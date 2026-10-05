@@ -6,7 +6,7 @@ import { builtinDefinitions } from "../src/builtins.ts";
 import type { UsageRecord } from "../src/client-sessions.ts";
 import { Outbound } from "../src/outbound.ts";
 import { micros } from "../src/pricing.ts";
-import { listen, runtime, sleep, toolCall, toolResults, until, type T } from "./runtime-server.ts";
+import { free, listen, runtime, sleep, toolCall, toolResults, until, type T } from "./runtime-server.ts";
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const PAYG = "payg-operator-token-at-least-24-chars";
@@ -102,7 +102,7 @@ test("Exa, Parallel and Firecrawl are POSTed JSON, and their answers become plai
 
 test("web_search uses the tenant's own search key, else the platform's billed to credit, and pairs with web_fetch", async t => {
   const brave = await fakeBrave(t);
-  const r = await runtime(t, researcher, {
+  const r = await runtime(t, free(researcher), {
     AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", AGENT_BRAVE_SEARCH_URL: brave.url, AGENT_WEB_SEARCH_PROVIDERS: "brave",
     AGENT_BILLING_ADMINS: "ops", AGENT_PRICE_AGENT_HOUR_USD: "0", AGENT_PRICE_WEB_SEARCH_USD: "0.25",
   }, tenantsFile);
@@ -272,10 +272,10 @@ test("web_search skips providers without a key, keeps to a definition's own orde
 
 test("a definition pins web_search's providers; a platform search is charged at the answering provider's price and counted in the hour's ledger entry", async t => {
   const fake = await fakeProviders(t);
-  const r = await runtime(t, (body: any) => {
+  const r = await runtime(t, free((body: any) => {
     const tool = body.messages.at(-1).role === "tool";
     return tool ? { role: "assistant", content: "done" } : toolCall("web_search", { query: "agent runtime" }, `search_${body.messages.length}`);
-  }, {
+  }), {
     AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", ...fake.env,
     AGENT_BILLING_ADMINS: "ops", AGENT_PRICE_AGENT_HOUR_USD: "0", AGENT_PRICE_WEB_SEARCH_PARALLEL_USD: "0.02",
   }, { ...tenantsFile, platformKeys: { openrouter: "fixture-platform-model-key", exa: "platform-exa-key", brave: "platform-brave-key", parallel: "platform-parallel-key" } });

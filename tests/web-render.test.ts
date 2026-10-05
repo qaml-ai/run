@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import type { UsageRecord } from "../src/client-sessions.ts";
 import { Outbound } from "../src/outbound.ts";
 import { isShell, WebRender } from "../src/web-render.ts";
-import { listen, runtime, toolCall, toolResults, until, type T } from "./runtime-server.ts";
+import { free, listen, runtime, toolCall, toolResults, until, type T } from "./runtime-server.ts";
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const PAYG = "payg-operator-token-at-least-24-chars";
@@ -52,10 +52,10 @@ test("web_fetch has Firecrawl render JavaScript shells, and only those, charging
     res.writeHead(404).end();
   });
   const fetches = [`${pages}/app`, `${pages}/article`, `${pages}/app`];
-  const r = await runtime(t, (body: any) => {
+  const r = await runtime(t, free((body: any) => {
     const step = body.messages.filter((message: any) => message.role === "tool").length;
     return fetches[step] ? toolCall("web_fetch", { url: fetches[step] }, `fetch_${step}`) : { role: "assistant", content: "done" };
-  }, {
+  }), {
     AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", AGENT_FIRECRAWL_SCRAPE_URL: firecrawl.url,
     AGENT_BILLING_ADMINS: "ops", AGENT_PRICE_AGENT_HOUR_USD: "0", AGENT_PRICE_WEB_RENDER_USD: "0.01",
   }, tenantsFile);

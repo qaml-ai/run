@@ -8,6 +8,7 @@ import type { AgentConfig, Credentials, RunLimits, ToolDefinition } from "./prot
 import { errorText } from "./protocol.ts";
 import { enqueueEvents, usageCost, webhookEvent, type WebhookEvent } from "./webhooks.ts";
 import { AgentSupervisor } from "./supervisor.ts";
+import { platformUsage } from "./platform-pricing.ts";
 import { configurationUpdate, type CustomProviders, type ModelEndpoints } from "./session-config.ts";
 import { outputInput, validateDefinitions } from "./tool-policy.ts";
 import { importedHistory, validateUserMessages } from "./history.ts";
@@ -3015,13 +3016,14 @@ export class ClientSessions {
           const { identity, keyScope } = session.header;
           const run = { requestId: record.id, ...(record.actor ? { actor: record.actor } : {}), ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) };
           if (event?.type === "message_end" && event.message?.role === "assistant" && event.message.usage && event.message.stopReason !== "error") {
-            this.options.onUsage?.(session.header.tenant, id, { ...event.message, ...run, provider: via + event.message.provider, platform: !!session.platformKey });
-            this.spent(session, responseCost(event.message.usage));
-            this.tally(session, record.id, event.message.usage);
+            const chars = event.message.stopReason === "aborted" ? JSON.stringify(event.message.content ?? []).length : undefined;
+            const usage = this.billable(session, event.message.usage, event.message.provider, event.message.model, chars);
+            this.options.onUsage?.(session.header.tenant, id, { ...event.message, usage, ...run, provider: via + event.message.provider, platform: !!session.platformKey });
+            this.spent(session, responseCost(usage));
+            this.tally(session, record.id, usage);
           }
           if (event?.type === "compaction_usage" && event.usage) {
-            this.compactionUsage(session, event, run);
-            this.tally(session, record.id, event.usage);
+            this.tally(session, record.id, this.compactionUsage(session, event, run));
           }
           // A prompt steered into this turn has been taken: it ends with the turn.
           const taken = event?.type === "message_end" && event.message?.role === "user" ? event.message.requestId : undefined;
@@ -3238,6 +3240,19 @@ export class ClientSessions {
     return session.spend;
   }
 
+  /**
+   * A response's usage as it is billed: on a platform key, priced from the runtime's catalog, never from the agent's
+   * stored model; one that reported no usage is charged an estimate, and logged.
+   */
+  private billable(session: Session, usage: any, provider: string, model: string, abortedChars?: number) {
+    if (!session.platformKey) return usage;
+    const priced = platformUsage(usage, provider, model, abortedChars === undefined ? undefined : { chars: abortedChars });
+    if (priced.estimated || !priced.known) {
+      console.log(JSON.stringify({ type: "platform_usage_untrusted", tenant: session.header.tenant, agent: session.header.id, provider, model, estimated: priced.estimated, known: priced.known, aborted: abortedChars !== undefined, usd: priced.usage.cost.total }));
+    }
+    return priced.usage;
+  }
+
   /** Give the agent a budget of `usd` from now (null: none). A new value starts counting from zero. */
   private async setSpendLimit(session: Session, usd: number | null) {
     const id = session.header.id, setAt = Date.now();
@@ -3248,13 +3263,15 @@ export class ClientSessions {
 
   /**
    * A compaction summary's usage, billed like a response: to the tenant (`onUsage`, kind compaction) and against the
-   * agent's spend limit. One made in the background belongs to no run (`run` has no requestId).
+   * agent's spend limit. One made in the background belongs to no run (`run` has no requestId). Returns the usage billed.
    */
   private compactionUsage(session: Session, event: any, run: Record<string, unknown>) {
+    const usage = this.billable(session, event.usage, event.provider, event.model);
     // Responses through the tenant's own endpoint count under it: `chiridion/openrouter/<model>`.
     const via = this.endpoint(session) ? `${session.header.config.model.provider}/` : "";
-    this.options.onUsage?.(session.header.tenant, session.header.id, { ...event, ...run, provider: via + event.provider, kind: "compaction", platform: !!session.platformKey });
-    this.spent(session, responseCost(event.usage));
+    this.options.onUsage?.(session.header.tenant, session.header.id, { ...event, usage, ...run, provider: via + event.provider, kind: "compaction", platform: !!session.platformKey });
+    this.spent(session, responseCost(usage));
+    return usage;
   }
 
   /** Events of a compaction made between runs: billed here, as no run's stream carries them, and shown on the agent's stream. */

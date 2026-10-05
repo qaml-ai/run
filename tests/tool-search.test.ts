@@ -6,7 +6,7 @@ import { CATALOG_LIMITS } from "../src/limits.ts";
 import { validateDefinitions, validateToolCall } from "../src/tool-policy.ts";
 import { compose, defaultExposure, valueServer } from "../src/tool-servers.ts";
 import { embeddingReranker, jevReranker, keywordScores, namespaces, rerankersFromEnv, searchQuery, searchTools, signature, type Candidate, type Reranker } from "../src/tool-search.ts";
-import { listen, runtime, toolCall, toolResults, until } from "./runtime-server.ts";
+import { free, listen, runtime, toolCall, toolResults, until } from "./runtime-server.ts";
 
 const tool = (name: string, description: string) => ({ name, description, parameters: { type: "object", properties: {} } });
 const catalog = [
@@ -310,8 +310,8 @@ test("every tenant pays tool search at cost on the platform's key: each search, 
     if (req.url === "/v1/embeddings") return json({ data: body.input.map((text: string, index: number) => ({ index, embedding: near(text) ? [1, 0] : [0, 1] })), usage: { prompt_tokens: 10, cost: 0.001 } });
     json({ answers: Object.fromEntries(Object.entries(body.questions).map(([id, question]: [string, any]) => [id, { noul: near(question.instructions) ? 0.9 : 0.1 }])), usage: { input_tokens: 900, cost: 0.004 } });
   });
-  const r = await runtime(t, body => body.messages.at(-1).role === "tool" ? { role: "assistant", content: "done" }
-    : toolCall("js_exec", { code: `return [(await tools.search("remind me later")).map(tool => tool.name), (await tools.search("")).length];` }), {
+  const r = await runtime(t, free(body => body.messages.at(-1).role === "tool" ? { role: "assistant", content: "done" }
+    : toolCall("js_exec", { code: `return [(await tools.search("remind me later")).map(tool => tool.name), (await tools.search("")).length];` })), {
     AGENT_TOOL_SEARCH: "embeddings,jev", AGENT_TOOL_SEARCH_URL: `${api}/v1`, AGENT_BILLING_ADMINS: "ops", AGENT_PRICE_AGENT_HOUR_USD: "0",
   }, {
     tenants: {

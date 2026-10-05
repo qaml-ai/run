@@ -35,6 +35,15 @@ export async function listen(t: T, handler: Parameters<typeof createServer>[1]) 
 }
 
 /**
+ * `respond` with each answer free on OpenRouter (its own cost 0, a token each way) unless it gives usage: a response on
+ * the platform's key that reports none is charged an estimate.
+ */
+export const free = (respond: (body: any, index: number) => object) => (body: any, index: number) => {
+  const answer = respond(body, index) as { usage?: unknown };
+  return answer.usage ? answer : { ...answer, usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0 } };
+};
+
+/**
  * An OpenAI-compatible model that answers each request with `respond`'s message delta. A delta's
  * `usage` (prompt_tokens, completion_tokens) is reported with the last chunk, and `delayMs` holds the answer back.
  * `httpStatus` (with `message`) answers with that error instead.
