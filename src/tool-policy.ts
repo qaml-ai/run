@@ -34,9 +34,42 @@ export function validateDefinitions(definitions: ToolDefinition[]) {
 const validators = new WeakMap<object, Validator>();
 function validator(schema: object) {
   let compiled = validators.get(schema);
-  if (!compiled) validators.set(schema, compiled = Compile(schema as never));
+  if (!compiled) validators.set(schema, compiled = Compile(checkable(schema) as never));
   return compiled;
 }
+
+/** Keywords whose value is a schema, or an array of them. */
+const SUBSCHEMAS = new Set(["items", "additionalItems", "prefixItems", "contains", "additionalProperties", "unevaluatedProperties", "unevaluatedItems", "propertyNames", "not", "if", "then", "else", "allOf", "anyOf", "oneOf"]);
+/** Keywords whose value maps names to schemas. */
+const SCHEMA_MAPS = new Set(["properties", "$defs", "definitions", "dependentSchemas", "dependencies"]);
+
+/**
+ * A schema as the runtime checks it: without `pattern` and `patternProperties`. Their regular
+ * expressions are the tenant's, matched here against arguments a model or guest code wrote, and one
+ * that backtracks takes minutes on a short string (V8's linear-time engine does not take the `u` flag
+ * JSON Schema patterns use). Without patternProperties, an object's other properties are let through
+ * too (its additionalProperties and unevaluatedProperties go): the check only loosens. A tool gets
+ * arguments of its declared shape still, and checks its own patterns. `const`, `enum`, `default` and
+ * the like are data, kept as they are.
+ */
+export function checkable(schema: unknown): unknown {
+  if (Array.isArray(schema)) return schema.map(checkable);
+  if (!schema || typeof schema !== "object") return schema;
+  const patterned = "patternProperties" in schema;
+  const kept: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(schema)) {
+    // Compiled (in linear time), never run: a schema with one that does not compile is still refused.
+    if (key === "pattern" && typeof value === "string") new RegExp(value, "u");
+    if (key === "patternProperties" && value && typeof value === "object") for (const name of Object.keys(value)) new RegExp(name, "u");
+    if (key === "pattern" || key === "patternProperties" || (patterned && (key === "additionalProperties" || key === "unevaluatedProperties"))) continue;
+    if (SCHEMA_MAPS.has(key) && value && typeof value === "object" && !Array.isArray(value)) kept[key] = Object.fromEntries(Object.entries(value).map(([name, entry]) => [name, checkable(entry)]));
+    else kept[key] = SUBSCHEMAS.has(key) ? checkable(value) : value;
+  }
+  return kept;
+}
+
+/** Arguments larger than this get no per-field account of what is wrong: working one out can take quadratic time (typebox's uniqueItems). */
+const DETAILED_ERROR_BYTES = 16 * 1024;
 
 /** Whether arguments can be checked against `schema`: a schema from outside (an MCP server) may not compile. */
 export function compiles(schema: object) {
@@ -78,6 +111,7 @@ export function validateToolCall(definitions: ToolDefinition[], name: unknown, a
   const json = jsonWithinLimit(args, SANDBOX_LIMITS.argumentBytes, "Tool arguments");
   const check = validator(tool.parameters);
   if (!check.Check(args)) {
+    if (json.length > DETAILED_ERROR_BYTES) throw new Error(`Invalid arguments for tool: ${tool.name}. It takes ${inputSignature(tool.parameters)}`);
     // Say what is wrong and what the tool takes, so the next call can be right without tools.describe.
     const problems = [...check.Errors(args)].slice(0, 3).map(error => `${error.instancePath || "arguments"} ${error.message}${error.keyword === "additionalProperties" ? ` (${(error.params as { additionalProperties?: string[] }).additionalProperties?.join(", ")})` : ""}`);
     throw new Error(`Invalid arguments for tool: ${tool.name}: ${problems.join("; ")}. It takes ${inputSignature(tool.parameters)}`);

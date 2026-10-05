@@ -38,6 +38,12 @@ export interface Reranker {
 
 export const DEFAULT_LIMIT = 20;
 export const MAX_LIMIT = 128;
+/**
+ * A query's characters, and the words of it ranked: searching costs words times tools, and a query
+ * comes from guest code, so it is cut rather than let a 128 KB one hold the runtime's thread.
+ */
+export const QUERY_CHARS = 500;
+const QUERY_WORDS = 32;
 /** All rerank stages of one search get this long; a stage not done by then is left out. */
 export const RERANK_TIMEOUT_MS = 2_500;
 /** Candidates a stage that cannot see the whole catalog is given. */
@@ -48,13 +54,13 @@ const SIGNATURE_CHARS = 400;
 /** A search from code: a string, or `{ query, namespace, limit }`. */
 export function searchQuery(value: unknown): SearchQuery {
   if (value === undefined || value === null) return {};
-  if (typeof value === "string") return { query: value };
+  if (typeof value === "string") return { query: value.slice(0, QUERY_CHARS) };
   if (typeof value !== "object" || Array.isArray(value)) throw new Error("tools.search takes a query string or { query?, namespace?, limit? }");
   const { query, namespace, limit } = value as Record<string, unknown>;
   if (query !== undefined && typeof query !== "string") throw new Error("tools.search query must be a string");
   if (namespace !== undefined && typeof namespace !== "string") throw new Error("tools.search namespace must be a string");
   if (limit !== undefined && (!Number.isInteger(limit) || (limit as number) < 1)) throw new Error("tools.search limit must be a positive integer");
-  return { ...(query !== undefined ? { query } : {}), ...(namespace !== undefined ? { namespace } : {}), ...(limit !== undefined ? { limit: Math.min(limit as number, MAX_LIMIT) } : {}) };
+  return { ...(query !== undefined ? { query: query.slice(0, QUERY_CHARS) } : {}), ...(namespace !== undefined ? { namespace } : {}), ...(limit !== undefined ? { limit: Math.min(limit as number, MAX_LIMIT) } : {}) };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -112,9 +118,10 @@ function prepare(tool: Candidate): Prepared {
 }
 
 /** A keyword score for each tool; 0 means no query word matched. */
-export function keywordScores(tools: Candidate[], query: string): number[] {
+export function keywordScores(tools: Candidate[], whole: string): number[] {
+  const query = whole.slice(0, QUERY_CHARS);
   const phrase = normalize(query);
-  const queryWords = [...new Set(words(query))];
+  const queryWords = [...new Set(words(query))].slice(0, QUERY_WORDS);
   if (!queryWords.length) return tools.map(() => 0);
   return tools.map(tool => {
     const matched = new Set<string>();

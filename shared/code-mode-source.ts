@@ -30,8 +30,9 @@ export async function stripTypeScriptFromUserCode(userCode: string): Promise<str
 export function prepareCodeModeUserCode(userCode: string): string {
   if (!userCode.trim() || /\breturn\b/.test(userCode)) return userCode;
 
-  const trailingWhitespace = userCode.match(/\s*$/)?.[0] ?? "";
-  const body = userCode.slice(0, userCode.length - trailingWhitespace.length);
+  // trimEnd, not /\s*$/: that regex is quadratic in a long run of whitespace.
+  const body = userCode.trimEnd();
+  const trailingWhitespace = userCode.slice(body.length);
   const lines = body.split("\n");
   const lastCodeLineIndex = lines.findLastIndex((line) => {
     const trimmed = line.trim();
