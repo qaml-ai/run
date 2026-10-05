@@ -98,7 +98,7 @@ export class EmailAccounts {
    * the address and password sign in to the new tenant, or to the one that asked. `wrong` when the password is not that
    * one (the link still works). `admit` is the sign-up rate limit, counted in the transaction that makes the tenant.
    */
-  async complete(token: unknown, password: unknown, admit?: (sql: Sql) => Promise<void>): Promise<{ tenant: string; email: string; next?: string } | { wrong: true; email: string }> {
+  async complete(token: unknown, password: unknown, admit?: (sql: Sql) => Promise<void>, created?: (sql: Sql, tenant: string) => Promise<void>): Promise<{ tenant: string; email: string; next?: string } | { wrong: true; email: string }> {
     if (typeof token !== "string" || !TOKEN.test(token)) throw new HttpError(400, LINK_GONE);
     const key = sha256(token);
     const link = (await this.db.query("select purpose, email, tenant, hash, next from account_email_links where sha256 = $1 and expires_at > $2 and purpose <> 'reset'", [key, this.now()])).rows[0] as Link | undefined;
@@ -126,6 +126,8 @@ export class EmailAccounts {
       }
       // Other links for the address (or the account) are moot now.
       await sql.query("delete from account_email_links where purpose <> 'reset' and (email = $1 or tenant = $2)", [link.email, tenant]);
+      // A sign-up made an account: `created` hears of it in this transaction, as a sign-in's does (Accounts.tenantForGithub).
+      if (link.purpose === "verify") await created?.(sql, tenant!);
       return tenant!;
     });
     return { tenant, email: link.email, ...(link.next ? { next: link.next } : {}) };

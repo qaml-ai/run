@@ -42,6 +42,15 @@ Changes on main since the last tag.
   stored for a self-serve tenant, and the reply no longer lists one. An engine still stored is
   ignored.
 - `AGENT_JS_EXEC` is ignored; drop it from your environment.
+### Journey events (opt-in)
+
+- With `AGENT_JOURNEY_URL` and `AGENT_JOURNEY_SECRET` (or its ARN) set, the runtime sends signed events to the
+  operator's own analytics store, for browsers that agreed to be measured: an arrival at the console from
+  elsewhere, the console's pages (as routes), an account being made, signed in to or out of, minting an API
+  token or being deleted, an agent being made through the API, an account's active days and first completed run,
+  and its payments. The account export gains `analytics/` for accounts it knew (migration 055; [privacy](privacy.md#journey-events)). Unset, the default, nothing
+  changes: no cookie is read or set, no row is written and nothing is sent.
+- `/` and `/console` keep the query string when they redirect to `/console/`.
 
 ### Console sessions
 

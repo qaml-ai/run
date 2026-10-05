@@ -2,6 +2,7 @@ import type { Accounts } from "./accounts.ts";
 import type { Channels } from "./channels.ts";
 import { transaction, type Db } from "./db.ts";
 import { HttpError } from "./http.ts";
+import { deleteJourneyAccount } from "./journey.ts";
 import { safeError } from "./metrics.ts";
 import { StripeError, type Stripe } from "./stripe.ts";
 import type { VolumeService } from "./volumes.ts";
@@ -157,6 +158,7 @@ export class AccountDeletions {
     await this.deleteCustomers(tenant);
     await transaction(db, async sql => {
       for (const table of TENANT_TABLES) await sql.query(`delete from ${table} where tenant = $1`, [tenant]);
+      await deleteJourneyAccount(sql, tenant);
       await sql.query("delete from billing_confirmation_limits where scope = $1", [`tenant:${tenant}`]);
       await sql.query("delete from storage_usage where (kind = 'tenant' and owner = $1) or (kind = 'volume' and owner in (select id from volumes where tenant = $1))", [tenant]);
       await sql.query("delete from volumes where tenant = $1", [tenant]);

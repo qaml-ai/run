@@ -54,12 +54,16 @@ export async function runtimeSecrets(env = process.env) {
   // A dedicated key for tool search's ranking by meaning (AGENT_TOOL_SEARCH). Null: the secret has no
   // value, and search uses the platform's OpenRouter key from the tenants file.
   const toolSearchArn = exclusive(["AGENT_TOOL_SEARCH_API_KEY"], "AGENT_TOOL_SEARCH_SECRET_ARN");
+  const journeyArn = exclusive(["AGENT_JOURNEY_SECRET"], "AGENT_JOURNEY_SECRET_ARN");
   let toolSearchKey: string | null | undefined = env.AGENT_TOOL_SEARCH_API_KEY;
   if (toolSearchArn) {
     try { toolSearchKey = (await read(toolSearchArn)).trim() || null; }
     catch (error) { if ((error as Error).name !== "ResourceNotFoundException") throw error; toolSearchKey = null; }
   }
+  // Journey events' signing secret (src/journey.ts): named only where the operator set one.
+  const journeySecret = journeyArn ? (await read(journeyArn)).trim() : env.AGENT_JOURNEY_SECRET;
   return {
+    ...(journeySecret === undefined ? {} : { journeySecret }),
     toolSearchKey,
     sessionSecret: sessionArn ? await read(sessionArn) : env.AGENT_SESSION_SECRET,
     secretsKey: keyArn ? await read(keyArn) : env.AGENT_SECRETS_KEY,

@@ -92,6 +92,7 @@ export class CardCredit {
       }], sql) : [];
       await sql.query("insert into card_checks (setup_intent, tenant, livemode, fingerprint, granted, grant_ledger_id, checked_at) values ($1, $2, $3, $4, $5, $6, $7)",
         [intentId, tenant, this.stripe.live, card.fingerprint, !!entry, entry?.id ?? null, Date.now()]);
+      if (entry) await this.billing.journey?.cardVerified(sql, tenant);
       return !!entry;
     });
     this.billing.invalidate([tenant]);

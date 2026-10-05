@@ -7,6 +7,7 @@ import type { BillingAlerts } from "./billing-alerts.ts";
 import type { Accounts, Principal } from "./accounts.ts";
 import { answerList, type ClientSessions } from "./client-sessions.ts";
 import { personal, type ConsoleAuth } from "./console-auth.ts";
+import type { Journey } from "./journey.ts";
 import { checkNewPassword, checkPassword, normalizeEmail } from "./passwords.ts";
 import type { OAuth } from "./oauth.ts";
 import { listModels, listProviders, modelInfo, providerInfo } from "./catalog.ts";
@@ -46,6 +47,8 @@ export interface ApiContext {
   billingAlerts?: { service: BillingAlerts; emailEnabled: boolean };
   clients: ClientSessions;
   consoleAuth: ConsoleAuth;
+  /** Journey events (src/journey.ts), where the operator configured them. */
+  journey?: Journey;
   /** OAuth for the hosted MCP endpoint: its access tokens act for their tenant here too. */
   oauth?: OAuth;
   keyScopes?: KeyScopes;
@@ -478,6 +481,11 @@ export function api(context: ApiContext) {
     const first = prompt === undefined ? undefined : promptRequest(parse(schema.PromptInput, prompt), undefined, c.req.header("traceparent"));
     await context.rateLimits?.agentCreate(tenant);
     const created = await context.createAgent(tenant, params, c.req.header("idempotency-key")) as { id: string };
+    // An agent its key already had comes back reconfigured: only a new one is told of (src/journey.ts).
+    if (context.journey && !("reconfigured" in created)) {
+      const { via } = c.var.principal;
+      await context.journey.agentCreated({ tenant, via: via === "console" ? "console" : via === "oauth" ? "mcp" : "api", ...(personal(c.var.principal) ? { browser: context.journey.browser(c.req.raw) } : {}) });
+    }
     if (!first) return json(c, 201, withoutToken(c, created));
     const submit = context.submit ?? clients.submit.bind(clients);
     // A prompt refused leaves the agent made: the caller learns why, and may send it again.
@@ -662,7 +670,9 @@ export function api(context: ApiContext) {
     // An OAuth grant lasts until revoked; a token it made would outlive that.
     if (c.var.principal.via === "oauth") throw new HttpError(403, "An OAuth access token cannot create API tokens");
     const body = await readJson(c.req.raw.body, 4096, {});
-    return json(c, 201, await accounts.createToken(c.var.principal.tenant, body.name));
+    const token = await accounts.createToken(c.var.principal.tenant, body.name);
+    await context.journey?.tokenCreated({ tenant: c.var.principal.tenant, ...(personal(c.var.principal) ? { browser: context.journey.browser(c.req.raw) } : {}) });
+    return json(c, 201, token);
   });
   route(createRoute({ method: "delete", path: "/v1/sessions", responses: { 200: reply("Signed out everywhere: every console session of the account ends now, this one too", schema.SignedOut) } }),
     async c => json(c, 200, { signedOut: await context.consoleAuth.endSessions(c.var.principal.tenant) }));
@@ -782,7 +792,9 @@ export function api(context: ApiContext) {
     const { amountUsd, requestId } = parse(schema.CheckoutInput, await readJson(c.req.raw.body, 4096, {}));
     const amount = Math.round(amountUsd * 100) * 10_000;
     if (Math.abs(amountUsd * 100 - Math.round(amountUsd * 100)) > 1e-6) throw new HttpError(400, "amountUsd must be in whole cents");
-    return json(c, 201, await accounts.billing.checkout(c.var.principal.tenant, amount, requestId));
+    const checkout = await accounts.billing.checkout(c.var.principal.tenant, amount, requestId);
+    await context.journey?.checkoutStarted({ tenant: c.var.principal.tenant, amountMinor: amount / 10_000, session: checkout.id, ...(personal(c.var.principal) ? { browser: context.journey.browser(c.req.raw) } : {}) });
+    return json(c, 201, checkout);
   });
   const cardCredit = () => {
     if (!accounts.billing.cardCredit) throw new HttpError(503, "Stripe billing is not configured");
@@ -869,7 +881,7 @@ export function api(context: ApiContext) {
     return context.accountDeletions;
   };
   const exported = (tenant: string) => {
-    const options = { accounts, clients, volumes: context.volumes, definitions: context.definitions, channels: context.channels, webhooks: context.webhooks, telemetry: context.telemetry, oauth: context.oauth, historyPage: context.historyPage };
+    const options = { accounts, clients, volumes: context.volumes, definitions: context.definitions, channels: context.channels, webhooks: context.webhooks, telemetry: context.telemetry, oauth: context.oauth, historyPage: context.historyPage, journey: context.journey };
     // Past the first bytes the status is sent: a failure cuts the zip off before its directory, so no reader takes it as whole.
     const zip = (async function* () {
       try { yield* exportAccount(options, tenant); }
@@ -917,6 +929,7 @@ export function api(context: ApiContext) {
     const { rowCount } = await accounts.db.query(
       "insert into tenants (id, created_at) select $1, $2 where not exists (select 1 from account_deletions where tenant = $1) on conflict do nothing", [id, Date.now()]);
     if (!rowCount) throw new HttpError(409, `Tenant ${id} already exists or was deleted`);
+    await context.journey?.accountProvisioned(id);
     console.log(JSON.stringify({ type: "tenant_created", tenant: id, by }));
     return json(c, 201, { tenant: id, token: await accounts.createToken(id, tokenName) });
   });

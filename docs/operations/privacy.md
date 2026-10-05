@@ -18,6 +18,7 @@ or a file chunk in memory at a time:
   the administrators who added Camel, and pending setup expiry times; never OAuth tokens or session/state hashes
 - `volumes/<id>/volume.json` and `volumes/<id>/files/...`: every volume's files (agents' workspaces included)
 - `billing/ledger.jsonl` (newest first) and `billing/usage.json` (per day and model)
+- `analytics/`: only for an account [journey events](#journey-events) ever knew, what this runtime and the operator's store hold of its journey
 
 Any token of the tenant can export (not a browser token). Entries are deflated and the archive uses
 ZIP64 only when it needs it (over 65,535 files or 4 GiB). A platform operator exports any tenant with
@@ -112,6 +113,7 @@ email address may sign up again as a new, empty tenant.
 | Account mail at Amazon SES | SES's sending records; addresses that bounce or complain stay on the account's suppression list until removed |
 | Ledger, usage, payment and starting-credit records | kept after deletion, as above |
 | Trace export settings (`telemetry_exporters`: endpoint, sealed headers) | until the tenant clears them, or its account is deleted |
+| Journey events waiting to be sent (`journey_outbox`), where configured | until the operator's store takes them, 30 days at most; an account's go when it is deleted |
 | Spans waiting to be exported | in each node's memory only, seconds; dropped when they cannot be sent |
 
 ## Trace export
@@ -126,6 +128,87 @@ logs, and are dropped when the endpoint moves to another origin. Exports go thro
 (public addresses only). A failed export logs `telemetry_export_failed` with the tenant, a span count and
 `safeError` (class and status), never a span or header. The account export holds `telemetry.json`
 (header names only), and deletion removes the settings.
+
+## Journey events
+
+Off unless the operator sets `AGENT_JOURNEY_URL` (see [configuration](configuration.md)); a self-hosted
+runtime sends none, and its console is served exactly as before. With it set, the runtime tells the
+operator's own analytics store (`src/journey.ts`), so a visit to the operator's website can be followed to
+an account and what it did:
+
+- when a browser arrives at the console from elsewhere (`run_arrived`: how it came, and the route it landed on);
+- which console pages a browser sees (`page_viewed`, from the console itself, `console/web/lib/journey.ts`);
+- when a sign-in is started, and when an account is made (by a GitHub or Google sign-in, by finishing an email sign-up, or by an operator through the API), signed in to, signed out of, mints an API token or is deleted;
+- when an agent is made through the API (not one its key already had, a delegate's child or a channel's), with how (`console`, `api` or `mcp`);
+- that an account ran an agent on a UTC day (`run_active_day`: one mark a day, no count of runs and nothing of any run), and its first run to end with its answer (`run_first_execution_completed`);
+- an account's payments: a card check that granted starting credit, a Checkout session started (the credit asked for), credit paid for by Checkout or an automatic top-up (the credit in cents, the fee aside, and Stripe's id for the payment), and automatic top-up switched on. A purchase is told of in the transaction that adds it to the ledger, so only on Stripe's word that it was paid, and once.
+
+An event carries its name, a time, a few listed properties (the sign-in method, whether a token or an agent
+was the account's first, the day), an `account_ref`, a `visitor_id`, and for a page its host and route, and
+nothing else: no tenant id, login, address, token, agent id or name, prompt, answer or query string. What an
+account did "first" is known for accounts made while journey events were on; an older account has no first
+run told, and its first token or agent is one made when it had no other. A page is its route (`/console/agents/:agent_id`),
+never the address with an id in it; an address that is no known route is `/console/*`. `account_ref` is a
+random id kept in `journey_accounts`, because a tenant id can be a GitHub login. `visitor_id` is the UUID in
+the cookie `AGENT_JOURNEY_VISITOR_COOKIE` names; a value that is not a UUID is ignored. Who an event is
+about comes from the request (its cookie, its session), never from what the console sends. A source may report
+120 console pages a minute to each node; past that it is answered 429 and nothing is written.
+`tests/journey.test.ts` and `tests/journey-server.test.ts` check what an event holds and that nothing is
+written without the setting.
+
+**Cookies.** The visitor cookie is normally set by the operator's website. A browser that reaches the
+console first, from another site or by a link carrying `camel_handoff`, and that agreed to be measured, is
+given one here (90 days, HttpOnly, `AGENT_JOURNEY_VISITOR_COOKIE_DOMAIN`), and where it came from (the other
+site's host, and the campaign its link named: `utm_*` and Google's click ids, nothing else of the query) is
+sent to the store as its touch. Programs and pages loaded ahead of time are not arrivals. The runtime also
+reads Google Analytics' `_ga` cookie where there is one, and passes its id along (`ga_client_id`); it keeps
+the id of an account's last browser that agreed (`journey_accounts.ga_client_id`) to send with what the
+account does away from a browser (a payment, a run), and forgets it when a browser of the account refuses.
+It reads no Google session cookie and sends no session id.
+
+**Consent.** A browser is recorded only if it agreed: its `AGENT_JOURNEY_CONSENT_COOKIE` says `granted`.
+One that says `denied`, or sends Global Privacy Control, never is, and is given no cookie; one that has not
+answered is only where the operator set `AGENT_JOURNEY_COLLECT_UNKNOWN=true`. Each event says which it was
+(`analytics_consent`: `granted` or `unknown`). An account keeps what its browser last said
+(`journey_accounts.consent`), for what it does away from a browser: after a refusal, a token minted with a
+token is not recorded either. Signing up and signing in never depend on the answer.
+
+A refusal is itself told to the store, as a control and not an event (`/api/journey/consent-controls`: the
+`account_ref`, the refusing browser's visitor id if it has one, and the time), so the store withdraws what it
+had queued for Google of that account or browser. It is told when an account turns to refusing (at a sign-in,
+or the first console page a signed-in browser reports after refusing) and at each sign-in that still refuses.
+Like a deletion it waits in the outbox until the store takes it, however long. That a browser agreed is never
+told separately: each event says what its browser said.
+
+**Delivery.** Events and touches wait in `journey_outbox` and are POSTed to
+`<AGENT_JOURNEY_URL>/api/journey/server-events` and `/api/marketing-attribution/resolve`, signed per
+Standard Webhooks, until the store's answer names what it took (30 days at most, then dropped with
+`journey_events_dropped`; a deletion is never dropped). They are never sent to a tenant's webhooks. A failed
+delivery logs `journey_delivery_failed` with the event's name, id and the HTTP status; one the store
+refuses as invalid (`journey_event_rejected`) is offered again once a day.
+
+**What can be lost.** Writing an event never fails what it describes, so a fault writing one loses it
+(`journey_event_failed`). An account's making is found again: when its event cannot be written, what it
+takes to send it late is noted aside (`journey_lost_signups`: what the browser said about being measured,
+and its visitor only if it agreed), and every ten minutes accounts made since journey events were first on
+and unknown to `journey_accounts` are given their `run_account_created`, at the time they were made, as
+that note allows (`journey_accounts_reconciled`). An account with no note is counted and never sent: its
+browser may have refused.
+
+**Deletion.** Deleting an account removes its `journey_accounts` row, its milestones, any note of a lost
+sign-up and its undelivered events in the deletion's last transaction, and queues one `run_account_deleted`
+naming only the `account_ref`, so the store deletes its copy. That event waits until the store takes it,
+however long, and is queued even on a runtime whose journey events have since been switched off (it is
+sent when they are on again).
+
+**Export.** An account journey ever knew has `analytics/` in its export (see [Export](#export)): `account.json`,
+what this runtime keeps of it (its `account_ref`, its sign-up visitor id, what its browser last said, what it
+has done once, and events still to be sent); and, where journey events are configured, what the store holds,
+asked for with the same signature: `summary.json` (how the store says the account was acquired),
+`events-*.json` and `touches-*.json`, a page a file, and `google-copies-*.json`, what the store prepared or
+sent to Google Analytics of those events. `summary.json` also says when the account last refused, if it has. The store is asked for the account this runtime
+authenticated, never one a request names. If the store cannot be asked the export fails, as for any part it
+cannot read whole.
 
 ## Runbook: a deletion or export request by email
 

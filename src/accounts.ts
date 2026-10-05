@@ -122,7 +122,7 @@ export class Accounts {
    * tenant named after the login (or, when another account has that name, the login and the id). Decide starting
    * credit only when creating the tenant, atomically with its grant. Later sign-ins never reconsider that decision.
    */
-  async tenantForGithub(user: GithubUser, options: { minAccountAgeMs?: number; admit?: (sql: Sql) => Promise<void> } = {}): Promise<string> {
+  async tenantForGithub(user: GithubUser, options: { minAccountAgeMs?: number; admit?: (sql: Sql) => Promise<void>; created?: (sql: Sql, tenant: string) => Promise<void> } = {}): Promise<string> {
     const { login, id: githubId, createdAt } = user;
     // Logins are renamed and freed, then taken by others: only the numeric id identifies an account.
     if (githubId === undefined || !Number.isSafeInteger(githubId) || githubId <= 0) throw new Error("GitHub did not return a valid account; try signing in again");
@@ -164,6 +164,7 @@ export class Accounts {
           githubCreatedAt: createdAt, minAccountAgeMs: options.minAccountAgeMs,
         });
       }
+      if (created) await options.created?.(sql, row.id);
       return row.id;
     });
     this.billing.invalidate([tenant]);
@@ -201,11 +202,12 @@ export class Accounts {
    * else random), so no part of the address shows in it. Google tenants are never linked to GitHub ones or admin tenants,
    * and get no automatic starting credit: a card check unlocks it (src/card-credit.ts).
    */
-  async tenantForGoogle({ sub, email }: GoogleUser, options: { admit?: (sql: Sql) => Promise<void> } = {}): Promise<string> {
+  async tenantForGoogle({ sub, email }: GoogleUser, options: { admit?: (sql: Sql) => Promise<void>; created?: (sql: Sql, tenant: string) => Promise<void> } = {}): Promise<string> {
     if (!/^[\x21-\x7e]{1,255}$/.test(sub) || !email.includes("@")) throw new Error("Google did not return a valid account; try signing in again");
     return transaction(this.db, async sql => {
       await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`google:${sub}`]);
       let row: { id: string; google_email: string | null } | undefined = (await sql.query("select id, google_email from tenants where google_sub = $1", [sub])).rows[0];
+      const created = !row;
       if (!row) {
         await options.admit?.(sql);
         const hash = sha256(`google:${sub}`);
@@ -219,6 +221,7 @@ export class Accounts {
       // An admin tenant is never reachable by sign-in, even if one is added later under this id.
       if (this.tenants.has(row.id)) throw new Error("This Google account cannot sign in here; contact support");
       if (row.google_email !== email) await sql.query("update tenants set google_email = $2 where id = $1", [row.id, email]);
+      if (created) await options.created?.(sql, row.id);
       return row.id;
     });
   }

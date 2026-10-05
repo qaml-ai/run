@@ -95,6 +95,7 @@ export class AutoTopup {
       [tenant, this.stripe.live, q.threshold, q.amount, q.fee, q.monthly_limit, this.now()])).rows[0];
       await sql.query("update billing_auto_quotes set accepted_at=$2,consent_version=$3,consent_card=$4 where id=$1", [q.id, this.now(), version, displayCard(card)]);
       await this.reserve(sql, tenant, s, card);
+      await this.billing.journey?.autoTopupEnabled(sql, tenant);
     });
     return this.get(tenant);
   }
