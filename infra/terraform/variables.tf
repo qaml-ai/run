@@ -209,3 +209,21 @@ variable "storage_gc_dry_run" {
   type        = bool
   default     = true
 }
+
+variable "admin_hostname" {
+  description = "The team's admin site (admin.tf, src/admin-site.ts), in the cloudflare_zone_id zone, behind Cloudflare Access. Empty for none."
+  type        = string
+  default     = "admin.camelai.dev"
+}
+
+variable "admin_access_team" {
+  description = "The Cloudflare Access team's origin: the issuer of the tokens the admin site checks."
+  type        = string
+  default     = "https://qaml.cloudflareaccess.com"
+}
+
+variable "admin_access_aud" {
+  description = "The AUD tag of the admin site's Access application (\"camelRun admin\" in Zero Trust → Access → Applications)."
+  type        = string
+  default     = "041fd04d6d1fb5bc79df2e24d35bde86085109e322819cdc0964501ba5bd3478"
+}

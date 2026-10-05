@@ -72,6 +72,7 @@ import { rerankersFromEnv } from "./tool-search.ts";
 import { Inputs, inputView } from "./inputs.ts";
 import { BrowserTokens } from "./browser-tokens.ts";
 import { publicOrigins } from "./origins.ts";
+import { adminSite, adminSiteFromEnvironment } from "./admin-site.ts";
 import { AccountDeletions } from "./account-deletion.ts";
 import { RateLimits, rateLimitConfig } from "./rate-limits.ts";
 
@@ -679,6 +680,9 @@ accountDeletions.start(Number(process.env.AGENT_SCHEDULER_INTERVAL_MS ?? 5_000))
 
 type Env = { Bindings: HttpBindings; Variables: { tenant: string } };
 const app = new Hono<Env>();
+// The team's admin site, behind Cloudflare Access on a hostname of its own (src/admin-site.ts): answered before anything else.
+const adminSiteOptions = adminSiteFromEnvironment(process.env, { db, consoleDir });
+if (adminSiteOptions) app.use(adminSite(adminSiteOptions));
 // On an alias, the pages people use move to the public URL, whose host their sign-in cookies and OAuth callbacks belong to.
 // Everything else (the API, MCP, OAuth's token endpoint, webhooks, links) is served on every origin alike.
 const BROWSER_PAGES = /^\/(?:$|console(?:\/|$)|oauth\/authorize$)/;
