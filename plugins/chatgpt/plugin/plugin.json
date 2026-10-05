@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "camelrun",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Create, deploy and run AI agents on camelRun, camelAI's hosted agent runtime.",
   "author": {
     "name": "camelAI",

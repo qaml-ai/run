@@ -80,7 +80,7 @@ The package is ready except for the demo video's URL, which needs you. The build
    the test cases below in a new chat with camelRun added from the + menu.
 5. **Upload.** `node --experimental-strip-types plugins/chatgpt/build.ts`, then at https://platform.openai.com/plugins
    select Upload new or existing plugin, choose the verified developer identity, and upload
-   `plugins/chatgpt/dist/camelrun-1.0.0.zip`. Fix any Metadata & Skills findings in `plugin/` and upload again
+   `plugins/chatgpt/dist/camelrun-<version>.zip`. Fix any Metadata & Skills findings in `plugin/` and upload again
    (bump `version` for a package that was already submitted).
 6. **Connect the MCP server.** MCPs, camelrun, Connect: URL `https://run.camelai.com/mcp`, OAuth with dynamic
    registration. The drawer shows a domain-verification token, which the runtime serves from
