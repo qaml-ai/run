@@ -88,11 +88,12 @@ export class Accounts {
 
   /**
    * Who a tenant belongs to, for showing the person rather than the tenant id: the Google address
-   * or GitHub login it signed up with, else the GitHub login an admin linked to it.
+   * or GitHub login it signed up with, else the GitHub login an admin linked to it, else the address it signs in with.
    */
   async identity(tenant: string): Promise<string | undefined> {
-    const row = validTenant(tenant) ? (await this.db.query("select google_email, github from tenants where id = $1", [tenant])).rows[0] : undefined;
-    return row?.google_email ?? row?.github ?? this.tenants.github(tenant);
+    const row = validTenant(tenant) ? (await this.db.query(`select (select google_email from tenants where id = $1) as google_email, (select github from tenants where id = $1) as github,
+      (select email from tenant_passwords where tenant = $1) as email`, [tenant])).rows[0] : undefined;
+    return row?.google_email ?? row?.github ?? this.tenants.github(tenant) ?? row?.email ?? undefined;
   }
 
   /** Resolve a bearer operator token or tenant API token. */

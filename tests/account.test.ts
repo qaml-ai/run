@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { Accounts } from "../src/accounts.ts";
 import { Tenants } from "../src/tenants.ts";
 import { unzip } from "./unzip.ts";
-import { listen, OPERATOR, OTHER_OPERATOR, runtime, until, type T } from "./runtime-server.ts";
+import { listen, OPERATOR, OTHER_OPERATOR, passwordSession, runtime, until, type T } from "./runtime-server.ts";
 
 /** A fake Stripe API: what the runtime deleted and expired. */
 async function fakeStripe(t: T) {
@@ -95,9 +95,11 @@ test("an account exports everything it stores, then deletes it all but the ledge
 
   // Deletion is the console's, signed in, with the account named; admin tenants and other operators cannot.
   assert.equal((await as("/v1/account", { method: "DELETE", body: { confirm: tenant } })).status, 403, "not with an API token");
-  const signIn = await fetch(`${r.base}/console/auth/token`, { method: "POST", headers: { "Content-Type": "application/json", "X-Agent-Runtime-Console": "1", "Sec-Fetch-Site": "same-origin" }, body: JSON.stringify({ token }) });
   const asSession = (cookie: string) => (path: string, init: { method?: string; body?: unknown } = {}) => r.call(path, { ...init, token: null, headers: { Cookie: cookie, "X-Agent-Runtime-Console": "1", "Sec-Fetch-Site": "same-origin" } });
-  assert.equal((await asSession(signIn.headers.getSetCookie()[0].split(";")[0])("/v1/account", { method: "DELETE", body: { confirm: tenant } })).status, 403, "not from a session signed in with a token");
+  // An API token cannot give its account a password, which would make it a person's console session; the platform operator can.
+  assert.equal((await as("/v1/tenants/carol/password", { method: "PUT", body: { email: "carol@example.com", password: "carol-password-1234" } })).status, 403);
+  const byPassword = asSession(await passwordSession(r.base, OPERATOR, tenant, "carol@example.com"));
+  assert.equal((await byPassword("/v1/me")).json.signIn, "password");
   // Carol's GitHub sign-in, as the callback stores it.
   const sessionId = randomBytes(32).toString("base64url");
   await r.db.query("insert into console_sessions (sha256, tenant, login, method, created_at, expires_at) values ($1, $2, 'carol', 'github', $3, $4)",
@@ -112,6 +114,7 @@ test("an account exports everything it stores, then deletes it all but the ledge
   // At once: nothing authenticates as the account any more.
   assert.equal((await as("/v1/me")).status, 401);
   assert.equal((await console_("/v1/me")).status, 401);
+  assert.equal((await byPassword("/v1/me")).status, 401);
 
   const done = await until(async () => { const status = await r.call("/v1/tenants/carol/deletion", { token: OPERATOR }); return status.json.state === "deleted" && status.json; }, "the deletion to finish", 60_000);
   assert.ok(done.completedAt >= done.requestedAt);
@@ -119,7 +122,7 @@ test("an account exports everything it stores, then deletes it all but the ledge
 
   // Gone: everything but the ledger, usage, payment and starting-credit records.
   const count = async (sql: string, params: unknown[] = [tenant]) => Number((await r.db.query(sql, params)).rows[0].count);
-  for (const table of ["console_sessions", "api_tokens", "provider_keys", "definitions", "webhook_endpoints", "schedules", "volumes", "channels", "billing_recipients", "chunk_touches", "oauth_grants", "agent_inputs", "discord_server_bindings", "discord_setup_attempts"]) {
+  for (const table of ["console_sessions", "tenant_passwords", "api_tokens", "provider_keys", "definitions", "webhook_endpoints", "schedules", "volumes", "channels", "billing_recipients", "chunk_touches", "oauth_grants", "agent_inputs", "discord_server_bindings", "discord_setup_attempts"]) {
     assert.equal(await count(`select count(*) from ${table} where tenant = $1`), 0, table);
   }
   assert.equal(await count("select count(*) from tenants where id = $1"), 0);

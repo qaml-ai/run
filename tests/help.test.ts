@@ -8,6 +8,7 @@ import { api } from "../src/api.ts";
 import { BillingAlerts } from "../src/billing-alerts.ts";
 import { billingMailConfig } from "../src/billing-mailer.ts";
 import { ConsoleAuth } from "../src/console-auth.ts";
+import { Passwords } from "../src/passwords.ts";
 import { Help, helpConfig, helpReference, HELP_LIMITS_PER } from "../src/help.ts";
 import { MailTransport, type MailResult, type OutgoingMail } from "../src/mail-transport.ts";
 import { Tenants } from "../src/tenants.ts";
@@ -214,7 +215,7 @@ test("a reply address that is the support inbox is not copied twice", async t =>
 
 test("POST /v1/help is the console's; GET /v1/help says whether the button shows", async t => {
   const { help, accounts, sent } = await setup(t);
-  const consoleAuth = new ConsoleAuth({ accounts, publicUrl: origin });
+  const consoleAuth = new ConsoleAuth({ accounts, publicUrl: origin, passwords: new Passwords(accounts.db) });
   const context = { accounts, consoleAuth, clients: {} as never, defaultModel: async () => "anthropic/claude-sonnet-5-5", createAgent: async () => ({}) };
   const cookie = (await consoleAuth.session("alice", "github", "octocat")).split(";")[0];
   const console = { cookie, "x-agent-runtime-console": "1", origin, "content-type": "application/json", "x-forwarded-for": "10.0.0.1, 203.0.113.7" };
@@ -302,7 +303,7 @@ test("console paths map to allowlisted templates; anything else is left out", ()
   assert.equal(helpRouteTemplate(`/v1/agents/${agentId}/requests/abc?x=1`), "/v1/agents/:id/requests/:requestId");
   assert.equal(helpRouteTemplate("/v1/volumes/vol_1/files/a/b/c.txt"), "/v1/volumes/:id/files/*");
   assert.equal(helpRouteTemplate("/v1/billing/auto-topup/quote?id=1"), "/v1/billing/auto-topup/quote");
-  assert.equal(helpRouteTemplate("/console/auth/token"), undefined);
+  assert.equal(helpRouteTemplate("/console/auth/password"), undefined);
   assert.equal(helpRouteTemplate("/v1/help"), undefined);
   assert.equal(helpRouteTemplate("/v1/links/secret-token/file.txt"), undefined);
 });
@@ -381,7 +382,7 @@ test("lookups that fail read as unknown, never as none, zero or allowed", async 
 
 test("GET /v1/help offers the console its verified addresses; POST enforces them", async t => {
   const { help, accounts, sent } = await setup(t, { verified: ["owner@example.test"] });
-  const consoleAuth = new ConsoleAuth({ accounts, publicUrl: origin });
+  const consoleAuth = new ConsoleAuth({ accounts, publicUrl: origin, passwords: new Passwords(accounts.db) });
   const app = api({ accounts, consoleAuth, clients: {} as never, defaultModel: async () => "anthropic/claude-sonnet-5-5", createAgent: async () => ({}), help });
   const cookie = (await consoleAuth.session("alice", "github", "octocat")).split(";")[0];
   const headers = { cookie, "x-agent-runtime-console": "1", origin, "content-type": "application/json" };
@@ -396,7 +397,7 @@ test("GET /v1/help offers the console its verified addresses; POST enforces them
 
 test("POST /v1/help keys its per-source limit on CF-Connecting-IP behind Cloudflare, not on Cloudflare's edge", async t => {
   const { help, accounts, db } = await setup(t);
-  const consoleAuth = new ConsoleAuth({ accounts, publicUrl: origin });
+  const consoleAuth = new ConsoleAuth({ accounts, publicUrl: origin, passwords: new Passwords(accounts.db) });
   const context = { accounts, consoleAuth, clients: {} as never, defaultModel: async () => "anthropic/claude-sonnet-5-5", createAgent: async () => ({}), help };
   const cookie = (await consoleAuth.session("alice", "github", "octocat")).split(";")[0];
   // Two people behind the same Cloudflare edge: the ALB's last X-Forwarded-For entry is the edge's address for both.

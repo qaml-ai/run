@@ -646,7 +646,7 @@ test("open sign-up admits any GitHub account; starting credit is once per accoun
   const { call, base } = await runtime(t, () => ({ role: "assistant", content: "hi" }), {
     ...githubEnv(github.url), AGENT_VERIFY_KEYS: "false", STRIPE_SECRET_KEY: "sk_test_fixture", STRIPE_WEBHOOK_SECRET: WEBHOOK_SECRET, AGENT_STRIPE_API_URL: stripeApi.url,
   }, tenantsFile);
-  assert.deepEqual((await call("/console/auth/methods", { token: null })).json, { github: true, google: false, open: true });
+  assert.deepEqual((await call("/console/auth/methods", { token: null })).json, { github: true, google: false, password: true, open: true });
 
   // Not eligible at signup, but can sign in and buy credit.
   github.account(2001, "Newbie", 5);

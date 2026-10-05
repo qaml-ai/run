@@ -1,20 +1,24 @@
 import { createHash, randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 /**
  * The plugin's path end to end against a running camelRun, as ChatGPT takes it: discovery from the 401, dynamic
- * client registration with ChatGPT's redirect URI, sign-in on the consent page with an API token (the reviewer's
- * way in), consent, the code exchange with PKCE, then the MCP tools the review cases use, a refresh, and
- * revocation. Everything it makes is deleted, and the grant is revoked, even when a step fails.
+ * client registration with ChatGPT's redirect URI, sign-in on the consent page with an email and password (the
+ * reviewer's way in), consent, the code exchange with PKCE, /v1/me and the MCP tools the review cases use, a refresh,
+ * and revocation. Everything it makes is deleted, and the grant is revoked, even when a step fails.
  *
- *   CAMELRUN_TOKEN=art_... node --experimental-strip-types plugins/chatgpt/e2e.ts [https://run.camelai.com]
+ *   CAMELRUN_EMAIL=reviewer@example.com CAMELRUN_PASSWORD_FILE=~/.config/camelrun/password-chatgpt-review \
+ *     node --experimental-strip-types plugins/chatgpt/e2e.ts [https://run.camelai.com]
  *
- * The token is read from the environment and never printed.
+ * The password is read from CAMELRUN_PASSWORD_FILE (as `infra/tenant.sh set-password` writes it) or CAMELRUN_PASSWORD,
+ * and never printed.
  */
 const base = (process.argv[2] ?? "https://run.camelai.com").replace(/\/$/, "");
-const token = process.env.CAMELRUN_TOKEN;
-if (!token) { console.error("Set CAMELRUN_TOKEN to an API token of the account to test with"); process.exit(2); }
+const email = process.env.CAMELRUN_EMAIL;
+const password = process.env.CAMELRUN_PASSWORD_FILE ? readFileSync(process.env.CAMELRUN_PASSWORD_FILE, "utf8").replace(/\r?\n$/, "") : process.env.CAMELRUN_PASSWORD;
+if (!email || !password) { console.error("Set CAMELRUN_EMAIL, and CAMELRUN_PASSWORD_FILE or CAMELRUN_PASSWORD, to the sign-in of the account to test with"); process.exit(2); }
 const REDIRECT = "https://chatgpt.com/connector_platform_oauth_redirect";
 const suffix = randomBytes(3).toString("hex");
 const agentKey = `chatgpt-e2e-${suffix}`, definitionKey = `chatgpt-e2e-def-${suffix}`;
@@ -54,16 +58,18 @@ const query = new URLSearchParams({
 });
 const authorize = `${server.authorization_endpoint}?${query}`;
 const signIn = await fetch(authorize);
-check(signIn.status === 200 && /name="token"/.test(await signIn.text()), "the sign-in page offers API-token sign-in");
-const login = await fetch(`${pages}/oauth/login`, { method: "POST", redirect: "manual", headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: pages }, body: form({ next: `/oauth/authorize?${query}`, token }) });
-check(login.status === 303, `API-token sign-in answers 303 (got ${login.status})`);
+const signInPage = await signIn.text();
+check(signIn.status === 200 && /action="\/oauth\/password"[\s\S]*name="email"[\s\S]*name="password"/.test(signInPage), "the sign-in page offers email and password sign-in");
+check(!/name="token"/.test(signInPage), "and no token sign-in");
+const login = await fetch(`${pages}/oauth/password`, { method: "POST", redirect: "manual", headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: pages }, body: form({ next: `/oauth/authorize?${query}`, email, password }) });
+check(login.status === 303, `email and password sign-in answers 303 (got ${login.status})`);
 const cookie = login.headers.get("set-cookie")!.split(";")[0];
 const consent = await fetch(authorize, { headers: { Cookie: cookie } });
 check(/Allow/.test(await consent.text()), "the consent page asks to allow the client");
 const allowed = await fetch(server.authorization_endpoint, { method: "POST", redirect: "manual", headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: pages, Cookie: cookie }, body: form({ ...Object.fromEntries(query), decision: "allow" }) });
 const back = new URL(allowed.headers.get("location") ?? "about:blank");
 check(`${back.origin}${back.pathname}` === REDIRECT && back.searchParams.get("state") === state && back.searchParams.get("iss") === issuer, "consent redirects to ChatGPT with the state and iss");
-step("sign-in with an API token and consent");
+step("sign-in with an email and password, and consent");
 
 const exchange = async (body: Record<string, string>) => {
   const response = await fetch(server.token_endpoint, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: form({ client_id: client.client_id, client_secret: client.client_secret, resource: resource.resource, ...body }) });
@@ -73,6 +79,10 @@ const exchange = async (body: Record<string, string>) => {
 };
 let tokens = await exchange({ grant_type: "authorization_code", code: back.searchParams.get("code")!, redirect_uri: REDIRECT, code_verifier: verifier });
 step(`code exchange: access token for ${tokens.expires_in} s, scope ${tokens.scope}`);
+const meResponse = await fetch(`${pages}/v1/me`, { headers: { Authorization: `Bearer ${tokens.access_token}` } });
+const meJson = await meResponse.json();
+check(meResponse.ok && meJson.via === "oauth", `/v1/me answers for the grant (got ${meResponse.status})`);
+step(`/v1/me with the access token: account ${meJson.tenant}, via ${meJson.via}`);
 
 const mcp = new Client({ name: "camelrun-plugin-e2e", version: "1" });
 await mcp.connect(new StreamableHTTPClientTransport(new URL(resource.resource), { requestInit: { headers: { Authorization: `Bearer ${tokens.access_token}` } } }));

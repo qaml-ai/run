@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { WebSocketServer, type WebSocket } from "ws";
-import { OPERATOR, OTHER_OPERATOR, runtime, until } from "./runtime-server.ts";
+import { OPERATOR, OTHER_OPERATOR, passwordSession, runtime, until } from "./runtime-server.ts";
 
 const APP = "999000000000000001";
 const BOT_TOKEN = "MTAxMjM0NTY3ODkwMTIzNDU2.GFixture.DiscordBotTokenSecretPart_abcdefXYZ0123";
@@ -88,8 +88,7 @@ test("managed bot runs isolated tenant agents through the real Gateway and conso
   const bindings: any[] = [];
   for (let i = 0; i < 2; i++) {
     const token = i === 0 ? OPERATOR : OTHER_OPERATOR;
-    const signIn = await fetch(`${r.base}/console/auth/token`, { method: "POST", headers: { "Content-Type": "application/json", "X-Agent-Runtime-Console": "1", "Sec-Fetch-Site": "same-origin" }, body: JSON.stringify({ token }) });
-    const cookie = signIn.headers.getSetCookie().find(value => value.startsWith("ar_session="))!.split(";")[0];
+    const cookie = await passwordSession(r.base, token, i === 0 ? "alice" : "bob");
     const h = { Cookie: cookie, "X-Agent-Runtime-Console": "1", "Sec-Fetch-Site": "same-origin", "Content-Type": "application/json" }; headers.push(h);
     const install = await fetch(`${r.base}/console/discord/install`, { headers: h, redirect: "manual" });
     assert.equal(install.status, 302);

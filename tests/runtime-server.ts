@@ -138,6 +138,19 @@ export async function runtime(t: T, respond: (body: any, index: number) => objec
   return { root, db: db!, databaseUrl, base, call, prompt, model, logs, child };
 }
 
+export const TEST_PASSWORD = "correct-horse-battery-staple";
+/**
+ * A console session for `tenant`, as a person gets one: `token` (the tenant's operator token, or the platform operator's)
+ * gives it an email and password, and it signs in with them. Returns the `ar_session=...` cookie.
+ */
+export async function passwordSession(base: string, token: string, tenant: string, email = `${tenant}@example.test`, password = TEST_PASSWORD) {
+  const set = await fetch(`${base}/v1/tenants/${tenant}/password`, { method: "PUT", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ email, password }) });
+  if (!set.ok) throw new Error(`set password: ${set.status} ${await set.text()}`);
+  const signIn = await fetch(`${base}/console/auth/password`, { method: "POST", headers: { "Content-Type": "application/json", "X-Agent-Runtime-Console": "1", "Sec-Fetch-Site": "same-origin" }, body: JSON.stringify({ email, password }) });
+  if (!signIn.ok) throw new Error(`password sign-in: ${signIn.status} ${await signIn.text()}`);
+  return signIn.headers.getSetCookie().find(value => value.startsWith("ar_session="))!.split(";")[0];
+}
+
 /**
  * An application attached to an agent that sets up its MCP session and never answers a tool
  * call: calls it gets stay in flight until they time out. `calls` collects them.

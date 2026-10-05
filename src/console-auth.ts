@@ -4,6 +4,7 @@ import { createLocalJWKSet, jwtVerify, type JSONWebKeySet } from "jose";
 import type { Accounts, Principal } from "./accounts.ts";
 import { readText } from "./http.ts";
 import type { Sql } from "./db.ts";
+import { MAX_PASSWORD, normalizeEmail, type Passwords } from "./passwords.ts";
 
 /**
  * Console sign-in. Sessions live in Postgres (`console_sessions`); the cookie (HttpOnly, Secure, SameSite=Lax)
@@ -28,12 +29,18 @@ export interface ConsoleAuthOptions {
   sessionHours?: number;
   /** What a sign-in that makes a new account must pass, in the transaction that makes it: the sign-up rate limit for the request's source. */
   admitSignup?: (c: Context) => ((sql: Sql) => Promise<void>) | undefined;
+  /** Email and password sign-in: operator-set passwords (src/passwords.ts). */
+  passwords: Passwords;
+  /** Failed password sign-ins per source and per address: `allowed` refuses (RateLimited) once either has failed too often, `failed` counts one. */
+  passwordLimits?: { allowed(c: Context, email: string): Promise<void>; failed(c: Context, email: string): Promise<void> };
 }
-/** How a console session was signed in. Only GitHub and Google sessions have the console's own powers (`personal`). */
-export type SignIn = "github" | "google" | "token";
-export type ConsolePrincipal = Principal & { via: "console"; signIn: SignIn; login?: string; name?: string };
-/** A session a person signed in to with GitHub or Google, which may mint API tokens, delete the account, bill and ask for help. */
-export const personal = (principal: { via: string; signIn?: SignIn }) => principal.via === "console" && (principal.signIn === "github" || principal.signIn === "google");
+/** How a console session was signed in. */
+export type SignIn = "github" | "google" | "password";
+export type ConsolePrincipal = Principal & { via: "console"; signIn: SignIn; login?: string; name?: string; session: string };
+/** A person signed in to the console, who may mint API tokens, delete the account, bill and ask for help; a token may not. */
+export const personal = (principal: { via: string }): principal is ConsolePrincipal => principal.via === "console";
+/** What every failed password sign-in says, whether the address is unknown or the password wrong. */
+export const WRONG_PASSWORD = "Wrong email or password";
 export const GOOGLE_ISSUER = "https://accounts.google.com";
 export const CONSOLE_HEADER = "x-agent-runtime-console";
 const SESSION_COOKIE = "ar_session";
@@ -79,17 +86,14 @@ export class ConsoleAuth {
     return `${name}=${value}; Path=${path}; Max-Age=${maxAgeSeconds}; HttpOnly; SameSite=Lax${this.secure ? "; Secure" : ""}`;
   }
 
-  /**
-   * The signed-in principal from the session cookie: its row, while unexpired, for a tenant that exists. A token's
-   * session goes with its API token (the row cascades), or with its operator token once the tenants file changes it.
-   */
+  /** The signed-in principal from the session cookie: its row, while unexpired, for a tenant that exists. `session` is the row's key. */
   async principal(req: Request): Promise<ConsolePrincipal | undefined> {
     const raw = cookies(req)[SESSION_COOKIE];
     if (!raw || !/^[A-Za-z0-9_-]{43}$/.test(raw)) return undefined;
-    const row = (await this.db.query("select tenant, login, name, method, token_id, operator_sha256 from console_sessions where sha256 = $1 and expires_at > $2", [sha256(raw), Date.now()])).rows[0];
+    const session = sha256(raw);
+    const row = (await this.db.query("select tenant, login, name, method from console_sessions where sha256 = $1 and expires_at > $2 and method <> 'token'", [session, Date.now()])).rows[0];
     if (!row || !await this.options.accounts.exists(row.tenant)) return undefined;
-    if (row.operator_sha256 && this.options.accounts.tenants.tokenSha256(row.tenant) !== row.operator_sha256) return undefined;
-    return { tenant: row.tenant, via: "console", signIn: row.method, ...(row.token_id ? { tokenId: row.token_id } : {}), ...(row.login ? { login: row.login } : {}), ...(row.name ? { name: row.name } : {}) };
+    return { tenant: row.tenant, via: "console", signIn: row.method, session, ...(row.login ? { login: row.login } : {}), ...(row.name ? { name: row.name } : {}) };
   }
 
   /**
@@ -111,33 +115,31 @@ export class ConsoleAuth {
   }
 
   /** A session cookie for `tenant` after GitHub or Google sign-in. */
-  session(tenant: string, signIn: Exclude<SignIn, "token">, login?: string, name?: string) { return this.startSession({ tenant, method: signIn, login, name }); }
+  session(tenant: string, signIn: Exclude<SignIn, "password">, login?: string, name?: string) { return this.startSession({ tenant, method: signIn, login, name }); }
 
   /**
-   * A session cookie after signing in with `token`, an API token or an operator token, naming the person the tenant
-   * belongs to when that is known. It ends when the token does, and has none of the console's own powers (`personal`).
+   * Sign in with an email address and password: a session cookie for the tenant they are for, or WRONG_PASSWORD, the
+   * same, and as slow, for an unknown address as for a wrong password. Past the failures allowed (`passwordLimits`),
+   * a RateLimited error, before the password is checked.
    */
-  async tokenSession(token: string) {
-    const principal = await this.options.accounts.authenticate(`Bearer ${token}`);
-    if (!principal || (principal.via !== "token" && principal.via !== "operator")) return undefined;
-    const { tenant } = principal;
-    try {
-      const cookie = await this.startSession({ tenant, method: "token", login: await this.options.accounts.identity(tenant),
-        ...(principal.via === "token" ? { tokenId: principal.tokenId } : { operatorSha256: sha256(token) }) });
-      return { tenant, cookie };
-    } catch (error) {
-      // Revoked since another node's cache last saw it: its row is gone, so the session cannot name it.
-      if ((error as { code?: string }).code === "23503") return undefined;
-      throw error;
+  async passwordSession(c: Context, email: unknown, password: unknown): Promise<{ tenant: string; cookie: string } | { error: string }> {
+    const address = normalizeEmail(email);
+    if (!address || typeof password !== "string" || !password || password.length > MAX_PASSWORD) return { error: WRONG_PASSWORD };
+    await this.options.passwordLimits?.allowed(c, address);
+    const tenant = await this.options.passwords.verify(address, password);
+    if (!tenant || !await this.options.accounts.exists(tenant)) {
+      await this.options.passwordLimits?.failed(c, address);
+      return { error: WRONG_PASSWORD };
     }
+    return { tenant, cookie: await this.startSession({ tenant, method: "password", login: address }) };
   }
 
-  /** `login` (Google address or GitHub login) and `name` show who is signed in; the tenant id is only for the API. */
-  private async startSession(session: { tenant: string; method: SignIn; login?: string; name?: string; tokenId?: string; operatorSha256?: string }) {
+  /** `login` (Google or sign-in address, or GitHub login) and `name` show who is signed in; the tenant id is only for the API. */
+  private async startSession(session: { tenant: string; method: SignIn; login?: string; name?: string }) {
     const hours = this.options.sessionHours ?? 12;
     const id = randomBytes(32).toString("base64url"), now = Date.now();
-    await this.db.query("insert into console_sessions (sha256, tenant, login, name, method, token_id, operator_sha256, created_at, expires_at) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-      [sha256(id), session.tenant, session.login ?? null, session.name?.slice(0, 100) ?? null, session.method, session.tokenId ?? null, session.operatorSha256 ?? null, now, now + hours * 3600_000]);
+    await this.db.query("insert into console_sessions (sha256, tenant, login, name, method, created_at, expires_at) values ($1, $2, $3, $4, $5, $6, $7)",
+      [sha256(id), session.tenant, session.login ?? null, session.name?.slice(0, 100) ?? null, session.method, now, now + hours * 3600_000]);
     // Expired sessions go now and then.
     if (now - this.swept > 60_000) {
       this.swept = now;
@@ -170,7 +172,8 @@ export class ConsoleAuth {
 
     app.get("/console/auth/methods", c => {
       const github = this.options.github;
-      return json(c, 200, { github: !!github, google: !!this.options.google, ...(github?.open ? { open: true } : { org: github?.org }) });
+      // Any runtime takes a password an operator set, beside GitHub and Google where they are configured.
+      return json(c, 200, { github: !!github, google: !!this.options.google, password: true, ...(github?.open ? { open: true } : { org: github?.org }) });
     });
     app.get("/console/auth/github", c => {
       const github = this.options.github;
@@ -284,16 +287,15 @@ export class ConsoleAuth {
         return fail(c, (error as Error).message, clear);
       }
     });
-    // Operator or API token sign-in, for tenants an admin created without GitHub or Google, and for the ChatGPT
-    // plugin's reviewers. Only the unlisted /console/sign-in/token page (or the console's sign-in page, where neither
-    // GitHub nor Google is configured) uses it. TODO: remove after the ChatGPT review (docs/operations).
-    app.post("/console/auth/token", async c => {
+    // Email and password, for accounts an operator gave a password (no sign-up). A session it makes is a person's, as GitHub's and Google's are.
+    app.post("/console/auth/password", async c => {
       if (!this.allowsMutation(c.req.raw)) return json(c, 403, { error: "Forbidden" });
-      let token = "", next: string | undefined;
-      try { const body = JSON.parse(await readText(c.req.raw.body, 4096)); token = body.token; next = nextPath(body.next); }
-      catch { return json(c, 400, { error: "Send {\"token\": \"...\"}" }); }
-      const session = typeof token === "string" ? await this.tokenSession(token) : undefined;
-      if (!session) return json(c, 401, { error: "Unknown token" });
+      let body: { email?: unknown; password?: unknown; next?: unknown };
+      try { body = JSON.parse(await readText(c.req.raw.body, 4096)); }
+      catch { return json(c, 400, { error: "Send {\"email\": \"...\", \"password\": \"...\"}" }); }
+      const next = typeof body?.next === "string" ? nextPath(body.next) : undefined;
+      const session = await this.passwordSession(c, body?.email, body?.password);
+      if ("error" in session) return json(c, 401, { error: session.error });
       return json(c, 200, { tenant: session.tenant, ...(next ? { next } : {}) }, [session.cookie]);
     });
     app.post("/console/auth/logout", async c => {

@@ -6,15 +6,17 @@ import { HttpError } from "./http.ts";
 
 const MINUTE = 60_000;
 const DAY = 86_400_000;
+/** The window failed password sign-ins are counted in. */
+export const PASSWORD_WINDOW_SECONDS = 900;
 /** Distinct clients one node keeps API buckets for; past it, idle and then the oldest are dropped. */
 const MAX_BUCKETS = 100_000;
 /** The address Cloudflare gives requests Workers make: every Worker's, so they are told apart by CF-Worker, their zone. */
 const WORKERS_ADDRESS = "2a06:98c0:3600::103";
 
 export interface RateLimit {
-  /** Which limit: `api_requests`, `auth_requests`, `signups`, `agent_creates` or `runs`. */
+  /** Which limit: `api_requests`, `auth_requests`, `signups`, `password_failures`, `agent_creates` or `runs`. */
   name: string;
-  scope: "ip" | "tenant";
+  scope: "ip" | "tenant" | "email";
   max: number;
   windowSeconds: number;
 }
@@ -43,6 +45,9 @@ export interface RateLimitConfig {
   authPerIp: number;
   /** New accounts (sign-ups) per client address per UTC day. */
   signupsPerIp: number;
+  /** Failed password sign-ins per client address, and per email address, in PASSWORD_WINDOW_SECONDS. */
+  passwordFailuresPerIp: number;
+  passwordFailuresPerEmail: number;
   /** Agents a tenant may create a minute (POST /v1/agents), and on free credit. */
   agentCreates: number;
   freeAgentCreates: number;
@@ -72,6 +77,9 @@ export function rateLimitConfig(env: NodeJS.ProcessEnv = process.env): RateLimit
     apiPerIp: count("AGENT_RATE_LIMIT_API_PER_IP", perAddress ? 600 : 0),
     authPerIp: count("AGENT_RATE_LIMIT_AUTH_PER_IP", perAddress ? 20 : 0),
     signupsPerIp: count("AGENT_RATE_LIMIT_SIGNUPS_PER_IP", perAddress ? 5 : 0),
+    passwordFailuresPerIp: count("AGENT_RATE_LIMIT_PASSWORD_FAILURES_PER_IP", perAddress ? 20 : 0),
+    // An email address is no network's, so this one is on everywhere.
+    passwordFailuresPerEmail: count("AGENT_RATE_LIMIT_PASSWORD_FAILURES_PER_EMAIL", 10),
     agentCreates: count("AGENT_RATE_LIMIT_AGENT_CREATES", 60),
     freeAgentCreates: count("AGENT_RATE_LIMIT_FREE_AGENT_CREATES", 10),
     runs: count("AGENT_RATE_LIMIT_RUNS", 600),
@@ -190,6 +198,34 @@ export class RateLimits {
       `Too many new accounts from this network today (at most ${this.config.signupsPerIp} a day); try again tomorrow, or contact support`);
   }
 
+  /**
+   * Refuse a password sign-in for `email` from `key` while either has used up its failures for the window, before the
+   * password is checked. Only failures count (`passwordFailed`), an unknown address's as a wrong password's.
+   */
+  async passwordAllowed(key: string | undefined, email: string) {
+    for (const limit of this.passwordLimits(key, email)) {
+      const windowMs = limit.windowSeconds * 1000, now = this.now();
+      const row = (await this.options.db.query("select count, window_start from rate_limits where key = $1 and window_start = $2", [limit.key, Math.floor(now / windowMs) * windowMs])).rows[0];
+      if (row && row.count >= limit.max) this.refuse(limit, (Number(row.window_start) + windowMs - now) / 1000, "Too many failed sign-ins; try again later");
+    }
+  }
+
+  /** Count a failed password sign-in for `email` from `key`. */
+  async passwordFailed(key: string | undefined, email: string) {
+    for (const limit of this.passwordLimits(key, email)) await this.increment(this.options.db, limit.key, limit.windowSeconds);
+  }
+
+  private passwordLimits(key: string | undefined, email: string) {
+    const limits: (RateLimit & { key: string })[] = [];
+    if (key && !this.config.exempt.has(key) && this.config.passwordFailuresPerIp) {
+      limits.push({ key: `password-ip:${this.hashed(key)}`, name: "password_failures", scope: "ip", max: this.config.passwordFailuresPerIp, windowSeconds: PASSWORD_WINDOW_SECONDS });
+    }
+    if (this.config.passwordFailuresPerEmail) {
+      limits.push({ key: `password-email:${this.hashed(`email:${email}`)}`, name: "password_failures", scope: "email", max: this.config.passwordFailuresPerEmail, windowSeconds: PASSWORD_WINDOW_SECONDS });
+    }
+    return limits;
+  }
+
   /** Count an agent create by `tenant` (POST /v1/agents). */
   agentCreate(tenant: string) {
     return this.perTenant(tenant, "agentCreates", "agent_creates", "agents created");
@@ -216,7 +252,13 @@ export class RateLimits {
 
   /** One more for `key` in its current window; refused past the limit. */
   private async counted(sql: Sql, key: string, limit: RateLimit, message: string) {
-    const windowMs = limit.windowSeconds * 1000, now = this.now();
+    const row = await this.increment(sql, key, limit.windowSeconds);
+    if (row.count > limit.max) this.refuse(limit, (Number(row.window_start) + limit.windowSeconds * 1000 - this.now()) / 1000, message);
+  }
+
+  /** One more for `key` in its current window of `windowSeconds`: the window's count and start. */
+  private async increment(sql: Sql, key: string, windowSeconds: number) {
+    const windowMs = windowSeconds * 1000, now = this.now();
     const start = Math.floor(now / windowMs) * windowMs;
     // A row from an earlier window starts over; one a node with a slower clock reaches keeps its newer window.
     const { rows: [row] } = await sql.query(`
@@ -226,7 +268,7 @@ export class RateLimits {
         window_start = greatest(r.window_start, excluded.window_start),
         expires_at = greatest(r.expires_at, excluded.expires_at)
       returning count, window_start`, [key, start, start + windowMs]);
-    if (row.count > limit.max) this.refuse(limit, (Number(row.window_start) + windowMs - now) / 1000, message);
+    return row as { count: number; window_start: string | number };
   }
 
   /** Take a token from `key`'s bucket of `capacity`, refilled over a minute: 0 if taken, else the seconds until one is. */

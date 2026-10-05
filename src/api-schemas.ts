@@ -31,9 +31,9 @@ export const SignedOut = z.object({ signedOut: z.number().int().openapi({ descri
 export const Me = z.object({
   tenant: z.string(),
   via: z.enum(["operator", "token", "console", "oauth"]),
-  login: z.string().optional().openapi({ description: "Who the tenant belongs to: the Google address or GitHub login it signed in with" }),
+  login: z.string().optional().openapi({ description: "Who the tenant belongs to: the Google or sign-in address, or the GitHub login, it signed in with" }),
   name: z.string().optional().openapi({ description: "The person's display name, for console sessions signed in with Google or GitHub" }),
-  signIn: z.enum(["github", "google", "token"]).optional().openapi({ description: "How a console session was signed in. One signed in with a token cannot mint API tokens, change billing, get help or delete the account" }),
+  signIn: z.enum(["github", "google", "password"]).optional().openapi({ description: "How a console session was signed in" }),
   canStoreKeys: z.boolean(),
   defaultModel: z.string().openapi({ description: "The model an agent of this tenant gets when it names none, as provider/model-id: the first of the runtime's defaults (Claude Sonnet 5.5 on Anthropic, OpenRouter, then Bedrock, ...) the tenant has a key for. An agent with a key scope counts the scope's keys too", example: "anthropic/claude-sonnet-5-5" }),
 }).openapi("Me");
@@ -842,6 +842,15 @@ export const TenantLimits = z.object({
   tenant: z.string(),
   limits: z.object({ maxStorageGb: z.number().optional(), maxBusyAgents: z.number().int().optional(), agentCreatesPerMinute: z.number().int().optional(), runsPerMinute: z.number().int().optional(), maxRunResponses: z.number().int().optional(), maxRunSeconds: z.number().int().optional(), codeCpuMs: z.number().int().optional(), codeMaxTimeoutMs: z.number().int().optional(), codeConcurrency: z.number().int().optional() }).openapi({ description: "The limits set for the tenant; those absent are its plan's" }),
 }).openapi("TenantLimits");
+export const TenantPasswordInput = z.object({
+  email: z.string().max(254).openapi({ description: "The address the tenant signs in with; another tenant's is refused (409)", example: "reviewer@example.com" }),
+  password: z.string().min(12).max(256).openapi({ description: "12 to 256 characters. Only its scrypt hash is kept" }),
+}).strict().openapi("TenantPasswordInput");
+export const TenantPassword = z.object({
+  tenant: z.string(),
+  email: z.string().nullable().openapi({ description: "The sign-in address, or null once the password is removed" }),
+  signedOut: z.number().int().openapi({ description: "How many of the tenant's password sessions ended" }),
+}).openapi("TenantPassword");
 export const TenantLookup = z.object({
   tenant: z.string(),
   github: z.string().nullable(),

@@ -6,7 +6,7 @@ import { request, type IncomingMessage } from "node:http";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { REFRESH_GRACE_MS } from "../src/oauth.ts";
-import { OPERATOR, OTHER_OPERATOR, lastUser, runtime } from "./runtime-server.ts";
+import { OPERATOR, OTHER_OPERATOR, TEST_PASSWORD, lastUser, runtime } from "./runtime-server.ts";
 
 const PUBLIC = "https://agents.example.test";
 const REDIRECT = "http://127.0.0.1:43210/callback";
@@ -116,29 +116,41 @@ test("MCP clients sign in with OAuth: registration, consent, PKCE, rotating refr
   const challenge = createHash("sha256").update(verifier).digest("base64url");
   const query = new URLSearchParams({ response_type: "code", client_id: client.client_id, redirect_uri: REDIRECT, code_challenge: challenge, code_challenge_method: "S256", state: "s-1", resource: `${PUBLIC}/mcp` });
 
-  // Not signed in: the page offers sign-in, and an API token signs in (same-origin only).
+  // Not signed in: the page offers sign-in, and an email and password an operator set sign in (same-origin only).
   const signInPage = await fetch(`${r.base}/oauth/authorize?${query}`);
   assert.equal(signInPage.status, 200);
   assert.equal(signInPage.headers.get("x-frame-options"), "DENY");
   // With no-referrer, browsers send its forms with Origin: null, which the same-origin check refuses (2026-10-01).
   assert.equal(signInPage.headers.get("referrer-policy"), "same-origin", "its forms must carry their Origin");
-  assert.match(await signInPage.text(), /Test Agent[\s\S]*name="token"/);
-  assert.equal((await post("/oauth/login", { token: OPERATOR, next: `/oauth/authorize?${query}` }, { Origin: "https://evil.example" })).status, 403);
-  assert.equal((await post("/oauth/login", { token: OPERATOR, next: "https://evil.example/" }, { Origin: r.base })).status, 400, "only back to the consent page");
-  const login = await post("/oauth/login", { token: OPERATOR, next: `/oauth/authorize?${query}` }, { Origin: r.base });
+  const signInHtml = await signInPage.text();
+  assert.match(signInHtml, /Test Agent[\s\S]*<form method="post" action="\/oauth\/password">[\s\S]*name="email"[\s\S]*name="password"/);
+  assert.doesNotMatch(signInHtml, /name="token"|API token/, "no token sign-in");
+  assert.equal((await r.call("/v1/tenants/alice/password", { method: "PUT", body: { email: "Alice@Example.test", password: TEST_PASSWORD } })).json.email, "alice@example.test");
+  const credentials = { email: "alice@example.test", password: TEST_PASSWORD };
+  assert.equal((await post("/oauth/password", { ...credentials, next: `/oauth/authorize?${query}` }, { Origin: "https://evil.example" })).status, 403);
+  assert.equal((await post("/oauth/password", { ...credentials, next: "https://evil.example/" }, { Origin: r.base })).status, 400, "only back to the consent page");
+  const wrong = await post("/oauth/password", { ...credentials, password: "not-the-password", next: `/oauth/authorize?${query}` }, { Origin: r.base });
+  assert.equal(wrong.status, 401);
+  assert.equal(wrong.headers.get("set-cookie"), null);
+  const wrongHtml = await wrong.text();
+  assert.match(wrongHtml, /Wrong email or password[\s\S]*value="alice@example\.test"/, "the page again, saying why, with the address kept");
+  assert.doesNotMatch(wrongHtml, /not-the-password/);
+  assert.equal(wrong.headers.get("x-frame-options"), "DENY");
+  assert.equal((await post("/oauth/login", { token: OPERATOR, next: `/oauth/authorize?${query}` }, { Origin: r.base })).status, 404, "token sign-in is gone");
+  const login = await post("/oauth/password", { ...credentials, next: `/oauth/authorize?${query}` }, { Origin: r.base });
   assert.equal(login.status, 303);
   const cookie = login.headers.get("set-cookie")!.split(";")[0];
 
   const consent = await fetch(`${r.base}${login.headers.get("location")}`, { headers: { Cookie: cookie } });
   const consentHtml = await consent.text();
-  assert.match(consentHtml, /Connect an application\?[\s\S]*alice[\s\S]*http:\/\/127\.0\.0\.1:43210[\s\S]*Test Agent/);
+  assert.match(consentHtml, /Connect an application\?[\s\S]*alice@example\.test[\s\S]*http:\/\/127\.0\.0\.1:43210[\s\S]*Test Agent/);
 
   const decide = (decision: string, params = query, origin = r.base) => post("/oauth/authorize", { ...Object.fromEntries(params), decision }, { Cookie: cookie, Origin: origin });
   assert.equal((await decide("allow", query, "https://evil.example")).status, 403, "consent is same-origin");
   // A request with no Origin (curl with a stolen cookie) is refused; a browser that leaves it out says Sec-Fetch-Site.
   assert.equal((await post("/oauth/authorize", { ...Object.fromEntries(query), decision: "allow" }, { Cookie: cookie })).status, 403);
-  assert.equal((await post("/oauth/login", { token: OPERATOR, next: `/oauth/authorize?${query}` })).status, 403);
-  assert.equal((await post("/oauth/login", { token: OPERATOR, next: `/oauth/authorize?${query}` }, { "Sec-Fetch-Site": "same-origin" })).status, 303);
+  assert.equal((await post("/oauth/password", { ...credentials, next: `/oauth/authorize?${query}` })).status, 403);
+  assert.equal((await post("/oauth/password", { ...credentials, next: `/oauth/authorize?${query}` }, { "Sec-Fetch-Site": "same-origin" })).status, 303);
   const denied = new URL((await decide("deny")).headers.get("location")!);
   assert.deepEqual([denied.searchParams.get("error"), denied.searchParams.get("state")], ["access_denied", "s-1"]);
   const allowed = await decide("allow");
@@ -212,7 +224,7 @@ test("MCP clients sign in with OAuth: registration, consent, PKCE, rotating refr
     ["/v1/billing/auto-topup/disable", "POST", {}],
   ] as const) assert.equal((await r.call(path, { token: tokens.access_token, method, body })).status, 403, "agents OAuth scope cannot change billing");
   const grants = (await r.call("/v1/oauth/grants")).json;
-  assert.deepEqual(grants.map((grant: any) => [grant.clientName, grant.login]), [["Test Agent", null]]);
+  assert.deepEqual(grants.map((grant: any) => [grant.clientName, grant.login]), [["Test Agent", "alice@example.test"]]);
   assert.equal((await r.call("/v1/oauth/grants", { token: OTHER_OPERATOR })).json.length, 0);
 
   // Refreshing rotates. Concurrent refreshes with one token, and a retry within the grace, get the same new tokens.

@@ -5,6 +5,7 @@ import type { ConsoleAuth } from "./console-auth.ts";
 import type { Db } from "./db.ts";
 import { readText } from "./http.ts";
 import type { PublicOrigins } from "./origins.ts";
+import { RateLimited } from "./rate-limits.ts";
 
 /**
  * The runtime as an OAuth 2.1 authorization server for its hosted MCP endpoints (/mcp, and each agent's), as MCP's authorization spec
@@ -27,7 +28,7 @@ export interface OAuthOptions {
   secret: string;
   /** The issuer; the public URL, where the endpoints and pages are; and the aliases, where MCP endpoints are too. */
   origins: PublicOrigins;
-  /** Whether the console signs in with GitHub and with Google (the sign-in page also takes an API token, behind a disclosure). */
+  /** Whether the console signs in with GitHub and with Google (the sign-in page also takes an email and password). */
   github: boolean;
   google?: boolean;
 }
@@ -336,9 +337,7 @@ export class OAuth {
     });
 
     // The consent page. It is never framed, and its form posts back here, same-origin, with the session's cookie.
-    const page = (c: Context, status: 200 | 400 | 403, title: string, body: string) => c.html(PAGE(title, body), status, {
-      "Cache-Control": "no-store", "X-Frame-Options": "DENY", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'", "Referrer-Policy": "same-origin",
-    });
+    const page = (c: Context, status: 200 | 400 | 403, title: string, body: string) => c.html(PAGE(title, body), status, PAGE_HEADERS);
     const shown = (c: Context, error: unknown) => {
       if (!(error instanceof OAuthError)) throw error;
       const redirect = (error as OAuthError & { redirect?: { redirectUri: string; state?: string } }).redirect;
@@ -359,17 +358,7 @@ export class OAuth {
       try { request = this.authorization(params); } catch (error) { return shown(c, error); }
       const principal = await this.options.consoleAuth.principal(c.req.raw);
       const here = `/oauth/authorize?${params}`;
-      const providers = this.options.github || this.options.google;
-      // API-token sign-in, which the ChatGPT plugin's reviewers use: out of the way where GitHub or Google is offered.
-      // TODO: remove after the ChatGPT review (docs/operations).
-      const tokenForm = `<form method="post" action="/oauth/login"><input type="hidden" name="next" value="${escape(here)}">
-<input type="password" name="token" placeholder="art_…" autocomplete="off" required aria-label="API token"><button type="submit"${providers ? " class=\"secondary\"" : ""}>Sign in</button></form>`;
-      if (!principal) {
-        return page(c, 200, "Sign in", `<h1>Sign in to camelRun</h1>
-<p>An application calling itself <strong>${escape(request.client.name)}</strong> <span class="muted">(unverified)</span>, at <code>${escape(destinationOf(request.redirectUri))}</code>, wants to connect to your camelRun account. Sign in first.</p>
-${providers ? `<p>${this.options.github ? `<a class="button" href="/console/auth/github?next=${encodeURIComponent(here)}">Sign in with GitHub</a>` : ""}${this.options.github && this.options.google ? " " : ""}${this.options.google ? `<a class="button" href="/console/auth/google?next=${encodeURIComponent(here)}">Sign in with Google</a>` : ""}</p>
-<details><summary class="muted">Use an API token instead</summary>${tokenForm}</details>` : tokenForm}`);
-      }
+      if (!principal) return this.signInPage(c, request, here);
       const destination = escape(destinationOf(request.redirectUri));
       return page(c, 200, "Connect", `<h1>Connect an application?</h1>
 <p class="muted">Signed in as <strong>${escape(principal.name ? `${principal.name} (${principal.login ?? principal.tenant})` : principal.login ?? principal.tenant)}</strong></p>
@@ -393,18 +382,40 @@ ${providers ? `<p>${this.options.github ? `<a class="button" href="/console/auth
       return this.redirect(c, request, { code: await this.code(principal.tenant, principal.login, request) });
     });
 
-    // Sign in with an API token, then back to the consent page.
-    app.post("/oauth/login", async c => {
+    // Sign in with an email address and password, then back to the consent page; a failure shows the sign-in page again, saying why.
+    app.post("/oauth/password", async c => {
       if (!sameOrigin(c)) return page(c, 403, "Forbidden", "<h1>Forbidden</h1><p>This form must be sent from this site.</p>");
-      const params = new URLSearchParams(await readText(c.req.raw.body, 16 * 1024));
-      const next = params.get("next") ?? "";
-      if (!next.startsWith("/oauth/authorize?")) return page(c, 400, "Cannot sign in", "<h1>Cannot sign in</h1><p>Start again from the application.</p>");
-      const session = await this.options.consoleAuth.tokenSession(params.get("token") ?? "");
-      if (!session) return page(c, 403, "Unknown token", `<h1>Unknown token</h1><p>That API token is not valid. <a href="${escape(next)}">Try again</a>.</p>`);
+      const form = new URLSearchParams(await readText(c.req.raw.body, 16 * 1024));
+      const next = form.get("next") ?? "";
+      let request;
+      try { if (!next.startsWith("/oauth/authorize?")) throw new Error(); request = this.authorization(new URLSearchParams(next.slice("/oauth/authorize?".length))); }
+      catch { return page(c, 400, "Cannot sign in", "<h1>Cannot sign in</h1><p>Start again from the application.</p>"); }
+      const email = form.get("email") ?? "";
+      let session;
+      try { session = await this.options.consoleAuth.passwordSession(c, email, form.get("password")); }
+      catch (error) {
+        if (!(error instanceof RateLimited)) throw error;
+        c.header("Retry-After", String(error.retryAfter));
+        return this.signInPage(c, request, next, error.message, email, 429);
+      }
+      if ("error" in session) return this.signInPage(c, request, next, session.error, email, 401);
       c.header("Set-Cookie", session.cookie);
       return c.redirect(next, 303);
     });
     return app;
+  }
+
+  /** The sign-in page before consent: GitHub and Google where configured, and an email and password; `error` says why the last try failed. */
+  private signInPage(c: Context, request: ReturnType<OAuth["authorization"]>, here: string, error?: string, email = "", status: 200 | 401 | 429 = 200) {
+    const providers = [this.options.github && `<a class="button" href="/console/auth/github?next=${encodeURIComponent(here)}">Sign in with GitHub</a>`,
+      this.options.google && `<a class="button" href="/console/auth/google?next=${encodeURIComponent(here)}">Sign in with Google</a>`].filter(Boolean);
+    return c.html(PAGE("Sign in", `<h1>Sign in to camelRun</h1>
+<p>An application calling itself <strong>${escape(request.client.name)}</strong> <span class="muted">(unverified)</span>, at <code>${escape(destinationOf(request.redirectUri))}</code>, wants to connect to your camelRun account. Sign in first.</p>
+${providers.length ? `<p>${providers.join(" ")}</p><p class="muted or">or with your email and password</p>` : ""}${error ? `<p class="error" role="alert">${escape(error)}</p>` : ""}
+<form method="post" action="/oauth/password"><input type="hidden" name="next" value="${escape(here)}">
+<label>Email <input type="email" name="email" value="${escape(email)}" autocomplete="username" required></label>
+<label>Password <input type="password" name="password" autocomplete="current-password" required></label>
+<button type="submit"${providers.length ? " class=\"secondary\"" : ""}>Sign in</button></form>`), status, PAGE_HEADERS);
   }
 }
 
@@ -439,6 +450,10 @@ function redirectMatches(registered: string, given: string) {
   } catch { return false; }
 }
 
+/** The sign-in and consent pages are never framed or cached, and their forms carry their Origin. */
+const PAGE_HEADERS = {
+  "Cache-Control": "no-store", "X-Frame-Options": "DENY", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'", "Referrer-Policy": "same-origin",
+};
 const PAGE = (title: string, body: string) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escape(title)} · camelRun</title><style>
 :root{color-scheme:light dark;--bg:#fafaf9;--fg:#1c1917;--muted:#78716c;--card:#fff;--line:#e7e5e4;--accent:#1c1917;--on:#fff}
@@ -447,5 +462,5 @@ body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--
 main{max-width:440px;width:100%;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:28px}
 h1{font-size:20px;margin:0 0 12px}.muted{color:var(--muted);font-size:13px}code{font-size:13px}
 button,.button{display:inline-block;border:1px solid var(--accent);background:var(--accent);color:var(--on);border-radius:8px;padding:8px 16px;font:inherit;cursor:pointer;text-decoration:none}
-.secondary{background:transparent;color:var(--fg)}input[type=password]{width:100%;box-sizing:border-box;margin:0 0 12px;padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);font:inherit}
-details{margin-top:16px}summary{cursor:pointer;margin-bottom:12px}.brand{font-weight:600;margin-bottom:16px}.destination{border:1px solid var(--line);border-radius:8px;padding:10px 12px;word-break:break-all}.destination code{font-size:15px}</style></head><body><main><div class="brand">camelRun</div>${body}</main></body></html>`;
+.secondary{background:transparent;color:var(--fg)}label{display:block;font-size:13px}input[type=password],input[type=email]{display:block;width:100%;box-sizing:border-box;margin:4px 0 12px;padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);font:inherit}
+.error{color:#dc2626}.or{margin-top:20px}.brand{font-weight:600;margin-bottom:16px}.destination{border:1px solid var(--line);border-radius:8px;padding:10px 12px;word-break:break-all}.destination code{font-size:15px}</style></head><body><main><div class="brand">camelRun</div>${body}</main></body></html>`;

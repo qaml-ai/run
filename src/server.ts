@@ -26,6 +26,7 @@ import { BillingMailer, billingMailConfig } from "./billing-mailer.ts";
 import { Help, helpConfig } from "./help.ts";
 import { MailTransport } from "./mail-transport.ts";
 import { ConsoleAuth } from "./console-auth.ts";
+import { Passwords } from "./passwords.ts";
 import { OAuth } from "./oauth.ts";
 import { hostedMcp } from "./hosted-mcp.ts";
 import { agentMcp } from "./agent-mcp.ts";
@@ -199,8 +200,9 @@ rateLimits.start();
 /** Who sent a request: its address and the key per-address limits count it under (none for the runtime's own calls). */
 const requestClient = (c: Context) => rateLimits.client(name => c.req.header(name), (c.env as HttpBindings | undefined)?.incoming?.socket?.remoteAddress);
 const consoleAuth = new ConsoleAuth({
-  accounts, publicUrl, github, google,
+  accounts, publicUrl, github, google, passwords: new Passwords(db),
   admitSignup: c => { const { key } = requestClient(c); return sql => rateLimits.signup(sql, key); },
+  passwordLimits: { allowed: (c, email) => rateLimits.passwordAllowed(requestClient(c).key, email), failed: (c, email) => rateLimits.passwordFailed(requestClient(c).key, email) },
 });
 const consoleDir = resolve(process.env.AGENT_CONSOLE_DIR ?? fileURLToPath(new URL("../console/dist", import.meta.url)));
 

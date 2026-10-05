@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { Api } from "../packages/cli/src/api.ts";
 import { tools } from "../packages/cli/src/tools.ts";
 import { registerTools, webMcpTool, type ModelContext, type WebMcpTool } from "../console/web/lib/webmcp.ts";
-import { OPERATOR, lastUser, runtime } from "./runtime-server.ts";
+import { OPERATOR, lastUser, passwordSession, runtime } from "./runtime-server.ts";
 
 /** A browser's model context, as the WebMCP spec has it, recording what the page registers and unregisters. */
 function fakeContext() {
@@ -62,8 +62,7 @@ test("the console registers the tools with the browser, runs them as the signed-
 
 test("in the console, the tools authenticate with the session cookie and the console header, not a key", async t => {
   const r = await runtime(t, body => ({ role: "assistant", content: `echo: ${lastUser(body)}` }));
-  const signIn = await fetch(`${r.base}/console/auth/token`, { method: "POST", headers: { "Content-Type": "application/json", "X-Agent-Runtime-Console": "1", "Sec-Fetch-Site": "same-origin" }, body: JSON.stringify({ token: OPERATOR }) });
-  const cookie = signIn.headers.get("set-cookie")!.split(";")[0];
+  const cookie = await passwordSession(r.base, OPERATOR, "alice");
   const { context, registered } = fakeContext();
   // What consoleApi() makes in the browser, where the cookie goes by itself.
   await registerTools(new AbortController().signal, context, () => new Api({ url: r.base, headers: { "X-Agent-Runtime-Console": "1", "Sec-Fetch-Site": "same-origin", Cookie: cookie } }));

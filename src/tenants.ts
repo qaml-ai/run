@@ -154,9 +154,6 @@ export class Tenants {
 
   has(id: string) { return this.byId.has(id); }
 
-  /** The hash of `id`'s operator token, which a console session signed in to with it must still match. */
-  tokenSha256(id: string) { return this.byId.get(id)?.tokenSha256; }
-
   /** The GitHub login an admin linked to `tenant`, if any. */
   github(tenant: string) { return this.byId.get(tenant)?.github; }
 

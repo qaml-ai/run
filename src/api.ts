@@ -7,6 +7,7 @@ import type { BillingAlerts } from "./billing-alerts.ts";
 import type { Accounts, Principal } from "./accounts.ts";
 import { answerList, type ClientSessions } from "./client-sessions.ts";
 import { personal, type ConsoleAuth } from "./console-auth.ts";
+import { checkPassword, normalizeEmail } from "./passwords.ts";
 import type { OAuth } from "./oauth.ts";
 import { listModels, listProviders, modelInfo, providerInfo } from "./catalog.ts";
 import { modelHeadersInput, resolveModel } from "./session-config.ts";
@@ -110,11 +111,6 @@ const withoutToken = <T extends object>(c: Context<Env>, made: T): T => {
 };
 /** Who a caller is, as a webhook or trace export records who last set it (Webhooks.setBy). */
 const setter = (principal: Caller) => principal.tokenId ? `token:${principal.tokenId}` : principal.via === "oauth" ? `oauth:${(principal as { grantId?: string }).grantId}` : principal.via;
-/**
- * What a console session signed in to with a token cannot do, though the token itself may do some of it: the console's
- * own powers (minting API tokens, billing, Get Help, deleting the account) are a person's, signed in with GitHub or Google.
- */
-const PERSONAL_ROUTES = [/^POST \/v1\/tokens$/, /^(?:POST|PUT|PATCH|DELETE) \/v1\/billing(?:\/|$)/, /^POST \/v1\/help$/, /^DELETE \/v1\/account$/];
 /** The routes a browser token reads, by scope: GET /v1/agents/<its agent>/<scope>. */
 const BROWSER_ROUTE = /^\/v1\/agents\/([^/]+)\/(events|state|history|inputs)$/;
 
@@ -244,9 +240,6 @@ export function api(context: ApiContext) {
     if (principal.via === "oauth" && !OAUTH_ROUTES.some(allowed => allowed.test(`${c.req.method} ${c.req.path}`))) {
       throw new HttpError(403, "An OAuth access token works with agents only: it cannot get agent tokens or make API tokens, links, webhooks, telemetry exports, channels or provider keys. Use an API token or the console");
     }
-    if (principal.via === "console" && !personal(principal) && PERSONAL_ROUTES.some(denied => denied.test(`${c.req.method} ${c.req.path}`))) {
-      throw new HttpError(403, "This console session was signed in to with an API token: sign in with GitHub or Google to manage API tokens and billing, get help or delete the account");
-    }
     // A browser token reads its one agent's events, state, history and inputs, as its scopes say, and nothing else.
     if (principal.browser) {
       const [, agent, scope] = BROWSER_ROUTE.exec(c.req.path) ?? [];
@@ -285,7 +278,7 @@ export function api(context: ApiContext) {
   app.post("/v1/help", async c => {
     if (!context.help) throw new HttpError(404, "Get Help is not enabled on this runtime");
     const principal = c.var.principal;
-    if (!personal(principal)) throw new HttpError(403, "Get Help is sent from the console, signed in with GitHub or Google");
+    if (!personal(principal)) throw new HttpError(403, "Get Help is sent from the console");
     const body = await readJson(c.req.raw.body, 64 * 1024);
     const reply = await context.help.submit({ tenant: principal.tenant, ...(principal.login ? { login: principal.login } : {}) }, body,
       { userAgent: c.req.header("user-agent"), source: context.clientAddress ? context.clientAddress(c) : clientAddress(name => c.req.header(name), (c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined)?.incoming?.socket?.remoteAddress, false) });
@@ -673,6 +666,20 @@ export function api(context: ApiContext) {
   });
   route(createRoute({ method: "delete", path: "/v1/sessions", responses: { 200: reply("Signed out everywhere: every console session of the account ends now, this one too", schema.SignedOut) } }),
     async c => json(c, 200, { signedOut: await context.consoleAuth.endSessions(c.var.principal.tenant) }));
+  // The console's Account page: the address the account signs in with, if an operator gave it a password, and changing
+  // that password. Not part of the documented API: only a person signed in to the console changes it.
+  const passwords = () => context.consoleAuth.options.passwords;
+  app.get("/v1/account/password", async c => json(c, 200, { email: await passwords().email(c.var.principal.tenant) ?? null }));
+  app.put("/v1/account/password", async c => {
+    const principal = c.var.principal;
+    if (!personal(principal)) throw new HttpError(403, "A password is changed from the console, signed in");
+    const body = await readJson(c.req.raw.body, 4096, {});
+    if (typeof body.currentPassword !== "string") throw new HttpError(400, "currentPassword is required");
+    // Every other session signed in with the old password ends; this one stays.
+    const signedOut = await passwords().change(principal.tenant, body.currentPassword, checkPassword(body.newPassword), principal.session);
+    console.log(JSON.stringify({ type: "password_changed", tenant: principal.tenant, signedOut }));
+    return json(c, 200, { changed: true, signedOut });
+  });
   const oauth = () => {
     if (!context.oauth) throw new HttpError(404, "OAuth is not enabled on this runtime");
     return context.oauth;
@@ -861,8 +868,8 @@ export function api(context: ApiContext) {
     responses: { 202: reply("The account is being deleted: it stops signing in and authenticating now, and its data goes within minutes. Its credit ledger, usage and payment records are kept for accounting; remaining credit is forfeited", schema.AccountDeletion) },
   }), async c => {
     const principal = c.var.principal;
-    // A token that leaked could otherwise end the account: only a person signed in to the console with GitHub or Google deletes it.
-    if (!personal(principal)) throw new HttpError(403, "An account is deleted from the console, signed in with GitHub or Google");
+    // A token that leaked could otherwise end the account: only a person signed in to the console deletes it.
+    if (!personal(principal)) throw new HttpError(403, "An account is deleted from the console, signed in");
     const { confirm } = parse(schema.AccountDeletionInput, await readJson(c.req.raw.body, 4096, {}));
     if (confirm !== principal.tenant) throw new HttpError(400, "confirm must be this account's tenant id");
     return json(c, 202, await deletions().request(principal.tenant, "self"));
@@ -921,6 +928,37 @@ export function api(context: ApiContext) {
       ...(typeof maxRunResponses === "number" ? { maxRunResponses } : {}), ...(typeof maxRunSeconds === "number" ? { maxRunSeconds } : {}),
       ...(typeof codeCpuMs === "number" ? { codeCpuMs } : {}), ...(typeof codeMaxTimeoutMs === "number" ? { codeMaxTimeoutMs } : {}), ...(typeof codeConcurrency === "number" ? { codeConcurrency } : {}),
     } });
+  });
+  // Email and password sign-in: set by the platform operator for any tenant, or by an operator token for its own tenant (a
+  // self-hosted runtime's). An API token cannot: it would make itself a person's console session.
+  const passwordAdmin = (c: Context<Env>) => {
+    const principal = c.var.principal, tenant = c.req.param("id")!;
+    if (principal.via !== "operator" || (principal.tenant !== tenant && !context.billingAdmins?.includes(principal.tenant))) {
+      throw new HttpError(403, "Only the platform operator, or this tenant's operator token, sets its password");
+    }
+    return { tenant, by: principal.tenant };
+  };
+  route(createRoute({
+    method: "put", path: "/v1/tenants/{id}/password", request: { params: tenantId, body: content(schema.TenantPasswordInput) },
+    responses: { 200: reply("The tenant signs in to the console and the MCP consent page with this email address and password (platform operator, or the tenant's operator token). Its password sessions end", schema.TenantPassword) },
+  }), async c => {
+    const { tenant, by } = passwordAdmin(c);
+    const body = await readJson(c.req.raw.body, 4096, {});
+    const email = normalizeEmail(body.email) ?? invalid("email is not an email address");
+    const password = checkPassword(body.password);
+    if (!await accounts.exists(tenant)) throw new HttpError(404, `Unknown tenant ${tenant}`);
+    const signedOut = await passwords().set(tenant, email, password);
+    console.log(JSON.stringify({ type: "password_set", tenant, by, signedOut }));
+    return json(c, 200, { tenant, email, signedOut });
+  });
+  route(createRoute({
+    method: "delete", path: "/v1/tenants/{id}/password", request: { params: tenantId },
+    responses: { 200: reply("The tenant no longer signs in with a password; its password sessions end (platform operator, or the tenant's operator token)", schema.TenantPassword) },
+  }), async c => {
+    const { tenant, by } = passwordAdmin(c);
+    const { cleared, signedOut } = await passwords().clear(tenant);
+    if (cleared) console.log(JSON.stringify({ type: "password_cleared", tenant, by, signedOut }));
+    return json(c, 200, { tenant, email: null, signedOut });
   });
   route(createRoute({ method: "get", path: "/v1/tenants/{id}/export", request: { params: tenantId }, responses: { 200: zipped("The tenant's export, as GET /v1/account/export gives it (platform operator only)") } }), async c => {
     operatorOnly(c);
