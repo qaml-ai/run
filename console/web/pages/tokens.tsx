@@ -31,11 +31,11 @@ function CreateTokenDialog({ onClose, onCreated }: { onClose: () => void; onCrea
         {created ? (
           <div className="flex flex-col gap-4">
             <DialogHeader>
-              <DialogTitle>Copy your token now</DialogTitle>
-              <DialogDescription>It won't be shown again. Anyone with it can create and control every agent in your tenant.</DialogDescription>
+              <DialogTitle>Copy your key now</DialogTitle>
+              <DialogDescription>It won't be shown again. Anyone with it can create and control every agent in your account.</DialogDescription>
             </DialogHeader>
             <div className="bg-card border-foreground/40 border p-3">
-              <div className="flex items-center justify-between gap-2"><Eyebrow>SHOWN ONCE</Eyebrow><CopyButton value={created} label="Copy token" /></div>
+              <div className="flex items-center justify-between gap-2"><Eyebrow>SHOWN ONCE</Eyebrow><CopyButton value={created} label="Copy key" /></div>
               <code className="mt-1 block font-mono text-xs leading-relaxed break-all">{created}</code>
             </div>
             <DialogFooter><Button onClick={onClose}>Done</Button></DialogFooter>
@@ -43,7 +43,7 @@ function CreateTokenDialog({ onClose, onCreated }: { onClose: () => void; onCrea
         ) : (
           <form onSubmit={create} className="flex flex-col gap-4">
             <DialogHeader>
-              <DialogTitle>New API token</DialogTitle>
+              <DialogTitle>New API key</DialogTitle>
               <DialogDescription>Use it as the SDK's <code className="font-mono">apiKey</code>, or as <code className="font-mono">Authorization: Bearer</code> for the REST API.</DialogDescription>
             </DialogHeader>
             <ErrorAlert error={error} />
@@ -53,7 +53,7 @@ function CreateTokenDialog({ onClose, onCreated }: { onClose: () => void; onCrea
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
-              <Button type="submit" disabled={!name.trim() || busy}>{busy && <Loader2 className="animate-spin" />}Create token</Button>
+              <Button type="submit" disabled={!name.trim() || busy}>{busy && <Loader2 className="animate-spin" />}Create key</Button>
             </DialogFooter>
           </form>
         )}
@@ -89,25 +89,25 @@ export function TokensPage({ tenant }: { tenant: string }) {
   const [left, setLeft] = useState<Left>();
   return (
     <>
-      <PageHeader title="API tokens" description="Tokens for your applications and scripts. Each one has full access to your tenant; revoke any you no longer use."
-        actions={<Button size="sm" onClick={() => setCreating(true)}><Plus />New token</Button>} />
+      <PageHeader title="API keys" docs="authentication" description="Keys for your applications and scripts (the SDKs read CAMELAI_API_KEY). Each one has full access to your account; revoke any you no longer use."
+        actions={<Button size="sm" onClick={() => setCreating(true)}><Plus />New key</Button>} />
       <ErrorAlert error={tokens.error ?? error} />
       <StillSending left={left} />
       <AccountId tenant={tenant} />
       <Alert className="mb-4">
         <KeyRound />
-        <AlertTitle>Keep tokens on your backend</AlertTitle>
-        <AlertDescription>Never ship a token to a browser or mobile app. Your backend creates agents and hands clients only an agent's scoped session.</AlertDescription>
+        <AlertTitle>Keep keys on your backend</AlertTitle>
+        <AlertDescription>Never ship a key to a browser or mobile app. Your backend creates agents and hands clients only an agent's scoped session.</AlertDescription>
       </Alert>
       {!tokens.data ? <Skeleton className="h-32 w-full" /> : tokens.data.length === 0 ? (
-        <FirstRunPanel art="aurora" eyebrow="FIRST TOKEN" title="No API tokens"
-          action={<PixelButton size="hero" onClick={() => setCreating(true)}>New token</PixelButton>}>
-          Create one to connect your application.
+        <FirstRunPanel art="aurora" eyebrow="FIRST KEY" title="No API keys"
+          action={<PixelButton size="hero" onClick={() => setCreating(true)}>New key</PixelButton>}>
+          Your application uses a key to create and run agents. Create one to connect it.
         </FirstRunPanel>
       ) : (
         <div className="bg-card border">
           <Table>
-            <TableHeader><TableRow><TableHead>Name</TableHead><TableHead>Token</TableHead><TableHead>Created</TableHead><TableHead /></TableRow></TableHeader>
+            <TableHeader><TableRow><TableHead>Name</TableHead><TableHead>Key</TableHead><TableHead>Created</TableHead><TableHead /></TableRow></TableHeader>
             <TableBody>
               {tokens.data.map(token => (
                 <TableRow key={token.id}>
@@ -115,7 +115,7 @@ export function TokensPage({ tenant }: { tenant: string }) {
                   <TableCell className="text-muted-foreground font-mono text-xs">{token.prefix}…</TableCell>
                   <TableCell className="text-muted-foreground text-xs">{formatTime(token.createdAt)}</TableCell>
                   <TableCell className="text-right">
-                    <ConfirmButton size="xs" label="Revoke" title={`Revoke “${token.name}”?`} description="Applications using this token stop working immediately." confirm="Revoke token"
+                    <ConfirmButton size="xs" label="Revoke" title={`Revoke “${token.name}”?`} description="Applications using this key stop working immediately." confirm="Revoke key"
                       onConfirm={async () => { try { setLeft((await api<{ left?: Left }>(`/v1/tokens/${token.id}`, { method: "DELETE" })).left); await tokens.reload(); } catch (caught) { setError((caught as Error).message); } }} />
                   </TableCell>
                 </TableRow>
@@ -153,7 +153,7 @@ function ConnectedApps() {
               {grants.data.map(grant => (
                 <TableRow key={grant.id}>
                   <TableCell className="font-medium">{grant.clientName}</TableCell>
-                  <TableCell className="text-muted-foreground text-xs">{grant.login ?? "API token sign-in"}</TableCell>
+                  <TableCell className="text-muted-foreground text-xs">{grant.login ?? "API key sign-in"}</TableCell>
                   <TableCell className="text-muted-foreground text-xs">{formatTime(grant.createdAt)}</TableCell>
                   <TableCell className="text-muted-foreground text-xs">{grant.usedAt ? formatTime(grant.usedAt) : "-"}</TableCell>
                   <TableCell className="text-right">

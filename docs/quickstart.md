@@ -33,7 +33,7 @@ To build it into your app yourself, read on.
 ## 1. Get an API key
 
 Sign in to the console at <https://run.camelai.com/console> with GitHub or Google.
-Under **API tokens** (<https://run.camelai.com/console/tokens>), create a token,
+Under **API keys** (<https://run.camelai.com/console/tokens>), create a key,
 and export it:
 
 ```sh

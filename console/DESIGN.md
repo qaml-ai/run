@@ -37,8 +37,9 @@ Fonts are self-hosted, since the CSP allows fonts from `'self'` only;
 ## The three moments
 
 1. Sign-in (`components/auth-layout.tsx`): `DitherLiquid` current behind an eyebrow and headline.
-2. First agent (Agents, with none): `FirstRunPanel` hero over `DitherLiquid` swell.
-3. First token (API tokens, with none): `FirstRunPanel` over `DitherAurora` curtain.
+2. Get started (the home of an account with no agents): `FirstRunPanel` hero over `DitherLiquid` swell, above the
+   use-case starts (a Discord bot, an agent with code).
+3. First key (API keys, with none): `FirstRunPanel` over `DitherAurora` curtain.
 
 Errors and not-found pages use `StatusPanel`: the bare curtain, the code in
 Silkscreen, no CamelCool. Every other surface is a working surface: no art, no
@@ -62,3 +63,13 @@ offscreen and in hidden tabs, and paint a still frame under reduced motion.
   that must keep its case (file names, a key's last characters) is never set in
   a badge's capitals.
 - `Stats` shows headline figures; tables sit in `border bg-card` frames.
+
+## Structure
+
+- The nav has five places (`web/lib/nav.ts`): Get started, Agents, Channels, API keys and Settings, then Docs and Get
+  help. Get started shows its progress until a path is done, then moves beside Docs. Agents and Settings group the
+  other pages as link tabs; each page keeps its URL.
+- Every page header links its docs page (`PageHeader`'s `docs`, `LearnMore`) on the docs site people read
+  (`web/lib/docs.ts`). An empty list says what the thing is and gives the one action to take (`EmptyState`'s `action`).
+- Get started's checklists tick from the account's real state through existing endpoints (`web/lib/onboarding.ts`);
+  `?start=discord` or `?start=code` on `/console/` opens a path directly, and survives sign-in.

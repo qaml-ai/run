@@ -11,7 +11,7 @@ export class ApiError extends Error {
   }
 }
 
-export async function api<T = any>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
+export async function api<T = any>(path: string, init: { method?: string; body?: unknown; headers?: Record<string, string> } = {}): Promise<T> {
   const method = init.method ?? (init.body === undefined ? "GET" : "POST");
   const scope = helpRequestScope();
   let response: Response;
@@ -23,6 +23,7 @@ export async function api<T = any>(path: string, init: { method?: string; body?:
         ...(init.body !== undefined ? { "Content-Type": "application/json" } : {}),
         // Required for any cookie-authenticated write; cross-site pages cannot send it.
         ...(method !== "GET" ? { "X-Agent-Runtime-Console": "1" } : {}),
+        ...init.headers,
       },
       body: init.body === undefined ? undefined : JSON.stringify(init.body),
     });
@@ -88,6 +89,8 @@ export interface Model {
 }
 export interface AgentSummary {
   id: string; name: string; type: string; model: string; connected: boolean; running: boolean; expiresAt: number | null;
+  /** The key it was made with (an upsert's, or an Idempotency-Key); null without one. */
+  key?: string | null;
   /** A sub-agent's parent: the agent whose delegate call made it. */
   parentAgentId?: string;
 }

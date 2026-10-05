@@ -53,19 +53,22 @@ export function ManagedDiscord({ onChanged, config }: { onChanged: () => void; c
   </>;
 }
 
-export function ManagedDiscordDialog({ config, binding, onClose, onSaved }: {
-  config: ManagedDiscordConfig; binding: ManagedDiscordBinding; onClose: () => void; onSaved: () => void;
+/** What a server's first setup starts from; Get started's Discord path opens it to every member, with tighter limits. */
+export interface SetupDefaults { definition?: string; public?: boolean; perSenderPerMinute?: number; turnsPerDay?: number }
+
+export function ManagedDiscordDialog({ config, binding, onClose, onSaved, defaults = {} }: {
+  config: ManagedDiscordConfig; binding: ManagedDiscordBinding; onClose: () => void; onSaved: () => void; defaults?: SetupDefaults;
 }) {
   const setup = !binding.channel;
   const definitions = useApi<Definition[]>("/v1/definitions");
   const channels = useApi<{ channels: DiscordGuildChannel[] }>(`/console/discord/guilds/${encodeURIComponent(binding.guildId)}/channels`);
-  const [definition, setDefinition] = useState(binding.channel?.definition ?? "");
+  const [definition, setDefinition] = useState(binding.channel?.definition ?? defaults.definition ?? "");
   const [definitionEditor, setDefinitionEditor] = useState<Definition | "new">();
   const [allowedChannels, setAllowedChannels] = useState(binding.allowedChannelIds);
-  const [publicAccess, setPublicAccess] = useState(binding.channel?.access.public ?? false);
+  const [publicAccess, setPublicAccess] = useState(binding.channel?.access.public ?? defaults.public ?? false);
   const [allow, setAllow] = useState(binding.channel?.access.allow.join(", ") ?? "");
-  const [perMinute, setPerMinute] = useState(binding.channel?.limits.perSenderPerMinute ?? 5);
-  const [perDay, setPerDay] = useState(binding.channel?.limits.turnsPerDay ?? 100);
+  const [perMinute, setPerMinute] = useState(binding.channel?.limits.perSenderPerMinute ?? defaults.perSenderPerMinute ?? 5);
+  const [perDay, setPerDay] = useState(binding.channel?.limits.turnsPerDay ?? defaults.turnsPerDay ?? 100);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState<ManagedDiscordBinding>();
   const [error, setError] = useState("");
@@ -120,6 +123,7 @@ export function ManagedDiscordDialog({ config, binding, onClose, onSaved }: {
             <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={publicAccess} onChange={event => setPublicAccess(event.target.checked)} />Allow every member in selected channels</label>
             <p className="text-muted-foreground text-xs">Allowed members can invoke these tools using your account's credentials. Conversations are shared with channel participants, and usage is billed to your camelRun account.</p>
           </div>
+          <p className="text-muted-foreground text-xs">Members' messages use your credit. These limits cap how much: each member, and the whole server.</p>
           <div className="flex flex-wrap gap-4"><div className="space-y-2"><Label htmlFor="managed-discord-rate">Turns per member per minute</Label><Input id="managed-discord-rate" type="number" min={1} max={100} step={1} value={perMinute} onChange={event => setPerMinute(Number(event.target.value))} /></div><div className="space-y-2"><Label htmlFor="managed-discord-daily">Turns per server per day</Label><Input id="managed-discord-daily" type="number" min={1} max={maxPerDay} step={1} value={perDay} onChange={event => setPerDay(Number(event.target.value))} /></div></div>
           <DialogFooter><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" disabled={busy || !ready}>{busy && <Loader2 className="animate-spin" />}{binding.state === "disconnected" ? "Save and reactivate" : setup ? "Save and activate" : "Save configuration"}</Button></DialogFooter>
         </form>}
