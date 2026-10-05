@@ -46,10 +46,10 @@ export function GetStartedPage({ billing, onboarding }: { billing?: Billing; onb
   if (start) return (
     <>
       <Button variant="ghost" size="sm" className="mb-3 -ml-2" onClick={() => setStart(undefined)}><ArrowLeft />All starts</Button>
-      <PageHeader title={start === "discord" ? "Build a Discord bot" : "Build an agent with code"} docs={start === "discord" ? "channels" : "quickstart"}
+      <PageHeader title={start === "discord" ? "Build a Discord bot" : "Build an agent"} docs={start === "discord" ? "channels" : "quickstart"}
         description={start === "discord"
           ? "Camel, our shared bot, answers @mentions in your server with the personality and tools you give it. No code, about three minutes."
-          : "Try an agent here with no code, then run one with your own tools from TypeScript, Python or curl."} />
+          : "Try an agent here first, with no code; then run one from your own code, with your own tools."} />
       <div className="flex flex-col gap-4">
         <CreditNeeded billing={billing} />
         {start === "discord" ? <DiscordPath onboarding={onboarding} config={onboarding.discord.error ? { enabled: false } : onboarding.discord.data} /> : <CodePath onboarding={onboarding} billing={billing} />}
@@ -58,7 +58,7 @@ export function GetStartedPage({ billing, onboarding }: { billing?: Billing; onb
   );
   const choices = [
     ...(discord !== false && !onboarding.discord.error ? [{ id: "discord" as const, icon: MessageCircle, title: "Build a Discord bot", description: "A bot that answers @mentions in your server: a helpful assistant, a dungeon master or your own. No code.", action: "Start with Discord" }] : []),
-    { id: "code" as const, icon: Code, title: "Build an agent with code", description: "Try one right here, then give it your own tools from TypeScript, Python or curl.", action: "Start with code" },
+    { id: "code" as const, icon: Code, title: "Build an agent", description: "Try one right here in your browser, then run it with your own tools from TypeScript, Python or curl.", action: "Start building" },
   ];
   return (
     <>

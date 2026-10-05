@@ -220,15 +220,15 @@ export function CodePath({ onboarding, billing }: { onboarding: ReturnType<typeo
   return (
     <div className="flex flex-col gap-4">
       <Checklist label="YOUR FIRST AGENT" steps={onboarding.code} />
-      <StepCard n={1} title="Try an agent right here" done={tryStep.done}
+      <StepCard n={1} title={tryStep.label} done={tryStep.done}
         description={<>No code: this makes an agent called Playground on your account's default model and runs your prompt. It has no tools, and it bills like any run.{billing?.billing === "none" && <> Runs use your <Link className="underline underline-offset-4" to="models">model keys</Link>.</>}</>}>
         <Playground agents={onboarding.agents.data} onRan={reload} />
       </StepCard>
-      <StepCard n={2} title="Create an API key" done={!!key || keyStep.done}
+      <StepCard n={2} title={keyStep.label} done={!!key || keyStep.done}
         description={<>Your application uses it to create and run agents. <LearnMore page="authentication" /></>}>
         <CreateKey count={onboarding.tokens.data?.length ?? 0} created={key} onCreated={token => { setKey(token); void onboarding.tokens.reload(); }} />
       </StepCard>
-      <StepCard n={3} title="Run an agent with your own tool" done={codeStep.done}
+      <StepCard n={3} title={codeStep.label} done={codeStep.done}
         description="Your tools are ordinary functions in your process. The runtime runs the model loop, keeps the agent's history and sandboxes code the model writes. Run it again and the agent remembers.">
         <Tabs defaultValue="typescript">
           <TabsList><TabsTrigger value="typescript">TypeScript</TabsTrigger><TabsTrigger value="python">Python</TabsTrigger><TabsTrigger value="rest">curl</TabsTrigger></TabsList>

@@ -81,7 +81,7 @@ export function DiscordPath({ onboarding, config }: { onboarding: ReturnType<typ
     <div className="flex flex-col gap-4">
       <Checklist label="YOUR DISCORD BOT" steps={steps} />
       <ErrorAlert error={error} title="Adding Camel to Discord" className="mb-0" />
-      <StepCard n={1} title="Pick a starter bot" done={starterDone}
+      <StepCard n={1} title={steps[0].label} done={starterDone}
         description="Its personality and tools. You can change everything later.">
         <div className="grid gap-3 md:grid-cols-3">
           {STARTERS.map(entry => {
@@ -96,23 +96,23 @@ export function DiscordPath({ onboarding, config }: { onboarding: ReturnType<typ
           })}
         </div>
         {starter && <p className="text-muted-foreground text-xs">{server?.channel
-          ? <>Your server uses <span className="text-foreground">{starter.name}</span>. To switch, choose another definition in step 3.</>
-          : <>Using <span className="text-foreground">{starter.name}</span>. Pick another to switch.</>}</p>}
+          ? <>Your server uses <span className="text-foreground">{starter.name.replace(DISCORD_STARTER_PREFIX, "")}</span>. To switch, choose another definition in step 3.</>
+          : <>Your bot will be the <span className="text-foreground">{starter.name.replace(DISCORD_STARTER_PREFIX, "")}</span>. Pick another to switch.</>}</p>}
       </StepCard>
-      <StepCard n={2} title="Add Camel to your Discord server" done={added}
+      <StepCard n={2} title={steps[1].label} done={added}
         description="One Discord authorization: choose a server you manage. Camel can read and send messages only where you allow it, and never gets Administrator.">
         {server ? <p className="text-sm">Camel is in <span className="font-medium">{server.guildName || server.guildId}</span>. <a className="underline underline-offset-4" href={install}>Add it to another server</a></p>
           : <div><PixelButton href={install} aria-disabled={!starterDone} className={cn(!starterDone && "pointer-events-none opacity-50")}>Add Camel to Discord</PixelButton>
             {!starterDone && <p className="text-muted-foreground mt-2 text-xs">Pick a starter first.</p>}</div>}
       </StepCard>
-      <StepCard n={3} title="Choose where it answers" done={ready}
+      <StepCard n={3} title={steps[2].label} done={ready}
         description={<>Members' messages use your credit; limits: {ONBOARDING_LIMITS.perSenderPerMinute} turns per member per minute and {ONBOARDING_LIMITS.turnsPerDay} per server per day, which you can change here.</>}>
         {server && <div className="flex flex-wrap items-center gap-3">
           <Button onClick={() => setSettingUp(true)} variant={ready ? "outline" : "default"}>{ready ? "Change channels and limits" : "Choose channels"}</Button>
           {server.channel && <Badge variant={server.state === "active" ? "live" : "outline"}>{server.state}</Badge>}
         </div>}
       </StepCard>
-      <StepCard n={4} title="Say hello" done={replied}
+      <StepCard n={4} title={steps[3].label} done={replied}
         description="In an allowed channel, type @Camel, pick the bot with the APP badge, and say hello. It answers only when mentioned, in every message.">
         {ready && <div className="flex flex-col gap-2">
           <Input aria-label="Test message" readOnly className="max-w-sm font-mono" value={`@Camel hello`} onFocus={event => event.target.select()} />

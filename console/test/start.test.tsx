@@ -48,7 +48,7 @@ describe("checklists", () => {
     expect(codeSteps({ tokens: [token], agents: [], usage: usage(0) }).map(step => step.done)).toEqual([false, true, false]);
     // The playground's run is card 1; card 3 needs an agent of the user's own code.
     expect(codeSteps({ agents: [agent({ key: "playground" })], usage: usage(1) }).map(step => step.done)).toEqual([true, false, false]);
-    expect(codeSteps({}).map(step => step.label)).toEqual(["Run an agent here", "Create an API key", "Run one from your code"]);
+    expect(codeSteps({}).map(step => step.label)).toEqual(["Try an agent right here", "Create an API key", "Run an agent with your own tool"]);
     expect(codeSteps({ tokens: [token], agents: [agent({ key: "playground" }), agent({ key: "quickstart" })], usage: usage(2) }).map(step => step.done)).toEqual([true, true, true]);
   });
 
@@ -66,6 +66,9 @@ describe("checklists", () => {
   it("show the further path in the nav, complete when either path is", () => {
     expect(navProgress(onboarding())).toEqual({ done: 0, total: 3, complete: false });
     expect(navProgress(onboarding({ definitions: [starter], bindings: [server()] }))).toEqual({ done: 2, total: 4, complete: false });
+    // On a path's page, the nav counts that path.
+    expect(navProgress(onboarding({ tokens: [token] }), "discord")).toEqual({ done: 0, total: 4, complete: false });
+    expect(navProgress(onboarding({ definitions: [starter], bindings: [server()] }), "code")).toEqual({ done: 0, total: 3, complete: false });
     expect(navProgress(onboarding({ tokens: [token], agents: [agent({ key: "quickstart" })], responses: 1 })).complete).toBe(true);
     expect(navProgress(onboarding({ bindings: [live], agents: [agent({ key: "discord-managed-ch1-1" })] })).complete).toBe(true);
   });
@@ -101,21 +104,21 @@ describe("nav", () => {
 describe("Get started", () => {
   it("offers the Discord bot first, then code", () => {
     render(<GetStartedPage onboarding={onboarding()} />);
-    const starts = screen.getAllByRole("button", { name: /^Start with/ }).map(button => button.textContent);
-    expect(starts).toEqual(["Start with Discord", "Start with code"]);
+    const starts = screen.getAllByRole("button", { name: /^Start (with|building)/ }).map(button => button.textContent);
+    expect(starts).toEqual(["Start with Discord", "Start building"]);
     expect(screen.getByText("Durable agents, hosted")).toBeTruthy();
   });
 
   it("leaves Discord out where the shared bot is off (a self-hosted runtime)", () => {
     render(<GetStartedPage onboarding={onboarding({ discord: false })} />);
-    expect(screen.getAllByRole("button", { name: /^Start with/ }).map(button => button.textContent)).toEqual(["Start with code"]);
+    expect(screen.getAllByRole("button", { name: /^Start (with|building)/ }).map(button => button.textContent)).toEqual(["Start building"]);
   });
 
   it("opens a path from ?start=, and choosing one puts it in the URL", () => {
     render(<GetStartedPage onboarding={onboarding()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Start with code" }));
+    fireEvent.click(screen.getByRole("button", { name: "Start building" }));
     expect(location.pathname + location.search).toBe("/console/start?start=code");
-    expect(screen.getByRole("heading", { name: "Build an agent with code" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Build an agent" })).toBeTruthy();
     cleanup();
     history.replaceState(null, "", "/console/?start=discord");
     render(<GetStartedPage onboarding={onboarding()} />);

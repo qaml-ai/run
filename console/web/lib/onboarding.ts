@@ -24,9 +24,9 @@ export interface Step { id: string; label: string; done: boolean }
 export function codeSteps({ tokens, agents, usage }: { tokens?: ApiToken[]; agents?: AgentSummary[]; usage?: Usage }): Step[] {
   const ran = (usage?.totals.responses ?? 0) > 0;
   return [
-    { id: "try", label: "Run an agent here", done: !!agents?.length && ran },
+    { id: "try", label: "Try an agent right here", done: !!agents?.length && ran },
     { id: "key", label: "Create an API key", done: !!tokens?.length },
-    { id: "code", label: "Run one from your code", done: ran && !!agents?.some(agent => agent.key !== PLAYGROUND_KEY) },
+    { id: "code", label: "Run an agent with your own tool", done: ran && !!agents?.some(agent => agent.key !== PLAYGROUND_KEY) },
   ];
 }
 
@@ -44,9 +44,9 @@ export function discordSteps({ definitions, server, agents }: { definitions?: De
   const ready = !!server?.channel && server.state === "active";
   return [
     { id: "starter", label: "Pick a starter bot", done: !!server?.channel || !!definitions?.some(definition => definition.name.startsWith(DISCORD_STARTER_PREFIX)) },
-    { id: "added", label: "Add Camel to your server", done: !!server },
-    { id: "setup", label: "Choose its channels", done: ready },
-    { id: "hello", label: "Say hello with an @mention", done: ready && repliedIn(agents, server?.channelId) },
+    { id: "added", label: "Add Camel to your Discord server", done: !!server },
+    { id: "setup", label: "Choose where it answers", done: ready },
+    { id: "hello", label: "Say hello", done: ready && repliedIn(agents, server?.channelId) },
   ];
 }
 
@@ -68,11 +68,11 @@ export function useOnboarding(poll?: number) {
   return { tokens, agents, usage, discord, bindings, definitions, code, loaded };
 }
 
-/** Get started stays in the nav, with its progress, until either path is done. */
-export function navProgress(onboarding: ReturnType<typeof useOnboarding>) {
+/** Get started stays in the nav, with its progress, until either path is done: the open path's, else the further one's. */
+export function navProgress(onboarding: ReturnType<typeof useOnboarding>, open?: Start) {
   const server = discordServer(onboarding.bindings.data?.bindings);
   const discord = discordSteps({ definitions: onboarding.definitions.data, server, agents: onboarding.agents.data });
   const code = onboarding.code;
-  const best = code.filter(step => step.done).length / code.length >= discord.filter(step => step.done).length / discord.length ? code : discord;
+  const best = open ? (open === "code" ? code : discord) : code.filter(step => step.done).length / code.length >= discord.filter(step => step.done).length / discord.length ? code : discord;
   return { done: best.filter(step => step.done).length, total: best.length, complete: onboarding.loaded && (complete(code) || complete(discord)) };
 }

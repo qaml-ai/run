@@ -97,7 +97,7 @@ function Console({ me }: { me: Me }) {
   const starting = home || section === "start" || section === "quickstart";
   // One read for the nav's progress; on Get started, polled, so its steps tick as they happen.
   const onboarding = useOnboarding(starting ? 5_000 : undefined);
-  const progress = navProgress(onboarding);
+  const progress = navProgress(onboarding, starting ? startFrom(location.search) : undefined);
   useWebMcp(me.tenant);
   if (!section && !agents.data && !agents.error && !startFrom(location.search)) return <div className="text-muted-foreground flex h-dvh items-center justify-center"><Loader2 className="animate-spin" /></div>;
   const page = starting ? <GetStartedPage billing={billing.data} onboarding={onboarding} />
