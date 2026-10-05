@@ -6,16 +6,18 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
 let calls: { path: string; method: string; body?: unknown; console?: string | null }[];
 let assigned: string[];
 let billing: Record<string, unknown>;
-let password: { email: string | null };
+let password: { email: string | null; googleEmail?: string | null; canAdd?: boolean };
+let add: () => Response;
 let change: () => Response;
 beforeEach(() => {
   calls = []; assigned = [];
   billing = { billing: "prepaid", balance: 12_340_000, purchased: 10_000_000 };
   password = { email: null };
   change = () => json({ changed: true, signedOut: 1 });
+  add = () => json({ sent: true }, 202);
   vi.stubGlobal("fetch", vi.fn(async (path: string, init?: RequestInit) => {
     calls.push({ path, method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body as string) : undefined, console: new Headers(init?.headers).get("X-Agent-Runtime-Console") });
-    if (path === "/v1/account/password") return init?.method === "PUT" ? change() : json(password);
+    if (path === "/v1/account/password") return init?.method === "PUT" ? change() : init?.method === "POST" ? add() : json(password);
     return path === "/v1/account" ? json({ tenant: "u-4f2a9c1d7e3b6a58", state: "deleting" }, 202) : path === "/v1/billing" ? json(billing) : json({});
   }));
   vi.stubGlobal("location", { ...location, assign: (url: string) => { assigned.push(url); } });
@@ -58,11 +60,44 @@ describe("AccountPage", () => {
     expect(screen.queryByRole("button", { name: /Change password/ })).toBeNull();
   });
 
+  it("shows the account's address: the one it signs in with, else its Google one", async () => {
+    password = { email: null, googleEmail: "Ren@example.com", canAdd: false };
+    render(<AccountPage me={{ tenant: "u-4f2a9c1d7e3b6a58" }} />);
+    expect(await screen.findByText("Ren@example.com")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Add password/ })).toBeNull();
+  });
+
+  it("adds a password to an account without one: its Google address at once", async () => {
+    password = { email: null, googleEmail: "ren@example.com", canAdd: true };
+    add = () => { password = { email: "ren@example.com", googleEmail: "ren@example.com", canAdd: false }; return json({ set: true, email: "ren@example.com" }); };
+    render(<AccountPage me={{ tenant: "u-4f2a9c1d7e3b6a58" }} />);
+    const submit = await screen.findByRole("button", { name: /Add password/ }) as HTMLButtonElement;
+    expect((screen.getByLabelText("Email") as HTMLInputElement).value).toBe("ren@example.com");
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "a long unusual passphrase" } });
+    expect(submit.disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("Confirm password"), { target: { value: "a long unusual passphrase" } });
+    fireEvent.click(submit);
+    // Then it has one: the change form takes its place.
+    expect(await screen.findByRole("button", { name: /Change password/ })).toBeTruthy();
+    expect(calls.filter(call => call.method === "POST")).toEqual([{ path: "/v1/account/password", method: "POST", body: { email: "ren@example.com", password: "a long unusual passphrase" }, console: "1" }]);
+  });
+
+  it("adds a password with another address through a link", async () => {
+    password = { email: null, googleEmail: null, canAdd: true };
+    render(<AccountPage me={{ tenant: "octo" }} />);
+    fireEvent.change(await screen.findByLabelText("Email"), { target: { value: "octo@example.com" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "a long unusual passphrase" } });
+    fireEvent.change(screen.getByLabelText("Confirm password"), { target: { value: "a long unusual passphrase" } });
+    fireEvent.click(screen.getByRole("button", { name: /Add password/ }));
+    expect(await screen.findByText(/we sent it a link/)).toBeTruthy();
+    expect((screen.getByLabelText("Password") as HTMLInputElement).value).toBe("");
+  });
+
   it("changes the password with the current one, once the new one is long enough and confirmed", async () => {
     password = { email: "reviewer@example.com" };
     render(<AccountPage me={{ tenant: "chatgpt-review" }} />);
     const submit = await screen.findByRole("button", { name: /Change password/ }) as HTMLButtonElement;
-    expect(screen.getByText("reviewer@example.com")).toBeTruthy();
+    expect(screen.getAllByText("reviewer@example.com")).toHaveLength(2);
     fireEvent.change(screen.getByLabelText("Current password"), { target: { value: "old password 123" } });
     fireEvent.change(screen.getByLabelText("New password"), { target: { value: "too short" } });
     fireEvent.change(screen.getByLabelText("Confirm new password"), { target: { value: "too short" } });

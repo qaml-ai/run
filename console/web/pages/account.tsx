@@ -6,23 +6,78 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { CopyButton, ErrorAlert, PageHeader } from "@/components/common";
 import { api, formatMicros, useApi, type Billing, type Me } from "@/lib/api";
+import { MIN_PASSWORD } from "@/pages/password-sign-in";
 
-/** The shortest password the runtime takes. */
-const MIN_PASSWORD = 12;
+/** The account's sign-in address, if it has a password; its Google address; and whether it may add a password by email. */
+type PasswordInfo = { email: string | null; googleEmail?: string | null; canAdd?: boolean };
 
 /**
- * Changing the account's password, shown only when an operator gave it one (there is no sign-up or reset by email). It
- * takes the current password; other sessions signed in with the password end, and this one stays.
+ * Adding a password to an account without one (GitHub or Google sign-in), where the runtime has account mail. Its own
+ * Google address is set at once; any other address gets a link to confirm, with this password, before it signs in.
  */
-function ChangePassword() {
-  const password = useApi<{ email: string | null }>("/v1/account/password");
+function AddPassword({ googleEmail, onSet }: { googleEmail?: string | null; onSet: () => void }) {
+  const [email, setEmail] = useState(googleEmail ?? "");
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const [sent, setSent] = useState("");
+  const mismatch = !!confirm && next !== confirm;
+  async function add(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true); setError(undefined);
+    try {
+      const added = await api<{ set?: true; sent?: true }>("/v1/account/password", { method: "POST", body: { email: email.trim(), password: next } });
+      setNext(""); setConfirm("");
+      if (added.set) onSet(); else setSent(email.trim());
+    } catch (caught) { setError((caught as Error).message); }
+    finally { setBusy(false); }
+  }
+  return (
+    <section className="bg-card mb-6 border p-5">
+      <h2 className="text-base font-semibold">Password</h2>
+      <p className="text-muted-foreground mt-1 mb-4 max-w-2xl text-sm">
+        Sign in with an email address and password too, beside {googleEmail ? "Google" : "GitHub"}. {googleEmail
+          ? "Your Google address works at once; any other gets a link to confirm it first."
+          : "The address gets a link to confirm it first."}
+      </p>
+      <ErrorAlert error={error} />
+      {sent ? <p role="status" className="bg-muted mb-4 p-3 text-sm">Check <span className="font-mono break-all">{sent}</span>: if it can be used, we sent it a link. Open it and enter this password to finish.</p> : null}
+      <form onSubmit={add} className="grid max-w-sm gap-3">
+        <div className="grid gap-1.5">
+          <Label htmlFor="add-email">Email</Label>
+          <Input id="add-email" type="email" autoComplete="username" value={email} onChange={event => setEmail(event.target.value)} />
+        </div>
+        <div className="grid gap-1.5">
+          <Label htmlFor="add-password">Password</Label>
+          <Input id="add-password" type="password" autoComplete="new-password" value={next} onChange={event => setNext(event.target.value)} />
+          <p className="text-muted-foreground text-xs">At least {MIN_PASSWORD} characters.</p>
+        </div>
+        <div className="grid gap-1.5">
+          <Label htmlFor="add-confirm">Confirm password</Label>
+          <Input id="add-confirm" type="password" autoComplete="new-password" value={confirm} onChange={event => setConfirm(event.target.value)} />
+          {mismatch && <p className="text-destructive text-xs">The passwords differ.</p>}
+        </div>
+        <div><Button size="sm" variant="outline" type="submit" disabled={busy || !email.trim() || next.length < MIN_PASSWORD || next !== confirm}>
+          {busy ? <Loader2 className="animate-spin" /> : <KeyRound />}Add password
+        </Button></div>
+      </form>
+    </section>
+  );
+}
+
+/**
+ * Changing the account's password, shown when it has one; it takes the current password. Other sessions signed in
+ * with the password end, and this one stays. An account without one may add one, where the runtime has account mail.
+ */
+function ChangePassword({ password }: { password: ReturnType<typeof useApi<PasswordInfo>> }) {
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [confirm, setConfirm] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [done, setDone] = useState(false);
-  if (!password.data?.email) return null;
+  if (!password.data?.email) return password.data?.canAdd ? <AddPassword googleEmail={password.data.googleEmail} onSet={() => void password.reload()} /> : null;
   const mismatch = !!confirm && next !== confirm;
   async function change(event: FormEvent) {
     event.preventDefault();
@@ -159,11 +214,14 @@ function SignOutEverywhere() {
 
 export function AccountPage({ me }: { me: Pick<Me, "tenant"> }) {
   const [deleting, setDeleting] = useState(false);
+  const password = useApi<PasswordInfo>("/v1/account/password");
+  const email = password.data?.email ?? password.data?.googleEmail;
   return (
     <>
       <PageHeader title="Account" description="Take a copy of your data, or delete your account." docs="export" />
       <div className="text-muted-foreground mb-6 flex flex-wrap items-center gap-2 text-xs">
         <span>Account ID</span><code className="text-foreground font-mono">{me.tenant}</code><CopyButton value={me.tenant} label="Copy account ID" />
+        {email && <><span className="ml-4">Email</span><span className="text-foreground break-all">{email}</span></>}
       </div>
       <section className="bg-card mb-6 border p-5">
         <h2 className="text-base font-semibold">Export your data</h2>
@@ -173,7 +231,7 @@ export function AccountPage({ me }: { me: Pick<Me, "tenant"> }) {
         </p>
         <Button asChild size="sm" variant="outline"><a href="/v1/account/export" download><Download />Export data</a></Button>
       </section>
-      <ChangePassword />
+      <ChangePassword password={password} />
       <SignOutEverywhere />
       <section className="bg-card border-destructive/40 border p-5">
         <h2 className="text-base font-semibold">Delete your account</h2>
