@@ -6,7 +6,7 @@
 #   tenant.sh set-key <tenant> <provider>       # reads the provider API key from stdin, e.g. anthropic
 #   tenant.sh rotate-token <tenant>             # replaces the operator token; the old one stops working
 #   tenant.sh remove <tenant>                   # removes the tenant (its agents stay on disk, unreachable: delete them through the API first)
-#   tenant.sh link-github <tenant> <login>      # console sign-in with that GitHub login uses this tenant
+#   tenant.sh link-github <tenant> <login>      # console sign-in as that GitHub account (by its numeric id, looked up now) uses this tenant
 #   tenant.sh set-limit <tenant> <n|default>    # busy agents across the fleet for this tenant (default: its usage tier, or AGENT_MAX_AGENTS_PER_TENANT)
 #   tenant.sh set-spend-limit <tenant> <usd|none>  # model spend per UTC month, e.g. 250 or 99.50 (default: none, unlimited)
 #
@@ -48,6 +48,8 @@ elif action == "key":
 elif action == "github":
     if tenant not in tenants: sys.exit(f"No tenant {tenant}")
     tenants[tenant]["github"] = os.environ["GITHUB_LOGIN"]
+    # The account's numeric id: a login can be renamed or freed and taken by someone else.
+    tenants[tenant]["githubId"] = int(os.environ["GITHUB_ID"])
 elif action == "limit":
     if tenant not in tenants: sys.exit(f"No tenant {tenant}")
     if os.environ["LIMIT"] == "default": tenants[tenant].pop("maxAgents", None)
@@ -61,7 +63,7 @@ elif action == "remove":
 json.dump(data, open(path, "w"))
 PY
 # edit <add|token|key|github|limit|spend|remove>: stdin stays free for the API key.
-edit() { TENANT="$tenant" PROVIDER="${provider:-}" TOKEN_SHA="${token_sha:-}" GITHUB_LOGIN="${login:-}" LIMIT="${limit:-}" python3 "$work/edit.py" "$work/tenants.json" "$1"; }
+edit() { TENANT="$tenant" PROVIDER="${provider:-}" TOKEN_SHA="${token_sha:-}" GITHUB_LOGIN="${login:-}" GITHUB_ID="${github_id:-}" LIMIT="${limit:-}" python3 "$work/edit.py" "$work/tenants.json" "$1"; }
 save() { aws secretsmanager put-secret-value --secret-id "$SECRET_PREFIX/tenants" --secret-string "file://$work/tenants.json" >/dev/null; }
 new_token() {
   printf 'art_%s' "$(openssl rand -hex 32)" > "$work/token"
@@ -100,7 +102,8 @@ for id, v in sorted(t.items()): print(id + "\tproviders: " + (", ".join(sorted(v
   link-github)
     login=${3:-}
     [[ "$login" =~ ^[A-Za-z0-9-]{1,39}$ ]] || { echo "Usage: $0 link-github <tenant> <github-login>" >&2; exit 2; }
-    edit github; save; echo "GitHub user $login now signs in as $tenant."; reload ;;
+    github_id=$(curl -sf "https://api.github.com/users/$login" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])') || { echo "No GitHub account $login" >&2; exit 1; }
+    edit github; save; echo "GitHub user $login (id $github_id) now signs in as $tenant."; reload ;;
   set-limit)
     limit=${3:-}
     [[ "$limit" == default || "$limit" =~ ^[1-9][0-9]{0,8}$ ]] || { echo "Usage: $0 set-limit <tenant> <n|default>  (n: a positive integer)" >&2; exit 2; }
