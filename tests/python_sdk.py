@@ -292,7 +292,7 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         settings = await telemetry.set(endpoint, headers={"x-api-key": "otlp-python-secret"}, protocol="http/json", sample_rate=1, include_content=False)
         self.assertEqual({**settings, "createdAt": 0, "updatedAt": 0}, {
             "endpoint": f"{endpoint}/v1/traces", "protocol": "http/json", "sampleRate": 1, "include": {"content": False}, "headers": ["x-api-key"],
-            "createdAt": 0, "updatedAt": 0, "status": {"lastExportAt": None, "lastError": None, "lastErrorAt": None}})
+            "createdAt": 0, "updatedAt": 0, "setBy": "operator", "status": {"lastExportAt": None, "lastError": None, "lastErrorAt": None}})
         shown = await telemetry.get()
         self.assertEqual(shown["headers"], ["x-api-key"])
         self.assertNotIn("otlp-python-secret", json.dumps([settings, shown]))
