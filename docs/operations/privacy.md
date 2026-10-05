@@ -34,8 +34,7 @@ the export.
 A signed-in person deletes their account from the console (**Account → Delete account**, typing
 `delete my account`; the dialog shows the purchased and free credit the deletion forfeits, counting
 free credit as spent first, and points to support@camelai.com), which calls `DELETE /v1/account` with `{"confirm": "<tenant id>"}`. Only a
-console session signed in with GitHub or Google can: an API or OAuth token, or a console session signed
-in with a token, cannot. A platform operator (an operator token of a tenant
+console session (signed in with GitHub, Google or a password) can: an API or OAuth token cannot. A platform operator (an operator token of a tenant
 in `AGENT_BILLING_ADMINS`) deletes any tenant with `DELETE /v1/tenants/{id}` and follows it with
 `GET /v1/tenants/{id}/deletion`. Admin tenants, from the tenants file, are refused (403): remove them
 from that file with `infra/tenant.sh remove`, after deleting what they own through the API.

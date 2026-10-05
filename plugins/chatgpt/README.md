@@ -9,7 +9,7 @@ rescans the server.
 ```sh
 node --experimental-strip-types plugins/chatgpt/build.ts           # check, then write dist/camelrun-<version>.zip
 node --experimental-strip-types plugins/chatgpt/build.ts --check   # check only
-CAMELRUN_TOKEN=art_... node --experimental-strip-types plugins/chatgpt/e2e.ts   # the OAuth + tools path against prod
+CAMELRUN_EMAIL=... CAMELRUN_PASSWORD_FILE=... node --experimental-strip-types plugins/chatgpt/e2e.ts   # the OAuth + tools path against prod
 ```
 
 `build.ts` checks the package against the Agent Plugins schemas (`schemas/`, copied from agent-plugins.org) and the
@@ -18,9 +18,10 @@ three negative review cases naming real tools, no tokens in any file), and warns
 needs. `tests/chatgpt-plugin.test.ts` runs the same checks, and `e2e.ts` against a local runtime.
 
 `e2e.ts` takes ChatGPT's path: discovery from the 401, dynamic client registration with ChatGPT's redirect URI,
-sign-in on the consent page with an API token, consent, the PKCE code exchange, then `whoami`, `create_agent`,
-`run_agent`, `list_agents`, `deploy` (dry run, then real) and a refresh, and finally deletes what it made and revokes
-the grant. It prints no token.
+sign-in on the consent page with an email and password, consent, the PKCE code exchange, `/v1/me` with the access
+token, then `whoami`, `create_agent`, `run_agent`, `list_agents`, `deploy` (dry run, then real) and a refresh, and
+finally deletes what it made and revokes the grant. It reads the password from `CAMELRUN_PASSWORD_FILE` (or
+`CAMELRUN_PASSWORD`) and prints no password or token.
 
 Codex users can install it from this repository, which is also a Codex marketplace (`.agents/plugins/marketplace.json`):
 
@@ -46,11 +47,10 @@ The package is ready except for the demo video's URL, which needs you. The build
 2. **Identity.** In [organization settings](https://platform.openai.com/settings/organization/general), complete
    business verification for CamelQA, Inc. (dba camelAI). The directory shows the verified name, whatever
    `developerName` says. Use a project with global (not EU) data residency.
-3. **Reviewer account.** A tenant of its own, with sample data, signed into with an API token (no GitHub, so no
-   device-verification email, no MFA). A console session signed in with a token can use agents, definitions and
-   connected apps, but cannot mint API tokens, change billing, use Get Help or delete the account, and ends when
-   the token is revoked. Token sign-in goes once the review is done (docs/operations/README.md, Pending removals). It is prepaid like a new sign-up, on the platform's model keys, and its credit
-   caps what reviews can spend. As a billing admin (`$OPERATOR`, an operator token of a tenant in
+3. **Reviewer account.** A tenant of its own, with sample data, signed into with an email and password (no GitHub
+   or Google, so no device-verification email, no MFA). There is no sign-up or reset by email: the operator sets the
+   password. It is prepaid like a new sign-up, on the platform's model keys, and its credit caps what reviews can
+   spend. As a billing admin (`$OPERATOR`, an operator token of a tenant in
    `AGENT_BILLING_ADMINS`; never printed):
    ```sh
    umask 077
@@ -59,18 +59,24 @@ The package is ready except for the demo video's URL, which needs you. The build
    curl -sf https://run.camelai.com/v1/billing/adjustments -H "Authorization: Bearer $OPERATOR" -H 'Content-Type: application/json' \
      -d '{"tenant":"chatgpt-review","amount":25000000,"reason":"ChatGPT plugin review","idempotencyKey":"chatgpt-review:initial"}'
    ```
-   Keep the token in the password manager, then create the demo agent the test cases mention:
+   Give it the reviewers' sign-in, with a generated password that goes to a 0600 file and is never printed:
+   ```sh
+   infra/tenant.sh set-password chatgpt-review <reviewer email> < /dev/null   # writes ~/.config/camelrun/password-chatgpt-review
+   ```
+   Keep the token and the password in the password manager, then create the demo agent the test cases mention, and
+   check the reviewers' path end to end (a ChatGPT-style OAuth grant signed in with the email and password):
    ```sh
    export CAMELAI_API_KEY=$(cat chatgpt-review.token)
    npx @camelai/camelrun agents create support-demo --prompt "You are Acme's support agent. Answer customers politely and briefly; offer a refund only for orders under 30 days old."
-   CAMELRUN_TOKEN=$CAMELAI_API_KEY node --experimental-strip-types plugins/chatgpt/e2e.ts   # must end with "ok"
+   CAMELRUN_EMAIL=<reviewer email> CAMELRUN_PASSWORD_FILE=~/.config/camelrun/password-chatgpt-review \
+     node --experimental-strip-types plugins/chatgpt/e2e.ts   # must end with "ok"
    ```
    It stays on free credit ($1 of usage an hour, two busy agents at once), enough for the test cases. Before each
    review, check `GET /v1/billing` with its token and top it up with another adjustment (a new `idempotencyKey`).
 4. **Try it in ChatGPT first (developer mode).** Settings, Security and login, turn on Developer mode. Then at
    https://chatgpt.com/plugins select +, name it camelRun, URL `https://run.camelai.com/mcp`, authentication
    OAuth. ChatGPT registers itself (dynamic client registration), so there is no client ID or secret to enter and no
-   redirect URI to allowlist. Sign in on the camelRun page (GitHub, Google, or "Use an API token instead"), select Allow, then run
+   redirect URI to allowlist. Sign in on the camelRun page (GitHub, Google, or the reviewer's email and password), select Allow, then run
    the test cases below in a new chat with camelRun added from the + menu.
 5. **Upload.** `node --experimental-strip-types plugins/chatgpt/build.ts`, then at https://platform.openai.com/plugins
    select Upload new or existing plugin, choose the verified developer identity, and upload
@@ -87,12 +93,12 @@ The package is ready except for the demo video's URL, which needs you. The build
    Then select Verify Domain, connect, sign in, and wait for the tool scan. Every tool states its three hints; the dashboard may
    still ask for a one-line justification per hint (see "Annotations" below).
 7. **Review details.** In Metadata & Skills, Review information, Review details, enter:
-   - login URL `https://run.camelai.com/console/sign-in/token` (unlisted: the console's own sign-in page offers only
-     GitHub and Google);
-   - credential: the `chatgpt-review` API token, in the password field (no username);
-   - sign-in instructions: "When ChatGPT opens the camelRun sign-in page, select 'Use an API token instead', paste the
-     API token and select Sign in, then select Allow. To look at the console, sign in with the same token at the login URL. Don't use Sign in with GitHub or Google. The account
-     is a test account with a demo agent, support-demo.";
+   - login URL `https://run.camelai.com/console` (the sign-in page has an Email and Password form under GitHub and Google);
+   - credentials: the reviewer's email as the username, and the password from `~/.config/camelrun/password-chatgpt-review`;
+   - sign-in instructions: "When ChatGPT opens the camelRun sign-in page, enter the email and password under
+     'or with your email and password' and select Sign in, then select Allow. To look at the console, sign in with the
+     same email and password at the login URL. Don't use Sign in with GitHub or Google. The account is a test account
+     with a demo agent, support-demo.";
    - the demo video's URL (step 8).
    The test cases and release notes come from the ZIP.
 8. **Video.** Record the script below on desktop (and one case on mobile), upload it where reviewers can open it
@@ -100,7 +106,8 @@ The package is ready except for the demo video's URL, which needs you. The build
    `review.demo_recording_url` in `plugin.json` and upload the ZIP again.
 9. **Submit** for review with the attestations. Once approved, select Publish plugin.
 
-Keep the reviewer tenant, its token and support-demo for later reviews. After publication OpenAI rescans the server
+Keep the reviewer tenant, its token, its password and support-demo for later reviews. Setting a new password
+(`infra/tenant.sh set-password`) signs the reviewers out; update Review details when you do. After publication OpenAI rescans the server
 daily; tool changes go live after its checks, with no new ZIP.
 
 ## Test cases
@@ -123,7 +130,7 @@ Clean up after a rehearsal: delete weather-bot, triage-1 and the triage definiti
 ## Demo video script (about 3 minutes)
 
 1. (0:00) ChatGPT, new chat. "camelRun lets you build and run AI agents from ChatGPT." Open + and add camelRun.
-2. (0:15) Connect: the camelRun sign-in page opens; open "Use an API token instead", paste the API token, Sign in, then Allow. Say that it asks for
+2. (0:15) Connect: the camelRun sign-in page opens; enter the reviewer's email and password, Sign in, then Allow. Say that it asks for
    the agents of this one account and can be revoked in the console under Connected apps.
 3. (0:40) P1: create weather-bot. Show ChatGPT's confirmation, if any, then the result.
 4. (1:05) P2: ask weather-bot about Dallas. Point out the reply comes from the agent, with its sources.
@@ -131,7 +138,7 @@ Clean up after a rehearsal: delete weather-bot, triage-1 and the triage definiti
 6. (1:40) P4: deploy the triage manifest, confirm, and see triage-1's label.
 7. (2:10) P5: delete weather-bot; show the confirmation, then list agents again.
 8. (2:30) N2: paste the fake Stripe key; show that it declines and points to the CLI.
-9. (2:45) The console (signed in with the token at https://run.camelai.com/console/sign-in/token): the agents made from ChatGPT, and the grant under
+9. (2:45) The console (signed in with the same email and password at https://run.camelai.com/console): the agents made from ChatGPT, and the grant under
    Connected apps.
 
 ## Release notes (1.0.0)

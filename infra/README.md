@@ -79,8 +79,15 @@ scripts that authenticate with an API token.
 Sign-in uses GitHub and is limited to active members of the `qaml-ai` org. A
 member's first sign-in creates a tenant named after their GitHub login. An
 admin tenant is linked to a GitHub login with
-`infra/tenant.sh link-github <tenant> <login>`. Token sign-in also works: paste
-an operator token or an API token.
+`infra/tenant.sh link-github <tenant> <login>`. A tenant without GitHub or Google (a
+review or demo account) signs in with an email and password an operator sets:
+`infra/tenant.sh set-password <tenant> <email>` reads the password from stdin, or
+generates one into a 0600 file it names (`~/.config/camelrun/password-<tenant>`,
+or `PASSWORD_FILE`) and never prints it; `set-password <tenant> --clear` removes
+it. Either ends the tenant's password sessions. It calls
+`PUT /v1/tenants/{id}/password` with the operator token of `ADMIN_TENANT`
+(default `miguel`, in `AGENT_BILLING_ADMINS`). There is no sign-up or reset by
+email. Tokens never sign in to the console.
 
 To enable GitHub sign-in, an org owner creates an OAuth app at
 https://github.com/organizations/qaml-ai/settings/applications/new with:

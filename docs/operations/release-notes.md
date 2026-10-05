@@ -16,15 +16,31 @@ Changes on main since the last tag.
   cookies are not sessions any more, so people sign in again.
 - `DELETE /v1/sessions` signs a tenant out everywhere (every console session ends), from the console's Account
   page or with an API token. `GET /v1/me` says how a console session signed in (`signIn`: `github`, `google`
-  or `token`).
-- A console session signed in with an API token ends when that token is revoked, and one signed in with an
-  operator token when the tenants file gives the tenant another token. A session signed in with a token cannot
-  mint API tokens, change billing, use Get Help or delete the account (403); GitHub and Google sessions can.
+  or `password`).
 - Cookie-authenticated writes (with `X-Agent-Runtime-Console: 1`), and the OAuth consent and sign-in forms, need
   a same-origin `Origin` or, where a browser leaves Origin out, `Sec-Fetch-Site: same-origin`. A request with
   neither (curl with a copied cookie) is refused.
-- The console's sign-in page offers token sign-in only where neither GitHub nor Google is configured (a
-  self-hosted runtime). The MCP consent page keeps it behind "Use an API token instead".
+
+### Email and password sign-in; token sign-in removed
+
+- **Signing in to the console, or on the MCP consent page, with an API or operator token is gone**:
+  `POST /console/auth/token`, `POST /oauth/login` and the console's token form answer 404, and console sessions
+  signed in with a token end on deploy. API and operator tokens still authenticate the API as Bearer tokens.
+- **Email and password**, next to GitHub and Google, on the console's sign-in page and the consent page, for
+  accounts an operator gave a password. There is no sign-up, email verification or reset by email: an operator
+  sets or clears a password with `PUT` / `DELETE /v1/tenants/{id}/password` (the platform operator for any
+  tenant, or a tenant's own operator token, as on a self-hosted runtime; never an API token), or on the hosted
+  service `infra/tenant.sh set-password <tenant> <email>`. Setting or clearing it ends the tenant's password
+  sessions. A password session is a person's, like a GitHub or Google one. Signed in, people change their own
+  password on the Account page with the current one (`PUT /v1/account/password`), which ends their other
+  password sessions.
+- Passwords are hashed with scrypt (N = 2^15, r = 8, p = 1), a random salt each, kept in `tenant_passwords`
+  (migration 054). A wrong password and an unknown address get the same 401 `Wrong email or password`, after
+  the same hashing. Failed sign-ins are limited per address (`AGENT_RATE_LIMIT_PASSWORD_FAILURES_PER_EMAIL`,
+  default 10 per 15 minutes, always on) and per source (`AGENT_RATE_LIMIT_PASSWORD_FAILURES_PER_IP`, default 20
+  behind Cloudflare, else off unless set); past either, sign-in answers 429 until the window turns over.
+- **Self-hosted runtimes without GitHub or Google** sign in with a password set with the operator token; see
+  [Self-hosting](self-host.md#sign-in-to-the-console).
 
 ## 0.4.0 (runtime-v0.4.0, 2026-10-03)
 

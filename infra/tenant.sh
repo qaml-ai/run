@@ -9,14 +9,19 @@
 #   tenant.sh link-github <tenant> <login>      # console sign-in as that GitHub account (by its numeric id, looked up now) uses this tenant
 #   tenant.sh set-limit <tenant> <n|default>    # busy agents across the fleet for this tenant (default: its usage tier, or AGENT_MAX_AGENTS_PER_TENANT)
 #   tenant.sh set-spend-limit <tenant> <usd|none>  # model spend per UTC month, e.g. 250 or 99.50 (default: none, unlimited)
+#   tenant.sh set-password <tenant> <email>     # console sign-in with this email and a password: read from stdin, else generated into a 0600 file
+#   tenant.sh set-password <tenant> --clear     # no more password sign-in for this tenant
 #
 # The operator token is stored at <SECRET_PREFIX>/operator-token/<tenant>. Share it
 # through a password manager; anyone holding it controls every agent in that tenant.
+# set-password calls the runtime (AGENT_URL, default https://run.camelai.com) with the operator token of
+# ADMIN_TENANT (default miguel, in AGENT_BILLING_ADMINS); a generated password goes to PASSWORD_FILE
+# (default ~/.config/camelrun/password-<tenant>). Setting or clearing it ends the tenant's password sessions.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 source "$here/config.sh"
 aws() { command aws --region "$REGION" "$@"; }
-usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 command=${1:-}; tenant=${2:-}
 [[ -n "$command" ]] || usage
@@ -120,5 +125,29 @@ for id, v in sorted(t.items()): print(id + "\tproviders: " + (", ".join(sorted(v
     reload ;;
   remove)
     edit remove; save; echo "Removed $tenant. Delete $SECRET_PREFIX/operator-token/$tenant when you no longer need it."; reload ;;
+  set-password)
+    email=${3:-}
+    [[ "$email" == --clear || "$email" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || { echo "Usage: $0 set-password <tenant> <email|--clear>  (password on stdin, or generated)" >&2; exit 2; }
+    url=${AGENT_URL:-https://run.camelai.com}
+    # The admin's token goes to curl in a header file, never in arguments.
+    printf 'Authorization: Bearer %s\n' "$(aws secretsmanager get-secret-value --secret-id "$SECRET_PREFIX/operator-token/${ADMIN_TENANT:-miguel}" --query SecretString --output text)" > "$work/auth"
+    if [[ "$email" == --clear ]]; then
+      curl -sS --fail-with-body -X DELETE -H @"$work/auth" "$url/v1/tenants/$tenant/password" > "$work/reply" || { cat "$work/reply" >&2; echo >&2; exit 1; }
+      python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print("%s no longer signs in with a password; %d password session(s) ended." % (r["tenant"], r["signedOut"]))' "$work/reply"
+      exit 0
+    fi
+    if [[ ! -t 0 ]]; then cat > "$work/password"; fi
+    if [[ ! -s "$work/password" ]]; then
+      # About 190 bits: 32 letters and digits. Written before it is set, so a password in use is never lost.
+      generated=${PASSWORD_FILE:-$HOME/.config/camelrun/password-$tenant}
+      mkdir -p "$(dirname "$generated")"
+      python3 -c 'import secrets,string; a=string.ascii_letters+string.digits; print("".join(secrets.choice(a) for _ in range(32)), end="")' > "$work/password"
+      # umask 077 (above) makes a new file 0600; an existing one is made so too.
+      cp "$work/password" "$generated"; chmod 600 "$generated"
+      echo "Generated password written to $generated (mode 0600). Share it through a password manager, then delete the file."
+    fi
+    EMAIL="$email" python3 -c 'import json,os,sys; p=open(sys.argv[1]).read().rstrip("\r\n"); json.dump({"email": os.environ["EMAIL"], "password": p}, open(sys.argv[2], "w"))' "$work/password" "$work/body"
+    curl -sS --fail-with-body -X PUT -H @"$work/auth" -H "Content-Type: application/json" --data-binary @"$work/body" "$url/v1/tenants/$tenant/password" > "$work/reply" || { cat "$work/reply" >&2; echo >&2; exit 1; }
+    python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print("%s signs in as %s at the console and the MCP consent page; %d password session(s) ended." % (r["tenant"], r["email"], r["signedOut"]))' "$work/reply" ;;
   *) usage ;;
 esac

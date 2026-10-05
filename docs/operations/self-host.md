@@ -51,6 +51,26 @@ Then, with the operator token from `.env`:
 curl -s localhost:8790/v1/me -H "Authorization: Bearer $AGENT_OPERATOR_TOKEN"
 ```
 
+### Sign in to the console
+
+The console is at `/console/` (`http://localhost:8790/console/` from the host). Without GitHub or Google
+configured, sign in with an email and password, which you set with the operator token. Nobody can sign up,
+and there is no email verification or reset by email: the operator sets, changes and clears passwords.
+
+```sh
+read -rs PASSWORD && printf '{"email":"you@example.com","password":"%s"}' "$PASSWORD" |
+  curl -s -X PUT localhost:8790/v1/tenants/selfhost/password -H "Authorization: Bearer $AGENT_OPERATOR_TOKEN" \
+    -H "Content-Type: application/json" --data-binary @- ; unset PASSWORD
+```
+
+Type the password (12 to 256 characters; no `"` or `\` in this one-liner) and press Enter; `selfhost` is
+`AGENT_TENANT`. Then sign in at the console with that address and password. Setting a password again
+replaces it and signs out every session that signed in with the old one; `curl -X DELETE
+localhost:8790/v1/tenants/selfhost/password -H "Authorization: Bearer $AGENT_OPERATOR_TOKEN"` removes it.
+Signed in, you change your own password on the Account page. With several tenants, each tenant's operator
+token sets its own tenant's password. API and operator tokens never sign in to the console; they are for
+the API. (Images up to 0.4.0, which predate passwords, sign in to the console with the operator token.)
+
 Agents can be made before any model key is set (image `0.2.0` and later;
 earlier images refuse to make one with `400 INVALID_REQUEST` until a key is
 set). Their runs fail with `model_key_missing`, saying which key to set, until

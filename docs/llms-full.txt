@@ -4652,6 +4652,7 @@ wait out `Retry-After` and retry.
 | `api_requests`: requests to `/v1/*` | client address | 600 a minute |
 | `auth_requests`: requests to `/console/auth/*` and `/oauth/*` (sign-in, sign-up callbacks, OAuth) | client address | 20 a minute |
 | `signups`: new accounts | client address | 5 a UTC day; past it, sign-in says so instead of making the account |
+| `password_failures`: failed email and password sign-ins (an unknown address counts as a wrong password) | email address, and client address | 10 per 15 minutes per address; 20 per 15 minutes per client address. Past either, sign-in answers 429, even with the right password, until the window turns over |
 | `agent_creates`: `POST /v1/agents` (upserts too) | account | 60 a minute; 10 on free credit |
 | `runs`: runs started (prompt, continue, execute), however sent: REST, SDKs, MCP, schedules, channels | account | 600 a minute; 60 on free credit |
 

@@ -177,9 +177,9 @@ Billing page shows both. An operator of a tenant in `AGENT_BILLING_ADMINS` can
 The same operator can make a tenant without a sign-in: `POST /v1/tenants` `{id, tokenName?}`
 returns `{tenant, token}`, a prepaid tenant like a new sign-up's (platform keys, free-credit
 limits, no starting credit) with no GitHub or Google identity, and an API token for it, shown
-once. The ChatGPT plugin's reviewers sign in to the console with that token (see the plugin's README); a
-console session signed in with a token cannot mint API tokens, change billing, use Get Help or delete the
-account, and ends when the token is revoked. Credit it with an adjustment. Ids of admin tenants,
+once. To let someone sign in to the console as it, give it an email and password with
+`PUT /v1/tenants/{id}/password` `{email, password}` (or `infra/tenant.sh set-password <tenant> <email>`), as
+for the ChatGPT plugin's reviewers (see the plugin's README). Credit it with an adjustment. Ids of admin tenants,
 existing tenants and deleted ones are refused (409). It is for test, review and demo accounts
 (see `plugins/chatgpt/README.md`), deleted with `DELETE /v1/tenants/{id}` when done.
 
