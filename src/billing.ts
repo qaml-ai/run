@@ -32,8 +32,10 @@ export interface LedgerRow { id: number; kind: LedgerKind; amount: number; metad
 export interface StartingCredit { status: "granted" | "not_eligible" | "not_granted" | "not_applicable"; amount: number; cardCheck?: { amount: number } }
 /** What a usage flush charges a tenant: `amount` micro-USD spent, and its breakdown (numbers, summed over the hour). */
 export interface UsageCharge { tenant: string; amount: number; metadata: Record<string, number> }
-/** What limits a tenant's runs: its balance, what it ever bought (none: on free credit), and its usage charges in the last hour. */
-type Account = { balance: number; purchased: number; lastHour: number };
+/** What limits a tenant's runs: its balance, what it ever bought (none: on free credit), its usage charges in the last hour, and whether a payment of its is disputed. */
+type Account = { balance: number; purchased: number; lastHour: number; disputed: boolean };
+/** A Stripe dispute closed with one of these leaves the money with us: its debit is restored. */
+const DISPUTE_RESTORED = ["won", "warning_closed", "prevented"];
 
 /** Debits on other nodes count toward a tenant's balance within this long. */
 const BALANCE_CACHE_MS = 5_000;
@@ -211,7 +213,7 @@ export class Billing {
     const cached = this.accounts.get(tenant);
     const stored = cached && cached.until > Date.now() ? cached : await this.read(tenant);
     const pending = this.options.pending?.(tenant) ?? 0;
-    return { balance: stored.balance - pending, purchased: stored.purchased, lastHour: stored.lastHour + pending };
+    return { balance: stored.balance - pending, purchased: stored.purchased, lastHour: stored.lastHour + pending, disputed: stored.disputed };
   }
 
   private read(tenant: string) {
@@ -220,9 +222,10 @@ export class Billing {
       reading = (async () => {
         await this.options.flush?.();
         const { rows: [row] } = await this.db.query(`
-          select balance, purchased, (select coalesce(sum(amount), 0) from credit_spend_minutes where tenant = $1 and minute >= $2) as last_hour
+          select balance, purchased, (select coalesce(sum(amount), 0) from credit_spend_minutes where tenant = $1 and minute >= $2) as last_hour,
+            exists (select 1 from billing_disputes where tenant = $1 and not closed) as disputed
           from (select $1::text as tenant) as t left join credit_accounts using (tenant)`, [tenant, Math.floor((Date.now() - HOUR) / MINUTE)]);
-        const value = { balance: row.balance ?? 0, purchased: row.purchased ?? 0, lastHour: Number(row.last_hour) };
+        const value = { balance: row.balance ?? 0, purchased: row.purchased ?? 0, lastHour: Number(row.last_hour), disputed: row.disputed };
         this.accounts.set(tenant, { ...value, until: Date.now() + BALANCE_CACHE_MS });
         return value;
       })().finally(() => this.reads.delete(tenant));
@@ -232,15 +235,17 @@ export class Billing {
   }
 
   /**
-   * Why a prepaid tenant may not start or continue runs: its credit is spent (402), or, on
-   * free credit, it has spent the free hourly allowance (429 until the hour's spend ages out).
+   * Why a prepaid tenant may not start or continue runs: one of its payments is disputed (402 until the
+   * dispute closes), its credit is spent (402), or, on free credit, it has spent the free hourly allowance
+   * (429 until the hour's spend ages out).
    * The messages state the fact and nothing to buy: they reach whoever called, through the API,
    * the SDKs, chat channels and MCP clients such as ChatGPT, where an upsell does not belong. The
    * console and billing emails say where to add credit themselves.
    */
   async creditLimit(tenant: string): Promise<HttpError | undefined> {
     if (await this.mode(tenant) !== "prepaid") return undefined;
-    const { balance, purchased, lastHour } = await this.account(tenant);
+    const { balance, purchased, lastHour, disputed } = await this.account(tenant);
+    if (disputed) return new HttpError(402, "A payment for this account's credit is disputed with the card issuer, so runs cannot start until the dispute is resolved");
     if (balance <= 0) return new HttpError(402, `This account is out of credit (balance ${usd(balance)}), so runs cannot start`);
     const allowance = this.pricing.free.hourlySpend;
     if (purchased <= 0 && lastHour >= allowance) {
@@ -418,7 +423,8 @@ export class Billing {
   /**
    * A Stripe webhook: a paid checkout adds the credit bought (not the fee), once per
    * session; a refund removes credit in proportion to the amount refunded, once per
-   * refunded total. Events for anything this runtime did not sell are acknowledged and ignored.
+   * refunded total; a dispute (`dispute`) removes the disputed share until it closes. Events for anything this
+   * runtime did not sell are acknowledged and ignored.
    */
   async webhook(payload: string, signature: string | undefined): Promise<{ handled: string }> {
     const stripe = this.options.stripe;
@@ -457,6 +463,7 @@ export class Billing {
       if (event.type === "invoice.paid") await this.payments?.attachInvoice(object);
     }
     if (event.type === "charge.refunded") return { handled: await this.refund(object) };
+    if (event.type === "charge.dispute.created" || event.type === "charge.dispute.closed") return { handled: await this.dispute(object, event.type === "charge.dispute.closed") };
     return { handled: "ignored" };
   }
 
@@ -469,7 +476,76 @@ export class Billing {
     if (prior && (prior.tenant !== purchase.tenant || prior.amount !== purchase.amount || prior.metadata.paymentIntent !== purchase.metadata?.paymentIntent)) throw new HttpError(400, "Purchase conflicts with its recorded payment");
     if (prior) purchase = { ...purchase, metadata: prior.metadata };
     const refunds = await this.refundEntries(sql, purchase, paymentIntent);
-    return postLedger(sql, [purchase, ...refunds]);
+    await sql.query("update billing_disputes set tenant = $2 where payment_intent = $1 and tenant is null", [paymentIntent, purchase.tenant]);
+    const disputes = await this.disputeEntries(sql, purchase, paymentIntent, refunds);
+    return postLedger(sql, [purchase, ...refunds, ...disputes]);
+  }
+
+  /**
+   * A card dispute (chargeback) on a credit purchase, kept by payment intent like a refund until its purchase is
+   * known. While it is open the disputed share of the purchase's credit is debited (a `refund` entry keyed by the
+   * dispute), the tenant may not start runs (`creditLimit`) and its auto top-up is turned off, so a stolen card's
+   * credit cannot be spent or the card charged again. Closed in our favour (`DISPUTE_RESTORED`), the debit is
+   * reversed; lost, it stands. A closed dispute never reopens, whatever order Stripe delivers its events in.
+   */
+  private async dispute(dispute: { id?: string; charge?: unknown; payment_intent?: unknown; amount?: number; currency?: string; status?: string; reason?: string }, closed: boolean) {
+    const paymentIntent = stripeId(dispute.payment_intent);
+    if (typeof dispute.id !== "string" || !paymentIntent) return "ignored";
+    if (!Number.isSafeInteger(dispute.amount) || dispute.amount! <= 0 || typeof dispute.status !== "string") throw new HttpError(400, "Invalid dispute");
+    const result = await transaction(this.db, async sql => {
+      await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`agent-runtime-payment:${paymentIntent}`]);
+      const now = Date.now();
+      const stored = await sql.query(`insert into billing_disputes (id, payment_intent, charge, amount, currency, status, reason, closed, created_at, updated_at)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
+        on conflict (id) do update set status = case when billing_disputes.closed then billing_disputes.status else excluded.status end,
+          closed = billing_disputes.closed or excluded.closed, updated_at = excluded.updated_at
+        where billing_disputes.payment_intent = excluded.payment_intent returning id`,
+      [dispute.id, paymentIntent, stripeId(dispute.charge) ?? null, dispute.amount, dispute.currency ?? null, dispute.status, dispute.reason ?? null, closed, now]);
+      if (!stored.rowCount) throw new HttpError(400, "Dispute conflicts with its recorded payment");
+      const purchase = (await sql.query("select tenant, amount, metadata from credit_ledger where kind = 'purchase' and metadata->>'paymentIntent' = $1", [paymentIntent])).rows[0];
+      if (!purchase) return undefined;
+      await sql.query("update billing_disputes set tenant = $2 where payment_intent = $1 and tenant is null", [paymentIntent, purchase.tenant]);
+      return { tenant: purchase.tenant as string, posted: await postLedger(sql, await this.disputeEntries(sql, purchase, paymentIntent)) };
+    });
+    if (!result) {
+      console.error(JSON.stringify({ type: "billing_dispute_unmatched", dispute: dispute.id, paymentIntent, status: dispute.status }));
+      return "pending dispute";
+    }
+    this.invalidate([result.tenant]);
+    console.error(JSON.stringify({ type: closed ? "billing_dispute_closed" : "billing_dispute_opened", tenant: result.tenant, dispute: dispute.id, status: dispute.status, amount: dispute.amount, reason: dispute.reason ?? null }));
+    if (!closed) await this.autoTopup?.disable(result.tenant).catch(error => console.error(JSON.stringify({ type: "billing_dispute_auto_topup", tenant: result.tenant, error: String(error) })));
+    return closed ? "dispute closed" : "dispute";
+  }
+
+  /**
+   * The ledger entries a purchase's disputes call for and are not yet in it: each dispute's debit, the disputed
+   * share of the credit bought (no more than refunds, `pending` among them, left), unless it closed in our favour
+   * before any debit; and the debit's reversal once it has.
+   */
+  private async disputeEntries(sql: Sql, purchase: { tenant: string; amount: number; metadata?: Record<string, unknown> }, paymentIntent: string, pending: LedgerEntry[] = []): Promise<LedgerEntry[]> {
+    const disputes = (await sql.query("select * from billing_disputes where payment_intent = $1 order by id", [paymentIntent])).rows;
+    if (!disputes.length) return [];
+    const posted = new Map((await sql.query("select idempotency_key, amount from credit_ledger where kind = 'refund' and metadata->>'paymentIntent' = $1", [paymentIntent])).rows.map(row => [row.idempotency_key as string, Number(row.amount)]));
+    let remaining = purchase.amount + [...posted.values(), ...pending.map(entry => entry.amount)].reduce((sum, amount) => sum + amount, 0);
+    const entries: LedgerEntry[] = [];
+    for (const dispute of disputes) {
+      const restored = dispute.closed && DISPUTE_RESTORED.includes(dispute.status);
+      let debit = posted.get(`dispute:${dispute.id}`);
+      if (debit === undefined && !restored) {
+        const paid = typeof purchase.metadata?.paid === "number" && purchase.metadata.paid > 0 ? purchase.metadata.paid : dispute.amount;
+        const target = Number((BigInt(purchase.amount) * BigInt(Math.min(dispute.amount, paid)) * 2n + BigInt(paid)) / (BigInt(paid) * 2n));
+        const amount = Math.min(Math.max(0, remaining), target);
+        if (amount > 0) {
+          debit = -amount;
+          remaining -= amount;
+          entries.push({ tenant: purchase.tenant, kind: "refund", amount: debit, key: `dispute:${dispute.id}`, metadata: { dispute: dispute.id, paymentIntent, reason: dispute.reason } });
+        }
+      }
+      if (restored && debit && !posted.has(`dispute-reversed:${dispute.id}`)) {
+        entries.push({ tenant: purchase.tenant, kind: "refund", amount: -debit, key: `dispute-reversed:${dispute.id}`, metadata: { dispute: dispute.id, paymentIntent, status: dispute.status } });
+      }
+    }
+    return entries;
   }
 
   /** Keep cumulative refunds even when their purchase has not arrived. All writers serialize by payment intent. */

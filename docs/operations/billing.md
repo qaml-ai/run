@@ -209,7 +209,18 @@ of `<t>.<payload>` under the endpoint's signing secret, at most five minutes old
 - `checkout.session.completed` or `checkout.session.async_payment_succeeded`, paid:
   the credit bought, not the fee, is added once per session;
 - `charge.refunded`: credit is removed in proportion to the refunded share of the
-  charge, once per refunded total.
+  charge, once per refunded total;
+- `charge.dispute.created`: a card dispute (chargeback) removes the disputed share of
+  the purchase's credit (a `refund` entry keyed `dispute:<id>`), stops the tenant's
+  runs with 402 until the dispute closes, and turns its auto top-up off, so credit
+  bought with a stolen card cannot be spent or the card charged again;
+- `charge.dispute.closed`: a dispute won (or an inquiry closed, or `prevented`)
+  restores the credit (`dispute-reversed:<id>`); a lost one keeps the debit, so credit
+  already spent leaves the balance negative. Either way runs may start again if the
+  balance allows. A closed dispute never reopens, whatever order the events arrive
+  in, and a dispute that arrives before its purchase is kept and applied with it.
+  Each dispute is logged (`billing_dispute_opened`, `billing_dispute_closed`, or
+  `billing_dispute_unmatched` for one with no purchase yet) for follow-up in Stripe.
 
 Sessions and explicitly tagged charges from other products are acknowledged and
 ignored. A refund with no known purchase is retained by charge/payment-intent ID,
@@ -267,8 +278,9 @@ Sessions** and **Customer Portal** to **Write**. The Customer Portal permission
 covers session creation and configuration reads. Invoice creation
 must be enabled for these one-time purchases. Pin the webhook endpoint to
 `2026-08-26.dahlia`, matching the request `Stripe-Version`, and subscribe to
-`checkout.session.completed`, `checkout.session.async_payment_succeeded`, and
-`charge.refunded`. Keep the key and signing secret in `AGENT_STRIPE_SECRET_ARN`
+`checkout.session.completed`, `checkout.session.async_payment_succeeded`,
+`charge.refunded`, `charge.dispute.created` and `charge.dispute.closed` (and the
+`invoice.*` events auto top-up uses). Keep the key and signing secret in `AGENT_STRIPE_SECRET_ARN`
 (or the development environment variables). Use a separate Stripe sandbox for
 integration validation before live rollout. The local suite uses an isolated
 Postgres database and an HTTP Stripe fake; it does not verify account permissions,

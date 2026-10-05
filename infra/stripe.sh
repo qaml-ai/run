@@ -10,8 +10,9 @@
 #                (the runtime's first address, served for good: keep the one endpoint there, since a
 #                second one at run.camelai.com would deliver, and credit, every event twice)
 #        API: 2026-08-26.dahlia. Events: checkout.session.completed,
-#        checkout.session.async_payment_succeeded, charge.refunded, invoice.paid,
-#        invoice.payment_failed, invoice.payment_action_required, invoice.voided
+#        checkout.session.async_payment_succeeded, charge.refunded, charge.dispute.created,
+#        charge.dispute.closed, invoice.paid, invoice.payment_failed,
+#        invoice.payment_action_required, invoice.voided
 #      then reveal its signing secret (whsec_...).
 #
 # Usage: infra/stripe.sh [--no-deploy] (reads the key and webhook secret from stdin)
