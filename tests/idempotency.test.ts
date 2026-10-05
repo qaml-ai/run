@@ -41,7 +41,7 @@ test("a response carrying a secret shown once is never kept or replayed: its key
   await r.call("/v1/usage-webhook", { method: "PUT", body: { url: hook } });
   const routes: [string, object][] = [
     ["/v1/tokens", { name: "ci" }], ["/v1/webhooks", { url: hook, events: ["run.failed"] }], [`/v1/webhooks/${endpoint}/secret`, {}],
-    ["/v1/usage-webhook/secret", {}], [`/v1/agents/${agent}/browser-tokens`, {}], [`/v1/volumes/${volume}/links`, { path: "/a.txt" }],
+    ["/v1/usage-webhook/secret", {}], [`/v1/agents/${agent}/browser-tokens`, {}], [`/v1/agents/${agent}/credentials/rotate`, {}], [`/v1/volumes/${volume}/links`, { path: "/a.txt" }],
   ];
   for (const [path, body] of routes) {
     const headers = { "Idempotency-Key": `secret-${path}` };

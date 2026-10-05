@@ -17,6 +17,13 @@ The answer carries the endpoint's `id` (`we_…`) and its signing `secret`
 `POST /v1/webhooks/:id/secret` replaces its secret (the old one also signs for 24
 hours).
 
+Each endpoint's `setBy` says who last set it: `token:<API token id>`, `console`,
+`operator`, or `oauth:<grant id>` for one an OAuth app set before they no longer
+could (null: set before this was recorded). An endpoint keeps sending when the
+token that set it is revoked: revoking one answers with `left`, the endpoints
+(and usage webhook and trace export) it set, so you can review them. OAuth apps
+cannot create or change webhooks.
+
 ## Events
 
 Every event is an envelope:

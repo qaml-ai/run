@@ -170,11 +170,34 @@ test("MCP clients sign in with OAuth: registration, consent, PKCE, rotating refr
   assert.equal((await mcp.call("create_agent", { key: "via-oauth", systemPrompt: "Hi." })).isError, false);
   assert.equal((await mcp.call("run_agent", { agent: "via-oauth", message: "hello" })).json.text, "echo: hello");
   assert.equal((await r.call("/v1/me", { token: tokens.access_token })).json.via, "oauth");
-  // An agent's credentials too, as an API token gets them: the grant acts for the account, and already gets an agent's token by creating it.
-  const credentials = await r.call("/v1/agents/via-oauth/credentials", { token: tokens.access_token });
-  assert.equal(credentials.status, 200);
-  assert.match(credentials.json.token, /^[0-9a-f]{64}$/);
-  assert.equal((await r.call("/v1/tokens", { token: tokens.access_token, body: { name: "escape" } })).status, 403);
+  // It works with agents, but holds no credential that would outlive the grant: no agent's token (an agent's token
+  // cannot be revoked with the grant), and no webhook, export, channel or key that sends the account's data elsewhere.
+  const viaOauth = (path: string, method = "GET", body?: unknown) => r.call(path, { token: tokens.access_token, method, body });
+  assert.equal((await viaOauth("/v1/agents/via-oauth/credentials")).status, 403);
+  const made = await viaOauth("/v1/agents", "POST", { systemPrompt: "Hi." });
+  assert.equal(made.status, 201);
+  assert.equal(made.json.token, undefined, "creating an agent does not hand the grant its token");
+  const forked = await viaOauth(`/v1/agents/${made.json.id}/fork`, "POST", {});
+  assert.equal(forked.status, 201);
+  assert.equal(forked.json.token, undefined);
+  assert.equal((await viaOauth(`/v1/agents/${made.json.id}`)).status, 200);
+  assert.equal((await viaOauth("/v1/agents")).status, 200);
+  assert.equal((await viaOauth("/v1/tokens", "POST", { name: "escape" })).status, 403);
+  for (const [path, method, body] of [
+    ["/v1/webhooks", "POST", { url: "https://collector.evil.example/hook", events: ["run.completed"] }],
+    ["/v1/webhooks", "GET", undefined],
+    ["/v1/usage-webhook", "PUT", { url: "https://collector.evil.example/usage" }],
+    ["/v1/telemetry", "PUT", { endpoint: "https://collector.evil.example" }],
+    ["/v1/providers/anthropic/key", "PUT", { key: "sk-ant-evil" }],
+    ["/v1/providers/evil", "PUT", { baseUrl: "https://collector.evil.example", api: "openai-completions" }],
+    ["/v1/channels", "POST", { type: "webhook" }],
+    ["/v1/volumes", "POST", {}],
+    [`/v1/agents/${made.json.id}/browser-tokens`, "POST", {}],
+    [`/v1/agents/${made.json.id}/links`, "POST", { path: "/a.txt" }],
+    [`/v1/agents/${made.json.id}/credentials/rotate`, "POST", {}],
+    ["/v1/account/export", "GET", undefined],
+    ["/v1/oauth/grants", "GET", undefined],
+  ] as const) assert.equal((await viaOauth(path, method, body)).status, 403, `${method} ${path} is refused to an OAuth grant`);
   for (const [path, method, body] of [
     ["/v1/billing/alerts", "PUT", { thresholdUsd: 5 }],
     ["/v1/billing/alerts/recipients", "POST", { email: "finance@example.test" }],

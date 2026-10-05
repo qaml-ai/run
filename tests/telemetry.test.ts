@@ -197,7 +197,7 @@ test("telemetry API: set, shown without header values, refused for internal addr
   assert.equal(set.status, 200, set.text);
   assert.deepEqual({ ...set.json, createdAt: 0, updatedAt: 0 }, {
     endpoint: `${receiver.url}/v1/traces`, protocol: "http/protobuf", sampleRate: 1, include: { content: false }, headers: ["authorization", "x-team"],
-    createdAt: 0, updatedAt: 0, status: { lastExportAt: null, lastError: null, lastErrorAt: null },
+    createdAt: 0, updatedAt: 0, setBy: "operator", status: { lastExportAt: null, lastError: null, lastErrorAt: null },
   }, "a base URL gets /v1/traces; defaults; header names only");
   const shown = await r.call("/v1/telemetry");
   assert.ok(!shown.text.includes("otlp-secret-value") && !set.text.includes("otlp-secret-value"), "header values are never returned");

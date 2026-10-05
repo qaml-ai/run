@@ -32,7 +32,10 @@ A `PUT` changes only the fields it carries: the others keep their current values
 (their defaults the first time). So `{"include": {"content": true}}` turns content
 on and leaves the endpoint, headers, protocol and sample rate as they were.
 
-- `GET /v1/telemetry` shows the settings, header names, and `status`: when a node
+- `GET /v1/telemetry` shows the settings, header names, `setBy` (who last set
+  it: `token:<API token id>`, `console` or `operator`; revoking that token lists
+  the export, which keeps going until you change it; OAuth apps cannot set it),
+  and `status`: when a node
   last exported, and why the last export failed (`HTTP 401`, `Could not connect
   (ECONNREFUSED)`), since the last success.
 - `POST /v1/telemetry/test` sends one span (`camelrun test span`) now and answers

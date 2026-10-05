@@ -89,6 +89,27 @@ export interface ApiContext {
 /** Who is calling: the tenant (an operator or API token, or the console), or a browser token's holder, reading one agent. */
 type Caller = (Principal & { login?: string; browser?: undefined }) | { tenant: string; via: "browser"; browser: BrowserClaims; tokenId?: undefined; login?: undefined };
 type Env = { Variables: { principal: Caller } };
+/**
+ * What an OAuth access token (an MCP client the tenant connected, src/oauth.ts) may call: its agents (but not their
+ * tokens), definitions, pending inputs, and reads of the account (models, providers, usage, balance). Nothing that makes
+ * a credential (API, agent, browser tokens, signed links) or sends the tenant's data somewhere new (webhooks, telemetry,
+ * channels, provider keys and endpoints, volumes' links), so revoking the grant leaves no access behind.
+ */
+const OAUTH_ROUTES = [
+  /^GET \/v1\/(?:me|models|providers|inputs|usage|billing|billing\/ledger)$/,
+  /^(?:GET|POST) \/v1\/agents$/,
+  /^(?:GET|DELETE) \/v1\/agents\/[^/]+$/,
+  /^(?:GET|POST|PUT|PATCH|DELETE) \/v1\/agents\/[^/]+\/(?:abort|configuration|events|fork|history|inputs|inputs\/[^/]+|mounts|prompt|requests\/[^/]+|schedules|schedules\/[^/]+|state|uploads\/[^/]+\/[^/]+)$/,
+  /^(?:GET|POST|PATCH|DELETE) \/v1\/definitions(?:\/[^/]+(?:\/agents)?)?$/,
+];
+/** An agent's token is for the application that serves it, which an OAuth grant is not: its answers leave it out. */
+const withoutToken = <T extends object>(c: Context<Env>, made: T): T => {
+  if (c.var.principal.via !== "oauth") return made;
+  const { token: _token, ...rest } = made as T & { token?: string };
+  return rest as T;
+};
+/** Who a caller is, as a webhook or trace export records who last set it (Webhooks.setBy). */
+const setter = (principal: Caller) => principal.via === "token" ? `token:${principal.tokenId}` : principal.via === "oauth" ? `oauth:${(principal as { grantId?: string }).grantId}` : principal.via;
 /** The routes a browser token reads, by scope: GET /v1/agents/<its agent>/<scope>. */
 const BROWSER_ROUTE = /^\/v1\/agents\/([^/]+)\/(events|state|history|inputs)$/;
 
@@ -215,8 +236,8 @@ export function api(context: ApiContext) {
   app.use("/v1/*", async (c, next) => {
     const principal = await authenticate(c, context);
     c.set("principal", principal);
-    if (principal.via === "oauth" && c.req.method !== "GET" && c.req.path.startsWith("/v1/billing/")) {
-      throw new HttpError(403, "An OAuth access token cannot change billing settings");
+    if (principal.via === "oauth" && !OAUTH_ROUTES.some(allowed => allowed.test(`${c.req.method} ${c.req.path}`))) {
+      throw new HttpError(403, "An OAuth access token works with agents only: it cannot get agent tokens or make API tokens, links, webhooks, telemetry exports, channels or provider keys. Use an API token or the console");
     }
     // A browser token reads its one agent's events, state, history and inputs, as its scopes say, and nothing else.
     if (principal.browser) {
@@ -237,7 +258,7 @@ export function api(context: ApiContext) {
     db: () => clients.db, tenant: c => c.var.principal.tenant, lockMs: context.idempotencyLockMs,
     skip: path => path === "/v1/agents" || path === "/v1/definitions" || /^\/v1\/agents\/[^/]+\/(?:prompt|fork)$/.test(path),
     // Answers with a secret shown once: API tokens (a new tenant's too), signing secrets, browser tokens, signed links.
-    secret: path => /^\/v1\/(?:tokens|tenants|webhooks|webhooks\/[^/]+\/secret|usage-webhook\/secret|agents\/[^/]+\/(?:browser-tokens|links)|volumes\/[^/]+\/links)$/.test(path),
+    secret: path => /^\/v1\/(?:tokens|tenants|webhooks|webhooks\/[^/]+\/secret|usage-webhook\/secret|agents\/[^/]+\/(?:browser-tokens|links|credentials\/rotate)|volumes\/[^/]+\/links)$/.test(path),
   }));
 
   route(createRoute({ method: "get", path: "/v1/me", responses: { 200: reply("The caller", schema.Me) } }), async c => {
@@ -360,14 +381,14 @@ export function api(context: ApiContext) {
     return context.webhooks;
   };
   route(createRoute({ method: "post", path: "/v1/webhooks", request: { body: content(schema.WebhookEndpointInput) }, responses: { 201: reply("The endpoint, with its signing secret, shown only now", schema.WebhookEndpointCreated) } }),
-    async c => json(c, 201, await webhooks().create(c.var.principal.tenant, parse(schema.WebhookEndpointInput, await readJson(c.req.raw.body, 16 * 1024, {})))));
+    async c => json(c, 201, await webhooks().create(c.var.principal.tenant, parse(schema.WebhookEndpointInput, await readJson(c.req.raw.body, 16 * 1024, {})), setter(c.var.principal))));
   route(createRoute({ method: "get", path: "/v1/webhooks", responses: { 200: reply("The tenant's webhook endpoints", z.array(schema.WebhookEndpoint)) } }),
     async c => json(c, 200, await webhooks().list(c.var.principal.tenant)));
   const endpoint = { path: "/v1/webhooks/{webhookId}", request: { params: z.object({ webhookId: z.string() }) } } as const;
   route(createRoute({ ...endpoint, method: "get", responses: { 200: reply("The endpoint", schema.WebhookEndpoint) } }),
     async c => json(c, 200, await webhooks().get(c.var.principal.tenant, c.req.param("webhookId")!)));
   route(createRoute({ ...endpoint, method: "patch", request: { ...endpoint.request, body: content(schema.WebhookEndpointUpdate) }, responses: { 200: reply("The endpoint; what the request left out is unchanged", schema.WebhookEndpoint) } }),
-    async c => json(c, 200, await webhooks().update(c.var.principal.tenant, c.req.param("webhookId")!, parse(schema.WebhookEndpointUpdate, await readJson(c.req.raw.body, 16 * 1024, {})))));
+    async c => json(c, 200, await webhooks().update(c.var.principal.tenant, c.req.param("webhookId")!, parse(schema.WebhookEndpointUpdate, await readJson(c.req.raw.body, 16 * 1024, {})), setter(c.var.principal))));
   route(createRoute({ ...endpoint, method: "delete", responses: { 200: reply("The endpoint and its undelivered events are removed", schema.Deleted) } }), async c => {
     await webhooks().delete(c.var.principal.tenant, c.req.param("webhookId")!);
     return json(c, 200, { deleted: true });
@@ -384,7 +405,7 @@ export function api(context: ApiContext) {
     return context.telemetry;
   };
   route(createRoute({ method: "put", path: "/v1/telemetry", request: { body: content(schema.TelemetryInput) }, responses: { 200: reply("Where the tenant's traces go now; header values are never returned. Fields left out keep their current values", schema.Telemetry) } }),
-    async c => json(c, 200, await telemetry().set(c.var.principal.tenant, parse(schema.TelemetryInput, await readJson(c.req.raw.body, 128 * 1024, {})))));
+    async c => json(c, 200, await telemetry().set(c.var.principal.tenant, parse(schema.TelemetryInput, await readJson(c.req.raw.body, 128 * 1024, {})), setter(c.var.principal))));
   route(createRoute({ method: "get", path: "/v1/telemetry", responses: { 200: reply("Where the tenant's traces go, with header names only, and how the last export went", schema.Telemetry) } }), async c => {
     const settings = await telemetry().get(c.var.principal.tenant);
     if (!settings) throw new HttpError(404, "No telemetry is set");
@@ -400,7 +421,7 @@ export function api(context: ApiContext) {
   // The usage webhook, from before endpoints: one endpoint of its own that gets each response's usage in its original body.
   route(createRoute({ method: "put", path: "/v1/usage-webhook", request: { body: content(schema.UsageWebhookInput) }, responses: { 200: reply("The receiver; with its signing secret the first time only", schema.UsageWebhookSet) } }), async c => {
     const { url } = parse(schema.UsageWebhookInput, await readJson(c.req.raw.body, 16 * 1024, {}));
-    return json(c, 200, await webhooks().setUsageWebhook(c.var.principal.tenant, url));
+    return json(c, 200, await webhooks().setUsageWebhook(c.var.principal.tenant, url, setter(c.var.principal)));
   });
   route(createRoute({ method: "get", path: "/v1/usage-webhook", responses: { 200: reply("The receiver", schema.UsageWebhook) } }), async c => {
     const webhook = await webhooks().usageWebhook(c.var.principal.tenant);
@@ -456,14 +477,14 @@ export function api(context: ApiContext) {
     const first = prompt === undefined ? undefined : promptRequest(parse(schema.PromptInput, prompt), undefined, c.req.header("traceparent"));
     await context.rateLimits?.agentCreate(tenant);
     const created = await context.createAgent(tenant, params, c.req.header("idempotency-key")) as { id: string };
-    if (!first) return json(c, 201, created);
+    if (!first) return json(c, 201, withoutToken(c, created));
     const submit = context.submit ?? clients.submit.bind(clients);
     // A prompt refused leaves the agent made: the caller learns why, and may send it again.
     const sent = await submit(created.id, tenant, first).catch(error => {
       const status = errorStatus(error, 400);
       return { error: { status, code: errorCode(error, status), message: errorText(error) } };
     });
-    return json(c, 201, { ...created, prompt: sent });
+    return json(c, 201, withoutToken(c, { ...created, prompt: sent }));
   });
   route(createRoute({
     method: "get", path: "/v1/agents/{id}", request: { params: agentId, query: z.object({
@@ -480,6 +501,10 @@ export function api(context: ApiContext) {
     method: "get", path: "/v1/agents/{id}/credentials", request: { params: z.object({ id: z.string().openapi({ description: "The agent's id, or the key it was made with (Idempotency-Key, the SDKs' upsert key)" }) }) },
     responses: { 200: reply("An existing agent's id and scoped token, its configuration untouched (the SDKs' agents.get). 404 when no live agent has this id or key; 409 AGENT_KEYLESS for one made without a key", schema.AgentCredentials) },
   }), async c => json(c, 200, await clients.credentials(c.var.principal.tenant, c.req.param("id")!)));
+  route(createRoute({
+    method: "post", path: "/v1/agents/{id}/credentials/rotate", request: { params: agentId },
+    responses: { 200: reply("A new token for the agent: the old one stops working at once, and connections made with it close. The application serving the agent reconnects with this one; credentials gives it from now on", schema.AgentCredentials) },
+  }), async c => json(c, 200, await clients.rotateToken(c.req.param("id")!, c.var.principal.tenant)));
   route(createRoute({ method: "delete", path: "/v1/agents/{id}", request: { params: agentId }, responses: { 200: reply("The agent is deleted: it stops at once, and its stored data is purged shortly after", schema.Deleted) } }), async c => {
     await clients.destroyAgent(c.req.param("id")!, c.var.principal.tenant);
     return json(c, 200, { deleted: true });
@@ -497,7 +522,7 @@ export function api(context: ApiContext) {
     await context.rateLimits?.agentCreate(tenant);
     // Lives as long as a create's agent would: with a key until deleted, without one a day, unless it says.
     const ttlMs = ttlSeconds === undefined ? (key !== undefined ? null : undefined) : ttlSeconds === null ? null : ttlSeconds * 1000;
-    return json(c, 201, await clients.fork(c.req.param("id")!, tenant, { key, name, atMessage, ttlMs, identity, systemPromptAppend, ...(modelHeaders !== undefined ? { modelHeaders: modelHeadersInput(modelHeaders) } : {}) }));
+    return json(c, 201, withoutToken(c, await clients.fork(c.req.param("id")!, tenant, { key, name, atMessage, ttlMs, identity, systemPromptAppend, ...(modelHeaders !== undefined ? { modelHeaders: modelHeadersInput(modelHeaders) } : {}) })));
   });
   route(createRoute({
     method: "get", path: "/v1/agents/{id}/events",
@@ -644,15 +669,17 @@ export function api(context: ApiContext) {
   };
   route(createRoute({ method: "get", path: "/v1/oauth/grants", responses: { 200: reply("The applications the tenant let act for it over OAuth (the hosted MCP endpoint's clients)", z.array(schema.OAuthGrant)) } }),
     async c => json(c, 200, await oauth().grants(c.var.principal.tenant)));
-  route(createRoute({ method: "delete", path: "/v1/oauth/grants/{id}", request: { params: z.object({ id: z.string() }) }, responses: { 200: reply("The grant is revoked: its tokens stop working within seconds", z.object({ revoked: z.literal(true) })) } }), async c => {
+  /** What a revoked credential leaves sending the tenant's data, for it to review; none where webhooks are off. */
+  const left = async (tenant: string, by: string) => context.webhooks && accounts.canStoreKeys ? await context.webhooks.setBy(tenant, by) : [];
+  route(createRoute({ method: "delete", path: "/v1/oauth/grants/{id}", request: { params: z.object({ id: z.string() }) }, responses: { 200: reply("The grant is revoked: its tokens stop working within seconds. Webhooks and a trace export it set (before grants could no longer set them) keep sending, and are listed", schema.Revoked) } }), async c => {
     if (!await oauth().revoke(c.var.principal.tenant, c.req.param("id")!)) throw new HttpError(404, "Unknown grant");
-    return json(c, 200, { revoked: true });
+    return json(c, 200, { revoked: true, left: await left(c.var.principal.tenant, `oauth:${c.req.param("id")}`) });
   });
-  route(createRoute({ method: "delete", path: "/v1/tokens/{id}", request: { params: z.object({ id: z.string() }) }, responses: { 200: reply("The token is revoked", z.object({ revoked: z.literal(true) })) } }), async c => {
+  route(createRoute({ method: "delete", path: "/v1/tokens/{id}", request: { params: z.object({ id: z.string() }) }, responses: { 200: reply("The token is revoked. Webhooks and a trace export it set keep sending, and are listed", schema.Revoked) } }), async c => {
     const id = c.req.param("id")!;
     if (c.var.principal.tokenId === id) throw new HttpError(400, "A token cannot revoke itself; use another token or the console");
     if (!await accounts.revokeToken(c.var.principal.tenant, id)) throw new HttpError(404, "Unknown token");
-    return json(c, 200, { revoked: true });
+    return json(c, 200, { revoked: true, left: await left(c.var.principal.tenant, `token:${id}`) });
   });
 
   route(createRoute({

@@ -1146,13 +1146,21 @@
           },
           "createdAt": {
             "type": "number"
+          },
+          "setBy": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who last set where it sends: \"token:<API token id>\", \"oauth:<grant id>\", \"console\" or \"operator\"; null if set before this was recorded. Revoking that token lists it"
           }
         },
         "required": [
           "id",
           "url",
           "events",
-          "createdAt"
+          "createdAt",
+          "setBy"
         ]
       },
       "WebhookEndpointInput": {
@@ -1287,6 +1295,13 @@
           "updatedAt": {
             "type": "number"
           },
+          "setBy": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who last set where it sends: \"token:<API token id>\", \"oauth:<grant id>\", \"console\" or \"operator\"; null if set before this was recorded. Revoking that token lists it"
+          },
           "status": {
             "type": "object",
             "properties": {
@@ -1326,6 +1341,7 @@
           "headers",
           "createdAt",
           "updatedAt",
+          "setBy",
           "status"
         ]
       },
@@ -1439,11 +1455,19 @@
           },
           "createdAt": {
             "type": "number"
+          },
+          "setBy": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who last set where it sends: \"token:<API token id>\", \"oauth:<grant id>\", \"console\" or \"operator\"; null if set before this was recorded. Revoking that token lists it"
           }
         },
         "required": [
           "url",
-          "createdAt"
+          "createdAt",
+          "setBy"
         ]
       },
       "Model": {
@@ -1605,7 +1629,7 @@
           },
           "token": {
             "type": "string",
-            "description": "The agent's scoped credential for /clients routes"
+            "description": "The agent's scoped credential for /clients routes; absent for an OAuth access token's caller, which may not hold one"
           },
           "expiresAt": {
             "type": [
@@ -1658,7 +1682,6 @@
         },
         "required": [
           "id",
-          "token",
           "expiresAt"
         ],
         "additionalProperties": {}
@@ -2569,7 +2592,7 @@
           },
           "token": {
             "type": "string",
-            "description": "The fork's scoped credential for /clients routes"
+            "description": "The fork's scoped credential for /clients routes; absent for an OAuth access token's caller, which may not hold one"
           },
           "expiresAt": {
             "type": [
@@ -2583,7 +2606,6 @@
         },
         "required": [
           "id",
-          "token",
           "expiresAt",
           "forkedFrom"
         ]
@@ -3391,6 +3413,48 @@
           "scope",
           "createdAt",
           "usedAt"
+        ]
+      },
+      "Revoked": {
+        "type": "object",
+        "properties": {
+          "revoked": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "left": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "webhook",
+                    "usage-webhook",
+                    "telemetry"
+                  ]
+                },
+                "id": {
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "url"
+              ]
+            },
+            "description": "The webhooks and trace export this credential last pointed somewhere, which keep sending: review them, and change or delete any you do not recognize"
+          }
+        },
+        "required": [
+          "revoked",
+          "left"
         ]
       },
       "Usage": {
@@ -7670,6 +7734,53 @@
         }
       }
     },
+    "/v1/agents/{id}/credentials/rotate": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A new token for the agent: the old one stops working at once, and connections made with it close. The application serving the agent reconnects with this one; credentials gives it from now on",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentCredentials"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/agents/{id}/fork": {
       "post": {
         "parameters": [
@@ -8857,22 +8968,11 @@
         ],
         "responses": {
           "200": {
-            "description": "The grant is revoked: its tokens stop working within seconds",
+            "description": "The grant is revoked: its tokens stop working within seconds. Webhooks and a trace export it set (before grants could no longer set them) keep sending, and are listed",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "revoked": {
-                      "type": "boolean",
-                      "enum": [
-                        true
-                      ]
-                    }
-                  },
-                  "required": [
-                    "revoked"
-                  ]
+                  "$ref": "#/components/schemas/Revoked"
                 }
               }
             }
@@ -8904,22 +9004,11 @@
         ],
         "responses": {
           "200": {
-            "description": "The token is revoked",
+            "description": "The token is revoked. Webhooks and a trace export it set keep sending, and are listed",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "revoked": {
-                      "type": "boolean",
-                      "enum": [
-                        true
-                      ]
-                    }
-                  },
-                  "required": [
-                    "revoked"
-                  ]
+                  "$ref": "#/components/schemas/Revoked"
                 }
               }
             }

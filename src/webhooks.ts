@@ -32,7 +32,8 @@ export type UsageEvent = {
   cost: { usd: number; source: "provider" | "catalog" }; at: number;
 };
 type Receiver = { url: string; secrets: string[] };
-export type Endpoint = { id: string; url: string; events: EventType[]; description?: string; createdAt: number };
+/** `setBy`: who last set it (Webhooks.setBy), null if before that was recorded. */
+export type Endpoint = { id: string; url: string; events: EventType[]; description?: string; createdAt: number; setBy: string | null };
 
 const MAX_ENDPOINTS = 16;
 const CLAIM_BATCH = 100;
@@ -149,7 +150,7 @@ export class Subscribers {
 }
 const RUN_EVENTS = EVENT_TYPES.filter(type => type.startsWith("run."));
 
-const endpointView = (row: any): Endpoint => ({ id: row.id, url: row.url, events: row.events, ...(row.description ? { description: row.description } : {}), createdAt: Number(row.created_at) });
+const endpointView = (row: any): Endpoint => ({ id: row.id, url: row.url, events: row.events, ...(row.description ? { description: row.description } : {}), createdAt: Number(row.created_at), setBy: row.set_by ?? null });
 
 export class Webhooks {
   private readonly db: Db;
@@ -191,27 +192,27 @@ export class Webhooks {
   }
 
   /** Register an endpoint; its signing secret is returned only now. */
-  async create(tenant: string, input: { url?: unknown; events?: unknown; description?: unknown }) {
+  async create(tenant: string, input: { url?: unknown; events?: unknown; description?: unknown }, setBy: string | null = null) {
     const url = this.checkUrl(input.url);
     const events = eventsInput(input.events);
     const id = `we_${randomBytes(12).toString("hex")}`;
     const secret = newSecret();
     const { rows } = await this.db.query(`
-      insert into webhook_endpoints (id, tenant, url, events, description, secret, created_at)
-      select $1, $2, $3, $4, $5, $6, $7 where (select count(*) from webhook_endpoints where tenant = $2) < ${MAX_ENDPOINTS}
-      returning *`, [id, tenant, url, events, descriptionInput(input.description), this.accounts.seal(aad(tenant, id), secret), Date.now()]);
+      insert into webhook_endpoints (id, tenant, url, events, description, secret, created_at, set_by)
+      select $1, $2, $3, $4, $5, $6, $7, $8 where (select count(*) from webhook_endpoints where tenant = $2) < ${MAX_ENDPOINTS}
+      returning *`, [id, tenant, url, events, descriptionInput(input.description), this.accounts.seal(aad(tenant, id), secret), Date.now(), setBy]);
     if (!rows[0]) throw new HttpError(409, `A tenant has at most ${MAX_ENDPOINTS} webhook endpoints`);
     await this.changed(tenant);
     return { ...endpointView(rows[0]), secret };
   }
 
   /** Change an endpoint's URL, events or description; what is left out stays. */
-  async update(tenant: string, id: string, input: { url?: unknown; events?: unknown; description?: unknown }) {
+  async update(tenant: string, id: string, input: { url?: unknown; events?: unknown; description?: unknown }, setBy: string | null = null) {
     const url = input.url === undefined ? null : this.checkUrl(input.url);
     const events = input.events === undefined ? null : eventsInput(input.events);
     const row = (await this.db.query(`
-      update webhook_endpoints set url = coalesce($3, url), events = coalesce($4, events), description = case when $5 then $6 else description end
-      where tenant = $1 and id = $2 returning *`, [tenant, id, url, events, input.description !== undefined, descriptionInput(input.description)])).rows[0];
+      update webhook_endpoints set url = coalesce($3, url), events = coalesce($4, events), description = case when $5 then $6 else description end, set_by = $7
+      where tenant = $1 and id = $2 returning *`, [tenant, id, url, events, input.description !== undefined, descriptionInput(input.description), setBy])).rows[0];
     if (!row) throw new HttpError(404, "Unknown webhook endpoint");
     await this.changed(tenant);
     return endpointView(row);
@@ -237,17 +238,17 @@ export class Webhooks {
   // The usage webhook, as before endpoints: in usage_webhooks, which nodes of every release read.
 
   async usageWebhook(tenant: string) {
-    const row = (await this.db.query("select url, created_at from usage_webhooks where tenant = $1", [tenant])).rows[0];
-    return row && { url: row.url as string, createdAt: Number(row.created_at) };
+    const row = (await this.db.query("select url, created_at, set_by from usage_webhooks where tenant = $1", [tenant])).rows[0];
+    return row && { url: row.url as string, createdAt: Number(row.created_at), setBy: row.set_by as string | null };
   }
 
   /** Set the usage webhook's URL. A tenant's first one gets a signing secret, returned only now. */
-  async setUsageWebhook(tenant: string, url: unknown) {
+  async setUsageWebhook(tenant: string, url: unknown, setBy: string | null = null) {
     this.checkUrl(url);
     const secret = newSecret();
     const { rows } = await this.db.query(`
-      insert into usage_webhooks (tenant, url, secret, created_at) values ($1, $2, $3, $4)
-      on conflict (tenant) do update set url = excluded.url returning (xmax = 0) as created`, [tenant, url, this.accounts.seal(aad(tenant), secret), Date.now()]);
+      insert into usage_webhooks (tenant, url, secret, created_at, set_by) values ($1, $2, $3, $4, $5)
+      on conflict (tenant) do update set url = excluded.url, set_by = excluded.set_by returning (xmax = 0) as created`, [tenant, url, this.accounts.seal(aad(tenant), secret), Date.now(), setBy]);
     return { url: url as string, ...(rows[0].created ? { secret } : {}) };
   }
 
@@ -264,6 +265,18 @@ export class Webhooks {
     const { rowCount } = await this.db.query("delete from usage_webhooks where tenant = $1", [tenant]);
     await this.db.query("delete from usage_webhook_outbox where tenant = $1", [tenant]);
     return !!rowCount;
+  }
+
+  /**
+   * The tenant's webhooks and trace export that `setBy` (a revoked token or grant, as `setBy` names it) last pointed
+   * somewhere, still in place: revoking a credential does not stop them, so the tenant is shown them to review.
+   */
+  async setBy(tenant: string, setBy: string): Promise<{ kind: "webhook" | "usage-webhook" | "telemetry"; id?: string; url: string }[]> {
+    const { rows } = await this.db.query(`
+      select 'webhook' as kind, id, url from webhook_endpoints where tenant = $1 and set_by = $2
+      union all select 'usage-webhook', null, url from usage_webhooks where tenant = $1 and set_by = $2
+      union all select 'telemetry', null, endpoint from telemetry_exporters where tenant = $1 and set_by = $2`, [tenant, setBy]);
+    return rows.map(row => ({ kind: row.kind, ...(row.id ? { id: row.id } : {}), url: row.url }));
   }
 
   start(intervalMs = 5_000) {

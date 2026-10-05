@@ -111,7 +111,7 @@ export const WebhookEndpointInput = z.object({
   description: z.string().max(500).optional(),
 }).strict().openapi("WebhookEndpointInput");
 export const WebhookEndpointUpdate = WebhookEndpointInput.partial().openapi("WebhookEndpointUpdate");
-export const WebhookEndpoint = z.object({ id: z.string(), url: z.string(), events: eventTypes, description: z.string().optional(), createdAt: z.number() }).openapi("WebhookEndpoint");
+export const WebhookEndpoint = z.object({ id: z.string(), url: z.string(), events: eventTypes, description: z.string().optional(), createdAt: z.number(), setBy: z.string().nullable().openapi({ description: "Who last set where it sends: \"token:<API token id>\", \"oauth:<grant id>\", \"console\" or \"operator\"; null if set before this was recorded. Revoking that token lists it" }) }).openapi("WebhookEndpoint");
 const signingSecret = z.string().openapi({ description: "The Standard Webhooks signing secret (whsec_…); shown only this once" });
 export const WebhookEndpointCreated = WebhookEndpoint.extend({ secret: signingSecret }).openapi("WebhookEndpointCreated");
 export const WebhookSecret = z.object({ secret: signingSecret }).openapi("WebhookSecret");
@@ -127,7 +127,7 @@ export const TelemetryInput = z.object({
 export const Telemetry = z.object({
   endpoint: z.string(), protocol: z.enum(["http/protobuf", "http/json"]), sampleRate: z.number(), include: z.object({ content: z.boolean() }),
   headers: z.array(z.string()).openapi({ description: "The names of the stored headers; their values are never returned" }),
-  createdAt: z.number(), updatedAt: z.number(),
+  createdAt: z.number(), updatedAt: z.number(), setBy: z.string().nullable().openapi({ description: "Who last set where it sends: \"token:<API token id>\", \"oauth:<grant id>\", \"console\" or \"operator\"; null if set before this was recorded. Revoking that token lists it" }),
   status: z.object({
     lastExportAt: z.number().nullable().openapi({ description: "When a node last exported spans here (recorded at most once a minute)" }),
     lastError: z.string().nullable().openapi({ description: "Why the last export failed, since the last success: an HTTP status, or how the connection failed" }),
@@ -139,7 +139,7 @@ export const TelemetryTest = z.object({
   traceId: z.string().openapi({ description: "The test span's trace, to look up in your backend" }), spanId: z.string(),
 }).openapi("TelemetryTest");
 export const UsageWebhookInput = z.object({ url: z.string().openapi({ description: "An HTTPS URL that receives each model response's usage", example: "https://example.com/hooks/agent-usage" }) }).strict().openapi("UsageWebhookInput");
-export const UsageWebhook = z.object({ url: z.string(), createdAt: z.number() }).openapi("UsageWebhook");
+export const UsageWebhook = z.object({ url: z.string(), createdAt: z.number(), setBy: z.string().nullable().openapi({ description: "Who last set where it sends: \"token:<API token id>\", \"oauth:<grant id>\", \"console\" or \"operator\"; null if set before this was recorded. Revoking that token lists it" }) }).openapi("UsageWebhook");
 export const UsageWebhookSet = z.object({ url: z.string(), secret: signingSecret.optional() }).openapi("UsageWebhookSet");
 
 // Webhook events: documentation only; src/webhooks.ts, src/inputs.ts and ClientSessions.runEvent build them.
@@ -334,7 +334,7 @@ export const AgentCredentials = z.object({
 }).openapi("AgentCredentials");
 export const AgentCreated = z.looseObject({
   id: z.string(),
-  token: z.string().openapi({ description: "The agent's scoped credential for /clients routes" }),
+  token: z.string().optional().openapi({ description: "The agent's scoped credential for /clients routes; absent for an OAuth access token's caller, which may not hold one" }),
   expiresAt: z.number().nullable(),
   prompt: z.union([RequestRecord, z.object({ error: z.object({ status: z.number(), code: z.string(), message: z.string() }) })]).optional()
     .openapi({ description: "The first prompt's request, when one was given: accepted, or refused (spend limit, capacity, model) with why, the agent made regardless; send it again with POST /v1/agents/{id}/prompt" }),
@@ -400,7 +400,7 @@ export const AgentForkInput = z.object({
 }).openapi("AgentForkInput");
 export const AgentForked = z.object({
   id: z.string(),
-  token: z.string().openapi({ description: "The fork's scoped credential for /clients routes" }),
+  token: z.string().optional().openapi({ description: "The fork's scoped credential for /clients routes; absent for an OAuth access token's caller, which may not hold one" }),
   expiresAt: z.number().nullable(),
   forkedFrom: ForkedFrom,
 }).openapi("AgentForked");
@@ -482,6 +482,10 @@ export const Schedule = z.object({
 }).openapi("Schedule");
 
 export const TokenInput = z.object({ name: z.string().openapi({ description: "1–80 characters" }) }).openapi("TokenInput");
+export const Revoked = z.object({
+  revoked: z.literal(true),
+  left: z.array(z.object({ kind: z.enum(["webhook", "usage-webhook", "telemetry"]), id: z.string().optional(), url: z.string() })).openapi({ description: "The webhooks and trace export this credential last pointed somewhere, which keep sending: review them, and change or delete any you do not recognize" }),
+}).openapi("Revoked");
 export const Token = z.object({ id: z.string(), name: z.string(), prefix: z.string(), createdAt: z.number() }).openapi("Token");
 export const OAuthGrant = z.object({
   id: z.string(), clientName: z.string().openapi({ description: "The name the application registered with" }),

@@ -62,6 +62,19 @@ function CreateTokenDialog({ onClose, onCreated }: { onClose: () => void; onCrea
   );
 }
 
+/** What a revoked token or app still has sending the account's data (webhooks, the trace export), to review. */
+export type Left = { kind: "webhook" | "usage-webhook" | "telemetry"; id?: string; url: string }[];
+function StillSending({ left }: { left?: Left }) {
+  if (!left?.length) return null;
+  return <Alert variant="destructive" className="mb-4">
+    <AlertTitle>Still sending your data</AlertTitle>
+    <AlertDescription>
+      <p>The credential you revoked set these, and they keep sending until you change or delete them: webhooks with <code className="font-mono">PATCH</code> or <code className="font-mono">DELETE /v1/webhooks/&#123;id&#125;</code> (the usage webhook at <code className="font-mono">/v1/usage-webhook</code>), the trace export on the Telemetry page.</p>
+      <ul className="mt-2 list-disc pl-5">{left.map(sink => <li key={`${sink.kind}:${sink.id ?? ""}`}><span className="font-medium">{sink.kind}</span>{sink.id ? <> <code className="font-mono text-xs">{sink.id}</code></> : null}: <code className="font-mono text-xs break-all">{sink.url}</code></li>)}</ul>
+    </AlertDescription>
+  </Alert>;
+}
+
 /** The account's id, for API calls and support: shown here only, never as who is signed in. */
 function AccountId({ tenant }: { tenant: string }) {
   return <div className="text-muted-foreground mb-4 flex flex-wrap items-center gap-2 text-xs">
@@ -73,11 +86,13 @@ export function TokensPage({ tenant }: { tenant: string }) {
   const tokens = useApi<ApiToken[]>("/v1/tokens");
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string>();
+  const [left, setLeft] = useState<Left>();
   return (
     <>
       <PageHeader title="API tokens" description="Tokens for your applications and scripts. Each one has full access to your tenant; revoke any you no longer use."
         actions={<Button size="sm" onClick={() => setCreating(true)}><Plus />New token</Button>} />
       <ErrorAlert error={tokens.error ?? error} />
+      <StillSending left={left} />
       <AccountId tenant={tenant} />
       <Alert className="mb-4">
         <KeyRound />
@@ -101,7 +116,7 @@ export function TokensPage({ tenant }: { tenant: string }) {
                   <TableCell className="text-muted-foreground text-xs">{formatTime(token.createdAt)}</TableCell>
                   <TableCell className="text-right">
                     <ConfirmButton size="xs" label="Revoke" title={`Revoke “${token.name}”?`} description="Applications using this token stop working immediately." confirm="Revoke token"
-                      onConfirm={async () => { try { await api(`/v1/tokens/${token.id}`, { method: "DELETE" }); await tokens.reload(); } catch (caught) { setError((caught as Error).message); } }} />
+                      onConfirm={async () => { try { setLeft((await api<{ left?: Left }>(`/v1/tokens/${token.id}`, { method: "DELETE" })).left); await tokens.reload(); } catch (caught) { setError((caught as Error).message); } }} />
                   </TableCell>
                 </TableRow>
               ))}
@@ -119,13 +134,15 @@ export function TokensPage({ tenant }: { tenant: string }) {
 function ConnectedApps() {
   const grants = useApi<OAuthGrant[]>("/v1/oauth/grants");
   const [error, setError] = useState<string>();
+  const [left, setLeft] = useState<Left>();
   const url = `${window.location.origin}/mcp`;
   return (
     <section className="mt-10">
       <h2 className="text-lg font-semibold">Connected apps</h2>
-      <p className="text-muted-foreground mb-4 text-sm">Coding agents and assistants connect to camelRun's MCP server at the URL below and sign in here. Each one you allow acts as your tenant, like an API token, until you revoke it. A browser with WebMCP gets the same tools from this page while you are signed in.</p>
+      <p className="text-muted-foreground mb-4 text-sm">Coding agents and assistants connect to camelRun's MCP server at the URL below and sign in here. Each one you allow works with your agents and definitions until you revoke it; it cannot make tokens, webhooks or exports. A browser with WebMCP gets the same tools from this page while you are signed in.</p>
       <CodeBlock code={url} />
       <ErrorAlert error={grants.error ?? error} />
+      <div className="mt-4"><StillSending left={left} /></div>
       {!grants.data ? <Skeleton className="mt-4 h-24 w-full" /> : grants.data.length === 0 ? (
         <div className="mt-4"><EmptyState icon={<Plug />} title="No connected apps">Add the URL above as a remote MCP server in your client, then sign in when it asks.</EmptyState></div>
       ) : (
@@ -141,7 +158,7 @@ function ConnectedApps() {
                   <TableCell className="text-muted-foreground text-xs">{grant.usedAt ? formatTime(grant.usedAt) : "-"}</TableCell>
                   <TableCell className="text-right">
                     <ConfirmButton size="xs" label="Revoke" title={`Disconnect “${grant.clientName}”?`} description="It loses access within seconds, and must be connected again to come back." confirm="Revoke"
-                      onConfirm={async () => { try { await api(`/v1/oauth/grants/${grant.id}`, { method: "DELETE" }); await grants.reload(); } catch (caught) { setError((caught as Error).message); } }} />
+                      onConfirm={async () => { try { setLeft((await api<{ left?: Left }>(`/v1/oauth/grants/${grant.id}`, { method: "DELETE" })).left); await grants.reload(); } catch (caught) { setError((caught as Error).message); } }} />
                   </TableCell>
                 </TableRow>
               ))}

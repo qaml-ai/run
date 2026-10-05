@@ -29,7 +29,7 @@ test("telemetry: set, get, test and clear through the SDK, header values never r
   const set = await telemetry.set({ endpoint: receiver.url, headers: { "x-api-key": "otlp-sdk-secret-value" }, protocol: "http/json", sampleRate: 1, include: { content: false } });
   assert.deepEqual({ ...set, createdAt: 0, updatedAt: 0 }, {
     endpoint: `${receiver.url}/v1/traces`, protocol: "http/json", sampleRate: 1, include: { content: false }, headers: ["x-api-key"],
-    createdAt: 0, updatedAt: 0, status: { lastExportAt: null, lastError: null, lastErrorAt: null },
+    createdAt: 0, updatedAt: 0, setBy: "operator", status: { lastExportAt: null, lastError: null, lastErrorAt: null },
   });
   const got = await telemetry.get();
   assert.deepEqual(got?.headers, ["x-api-key"]);

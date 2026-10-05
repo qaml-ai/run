@@ -57,6 +57,8 @@ interface SessionHeader {
   version: 3; id: string; digest: string; expiresAt: number | null; revoked: boolean;
   /** Owning tenant. */
   tenant: string;
+  /** How many times its token was rotated (`rotateToken`): from the first, the token is derived from this, not its key. */
+  tokenRotation?: number;
   metadata?: AgentMetadata; definitions: ToolDefinition[]; provisionHash: string; config: SessionConfig;
   /** Volumes the agent's file tools can reach; absent on sessions created before volumes existed. */
   mounts?: Mount[];
@@ -2055,6 +2057,33 @@ export class ClientSessions {
   }
 
   /**
+   * An agent's token: derived from its tenant and key (with the key's generation) until it is rotated, then from its
+   * id and how many times it was, so rotating makes a new one even for an agent made without a key.
+   */
+  private agentToken(tenant: string, scoped: string, id: string, rotation = 0) {
+    return createHmac("sha256", this.options.secret).update(rotation ? `client-rotated:${tenant}:${id}:${rotation}` : `client-v2:${tenant}:${scoped}`).digest("hex");
+  }
+
+  /**
+   * A new token for a tenant's agent: the old one stops working at once, here and on every node (they check the header
+   * this writes), and connections made with it (the application's, event streams) are closed. Applications reconnect
+   * with the new one, which `credentials` gives from now on.
+   */
+  async rotateToken(id: string, tenant: string): Promise<{ id: string; token: string; expiresAt: number | null }> {
+    const session = (await this.owns(id, tenant)) ? await this.load(id) : undefined;
+    if (!session || session.header.tenant !== tenant) throw new HttpError(404, "Unknown agent");
+    const rotation = (session.header.tokenRotation ?? 0) + 1;
+    const token = this.agentToken(tenant, "", id, rotation);
+    session.header.tokenRotation = rotation;
+    session.header.digest = hash(token);
+    await this.writeHeader(session);
+    this.retire(session);
+    this.endStreams(session);
+    console.log(JSON.stringify({ type: "agent_token_rotated", agent: id, tenant, rotation }));
+    return { id, token, expiresAt: session.header.expiresAt };
+  }
+
+  /**
    * The agent a tenant's key names now: its id and token, and its stored header unless this node holds it. A key whose
    * agent was deleted or expired names a fresh one: the next generation of the key, with an id and token of its own, so
    * the old agent's id is never reused and its token never works again.
@@ -2067,7 +2096,7 @@ export class ClientSessions {
       // A deleted or expired agent (a tombstone once purged) is never loaded again; one another node serves only needs its header.
       const existing = this.sessions.has(id) ? undefined : await this.readHeader(id);
       const header = this.sessions.get(id)?.header ?? existing?.value;
-      if (!header || !(header.revoked || expired(header.expiresAt))) return { id, token: createHmac("sha256", this.options.secret).update(`client-v2:${tenant}:${scoped}`).digest("hex"), existing };
+      if (!header || !(header.revoked || expired(header.expiresAt))) return { id, token: this.agentToken(tenant, scoped, id, header?.tokenRotation), existing };
     }
   }
 
@@ -2180,17 +2209,18 @@ export class ClientSessions {
   /**
    * An existing agent's credentials, by its id or the key it was made with, without touching its configuration (an
    * upsert would set it to what the caller passes). The token is the one `create` gave: derived from the key and its
-   * generation, so only an agent made with a key has one to give again.
+   * generation, so only an agent made with a key has one to give again; or, once rotated (`rotateToken`), the latest.
    */
   async credentials(tenant: string, ref: string): Promise<{ id: string; token: string; expiresAt: number | null }> {
     // By id alone: a purged agent's tombstone keeps only its id, and still holds its key's generation.
-    const live = async (id: string) => (await this.db.query("select tenant, header->>'key' as key, expires_at, revoked from agents where id = $1", [id])).rows[0] as { tenant: string | null; key: string | null; expires_at: number | null; revoked: boolean } | undefined;
+    const live = async (id: string) => (await this.db.query("select tenant, header->>'key' as key, (header->>'tokenRotation')::int as rotation, expires_at, revoked from agents where id = $1", [id])).rows[0] as { tenant: string | null; key: string | null; rotation: number | null; expires_at: number | null; revoked: boolean } | undefined;
     const alive = (row: { tenant: string | null; expires_at: number | null; revoked: boolean }) => row.tenant === tenant && !row.revoked && !expired(row.expires_at === null ? null : Number(row.expires_at));
-    const found = (id: string, scoped: string, row: { expires_at: number | null }) =>
-      ({ id, token: createHmac("sha256", this.options.secret).update(`client-v2:${tenant}:${scoped}`).digest("hex"), expiresAt: row.expires_at === null ? null : Number(row.expires_at) });
+    const found = (id: string, scoped: string, row: { rotation: number | null; expires_at: number | null }) =>
+      ({ id, token: this.agentToken(tenant, scoped, id, row.rotation ?? 0), expiresAt: row.expires_at === null ? null : Number(row.expires_at) });
     if (validSessionId(ref)) {
       const row = await live(ref);
       if (row && alive(row)) {
+        if (row.rotation) return found(ref, "", row);
         if (!row.key) throw new HttpError(409, "AGENT_KEYLESS: this agent was made without a key, so its token is only what its create answered");
         // Its generation: the key's agents before it were deleted or expired.
         for (let generation = 0; generation < 10_000; generation++) {

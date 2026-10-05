@@ -25,7 +25,7 @@ export type TraceSettings = { endpoint: string; protocol: Protocol; sampleRate: 
 /** A tenant's telemetry as the API shows it: header names only, never their values. */
 export type TelemetryView = {
   endpoint: string; protocol: Protocol; sampleRate: number; include: { content: boolean }; headers: string[];
-  createdAt: number; updatedAt: number;
+  createdAt: number; updatedAt: number; setBy: string | null;
   status: { lastExportAt: number | null; lastError: string | null; lastErrorAt: number | null };
 };
 /** What ClientSessions needs of tracing: whether a tenant exports (and how), and somewhere to put finished spans. */
@@ -90,7 +90,7 @@ function headersInput(value: unknown): Record<string, string> {
 
 const viewOf = (row: any): TelemetryView => ({
   endpoint: row.endpoint, protocol: row.protocol, sampleRate: Number(row.sample_rate), include: { content: row.include_content }, headers: row.header_names,
-  createdAt: Number(row.created_at), updatedAt: Number(row.updated_at),
+  createdAt: Number(row.created_at), updatedAt: Number(row.updated_at), setBy: row.set_by ?? null,
   status: { lastExportAt: row.last_export_at === null ? null : Number(row.last_export_at), lastError: row.last_error, lastErrorAt: row.last_error_at === null ? null : Number(row.last_error_at) },
 });
 
@@ -162,7 +162,7 @@ export class Telemetry implements Tracing {
    * `endpoint` is needed then). Stored `headers` stay while the endpoint keeps its origin and are dropped when it
    * moves (credentials never follow an endpoint elsewhere); `{}` removes them.
    */
-  async set(tenant: string, input: { endpoint?: unknown; headers?: unknown; protocol?: unknown; sampleRate?: unknown; include?: unknown }): Promise<TelemetryView> {
+  async set(tenant: string, input: { endpoint?: unknown; headers?: unknown; protocol?: unknown; sampleRate?: unknown; include?: unknown }, setBy: string | null = null): Promise<TelemetryView> {
     const current = (await this.db.query("select endpoint, origin, protocol, sample_rate, include_content from telemetry_exporters where tenant = $1", [tenant])).rows[0];
     const given = input.endpoint ?? current?.endpoint;
     if (typeof given !== "string" || !given || given.length > this.limits.endpointChars) throw new HttpError(400, `endpoint must be the URL of an OTLP/HTTP traces receiver, at most ${this.limits.endpointChars} characters`);
@@ -188,13 +188,13 @@ export class Telemetry implements Tracing {
     const keep = headers === undefined && current?.origin === url.origin;
     const sealed = headers && Object.keys(headers).length ? this.accounts.seal(aad(tenant), JSON.stringify(headers)) : null;
     const { rows } = await this.db.query(`
-      insert into telemetry_exporters (tenant, endpoint, origin, protocol, sample_rate, include_content, headers, header_names, created_at, updated_at)
-      values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
-      on conflict (tenant) do update set endpoint = excluded.endpoint, origin = excluded.origin, protocol = excluded.protocol, sample_rate = excluded.sample_rate,
+      insert into telemetry_exporters (tenant, endpoint, origin, protocol, sample_rate, include_content, headers, header_names, created_at, updated_at, set_by)
+      values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $11)
+      on conflict (tenant) do update set endpoint = excluded.endpoint, set_by = excluded.set_by, origin = excluded.origin, protocol = excluded.protocol, sample_rate = excluded.sample_rate,
         include_content = excluded.include_content, updated_at = excluded.updated_at, last_error = null, last_error_at = null,
         headers = case when $10 then telemetry_exporters.headers else excluded.headers end,
         header_names = case when $10 then telemetry_exporters.header_names else excluded.header_names end
-      returning *`, [tenant, endpoint, url.origin, protocol, sampleRate, content, sealed, headers ? Object.keys(headers).sort() : [], now, keep]);
+      returning *`, [tenant, endpoint, url.origin, protocol, sampleRate, content, sealed, headers ? Object.keys(headers).sort() : [], now, keep, setBy]);
     await this.changed(tenant);
     return viewOf(rows[0]);
   }

@@ -28,7 +28,10 @@ const agent = await agents.upsert("user-123", { model, instructions, tools });
 Every agent also has an **id** (`client_…`), which is safe to log and store, and
 a **token**, which lets its holder run it and nothing else. The SDKs keep the
 token out of logs; you rarely need it, because upserting by key gives you the
-agent again.
+agent again. If a token leaks, `POST /v1/agents/{id}/credentials/rotate` gives
+the agent a new one: the old one stops working at once and connections made
+with it close, and `GET /v1/agents/{id}/credentials` (the SDKs' `agents.get`)
+gives the new one from then on.
 
 Agents made without a key are scratch agents: they expire after a day unless you
 set `ttlSeconds`.
@@ -216,7 +219,7 @@ Everything that changes something can be retried safely:
   path and body gets the first answer again (for a day); the same key with a
   different body is a 409. An answer with a secret shown once (an API token,
   including a new tenant's from `POST /v1/tenants`, a signing secret, a browser
-  token or a signed link) is never stored: a retry of a key that succeeded is a
+  token, a rotated agent token or a signed link) is never stored: a retry of a key that succeeded is a
   409, not the secret again.
 - Every tool call carries `context.idempotencyKey`, the same for every attempt
   of that call: a retry after a lost connection, or the call run again after a

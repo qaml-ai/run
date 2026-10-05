@@ -215,13 +215,23 @@ Signing in is OAuth 2.1, as MCP's authorization spec describes: a `401` from
 `/mcp` names `/.well-known/oauth-protected-resource/mcp`, which names the
 runtime as the authorization server (`/.well-known/oauth-authorization-server`);
 clients register themselves (`/oauth/register`) and use the authorization code
-flow with PKCE. Access tokens last an hour and act as your tenant at `/mcp` and
-the REST API, except that they cannot create API tokens; refresh tokens last 30
+flow with PKCE. Access tokens last an hour and work with your tenant's agents at
+`/mcp` and the REST API: agents, their runs, inputs, schedules and mounts,
+definitions, and reads of models, providers, usage and the balance. They get no
+credential that would outlive the grant and send nothing elsewhere: an agent's
+token (creating or forking an agent over OAuth answers without one), API tokens,
+browser tokens, signed links, webhooks, the usage webhook, the trace export,
+channels, provider keys and endpoints, volumes and the account export are all
+`403` to them; use an API token or the console for those. Refresh tokens last 30
 days and rotate on each use. A refresh token presented again within 10 seconds of its
 rotation (a retry, or refreshes racing) gets the same new tokens; later, it revokes its grant.
 The console's API tokens page lists connected apps under **Connected apps**,
 where you revoke them (or `GET /v1/oauth/grants`, `DELETE
 /v1/oauth/grants/{id}`). Any API token also works, as `Authorization: Bearer`.
+Revoking an API token or a grant answers with `left`: the webhooks and trace
+export it last pointed somewhere (`setBy` on each names who did), which keep
+sending until you change or delete them; the console lists them when you
+revoke. Grants made before they were limited may have set some.
 
 Each registration makes a client of its own, even for the same name and
 redirect URIs, so a confidential client's secret is known only to whoever

@@ -183,7 +183,7 @@ test("telemetry: set, get, test and clear from the CLI, never printing a header'
   assert.equal(set.json.code, 0, set.json.err);
   assert.deepEqual({ ...set.json.json, createdAt: 0, updatedAt: 0 }, {
     endpoint: `${receiver.url}/v1/traces`, protocol: "http/json", sampleRate: 1, include: { content: false }, headers: ["x-api-key", "x-team"],
-    createdAt: 0, updatedAt: 0, status: { lastExportAt: null, lastError: null, lastErrorAt: null },
+    createdAt: 0, updatedAt: 0, setBy: "operator", status: { lastExportAt: null, lastError: null, lastErrorAt: null },
   });
   assert.match(set.text.text, /Exporting to .*\/v1\/traces \(http\/json, sample rate 1, content not included\)\nHeaders: x-api-key, x-team/);
   assert.deepEqual((await run("telemetry", "get")).json.headers, ["x-api-key", "x-team"]);
