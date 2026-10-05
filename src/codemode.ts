@@ -1,24 +1,40 @@
 import { MessageChannel, Worker, type MessagePort } from "node:worker_threads";
-import { availableParallelism } from "node:os";
+import { availableParallelism, totalmem } from "node:os";
 import { connect } from "node:net";
 import { Rpc } from "./rpc.ts";
 import { errorText, type ToolBridge, type WireMessage } from "./protocol.ts";
 import { frames } from "./sandbox-wire.ts";
 import { FILE_LIMITS, jsonWithinLimit, SANDBOX_LIMITS } from "./limits.ts";
-import { prepareCodeModeUserCode, stripTypeScriptFromUserCode } from "../shared/code-mode-source.ts";
 import { FS_CALLS, HOST_CALLS } from "./sandbox-bootstrap.ts";
 import { namespaces, searchQuery, searchTools } from "./tool-search.ts";
 import type { Returned } from "./quickjs-sandbox.ts";
 
 /** How long a cancelled guest gets to unwind before its worker is terminated and replaced. */
 const CANCEL_GRACE_MS = 250;
+/** How often a busy worker's CPU time is read, and how far past its budget it may get before it is terminated. */
+const CPU_CHECK_MS = 50;
+const CPU_GRACE_MS = 250;
 
-type Slot = { worker: Worker; state: "starting" | "idle" | "busy"; dispatched: number; idle?: (clean: boolean) => void; reaper?: NodeJS.Timeout };
+type Slot = { worker: Worker; state: "starting" | "idle" | "busy"; dispatched: number; idle?: (clean: boolean) => void; reaper?: NodeJS.Timeout; watchdog?: NodeJS.Timeout };
 
 /**
- * Warm worker threads, each running QuickJS/WASM. A worker is only resource
- * control (a thread that can be terminated); the sandbox is QuickJS itself, and
- * every execution gets a fresh WASM instance, runtime and context.
+ * Workers a pool may run by default: what a fraction of the memory this process may use
+ * (its cgroup's limit in a container) affords at a worker's typical peak, so a full pool
+ * cannot take a task's memory. A worker holds QuickJS's 32 MiB of WASM memory, a V8 heap
+ * capped at 128 MiB and Node's own, about 100 MB resident once busy.
+ */
+export function defaultCodeWorkers(memory = Math.min(process.constrainedMemory?.() || Infinity, totalmem())) {
+  return Math.max(2, Math.min(32, Math.floor(memory * CODE_MEMORY_SHARE / CODE_WORKER_BYTES)));
+}
+const CODE_MEMORY_SHARE = 0.4;
+const CODE_WORKER_BYTES = 128 * 1024 * 1024;
+
+/**
+ * Warm worker threads, each running QuickJS/WASM. A worker is resource control (a
+ * thread whose CPU time is watched, and that can be terminated); the sandbox is
+ * QuickJS itself. A worker builds one QuickJS instance and snapshots it; every
+ * execution starts from that snapshot, and the whole memory is written back over
+ * when it ends (quickjs-sandbox.ts), so nothing of one execution reaches the next.
  */
 export class CodePool {
   min: number;
@@ -32,7 +48,7 @@ export class CodePool {
   private readonly waiters: { resolve: (slot: Slot) => void; reject: (error: Error) => void }[] = [];
 
   constructor(options: { min?: number; max?: number; idleMs?: number; maxDying?: number } = {}) {
-    this.max = options.max ?? 32;
+    this.max = options.max ?? defaultCodeWorkers();
     this.min = Math.min(options.min ?? Math.min(4, availableParallelism()), this.max);
     this.idleMs = options.idleMs ?? 30_000;
     this.maxDying = options.maxDying ?? 8;
@@ -65,6 +81,7 @@ export class CodePool {
   private remove(slot: Slot) {
     if (!this.slots.delete(slot)) return false;
     clearTimeout(slot.reaper);
+    clearInterval(slot.watchdog);
     slot.idle?.(false);
     return true;
   }
@@ -102,6 +119,7 @@ export class CodePool {
   /** Return a worker whose guest is disposed. */
   release(slot: Slot) {
     slot.idle = undefined;
+    clearInterval(slot.watchdog);
     const waiter = this.waiters.shift();
     if (waiter) return waiter.resolve(this.take(slot));
     slot.state = "idle";
@@ -139,10 +157,23 @@ export class CodePool {
     return waiter.promise;
   }
 
-  /** Hand one execution's port to the worker. Resolves true once its guest is disposed, false if the worker died. */
-  dispatch(slot: Slot, port: MessagePort, cancel: SharedArrayBuffer): Promise<boolean> {
+  /**
+   * Hand one execution's port to the worker. Resolves true once its guest is disposed, false if the worker died.
+   * The worker is terminated once its thread has been busy for `cpuMs` (and a grace for the guest's own limit
+   * to report it) whatever it is doing: QuickJS checks its interrupt only between bytecodes, and a built-in
+   * (a long indexOf, a BigInt's digits) or source preparation never reaches one. `overrun` hears it first.
+   * A thread's busy time is its CPU time unless the host is oversubscribed, when it counts the wait as well.
+   */
+  dispatch(slot: Slot, port: MessagePort, cancel: SharedArrayBuffer, cpuMs: number, overrun: () => void): Promise<boolean> {
     const idle = new Promise<boolean>(resolve => { slot.idle = resolve; });
+    const start = slot.worker.performance.eventLoopUtilization();
     slot.worker.postMessage({ port, cancel, id: ++slot.dispatched }, [port]);
+    slot.watchdog = setInterval(() => {
+      if (slot.worker.performance.eventLoopUtilization(start).active < cpuMs + CPU_GRACE_MS) return;
+      clearInterval(slot.watchdog);
+      overrun();
+      this.retire(slot);
+    }, CPU_CHECK_MS);
     return idle;
   }
 
@@ -173,12 +204,13 @@ export interface Guest {
   end(answered: boolean): void;
 }
 
-/** A worker of `pool` bound to one execution. */
-export async function localGuest(pool: CodePool, signal: AbortSignal): Promise<Guest> {
+/** A worker of `pool` bound to one execution, which may keep its thread busy for `cpuMs`. */
+export async function localGuest(pool: CodePool, signal: AbortSignal, cpuMs: number = SANDBOX_LIMITS.cpuMs): Promise<Guest> {
   const slot = await pool.acquire(signal);
   const cancel = new SharedArrayBuffer(4);
   const { port1, port2 } = new MessageChannel();
-  const idle = pool.dispatch(slot, port2, cancel);
+  let exceeded = false;
+  const idle = pool.dispatch(slot, port2, cancel, cpuMs, () => { exceeded = true; });
   let ended = false;
   return {
     dispatched: true,
@@ -186,7 +218,7 @@ export async function localGuest(pool: CodePool, signal: AbortSignal): Promise<G
     listen(onMessage, onClose) {
       port1.on("message", onMessage);
       // A terminated or crashed worker closes its end.
-      port1.once("close", () => onClose("Codemode worker exited"));
+      port1.once("close", () => onClose(exceeded ? cpuExceeded(cpuMs) : "Codemode worker exited"));
     },
     end(answered) {
       if (ended) return;
@@ -290,11 +322,18 @@ export class SandboxProcesses {
   }
 }
 
+/** Why an execution was stopped by its worker's CPU watchdog. */
+export const cpuExceeded = (cpuMs: number) => `Codemode CPU limit exceeded: the execution kept its thread busy for over ${cpuMs} ms`;
+
+/** How many js_exec workers this node runs in all: AGENT_CODE_WORKERS_MAX, else what its memory affords. */
+export function codeWorkers() {
+  return process.env.AGENT_CODE_WORKERS_MAX ? Number(process.env.AGENT_CODE_WORKERS_MAX) : defaultCodeWorkers();
+}
+
 let shared: CodePool | undefined;
-/** The process-wide pool, sized by AGENT_CODE_WORKERS_MIN and AGENT_CODE_WORKERS_MAX. */
+/** The process-wide pool, sized by AGENT_CODE_WORKERS_MIN and AGENT_CODE_WORKERS_MAX (`codeWorkers`). */
 export function codePool() {
-  const count = (name: string) => process.env[name] ? Number(process.env[name]) : undefined;
-  return shared ??= new CodePool({ min: count("AGENT_CODE_WORKERS_MIN"), max: count("AGENT_CODE_WORKERS_MAX") });
+  return shared ??= new CodePool({ min: process.env.AGENT_CODE_WORKERS_MIN ? Number(process.env.AGENT_CODE_WORKERS_MIN) : undefined, max: codeWorkers() });
 }
 
 let sandboxes: SandboxProcesses | null | undefined;
@@ -333,8 +372,8 @@ function guestMessage(value: any): WireMessage {
   throw new Error("Codemode sandbox sent an invalid message");
 }
 
-/** What an execution printed, in order (its return value included), and what it returned. */
-export type CodeResult = { output: string[]; truncated: boolean; returned?: Returned };
+/** What an execution printed, in order (its return value included), what it returned, and the guest's CPU time (as the sandbox reports it: for metrics only). */
+export type CodeResult = { output: string[]; truncated: boolean; returned?: Returned; cpuMs?: number };
 
 function guestResult(value: any, maxOutputCharacters: number): CodeResult {
   const output = value?.output;
@@ -345,7 +384,8 @@ function guestResult(value: any, maxOutputCharacters: number): CodeResult {
       (returned.index !== undefined && !(Number.isInteger(returned.index) && returned.index >= 0 && returned.index < output.length))))) {
     throw new Error("Codemode sandbox returned an invalid result");
   }
-  return { output, truncated: value.truncated, ...(returned ? { returned: { ...(returned.index !== undefined ? { index: returned.index } : {}), json: returned.json, truncated: returned.truncated } } : {}) };
+  const cpuMs = Number.isSafeInteger(value.cpuMs) && value.cpuMs >= 0 ? value.cpuMs as number : undefined;
+  return { output, truncated: value.truncated, ...(returned ? { returned: { ...(returned.index !== undefined ? { index: returned.index } : {}), json: returned.json, truncated: returned.truncated } } : {}), ...(cpuMs !== undefined ? { cpuMs } : {}) };
 }
 
 /**
@@ -378,49 +418,114 @@ async function hostCall(bridge: ToolBridge, name: string, args: unknown) {
   return bridge.search ? bridge.search(query) : searchTools(bridge.definitions, query);
 }
 
+/** A tenant's js_exec limits (client-sessions' `codeLimits`): CPU per execution, the longest timeoutMs, and executions at once on a node. */
+export type CodeLimits = { cpuMs: number; maxTimeoutMs: number; concurrent: number };
+
+/**
+ * Admits js_exec executions on a node: at most `capacity` at once (its sandbox workers), and at
+ * most `limit` of them for any one tenant. Executions waiting are admitted a tenant at a time, in
+ * turn, so a tenant that keeps every slot it may have busy cannot hold back another's.
+ */
+export class CodeGate {
+  readonly capacity: number;
+  running = 0;
+  private readonly counts = new Map<string, number>();
+  /** Executions waiting, by tenant; the tenant first in the map is served next. */
+  private readonly queues = new Map<string, { limit: number; admit: () => void }[]>();
+  constructor(capacity: number) {
+    if (!Number.isInteger(capacity) || capacity < 1) throw new Error("Invalid codemode capacity");
+    this.capacity = capacity;
+  }
+
+  /** Executions `tenant` has running. */
+  count(tenant: string) { return this.counts.get(tenant) ?? 0; }
+
+  /** Wait for a turn to run one of `tenant`'s executions, until `signal` aborts. Resolves with the function that gives it back. */
+  acquire(tenant: string, limit: number, signal: AbortSignal): Promise<() => void> {
+    signal.throwIfAborted();
+    if (!this.queues.has(tenant) && this.free(tenant, limit)) return Promise.resolve(this.take(tenant));
+    const waiter = Promise.withResolvers<() => void>();
+    const entry = { limit, admit: () => { signal.removeEventListener("abort", abort); waiter.resolve(this.take(tenant)); } };
+    const abort = () => {
+      const queue = this.queues.get(tenant) ?? [];
+      queue.splice(queue.indexOf(entry), 1);
+      if (!queue.length) this.queues.delete(tenant);
+      waiter.reject(signal.reason);
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    const queue = this.queues.get(tenant);
+    if (queue) queue.push(entry); else this.queues.set(tenant, [entry]);
+    return waiter.promise;
+  }
+
+  private free(tenant: string, limit: number) { return this.running < this.capacity && this.count(tenant) < limit; }
+
+  private take(tenant: string) {
+    this.running++;
+    this.counts.set(tenant, this.count(tenant) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.running--;
+      const left = this.count(tenant) - 1;
+      if (left) this.counts.set(tenant, left); else this.counts.delete(tenant);
+      this.next();
+    };
+  }
+
+  /** Admit waiting executions while there is room: the first tenant in turn that may run one more, which then goes last. */
+  private next() {
+    for (let admitted = true; admitted && this.running < this.capacity;) {
+      admitted = false;
+      for (const [tenant, queue] of this.queues) {
+        if (!this.free(tenant, queue[0].limit)) continue;
+        const entry = queue.shift()!;
+        this.queues.delete(tenant);
+        if (queue.length) this.queues.set(tenant, queue);
+        entry.admit();
+        admitted = true;
+        break;
+      }
+    }
+  }
+}
+
 export async function executeCode(options: {
   code: string; bridge: ToolBridge; signal?: AbortSignal;
   timeoutMs?: number; maxOutputCharacters?: number;
   onEvent?: (event: unknown) => void;
   /** Where to run: by default the sandbox processes, or without them this process's pool. */
   pool?: CodePool | { open(): Guest };
-  /** Strip TypeScript here before running: set when the sandbox found the code does not compile as JavaScript. */
-  typescript?: boolean;
+  /** The tenant's limits: CPU (`SANDBOX_LIMITS.cpuMs` by default) and the longest timeoutMs (`SANDBOX_LIMITS.maxTimeoutMs`); a longer timeoutMs is cut to it. */
+  limits?: Partial<Pick<CodeLimits, "cpuMs" | "maxTimeoutMs">>;
+  /** Wait for the tenant's turn on the node (`CodeGate`); resolves with the function that gives it back. */
+  admit?: (signal: AbortSignal) => Promise<() => void>;
 }): Promise<CodeResult> {
-  const timeoutMs = options.timeoutMs ?? SANDBOX_LIMITS.timeoutMs;
+  const maxTimeoutMs = Math.min(options.limits?.maxTimeoutMs ?? SANDBOX_LIMITS.maxTimeoutMs, SANDBOX_LIMITS.maxTimeoutMs);
+  const cpuMs = Math.min(options.limits?.cpuMs ?? SANDBOX_LIMITS.cpuMs, SANDBOX_LIMITS.maxCpuMs);
+  const requested = options.timeoutMs ?? SANDBOX_LIMITS.timeoutMs;
   const maxOutputCharacters = options.maxOutputCharacters ?? SANDBOX_LIMITS.outputCharacters;
-  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > SANDBOX_LIMITS.maxTimeoutMs) throw new Error(`timeoutMs must be 1..${SANDBOX_LIMITS.maxTimeoutMs}`);
+  if (!Number.isInteger(requested) || requested < 1) throw new Error(`timeoutMs must be 1..${maxTimeoutMs}`);
+  const timeoutMs = Math.min(requested, maxTimeoutMs);
+  if (!Number.isInteger(maxTimeoutMs) || maxTimeoutMs < 1 || !Number.isInteger(cpuMs) || cpuMs < 1) throw new Error("Invalid codemode limits");
   if (!Number.isInteger(maxOutputCharacters) || maxOutputCharacters < 1 || maxOutputCharacters > SANDBOX_LIMITS.maxOutputCharacters) throw new Error(`maxOutputCharacters must be 1..${SANDBOX_LIMITS.maxOutputCharacters}`);
   if (typeof options.code !== "string" || options.code.length > 256_000) throw new Error("Invalid or oversized code");
-  // Loaded here: sandbox processes import this module for CodePool alone, and typebox would cost each about 25 MB.
-  const { validateDefinitions, validateToolCall } = await import("./tool-policy.ts");
-  validateDefinitions(options.bridge.definitions);
-  // Code gets the tools' names; their schemas and search are answered here (hostCall).
-  const names = options.bridge.definitions.map(tool => tool.name);
-  // Most code is plain JavaScript, and sucrase is most of what preparing it costs. Code
-  // without a "<" goes to the sandbox as it is: QuickJS compiles it and, if that fails,
-  // answers without running any of it, and it comes back here to be stripped. Never
-  // V8: this process holds secrets, and no parser but QuickJS's (in WASM) and
-  // sucrase's (JavaScript) sees guest code. A "<" may be a generic call, which
-  // JavaScript reads as comparisons, so such code is always stripped first.
-  // Sucrase runs here rather than in the worker, which would cost every worker its
-  // own copy; it is linear in code already capped at 256 KB (tens of milliseconds at worst).
-  const javascriptOnly = !options.typescript && !options.code.includes("<");
-  const code = prepareCodeModeUserCode(javascriptOnly ? options.code : await stripTypeScriptFromUserCode(options.code));
-  options.signal?.throwIfAborted();
-  const pool = options.pool ?? sandboxProcesses() ?? codePool();
+  // The deadline and cancellation hold from here, before anything looks at the code or waits for a turn.
+  // Nothing of the code is parsed on this thread: the worker strips TypeScript and compiles it (quickjs-sandbox.ts).
   const started = performance.now();
+  const pool = options.pool ?? sandboxProcesses() ?? codePool();
   // Tool calls still running, by name: a timeout while one runs names it and says timeoutMs can be raised.
   const pending = new Map<string, number>();
   const timedOut = () => {
     const waiting = [...pending.keys()].map(name => `tools.${name}`);
-    return `Codemode timed out after ${timeoutMs}ms${waiting.length ? ` while ${waiting.slice(0, 3).join(", ")} ${waiting.length === 1 ? "was" : "were"} still running` : ""}; external side effects may have completed${waiting.length ? `. Pass a larger timeoutMs (at most ${SANDBOX_LIMITS.maxTimeoutMs}) for slow tools` : ""}`;
+    return `Codemode timed out after ${timeoutMs}ms${waiting.length ? ` while ${waiting.slice(0, 3).join(", ")} ${waiting.length === 1 ? "was" : "were"} still running` : ""}; external side effects may have completed${waiting.length && timeoutMs < maxTimeoutMs ? `. Pass a larger timeoutMs (at most ${maxTimeoutMs}) for slow tools` : ""}`;
   };
   const controller = new AbortController();
+  let release: (() => void) | undefined;
   let guest: Guest | undefined;
   let rpc: Rpc | undefined;
   let responded = false;
-  let typescript = false;
   const stop = (reason: string) => {
     if (controller.signal.aborted) return;
     controller.abort(new Error(reason));
@@ -431,8 +536,16 @@ export async function executeCode(options: {
   const waiting = () => `Codemode timed out after ${timeoutMs}ms waiting for a sandbox worker${pool instanceof CodePool ? ` (${pool.saturation()})` : ""}`;
   const timer = setTimeout(() => stop(guest?.dispatched ? timedOut() : waiting()), timeoutMs);
   options.signal?.addEventListener("abort", abort, { once: true });
+  if (options.signal?.aborted) abort();
   try {
-    guest = pool instanceof CodePool ? await localGuest(pool, controller.signal) : pool.open();
+    // Loaded here: sandbox processes import this module for CodePool alone, and typebox would cost each about 25 MB.
+    const { validateDefinitions, validateToolCall } = await import("./tool-policy.ts");
+    validateDefinitions(options.bridge.definitions);
+    // Code gets the tools' names; their schemas and search are answered here (hostCall).
+    const names = options.bridge.definitions.map(tool => tool.name);
+    if (options.admit) release = await options.admit(controller.signal);
+    controller.signal.throwIfAborted();
+    guest = pool instanceof CodePool ? await localGuest(pool, controller.signal, cpuMs) : pool.open();
     controller.signal.throwIfAborted();
     const link = guest;
     const channel = rpc = new Rpc(message => link.send(message));
@@ -493,11 +606,9 @@ export async function executeCode(options: {
     // answer at that moment is a wall-clock failure, which should read as the timeout.
     const remainingMs = Math.max(1, Math.ceil(timeoutMs - (performance.now() - started)));
     // The worker answers only after disposing the guest, so an answer means it is free again.
-    const result = await channel.request("execute", { code, tools: names, maxOutputCharacters, timeoutMs: remainingMs, ...(javascriptOnly ? { javascriptOnly } : {}) })
+    const result = await channel.request("execute", { code: options.code, tools: names, maxOutputCharacters, timeoutMs: remainingMs, cpuMs })
       .finally(() => { responded = !controller.signal.aborted; });
-    // Believed only when asked, and when nothing ran: no tool call, no output.
-    if (javascriptOnly && result?.typescript === true && !calls && !events) typescript = true;
-    else return guestResult(result, maxOutputCharacters);
+    return guestResult(result, maxOutputCharacters);
   } catch (error) {
     if (controller.signal.aborted) throw controller.signal.reason;
     // The guest's own deadline can report just before this side's timer fires.
@@ -508,8 +619,8 @@ export async function executeCode(options: {
     options.signal?.removeEventListener("abort", abort);
     guest?.end(responded);
     stop("Codemode completed");
+    release?.();
   }
-  return executeCode({ ...options, typescript, timeoutMs: Math.max(1, Math.floor(timeoutMs - (performance.now() - started))) });
 }
 
 /**

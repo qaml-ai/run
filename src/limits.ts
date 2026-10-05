@@ -3,8 +3,15 @@ export const SANDBOX_LIMITS = Object.freeze({
   wasmBytes: 32 * 1024 * 1024,
   heapBytes: 16 * 1024 * 1024,
   stackBytes: 256 * 1024,
-  cpuMs: 2_000,
-  /** One execution's wall time and output characters: by default, and at most when it asks (`timeoutMs`, `maxOutputCharacters`). */
+  /**
+   * One execution's CPU: what a tenant gets by default, and at most whatever is set for it. A worker
+   * thread busy this long (plus 250 ms grace) is terminated, whatever the guest is doing (codemode.ts).
+   */
+  cpuMs: 2_000, maxCpuMs: 30_000,
+  /**
+   * One execution's wall time and output characters: by default, and at most when it asks (`timeoutMs`,
+   * `maxOutputCharacters`). A tenant's longest timeoutMs is `CODE_LIMITS.maxTimeoutMs` unless set otherwise, within this.
+   */
   timeoutMs: 30_000, maxTimeoutMs: 120_000, outputCharacters: 32_000, maxOutputCharacters: 128_000,
   toolCalls: 256,
   concurrentTools: 32,
@@ -13,6 +20,14 @@ export const SANDBOX_LIMITS = Object.freeze({
   totalToolBytes: 8 * 1024 * 1024,
   outputEvents: 1024,
 });
+
+/**
+ * A tenant's js_exec limits unless its own are set (a tenants-file entry's `codeCpuMs`,
+ * `codeMaxTimeoutMs`, `codeConcurrency`, or `tenants.limits`'): CPU per execution, the longest
+ * timeoutMs it may ask for, and executions it may run at once on one node (on free credit, `freeConcurrent`).
+ * Admin tenants (the tenants file's) are not held to `concurrent` or `maxTimeoutMs` unless their entry sets them.
+ */
+export const CODE_LIMITS = Object.freeze({ cpuMs: SANDBOX_LIMITS.cpuMs, maxTimeoutMs: 60_000, concurrent: 4, freeConcurrent: 2 });
 
 /**
  * An agent's tool catalog. Most tools are reached from js_exec, where only names enter the

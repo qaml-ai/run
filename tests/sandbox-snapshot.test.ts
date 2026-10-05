@@ -13,10 +13,10 @@ import type { ToolBridge } from "../src/protocol.ts";
 const quickjs = createRequire(import.meta.url).resolve("quickjs-emscripten");
 const wasmModule = await WebAssembly.compile(await readFile(createRequire(quickjs).resolve("@jitl/quickjs-wasmfile-release-sync/wasm")));
 
-function sandbox(code: string, options: { call?: (name: string, args: unknown) => Promise<string>; cancel?: Int32Array; signal?: AbortSignal; timeoutMs?: number; javascriptOnly?: boolean; tools?: string[]; mark?: (phase: string) => void } = {}) {
+function sandbox(code: string, options: { call?: (name: string, args: unknown) => Promise<string>; cancel?: Int32Array; signal?: AbortSignal; timeoutMs?: number; tools?: string[]; mark?: (phase: string) => void } = {}) {
   return runSandbox({
     wasmModule, code, cancel: options.cancel ?? new Int32Array(new SharedArrayBuffer(4)), signal: options.signal ?? new AbortController().signal,
-    javascriptOnly: options.javascriptOnly, timeoutMs: options.timeoutMs ?? 10_000, maxOutputCharacters: 32_000,
+    timeoutMs: options.timeoutMs ?? 10_000, maxOutputCharacters: 32_000,
     tools: options.tools ?? ["probe"],
     call: options.call ?? (async () => "null"), onOutput: () => {}, mark: options.mark,
   });
@@ -39,7 +39,7 @@ test("every execution, however it ends, leaves the memory exactly as the snapsho
     ["returns", () => sandbox(`const kept = "${marker}".repeat(1000); globalThis.leak = kept; return kept.length;`), /\["19000"\]/],
     ["mutates built-ins", () => sandbox(`Object.prototype.polluted = "${marker}"; Array.prototype.push = () => 0; JSON.parse = () => "${marker}"; Math.random = () => 4; return 1;`), /"1"/],
     ["throws", () => sandbox(`throw new Error("${marker}");`), new RegExp(`error: ${marker}`)],
-    ["does not compile as JavaScript", () => sandbox(`const secret: string = "${marker}"; return secret;`, { javascriptOnly: true }), /"typescript":true/],
+    ["is TypeScript, stripped in the worker", () => sandbox(`const secret: string = "${marker}"; return secret;`), new RegExp(`"output":\\["${marker}"\\]`)],
     ["spins until cancelled", () => sandbox(`globalThis.leak = "${marker}"; while (true) {}`, { cancel: cancelled }), /limit exceeded/],
     ["spins until its deadline", () => sandbox(`globalThis.leak = "${marker}"; while (true) {}`, { timeoutMs: 100 }), /limit exceeded/],
     ["recurses", () => sandbox(`const secret = "${marker}"; function recurse() { return recurse() + 1; } return recurse();`), /stack overflow/],
@@ -57,7 +57,7 @@ test("every execution, however it ends, leaves the memory exactly as the snapsho
   await sleep(100);
   unchanged("late tool result");
   assert.equal(await prepareSandbox(wasmModule), image, "Guest failures keep the image");
-  assert.deepEqual(await sandbox("return [typeof leak, ({}).polluted, [].push(1), JSON.parse('2'), Math.random() < 1];"), { output: ['["undefined",null,1,2,true]'], truncated: false, returned: { index: 0, json: true, truncated: false } });
+  assert.deepEqual(await sandbox("return [typeof leak, ({}).polluted, [].push(1), JSON.parse('2'), Math.random() < 1];").then(({ cpuMs: _cpuMs, ...result }: any) => result), { output: ['["undefined",null,1,2,true]'], truncated: false, returned: { index: 0, json: true, truncated: false } });
 });
 
 test("a failure outside the guest's own errors drops the image, and the next execution builds a new one", async () => {

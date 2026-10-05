@@ -28,7 +28,7 @@ parentPort!.on("message", ({ port, cancel, id }: { port: MessagePort; cancel: Sh
     try {
       return await runSandbox({
         wasmModule, cancel: new Int32Array(cancel), signal: closed.signal,
-        code: params.code, javascriptOnly: params.javascriptOnly === true, tools: params.tools, timeoutMs: params.timeoutMs, maxOutputCharacters: params.maxOutputCharacters,
+        code: params.code, cpuMs: params.cpuMs, tools: params.tools, timeoutMs: params.timeoutMs, maxOutputCharacters: params.maxOutputCharacters,
         call: (name, args) => rpc.request("tool", { name, args }),
         onOutput: text => rpc.send({ type: "event", event: { type: "output", text } }),
       });

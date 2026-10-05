@@ -5,7 +5,7 @@
 //    CPU the whole process (main thread and worker) spends per execution. With
 //    AGENT_SANDBOX_SOCKETS set (run inside the image, as root, next to agent-launcher's
 //    sandbox processes) it goes through those instead, and their CPU is counted too.
-// Each for `return 1` and for a TypeScript snippet, which the main thread strips first.
+// Each for `return 1` and for a TypeScript snippet, which the worker strips first.
 // Usage: npm run bench:js-exec [-- --runs 300]
 import { readdirSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -13,7 +13,6 @@ import { createRequire } from "node:module";
 import { parseArgs } from "node:util";
 import { CodePool, executeCode, sandboxProcesses } from "../src/codemode.ts";
 import { runSandbox } from "../src/quickjs-sandbox.ts";
-import { prepareCodeModeUserCode, stripTypeScriptFromUserCode } from "../shared/code-mode-source.ts";
 import type { ToolBridge } from "../src/protocol.ts";
 
 const { values: args } = parseArgs({ options: { runs: { type: "string", default: "300" } } });
@@ -41,15 +40,12 @@ const wasmModule = await WebAssembly.compile(await readFile(wasm));
 const moduleCompileMs = performance.now() - started;
 
 async function phases(code: string) {
-  started = performance.now();
-  const typescript = code.includes("<");
-  const prepared = prepareCodeModeUserCode(typescript ? await stripTypeScriptFromUserCode(code) : code);
-  const strip = performance.now() - started;
-  const timings: Record<string, number> = { strip };
+  // Stripping TypeScript (in the worker, since it can be slow on hostile code) counts in "compile".
+  const timings: Record<string, number> = {};
   let last = performance.now();
   const result = await runSandbox({
     wasmModule, cancel: new Int32Array(new SharedArrayBuffer(4)), signal: new AbortController().signal,
-    code: prepared, javascriptOnly: !typescript, tools: bridge.definitions.map(tool => tool.name), timeoutMs: 30_000, maxOutputCharacters: 32_000,
+    code, tools: bridge.definitions.map(tool => tool.name), timeoutMs: 30_000, maxOutputCharacters: 32_000,
     call: async (name, args) => JSON.stringify(await bridge.call(name, args as Record<string, unknown>, new AbortController().signal)),
     onOutput: () => {},
     mark: phase => { const now = performance.now(); timings[phase] = (timings[phase] ?? 0) + now - last; last = now; },

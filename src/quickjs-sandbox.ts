@@ -4,6 +4,7 @@ import {
 } from "quickjs-emscripten";
 import { SANDBOX_LIMITS } from "./limits.ts";
 import { SANDBOX_BOOTSTRAP } from "./sandbox-bootstrap.ts";
+import { prepareCodeModeUserCode, stripTypeScriptFromUserCode } from "../shared/code-mode-source.ts";
 
 /**
  * What the code returned, when it returned something: `output[index]` (absent when the output
@@ -179,9 +180,12 @@ function failure(message: string) {
 }
 
 /**
- * Runs in a pool worker. The main thread has already validated the catalog and
- * prepared the code, and it enforces tool-call schemas and quotas; this side
- * only bounds what crosses from the guest before handing it over.
+ * Runs in a pool worker. The main thread has already validated the catalog, and it
+ * enforces tool-call schemas and quotas; this side prepares the code (strips
+ * TypeScript, returns a last expression) and bounds what crosses from the guest
+ * before handing it over. Preparing is here, not on the main thread, because
+ * sucrase can take exponential time on hostile input: here the pool's CPU
+ * watchdog terminates the thread (codemode.ts), and nothing else waits on it.
  */
 export async function runSandbox(options: {
   /** Compiled once per worker; the thread's image is instantiated from it. */
@@ -190,13 +194,10 @@ export async function runSandbox(options: {
   cancel: Int32Array;
   /** Aborted when the main thread gives up, to wake a guest waiting on nothing. */
   signal: AbortSignal;
-  /** JavaScript: stripped of TypeScript already, or (`javascriptOnly`) not yet. */
+  /** The code as the model wrote it: JavaScript or TypeScript. */
   code: string;
-  /**
-   * The code may still hold TypeScript. If it does not compile, answer
-   * `{ typescript: true }` without running any of it, and the runtime strips it.
-   */
-  javascriptOnly?: boolean;
+  /** Milliseconds of guest execution allowed (`SANDBOX_LIMITS.cpuMs` by default); the pool's watchdog enforces it from outside as well. */
+  cpuMs?: number;
   /** The names of the tools code may call; their schemas and search stay on the host. */
   tools: string[];
   timeoutMs: number;
@@ -221,6 +222,7 @@ export async function runSandbox(options: {
   let closed = false;
   let faulted = false;
   let cpuMs = 0;
+  const cpuLimit = options.cpuMs ?? SANDBOX_LIMITS.cpuMs;
   let enteredAt = performance.now();
   const deadline = enteredAt + options.timeoutMs;
   let wake: (() => void) | undefined;
@@ -256,7 +258,7 @@ export async function runSandbox(options: {
   self.current = {
     interrupted() {
       const now = performance.now();
-      interrupted ||= now >= deadline || cpuMs + now - enteredAt >= SANDBOX_LIMITS.cpuMs || Atomics.load(options.cancel, 0) === 1;
+      interrupted ||= now >= deadline || cpuMs + now - enteredAt >= cpuLimit || Atomics.load(options.cancel, 0) === 1;
       return interrupted;
     },
     emit(value, flagsHandle) {
@@ -312,13 +314,19 @@ export async function runSandbox(options: {
     vm.unwrapResult(vm.callFunction(self.install, vm.undefined, catalog)).dispose();
     catalog.dispose();
     mark("install");
-    const initial = run(() => vm.evalCode(`(async function() { "use strict";\n${options.code}\n})()`, "codemode.js"));
+    const compile = (code: string) => run(() => vm.evalCode(`(async function() { "use strict";\n${prepareCodeModeUserCode(code)}\n})()`, "codemode.js"));
+    // Most code is plain JavaScript, and sucrase is most of what preparing it costs: code without
+    // a "<" is compiled as it is, and stripped only if that fails. A "<" may be a generic call,
+    // which JavaScript reads as comparisons, so such code is always stripped first.
+    const generic = options.code.includes("<");
+    let initial = compile(generic ? await stripTypeScriptFromUserCode(options.code) : options.code);
+    if (initial.error && !generic && errorName(initial.error) === "SyntaxError") {
+      initial.dispose();
+      initial = compile(await stripTypeScriptFromUserCode(options.code));
+    }
     // Only compiling can fail here: the code's own errors reject the promise.
     if (initial.error) {
-      try {
-        if (options.javascriptOnly && errorName(initial.error) === "SyntaxError") return { typescript: true as const };
-        throw guestError(initial.error);
-      } finally { initial.dispose(); }
+      try { throw guestError(initial.error); } finally { initial.dispose(); }
     }
     const result = run(() => vm.unwrapResult(vm.callFunction(self.finish, vm.undefined, initial.value)));
     initial.value.dispose();
@@ -341,7 +349,8 @@ export async function runSandbox(options: {
       else await new Promise<void>(resolve => { wake = resolve; });
     }
     mark("run");
-    return { output, truncated, returned };
+    // Guest time on this thread, for the runtime's metrics (code_execution): never counted while waiting on tools.
+    return { output, truncated, returned, cpuMs: Math.round(cpuMs) };
   } catch (error) {
     faulted = !(error instanceof Error && expected.has(error));
     throw error;

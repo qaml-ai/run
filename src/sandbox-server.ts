@@ -1,10 +1,10 @@
 import { createServer, type Socket } from "node:net";
 import { parseArgs } from "node:util";
 import { availableParallelism } from "node:os";
-import { CodePool, localGuest, type Guest } from "./codemode.ts";
+import { CodePool, defaultCodeWorkers, localGuest, type Guest } from "./codemode.ts";
 import { frames } from "./sandbox-wire.ts";
 import { inspectHere } from "./inspect.ts";
-import { FILE_LIMITS } from "./limits.ts";
+import { FILE_LIMITS, SANDBOX_LIMITS } from "./limits.ts";
 
 // One sandbox process: a CodePool serving executions over a unix socket, one per
 // connection. agent-launcher (sandbox/launcher.c) binds the socket, passes it as
@@ -28,7 +28,7 @@ const processes = Number(args.processes);
 const share = (total: number) => Math.ceil(total / processes);
 const pool = new CodePool({
   min: share(args["workers-min"] === undefined ? Math.min(4, availableParallelism()) : Number(args["workers-min"])),
-  max: share(args["workers-max"] === undefined ? 32 : Number(args["workers-max"])),
+  max: share(args["workers-max"] === undefined ? defaultCodeWorkers() : Number(args["workers-max"])),
 });
 
 function serve(socket: Socket) {
@@ -53,7 +53,9 @@ function serve(socket: Socket) {
         .then(result => send({ type: "response", id: execution, result }), error => send({ type: "response", id: execution, error: String(error) }));
     }
     if (message.method !== "execute") return void socket.destroy();
-    localGuest(pool, closed.signal).then(acquired => {
+    // The runtime's CPU budget for the execution, which this process's watchdog holds it to.
+    const cpuMs = message.params?.cpuMs;
+    localGuest(pool, closed.signal, Number.isInteger(cpuMs) && cpuMs > 0 && cpuMs <= SANDBOX_LIMITS.maxCpuMs ? cpuMs : SANDBOX_LIMITS.cpuMs).then(acquired => {
       if (socket.destroyed) return acquired.end(false);
       guest = acquired;
       acquired.listen(reply => {

@@ -138,7 +138,7 @@ test("CPU, stack, hostile serialization and abandoned promises are bounded", { t
 
 test("output floods are bounded by both characters and event count", async t => {
   const { run } = await fixture(t);
-  assert.deepEqual(await run('return "x".repeat(1000000);', { maxOutputCharacters: 5 }), { output: ["xxxxx"], truncated: true, returned: { index: 0, json: false, truncated: true } });
+  assert.deepEqual(await run('return "x".repeat(1000000);', { maxOutputCharacters: 5 }).then(({ cpuMs: _cpuMs, ...result }) => result), { output: ["xxxxx"], truncated: true, returned: { index: 0, json: false, truncated: true } });
   const result = await run('for(let i=0;i<10000;i++) text("x");', { maxOutputCharacters: 128000 });
   assert.equal(result.output.length, SANDBOX_LIMITS.outputEvents);
   assert.equal(result.truncated, true);
