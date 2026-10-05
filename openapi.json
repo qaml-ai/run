@@ -680,6 +680,15 @@
             "type": "string",
             "description": "The person's display name, for console sessions signed in with Google or GitHub"
           },
+          "signIn": {
+            "type": "string",
+            "enum": [
+              "github",
+              "google",
+              "token"
+            ],
+            "description": "How a console session was signed in. One signed in with a token cannot mint API tokens, change billing, get help or delete the account"
+          },
           "canStoreKeys": {
             "type": "boolean"
           },
@@ -3373,6 +3382,18 @@
         },
         "required": [
           "name"
+        ]
+      },
+      "SignedOut": {
+        "type": "object",
+        "properties": {
+          "signedOut": {
+            "type": "integer",
+            "description": "How many console sessions ended"
+          }
+        },
+        "required": [
+          "signedOut"
         ]
       },
       "OAuthGrant": {
@@ -8908,6 +8929,32 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/TokenCreated"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions": {
+      "delete": {
+        "responses": {
+          "200": {
+            "description": "Signed out everywhere: every console session of the account ends now, this one too",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignedOut"
                 }
               }
             }

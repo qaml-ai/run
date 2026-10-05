@@ -6,7 +6,7 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { BillingAlerts } from "./billing-alerts.ts";
 import type { Accounts, Principal } from "./accounts.ts";
 import { answerList, type ClientSessions } from "./client-sessions.ts";
-import type { ConsoleAuth } from "./console-auth.ts";
+import { personal, type ConsoleAuth } from "./console-auth.ts";
 import type { OAuth } from "./oauth.ts";
 import { listModels, listProviders, modelInfo, providerInfo } from "./catalog.ts";
 import { modelHeadersInput, resolveModel } from "./session-config.ts";
@@ -109,7 +109,12 @@ const withoutToken = <T extends object>(c: Context<Env>, made: T): T => {
   return rest as T;
 };
 /** Who a caller is, as a webhook or trace export records who last set it (Webhooks.setBy). */
-const setter = (principal: Caller) => principal.via === "token" ? `token:${principal.tokenId}` : principal.via === "oauth" ? `oauth:${(principal as { grantId?: string }).grantId}` : principal.via;
+const setter = (principal: Caller) => principal.tokenId ? `token:${principal.tokenId}` : principal.via === "oauth" ? `oauth:${(principal as { grantId?: string }).grantId}` : principal.via;
+/**
+ * What a console session signed in to with a token cannot do, though the token itself may do some of it: the console's
+ * own powers (minting API tokens, billing, Get Help, deleting the account) are a person's, signed in with GitHub or Google.
+ */
+const PERSONAL_ROUTES = [/^POST \/v1\/tokens$/, /^(?:POST|PUT|PATCH|DELETE) \/v1\/billing(?:\/|$)/, /^POST \/v1\/help$/, /^DELETE \/v1\/account$/];
 /** The routes a browser token reads, by scope: GET /v1/agents/<its agent>/<scope>. */
 const BROWSER_ROUTE = /^\/v1\/agents\/([^/]+)\/(events|state|history|inputs)$/;
 
@@ -239,6 +244,9 @@ export function api(context: ApiContext) {
     if (principal.via === "oauth" && !OAUTH_ROUTES.some(allowed => allowed.test(`${c.req.method} ${c.req.path}`))) {
       throw new HttpError(403, "An OAuth access token works with agents only: it cannot get agent tokens or make API tokens, links, webhooks, telemetry exports, channels or provider keys. Use an API token or the console");
     }
+    if (principal.via === "console" && !personal(principal) && PERSONAL_ROUTES.some(denied => denied.test(`${c.req.method} ${c.req.path}`))) {
+      throw new HttpError(403, "This console session was signed in to with an API token: sign in with GitHub or Google to manage API tokens and billing, get help or delete the account");
+    }
     // A browser token reads its one agent's events, state, history and inputs, as its scopes say, and nothing else.
     if (principal.browser) {
       const [, agent, scope] = BROWSER_ROUTE.exec(c.req.path) ?? [];
@@ -265,19 +273,19 @@ export function api(context: ApiContext) {
     const principal = c.var.principal;
     // A console session names the person; a token names its tenant's, looked up here.
     const login = "login" in principal ? principal.login as string | undefined : await accounts.identity(principal.tenant);
-    return json(c, 200, { tenant: principal.tenant, via: principal.via, ...(login ? { login } : {}), ...("name" in principal && principal.name ? { name: principal.name } : {}), canStoreKeys: accounts.canStoreKeys, defaultModel: await context.defaultModel(principal.tenant) });
+    return json(c, 200, { tenant: principal.tenant, via: principal.via, ...(login ? { login } : {}), ...("name" in principal && principal.name ? { name: principal.name } : {}), ...("signIn" in principal ? { signIn: principal.signIn } : {}), canStoreKeys: accounts.canStoreKeys, defaultModel: await context.defaultModel(principal.tenant) });
   });
 
   // Get Help is the console's, so it is not part of the documented API: a script has no one to reply to.
   // Replies go to a verified billing address when the tenant has one, so the console offers only those.
   app.get("/v1/help", async c => {
-    const help = c.var.principal.via === "console" ? context.help : undefined;
+    const help = personal(c.var.principal) ? context.help : undefined;
     return json(c, 200, { enabled: !!help, replyEmails: help ? await help.replyEmails(c.var.principal.tenant) : [] });
   });
   app.post("/v1/help", async c => {
     if (!context.help) throw new HttpError(404, "Get Help is not enabled on this runtime");
     const principal = c.var.principal;
-    if (principal.via !== "console") throw new HttpError(403, "Get Help is sent from the console");
+    if (!personal(principal)) throw new HttpError(403, "Get Help is sent from the console, signed in with GitHub or Google");
     const body = await readJson(c.req.raw.body, 64 * 1024);
     const reply = await context.help.submit({ tenant: principal.tenant, ...(principal.login ? { login: principal.login } : {}) }, body,
       { userAgent: c.req.header("user-agent"), source: context.clientAddress ? context.clientAddress(c) : clientAddress(name => c.req.header(name), (c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined)?.incoming?.socket?.remoteAddress, false) });
@@ -663,6 +671,8 @@ export function api(context: ApiContext) {
     const body = await readJson(c.req.raw.body, 4096, {});
     return json(c, 201, await accounts.createToken(c.var.principal.tenant, body.name));
   });
+  route(createRoute({ method: "delete", path: "/v1/sessions", responses: { 200: reply("Signed out everywhere: every console session of the account ends now, this one too", schema.SignedOut) } }),
+    async c => json(c, 200, { signedOut: await context.consoleAuth.endSessions(c.var.principal.tenant) }));
   const oauth = () => {
     if (!context.oauth) throw new HttpError(404, "OAuth is not enabled on this runtime");
     return context.oauth;
@@ -677,7 +687,7 @@ export function api(context: ApiContext) {
   });
   route(createRoute({ method: "delete", path: "/v1/tokens/{id}", request: { params: z.object({ id: z.string() }) }, responses: { 200: reply("The token is revoked. Webhooks and a trace export it set keep sending, and are listed", schema.Revoked) } }), async c => {
     const id = c.req.param("id")!;
-    if (c.var.principal.tokenId === id) throw new HttpError(400, "A token cannot revoke itself; use another token or the console");
+    if (c.var.principal.via === "token" && c.var.principal.tokenId === id) throw new HttpError(400, "A token cannot revoke itself; use another token or the console");
     if (!await accounts.revokeToken(c.var.principal.tenant, id)) throw new HttpError(404, "Unknown token");
     return json(c, 200, { revoked: true, left: await left(c.var.principal.tenant, `token:${id}`) });
   });
@@ -851,8 +861,8 @@ export function api(context: ApiContext) {
     responses: { 202: reply("The account is being deleted: it stops signing in and authenticating now, and its data goes within minutes. Its credit ledger, usage and payment records are kept for accounting; remaining credit is forfeited", schema.AccountDeletion) },
   }), async c => {
     const principal = c.var.principal;
-    // A token that leaked could otherwise end the account: only a person signed in to the console deletes it.
-    if (principal.via !== "console") throw new HttpError(403, "An account is deleted from the console, signed in");
+    // A token that leaked could otherwise end the account: only a person signed in to the console with GitHub or Google deletes it.
+    if (!personal(principal)) throw new HttpError(403, "An account is deleted from the console, signed in with GitHub or Google");
     const { confirm } = parse(schema.AccountDeletionInput, await readJson(c.req.raw.body, 4096, {}));
     if (confirm !== principal.tenant) throw new HttpError(400, "confirm must be this account's tenant id");
     return json(c, 202, await deletions().request(principal.tenant, "self"));

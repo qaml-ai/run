@@ -27,7 +27,7 @@ export interface OAuthOptions {
   secret: string;
   /** The issuer; the public URL, where the endpoints and pages are; and the aliases, where MCP endpoints are too. */
   origins: PublicOrigins;
-  /** Whether the console signs in with GitHub and with Google (the sign-in page always takes an API token too). */
+  /** Whether the console signs in with GitHub and with Google (the sign-in page also takes an API token, behind a disclosure). */
   github: boolean;
   google?: boolean;
 }
@@ -345,9 +345,11 @@ export class OAuth {
       if (redirect) return this.redirect(c, redirect, { error: error.code, error_description: error.message });
       return page(c, 400, "Cannot connect", `<h1>Cannot connect this application</h1><p>${escape(error.message)}</p>`);
     };
+    // A browser names our origin in Origin, or where it leaves that out, says same-origin in Sec-Fetch-Site; a request with neither is not a form of ours.
     const sameOrigin = (c: Context) => {
       const origin = c.req.header("origin");
-      if (origin === undefined || origin === this.base) return true;
+      if (origin === undefined) return c.req.header("sec-fetch-site") === "same-origin";
+      if (origin === this.base) return true;
       try { return new URL(origin).host === c.req.header("host"); } catch { return false; }
     };
 
@@ -358,12 +360,15 @@ export class OAuth {
       const principal = await this.options.consoleAuth.principal(c.req.raw);
       const here = `/oauth/authorize?${params}`;
       const providers = this.options.github || this.options.google;
+      // API-token sign-in, which the ChatGPT plugin's reviewers use: out of the way where GitHub or Google is offered.
+      // TODO: remove after the ChatGPT review (docs/operations).
+      const tokenForm = `<form method="post" action="/oauth/login"><input type="hidden" name="next" value="${escape(here)}">
+<input type="password" name="token" placeholder="art_…" autocomplete="off" required aria-label="API token"><button type="submit"${providers ? " class=\"secondary\"" : ""}>Sign in</button></form>`;
       if (!principal) {
         return page(c, 200, "Sign in", `<h1>Sign in to camelRun</h1>
 <p>An application calling itself <strong>${escape(request.client.name)}</strong> <span class="muted">(unverified)</span>, at <code>${escape(destinationOf(request.redirectUri))}</code>, wants to connect to your camelRun account. Sign in first.</p>
-${providers ? `<p>${this.options.github ? `<a class="button" href="/console/auth/github?next=${encodeURIComponent(here)}">Sign in with GitHub</a>` : ""}${this.options.github && this.options.google ? " " : ""}${this.options.google ? `<a class="button" href="/console/auth/google?next=${encodeURIComponent(here)}">Sign in with Google</a>` : ""}</p><p class="muted">Or sign in with an API token:</p>` : ""}
-<form method="post" action="/oauth/login"><input type="hidden" name="next" value="${escape(here)}">
-<input type="password" name="token" placeholder="art_…" autocomplete="off" required aria-label="API token"><button type="submit"${providers ? " class=\"secondary\"" : ""}>Sign in</button></form>`);
+${providers ? `<p>${this.options.github ? `<a class="button" href="/console/auth/github?next=${encodeURIComponent(here)}">Sign in with GitHub</a>` : ""}${this.options.github && this.options.google ? " " : ""}${this.options.google ? `<a class="button" href="/console/auth/google?next=${encodeURIComponent(here)}">Sign in with Google</a>` : ""}</p>
+<details><summary class="muted">Use an API token instead</summary>${tokenForm}</details>` : tokenForm}`);
       }
       const destination = escape(destinationOf(request.redirectUri));
       return page(c, 200, "Connect", `<h1>Connect an application?</h1>
@@ -394,9 +399,9 @@ ${providers ? `<p>${this.options.github ? `<a class="button" href="/console/auth
       const params = new URLSearchParams(await readText(c.req.raw.body, 16 * 1024));
       const next = params.get("next") ?? "";
       if (!next.startsWith("/oauth/authorize?")) return page(c, 400, "Cannot sign in", "<h1>Cannot sign in</h1><p>Start again from the application.</p>");
-      const principal = await this.options.accounts.authenticate(`Bearer ${params.get("token") ?? ""}`);
-      if (!principal) return page(c, 403, "Unknown token", `<h1>Unknown token</h1><p>That API token is not valid. <a href="${escape(next)}">Try again</a>.</p>`);
-      c.header("Set-Cookie", await this.options.consoleAuth.tokenSession(principal.tenant));
+      const session = await this.options.consoleAuth.tokenSession(params.get("token") ?? "");
+      if (!session) return page(c, 403, "Unknown token", `<h1>Unknown token</h1><p>That API token is not valid. <a href="${escape(next)}">Try again</a>.</p>`);
+      c.header("Set-Cookie", session.cookie);
       return c.redirect(next, 303);
     });
     return app;
@@ -443,4 +448,4 @@ main{max-width:440px;width:100%;background:var(--card);border:1px solid var(--li
 h1{font-size:20px;margin:0 0 12px}.muted{color:var(--muted);font-size:13px}code{font-size:13px}
 button,.button{display:inline-block;border:1px solid var(--accent);background:var(--accent);color:var(--on);border-radius:8px;padding:8px 16px;font:inherit;cursor:pointer;text-decoration:none}
 .secondary{background:transparent;color:var(--fg)}input[type=password]{width:100%;box-sizing:border-box;margin:0 0 12px;padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);font:inherit}
-.brand{font-weight:600;margin-bottom:16px}.destination{border:1px solid var(--line);border-radius:8px;padding:10px 12px;word-break:break-all}.destination code{font-size:15px}</style></head><body><main><div class="brand">camelRun</div>${body}</main></body></html>`;
+details{margin-top:16px}summary{cursor:pointer;margin-bottom:12px}.brand{font-weight:600;margin-bottom:16px}.destination{border:1px solid var(--line);border-radius:8px;padding:10px 12px;word-break:break-all}.destination code{font-size:15px}</style></head><body><main><div class="brand">camelRun</div>${body}</main></body></html>`;

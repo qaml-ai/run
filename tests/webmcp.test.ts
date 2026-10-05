@@ -62,11 +62,11 @@ test("the console registers the tools with the browser, runs them as the signed-
 
 test("in the console, the tools authenticate with the session cookie and the console header, not a key", async t => {
   const r = await runtime(t, body => ({ role: "assistant", content: `echo: ${lastUser(body)}` }));
-  const signIn = await fetch(`${r.base}/console/auth/token`, { method: "POST", headers: { "Content-Type": "application/json", "X-Agent-Runtime-Console": "1" }, body: JSON.stringify({ token: OPERATOR }) });
+  const signIn = await fetch(`${r.base}/console/auth/token`, { method: "POST", headers: { "Content-Type": "application/json", "X-Agent-Runtime-Console": "1", "Sec-Fetch-Site": "same-origin" }, body: JSON.stringify({ token: OPERATOR }) });
   const cookie = signIn.headers.get("set-cookie")!.split(";")[0];
   const { context, registered } = fakeContext();
   // What consoleApi() makes in the browser, where the cookie goes by itself.
-  await registerTools(new AbortController().signal, context, () => new Api({ url: r.base, headers: { "X-Agent-Runtime-Console": "1", Cookie: cookie } }));
+  await registerTools(new AbortController().signal, context, () => new Api({ url: r.base, headers: { "X-Agent-Runtime-Console": "1", "Sec-Fetch-Site": "same-origin", Cookie: cookie } }));
   const created = await registered.get("create_agent")!.execute({ key: "by-cookie", systemPrompt: "Hi." });
   assert.equal(created.isError, undefined, created.content[0].text);
   assert.equal(JSON.parse((await registered.get("whoami")!.execute({})).content[0].text).via, "console");

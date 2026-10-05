@@ -214,9 +214,9 @@ test("a reply address that is the support inbox is not copied twice", async t =>
 
 test("POST /v1/help is the console's; GET /v1/help says whether the button shows", async t => {
   const { help, accounts, sent } = await setup(t);
-  const consoleAuth = new ConsoleAuth({ accounts, secret: "console-session-secret-with-32-chars!", publicUrl: origin });
+  const consoleAuth = new ConsoleAuth({ accounts, publicUrl: origin });
   const context = { accounts, consoleAuth, clients: {} as never, defaultModel: async () => "anthropic/claude-sonnet-5-5", createAgent: async () => ({}) };
-  const cookie = consoleAuth.session("alice", "octocat").split(";")[0];
+  const cookie = (await consoleAuth.session("alice", "github", "octocat")).split(";")[0];
   const console = { cookie, "x-agent-runtime-console": "1", origin, "content-type": "application/json", "x-forwarded-for": "10.0.0.1, 203.0.113.7" };
   const operator = { authorization: "Bearer alice-operator-token-at-least-24", "content-type": "application/json" };
   const enabled = api({ ...context, help });
@@ -381,9 +381,9 @@ test("lookups that fail read as unknown, never as none, zero or allowed", async 
 
 test("GET /v1/help offers the console its verified addresses; POST enforces them", async t => {
   const { help, accounts, sent } = await setup(t, { verified: ["owner@example.test"] });
-  const consoleAuth = new ConsoleAuth({ accounts, secret: "console-session-secret-with-32-chars!", publicUrl: origin });
+  const consoleAuth = new ConsoleAuth({ accounts, publicUrl: origin });
   const app = api({ accounts, consoleAuth, clients: {} as never, defaultModel: async () => "anthropic/claude-sonnet-5-5", createAgent: async () => ({}), help });
-  const cookie = consoleAuth.session("alice", "octocat").split(";")[0];
+  const cookie = (await consoleAuth.session("alice", "github", "octocat")).split(";")[0];
   const headers = { cookie, "x-agent-runtime-console": "1", origin, "content-type": "application/json" };
   assert.deepEqual(await (await app.request("/v1/help", { headers: { cookie } })).json(), { enabled: true, replyEmails: ["owner@example.test"] });
   assert.deepEqual(await (await app.request("/v1/help", { headers: { authorization: "Bearer alice-operator-token-at-least-24" } })).json(), { enabled: false, replyEmails: [] });
@@ -396,9 +396,9 @@ test("GET /v1/help offers the console its verified addresses; POST enforces them
 
 test("POST /v1/help keys its per-source limit on CF-Connecting-IP behind Cloudflare, not on Cloudflare's edge", async t => {
   const { help, accounts, db } = await setup(t);
-  const consoleAuth = new ConsoleAuth({ accounts, secret: "console-session-secret-with-32-chars!", publicUrl: origin });
+  const consoleAuth = new ConsoleAuth({ accounts, publicUrl: origin });
   const context = { accounts, consoleAuth, clients: {} as never, defaultModel: async () => "anthropic/claude-sonnet-5-5", createAgent: async () => ({}), help };
-  const cookie = consoleAuth.session("alice", "octocat").split(";")[0];
+  const cookie = (await consoleAuth.session("alice", "github", "octocat")).split(";")[0];
   // Two people behind the same Cloudflare edge: the ALB's last X-Forwarded-For entry is the edge's address for both.
   const from = (ip: string) => ({ cookie, "x-agent-runtime-console": "1", origin, "content-type": "application/json", "cf-connecting-ip": ip, "x-forwarded-for": `${ip}, 162.158.1.1` });
   const sources = async () => new Set((await db.query("select source_hash from help_requests")).rows.map(row => row.source_hash));

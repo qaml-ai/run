@@ -638,7 +638,7 @@ async function fakeGithub(t: { after(fn: () => void | Promise<void>): void }) {
 }
 const githubEnv = (github: string) => ({ GITHUB_CLIENT_ID: "client-id", GITHUB_CLIENT_SECRET: "client-secret", AGENT_GITHUB_WEB_URL: github, AGENT_GITHUB_API_URL: github, AGENT_OPEN_SIGNUP: "true", AGENT_SIGNUP_MIN_ACCOUNT_DAYS: "7" });
 const consoleCall = (call: (path: string, init?: any) => Promise<any>, cookie: string) =>
-  (path: string, init: { method?: string; body?: unknown } = {}) => call(path, { ...init, token: null, headers: { Cookie: cookie, "X-Agent-Runtime-Console": "1" } });
+  (path: string, init: { method?: string; body?: unknown } = {}) => call(path, { ...init, token: null, headers: { Cookie: cookie, "X-Agent-Runtime-Console": "1", "Sec-Fetch-Site": "same-origin" } });
 
 test("open sign-up admits any GitHub account; starting credit is once per account id and uses the configured signup policy; a renamed login keeps its tenant", async t => {
   const github = await fakeGithub(t);
@@ -646,7 +646,7 @@ test("open sign-up admits any GitHub account; starting credit is once per accoun
   const { call, base } = await runtime(t, () => ({ role: "assistant", content: "hi" }), {
     ...githubEnv(github.url), AGENT_VERIFY_KEYS: "false", STRIPE_SECRET_KEY: "sk_test_fixture", STRIPE_WEBHOOK_SECRET: WEBHOOK_SECRET, AGENT_STRIPE_API_URL: stripeApi.url,
   }, tenantsFile);
-  assert.deepEqual((await call("/console/auth/methods", { token: null })).json, { github: true, google: false, token: true, open: true });
+  assert.deepEqual((await call("/console/auth/methods", { token: null })).json, { github: true, google: false, open: true });
 
   // Not eligible at signup, but can sign in and buy credit.
   github.account(2001, "Newbie", 5);

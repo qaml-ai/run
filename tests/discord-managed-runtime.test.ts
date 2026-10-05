@@ -88,9 +88,9 @@ test("managed bot runs isolated tenant agents through the real Gateway and conso
   const bindings: any[] = [];
   for (let i = 0; i < 2; i++) {
     const token = i === 0 ? OPERATOR : OTHER_OPERATOR;
-    const signIn = await fetch(`${r.base}/console/auth/token`, { method: "POST", headers: { "Content-Type": "application/json", "X-Agent-Runtime-Console": "1" }, body: JSON.stringify({ token }) });
+    const signIn = await fetch(`${r.base}/console/auth/token`, { method: "POST", headers: { "Content-Type": "application/json", "X-Agent-Runtime-Console": "1", "Sec-Fetch-Site": "same-origin" }, body: JSON.stringify({ token }) });
     const cookie = signIn.headers.getSetCookie().find(value => value.startsWith("ar_session="))!.split(";")[0];
-    const h = { Cookie: cookie, "X-Agent-Runtime-Console": "1", "Content-Type": "application/json" }; headers.push(h);
+    const h = { Cookie: cookie, "X-Agent-Runtime-Console": "1", "Sec-Fetch-Site": "same-origin", "Content-Type": "application/json" }; headers.push(h);
     const install = await fetch(`${r.base}/console/discord/install`, { headers: h, redirect: "manual" });
     assert.equal(install.status, 302);
     const state = new URL(install.headers.get("location")!).searchParams.get("state");

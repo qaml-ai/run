@@ -245,27 +245,92 @@ test("tenants mint and revoke their own API tokens", async t => {
 
 test("console sessions require same-origin mutations; token sign-in sets a session", async t => {
   const { call, base } = await runtime(t);
-  assert.deepEqual((await call("/console/auth/methods")).json, { github: false, google: false, token: true });
+  const browser = { "X-Agent-Runtime-Console": "1", "Sec-Fetch-Site": "same-origin" };
+  assert.deepEqual((await call("/console/auth/methods")).json, { github: false, google: false });
   assert.match(decodeURIComponent((await call("/console/auth/google")).headers.get("location")!), /Google sign-in is not configured/);
   assert.equal((await call("/console/auth/token", { body: { token: alice } })).status, 403, "the console header is required");
-  assert.equal((await call("/console/auth/token", { body: { token: "wrong" }, headers: { "X-Agent-Runtime-Console": "1" } })).status, 401);
-  const signIn = await call("/console/auth/token", { body: { token: alice }, headers: { "X-Agent-Runtime-Console": "1" } });
+  assert.equal((await call("/console/auth/token", { body: { token: alice }, headers: { "X-Agent-Runtime-Console": "1" } })).status, 403, "and a browser's word that it is same-origin");
+  assert.equal((await call("/console/auth/token", { body: { token: "wrong" }, headers: browser })).status, 401);
+  const signIn = await call("/console/auth/token", { body: { token: alice }, headers: browser });
   assert.equal(signIn.status, 200);
   const setupNext = "/console/discord/install?guild_id=123456789012345678";
-  assert.equal((await call("/console/auth/token", { body: { token: alice, next: setupNext }, headers: { "X-Agent-Runtime-Console": "1" } })).json.next, setupNext);
+  assert.equal((await call("/console/auth/token", { body: { token: alice, next: setupNext }, headers: browser })).json.next, setupNext);
   for (const next of ["//evil.example/", "/console/discord/install?guild_id=1&next=https://evil.example", "/console/discord/install?guild_id=abc", "/console/channels?discord_setup=123"]) {
-    assert.equal((await call("/console/auth/token", { body: { token: alice, next }, headers: { "X-Agent-Runtime-Console": "1" } })).json.next, undefined);
+    assert.equal((await call("/console/auth/token", { body: { token: alice, next }, headers: browser })).json.next, undefined);
   }
   const cookie = signIn.headers.get("set-cookie")!.split(";")[0];
+  assert.match(cookie, /^ar_session=[A-Za-z0-9_-]{43}$/, "the cookie is only a random id");
   assert.match(signIn.headers.get("set-cookie")!, /HttpOnly; SameSite=Lax/);
-  assert.equal((await call("/v1/me", { headers: { Cookie: cookie } })).json.via, "console");
-  // Reads work with the cookie; writes need the console header and our origin.
-  assert.equal((await call("/v1/tokens", { body: { name: "x" }, headers: { Cookie: cookie } })).status, 403);
-  assert.equal((await call("/v1/tokens", { body: { name: "x" }, headers: { Cookie: cookie, "X-Agent-Runtime-Console": "1", Origin: "https://evil.example" } })).status, 403);
-  assert.equal((await call("/v1/tokens", { body: { name: "x" }, headers: { Cookie: cookie, "X-Agent-Runtime-Console": "1", Origin: base } })).status, 201);
+  assert.deepEqual((await call("/v1/me", { headers: { Cookie: cookie } })).json, { tenant: "alice", via: "console", signIn: "token", canStoreKeys: true, defaultModel: "anthropic/claude-sonnet-5-5" });
+  // Reads work with the cookie; writes need the console header and our origin, as Origin or Sec-Fetch-Site names it.
+  const agent = { name: "x" };
+  assert.equal((await call("/v1/agents", { body: agent, headers: { Cookie: cookie } })).status, 403);
+  assert.equal((await call("/v1/agents", { body: agent, headers: { Cookie: cookie, "X-Agent-Runtime-Console": "1" } })).status, 403, "curl with no Origin cannot write with a cookie");
+  assert.equal((await call("/v1/agents", { body: agent, headers: { Cookie: cookie, "X-Agent-Runtime-Console": "1", "Sec-Fetch-Site": "cross-site" } })).status, 403);
+  assert.equal((await call("/v1/agents", { body: agent, headers: { Cookie: cookie, "X-Agent-Runtime-Console": "1", Origin: "https://evil.example" } })).status, 403);
+  assert.equal((await call("/v1/agents", { body: agent, headers: { Cookie: cookie, "X-Agent-Runtime-Console": "1", Origin: "https://evil.example", "Sec-Fetch-Site": "same-origin" } })).status, 403, "a foreign Origin wins");
+  assert.equal((await call("/v1/agents", { body: agent, headers: { Cookie: cookie, "X-Agent-Runtime-Console": "1", Origin: "null" } })).status, 403);
+  assert.equal((await call("/v1/agents", { body: { name: "y" }, headers: { Cookie: cookie, "X-Agent-Runtime-Console": "1", Origin: base } })).status, 201);
+  assert.equal((await call("/v1/agents", { body: { name: "z" }, headers: { Cookie: cookie, ...browser } })).status, 201);
+  assert.equal((await call("/console/auth/logout", { body: {}, headers: { Cookie: cookie, "X-Agent-Runtime-Console": "1" } })).status, 403, "nor sign out");
   const tampered = cookie.replace(/.$/, cookie.endsWith("A") ? "B" : "A");
   assert.equal((await call("/v1/me", { headers: { Cookie: tampered } })).status, 401);
-  assert.equal((await call("/console/auth/logout", { body: {}, headers: { Cookie: cookie, "X-Agent-Runtime-Console": "1" } })).headers.get("set-cookie")?.includes("Max-Age=0"), true);
+  // Signing out ends the session on the server: the cookie, replayed, is nothing.
+  const logout = await call("/console/auth/logout", { body: {}, headers: { Cookie: cookie, ...browser } });
+  assert.equal(logout.headers.get("set-cookie")?.includes("Max-Age=0"), true);
+  assert.equal((await call("/v1/me", { headers: { Cookie: cookie } })).status, 401, "logout ends the session server-side");
+});
+
+test("a token's console session ends with its token and has none of the console's own powers", async t => {
+  const { call, db, root, child, logged } = await runtime(t);
+  const browser = { "X-Agent-Runtime-Console": "1", "Sec-Fetch-Site": "same-origin" };
+  const signIn = async (token: string) => (await call("/console/auth/token", { body: { token }, headers: browser })).headers.getSetCookie()[0].split(";")[0];
+  const minted = (await call("/v1/tokens", { token: alice, body: { name: "reviewer" } })).json;
+  const session = await signIn(minted.token);
+  const as = (path: string, init: { method?: string; body?: unknown } = {}) => call(path, { ...init, headers: { Cookie: session, ...browser } });
+  assert.equal((await as("/v1/me")).json.signIn, "token");
+  // What a reviewer does in the console works: agents, definitions, connected apps.
+  const agent = await as("/v1/agents", { body: { name: "support-demo" } });
+  assert.equal(agent.status, 201);
+  assert.equal((await as("/v1/agents")).json.some((listed: { id: string }) => listed.id === agent.json.id), true);
+  assert.equal((await as("/v1/definitions", { body: { name: "helper", systemPrompt: "Be brief" } })).status, 201);
+  assert.equal((await as("/v1/oauth/grants")).status, 200);
+  assert.equal((await as("/v1/tokens")).status, 200, "it sees the tokens");
+  assert.equal((await as("/v1/billing")).status, 200, "and billing");
+  // But not what is a person's: minting tokens, changing billing, Get Help, deleting the account.
+  for (const [method, path, body] of [["POST", "/v1/tokens", { name: "more" }], ["PUT", "/v1/billing/alerts", { threshold: 1 }], ["POST", "/v1/billing/checkout", { amount: 10_000_000 }],
+    ["POST", "/v1/billing/portal", {}], ["POST", "/v1/help", {}], ["DELETE", "/v1/account", { confirm: "alice" }]] as const) {
+    const refused = await as(path, { method, body });
+    assert.equal(refused.status, 403, `${method} ${path}`);
+    assert.match(refused.json.error, /signed in to with an API token/, `${method} ${path}`);
+  }
+  assert.deepEqual((await as("/v1/help")).json, { enabled: false, replyEmails: [] });
+  // Revoking the token ends its session at once, and every session it made.
+  const second = await signIn(minted.token);
+  assert.equal((await call(`/v1/tokens/${minted.id}`, { method: "DELETE", token: alice })).status, 200);
+  assert.equal((await as("/v1/me")).status, 401, "revoking the token kills its session");
+  assert.equal((await call("/v1/me", { headers: { Cookie: second } })).status, 401);
+  assert.equal(Number((await db.query("select count(*) from console_sessions where method = 'token' and token_id is not null")).rows[0].count), 0);
+
+  // Sign out everywhere ends every session of the tenant, from the console or with a token, and no other tenant's.
+  const sessions = [await signIn(alice), await signIn(alice)];
+  const bobs = await signIn(bob);
+  assert.deepEqual((await call("/v1/sessions", { method: "DELETE", headers: { Cookie: sessions[0], ...browser } })).json, { signedOut: 2 });
+  for (const ended of sessions) assert.equal((await call("/v1/me", { headers: { Cookie: ended } })).status, 401);
+  assert.equal((await call("/v1/me", { headers: { Cookie: bobs } })).status, 200);
+  assert.deepEqual((await call("/v1/sessions", { method: "DELETE", token: bob })).json, { signedOut: 1 });
+  assert.equal((await call("/v1/me", { headers: { Cookie: bobs } })).status, 401);
+
+  // An operator token's session ends once the tenants file gives the tenant another token.
+  const operator = await signIn(alice);
+  assert.equal((await call("/v1/me", { headers: { Cookie: operator } })).status, 200);
+  const rotated = "alice-rotated-operator-token-24-chars";
+  writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { ...defaultTenants, alice: { tokenSha256: sha(rotated), apiKeys: {} } } }));
+  const reloaded = logged(/tenants_reloaded/);
+  child.kill("SIGHUP");
+  await reloaded;
+  assert.equal((await call("/v1/me", { headers: { Cookie: operator } })).status, 401);
+  assert.equal((await call("/v1/me", { headers: { Cookie: await signIn(rotated) } })).status, 200);
 });
 
 test("sign-ups per address per day: behind Cloudflare, a new account past the limit waits a day; existing accounts still sign in", async t => {
@@ -314,7 +379,7 @@ test("GitHub sign-in admits active org members, links admin tenants, and creates
   assert.equal((await signIn("Bob-Builder", "//evil.example/oauth/authorize?")).location, "/console/");
   assert.equal((await call("/v1/me", { headers: { Cookie: bobSession.session! } })).json.tenant, "bob");
   const carol = await signIn("Carol");
-  assert.deepEqual((await call("/v1/me", { headers: { Cookie: carol.session! } })).json, { tenant: "carol", via: "console", login: "Carol", canStoreKeys: true, defaultModel: "anthropic/claude-sonnet-5-5" });
+  assert.deepEqual((await call("/v1/me", { headers: { Cookie: carol.session! } })).json, { tenant: "carol", via: "console", login: "Carol", signIn: "github", canStoreKeys: true, defaultModel: "anthropic/claude-sonnet-5-5" });
   const mallory = await signIn("Mallory");
   assert.equal(mallory.session, undefined);
   assert.match(decodeURIComponent(mallory.location), /Only members of the qaml-ai/);
@@ -326,7 +391,7 @@ test("GitHub sign-in admits active org members, links admin tenants, and creates
 test("Google sign-in verifies the ID token, creates separate tenants, and returns to the consent page", async t => {
   const google = await fakeGoogle(t);
   const { call, db, base } = await runtime(t, undefined, { GOOGLE_CLIENT_ID: "google-client", GOOGLE_CLIENT_SECRET: "google-secret", AGENT_GOOGLE_ISSUER: google.url, AGENT_OPEN_SIGNUP: "true" });
-  assert.deepEqual((await call("/console/auth/methods")).json, { github: false, google: true, token: true });
+  assert.deepEqual((await call("/console/auth/methods")).json, { github: false, google: true });
   const signIn = async (claims: Record<string, unknown>, options: { next?: string; spoil?: Parameters<typeof google.nextSignIn>[2]; state?: string } = {}) => {
     const start = await call(`/console/auth/google${options.next ? `?next=${encodeURIComponent(options.next)}` : ""}`);
     assert.equal(start.status, 302);
@@ -344,7 +409,7 @@ test("Google sign-in verifies the ID token, creates separate tenants, and return
   };
   const ada = await signIn({ sub: "1001", email: "ada@example.com", email_verified: true, name: "Ada Lovelace" });
   assert.equal(ada.location, "/console/");
-  assert.deepEqual((await call("/v1/me", { headers: { Cookie: ada.session! } })).json, { tenant: neutral("1001"), via: "console", login: "ada@example.com", name: "Ada Lovelace", canStoreKeys: true, defaultModel: "anthropic/claude-sonnet-5-5" });
+  assert.deepEqual((await call("/v1/me", { headers: { Cookie: ada.session! } })).json, { tenant: neutral("1001"), via: "console", login: "ada@example.com", name: "Ada Lovelace", signIn: "google", canStoreKeys: true, defaultModel: "anthropic/claude-sonnet-5-5" });
   // No automatic starting credit: the account starts at zero.
   const billing = (await call("/v1/billing", { headers: { Cookie: ada.session! } })).json;
   assert.equal(billing.balance, 0);
@@ -359,14 +424,26 @@ test("Google sign-in verifies the ID token, creates separate tenants, and return
   const client = (await call("/oauth/register", { body: { client_name: "Test Agent", redirect_uris: ["http://127.0.0.1:43210/cb"], token_endpoint_auth_method: "none" } })).json;
   const consent = `/oauth/authorize?${new URLSearchParams({ response_type: "code", client_id: client.client_id, redirect_uri: "http://127.0.0.1:43210/cb", code_challenge: "x".repeat(43), code_challenge_method: "S256", state: "s-1", resource: `${base}/mcp` })}`;
   assert.ok(String((await call(consent)).json).includes(`href="/console/auth/google?next=${encodeURIComponent(consent)}"`));
+  assert.match(String((await call(consent)).json), /<details><summary class="muted">Use an API token instead<\/summary><form method="post" action="\/oauth\/login">/, "API-token sign-in is behind a disclosure");
   const returned = await signIn({ sub: "1001", email: "ada@example.com", email_verified: true }, { next: consent });
   assert.equal(returned.location, decodeURIComponent(consent));
   assert.match(String((await call(consent, { headers: { Cookie: returned.session! } })).json), /Connect an application\?[\s\S]*Signed in as <strong>ada@example\.com<\/strong>/);
   // An API token of a Google tenant names the person too, in /v1/me and in a console session it signs in.
-  const token = (await call("/v1/tokens", { body: { name: "script" }, headers: { Cookie: ada.session!, "X-Agent-Runtime-Console": "1" } })).json.token;
+  const token = (await call("/v1/tokens", { body: { name: "script" }, headers: { Cookie: ada.session!, "X-Agent-Runtime-Console": "1", "Sec-Fetch-Site": "same-origin" } })).json.token;
   assert.equal((await call("/v1/me", { token })).json.login, "ada@example.com");
-  const tokenSession = (await call("/console/auth/token", { body: { token }, headers: { "X-Agent-Runtime-Console": "1" } })).headers.getSetCookie()[0].split(";")[0];
+  const tokenSession = (await call("/console/auth/token", { body: { token }, headers: { "X-Agent-Runtime-Console": "1", "Sec-Fetch-Site": "same-origin" } })).headers.getSetCookie()[0].split(";")[0];
   assert.equal((await call("/v1/me", { headers: { Cookie: tokenSession } })).json.login, "ada@example.com");
+  // The consent page's API-token disclosure (how the ChatGPT plugin's reviewers sign in) still ends in a grant.
+  const verifier = randomBytes(32).toString("base64url");
+  const pkce = new URLSearchParams({ response_type: "code", client_id: client.client_id, redirect_uri: "http://127.0.0.1:43210/cb", code_challenge: createHash("sha256").update(verifier).digest("base64url"), code_challenge_method: "S256", state: "s-2", resource: `${base}/mcp` });
+  const form = (path: string, body: Record<string, string>, headers: Record<string, string> = {}) =>
+    fetch(base + path, { method: "POST", redirect: "manual", headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: base, ...headers }, body: new URLSearchParams(body) });
+  const login = await form("/oauth/login", { token, next: `/oauth/authorize?${pkce}` });
+  assert.equal(login.status, 303);
+  const viaToken = login.headers.get("set-cookie")!.split(";")[0];
+  const granted = new URL((await form("/oauth/authorize", { ...Object.fromEntries(pkce), decision: "allow" }, { Cookie: viaToken })).headers.get("location")!);
+  const exchanged = await (await form("/oauth/token", { grant_type: "authorization_code", code: granted.searchParams.get("code")!, code_verifier: verifier, client_id: client.client_id, redirect_uri: "http://127.0.0.1:43210/cb" })).json();
+  assert.equal((await call("/v1/me", { token: exchanged.access_token })).json.via, "oauth");
   // Unverified addresses, and tokens with the wrong nonce, signer or lifetime, never sign in or create a tenant.
   const refused = [
     [await signIn({ sub: "2001", email: "eve@example.com", email_verified: false }), /email address is verified/],

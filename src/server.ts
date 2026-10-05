@@ -199,7 +199,7 @@ rateLimits.start();
 /** Who sent a request: its address and the key per-address limits count it under (none for the runtime's own calls). */
 const requestClient = (c: Context) => rateLimits.client(name => c.req.header(name), (c.env as HttpBindings | undefined)?.incoming?.socket?.remoteAddress);
 const consoleAuth = new ConsoleAuth({
-  accounts, secret: sessionSecret, publicUrl, github, google,
+  accounts, publicUrl, github, google,
   admitSignup: c => { const { key } = requestClient(c); return sql => rateLimits.signup(sql, key); },
 });
 const consoleDir = resolve(process.env.AGENT_CONSOLE_DIR ?? fileURLToPath(new URL("../console/dist", import.meta.url)));

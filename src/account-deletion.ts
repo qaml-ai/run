@@ -43,7 +43,7 @@ export interface AccountDeletionOptions {
 /** Tables whose rows go with the tenant, by their `tenant` column (payment, ledger and anti-abuse records are not here). */
 const TENANT_TABLES = [
   "discord_setup_attempts", "discord_server_bindings",
-  "api_tokens", "oauth_grants", "provider_keys", "key_scope_providers", "model_providers", "definitions",
+  "console_sessions", "api_tokens", "oauth_grants", "provider_keys", "key_scope_providers", "model_providers", "definitions",
   "webhook_deliveries", "webhook_endpoints", "usage_webhook_outbox", "usage_webhooks", "telemetry_exporters", "idempotency_keys",
   "agent_inputs", "schedules", "channel_agents", "volume_watchers", "channels",
   "chunk_pins", "chunk_touches", "gc_candidates", "storage_gc",

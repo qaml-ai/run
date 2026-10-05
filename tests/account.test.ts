@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { Accounts } from "../src/accounts.ts";
@@ -94,9 +95,14 @@ test("an account exports everything it stores, then deletes it all but the ledge
 
   // Deletion is the console's, signed in, with the account named; admin tenants and other operators cannot.
   assert.equal((await as("/v1/account", { method: "DELETE", body: { confirm: tenant } })).status, 403, "not with an API token");
-  const signIn = await fetch(`${r.base}/console/auth/token`, { method: "POST", headers: { "Content-Type": "application/json", "X-Agent-Runtime-Console": "1" }, body: JSON.stringify({ token }) });
-  const cookie = signIn.headers.getSetCookie()[0].split(";")[0];
-  const console_ = (path: string, init: { method?: string; body?: unknown } = {}) => r.call(path, { ...init, token: null, headers: { Cookie: cookie, "X-Agent-Runtime-Console": "1" } });
+  const signIn = await fetch(`${r.base}/console/auth/token`, { method: "POST", headers: { "Content-Type": "application/json", "X-Agent-Runtime-Console": "1", "Sec-Fetch-Site": "same-origin" }, body: JSON.stringify({ token }) });
+  const asSession = (cookie: string) => (path: string, init: { method?: string; body?: unknown } = {}) => r.call(path, { ...init, token: null, headers: { Cookie: cookie, "X-Agent-Runtime-Console": "1", "Sec-Fetch-Site": "same-origin" } });
+  assert.equal((await asSession(signIn.headers.getSetCookie()[0].split(";")[0])("/v1/account", { method: "DELETE", body: { confirm: tenant } })).status, 403, "not from a session signed in with a token");
+  // Carol's GitHub sign-in, as the callback stores it.
+  const sessionId = randomBytes(32).toString("base64url");
+  await r.db.query("insert into console_sessions (sha256, tenant, login, method, created_at, expires_at) values ($1, $2, 'carol', 'github', $3, $4)",
+    [createHash("sha256").update(sessionId).digest("hex"), tenant, Date.now(), Date.now() + 3600_000]);
+  const console_ = asSession(`ar_session=${sessionId}`);
   assert.equal((await console_("/v1/account", { method: "DELETE", body: { confirm: "someone-else" } })).status, 400);
   assert.equal((await r.call("/v1/tenants/bob", { method: "DELETE" })).status, 403, "an admin tenant is never deleted");
   assert.equal((await r.call("/v1/tenants/carol", { method: "DELETE", token: OTHER_OPERATOR })).status, 403, "only the platform operator deletes others");
@@ -113,7 +119,7 @@ test("an account exports everything it stores, then deletes it all but the ledge
 
   // Gone: everything but the ledger, usage, payment and starting-credit records.
   const count = async (sql: string, params: unknown[] = [tenant]) => Number((await r.db.query(sql, params)).rows[0].count);
-  for (const table of ["api_tokens", "provider_keys", "definitions", "webhook_endpoints", "schedules", "volumes", "channels", "billing_recipients", "chunk_touches", "oauth_grants", "agent_inputs", "discord_server_bindings", "discord_setup_attempts"]) {
+  for (const table of ["console_sessions", "api_tokens", "provider_keys", "definitions", "webhook_endpoints", "schedules", "volumes", "channels", "billing_recipients", "chunk_touches", "oauth_grants", "agent_inputs", "discord_server_bindings", "discord_setup_attempts"]) {
     assert.equal(await count(`select count(*) from ${table} where tenant = $1`), 0, table);
   }
   assert.equal(await count("select count(*) from tenants where id = $1"), 0);

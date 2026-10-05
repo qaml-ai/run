@@ -135,6 +135,10 @@ test("MCP clients sign in with OAuth: registration, consent, PKCE, rotating refr
 
   const decide = (decision: string, params = query, origin = r.base) => post("/oauth/authorize", { ...Object.fromEntries(params), decision }, { Cookie: cookie, Origin: origin });
   assert.equal((await decide("allow", query, "https://evil.example")).status, 403, "consent is same-origin");
+  // A request with no Origin (curl with a stolen cookie) is refused; a browser that leaves it out says Sec-Fetch-Site.
+  assert.equal((await post("/oauth/authorize", { ...Object.fromEntries(query), decision: "allow" }, { Cookie: cookie })).status, 403);
+  assert.equal((await post("/oauth/login", { token: OPERATOR, next: `/oauth/authorize?${query}` })).status, 403);
+  assert.equal((await post("/oauth/login", { token: OPERATOR, next: `/oauth/authorize?${query}` }, { "Sec-Fetch-Site": "same-origin" })).status, 303);
   const denied = new URL((await decide("deny")).headers.get("location")!);
   assert.deepEqual([denied.searchParams.get("error"), denied.searchParams.get("state")], ["access_denied", "s-1"]);
   const allowed = await decide("allow");

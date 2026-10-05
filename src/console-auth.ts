@@ -1,4 +1,4 @@
-import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { Hono, type Context } from "hono";
 import { createLocalJWKSet, jwtVerify, type JSONWebKeySet } from "jose";
 import type { Accounts, Principal } from "./accounts.ts";
@@ -6,13 +6,13 @@ import { readText } from "./http.ts";
 import type { Sql } from "./db.ts";
 
 /**
- * Console sign-in. Sessions are HMAC-signed cookies (HttpOnly, Secure, SameSite=Lax).
- * Browsers may only mutate state with the console's custom header, which a cross-site
- * page cannot send without a CORS preflight this server never grants.
+ * Console sign-in. Sessions live in Postgres (`console_sessions`); the cookie (HttpOnly, Secure, SameSite=Lax)
+ * carries only a random id, so signing out ends a session for good. Browsers may only mutate state with the
+ * console's custom header, which a cross-site page cannot send without a CORS preflight this server never
+ * grants, and from our origin, which the browser names in Origin or Sec-Fetch-Site.
  */
 export interface ConsoleAuthOptions {
   accounts: Accounts;
-  secret: string;
   /** Public origin, e.g. https://run.camelai.com. Cookies are Secure when it is https. */
   publicUrl: string;
   /**
@@ -29,6 +29,11 @@ export interface ConsoleAuthOptions {
   /** What a sign-in that makes a new account must pass, in the transaction that makes it: the sign-up rate limit for the request's source. */
   admitSignup?: (c: Context) => ((sql: Sql) => Promise<void>) | undefined;
 }
+/** How a console session was signed in. Only GitHub and Google sessions have the console's own powers (`personal`). */
+export type SignIn = "github" | "google" | "token";
+export type ConsolePrincipal = Principal & { via: "console"; signIn: SignIn; login?: string; name?: string };
+/** A session a person signed in to with GitHub or Google, which may mint API tokens, delete the account, bill and ask for help. */
+export const personal = (principal: { via: string; signIn?: SignIn }) => principal.via === "console" && (principal.signIn === "github" || principal.signIn === "google");
 export const GOOGLE_ISSUER = "https://accounts.google.com";
 export const CONSOLE_HEADER = "x-agent-runtime-console";
 const SESSION_COOKIE = "ar_session";
@@ -45,7 +50,7 @@ const nextPath = (value: string | undefined) => {
   return undefined;
 };
 
-const b64 = (value: string | Buffer) => Buffer.from(value).toString("base64url");
+const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 const same = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 /** An issuer's OpenID configuration, read at each sign-in. */
 async function discover(issuer: string) {
@@ -68,46 +73,88 @@ export class ConsoleAuth {
   constructor(options: ConsoleAuthOptions) { this.options = options; }
 
   private get secure() { return this.options.publicUrl.startsWith("https://"); }
-  private sign(payload: string) { return createHmac("sha256", this.options.secret).update(`console-session:${payload}`).digest("base64url"); }
+  private get db() { return this.options.accounts.db; }
+  private swept = 0;
   private cookie(name: string, value: string, maxAgeSeconds: number, path = "/") {
     return `${name}=${value}; Path=${path}; Max-Age=${maxAgeSeconds}; HttpOnly; SameSite=Lax${this.secure ? "; Secure" : ""}`;
   }
 
-  /** The signed-in principal from the session cookie, if valid and unexpired. */
-  async principal(req: Request): Promise<(Principal & { login?: string; name?: string }) | undefined> {
+  /**
+   * The signed-in principal from the session cookie: its row, while unexpired, for a tenant that exists. A token's
+   * session goes with its API token (the row cascades), or with its operator token once the tenants file changes it.
+   */
+  async principal(req: Request): Promise<ConsolePrincipal | undefined> {
     const raw = cookies(req)[SESSION_COOKIE];
-    if (!raw) return undefined;
-    const [payload, signature] = raw.split(".");
-    if (!payload || !signature) return undefined;
-    const expected = Buffer.from(this.sign(payload));
-    const given = Buffer.from(signature);
-    if (expected.length !== given.length || !timingSafeEqual(expected, given)) return undefined;
-    let session: { tenant: string; login?: string; name?: string; exp: number };
-    try { session = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")); } catch { return undefined; }
-    if (typeof session.exp !== "number" || session.exp < Date.now() || !await this.options.accounts.exists(session.tenant)) return undefined;
-    return { tenant: session.tenant, via: "console", ...(session.login ? { login: session.login } : {}), ...(session.name ? { name: session.name } : {}) };
+    if (!raw || !/^[A-Za-z0-9_-]{43}$/.test(raw)) return undefined;
+    const row = (await this.db.query("select tenant, login, name, method, token_id, operator_sha256 from console_sessions where sha256 = $1 and expires_at > $2", [sha256(raw), Date.now()])).rows[0];
+    if (!row || !await this.options.accounts.exists(row.tenant)) return undefined;
+    if (row.operator_sha256 && this.options.accounts.tenants.tokenSha256(row.tenant) !== row.operator_sha256) return undefined;
+    return { tenant: row.tenant, via: "console", signIn: row.method, ...(row.token_id ? { tokenId: row.token_id } : {}), ...(row.login ? { login: row.login } : {}), ...(row.name ? { name: row.name } : {}) };
   }
 
-  /** Browser requests that change state must carry the console header and come from our origin. */
+  /**
+   * Browser requests that change state must carry the console header and come from our origin: the Origin header
+   * names it, or, where a browser leaves Origin out, Sec-Fetch-Site says same-origin. A request with neither (curl
+   * with a stolen cookie) is refused.
+   */
   allowsMutation(req: Request) {
-    if (req.headers.get(CONSOLE_HEADER) !== "1") return false;
+    return req.headers.get(CONSOLE_HEADER) === "1" && this.sameOrigin(req);
+  }
+
+  /** Whether a browser says `req` comes from a page of ours. */
+  sameOrigin(req: Request) {
     const origin = req.headers.get("origin");
-    if (origin === null || origin === new URL(this.options.publicUrl).origin) return true;
+    if (origin === null) return req.headers.get("sec-fetch-site") === "same-origin";
+    if (origin === new URL(this.options.publicUrl).origin) return true;
     // Same-origin also means the Origin names the host this request was sent to.
     try { return new URL(origin).host === req.headers.get("host"); } catch { return false; }
   }
 
-  /** A session cookie for `tenant`, as sign-in sets it. */
-  session(tenant: string, login?: string) { return this.startSession(tenant, login); }
+  /** A session cookie for `tenant` after GitHub or Google sign-in. */
+  session(tenant: string, signIn: Exclude<SignIn, "token">, login?: string, name?: string) { return this.startSession({ tenant, method: signIn, login, name }); }
 
-  /** A session cookie after token sign-in, naming the person the tenant belongs to when that is known. */
-  async tokenSession(tenant: string) { return this.startSession(tenant, await this.options.accounts.identity(tenant)); }
+  /**
+   * A session cookie after signing in with `token`, an API token or an operator token, naming the person the tenant
+   * belongs to when that is known. It ends when the token does, and has none of the console's own powers (`personal`).
+   */
+  async tokenSession(token: string) {
+    const principal = await this.options.accounts.authenticate(`Bearer ${token}`);
+    if (!principal || (principal.via !== "token" && principal.via !== "operator")) return undefined;
+    const { tenant } = principal;
+    try {
+      const cookie = await this.startSession({ tenant, method: "token", login: await this.options.accounts.identity(tenant),
+        ...(principal.via === "token" ? { tokenId: principal.tokenId } : { operatorSha256: sha256(token) }) });
+      return { tenant, cookie };
+    } catch (error) {
+      // Revoked since another node's cache last saw it: its row is gone, so the session cannot name it.
+      if ((error as { code?: string }).code === "23503") return undefined;
+      throw error;
+    }
+  }
 
   /** `login` (Google address or GitHub login) and `name` show who is signed in; the tenant id is only for the API. */
-  private startSession(tenant: string, login?: string, name?: string) {
+  private async startSession(session: { tenant: string; method: SignIn; login?: string; name?: string; tokenId?: string; operatorSha256?: string }) {
     const hours = this.options.sessionHours ?? 12;
-    const payload = b64(JSON.stringify({ tenant, ...(login ? { login } : {}), ...(name ? { name: name.slice(0, 100) } : {}), exp: Date.now() + hours * 3600_000 }));
-    return this.cookie(SESSION_COOKIE, `${payload}.${this.sign(payload)}`, hours * 3600);
+    const id = randomBytes(32).toString("base64url"), now = Date.now();
+    await this.db.query("insert into console_sessions (sha256, tenant, login, name, method, token_id, operator_sha256, created_at, expires_at) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+      [sha256(id), session.tenant, session.login ?? null, session.name?.slice(0, 100) ?? null, session.method, session.tokenId ?? null, session.operatorSha256 ?? null, now, now + hours * 3600_000]);
+    // Expired sessions go now and then.
+    if (now - this.swept > 60_000) {
+      this.swept = now;
+      await this.db.query("delete from console_sessions where expires_at < $1", [now]).catch(() => {});
+    }
+    return this.cookie(SESSION_COOKIE, id, hours * 3600);
+  }
+
+  /** End the session `req` carries, if any. */
+  async endSession(req: Request) {
+    const raw = cookies(req)[SESSION_COOKIE];
+    if (raw) await this.db.query("delete from console_sessions where sha256 = $1", [sha256(raw)]);
+  }
+
+  /** Sign `tenant` out everywhere: every console session of it ends. Returns how many did. */
+  async endSessions(tenant: string) {
+    return (await this.db.query("delete from console_sessions where tenant = $1", [tenant])).rowCount ?? 0;
   }
 
   /** The /console/auth/* routes. */
@@ -123,7 +170,7 @@ export class ConsoleAuth {
 
     app.get("/console/auth/methods", c => {
       const github = this.options.github;
-      return json(c, 200, { github: !!github, google: !!this.options.google, token: true, ...(github?.open ? { open: true } : { org: github?.org }) });
+      return json(c, 200, { github: !!github, google: !!this.options.google, ...(github?.open ? { open: true } : { org: github?.org }) });
     });
     app.get("/console/auth/github", c => {
       const github = this.options.github;
@@ -185,7 +232,7 @@ export class ConsoleAuth {
         const tenant = await this.options.accounts.tenantForGithub(
           { login: user.login, id: user.id, ...(Number.isFinite(createdAt) ? { createdAt } : {}) },
           { minAccountAgeMs: github.minAccountDays === undefined ? undefined : Math.round(github.minAccountDays * 86_400_000), admit: this.options.admitSignup?.(c) });
-        return redirect(c, next ?? "/console/", [clearState, clearNext, this.startSession(tenant, user.login, user.name ?? undefined)]);
+        return redirect(c, next ?? "/console/", [clearState, clearNext, await this.session(tenant, "github", user.login, user.name ?? undefined)]);
       } catch (error) {
         return fail(c, (error as Error).message, [clearState, clearNext]);
       }
@@ -232,23 +279,26 @@ export class ConsoleAuth {
         if (typeof claims.nonce !== "string" || !same(claims.nonce, nonce) || (claims.azp !== undefined && claims.azp !== google.clientId)) throw new Error("Google's sign-in token did not verify; try again");
         if (claims.email_verified !== true || typeof claims.email !== "string" || typeof claims.sub !== "string") throw new Error("Sign in with a Google account whose email address is verified");
         const tenant = await this.options.accounts.tenantForGoogle({ sub: claims.sub, email: claims.email }, { admit: this.options.admitSignup?.(c) });
-        return redirect(c, next ?? "/console/", [...clear, this.startSession(tenant, claims.email, typeof claims.name === "string" ? claims.name : undefined)]);
+        return redirect(c, next ?? "/console/", [...clear, await this.session(tenant, "google", claims.email, typeof claims.name === "string" ? claims.name : undefined)]);
       } catch (error) {
         return fail(c, (error as Error).message, clear);
       }
     });
-    // Operator or API token sign-in, for tenants an admin created without GitHub or Google.
+    // Operator or API token sign-in, for tenants an admin created without GitHub or Google, and for the ChatGPT
+    // plugin's reviewers. Only the unlisted /console/sign-in/token page (or the console's sign-in page, where neither
+    // GitHub nor Google is configured) uses it. TODO: remove after the ChatGPT review (docs/operations).
     app.post("/console/auth/token", async c => {
       if (!this.allowsMutation(c.req.raw)) return json(c, 403, { error: "Forbidden" });
       let token = "", next: string | undefined;
       try { const body = JSON.parse(await readText(c.req.raw.body, 4096)); token = body.token; next = nextPath(body.next); }
       catch { return json(c, 400, { error: "Send {\"token\": \"...\"}" }); }
-      const principal = typeof token === "string" ? await this.options.accounts.authenticate(`Bearer ${token}`) : undefined;
-      if (!principal) return json(c, 401, { error: "Unknown token" });
-      return json(c, 200, { tenant: principal.tenant, ...(next ? { next } : {}) }, [await this.tokenSession(principal.tenant)]);
+      const session = typeof token === "string" ? await this.tokenSession(token) : undefined;
+      if (!session) return json(c, 401, { error: "Unknown token" });
+      return json(c, 200, { tenant: session.tenant, ...(next ? { next } : {}) }, [session.cookie]);
     });
-    app.post("/console/auth/logout", c => {
+    app.post("/console/auth/logout", async c => {
       if (!this.allowsMutation(c.req.raw)) return json(c, 403, { error: "Forbidden" });
+      await this.endSession(c.req.raw);
       return json(c, 200, { signedOut: true }, [this.cookie(SESSION_COOKIE, "", 0)]);
     });
     app.all("/console/auth/*", c => json(c, 404, { error: "Unknown sign-in route" }));

@@ -26,12 +26,14 @@ export const ApiError = z.object({
   }).optional().openapi({ description: "On a rate limit's 429: the limit reached. Retry-After says when to retry" }),
 }).openapi("Error");
 export const Deleted = z.object({ deleted: z.literal(true) });
+export const SignedOut = z.object({ signedOut: z.number().int().openapi({ description: "How many console sessions ended" }) }).openapi("SignedOut");
 
 export const Me = z.object({
   tenant: z.string(),
   via: z.enum(["operator", "token", "console", "oauth"]),
   login: z.string().optional().openapi({ description: "Who the tenant belongs to: the Google address or GitHub login it signed in with" }),
   name: z.string().optional().openapi({ description: "The person's display name, for console sessions signed in with Google or GitHub" }),
+  signIn: z.enum(["github", "google", "token"]).optional().openapi({ description: "How a console session was signed in. One signed in with a token cannot mint API tokens, change billing, get help or delete the account" }),
   canStoreKeys: z.boolean(),
   defaultModel: z.string().openapi({ description: "The model an agent of this tenant gets when it names none, as provider/model-id: the first of the runtime's defaults (Claude Sonnet 5.5 on Anthropic, OpenRouter, then Bedrock, ...) the tenant has a key for. An agent with a key scope counts the scope's keys too", example: "anthropic/claude-sonnet-5-5" }),
 }).openapi("Me");
