@@ -15,8 +15,14 @@ export interface Tenant {
   tokenSha256: string;
   /** Provider name (Pi's `model.provider`, e.g. "anthropic") → API key. */
   apiKeys: Record<string, string>;
-  /** GitHub login that signs in to the console as this tenant. */
+  /**
+   * GitHub login that signs in to the console as this tenant. A login can be renamed or freed and taken by
+   * someone else, so the first account to sign in with it is bound to the tenant by its numeric id and only that
+   * account signs in from then on (Accounts.tenantForGithub); `githubId` names the account up front instead.
+   */
   github?: string;
+  /** The numeric id of the GitHub account that signs in as this tenant (https://api.github.com/users/<login> shows it); overrides `github`. */
+  githubId?: number;
   /** Agents this tenant may have busy at once across the fleet (and hosted on any one node); overrides its usage tier and AGENT_MAX_AGENTS_PER_TENANT. */
   maxAgents?: number;
   /** Read-only event-stream subscribers (browser tabs) its agents may have at once on a node; default 1024. */
@@ -94,6 +100,8 @@ export class Tenants {
       if (tenant.apiKeys && "*" in tenant.apiKeys) throw new Error(`Tenant ${tenant.id} has a \`*\` API key: name each provider`);
       hashes.add(tenant.tokenSha256);
       if (tenant.github !== undefined && (typeof tenant.github !== "string" || !/^[A-Za-z0-9-]{1,39}$/.test(tenant.github))) throw new Error(`Tenant ${tenant.id} has an invalid github login`);
+      if (tenant.githubId !== undefined && (!Number.isSafeInteger(tenant.githubId) || tenant.githubId < 1)) throw new Error(`Tenant ${tenant.id} has an invalid githubId: the GitHub account's numeric id`);
+      if (tenant.githubId !== undefined && tenants.some(other => other !== tenant && other.githubId === tenant.githubId)) throw new Error(`Tenant ${tenant.id} has another tenant's githubId`);
       if (tenant.maxAgents !== undefined && (!Number.isSafeInteger(tenant.maxAgents) || tenant.maxAgents < 1)) throw new Error(`Tenant ${tenant.id} has an invalid maxAgents: a positive integer, or absent for the default`);
       if (tenant.maxWatchers !== undefined && (!Number.isSafeInteger(tenant.maxWatchers) || tenant.maxWatchers < 1)) throw new Error(`Tenant ${tenant.id} has an invalid maxWatchers: a positive integer, or absent for the default`);
       if (tenant.maxDiscordServers !== undefined && (!Number.isSafeInteger(tenant.maxDiscordServers) || tenant.maxDiscordServers < 0)) throw new Error(`Tenant ${tenant.id} has an invalid maxDiscordServers: a non-negative integer, or absent for the default`);
@@ -110,7 +118,7 @@ export class Tenants {
       if (tenant.platformKeys === false && tenant.billing === "prepaid") throw new Error(`Tenant ${tenant.id} is prepaid, so it pays for the platform's keys: platformKeys: false is for unbilled tenants`);
       if (tenant.modelEndpoints !== undefined) validEndpoints(tenant.id, tenant.modelEndpoints);
       next.set(tenant.id, {
-        id: tenant.id, tokenSha256: tenant.tokenSha256, apiKeys: { ...(tenant.apiKeys ?? {}) }, ...(tenant.github ? { github: tenant.github } : {}),
+        id: tenant.id, tokenSha256: tenant.tokenSha256, apiKeys: { ...(tenant.apiKeys ?? {}) }, ...(tenant.github ? { github: tenant.github } : {}), ...(tenant.githubId !== undefined ? { githubId: tenant.githubId } : {}),
         ...(tenant.maxAgents !== undefined ? { maxAgents: tenant.maxAgents } : {}), ...(tenant.maxWatchers !== undefined ? { maxWatchers: tenant.maxWatchers } : {}), ...(tenant.maxMonthlyCost !== undefined ? { maxMonthlyCost: tenant.maxMonthlyCost } : {}),
         ...(tenant.maxDiscordServers !== undefined ? { maxDiscordServers: tenant.maxDiscordServers } : {}), ...(tenant.maxStorageGb !== undefined ? { maxStorageGb: tenant.maxStorageGb } : {}),
         ...(tenant.maxAgentCreatesPerMinute !== undefined ? { maxAgentCreatesPerMinute: tenant.maxAgentCreatesPerMinute } : {}),
@@ -133,13 +141,24 @@ export class Tenants {
 
   has(id: string) { return this.byId.has(id); }
 
-  /** The admin-defined tenant a GitHub login signs in as, if any (case-insensitive). */
   /** The GitHub login an admin linked to `tenant`, if any. */
   github(tenant: string) { return this.byId.get(tenant)?.github; }
 
-  byGithub(login: string) {
-    for (const tenant of this.byId.values()) if (tenant.github?.toLowerCase() === login.toLowerCase()) return tenant.id;
+  /** Whether `tenant`'s entry is linked by login only (no `githubId`) to `login` (case-insensitive). */
+  linkedByLogin(tenant: string, login: string) {
+    const entry = this.byId.get(tenant);
+    return !!entry && entry.githubId === undefined && entry.github?.toLowerCase() === login.toLowerCase();
+  }
+
+  /** The admin-defined tenant whose entry names the GitHub account `id` (`githubId`), if any. */
+  byGithubId(id: number) {
+    for (const tenant of this.byId.values()) if (tenant.githubId === id) return tenant.id;
     return undefined;
+  }
+
+  /** The admin-defined tenants linked only by login (case-insensitive), without a `githubId`: a sign-in binds them to an account (Accounts.tenantForGithub). */
+  byGithubLogin(login: string) {
+    return [...this.byId.values()].filter(tenant => tenant.githubId === undefined && tenant.github?.toLowerCase() === login.toLowerCase()).map(tenant => tenant.id);
   }
 
   /** The tenant's own busy-agent limit across the fleet (busy-agents.ts), if its entry sets one. */

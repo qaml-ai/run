@@ -116,33 +116,30 @@ export class Accounts {
   }
 
   /**
-   * The tenant a GitHub user signs in as: an admin tenant linked to that login, else the
-   * tenant made for that GitHub account (found by its numeric id, so a renamed login keeps
-   * it), else a new tenant named after the login (or, when another account has that name,
-   * the login and the id). Decide starting credit only when creating the tenant,
-   * atomically with its grant. Later sign-ins never reconsider that decision.
+   * The tenant a GitHub user signs in as: an admin tenant linked to that account (`adminTenantForGithub`), else
+   * the tenant made for that GitHub account (found by its numeric id, so a renamed login keeps it), else a new
+   * tenant named after the login (or, when another account has that name, the login and the id). Decide starting
+   * credit only when creating the tenant, atomically with its grant. Later sign-ins never reconsider that decision.
    */
-  async tenantForGithub(user: GithubUser | string, options: { minAccountAgeMs?: number; admit?: (sql: Sql) => Promise<void> } = {}): Promise<string> {
-    const { login, id: githubId, createdAt } = typeof user === "string" ? { login: user } as GithubUser : user;
-    const linked = this.tenants.byGithub(login);
+  async tenantForGithub(user: GithubUser, options: { minAccountAgeMs?: number; admit?: (sql: Sql) => Promise<void> } = {}): Promise<string> {
+    const { login, id: githubId, createdAt } = user;
+    // Logins are renamed and freed, then taken by others: only the numeric id identifies an account.
+    if (githubId === undefined || !Number.isSafeInteger(githubId) || githubId <= 0) throw new Error("GitHub did not return a valid account; try signing in again");
+    const linked = await this.adminTenantForGithub(login, githubId);
     if (linked) return linked;
-    if (githubId !== undefined && (!Number.isSafeInteger(githubId) || githubId <= 0)) throw new Error("GitHub did not return a valid account; try signing in again");
     const tenant = await transaction(this.db, async sql => {
       // Signup and support awards for an identity take the same lock on every node.
       await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`starting-credit:${githubId ?? login.toLowerCase()}`]);
       let row: { id: string; github: string | null; github_id: number | null; billing: string; created_at: number } | undefined;
       const columns = "id, github, github_id, billing, created_at";
-      if (githubId !== undefined) {
-        row = (await sql.query(`select ${columns} from tenants where github_id = $1`, [githubId])).rows[0];
-        // Older tenants without an identity are linked, but never treated as new signups.
-        row ??= (await sql.query(`update tenants set github_id = $2 where lower(github) = lower($1) and github_id is null returning ${columns}`, [login, githubId])).rows[0];
-      } else {
-        row = (await sql.query(`select ${columns} from tenants where lower(github) = lower($1)`, [login])).rows[0];
-      }
+      row = (await sql.query(`select ${columns} from tenants where github_id = $1`, [githubId])).rows[0];
+      // Older tenants without an identity are bound to the first account to sign in with their login, but never
+      // treated as new signups, and never to an account made after the tenant (one that took a freed login).
+      row ??= (await sql.query(`update tenants set github_id = $2 where lower(github) = lower($1) and github_id is null and ($3::bigint is null or created_at >= $3) returning ${columns}`, [login, githubId, Number.isSafeInteger(createdAt) ? createdAt : null])).rows[0];
       let created = false;
       const now = Date.now();
       if (!row) {
-        if (githubId === undefined || createdAt === undefined || !Number.isSafeInteger(createdAt) || createdAt < 0 || createdAt > now) {
+        if (createdAt === undefined || !Number.isSafeInteger(createdAt) || createdAt < 0 || createdAt > now) {
           throw new Error("GitHub account details are unavailable; try signing in again");
         }
         // A new account counts against its source's sign-up limit, in this transaction: a sign-up that fails counts nothing.
@@ -159,9 +156,8 @@ export class Accounts {
         }
         if (!row) throw new Error(`GitHub login ${login} cannot be used as a tenant id; contact support`);
       }
-      if (githubId === undefined && row.github?.toLowerCase() !== login.toLowerCase()) throw new Error(`Tenant ${row.id} belongs to another account`);
       if (row.github !== login) await sql.query("update tenants set github = $2 where id = $1", [row.id, login]);
-      if (row.billing === "prepaid" && githubId !== undefined) {
+      if (row.billing === "prepaid") {
         await this.billing.recordStartingCredit(sql, {
           tenant: row.id, githubId, signupAt: row.created_at, created,
           githubCreatedAt: createdAt, minAccountAgeMs: options.minAccountAgeMs,
@@ -171,6 +167,30 @@ export class Accounts {
     });
     this.billing.invalidate([tenant]);
     return tenant;
+  }
+
+  /**
+   * The admin tenant GitHub account `githubId` signs in as: the one whose entry names it (`githubId`), else one
+   * linked by login only that this account was bound to at its first sign-in, while the entry still names the
+   * login it was bound under (so a renamed account keeps it), else one linked by `login` that no account is bound
+   * to yet, which it binds now. Someone who later takes a freed or renamed login gets no admin tenant; an admin who
+   * changes an entry's login rebinds it to the next account to sign in with the new one.
+   */
+  private async adminTenantForGithub(login: string, githubId: number): Promise<string | undefined> {
+    const named = this.tenants.byGithubId(githubId);
+    if (named) return named;
+    const bound = (await this.db.query("select tenant, login from admin_github_bindings where github_id = $1 order by tenant", [githubId])).rows as { tenant: string; login: string }[];
+    const kept = bound.find(binding => this.tenants.linkedByLogin(binding.tenant, binding.login));
+    if (kept) return kept.tenant;
+    for (const tenant of this.tenants.byGithubLogin(login)) {
+      await this.db.query(`insert into admin_github_bindings (tenant, github_id, login, bound_at) values ($1, $2, $3, $4)
+        on conflict (tenant) do update set github_id = excluded.github_id, login = excluded.login, bound_at = excluded.bound_at
+        where lower(admin_github_bindings.login) <> lower(excluded.login)`, [tenant, githubId, login, Date.now()]);
+      const binding = (await this.db.query("select github_id from admin_github_bindings where tenant = $1", [tenant])).rows[0];
+      if (binding && Number(binding.github_id) === githubId) return tenant;
+      console.warn(JSON.stringify({ type: "github_login_rebound", tenant, message: "a GitHub account other than the one bound to this admin tenant signed in with its login; set the tenant's githubId to choose" }));
+    }
+    return undefined;
   }
 
   /**

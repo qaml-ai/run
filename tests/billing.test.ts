@@ -295,7 +295,7 @@ test("a self-serve tenant gets its starting credit once; tenants from before bil
   assert.equal(summary.billing, "prepaid");
   assert.equal(summary.freeCredit, true);
   assert.equal(summary.month.grant, micros(5));
-  assert.equal(await accounts.tenantForGithub("Veteran"), "veteran");
+  assert.equal(await accounts.tenantForGithub({ login: "Veteran", id: 1002 }), "veteran");
   assert.equal((await accounts.billing.summary("veteran")).billing, "none");
   assert.equal(await balance(db, "veteran"), 0);
   // Self-serve prepaid tenants use the platform's keys; unbilled ones need their own.

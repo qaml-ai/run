@@ -140,7 +140,7 @@ test("migration preserves historical grants and never gives legacy accounts catc
     for (const name of readdirSync(source).filter(name => name < "031")) cpSync(join(source, name), join(earlier, name));
     await migrate(db, earlier);
     await db.query(`insert into tenants (id, github, github_id, created_at) values
-      ('awarded', 'awarded', 708, 1), ('unawarded', 'unawarded', 709, 1), ('unlinked', 'unlinked', null, 1)`);
+      ('awarded', 'awarded', 708, 1), ('unawarded', 'unawarded', 709, 1), ('unlinked', 'unlinked', null, ${Date.now()})`);
     await postLedger(db, [{ tenant: "awarded", kind: "grant", amount: micros(3), key: "grant:github:708" }]);
     await migrate(db);
     const accounts = await accountsOn(db);
