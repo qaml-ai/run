@@ -188,7 +188,8 @@ export class Accounts {
         where lower(admin_github_bindings.login) <> lower(excluded.login)`, [tenant, githubId, login, Date.now()]);
       const binding = (await this.db.query("select github_id from admin_github_bindings where tenant = $1", [tenant])).rows[0];
       if (binding && Number(binding.github_id) === githubId) return tenant;
-      console.warn(JSON.stringify({ type: "github_login_rebound", tenant, message: "a GitHub account other than the one bound to this admin tenant signed in with its login; set the tenant's githubId to choose" }));
+      // Another account than the one bound signed in with the entry's login: set the entry's githubId to choose.
+      console.warn(JSON.stringify({ type: "github_login_rebound", tenant }));
     }
     return undefined;
   }

@@ -10,6 +10,7 @@ import { AutoTopup } from "./auto-topup.ts";
 import { BillingPayments, stripeId } from "./billing-payments.ts";
 import { CardCredit, CARD_CHECK } from "./card-credit.ts";
 import type { StorageUsage } from "./storage-usage.ts";
+import { safeError } from "./metrics.ts";
 
 /**
  * Prepaid credit. Tenants with `billing: "prepaid"` (every tenant created by sign-in)
@@ -513,7 +514,7 @@ export class Billing {
     }
     this.invalidate([result.tenant]);
     console.error(JSON.stringify({ type: closed ? "billing_dispute_closed" : "billing_dispute_opened", tenant: result.tenant, dispute: dispute.id, status: dispute.status, amount: dispute.amount, reason: dispute.reason ?? null }));
-    if (!closed) await this.autoTopup?.disable(result.tenant).catch(error => console.error(JSON.stringify({ type: "billing_dispute_auto_topup", tenant: result.tenant, error: String(error) })));
+    if (!closed) await this.autoTopup?.disable(result.tenant).catch(error => console.error(JSON.stringify({ type: "billing_dispute_auto_topup", tenant: result.tenant, error: safeError(error) })));
     return closed ? "dispute closed" : "dispute";
   }
 
