@@ -1,16 +1,13 @@
-import { StrictMode, useEffect, useLayoutEffect, useState, type FormEvent } from "react";
+import { StrictMode, useEffect, useLayoutEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { Activity, BarChart3, Bot, CircleUser, Github, KeyRound, LogOut, MessageCircle, Rocket, Boxes, Loader2, FileCog, HardDrive, Wallet } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { FullLogo } from "@/components/ui/logo";
 import { PixelButton } from "@/components/ui/pixel-button";
 import { Separator } from "@/components/ui/separator";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthLayout } from "@/components/auth-layout";
-import { PIXEL_STYLE } from "@/components/brand";
 import { ErrorAlert, PageErrorBoundary } from "@/components/common";
 import { BillingBanner, BillingBalance } from "@/components/billing-banner";
 import { BillingDialogs } from "@/components/billing-controls";
@@ -18,7 +15,7 @@ import { useBillingState } from "@/components/billing-state";
 import { GetHelp } from "@/components/get-help";
 import { SignedInAs } from "@/components/signed-in-as";
 import { setHelpTenant } from "@/lib/help-context";
-import { api, useApi, type Me, type Billing, type AgentSummary } from "@/lib/api";
+import { api, signedInWithToken, useApi, type Me, type Billing, type AgentSummary } from "@/lib/api";
 import { Link, usePath } from "@/lib/router";
 import { cn } from "@/lib/utils";
 import { consoleLoginUrl, discordInstallNext } from "@/lib/discord-setup";
@@ -36,6 +33,7 @@ import { BillingUnsubscribePage } from "@/pages/billing-unsubscribe";
 import { BillingPage } from "@/pages/billing";
 import { QuickstartPage } from "@/pages/quickstart";
 import { VolumePage, VolumesPage } from "@/pages/volumes";
+import { TokenForm, TokenSignIn } from "@/pages/token-sign-in";
 import "@fontsource-variable/figtree";
 import "@fontsource-variable/geist-mono";
 import "./style.css";
@@ -81,16 +79,17 @@ function App() {
   const agents = useApi<AgentSummary[]>(me.data && isAgentsList ? "/v1/agents" : undefined, 10_000);
   useWebMcp(me.data?.tenant);
   if (me.loading && !me.data) return <div className="text-muted-foreground flex h-dvh items-center justify-center"><Loader2 className="animate-spin" /></div>;
-  if (!me.data) return <SignIn onSignedIn={() => void me.reload()} />;
+  // sign-in/token is unlisted: API-token sign-in, for accounts without GitHub or Google (the ChatGPT plugin's reviewers).
+  if (!me.data) return path === "sign-in/token" ? <TokenSignIn onSignedIn={() => void me.reload()} /> : <SignIn onSignedIn={() => void me.reload()} />;
   const page = section === "agents" && rest[0] ? <AgentPage id={rest[0]} />
     : section === "volumes" ? (rest[0] ? <VolumePage id={rest[0]} /> : <VolumesPage />)
     : section === "definitions" ? <DefinitionsPage />
     : section === "channels" ? <ChannelsPage />
     : section === "models" ? <ModelsPage me={me.data} />
-    : section === "tokens" ? <TokensPage tenant={me.data.tenant} />
+    : section === "tokens" ? <TokensPage tenant={me.data.tenant} canMint={!signedInWithToken(me.data)} />
     : section === "usage" ? <UsagePage />
     : section === "telemetry" ? <TelemetryPage me={me.data} />
-    : section === "billing" ? <BillingPage state={billingState} />
+    : section === "billing" ? <BillingPage state={billingState} readOnly={signedInWithToken(me.data)} />
     : section === "account" ? <AccountPage me={me.data} />
     : section === "quickstart" ? <QuickstartPage />
     : <AgentsPage agents={agents} billing={billing} />;
@@ -155,26 +154,10 @@ function GoogleMark({ className }: { className?: string }) {
 
 function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
   const next = discordInstallNext(location.pathname, location.search);
-  const methods = useApi<{ github: boolean; google?: boolean; token: boolean; org?: string; open?: boolean }>("/console/auth/methods");
+  const methods = useApi<{ github: boolean; google?: boolean; org?: string; open?: boolean }>("/console/auth/methods");
   const providers = !!(methods.data?.github || methods.data?.google);
-  const [token, setToken] = useState("");
-  const [error, setError] = useState(new URLSearchParams(location.search).get("error") ?? "");
+  const error = new URLSearchParams(location.search).get("error") ?? "";
   const deleted = new URLSearchParams(location.search).get("deleted") === "1";
-  const [busy, setBusy] = useState(false);
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    setBusy(true);
-    try {
-      const signedIn = await api<{ next?: string }>("/console/auth/token", { body: { token: token.trim(), ...(next ? { next } : {}) } });
-      // The server accepted only its own install route: that is a page load (on to Discord), not a console route.
-      if (signedIn.next && signedIn.next === next) { location.assign(signedIn.next); return; }
-      history.replaceState(null, "", "/console/");
-      dispatchEvent(new PopStateEvent("popstate"));
-      onSignedIn();
-    }
-    catch (caught) { setError((caught as Error).message); }
-    finally { setBusy(false); }
-  }
   // Every call to action here is a brand (pixel) button, as on camelStream's sign-in.
   return (
     <AuthLayout>
@@ -196,23 +179,8 @@ function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
                 : `For members of the ${methods.data!.org} GitHub organization${methods.data!.google ? ", or anyone with a Google account" : ""}.`}</p>
           </div>
         )}
-        {providers && (
-          <div className="relative">
-            <div className="absolute inset-0 flex items-center"><span className="w-full border-t" /></div>
-            <div className="relative flex justify-center">
-              <span className="bg-background text-muted-foreground px-2 text-[10px] uppercase tracking-[0.3em]" style={PIXEL_STYLE}>or</span>
-            </div>
-          </div>
-        )}
-        <form onSubmit={submit} className="grid gap-4">
-          <div className="grid gap-1.5">
-            <Label htmlFor="token">Operator or API token</Label>
-            <Input id="token" type="password" autoComplete="off" placeholder="art_…" value={token} onChange={event => setToken(event.target.value)} />
-          </div>
-          <PixelButton size="hero" type="submit" variant={providers ? "secondary" : "primary"} className="w-full" loading={busy} disabled={!token.trim() || busy}>
-            Sign in with token
-          </PixelButton>
-        </form>
+        {/* A runtime without GitHub or Google (self-hosted) signs in with its operator or API tokens. */}
+        {methods.data && !providers && <TokenForm onSignedIn={onSignedIn} next={next} />}
       </div>
     </AuthLayout>
   );

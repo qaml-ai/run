@@ -40,6 +40,19 @@ describe("AccountPage", () => {
     expect(writes[0].console).toBe("1");
   });
 
+  it("signs out everywhere, then back to sign-in", async () => {
+    render(<AccountPage me={{ tenant: "u-4f2a9c1d7e3b6a58" }} />);
+    fireEvent.click(screen.getByRole("button", { name: /Sign out everywhere/ }));
+    await waitFor(() => expect(assigned).toEqual(["/console/"]));
+    expect(calls.filter(call => call.method !== "GET").map(call => `${call.method} ${call.path} ${call.console}`)).toEqual(["DELETE /v1/sessions 1"]);
+  });
+
+  it("does not offer deletion to a session signed in with a token", () => {
+    render(<AccountPage me={{ tenant: "chatgpt-review", via: "console", signIn: "token" }} />);
+    expect(screen.queryByRole("button", { name: /Delete account/ })).toBeNull();
+    expect(screen.getByText(/sign in with GitHub or Google to delete the account/)).toBeTruthy();
+  });
+
   it("shows the purchased and free credit the deletion forfeits, and where to ask", async () => {
     render(<AccountPage me={{ tenant: "u-4f2a9c1d7e3b6a58" }} />);
     fireEvent.click(screen.getByRole("button", { name: /Delete account/ }));

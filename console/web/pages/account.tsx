@@ -1,11 +1,11 @@
 import { useState, type FormEvent } from "react";
-import { Download, Loader2, Trash2 } from "lucide-react";
+import { Download, Loader2, LogOut, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { CopyButton, ErrorAlert, PageHeader } from "@/components/common";
-import { api, formatMicros, useApi, type Billing, type Me } from "@/lib/api";
+import { api, formatMicros, signedInWithToken, useApi, type Billing, type Me } from "@/lib/api";
 
 /**
  * The credit a deletion forfeits, split as it was paid for: the balance is one pool, and free credit
@@ -78,8 +78,30 @@ function DeleteAccountDialog({ tenant, onClose }: { tenant: string; onClose: () 
   );
 }
 
-export function AccountPage({ me }: { me: Pick<Me, "tenant"> }) {
+/** Every console session of the account ends, this one too: then back to sign-in. */
+function SignOutEverywhere() {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  return (
+    <section className="bg-card mb-6 border p-5">
+      <h2 className="text-base font-semibold">Sign out everywhere</h2>
+      <p className="text-muted-foreground mt-1 mb-4 max-w-2xl text-sm">
+        Ends every console session of this account, on every browser and device, including this one. API tokens and connected apps keep working;
+        revoke those under API tokens.
+      </p>
+      <ErrorAlert error={error} />
+      <Button size="sm" variant="outline" disabled={busy} onClick={async () => {
+        setBusy(true); setError(undefined);
+        try { await api("/v1/sessions", { method: "DELETE" }); location.assign("/console/"); }
+        catch (caught) { setError((caught as Error).message); setBusy(false); }
+      }}>{busy ? <Loader2 className="animate-spin" /> : <LogOut />}Sign out everywhere</Button>
+    </section>
+  );
+}
+
+export function AccountPage({ me }: { me: Pick<Me, "tenant"> & Partial<Pick<Me, "via" | "signIn">> }) {
   const [deleting, setDeleting] = useState(false);
+  const withToken = signedInWithToken({ via: me.via ?? "console", signIn: me.signIn });
   return (
     <>
       <PageHeader title="Account" description="Take a copy of your data, or delete your account." />
@@ -94,6 +116,7 @@ export function AccountPage({ me }: { me: Pick<Me, "tenant"> }) {
         </p>
         <Button asChild size="sm" variant="outline"><a href="/v1/account/export" download><Download />Export data</a></Button>
       </section>
+      <SignOutEverywhere />
       <section className="bg-card border-destructive/40 border p-5">
         <h2 className="text-base font-semibold">Delete your account</h2>
         <p className="text-muted-foreground mt-1 mb-4 max-w-2xl text-sm">
@@ -101,7 +124,9 @@ export function AccountPage({ me }: { me: Pick<Me, "tenant"> }) {
           and a record that starting credit was given, so a new account for the same GitHub account or card gets none. Signing in again
           later makes a new, empty account.
         </p>
-        <Button size="sm" variant="destructive" onClick={() => setDeleting(true)}><Trash2 />Delete account</Button>
+        {withToken
+          ? <p className="text-sm">You signed in with a token: sign in with GitHub or Google to delete the account.</p>
+          : <Button size="sm" variant="destructive" onClick={() => setDeleting(true)}><Trash2 />Delete account</Button>}
       </section>
       {deleting && <DeleteAccountDialog tenant={me.tenant} onClose={() => setDeleting(false)} />}
     </>
