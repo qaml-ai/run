@@ -109,6 +109,25 @@ test("delegation stops at its depth limit, and a run's spend limit bounds its ch
   assert.equal(limited.outcome.result.stopped, "spend_limit", "the children's spend counts against the parent run's limit");
 });
 
+test("a caller cannot move a run's place in the delegation chain with prompt metadata", async t => {
+  const r = await runtime(t, body => toolResults(body).length || body.messages.at(-1).role === "tool"
+    ? { role: "assistant", content: `got: ${toolResults(body).at(-1)}` }
+    : toolCall("delegate", { agent: "self", task: "go deeper" }, "call_deep"));
+  const saved = await r.call("/v1/definitions", { headers: { "Idempotency-Key": "self" }, body: { name: "Self", systemPrompt: "Delegate.", builtins: ["delegate"], delegate: { agents: ["self"] } } });
+  assert.equal(saved.status, 201, saved.text);
+  const root = (await r.call("/v1/agents", { body: { definition: saved.json.id } })).json.id;
+  // Metadata naming the runtime's delegation keys, as a delegate call's would, but sent by the caller.
+  const record = await r.prompt(root, "start", undefined, { metadata: { delegationDepth: "-10", delegationMaxDepth: "5", delegationChain: "" } });
+  assert.equal(record.error, undefined, JSON.stringify(record));
+  const child = (await r.call(`/v1/agents/${record.outcome.result.toolCalls[0].agentId}`)).json;
+  const childRun = child.requests.find((request: any) => request.method === "prompt");
+  assert.equal(childRun.metadata.delegationDepth, "1", "the root is where every chain starts, whatever its prompt said");
+  const grandchild = (await r.call(`/v1/agents/${childRun.outcome.result.toolCalls[0].agentId}`)).json;
+  const grandchildRun = grandchild.requests.find((request: any) => request.method === "prompt");
+  assert.equal(grandchildRun.outcome.result.toolCalls[0].ok, false);
+  assert.match(grandchildRun.outcome.result.reply, /depth limit of 2/);
+});
+
 test("aborting a parent aborts the children it waits on; the stream shows them to subscribers that ask", async t => {
   const r = await runtime(t, body => {
     if (systemText(body).includes("SLOW")) return { role: "assistant", content: "too late", delayMs: 30_000 };

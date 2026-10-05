@@ -1504,12 +1504,12 @@ export class ClientSessions {
     if ((target === undefined) === (instructions === undefined)) throw new Error(settings.instructions && settings.agents?.length ? "Name an agent to delegate to, or give instructions: one of them" : settings.instructions ? "Give the sub-agent's instructions" : "Name an agent to delegate to");
     if (typeof task !== "string" || !task.trim()) throw new Error("Give the task to delegate");
     const output = schema === undefined ? undefined : outputInput({ schema });
-    // Where this run is in its chain: the prompt that started it says so, if a delegate call sent it.
-    const metadata = run.metadata ?? {};
-    const depth = (Number(metadata[PARENT_KEYS.depth]) || 0) + 1;
-    const maxDepth = Math.min(Number(metadata[PARENT_KEYS.maxDepth]) || MULTI_AGENT_LIMITS.depthCeiling, settings.maxDepth ?? MULTI_AGENT_LIMITS.maxDepth);
+    // Where this run is in its chain: the prompt that started it says so, if a delegate call sent it (signed by the runtime).
+    const place = this.delegation(header.id, run.id, run.metadata);
+    const depth = place.depth + 1;
+    const maxDepth = Math.min(place.maxDepth, settings.maxDepth ?? MULTI_AGENT_LIMITS.maxDepth);
     if (depth > maxDepth) throw new Error(`Delegation has reached its depth limit of ${maxDepth}: do this task yourself`);
-    const chain = [...(metadata[PARENT_KEYS.chain] ?? "").split(",").filter(Boolean), header.id];
+    const chain = [...place.chain, header.id];
     await this.delegationSlot(session, settings.maxParallel ?? MULTI_AGENT_LIMITS.maxParallel, call.signal);
     let untap: (() => void) | undefined;
     let child: Child | undefined;
@@ -1554,7 +1554,8 @@ export class ClientSessions {
             text: task, ...output ? { output } : {}, ...budget !== undefined ? { spendLimit: { usd: budget } } : {}, ...run.actor ? { actor: run.actor } : {},
             // The child's run joins the parent's trace, under this call's span (not part of the request's fingerprint).
             ...call.traceparent ? { traceparent: call.traceparent } : {},
-            metadata: { [PARENT_KEYS.agent]: header.id, [PARENT_KEYS.run]: run.id, [PARENT_KEYS.toolCall]: toolCallId, [PARENT_KEYS.depth]: String(depth), [PARENT_KEYS.maxDepth]: String(maxDepth), [PARENT_KEYS.chain]: chain.join(",") },
+            metadata: { [PARENT_KEYS.agent]: header.id, [PARENT_KEYS.run]: run.id, [PARENT_KEYS.toolCall]: toolCallId, [PARENT_KEYS.depth]: String(depth), [PARENT_KEYS.maxDepth]: String(maxDepth), [PARENT_KEYS.chain]: chain.join(","),
+              [PARENT_KEYS.signature]: this.delegationSignature(agent, requestId, String(depth), String(maxDepth), chain.join(",")) },
           } });
         } catch (error) {
           // Refused (the tenant's busy agents, its spend, the child's own limits): the call fails with why.
@@ -1587,6 +1588,24 @@ export class ClientSessions {
       untap?.();
       this.releaseDelegation(session);
     }
+  }
+
+  /**
+   * Where run `runId` of agent `agentId` is in a delegation chain: as its prompt's metadata says when the runtime signed
+   * it for that agent and run (a delegate call's child run), else at a chain's start. Metadata is the caller's to send,
+   * so a caller that names the same keys cannot set its run's depth, raise its limit or hide the chain.
+   */
+  private delegation(agentId: string, runId: string, metadata: Record<string, string> | undefined): { depth: number; maxDepth: number; chain: string[] } {
+    const start = { depth: 0, maxDepth: MULTI_AGENT_LIMITS.depthCeiling, chain: [] };
+    const depth = metadata?.[PARENT_KEYS.depth], maxDepth = metadata?.[PARENT_KEYS.maxDepth], chain = metadata?.[PARENT_KEYS.chain] ?? "", signature = metadata?.[PARENT_KEYS.signature];
+    if (depth === undefined || maxDepth === undefined || typeof signature !== "string") return start;
+    const expected = Buffer.from(this.delegationSignature(agentId, runId, depth, maxDepth, chain));
+    if (signature.length !== expected.length || !timingSafeEqual(Buffer.from(signature), expected)) return start;
+    return { depth: Number(depth), maxDepth: Number(maxDepth), chain: chain.split(",").filter(Boolean) };
+  }
+
+  private delegationSignature(agentId: string, runId: string, depth: string, maxDepth: string, chain: string) {
+    return createHmac("sha256", this.options.secret).update(`delegation-v1:${agentId}:${runId}:${depth}:${maxDepth}:${chain}`).digest("hex");
   }
 
   /** Wait until one of the running run's delegate calls may go: at most `max` are in flight at once. */

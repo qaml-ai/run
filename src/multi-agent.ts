@@ -33,8 +33,12 @@ export interface DelegateSettings {
 
 /** Stream events of an agent's children, sent only to subscribers that ask for them (`?subagents=1`). */
 export const SUBAGENT_EVENTS: readonly string[] = ["subagent_start", "subagent_event", "subagent_end"];
-/** What a child's run carries in its prompt's metadata: who started it, and where it is in the chain. */
-export const PARENT_KEYS = { agent: "parentAgentId", run: "parentRunId", toolCall: "parentToolCallId", depth: "delegationDepth", maxDepth: "delegationMaxDepth", chain: "delegationChain" } as const;
+/**
+ * What a child's run carries in its prompt's metadata: who started it, and where it is in the chain. Where it is counts
+ * only with `signature`, the runtime's MAC over it for that agent and run (ClientSessions' `delegation`): a caller's
+ * prompt may carry the same keys, and its run starts a chain of its own.
+ */
+export const PARENT_KEYS = { agent: "parentAgentId", run: "parentRunId", toolCall: "parentToolCallId", depth: "delegationDepth", maxDepth: "delegationMaxDepth", chain: "delegationChain", signature: "delegationSignature" } as const;
 
 const NAME = /^[A-Za-z0-9_-]{1,64}$/;
 /** A definition id, or a definition's or agent's key. */
