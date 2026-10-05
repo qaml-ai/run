@@ -18,6 +18,7 @@ else is here.
 | `monitoring.tf` | Route 53 health check, `-healthz` alarm and SNS topic in us-east-1 |
 | `alarms.tf` | ALB/ECS alarms and their us-west-2 SNS topic |
 | `email.tf` | email channels, when `email_domain` is set: SES identity and receipt rule, DKIM/MX/DMARC records, inbound mail bucket, SNS topic and subscription, the task's send/read policy |
+| `account-email.tf` | account mail (email sign-up and reset), when `account_email_domain` is set: SES domain identity with Easy DKIM, MAIL FROM `bounce.<domain>`, the task's `ses:SendEmail` as `account_email_from`; the DNS records are added by hand (`tofu output account_email_dns_records`), then `account_email_enabled` gives the task `AGENT_ACCOUNT_EMAIL_*` |
 
 ## Prerequisites
 

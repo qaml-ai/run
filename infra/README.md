@@ -86,8 +86,10 @@ generates one into a 0600 file it names (`~/.config/camelrun/password-<tenant>`,
 or `PASSWORD_FILE`) and never prints it; `set-password <tenant> --clear` removes
 it. Either ends the tenant's password sessions. It calls
 `PUT /v1/tenants/{id}/password` with the operator token of `ADMIN_TENANT`
-(default `miguel`, in `AGENT_BILLING_ADMINS`). There is no sign-up or reset by
-email. Tokens never sign in to the console.
+(default `miguel`, in `AGENT_BILLING_ADMINS`). Sign-up and reset by email come
+with account mail (`terraform/account-email.tf`; the runbook is
+[docs/operations/account-email.md](../docs/operations/account-email.md)), off until
+`account_email_enabled` is set. Tokens never sign in to the console.
 
 To enable GitHub sign-in, an org owner creates an OAuth app at
 https://github.com/organizations/qaml-ai/settings/applications/new with:
