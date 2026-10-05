@@ -32,9 +32,18 @@ else is here.
 ```sh
 cd infra/terraform
 tofu init
+# Production's settings that aren't defaults (billing email, Slack alerts, Discord, storage GC, ...).
+# They are not in this public repository: fetch them first, every time. *.auto.tfvars is gitignored and
+# loaded without -var-file, so no plan runs without them.
+aws s3 cp s3://camelai-terraform-state-904534089871/agent-runtime/prod.tfvars prod.auto.tfvars
 tofu plan -out=tfplan
 tofu apply tfplan
 ```
+
+Without that file, a plan turns production's optional features off: it drops their environment
+variables from the task definition and destroys the billing Slack channel. When you change one of
+those settings, edit `prod.auto.tfvars` and upload it back (`aws s3 cp prod.auto.tfvars
+s3://camelai-terraform-state-904534089871/agent-runtime/prod.tfvars`) in the same sitting as the apply.
 
 Always apply a saved plan you have read. The state bucket, the RDS instance and
 the session-secret/secrets-key/tenants/github-oauth secrets have
@@ -192,8 +201,8 @@ On a stack where they already exist, import them before the first apply, or the
 create fails with `ResourceAlreadyExistsException`:
 
 ```sh
-tofu import -var-file=prod.tfvars aws_cloudwatch_log_group.container_insights /aws/ecs/containerinsights/camelai-agent-runtime/performance
-tofu import -var-file=prod.tfvars aws_cloudwatch_log_group.database_proxy /aws/rds/proxy/camelai-agent-runtime-control
+tofu import aws_cloudwatch_log_group.container_insights /aws/ecs/containerinsights/camelai-agent-runtime/performance
+tofu import aws_cloudwatch_log_group.database_proxy /aws/rds/proxy/camelai-agent-runtime-control
 ```
 
 The billing-email Worker (`infra/billing-email`) is deployed with Wrangler, not
