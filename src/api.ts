@@ -445,7 +445,13 @@ export function api(context: ApiContext) {
     responses: { 201: reply("The agent and its scoped token", schema.AgentCreated) },
   }), async c => {
     const tenant = c.var.principal.tenant;
-    const { prompt, ...params } = await readJson(c.req.raw.body, 18 * 1024 * 1024, {}) ?? {};
+    const body = await readJson(c.req.raw.body, 18 * 1024 * 1024, {}) ?? {};
+    // Only the fields an agent takes: the model by name, never a model object of the caller's (its prices, its endpoint).
+    // The fields' values are checked as the agent is made, with the messages the SDKs rely on.
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new HttpError(400, "Send an agent object");
+    for (const key of Object.keys(body)) if (!Object.hasOwn(schema.AgentInput.shape, key)) throw new HttpError(400, `Unknown agent field: ${key}`);
+    if (body.model !== undefined && typeof body.model !== "string") throw new HttpError(400, 'model must be a "provider/model-id" string; see GET /v1/models');
+    const { prompt, ...params } = body;
     // A first prompt is checked before anything is made, and sent once the agent is: it runs when the agent has started.
     const first = prompt === undefined ? undefined : promptRequest(parse(schema.PromptInput, prompt), undefined, c.req.header("traceparent"));
     await context.rateLimits?.agentCreate(tenant);

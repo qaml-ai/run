@@ -9,20 +9,6 @@ import { HttpError } from './http.ts';
 
 type SessionConfig = Omit<AgentConfig, 'id' | 'directory' | 'tools' | 'apiKey'>;
 
-const endpoint = (value: string) => { const url = new URL(value); return `${url.origin}${url.pathname.replace(/\/+$/, '')}`; };
-
-/**
- * The host's provider key is sent to whatever endpoint the model names, so an
- * agent may only use an endpoint the host already trusts: the default model's,
- * Pi's published endpoint for that provider and model, or an operator allowlist.
- */
-export function assertTrustedEndpoint(model: AgentConfig['model'], defaultModel: AgentConfig['model'], allowedBaseUrls: string[] = []) {
-  const target = endpoint(model.baseUrl);
-  const published = (getModel as (provider: string, id: string) => AgentConfig['model'] | undefined)(model.provider, model.id)?.baseUrl;
-  const trusted = [defaultModel.baseUrl, ...(published ? [published] : []), ...allowedBaseUrls].map(endpoint);
-  if (!trusted.includes(target)) throw new Error(`Model endpoint ${target} is not trusted by this runtime; add it to AGENT_ALLOWED_BASE_URLS`);
-}
-
 /** What a model on a tenant's own endpoint can do, for a model the catalog lacks. */
 export type EndpointModel = { contextWindow: number; maxTokens: number; reasoning?: boolean; input?: ('text' | 'image')[] };
 /**
@@ -176,12 +162,16 @@ export function runLimitsInput(value: unknown): RunLimits | null {
   return Object.keys(value).length ? value as RunLimits : null;
 }
 
-/** Only operator-authenticated provisioning may choose a model, and only among trusted endpoints. */
-export function sessionConfig(input: any, defaultModel: AgentConfig['model'], defaultPrompt?: string, allowedBaseUrls: string[] = [], endpoints?: ModelEndpoints, custom?: CustomProviders): SessionConfig {
+/**
+ * An agent's configuration as provisioning gives it. Its model is named ("provider/model-id") and resolved here, from
+ * the catalog or the tenant's own endpoints and providers: a model object's prices, endpoint and compat switches are
+ * the runtime's to say (`defaultModel`), never a caller's.
+ */
+export function sessionConfig(input: any, defaultModel: AgentConfig['model'], defaultPrompt?: string, endpoints?: ModelEndpoints, custom?: CustomProviders): SessionConfig {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid session configuration');
   if ('apiKey' in input) throw new Error('Configure credentials on the runtime host, not in agent configuration');
-  const named = typeof input.model === 'string';
-  const model = named ? resolveModel(input.model, endpoints, custom) : input.model ?? defaultModel;
+  if (input.model !== undefined && typeof input.model !== 'string') throw new HttpError(400, 'model must be a "provider/model-id" string; see GET /v1/models');
+  const model: any = input.model !== undefined ? resolveModel(input.model, endpoints, custom) : defaultModel;
   if (!model || typeof model !== 'object' || Array.isArray(model) ||
       ['id', 'name', 'api', 'provider', 'baseUrl'].some(key => typeof model[key] !== 'string' || !model[key]) ||
       typeof model.reasoning !== 'boolean' || !Array.isArray(model.input) || !model.input.every((value: unknown) => value === 'text' || value === 'image') ||
@@ -190,10 +180,6 @@ export function sessionConfig(input: any, defaultModel: AgentConfig['model'], de
   const url = new URL(model.baseUrl);
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error('Model baseUrl must be an HTTP(S) endpoint without credentials or query parameters');
   if (model.headers || model.apiKey || model.token) throw new Error('Model credentials and custom headers must be configured on the runtime host');
-  // A named model's endpoint is the catalog's or the tenant's own; an endpoint's models can only be named.
-  if (!named && endpoints && Object.hasOwn(endpoints, model.provider)) throw new Error(`Name ${model.provider}'s models as "${model.provider}/<provider>/<model id>"`);
-  if (!named && custom && Object.hasOwn(custom, model.provider)) throw new Error(`Name ${model.provider}'s models as "${model.provider}/<model id>"`);
-  if (!named) assertTrustedEndpoint(model, defaultModel, allowedBaseUrls);
   if (input.systemPrompt === null) throw new Error('systemPrompt must contain 1–32000 characters');
   const updates = configurationUpdate({
     ...(input.systemPrompt !== undefined || defaultPrompt !== undefined ? { systemPrompt: input.systemPrompt !== undefined ? input.systemPrompt : defaultPrompt } : {}),

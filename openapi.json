@@ -1797,6 +1797,19 @@
       "AgentInput": {
         "type": "object",
         "properties": {
+          "mcp": {
+            "type": "object",
+            "properties": {
+              "tools": {
+                "type": "array",
+                "items": {}
+              }
+            },
+            "required": [
+              "tools"
+            ],
+            "description": "The application's attached MCP server: its tools/list, whose tools the agent calls back through the application's connection. The SDKs send it"
+          },
           "definition": {
             "type": "string",
             "description": "Make the agent from this definition (GET /v1/definitions). It supplies the model, system prompt, thinking level, fileTools and tool sources; name, type, ttlSeconds, mounts and initialMessages given here override its defaults. model, thinkingLevel and fileTools given here are the agent's own: applying the definition later keeps them. systemPrompt cannot be given with a definition; use systemPromptAppend"
@@ -1891,7 +1904,8 @@
           "prompt": {
             "$ref": "#/components/schemas/PromptInput"
           }
-        }
+        },
+        "additionalProperties": false
       },
       "Mount": {
         "type": "object",

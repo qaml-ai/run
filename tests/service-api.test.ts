@@ -9,7 +9,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { configuredModel } from '../src/model.ts';
-import { assertTrustedEndpoint } from '../src/session-config.ts';
 import { testDatabase } from './database.ts';
 
 async function fixture(t: { after(fn: () => Promise<void>): void }, env: (root: string) => Record<string, string> = () => ({})) {
@@ -44,7 +43,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, env: (root: 
 test('operator provisioning imports native history once; scoped reads do not journal transcript copies', async t => {
   const f = await fixture(t);
   const initialMessages = [{ role: 'user', content: 'preserve-native-history', timestamp: 1 }];
-  const response = await f.post('/v1/agents', { model: configuredModel(), thinkingLevel: 'low', initialMessages });
+  const response = await f.post('/v1/agents', { thinkingLevel: 'low', initialMessages });
   assert.equal(response.status, 201);
   const session = await response.json() as any;
   const path = `/clients/${session.id}`;
@@ -86,27 +85,18 @@ test('scoped configuration persists allowed fields and rejects provider credenti
   assert.deepEqual(saved.definitions, [{ name: 'inspect', description: 'Inspect a fixture', parameters: inspect.inputSchema, exposure: 'direct' }]);
 });
 
-test('operator model configuration accepts endpoints but never persists supplied credentials', async t => {
+test('provisioning takes models by name only, never an endpoint or credentials', async t => {
   const f = await fixture(t);
   for (const extra of [
     { apiKey: 'should-not-persist' },
     { model: { ...configuredModel(), headers: { Authorization: 'Bearer should-not-persist' } } },
     { model: { ...configuredModel(), baseUrl: 'https://user:pass@example.test/v1' } },
     { model: { ...configuredModel(), baseUrl: 'https://example.test/v1?key=secret' } },
-    // The host provider key must never be sent to an endpoint the operator did not trust.
+    // The host provider key must never be sent to an endpoint a caller names.
     { model: { ...configuredModel(), baseUrl: 'https://collector.example.test/v1' } },
     { model: { ...configuredModel(), maxTokens: -1 } },
     { thinkingLevel: 'invalid' },
   ]) assert.equal((await f.post('/v1/agents', { ...extra })).status, 400);
-});
-
-test('trusted endpoints are the default model, Pi published endpoints, and the operator allowlist', () => {
-  const base = configuredModel();
-  assertTrustedEndpoint({ ...base, baseUrl: base.baseUrl + '/' }, base);
-  const gateway = { ...base, baseUrl: 'https://gateway.example.test/v1/anthropic' };
-  assert.throws(() => assertTrustedEndpoint(gateway, base), /not trusted/);
-  assertTrustedEndpoint(gateway, base, ['https://gateway.example.test/v1/anthropic/']);
-  assert.throws(() => assertTrustedEndpoint({ ...gateway, baseUrl: 'https://gateway.example.test/v1/other' }, base, ['https://gateway.example.test/v1/anthropic']), /not trusted/);
 });
 
 test('tenants provision and see only their own agents, billed to their own provider keys', async t => {

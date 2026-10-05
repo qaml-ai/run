@@ -265,6 +265,7 @@ export const PromptInput = z.object({
 }, { error: SEND_TEXT }).openapi("PromptInput");
 
 export const AgentInput = z.object({
+  mcp: z.object({ tools: z.array(z.unknown()) }).optional().openapi({ description: "The application's attached MCP server: its tools/list, whose tools the agent calls back through the application's connection. The SDKs send it" }),
   definition: z.string().optional().openapi({ description: "Make the agent from this definition (GET /v1/definitions). It supplies the model, system prompt, thinking level, fileTools and tool sources; name, type, ttlSeconds, mounts and initialMessages given here override its defaults. model, thinkingLevel and fileTools given here are the agent's own: applying the definition later keeps them. systemPrompt cannot be given with a definition; use systemPromptAppend" }),
   name: z.string().optional(),
   type: z.string().optional(),
@@ -285,7 +286,7 @@ export const AgentInput = z.object({
   runLimits: RunLimits.optional().openapi({ description: "The most one run may take (model responses, seconds); an agent from a definition gets the definition's unless this is given" }),
   modelHeaders: ModelHeaders.optional(),
   prompt: PromptInput.optional().openapi({ description: "A first prompt, as POST /v1/agents/{id}/prompt takes it, sent once the agent is made: it runs as soon as the agent has started, so a new conversation needs one call. Give it a requestId: a retry of the create (same Idempotency-Key) with the same requestId makes no second agent and sends no second prompt" }),
-}).openapi("AgentInput");
+}).strict().openapi("AgentInput");
 
 
 export const AgentSummary = z.object({

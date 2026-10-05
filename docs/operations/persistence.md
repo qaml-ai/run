@@ -108,9 +108,10 @@ with it refuses to start while another node's heartbeat is live in the same data
 (after waiting one lease for a peer that just stopped). The whole transcript of an
 active agent is still held in memory.
 
-The host provider key is only sent to trusted endpoints: the default model's,
-Pi's published endpoint for the requested provider and model, or an entry in
-`AGENT_ALLOWED_BASE_URLS` (comma-separated). Scoped credentials can only submit
+Agents name their models (`provider/model-id`); the runtime resolves each from
+Pi's catalog or the tenant's own endpoints and providers, so the host provider key
+is only sent to the catalog's endpoint (or the default model's), and responses on
+it are priced from the catalog. Scoped credentials can only submit
 user messages; assistant and tool-result history is produced by the runtime.
 
 ## Volume storage

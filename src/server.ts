@@ -11,7 +11,7 @@ import { Telemetry, TELEMETRY_CHANNEL } from "./telemetry.ts";
 import { expireIdempotencyKeys } from "./idempotency.ts";
 import { DOCS_SITE, loadDocs, loadRegistry, SKILL_PATHS } from "./docs.ts";
 import { StorageGc } from "./storage-gc.ts";
-import { modelHeadersInput, sessionConfig } from "./session-config.ts";
+import { modelHeadersInput, resolveModel, sessionConfig } from "./session-config.ts";
 import { ClientSessions, RUN_LIMITS, spendInput } from "./client-sessions.ts";
 import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts";
 import { StorageUsage } from "./storage-usage.ts";
@@ -146,8 +146,6 @@ if (!Number.isSafeInteger(runLimits.maxResponses) || runLimits.maxResponses < 1)
 if (!Number.isSafeInteger(runLimits.maxSeconds) || runLimits.maxSeconds < 1) throw new Error("AGENT_MAX_RUN_SECONDS must be a positive integer");
 const idleMs = Number(process.env.AGENT_IDLE_MS ?? 5 * 60_000);
 if (!Number.isInteger(idleMs) || idleMs < 1000) throw new Error("AGENT_IDLE_MS must be an integer of at least 1000");
-// Endpoints beyond the default model's and Pi's published ones that may receive a provider key.
-const allowedBaseUrls = (process.env.AGENT_ALLOWED_BASE_URLS ?? "").split(",").map(value => value.trim()).filter(Boolean);
 const publicUrl = (process.env.AGENT_PUBLIC_URL ?? `http://127.0.0.1:${port}`).replace(/\/+$/, "");
 // Where people are sent (the public URL), other names served in full (an earlier domain), and the issuer tokens name.
 const origins = publicOrigins(process.env, `http://127.0.0.1:${port}`);
@@ -286,6 +284,13 @@ async function createAgent(tenant: string, params: any, key?: string, parent?: {
   }
 }
 
+/** A parent agent's model as the runtime knows it: one of its defaults, or the catalog's of that name. */
+function parentModel(given: { provider?: unknown; id?: unknown; baseUrl?: unknown }) {
+  const own = defaults.find(candidate => candidate.provider === given.provider && candidate.id === given.id && candidate.baseUrl === given.baseUrl);
+  if (own) return own;
+  try { return resolveModel(`${given.provider}/${given.id}`); } catch { return undefined; }
+}
+
 async function provisionAgent(tenant: string, params: any, key: string | undefined, steps: Steps, outcome: { agent?: string; upsert: boolean }, parent?: { agentId: string; runId: string; toolCallId: string; depth: number }) {
   // The application's tools are its attached MCP server's: the tools/list it declares.
   const { mcp: _mcp, subject: _subject, context: _context, keyScope, spendLimit: limit, modelHeaders: headers, builtins: asked, delegate: delegating, ...rest } = params ?? {};
@@ -301,6 +306,10 @@ async function provisionAgent(tenant: string, params: any, key: string | undefin
   const delegate = delegateSettings(builtins, delegating);
   const spendLimit = limit === undefined ? undefined : spendInput(limit) ?? undefined;
   const modelHeaders = headers === undefined ? null : modelHeadersInput(headers);
+  // A delegate's inline child runs on its parent's model, which the runtime passes as it is. It is taken again from the
+  // runtime's own defaults or the catalog by name: the parent's prices and endpoint are never copied.
+  const inherited = parent && rest.model !== undefined && typeof rest.model !== "string" ? parentModel(rest.model) : undefined;
+  if (inherited) delete rest.model;
   try { params = { ...rest, tools: applicationTools(params ?? {}) }; } catch (error) { throw new HttpError(400, errorText(error)); }
   // Its definition and the tenant's own providers are read at once.
   const [made, custom] = await Promise.all([
@@ -308,8 +317,8 @@ async function provisionAgent(tenant: string, params: any, key: string | undefin
     steps.time("providers", modelProviders.resolvable(tenant, keyScope)),
   ]);
   if (made) params = made.params;
-  const fallback = params.model === undefined ? await steps.time("providers", defaultModelFor(tenant, keyScope)) : model;
-  const config = { ...sessionConfig(params, fallback, process.env.AGENT_SYSTEM_PROMPT, allowedBaseUrls, tenants.modelEndpoints(tenant), custom), ...(modelHeaders ? { modelHeaders } : {}) };
+  const fallback = inherited ?? (params.model === undefined ? await steps.time("providers", defaultModelFor(tenant, keyScope)) : model);
+  const config = { ...sessionConfig(params, fallback, process.env.AGENT_SYSTEM_PROMPT, tenants.modelEndpoints(tenant), custom), ...(modelHeaders ? { modelHeaders } : {}) };
   const ttl = params.ttlSeconds;
   validTtl(ttl);
   // An agent made with a key is one the application comes back to: it lives until deleted, unless it says otherwise.
@@ -560,7 +569,7 @@ const clients = new ClientSessions(supervisor, {
   get hooks() { return channels.hooks; },
   definitionFor: async (tenant, id) => {
     const { revision, spec } = await definitions.read(tenant, id);
-    const config = sessionConfig({ model: spec.model, systemPrompt: spec.systemPrompt, thinkingLevel: spec.thinkingLevel }, spec.model === undefined ? await defaultModelFor(tenant) : model, process.env.AGENT_SYSTEM_PROMPT, allowedBaseUrls, tenants.modelEndpoints(tenant), await modelProviders.resolvable(tenant));
+    const config = sessionConfig({ model: spec.model, systemPrompt: spec.systemPrompt, thinkingLevel: spec.thinkingLevel }, spec.model === undefined ? await defaultModelFor(tenant) : model, process.env.AGENT_SYSTEM_PROMPT, tenants.modelEndpoints(tenant), await modelProviders.resolvable(tenant));
     return { id, revision, ...(spec.description ? { description: spec.description } : {}), config: { model: config.model, systemPrompt: config.systemPrompt, thinkingLevel: config.thinkingLevel ?? "off", fileTools: spec.fileTools !== false, runLimits: spec.runLimits ?? null }, sources: sources(spec) };
   },
   sources: toolSources,
