@@ -215,14 +215,12 @@ export function CodePath({ onboarding, billing }: { onboarding: ReturnType<typeo
   const [key, setKey] = useState<string>();
   const url = location.origin;
   const code = snippets(url, key);
-  const [agentStep, runStep, keyStep] = onboarding.code;
-  // Step 3 is done once an agent of the user's own code (not the playground's) exists.
-  const ownAgent = !!onboarding.agents.data?.some(agent => agent.key !== PLAYGROUND_KEY);
+  const [tryStep, keyStep, codeStep] = onboarding.code;
   const reload = () => { void onboarding.agents.reload(); void onboarding.usage.reload(); };
   return (
     <div className="flex flex-col gap-4">
       <Checklist label="YOUR FIRST AGENT" steps={onboarding.code} />
-      <StepCard n={1} title="Try an agent right here" done={agentStep.done && runStep.done}
+      <StepCard n={1} title="Try an agent right here" done={tryStep.done}
         description={<>No code: this makes an agent called Playground on your account's default model and runs your prompt. It has no tools, and it bills like any run.{billing?.billing === "none" && <> Runs use your <Link className="underline underline-offset-4" to="models">model keys</Link>.</>}</>}>
         <Playground agents={onboarding.agents.data} onRan={reload} />
       </StepCard>
@@ -230,7 +228,7 @@ export function CodePath({ onboarding, billing }: { onboarding: ReturnType<typeo
         description={<>Your application uses it to create and run agents. <LearnMore page="authentication" /></>}>
         <CreateKey count={onboarding.tokens.data?.length ?? 0} created={key} onCreated={token => { setKey(token); void onboarding.tokens.reload(); }} />
       </StepCard>
-      <StepCard n={3} title="Run an agent with your own tool" done={ownAgent && runStep.done}
+      <StepCard n={3} title="Run an agent with your own tool" done={codeStep.done}
         description="Your tools are ordinary functions in your process. The runtime runs the model loop, keeps the agent's history and sandboxes code the model writes. Run it again and the agent remembers.">
         <Tabs defaultValue="typescript">
           <TabsList><TabsTrigger value="typescript">TypeScript</TabsTrigger><TabsTrigger value="python">Python</TabsTrigger><TabsTrigger value="rest">curl</TabsTrigger></TabsList>

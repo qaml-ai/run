@@ -12,3 +12,12 @@ export function FullLogo({ className }: { className?: string }) {
     </>
   );
 }
+
+/** The console names the product, camelRun: camelAI's mark beside the name, in the body face. */
+export function RunLogo({ className }: { className?: string }) {
+  return (
+    <span className={cn("text-foreground inline-flex items-center gap-2 text-base font-semibold tracking-tight", className)}>
+      <img src={`${import.meta.env.BASE_URL}favicon.svg`} alt="" className="size-5 dark:invert" />camelRun
+    </span>
+  );
+}

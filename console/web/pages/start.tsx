@@ -64,8 +64,8 @@ export function GetStartedPage({ billing, onboarding }: { billing?: Billing; onb
     <>
       <FirstRunPanel art="liquid" eyebrow="GET STARTED" title="Durable agents, hosted"
         action={<LearnMore page="concepts">How camelRun works</LearnMore>}>
-        camelRun runs your agents for you: the model loop, each agent's history and files, and a sandbox for the code it writes.
-        Your tools stay in your code, with your credentials. Pick what you want to build.
+        camelRun runs your agents: the model loop, their history and files, and a sandbox for the code they write. Your tools
+        stay in your code. Pick what to build.
       </FirstRunPanel>
       <div className="mt-4 flex flex-col gap-4">
         <CreditNeeded billing={billing} />

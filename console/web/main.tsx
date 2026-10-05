@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { ArrowUpRight, BookOpen, Github, LogOut, Rocket, Loader2 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { FullLogo } from "@/components/ui/logo";
+import { RunLogo } from "@/components/ui/logo";
 import { PixelButton } from "@/components/ui/pixel-button";
 import { Separator } from "@/components/ui/separator";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -123,7 +123,7 @@ function Console({ me }: { me: Me }) {
       <aside className="bg-sidebar text-sidebar-foreground border-sidebar-border flex shrink-0 flex-col border-b md:sticky md:top-0 md:h-dvh md:w-60 md:border-r md:border-b-0">
         <div className="flex items-center justify-between gap-2 px-5 pt-5 pb-4">
           <div className="min-w-0">
-            <FullLogo className="h-5 w-auto" />
+            <RunLogo />
             <div className="text-muted-foreground mt-2 truncate text-xs">{location.host}</div>
           </div>
           <div className="flex items-center gap-4 md:hidden"><BillingBalance state={billingState} mobile /><SignOut /></div>

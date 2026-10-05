@@ -20,12 +20,13 @@ export const DISCORD_STARTER_PREFIX = "Discord: ";
 
 export interface Step { id: string; label: string; done: boolean }
 
-/** The code path, from what the account has, in the page's order: an agent, a finished run, an API key. */
+/** The code path's three cards, from what the account has: a run here, an API key, an agent of your own code that ran. */
 export function codeSteps({ tokens, agents, usage }: { tokens?: ApiToken[]; agents?: AgentSummary[]; usage?: Usage }): Step[] {
+  const ran = (usage?.totals.responses ?? 0) > 0;
   return [
-    { id: "agent", label: "Create your first agent", done: !!agents?.length },
-    { id: "run", label: "Complete a run", done: (usage?.totals.responses ?? 0) > 0 },
+    { id: "try", label: "Run an agent here", done: !!agents?.length && ran },
     { id: "key", label: "Create an API key", done: !!tokens?.length },
+    { id: "code", label: "Run one from your code", done: ran && !!agents?.some(agent => agent.key !== PLAYGROUND_KEY) },
   ];
 }
 

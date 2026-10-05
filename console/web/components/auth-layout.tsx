@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { DISPLAY_STYLE, GLOW } from "@/components/brand";
 import { DitherLiquid, TONES } from "@/components/dither";
 import { Eyebrow } from "@/components/ui/eyebrow";
-import { FullLogo } from "@/components/ui/logo";
+import { RunLogo } from "@/components/ui/logo";
 import { useArtTheme } from "@/hooks/use-art-theme";
 import { cn } from "@/lib/utils";
 
@@ -13,7 +13,7 @@ export function AuthLayout({ children }: { children: ReactNode }) {
     <div className="grid min-h-dvh lg:grid-cols-2">
       <div className="flex flex-col gap-4 p-6 md:p-10">
         <div className="flex justify-center md:justify-start">
-          <FullLogo className="h-6" />
+          <RunLogo className="text-lg" />
         </div>
         <div className="flex flex-1 items-center justify-center">
           <div className="w-full max-w-xs">{children}</div>

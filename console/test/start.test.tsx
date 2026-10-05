@@ -45,9 +45,11 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 describe("checklists", () => {
   it("tick the code path off from tokens, agents and usage", () => {
     expect(codeSteps({}).map(step => step.done)).toEqual([false, false, false]);
-    expect(codeSteps({ tokens: [token], agents: [], usage: usage(0) }).map(step => step.done)).toEqual([false, false, true]);
-    expect(codeSteps({ agents: [agent()], usage: usage(1) }).map(step => step.label)).toEqual(["Create your first agent", "Complete a run", "Create an API key"]);
-    expect(codeSteps({ tokens: [token], agents: [agent()], usage: usage(2) }).map(step => step.done)).toEqual([true, true, true]);
+    expect(codeSteps({ tokens: [token], agents: [], usage: usage(0) }).map(step => step.done)).toEqual([false, true, false]);
+    // The playground's run is card 1; card 3 needs an agent of the user's own code.
+    expect(codeSteps({ agents: [agent({ key: "playground" })], usage: usage(1) }).map(step => step.done)).toEqual([true, false, false]);
+    expect(codeSteps({}).map(step => step.label)).toEqual(["Run an agent here", "Create an API key", "Run one from your code"]);
+    expect(codeSteps({ tokens: [token], agents: [agent({ key: "playground" }), agent({ key: "quickstart" })], usage: usage(2) }).map(step => step.done)).toEqual([true, true, true]);
   });
 
   it("tick the Discord path off from a starter, the server, its setup and its first conversation", () => {
@@ -64,7 +66,7 @@ describe("checklists", () => {
   it("show the further path in the nav, complete when either path is", () => {
     expect(navProgress(onboarding())).toEqual({ done: 0, total: 3, complete: false });
     expect(navProgress(onboarding({ definitions: [starter], bindings: [server()] }))).toEqual({ done: 2, total: 4, complete: false });
-    expect(navProgress(onboarding({ tokens: [token], agents: [agent()], responses: 1 })).complete).toBe(true);
+    expect(navProgress(onboarding({ tokens: [token], agents: [agent({ key: "quickstart" })], responses: 1 })).complete).toBe(true);
     expect(navProgress(onboarding({ bindings: [live], agents: [agent({ key: "discord-managed-ch1-1" })] })).complete).toBe(true);
   });
 });
@@ -221,6 +223,23 @@ describe("the Discord path", () => {
     render(<GetStartedPage onboarding={onboarding({ definitions: [starter], bindings: [live], agents: [agent({ key: "discord-managed-ch1-555" })] })} />);
     expect(screen.queryByText(/ticks when Camel gets its first mention/)).toBeNull();
     expect(screen.getByLabelText("YOUR DISCORD BOT").textContent).toContain("4/4");
+  });
+
+  it("offers tuning only once Camel is in a server, and server settings once it is set up", () => {
+    render(<GetStartedPage onboarding={onboarding({ definitions: [starter] })} />);
+    expect((screen.getByRole("button", { name: "Edit personality and tools" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Server settings" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText("Available once Camel is in your server.")).toBeTruthy();
+    cleanup();
+    render(<GetStartedPage onboarding={onboarding({ definitions: [starter], bindings: [live] })} />);
+    expect((screen.getByRole("button", { name: "Edit personality and tools" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getByRole("link", { name: "Server settings" })).toBeTruthy();
+  });
+
+  it("numbers its cards as its checklist does", () => {
+    render(<GetStartedPage onboarding={onboarding()} />);
+    expect(screen.getByLabelText("YOUR DISCORD BOT").querySelectorAll("li").length).toBe(4);
+    expect(screen.queryByText(/step 5/)).toBeNull();
   });
 
   it("explains itself where the shared bot is off", () => {

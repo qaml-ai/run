@@ -127,9 +127,12 @@ export function DiscordPath({ onboarding, config }: { onboarding: ReturnType<typ
           <CardTitle>Then: tune its personality and tools</CardTitle>
           <CardDescription>Its prompt, model and tools are a definition: edit it and every conversation in the server takes the change between turns.</CardDescription>
         </CardHeader>
-        <CardContent className="flex flex-wrap gap-2">
-          <Button variant="outline" disabled={!starter} onClick={() => setEditing(starter)}>Edit personality and tools</Button>
-          {ready && <Button variant="outline" asChild><Link to="channels">Server settings</Link></Button>}
+        <CardContent className="flex flex-col gap-2">
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" disabled={!added || !starter} onClick={() => setEditing(starter)}>Edit personality and tools</Button>
+            {ready ? <Button variant="outline" asChild><Link to="channels">Server settings</Link></Button> : <Button variant="outline" disabled>Server settings</Button>}
+          </div>
+          {!ready && <p className="text-muted-foreground text-xs">{added ? "Available once you've chosen where it answers." : "Available once Camel is in your server."}</p>}
         </CardContent>
       </Card>
       <NextSteps>
