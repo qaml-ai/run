@@ -375,40 +375,11 @@ this current-state cooldown.
 
 Email is optional. Without `AGENT_BILLING_EMAIL_FROM`, no worker starts and adding
 or resending recipients returns 503; balance events and threshold editing still
-work. Both providers use the same confirmed recipients, durable outbox, templates,
-and one-click unsubscribe controls.
+work. Mail uses confirmed recipients, a durable outbox, templates and one-click
+unsubscribe controls, and goes through Amazon SES (camelRun's setup:
+`infra/terraform/ses-mail.tf`, and [Account email](account-email.md#camelruns-mail-all-through-ses)).
 
-**Moving to SES.** camelRun's billing and Get Help mail moves to Amazon SES with account mail
-(`infra/terraform/ses-mail.tf`, `ses_mail_enabled`; runbook in [Account email](account-email.md#runbook-all-camelrun-mail-through-ses)):
-`AGENT_BILLING_EMAIL_PROVIDER=ses` with the shared configuration set and its bounce and complaint topic, as below.
-Until then, and while that switch is off,
-production uses Cloudflare Email Sending, following camelStream's native email
-binding. Deploy `infra/billing-email/wrangler.toml` in the camelAI Cloudflare
-account; its sender is restricted to `billing@mail.camelai.com` on the existing
-verified `mail.camelai.com` domain. The runtime authenticates to this small mail
-Worker with a dedicated random 32-byte secret, not a Cloudflare account API key.
-The Worker forwards permanent bounce, complaint and suppression events from its
-Cloudflare Queue to the runtime with the same secret. The runtime matches the
-recorded provider message ID and recipient before suppressing the address.
-Unknown IDs return 503 so a callback racing the send transaction can retry.
-Temporary bounces do not suppress addresses. See
-[`infra/billing-email/README.md`](../../infra/billing-email/README.md) for setup,
-feedback retry/dead-letter checks and the staged launch procedure.
-
-Configure Cloudflare delivery with:
-
-- `AGENT_BILLING_EMAIL_PROVIDER=cloudflare`.
-- `AGENT_BILLING_EMAIL_FROM=billing@mail.camelai.com` and optional
-  `AGENT_BILLING_EMAIL_NAME` (default `camelRun Billing`).
-- `AGENT_BILLING_EMAIL_URL`: the mail Worker's HTTPS `/send` URL.
-- `AGENT_BILLING_EMAIL_SECRET_ARN`: a Secrets Manager string containing the
-  Worker's `MAIL_SECRET`. Development can use `AGENT_BILLING_EMAIL_SECRET` instead.
-  Use the ARN in production so sandbox children cannot read the secret from the
-  server process environment.
-- `AGENT_PUBLIC_URL`, `AGENT_SECRETS_KEY_ARN` and `AWS_REGION` as for the runtime.
-
-SES remains available for other deployments. For SES, use
-`AGENT_BILLING_EMAIL_PROVIDER=ses` (the default) and configure:
+Configure it with (`AGENT_BILLING_EMAIL_PROVIDER` may be omitted; `ses` is the only provider):
 
 - `AGENT_BILLING_EMAIL_FROM`: a verified SES sender address.
 - `AGENT_BILLING_EMAIL_NAME`: optional display name, default `camelRun Billing`.
@@ -427,7 +398,7 @@ validates SNS signatures and topic allowlisting, confirms matching signed
 subscription requests, and correlates feedback with this product's delivery tags
 and recipient. Transient bounces do not suppress the address. Configure the SES
 event destination as described in [SES event publishing](https://docs.aws.amazon.com/ses/latest/dg/monitor-using-event-publishing.html).
-Cloudflare delivery does not require SES or an SNS email subscription.
+Account mail and Get Help share the configuration set and topic; their events never suppress a billing contact.
 
 The worker polls every five seconds, claims at most five deliveries, and sends
 them concurrently with a 15-second request deadline and no SDK retries. The outbox

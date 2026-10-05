@@ -2,7 +2,8 @@ import { test, type TestContext } from "node:test";
 import pg from "pg";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import worker, { type MailEnv } from "../infra/billing-email/worker.ts";
+import { createServer } from "node:http";
+import { once } from "node:events";
 import { Accounts } from "../src/accounts.ts";
 import { api } from "../src/api.ts";
 import { BillingAlerts } from "../src/billing-alerts.ts";
@@ -241,8 +242,8 @@ test("POST /v1/help is the console's; GET /v1/help says whether the button shows
 });
 
 test("Get Help is off unless the support inbox and its sender are configured", () => {
-  const mail = billingMailConfig({ AGENT_BILLING_EMAIL_FROM: "billing@mail.camelai.test", AGENT_BILLING_EMAIL_PROVIDER: "cloudflare",
-    AGENT_BILLING_EMAIL_URL: "https://mail.example.test/send", AGENT_PUBLIC_URL: origin }, secret);
+  const mail = billingMailConfig({ AGENT_BILLING_EMAIL_FROM: "billing@mail.camelai.test", AGENT_BILLING_EMAIL_CONFIGURATION_SET: "camelai-agent-runtime-mail",
+    AGENT_BILLING_EMAIL_SNS_TOPICS: "arn:aws:sns:us-west-2:123456789012:camelai-agent-runtime-mail-feedback", AGENT_PUBLIC_URL: origin, AWS_REGION: "us-west-2" });
   const env = { AGENT_SUPPORT_EMAIL: inbox, AGENT_SUPPORT_EMAIL_FROM: "no-reply@mail.camelai.test" };
   assert.equal(helpConfig({}, mail), undefined);
   assert.throws(() => helpConfig({ AGENT_SUPPORT_EMAIL: inbox }, mail), /both/);
@@ -252,51 +253,37 @@ test("Get Help is off unless the support inbox and its sender are configured", (
   const configured = helpConfig({ ...env, AGENT_RELEASE: "2026.09.30-abc", AGENT_SUPPORT_LOG_GROUP: "/ecs/camelai-agent-runtime" }, mail)!;
   assert.equal(configured.displayName, "camelRun");
   assert.equal(configured.origin, origin);
-  assert.deepEqual(configured.transport.cloudflare, mail!.cloudflare);
+  assert.deepEqual(configured.transport, { from: "no-reply@mail.camelai.test", displayName: "camelRun", region: "us-west-2", configurationSet: "camelai-agent-runtime-mail" }, "through SES, in billing's configuration set");
   assert.equal(configured.release, "2026.09.30-abc");
 });
 
-const workerEnv = (send: MailEnv["EMAIL"]["send"], support = true): MailEnv => ({ MAIL_SECRET: secret, FROM: "billing@mail.camelai.test",
-  FEEDBACK_URL: `${origin}/v1/billing/email/feedback`, ...(support ? { SUPPORT_FROM: "no-reply@mail.camelai.test", SUPPORT_TO: inbox } : {}), EMAIL: { send } });
-const workerRequest = (body: unknown) => new Request("https://mail.example.test/send", { method: "POST",
-  headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" }, body: JSON.stringify(body) });
-
-test("the mail Worker sends support mail only to the support inbox, with at most one other address, replying there", async () => {
-  let sent: any;
-  const env = workerEnv(async value => { sent = value; return { messageId: "cf-support" }; });
-  const mail = { from: "no-reply@mail.camelai.test", displayName: "camelRun", to: inbox, cc: "user@example.test", replyTo: inbox,
-    subject: "We got your request", text: "Hi", html: "<p>Hi</p>", headers: [] };
-  const response = await worker.fetch(workerRequest(mail), env);
-  assert.deepEqual(await response.json(), { messageId: "cf-support" });
-  assert.deepEqual(sent, { from: { email: "no-reply@mail.camelai.test", name: "camelRun" }, to: inbox, cc: "user@example.test", replyTo: inbox,
-    subject: "We got your request", text: "Hi", html: "<p>Hi</p>", headers: {} });
-  sent = undefined;
-  for (const invalid of [
-    { ...mail, to: "user@example.test", cc: "other@example.test" }, // no support inbox
-    { ...mail, replyTo: "attacker@example.test" }, { ...mail, cc: ["a@example.test", "b@example.test"] }, { ...mail, cc: "a@example.test, b@example.test" },
-    { ...mail, headers: [{ Name: "List-Unsubscribe", Value: "<https://example.test>" }] },
-    { ...mail, from: "billing@mail.camelai.test", headers: [] }, // billing mail takes no cc or reply-to
-  ]) assert.equal((await worker.fetch(workerRequest(invalid), env)).status, 400, JSON.stringify(invalid));
-  assert.equal((await worker.fetch(workerRequest(mail), workerEnv(env.EMAIL.send, false))).status, 400, "no support mail unless configured");
-  assert.equal(sent, undefined);
-});
-
-test("the transport posts cc and reply-to to the Worker and reports suppression", async () => {
-  let sent: any;
-  let suppress = false;
-  const env = workerEnv(async value => {
-    sent = value;
-    if (suppress) throw Object.assign(new Error("suppressed"), { code: "E_RECIPIENT_SUPPRESSED" });
-    return { messageId: "cf-7" };
+test("the SES transport sends support mail with its cc, reply-to and configuration set", async t => {
+  const requests: any[] = [];
+  const server = createServer(async (req, res) => {
+    let text = "";
+    for await (const chunk of req) text += chunk;
+    requests.push({ path: req.url, body: JSON.parse(text) });
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ MessageId: "ses-7" }));
   });
-  const transport = new MailTransport({ from: "no-reply@mail.camelai.test", displayName: "camelRun", cloudflare: { url: "https://mail.example.test/send", secret },
-    fetch: (async (url: string, options: RequestInit) => worker.fetch(new Request(url, options), env)) as typeof fetch });
-  const mail = { to: inbox, cc: "user@example.test", replyTo: inbox, subject: "S", html: "<p>H</p>", text: "T" };
-  assert.deepEqual(await transport.send(mail, AbortSignal.timeout(5_000)), { messageId: "cf-7" });
-  assert.equal(sent.cc, "user@example.test");
-  assert.equal(sent.replyTo, inbox);
-  suppress = true;
-  assert.deepEqual(await transport.send(mail, AbortSignal.timeout(5_000)), { suppressed: true });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const saved = { endpoint: process.env.AWS_ENDPOINT_URL_SESV2, key: process.env.AWS_ACCESS_KEY_ID, secret: process.env.AWS_SECRET_ACCESS_KEY };
+  Object.assign(process.env, { AWS_ENDPOINT_URL_SESV2: `http://127.0.0.1:${(server.address() as { port: number }).port}`, AWS_ACCESS_KEY_ID: "fixture-key", AWS_SECRET_ACCESS_KEY: "fixture-secret" });
+  const transport = new MailTransport({ from: "no-reply@mail.camelai.test", displayName: "camelRun", region: "us-west-2", configurationSet: "camelai-agent-runtime-mail" });
+  t.after(() => {
+    transport.destroy(); server.close();
+    for (const [name, value] of [["AWS_ENDPOINT_URL_SESV2", saved.endpoint], ["AWS_ACCESS_KEY_ID", saved.key], ["AWS_SECRET_ACCESS_KEY", saved.secret]] as const) {
+      if (value === undefined) delete process.env[name]; else process.env[name] = value;
+    }
+  });
+  const mail = { to: inbox, cc: "user@example.test", replyTo: inbox, subject: "S", html: "<p>H</p>", text: "T", tags: [{ Name: "product", Value: "camelrun-help" }] };
+  assert.deepEqual(await transport.send(mail, AbortSignal.timeout(5_000)), { messageId: "ses-7" });
+  const [{ path, body }] = requests;
+  assert.equal(path, "/v2/email/outbound-emails");
+  assert.deepEqual(body.Destination, { ToAddresses: [inbox], CcAddresses: ["user@example.test"] });
+  assert.deepEqual(body.ReplyToAddresses, [inbox]);
+  assert.equal(body.ConfigurationSetName, "camelai-agent-runtime-mail");
+  assert.match(body.FromEmailAddress, /<no-reply@mail\.camelai\.test>$/);
 });
 
 test("console paths map to allowlisted templates; anything else is left out", () => {

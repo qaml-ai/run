@@ -8,10 +8,10 @@
 # sender off addresses that bounce or complain. The account is out of the SES sandbox in
 # us-west-2 (checked 2026-10-05: 50,000 a day, 14 a second).
 #
-# DNS for camelai.com is added by hand in Cloudflare, so this rolls out in stages
-# (docs/operations/account-email.md, "Runbook"):
+# DNS for camelai.com is added by hand in Cloudflare, so this rolled out in stages
+# (docs/operations/account-email.md, "Runbook"); all three are on in production:
 #   1. ses_mail_domain set: identity, MAIL FROM, configuration set, topic and the task
-#      role's send permission. The runtime is unchanged; billing stays on the Worker.
+#      role's send permission.
 #      Add the records `tofu output ses_mail_dns_records` lists; wait for SES to verify.
 #   2. ses_mail_enabled = true: the task sends billing, Get Help and account mail through
 #      SES (AGENT_BILLING_EMAIL_PROVIDER=ses, AGENT_ACCOUNT_EMAIL_FROM, ...). Deploy.
@@ -26,7 +26,7 @@ variable "ses_mail_domain" {
 
 variable "ses_mail_enabled" {
   type        = bool
-  description = "Stage 2: billing, Get Help and account mail through SES. Only once SES shows ses_mail_domain verified."
+  description = "Stage 2: billing, Get Help and account mail through SES (without it the runtime sends no mail). Only once SES shows ses_mail_domain verified."
   default     = false
 }
 
@@ -156,4 +156,68 @@ output "ses_mail_dns_records" {
       { type = "TXT", name = local.ses_mail_from_domain, content = "v=spf1 include:amazonses.com ~all" },
     ],
   ) : []
+}
+
+# Mail health, on the regional alerts topic (alarms.tf). SES pauses an account's sending at a bounce rate of
+# 10% or a complaint rate of 0.5%, and reviews it from 5% and 0.1%: these fire at the review thresholds.
+resource "aws_cloudwatch_metric_alarm" "ses_bounce_rate" {
+  count               = local.ses_mail ? 1 : 0
+  alarm_name          = "${var.name}-ses-bounce-rate"
+  alarm_description   = "SES reputation bounce rate is over 5% (SES reviews the account from 5%, pauses sending at 10%). Check sign-up abuse and billing contacts."
+  namespace           = "AWS/SES"
+  metric_name         = "Reputation.BounceRate"
+  statistic           = "Maximum"
+  period              = 3600
+  evaluation_periods  = 1
+  threshold           = 0.05
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_topics
+  ok_actions          = local.alarm_topics
+}
+
+resource "aws_cloudwatch_metric_alarm" "ses_complaint_rate" {
+  count               = local.ses_mail ? 1 : 0
+  alarm_name          = "${var.name}-ses-complaint-rate"
+  alarm_description   = "SES reputation complaint rate is over 0.1% (SES reviews the account from 0.1%, pauses sending at 0.5%)."
+  namespace           = "AWS/SES"
+  metric_name         = "Reputation.ComplaintRate"
+  statistic           = "Maximum"
+  period              = 3600
+  evaluation_periods  = 1
+  threshold           = 0.001
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_topics
+  ok_actions          = local.alarm_topics
+}
+
+# A send SES refused (account mail, billing mail), from the runtime's log.
+resource "aws_cloudwatch_log_metric_filter" "mail_send_failed" {
+  count          = local.ses_mail ? 1 : 0
+  name           = "${var.name}-mail-send-failed"
+  log_group_name = aws_cloudwatch_log_group.runtime.name
+  pattern        = "{ ($.type = \"account_mail_failed\") || ($.type = \"billing_mail_send_failed\") }"
+  metric_transformation {
+    namespace     = "AgentRuntime/Mail"
+    name          = "SendFailures"
+    value         = "1"
+    default_value = "0"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "mail_send_failed" {
+  count               = local.ses_mail ? 1 : 0
+  alarm_name          = "${var.name}-mail-send-failed"
+  alarm_description   = "A mail send failed in the last 15 minutes (account_mail_failed or billing_mail_send_failed in /ecs/${var.name}): look at the error class; SES throttling, the sender's identity or the task's permission."
+  namespace           = "AgentRuntime/Mail"
+  metric_name         = "SendFailures"
+  statistic           = "Sum"
+  period              = 900
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_topics
+  ok_actions          = local.alarm_topics
 }

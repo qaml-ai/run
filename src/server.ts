@@ -162,7 +162,7 @@ const accounts = new Accounts({ tenants, db, secretsKey: secrets.secretsKey, pri
 const busyAgents = new BusyAgents({ db, ownership, limitFor: (tenant, sql) => accounts.billing.busyLimit(tenant, sql) });
 accounts.billing.autoTopup?.start();
 const billingAlerts = new BillingAlerts(db, accounts);
-const mailConfig = billingMailConfig(process.env, secrets.billingEmailSecret);
+const mailConfig = billingMailConfig(process.env);
 if (mailConfig && !accounts.canStoreKeys) throw new Error("Billing email requires AGENT_SECRETS_KEY for confirmation tokens");
 const billingMailer = mailConfig ? new BillingMailer({ db, alerts: billingAlerts, ...mailConfig }) : undefined;
 billingMailer?.start();

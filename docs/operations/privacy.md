@@ -106,7 +106,7 @@ email address may sign up again as a new, empty tenant.
 | Inbound mail stored in S3 (large messages) | 7 days (`email.tf` lifecycle) |
 | A deleted volume's files | until storage collection's grace period passes (`AGENT_GC_GRACE_MS`, a day), once collection is enabled; at once on account deletion |
 | Runtime logs (`/ecs/camelai-agent-runtime`) | 30 days; ids, sizes and error classes only (see "What logs hold" in [architecture](architecture.md)) |
-| Other log groups, and the billing-email Worker's | see [infra/terraform/README.md](../../infra/terraform/README.md#log-retention) |
+| Other log groups | see [infra/terraform/README.md](../../infra/terraform/README.md#log-retention) |
 | Rate limit counters (`rate_limits`: tenant ids, and client addresses and email addresses as keyed hashes) | until their window (a minute, 15 minutes, an hour, or a UTC day) ends, then swept within an hour; per-node request counts are in memory only |
 | Mailed links (`account_email_links`: the address, the token's hash, a sign-up's password hash) | until used or replaced, else a day after mailing (a reset link, an hour), then swept; a tenant's go with its account |
 | Account mail at Amazon SES | SES's sending records; addresses that bounce or complain stay on the account's suppression list until removed |

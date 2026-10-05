@@ -60,58 +60,45 @@ the operator's to set (`PUT /v1/tenants/{id}/password`, `infra/tenant.sh set-pas
   `AGENT_PUBLIC_URL` is a loopback address, so a public runtime never logs a sign-up link. With sign-up
   closed it is a way to hand out password resets.
 
-## Runbook: all camelRun mail through SES
+## camelRun's mail: all through SES
 
 camelRun sends all its mail through Amazon SES in us-west-2, where the account is out of the sandbox (production
-access; 50,000 a day, 14 a second, checked 2026-10-05): billing (`billing@mail.camelai.com`), Get Help
-(`no-reply@mail.camelai.com`) and account mail (`accounts@mail.camelai.com`), from the SES domain identity
-`mail.camelai.com` that `infra/terraform/ses-mail.tf` makes, through one configuration set
-(`camelai-agent-runtime-mail`) whose bounces and complaints go to an SNS topic subscribed to the runtime's
-`/v1/billing/email/feedback` (each message's signature checked with `verifySns`): billing contacts that bounce or
-complain are suppressed, and SES's account-level suppression list keeps every sender off them. Until stage 3,
-billing and Get Help mail keep going through the Cloudflare Worker (`infra/billing-email`), and no sign-up is
-offered. The guarded script `apply-ses-mail.sh` runs each stage, allowing only its own changes.
+access; 50,000 a day, 14 a second): billing (`billing@mail.camelai.com`), Get Help (`no-reply@mail.camelai.com`)
+and account mail (`accounts@mail.camelai.com`), from the SES domain identity `mail.camelai.com` that
+`infra/terraform/ses-mail.tf` makes, through one configuration set (`camelai-agent-runtime-mail`) whose bounces and
+complaints go to an SNS topic subscribed to the runtime's `/v1/billing/email/feedback` (each message's signature
+checked with `verifySns`): billing contacts that bounce or complain are suppressed, and SES's account-level
+suppression list keeps every sender off them. It went live on 2026-10-05 (`ses_mail_domain`, `ses_mail_enabled`,
+`ses_mail_feedback` in `prod.tfvars`); the Cloudflare billing Worker that sent billing mail before is gone.
 
-1. **SES resources** (`ses_mail_domain = "mail.camelai.com"`): identity with Easy DKIM, MAIL FROM
-   `bounce.mail.camelai.com`, configuration set, topic and its policy, the bounce/complaint event destination, and
-   the task role's `ses:SendEmail` on the identity and configuration set, only as those three senders. The
-   runtime's environment does not change.
-2. **DNS**, by hand in Cloudflare, zone `camelai.com`, DNS only (grey cloud): three DKIM CNAMEs
-   `<token>._domainkey.mail.camelai.com` → `<token>.dkim.amazonses.com` (`tofu output ses_mail_dns_records`
-   has the tokens), and for `bounce.mail.camelai.com` an MX `10 feedback-smtp.us-west-2.amazonses.com` and a TXT
-   `v=spf1 include:amazonses.com ~all`. `_dmarc.mail.camelai.com` (`p=reject`) stays: SES's DKIM aligns with it;
-   Cloudflare's own records for the domain stay too. Wait until `aws sesv2 get-email-identity --email-identity
-   mail.camelai.com` shows `VerifiedForSendingStatus: true`, DKIM `SUCCESS` and MAIL FROM `SUCCESS`.
-3. **Switch** (`ses_mail_enabled = true`, refused by the script until step 2 verified): the task gets
-   `AGENT_BILLING_EMAIL_PROVIDER=ses` with the configuration set and topic, Get Help's sender, and
-   `AGENT_ACCOUNT_EMAIL_FROM`; deploy. Billing, Get Help and account mail now go through SES, and
-   `/console/auth/methods` says `signup: true, reset: true`.
-4. **Feedback** (`ses_mail_feedback = true`): the topic's HTTPS subscription, which the runtime confirms.
-5. **Check**: from a test account, add a billing contact (Billing → alerts) with an address you read, and confirm it
-   from the mail; sign up at `/console/signup`, follow the link, sign in, and reset that password; send a Get Help
-   request. Then retire the Worker (below).
+The DNS it needs, in Cloudflare's `camelai.com` zone (DNS only): three DKIM CNAMEs
+`<token>._domainkey.mail.camelai.com` → `<token>.dkim.amazonses.com` (`tofu output ses_mail_dns_records`), and for
+`bounce.mail.camelai.com` an MX `10 feedback-smtp.us-west-2.amazonses.com` and a TXT
+`v=spf1 include:amazonses.com ~all`. `_dmarc.mail.camelai.com` (`p=reject`) is aligned by SES's DKIM.
 
-Back out of stage 3 by setting `ses_mail_enabled = false` and applying: billing returns to the Worker, and sign-up
-and reset disappear on the next deploy (links already mailed stop working).
+**Alarms** (on the regional alerts topic): `camelai-agent-runtime-ses-bounce-rate` (reputation bounce rate over 5%,
+where SES starts reviewing an account; it pauses sending at 10%), `camelai-agent-runtime-ses-complaint-rate` (over
+0.1%; paused at 0.5%), and `camelai-agent-runtime-mail-send-failed` (any `account_mail_failed` or
+`billing_mail_send_failed` in 15 minutes). A rising bounce rate after sign-up opens is most likely sign-ups with
+made-up addresses: tighten `AGENT_RATE_LIMIT_EMAIL_REQUESTS_PER_IP` or close sign-up (`AGENT_OPEN_SIGNUP`) while
+investigating.
 
-### Retiring the Cloudflare billing Worker, once SES mail is live
+Turning account mail off: `ses_mail_enabled = false` stops all of the runtime's mail (billing and Get Help too).
+To stop only sign-up, set `AGENT_OPEN_SIGNUP=false`.
 
-Nothing in the runtime calls the Worker once stage 3 is deployed. Then, with an authorized Cloudflare login, from
-`infra/billing-email`:
+### Removing the Cloudflare billing Worker's leftovers
 
-```sh
-npx --yes wrangler@4.144.0 queues subscription list camelrun-billing-email-feedback   # its id
-npx --yes wrangler@4.144.0 queues subscription delete camelrun-billing-email-feedback --id <subscription id>
-npx --yes wrangler@4.144.0 delete --name camelrun-billing-email
-npx --yes wrangler@4.144.0 queues delete camelrun-billing-email-feedback
-npx --yes wrangler@4.144.0 queues delete camelrun-billing-email-feedback-dlq   # once nothing in it needs review
-aws secretsmanager delete-secret --region us-west-2 --secret-id camelai/agent-runtime/billing-email --recovery-window-in-days 7
-```
+The Worker, its feedback queue and its event subscription were deleted on 2026-10-05; the dead-letter queue
+`camelrun-billing-email-feedback-dlq` was kept for review. The runtime no longer knows the Worker (no `cloudflare`
+billing provider, no `billing_email_worker_url`, no `billing-email` secret). To finish:
 
-Before deleting the secret, remove `billing-email` from `infra/terraform/secrets.tf` (and the task policy's read of it)
-with the code change that drops the `cloudflare` billing provider, `billing_email_worker_url` and
-`infra/billing-email/`, so Terraform does not recreate it. Leave `mail.camelai.com` enabled for Email Sending in
-Cloudflare if camelStream still sends from it.
+1. Before applying the Terraform without it: `tofu state rm 'aws_secretsmanager_secret.runtime["billing-email"]'`
+   (every runtime secret has `prevent_destroy`), then apply; `billing_email_worker_url` comes out of `prod.tfvars`.
+2. Then delete the secret: `aws secretsmanager delete-secret --region us-west-2 --secret-id
+   camelai/agent-runtime/billing-email --recovery-window-in-days 7`.
+3. Once nothing in it needs review: `npx --yes wrangler@4.144.0 queues delete camelrun-billing-email-feedback-dlq`.
+
+Leave `mail.camelai.com` enabled for Email Sending in Cloudflare if camelStream still sends from it.
 
 ## Runbook: self-hosted
 

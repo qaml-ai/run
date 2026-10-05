@@ -18,7 +18,7 @@ else is here.
 | `monitoring.tf` | Route 53 health check, `-healthz` alarm and SNS topic in us-east-1 |
 | `alarms.tf` | ALB/ECS alarms and their us-west-2 SNS topic |
 | `email.tf` | email channels, when `email_domain` is set: SES identity and receipt rule, DKIM/MX/DMARC records, inbound mail bucket, SNS topic and subscription, the task's send/read policy |
-| `ses-mail.tf` | all outgoing mail through SES, when `ses_mail_domain` is set: domain identity with Easy DKIM, MAIL FROM `bounce.<domain>`, a configuration set publishing bounces and complaints to an SNS topic, the task's `ses:SendEmail` as billing@, no-reply@ and accounts@ only; DNS added by hand (`tofu output ses_mail_dns_records`); `ses_mail_enabled` switches billing, Get Help and account mail to it, `ses_mail_feedback` subscribes the runtime to the topic |
+| `ses-mail.tf` | all outgoing mail through SES, when `ses_mail_domain` is set: domain identity with Easy DKIM, MAIL FROM `bounce.<domain>`, a configuration set publishing bounces and complaints to an SNS topic, the task's `ses:SendEmail` as billing@, no-reply@ and accounts@ only; DNS added by hand (`tofu output ses_mail_dns_records`); `ses_mail_enabled` sends billing, Get Help and account mail through it, `ses_mail_feedback` subscribes the runtime to the topic; alarms on SES bounce and complaint rates and on failed sends |
 
 ## Prerequisites
 
@@ -206,10 +206,6 @@ tofu import aws_cloudwatch_log_group.container_insights /aws/ecs/containerinsigh
 tofu import aws_cloudwatch_log_group.database_proxy /aws/rds/proxy/camelai-agent-runtime-control
 ```
 
-The billing-email Worker (`infra/billing-email`) is deployed with Wrangler, not
-Terraform. Cloudflare keeps Workers Logs for 7 days on the Workers Paid plan
-(3 on Free), and the retention cannot be changed. It logs only a line's type;
-Cloudflare's invocation logs (request metadata) are off in its `wrangler.toml`.
 
 ## Alarms
 
@@ -235,6 +231,13 @@ Cloudflare's invocation logs (request metadata) are off in its `wrangler.toml`.
     drains: it is one `task_protection_blocked` line, not counted. The `retiring` and `retired`
     lines can be found with a Logs Insights query:
     `filter type in ["retiring", "retired"]`.
+
+- **Mail** (`ses-mail.tf`, us-west-2, on the regional alerts topic):
+  - `-ses-bounce-rate`: SES's account reputation bounce rate over 5% (SES reviews an account from 5% and pauses
+    its sending at 10%);
+  - `-ses-complaint-rate`: complaint rate over 0.1% (paused at 0.5%);
+  - `-mail-send-failed`: any `account_mail_failed` or `billing_mail_send_failed` log line in 15 minutes
+    (`AgentRuntime/Mail` `SendFailures`).
 
 - **Runtime metrics** (`observability.tf`, us-west-2, namespace `AgentRuntime`),
   among them:

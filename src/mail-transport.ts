@@ -1,15 +1,12 @@
 /**
- * Transactional mail through the configured provider: SES, or the Cloudflare mail Worker
- * (infra/billing-email). Billing and Get Help both send through it; neither provider has an
- * idempotency key, so a caller that retries delivers at least once.
+ * Transactional mail through Amazon SES. Billing, Get Help and account mail all send through it;
+ * SES has no idempotency key, so a caller that retries delivers at least once.
  */
 export interface MailTransportOptions {
   from: string;
   displayName: string;
   region?: string;
   configurationSet?: string;
-  cloudflare?: { url: string; secret: string };
-  fetch?: typeof fetch;
 }
 export interface OutgoingMail {
   to: string;
@@ -31,19 +28,7 @@ export class MailTransport {
   constructor(options: MailTransportOptions) { this.options = options; }
 
   async send(mail: OutgoingMail, signal: AbortSignal): Promise<MailResult> {
-    const { from, displayName, cloudflare } = this.options;
-    if (cloudflare) {
-      const response = await (this.options.fetch ?? fetch)(cloudflare.url, { method: "POST", redirect: "error", signal,
-        headers: { Authorization: `Bearer ${cloudflare.secret}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ to: mail.to, ...(mail.cc ? { cc: mail.cc } : {}), ...(mail.replyTo ? { replyTo: mail.replyTo } : {}),
-          subject: mail.subject, html: mail.html, text: mail.text, headers: mail.headers ?? [], from, displayName }),
-      });
-      if (!response.ok) throw new Error("Cloudflare mail failed");
-      const result = await response.json() as { messageId?: string; suppressed?: boolean };
-      if (result.suppressed === true) return { suppressed: true };
-      if (typeof result.messageId !== "string" || !result.messageId || result.messageId.length > 512) throw new Error("Missing Cloudflare message ID");
-      return { messageId: result.messageId };
-    }
+    const { from, displayName } = this.options;
     const { SESv2Client, SendEmailCommand } = await import("@aws-sdk/client-sesv2");
     const { NodeHttpHandler } = await import("@smithy/node-http-handler");
     this.client ??= new SESv2Client({ region: this.options.region, maxAttempts: 1,

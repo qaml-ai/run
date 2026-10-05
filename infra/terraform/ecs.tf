@@ -157,7 +157,6 @@ resource "aws_iam_role_policy" "task" {
           aws_secretsmanager_secret.runtime["github-oauth"].arn,
           aws_secretsmanager_secret.runtime["google-oauth"].arn,
           aws_secretsmanager_secret.runtime["stripe"].arn,
-          aws_secretsmanager_secret.runtime["billing-email"].arn,
           aws_secretsmanager_secret.runtime["tool-search"].arn,
           aws_secretsmanager_secret.runtime["discord-managed"].arn,
         ]

@@ -33,7 +33,7 @@ export interface HelpConfig {
   origin: string;
   release?: string;
   logGroup?: string;
-  transport: { from: string; displayName: string; region?: string; configurationSet?: string; cloudflare?: { url: string; secret: string } };
+  transport: { from: string; displayName: string; region?: string; configurationSet?: string };
 }
 
 /**
@@ -51,7 +51,7 @@ export function helpConfig(env: NodeJS.ProcessEnv, mail: ReturnType<typeof billi
   if (!displayName.trim() || displayName.length > 80 || /[\r\n]/.test(displayName)) throw new Error("AGENT_SUPPORT_EMAIL_NAME must be a single display name, at most 80 characters");
   const release = env.AGENT_RELEASE && /^[\w.:@+-]{1,128}$/.test(env.AGENT_RELEASE) ? env.AGENT_RELEASE : undefined;
   return { inbox, from, displayName, origin: mail.origin, release, logGroup: env.AGENT_SUPPORT_LOG_GROUP || undefined,
-    transport: { from, displayName, region: mail.region, configurationSet: mail.configurationSet, cloudflare: mail.cloudflare } };
+    transport: { from, displayName, region: mail.region, configurationSet: mail.configurationSet } };
 }
 
 export interface HelpOptions extends HelpConfig {

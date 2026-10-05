@@ -21,6 +21,13 @@ Changes on main since the last tag.
   a same-origin `Origin` or, where a browser leaves Origin out, `Sec-Fetch-Site: same-origin`. A request with
   neither (curl with a copied cookie) is refused.
 
+### Billing and Get Help mail: SES only
+
+- The `cloudflare` billing email provider (the `infra/billing-email` Worker) is removed, with
+  `AGENT_BILLING_EMAIL_URL`, `AGENT_BILLING_EMAIL_SECRET` and `AGENT_BILLING_EMAIL_SECRET_ARN`. Billing and Get Help
+  mail go through SES (`AGENT_BILLING_EMAIL_PROVIDER=ses`, the default), with its configuration set and SNS topics.
+  **A runtime configured with `AGENT_BILLING_EMAIL_PROVIDER=cloudflare` no longer starts**: move it to SES first.
+
 ### Sign-up, password reset and adding a password by email
 
 Off unless account mail is configured (`AGENT_ACCOUNT_EMAIL_FROM`); without it nothing changes. See
