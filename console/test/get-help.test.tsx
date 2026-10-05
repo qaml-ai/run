@@ -180,7 +180,7 @@ describe("Get help", () => {
 describe("automatic diagnostics", () => {
   it("keeps only five route templates and excludes auth, help and unknown URLs", async () => {
     for (let index = 0; index < 7; index++) await api(`/v1/agents/secret-${index}?token=secret`).catch(() => {});
-    await api("/console/auth/token", { body: { token: "private" } }).catch(() => {});
+    await api("/console/auth/password", { body: { email: "private@example.com", password: "private" } }).catch(() => {});
     await api("/v1/links/secret").catch(() => {});
     const snapshot = helpContext()!;
     expect(snapshot.failures).toHaveLength(5);

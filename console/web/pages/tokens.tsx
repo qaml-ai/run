@@ -82,8 +82,7 @@ function AccountId({ tenant }: { tenant: string }) {
   </div>;
 }
 
-/** `canMint` is false for a console session signed in to with a token: only GitHub or Google sessions make tokens. */
-export function TokensPage({ tenant, canMint = true }: { tenant: string; canMint?: boolean }) {
+export function TokensPage({ tenant }: { tenant: string }) {
   const tokens = useApi<ApiToken[]>("/v1/tokens");
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string>();
@@ -91,11 +90,10 @@ export function TokensPage({ tenant, canMint = true }: { tenant: string; canMint
   return (
     <>
       <PageHeader title="API tokens" description="Tokens for your applications and scripts. Each one has full access to your tenant; revoke any you no longer use."
-        actions={canMint ? <Button size="sm" onClick={() => setCreating(true)}><Plus />New token</Button> : undefined} />
+        actions={<Button size="sm" onClick={() => setCreating(true)}><Plus />New token</Button>} />
       <ErrorAlert error={tokens.error ?? error} />
       <StillSending left={left} />
       <AccountId tenant={tenant} />
-      {!canMint && <Alert className="mb-4"><KeyRound /><AlertTitle>Signed in with a token</AlertTitle><AlertDescription>Sign in with GitHub or Google to create API tokens.</AlertDescription></Alert>}
       <Alert className="mb-4">
         <KeyRound />
         <AlertTitle>Keep tokens on your backend</AlertTitle>
@@ -103,8 +101,8 @@ export function TokensPage({ tenant, canMint = true }: { tenant: string; canMint
       </Alert>
       {!tokens.data ? <Skeleton className="h-32 w-full" /> : tokens.data.length === 0 ? (
         <FirstRunPanel art="aurora" eyebrow="FIRST TOKEN" title="No API tokens"
-          action={canMint ? <PixelButton size="hero" onClick={() => setCreating(true)}>New token</PixelButton> : undefined}>
-          {canMint ? "Create one to connect your application." : "Sign in with GitHub or Google to create one."}
+          action={<PixelButton size="hero" onClick={() => setCreating(true)}>New token</PixelButton>}>
+          Create one to connect your application.
         </FirstRunPanel>
       ) : (
         <div className="bg-card border">

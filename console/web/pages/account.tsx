@@ -1,11 +1,69 @@
 import { useState, type FormEvent } from "react";
-import { Download, Loader2, LogOut, Trash2 } from "lucide-react";
+import { Download, KeyRound, Loader2, LogOut, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { CopyButton, ErrorAlert, PageHeader } from "@/components/common";
-import { api, formatMicros, signedInWithToken, useApi, type Billing, type Me } from "@/lib/api";
+import { api, formatMicros, useApi, type Billing, type Me } from "@/lib/api";
+
+/** The shortest password the runtime takes. */
+const MIN_PASSWORD = 12;
+
+/**
+ * Changing the account's password, shown only when an operator gave it one (there is no sign-up or reset by email). It
+ * takes the current password; other sessions signed in with the password end, and this one stays.
+ */
+function ChangePassword() {
+  const password = useApi<{ email: string | null }>("/v1/account/password");
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const [done, setDone] = useState(false);
+  if (!password.data?.email) return null;
+  const mismatch = !!confirm && next !== confirm;
+  async function change(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true); setError(undefined); setDone(false);
+    try {
+      await api("/v1/account/password", { method: "PUT", body: { currentPassword: current, newPassword: next } });
+      setCurrent(""); setNext(""); setConfirm(""); setDone(true);
+    } catch (caught) { setError((caught as Error).message); }
+    finally { setBusy(false); }
+  }
+  return (
+    <section className="bg-card mb-6 border p-5">
+      <h2 className="text-base font-semibold">Password</h2>
+      <p className="text-muted-foreground mt-1 mb-4 max-w-2xl text-sm">
+        You can sign in as <span className="text-foreground font-mono">{password.data.email}</span> with a password. Changing it signs out every other
+        session that signed in with the password.
+      </p>
+      <ErrorAlert error={error} />
+      {done && <p role="status" className="bg-muted mb-4 p-3 text-sm">Password changed.</p>}
+      <form onSubmit={change} className="grid max-w-sm gap-3">
+        <div className="grid gap-1.5">
+          <Label htmlFor="current-password">Current password</Label>
+          <Input id="current-password" type="password" autoComplete="current-password" value={current} onChange={event => setCurrent(event.target.value)} />
+        </div>
+        <div className="grid gap-1.5">
+          <Label htmlFor="new-password">New password</Label>
+          <Input id="new-password" type="password" autoComplete="new-password" value={next} onChange={event => setNext(event.target.value)} />
+          <p className="text-muted-foreground text-xs">At least {MIN_PASSWORD} characters.</p>
+        </div>
+        <div className="grid gap-1.5">
+          <Label htmlFor="confirm-password">Confirm new password</Label>
+          <Input id="confirm-password" type="password" autoComplete="new-password" value={confirm} onChange={event => setConfirm(event.target.value)} />
+          {mismatch && <p className="text-destructive text-xs">The new passwords differ.</p>}
+        </div>
+        <div><Button size="sm" variant="outline" type="submit" disabled={busy || !current || next.length < MIN_PASSWORD || next !== confirm}>
+          {busy ? <Loader2 className="animate-spin" /> : <KeyRound />}Change password
+        </Button></div>
+      </form>
+    </section>
+  );
+}
 
 /**
  * The credit a deletion forfeits, split as it was paid for: the balance is one pool, and free credit
@@ -99,9 +157,8 @@ function SignOutEverywhere() {
   );
 }
 
-export function AccountPage({ me }: { me: Pick<Me, "tenant"> & Partial<Pick<Me, "via" | "signIn">> }) {
+export function AccountPage({ me }: { me: Pick<Me, "tenant"> }) {
   const [deleting, setDeleting] = useState(false);
-  const withToken = signedInWithToken({ via: me.via ?? "console", signIn: me.signIn });
   return (
     <>
       <PageHeader title="Account" description="Take a copy of your data, or delete your account." />
@@ -116,6 +173,7 @@ export function AccountPage({ me }: { me: Pick<Me, "tenant"> & Partial<Pick<Me, 
         </p>
         <Button asChild size="sm" variant="outline"><a href="/v1/account/export" download><Download />Export data</a></Button>
       </section>
+      <ChangePassword />
       <SignOutEverywhere />
       <section className="bg-card border-destructive/40 border p-5">
         <h2 className="text-base font-semibold">Delete your account</h2>
@@ -124,9 +182,7 @@ export function AccountPage({ me }: { me: Pick<Me, "tenant"> & Partial<Pick<Me, 
           and a record that starting credit was given, so a new account for the same GitHub account or card gets none. Signing in again
           later makes a new, empty account.
         </p>
-        {withToken
-          ? <p className="text-sm">You signed in with a token: sign in with GitHub or Google to delete the account.</p>
-          : <Button size="sm" variant="destructive" onClick={() => setDeleting(true)}><Trash2 />Delete account</Button>}
+        <Button size="sm" variant="destructive" onClick={() => setDeleting(true)}><Trash2 />Delete account</Button>
       </section>
       {deleting && <DeleteAccountDialog tenant={me.tenant} onClose={() => setDeleting(false)} />}
     </>

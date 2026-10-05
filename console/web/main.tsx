@@ -15,7 +15,7 @@ import { useBillingState } from "@/components/billing-state";
 import { GetHelp } from "@/components/get-help";
 import { SignedInAs } from "@/components/signed-in-as";
 import { setHelpTenant } from "@/lib/help-context";
-import { api, signedInWithToken, useApi, type Me, type Billing, type AgentSummary } from "@/lib/api";
+import { api, useApi, type Me, type Billing, type AgentSummary } from "@/lib/api";
 import { Link, usePath } from "@/lib/router";
 import { cn } from "@/lib/utils";
 import { consoleLoginUrl, discordInstallNext } from "@/lib/discord-setup";
@@ -33,7 +33,7 @@ import { BillingUnsubscribePage } from "@/pages/billing-unsubscribe";
 import { BillingPage } from "@/pages/billing";
 import { QuickstartPage } from "@/pages/quickstart";
 import { VolumePage, VolumesPage } from "@/pages/volumes";
-import { TokenForm, TokenSignIn } from "@/pages/token-sign-in";
+import { PasswordForm } from "@/pages/password-sign-in";
 import "@fontsource-variable/figtree";
 import "@fontsource-variable/geist-mono";
 import "./style.css";
@@ -79,17 +79,16 @@ function App() {
   const agents = useApi<AgentSummary[]>(me.data && isAgentsList ? "/v1/agents" : undefined, 10_000);
   useWebMcp(me.data?.tenant);
   if (me.loading && !me.data) return <div className="text-muted-foreground flex h-dvh items-center justify-center"><Loader2 className="animate-spin" /></div>;
-  // sign-in/token is unlisted: API-token sign-in, for accounts without GitHub or Google (the ChatGPT plugin's reviewers).
-  if (!me.data) return path === "sign-in/token" ? <TokenSignIn onSignedIn={() => void me.reload()} /> : <SignIn onSignedIn={() => void me.reload()} />;
+  if (!me.data) return <SignIn onSignedIn={() => void me.reload()} />;
   const page = section === "agents" && rest[0] ? <AgentPage id={rest[0]} />
     : section === "volumes" ? (rest[0] ? <VolumePage id={rest[0]} /> : <VolumesPage />)
     : section === "definitions" ? <DefinitionsPage />
     : section === "channels" ? <ChannelsPage />
     : section === "models" ? <ModelsPage me={me.data} />
-    : section === "tokens" ? <TokensPage tenant={me.data.tenant} canMint={!signedInWithToken(me.data)} />
+    : section === "tokens" ? <TokensPage tenant={me.data.tenant} />
     : section === "usage" ? <UsagePage />
     : section === "telemetry" ? <TelemetryPage me={me.data} />
-    : section === "billing" ? <BillingPage state={billingState} readOnly={signedInWithToken(me.data)} />
+    : section === "billing" ? <BillingPage state={billingState} />
     : section === "account" ? <AccountPage me={me.data} />
     : section === "quickstart" ? <QuickstartPage />
     : <AgentsPage agents={agents} billing={billing} />;
@@ -154,7 +153,7 @@ function GoogleMark({ className }: { className?: string }) {
 
 function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
   const next = discordInstallNext(location.pathname, location.search);
-  const methods = useApi<{ github: boolean; google?: boolean; org?: string; open?: boolean }>("/console/auth/methods");
+  const methods = useApi<{ github: boolean; google?: boolean; password?: boolean; org?: string; open?: boolean }>("/console/auth/methods");
   const providers = !!(methods.data?.github || methods.data?.google);
   const error = new URLSearchParams(location.search).get("error") ?? "";
   const deleted = new URLSearchParams(location.search).get("deleted") === "1";
@@ -179,8 +178,11 @@ function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
                 : `For members of the ${methods.data!.org} GitHub organization${methods.data!.google ? ", or anyone with a Google account" : ""}.`}</p>
           </div>
         )}
-        {/* A runtime without GitHub or Google (self-hosted) signs in with its operator or API tokens. */}
-        {methods.data && !providers && <TokenForm onSignedIn={onSignedIn} next={next} />}
+        {/* Accounts an operator gave a password: a self-hosted runtime's, or one made without GitHub or Google. */}
+        {methods.data?.password && <>
+          {providers && <div className="text-muted-foreground flex items-center gap-3 text-xs"><Separator className="flex-1" />or<Separator className="flex-1" /></div>}
+          <PasswordForm onSignedIn={onSignedIn} next={next} secondary={providers} />
+        </>}
       </div>
     </AuthLayout>
   );
