@@ -74,7 +74,7 @@ export function DiscordPath({ onboarding, config }: { onboarding: ReturnType<typ
     } catch (caught) { setError((caught as Error).message); }
     finally { setBusy(undefined); }
   }
-  const defaults: SetupDefaults = { definition: starter?.id, public: true, ...ONBOARDING_LIMITS };
+  const defaults: SetupDefaults = { definition: starter?.id, public: true, preselect: true, ...ONBOARDING_LIMITS };
   const reload = () => { void onboarding.bindings.reload(); void onboarding.definitions.reload(); };
   const channel = server?.allowedChannelIds[0];
   return (

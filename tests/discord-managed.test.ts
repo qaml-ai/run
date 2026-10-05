@@ -7,7 +7,7 @@ import { Ownership } from "../src/ownership.ts";
 import { randomUUID } from "node:crypto";
 import type { ConsoleAuth } from "../src/console-auth.ts";
 import type { Channels, Channel, ChannelInput, Inbound } from "../src/channels.ts";
-import { ManagedDiscord, type ManagedDiscordOptions } from "../src/discord-managed.ts";
+import { canPost, ManagedDiscord, type ManagedDiscordOptions } from "../src/discord-managed.ts";
 import { HttpError } from "../src/http.ts";
 import { testDatabase } from "./database.ts";
 
@@ -23,7 +23,7 @@ async function fixture(t: { after(fn: () => Promise<void> | void): void }, extra
   const received: { channel: string; message: Inbound }[] = [];
   const sent: { channel: string; content: string }[] = [];
   const left: string[] = [];
-  const state = { present: true, noGuild: false, scope: "bot", memberRoles: [] as string[] | undefined, shards: 1, gatewayCalls: 0, limited: false, gatewayWait: undefined as Promise<void> | undefined, identified: 0, limitedGet: false, routeLimited: false };
+  const state = { present: true, noGuild: false, scope: "bot", memberRoles: [] as string[] | undefined, shards: 1, gatewayCalls: 0, limited: false, gatewayWait: undefined as Promise<void> | undefined, identified: 0, limitedGet: false, routeLimited: false, guildChannels: undefined as unknown[] | undefined, systemChannel: undefined as string | undefined };
   let gatewayUrl = "";
   const discord = createServer(async (req, res) => {
     let raw = ""; for await (const chunk of req) raw += chunk;
@@ -45,8 +45,8 @@ async function fixture(t: { after(fn: () => Promise<void> | void): void }, extra
       const id = url.pathname.split("/")[2];
       if (!state.present) return json(404, {});
       if (url.pathname.includes("/members/")) return state.memberRoles ? json(200, { user: { id: url.pathname.split("/")[4] }, roles: state.memberRoles }) : json(404, {});
-      if (url.pathname.endsWith("/channels")) return json(200, [{ id: id === guildA ? channelA : channelB, name: "test", type: 0 }]);
-      return json(200, { id, name: id === guildA ? "Alpha" : "Beta", owner_id: "999", roles: [{ id, permissions: "1024" }, { id: "role-manager", permissions: "32" }, { id: "role-member", permissions: "3072" }] });
+      if (url.pathname.endsWith("/channels")) return json(200, state.guildChannels ?? [{ id: id === guildA ? channelA : channelB, name: "test", type: 0 }]);
+      return json(200, { id, name: id === guildA ? "Alpha" : "Beta", owner_id: "999", system_channel_id: state.systemChannel, roles: [{ id, permissions: "1024" }, { id: "role-manager", permissions: "32" }, { id: "role-member", permissions: "3072" }] });
     }
     const channel = url.pathname.split("/")[2];
     if (req.method === "GET" && url.pathname.startsWith("/channels/")) {
@@ -148,6 +148,34 @@ test("adding Camel from Get started's Discord path returns there, with the serve
   assert.equal(cancelled.searchParams.get("discord_error"), "Discord authorization was cancelled");
   // Without it, Discord returns to Channels as before.
   assert.equal((await f.install(guildB)).location.pathname, "/console/channels");
+});
+
+test("a server's channels come in Discord's order, marking its system channel and where Camel may post", async t => {
+  const f = await fixture(t);
+  await f.install(guildA);
+  // @everyone may view (1024) but not send; role-member may view and send (3072).
+  f.state.memberRoles = ["role-member"];
+  f.state.systemChannel = "402";
+  f.state.guildChannels = [
+    { id: "403", name: "rules", type: 0, position: 2, permission_overwrites: [{ id: "role-member", type: 0, deny: "2048" }] },
+    { id: "401", name: "voice", type: 2, position: 0 },
+    { id: "402", name: "general", type: 0, position: 1 },
+  ];
+  const listed = await (await f.request(`/console/discord/guilds/${guildA}/channels`)).json() as any;
+  assert.deepEqual(listed.channels, [{ id: "402", name: "general", type: 0, system: true, canPost: true }, { id: "403", name: "rules", type: 0, canPost: false }]);
+  // A bot Discord no longer lists as a member: whether it may post is unknown, not false.
+  f.state.memberRoles = undefined;
+  assert.deepEqual((await (await f.request(`/console/discord/guilds/${guildA}/channels`)).json() as any).channels.map((channel: any) => channel.canPost), [undefined, undefined]);
+});
+
+test("canPost follows Discord's permission order", () => {
+  const guild = { id: "g", owner_id: "owner", roles: [{ id: "g", permissions: "1024" }, { id: "r", permissions: "2048" }, { id: "admin", permissions: "8" }] };
+  assert.equal(canPost(guild, { user: { id: "u" }, roles: [] }, {}), false, "@everyone can only view");
+  assert.equal(canPost(guild, { user: { id: "u" }, roles: ["r"] }, {}), true);
+  assert.equal(canPost(guild, { user: { id: "u" }, roles: ["r"] }, { permission_overwrites: [{ id: "r", type: 0, deny: "1024" }] }), false, "a role overwrite denies view");
+  assert.equal(canPost(guild, { user: { id: "u" }, roles: [] }, { permission_overwrites: [{ id: "g", type: 0, allow: "2048" }] }), true, "@everyone's overwrite allows send");
+  assert.equal(canPost(guild, { user: { id: "u" }, roles: ["r"] }, { permission_overwrites: [{ id: "u", type: 1, deny: "2048" }] }), false, "the member's own overwrite comes last");
+  assert.equal(canPost(guild, { user: { id: "u" }, roles: ["admin"] }, { permission_overwrites: [{ id: "g", type: 0, deny: "3072" }] }), true, "Administrator overrides overwrites");
 });
 
 test("adding Camel starts one Discord authorization: bot and identity only, message permissions only, and a single-use state", async t => {

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentSummary, ApiToken, Definition, ManagedDiscordBinding, Usage } from "../web/lib/api";
 import { groupOf, NAV, TABS } from "../web/lib/nav";
 import { codeSteps, discordSteps, navProgress, startFrom, startNext, type useOnboarding } from "../web/lib/onboarding";
-import { ManagedDiscordDialog } from "../web/pages/discord-managed";
+import { ManagedDiscordDialog, preselected } from "../web/pages/discord-managed";
 import { GetStartedPage } from "../web/pages/start";
 import { PLAYGROUND_PROMPT, snippets } from "../web/pages/start-code";
 import { ONBOARDING_LIMITS } from "../web/pages/start-discord";
@@ -255,6 +255,50 @@ describe("the Discord path", () => {
   it("explains itself where the shared bot is off", () => {
     render(<GetStartedPage onboarding={onboarding({ discord: false })} />);
     expect(screen.getByText("Camel's Discord bot isn't available here")).toBeTruthy();
+  });
+
+  it("preselects the system channel, else the first text channel Camel can post in", () => {
+    const text = (id: string, fields = {}) => ({ id, name: `c${id}`, type: 0, ...fields });
+    expect(preselected([text("1"), text("2", { system: true })])?.channel.id).toBe("2");
+    expect(preselected([text("1", { canPost: false }), text("2", { system: true, canPost: false }), text("3")])).toEqual({ channel: text("3"), why: "the first text channel Camel can post in" });
+    expect(preselected([{ id: "9", name: "forum", type: 15 }, text("4")])?.channel.id).toBe("4");
+    expect(preselected([text("1", { canPost: false })])).toBeUndefined();
+  });
+
+  it("from Get started, setup starts on the chosen channel, says which, and closes on saving", async () => {
+    respond = (path, method) => {
+      if (path.startsWith("/console/discord/guilds/")) return json({ channels: [{ id: "554", name: "rules", type: 0, canPost: false }, { id: "555", name: "general", type: 0, system: true, canPost: true }] });
+      if (path === "/v1/definitions") return json([starter]);
+      if (method === "PATCH") return json({ ...live });
+    };
+    const onClose = vi.fn();
+    render(<ManagedDiscordDialog config={{ enabled: true, applicationId: "999" }} binding={server()} onClose={onClose} onSaved={() => {}}
+      defaults={{ definition: "d1", public: true, preselect: true, ...ONBOARDING_LIMITS }} />);
+    expect((await screen.findByText(/Camel will answer in/)).textContent).toBe("Camel will answer in #general, the server's system channel. Add or change channels here.");
+    expect((screen.getByRole("checkbox", { name: "#general" }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole("checkbox", { name: "#rules" }) as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Save and activate" }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(calls.find(call => call.method === "PATCH")?.body.allowedChannelIds).toEqual(["555"]);
+    expect(screen.queryByText(/configured/)).toBeNull();
+  });
+
+  it("still confirms a save that has warnings, and the Channels page's setup still confirms", async () => {
+    respond = (path, method) => {
+      if (path === "/v1/definitions") return json([starter]);
+      if (method === "PATCH") return json({ ...live, warnings: ["web_search has no key"] });
+    };
+    const onClose = vi.fn();
+    render(<ManagedDiscordDialog config={{ enabled: true, applicationId: "999" }} binding={server()} onClose={onClose} onSaved={() => {}}
+      defaults={{ definition: "d1", public: true, preselect: true, ...ONBOARDING_LIMITS }} />);
+    await waitFor(() => expect((screen.getByRole("checkbox", { name: "#general" }) as HTMLInputElement).checked).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: "Save and activate" }));
+    expect(await screen.findByText("web_search has no key")).toBeTruthy();
+    expect(onClose).not.toHaveBeenCalled();
+    cleanup();
+    respond = (path, method) => method === "PATCH" ? json({ ...live }) : path === "/v1/definitions" ? json([starter]) : undefined;
+    render(<ManagedDiscordDialog config={{ enabled: true, applicationId: "999" }} binding={server()} onClose={() => {}} onSaved={() => {}} />);
+    expect((await screen.findByRole("checkbox", { name: "#general" }) as HTMLInputElement).checked).toBe(false);
   });
 
   it("first setup from here is open to every member in the chosen channels, at the tighter limits", async () => {

@@ -169,7 +169,8 @@ export interface ManagedDiscordBinding {
   /** On a save: builtins of its definition it cannot use yet (no key), and how to fix it. */
   warnings?: string[];
 }
-export interface DiscordGuildChannel { id: string; name: string; type: number }
+/** `system`: the server's system channel; `canPost`: whether Camel may view and send there (absent when unknown). */
+export interface DiscordGuildChannel { id: string; name: string; type: number; system?: boolean; canPost?: boolean }
 
 export interface VolumeSummary { id: string; name: string; createdAt: number }
 export interface Volume extends VolumeSummary { seq: number; files: number; bytes: number; origin?: { volume: string; snapshot?: string; seq: number } }

@@ -11,6 +11,25 @@ import { managedBuiltinsRefusal } from "./builtins.ts";
 import { underClaim, type Claim, type Ownership } from "./ownership.ts";
 
 const ID = /^\d{1,20}$/;
+const VIEW_AND_SEND = (1n << 10n) | (1n << 11n);
+const bits = (value: unknown) => typeof value === "string" && /^\d+$/.test(value) ? BigInt(value) : 0n;
+/** Whether a member may view and send in a channel: Discord's permission order (roles, then @everyone's, roles' and the member's overwrites). */
+export function canPost(guild: { id: string; owner_id?: string; roles?: { id: string; permissions?: string }[] }, member: { user?: { id: string }; roles?: string[] },
+  channel: { permission_overwrites?: { id: string; type: number | string; allow?: string; deny?: string }[] }) {
+  if (member.user?.id && member.user.id === guild.owner_id) return true;
+  const held = new Set(member.roles ?? []);
+  let permissions = (guild.roles ?? []).filter(role => role.id === guild.id || held.has(role.id)).reduce((all, role) => all | bits(role.permissions), 0n);
+  if (permissions & 8n) return true;
+  const overwrites = channel.permission_overwrites ?? [];
+  const apply = (list: typeof overwrites) => {
+    const deny = list.reduce((all, o) => all | bits(o.deny), 0n), allow = list.reduce((all, o) => all | bits(o.allow), 0n);
+    permissions = (permissions & ~deny) | allow;
+  };
+  apply(overwrites.filter(o => o.id === guild.id));
+  apply(overwrites.filter(o => o.id !== guild.id && held.has(o.id)));
+  apply(overwrites.filter(o => member.user?.id && o.id === member.user.id));
+  return (permissions & VIEW_AND_SEND) === VIEW_AND_SEND;
+}
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 /** View Channel, Send Messages, Send Messages in Threads, Attach Files and Read Message History; never Administrator. */
 export const BOT_PERMISSIONS = "274878008320";
@@ -517,8 +536,15 @@ export class ManagedDiscord {
       const guildId = c.req.param("guildId");
       const binding = ID.test(guildId) ? await this.byGuild(guildId) : undefined;
       if (!binding || binding.tenant !== tenant(c)) throw new HttpError(404, "Discord server binding not found");
-      const channels = await this.bot(`/guilds/${guildId}/channels`);
-      return c.json({ channels: channels.filter((channel: any) => [0, 5, 15, 16].includes(channel.type)).map((channel: any) => ({ id: channel.id, name: channel.name, type: channel.type })) });
+      // In Discord's order; `system` marks the server's system channel, and `canPost` whether Camel may view and send there.
+      const [guild, channels, member] = await Promise.all([
+        this.bot(`/guilds/${guildId}`), this.bot(`/guilds/${guildId}/channels`),
+        this.bot(`/guilds/${guildId}/members/${this.options.applicationId}`).catch(error => { if (error instanceof HttpError && error.status === 404) return undefined; throw error; }),
+      ]);
+      return c.json({ channels: channels.filter((channel: any) => [0, 5, 15, 16].includes(channel.type))
+        .sort((a: any, b: any) => (a.position ?? 0) - (b.position ?? 0))
+        .map((channel: any) => ({ id: channel.id, name: channel.name, type: channel.type, ...(channel.id === guild.system_channel_id ? { system: true } : {}),
+          ...(member ? { canPost: canPost(guild, member, channel) } : {}) })) });
     });
     // The bound account configures, pauses, resumes and disconnects its server; Discord's own permissions decided who could bind it.
     app.patch("/console/discord/bindings/:guildId", async c => {

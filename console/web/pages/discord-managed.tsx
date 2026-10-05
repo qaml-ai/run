@@ -53,8 +53,18 @@ export function ManagedDiscord({ onChanged, config }: { onChanged: () => void; c
   </>;
 }
 
-/** What a server's first setup starts from; Get started's Discord path opens it to every member, with tighter limits. */
-export interface SetupDefaults { definition?: string; public?: boolean; perSenderPerMinute?: number; turnsPerDay?: number }
+/**
+ * What a server's first setup starts from. Get started's Discord path opens it to every member, with tighter limits,
+ * `preselect`s one channel and closes on saving (unless the save has something to say) instead of confirming.
+ */
+export interface SetupDefaults { definition?: string; public?: boolean; perSenderPerMinute?: number; turnsPerDay?: number; preselect?: boolean }
+
+/** The channel a first setup starts with: the server's system channel, else the first text channel, where Camel may post. */
+export function preselected(channels: DiscordGuildChannel[]) {
+  const usable = channels.filter(channel => channel.type === 0 && channel.canPost !== false);
+  const system = usable.find(channel => channel.system);
+  return system ? { channel: system, why: "the server's system channel" } : usable[0] && { channel: usable[0], why: "the first text channel Camel can post in" };
+}
 
 export function ManagedDiscordDialog({ config, binding, onClose, onSaved, defaults = {} }: {
   config: ManagedDiscordConfig; binding: ManagedDiscordBinding; onClose: () => void; onSaved: () => void; defaults?: SetupDefaults;
@@ -72,6 +82,12 @@ export function ManagedDiscordDialog({ config, binding, onClose, onSaved, defaul
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState<ManagedDiscordBinding>();
   const [error, setError] = useState("");
+  const [chosen, setChosen] = useState<ReturnType<typeof preselected>>();
+  useEffect(() => {
+    if (!defaults.preselect || !setup || allowedChannels.length || !channels.data) return;
+    const pick = preselected(channels.data.channels);
+    if (pick) { setAllowedChannels([pick.channel.id]); setChosen(pick); }
+  }, [channels.data]);
   useEffect(() => {
     if (definition || !definitions.data?.length) return;
     setDefinition(definitions.data[0].id);
@@ -81,7 +97,10 @@ export function ManagedDiscordDialog({ config, binding, onClose, onSaved, defaul
     event.preventDefault(); setBusy(true); setError("");
     try {
       const body = { definition, allowedChannelIds: allowedChannels, access: { public: publicAccess, allow: ids(allow) }, limits: { perSenderPerMinute: perMinute, turnsPerDay: perDay }, ...(binding.state === "disconnected" ? { state: "active" } : {}) };
-      setSaved(await api<ManagedDiscordBinding>(guildPath(binding.guildId), { method: "PATCH", body })); onSaved();
+      const result = await api<ManagedDiscordBinding>(guildPath(binding.guildId), { method: "PATCH", body }); onSaved();
+      // From Get started, its next step (say hello) is the confirmation; a save with warnings still shows them.
+      if (defaults.preselect && setup && !result.warnings?.length && result.state === "active") { onClose(); return; }
+      setSaved(result);
     } catch (caught) { setError((caught as Error).message); }
     finally { setBusy(false); }
   }
@@ -117,6 +136,7 @@ export function ManagedDiscordDialog({ config, binding, onClose, onSaved, defaul
           <fieldset className="border p-3 space-y-2"><legend className="px-1 text-sm font-medium">Allowed channels</legend>
             <ErrorAlert error={channels.error} />
             {channels.loading ? <p className="text-sm">Loading channels…</p> : channels.data?.channels.length ? channels.data.channels.map(channel => <label key={channel.id} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={allowedChannels.includes(channel.id)} onChange={event => setAllowedChannels(current => event.target.checked ? [...current, channel.id] : current.filter(id => id !== channel.id))} />#{channel.name}</label>) : <p className="text-sm">No available text channels. Check the bot's View Channel and Send Messages permissions.</p>}
+            {chosen && allowedChannels.length === 1 && allowedChannels[0] === chosen.channel.id && <p className="text-xs">Camel will answer in <span className="font-medium">#{chosen.channel.name}</span>, {chosen.why}. Add or change channels here.</p>}
             <p className="text-muted-foreground text-xs">Choose at least one channel. Threads in selected channels use the same access policy.</p>
           </fieldset>
           <div className="space-y-2"><Label htmlFor="managed-discord-members">Allowed member IDs</Label><Input id="managed-discord-members" placeholder="123456789012345678, …" value={allow} disabled={publicAccess} onChange={event => setAllow(event.target.value)} />
