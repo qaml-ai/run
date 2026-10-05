@@ -23,10 +23,16 @@ import { createAgentHost, HISTORY_FLUSH_MS } from "./agent-host.ts";
  */
 export type Hosting = "process" | "inline";
 type Common = { bridge: ToolBridge; calls: Set<AbortController>; listeners: Set<(event: any) => void>; transcript: AppendLog<TranscriptRecord> };
-type ProcessHandle = Common & { kind: "process"; child: ChildProcess; rpc: Rpc };
+/** An agent process's js_exec turns (`codeSlot`), by its id for them: waiting (`release` unset) or held. */
+type CodeSlots = Map<string, { controller: AbortController; release?: () => void }>;
+type ProcessHandle = Common & { kind: "process"; child: ChildProcess; rpc: Rpc; slots: CodeSlots; watchdog?: NodeJS.Timeout };
 type InlineHandle = Common & { kind: "inline"; host: ReturnType<typeof createAgentHost>; stop: (error: Error) => void; stopped: Promise<never> };
 type Handle = ProcessHandle | InlineHandle;
-export type SupervisorOptions = { runtime?: string; maxAgents?: number; storage?: Storage; hosting?: Hosting; /** How long stopping agents wait, all together, to index their settled turns (default 5 s). */ historyFlushMs?: number };
+export type SupervisorOptions = {
+  runtime?: string; maxAgents?: number; storage?: Storage; hosting?: Hosting; /** How long stopping agents wait, all together, to index their settled turns (default 5 s). */ historyFlushMs?: number;
+  /** An agent process is pinged this often, and killed once a ping has gone this long unanswered (default 5 s and 30 s). */
+  pingMs?: number; unresponsiveMs?: number;
+};
 
 export class AgentSupervisor {
   readonly agents = new Map<string, Handle>();
@@ -121,11 +127,14 @@ export class AgentSupervisor {
 
   private async startProcess(id: string, directory: string, init: AgentConfig, bridge: ToolBridge, transcript: AppendLog<TranscriptRecord>) {
     const { child, rpc } = childProcess("./agent-child.ts", directory, this.options.runtime, true, id);
-    const handle: ProcessHandle = { kind: "process", bridge, child, rpc, calls: new Set(), listeners: new Set(), transcript };
+    const handle: ProcessHandle = { kind: "process", bridge, child, rpc, calls: new Set(), listeners: new Set(), transcript, slots: new Map() };
     this.agents.set(id, handle);
     this.starting.delete(id);
     const cleanup = () => {
+      clearInterval(handle.watchdog);
       this.cancelTools(handle);
+      // A process that ends holding js_exec turns gives them back.
+      for (const slot of handle.slots.keys()) this.releaseSlot(handle, slot);
       if (this.agents.get(id) === handle) this.agents.delete(id);
       void handle.transcript.close();
     };
@@ -141,13 +150,63 @@ export class AgentSupervisor {
       if (method === "model-auth") return this.modelAuth(handle);
       if (method === "fs") return this.dispatchFs(handle, params);
       if (method === "history") return this.historyRequest(id, handle, params);
+      if (method === "code-slot") return this.codeSlot(handle, params?.id);
+      if (method === "code-release") return this.releaseSlot(handle, params?.id);
       if (method !== "tool") throw new Error("Unknown tool");
       return this.dispatchTool(handle, params);
     };
     const timeout = setTimeout(() => { rpc.close("Agent initialization timed out"); child.kill("SIGKILL"); }, 30_000);
-    try { return await rpc.request("init", init); }
+    try {
+      const result = await rpc.request("init", init);
+      this.watch(id, handle);
+      return result;
+    }
     catch (error) { await this.stop(id); throw error; }
     finally { clearTimeout(timeout); }
+  }
+
+  /**
+   * Kill an agent process that stops answering (its thread stuck in something synchronous), so it
+   * cannot hold its slot or its run forever. Its run fails; the next start closes the interrupted
+   * turn from its transcript (agent-host.ts), as after a crash.
+   */
+  private watch(id: string, handle: ProcessHandle) {
+    const unresponsiveMs = this.options.unresponsiveMs ?? 30_000;
+    let since: number | undefined;
+    handle.watchdog = setInterval(() => {
+      if (since === undefined) {
+        const sent = since = Date.now();
+        handle.rpc.request("ping").then(() => { if (since === sent) since = undefined; }, () => {});
+      } else if (Date.now() - since >= unresponsiveMs && this.agents.get(id) === handle) {
+        console.error(JSON.stringify({ type: "agent_unresponsive", agent: id, ms: Date.now() - since }));
+        void this.stop(id, { flush: false });
+      }
+    }, this.options.pingMs ?? 5_000);
+    handle.watchdog.unref();
+  }
+
+  /** Wait for a js_exec turn for an agent process (`ToolBridge.codeSlot`); it is held under `id` until `releaseSlot`. */
+  private async codeSlot(handle: ProcessHandle, id: unknown) {
+    if (typeof id !== "string" || id.length > 64 || handle.slots.has(id)) throw new Error("Invalid code slot");
+    if (!handle.bridge.codeSlot) return null;
+    const entry: { controller: AbortController; release?: () => void } = { controller: new AbortController() };
+    handle.slots.set(id, entry);
+    let release: () => void;
+    try { release = await handle.bridge.codeSlot(entry.controller.signal); }
+    catch (error) { if (handle.slots.get(id) === entry) handle.slots.delete(id); throw error; }
+    // Given back while it waited: the process no longer wants it.
+    if (handle.slots.get(id) !== entry) release();
+    else entry.release = release;
+    return null;
+  }
+
+  private releaseSlot(handle: ProcessHandle, id: unknown) {
+    const entry = typeof id === "string" ? handle.slots.get(id) : undefined;
+    if (!entry) return null;
+    handle.slots.delete(id as string);
+    entry.controller.abort(new Error("Code slot released"));
+    entry.release?.();
+    return null;
   }
 
   /** `tools.search` from an agent's code: the bridge's search (with rerankers), else keywords over its code-mode tools. */
@@ -218,6 +277,7 @@ export class AgentSupervisor {
       file: ref => this.file(handle, structuredClone(ref)),
       modelAuth: () => this.modelAuth(handle),
       fs: (op, args) => this.dispatchFs(handle, structuredClone({ op, args })),
+      codeSlot: signal => handle.bridge.codeSlot?.(signal) ?? Promise.resolve(() => {}),
       history: {
         indexed: () => this.historyRequest(id, handle, { op: "indexed" }), write: chunk => this.historyRequest(id, handle, { op: "write", chunk: structuredClone(chunk) }),
         read: from => this.historyRequest(id, handle, { op: "read", from }),

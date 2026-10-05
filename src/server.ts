@@ -562,6 +562,7 @@ const clients = new ClientSessions(supervisor, {
     const set = await accounts.billing.runLimits(tenant), none = tenants.has(tenant);
     return { maxResponses: set.maxResponses ?? (none ? Infinity : runLimits.maxResponses), maxSeconds: set.maxSeconds ?? (none ? Infinity : runLimits.maxSeconds) };
   },
+  codeLimitsFor: tenant => accounts.billing.codeLimits(tenant),
   runRate: tenant => rateLimits.run(tenant),
   rerankers,
   creditLimit: tenant => accounts.billing.creditLimit(tenant),

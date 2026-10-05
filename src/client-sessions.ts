@@ -35,6 +35,8 @@ import { actorInput, type AgentIdentity, type TokenClaims } from "./identity.ts"
 import { metadataInput, senderInput } from "./sender.ts";
 import { callMeta, compose, jsonResult, TOOL_DEADLINES, timedOut, toolCallKey, ToolFailure, type RunToolCall, type ToolCallCode, type ToolError, defaultExposure, describeSources, fileServer, type Progress, type ToolCall, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
 import { searchTools, type Reranker, type SearchQuery } from "./tool-search.ts";
+import { CodeGate, codeWorkers, type CodeLimits } from "./codemode.ts";
+import { CODE_LIMITS } from "./limits.ts";
 import { declaredType, FILE_LIMITS, fileResponse, safeName, validFileRef, type FileLinks, type FileRef } from "./files.ts";
 import { fileRef } from "./inspect.ts";
 import { resolve as resolveMount, type ToolContext, type WrittenFile } from "./volume-tools.ts";
@@ -218,6 +220,8 @@ const validSessionId = (value: string) => /^client_[a-f0-9]{40}$/.test(value);
 const has = (object: object, key: string) => Object.hasOwn(object, key);
 /** `resume` continues a turn that waited on human input; the runtime makes it when the last input settles. */
 const RUN_METHODS = ["prompt", "execute", "continue", "resume"];
+/** How far past its time limit a run may get before it is aborted, and twice this before its agent is stopped (`overrun`). */
+const RUN_OVERRUN_MS = 60_000;
 /**
  * Requests queued behind the agent's runs. Each keeps its params for as long as it may
  * run again on the agent's next owner: a run until it begins, and configuration (an
@@ -411,6 +415,10 @@ export interface ClientSessionOptions {
    * summaries count) and seconds from when it began; Infinity for no limit. Default 1,000 responses and 2 hours (`RUN_LIMITS`).
    */
   runLimitsFor?: (tenant: string) => Promise<Required<RunLimits>>;
+  /** A tenant's js_exec limits: CPU per execution, the longest timeoutMs, and executions at once on this node. Default `CODE_LIMITS`. */
+  codeLimitsFor?: (tenant: string) => Promise<CodeLimits>;
+  /** js_exec executions this node runs at once, every tenant's together; default its sandbox workers (`codeWorkers`). */
+  codeCapacity?: number;
   /** Why a tenant may not start any run, code executions included (spent prepaid credit). Checked when a run is accepted and when it starts. */
   creditLimit?: (tenant: string) => Promise<Refusal | undefined>;
   /** Count a run the tenant starts against its rate limit; throws (429) past it. Checked when a run is accepted, not for retries. */
@@ -510,6 +518,8 @@ export class ClientSessions {
   readonly heartbeat: ReturnType<typeof setInterval>;
   /** Agents' history in pages. */
   readonly historyIndex: HistoryIndex;
+  /** Turns to run js_exec on this node, shared fairly among tenants. */
+  readonly codeGate: CodeGate;
   private closed = false;
   /** Set while the node drains or retires: runs that have not begun stay queued for the next owner. */
   draining = false;
@@ -522,6 +532,7 @@ export class ClientSessions {
     this.db = options.db;
     this.storage = options.storage ?? fileStorage(options.root!);
     this.historyIndex = new HistoryIndex(this.db, this.storage);
+    this.codeGate = new CodeGate(options.codeCapacity ?? codeWorkers());
     this.heartbeat = setInterval(() => this.tick(), Math.min(5000, Math.max(50, Math.floor((options.idleMs ?? 5 * 60_000) / 2))));
     this.heartbeat.unref();
     options.ownership?.onFence(() => { for (const session of [...this.sessions.values()]) void this.lost(session); });
@@ -1242,8 +1253,10 @@ export class ClientSessions {
       session.catalogPriced = !!priced;
       // Its tool servers are listed (remote MCP servers connected to) before its host starts.
       const definitions = await steps.time("tools", this.toolset(session));
-      const result = await steps.time("init", this.supervisor.start(session.header.id, { ...session.header.config, apiKey, mounts: (session.header.mounts ?? []).map(({ path, mode }) => ({ path, mode })), ...(this.options.retry ? { retry: this.options.retry } : {}), ...(session.resuming.size ? { resume: true } : {}) }, {
+      const { cpuMs, maxTimeoutMs } = await this.codeLimits(session.header.tenant);
+      const result = await steps.time("init", this.supervisor.start(session.header.id, { ...session.header.config, apiKey, mounts: (session.header.mounts ?? []).map(({ path, mode }) => ({ path, mode })), ...(this.options.retry ? { retry: this.options.retry } : {}), ...(session.resuming.size ? { resume: true } : {}), tenant: session.header.tenant, codeLimits: { cpuMs, maxTimeoutMs } }, {
         definitions,
+        codeSlot: async signal => this.codeGate.acquire(session.header.tenant, (await this.codeLimits(session.header.tenant)).concurrent, signal),
         runLimit: async () => {
           const limited = await this.agentSpendLimit(session) ?? this.runSpendLimit(session) ?? await this.options.spendLimit?.(session.header.tenant);
           if (limited) return { stopped: "spend_limit" as const, message: typeof limited === "string" ? limited : limited.message };
@@ -3376,6 +3389,11 @@ export class ClientSessions {
       .catch(error => console.error(JSON.stringify({ type: "agent_spend_write_failed", agent: session.header.id, error: errorText(error) })));
   }
 
+  /** The tenant's js_exec limits. */
+  private async codeLimits(tenant: string): Promise<CodeLimits> {
+    return await this.options.codeLimitsFor?.(tenant) ?? { cpuMs: CODE_LIMITS.cpuMs, maxTimeoutMs: CODE_LIMITS.maxTimeoutMs, concurrent: CODE_LIMITS.concurrent };
+  }
+
   /** Why the agent may not spend more on models: it has reached its own spend limit. */
   private async agentSpendLimit(session: Session): Promise<string | undefined> {
     const spend = await this.spendOf(session);
@@ -3702,6 +3720,7 @@ export class ClientSessions {
       // A replaced connection still answering its calls is kept alive too, or its client would think the stream dead.
       for (const attached of session.retiring ?? []) send(attached.res, ": heartbeat\n\n");
       if (session.activeSince !== undefined && now - session.activeSince >= ACTIVE_REPORT_MS) this.reportActive(session, true, now);
+      void this.overrun(session, now).catch(() => {});
       if (this.busy(session) || now - session.lastActive < idleMs) continue;
       if (this.supervisor.agents.has(id)) void this.supervisor.stop(id).catch(() => {});
       else if (!session.response && !session.fault) {
@@ -3719,6 +3738,23 @@ export class ClientSessions {
       entry.checked = now;
       void ownership.route(id).then(owner => { if (owner && owner !== ownership.node && !this.sessions.has(id)) this.loadedElsewhere(id); }).catch(() => {});
     }
+  }
+
+  /**
+   * A run past its time limit (`runLimitsFor`'s maxSeconds) by `RUN_OVERRUN_MS` is aborted, and its agent stopped by
+   * twice that: the limit is otherwise checked only between model requests, and a turn stuck inside one
+   * step would hold its agent (and its busy slot) forever. The next start closes the interrupted turn.
+   */
+  private async overrun(session: Session, now: number) {
+    const run = [...session.running.values()].find(record => RUN_METHODS.includes(record.method) && record.began);
+    if (!run || now - run.began! < RUN_OVERRUN_MS) return;
+    const { maxSeconds } = await this.options.runLimitsFor?.(session.header.tenant) ?? RUN_LIMITS;
+    const over = now - run.began! - maxSeconds * 1000;
+    const id = session.header.id;
+    if (over < RUN_OVERRUN_MS || !this.supervisor.agents.has(id) || !session.running.has(run.id)) return;
+    console.error(JSON.stringify({ type: "run_overrun", agent: id, request: run.id, maxSeconds, overMs: over }));
+    if (over < 2 * RUN_OVERRUN_MS) await this.supervisor.request(id, "abort");
+    else await this.supervisor.stop(id, { flush: false });
   }
 
   /** A session unloading keeps its watchers, idle, and answers its polls. */

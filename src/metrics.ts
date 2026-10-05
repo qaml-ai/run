@@ -85,6 +85,40 @@ export function safeError(error: unknown): string {
   return `${errorClass(message)}${facts.length ? ` ${facts.join(" ")}` : ""} (${message.length} chars)`;
 }
 
+const CODE_CLASSES: [string, RegExp][] = [
+  ["cpu_limit", /^Codemode CPU limit exceeded/],
+  ["guest_limit", /^Codemode CPU or wall-clock limit exceeded/],
+  ["timeout_waiting_worker", /^Codemode timed out after \d+ms waiting for a sandbox worker/],
+  ["timeout_tool", /^Codemode timed out after \d+ms while tools\./],
+  ["timeout", /^Codemode timed out/],
+  ["aborted", /^Codemode aborted/],
+  ["worker_exited", /^Codemode (worker|sandbox process) exited/],
+  ["memory", /memory or execution limit|out of memory/i],
+  ["tool_limit", /^Codemode (tool call|transfer) limit exceeded|^Too many concurrent tool calls/],
+  ["syntax", /SyntaxError/],
+];
+
+/** A js_exec error, sorted by which limit stopped it (else `guest_error`, the code's own), for a metric dimension. */
+export function codeErrorClass(message: string | null | undefined): string {
+  if (!message) return "none";
+  return CODE_CLASSES.find(([, pattern]) => pattern.test(message))?.[0] ?? "guest_error";
+}
+
+/**
+ * One js_exec execution: how long it took, the CPU its guest used (when it finished), the timeoutMs
+ * it asked for and got, and how it ended, so its limits can be tuned from what executions need.
+ */
+export function recordCodeExecution(execution: { tenant?: string; ms: number; requestedTimeoutMs?: number; timeoutMs: number; cpuMs?: number; error?: unknown }) {
+  // Only the class goes in the line: a guest's error can echo what a user wrote.
+  const failure = execution.error === undefined ? "none" : codeErrorClass(errorText(execution.error));
+  emit("code_execution", {
+    dimensions: { ErrorClass: failure },
+    rollups: [[], ["ErrorClass"]],
+    metrics: { CodeExecutions: 1, CodeDurationMs: [execution.ms, "Milliseconds"], CodeCpuMs: execution.cpuMs === undefined ? undefined : [execution.cpuMs, "Milliseconds"] },
+    properties: { tenant: execution.tenant, timeoutMs: execution.timeoutMs, ...(execution.requestedTimeoutMs !== undefined ? { requestedTimeoutMs: execution.requestedTimeoutMs } : {}) },
+  });
+}
+
 /** The methods that are a turn of the model (not code executions, configuration or loads). */
 const TURN_METHODS = new Set(["prompt", "continue", "resume"]);
 
@@ -92,11 +126,11 @@ const TURN_METHODS = new Set(["prompt", "continue", "resume"]);
  * A host's turns, observed from its events and its handler: `event` sees each event
  * the host emits, `wrap` times each turn and writes its line when it ends.
  */
-export function observeTurns(model: () => { provider: string; id: string } | undefined, clock = Date.now) {
+export function observeTurns(model: () => { provider: string; id: string } | undefined, clock = Date.now, tenant: () => string | undefined = () => undefined) {
   let turn: { started: number; firstToken?: number; responses: number; errors: number; retries: number; tools: number; toolErrors: number } | undefined;
 
   function event(value: unknown) {
-    const event = value as { type?: string; message?: any; toolName?: string; isError?: boolean };
+    const event = value as { type?: string; message?: any; toolName?: string; isError?: boolean; result?: any };
     if (event.type === "message_update" && event.message?.role === "assistant") {
       if (turn && turn.firstToken === undefined) turn.firstToken = clock();
     } else if (event.type === "message_end" && event.message?.role === "assistant") {
@@ -119,7 +153,9 @@ export function observeTurns(model: () => { provider: string; id: string } | und
       if (turn) turn.tools++;
       if (event.isError) {
         if (turn) turn.toolErrors++;
-        sink(JSON.stringify({ type: "tool_failed", toolName: event.toolName ?? "", provider: model()?.provider, model: model()?.id }));
+        // The error's class only, never its text: a tool's error can echo what a user wrote.
+        const text = String(event.result?.content?.find?.((part: any) => part?.type === "text")?.text ?? "");
+        sink(JSON.stringify({ type: "tool_failed", toolName: event.toolName ?? "", tenant: tenant(), errorClass: event.toolName === "js_exec" ? codeErrorClass(text) : errorClass(text || "error"), provider: model()?.provider, model: model()?.id }));
       }
     }
   }

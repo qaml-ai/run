@@ -905,7 +905,7 @@ export function api(context: ApiContext) {
     else if (input.maxStorageGb !== undefined) set.maxStorageBytes = Math.round(input.maxStorageGb * 1e9);
     if (input.maxBusyAgents === null) removed.push("maxBusyAgents");
     else if (input.maxBusyAgents !== undefined) set.maxBusyAgents = input.maxBusyAgents;
-    for (const key of ["agentCreatesPerMinute", "runsPerMinute", "maxRunResponses", "maxRunSeconds"] as const) {
+    for (const key of ["agentCreatesPerMinute", "runsPerMinute", "maxRunResponses", "maxRunSeconds", "codeCpuMs", "codeMaxTimeoutMs", "codeConcurrency"] as const) {
       if (input[key] === null) removed.push(key);
       else if (input[key] !== undefined) set[key] = input[key];
     }
@@ -914,11 +914,12 @@ export function api(context: ApiContext) {
     if (!row) throw new HttpError(404, `Unknown tenant ${tenant}`);
     accounts.billing.forgetLimits(tenant);
     console.log(JSON.stringify({ type: "tenant_limits_set", tenant, limits: row.limits, by }));
-    const { maxStorageBytes: bytes, maxBusyAgents: busy, agentCreatesPerMinute, runsPerMinute, maxRunResponses, maxRunSeconds } = row.limits;
+    const { maxStorageBytes: bytes, maxBusyAgents: busy, agentCreatesPerMinute, runsPerMinute, maxRunResponses, maxRunSeconds, codeCpuMs, codeMaxTimeoutMs, codeConcurrency } = row.limits;
     return json(c, 200, { tenant, limits: {
       ...(typeof bytes === "number" ? { maxStorageGb: bytes / 1e9 } : {}), ...(typeof busy === "number" ? { maxBusyAgents: busy } : {}),
       ...(typeof agentCreatesPerMinute === "number" ? { agentCreatesPerMinute } : {}), ...(typeof runsPerMinute === "number" ? { runsPerMinute } : {}),
       ...(typeof maxRunResponses === "number" ? { maxRunResponses } : {}), ...(typeof maxRunSeconds === "number" ? { maxRunSeconds } : {}),
+      ...(typeof codeCpuMs === "number" ? { codeCpuMs } : {}), ...(typeof codeMaxTimeoutMs === "number" ? { codeMaxTimeoutMs } : {}), ...(typeof codeConcurrency === "number" ? { codeConcurrency } : {}),
     } });
   });
   route(createRoute({ method: "get", path: "/v1/tenants/{id}/export", request: { params: tenantId }, responses: { 200: zipped("The tenant's export, as GET /v1/account/export gives it (platform operator only)") } }), async c => {

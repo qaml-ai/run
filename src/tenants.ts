@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { getProviders } from "@earendil-works/pi-ai/compat";
 import { secretReader } from "./secrets.ts";
 import { UPSTREAMS, type ModelEndpoint } from "./session-config.ts";
+import { SANDBOX_LIMITS } from "./limits.ts";
 
 /**
  * A tenant owns its operator token, its agents and its model provider keys.
@@ -36,6 +37,13 @@ export interface Tenant {
   /** The most one run of its agents may take, in model responses and seconds; absent: no limit, as for every admin tenant (self-serve tenants get the runtime's). */
   maxRunResponses?: number;
   maxRunSeconds?: number;
+  /**
+   * js_exec: CPU milliseconds per execution, the longest timeoutMs it may ask for, and executions at once on
+   * one node (src/limits.ts CODE_LIMITS). Absent: the default CPU, and no limit on the others below the runtime's own.
+   */
+  codeCpuMs?: number;
+  codeMaxTimeoutMs?: number;
+  codeConcurrency?: number;
   /** Model spend (USD, list prices) this tenant may reach per UTC month; absent means unlimited. */
   maxMonthlyCost?: number;
   /** GB (10^9 bytes) it may store in all, as the storage charge counts them; absent: the plan's for a prepaid tenant, else unlimited. */
@@ -108,8 +116,11 @@ export class Tenants {
       for (const field of ["maxRunResponses", "maxRunSeconds"] as const) {
         if (tenant[field] !== undefined && (!Number.isSafeInteger(tenant[field]) || tenant[field]! < 1)) throw new Error(`Tenant ${tenant.id} has an invalid ${field}: a positive integer, or absent for no limit`);
       }
-      for (const field of ["maxAgentCreatesPerMinute", "maxRunsPerMinute"] as const) {
+      for (const field of ["maxAgentCreatesPerMinute", "maxRunsPerMinute", "codeConcurrency"] as const) {
         if (tenant[field] !== undefined && (!Number.isSafeInteger(tenant[field]) || tenant[field]! < 1)) throw new Error(`Tenant ${tenant.id} has an invalid ${field}: a positive integer, or absent for the default`);
+      }
+      for (const [field, most] of [["codeCpuMs", SANDBOX_LIMITS.maxCpuMs], ["codeMaxTimeoutMs", SANDBOX_LIMITS.maxTimeoutMs]] as const) {
+        if (tenant[field] !== undefined && (!Number.isSafeInteger(tenant[field]) || tenant[field]! < 1 || tenant[field]! > most)) throw new Error(`Tenant ${tenant.id} has an invalid ${field}: an integer from 1 to ${most}, or absent for the default`);
       }
       if (tenant.maxMonthlyCost !== undefined && (typeof tenant.maxMonthlyCost !== "number" || !Number.isFinite(tenant.maxMonthlyCost) || tenant.maxMonthlyCost < 0)) throw new Error(`Tenant ${tenant.id} has an invalid maxMonthlyCost: a non-negative number of USD, or absent for no limit`);
       if (tenant.maxStorageGb !== undefined && (typeof tenant.maxStorageGb !== "number" || !Number.isFinite(tenant.maxStorageGb) || tenant.maxStorageGb < 0)) throw new Error(`Tenant ${tenant.id} has an invalid maxStorageGb: a non-negative number of GB, or absent for the default`);
@@ -124,6 +135,8 @@ export class Tenants {
         ...(tenant.maxAgentCreatesPerMinute !== undefined ? { maxAgentCreatesPerMinute: tenant.maxAgentCreatesPerMinute } : {}),
         ...(tenant.maxRunsPerMinute !== undefined ? { maxRunsPerMinute: tenant.maxRunsPerMinute } : {}),
         ...(tenant.maxRunResponses !== undefined ? { maxRunResponses: tenant.maxRunResponses } : {}), ...(tenant.maxRunSeconds !== undefined ? { maxRunSeconds: tenant.maxRunSeconds } : {}),
+        ...(tenant.codeCpuMs !== undefined ? { codeCpuMs: tenant.codeCpuMs } : {}), ...(tenant.codeMaxTimeoutMs !== undefined ? { codeMaxTimeoutMs: tenant.codeMaxTimeoutMs } : {}),
+        ...(tenant.codeConcurrency !== undefined ? { codeConcurrency: tenant.codeConcurrency } : {}),
         ...(tenant.billing ? { billing: tenant.billing } : {}), ...(tenant.platformKeys === false ? { platformKeys: false } : {}), ...(tenant.modelEndpoints ? { modelEndpoints: tenant.modelEndpoints } : {}),
       });
     }
@@ -171,6 +184,9 @@ export class Tenants {
   /** The tenant's own rate limit (a minute) for agent creates or runs, if its entry sets one. */
   /** The most one run of an admin tenant's agents may take, as its entry sets it (absent: no limit). */
   runLimits(id: string) { const tenant = this.byId.get(id); return { maxResponses: tenant?.maxRunResponses, maxSeconds: tenant?.maxRunSeconds }; }
+
+  /** An admin tenant's js_exec limits, as its entry sets them. */
+  codeLimits(id: string) { const tenant = this.byId.get(id); return { cpuMs: tenant?.codeCpuMs, maxTimeoutMs: tenant?.codeMaxTimeoutMs, concurrent: tenant?.codeConcurrency }; }
 
   rateLimit(id: string, limit: "agentCreates" | "runs") { const tenant = this.byId.get(id); return limit === "runs" ? tenant?.maxRunsPerMinute : tenant?.maxAgentCreatesPerMinute; }
 

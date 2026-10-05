@@ -6,7 +6,7 @@ import {
   getCurrentSystemMessage, getCurrentTools, getSystemMessageText, getToolStateChanges, isContextOverflow, isRetryableAssistantError, toToolDeclaration, validateToolArguments,
   type AssistantMessage, type Message, type SystemMessage, type Tool, type ToolCall,
 } from "@earendil-works/pi-ai";
-import { executeCode, presentResult } from "./codemode.ts";
+import { executeCode, presentResult, type CodeResult } from "./codemode.ts";
 import { scriptValue } from "./mcp-results.ts";
 import { errorText, IDENTITY_KEY, SCOPE_KEY, type AgentConfig, type CallContext, type Credentials, type RunStop, type ToolBridge } from "./protocol.ts";
 import { applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS, leadingSystemMessage, OUTPUT, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER, OUTPUT_TOOL } from "./system-prompt.ts";
@@ -19,7 +19,7 @@ import { backgroundTokens, compactionNeed, compactionSettings, contextTokens, ex
 import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
 import { describeFile, documentPayload, FILE_LIMITS, nativeBlock, unseen, validFileRef, type FileRef } from "./files.ts";
 import { CHUNK_BYTES, chunksOf, type HistoryChunk } from "./history-pages.ts";
-import { observeTurns } from "./metrics.ts";
+import { observeTurns, recordCodeExecution } from "./metrics.ts";
 
 /** How often an agent reads back from its log what its history backlog could not hold (see `index`). */
 const LAG_READ_MS = 60_000;
@@ -45,6 +45,8 @@ export interface HostIO {
   modelAuth(): Promise<Credentials>;
   /** js_exec's `fs`, answered by the supervisor over the agent's mounts. */
   fs(op: string, args: Record<string, unknown>): Promise<unknown>;
+  /** Wait for the tenant's turn to run js_exec on the node, until `signal` aborts; resolves with the function that gives it back. */
+  codeSlot?(signal: AbortSignal): Promise<() => void>;
   /** The agent's history index, which the supervisor writes: how many messages it has (null: it has none yet, or none is kept), and a chunk to add. */
   history?: { indexed(): Promise<number | null>; write(chunk: HistoryChunk): Promise<number>; read(from: number): Promise<Backlog> };
 }
@@ -71,7 +73,7 @@ export function createAgentHost(hostIO: HostIO) {
   let agent: Agent | undefined;
   let config: AgentConfig;
   // Each turn's outcome, timing and model and tool counts, as metrics (metrics.ts), from what the host emits.
-  const turns = observeTurns(() => config?.model && { provider: config.model.provider, id: config.model.id });
+  const turns = observeTurns(() => config?.model && { provider: config.model.provider, id: config.model.id }, Date.now, () => config?.tenant);
   const io: HostIO = { ...hostIO, emit: event => { turns.event(event); hostIO.emit(event); } };
   let transcript: Transcript;
   let busy = false;
@@ -396,6 +398,18 @@ export function createAgentHost(hostIO: HostIO) {
   }
 
   /** The tools code can call; `toolCallId` is the js_exec call running it, if the model made one. */
+  /** One js_exec execution under the tenant's limits, and its metric line. */
+  async function runCode(options: Parameters<typeof executeCode>[0]) {
+    const started = Date.now();
+    let result: CodeResult | undefined, failure: unknown;
+    try { return result = await executeCode({ ...options, limits: config.codeLimits, admit: io.codeSlot && (signal => io.codeSlot!(signal)) }); }
+    catch (error) { failure = error; throw error; }
+    finally {
+      const maxTimeoutMs = Math.min(config.codeLimits?.maxTimeoutMs ?? SANDBOX_LIMITS.maxTimeoutMs, SANDBOX_LIMITS.maxTimeoutMs);
+      recordCodeExecution({ tenant: config.tenant, ms: Date.now() - started, requestedTimeoutMs: options.timeoutMs, timeoutMs: Math.min(options.timeoutMs ?? SANDBOX_LIMITS.timeoutMs, maxTimeoutMs), cpuMs: result?.cpuMs, error: failure });
+    }
+  }
+
   function bridge(signal: AbortSignal, toolCallId?: string): ToolBridge {
     let calls = 0;
     return {
@@ -640,9 +654,10 @@ export function createAgentHost(hostIO: HostIO) {
         await transcript.replace(messages, undefined, compaction);
       }
       const directTools = directAgentTools(config.tools);
+      const maxTimeoutMs = config.codeLimits?.maxTimeoutMs ?? SANDBOX_LIMITS.maxTimeoutMs;
       const jsExec: AgentTool = {
         name: "js_exec", label: "JavaScript",
-        description: "Run JavaScript or TypeScript in a fresh QuickJS sandbox. Return what you want to see: it comes back as JSON (a string as its own text), after any console.log lines. In scope: tools (await tools.<name>(args) gives the tool's result as data; tools.search, tools.namespaces and tools.describe find them) and fs for your files (readFile(path, { encoding: \"utf8\" }) gives a string, a Uint8Array without it; writeFile(path, string | Uint8Array); stat, list, remove); no network, imports, Node APIs or timers. Variables are gone after each execution; files persist. An execution gets timeoutMs of wall time (default 30000, at most 120000), tool calls included: raise it for slow tools. For example:\nconst tickets = [];\nfor (let page = 1; page; ) { const result = await tools.helpdesk__list_tickets({ status: \"open\", page }); tickets.push(...result.tickets); page = result.nextPage; }\nawait fs.writeFile(\"/workspace/tmp/tickets.json\", JSON.stringify(tickets)); // a later execution can read it back\nreturn { open: tickets.length, oldest: tickets[0]?.createdAt };",
+        description: "Run JavaScript or TypeScript in a fresh QuickJS sandbox. Return what you want to see: it comes back as JSON (a string as its own text), after any console.log lines. In scope: tools (await tools.<name>(args) gives the tool's result as data; tools.search, tools.namespaces and tools.describe find them) and fs for your files (readFile(path, { encoding: \"utf8\" }) gives a string, a Uint8Array without it; writeFile(path, string | Uint8Array); stat, list, remove); no network, imports, Node APIs or timers. Variables are gone after each execution; files persist. An execution gets timeoutMs of wall time (default " + Math.min(SANDBOX_LIMITS.timeoutMs, maxTimeoutMs) + ", at most " + maxTimeoutMs + "), tool calls included: raise it for slow tools." + " For example:\nconst tickets = [];\nfor (let page = 1; page; ) { const result = await tools.helpdesk__list_tickets({ status: \"open\", page }); tickets.push(...result.tickets); page = result.nextPage; }\nawait fs.writeFile(\"/workspace/tmp/tickets.json\", JSON.stringify(tickets)); // a later execution can read it back\nreturn { open: tickets.length, oldest: tickets[0]?.createdAt };",
         parameters: {
           type: "object", required: ["code"],
           properties: { code: { type: "string" }, description: { type: "string" }, timeoutMs: { type: "number" }, maxOutputCharacters: { type: "number" } },
@@ -651,7 +666,7 @@ export function createAgentHost(hostIO: HostIO) {
         execute: async (id, args, signal, onUpdate) => {
           try {
             const request = codeRequest(args);
-            const { returned, ...result } = await executeCode({
+            const { returned, cpuMs: _cpuMs, ...result } = await runCode({
               ...request, bridge: bridge(signal ?? new AbortController().signal, id), signal,
               onEvent: event => {
                 io.emit({ type: "codemode", toolCallId: id, event });
@@ -781,7 +796,7 @@ export function createAgentHost(hostIO: HostIO) {
     try {
       if (method === "prompt") await useOutput(params.output?.schema);
       if (method === "execute") {
-        const { returned: _returned, ...result } = await executeCode({ ...codeRequest(params), bridge: bridge(active.signal), signal: active.signal, onEvent: event => io.emit(event) });
+        const { returned: _returned, cpuMs: _cpuMs, ...result } = await runCode({ ...codeRequest(params), bridge: bridge(active.signal), signal: active.signal, onEvent: event => io.emit(event) });
         return result;
       }
       if (method === "continue" && transcript.awaiting.length) throw new Error("The agent is waiting for input: answer it, or send a new prompt");

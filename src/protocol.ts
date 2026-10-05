@@ -28,6 +28,8 @@ export interface ToolBridge {
   history?: { indexed(): Promise<number | null>; write(chunk: HistoryChunk): Promise<number> };
   /** Events of work the agent does apart from any run (`background: true`: a background compaction's), which reach no run's stream. */
   background?(event: any): void;
+  /** Wait for the tenant's turn to run js_exec on this node (codemode.ts `CodeGate`), until `signal` aborts; resolves with the function that gives it back. */
+  codeSlot?(signal: AbortSignal): Promise<() => void>;
 }
 /** The `apiKey` of an agent whose model is on its tenant's own endpoint: each call gets a fresh identity token instead (`ToolBridge.modelAuth`). */
 export const IDENTITY_KEY = "agent-runtime:identity-token";
@@ -63,6 +65,10 @@ export interface AgentConfig {
   retry?: { maxAttempts: number; baseDelayMs: number };
   /** A run that began elsewhere will resume: leave an interrupted turn open to continue it. */
   resume?: boolean;
+  /** The agent's tenant, set by the runtime, for its metric lines. */
+  tenant?: string;
+  /** The tenant's js_exec limits, set by the runtime (never the agent's configuration): CPU per execution and the longest timeoutMs. */
+  codeLimits?: { cpuMs: number; maxTimeoutMs: number };
 }
 export type WireMessage =
   | { type: "request"; id: string; method: string; params: any }

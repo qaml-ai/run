@@ -834,10 +834,13 @@ export const TenantLimitsInput = z.object({
   runsPerMinute: z.number().int().min(1).max(1_000_000).nullable().optional().openapi({ description: "Runs the tenant may start a minute, in place of its plan's (60 on free credit, else 600); null returns to the plan's" }),
   maxRunResponses: z.number().int().min(1).max(1_000_000).nullable().optional().openapi({ description: "Model responses one run of the tenant's agents may make, in place of the runtime's (1,000 by default); null returns to the runtime's" }),
   maxRunSeconds: z.number().int().min(1).max(31_536_000).nullable().optional().openapi({ description: "Seconds one run of the tenant's agents may take, in place of the runtime's (7,200 by default); null returns to the runtime's" }),
+  codeCpuMs: z.number().int().min(1).max(30_000).nullable().optional().openapi({ description: "CPU milliseconds one js_exec execution may use, in place of the runtime's (2,000); null returns to the runtime's" }),
+  codeMaxTimeoutMs: z.number().int().min(1).max(120_000).nullable().optional().openapi({ description: "The longest timeoutMs (wall time) a js_exec execution may ask for, in place of the runtime's (60,000); null returns to the runtime's" }),
+  codeConcurrency: z.number().int().min(1).max(1_000).nullable().optional().openapi({ description: "js_exec executions the tenant may run at once on one node, in place of its plan's (2 on free credit, else 4); null returns to the plan's" }),
 }).strict().openapi("TenantLimitsInput");
 export const TenantLimits = z.object({
   tenant: z.string(),
-  limits: z.object({ maxStorageGb: z.number().optional(), maxBusyAgents: z.number().int().optional(), agentCreatesPerMinute: z.number().int().optional(), runsPerMinute: z.number().int().optional(), maxRunResponses: z.number().int().optional(), maxRunSeconds: z.number().int().optional() }).openapi({ description: "The limits set for the tenant; those absent are its plan's" }),
+  limits: z.object({ maxStorageGb: z.number().optional(), maxBusyAgents: z.number().int().optional(), agentCreatesPerMinute: z.number().int().optional(), runsPerMinute: z.number().int().optional(), maxRunResponses: z.number().int().optional(), maxRunSeconds: z.number().int().optional(), codeCpuMs: z.number().int().optional(), codeMaxTimeoutMs: z.number().int().optional(), codeConcurrency: z.number().int().optional() }).openapi({ description: "The limits set for the tenant; those absent are its plan's" }),
 }).openapi("TenantLimits");
 export const TenantLookup = z.object({
   tenant: z.string(),

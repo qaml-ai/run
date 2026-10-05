@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { parentRpc, type Rpc } from "./rpc.ts";
 import { createAgentHost } from "./agent-host.ts";
 import { setMetricSink } from "./metrics.ts";
@@ -17,9 +18,21 @@ const host = createAgentHost({
   file: ref => rpc.request("file", ref),
   modelAuth: () => rpc.request("model-auth"),
   fs: (op, args) => rpc.request("fs", { op, args }),
+  codeSlot: signal => codeSlot(rpc, signal),
   history: { indexed: () => rpc.request("history", { op: "indexed" }), write: chunk => rpc.request("history", { op: "write", chunk }), read: from => rpc.request("history", { op: "read", from }) },
   transcript: remoteTranscript(rpc),
 });
+
+/** A turn to run js_exec, held by the supervisor (which counts the tenant's across the node) until given back. */
+async function codeSlot(rpc: Rpc, signal: AbortSignal): Promise<() => void> {
+  const id = randomUUID();
+  const release = () => { void rpc.request("code-release", { id }).catch(() => {}); };
+  signal.addEventListener("abort", release, { once: true });
+  try { await rpc.request("code-slot", { id }); }
+  catch (error) { release(); throw error; }
+  finally { signal.removeEventListener("abort", release); }
+  return release;
+}
 
 /** The transcript is the supervisor's: records are buffered here and sent with each flush. The supervisor closes the log when this process ends. */
 function remoteTranscript(rpc: Rpc): AppendLog<TranscriptRecord> {
@@ -42,4 +55,5 @@ function remoteTranscript(rpc: Rpc): AppendLog<TranscriptRecord> {
     close: async () => {},
   };
 }
-rpc.handler = (method, params) => host.handle(method, params);
+// Answered here, not by the host: the supervisor's watchdog pings to see that this thread is not stuck.
+rpc.handler = (method, params) => method === "ping" ? Promise.resolve(null) : host.handle(method, params);

@@ -53,7 +53,7 @@ export function applicationInstructions(applicationPrompt?: string, append?: str
  * tools and js_exec's limits. Nothing per turn, so it changes only with the configuration and the
  * cached prompt prefix holds.
  */
-export function environmentSummary(config: Pick<AgentConfig, "mounts" | "model" | "tools" | "fileTools">): string {
+export function environmentSummary(config: Pick<AgentConfig, "mounts" | "model" | "tools" | "fileTools" | "codeLimits">): string {
   const mounts = config.mounts ?? [];
   const writable = mounts.find(mount => mount.path === "/workspace" && mount.mode === "rw") ?? mounts.find(mount => mount.mode === "rw");
   const files = !mounts.length ? "Files: none are mounted, so fs and the file tools are unavailable."
@@ -66,6 +66,7 @@ export function environmentSummary(config: Pick<AgentConfig, "mounts" | "model" 
     : images ? "You see images (attached ones and ones you read are shown to you, so never decode their bytes in code), but not PDFs: read a PDF for its text."
     : "You cannot see images or PDFs: read a PDF for its text.";
   const direct = config.tools.filter(tool => tool.exposure === "direct" || tool.exposure === "both").map(tool => tool.name).sort();
+  const maxTimeoutMs = config.codeLimits?.maxTimeoutMs ?? SANDBOX_LIMITS.maxTimeoutMs;
   const hidden = config.tools.filter(tool => (tool.exposure ?? "codemode") === "codemode");
   const counts = new Map<string, number>();
   for (const tool of hidden) counts.set(namespaceOf(tool.name), (counts.get(namespaceOf(tool.name)) ?? 0) + 1);
@@ -78,7 +79,7 @@ export function environmentSummary(config: Pick<AgentConfig, "mounts" | "model" 
     `- Tools only in js_exec: ${hidden.length ? `${hidden.length}, in ${namespaces.join(", ")}; find them with tools.search` : "none"}.`,
     ...config.tools.some(tool => tool.needsApproval) ? [`- The user approves each call of these tools before it runs, which pauses your turn until they answer: ${config.tools.filter(tool => tool.needsApproval).map(tool => tool.name).sort().join(", ")}.`] : [],
     ...config.tools.some(tool => tool.name === "ask_user") ? ["- When you are blocked on a choice only the user can make, ask them with ask_user; your turn pauses until they answer. Don't ask what you can find out yourself."] : [],
-    `- js_exec limits per execution: ${SANDBOX_LIMITS.cpuMs / 1000} s of CPU, ${SANDBOX_LIMITS.heapBytes / 1024 / 1024} MB of memory, ${SANDBOX_LIMITS.timeoutMs / 1000} s (timeoutMs, up to ${SANDBOX_LIMITS.maxTimeoutMs / 1000} s), ${SANDBOX_LIMITS.toolCalls} tool calls, ${SANDBOX_LIMITS.outputCharacters.toLocaleString("en-US")} output characters. QuickJS interprets slowly: process large data in one pass.`,
+    `- js_exec limits per execution: ${(config.codeLimits?.cpuMs ?? SANDBOX_LIMITS.cpuMs) / 1000} s of CPU, ${SANDBOX_LIMITS.heapBytes / 1024 / 1024} MB of memory, ${Math.min(SANDBOX_LIMITS.timeoutMs, maxTimeoutMs) / 1000} s (timeoutMs, up to ${maxTimeoutMs / 1000} s), ${SANDBOX_LIMITS.toolCalls} tool calls, ${SANDBOX_LIMITS.outputCharacters.toLocaleString("en-US")} output characters. QuickJS interprets slowly: process large data in one pass.`,
   ].join("\n");
 }
 
@@ -86,7 +87,7 @@ export function environmentSummary(config: Pick<AgentConfig, "mounts" | "model" 
  * The context's first system message: the runtime's instructions, then the application's and a
  * summary of the environment as named sections. Rendered, they are joined by blank lines.
  */
-export function leadingSystemMessage(config: Pick<AgentConfig, "systemPrompt" | "systemPromptAppend" | "mounts" | "model" | "tools" | "fileTools">, tools: Tool[]): SystemMessage {
+export function leadingSystemMessage(config: Pick<AgentConfig, "systemPrompt" | "systemPromptAppend" | "mounts" | "model" | "tools" | "fileTools" | "codeLimits">, tools: Tool[]): SystemMessage {
   return {
     role: "system", content: runtimeInstructions, timestamp: 0,
     sections: {

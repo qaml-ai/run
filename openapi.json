@@ -4193,6 +4193,15 @@
               },
               "maxRunSeconds": {
                 "type": "integer"
+              },
+              "codeCpuMs": {
+                "type": "integer"
+              },
+              "codeMaxTimeoutMs": {
+                "type": "integer"
+              },
+              "codeConcurrency": {
+                "type": "integer"
               }
             },
             "description": "The limits set for the tenant; those absent are its plan's"
@@ -4259,6 +4268,33 @@
             "minimum": 1,
             "maximum": 31536000,
             "description": "Seconds one run of the tenant's agents may take, in place of the runtime's (7,200 by default); null returns to the runtime's"
+          },
+          "codeCpuMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "maximum": 30000,
+            "description": "CPU milliseconds one js_exec execution may use, in place of the runtime's (2,000); null returns to the runtime's"
+          },
+          "codeMaxTimeoutMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "maximum": 120000,
+            "description": "The longest timeoutMs (wall time) a js_exec execution may ask for, in place of the runtime's (60,000); null returns to the runtime's"
+          },
+          "codeConcurrency": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "js_exec executions the tenant may run at once on one node, in place of its plan's (2 on free credit, else 4); null returns to the plan's"
           }
         },
         "additionalProperties": false
