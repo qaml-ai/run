@@ -429,7 +429,10 @@ Everything that changes something can be retried safely:
   (the request id): the same key returns the same agent or run.
 - Every other POST takes an `Idempotency-Key` header: a retry with the same key,
   path and body gets the first answer again (for a day); the same key with a
-  different body is a 409.
+  different body is a 409. An answer with a secret shown once (an API token,
+  including a new tenant's from `POST /v1/tenants`, a signing secret, a browser
+  token or a signed link) is never stored: a retry of a key that succeeded is a
+  409, not the secret again.
 - Every tool call carries `context.idempotencyKey`, the same for every attempt
   of that call: a retry after a lost connection, or the call run again after a
   person answered. Key your side effects by it. (`context.callId` is new each

@@ -236,8 +236,8 @@ export function api(context: ApiContext) {
   app.use("/v1/*", idempotency({
     db: () => clients.db, tenant: c => c.var.principal.tenant, lockMs: context.idempotencyLockMs,
     skip: path => path === "/v1/agents" || path === "/v1/definitions" || /^\/v1\/agents\/[^/]+\/(?:prompt|fork)$/.test(path),
-    // Answers with a secret shown once: API tokens, signing secrets, browser tokens, signed links.
-    secret: path => /^\/v1\/(?:tokens|webhooks|webhooks\/[^/]+\/secret|usage-webhook\/secret|agents\/[^/]+\/(?:browser-tokens|links)|volumes\/[^/]+\/links)$/.test(path),
+    // Answers with a secret shown once: API tokens (a new tenant's too), signing secrets, browser tokens, signed links.
+    secret: path => /^\/v1\/(?:tokens|tenants|webhooks|webhooks\/[^/]+\/secret|usage-webhook\/secret|agents\/[^/]+\/(?:browser-tokens|links)|volumes\/[^/]+\/links)$/.test(path),
   }));
 
   route(createRoute({ method: "get", path: "/v1/me", responses: { 200: reply("The caller", schema.Me) } }), async c => {

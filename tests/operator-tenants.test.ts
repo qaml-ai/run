@@ -12,15 +12,20 @@ const tenantsFile = {
 };
 
 test("the platform operator makes a prepaid tenant like a sign-up's, with an API token, credits it and deletes it", { timeout: 120_000 }, async t => {
-  const { call, prompt, model } = await runtime(t, () => ({ role: "assistant", content: "hello from the platform key", usage: { prompt_tokens: 10, completion_tokens: 1 } }),
+  const { call, prompt, model, db } = await runtime(t, () => ({ role: "assistant", content: "hello from the platform key", usage: { prompt_tokens: 10, completion_tokens: 1 } }),
     { AGENT_BILLING_ADMINS: "ops", AGENT_PURGE_INTERVAL_MS: "1000" }, tenantsFile);
 
   // Only a billing admin's operator token, and only valid ids that are new.
   assert.equal((await call("/v1/tenants", { body: { id: "lab-one" }, token: OTHER })).status, 403);
   assert.equal((await call("/v1/tenants", { body: { id: "Lab One" }, token: OPS })).status, 400);
   assert.equal((await call("/v1/tenants", { body: { id: "other" }, token: OPS })).status, 409, "never an admin tenant's id");
-  const created = await call("/v1/tenants", { body: { id: "lab-one", tokenName: "tester" }, token: OPS });
+  const created = await call("/v1/tenants", { body: { id: "lab-one", tokenName: "tester" }, token: OPS, headers: { "Idempotency-Key": "make-lab-one" } });
   assert.equal(created.status, 201);
+  // The new tenant's API token is shown once: its idempotency record keeps no copy, and a retry does not show it again.
+  const kept = (await db.query("select body from idempotency_keys where key = 'make-lab-one'")).rows;
+  assert.equal(kept.length, 1);
+  assert.equal(kept[0].body, null);
+  assert.equal((await call("/v1/tenants", { body: { id: "lab-one", tokenName: "tester" }, token: OPS, headers: { "Idempotency-Key": "make-lab-one" } })).status, 409);
   assert.equal(created.json.tenant, "lab-one");
   assert.equal(created.json.token.name, "tester");
   const token = created.json.token.token;
