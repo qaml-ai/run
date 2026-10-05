@@ -9,6 +9,23 @@ between yours and the new one first.
 
 Changes on main since the last tag.
 
+### Console sessions
+
+- Console sessions are stored in Postgres (`console_sessions`, migration 053); the cookie carries only a random
+  id. Signing out ends the session on the server. **Deploying this signs everyone out once**: the earlier signed
+  cookies are not sessions any more, so people sign in again.
+- `DELETE /v1/sessions` signs a tenant out everywhere (every console session ends), from the console's Account
+  page or with an API token. `GET /v1/me` says how a console session signed in (`signIn`: `github`, `google`
+  or `token`).
+- A console session signed in with an API token ends when that token is revoked, and one signed in with an
+  operator token when the tenants file gives the tenant another token. A session signed in with a token cannot
+  mint API tokens, change billing, use Get Help or delete the account (403); GitHub and Google sessions can.
+- Cookie-authenticated writes (with `X-Agent-Runtime-Console: 1`), and the OAuth consent and sign-in forms, need
+  a same-origin `Origin` or, where a browser leaves Origin out, `Sec-Fetch-Site: same-origin`. A request with
+  neither (curl with a copied cookie) is refused.
+- The console's sign-in page offers token sign-in only where neither GitHub nor Google is configured (a
+  self-hosted runtime). The MCP consent page keeps it behind "Use an API token instead".
+
 ## 0.4.0 (runtime-v0.4.0, 2026-10-03)
 
 ### Sub-agents

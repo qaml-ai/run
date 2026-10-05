@@ -17,6 +17,16 @@ with the [Quickstart](../quickstart.md) and [Concepts](../concepts.md) instead.
 - [Sandbox](sandbox.md): the codemode sandbox's layers and limits
 - [Integration seam](integration.md)
 
+## Pending removals
+
+- **API-token sign-in, after the ChatGPT plugin's review.** The plugin's reviewers sign in with the
+  `chatgpt-review` tenant's API token (`plugins/chatgpt/README.md`), so it stays, out of sight, until OpenAI
+  approves the plugin. Then remove the unlisted console page (`console/web/pages/token-sign-in.tsx`, routed in
+  `console/web/main.tsx`), the consent page's "Use an API token instead" disclosure and `POST /oauth/login`
+  (`src/oauth.ts`), and `POST /console/auth/token` with token sessions (`src/console-auth.ts`, the
+  `token` sign-in method), keeping token sign-in only where neither GitHub nor Google is configured, if
+  self-hosted runtimes still need it. Update the plugin README's review instructions to match.
+
 ## Layout
 
 - `src/` server, supervisor, agent host, sessions, scheduler, REST API, sandbox

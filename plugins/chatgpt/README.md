@@ -47,7 +47,9 @@ The package is ready except for the demo video's URL, which needs you. The build
    business verification for CamelQA, Inc. (dba camelAI). The directory shows the verified name, whatever
    `developerName` says. Use a project with global (not EU) data residency.
 3. **Reviewer account.** A tenant of its own, with sample data, signed into with an API token (no GitHub, so no
-   device-verification email, no MFA). It is prepaid like a new sign-up, on the platform's model keys, and its credit
+   device-verification email, no MFA). A console session signed in with a token can use agents, definitions and
+   connected apps, but cannot mint API tokens, change billing, use Get Help or delete the account, and ends when
+   the token is revoked. Token sign-in goes once the review is done (docs/operations/README.md, Pending removals). It is prepaid like a new sign-up, on the platform's model keys, and its credit
    caps what reviews can spend. As a billing admin (`$OPERATOR`, an operator token of a tenant in
    `AGENT_BILLING_ADMINS`; never printed):
    ```sh
@@ -68,7 +70,7 @@ The package is ready except for the demo video's URL, which needs you. The build
 4. **Try it in ChatGPT first (developer mode).** Settings, Security and login, turn on Developer mode. Then at
    https://chatgpt.com/plugins select +, name it camelRun, URL `https://run.camelai.com/mcp`, authentication
    OAuth. ChatGPT registers itself (dynamic client registration), so there is no client ID or secret to enter and no
-   redirect URI to allowlist. Sign in on the camelRun page (GitHub, Google, or paste the API token), select Allow, then run
+   redirect URI to allowlist. Sign in on the camelRun page (GitHub, Google, or "Use an API token instead"), select Allow, then run
    the test cases below in a new chat with camelRun added from the + menu.
 5. **Upload.** `node --experimental-strip-types plugins/chatgpt/build.ts`, then at https://platform.openai.com/plugins
    select Upload new or existing plugin, choose the verified developer identity, and upload
@@ -85,10 +87,11 @@ The package is ready except for the demo video's URL, which needs you. The build
    Then select Verify Domain, connect, sign in, and wait for the tool scan. Every tool states its three hints; the dashboard may
    still ask for a one-line justification per hint (see "Annotations" below).
 7. **Review details.** In Metadata & Skills, Review information, Review details, enter:
-   - login URL `https://run.camelai.com/console`;
+   - login URL `https://run.camelai.com/console/sign-in/token` (unlisted: the console's own sign-in page offers only
+     GitHub and Google);
    - credential: the `chatgpt-review` API token, in the password field (no username);
-   - sign-in instructions: "When ChatGPT opens the camelRun sign-in page, paste the API token into the field under
-     'Or sign in with an API token' and select Sign in, then select Allow. Don't use Sign in with GitHub or Google. The account
+   - sign-in instructions: "When ChatGPT opens the camelRun sign-in page, select 'Use an API token instead', paste the
+     API token and select Sign in, then select Allow. To look at the console, sign in with the same token at the login URL. Don't use Sign in with GitHub or Google. The account
      is a test account with a demo agent, support-demo.";
    - the demo video's URL (step 8).
    The test cases and release notes come from the ZIP.
@@ -120,7 +123,7 @@ Clean up after a rehearsal: delete weather-bot, triage-1 and the triage definiti
 ## Demo video script (about 3 minutes)
 
 1. (0:00) ChatGPT, new chat. "camelRun lets you build and run AI agents from ChatGPT." Open + and add camelRun.
-2. (0:15) Connect: the camelRun sign-in page opens; paste the API token, Sign in, then Allow. Say that it asks for
+2. (0:15) Connect: the camelRun sign-in page opens; open "Use an API token instead", paste the API token, Sign in, then Allow. Say that it asks for
    the agents of this one account and can be revoked in the console under Connected apps.
 3. (0:40) P1: create weather-bot. Show ChatGPT's confirmation, if any, then the result.
 4. (1:05) P2: ask weather-bot about Dallas. Point out the reply comes from the agent, with its sources.
@@ -128,7 +131,7 @@ Clean up after a rehearsal: delete weather-bot, triage-1 and the triage definiti
 6. (1:40) P4: deploy the triage manifest, confirm, and see triage-1's label.
 7. (2:10) P5: delete weather-bot; show the confirmation, then list agents again.
 8. (2:30) N2: paste the fake Stripe key; show that it declines and points to the CLI.
-9. (2:45) The console at https://run.camelai.com/console: the agents made from ChatGPT, and the grant under
+9. (2:45) The console (signed in with the token at https://run.camelai.com/console/sign-in/token): the agents made from ChatGPT, and the grant under
    Connected apps.
 
 ## Release notes (1.0.0)
