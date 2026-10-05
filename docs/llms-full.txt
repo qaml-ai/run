@@ -4240,7 +4240,9 @@ where you revoke them (or `GET /v1/oauth/grants`, `DELETE
 
 Each registration makes a client of its own, even for the same name and
 redirect URIs, so a confidential client's secret is known only to whoever
-registered it.
+registered it. The consent page shows where it sends the authorization (a web
+app's scheme and host, or a native app's whole redirect URI) and marks the
+name the application gave itself as unverified: judge it by that destination.
 
 Each agent is also an MCP server of its own, with one tool that messages it:
 see [Agents as MCP servers](https://run.camelai.com/docs/guides/mcp-server.md).

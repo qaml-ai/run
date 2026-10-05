@@ -361,7 +361,7 @@ test("Google sign-in verifies the ID token, creates separate tenants, and return
   assert.ok(String((await call(consent)).json).includes(`href="/console/auth/google?next=${encodeURIComponent(consent)}"`));
   const returned = await signIn({ sub: "1001", email: "ada@example.com", email_verified: true }, { next: consent });
   assert.equal(returned.location, decodeURIComponent(consent));
-  assert.match(String((await call(consent, { headers: { Cookie: returned.session! } })).json), /Connect Test Agent\?[\s\S]*Signed in as <strong>ada@example\.com<\/strong>/);
+  assert.match(String((await call(consent, { headers: { Cookie: returned.session! } })).json), /Connect an application\?[\s\S]*Signed in as <strong>ada@example\.com<\/strong>/);
   // An API token of a Google tenant names the person too, in /v1/me and in a console session it signs in.
   const token = (await call("/v1/tokens", { body: { name: "script" }, headers: { Cookie: ada.session!, "X-Agent-Runtime-Console": "1" } })).json.token;
   assert.equal((await call("/v1/me", { token })).json.login, "ada@example.com");

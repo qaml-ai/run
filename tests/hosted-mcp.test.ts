@@ -131,7 +131,7 @@ test("MCP clients sign in with OAuth: registration, consent, PKCE, rotating refr
 
   const consent = await fetch(`${r.base}${login.headers.get("location")}`, { headers: { Cookie: cookie } });
   const consentHtml = await consent.text();
-  assert.match(consentHtml, /Connect Test Agent\?[\s\S]*alice[\s\S]*127\.0\.0\.1:43210/);
+  assert.match(consentHtml, /Connect an application\?[\s\S]*alice[\s\S]*http:\/\/127\.0\.0\.1:43210[\s\S]*Test Agent/);
 
   const decide = (decision: string, params = query, origin = r.base) => post("/oauth/authorize", { ...Object.fromEntries(params), decision }, { Cookie: cookie, Origin: origin });
   assert.equal((await decide("allow", query, "https://evil.example")).status, 403, "consent is same-origin");

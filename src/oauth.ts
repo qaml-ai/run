@@ -360,16 +360,17 @@ export class OAuth {
       const providers = this.options.github || this.options.google;
       if (!principal) {
         return page(c, 200, "Sign in", `<h1>Sign in to camelRun</h1>
-<p><strong>${escape(request.client.name)}</strong> wants to connect to your camelRun account. Sign in first.</p>
+<p>An application calling itself <strong>${escape(request.client.name)}</strong> <span class="muted">(unverified)</span>, at <code>${escape(destinationOf(request.redirectUri))}</code>, wants to connect to your camelRun account. Sign in first.</p>
 ${providers ? `<p>${this.options.github ? `<a class="button" href="/console/auth/github?next=${encodeURIComponent(here)}">Sign in with GitHub</a>` : ""}${this.options.github && this.options.google ? " " : ""}${this.options.google ? `<a class="button" href="/console/auth/google?next=${encodeURIComponent(here)}">Sign in with Google</a>` : ""}</p><p class="muted">Or sign in with an API token:</p>` : ""}
 <form method="post" action="/oauth/login"><input type="hidden" name="next" value="${escape(here)}">
 <input type="password" name="token" placeholder="art_…" autocomplete="off" required aria-label="API token"><button type="submit"${providers ? " class=\"secondary\"" : ""}>Sign in</button></form>`);
       }
-      const redirect = new URL(request.redirectUri);
-      return page(c, 200, "Connect", `<h1>Connect ${escape(request.client.name)}?</h1>
+      const destination = escape(destinationOf(request.redirectUri));
+      return page(c, 200, "Connect", `<h1>Connect an application?</h1>
 <p class="muted">Signed in as <strong>${escape(principal.name ? `${principal.name} (${principal.login ?? principal.tenant})` : principal.login ?? principal.tenant)}</strong></p>
-<p><strong>${escape(request.client.name)}</strong> is asking to manage your camelRun agents: to create, configure, run and delete agents and definitions, read their history, and answer their questions and approvals. It acts as an API token of this account does, until you revoke it.</p>
-<p class="muted">It will be sent back to <code>${escape(redirect.protocol === "http:" || redirect.protocol === "https:" ? redirect.host : redirect.protocol)}</code>. Only connect applications you trust.</p>
+<p class="destination">Access goes to<br><strong><code>${destination}</code></strong></p>
+<p>An application calling itself <strong>${escape(request.client.name)}</strong> <span class="muted">(a name it chose; camelRun has not verified it)</span> is asking to manage your camelRun agents: to create, configure, run and delete agents and definitions, read their history, and answer their questions and approvals. It acts for this account until you revoke it.</p>
+<p class="muted">Only connect if you trust <code>${destination}</code>, whatever the application calls itself.</p>
 <form method="post" action="/oauth/authorize">${[...params].map(([key, value]) => `<input type="hidden" name="${escape(key)}" value="${escape(value)}">`).join("")}
 <button type="submit" name="decision" value="allow">Allow</button> <button type="submit" name="decision" value="deny" class="secondary">Deny</button></form>`);
     });
@@ -413,6 +414,17 @@ function validRedirect(uri: unknown) {
   return /^[a-z][a-z0-9+.-]*:$/.test(url.protocol) && !["javascript:", "data:", "file:", "vbscript:", "blob:", "about:", "ftp:", "ws:", "wss:"].includes(url.protocol);
 }
 
+/**
+ * Where a redirect URI sends the code, as the consent page shows it: a web address's scheme and host, which is
+ * whose server gets it; for an app's own scheme the whole URI but its query, since any app may claim a scheme.
+ */
+function destinationOf(uri: string) {
+  const url = new URL(uri);
+  if (url.protocol === "https:" || url.protocol === "http:") return `${url.protocol}//${url.host}`;
+  const shown = `${url.protocol}${uri.slice(url.protocol.length).split("?")[0]}`;
+  return shown.length > 200 ? `${shown.slice(0, 200)}…` : shown;
+}
+
 /** The same URI, or for a loopback http one the same but for its port (RFC 8252: native apps listen on any port). */
 function redirectMatches(registered: string, given: string) {
   if (registered === given) return true;
@@ -431,4 +443,4 @@ main{max-width:440px;width:100%;background:var(--card);border:1px solid var(--li
 h1{font-size:20px;margin:0 0 12px}.muted{color:var(--muted);font-size:13px}code{font-size:13px}
 button,.button{display:inline-block;border:1px solid var(--accent);background:var(--accent);color:var(--on);border-radius:8px;padding:8px 16px;font:inherit;cursor:pointer;text-decoration:none}
 .secondary{background:transparent;color:var(--fg)}input[type=password]{width:100%;box-sizing:border-box;margin:0 0 12px;padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);font:inherit}
-.brand{font-weight:600;margin-bottom:16px}</style></head><body><main><div class="brand">camelRun</div>${body}</main></body></html>`;
+.brand{font-weight:600;margin-bottom:16px}.destination{border:1px solid var(--line);border-radius:8px;padding:10px 12px;word-break:break-all}.destination code{font-size:15px}</style></head><body><main><div class="brand">camelRun</div>${body}</main></body></html>`;
