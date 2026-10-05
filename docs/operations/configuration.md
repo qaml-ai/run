@@ -36,7 +36,7 @@
 | `AGENT_STRIPE_PORTAL_CONFIGURATION` | Product-specific `bpc_` configuration for Stripe-hosted cards and invoices; see [Billing](billing.md) |
 | `AGENT_STRIPE_SECRET_ARN` | instead: a Secrets Manager secret holding `{secretKey, webhookSecret}`, read at startup; while it has no value, purchases are off |
 | `GITHUB_ORG` | console GitHub sign-in admits active members of this organization (default `qaml-ai`) |
-| `AGENT_OPEN_SIGNUP` | `true` admits any GitHub account instead, and allows Google sign-in (see [Billing](billing.md)) |
+| `AGENT_OPEN_SIGNUP` | `true` admits any GitHub account instead, and allows Google sign-in and, with account mail, email sign-up (see [Billing](billing.md)) |
 | `AGENT_DISCORD_MANAGED_ENABLED` | `true` enables the hosted Camel Discord integration; off by default. Requires the platform application settings below; see [Managed Discord](managed-discord.md) |
 | `AGENT_DISCORD_MANAGED_APPLICATION_ID` | the Discord application's ID |
 | `AGENT_DISCORD_MANAGED_BOT_TOKEN`, `AGENT_DISCORD_MANAGED_CLIENT_SECRET` | platform bot token and OAuth client secret, server-side only; never customer channel credentials. Restart after rotating them |
@@ -49,6 +49,10 @@
 | `AGENT_EMAIL_SNS_TOPICS` | SNS topic ARNs (comma-separated) whose notifications `/channels/email/inbound` accepts; with none, no mail is received |
 | `AGENT_EMAIL_BUCKET` | the bucket an SES S3 receipt action stores mail in (the runtime reads messages and their attachments from it, under the task role); without it, only mail SES puts in the SNS notification itself (up to 150 KB) arrives |
 | `AGENT_EMAIL_REGION` | SES and S3's region (default `AWS_REGION`) |
+| `AGENT_ACCOUNT_EMAIL_FROM` | optional sender of account mail: with it, people sign up with an email and password (with `AGENT_OPEN_SIGNUP=true`), reset a forgotten password, and add a password to a GitHub or Google account, each through a link mailed to the address. Unset (the default): none of these is offered, and passwords are the operator's to set. See [Account email](account-email.md) |
+| `AGENT_ACCOUNT_EMAIL_PROVIDER` | `ses` (default): Amazon SES's API, with the runtime's AWS credentials and `AWS_REGION`; the sender must be a verified SES identity and the credentials allowed `ses:SendEmail` as it. `log`: no mail; each link and its address are written to the log for the operator to pass on. `log` is refused with `AGENT_OPEN_SIGNUP=true` unless `AGENT_PUBLIC_URL` is a loopback address, so a public runtime never logs a sign-up link |
+| `AGENT_ACCOUNT_EMAIL_NAME`, `AGENT_ACCOUNT_EMAIL_CONFIGURATION_SET` | optional: the sender's display name (default `camelRun`), and an SES configuration set to send with |
+| `AGENT_RATE_LIMIT_EMAIL_REQUESTS_PER_IP`, `AGENT_RATE_LIMIT_EMAILS_PER_ADDRESS` | requests that mail a link (sign-up, password reset, adding a password) per client address an hour (default 10, on by default only with `AGENT_TRUST_CF_CONNECTING_IP=true`), and such mails per email address a UTC day (default 5, on everywhere). Counted whether or not the address has an account; a refused password counts nothing; 0 turns one off |
 | `AGENT_BILLING_EMAIL_FROM` | optional verified sender for billing confirmation and balance alerts; unset disables billing email |
 | `AGENT_BILLING_EMAIL_NAME` | sender display name, default `camelRun Billing`; the FROM setting remains the bare verified address |
 | `AGENT_BILLING_EMAIL_PROVIDER` | `cloudflare` for the production mail Worker, or `ses` (default); both require `AGENT_PUBLIC_URL` and `AGENT_SECRETS_KEY` |

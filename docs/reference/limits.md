@@ -18,6 +18,8 @@ wait out `Retry-After` and retry.
 | `auth_requests`: requests to `/console/auth/*` and `/oauth/*` (sign-in, sign-up callbacks, OAuth) | client address | 20 a minute |
 | `signups`: new accounts | client address | 5 a UTC day; past it, sign-in says so instead of making the account |
 | `password_failures`: failed email and password sign-ins (an unknown address counts as a wrong password) | email address, and client address | 10 per 15 minutes per address; 20 per 15 minutes per client address. Past either, sign-in answers 429, even with the right password, until the window turns over |
+| `email_requests`: requests that mail a link (email sign-up, password reset, adding a password), where the runtime has account mail | client address | 10 an hour |
+| `emails`: those mails to one address, whether or not it has an account | email address | 5 a UTC day |
 | `agent_creates`: `POST /v1/agents` (upserts too) | account | 60 a minute; 10 on free credit |
 | `runs`: runs started (prompt, continue, execute), however sent: REST, SDKs, MCP, schedules, channels | account | 600 a minute; 60 on free credit |
 
@@ -25,8 +27,8 @@ wait out `Retry-After` and retry.
   rest of its `/64`. The runtime's own calls (hosted MCP tools calling the API)
   are not counted.
 - `api_requests` refills continuously (a request comes back every tenth of a
-  second at 600 a minute); the others count in fixed windows (the minute, or the
-  UTC day), so `Retry-After` is the time to the next window.
+  second at 600 a minute); the others count in fixed windows (the minute, 15
+  minutes, the hour, or the UTC day), so `Retry-After` is the time to the next window.
 - A retried request (the same request id or `Idempotency-Key`) that the runtime
   answers from its record is not a new run.
 - Admin tenants (the operator's own, from its tenants file) are not rate

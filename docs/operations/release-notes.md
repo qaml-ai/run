@@ -21,6 +21,33 @@ Changes on main since the last tag.
   a same-origin `Origin` or, where a browser leaves Origin out, `Sec-Fetch-Site: same-origin`. A request with
   neither (curl with a copied cookie) is refused.
 
+### Sign-up, password reset and adding a password by email
+
+Off unless account mail is configured (`AGENT_ACCOUNT_EMAIL_FROM`); without it nothing changes. See
+[Account email](account-email.md).
+
+- **Sign up with an email and a password** on the console (`/console/signup`) and the MCP consent page, with
+  `AGENT_OPEN_SIGNUP=true`. The password is 12 to 256 characters, not one of the most common, not the address;
+  no composition rules. A link mailed to the address (24 hours, once) finishes it with that password, making
+  the account (prepaid, a random `u-<16 hex>` id, starting credit by card check as for Google) and signing in.
+  Unverified sign-ups have no account and cannot sign in.
+- **Forgot password**: a link (an hour, once, only the newest) sets a new password and ends every password
+  session.
+- **Account page**: shows the account's address; an account without a password adds one (its own Google
+  address at once, any other through a link). Changing a password now refuses the most common ones.
+- Requests answer the same whether or not the address has an account: an address with one is mailed that
+  someone tried; a Google account's address is told to sign in with Google. Email sign-up never merges with or
+  takes over a GitHub or Google account.
+- Links are kept only as SHA-256 hashes, in `account_email_links` (**migration 055**), with an index on
+  `tenants.google_email`.
+- New limits: `email_requests` per client address an hour (`AGENT_RATE_LIMIT_EMAIL_REQUESTS_PER_IP`, 10
+  behind Cloudflare, else off unless set) and `emails` per address a day (`AGENT_RATE_LIMIT_EMAILS_PER_ADDRESS`,
+  5, always on).
+- Mail goes through Amazon SES (`AGENT_ACCOUNT_EMAIL_PROVIDER=ses`, the default) with the runtime's AWS
+  credentials, or for a runtime of one's own to the log (`log`, refused with open sign-up on a public URL).
+- `GET /v1/tenants?login=` also finds a tenant by its password address (`email` in the result), and the
+  account export's `account.json` has it.
+
 ### Email and password sign-in; token sign-in removed
 
 - **Signing in to the console, or on the MCP consent page, with an API or operator token is gone**:

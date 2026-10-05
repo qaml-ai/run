@@ -9,7 +9,7 @@ support handles those requests when they arrive by email.
 is read (`src/account-export.ts`, `src/zip.ts`), so an export of any size holds only a history page
 or a file chunk in memory at a time:
 
-- `account.json`: the tenant id, the GitHub login or Google address it signs in with, when it was made
+- `account.json`: the tenant id, the GitHub login or Google address it signs in with, the address it signs in with a password (`email`), when it was made
 - `agents/<id>/agent.json`: each live agent's configuration (as `GET /v1/agents/:id` shows it) and schedules
 - `agents/<id>/history/<index>.json`: its whole history, a page of whole turns per file, named by the page's first message index
 - `definitions.json`, `channels.json`, `webhooks.json`, `telemetry.json`, `tokens.json`, `keys.json`, `oauth-grants.json`: as the API lists them,
@@ -28,6 +28,23 @@ node holds its newest turns), and an agent's pages must add up to its message co
 cannot be read (its node unreachable, a chunk missing) ends the export with the zip cut off before its
 central directory, so no zip reader takes it as complete; the node logs `account_export_failed`. Retry
 the export.
+
+## Email addresses and account mail
+
+The runtime keeps an email address where someone signs in with it: the Google address of a Google sign-in
+(`tenants.google_email`), and the address of a password (`tenant_passwords.email`), lowercased. Where account
+mail is configured ([Account email](account-email.md)), it also keeps, for each link it mails, the address it
+went to, the SHA-256 of the link's token (never the token) and, for a sign-up or an added password, the
+password's scrypt hash (`account_email_links`); a link lasts a day (a reset link an hour) and is deleted when
+used, replaced or swept after it expires. An address that never verifies leaves nothing else behind.
+
+Account mail goes through Amazon SES (camelRun's AWS account, us-west-2): the address, the subject and the
+link travel to SES, which keeps its own sending records and, for addresses that bounce or complain, the
+account-level suppression list. The runtime sends only what a person asked for (a sign-up, a reset, adding a
+password, or a note that the address already has an account); no marketing. Logs name the tenant and the
+kind of mail, never an address, a link or a password (`tests/log-privacy.test.ts`, `tests/email-signup.test.ts`).
+On a self-hosted runtime with the `log` provider, each link and its address are written to the log for the
+operator to pass on.
 
 ## Deletion
 
@@ -56,7 +73,7 @@ refused (409) while an automatic top-up payment is in flight.
 4. Open Stripe Checkout sessions are expired and the tenant's Stripe customers deleted. Deleting a
    customer detaches its saved cards and cannot be undone; the charges, invoices and refunds stay in
    Stripe, where accounting needs them. That is simpler and more complete than detaching each card.
-5. The remaining rows go in one transaction: API tokens, OAuth grants and tokens, provider keys, key
+5. The remaining rows go in one transaction: the password and its address, mailed links, API tokens, OAuth grants and tokens, provider keys, key
    scopes, custom providers, definitions, webhooks and their deliveries, trace export settings, idempotency answers, billing
    contacts, settings and events, Get Help requests, managed Discord bindings and setup attempts,
    storage and collection rows, and the tenant row. Platform Discord installation metadata remains independently
@@ -76,7 +93,8 @@ signup the tenant id is the GitHub login (lowercased), so that login stays on th
 tombstones keep only their ids.
 
 **Afterwards** the same GitHub account or Google `sub` signs up as a new, empty tenant (under another
-id), with no starting credit: its GitHub id's decision, or its card's check, is still recorded.
+id), with no starting credit: its GitHub id's decision, or its card's check, is still recorded. The same
+email address may sign up again as a new, empty tenant.
 
 ## Retention
 
@@ -89,7 +107,9 @@ id), with no starting credit: its GitHub id's decision, or its card's check, is 
 | A deleted volume's files | until storage collection's grace period passes (`AGENT_GC_GRACE_MS`, a day), once collection is enabled; at once on account deletion |
 | Runtime logs (`/ecs/camelai-agent-runtime`) | 30 days; ids, sizes and error classes only (see "What logs hold" in [architecture](architecture.md)) |
 | Other log groups, and the billing-email Worker's | see [infra/terraform/README.md](../../infra/terraform/README.md#log-retention) |
-| Rate limit counters (`rate_limits`: tenant ids, and client addresses as keyed hashes) | until their window (a minute, or a UTC day for sign-ups) ends, then swept within an hour; per-node request counts are in memory only |
+| Rate limit counters (`rate_limits`: tenant ids, and client addresses and email addresses as keyed hashes) | until their window (a minute, 15 minutes, an hour, or a UTC day) ends, then swept within an hour; per-node request counts are in memory only |
+| Mailed links (`account_email_links`: the address, the token's hash, a sign-up's password hash) | until used or replaced, else a day after mailing (a reset link, an hour), then swept; a tenant's go with its account |
+| Account mail at Amazon SES | SES's sending records; addresses that bounce or complain stay on the account's suppression list until removed |
 | Ledger, usage, payment and starting-credit records | kept after deletion, as above |
 | Trace export settings (`telemetry_exporters`: endpoint, sealed headers) | until the tenant clears them, or its account is deleted |
 | Spans waiting to be exported | in each node's memory only, seconds; dropped when they cannot be sent |
@@ -109,10 +129,10 @@ logs, and are dropped when the endpoint moves to another origin. Exports go thro
 
 ## Runbook: a deletion or export request by email
 
-1. **Find the account.** Ask for the GitHub login or Google address they sign in with, then
+1. **Find the account.** Ask for the GitHub login, Google address or password address they sign in with, then
    `curl -G -H "Authorization: Bearer $OPERATOR" --data-urlencode "login=<login or address>" "$RUNTIME/v1/tenants"`.
    No match: tell them there is no account for that identity.
-2. **Verify the requester.** Reply only to the address on the account (`googleEmail`), or, for a
+2. **Verify the requester.** Reply only to the address on the account (`googleEmail` or `email`), or, for a
    GitHub account, to the email on their public GitHub profile, and ask them to confirm; or have them
    sign in and do it from the console (Account page), which needs no verification. Never act on a
    request from another address.
