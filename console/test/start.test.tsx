@@ -109,6 +109,13 @@ describe("Get started", () => {
     expect(screen.getByText("Durable agents, hosted")).toBeTruthy();
   });
 
+  it("offers the no-code playground on the home itself, and takes its own URL", () => {
+    render(<GetStartedPage onboarding={onboarding()} />);
+    expect(screen.getByText("Try an agent right now")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Run" })).toBeTruthy();
+    expect(location.pathname).toBe("/console/start");
+  });
+
   it("leaves Discord out where the shared bot is off (a self-hosted runtime)", () => {
     render(<GetStartedPage onboarding={onboarding({ discord: false })} />);
     expect(screen.getAllByRole("button", { name: /^Start (with|building)/ }).map(button => button.textContent)).toEqual(["Start building"]);

@@ -80,7 +80,7 @@ export function CopyButton({ value, label = "Copy" }: { value: string; label?: s
 
 export function CodeBlock({ code, language }: { code: string; language?: string }) {
   return (
-    <div className="bg-muted relative border">
+    <div className="bg-muted relative max-w-full min-w-0 border">
       {language && <span className="text-muted-foreground absolute top-2.5 left-3 text-[10px] uppercase tracking-[0.18em]" style={PIXEL_STYLE}>{language}</span>}
       <div className="absolute top-1 right-1"><CopyButton value={code} /></div>
       <pre className="overflow-x-auto p-3 pt-7 font-mono text-xs leading-relaxed"><code>{code}</code></pre>

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ArrowLeft, Code, MessageCircle } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -10,7 +10,7 @@ import { needsStartingCredit, StartingCreditHelp } from "@/components/starting-c
 import { type Billing } from "@/lib/api";
 import { startFrom, type Start, type useOnboarding } from "@/lib/onboarding";
 import { Link } from "@/lib/router";
-import { CodePath } from "./start-code";
+import { CodePath, Playground } from "./start-code";
 import { DiscordPath } from "./start-discord";
 
 /** Before a run can work: starting credit to unlock, or a balance to top up. */
@@ -37,6 +37,12 @@ function CreditNeeded({ billing }: { billing?: Billing }) {
 export function GetStartedPage({ billing, onboarding }: { billing?: Billing; onboarding: ReturnType<typeof useOnboarding> }) {
   const [start, setStartState] = useState<Start | undefined>(() => startFrom(location.search));
   const discord = onboarding.discord.data?.enabled;
+  // Home is Get started only while an account has no agents: give it its own URL, so a first run here doesn't swap it for the agents list.
+  useEffect(() => {
+    if (location.pathname !== "/console/") return;
+    history.replaceState(null, "", `/console/start${location.search}`);
+    dispatchEvent(new PopStateEvent("popstate"));
+  }, []);
   const setStart = (next?: Start) => {
     // The path is in the URL, so a reload or a shared link opens it again; Discord's own parameters are spent.
     history.replaceState(null, "", `/console/start${next ? `?start=${next}` : ""}`);
@@ -80,6 +86,13 @@ export function GetStartedPage({ billing, onboarding }: { billing?: Billing; onb
             </Card>
           ))}
         </div>
+        <Card>
+          <CardHeader>
+            <CardTitle>Try an agent right now</CardTitle>
+            <CardDescription>No code: this runs your prompt on an agent called Playground, on your account's default model, with no tools. It bills like any run.</CardDescription>
+          </CardHeader>
+          <CardContent><Playground agents={onboarding.agents.data} onRan={() => { void onboarding.agents.reload(); void onboarding.usage.reload(); }} /></CardContent>
+        </Card>
       </div>
     </>
   );

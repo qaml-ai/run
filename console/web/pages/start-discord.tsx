@@ -100,7 +100,7 @@ export function DiscordPath({ onboarding, config }: { onboarding: ReturnType<typ
           : <>Your bot will be the <span className="text-foreground">{starter.name.replace(DISCORD_STARTER_PREFIX, "")}</span>. Pick another to switch.</>}</p>}
       </StepCard>
       <StepCard n={2} title={steps[1].label} done={added}
-        description="One Discord authorization: choose a server you manage. Camel can read and send messages only where you allow it, and never gets Administrator.">
+        description="Camel is camelRun's shared Discord bot: it answers with the starter you picked. One Discord authorization adds it to a server you manage; it reads and sends messages only where you allow it, and never gets Administrator.">
         {server ? <p className="text-sm">Camel is in <span className="font-medium">{server.guildName || server.guildId}</span>. <a className="underline underline-offset-4" href={install}>Add it to another server</a></p>
           : <div><PixelButton href={install} aria-disabled={!starterDone} className={cn(!starterDone && "pointer-events-none opacity-50")}>Add Camel to Discord</PixelButton>
             {!starterDone && <p className="text-muted-foreground mt-2 text-xs">Pick a starter first.</p>}</div>}

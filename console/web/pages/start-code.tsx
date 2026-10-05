@@ -229,12 +229,12 @@ export function CodePath({ onboarding, billing }: { onboarding: ReturnType<typeo
         <CreateKey count={onboarding.tokens.data?.length ?? 0} created={key} onCreated={token => { setKey(token); void onboarding.tokens.reload(); }} />
       </StepCard>
       <StepCard n={3} title={codeStep.label} done={codeStep.done}
-        description="Your tools are ordinary functions in your process. The runtime runs the model loop, keeps the agent's history and sandboxes code the model writes. Run it again and the agent remembers.">
+        description={<>Your tools are ordinary functions in your process. The runtime runs the model loop, keeps the agent's history and sandboxes code the model writes. Run it again and the agent remembers. The SDK is <code>@camelai/run</code> on npm and <code>camelai-run</code> on PyPI; both read your API key from <code>CAMELAI_API_KEY</code>.</>}>
         <Tabs defaultValue="typescript">
           <TabsList><TabsTrigger value="typescript">TypeScript</TabsTrigger><TabsTrigger value="python">Python</TabsTrigger><TabsTrigger value="rest">curl</TabsTrigger></TabsList>
-          <TabsContent value="typescript" className="flex flex-col gap-3 pt-3"><CodeBlock language="shell" code={code.install.typescript} /><CodeBlock language="ts" code={code.typescript} /><p className="text-muted-foreground">Node 22 or later, or Bun.</p></TabsContent>
-          <TabsContent value="python" className="flex flex-col gap-3 pt-3"><CodeBlock language="shell" code={code.install.python} /><CodeBlock language="python" code={code.python} /><p className="text-muted-foreground">Python 3.11 or later. The SDK is async.</p></TabsContent>
-          <TabsContent value="rest" className="flex flex-col gap-3 pt-3"><CodeBlock language="shell" code={code.install.rest} /><CodeBlock language="shell" code={code.rest} /></TabsContent>
+          <TabsContent value="typescript" className="flex min-w-0 flex-col gap-3 pt-3"><CodeBlock language="shell" code={code.install.typescript} /><CodeBlock language="ts" code={code.typescript} /><p className="text-muted-foreground">Node 22 or later, or Bun.</p></TabsContent>
+          <TabsContent value="python" className="flex min-w-0 flex-col gap-3 pt-3"><CodeBlock language="shell" code={code.install.python} /><CodeBlock language="python" code={code.python} /><p className="text-muted-foreground">Python 3.11 or later. The SDK is async.</p></TabsContent>
+          <TabsContent value="rest" className="flex min-w-0 flex-col gap-3 pt-3"><CodeBlock language="shell" code={code.install.rest} /><CodeBlock language="shell" code={code.rest} /></TabsContent>
         </Tabs>
       </StepCard>
       <Card>
