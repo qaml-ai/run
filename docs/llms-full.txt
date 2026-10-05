@@ -4238,6 +4238,10 @@ The console's API tokens page lists connected apps under **Connected apps**,
 where you revoke them (or `GET /v1/oauth/grants`, `DELETE
 /v1/oauth/grants/{id}`). Any API token also works, as `Authorization: Bearer`.
 
+Each registration makes a client of its own, even for the same name and
+redirect URIs, so a confidential client's secret is known only to whoever
+registered it.
+
 Each agent is also an MCP server of its own, with one tool that messages it:
 see [Agents as MCP servers](https://run.camelai.com/docs/guides/mcp-server.md).
 

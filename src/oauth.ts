@@ -14,8 +14,10 @@ import type { PublicOrigins } from "./origins.ts";
  * 7009). People sign in with the console's session and consent on a page of ours. Access tokens are opaque and act
  * for the tenant as an API token does, at /mcp and /v1, until they expire or the grant is revoked.
  *
- * Clients have no rows: a client_id is its registration, signed, and a confidential client's secret is derived
- * from its id. So registration, which anyone may do, stores nothing.
+ * Clients have no rows: a client_id is its registration, signed, and a confidential client's secret is an HMAC of
+ * its id under the server's secret. So registration, which anyone may do, stores nothing. Each registration's id
+ * carries a random nonce, so registering the same metadata again (which anyone can read from a public client_id)
+ * makes another client, never one whose secret is someone else's.
  */
 export interface OAuthOptions {
   db: Db;
@@ -40,7 +42,7 @@ const ACCESS = "aro_", REFRESH = "arr_", CODE = "arc_";
 const CACHE_MS = 10_000;
 const AUTH_METHODS = ["none", "client_secret_post", "client_secret_basic"] as const;
 type AuthMethod = typeof AUTH_METHODS[number];
-interface Client { name: string; redirectUris: string[]; method: AuthMethod }
+interface Client { name: string; redirectUris: string[]; method: AuthMethod; nonce?: string }
 export interface Grant { id: string; clientName: string; login: string | null; scope: string; createdAt: number; usedAt: number | null }
 export type OAuthPrincipal = Principal & { via: "oauth"; grantId: string; login?: string };
 
@@ -136,15 +138,16 @@ export class OAuth {
   // Clients: the registration is the id.
   private sign(payload: string, purpose: string) { return createHmac("sha256", this.options.secret).update(`oauth-${purpose}:${payload}`).digest("base64url"); }
   private clientId(client: Client) {
-    const payload = b64(JSON.stringify({ n: client.name, r: client.redirectUris, m: client.method }));
+    const payload = b64(JSON.stringify({ n: client.name, r: client.redirectUris, m: client.method, ...(client.nonce ? { i: client.nonce } : {}) }));
     return `mcp_${payload}.${this.sign(payload, "client").slice(0, 32)}`;
   }
+  /** Clients registered before ids had a nonce keep their ids and secrets; no registration makes such an id again. */
   private clientSecret(clientId: string) { return this.sign(clientId, "client-secret"); }
   private client(clientId: string | undefined): Client | undefined {
     const [, payload, signature] = /^mcp_([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]{32})$/.exec(clientId ?? "") ?? [];
     if (!payload || !same(signature, this.sign(payload, "client").slice(0, 32))) return undefined;
-    const { n, r, m } = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-    return { name: n, redirectUris: r, method: m };
+    const { n, r, m, i } = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    return { name: n, redirectUris: r, method: m, ...(i ? { nonce: i } : {}) };
   }
 
   /** Register a client (RFC 7591): anyone may, and nothing is stored. */
@@ -159,7 +162,7 @@ export class OAuth {
     if (!Array.isArray(grantTypes) || grantTypes.some(type => type !== "authorization_code" && type !== "refresh_token")) throw new OAuthError("invalid_client_metadata", "grant_types are authorization_code and refresh_token");
     if (body.response_types !== undefined && (!Array.isArray(body.response_types) || body.response_types.some((type: unknown) => type !== "code"))) throw new OAuthError("invalid_client_metadata", "response_types is [\"code\"]");
     const name = typeof body.client_name === "string" && body.client_name.trim() ? body.client_name.trim().slice(0, 100) : "An MCP client";
-    const client: Client = { name, redirectUris: uris, method };
+    const client: Client = { name, redirectUris: uris, method, nonce: randomBytes(12).toString("base64url") };
     const clientId = this.clientId(client);
     if (clientId.length > 6000) throw new OAuthError("invalid_client_metadata", "The registration is too large");
     return {
