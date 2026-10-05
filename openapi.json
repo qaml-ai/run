@@ -9097,7 +9097,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The grant is revoked: its tokens stop working within seconds. Webhooks and a trace export it set (before grants could no longer set them) keep sending, and are listed",
+            "description": "The grant is revoked: its tokens stop working at once. Webhooks and a trace export it set (before grants could no longer set them) keep sending, and are listed",
             "content": {
               "application/json": {
                 "schema": {

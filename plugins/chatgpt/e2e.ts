@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -136,6 +137,8 @@ try {
   await cleanup.close();
   const revoked = await fetch(server.revocation_endpoint, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: form({ client_id: client.client_id, client_secret: client.client_secret, token: tokens.refresh_token }) });
   const after = await fetch(resource.resource, { method: "POST", headers: { Authorization: `Bearer ${tokens.access_token}`, "Content-Type": "application/json", Accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
+  assert.equal(revoked.status, 200);
+  assert.equal(after.status, 401, "a revoked grant's access token stops working at once");
   console.log(`- revoked the grant (${revoked.status}); its access token now gets ${after.status}`);
 }
 console.log("ok");

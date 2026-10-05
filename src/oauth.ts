@@ -40,7 +40,6 @@ export const REFRESH_TOKEN_MS = 30 * 86_400_000;
 export const REFRESH_GRACE_MS = 10_000;
 const CODE_MS = 600_000;
 const ACCESS = "aro_", REFRESH = "arr_", CODE = "arc_";
-const CACHE_MS = 10_000;
 const AUTH_METHODS = ["none", "client_secret_post", "client_secret_basic"] as const;
 type AuthMethod = typeof AUTH_METHODS[number];
 interface Client { name: string; redirectUris: string[]; method: AuthMethod; nonce?: string }
@@ -79,7 +78,6 @@ class OAuthError extends Error {
 
 export class OAuth {
   private readonly options: OAuthOptions;
-  private readonly cache = new Map<string, { principal: OAuthPrincipal; until: number }>();
   private swept = 0;
   constructor(options: OAuthOptions) { this.options = options; }
 
@@ -110,15 +108,10 @@ export class OAuth {
   async authenticate(authorization: string | undefined): Promise<OAuthPrincipal | undefined> {
     if (!authorization?.startsWith(`Bearer ${ACCESS}`)) return undefined;
     const hash = sha(authorization.slice(7));
-    const cached = this.cache.get(hash);
-    if (cached && cached.until > Date.now()) return cached.principal;
     const row = (await this.options.db.query(
       "select g.id, g.tenant, g.login, t.expires_at from oauth_tokens t join oauth_grants g on g.id = t.grant_id where t.sha256 = $1 and t.kind = 'access'", [hash])).rows[0];
     if (!row || Number(row.expires_at) <= Date.now() || !await this.options.accounts.exists(row.tenant)) return undefined;
-    const principal: OAuthPrincipal = { tenant: row.tenant, via: "oauth", grantId: row.id, ...(row.login ? { login: row.login } : {}) };
-    if (this.cache.size > 10_000) this.cache.clear();
-    this.cache.set(hash, { principal, until: Math.min(Date.now() + CACHE_MS, Number(row.expires_at)) });
-    return principal;
+    return { tenant: row.tenant, via: "oauth", grantId: row.id, ...(row.login ? { login: row.login } : {}) };
   }
 
   /** The clients a tenant has let act for it. */
@@ -127,14 +120,10 @@ export class OAuth {
     return rows.map(row => ({ id: row.id, clientName: row.client_name, login: row.login, scope: row.scope, createdAt: Number(row.created_at), usedAt: row.used_at === null ? null : Number(row.used_at) }));
   }
 
-  /** Revoke a grant: its tokens stop working at once on this node, and within seconds on others. */
+  /** Revoke a grant: its tokens stop working at once, on every node. */
   async revoke(tenant: string, id: string) {
-    const deleted = (await this.options.db.query("delete from oauth_grants where id = $1 and tenant = $2", [id, tenant])).rowCount! > 0;
-    this.forget(id);
-    return deleted;
+    return (await this.options.db.query("delete from oauth_grants where id = $1 and tenant = $2", [id, tenant])).rowCount! > 0;
   }
-
-  private forget(grantId: string) { for (const [hash, entry] of this.cache) if (entry.principal.grantId === grantId) this.cache.delete(hash); }
 
   // Clients: the registration is the id.
   private sign(payload: string, purpose: string) { return createHmac("sha256", this.options.secret).update(`oauth-${purpose}:${payload}`).digest("base64url"); }
@@ -277,7 +266,6 @@ export class OAuth {
         if (used?.data?.successor && Date.now() - Number(used.used_at) <= REFRESH_GRACE_MS) return unseal(presented, used.data.successor);
         // Past it, a used refresh token is a copy someone kept: end the grant it belongs to.
         await this.options.db.query("delete from oauth_grants where id = $1", [current.grant_id]);
-        this.forget(current.grant_id);
         throw new OAuthError("invalid_grant", "The refresh token is unknown, used or revoked");
       }
       default: throw new OAuthError("unsupported_grant_type", "grant_type is authorization_code or refresh_token");
@@ -331,7 +319,7 @@ export class OAuth {
         const params = await form(c);
         this.authenticateClient(c, params);
         const row = (await this.options.db.query("select grant_id from oauth_tokens where sha256 = $1 and kind in ('access', 'refresh')", [sha(params.get("token") ?? "")])).rows[0];
-        if (row?.grant_id) { await this.options.db.query("delete from oauth_grants where id = $1", [row.grant_id]); this.forget(row.grant_id); }
+        if (row?.grant_id) await this.options.db.query("delete from oauth_grants where id = $1", [row.grant_id]);
         return c.body(null, 200, open);
       } catch (error) { return oauthError(c, error); }
     });

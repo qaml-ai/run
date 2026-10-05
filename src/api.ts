@@ -688,7 +688,7 @@ export function api(context: ApiContext) {
     async c => json(c, 200, await oauth().grants(c.var.principal.tenant)));
   /** What a revoked credential leaves sending the tenant's data, for it to review; none where webhooks are off. */
   const left = async (tenant: string, by: string) => context.webhooks && accounts.canStoreKeys ? await context.webhooks.setBy(tenant, by) : [];
-  route(createRoute({ method: "delete", path: "/v1/oauth/grants/{id}", request: { params: z.object({ id: z.string() }) }, responses: { 200: reply("The grant is revoked: its tokens stop working within seconds. Webhooks and a trace export it set (before grants could no longer set them) keep sending, and are listed", schema.Revoked) } }), async c => {
+  route(createRoute({ method: "delete", path: "/v1/oauth/grants/{id}", request: { params: z.object({ id: z.string() }) }, responses: { 200: reply("The grant is revoked: its tokens stop working at once. Webhooks and a trace export it set (before grants could no longer set them) keep sending, and are listed", schema.Revoked) } }), async c => {
     if (!await oauth().revoke(c.var.principal.tenant, c.req.param("id")!)) throw new HttpError(404, "Unknown grant");
     return json(c, 200, { revoked: true, left: await left(c.var.principal.tenant, `oauth:${c.req.param("id")}`) });
   });

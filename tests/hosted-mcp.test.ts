@@ -253,6 +253,13 @@ test("MCP clients sign in with OAuth: registration, consent, PKCE, rotating refr
   assert.equal((await fetch(`${r.base}/mcp`, { method: "POST", headers: { Authorization: `Bearer ${third.access_token}` } })).status, 401);
   assert.equal((await (await exchange({ grant_type: "refresh_token", refresh_token: third.refresh_token })).json()).error, "invalid_grant");
 
+  // A grant revoked by another node (straight in the database) stops working here at once, even right after a use.
+  const code4 = new URL((await decide("allow")).headers.get("location")!).searchParams.get("code")!;
+  const fourth = await (await exchange({ grant_type: "authorization_code", code: code4, redirect_uri: REDIRECT, code_verifier: verifier })).json();
+  assert.equal((await r.call("/v1/me", { token: fourth.access_token })).status, 200);
+  await r.db.query("delete from oauth_grants");
+  assert.equal((await r.call("/v1/me", { token: fourth.access_token })).status, 401, "no node keeps honoring a revoked grant");
+
   // A confidential client must present its secret.
   const confidential = await (await fetch(`${r.base}/oauth/register`, { method: "POST", body: JSON.stringify({ client_name: "Server app", redirect_uris: ["https://app.example/cb"] }) })).json();
   assert.equal(confidential.token_endpoint_auth_method, "client_secret_basic");
