@@ -232,7 +232,7 @@ export class Accounts {
     for (let attempt = 0; attempt < 3; attempt++) {
       const candidate = `u-${randomBytes(8).toString("hex")}`;
       if (this.tenants.has(candidate)) continue;
-      const row = (await sql.query("insert into tenants (id, created_at) select $1, $2 where not exists (select 1 from account_deletions where tenant = $1) on conflict do nothing returning id", [candidate, Date.now()])).rows[0];
+      const row = (await sql.query("insert into tenants (id, email_signup, created_at) select $1, true, $2 where not exists (select 1 from account_deletions where tenant = $1) on conflict do nothing returning id", [candidate, Date.now()])).rows[0];
       if (row) return row.id as string;
     }
     throw new Error("No tenant id is free; try again");

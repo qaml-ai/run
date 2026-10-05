@@ -4,12 +4,12 @@ import type { Sql } from "./db.ts";
 export interface AdminDay { day: string; signups: number; activeTenants: number; responses: number; cost: number; platformCost: number }
 /** A recent sign-up and how far it got. Amounts are micro-USD, as in the credit ledger; costs are USD. */
 export interface AdminSignup {
-  tenant: string; github: string | null; googleEmail: string | null; signIn: "github" | "google" | "operator" | null;
+  tenant: string; github: string | null; googleEmail: string | null; signIn: "github" | "google" | "email" | "operator" | null;
   createdAt: number; deleted: boolean; tokens: number; agents: number; responses: number; cost: number; balance: number; purchased: number;
 }
 export interface AdminStats {
   days: number;
-  signups: { total: number; last24h: number; last7d: number; last30d: number; deleted: number; github: number; google: number; operator: number };
+  signups: { total: number; last24h: number; last7d: number; last30d: number; deleted: number; github: number; google: number; email: number; operator: number };
   /** Of the live self-serve tenants, how many got to each step. */
   activation: { tenants: number; withToken: number; withAgent: number; withUsage: number; purchased: number };
   agents: { live: number; tenants: number };
@@ -35,7 +35,8 @@ export async function adminStats(db: Sql, options: { days: number; recent: numbe
         count(*) filter (where t.created_at > $1) last24h, count(*) filter (where t.created_at > $2) last7d, count(*) filter (where t.created_at > $3) last30d,
         count(d.tenant) deleted,
         count(*) filter (where d.tenant is null and (t.github_id is not null or t.github is not null)) github,
-        count(*) filter (where d.tenant is null and t.google_sub is not null) google
+        count(*) filter (where d.tenant is null and t.google_sub is not null) google,
+        count(*) filter (where d.tenant is null and t.email_signup) email
       from tenants t left join account_deletions d on d.tenant = t.id`, [now - DAY_MS, now - 7 * DAY_MS, now - 30 * DAY_MS]),
     db.query(`
       select count(*) tenants,
@@ -54,7 +55,7 @@ export async function adminStats(db: Sql, options: { days: number; recent: numbe
       from generate_series($1::date, $2::date, interval '1 day') as series(day) left join usage u on u.day = series.day::date
       group by series.day order by series.day`, [since, today, DAY_MS]),
     db.query(`
-      select t.id, t.github, t.google_email, (t.github_id is not null or t.github is not null) as by_github, t.google_sub is not null as by_google, t.created_at, d.tenant is not null as deleted,
+      select t.id, t.github, t.google_email, (t.github_id is not null or t.github is not null) as by_github, t.google_sub is not null as by_google, t.email_signup as by_email, t.created_at, d.tenant is not null as deleted,
         (select count(*) from api_tokens k where k.tenant = t.id) tokens,
         (select count(*) from agents a where a.tenant = t.id and not a.revoked) agents,
         (select coalesce(sum(responses), 0) from usage u where u.tenant = t.id) responses,
@@ -69,7 +70,7 @@ export async function adminStats(db: Sql, options: { days: number; recent: numbe
     days: options.days,
     signups: {
       total: n(s.total), last24h: n(s.last24h), last7d: n(s.last7d), last30d: n(s.last30d), deleted: n(s.deleted),
-      github: n(s.github), google: n(s.google), operator: n(s.total) - n(s.deleted) - n(s.github) - n(s.google),
+      github: n(s.github), google: n(s.google), email: n(s.email), operator: n(s.total) - n(s.deleted) - n(s.github) - n(s.google) - n(s.email),
     },
     activation: { tenants: n(a.tenants), withToken: n(a.with_token), withAgent: n(a.with_agent), withUsage: n(a.with_usage), purchased: n(a.purchased) },
     agents: { live: n(agents.rows[0].live), tenants: n(agents.rows[0].tenants) },
@@ -78,7 +79,7 @@ export async function adminStats(db: Sql, options: { days: number; recent: numbe
     // A deleted account's identity columns are cleared at once (account-deletion.ts), so it shows by id only.
     recent: recent.rows.map(row => ({
       tenant: row.id, github: row.github, googleEmail: row.google_email,
-      signIn: row.deleted ? null : row.by_github ? "github" : row.by_google ? "google" : "operator",
+      signIn: row.deleted ? null : row.by_github ? "github" : row.by_google ? "google" : row.by_email ? "email" : "operator",
       createdAt: n(row.created_at), deleted: row.deleted, tokens: n(row.tokens), agents: n(row.agents),
       responses: n(row.responses), cost: n(row.cost), balance: n(row.balance), purchased: n(row.purchased),
     })),

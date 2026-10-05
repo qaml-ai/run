@@ -75,6 +75,7 @@ test("the admin site answers only on its hostname, to people Cloudflare Access s
   assert.equal(stats.signups.total, 2);
   assert.equal(stats.signups.last24h, 2);
   assert.equal(stats.signups.operator, 2);
+  assert.equal(stats.signups.email, 0);
   assert.equal(stats.daily.at(-1).signups, 2);
   assert.ok(stats.daily.at(-1).responses >= 1);
   assert.deepEqual(stats.activation, { tenants: 2, withToken: 2, withAgent: 1, withUsage: 1, purchased: 0 });

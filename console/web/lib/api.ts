@@ -70,13 +70,13 @@ export interface Me { tenant: string; via: "operator" | "token" | "console" | "o
 export interface AdminStats {
   viewer: string;
   days: number;
-  signups: { total: number; last24h: number; last7d: number; last30d: number; deleted: number; github: number; google: number; operator: number };
+  signups: { total: number; last24h: number; last7d: number; last30d: number; deleted: number; github: number; google: number; email: number; operator: number };
   activation: { tenants: number; withToken: number; withAgent: number; withUsage: number; purchased: number };
   agents: { live: number; tenants: number };
   purchases: { count: number; buyers: number; amount: number };
   daily: { day: string; signups: number; activeTenants: number; responses: number; cost: number; platformCost: number }[];
   recent: {
-    tenant: string; github: string | null; googleEmail: string | null; signIn: "github" | "google" | "operator" | null;
+    tenant: string; github: string | null; googleEmail: string | null; signIn: "github" | "google" | "email" | "operator" | null;
     createdAt: number; deleted: boolean; tokens: number; agents: number; responses: number; cost: number; balance: number; purchased: number;
   }[];
 }

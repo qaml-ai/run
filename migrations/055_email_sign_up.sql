@@ -24,3 +24,6 @@ create index account_email_links_expires on account_email_links (expires_at);
 
 -- A sign-up or reset for a Google account's address mails its owner to sign in with Google instead (no second account).
 create index tenants_google_email on tenants (lower(google_email)) where google_email is not null;
+
+-- Which tenants an email sign-up made (Accounts.createEmailTenant), so they are told apart from ones an operator made.
+alter table tenants add column email_signup boolean not null default false;

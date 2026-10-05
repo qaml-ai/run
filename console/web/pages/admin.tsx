@@ -32,7 +32,7 @@ export function AdminPage() {
       {!data ? <Skeleton className="h-64 w-full" /> : (
         <>
           <Stats items={[
-            { label: "Sign-ups", value: formatNumber(data.signups.total), extra: <Sub>{data.signups.github} GitHub · {data.signups.google} Google · {data.signups.operator} operator{data.signups.deleted ? ` · ${data.signups.deleted} deleted` : ""}</Sub> },
+            { label: "Sign-ups", value: formatNumber(data.signups.total), extra: <Sub>{data.signups.github} GitHub · {data.signups.google} Google · {data.signups.email} email · {data.signups.operator} operator{data.signups.deleted ? ` · ${data.signups.deleted} deleted` : ""}</Sub> },
             { label: "Last 24 hours", value: formatNumber(data.signups.last24h) },
             { label: "Last 7 days", value: formatNumber(data.signups.last7d) },
             { label: "Last 30 days", value: formatNumber(data.signups.last30d) },

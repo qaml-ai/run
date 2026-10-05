@@ -92,6 +92,9 @@ test("email sign-up: a link to finish it with the chosen password makes the tena
   assert.equal(verified.status, 200);
   const tenant = verified.json.tenant as string;
   assert.match(tenant, /^u-[a-f0-9]{16}$/, "a neutral id, nothing of the address in it");
+  const { adminStats } = await import("../src/admin-stats.ts");
+  const stats = await adminStats(r.db, { days: 1, recent: 5 });
+  assert.deepEqual([stats.signups.email, stats.signups.operator, stats.recent[0].signIn], [1, 0, "email"], "the admin site counts it as an email sign-up");
   const who = (await r.me(verified.cookie!)).json;
   assert.deepEqual([who.tenant, who.via, who.login, who.signIn], [tenant, "console", "ada@example.test", "password"]);
 
