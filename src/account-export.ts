@@ -59,7 +59,8 @@ export async function* exportAccount(options: ExportOptions, tenant: string): As
   const zip = new ZipWriter();
   const created = (await accounts.db.query("select created_at from tenants where id = $1", [tenant])).rows[0]?.created_at;
   yield* zip.file("README.txt", README);
-  yield* zip.file("account.json", json({ tenant, login: await accounts.identity(tenant) ?? null, createdAt: created === undefined ? null : Number(created), exportedAt: new Date().toISOString() }));
+  const email = (await accounts.db.query("select email from tenant_passwords where tenant = $1", [tenant])).rows[0]?.email ?? null;
+  yield* zip.file("account.json", json({ tenant, login: await accounts.identity(tenant) ?? null, email, createdAt: created === undefined ? null : Number(created), exportedAt: new Date().toISOString() }));
 
   for (let after = ""; ;) {
     const { rows } = await accounts.db.query(`
