@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ErrorAlert } from "@/components/common";
+import { ErrorAlert, LearnMore } from "@/components/common";
 import { needsStartingCredit, StartingCreditHelp } from "@/components/starting-credit";
 import { api, formatMicros, formatNumber, type Billing, type BusyAgents, type LedgerEntry, type LedgerKind } from "@/lib/api";
 
@@ -118,7 +118,7 @@ export function BillingPage({ state }: { state: BillingState }) {
     catch (e) { setError((e as Error).message); } finally { setLoading(false); }
   }
   return <div className="mx-auto max-w-[760px]">
-    <header className="mb-8"><div className="flex flex-wrap items-center justify-between gap-4"><h1 className="text-2xl font-semibold tracking-tight">Billing</h1>{data?.billing === "prepaid" && data.checkout && <div className="flex flex-wrap gap-2">{state.payment.data?.portal && state.payment.data.customer && <Button variant="outline" disabled={state.busy} onClick={() => void state.portal("manage")}>Manage billing ↗</Button>}<Button onClick={() => state.setDialog("add")}><Plus />Add credit</Button></div>}</div><p className="text-muted-foreground mt-2 text-sm">Prepaid credit for model usage, agent time and storage. {data && <button className="text-foreground underline underline-offset-4" onClick={() => setRates(true)}>Rates</button>}</p></header>
+    <header className="mb-8"><div className="flex flex-wrap items-center justify-between gap-4"><h1 className="text-2xl font-semibold tracking-tight">Billing</h1>{data?.billing === "prepaid" && data.checkout && <div className="flex flex-wrap gap-2">{state.payment.data?.portal && state.payment.data.customer && <Button variant="outline" disabled={state.busy} onClick={() => void state.portal("manage")}>Manage billing ↗</Button>}<Button onClick={() => state.setDialog("add")}><Plus />Add credit</Button></div>}</div><p className="text-muted-foreground mt-2 text-sm">Prepaid credit for model usage, agent time and storage. {data && <button className="text-foreground underline underline-offset-4" onClick={() => setRates(true)}>Rates</button>} <LearnMore page="pricing" /></p></header>
     <ErrorAlert error={billing.error ?? state.error ?? state.payment.error ?? error} />
     {state.notice && <p role="status" className="bg-muted mb-5 p-3 text-sm">{state.notice} <button className="underline" onClick={() => state.setNotice(undefined)}>Dismiss</button></p>}
     {returned && <p role="status" className="bg-muted mb-5 p-3 text-sm">{returned === "cancelled" ? "Checkout cancelled. Nothing was charged." : arrived ? "Credit added. Your new balance is below." : gaveUp ? "Stripe hasn't confirmed the payment yet. Your credit will appear when it does." : "Confirming payment. Your credit appears as soon as Stripe confirms it."} <button className="underline" onClick={dismiss}>Dismiss</button></p>}

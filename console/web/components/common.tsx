@@ -1,5 +1,5 @@
 import { Component, useState, type ReactNode } from "react";
-import { AlertCircle, AlertTriangle, Check, Copy } from "lucide-react";
+import { AlertCircle, AlertTriangle, ArrowUpRight, Check, Copy } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
@@ -7,15 +7,21 @@ import {
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { PIXEL_STYLE, StatusPanel } from "@/components/brand";
+import { docsUrl, type DocsPage } from "@/lib/docs";
 import { Link } from "@/lib/router";
 import { cn } from "@/lib/utils";
 
-export function PageHeader({ title, description, actions }: { title: string; description?: ReactNode; actions?: ReactNode }) {
+/** A link to the docs page about what a page shows; it opens beside the console. */
+export function LearnMore({ page, children = "Learn more" }: { page: DocsPage; children?: ReactNode }) {
+  return <a href={docsUrl(page)} target="_blank" rel="noreferrer" className="text-foreground inline-flex items-center gap-0.5 whitespace-nowrap underline underline-offset-4">{children}<ArrowUpRight className="size-3" aria-hidden="true" /></a>;
+}
+
+export function PageHeader({ title, description, actions, docs }: { title: string; description?: ReactNode; actions?: ReactNode; docs?: DocsPage }) {
   return (
     <div className="flex flex-wrap items-start justify-between gap-4 pb-6">
       <div className="min-w-0">
         <h1 className="text-2xl font-semibold">{title}</h1>
-        {description && <p className="text-muted-foreground mt-1 text-sm">{description}</p>}
+        {(description || docs) && <p className="text-muted-foreground mt-1 text-sm">{description}{docs && <>{description && " "}<LearnMore page={docs} /></>}</p>}
       </div>
       {actions && <div className="flex items-center gap-2">{actions}</div>}
     </div>
@@ -104,12 +110,14 @@ export function ConfirmButton({ label, title, description, confirm, onConfirm, v
   );
 }
 
-export function EmptyState({ icon, title, children }: { icon: ReactNode; title: string; children?: ReactNode }) {
+/** An empty list: what the thing is, and the one action to take (`action`). */
+export function EmptyState({ icon, title, children, action }: { icon: ReactNode; title: string; children?: ReactNode; action?: ReactNode }) {
   return (
     <div className="text-muted-foreground flex flex-col items-center gap-2 rounded-lg border border-dashed px-6 py-12 text-center">
       <div className="[&_svg]:size-6">{icon}</div>
       <p className="text-foreground text-sm font-medium">{title}</p>
       {children && <div className="max-w-md text-sm">{children}</div>}
+      {action && <div className="mt-2 flex flex-wrap justify-center gap-2">{action}</div>}
     </div>
   );
 }

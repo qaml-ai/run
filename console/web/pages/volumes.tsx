@@ -59,13 +59,13 @@ export function VolumesPage() {
   return (
     <>
       <PageHeader
-        title="Volumes"
+        title="Volumes" docs="files"
         description="Durable file storage. Agents mount volumes (their workspace is one); attachments and files agents write live here."
         actions={<Button size="sm" onClick={() => setCreating(true)}><Plus />New volume</Button>}
       />
       <ErrorAlert error={volumes.error} />
       {volumes.loading && !volumes.data ? <Skeleton className="h-40 w-full" />
-        : volumes.data?.length === 0 ? <EmptyState icon={<HardDrive />} title="No volumes yet">Agents get a workspace volume when they are created, or make one here.</EmptyState>
+        : volumes.data?.length === 0 ? <EmptyState icon={<HardDrive />} title="No volumes yet" action={<Button size="sm" onClick={() => setCreating(true)}><Plus />New volume</Button>}>A volume is durable file storage. Every agent gets a workspace volume when it is made; make one here to share files between agents.</EmptyState>
         : volumes.data && (
           <div className="bg-card border">
             <Table>

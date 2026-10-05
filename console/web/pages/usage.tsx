@@ -3,8 +3,10 @@ import { BarChart3 } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorAlert, PageHeader, Stats } from "@/components/common";
 import { formatCost, formatNumber, useApi, type Usage } from "@/lib/api";
+import { Link } from "@/lib/router";
 
 export function UsagePage() {
   const [days, setDays] = useState("30");
@@ -12,7 +14,7 @@ export function UsagePage() {
   const totals = usage.data?.totals;
   return (
     <>
-      <PageHeader title="Usage" description="Model and tool usage from your agents. Model costs use provider reports when available and otherwise list-price estimates. Billing includes applicable provider credit funding costs."
+      <PageHeader title="Usage" docs="pricing" description="Model and tool usage from your agents. Model costs use provider reports when available and otherwise list-price estimates. Billing includes applicable provider credit funding costs."
         actions={
           <Select value={days} onValueChange={setDays}>
             <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
@@ -33,7 +35,7 @@ export function UsagePage() {
             { label: "Output tokens", value: formatNumber(totals!.output) },
             { label: "Usage cost", value: formatCost(totals!.cost) },
           ]} />
-          {usage.data.days.length === 0 ? <EmptyState icon={<BarChart3 />} title="No usage in this period" /> : (
+          {usage.data.days.length === 0 ? <EmptyState icon={<BarChart3 />} title="No usage in this period" action={<Button size="sm" variant="outline" asChild><Link to="start">Run an agent</Link></Button>}>Each model response your agents make shows here, with its tokens and cost.</EmptyState> : (
             <div className="bg-card border">
               <Table>
                 <TableHeader>

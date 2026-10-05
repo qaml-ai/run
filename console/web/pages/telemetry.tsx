@@ -88,7 +88,7 @@ export function TelemetryPage({ me }: { me: Pick<Me, "canStoreKeys"> }) {
 
   return (
     <>
-      <PageHeader title="Telemetry" description="Export your agents' runs as OpenTelemetry traces to your own backend: LangSmith, Langfuse, Honeycomb, Datadog, Grafana or any OTLP/HTTP collector."
+      <PageHeader title="Telemetry" docs="observability" description="Export your agents' runs as OpenTelemetry traces to your own backend: LangSmith, Langfuse, Honeycomb, Datadog, Grafana or any OTLP/HTTP collector."
         actions={current && <>
           <Button size="sm" variant="outline" onClick={() => void sendTest()} disabled={testing}>{testing ? <Loader2 className="animate-spin" /> : <Send />}Send test span</Button>
           <ConfirmButton label="Remove" icon={<Trash2 />} title="Stop exporting traces?" confirm="Remove telemetry"

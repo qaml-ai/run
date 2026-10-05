@@ -76,7 +76,7 @@ export function ModelsPage({ me }: { me: Me }) {
   const shown = showAll ? supported : supported.filter(provider => FEATURED.includes(provider.id) || provider.key);
   return (
     <>
-      <PageHeader title="Models & keys" description="Add a key for each provider you want to use. Agents in your tenant call models with your keys." />
+      <PageHeader title="Models & keys" docs="models-and-keys" description="Add a key for each provider you want to use. Agents in your account call models with your keys." />
       <ErrorAlert error={providers.error ?? error} />
       {!me.canStoreKeys && <ErrorAlert title="Keys cannot be stored" error="This runtime has no key encryption configured. Ask an admin to set AGENT_SECRETS_KEY." />}
       <section className="mb-10">

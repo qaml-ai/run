@@ -205,11 +205,11 @@ export function DefinitionsPage() {
   const [error, setError] = useState<string>();
   return (
     <>
-      <PageHeader title="Definitions" description="Reusable agent configurations: model, prompt and tools. Agents and channels are made from them."
+      <PageHeader title="Definitions" docs="definitions" description="Reusable agent configurations: model, prompt and tools. Agents and channels are made from them."
         actions={<Button size="sm" onClick={() => setEditing("new")}><Plus />New definition</Button>} />
       <ErrorAlert error={definitions.error ?? error} />
       {!definitions.data ? <Skeleton className="h-32 w-full" /> : definitions.data.length === 0 ? (
-        <EmptyState icon={<FileCog />} title="No definitions">Create one to make agents with the same configuration from your app or a channel.</EmptyState>
+        <EmptyState icon={<FileCog />} title="No definitions" action={<Button size="sm" onClick={() => setEditing("new")}><Plus />New definition</Button>}>A definition is a reusable model, prompt and tools. Your app makes agents from it, and channels answer with it; change it once, and every agent made from it follows.</EmptyState>
       ) : (
         <div className="bg-card border">
           <Table>

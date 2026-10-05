@@ -116,7 +116,7 @@ function DeleteAccountDialog({ tenant, onClose }: { tenant: string; onClose: () 
           <DialogHeader>
             <DialogTitle>Delete your account?</DialogTitle>
             <DialogDescription>
-              This deletes every agent and its history, your volumes and files, definitions, channels, webhooks, API tokens,
+              This deletes every agent and its history, your volumes and files, definitions, channels, webhooks, API keys,
               connected apps and saved keys, and your saved payment cards. It cannot be undone.
             </DialogDescription>
           </DialogHeader>
@@ -144,8 +144,8 @@ function SignOutEverywhere() {
     <section className="bg-card mb-6 border p-5">
       <h2 className="text-base font-semibold">Sign out everywhere</h2>
       <p className="text-muted-foreground mt-1 mb-4 max-w-2xl text-sm">
-        Ends every console session of this account, on every browser and device, including this one. API tokens and connected apps keep working;
-        revoke those under API tokens.
+        Ends every console session of this account, on every browser and device, including this one. API keys and connected apps keep working;
+        revoke those under API keys.
       </p>
       <ErrorAlert error={error} />
       <Button size="sm" variant="outline" disabled={busy} onClick={async () => {
@@ -161,7 +161,7 @@ export function AccountPage({ me }: { me: Pick<Me, "tenant"> }) {
   const [deleting, setDeleting] = useState(false);
   return (
     <>
-      <PageHeader title="Account" description="Take a copy of your data, or delete your account." />
+      <PageHeader title="Account" description="Take a copy of your data, or delete your account." docs="export" />
       <div className="text-muted-foreground mb-6 flex flex-wrap items-center gap-2 text-xs">
         <span>Account ID</span><code className="text-foreground font-mono">{me.tenant}</code><CopyButton value={me.tenant} label="Copy account ID" />
       </div>
