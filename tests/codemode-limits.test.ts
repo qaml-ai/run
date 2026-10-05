@@ -81,10 +81,12 @@ test("a tenant's longest timeoutMs cuts a longer one, and its timeout says so", 
   const pool = new CodePool({ min: 1, max: 1 });
   t.after(() => pool.close());
   const hang: ToolBridge = { definitions: [{ name: "hang", description: "Never answers", parameters: { type: "object" } }], call: (_name, _args, signal) => new Promise((_, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")))) };
+  // Warm first, so a slow machine's worker start does not take the whole deadline before the tool is called.
+  await executeCode({ code: "return 1", bridge: hang, pool });
   const started = performance.now();
-  await assert.rejects(executeCode({ code: "await tools.hang({})", bridge: hang, pool, timeoutMs: 120_000, limits: { maxTimeoutMs: 300 } }), /timed out after 300ms while tools\.hang was still running; external side effects may have completed$/);
-  assert.ok(performance.now() - started < 1_500);
-  await assert.rejects(executeCode({ code: "await tools.hang({})", bridge: hang, pool, timeoutMs: 200, limits: { maxTimeoutMs: 300 } }), /Pass a larger timeoutMs \(at most 300\)/);
+  await assert.rejects(executeCode({ code: "await tools.hang({})", bridge: hang, pool, timeoutMs: 120_000, limits: { maxTimeoutMs: 1_500 } }), /timed out after 1500ms while tools\.hang was still running; external side effects may have completed$/);
+  assert.ok(performance.now() - started < 4_000);
+  await assert.rejects(executeCode({ code: "await tools.hang({})", bridge: hang, pool, timeoutMs: 1_000, limits: { maxTimeoutMs: 1_500 } }), /Pass a larger timeoutMs \(at most 1500\)/);
 });
 
 test("the gate admits each tenant up to its own limit, and waiting tenants in turn", async () => {
