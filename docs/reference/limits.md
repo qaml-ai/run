@@ -115,7 +115,7 @@ reading them and sending them input do not count; only runs do.
 | Inline (base64) file bytes in one message | 4 MiB in all, decoded; upload larger ones first (`PUT …/uploads/:requestId/:name`) and attach them by path |
 | One file (upload, volume write) | 256 MiB |
 | An upload's whole request | 15 minutes (other requests: 30 s without progress in the SDKs) |
-| Image the model sees natively | 5 MiB and 8,000 pixels a side (larger ones are described in text) |
+| Image the model sees natively | 5 MiB and 8,000 pixels a side (larger ones are described in text); sent at most 1,568 pixels a side, scaled down in the request |
 | PDF the model sees natively | 16 MiB and 100 pages |
 | Files in one model request | 24 MiB and 100 images; older files past that are described in text |
 | Parsing an untrusted file for its text | 32 MiB in, 10 s, 1,000,000 characters out |

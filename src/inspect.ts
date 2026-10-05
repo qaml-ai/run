@@ -3,6 +3,7 @@ import { FILE_LIMITS } from "./limits.ts";
 import { errorText } from "./protocol.ts";
 import { sandboxProcesses } from "./codemode.ts";
 import { textual, type FileRef, type Media } from "./files.ts";
+import { imageHeader } from "./image-header.ts";
 import type { FileEntry, VolumeService } from "./volumes.ts";
 
 /**
@@ -13,18 +14,23 @@ import type { FileEntry, VolumeService } from "./volumes.ts";
  * which the launcher restarts. Without them (development) it runs on a worker thread here.
  * Either way the worker has a V8 heap limit, a deadline, and a ceiling on the process's resident
  * memory: pdf.js inflates streams into ArrayBuffers, which heap limits do not count, so a small
- * compressed "bomb" is stopped by the ceiling. Images pass through as they are: only their
- * header is read, nothing is decoded or re-encoded.
+ * compressed "bomb" is stopped by the ceiling. Inspecting an image reads only its header; an
+ * image is decoded only to scale it down for a model request (`fitImage`).
  */
 export type Inspection = { media: Media; text?: string; truncated?: boolean };
+/** An image as a model request carries it: the bytes given, or scaled down; or why it cannot be shown. */
+export type Fitted = { data: Buffer; mimeType: string; width: number; height: number } | { omitted: string };
 
 const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 const none = (reason: string): Inspection => ({ media: { kind: "none", reason } });
 
-/** Parse `bytes` on a worker thread of this process, within the limits above. */
-export function inspectHere(bytes: Uint8Array, text: boolean): Promise<unknown> {
+/** How the worker scales an image down for a model request (inspect-worker.ts). */
+const FIT = { side: FILE_LIMITS.requestImageSide, bytes: FILE_LIMITS.requestImageBytes, pixels: FILE_LIMITS.imageSide ** 2, ms: FILE_LIMITS.inspectMs };
+
+/** Parse `bytes` on a worker thread of this process, within the limits above; `fit` scales an image down for a model request. */
+export function inspectHere(bytes: Uint8Array, text: boolean, fit = false): Promise<unknown> {
   const worker = new Worker(new URL("./inspect-worker.ts", import.meta.url), {
-    workerData: { bytes, text, maxChars: FILE_LIMITS.extractedChars }, env: {},
+    workerData: { bytes, text, maxChars: FILE_LIMITS.extractedChars, ...(fit ? { fit: FIT } : {}) }, env: {},
     resourceLimits: { maxOldGenerationSizeMb: FILE_LIMITS.inspectHeapMb, maxYoungGenerationSizeMb: 32 },
   });
   const done = Promise.withResolvers<unknown>();
@@ -57,6 +63,36 @@ export async function inspect(bytes: Uint8Array, text = false): Promise<Inspecti
   const processes = sandboxProcesses();
   try { return inspection(await (processes ? processes.pick().inspect(bytes, text) : inspectHere(bytes, text))); }
   catch (error) { return none(`could not be read (${errorText(error)})`); }
+}
+
+/** Whether an image of this size and these bytes goes in a model request as it is. */
+export const fits = (width: number, height: number, bytes: number) => Math.max(width, height) <= FILE_LIMITS.requestImageSide && bytes <= FILE_LIMITS.requestImageBytes;
+
+/**
+ * An image as a model request may carry it: `bytes` as they are when their header is within
+ * `fits`, else decoded and scaled down where untrusted files are parsed (`inspect`). The same bytes
+ * always give the same output. One that cannot be (not an image a model takes, over the input,
+ * pixel or time caps, or still too large) is `omitted`, with the reason, for a placeholder.
+ */
+export async function fitImage(bytes: Buffer): Promise<Fitted> {
+  const header = imageHeader(bytes);
+  if (header && fits(header.width, header.height, bytes.length)) return { data: bytes, ...header };
+  const size = header ? `${header.width}×${header.height} px` : "not an image the model can view";
+  if (!header) return { omitted: size };
+  if (bytes.length > FILE_LIMITS.inspectBytes) return { omitted: `${size}, larger than ${FILE_LIMITS.inspectBytes} bytes` };
+  if (header.width * header.height > FIT.pixels) return { omitted: `${size}, too many pixels to scale down` };
+  const processes = sandboxProcesses();
+  let answer: any;
+  try { answer = await (processes ? processes.pick().inspect(bytes, false, true) : inspectHere(bytes, false, true)); }
+  catch (error) { return { omitted: `${size}, could not be resized (${errorText(error)})` }; }
+  // As untrusted as any answer: the bytes must be an image a model takes, as large as they say and within the caps.
+  const data = answer?.data instanceof Uint8Array ? Buffer.from(answer.data.buffer, answer.data.byteOffset, answer.data.byteLength) : undefined;
+  const scaled = data && imageHeader(data);
+  if (!data || !scaled || !["image/png", "image/jpeg"].includes(scaled.mimeType) || !fits(scaled.width, scaled.height, data.length) || scaled.mimeType !== answer.media?.mimeType) {
+    const reason = typeof answer?.media?.reason === "string" ? answer.media.reason.slice(0, 200) : undefined;
+    return { omitted: `${size}, could not be resized${reason ? ` (${reason})` : ""}` };
+  }
+  return { data, ...scaled };
 }
 
 /**

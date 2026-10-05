@@ -1,7 +1,7 @@
 import { createServer, type Socket } from "node:net";
 import { parseArgs } from "node:util";
 import { availableParallelism } from "node:os";
-import { CodePool, codeWorkers, localGuest, type Guest } from "./codemode.ts";
+import { CodePool, codeWorkers, INSPECT_FRAME_BYTES, localGuest, type Guest } from "./codemode.ts";
 import { frames } from "./sandbox-wire.ts";
 import { inspectHere } from "./inspect.ts";
 import { FILE_LIMITS, SANDBOX_LIMITS } from "./limits.ts";
@@ -71,7 +71,7 @@ function serve(socket: Socket) {
     }, () => socket.destroy());
   });
 
-  /** An untrusted file to parse (inspect.ts): its bytes follow in `data` frames, then one response. */
+  /** An untrusted file to parse (inspect.ts): its bytes follow in `data` frames; then one response, after an image's scaled-down bytes if it was to `fit`. */
   function receiveFile(params: any, reply: (message: unknown) => void, socket: Socket) {
     const size = params?.size;
     if (!Number.isSafeInteger(size) || size < 0 || size > FILE_LIMITS.inspectBytes) return void socket.destroy();
@@ -79,7 +79,12 @@ function serve(socket: Socket) {
     let received = 0;
     const run = () => {
       onData = () => socket.destroy();
-      inspectHere(bytes, params.text === true).then(result => reply({ type: "response", id: execution, result }), error => reply({ type: "response", id: execution, error: String(error) }));
+      inspectHere(bytes, params.text === true, params.fit === true).then((result: any) => {
+        // A scaled-down image's bytes go back in `data` frames before the response, as they came.
+        const data: Uint8Array | undefined = result?.data instanceof Uint8Array ? result.data : undefined;
+        if (data) for (let offset = 0; offset < data.length; offset += INSPECT_FRAME_BYTES) reply({ type: "data", data: Buffer.from(data.subarray(offset, offset + INSPECT_FRAME_BYTES)).toString("base64") });
+        reply({ type: "response", id: execution, result: data ? { ...result, data: undefined } : result });
+      }, error => reply({ type: "response", id: execution, error: String(error) }));
     };
     onData = message => {
       const data = message?.type === "data" && typeof message.data === "string" ? Buffer.from(message.data, "base64") : undefined;

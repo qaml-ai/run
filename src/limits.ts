@@ -41,6 +41,12 @@ export const FILE_LIMITS = Object.freeze({
   attachments: 20, inlineBytes: 4 * 1024 * 1024,
   /** An image the model sees natively: Anthropic's per-image cap, and the longest side any provider takes. */
   imageBytes: 5 * 1024 * 1024, imageSide: 8000,
+  /**
+   * An image as a model request carries it; a larger one is scaled down first (inspect.ts). Anthropic scales a side
+   * past 1,568 px down anyway, and refuses sides over 2,000 px once a request holds more than 20 images; base64 of
+   * the bytes stays within its 5 MB. Scaling down decodes at most `imageSide` squared pixels, within `inspectMs`.
+   */
+  requestImageSide: 1568, requestImageBytes: 3.75 * 1024 * 1024,
   /** A PDF the model sees natively (Anthropic's page cap; well under every provider's size cap). */
   documentBytes: 16 * 1024 * 1024, documentPages: 100,
   /** Across one model request: older files past these are described in text instead. */

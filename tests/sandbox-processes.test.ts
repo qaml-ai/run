@@ -13,6 +13,8 @@ import { frames, MAX_FRAME_BYTES } from "../src/sandbox-wire.ts";
 import type { ToolBridge } from "../src/protocol.ts";
 import { inspection } from "../src/inspect.ts";
 import { bombPdf, pdfBytes, PNG } from "./file-fixtures.ts";
+import sharp from "sharp";
+import { imageHeader } from "../src/image-header.ts";
 
 type Context = { after: (fn: () => unknown) => void };
 
@@ -258,6 +260,11 @@ test("a sandbox process parses files for the runtime: bytes in frames, a hostile
   assert.deepEqual(inspection(await target.inspect(large, false)), { media: { kind: "image", mimeType: "image/png", width: 2, height: 3 } });
   assert.deepEqual(inspection(await target.inspect(pdfBytes(["Parsed in the sandbox"]), true)), { media: { kind: "pdf", pages: 1 }, text: "--- Page 1 ---\nParsed in the sandbox" });
   assert.deepEqual(inspection(await target.inspect(await bombPdf(), true)), { media: { kind: "none", reason: "could not be read (it needs too much memory)" } });
+  // An image scaled down for a model request: its bytes come back in frames before the response.
+  const noise = Buffer.alloc(2400 * 1800 * 3);
+  for (let i = 0; i < noise.length; i++) noise[i] = (i * 2654435761) >>> 24;
+  const scaled = await target.inspect(await sharp(noise, { raw: { width: 2400, height: 1800, channels: 3 } }).png().toBuffer(), false, true) as { media: any; data: Buffer };
+  assert.deepEqual([scaled.media, imageHeader(scaled.data)], [{ kind: "image", mimeType: "image/jpeg", width: 1568, height: 1176 }, { mimeType: "image/jpeg", width: 1568, height: 1176 }], "noise too large as a PNG goes as a JPEG");
   assert.deepEqual(await executeCode({ code: "return 1", bridge: echo, pool: target }).then(({ cpuMs: _cpuMs, ...result }) => result), { output: ["1"], truncated: false, returned: { index: 0, json: true, truncated: false } });
   assert.equal(target.load, 0);
   // Whatever a sandbox answers is checked: a lie becomes "could not be read".

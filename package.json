@@ -53,6 +53,7 @@
     "pg": "^8.13.1",
     "postal-mime": "^4.0.0",
     "quickjs-emscripten": "0.32.0",
+    "sharp": "0.35.5",
     "sucrase": "^3.35.1",
     "typebox": "1.1.38",
     "undici": "^8.11.2",

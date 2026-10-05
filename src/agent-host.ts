@@ -20,11 +20,20 @@ import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
 import { describeFile, documentPayload, FILE_LIMITS, nativeBlock, unseen, validFileRef, type FileRef } from "./files.ts";
 import { CHUNK_BYTES, chunksOf, type HistoryChunk } from "./history-pages.ts";
 import { observeTurns, recordCodeExecution } from "./metrics.ts";
+import { fitImage, fits, type Fitted } from "./inspect.ts";
+import { imageHeader } from "./image-header.ts";
 
 /** How often an agent reads back from its log what its history backlog could not hold (see `index`). */
 const LAG_READ_MS = 60_000;
 /** How long a stopping agent waits to index its settled turns (see `index`). */
 export const HISTORY_FLUSH_MS = 5_000;
+
+/** Images one agent scales down at once for its requests (`fitImage`). */
+const FIT_CONCURRENCY = 2;
+/** A file as requests carry it: its bytes (base64; an image's type if it was scaled down), or why an image is omitted. */
+type Hydrated = { data: string; mimeType?: string } | { omitted: string };
+const hydratedSize = (value: Hydrated) => "data" in value ? value.data.length : value.omitted.length;
+const hydratedImage = (fitted: Fitted): Hydrated => "omitted" in fitted ? fitted : { data: fitted.data.toString("base64"), mimeType: fitted.mimeType };
 
 /** How a host talks to its supervisor: over IPC in its own process, or directly when inline. */
 export interface HostIO {
@@ -83,9 +92,12 @@ export function createAgentHost(hostIO: HostIO) {
   /** Messages a compaction folded into the summary during the current run, still in Pi's live state. */
   let dropped = new WeakSet<AgentMessage>();
   let summary: { state: CompactionState; message: AgentMessage } | undefined;
-  /** Files' bytes (base64) by content, least recently used first, kept between model requests. */
-  const hydrated = new Map<string, string>();
+  /** Files' bytes (base64) by content, as requests carry them, least recently used first, kept between model requests. */
+  const hydrated = new Map<string, Hydrated>();
   let hydratedBytes = 0;
+  /** Images being scaled down for requests, and those waiting to be (`scaled`). */
+  let fitting = 0;
+  const waitingToFit: (() => void)[] = [];
   /** Whether the model request being built carries a PDF, whose block the provider payload needs rewritten. */
   let documents = false;
   /** History index writes, one at a time. */
@@ -468,28 +480,63 @@ export function createAgentHost(hostIO: HostIO) {
       }));
   }
 
-  async function fileData(ref: FileRef) {
+  /** A referenced file's bytes as the request carries them: an image scaled down if it must be (`fitImage`), or why it is omitted. */
+  async function fileData(ref: FileRef): Promise<Hydrated> {
     const key = ref.chunks.join("");
     let data = hydrated.get(key);
     if (data !== undefined) hydrated.delete(key);
     else {
-      data = await io.file(ref);
-      hydratedBytes += data.length;
+      const read = await io.file(ref);
+      const media = ref.media;
+      data = media?.kind === "image" && !fits(media.width, media.height, ref.size) ? hydratedImage(await scaled(Buffer.from(read, "base64"))) : { data: read };
+      hydratedBytes += hydratedSize(data);
       for (const [old, value] of hydrated) {
         if (hydratedBytes <= FILE_LIMITS.hydratedBytes) break;
         hydrated.delete(old);
-        hydratedBytes -= value.length;
+        hydratedBytes -= hydratedSize(value);
       }
     }
     hydrated.set(key, data);
     return data;
   }
 
+  /** An image scaled down for requests (`fitImage`), a couple at a time: each decodes in a worker of its own. */
+  async function scaled(bytes: Buffer): Promise<Fitted> {
+    while (fitting >= FIT_CONCURRENCY) await new Promise<void>(resolve => waitingToFit.push(resolve));
+    fitting++;
+    try { return await fitImage(bytes); }
+    finally { fitting--; waitingToFit.shift()?.(); }
+  }
+
+  /**
+   * An image block as a request may carry it: as it is when its header is within `fits`, else scaled down,
+   * or a placeholder in its place when it cannot be. The transcript is not changed: it heals in the request.
+   */
+  async function fittedBlock(block: { type: "image"; data: string; mimeType: string }): Promise<{ type: "image"; data: string; mimeType: string } | { type: "text"; text: string }> {
+    if (block.mimeType === "application/pdf") return block;
+    // The header is near the start: a JPEG's may follow its metadata, so the whole image is decoded only when the start lacks it.
+    const header = imageHeader(Buffer.from(block.data.slice(0, 64 * 1024), "base64")) ?? (block.data.length > 64 * 1024 ? imageHeader(Buffer.from(block.data, "base64")) : undefined);
+    if (header && fits(header.width, header.height, Math.floor(block.data.length * 3 / 4))) return block;
+    const fitted = await scaled(Buffer.from(block.data, "base64"));
+    return "omitted" in fitted ? { type: "text", text: `[image omitted: ${fitted.omitted}]` } : { type: "image", data: fitted.data.toString("base64"), mimeType: fitted.mimeType };
+  }
+
+  /** Messages with their image blocks as a request may carry them (`fittedBlock`); the same messages when none needs it. */
+  async function fittedImages<T extends object>(messages: T[]): Promise<T[]> {
+    return Promise.all(messages.map(async message => {
+      const content = (message as { content?: unknown }).content;
+      if (!Array.isArray(content) || !content.some(block => block?.type === "image")) return message;
+      const fitted = await Promise.all(content.map(block => block?.type === "image" && typeof block.data === "string" && typeof block.mimeType === "string" ? fittedBlock(block) : block));
+      return fitted.every((block, index) => block === content[index]) ? message : { ...message, content: fitted };
+    }));
+  }
+
   /**
    * The model request's files: the transcript keeps references, and each becomes a line naming it
    * plus, where the model can take it, its bytes as a native block. The same references always
    * give the same request, so the provider's cached prefix holds. Past the request's file budget,
-   * older files are named but not shown.
+   * older files are named but not shown. Every image, referenced or inline, is within what any
+   * provider takes in a request of many images (`fitImage`).
    */
   async function hydrate(messages: Message[]): Promise<Message[]> {
     documents = false;
@@ -505,7 +552,7 @@ export function createAgentHost(hostIO: HostIO) {
         bytes += ref.size;
       }
     }
-    return Promise.all(messages.map(async message => {
+    return Promise.all((await fittedImages(messages)).map(async message => {
       if (!Array.isArray(message.content) || !message.content.some(block => (block.type as string) === "file")) return message;
       const content: unknown[] = [];
       for (const block of message.content as unknown as (FileRef | { type: string })[]) {
@@ -514,7 +561,9 @@ export function createAgentHost(hostIO: HostIO) {
         const kind = shown.has(ref) ? nativeBlock(ref, config.model) : undefined;
         if (!kind) { content.push({ type: "text", text: describeFile(ref, unseen(ref, config.model) ?? (nativeBlock(ref, config.model) ? "not shown, as this request holds too many files; read it to view it" : undefined)) }); continue; }
         try {
-          content.push({ type: "text", text: describeFile(ref) }, { type: "image", data: await fileData(ref), mimeType: kind === "image" && ref.media?.kind === "image" ? ref.media.mimeType : "application/pdf" });
+          const data = await fileData(ref);
+          if ("omitted" in data) { content.push({ type: "text", text: describeFile(ref, `image omitted: ${data.omitted}`) }); continue; }
+          content.push({ type: "text", text: describeFile(ref) }, { type: "image", data: data.data, mimeType: data.mimeType ?? (kind === "image" && ref.media?.kind === "image" ? ref.media.mimeType : "application/pdf") });
           if (kind === "document") documents = true;
         } catch (error) { content.push({ type: "text", text: describeFile(ref, `could not be read (${errorText(error)})`) }); }
       }

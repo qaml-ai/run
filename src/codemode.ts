@@ -277,22 +277,32 @@ export class SandboxProcess {
 
   /**
    * Parse an untrusted file here (inspect.ts): the request, then its bytes in frames of 2 MiB,
-   * answered by one response. The answer is as untrusted as the process; the caller checks it.
+   * answered by one response; for an image scaled down to `fit`, its bytes come first in frames the
+   * same way, and the result carries them as `data`. The answer is as untrusted as the process; the caller checks it.
    */
-  inspect(bytes: Uint8Array, text: boolean): Promise<unknown> {
+  inspect(bytes: Uint8Array, text: boolean, fit = false): Promise<unknown> {
     const socket = connect(this.path);
     this.load++;
     const done = Promise.withResolvers<unknown>();
     const timer = setTimeout(() => socket.destroy(new Error("the sandbox process took too long")), FILE_LIMITS.inspectMs + 2_000);
     socket.on("error", error => done.reject(error));
     socket.once("close", () => { this.load--; clearTimeout(timer); done.reject(new Error("the sandbox process closed the connection")); });
+    const data: Buffer[] = [];
+    let received = 0;
     const write = frames(socket, (message: any) => {
+      if (fit && message?.type === "data" && typeof message.data === "string") {
+        data.push(Buffer.from(message.data, "base64"));
+        received += data.at(-1)!.length;
+        if (received > FILE_LIMITS.requestImageBytes) socket.destroy();
+        return;
+      }
       if (message?.type !== "response") return void socket.destroy();
-      if (message.error !== undefined) done.reject(new Error(String(message.error).slice(0, 300))); else done.resolve(message.result);
+      if (message.error !== undefined) done.reject(new Error(String(message.error).slice(0, 300)));
+      else done.resolve(data.length && message.result && typeof message.result === "object" ? { ...message.result, data: Buffer.concat(data) } : message.result);
       socket.end();
     });
     try {
-      write({ type: "request", id: "inspect", method: "inspect", params: { size: bytes.length, text } });
+      write({ type: "request", id: "inspect", method: "inspect", params: { size: bytes.length, text, ...(fit ? { fit } : {}) } });
       for (let offset = 0; offset < bytes.length; offset += INSPECT_FRAME_BYTES) write({ type: "data", data: Buffer.from(bytes.subarray(offset, offset + INSPECT_FRAME_BYTES)).toString("base64") });
     } catch (error) { socket.destroy(error as Error); }
     return done.promise;

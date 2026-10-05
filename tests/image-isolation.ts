@@ -88,6 +88,37 @@ try {
       `process_vm_readv ${probe.native.runtime.process_vm_readv}, runtime environ ${probe.files[`/proc/${runtimePid}/environ`]}, /data ${probe.files["/data"]}`);
   }
 
+  // An image scaled down for a model request, decoded with sharp inside a confined sandbox process: its bytes come back in frames.
+  const fit = `
+    const { connect } = require("node:net");
+    const sharp = require("sharp");
+    (async () => {
+      const image = await sharp({ create: { width: 2400, height: 1800, channels: 3, background: "#3366aa" } }).png().toBuffer();
+      const socket = connect(process.argv[1]);
+      const send = message => { const body = Buffer.from(JSON.stringify(message)); const header = Buffer.alloc(4); header.writeUInt32BE(body.length); socket.write(Buffer.concat([header, body])); };
+      send({ type: "request", id: "inspect", method: "inspect", params: { size: image.length, text: false, fit: true } });
+      send({ type: "data", data: image.toString("base64") });
+      let data = Buffer.alloc(0);
+      const parts = [];
+      socket.on("data", chunk => {
+        data = Buffer.concat([data, chunk]);
+        while (data.length >= 4 && data.length >= 4 + data.readUInt32BE(0)) {
+          const message = JSON.parse(data.subarray(4, 4 + data.readUInt32BE(0)));
+          data = data.subarray(4 + data.readUInt32BE(0));
+          if (message.type === "data") { parts.push(Buffer.from(message.data, "base64")); continue; }
+          const out = Buffer.concat(parts);
+          process.stdout.write(JSON.stringify({ ...message, bytes: out.length, width: out.readUInt32BE(16), height: out.readUInt32BE(20) }));
+          socket.destroy();
+        }
+      });
+    })();`;
+  for (const index of [0, 1]) {
+    const fitted = JSON.parse(docker("exec", "-u", "node", name, "node", "-e", fit, `/run/agent-sandbox/${index}.sock`));
+    assert.equal(fitted.error, undefined, fitted.error);
+    assert.deepEqual([fitted.result.media, fitted.width, fitted.height], [{ kind: "image", mimeType: "image/png", width: 1568, height: 1176 }, 1568, 1176]);
+    console.log(`sandbox ${index}: scaled a 2400×1800 image to ${fitted.width}×${fitted.height} (${fitted.bytes} bytes) with sharp`);
+  }
+
   // js_exec end to end through the runtime, with a client tool call, and a sandbox process killed mid-execution.
   let kill = false;
   const runtime = new AgentRuntime({ url, apiKey: token });

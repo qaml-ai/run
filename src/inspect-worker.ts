@@ -1,33 +1,32 @@
 import { parentPort, workerData } from "node:worker_threads";
+import { imageHeader } from "./image-header.ts";
 
 // Parses one untrusted file: an image's format and size from its header, or a PDF's pages
-// (and text, if asked) with pdf.js. It runs in a worker the parent terminates at a deadline or
-// memory ceiling (inspect.ts), in a sandbox process when there are some. Nothing here is
-// trusted by the parent: it checks every field it gets back.
-const { bytes, text: wantText, maxChars } = workerData as { bytes: Uint8Array; text: boolean; maxChars: number };
+// (and text, if asked) with pdf.js; or decodes an image to scale it down for a model request
+// (`fit`), with sharp. It runs in a worker the parent terminates at a deadline or memory
+// ceiling (inspect.ts), in a sandbox process when there are some. Nothing here is trusted by
+// the parent: it checks every field it gets back.
+type Fit = { side: number; bytes: number; pixels: number; ms: number };
+const { bytes, text: wantText, maxChars, fit } = workerData as { bytes: Uint8Array; text: boolean; maxChars: number; fit?: Fit };
 const data = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-const at = (offset: number, text: string) => data.subarray(offset, offset + text.length).toString("latin1") === text;
 
-function image(): { mimeType: string; width: number; height: number } | undefined {
-  if (data.length >= 24 && data[0] === 0x89 && at(1, "PNG") && at(12, "IHDR")) return { mimeType: "image/png", width: data.readUInt32BE(16), height: data.readUInt32BE(20) };
-  if (data.length >= 10 && (at(0, "GIF87a") || at(0, "GIF89a"))) return { mimeType: "image/gif", width: data.readUInt16LE(6), height: data.readUInt16LE(8) };
-  if (data.length >= 30 && at(0, "RIFF") && at(8, "WEBP")) {
-    if (at(12, "VP8 ")) return { mimeType: "image/webp", width: data.readUInt16LE(26) & 0x3fff, height: data.readUInt16LE(28) & 0x3fff };
-    if (at(12, "VP8L")) { const bits = data.readUInt32LE(21); return { mimeType: "image/webp", width: (bits & 0x3fff) + 1, height: ((bits >> 14) & 0x3fff) + 1 }; }
-    if (at(12, "VP8X")) return { mimeType: "image/webp", width: data.readUIntLE(24, 3) + 1, height: data.readUIntLE(27, 3) + 1 };
-  }
-  if (data.length >= 4 && data[0] === 0xff && data[1] === 0xd8) {
-    // Walk the segments to the frame header (SOF0–SOF15, except DHT, JPG and DAC).
-    for (let offset = 2; offset + 9 < data.length;) {
-      if (data[offset] !== 0xff) return undefined;
-      const marker = data[offset + 1];
-      if (marker === 0xff) { offset++; continue; }
-      if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd9)) { offset += 2; continue; }
-      if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) return { mimeType: "image/jpeg", width: data.readUInt16BE(offset + 7), height: data.readUInt16BE(offset + 5) };
-      offset += 2 + data.readUInt16BE(offset + 2);
-    }
-  }
-  return undefined;
+/**
+ * The image as a model request may carry it (`fit`): scaled down, keeping its aspect ratio, to at most
+ * `side` pixels a side and `bytes` encoded. The same bytes always give the same output, so a provider's
+ * cached prompt prefix holds across turns: one libvips thread, no operation cache, no metadata kept. A
+ * JPEG stays a JPEG; anything else becomes a PNG (a GIF or WebP its first frame), or a JPEG on white if
+ * a PNG would be too large.
+ */
+async function fitted(found: { width: number; height: number; mimeType: string }) {
+  const { default: sharp } = await import("sharp");
+  sharp.cache(false);
+  sharp.concurrency(1);
+  const scaled = sharp(data, { limitInputPixels: fit!.pixels, failOn: "error" }).timeout({ seconds: Math.ceil(fit!.ms / 1000) })
+    .rotate().resize({ width: fit!.side, height: fit!.side, fit: "inside", withoutEnlargement: true });
+  let out = await (found.mimeType === "image/jpeg" ? scaled.clone().jpeg({ quality: 85 }) : scaled.clone().png({ compressionLevel: 6 })).toBuffer({ resolveWithObject: true });
+  if (out.data.length > fit!.bytes && found.mimeType !== "image/jpeg") out = await scaled.clone().flatten({ background: "#ffffff" }).jpeg({ quality: 80 }).toBuffer({ resolveWithObject: true });
+  if (out.data.length > fit!.bytes) throw new Error(`still over ${fit!.bytes} bytes scaled down`);
+  return { media: { kind: "image", mimeType: `image/${out.info.format}`, width: out.info.width, height: out.info.height }, data: out.data };
 }
 
 async function pdf() {
@@ -41,8 +40,9 @@ async function pdf() {
 }
 
 try {
-  const found = image();
-  parentPort!.postMessage(found ? { media: { kind: "image", ...found } } : at(0, "%PDF-") ? await pdf() : { media: { kind: "none", reason: "not an image or PDF the model can view" } });
+  const found = imageHeader(data);
+  if (fit && found && (Math.max(found.width, found.height) > fit.side || data.length > fit.bytes)) parentPort!.postMessage(await fitted(found));
+  else parentPort!.postMessage(found ? { media: { kind: "image", ...found } } : !fit && data.subarray(0, 5).toString("latin1") === "%PDF-" ? await pdf() : { media: { kind: "none", reason: `not an image${fit ? "" : " or PDF"} the model can view` } });
 } catch (error) {
   parentPort!.postMessage({ media: { kind: "none", reason: `could not be read (${String((error as Error)?.message ?? error).slice(0, 200)})` } });
 }

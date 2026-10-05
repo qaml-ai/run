@@ -42,6 +42,13 @@ itself where the model can take it:
 | PDFs | Anthropic, Google, OpenAI and OpenRouter models with image input | 16 MiB and 100 pages each |
 | Per model request | | 24 MiB and 100 files shown; older files past that are named only |
 
+An image goes to the model at most 1,568 px a side: a larger one is scaled down
+in the request (keeping its shape; the file itself is unchanged), as Anthropic
+would scale it anyway, so a conversation with many images stays within every
+provider's limits. One that cannot be scaled down is named with why instead.
+Inline images (a message's or a tool result's base64) are scaled down as they
+enter the transcript.
+
 Anything else is only named, and the model reads it with its file tools. The
 transcript keeps a reference to each file's content, never its bytes, so a file
 changed or deleted later still reads as it was when attached.
