@@ -2,14 +2,47 @@
 
 ## Limits of an execution
 
-Scripts default to a 30-second external deadline, capped at 120 seconds. The
-QuickJS interrupt handler separately allows 2 seconds spent executing guest code
-(elapsed execution time, excluding time waiting for tools). Expensive built-ins
-that do not invoke the interrupt handler are still bounded by the external
-deadline: a guest that has not unwound 250 ms after it is cancelled has its
-worker thread terminated and replaced. Every invocation has fixed 32 MiB WebAssembly memory, a 16 MiB
-QuickJS allocation limit and a 256 KiB interpreter stack limit. These are guest
-limits; each worker thread's own JavaScript heap is capped at 128 MiB.
+Scripts default to a 30-second external deadline. A tenant may ask for at most
+60 seconds (`timeoutMs`; admin tenants 120 s), unless its operator set another
+(`codeMaxTimeoutMs`, at most 120 s); a longer `timeoutMs` is cut to it.
+
+Each execution may keep its worker thread busy for 2 seconds (`codeCpuMs` per
+tenant, at most 30 s). Time waiting on tools does not count. This is enforced
+twice. The QuickJS interrupt handler stops guest code between bytecodes. The
+pool's watchdog (`src/codemode.ts`) reads the worker thread's event-loop
+utilization every 50 ms from outside it and terminates the thread at the budget
+plus 250 ms, whatever it is doing. That covers built-ins that never reach the
+interrupt handler (a long `indexOf`, a huge BigInt's digits) and preparing the
+source. Busy time is CPU time while the host has a core for the thread; on an
+oversubscribed host it also counts the wait for one, so an execution there is
+stopped sooner. A cancelled guest that has not unwound 250 ms later has its
+worker terminated and replaced too.
+
+Every invocation has fixed 32 MiB WebAssembly memory, a 16 MiB QuickJS
+allocation limit and a 256 KiB interpreter stack limit. These are guest limits;
+each worker thread's own JavaScript heap is capped at 128 MiB.
+
+Nothing the model or a tenant supplies is parsed on the runtime's own thread.
+The worker strips TypeScript (sucrase, which can take exponential time on
+hostile input) and compiles the code, under the CPU budget. On the host,
+tool-argument checks skip the tenant's `pattern` and `patternProperties`
+regular expressions, which could backtrack for hours; the tool checks those
+itself. A failed check of arguments over 16 KiB names no fields. `tools.search`
+reads at most 500 characters and 32 words of a query.
+
+**Fairness.** A node runs at most as many executions at once as it has sandbox
+workers. By default that is what 40% of the task's memory affords at 128 MiB a
+worker, at least 2 and at most 32: 6 on a 2 GB task. `AGENT_CODE_WORKERS_MAX`
+sets it. Each tenant may run 4 of them at once (2 on free credit; admin tenants
+are not limited unless their entry sets it; `codeConcurrency` per tenant).
+Executions beyond that wait for a turn, tenant by tenant in rotation, within
+their own `timeoutMs`. A busy tenant therefore delays only its own executions.
+
+**Stuck agents.** Under `process` hosting the supervisor pings each agent
+process every 5 s and kills one that leaves a ping unanswered for 30 s. A run
+still going 60 s past its time limit (`maxRunSeconds`) is aborted, and its agent
+is stopped 60 s after that. Either way the run fails, and the agent's next start
+closes the interrupted turn, as after a crash.
 
 Output defaults to 32,000 characters, capped at 128,000 and 1,024 emitted chunks.
 Each script permits 256 tool calls with at most 32 in flight; arguments are
@@ -36,11 +69,18 @@ constructors stay inside QuickJS; they never create host functions.
 Guest code is contained by layers, each assuming the one inside it failed:
 
 1. **QuickJS compiled to WebAssembly.** A worker (`src/code-worker.ts`)
-   compiles the QuickJS module once; every execution instantiates it with its
-   own fixed WASM memory, then creates a new runtime and context, and drops all
-   three when it ends. No guest state survives an execution, and one worker runs
-   one execution at a time. Guest code only ever sees the QuickJS heap, never the
-   worker's Node globals, `process.env`, modules or the filesystem.
+   compiles the QuickJS module once. It then builds one instance, runtime and
+   context in a fixed, bounded WASM memory, runs the bootstrap, and snapshots
+   that memory before any guest code runs. Every execution starts from the
+   snapshot with a fresh `Math.random` seed. When it ends, however it ends, the
+   whole memory is written back to the snapshot: the snapshot's pages where it
+   has any, and zeros everywhere else, including pages the guest grew. Globals,
+   prototypes, heap and stack therefore never carry over, and the memory holds no
+   guest's data between executions (`tests/sandbox-snapshot.test.ts`). A failure
+   outside the guest's own errors (a trap, say) drops the image, and the next
+   execution builds a new one. One worker runs one execution at a time, for any
+   tenant in turn. Guest code only ever sees the QuickJS heap, never the worker's
+   Node globals, `process.env`, modules or the filesystem.
 2. **A separate process with its own uid.** The workers run in sandbox
    processes (`src/sandbox-server.ts`, `AGENT_SANDBOX_PROCESSES`, default 2),
    not in the runtime. The image's entrypoint, `agent-launcher`
@@ -119,9 +159,10 @@ The supervisor, Pi process, tool schemas and tool implementations remain trusted
 code with OS access.
 
 The tests cover known escape patterns and limits; they are not a security audit
-or proof against engine vulnerabilities. A sandbox process serves many tenants'
-executions in turn, so an escape that persists in one would see later executions
-routed to it. Shared-VM operation still needs resource quotas around the
+or proof against engine vulnerabilities. A worker, and a sandbox process, serve
+many tenants' executions in turn. The snapshot restore removes what a guest left
+in QuickJS's memory, but an escape out of WASM into the worker could persist
+there and see later executions routed to it. Shared-VM operation still needs resource quotas around the
 sandbox, tool-specific authorization, controlled egress for tool hosts, and a
 maintained engine/security update process.
 

@@ -4,7 +4,7 @@
 app (TypeScript / Python SDK, HTTP + SSE)
   -> any runtime node --forwarded to--> the node that owns the agent
       -> agent host (Pi loop, working-set transcript, compaction, retries)
-          -> QuickJS/WASM sandbox (a fresh instance per execution, on a pool of worker threads)
+          -> QuickJS/WASM sandbox (restored from a clean snapshot for every execution, on a pool of worker threads)
               -> JSON tool calls -> back to the app's SDK callbacks
   control plane: Postgres (ownership, headers, accounts, schedules, channels, volume metadata)
   data plane: Storage (append logs and blobs, S3 in production)
@@ -193,11 +193,13 @@ dimension sets listed:
 | `model_cost` | usage events are written | `ModelCostUsd`, `ModelUsageEvents` | `Tenant`, `Provider`+`Model` |
 | `webhook_delivered` / `webhook_failed` | a delivery succeeds / fails | `WebhooksDelivered`, `WebhookDeliveryLagMs`, `WebhookAttempts` / `WebhooksFailed` | `Kind` (endpoint, usage) |
 | `webhook_backlog` | every minute, from each node (read with Maximum) | `WebhookBacklog`, `WebhookOldestPendingMs` | |
+| `code_execution` | a js_exec execution (or `execute`) ends; properties `tenant`, `timeoutMs` (what it got) and `requestedTimeoutMs` | `CodeExecutions`, `CodeDurationMs`, `CodeCpuMs` (guest CPU, when it finished) | `ErrorClass` (none, cpu_limit, guest_limit, timeout_tool, timeout_waiting_worker, timeout, aborted, worker_exited, memory, tool_limit, syntax, guest_error) |
 | `watch_refused` | an event stream subscriber is refused (429) at a limit | `WatchersRefused` | `Scope` (agent, tenant, node), `Tenant` |
 
 `ErrorClass` is one of rate_limit, overloaded, context_overflow, auth, billing, timeout,
 provider_5xx, network, runtime_restart, exception, other (none for a success). A failed
-tool call also logs `tool_failed` with the tool's name (not a metric). Run events exist
+tool call also logs `tool_failed` with the tool's name, the tenant and the error's class
+(js_exec's as for `code_execution`), never its text (not a metric). Run events exist
 only for tenants with an endpoint for them. An agent in its own process
 (`AGENT_HOSTING=process`) writes its lines to stderr. Alarms and the launch dashboard
 on them are in `infra/terraform/observability.tf`.

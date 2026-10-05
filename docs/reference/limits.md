@@ -146,8 +146,9 @@ reading them and sending them input do not count; only runs do.
 
 | Limit | Value |
 | --- | --- |
-| Wall time | 30 s by default, at most 120 s (`timeoutMs`) |
-| Guest CPU time | 2 s of executing code (time waiting on tools does not count) |
+| Wall time | 30 s by default, at most 60 s (`timeoutMs`; a longer one is cut to it). Admin tenants may ask for 120 s; an operator can set a tenant's maximum up to 120 s (`codeMaxTimeoutMs`) |
+| CPU time | 2 s of keeping its thread busy, TypeScript stripping included (time waiting on tools does not count). Enforced from outside the guest: an execution past it is stopped whatever it is doing, with `Codemode CPU limit exceeded`. An operator can set a tenant's up to 30 s (`codeCpuMs`) |
+| Executions at once | 4 per tenant on each node (2 on free credit; admin tenants are not limited unless set; `codeConcurrency`), within the node's sandbox workers. Executions past it wait their turn, tenants in rotation, within their own `timeoutMs` |
 | Memory | 32 MiB WebAssembly memory, 16 MiB QuickJS heap, 256 KiB stack |
 | Output | 32,000 characters by default, at most 128,000 (`maxOutputCharacters`); 1,024 chunks |
 | Tool calls | 256 per script, at most 32 in flight |

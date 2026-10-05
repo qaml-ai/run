@@ -335,7 +335,7 @@ A [definition](definitions.md) lists tool sources the runtime calls itself.
   `_meta["agent-runtime/timeoutMs"]`.
 - Each call has a deadline (`timeoutMs`, default 60 s, at most 20 minutes). It
   limits silence: each progress notification restarts it, up to 20 minutes in
-  all. A call from `js_exec` also ends with its execution (120 s at most), so
+  all. A call from `js_exec` also ends with its execution (60 s at most), so
   expose long tools directly.
 - Text reaches the model as it is; images, audio, blobs and text resources over
   64 KiB are saved to the agent's workspace and reach it as files. `isError`
@@ -428,7 +428,7 @@ The model can write JavaScript that calls any of its tools, in a sandbox
 (QuickJS in WebAssembly) that can reach nothing else: `await
 tools.shop__getOrder({ id })`, `Promise.all` for parallel calls, `fs` over its
 files, `tools.search(query)` to find tools in a large catalog, `tools.describe(name)`
-for a schema. Code runs for at most 120 seconds and 256 tool calls; see
+for a schema. Code runs for at most 60 seconds, 2 s of CPU and 256 tool calls; see
 [Limits](../reference/limits.md). `agent.client.execute(code)` runs code
 yourself, outside the model's history, which is handy for testing tools.
 

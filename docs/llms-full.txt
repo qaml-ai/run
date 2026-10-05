@@ -856,7 +856,7 @@ A [definition](https://run.camelai.com/docs/guides/definitions.md) lists tool so
   `_meta["agent-runtime/timeoutMs"]`.
 - Each call has a deadline (`timeoutMs`, default 60 s, at most 20 minutes). It
   limits silence: each progress notification restarts it, up to 20 minutes in
-  all. A call from `js_exec` also ends with its execution (120 s at most), so
+  all. A call from `js_exec` also ends with its execution (60 s at most), so
   expose long tools directly.
 - Text reaches the model as it is; images, audio, blobs and text resources over
   64 KiB are saved to the agent's workspace and reach it as files. `isError`
@@ -949,7 +949,7 @@ The model can write JavaScript that calls any of its tools, in a sandbox
 (QuickJS in WebAssembly) that can reach nothing else: `await
 tools.shop__getOrder({ id })`, `Promise.all` for parallel calls, `fs` over its
 files, `tools.search(query)` to find tools in a large catalog, `tools.describe(name)`
-for a schema. Code runs for at most 120 seconds and 256 tool calls; see
+for a schema. Code runs for at most 60 seconds, 2 s of CPU and 256 tool calls; see
 [Limits](https://run.camelai.com/docs/reference/limits.md). `agent.client.execute(code)` runs code
 yourself, outside the model's history, which is handy for testing tools.
 
@@ -4781,8 +4781,9 @@ reading them and sending them input do not count; only runs do.
 
 | Limit | Value |
 | --- | --- |
-| Wall time | 30 s by default, at most 120 s (`timeoutMs`) |
-| Guest CPU time | 2 s of executing code (time waiting on tools does not count) |
+| Wall time | 30 s by default, at most 60 s (`timeoutMs`; a longer one is cut to it). Admin tenants may ask for 120 s; an operator can set a tenant's maximum up to 120 s (`codeMaxTimeoutMs`) |
+| CPU time | 2 s of keeping its thread busy, TypeScript stripping included (time waiting on tools does not count). Enforced from outside the guest: an execution past it is stopped whatever it is doing, with `Codemode CPU limit exceeded`. An operator can set a tenant's up to 30 s (`codeCpuMs`) |
+| Executions at once | 4 per tenant on each node (2 on free credit; admin tenants are not limited unless set; `codeConcurrency`), within the node's sandbox workers. Executions past it wait their turn, tenants in rotation, within their own `timeoutMs` |
 | Memory | 32 MiB WebAssembly memory, 16 MiB QuickJS heap, 256 KiB stack |
 | Output | 32,000 characters by default, at most 128,000 (`maxOutputCharacters`); 1,024 chunks |
 | Tool calls | 256 per script, at most 32 in flight |
