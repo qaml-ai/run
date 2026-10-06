@@ -7,7 +7,7 @@
 //   out: {type:"request", id, method:"tool", params:{name, args}}, {type:"event", event:{type:"output", text}},
 //        and one {type:"response", id, result:{output, truncated, returned, cpuMs}} or {..., error}
 // There is no Node here: the guest's realm is a bare V8 context holding the ECMAScript built-ins,
-// `tools`, `fs`, `console` and `text` (src/sandbox-bootstrap.ts), and nothing else.
+// `tools`, `fs`, `console` and `text` (bootstrap.js), and nothing else.
 //
 // Limits, from the inside out: V8's heap limit (a near-heap-limit callback terminates), a
 // counting ArrayBuffer allocator, a watchdog thread that terminates at the CPU budget and exits
@@ -325,8 +325,8 @@ fn main() {
   let args: Vec<String> = std::env::args().collect();
   let flag = |name: &str| args.iter().position(|arg| arg == name).and_then(|i| args.get(i + 1)).cloned();
   let jitless = args.iter().any(|arg| arg == "--jitless");
-  // Not dumpable: processes of the same uid (the sandbox process, other executions' v8-exec
-  // processes) cannot read this one's memory through /proc/<pid>/mem, whatever Yama's ptrace_scope.
+  // Not dumpable: no process of the same uid (agent-launcher gives each one its own; without it,
+  // the runtime's) can read this one's memory through /proc/<pid>/mem, whatever Yama's ptrace_scope.
   // (Not under --seccomp-debug, so strace can read its calls' arguments.)
   #[cfg(target_os = "linux")]
   if !args.iter().any(|arg| arg == "--seccomp-debug") { unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) }; }

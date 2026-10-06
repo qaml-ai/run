@@ -634,7 +634,10 @@ test("a tenant's own maxAgents replaces the default limit, and a change applies 
   child.kill("SIGHUP");
   await reloaded;
   assert.equal((await create(bob, refused)).status, 201);
-  assert.equal((await create(alice, "a3")).status, 201, "alice's idle agent makes room under the default");
+  // Her one agent is idle once it has settled after creation, which a loaded runner can take a moment to see.
+  let status = 0;
+  for (let tries = 0; tries < 50 && (status = (await create(alice, "a3")).status) === 429; tries++) await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(status, 201, "alice's idle agent makes room under the default");
 });
 
 test("a tenant's monthly spend cap ends a turn after the response that crosses it, refuses new runs, and a reload raising it lets the turn continue", async t => {

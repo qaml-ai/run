@@ -1,7 +1,7 @@
 # Hosted agent runtime: the HTTP/SSE service, agent processes and the js_exec sandboxes (V8, in v8-exec).
 # Build from the repository root: docker build -t agent-runtime .
 
-# agent-launcher (sandbox/launcher.c): starts the sandbox processes and the runtime. Static, so the
+# agent-launcher (sandbox/launcher.c): starts the runtime, and the confined processes it asks for. Static, so the
 # final image needs no libseccomp.
 FROM node:22-bookworm-slim AS launcher
 RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev libseccomp-dev && rm -rf /var/lib/apt/lists/*
@@ -67,16 +67,16 @@ ADD --chmod=644 --checksum=sha256:870f56d009d8aeb95b716b0e7b0020225d542c4b283b9e
 RUN for pem in /tmp/database-ca/*.pem; do cat "$pem"; echo; done | sed '/^$/d' > /etc/ssl/rds-global-bundle.pem \
  && chmod 644 /etc/ssl/rds-global-bundle.pem && rm -rf /tmp/database-ca \
  && node -e 'const { X509Certificate } = require("node:crypto"); const pems = require("node:fs").readFileSync("/etc/ssl/rds-global-bundle.pem", "utf8").match(/-----BEGIN CERTIFICATE-----[^-]+-----END CERTIFICATE-----/g); const subjects = pems.map(pem => new X509Certificate(pem).subject); for (const cn of ["CN=Amazon Root CA 1", "CN=Amazon RDS us-west-2 Root CA RSA2048 G1"]) if (!subjects.some(subject => subject.includes(cn))) throw new Error(`database CA bundle lacks ${cn}`); console.log(`database CA bundle: ${pems.length} certificates`)'
-# js_exec runs in sandbox processes as their own uid, which must not read the runtime's data.
-# Sandbox process i runs as uid 1001 + i in this group.
+# js_exec and file parsing run in confined processes, each as a uid of its own, which must not read the
+# runtime's data: uid 1001 + its slot, in this group.
 RUN groupadd --gid 1001 sandbox \
  && useradd --uid 1001 --gid 1001 --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin sandbox \
  && mkdir -p /data && chown node:node /data && chmod 700 /data
 COPY --from=launcher /agent-launcher /usr/local/bin/agent-launcher
 # No startup snapshot of our own: measured, it saved nothing over V8's built-in one (bench/v8-exec-*.json).
 COPY --from=v8exec /v8-exec /usr/local/bin/v8-exec
-# No USER: the launcher starts as root, then runs the runtime as node (uid 1000) and the
-# sandbox processes as their own uids. The runtime refuses to start without them.
+# No USER: the launcher starts as root, then runs the runtime as node (uid 1000) and each
+# confined process as a uid of its own. The runtime refuses to start without the launcher.
 ENV NODE_ENV=production \
     HOME=/home/node \
     AGENT_SANDBOX_REQUIRED=1 \

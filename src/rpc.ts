@@ -55,11 +55,12 @@ export function childProcess(entry: string, cwd: string, runtime = process.execP
     cwd,
     detached,
     // No inherited provider keys, supervisor token, NODE_OPTIONS, or preload hooks. One agent
-    // runs one js_exec at a time, in a v8-exec process or a sandbox process.
+    // runs one js_exec at a time, in a v8-exec process.
     env: {
       PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: cwd, TMPDIR: cwd,
-      // Where agent-launcher's sandbox processes listen, when it started them.
-      ...(process.env.AGENT_SANDBOX_SOCKETS ? { AGENT_SANDBOX_SOCKETS: process.env.AGENT_SANDBOX_SOCKETS } : {}),
+      // Where agent-launcher starts confined processes, when it started this one; none started ahead per agent.
+      ...(process.env.AGENT_SANDBOX_DIR ? { AGENT_SANDBOX_DIR: process.env.AGENT_SANDBOX_DIR } : {}),
+      AGENT_V8_PRESPAWN: "0",
       // The outbound policy (outbound.ts): the agent calls endpoints tenants give for their models.
       ...Object.fromEntries(OUTBOUND_ENV.filter(name => process.env[name] !== undefined).map(name => [name, process.env[name]!])),
       // The history backlog's bound (transcript.ts), which tests lower.

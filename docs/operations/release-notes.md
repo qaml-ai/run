@@ -9,6 +9,33 @@ between yours and the new one first.
 
 Changes on main since the last tag.
 
+### Faster resume after a crash, a drain or a deploy
+
+- A node that dies mid-turn is found by its peers within about 10 s, not after its 90 s lease: a
+  heartbeat three renewals late whose address refuses connections or does not answer is ended, and
+  its turns resume at once on another node ([Dead nodes](architecture.md)). Heartbeats are renewed
+  every 3 s (one write per node; it was every 15 s at the default lease). The lease stays 90 s, so a
+  node still rides out a database failover; an expired heartbeat is no longer renewed.
+- A node that gives up agents with runs open (a drain that timed out, a retirement leaving queued
+  runs) tells the others, which sweep at once: the work resumes within about a second, not at the
+  next 30 s sweep. Nodes also sweep as they start, and `AGENT_ORPHAN_SWEEP_MS` defaults to 10 s.
+- Nodes must reach each other's `AGENT_NODE_URL` (as forwarding already needs).
+
+### Sandbox: no sandbox processes
+
+- js_exec and file parsing no longer go through long-lived Node "sandbox processes". `agent-launcher`
+  starts each v8-exec process, and a parse job (`src/parse-job.ts`) for each PDF or image to scale
+  down, itself: a uid no other live process has, no environment, `no_new_privs` and its seccomp
+  filter, as before ([Layers](sandbox.md#layers)). An execution goes runtime → v8-exec (the launcher
+  only starts it); a trivial one takes about 0.8 ms instead of 1.6, and an idle task holds about
+  350 MB less. Image headers are read in the runtime; a parse job takes about 120 ms to start.
+- Removed: `AGENT_SANDBOX_PROCESSES`. `AGENT_SANDBOX_SOCKETS` is now `AGENT_SANDBOX_DIR` (set by
+  the launcher). `AGENT_V8_PRESPAWN` and `AGENT_V8_MAX` count the runtime's own processes.
+- `AGENT_CODE_WORKERS_MAX` defaults to 16 (it was what the task's memory afforded at 128 MiB an
+  execution: 6 on a 2 GB task), and sets the number rather than only lowering it.
+- `v8_exec` metric lines (`Event`: `killed`) now come from the runtime, with the signal the
+  launcher reports.
+
 ### js_exec on V8; QuickJS removed
 
 - js_exec runs on V8, in a process of its own per execution (`v8-exec`, in the image at

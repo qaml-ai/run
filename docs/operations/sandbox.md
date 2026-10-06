@@ -1,8 +1,8 @@
 # Sandbox boundary and remaining production work
 
 js_exec runs on V8: a bare V8 isolate in a process of its own per execution, `v8-exec`
-(`sandbox/v8-exec`, `src/v8-exec.ts`), started for one execution and killed when it ends, inside
-the [sandbox processes](#layers). See [The V8 engine](#the-v8-engine-v8-exec). Each
+(`sandbox/v8-exec`, `src/v8-exec.ts`), started for one execution and killed when it ends, as a
+[confined process](#layers) of its own. See [The V8 engine](#the-v8-engine-v8-exec). Each
 `code_execution` metric line carries `Engine: v8`, and the runtime does not start if js_exec does
 not run (the `listening` log line's `sandbox` field says where it runs).
 
@@ -32,11 +32,10 @@ CPU budget. On the host, tool-argument checks skip the tenant's `pattern` and
 tool checks those itself. A failed check of arguments over 16 KiB names no
 fields. `tools.search` reads at most 500 characters and 32 words of a query.
 
-**Fairness.** An execution keeps its v8-exec process while it waits on tools.
-Tenants with a concurrency limit therefore share what 40% of the task's memory
-affords at 128 MiB an execution (its heap limit), at least 2 and at most 32: 6 on
-a 2 GB task (`AGENT_CODE_WORKERS_MAX` lowers it). Each such tenant may run 4 at
-once (2 on free credit; `codeConcurrency` per tenant). Executions beyond that wait
+**Fairness.** An execution keeps its v8-exec process while it waits on tools,
+about 20 MB resident. Tenants with a concurrency limit therefore share 16
+executions at once on a node (`AGENT_CODE_WORKERS_MAX` sets another number).
+Each such tenant may run 4 at once (2 on free credit; `codeConcurrency` per tenant). Executions beyond that wait
 for a turn, tenant by tenant in rotation, within their own `timeoutMs`, so a busy
 tenant delays only its own. Admin tenants have no limit unless their entry sets
 one: they are admitted at once and bounded only by the v8-exec processes a node
@@ -78,18 +77,19 @@ Guest code is contained by layers, each assuming the one inside it failed:
    memory carry over, and a process serves one tenant's one execution. It
    confines itself further (no JIT, a seccomp allowlist, rlimits): see
    [Confinement](#the-v8-engine-v8-exec).
-2. **A separate process with its own uid.** v8-exec runs under sandbox
-   processes (`src/sandbox-server.ts`, `AGENT_SANDBOX_PROCESSES`, default 2),
-   not under the runtime. The image's entrypoint, `agent-launcher`
-   (`sandbox/launcher.c`), starts as root under the container's init and runs
-   the runtime as `node` (uid 1000) and sandbox process *i* as uid 1001 + *i*
-   (group `sandbox`, no supplementary groups), so a sandbox process cannot read
-   another process's `/proc/<pid>/environ` or `mem`, or trace it. It restarts a
-   sandbox process that dies, forwards termination signals to the runtime and
-   exits with its status.
-3. **No network, no secrets.** A sandbox process starts with an empty
-   environment (a fixed `PATH`, `HOME` and `TMPDIR` only), `/dev/null` for stdin
-   and no descriptors but its socket. The runtime's data directory (`/data`,
+2. **A process with a uid of its own.** The image's entrypoint, `agent-launcher`
+   (`sandbox/launcher.c`), starts as root under the container's init, runs the
+   runtime as `node` (uid 1000), and starts every v8-exec process (and every
+   [parse job](#parsing-untrusted-files)) itself, as a uid no other live process
+   has: 1001 + a free slot of 512 (group `sandbox`, no supplementary groups). So
+   no confined process can read another process's `/proc/<pid>/environ` or
+   `mem`, or trace it, the runtime's or another execution's. Before it runs, a
+   process kills anything an earlier holder of its uid left behind. The
+   launcher forwards termination signals to the runtime and exits with its
+   status.
+3. **No network, no secrets.** A confined process starts with an empty
+   environment (a fixed `PATH`, `HOME` and `TMPDIR` only) and no descriptors
+   but its connection to the runtime. The runtime's data directory (`/data`,
    mode 0700) is unreadable to it, and secrets are never in any environment it
    can see. It has no capabilities, `no_new_privs`, and a seccomp filter
    installed before `exec`: every `socket()` fails (`AF_UNIX` included), as do
@@ -97,38 +97,39 @@ Guest code is contained by layers, each assuming the one inside it failed:
    `mount`, `unshare`/`setns` and namespace flags to `clone`, `bpf`,
    `perf_event_open`, `userfaultfd`, `io_uring` (which could open sockets past
    the filter), `kexec`, module loading and `reboot`; other architectures' calls
-   kill it. It is a denylist: Node, V8, libuv and glibc use a syscall set that
-   shifts with their versions and the kernel, and an allowlist that misses one
-   crashes rare paths. Its v8-exec processes inherit all of it.
+   kill it. It is a denylist: Node (for parse jobs), V8, libuv and glibc use a
+   syscall set that shifts with their versions and the kernel, and an allowlist
+   that misses one crashes rare paths. v8-exec adds its own allowlist on top.
 
-The launcher binds one unix socket per sandbox process at
-`/run/agent-sandbox/<i>.sock` (root:node 0660, in a root:node 0710 directory, so
-only the runtime's uid connects) and hands it over as fd 3; a sandbox process
-cannot reach its own socket's path, only accept on it. Each execution is one
-connection carrying length-prefixed JSON frames (at most 4 MiB each; either side
-drops the connection on anything bigger or malformed); closing it cancels the
-execution. The runtime sends each execution to the process with the fewest open,
-and at startup checks that every one answers. A sandbox process that dies fails
-the executions it held with "Codemode sandbox process exited", and new ones queue
-on its socket until the launcher has restarted it.
+The launcher listens on `/run/agent-sandbox/v8.sock` and `parse.sock`
+(root:node 0660, in a root:node 0710 directory, so only the runtime's uid
+connects; `AGENT_SANDBOX_DIR` tells the runtime where). Each connection starts
+one process, v8-exec or a parse job, with the connection as its stdin and
+stdout. It carries length-prefixed JSON frames (at most 4 MiB each; the runtime
+drops the connection on anything bigger or malformed). Closing it kills the
+process; when the process ends, the launcher sends how (its exit code or
+signal) as a last frame and closes it. The runtime starts 2 v8-exec processes
+ahead (`AGENT_V8_PRESPAWN`), and at startup checks that js_exec runs and a file
+parses. A process that dies, or that something kills, fails its execution with
+"Codemode sandbox process exited"; the next execution gets a new one.
 
-The runtime treats a sandbox process as compromised: it accepts only tool-call
+The runtime treats every confined process as compromised: it accepts only tool-call
 requests, output events and the execution's answer, rebuilt from checked fields;
 it caps the number of messages, holds output to the caller's character and event
 limits, validates the result, and enforces tool schemas, call count, concurrency,
 and result and transfer size limits on its side, as it always has. Cancellation
 kills the execution's v8-exec process.
 
-Without the launcher (macOS, tests, not root, or `AGENT_SANDBOX_PROCESSES=0`),
-the runtime process spawns v8-exec itself (`src/codemode.ts`), with layer 1
-only; the `listening` log line says which mode is active, and the image sets
+Without the launcher (macOS, tests, not root), the runtime process starts
+v8-exec and parse jobs itself (`src/sandbox.ts`), with layer 1 only; the
+`listening` log line says which mode is active, and the image sets
 `AGENT_SANDBOX_REQUIRED=1` so production cannot start that way. Running from a
 checkout needs the binary built first (`npm run build:v8-exec`; or
 `AGENT_V8_EXEC` names one). `tests/image-isolation.ts` boots the image and
-proves the other layers from inside a sandbox process.
+proves the other layers from inside a parse job and a v8-exec process.
 
 What guest code can reach on the host, all through the trusted bootstrap
-(`src/sandbox-bootstrap.ts`) and never as globals:
+(`sandbox/v8-exec/src/bootstrap.js`) and never as globals:
 
 - `call(name, argsJson)`: a string name of at most 80 characters and a JSON
   string of at most 128 KiB. It returns a promise settled with the result as a
@@ -149,8 +150,8 @@ The supervisor, Pi process, tool schemas and tool implementations remain trusted
 code with OS access.
 
 The tests cover known escape patterns and limits; they are not a security audit
-or proof against engine vulnerabilities. A sandbox process serves many tenants'
-executions in turn, each in a fresh v8-exec process. Shared-VM operation still
+or proof against engine vulnerabilities. Every execution and every parsed file
+gets a fresh process. Shared-VM operation still
 needs resource quotas around the sandbox, tool-specific authorization,
 controlled egress for tool hosts, and a maintained engine/security update process.
 
@@ -158,13 +159,13 @@ controlled egress for tool hosts, and a maintained engine/security update proces
 
 `v8-exec` is a Rust program on the [`v8` crate](https://crates.io/crates/v8) (rusty_v8's
 prebuilt V8, the same V8 as Deno's): no Node, so no Node built-ins, modules, `process`, file system
-or network to lock down. A sandbox process (or, without sandbox processes, the runtime) spawns it
-for one execution, with no environment and only its three pipes, and speaks the codemode frames to
-it over stdin and stdout. Nothing is reused between executions, and a cancelled or timed-out
+or network to lock down. agent-launcher (or, without it, the runtime) starts it for one execution,
+with no environment and no descriptors but its stdin and stdout, over which the runtime speaks the
+codemode frames to it. Nothing is reused between executions, and a cancelled or timed-out
 execution's process is killed (SIGKILL).
 
 **What code sees.** One V8 context holding the ECMAScript built-ins and `tools`, `fs`, `text` and
-`console` from the bootstrap (`src/sandbox-bootstrap.ts`). There is no
+`console` from the bootstrap (`sandbox/v8-exec/src/bootstrap.js`). There is no
 `SharedArrayBuffer`, `Atomics` or `WebAssembly`; every `import()` is refused. `Intl` works: ICU
 data is compiled in (any locale; `en-US` and UTC by default). TypeScript is stripped in the process
 by [oxc](https://oxc.rs) (types removed, enums and parameter properties compiled), in linear time.
@@ -183,8 +184,8 @@ by [oxc](https://oxc.rs) (types removed, enums and parameter properties compiled
 - **Wall time and cancellation.** The runtime's timer and abort kill the process.
 - **Output, tool calls and transfer.** Bounded in the process and again in the runtime.
 
-**Confinement.** On top of what it inherits from its sandbox process (uid, `no_new_privs`, no
-capabilities, agent-launcher's seccomp denylist), the process confines itself before any of the
+**Confinement.** On top of what agent-launcher gives it (a uid of its own, `no_new_privs`, no
+capabilities, the launcher's seccomp denylist), the process confines itself before any of the
 guest's code is parsed:
 
 - **No JIT** (`AGENT_V8_JITLESS`, on by default): V8 interprets, so its optimizing compilers, the
@@ -202,37 +203,40 @@ guest's code is parsed:
   aarch64; other ABIs are killed), and fails closed: an execution whose process cannot install it
   fails. `scripts/v8-syscalls.ts` traces what the process calls (with strace, and `--seccomp-trap`, which prints a refused call and its first argument), to update the list.
 - **Rlimits it cannot lift:** no processes (`RLIMIT_NPROC` 0), no file writes (`RLIMIT_FSIZE` 0),
-  no core dumps, and not dumpable, so processes of its own uid (its sandbox process, other
-  executions') cannot read its memory.
+  no core dumps, and not dumpable, so even a process of its own uid could not read its memory.
 
-**Processes.** Each sandbox process runs at most `AGENT_V8_MAX` (64 by default, shared among the
-sandbox processes) at once; more wait their turn within their timeout. Each sandbox process
-keeps 2 started ahead (`AGENT_V8_PRESPAWN`), past V8's setup and waiting for an execution, so
-most executions skip the 3 ms start. A process waiting on tools holds about 20 MB resident (4 MB
+**Processes.** A runtime runs at most `AGENT_V8_MAX` (64 by default) at once; more wait their turn
+within their timeout. It keeps 2 started ahead (`AGENT_V8_PRESPAWN`), past V8's setup and waiting
+for an execution, so most executions skip the 3 ms start (a `return 1` takes about 0.8 ms). A process waiting on tools holds about 20 MB resident (4 MB
 proportional: the binary's pages are shared). A process that cannot be started, or that the kernel killed (seccomp, rlimits, the OOM
 killer), writes a `v8_exec` metric line (`Event`: `spawn_failed` or `killed`) and fails its
 execution with what happened.
 
 **What it does not protect against.** A V8 bug reachable from the interpreter still gives native
-code in the process; it then has the allowlist above, its sandbox process's uid and filter, and
+code in the process; it then has the allowlist above, its own uid and the launcher's filter, and
 nothing of the runtime's. It shares no memory with other executions. V8's own heap sandbox is not on: rusty_v8 publishes no
 prebuilt library with it.
 
 ## Parsing untrusted files
 
-Inspecting an image's header or a PDF (page count, and text for models that
-cannot read PDFs) parses untrusted input, so it never runs on the runtime's
-main thread, which holds secrets and database credentials. With sandbox
-processes (production) the bytes go over the sandbox socket in frames of 2 MiB,
-and the sandbox process (its own uid, empty environment, no sockets, seccomp)
-parses them on a worker thread; an exploit reaches nothing, and a crash takes
-down only that process, which the launcher restarts. Without sandbox processes
-(development) the worker runs in the runtime process. Either way the worker has
-a 256 MiB V8 heap, 10 seconds, and a ceiling of 512 MiB on its process's
+An image's type and size come from its header, read in the runtime: a few
+bounds-checked reads of fixed offsets (`src/image-header.ts`), nothing decoded.
+Everything that decodes untrusted input runs in a parse job (`src/parse-job.ts`),
+a process of its own per file that agent-launcher confines like v8-exec (its
+own uid, empty environment, no sockets, seccomp): a PDF's page count (and text
+for models that cannot read PDFs), and an image scaled down for a model request
+(sharp, `fitImage`). The bytes go over the connection in frames of 2 MiB; an
+exploit reaches nothing, and a crash takes down only that file's process. The
+runtime runs 2 at once; more wait. In the job the parser runs on a worker thread
+with a 256 MiB V8 heap, 10 seconds, and a ceiling of 512 MiB on the job's
 resident memory, checked every 20 ms: pdf.js inflates streams into
 ArrayBuffers, which heap limits do not count, so a 400 KB PDF that inflates to
 400 MB is stopped by the ceiling. Answers are rebuilt from checked fields
 (`inspection` in `src/inspect.ts`). PDFs are parsed with
 [unpdf](https://github.com/unjs/unpdf) (pdf.js, pure JavaScript, no native
-addons, `isEvalSupported: false`). Images are only measured: their bytes go to
-the provider as they were uploaded.
+addons, `isEvalSupported: false`). A parse job starts in about 120 ms (Node and
+its TypeScript), so the runtime starts one only for a PDF or an image to scale.
+
+Email channels parse inbound mail with
+[postal-mime](https://github.com/postalsys/postal-mime) (pure JavaScript) in the
+runtime process itself, not in a parse job.

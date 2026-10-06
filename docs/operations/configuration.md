@@ -4,7 +4,7 @@
 | --- | --- |
 | `AGENT_DATABASE_URL` | Postgres for development and tests (`sslmode` and `sslrootcert` in the URL are honoured) |
 | `AGENT_DATABASE_HOST`, `AGENT_DATABASE_SECRET_ARN` | production instead of a URL: the login is read from the Secrets Manager secret (`{username, password}`, rotated by RDS), cached, and re-read every 10 minutes and whenever a connection fails authentication; `AGENT_DATABASE_NAME` (default `agent_runtime`), `AGENT_DATABASE_PORT` (default 5432), `AWS_REGION` |
-| `AGENT_DATABASE_LISTEN_HOST` | where each node's one listening connection goes (notifications that another node loaded an agent), instead of `AGENT_DATABASE_HOST`: the database instance when the pool goes through RDS Proxy, which does not carry LISTEN reliably |
+| `AGENT_DATABASE_LISTEN_HOST` | where each node's one listening connection goes (notifications that another node loaded an agent, or left work for others), instead of `AGENT_DATABASE_HOST`: the database instance when the pool goes through RDS Proxy, which does not carry LISTEN reliably |
 | `AGENT_DATABASE_CA` | PEM bundle the server's certificate must chain to (e.g. `/etc/ssl/rds-global-bundle.pem`); TLS settings in a URL are then ignored |
 | `AGENT_DATABASE_POOL_SIZE` | connections per node (default 10) |
 | `AGENT_DATABASE_QUERY_TIMEOUT_MS` | how long a query may take before it fails and its connection is replaced (default 30000; 0 for none), so a connection that went dark in a failover cannot hang a request |
@@ -17,7 +17,8 @@
 | `AGENT_BROWSER_URL` | where browsers reach the runtime, as browser tokens' `url` says: `AGENT_PUBLIC_URL` unless set; empty for none, for a private runtime browsers read through the application ([Self-hosting](self-host.md#networking)) |
 | `AGENT_S3_ENDPOINT`, `AGENT_S3_FORCE_PATH_STYLE` | an S3-compatible service instead of AWS S3 (R2, SeaweedFS), and `true` for path-style requests; it must support conditional writes (`If-None-Match`) |
 | `AGENT_NODE_URL` | this node's address for forwarding between nodes; unset on ECS, it is `http://<task private IPv4>:<PORT>` from `ECS_CONTAINER_METADATA_URI_V4`, and elsewhere `http://127.0.0.1:<PORT>` |
-| `AGENT_LEASE_TTL_MS` | node heartbeat lifetime (default 90000): the longest database outage a node rides out, and how long a crashed node's actors wait for a new owner |
+| `AGENT_LEASE_TTL_MS` | node heartbeat lifetime (default 90000): the longest database outage a node rides out, and how long a crashed node's actors wait for a new owner when its peers cannot tell it died (a crashed node whose address refuses connections, or no longer answers, is found within about 10 s; see [Dead nodes](architecture.md)). Peers must reach each other's `AGENT_NODE_URL` |
+| `AGENT_ORPHAN_SWEEP_MS` | how often every node also sweeps for agents with work no node is doing (default 10000; 0 for none); nodes sweep at once when told work was left |
 | `AGENT_GC_ENABLED`, `AGENT_GC_DRY_RUN` | storage garbage collection: `true` to run it (default off), and `true` to only log what it would delete (see [Storage garbage collection](persistence.md#storage-garbage-collection)) |
 | `AGENT_GC_GRACE_MS`, `AGENT_GC_INTERVAL_MS`, `AGENT_GC_POLL_MS` | how long a chunk must stay unreferenced before it is deleted (default 86400000, a day), how often each tenant is collected (default 21600000, 6 h), and how often a node looks for a tenant due (default 60000) |
 | `AGENT_MAX_RUN_RESPONSES`, `AGENT_MAX_RUN_SECONDS` | the most one run may take: model responses (default 1000) and seconds from when it began (default 7200); agents' and definitions' `runLimits` may only lower them. They apply to self-serve tenants; a tenant's own `maxRunResponses` and `maxRunSeconds` (tenants-file entry, or `PUT /v1/tenants/{id}/limits`) replace them, and admin tenants have none unless their entry sets them. At either, the turn stops with `stopped: "turn_limit"` |
@@ -90,18 +91,17 @@
 | `AGENT_STORAGE_RECONCILE_DAYS` | how often the storage charge first corrects tracked storage by listing Storage (default 7; 0: only the first time; see [Billing](billing.md)) |
 | `AGENT_SERVICE_NAME` | the `ServiceName` dimension on the `node_load` metrics (none when unset) |
 | `AGENT_HOSTING` | `process` (one Node process per awake agent) or `inline` (many agents per process) |
-| `AGENT_CODE_WORKERS_MAX` | at most how many js_exec executions tenants with a concurrency limit (`codeConcurrency`; self-serve ones by default) run at once on a node, together. By default what 40% of the process's memory (its cgroup limit in a container) affords at 128 MiB an execution, from 2 to 32 (6 on a 2 GB task); this only lowers it. Executions beyond it, or beyond their tenant's limit, wait their turn within their own timeout. Admin tenants without one are bounded only by `AGENT_V8_MAX` |
-| `AGENT_V8_PRESPAWN` | v8-exec processes each sandbox process keeps started ahead (default 2; none in the runtime process without sandbox processes) |
-| `AGENT_V8_MAX` | v8-exec processes running at once on a node, shared among its sandbox processes (default 64); more wait their turn |
+| `AGENT_CODE_WORKERS_MAX` | how many js_exec executions tenants with a concurrency limit (`codeConcurrency`; self-serve ones by default) run at once on a node, together (default 16; each holds about 20 MB while it waits on tools). Executions beyond it, or beyond their tenant's limit, wait their turn within their own timeout. Admin tenants without one are bounded only by `AGENT_V8_MAX` |
+| `AGENT_V8_PRESPAWN` | v8-exec processes the runtime keeps started ahead (default 2 under `agent-launcher`, else none; agent processes under `process` hosting keep none) |
+| `AGENT_V8_MAX` | v8-exec processes running at once in the runtime process (default 64); more wait their turn |
 | `AGENT_V8_JITLESS` | `false` lets V8 use its JIT compilers (default on: interpreted, no executable memory) |
 | `AGENT_V8_EXEC` | the v8-exec binary, which runs every js_exec (default `/usr/local/bin/v8-exec`, as the image has it, else the checkout's `npm run build:v8-exec` build). The runtime does not start if js_exec does not run |
-| `AGENT_SANDBOX_PROCESSES` | read by `agent-launcher` (the image's entrypoint): how many [sandbox processes](sandbox.md) run js_exec (default 2, at most 16; 0 runs it in the runtime process) |
-| `AGENT_SANDBOX_REQUIRED` | `1` (the image's default) refuses to start without sandbox processes |
+| `AGENT_SANDBOX_REQUIRED` | `1` (the image's default) refuses to start without `agent-launcher` confining js_exec and file parsing ([Sandbox](sandbox.md#layers)) |
 | `AGENT_OUTBOUND_ALLOW_HTTP` | `true` lets MCP servers, `web_fetch` and tenants' model endpoints (key scopes' `baseUrl`) use `http://` URLs (tests and development only) |
 | `AGENT_OUTBOUND_BLOCK_CIDRS` | ranges no tool source may reach, on top of the built-in private and reserved ranges, e.g. the VPC's CIDR (see [Outbound calls](../guides/tools.md#outbound-calls)) |
 | `AGENT_OUTBOUND_ALLOW_CIDRS` | exceptions to the built-in ranges, e.g. `127.0.0.1/32` for a local test server; never set in production |
 | `AGENT_OUTBOUND_ALLOW_ORIGINS` | exact origins (`scheme://host:port`, comma-separated) reachable despite the built-in ranges, over `http` too: an operator's own services, e.g. `http://app:3000` for a self-hosted runtime's application. Only that scheme, host and port; checked at each connection, and `AGENT_OUTBOUND_BLOCK_CIDRS` still applies. MCP servers, HTTP tools, model providers and webhooks may use them; `web_fetch`, `web_search` and renders never do ([Self-hosting](self-host.md#networking)) |
-| `AGENT_SANDBOX_SOCKETS` | set by `agent-launcher`: the sandbox processes' sockets. Without it, the runtime process runs js_exec in v8-exec processes of its own, as in development on macOS; the `listening` log line's `sandbox` field says which |
+| `AGENT_SANDBOX_DIR` | set by `agent-launcher`: where it takes requests for confined processes. Without it, the runtime process starts v8-exec and parse jobs as its own children, unconfined, as in development on macOS; the `listening` log line's `sandbox` field says which |
 
 Start a runtime on a VM using a trusted terminal. It always reads its tenants
 from `AGENT_TENANTS_FILE` or `AGENT_TENANTS_SECRET_ARN`, and does not start

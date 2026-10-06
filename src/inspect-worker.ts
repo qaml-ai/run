@@ -4,7 +4,7 @@ import { imageHeader } from "./image-header.ts";
 // Parses one untrusted file: an image's format and size from its header, or a PDF's pages
 // (and text, if asked) with pdf.js; or decodes an image to scale it down for a model request
 // (`fit`), with sharp. It runs in a worker the parent terminates at a deadline or memory
-// ceiling (inspect.ts), in a sandbox process when there are some. Nothing here is trusted by
+// ceiling (parse-job.ts), in a parse job of its own. Nothing here is trusted by
 // the parent: it checks every field it gets back.
 type Fit = { side: number; bytes: number; pixels: number; ms: number };
 const { bytes, text: wantText, maxChars, fit } = workerData as { bytes: Uint8Array; text: boolean; maxChars: number; fit?: Fit };

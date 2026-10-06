@@ -1,20 +1,27 @@
 // agent-launcher: the image's entrypoint, started as root under the container's init.
 //
-// It binds one unix socket per sandbox process (root:node 0660, in a root:node 0710
-// directory, so only the runtime's uid can connect), then runs
-//   - each sandbox process (src/sandbox-server.ts) as its own uid (1001 + index, group
-//     sandbox), so none can open another's /proc/<pid>/mem, with its socket as fd 3, no
-//     other descriptors, an empty environment, no_new_privs and the seccomp filter below,
-//     restarting it when it dies; and
-//   - the runtime (argv) as the node uid, with AGENT_SANDBOX_SOCKETS set.
+// It runs the runtime (argv) as the node uid with AGENT_SANDBOX_DIR set, then starts a confined
+// process for each connection to one of the unix sockets there:
+//   - v8.sock: sandbox/v8-exec, for one js_exec execution (src/v8-exec.ts);
+//   - parse.sock: Node on src/parse-job.ts, for one untrusted file (src/inspect.ts).
+// The sockets are root:node 0660 in a root:node 0710 directory, so only the runtime's uid connects.
+// Each process runs as a uid no other live process has (1001 + slot, group sandbox), so none can
+// open another's /proc/<pid>/mem, with the connection as its stdin and stdout, no other
+// descriptors, an empty environment, no_new_privs and the seccomp filter below. The runtime closing
+// the connection kills the process; when the process ends, how it ended goes to the connection as
+// a last frame ({"type":"exit","code":N} or {"type":"exit","signal":"SIGSYS"}) and it is closed.
+// Either way every other process of its uid (anything it forked) is killed before the slot, and so
+// the uid, is given to another.
 // It forwards termination signals to the runtime and exits with its status.
 //
 // `agent-launcher probe <pid>` is a test hook: it reports, as JSON, how the calls the
-// filter denies fail. tests/image-isolation.ts runs it from inside a sandbox process.
+// filter denies fail. tests/image-isolation.ts runs it from inside a confined process.
 #define _GNU_SOURCE
+#include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <grp.h>
+#include <poll.h>
 #include <sched.h>
 #include <seccomp.h>
 #include <signal.h>
@@ -25,13 +32,13 @@
 #include <sys/prctl.h>
 #include <sys/ptrace.h>
 #include <sys/resource.h>
+#include <sys/signalfd.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
 #include <sys/un.h>
 #include <sys/wait.h>
-#include <time.h>
 #include <unistd.h>
 
 #define RUNTIME_UID 1000
@@ -39,11 +46,16 @@
 #define SANDBOX_GID 1001
 #define SOCKET_DIR "/run/agent-sandbox"
 #define NODE "/usr/local/bin/node"
-#define SANDBOX_ENTRY "/app/src/sandbox-server.ts"
-#define MAX_SANDBOXES 16
+#define V8_EXEC "/usr/local/bin/v8-exec"
+#define PARSE_ENTRY "/app/src/parse-job.ts"
+// Confined processes at once; each has its own uid, SANDBOX_UID + its slot.
+#define MAX_CHILDREN 512
 #ifndef CLONE_NEWTIME
 #define CLONE_NEWTIME 0x00000080
 #endif
+
+enum kind { V8, PARSE, KINDS };
+static const char *const socket_names[KINDS] = { "v8.sock", "parse.sock" };
 
 static void die(const char *what) {
   fprintf(stderr, "agent-launcher: %s: %s\n", what, strerror(errno));
@@ -54,6 +66,7 @@ static void die(const char *what) {
 // shifts with their versions and the kernel, and a missing entry crashes rare paths
 // (worker teardown, OOM). What is denied is what an escaped guest would use to reach
 // other processes, the network or kernel attack surface a JavaScript runtime never needs.
+// v8-exec adds its own allowlist on top (sandbox/v8-exec/src/seccomp.rs).
 static const char *const denied[] = {
   // Other processes' memory, descriptors and credentials.
   "ptrace", "process_vm_readv", "process_vm_writev", "process_madvise", "pidfd_getfd", "kcmp",
@@ -81,7 +94,7 @@ static void install_seccomp(void) {
     // A negative number is a syscall this architecture does not have (iopl on arm64).
     if (nr >= 0) rc = seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), nr, 0);
   }
-  // No network: every socket() fails, AF_UNIX included, so the inherited listener is the
+  // No network: every socket() fails, AF_UNIX included, so the inherited connection is the
   // only way in or out. socketpair stays for Node's child-process pipes.
   if (!rc) rc = seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(socket), 0);
   if (!rc) rc = seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(socketpair), 1, SCMP_A0(SCMP_CMP_NE, AF_UNIX));
@@ -102,130 +115,152 @@ static void drop_to(uid_t uid, gid_t gid) {
   if (setuid(0) == 0) { errno = EPERM; die("privileges were not dropped"); }
 }
 
-static int listeners[MAX_SANDBOXES];
-static pid_t sandboxes[MAX_SANDBOXES];
-static struct timespec restart_at[MAX_SANDBOXES];
-static int failures[MAX_SANDBOXES];
-static struct timespec started_at[MAX_SANDBOXES];
+/**
+ * A confined process, by slot: its pid (0 once reaped), its connection (-1 once closed), whether the
+ * runtime hung up, and the sweep killing whatever else runs as its uid (`sweep`): its pid while it
+ * runs, and whether another is due after it. A slot is free again only once all are done.
+ */
+static struct { pid_t pid; int conn; int hung_up; pid_t sweeper; int sweep_again; } children[MAX_CHILDREN];
 static sigset_t original_mask;
-static char *sandbox_argv[14];
+static char *argvs[KINDS][8];
 
-static void listen_on(int index) {
+static int listen_on(const char *name) {
   struct sockaddr_un address = { .sun_family = AF_UNIX };
-  snprintf(address.sun_path, sizeof address.sun_path, SOCKET_DIR "/%d.sock", index);
-  int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+  snprintf(address.sun_path, sizeof address.sun_path, SOCKET_DIR "/%s", name);
+  int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
   if (fd < 0) die("socket");
   unlink(address.sun_path);
   if (bind(fd, (struct sockaddr *)&address, sizeof address)) die(address.sun_path);
   if (chown(address.sun_path, 0, RUNTIME_UID) || chmod(address.sun_path, 0660)) die(address.sun_path);
   if (listen(fd, 256)) die("listen");
-  listeners[index] = fd;
+  return fd;
 }
 
-static void start_sandbox(int index) {
+/** Start a process of `kind` on `conn` in a free slot, or close `conn` when there is none. */
+static void start(enum kind kind, int conn) {
+  int slot = 0;
+  while (slot < MAX_CHILDREN && (children[slot].pid || children[slot].conn >= 0 || children[slot].sweeper || children[slot].sweep_again)) slot++;
+  if (slot == MAX_CHILDREN) { fprintf(stderr, "agent-launcher: %d confined processes running; refused one\n", MAX_CHILDREN); close(conn); return; }
   pid_t launcher = getpid();
   pid_t pid = fork();
-  if (pid < 0) die("fork");
+  if (pid < 0) { fprintf(stderr, "agent-launcher: fork: %s\n", strerror(errno)); close(conn); return; }
   if (pid == 0) {
     sigprocmask(SIG_SETMASK, &original_mask, NULL);
-    // dup2 onto itself would keep close-on-exec, so clear it either way.
-    if (dup2(listeners[index], 3) < 0 || fcntl(3, F_SETFD, 0)) die("dup2");
-    int null = open("/dev/null", O_RDONLY);
-    if (null < 0 || dup2(null, 0) < 0) die("/dev/null");
-    if (close_range(4, ~0U, 0)) die("close_range");
+    // dup2 clears close-on-exec on the copies. v8-exec's stderr goes nowhere; Node's to the launcher's.
+    if (dup2(conn, 0) < 0 || dup2(conn, 1) < 0) die("dup2");
+    if (kind == V8) {
+      int null = open("/dev/null", O_WRONLY);
+      if (null < 0 || dup2(null, 2) < 0) die("/dev/null");
+    }
+    if (close_range(3, ~0U, 0)) die("close_range");
     struct rlimit core = { 0, 0 }, processes = { 1024, 1024 };
     if (setrlimit(RLIMIT_CORE, &core) || setrlimit(RLIMIT_NPROC, &processes)) die("setrlimit");
-    drop_to(SANDBOX_UID + index, SANDBOX_GID);
+    drop_to(SANDBOX_UID + slot, SANDBOX_GID);
     // After the uid change, which would clear it.
     if (prctl(PR_SET_PDEATHSIG, SIGKILL) || getppid() != launcher) die("parent");
+    // Anything of this uid the sweep after the last process missed goes before this one runs.
+    kill(-1, SIGKILL);
     if (chdir("/")) die("chdir");
     if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) die("no_new_privs");
     install_seccomp();
     char *env[] = { "PATH=/usr/local/bin:/usr/bin:/bin", "HOME=/nonexistent", "TMPDIR=/nonexistent", NULL };
-    execve(NODE, sandbox_argv, env);
-    die("execve " NODE);
+    execve(kind == V8 ? V8_EXEC : NODE, argvs[kind], env);
+    die(kind == V8 ? "execve " V8_EXEC : "execve " NODE);
   }
-  sandboxes[index] = pid;
-  clock_gettime(CLOCK_MONOTONIC, &started_at[index]);
-  fprintf(stderr, "agent-launcher: sandbox %d started (pid %d, uid %d)\n", index, pid, SANDBOX_UID + index);
+  children[slot].pid = pid;
+  children[slot].conn = conn;
+  children[slot].hung_up = 0;
 }
 
-static double seconds_since(const struct timespec *then) {
-  struct timespec now;
-  clock_gettime(CLOCK_MONOTONIC, &now);
-  return (now.tv_sec - then->tv_sec) + (now.tv_nsec - then->tv_nsec) / 1e9;
+/**
+ * Kill every process running as `slot`'s uid: what a confined process forked outlives it, reparented
+ * to init. A short helper takes the uid and kills all it may signal (kill(-1) spares only itself);
+ * the slot stays taken until the helper is reaped, so no new process gets the uid meanwhile.
+ */
+static void sweep(int slot) {
+  if (children[slot].sweeper) { children[slot].sweep_again = 1; return; }
+  children[slot].sweep_again = 0;
+  pid_t pid = fork();
+  if (pid < 0) { fprintf(stderr, "agent-launcher: fork: %s\n", strerror(errno)); children[slot].sweep_again = 1; return; }
+  if (pid == 0) {
+    drop_to(SANDBOX_UID + slot, SANDBOX_GID);
+    kill(-1, SIGKILL);
+    _exit(0);
+  }
+  children[slot].sweeper = pid;
 }
 
-static const char *error_name(int ok) { return ok ? "ok" : strerrorname_np(errno); }
-
-static int probe(pid_t target) {
-  // As root, PTRACE_ATTACH would succeed and stop the target.
-  if (getuid() < SANDBOX_UID || getuid() >= SANDBOX_UID + MAX_SANDBOXES) { fprintf(stderr, "agent-launcher: probe runs only as a sandbox uid\n"); return 2; }
-  char path[64];
-  struct iovec local = { path, 1 }, remote = { (void *)path, 1 };
-  printf("{\"socket_inet\":\"%s\"", error_name(socket(AF_INET, SOCK_STREAM, 0) >= 0));
-  printf(",\"socket_unix\":\"%s\"", error_name(socket(AF_UNIX, SOCK_STREAM, 0) >= 0));
-  printf(",\"ptrace_attach\":\"%s\"", error_name(ptrace(PTRACE_ATTACH, target, 0, 0) == 0));
-  printf(",\"process_vm_readv\":\"%s\"", error_name(process_vm_readv(target, &local, 1, &remote, 1, 0) >= 0));
-  printf(",\"unshare_user\":\"%s\"", error_name(unshare(CLONE_NEWUSER) == 0));
-  printf(",\"io_uring_setup\":\"%s\"", error_name(syscall(SYS_io_uring_setup, 1, path) >= 0));
-  printf(",\"bpf\":\"%s\"", error_name(syscall(SYS_bpf, 0, NULL, 0) >= 0));
-  snprintf(path, sizeof path, "/proc/%d/environ", target);
-  printf(",\"environ\":\"%s\"", error_name(open(path, O_RDONLY) >= 0));
-  snprintf(path, sizeof path, "/proc/%d/mem", target);
-  printf(",\"mem\":\"%s\"}\n", error_name(open(path, O_RDONLY) >= 0));
-  return 0;
+/** How a process ended, as the last frame on its connection; dropped if the runtime is not reading. */
+static void report(int conn, int status) {
+  char frame[128];
+  const char *name = WIFSIGNALED(status) ? sigabbrev_np(WTERMSIG(status)) : NULL;
+  int length = WIFSIGNALED(status) ? (name ? snprintf(frame + 4, sizeof frame - 4, "{\"type\":\"exit\",\"signal\":\"SIG%s\"}", name)
+      : snprintf(frame + 4, sizeof frame - 4, "{\"type\":\"exit\",\"signal\":\"%d\"}", WTERMSIG(status)))
+    : snprintf(frame + 4, sizeof frame - 4, "{\"type\":\"exit\",\"code\":%d}", WEXITSTATUS(status));
+  uint32_t header = htonl((uint32_t)length);
+  memcpy(frame, &header, 4);
+  (void)!send(conn, frame, 4 + length, MSG_DONTWAIT | MSG_NOSIGNAL);
 }
 
 int main(int argc, char **argv) {
-  if (argc == 3 && !strcmp(argv[1], "probe")) return probe(atoi(argv[2]));
-  if (argc < 2) { fprintf(stderr, "usage: agent-launcher <runtime command...>\n"); return 2; }
-  const char *configured = getenv("AGENT_SANDBOX_PROCESSES");
-  char *end;
-  long count = configured && *configured ? strtol(configured, &end, 10) : 2;
-  if (configured && *configured && (*end || count < 0 || count > MAX_SANDBOXES)) {
-    fprintf(stderr, "agent-launcher: AGENT_SANDBOX_PROCESSES must be 0..%d\n", MAX_SANDBOXES);
-    return 2;
+  if (argc == 3 && !strcmp(argv[1], "probe")) {
+    pid_t target = atoi(argv[2]);
+    // As root, PTRACE_ATTACH would succeed and stop the target.
+    if (getuid() < SANDBOX_UID || getuid() >= SANDBOX_UID + MAX_CHILDREN) { fprintf(stderr, "agent-launcher: probe runs only as a sandbox uid\n"); return 2; }
+    char path[64];
+    struct iovec local = { path, 1 }, remote = { (void *)path, 1 };
+#define OUTCOME(ok) ((ok) ? "ok" : strerrorname_np(errno))
+    printf("{\"socket_inet\":\"%s\"", OUTCOME(socket(AF_INET, SOCK_STREAM, 0) >= 0));
+    printf(",\"socket_unix\":\"%s\"", OUTCOME(socket(AF_UNIX, SOCK_STREAM, 0) >= 0));
+    printf(",\"ptrace_attach\":\"%s\"", OUTCOME(ptrace(PTRACE_ATTACH, target, 0, 0) == 0));
+    printf(",\"process_vm_readv\":\"%s\"", OUTCOME(process_vm_readv(target, &local, 1, &remote, 1, 0) >= 0));
+    printf(",\"unshare_user\":\"%s\"", OUTCOME(unshare(CLONE_NEWUSER) == 0));
+    printf(",\"io_uring_setup\":\"%s\"", OUTCOME(syscall(SYS_io_uring_setup, 1, path) >= 0));
+    printf(",\"bpf\":\"%s\"", OUTCOME(syscall(SYS_bpf, 0, NULL, 0) >= 0));
+    snprintf(path, sizeof path, "/proc/%d/environ", target);
+    printf(",\"environ\":\"%s\"", OUTCOME(open(path, O_RDONLY) >= 0));
+    snprintf(path, sizeof path, "/proc/%d/mem", target);
+    printf(",\"mem\":\"%s\"}\n", OUTCOME(open(path, O_RDONLY) >= 0));
+    return 0;
   }
-  // Without sandbox processes the runtime runs js_exec itself and says so at startup.
-  if (geteuid() != 0 || count == 0) {
-    fprintf(stderr, "agent-launcher: %s; no sandbox processes\n", geteuid() != 0 ? "not root" : "AGENT_SANDBOX_PROCESSES=0");
-    if (geteuid() == 0) drop_to(RUNTIME_UID, RUNTIME_UID);
+  if (argc < 2) { fprintf(stderr, "usage: agent-launcher <runtime command...>\n"); return 2; }
+  // Without root there is nothing to confine with: the runtime runs v8-exec and parses files in
+  // processes of its own, and says so at startup.
+  if (geteuid() != 0) {
+    fprintf(stderr, "agent-launcher: not root; no confined processes\n");
     execvp(argv[1], argv + 1);
     die(argv[1]);
   }
 
+  // The settings the confined processes take, fixed here: they get no environment.
+  int n = 0;
+  argvs[V8][n++] = "v8-exec";
+  const char *jitless = getenv("AGENT_V8_JITLESS");
+  if (!jitless || (strcmp(jitless, "0") && strcasecmp(jitless, "false"))) argvs[V8][n++] = "--jitless";
+  // RLIMIT_DATA, behind its heap (128 MB) and ArrayBuffer (128 MB) limits.
+  argvs[V8][n++] = "--max-data-mb";
+  argvs[V8][n++] = "512";
+  argvs[V8][n] = NULL;
+  n = 0;
+  argvs[PARSE][n++] = "node";
+  argvs[PARSE][n++] = "--experimental-strip-types";
+  argvs[PARSE][n++] = "--disable-warning=ExperimentalWarning";
+  argvs[PARSE][n++] = PARSE_ENTRY;
+  const char *hooks = getenv("AGENT_SANDBOX_TEST_HOOKS");
+  if (hooks && !strcmp(hooks, "1")) {
+    argvs[PARSE][n++] = "--test-hooks";
+    fprintf(stderr, "agent-launcher: AGENT_SANDBOX_TEST_HOOKS=1: parse jobs serve test probes\n");
+  }
+  argvs[PARSE][n] = NULL;
+
   umask(0077);
   if (mkdir(SOCKET_DIR, 0710) && errno != EEXIST) die(SOCKET_DIR);
   if (chown(SOCKET_DIR, 0, RUNTIME_UID) || chmod(SOCKET_DIR, 0710)) die(SOCKET_DIR);
-  char sockets[MAX_SANDBOXES * 32] = "";
-  for (int i = 0; i < count; i++) {
-    listen_on(i);
-    snprintf(sockets + strlen(sockets), sizeof sockets - strlen(sockets), "%s" SOCKET_DIR "/%d.sock", i ? "," : "", i);
-  }
-  if (setenv("AGENT_SANDBOX_SOCKETS", sockets, 1)) die("setenv");
+  int listeners[KINDS];
+  for (int kind = 0; kind < KINDS; kind++) listeners[kind] = listen_on(socket_names[kind]);
+  if (setenv("AGENT_SANDBOX_DIR", SOCKET_DIR, 1)) die("setenv");
   umask(0022);
-
-  // How many there are and v8-exec's settings are the only settings a sandbox process takes.
-  int n = 0;
-  static char processes_arg[32];
-  sandbox_argv[n++] = "node";
-  sandbox_argv[n++] = "--experimental-strip-types";
-  sandbox_argv[n++] = "--disable-warning=ExperimentalWarning";
-  sandbox_argv[n++] = SANDBOX_ENTRY;
-  snprintf(sandbox_argv[n++] = processes_arg, sizeof processes_arg, "--processes=%ld", count);
-  // v8-exec's settings (src/v8-exec.ts), checked here, since the sandbox processes get no environment.
-  static char prespawn_arg[32], v8_max_arg[32];
-  const char *prespawn = getenv("AGENT_V8_PRESPAWN"), *v8_max = getenv("AGENT_V8_MAX"), *jitless = getenv("AGENT_V8_JITLESS");
-  if (prespawn && *prespawn && strspn(prespawn, "0123456789") == strlen(prespawn) && strlen(prespawn) < 4) snprintf(sandbox_argv[n++] = prespawn_arg, sizeof prespawn_arg, "--v8-prespawn=%s", prespawn);
-  if (v8_max && *v8_max && strspn(v8_max, "0123456789") == strlen(v8_max) && strlen(v8_max) < 6) snprintf(sandbox_argv[n++] = v8_max_arg, sizeof v8_max_arg, "--v8-max=%s", v8_max);
-  if (jitless && (!strcmp(jitless, "0") || !strcasecmp(jitless, "false"))) sandbox_argv[n++] = "--v8-jitless=0";
-  const char *hooks = getenv("AGENT_SANDBOX_TEST_HOOKS");
-  if (hooks && !strcmp(hooks, "1")) {
-    sandbox_argv[n++] = "--test-hooks";
-    fprintf(stderr, "agent-launcher: AGENT_SANDBOX_TEST_HOOKS=1: sandbox processes serve test probes\n");
-  }
-  sandbox_argv[n] = NULL;
+  for (int slot = 0; slot < MAX_CHILDREN; slot++) children[slot].conn = -1;
 
   sigset_t handled;
   sigemptyset(&handled);
@@ -233,8 +268,9 @@ int main(int argc, char **argv) {
   for (size_t i = 0; i < sizeof forwarded / sizeof *forwarded; i++) sigaddset(&handled, forwarded[i]);
   sigaddset(&handled, SIGCHLD);
   if (sigprocmask(SIG_BLOCK, &handled, &original_mask)) die("sigprocmask");
+  int signals = signalfd(-1, &handled, SFD_CLOEXEC | SFD_NONBLOCK);
+  if (signals < 0) die("signalfd");
 
-  for (int i = 0; i < count; i++) start_sandbox(i);
   pid_t runtime = fork();
   if (runtime < 0) die("fork");
   if (runtime == 0) {
@@ -243,40 +279,67 @@ int main(int argc, char **argv) {
     execvp(argv[1], argv + 1);
     die(argv[1]);
   }
-  fprintf(stderr, "agent-launcher: runtime started (pid %d, uid %d); %ld sandbox processes (uid %d..%ld, seccomp)\n", runtime, RUNTIME_UID, count, SANDBOX_UID, SANDBOX_UID + count - 1);
+  fprintf(stderr, "agent-launcher: runtime started (pid %d, uid %d); confined processes on demand (uid %d..%d, seccomp)\n",
+    runtime, RUNTIME_UID, SANDBOX_UID, SANDBOX_UID + MAX_CHILDREN - 1);
 
+  static struct pollfd fds[1 + KINDS + MAX_CHILDREN];
+  static int slots[MAX_CHILDREN];
   for (;;) {
-    // Sleep until a signal, or the next due restart.
-    struct timespec wait = { 3600, 0 };
-    for (int i = 0; i < count; i++) {
-      if (sandboxes[i]) continue;
-      double due = -seconds_since(&restart_at[i]);
-      if (due <= 0) { start_sandbox(i); continue; }
-      if (due < wait.tv_sec + wait.tv_nsec / 1e9) wait = (struct timespec){ (time_t)due, (long)((due - (time_t)due) * 1e9) };
+    // A sweep that could not start (fork failed) is tried again, about every second until it does.
+    int retrying = 0;
+    for (int slot = 0; slot < MAX_CHILDREN; slot++) {
+      if (children[slot].sweep_again && !children[slot].sweeper && !children[slot].pid) sweep(slot);
+      retrying |= children[slot].sweep_again && !children[slot].sweeper;
     }
-    int signal = sigtimedwait(&handled, NULL, &wait);
-    if (signal < 0) continue;
-    if (signal != SIGCHLD) { kill(runtime, signal); continue; }
-    int status;
-    pid_t pid;
-    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
-      if (pid == runtime) {
-        for (int i = 0; i < count; i++) if (sandboxes[i]) kill(sandboxes[i], SIGKILL);
-        return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
-      }
-      for (int i = 0; i < count; i++) {
-        if (sandboxes[i] != pid) continue;
-        sandboxes[i] = 0;
-        // Back off a process that keeps dying young: 0.25 s doubling to 30 s.
-        failures[i] = seconds_since(&started_at[i]) < 10 ? failures[i] + 1 : 0;
-        double delay = failures[i] ? 0.25 * (1 << (failures[i] < 8 ? failures[i] - 1 : 7)) : 0;
-        if (delay > 30) delay = 30;
-        clock_gettime(CLOCK_MONOTONIC, &restart_at[i]);
-        restart_at[i].tv_sec += (time_t)delay;
-        restart_at[i].tv_nsec += (long)((delay - (time_t)delay) * 1e9);
-        if (restart_at[i].tv_nsec >= 1000000000L) { restart_at[i].tv_sec++; restart_at[i].tv_nsec -= 1000000000L; }
-        fprintf(stderr, "agent-launcher: sandbox %d (pid %d) %s %d; restarting in %.2fs\n", i, pid,
-          WIFEXITED(status) ? "exited with status" : "killed by signal", WIFEXITED(status) ? WEXITSTATUS(status) : WTERMSIG(status), delay);
+    int count = 0;
+    fds[count++] = (struct pollfd){ signals, POLLIN, 0 };
+    for (int kind = 0; kind < KINDS; kind++) fds[count++] = (struct pollfd){ listeners[kind], POLLIN, 0 };
+    // A connection the runtime closed: only hang-ups are watched, its data is the process's to read.
+    int watched = 0;
+    for (int slot = 0; slot < MAX_CHILDREN; slot++) {
+      if (children[slot].conn < 0 || children[slot].hung_up) continue;
+      slots[watched++] = slot;
+      fds[count++] = (struct pollfd){ children[slot].conn, POLLRDHUP, 0 };
+    }
+    if (poll(fds, count, retrying ? 1000 : -1) < 0) { if (errno == EINTR) continue; die("poll"); }
+
+    for (int i = 0; i < watched; i++) {
+      if (!fds[1 + KINDS + i].revents) continue;
+      int slot = slots[i];
+      children[slot].hung_up = 1;
+      if (children[slot].pid) kill(children[slot].pid, SIGKILL);
+      sweep(slot);
+    }
+    for (int kind = 0; kind < KINDS; kind++) {
+      if (!(fds[1 + kind].revents & POLLIN)) continue;
+      int conn;
+      while ((conn = accept4(listeners[kind], NULL, NULL, SOCK_CLOEXEC)) >= 0) start(kind, conn);
+    }
+    if (!fds[0].revents) continue;
+    struct signalfd_siginfo info;
+    while (read(signals, &info, sizeof info) == sizeof info) {
+      if (info.ssi_signo != SIGCHLD) { kill(runtime, info.ssi_signo); continue; }
+      int status;
+      pid_t pid;
+      while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
+        if (pid == runtime) {
+          for (int slot = 0; slot < MAX_CHILDREN; slot++) if (children[slot].pid) kill(children[slot].pid, SIGKILL);
+          return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+        }
+        for (int slot = 0; slot < MAX_CHILDREN; slot++) {
+          if (children[slot].sweeper == pid) {
+            children[slot].sweeper = 0;
+            if (children[slot].sweep_again) sweep(slot);
+            break;
+          }
+          if (children[slot].pid != pid) continue;
+          if (!children[slot].hung_up) report(children[slot].conn, status);
+          close(children[slot].conn);
+          children[slot].pid = 0;
+          children[slot].conn = -1;
+          sweep(slot);
+          break;
+        }
       }
     }
   }

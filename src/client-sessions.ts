@@ -234,6 +234,8 @@ const MODEL_RUNS = ["prompt", "continue"];
 const ACTIVE_REPORT_MS = 60_000;
 /** Resumes of one run's turn before it fails as uncertain, so a turn that kills its node cannot loop. */
 const MAX_RESUMES = 2;
+/** Notified, as `<node> <agent>`, when a node gives up an agent with runs open, or ends a dead peer's heartbeat: nodes sweep at once. */
+export const ORPHANS_CHANNEL = "agent_runtime_orphans";
 /** A model turn that began can continue from its transcript on another node; a code execution cannot. */
 const resumable = (request: RequestRecord) => ["prompt", "continue", "resume"].includes(request.method) && !!request.began;
 /** Requests an agent may have accepted but not finished, queued runs included. */
@@ -417,7 +419,7 @@ export interface ClientSessionOptions {
   runLimitsFor?: (tenant: string) => Promise<Required<RunLimits>>;
   /** A tenant's js_exec limits: CPU per execution, the longest timeoutMs, and executions at once on this node. Default `CODE_LIMITS`. */
   codeLimitsFor?: (tenant: string) => Promise<CodeLimits>;
-  /** js_exec executions this node runs at once for tenants with a concurrency limit, together; default what its memory affords (`codeCapacity`). */
+  /** js_exec executions this node runs at once for tenants with a concurrency limit, together; default `codeCapacity`. */
   codeCapacity?: number;
   /** Why a tenant may not start any run, code executions included (spent prepaid credit). Checked when a run is accepted and when it starts. */
   creditLimit?: (tenant: string) => Promise<Refusal | undefined>;
@@ -2423,6 +2425,23 @@ export class ClientSessions {
     return loaded;
   }
 
+  /**
+   * Sweep now (see `resumeOrphans`): for the interval's sweep, and when work was just left without an owner
+   * (a node released agents with runs open, or a dead node's heartbeat was ended). One sweep at a time; one
+   * asked for while another runs runs after it, so work freed meanwhile is not missed.
+   */
+  resumeSoon(): Promise<void> {
+    if (this.resuming) { this.resumeAgain = true; return this.resuming; }
+    return this.resuming = (async () => {
+      try {
+        do { this.resumeAgain = false; await this.resumeOrphans(); } while (this.resumeAgain && !this.closed && !this.draining);
+      } catch (error) { console.error(JSON.stringify({ type: "orphan_sweep_failed", error: safeError(error) })); }
+      finally { this.resuming = undefined; }
+    })();
+  }
+  private resuming?: Promise<void>;
+  private resumeAgain = false;
+
   /** A put-off load of an agent's work, as its state and listing show it: how many times it failed, and until when. */
   private async resumeState(id: string) {
     const row = (await this.db.query("select resume_failures, resume_after from agents where id = $1", [id])).rows[0];
@@ -3785,6 +3804,9 @@ export class ClientSessions {
     // Runs left open are its next owner's to count.
     await this.releaseBusy(session, true);
     if (session.claim) await this.options.ownership!.release(session.claim).catch(() => {});
+    // Runs left open (a drain's or a retirement's): peers sweep at once rather than at their next interval.
+    const node = this.options.ownership?.node;
+    if (node && session.running.size && !session.handedBack) void this.db.query("select pg_notify($1, $2)", [ORPHANS_CHANNEL, `${node} ${session.header.id}`]).catch(() => {});
   }
 
   /** This node fenced itself: another node may already be serving the agent, so stop writing, stop the agent, forget it. */

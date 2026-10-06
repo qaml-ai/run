@@ -12,12 +12,12 @@ import { expireIdempotencyKeys } from "./idempotency.ts";
 import { DOCS_SITE, loadDocs, loadRegistry, SKILL_PATHS } from "./docs.ts";
 import { StorageGc } from "./storage-gc.ts";
 import { modelHeadersInput, resolveModel, sessionConfig } from "./session-config.ts";
-import { ClientSessions, RUN_LIMITS, spendInput , type SessionHooks } from "./client-sessions.ts";
+import { ClientSessions, ORPHANS_CHANNEL, RUN_LIMITS, spendInput, type SessionHooks } from "./client-sessions.ts";
 import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts";
 import { StorageUsage } from "./storage-usage.ts";
 import { postgresTail, sweepTails } from "./log-tail.ts";
 import { databaseFromEnvironment, listenFromEnvironment, migrate } from "./db.ts";
-import { Ownership } from "./ownership.ts";
+import { Ownership, probeNode } from "./ownership.ts";
 import { BusyAgents } from "./busy-agents.ts";
 import { tenantsFromEnvironment } from "./tenants.ts";
 import { Accounts } from "./accounts.ts";
@@ -101,7 +101,7 @@ const drainMs = Number(process.env.AGENT_DRAIN_TIMEOUT_MS ?? 100_000);
 if (!Number.isInteger(drainMs) || drainMs < 0) throw new Error("AGENT_DRAIN_TIMEOUT_MS must be a non-negative integer");
 const retireMaxMs = Number(process.env.AGENT_RETIRE_MAX_MS ?? 6 * 60 * 60_000);
 if (!Number.isInteger(retireMaxMs) || retireMaxMs < 0) throw new Error("AGENT_RETIRE_MAX_MS must be a non-negative integer");
-// Where js_exec runs, reported in the "listening" line; fails startup if isolation is required but absent.
+// Where js_exec and file parsing run, reported in the "listening" line; fails startup if either does not work, or if isolation is required but absent.
 const sandbox = await checkSandbox();
 // How tools.search ranks: keywords alone, or fused with the operator's rerank stages.
 // The key: a dedicated one if set (AGENT_TOOL_SEARCH_API_KEY, or the tool-search secret), else the
@@ -119,6 +119,10 @@ await migrate(db);
 // Shared logs keep their recent records in Postgres until they are compacted into Storage.
 const storageDescriptor = storageFromEnvironment(root);
 const leaseTtlMs = Number(process.env.AGENT_LEASE_TTL_MS ?? 90_000);
+// How often every node sweeps for agents with work no node is doing (0: never). Nodes also sweep at once when told
+// that work was left (a drain, a retirement, a dead peer found), so this is the backstop.
+const orphanMs = Number(process.env.AGENT_ORPHAN_SWEEP_MS ?? 10_000);
+if (!Number.isInteger(orphanMs) || orphanMs < 0) throw new Error("AGENT_ORPHAN_SWEEP_MS must be a non-negative integer (0: no sweep)");
 // A durable flush while the database is away waits up to a lease for it; by then the node has fenced anyway.
 // What each agent, volume and tenant stores is tracked as objects are written and deleted, for the storage charge.
 const storageUsage = new StorageUsage(db);
@@ -126,7 +130,8 @@ const storage = await openStorage(storageDescriptor, postgresTail(db, { retryMs:
 const distributed = storageDescriptor.kind === "s3" || !!(storageDescriptor.kind === "file" && storageDescriptor.shared);
 const address = await taskAddress();
 const node = nodeUrl(process.env, port, address);
-const ownership = new Ownership(db, { node, ttlMs: leaseTtlMs });
+// A peer whose heartbeat is late and whose address no longer accepts connections has died: its actors are freed at once.
+const ownership = new Ownership(db, { node, ttlMs: leaseTtlMs, alive: peer => probeNode(peer) });
 await ownership.start();
 // Local files are this host's alone: a second node on the same database would serve agents and volumes whose
 // logs it cannot see, with nothing to fence its writes. Wait out a peer that may have just died, then refuse.
@@ -553,7 +558,7 @@ const clients = new ClientSessions(supervisor, {
   tracing: telemetry,
   // A self-hosted runtime configured by its environment takes keys there too.
   ...(process.env.AGENT_TENANT ? { modelKeyHint: "On this self-hosted runtime, AGENT_TENANT_API_KEYS in its environment sets keys too ({\"anthropic\": \"sk-ant-...\"}; restart it after)." } : {}),
-  secret: sessionSecret, toolTimeoutMs, idleMs, maxAgentsPerTenant, ...(process.env.AGENT_SNAPSHOT_BYTES ? { snapshotBytes: Number(process.env.AGENT_SNAPSHOT_BYTES) } : {}), orphanSweepMs: Number(process.env.AGENT_ORPHAN_SWEEP_MS ?? 30_000), watcherLimitFor: tenant => tenants.maxWatchers(tenant), busyAgents, agentLimitFor: async tenant => {
+  secret: sessionSecret, toolTimeoutMs, idleMs, maxAgentsPerTenant, ...(process.env.AGENT_SNAPSHOT_BYTES ? { snapshotBytes: Number(process.env.AGENT_SNAPSHOT_BYTES) } : {}), orphanSweepMs: orphanMs, watcherLimitFor: tenant => tenants.maxWatchers(tenant), busyAgents, agentLimitFor: async tenant => {
     // Agents hosted on this node stay within the tenant's busy limit too: its own, or its tier's (else the default).
     const { limit, source } = await accounts.billing.busyLimit(tenant);
     return source === "default" ? undefined : limit;
@@ -623,6 +628,14 @@ const loads = await listenFromEnvironment({
   },
   [ENDPOINTS_CHANNEL]: tenant => subscribers.forget(tenant),
   [TELEMETRY_CHANNEL]: tenant => telemetry.forget(tenant),
+  // Work just left without an owner: a peer released agents with runs open, or ended a dead node's heartbeat.
+  [ORPHANS_CHANNEL]: payload => { if (orphanMs && payload.split(" ")[0] !== node) void clients.resumeSoon(); },
+});
+// A dead peer's agents are free: sweep for them here, and tell the other nodes to.
+ownership.onReaped(() => {
+  if (!orphanMs) return;
+  void clients.resumeSoon();
+  void db.query("select pg_notify($1, $2)", [ORPHANS_CHANNEL, node]).catch(() => {});
 });
 // Wake-ups are delivered as prompts with ids derived from the schedule, so repeats are no-ops.
 const scheduler = new Scheduler({
@@ -968,11 +981,10 @@ purgeTimer.unref();
 const storageGc = new StorageGc({ db, storage, volumes, graceMs: Number(process.env.AGENT_GC_GRACE_MS ?? 24 * 60 * 60_000), intervalMs: Number(process.env.AGENT_GC_INTERVAL_MS ?? 6 * 60 * 60_000), dryRun: process.env.AGENT_GC_DRY_RUN === "true" });
 if (process.env.AGENT_GC_ENABLED === "true") storageGc.start(Number(process.env.AGENT_GC_POLL_MS ?? 60_000));
 // Agents no node holds with work left (a dead owner's turn, runs a drain queued) are loaded by whichever node gets to them first,
-// so their runs resume even when no one reads them.
-const orphanMs = Number(process.env.AGENT_ORPHAN_SWEEP_MS ?? 30_000);
-if (!Number.isInteger(orphanMs) || orphanMs < 0) throw new Error("AGENT_ORPHAN_SWEEP_MS must be a non-negative integer (0: no sweep)");
-const orphanTimer = orphanMs ? setInterval(() => void clients.resumeOrphans().catch(error => console.error(JSON.stringify({ type: "orphan_sweep_failed", error: errorText(error) }))), orphanMs) : undefined;
+// so their runs resume even when no one reads them. A node sweeps as it starts too: in a deploy, its peers are retiring and do not.
+const orphanTimer = orphanMs ? setInterval(() => void clients.resumeSoon(), orphanMs) : undefined;
 orphanTimer?.unref();
+if (orphanMs) void clients.resumeSoon();
 // Storage is charged to prepaid tenants once a UTC day, by whichever node claims the day's job first.
 const billingMs = Number(process.env.AGENT_BILLING_INTERVAL_MS ?? 60 * 60_000);
 if (!Number.isInteger(billingMs) || billingMs < 1000) throw new Error("AGENT_BILLING_INTERVAL_MS must be an integer of at least 1000");

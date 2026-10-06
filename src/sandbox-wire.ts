@@ -6,6 +6,9 @@ import type { Socket } from "node:net";
  */
 export const MAX_FRAME_BYTES = 4 * 1024 * 1024;
 
+/** Bytes per frame of a file to and from a parse job: base64 of this stays well under MAX_FRAME_BYTES. */
+export const INSPECT_FRAME_BYTES = 2 * 1024 * 1024;
+
 /**
  * Length-prefixed JSON frames over a stream socket, one execution per connection.
  * A frame that is oversized or not JSON destroys the socket.

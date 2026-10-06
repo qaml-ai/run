@@ -127,7 +127,7 @@ export function recordCodeExecution(execution: { tenant?: string; ms: number; re
 /**
  * A v8-exec process that did not get to answer: it could not be started (`code`, the spawn's errno, logged as `errno`),
  * or something other than the runtime killed it (`signal`: SIGSYS for its seccomp allowlist, SIGXCPU
- * or SIGKILL for its rlimits or the OOM killer). Written by the sandbox process that ran it.
+ * or SIGKILL for its rlimits or the OOM killer; agent-launcher reports the signal). Written by the runtime that ran it.
  */
 export function recordV8Exec(event: { event: "spawn_failed" | "killed"; code?: string; signal?: string }) {
   emit("v8_exec", {

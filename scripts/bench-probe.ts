@@ -19,7 +19,7 @@ if (isMainThread) {
     return (query as any).apply(this, args);
   } as any;
 
-  // Linux only: the main thread's own CPU time, and the container's (every process in it, sandbox processes included).
+  // Linux only: the main thread's own CPU time, and the container's (every process in it, v8-exec and parse jobs included).
   const mainThread = () => {
     try { const fields = readFileSync(`/proc/self/task/${process.pid}/stat`, "utf8").split(") ")[1].split(" "); return (Number(fields[11]) + Number(fields[12])) * 10_000; }
     catch { return undefined; }

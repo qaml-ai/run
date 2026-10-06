@@ -1,14 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { once } from "node:events";
+import { createServer } from "node:net";
 import pg from "pg";
 import type { Db } from "../src/db.ts";
-import { Ownership } from "../src/ownership.ts";
+import { Ownership, probeNode } from "../src/ownership.ts";
 import { testDatabase } from "./database.ts";
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 /** A node's own connection pool, which a test can partition from the database and whose statements it counts. */
-async function node(url: string, name: string, ttlMs = 30_000) {
+async function node(url: string, name: string, ttlMs = 30_000, alive?: (node: string) => Promise<boolean>) {
   const pool = new pg.Pool({ connectionString: url, max: 2 });
   const link = { partitioned: false, statements: [] as string[], after: undefined as ((text: string) => Promise<void>) | undefined };
   const db = {
@@ -20,7 +22,7 @@ async function node(url: string, name: string, ttlMs = 30_000) {
       return result;
     },
   } as unknown as Db;
-  const ownership = new Ownership(db, { node: name, ttlMs });
+  const ownership = new Ownership(db, { node: name, ttlMs, alive });
   const fences: string[] = [];
   ownership.onFence(reason => fences.push(reason));
   await ownership.start();
@@ -217,4 +219,78 @@ test("a draining node takes nothing new, sends unowned actors to a live peer, an
   await c.ownership.drain();
   b.ownership.forget();
   assert.equal(await b.ownership.peer(), undefined);
+});
+
+/** Make `name`'s heartbeat look as if its last renewal was `lateMs` ago, by the database's clock. */
+const late = (db: pg.Pool, name: string, ttlMs: number, lateMs: number) =>
+  db.query("update runtime_nodes set expires_at = now() + $2 * interval '1 millisecond' where node = $1", [name, ttlMs - lateMs]);
+
+test("a peer ends a late heartbeat whose node is gone: its actors move at once with a higher epoch, and the node fences if it comes back", async t => {
+  const { db, url } = await testDatabase();
+  const gone = new Set<string>();
+  const alive = async (name: string) => !gone.has(name);
+  const a = await node(url, "http://a", 30_000, alive), b = await node(url, "http://b", 30_000, alive);
+  t.after(async () => { await a.stop(); await b.stop(); });
+  const reaped: string[][] = [];
+  b.ownership.onReaped(nodes => reaped.push(nodes));
+  const held = await a.ownership.acquire("client_r");
+  assert.ok("claim" in held);
+  a.link.partitioned = true;
+  gone.add("http://a");
+
+  // Two renewals late is not yet a suspect; three is.
+  await late(db, "http://a", 30_000, 2 * b.ownership.heartbeatMs);
+  assert.deepEqual(await b.ownership.reap(), []);
+  assert.deepEqual(await b.ownership.acquire("client_r"), { owner: "http://a" });
+  await late(db, "http://a", 30_000, 3 * b.ownership.heartbeatMs + 100);
+  assert.deepEqual(await b.ownership.reap(), ["http://a"]);
+  assert.deepEqual(reaped, [["http://a"]]);
+  const taken = await b.ownership.acquire("client_r");
+  assert.ok("claim" in taken && taken.claim.epoch === held.claim.epoch + 1, "taken long before the 30 s expiry");
+
+  // Back, it cannot renew the heartbeat a peer ended: it fences, and the actor stays where it moved.
+  a.link.partitioned = false;
+  await a.ownership.renew();
+  assert.deepEqual(a.fences, ["heartbeat_replaced"]);
+  assert.equal(a.ownership.holds(held.claim), false);
+  assert.deepEqual(await a.ownership.acquire("client_r"), { owner: "http://b" });
+});
+
+test("a late heartbeat whose node still accepts connections is left to expire, and a timely one is not probed", async t => {
+  const { db, url } = await testDatabase();
+  const probed: string[] = [];
+  const alive = async (name: string) => { probed.push(name); return true; };
+  const a = await node(url, "http://a", 30_000, alive), b = await node(url, "http://b", 30_000, alive), c = await node(url, "http://c", 30_000, alive);
+  t.after(async () => { await a.stop(); await b.stop(); await c.stop(); });
+  assert.ok("claim" in await a.ownership.acquire("client_s"));
+  // A stalled node, or one cut off from the database: late, but its process runs.
+  a.link.partitioned = true;
+  await late(db, "http://a", 30_000, 20_000);
+  probed.length = 0;
+  assert.deepEqual(await b.ownership.reap(), []);
+  assert.deepEqual(probed, ["http://a"]);
+  assert.deepEqual(await b.ownership.acquire("client_s"), { owner: "http://a" });
+});
+
+test("an expired heartbeat is never renewed: its node fences instead", async t => {
+  const { db, url } = await testDatabase();
+  const a = await node(url, "http://a");
+  t.after(() => a.stop());
+  const held = await a.ownership.acquire("client_t");
+  assert.ok("claim" in held);
+  await db.query("update runtime_nodes set expires_at = now() - interval '1 millisecond' where node = 'http://a'");
+  await a.ownership.renew();
+  assert.deepEqual(a.fences, ["heartbeat_replaced"]);
+  assert.equal(a.ownership.holds(held.claim), false);
+});
+
+test("probeNode: a listening address is alive; a closed port is gone; an address it cannot resolve or parse is assumed alive", async () => {
+  const server = createServer().listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const port = (server.address() as { port: number }).port;
+  assert.equal(await probeNode(`http://127.0.0.1:${port}`), true);
+  await new Promise(resolve => server.close(resolve));
+  assert.equal(await probeNode(`http://127.0.0.1:${port}`), false);
+  assert.equal(await probeNode("http://no-such-node.invalid:8790"), true);
+  assert.equal(await probeNode("first"), true);
 });

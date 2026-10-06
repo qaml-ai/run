@@ -1,11 +1,16 @@
-// js_exec cost through the full executeCode path: latency of `return 1`, and
-// the resident memory each concurrent execution holds (this process, any child
-// processes, and the sandbox processes when agent-launcher runs them).
-// Usage: npm run bench:codemode [-- concurrency]
-import { execFileSync } from "node:child_process";
+// js_exec and file parsing cost, as production runs them: js_exec `return 1` latency through executeCode,
+// file parsing latency (inspect an image's header, scale a large image down), and the memory the
+// container's processes hold idle and with executions waiting on a tool. Run it in the image, under
+// agent-launcher, so the confined processes are as in production:
+//   docker run --rm --init -v "$PWD/scripts/bench-codemode.ts:/app/scripts/bench-codemode.ts:ro" agent-runtime \
+//     node --experimental-strip-types --disable-warning=ExperimentalWarning --expose-gc scripts/bench-codemode.ts [concurrency]
+// (or npm run bench:codemode, here, without the launcher).
+// On Linux, memory is the VmRSS of every process the container can see; elsewhere, this process's.
 import { readdirSync, readFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
-import { executeCode, sandboxProcesses } from "../src/codemode.ts";
+import sharp from "sharp";
+import { executeCode } from "../src/codemode.ts";
+import { fitImage, inspect } from "../src/inspect.ts";
 import type { ToolBridge } from "../src/protocol.ts";
 
 const concurrency = Number(process.argv[2] ?? 16);
@@ -17,56 +22,55 @@ const bridge: ToolBridge = {
 };
 const run = (code: string) => executeCode({ code, bridge });
 
-function descendants(pid: number): number[] {
-  let children: number[] = [];
-  try { children = execFileSync("pgrep", ["-P", String(pid)], { encoding: "utf8" }).trim().split("\n").filter(Boolean).map(Number); }
-  catch { return []; }
-  return children.flatMap(child => [child, ...descendants(child)]);
-}
-/** Linux only: sandbox processes run under the launcher, not this process. */
-function sandboxRssBytes(): number {
-  if (!sandboxProcesses()) return 0;
-  return readdirSync("/proc").filter(name => /^\d+$/.test(name)).reduce((sum, pid) => {
-    try {
-      if (!readFileSync(`/proc/${pid}/cmdline`, "utf8").includes("sandbox-server.ts")) return sum;
-      return sum + Number(/VmRSS:\s+(\d+)/.exec(readFileSync(`/proc/${pid}/status`, "utf8"))![1]) * 1024;
-    } catch { return sum; }
-  }, 0);
-}
+/** MB resident, in all and by program (the last file its command line names, or its first word). */
 function rssMb() {
-  const pids = descendants(process.pid);
-  const children = pids.length ? execFileSync("ps", ["-o", "rss=", "-p", pids.join(",")], { encoding: "utf8" }).trim().split("\n").reduce((sum, kb) => sum + Number(kb), 0) * 1024 : 0;
-  return (process.memoryUsage().rss + children + sandboxRssBytes()) / 2 ** 20;
+  if (process.platform !== "linux") return { total: process.memoryUsage().rss / 2 ** 20, by: {} };
+  const by: Record<string, number> = {};
+  for (const pid of readdirSync("/proc").filter(name => /^\d+$/.test(name))) {
+    try {
+      const kb = Number(/VmRSS:\s+(\d+)/.exec(readFileSync(`/proc/${pid}/status`, "utf8"))?.[1] ?? 0);
+      const words = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
+      const name = (words.filter(word => /[/.]/.test(word) && !word.startsWith("-")).at(-1) ?? words[0]).split("/").at(-1)!;
+      by[name] = +((by[name] ?? 0) + kb / 1024).toFixed(1);
+    } catch {}
+  }
+  return { total: Object.values(by).reduce((a, b) => a + b, 0), by };
 }
-const percentile = (sorted: number[], p: number) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))];
+const percentile = (values: number[], p: number) => { const sorted = [...values].sort((a, b) => a - b); return +sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))].toFixed(2); };
+async function time(runs: number, fn: () => Promise<unknown>) {
+  const took: number[] = [];
+  for (let i = 0; i < runs; i++) {
+    const start = performance.now();
+    await fn();
+    took.push(performance.now() - start);
+  }
+  return { p50Ms: percentile(took, 0.5), p90Ms: percentile(took, 0.9) };
+}
 
 for (let i = 0; i < 20; i++) await run("return 1");
-const latencies: number[] = [];
-for (let i = 0; i < 200; i++) {
-  const start = performance.now();
-  await run("return 1");
-  latencies.push(performance.now() - start);
-}
-latencies.sort((a, b) => a - b);
+const execute = await time(200, () => run("return 1"));
+const small = await sharp({ create: { width: 64, height: 48, channels: 3, background: "#3366aa" } }).png().toBuffer();
+const large = await sharp({ create: { width: 2400, height: 1800, channels: 3, background: "#3366aa" } }).png().toBuffer();
+const pdf = Buffer.from("%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj 2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj 3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 10 10]>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n");
+for (let i = 0; i < 3; i++) await inspect(small);
+const header = await time(30, () => inspect(small));
+const pages = await time(30, () => inspect(pdf, true));
+const fit = await time(20, async () => { const fitted = await fitImage(large); if ("omitted" in fitted) throw new Error(fitted.omitted); });
 
-global.gc?.();
-await sleep(500);
+(globalThis as { gc?: () => void }).gc?.();
+await sleep(1000);
 const idle = rssMb();
 const held = Array.from({ length: concurrency }, () => run("return await tools.hold({})"));
 while (entered < concurrency) await sleep(10);
-await sleep(200);
+await sleep(300);
 const busy = rssMb();
 release.resolve();
 await Promise.all(held);
 
 console.log(JSON.stringify({
-  mode: sandboxProcesses() ? "isolated" : "in-process",
-  p50Ms: +percentile(latencies, 0.5).toFixed(2),
-  p90Ms: +percentile(latencies, 0.9).toFixed(2),
-  concurrency,
-  idleRssMb: +idle.toFixed(1),
-  busyRssMb: +busy.toFixed(1),
-  rssPerExecutionMb: +((busy - idle) / concurrency).toFixed(2),
-  executionsIn2Gb: Math.floor((2048 - idle) / ((busy - idle) / concurrency)),
+  sandbox: process.env.AGENT_SANDBOX_DIR ? "isolated" : "in-process",
+  execute, inspectImage: header, inspectPdf: pages, fitImage: fit,
+  concurrency, idleRssMb: +idle.total.toFixed(1), busyRssMb: +busy.total.toFixed(1), rssPerExecutionMb: +((busy.total - idle.total) / concurrency).toFixed(2),
+  idleByProgram: idle.by,
 }));
 process.exit(0);

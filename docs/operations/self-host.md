@@ -18,8 +18,8 @@ on deploys, Secrets Manager) turn on only when their settings are present.
 The image is `ghcr.io/qaml-ai/run:<version>`. It needs no extra
 privileges: no `--privileged`, no added capabilities, no Docker socket, no
 gVisor. Its entrypoint, `agent-launcher`, starts as root inside the container,
-runs each [sandbox process](sandbox.md) for `js_exec` as its own uid under a
-seccomp filter with `no_new_privs`, and runs the runtime itself as `node`; that
+runs each [`js_exec` and file-parsing process](sandbox.md) as a uid of its own
+under a seccomp filter with `no_new_privs`, and runs the runtime itself as `node`; that
 takes only Docker's default capabilities (`SETUID`, `SETGID`). A seccomp or
 AppArmor profile stricter than Docker's default can stop it: the runtime then
 refuses to start (`AGENT_SANDBOX_REQUIRED=1`) rather than run code unsandboxed.

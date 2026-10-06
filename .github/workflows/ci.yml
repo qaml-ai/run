@@ -95,7 +95,7 @@ jobs:
           if-no-files-found: error
   image:
     # The deployed image installs only runtime dependencies; prove it migrates its database, starts and serves,
-    # with js_exec isolated in sandbox processes. Built natively for production's ARM64 (Graviton).
+    # with js_exec and file parsing confined by agent-launcher. Built natively for production's ARM64 (Graviton).
     runs-on: ubuntu-24.04-arm
     services:
       postgres:
@@ -127,15 +127,15 @@ jobs:
           for _ in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8790/healthz; then
               docker logs runtime 2>&1 | grep '"type":"listening"' | grep -q '"sandbox":{"mode":"isolated"' && exit 0
-              docker logs runtime; echo "js_exec is not running in sandbox processes"; exit 1
+              docker logs runtime; echo "js_exec is not running confined"; exit 1
             fi
             sleep 1
           done
           docker logs runtime; exit 1
       - run: docker rm -f runtime
-      # From inside a sandbox process: its uid, empty environment, seccomp filter and what it cannot reach;
-      # then js_exec end to end (the v8-exec process under its sandbox process and its own seccomp filter),
-      # and a killed sandbox process restarted.
+      # From inside a parse job: its uid, empty environment, seccomp filter and what it cannot reach;
+      # then js_exec end to end (a v8-exec process with a uid of its own, the launcher's filter and its own),
+      # and every confined process killed, with js_exec and parsing still serving.
       - run: node --experimental-strip-types --disable-warning=ExperimentalWarning tests/image-isolation.ts
         env: { IMAGE: "agent-runtime:ci", DATABASE_URL: "postgres://postgres:test@127.0.0.1:5432/postgres" }
       # And the image's v8-exec on ARM64, seccomp included, as the node user.
