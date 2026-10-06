@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { z } from "zod";
+import { Agents, RunError } from "../clients/node.ts";
 import { OPERATOR, OTHER_OPERATOR, runtime, toolCall, until } from "./runtime-server.ts";
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -211,4 +213,39 @@ test("a run's configuration is checked before anything is made", async t => {
   }
   assert.equal((await r.db.query("select count(*)::int as n from agents where not revoked")).rows[0].n, 0);
   assert.equal(r.model.bodies.length, 0);
+});
+
+test("the TypeScript SDK: agents.run in one call, runs.stream as it happens, runs.get, abort and messages", async t => {
+  const r = await runtime(t, body => /slow/.test(JSON.stringify(body.messages)) ? { role: "assistant", content: "never", delayMs: 8_000 }
+    : /vote/.test(JSON.stringify(body.messages)) ? toolCall("final_output", { vote: "yes" }) : body.messages.some((message: any) => message.role === "tool") ? { role: "assistant", content: "two" } : toolCall("js_exec", { code: "return 1 + 1" }));
+  const agents = new Agents({ url: r.base, apiKey: OPERATOR });
+  const voted = await agents.run({ instructions: "Vote.", input: "vote: ship it?", output: z.object({ vote: z.enum(["yes", "no"]) }), metadata: { voter: "1" } });
+  assert.equal(voted.status, "completed");
+  assert.deepEqual(voted.output, { vote: "yes" });
+  assert.match(voted.id, /^run_/);
+  const again = await agents.runs.get(voted.id);
+  assert.deepEqual(again.output, { vote: "yes" });
+  assert.deepEqual(again.metadata, { voter: "1" });
+  assert.deepEqual((await agents.runs.messages(voted.id)).map(message => message.role), ["user", "assistant", "toolResult"]);
+
+  const stream = await agents.runs.stream({ input: "add" });
+  const parts = [];
+  for await (const part of stream) parts.push(part);
+  assert.deepEqual(parts.map(part => part.type), ["tool_call", "tool_result", "text", "done"]);
+  const done = parts.at(-1) as { type: "done"; run: { text: string } };
+  assert.equal(done.run.text, "two");
+  assert.equal((await stream.result()).text, "two");
+
+  const slow = await agents.runs.create({ input: "slow" });
+  assert.equal(slow.status, "running");
+  await until(() => r.model.bodies.some(body => /slow/.test(JSON.stringify(body.messages))), "the slow model call");
+  await agents.runs.abort(slow.id);
+  const aborted = await agents.runs.stream(slow.id, { throwOnError: false });
+  const failed = await aborted.result();
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.error?.code, "aborted");
+  await assert.rejects(agents.run({ input: "slow", idempotencyKey: "slow-2", signal: AbortSignal.timeout(500) }), /aborted|timeout/i);
+  await agents.runs.abort((await agents.runs.create({ input: "slow", idempotencyKey: "slow-2" })).id);
+  await assert.rejects(agents.runs.run({ input: "slow", idempotencyKey: "slow-2" }), (error: unknown) => error instanceof RunError && error.run.error?.code === "aborted");
+  assert.deepEqual(await agents.runtime.listAgents(), [], "no agents were made");
 });

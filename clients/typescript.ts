@@ -697,6 +697,7 @@ class Transport {
         if (!response.ok) throw Object.assign(new AgentError(value.error ?? `HTTP ${response.status}`, response.status), { retryAfterMs: retryAfter(response), ...codeOf(value) });
         return value;
       } catch (error) {
+        if (signal?.aborted) throw signal.reason;
         const limited = error instanceof AgentError && error.status === 429;
         if (signal?.aborted) throw error;
         if (limited ? attempt >= RATE_LIMIT_ATTEMPTS - 1 : !retry || attempt >= 3 || (error instanceof AgentError && error.status < 500)) throw error;
@@ -925,7 +926,120 @@ export class AgentRuntime {
     const query = [options.schemas && "schemas=true", options.refresh && "refresh=true"].filter(Boolean).join("&");
     return (await this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}${query ? `?${query}` : ""}`, this.operator())).toolSources;
   }
+
+  /**
+   * Start a stateless run (POST /v1/runs): a configuration and an input, nothing carried over. With `wait` (true: up to
+   * 60 s, or seconds) it answers once the run ends, else still running. Retries are safe: each create has an
+   * Idempotency-Key (one of its own unless given), so a retry is the same run.
+   */
+  createRun(request: RunRequest, options: { idempotencyKey?: string; wait?: boolean | number; traceparent?: string; signal?: AbortSignal } = {}): Promise<StatelessRun> {
+    const waitMs = options.wait === true ? 60_000 : typeof options.wait === "number" ? Math.min(options.wait, 60) * 1000 : 0;
+    return this.transport.json("/v1/runs", this.operator(), "POST", { ...withMultiAgent(request as RunRequest & { builtins?: Builtin[] }), ...(options.wait !== undefined ? { wait: options.wait } : {}) }, true,
+      { "Idempotency-Key": options.idempotencyKey ?? globalThis.crypto.randomUUID(), ...traceHeader(options.traceparent) }, waitMs + 15_000, options.signal);
+  }
+  /** A stateless run: running, or how it ended. `wait` (seconds, at most 25) waits for it to end first. */
+  getRun(id: string, options: { wait?: number; signal?: AbortSignal } = {}): Promise<StatelessRun> {
+    const wait = Math.min(options.wait ?? 0, 25);
+    return this.transport.json(`/v1/runs/${encodeURIComponent(id)}${wait ? `?wait=${wait}` : ""}`, this.operator(), "GET", undefined, true, {}, wait * 1000 + 15_000, options.signal);
+  }
+  /** A stateless run once it ends, however long it takes; `signal` stops waiting (not the run: `abortRun` does). */
+  async waitForRun(id: string, options: { signal?: AbortSignal } = {}): Promise<StatelessRun> {
+    for (;;) {
+      options.signal?.throwIfAborted();
+      const run = await this.getRun(id, { wait: 25, ...(options.signal ? { signal: options.signal } : {}) });
+      if (run.status !== "running") return run;
+    }
+  }
+  abortRun(id: string): Promise<{ aborted: true }> { return this.transport.json(`/v1/runs/${encodeURIComponent(id)}/abort`, this.operator(), "POST", {}, true); }
+  /** Delete a run now, before its retention ends (a running one stops). */
+  deleteRun(id: string): Promise<{ deleted: true }> { return this.transport.json(`/v1/runs/${encodeURIComponent(id)}`, this.operator(), "DELETE", undefined, true); }
+  /** A run's messages: its input, the model's turns and tool results. */
+  runMessages(id: string): Promise<AgentHistory> { return this.transport.json(`/v1/runs/${encodeURIComponent(id)}/messages`, this.operator()); }
+  /**
+   * A run's event stream, to its end (its `response` frame): reconnecting with Last-Event-ID where the connection drops,
+   * so no event is missed or repeated where the stream still has them (a stream that no longer has them starts with a snapshot).
+   */
+  async *runEvents(id: string, options: { lastEventId?: number; signal?: AbortSignal } = {}): AsyncGenerator<RunFrame> {
+    let cursor = options.lastEventId ?? 0;
+    for (let failures = 0; ;) {
+      options.signal?.throwIfAborted();
+      let response: Response;
+      try {
+        response = await this.transport.fetcher(`${this.transport.base}/v1/runs/${encodeURIComponent(id)}/events`, {
+          headers: { Authorization: `Bearer ${this.operator()}`, Accept: "text/event-stream", ...(cursor ? { "Last-Event-ID": String(cursor) } : {}) }, redirect: "manual", ...(options.signal ? { signal: options.signal } : {}),
+        });
+      } catch (error) {
+        if (options.signal?.aborted || ++failures > 5) throw error;
+        await pause(250 * 2 ** failures);
+        continue;
+      }
+      if (!response.ok || !response.body) {
+        const value = await response.json().catch(() => ({})) as { error?: string; code?: string };
+        const error = Object.assign(new AgentError(value.error ?? `HTTP ${response.status}`, response.status), { retryAfterMs: retryAfter(response), ...codeOf(value) });
+        if ((response.status !== 503 && response.status !== 502) || ++failures > 5) throw error;
+        await pause(error.retryAfterMs ?? 250 * 2 ** failures);
+        continue;
+      }
+      failures = 0;
+      let buffer = "";
+      try {
+        for await (const chunk of response.body.pipeThrough(new TextDecoderStream())) {
+          buffer += chunk;
+          for (let end; (end = buffer.indexOf("\n\n")) !== -1; buffer = buffer.slice(end + 2)) {
+            const lines = buffer.slice(0, end).split("\n");
+            const text = lines.filter(line => line.startsWith("data:")).map(line => line.slice(5).trimStart()).join("\n");
+            const frameId = Number(lines.find(line => line.startsWith("id:"))?.slice(3));
+            if (!text || lines.includes("event: ready") || !Number.isSafeInteger(frameId)) continue;
+            const frame = { id: frameId, data: JSON.parse(text) } as RunFrame;
+            cursor = frameId;
+            yield frame;
+            if (frame.data.type === "response") return;
+          }
+        }
+      } catch (error) { if (options.signal?.aborted) throw error; }
+      // Cut off before the run's response: pick up where it left off.
+    }
+  }
 }
+
+/** A part of a stateless run's input: text, or a file sent inline (base64, at most 4 MiB across a run's files). */
+export type RunInputPart = { type: "text"; text: string } | { type: "file"; name?: string; data: string; contentType?: string };
+/** What a stateless run is (POST /v1/runs): an agent's configuration and an input. Nothing carries over between runs. */
+export interface RunRequest {
+  input: string | RunInputPart[];
+  /** A definition's key or id to take the configuration from (model, system prompt, tool sources). */
+  definition?: string;
+  model?: string; systemPrompt?: string; systemPromptAppend?: string; thinkingLevel?: ThinkingLevel;
+  builtins?: ("web_fetch" | "web_search" | "delegate")[]; delegate?: DelegateSettings;
+  /** true: a workspace volume and file tools. Default: none, unless the input has files. */
+  fileTools?: boolean; mounts?: Mount[];
+  output?: { schema: Record<string, unknown> };
+  keyScope?: string; modelHeaders?: Record<string, string>;
+  /** The run's budget (USD). */
+  spendLimit?: { usd: number };
+  runLimits?: { maxResponses?: number; maxSeconds?: number };
+  subject?: string; context?: Record<string, unknown>; actor?: string; from?: Sender; metadata?: Record<string, string>; name?: string;
+  /** How long its result, events and messages are kept once it ends (60 to 604800 seconds; default a day). */
+  retentionSeconds?: number;
+}
+/** A stateless run, as the runtime has it: `running`, then how it ended. */
+export interface StatelessRun {
+  id: string;
+  status: "running" | "completed" | "input_required" | "failed";
+  text: string;
+  output?: unknown;
+  error: { code: string; message: string; uncertain?: boolean } | null;
+  usage: RunUsage | null;
+  toolCalls: RunToolCall[]; toolErrors: ToolError[]; sourceErrors: { kind: string; source: string; message: string }[]; files: AgentFile[];
+  metadata?: Record<string, string>;
+  createdAt?: number; startedAt?: number; endedAt?: number;
+  /** Once it ended: when its result, events and messages are deleted. */
+  expiresAt: number | null;
+  resumes?: number;
+  handoffs?: { reason: "retire" | "drain"; at: number }[];
+}
+/** A frame of a run's event stream: its id (Last-Event-ID), and an event of its turn, a snapshot, or (last) its response. */
+export type RunFrame = { id: number; data: { type: "event"; requestId: string; event: AgentEvent } | { type: "response"; id: string; outcome: { result?: unknown; error?: string; uncertain?: boolean } } | { type: "snapshot"; [field: string]: unknown } };
 
 /** Files are versioned: pass `version` to write or remove only if nobody changed the file since (0: must not exist). */
 export class VolumeHandle {
@@ -1604,5 +1718,5 @@ export class AgentClient {
   async [Symbol.asyncDispose]() { await this.close(); }
 }
 
-export { Agents, Agent } from "./agents.ts";
-export type { AgentsOptions, AgentConfig, Run, RunFailure, RunInput, RunOptions, RunStream, StreamPart, InputValue, AnswerOptions, OutputSchema, OutputOf, StandardOutputSchema } from "./agents.ts";
+export { Agents, Agent, Runs } from "./agents.ts";
+export type { AgentsOptions, AgentConfig, Run, RunFailure, RunInput, RunOptions, RunStream, StreamPart, StatelessRunConfig, InputValue, AnswerOptions, OutputSchema, OutputOf, StandardOutputSchema } from "./agents.ts";

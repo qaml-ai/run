@@ -13,6 +13,7 @@ import {
   AgentClient, AgentError, AgentRuntime, RunError, toolServer,
   type AgentFiles, type Builtin, type DelegateSettings, type RecordedMessage, type AgentInput, type AgentOptions, type Attachment, type CreateAgentOptions, type HistoryPage, type InputAnswer,
   type ForkedFrom, type ForkOptions, type Mount, type RunResult, type RunUsage, type RuntimeOptions, type Sender, type SessionCredentials, type ToolError, type RunToolCall, type ToolServer, type Tools, type AgentFile, type SteerReceipt,
+  type RunFrame, type RunInputPart, type RunRequest, type StatelessRun,
 } from "./typescript.ts";
 import type { AgentEvent, ThinkingLevel } from "./types.ts";
 import type { Static, TSchema } from "typebox";
@@ -257,6 +258,8 @@ const textOf = (value: unknown): string => {
 export class Agents {
   /** The lower-level client: definitions, volumes, mounts, inbox. */
   readonly runtime: AgentRuntime;
+  /** Stateless runs: `create`, `get`, `stream`, `abort`, `delete`, `messages`; `agents.run` is the one-call form. */
+  readonly runs: Runs;
   private readonly open = new Set<Agent>();
   private readonly connection: "eager" | "lazy";
   constructor(options: AgentsOptions = {}) {
@@ -265,7 +268,18 @@ export class Agents {
     this.runtime = new AgentRuntime({
       ...options, url: options.url ?? env("CAMELAI_BASE_URL") ?? env("AGENT_URL"), ...(apiKey ? { apiKey } : {}),
     });
+    this.runs = new Runs(this.runtime);
   }
+
+  /**
+   * A stateless run: `config` and `input` in, its result out, nothing carried over and no agent kept. It is as durable
+   * as an agent's run (a node lost mid-run, or a deploy, goes on from its last step), and counts toward busy agents and
+   * runs per minute as one does. There is no timeout; `signal` stops waiting (not the run). A failed run throws a RunError
+   * unless `throwOnError: false`. For a conversation that carries over, `upsert` an agent instead.
+   *
+   *   const run = await agents.run({ instructions: "Vote yes or no.", input: "Ship on Friday?", output: z.object({ vote: z.enum(["yes", "no"]) }) });
+   */
+  run<S extends OutputSchema = never>(config: StatelessRunConfig<S>): Promise<Run<OutputOf<S>>> { return this.runs.run(config); }
 
   /**
    * The agent for `key` (your name for it: "support-triage", or "user-123"), made now if there is none,
@@ -325,6 +339,146 @@ export class Agents {
    */
   async close(options: { drainMs?: number } = {}) { await Promise.all([...this.open].map(agent => agent.close(options))); }
   async [Symbol.asyncDispose]() { await this.close(); }
+}
+
+/** A stateless run's configuration (an agent's, but for tools that need a connected process) and its input. */
+export interface StatelessRunConfig<S extends OutputSchema = never> extends Pick<AgentConfig, "model" | "instructions" | "instructionsAppend" | "definition" | "delegate" | "thinkingLevel" | "subject" | "context" | "keyScope" | "runLimits" | "modelHeaders" | "mounts" | "name" | "fileTools"> {
+  /** What the run is asked. */
+  input: string;
+  /** Files sent with it, inline (bytes or Blobs; at most 4 MiB in all): the run gets a workspace for them. */
+  files?: (Uint8Array | Blob | { name?: string; data: Uint8Array | Blob; contentType?: string })[];
+  /** Tools the runtime answers itself: web_fetch, web_search, delegate. */
+  builtins?: ("web_fetch" | "web_search" | "delegate")[];
+  output?: S;
+  user?: string | Sender;
+  metadata?: Record<string, string>;
+  /** The same key (with the same configuration and input) is the same run, never a second one. */
+  idempotencyKey?: string;
+  spendLimit?: { usd: number };
+  /** How long its result, events and messages are kept once it ends (60 to 604800 seconds; default a day). */
+  retentionSeconds?: number;
+  signal?: AbortSignal;
+  /** Resolve with a failed run instead of throwing RunError. Default true: failures throw. */
+  throwOnError?: boolean;
+  traceparent?: string;
+}
+
+const base64 = async (data: Uint8Array | Blob) => {
+  const bytes = data instanceof Blob ? new Uint8Array(await data.arrayBuffer()) : data;
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(binary);
+};
+
+/** Stateless runs (POST /v1/runs): see `Agents.run`. */
+export class Runs {
+  readonly runtime: AgentRuntime;
+  constructor(runtime: AgentRuntime) { this.runtime = runtime; }
+
+  /** Start a run and return at once, still running (or, with `wait`, once it ends within it). */
+  async create<S extends OutputSchema = never>(config: StatelessRunConfig<S>, options: { wait?: boolean | number } = {}): Promise<StatelessRun> {
+    const { request, key } = await this.request(config);
+    return this.runtime.createRun(request, { idempotencyKey: key, ...(options.wait !== undefined ? { wait: options.wait } : {}), ...(config.traceparent ? { traceparent: config.traceparent } : {}), ...(config.signal ? { signal: config.signal } : {}) });
+  }
+  /** A run, by its id: running, or how it ended. `wait` (seconds, at most 25) waits for it to end first. */
+  get(id: string, options: { wait?: number } = {}): Promise<StatelessRun> { return this.runtime.getRun(id, options); }
+  /** Stop a running run: it ends failed, code aborted. */
+  abort(id: string) { return this.runtime.abortRun(id); }
+  /** Delete a run's result, events and messages now, before its retention ends. */
+  delete(id: string) { return this.runtime.deleteRun(id); }
+  /** A run's messages: its input, the model's turns and tool results. */
+  async messages(id: string): Promise<RecordedMessage[]> { return (await this.runtime.runMessages(id)).messages; }
+  /** A run's raw event stream, to its end; see `stream` for one already read into text, tool calls and the result. */
+  events(id: string, options: { lastEventId?: number; signal?: AbortSignal } = {}): AsyncGenerator<RunFrame> { return this.runtime.runEvents(id, options); }
+
+  /** Run and wait for its result: see `Agents.run`. */
+  async run<S extends OutputSchema = never>(config: StatelessRunConfig<S>): Promise<Run<OutputOf<S>>> {
+    let run = await this.create(config, { wait: true });
+    if (run.status === "running") run = await this.runtime.waitForRun(run.id, config.signal ? { signal: config.signal } : {});
+    return settled(run, config);
+  }
+
+  /**
+   * Run, reading it as it happens: its text as it is written, tool calls and results, and last `done` with the run.
+   * Given a run's id instead, follow that run (from its start where the stream still has it, else from a snapshot).
+   * Breaking off stops the reading, not the run.
+   *
+   *   for await (const part of await agents.runs.stream({ input: "…" })) if (part.type === "text") process.stdout.write(part.text);
+   */
+  async stream<S extends OutputSchema = never>(config: StatelessRunConfig<S> | string, options: Pick<StatelessRunConfig<S>, "output" | "signal" | "throwOnError"> = {}): Promise<RunStream<OutputOf<S>>> {
+    const settings = typeof config === "string" ? options : config;
+    const run = typeof config === "string" ? await this.get(config) : await this.create(config);
+    const runtime = this.runtime, signal = settings.signal ? { signal: settings.signal } : {};
+    let finished: Promise<Run<OutputOf<S>>> | undefined;
+    const ended = () => finished ??= runtime.waitForRun(run.id, signal).then(value => settled<S>(value, { ...settings, throwOnError: false }));
+    return {
+      id: run.id,
+      result: async () => {
+        const value = await ended();
+        if (value.error && settings.throwOnError !== false) throw new RunError(value);
+        return value;
+      },
+      async *[Symbol.asyncIterator]() {
+        let spoke = false, fresh = false;
+        for await (const frame of runtime.runEvents(run.id, signal)) {
+          if (frame.data.type === "response") break;
+          if (frame.data.type !== "event") continue;
+          const event = frame.data.event;
+          switch (event.type) {
+            case "message_start": if (event.message.role === "assistant") fresh = true; break;
+            case "message_update": {
+              const delta = event.assistantMessageEvent;
+              if (delta.type !== "text_delta" || !delta.delta) break;
+              yield { type: "text", text: (fresh && spoke ? "\n\n" : "") + delta.delta, raw: event };
+              spoke = true; fresh = false;
+              break;
+            }
+            case "tool_execution_start": yield { type: "tool_call", id: event.toolCallId, toolCallId: event.toolCallId, name: event.toolName, tool: event.toolName, arguments: event.args, raw: event }; break;
+            case "tool_execution_end": yield { type: "tool_result", id: event.toolCallId, toolCallId: event.toolCallId, name: event.toolName, tool: event.toolName, output: textOf(event.result), isError: event.isError, raw: event }; break;
+          }
+        }
+        const value = await ended();
+        yield { type: "done", run: value };
+        if (value.error && settings.throwOnError !== false) throw new RunError(value);
+      },
+    };
+  }
+
+  private async request(config: StatelessRunConfig<OutputSchema>): Promise<{ request: RunRequest; key: string }> {
+    if (!this.runtime.options.apiKey) throw new AgentError("No API key: set CAMELAI_API_KEY (or pass apiKey). Create one at https://run.camelai.com/console/tokens");
+    const { input, files, instructions, instructionsAppend, output, user, idempotencyKey, signal: _signal, throwOnError: _throw, traceparent: _trace, ...rest } = config;
+    const parts: RunInputPart[] = [{ type: "text", text: input }];
+    for (const file of files ?? []) {
+      const entry = file instanceof Uint8Array || file instanceof Blob ? { data: file } : file;
+      const name = entry.name ?? (entry.data as { name?: string }).name;
+      const contentType = (entry as { contentType?: string }).contentType ?? (entry.data instanceof Blob && entry.data.type ? entry.data.type : undefined);
+      parts.push({ type: "file", ...(name ? { name } : {}), data: await base64(entry.data), ...(contentType ? { contentType } : {}) });
+    }
+    const request: RunRequest = {
+      ...rest, input: parts.length === 1 ? input : parts,
+      ...(instructions !== undefined ? { systemPrompt: instructions } : {}), ...(instructionsAppend !== undefined ? { systemPromptAppend: instructionsAppend } : {}),
+      ...(output ? { output: outputRequest(output) } : {}), ...(user ? { from: senderOf(user) } : {}),
+    };
+    return { request, key: idempotencyKey ?? globalThis.crypto.randomUUID() };
+  }
+}
+
+/** A stateless run as a Run: its failure thrown, unless `throwOnError` is false; its output parsed by a Standard Schema. */
+async function settled<S extends OutputSchema>(run: StatelessRun, config: Pick<StatelessRunConfig<S>, "output" | "throwOnError">): Promise<Run<OutputOf<S>>> {
+  let output = run.output as OutputOf<S> | undefined;
+  let error = run.error ? { code: run.error.code, message: run.error.message, ...(run.error.uncertain ? { uncertain: true } : {}) } : null;
+  const standard = (config.output as StandardOutputSchema<OutputOf<S>> | undefined)?.["~standard"];
+  if (standard && output !== undefined && !error) {
+    const parsed = await standard.validate(output);
+    if (parsed.issues) error = { code: "output_invalid", message: `The output does not fit its schema: ${parsed.issues.map(issue => issue.message).join("; ")}` };
+    else output = parsed.value;
+  }
+  const value: Run<OutputOf<S>> = {
+    id: run.id, status: error ? "failed" : run.status === "input_required" ? "input_required" : "completed", text: run.text, ...(output !== undefined ? { output } : {}), inputs: [], error,
+    usage: run.usage, files: run.files, toolErrors: run.toolErrors, toolCalls: run.toolCalls, sourceErrors: run.sourceErrors, raw: null,
+  };
+  if (value.error && config.throwOnError !== false) throw new RunError(value);
+  return value;
 }
 
 function createOptions(config: AgentConfig): CreateAgentOptions {
