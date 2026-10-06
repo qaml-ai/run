@@ -10,6 +10,8 @@
 // descriptors, an empty environment, no_new_privs and the seccomp filter below. The runtime closing
 // the connection kills the process; when the process ends, how it ended goes to the connection as
 // a last frame ({"type":"exit","code":N} or {"type":"exit","signal":"SIGSYS"}) and it is closed.
+// Either way every other process of its uid (anything it forked) is killed before the slot, and so
+// the uid, is given to another.
 // It forwards termination signals to the runtime and exits with its status.
 //
 // `agent-launcher probe <pid>` is a test hook: it reports, as JSON, how the calls the
@@ -113,8 +115,12 @@ static void drop_to(uid_t uid, gid_t gid) {
   if (setuid(0) == 0) { errno = EPERM; die("privileges were not dropped"); }
 }
 
-/** A confined process, by slot: its pid (0 once reaped), its connection (-1 once closed), and whether the runtime hung up. */
-static struct { pid_t pid; int conn; int hung_up; } children[MAX_CHILDREN];
+/**
+ * A confined process, by slot: its pid (0 once reaped), its connection (-1 once closed), whether the
+ * runtime hung up, and the sweep killing whatever else runs as its uid (`sweep`): its pid while it
+ * runs, and whether another is due after it. A slot is free again only once all are done.
+ */
+static struct { pid_t pid; int conn; int hung_up; pid_t sweeper; int sweep_again; } children[MAX_CHILDREN];
 static sigset_t original_mask;
 static char *argvs[KINDS][8];
 
@@ -133,7 +139,7 @@ static int listen_on(const char *name) {
 /** Start a process of `kind` on `conn` in a free slot, or close `conn` when there is none. */
 static void start(enum kind kind, int conn) {
   int slot = 0;
-  while (slot < MAX_CHILDREN && (children[slot].pid || children[slot].conn >= 0)) slot++;
+  while (slot < MAX_CHILDREN && (children[slot].pid || children[slot].conn >= 0 || children[slot].sweeper || children[slot].sweep_again)) slot++;
   if (slot == MAX_CHILDREN) { fprintf(stderr, "agent-launcher: %d confined processes running; refused one\n", MAX_CHILDREN); close(conn); return; }
   pid_t launcher = getpid();
   pid_t pid = fork();
@@ -152,7 +158,7 @@ static void start(enum kind kind, int conn) {
     drop_to(SANDBOX_UID + slot, SANDBOX_GID);
     // After the uid change, which would clear it.
     if (prctl(PR_SET_PDEATHSIG, SIGKILL) || getppid() != launcher) die("parent");
-    // Anything an earlier process of this uid left behind (a child it forked) goes before this one runs.
+    // Anything of this uid the sweep after the last process missed goes before this one runs.
     kill(-1, SIGKILL);
     if (chdir("/")) die("chdir");
     if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) die("no_new_privs");
@@ -164,6 +170,24 @@ static void start(enum kind kind, int conn) {
   children[slot].pid = pid;
   children[slot].conn = conn;
   children[slot].hung_up = 0;
+}
+
+/**
+ * Kill every process running as `slot`'s uid: what a confined process forked outlives it, reparented
+ * to init. A short helper takes the uid and kills all it may signal (kill(-1) spares only itself);
+ * the slot stays taken until the helper is reaped, so no new process gets the uid meanwhile.
+ */
+static void sweep(int slot) {
+  if (children[slot].sweeper) { children[slot].sweep_again = 1; return; }
+  children[slot].sweep_again = 0;
+  pid_t pid = fork();
+  if (pid < 0) { fprintf(stderr, "agent-launcher: fork: %s\n", strerror(errno)); children[slot].sweep_again = 1; return; }
+  if (pid == 0) {
+    drop_to(SANDBOX_UID + slot, SANDBOX_GID);
+    kill(-1, SIGKILL);
+    _exit(0);
+  }
+  children[slot].sweeper = pid;
 }
 
 /** How a process ended, as the last frame on its connection; dropped if the runtime is not reading. */
@@ -261,6 +285,12 @@ int main(int argc, char **argv) {
   static struct pollfd fds[1 + KINDS + MAX_CHILDREN];
   static int slots[MAX_CHILDREN];
   for (;;) {
+    // A sweep that could not start (fork failed) is tried again, about every second until it does.
+    int retrying = 0;
+    for (int slot = 0; slot < MAX_CHILDREN; slot++) {
+      if (children[slot].sweep_again && !children[slot].sweeper && !children[slot].pid) sweep(slot);
+      retrying |= children[slot].sweep_again && !children[slot].sweeper;
+    }
     int count = 0;
     fds[count++] = (struct pollfd){ signals, POLLIN, 0 };
     for (int kind = 0; kind < KINDS; kind++) fds[count++] = (struct pollfd){ listeners[kind], POLLIN, 0 };
@@ -271,13 +301,14 @@ int main(int argc, char **argv) {
       slots[watched++] = slot;
       fds[count++] = (struct pollfd){ children[slot].conn, POLLRDHUP, 0 };
     }
-    if (poll(fds, count, -1) < 0) { if (errno == EINTR) continue; die("poll"); }
+    if (poll(fds, count, retrying ? 1000 : -1) < 0) { if (errno == EINTR) continue; die("poll"); }
 
     for (int i = 0; i < watched; i++) {
       if (!fds[1 + KINDS + i].revents) continue;
       int slot = slots[i];
       children[slot].hung_up = 1;
       if (children[slot].pid) kill(children[slot].pid, SIGKILL);
+      sweep(slot);
     }
     for (int kind = 0; kind < KINDS; kind++) {
       if (!(fds[1 + kind].revents & POLLIN)) continue;
@@ -296,11 +327,17 @@ int main(int argc, char **argv) {
           return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
         }
         for (int slot = 0; slot < MAX_CHILDREN; slot++) {
+          if (children[slot].sweeper == pid) {
+            children[slot].sweeper = 0;
+            if (children[slot].sweep_again) sweep(slot);
+            break;
+          }
           if (children[slot].pid != pid) continue;
           if (!children[slot].hung_up) report(children[slot].conn, status);
           close(children[slot].conn);
           children[slot].pid = 0;
           children[slot].conn = -1;
+          sweep(slot);
           break;
         }
       }

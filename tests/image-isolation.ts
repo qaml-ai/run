@@ -103,6 +103,18 @@ try {
     `TCP ${parseJob.tcp}, socket(AF_INET) ${parseJob.native.runtime.socket_inet}, ptrace ${parseJob.native.runtime.ptrace_attach}, ` +
     `process_vm_readv ${parseJob.native.runtime.process_vm_readv}, runtime environ ${parseJob.files[`/proc/${runtimePid}/environ`]}, /data ${parseJob.files["/data"]}`);
 
+  // A parse job that forks and exits: what it left behind dies with it, and its uid is swept before it is given out again.
+  const orphanClient = probeClient.replace('method: "probe", params: JSON.parse(process.argv[1])', 'method: "orphan", params: {}');
+  const orphan = JSON.parse(docker("exec", "-u", "node", name, "node", "-e", orphanClient, "{}"));
+  assert.equal(orphan.error, undefined, orphan.error);
+  const sleeper = Number(orphan.result.pid);
+  assert.ok(sleeper > 0, JSON.stringify(orphan));
+  // Alive, and still the sleeper (not a reused pid, not a zombie awaiting its reaper). The image has no kill(1).
+  const alive = () => docker("exec", name, "node", "-e", `try { const fs = require("node:fs"); const stat = fs.readFileSync("/proc/${sleeper}/stat", "utf8"); process.stdout.write(String(fs.readFileSync("/proc/${sleeper}/cmdline", "utf8").startsWith("sleep") && !/\\) Z /.test(stat))); } catch { process.stdout.write("false"); }`) === "true";
+  for (let i = 0; i < 50 && alive(); i++) await sleep(100);
+  assert.equal(alive(), false, `The parse job's forked sleeper (pid ${sleeper}) outlived it`);
+  console.log(`parse job forked a sleeper (pid ${sleeper}) and exited: the sleeper was killed with it`);
+
   // An image scaled down for a model request, decoded with sharp in a parse job: its bytes come back in frames.
   const fit = `
     const { connect } = require("node:net");

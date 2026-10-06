@@ -13,7 +13,10 @@ import { FILE_LIMITS } from "./limits.ts";
 // short-lived process startup time.
 const { values: args } = parseArgs({
   options: {
-    /** Serve a `probe` request instead, which reports this process's confinement (tests/image-isolation.ts). */
+    /**
+     * Serve test requests instead (tests/image-isolation.ts): `probe`, which reports this process's
+     * confinement, and `orphan`, which leaves a detached `sleep` behind and exits.
+     */
     "test-hooks": { type: "boolean", default: false },
   },
 });
@@ -28,6 +31,14 @@ const send = frames(input, (message: any) => {
   const id = message.id;
   const reply = (result: Promise<unknown>) => result.then(result => send({ type: "response", id, result }), error => send({ type: "response", id, error: String(error) }));
   if (message.method === "probe" && args["test-hooks"]) return void reply(import("./sandbox-probe.ts").then(({ probe }) => probe(message.params)));
+  if (message.method === "orphan" && args["test-hooks"]) {
+    return void import("node:child_process").then(({ spawn }) => {
+      const sleeper = spawn("sleep", ["300"], { detached: true, stdio: "ignore" });
+      sleeper.unref();
+      send({ type: "response", id, result: { pid: sleeper.pid } });
+      process.exit(0);
+    });
+  }
   if (message.method !== "inspect") return void process.exit(1);
   const params = message.params;
   const size = params?.size;
