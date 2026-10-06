@@ -1,0 +1,35 @@
+name: Nightly
+# The deep runs of what pull requests check briefly. Property tests (tests/prop-*.test.ts, fast-check) run on every PR
+# at their own small run counts, inside the test shards; here every one runs PROP_SCALE times as many. A failure prints
+# its seed, path and the command that replays it (tests/prop-helpers.ts). Any suite added later that reads PROP_SCALE
+# (or wants a nightly-only job) belongs in this file as another job.
+on:
+  schedule: [{ cron: "17 6 * * *" }]
+  workflow_dispatch:
+    inputs:
+      scale: { description: "PROP_SCALE: multiplier on each property's PR run count", default: "100" }
+      seed: { description: "PROP_SEED: replay one seed (with path)", default: "" }
+      path: { description: "PROP_PATH: the failing path fast-check printed", default: "" }
+concurrency: { group: nightly, cancel-in-progress: false }
+jobs:
+  properties:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: { POSTGRES_PASSWORD: test }
+        ports: ["5432:5432"]
+        options: --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 20
+    env:
+      AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:5432/postgres
+      PROP_SCALE: ${{ inputs.scale || '100' }}
+      PROP_SEED: ${{ inputs.seed }}
+      PROP_PATH: ${{ inputs.path }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      # An empty PROP_SEED (a scheduled run) means a fresh seed per property.
+      - run: npm run test:props
