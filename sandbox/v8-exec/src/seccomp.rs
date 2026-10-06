@@ -4,7 +4,7 @@
 //
 // What is left is what running JavaScript needs: memory (mmap/munmap/mprotect/madvise/mremap/brk),
 // the two pipes (read/write), time (clock_gettime, the watchdog's sleep), futexes, signal masks,
-// and exiting. No socket, no fork or clone, no exec, no ioctl; openat fails (EACCES). Under --jitless, no
+// and exiting. No socket, no fork or clone, no exec, no ioctl; openat and prctl fail. Under --jitless, no
 // executable memory either: mmap and mprotect with PROT_EXEC kill the process.
 //
 // Syscall numbers come from the libc crate for the target, so x86_64's and aarch64's tables both
@@ -68,6 +68,14 @@ pub fn install(jitless: bool, debug: Debug) -> Result<(), String> {
   push(JEQ_K, 0, 1, unsafe { getpid() } as u32);
   push(RET_K, 0, 0, RET_ALLOW);
   push(LD_W_ABS, 0, 0, NR);
+  // prctl fails with EINVAL rather than killing: on x86_64, V8 names the anonymous memory it maps as its
+  // heap grows (PR_SET_VMA, seen at the CPU limit and in long regular expressions) and does without the
+  // names. Failing every option keeps the rest of prctl (dumpable, no_new_privs, ...) out of reach.
+  // (--seccomp-trap reports it, with its option, to check what asks.)
+  if debug != Debug::Trap {
+    push(JEQ_K, 0, 1, SYS_prctl as u32);
+    push(RET_K, 0, 0, 0x0005_0000 | EINVAL as u32); // SECCOMP_RET_ERRNO
+  }
   // openat fails with EACCES rather than killing: V8 and glibc open a few files of their own as they
   // run (/proc/self/maps for the main thread's stack bounds, /sys/devices/system/cpu/online and
   // /proc/stat to count CPUs, as the heap grows) and get on without them. Nothing is opened.

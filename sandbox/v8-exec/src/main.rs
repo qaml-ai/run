@@ -510,10 +510,16 @@ fn main() {
 fn trap_sigsys() {
   #[cfg(target_os = "linux")]
   unsafe {
-    extern "C" fn on_sigsys(_signal: libc::c_int, info: *mut libc::siginfo_t, _context: *mut c_void) {
+    extern "C" fn on_sigsys(_signal: libc::c_int, info: *mut libc::siginfo_t, context: *mut c_void) {
       // siginfo_t's SIGSYS fields: _call_addr at 16, _syscall (an int) at 24, on both 64-bit Linux ABIs.
       let number = unsafe { *(info as *const u8).add(24).cast::<i32>() };
-      let text = format!("seccomp: syscall {number}\n");
+      // Its first argument, from the registers the call was made with.
+      let context = context as *const libc::ucontext_t;
+      #[cfg(target_arch = "x86_64")]
+      let first = unsafe { (*context).uc_mcontext.gregs[libc::REG_RDI as usize] as u64 };
+      #[cfg(target_arch = "aarch64")]
+      let first = unsafe { (*context).uc_mcontext.regs[0] };
+      let text = format!("seccomp: syscall {number} (first argument {first:#x})\n");
       unsafe { libc::write(2, text.as_ptr().cast(), text.len()); libc::_exit(99) };
     }
     let mut action: libc::sigaction = std::mem::zeroed();

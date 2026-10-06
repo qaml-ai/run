@@ -73,6 +73,6 @@ for (const code of snippets) {
   }, undefined, child.stdin as Socket);
   write({ type: "request", id: "x", method: "execute", params: { code, tools: ["echo"], timeoutMs: 10_000, maxOutputCharacters: 1000, cpuMs: 2000 } });
   await done;
-  for (const match of stderr.matchAll(/seccomp: syscall (\d+)/g)) trapped.add(`${match[1]} (${code.slice(0, 40)})`);
+  for (const match of stderr.matchAll(/seccomp: syscall (\d+ \(first argument \w+\))/g)) trapped.add(`${match[1]} (${code.slice(0, 40)})`);
 }
 console.log(JSON.stringify({ jitless, trapped: [...trapped], killedBy: [...killedBy], total: all.size, afterRequest: afterRequest.size, afterRequestCalls: [...afterRequest].sort(), all: [...all].sort() }, null, 1));
