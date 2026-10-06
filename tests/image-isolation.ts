@@ -34,7 +34,7 @@ const logs = () => { const out = spawnSync("docker", ["logs", name], { encoding:
 docker("run", "-d", "--init", "--name", name, ...(hostNetwork ? ["--network", "host"] : ["-p", `127.0.0.1:${port}:8790`]),
   "-v", `${tenants}:/etc/agent-runtime:ro`, "-e", "AGENT_TENANTS_FILE=/etc/agent-runtime/tenants.json", "-e", `AGENT_SESSION_SECRET=${token}`, "-e", `AGENT_DATABASE_URL=${database}`, "-e", "AGENT_HOSTING=inline",
   "-e", "AGENT_SANDBOX_TEST_HOOKS=1", "-e", `AGENT_ISOLATION_CANARY=${canary}`,
-  // Prototype (proto/v8-exec): AGENT_JS_EXEC=v8 runs the same checks with js_exec in v8-exec processes.
+  // AGENT_JS_EXEC=v8: the same checks with V8 the default engine, js_exec in v8-exec processes (CI runs both).
   ...(process.env.AGENT_JS_EXEC ? ["-e", `AGENT_JS_EXEC=${process.env.AGENT_JS_EXEC}`] : []), image);
 let failed = true;
 try {

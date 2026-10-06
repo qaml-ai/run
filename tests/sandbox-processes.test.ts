@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer, connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -15,6 +16,7 @@ import { inspection } from "../src/inspect.ts";
 import { bombPdf, pdfBytes, PNG } from "./file-fixtures.ts";
 import sharp from "sharp";
 import { imageHeader } from "../src/image-header.ts";
+import { v8ExecBinary } from "../src/v8-exec.ts";
 
 type Context = { after: (fn: () => unknown) => void };
 
@@ -110,6 +112,16 @@ test("js_exec runs end to end through a sandbox process, tool calls included", a
   // Arguments are still validated here, whatever the sandbox forwards.
   const strict: ToolBridge = { definitions: [{ name: "strict", description: "", parameters: { type: "object", properties: { n: { type: "number" } }, required: ["n"] } }], call: async () => 1 };
   await assert.rejects(executeCode({ code: 'return await tools.strict({ n: "x" })', bridge: strict, pool: sandbox }), /Invalid arguments for tool: strict/);
+  assert.equal(sandbox.processes[0].load, 0);
+});
+
+test("one sandbox process runs each execution on the engine it names", { skip: !existsSync(v8ExecBinary()) && "v8-exec is not built" }, async t => {
+  const { path } = await sandboxProcess(t);
+  const sandbox = new SandboxProcesses([path]);
+  // Intl tells them apart: QuickJS has none.
+  const engine = 'return [typeof Intl === "object" ? "v8" : "quickjs", (await tools.echo({ n: 1 })).n]';
+  assert.deepEqual((await executeCode({ code: engine, bridge: echo, pool: sandbox, limits: { engine: "quickjs" } })).output, ['["quickjs",1]']);
+  assert.deepEqual((await executeCode({ code: engine, bridge: echo, pool: sandbox, limits: { engine: "v8" } })).output, ['["v8",1]']);
   assert.equal(sandbox.processes[0].load, 0);
 });
 
