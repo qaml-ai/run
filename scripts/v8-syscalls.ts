@@ -65,7 +65,10 @@ for (const [index, code] of snippets.entries()) {
 // --repeat N runs each N times there, for calls that only happen now and then.
 const trapped = new Set<string>();
 const repeat = Number(process.argv[process.argv.indexOf("--repeat") + 1]) || 1;
-for (const code of snippets.flatMap(code => Array(process.argv.includes("--repeat") ? repeat : 1).fill(code))) {
+// --parallel N runs N at once, as test files do: refusals that depend on timing under load show up there.
+const parallel = Number(process.argv[process.argv.indexOf("--parallel") + 1]) || 1;
+const queue = snippets.flatMap(code => Array(process.argv.includes("--repeat") ? repeat : 1).fill(code));
+await Promise.all(Array.from({ length: process.argv.includes("--parallel") ? parallel : 1 }, async () => { for (let code = queue.shift(); code !== undefined; code = queue.shift()) {
   const child = spawn(v8ExecBinary(), ["--max-data-mb", "512", ...(jitless ? ["--jitless"] : []), "--seccomp-trap"], { stdio: ["pipe", "pipe", "pipe"] });
   let stderr = "";
   child.stderr!.on("data", chunk => { stderr += chunk; });
@@ -76,5 +79,5 @@ for (const code of snippets.flatMap(code => Array(process.argv.includes("--repea
   write({ type: "request", id: "x", method: "execute", params: { code, tools: ["echo"], timeoutMs: 10_000, maxOutputCharacters: 1000, cpuMs: 2000 } });
   await done;
   for (const match of stderr.matchAll(/seccomp: syscall (\d+ \(first argument \w+\))/g)) trapped.add(`${match[1]} (${code.slice(0, 40)})`);
-}
+} }));
 console.log(JSON.stringify({ jitless, trapped: [...trapped], killedBy: [...killedBy], total: all.size, afterRequest: afterRequest.size, afterRequestCalls: [...afterRequest].sort(), all: [...all].sort() }, null, 1));
