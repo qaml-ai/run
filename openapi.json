@@ -4210,6 +4210,13 @@
               },
               "codeConcurrency": {
                 "type": "integer"
+              },
+              "codeEngine": {
+                "type": "string",
+                "enum": [
+                  "quickjs",
+                  "v8"
+                ]
               }
             },
             "description": "The limits set for the tenant; those absent are its plan's"
@@ -4303,6 +4310,18 @@
             "minimum": 1,
             "maximum": 1000,
             "description": "js_exec executions the tenant may run at once on one node, in place of its plan's (2 on free credit, else 4); null returns to the plan's"
+          },
+          "codeEngine": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "quickjs",
+              "v8",
+              null
+            ],
+            "description": "What runs the tenant's js_exec: quickjs (WASM worker threads) or v8 (a process per execution), in place of the runtime's (AGENT_JS_EXEC); null returns to the runtime's. Reaches agents as they next load"
           }
         },
         "additionalProperties": false

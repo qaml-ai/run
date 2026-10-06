@@ -10,6 +10,9 @@ import { localTools } from "./local-tools.ts";
 import { SANDBOX_LIMITS, codeRequest } from "../src/limits.ts";
 import type { ToolBridge } from "../src/protocol.ts";
 
+// Both engines run these: AGENT_JS_EXEC=v8 runs them on v8-exec (CodePools given stand for "this
+// process's own"); tests of the QuickJS pool's own workings are skipped there.
+const v8 = process.env.AGENT_JS_EXEC === "v8";
 type RunOptions = { timeoutMs?: number; maxOutputCharacters?: number; signal?: AbortSignal; onEvent?: (event: unknown) => void };
 async function fixture(t: { after: (fn: () => Promise<void>) => void }, bridge?: ToolBridge, pool?: CodePool) {
   const directory = await mkdtemp(join(tmpdir(), "camelai-sandbox-test-"));
@@ -111,6 +114,14 @@ test("host policy validates schemas and rejects execution policy overrides", asy
 
 test("bulk arrays and strings cannot grow beyond the fixed WASM memory", async t => {
   const { run } = await fixture(t);
+  if (v8) {
+    // V8: ArrayBuffers are refused past 128 MB (catchable); a heap past its 128 MB ends the execution.
+    const buffers = JSON.parse((await run('const a = []; try { for (let i = 0; i < 256; i++) a.push(new Uint8Array(1 << 20)); } catch (error) { return { count: a.length, error: String(error) }; }')).output[0]);
+    assert.ok(buffers.count < 128 && /RangeError/.test(buffers.error), JSON.stringify(buffers));
+    await assert.rejects(run('const a = []; for (;;) a.push(new Array(1 << 16).fill(Math.random()));'), /Codemode memory limit exceeded/);
+    assert.deepEqual((await run("return 42;")).output, ["42"]);
+    return;
+  }
   for (const allocation of ['new Uint8Array(1024 * 1024)', '"x".repeat(1024 * 1024)']) {
     const result = await run(`
       const allocations = [];
@@ -232,7 +243,16 @@ test("the guest reaches only ECMAScript built-ins and the codemode helpers: no p
     return { globals, probes, imports, reachable: JSON.stringify(globals.map(name => { try { return String(globalThis[name]); } catch { return ""; } })) };
   `);
   const value = JSON.parse(result.output[0]);
-  assert.deepEqual(value.globals, [
+  if (v8) assert.deepEqual(value.globals, [
+    "AggregateError", "Array", "ArrayBuffer", "AsyncDisposableStack", "BigInt", "BigInt64Array", "BigUint64Array", "Boolean", "DataView", "Date",
+    "DisposableStack", "Error", "EvalError", "FinalizationRegistry", "Float16Array", "Float32Array", "Float64Array", "Function", "Infinity",
+    "Int16Array", "Int32Array", "Int8Array", "Intl", "Iterator", "JSON", "Map", "Math", "NaN", "Number", "Object", "Promise", "Proxy",
+    "RangeError", "ReferenceError", "Reflect", "RegExp", "Set", "String", "SuppressedError", "Symbol", "SyntaxError", "Temporal", "TypeError",
+    "URIError", "Uint16Array", "Uint32Array", "Uint8Array", "Uint8ClampedArray", "WeakMap", "WeakRef", "WeakSet", "console", "decodeURI",
+    "decodeURIComponent", "encodeURI", "encodeURIComponent", "escape", "eval", "fs", "globalThis", "isFinite", "isNaN", "parseFloat",
+    "parseInt", "text", "tools", "undefined", "unescape",
+  ]);
+  else assert.deepEqual(value.globals, [
     "AggregateError", "Array", "ArrayBuffer", "BigInt", "BigInt64Array", "BigUint64Array", "Boolean", "DataView", "Date", "Error",
     "EvalError", "FinalizationRegistry", "Float16Array", "Float32Array", "Float64Array", "Function", "Infinity", "Int16Array", "Int32Array",
     "Int8Array", "InternalError", "Iterator", "JSON", "Map", "Math", "NaN", "Number", "Object", "Promise", "Proxy", "RangeError",
@@ -245,7 +265,7 @@ test("the guest reaches only ECMAScript built-ins and the codemode helpers: no p
   assert.ok(!value.reachable.includes("sandbox-test-canary"));
 });
 
-test("a worker keeps no guest state between executions", async t => {
+test("a worker keeps no guest state between executions", { skip: v8 && "QuickJS pool internals; tests/v8-exec.test.ts covers v8-exec's" }, async t => {
   const pool = new CodePool({ min: 1, max: 1 });
   const { run } = await fixture(t, undefined, pool);
   await run("return 0");
@@ -279,7 +299,7 @@ test("concurrent executions do not interfere", async t => {
   assert.ok(pool.slots.size <= 3);
 });
 
-test("timeouts and aborts cancel the guest, and the worker is reused once it unwinds", async t => {
+test("timeouts and aborts cancel the guest, and the worker is reused once it unwinds", { skip: v8 && "QuickJS pool internals; tests/v8-exec.test.ts covers v8-exec's" }, async t => {
   const pool = new CodePool({ min: 1, max: 1 });
   const hang = blocking();
   const { run } = await fixture(t, hang.bridge, pool);
@@ -305,7 +325,7 @@ test("timeouts and aborts cancel the guest, and the worker is reused once it unw
   assert.deepEqual(threads(pool), [worker], "Every cancellation was cooperative");
 });
 
-test("a guest stuck where the interrupt handler cannot reach is terminated with its worker, whose slot is refilled without waiting for it to exit", async t => {
+test("a guest stuck where the interrupt handler cannot reach is terminated with its worker, whose slot is refilled without waiting for it to exit", { skip: v8 && "QuickJS pool internals; tests/v8-exec.test.ts covers v8-exec's" }, async t => {
   const pool = new CodePool({ min: 1, max: 2 });
   const { run } = await fixture(t, undefined, pool);
   await run("return 0");
@@ -320,7 +340,7 @@ test("a guest stuck where the interrupt handler cannot reach is terminated with 
   assert.equal(pool.slots.size, 1);
 });
 
-test("while too many terminated workers are still exiting, no new ones start and executions wait with a clear error", async t => {
+test("while too many terminated workers are still exiting, no new ones start and executions wait with a clear error", { skip: v8 && "QuickJS pool internals; tests/v8-exec.test.ts covers v8-exec's" }, async t => {
   const pool = new CodePool({ min: 1, max: 4, maxDying: 2 });
   const { run } = await fixture(t, undefined, pool);
   const logged = t.mock.method(console, "error", () => {});
@@ -343,7 +363,7 @@ test("while too many terminated workers are still exiting, no new ones start and
   await until(() => pool.dying.size === 0);
 });
 
-test("a worker that dies mid-execution fails the execution and is replaced", async t => {
+test("a worker that dies mid-execution fails the execution and is replaced", { skip: v8 && "QuickJS pool internals; tests/v8-exec.test.ts covers v8-exec's" }, async t => {
   const pool = new CodePool({ min: 1, max: 1 });
   const hang = blocking();
   const { run } = await fixture(t, hang.bridge, pool);
@@ -356,7 +376,7 @@ test("a worker that dies mid-execution fails the execution and is replaced", asy
   assert.deepEqual((await run("return 1;")).output, ["1"]);
 });
 
-test("executions queue for a free worker and fail clearly past their own timeout; idle extra workers are reaped", async t => {
+test("executions queue for a free worker and fail clearly past their own timeout; idle extra workers are reaped", { skip: v8 && "QuickJS pool internals; tests/v8-exec.test.ts covers v8-exec's" }, async t => {
   const pool = new CodePool({ min: 1, max: 2, idleMs: 100 });
   const hang = blocking();
   const { run } = await fixture(t, hang.bridge, pool);

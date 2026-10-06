@@ -4,7 +4,7 @@ import { connect } from "node:net";
 import { Rpc } from "./rpc.ts";
 import { errorText, type ToolBridge, type WireMessage } from "./protocol.ts";
 import { frames } from "./sandbox-wire.ts";
-import { FILE_LIMITS, jsonWithinLimit, SANDBOX_LIMITS } from "./limits.ts";
+import { defaultCodeEngine, FILE_LIMITS, jsonWithinLimit, SANDBOX_LIMITS, type CodeEngine } from "./limits.ts";
 import { FS_CALLS, HOST_CALLS } from "./sandbox-bootstrap.ts";
 import { namespaces, searchQuery, searchTools } from "./tool-search.ts";
 import type { Returned } from "./quickjs-sandbox.ts";
@@ -437,8 +437,8 @@ async function hostCall(bridge: ToolBridge, name: string, args: unknown) {
   return bridge.search ? bridge.search(query) : searchTools(bridge.definitions, query);
 }
 
-/** A tenant's js_exec limits (client-sessions' `codeLimits`): CPU per execution, the longest timeoutMs, and executions at once on a node. */
-export type CodeLimits = { cpuMs: number; maxTimeoutMs: number; concurrent: number };
+/** A tenant's js_exec limits (client-sessions' `codeLimits`): CPU per execution, the longest timeoutMs, executions at once on a node, and the engine that runs them. */
+export type CodeLimits = { cpuMs: number; maxTimeoutMs: number; concurrent: number; engine: CodeEngine };
 
 /**
  * Admits js_exec executions on a node: at most `capacity` at once (what its memory affords), and
@@ -518,10 +518,17 @@ export async function executeCode(options: {
   code: string; bridge: ToolBridge; signal?: AbortSignal;
   timeoutMs?: number; maxOutputCharacters?: number;
   onEvent?: (event: unknown) => void;
-  /** Where to run: by default the sandbox processes, or without them this process's pool. */
+  /**
+   * Where to run: by default the sandbox processes (which run each execution on the engine it names),
+   * or without them this process's own: its QuickJS pool, or v8-exec processes. A `CodePool` given
+   * stands for "this process's own", so it serves only executions on QuickJS.
+   */
   pool?: CodePool | { open(): Guest };
-  /** The tenant's limits: CPU (`SANDBOX_LIMITS.cpuMs` by default) and the longest timeoutMs (`SANDBOX_LIMITS.maxTimeoutMs`); a longer timeoutMs is cut to it. */
-  limits?: Partial<Pick<CodeLimits, "cpuMs" | "maxTimeoutMs">>;
+  /**
+   * The tenant's limits: CPU (`SANDBOX_LIMITS.cpuMs` by default), the longest timeoutMs (`SANDBOX_LIMITS.maxTimeoutMs`;
+   * a longer timeoutMs is cut to it), and the engine (`defaultCodeEngine()` by default).
+   */
+  limits?: Partial<Pick<CodeLimits, "cpuMs" | "maxTimeoutMs" | "engine">>;
   /** Wait for the tenant's turn on the node (`CodeGate`); resolves with the function that gives it back. */
   admit?: (signal: AbortSignal) => Promise<() => void>;
 }): Promise<CodeResult> {
@@ -537,10 +544,10 @@ export async function executeCode(options: {
   // The deadline and cancellation hold from here, before anything looks at the code or waits for a turn.
   // Nothing of the code is parsed on this thread: the worker strips TypeScript and compiles it (quickjs-sandbox.ts).
   const started = performance.now();
-  // Prototype switch (proto/v8-exec): AGENT_JS_EXEC=v8 runs every execution meant for a local pool in a v8-exec process instead.
-  // The sandbox processes still come first: there (sandbox-server.ts --engine=v8) the v8-exec processes inherit their confinement.
-  const v8 = process.env.AGENT_JS_EXEC === "v8";
-  const pool = v8 && options.pool instanceof CodePool ? v8Exec() : options.pool ?? sandboxProcesses() ?? (v8 ? v8Exec() : codePool());
+  const engine = options.limits?.engine ?? defaultCodeEngine();
+  // The sandbox processes come first: their v8-exec processes inherit their confinement (sandbox-server.ts).
+  const own = !options.pool || options.pool instanceof CodePool;
+  const pool = !own ? options.pool! : (!options.pool && sandboxProcesses()) || (engine === "v8" ? v8Exec() : options.pool ?? codePool());
   // Tool calls still running, by name: a timeout while one runs names it and says timeoutMs can be raised.
   const pending = new Map<string, number>();
   const timedOut = () => {
@@ -632,7 +639,7 @@ export async function executeCode(options: {
     // answer at that moment is a wall-clock failure, which should read as the timeout.
     const remainingMs = Math.max(1, Math.ceil(timeoutMs - (performance.now() - started)));
     // The worker answers only after disposing the guest, so an answer means it is free again.
-    const result = await channel.request("execute", { code: options.code, tools: names, maxOutputCharacters, timeoutMs: remainingMs, cpuMs })
+    const result = await channel.request("execute", { code: options.code, tools: names, maxOutputCharacters, timeoutMs: remainingMs, cpuMs, engine })
       .finally(() => { responded = !controller.signal.aborted; });
     return guestResult(result, maxOutputCharacters);
   } catch (error) {
@@ -650,18 +657,28 @@ export async function executeCode(options: {
 }
 
 /**
- * Where js_exec runs, for the startup log. With sandbox processes, each must answer
- * `return 1` first; with AGENT_SANDBOX_REQUIRED=1 (the image sets it), running without them is an error.
+ * Where js_exec runs, for the startup log. With sandbox processes, each must answer `return 1`
+ * first on each engine; with AGENT_SANDBOX_REQUIRED=1 (the image sets it), running without them is
+ * an error. The default engine (AGENT_JS_EXEC) must work; the other is reported, for tenants pinned to it.
  */
 export async function checkSandbox(): Promise<Record<string, unknown>> {
+  const engine = defaultCodeEngine();
   const processes = sandboxProcesses();
-  if (!processes) {
-    const reason = "no sandbox processes: agent-launcher starts them when run as root on Linux with AGENT_SANDBOX_PROCESSES > 0";
-    if (process.env.AGENT_SANDBOX_REQUIRED === "1") throw new Error(`AGENT_SANDBOX_REQUIRED=1, but ${reason}`);
-    return { mode: "in-process", reason };
-  }
+  const reason = "no sandbox processes: agent-launcher starts them when run as root on Linux with AGENT_SANDBOX_PROCESSES > 0";
+  if (!processes && process.env.AGENT_SANDBOX_REQUIRED === "1") throw new Error(`AGENT_SANDBOX_REQUIRED=1, but ${reason}`);
   const started = performance.now();
   const bridge: ToolBridge = { definitions: [], call: async () => null };
-  await Promise.all(processes.processes.map(target => executeCode({ code: "return 1", bridge, pool: target, timeoutMs: 60_000 })));
-  return { mode: "isolated", processes: processes.processes.length, ms: Math.round(performance.now() - started) };
+  const engines: Record<string, string> = {};
+  for (const each of ["quickjs", "v8"] as const) {
+    // The local QuickJS pool starts its workers on first use: not worth doing just to log it.
+    if (!processes && each === "quickjs") { engines[each] = "local"; continue; }
+    const targets: (CodePool | { open(): Guest } | undefined)[] = processes ? processes.processes : [undefined];
+    const checked = Promise.all(targets.map(pool => executeCode({ code: "return 1", bridge, pool, timeoutMs: 60_000, limits: { engine: each } })));
+    try { await checked; engines[each] = "ok"; }
+    catch (error) {
+      if (each === engine) throw new Error(`js_exec's default engine (${engine}) does not run: ${errorText(error)}`);
+      engines[each] = `unavailable: ${errorText(error).slice(0, 200)}`;
+    }
+  }
+  return { mode: processes ? "isolated" : "in-process", ...(processes ? { processes: processes.processes.length } : { reason }), engine, engines, ms: Math.round(performance.now() - started) };
 }

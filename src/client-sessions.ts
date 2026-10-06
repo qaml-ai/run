@@ -36,7 +36,7 @@ import { metadataInput, senderInput } from "./sender.ts";
 import { callMeta, compose, jsonResult, TOOL_DEADLINES, timedOut, toolCallKey, ToolFailure, type RunToolCall, type ToolCallCode, type ToolError, defaultExposure, describeSources, fileServer, type Progress, type ToolCall, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
 import { searchTools, type Reranker, type SearchQuery } from "./tool-search.ts";
 import { CodeGate, codeCapacity, type CodeLimits } from "./codemode.ts";
-import { CODE_LIMITS } from "./limits.ts";
+import { CODE_LIMITS, defaultCodeEngine } from "./limits.ts";
 import { declaredType, FILE_LIMITS, fileResponse, safeName, validFileRef, type FileLinks, type FileRef } from "./files.ts";
 import { fileRef } from "./inspect.ts";
 import { resolve as resolveMount, type ToolContext, type WrittenFile } from "./volume-tools.ts";
@@ -1253,8 +1253,8 @@ export class ClientSessions {
       session.catalogPriced = !!priced;
       // Its tool servers are listed (remote MCP servers connected to) before its host starts.
       const definitions = await steps.time("tools", this.toolset(session));
-      const { cpuMs, maxTimeoutMs } = await this.codeLimits(session.header.tenant);
-      const result = await steps.time("init", this.supervisor.start(session.header.id, { ...session.header.config, apiKey, mounts: (session.header.mounts ?? []).map(({ path, mode }) => ({ path, mode })), ...(this.options.retry ? { retry: this.options.retry } : {}), ...(session.resuming.size ? { resume: true } : {}), tenant: session.header.tenant, codeLimits: { cpuMs, maxTimeoutMs } }, {
+      const { cpuMs, maxTimeoutMs, engine } = await this.codeLimits(session.header.tenant);
+      const result = await steps.time("init", this.supervisor.start(session.header.id, { ...session.header.config, apiKey, mounts: (session.header.mounts ?? []).map(({ path, mode }) => ({ path, mode })), ...(this.options.retry ? { retry: this.options.retry } : {}), ...(session.resuming.size ? { resume: true } : {}), tenant: session.header.tenant, codeLimits: { cpuMs, maxTimeoutMs, engine } }, {
         definitions,
         codeSlot: async signal => this.codeGate.acquire(session.header.tenant, (await this.codeLimits(session.header.tenant)).concurrent, signal),
         runLimit: async () => {
@@ -3391,7 +3391,7 @@ export class ClientSessions {
 
   /** The tenant's js_exec limits. */
   private async codeLimits(tenant: string): Promise<CodeLimits> {
-    return await this.options.codeLimitsFor?.(tenant) ?? { cpuMs: CODE_LIMITS.cpuMs, maxTimeoutMs: CODE_LIMITS.maxTimeoutMs, concurrent: CODE_LIMITS.concurrent };
+    return await this.options.codeLimitsFor?.(tenant) ?? { cpuMs: CODE_LIMITS.cpuMs, maxTimeoutMs: CODE_LIMITS.maxTimeoutMs, concurrent: CODE_LIMITS.concurrent, engine: defaultCodeEngine() };
   }
 
   /** Why the agent may not spend more on models: it has reached its own spend limit. */

@@ -4,11 +4,12 @@ import { availableParallelism } from "node:os";
 import { CodePool, codeWorkers, INSPECT_FRAME_BYTES, localGuest, type Guest } from "./codemode.ts";
 import { frames } from "./sandbox-wire.ts";
 import { inspectHere } from "./inspect.ts";
-import { v8Exec } from "./v8-exec.ts";
+import { V8Exec } from "./v8-exec.ts";
 import { FILE_LIMITS, SANDBOX_LIMITS } from "./limits.ts";
 
-// One sandbox process: a CodePool serving executions over a unix socket, one per
-// connection. agent-launcher (sandbox/launcher.c) binds the socket, passes it as
+// One sandbox process, serving executions over a unix socket, one per connection, each on the
+// engine its request names: its CodePool (QuickJS), or a v8-exec process of its own (V8), which
+// inherits this process's confinement. agent-launcher (sandbox/launcher.c) binds the socket, passes it as
 // fd 3, and runs this as its own uid with an empty environment, no_new_privs and a
 // seccomp filter that leaves it no network. The runtime treats every frame from
 // here as untrusted and enforces all tool policy and limits on its side.
@@ -23,15 +24,31 @@ const { values: args } = parseArgs({
     processes: { type: "string", default: "1" },
     /** Serve `probe` requests, which report this process's confinement (tests/image-isolation.ts). */
     "test-hooks": { type: "boolean", default: false },
-    /** Prototype (proto/v8-exec): `v8` runs each execution in its own v8-exec process instead of the QuickJS pool. */
+    /**
+     * AGENT_JS_EXEC, AGENT_V8_PRESPAWN, AGENT_V8_MAX and AGENT_V8_JITLESS as the runtime reads them (the
+     * launcher passes them on). With v8 the default, v8-exec processes are started ahead (2 per sandbox
+     * process by default, else none until a tenant on V8 runs one).
+     */
     engine: { type: "string", default: "quickjs" },
+    "v8-prespawn": { type: "string" },
+    "v8-max": { type: "string" },
+    "v8-jitless": { type: "string", default: "1" },
   },
 });
 const processes = Number(args.processes);
 const share = (total: number) => Math.ceil(total / processes);
-const v8 = args.engine === "v8" ? v8Exec() : undefined;
+const v8First = args.engine === "v8";
+// Started on first use, so a node whose tenants never run V8 spawns nothing.
+let v8: V8Exec | undefined;
+const v8Exec = () => v8 ??= new V8Exec({
+  prespawn: args["v8-prespawn"] === undefined ? (v8First ? 2 : 0) : Number(args["v8-prespawn"]),
+  max: share(args["v8-max"] === undefined ? 64 : Number(args["v8-max"])),
+  jitless: args["v8-jitless"] !== "0",
+});
+if (v8First) v8Exec();
 const pool = new CodePool({
-  min: v8 ? 0 : share(args["workers-min"] === undefined ? Math.min(4, availableParallelism()) : Number(args["workers-min"])),
+  // Warm whatever the default engine: tenants pinned to QuickJS keep its warm workers (AGENT_CODE_WORKERS_MIN=0 once none are).
+  min: share(args["workers-min"] === undefined ? Math.min(4, availableParallelism()) : Number(args["workers-min"])),
   max: share(args["workers-max"] === undefined ? codeWorkers() : Number(args["workers-max"])),
 });
 
@@ -59,7 +76,7 @@ function serve(socket: Socket) {
     if (message.method !== "execute") return void socket.destroy();
     // The runtime's CPU budget for the execution, which this process's watchdog holds it to.
     const cpuMs = message.params?.cpuMs;
-    (v8 ? Promise.resolve(v8.open()) : localGuest(pool, closed.signal, Number.isInteger(cpuMs) && cpuMs > 0 && cpuMs <= SANDBOX_LIMITS.maxCpuMs ? cpuMs : SANDBOX_LIMITS.cpuMs)).then(acquired => {
+    (message.params?.engine === "v8" ? Promise.resolve(v8Exec().open()) : localGuest(pool, closed.signal, Number.isInteger(cpuMs) && cpuMs > 0 && cpuMs <= SANDBOX_LIMITS.maxCpuMs ? cpuMs : SANDBOX_LIMITS.cpuMs)).then(acquired => {
       if (socket.destroyed) return acquired.end(false);
       guest = acquired;
       acquired.listen(reply => {

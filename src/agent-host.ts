@@ -16,7 +16,7 @@ import type { AppendLog } from "../shared/append-log.ts";
 import { Transcript, readTranscriptLog, summaryMessage, type Backlog, type CompactionState, type TranscriptRecord } from "./transcript.ts";
 import { boundedContext, importedHistory, interruptedTurnRepairs, validateInitialMessages, validateUserMessages } from "./history.ts";
 import { backgroundTokens, compactionNeed, compactionSettings, contextTokens, explicitKeyStream, modelKeyFailure, runCompaction } from "./compaction.ts";
-import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
+import { codeRequest, DEFAULT_RETRY, defaultCodeEngine, SANDBOX_LIMITS } from "./limits.ts";
 import { describeFile, documentPayload, FILE_LIMITS, nativeBlock, unseen, validFileRef, type FileRef } from "./files.ts";
 import { CHUNK_BYTES, chunksOf, type HistoryChunk } from "./history-pages.ts";
 import { observeTurns, recordCodeExecution } from "./metrics.ts";
@@ -418,7 +418,7 @@ export function createAgentHost(hostIO: HostIO) {
     catch (error) { failure = error; throw error; }
     finally {
       const maxTimeoutMs = Math.min(config.codeLimits?.maxTimeoutMs ?? SANDBOX_LIMITS.maxTimeoutMs, SANDBOX_LIMITS.maxTimeoutMs);
-      recordCodeExecution({ tenant: config.tenant, ms: Date.now() - started, requestedTimeoutMs: options.timeoutMs, timeoutMs: Math.min(options.timeoutMs ?? SANDBOX_LIMITS.timeoutMs, maxTimeoutMs), cpuMs: result?.cpuMs, error: failure });
+      recordCodeExecution({ tenant: config.tenant, engine: config.codeLimits?.engine ?? defaultCodeEngine(), ms: Date.now() - started, requestedTimeoutMs: options.timeoutMs, timeoutMs: Math.min(options.timeoutMs ?? SANDBOX_LIMITS.timeoutMs, maxTimeoutMs), cpuMs: result?.cpuMs, error: failure });
     }
   }
 

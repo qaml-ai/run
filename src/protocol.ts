@@ -1,3 +1,4 @@
+import type { CodeEngine } from "./limits.ts";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
 
@@ -67,8 +68,8 @@ export interface AgentConfig {
   resume?: boolean;
   /** The agent's tenant, set by the runtime, for its metric lines. */
   tenant?: string;
-  /** The tenant's js_exec limits, set by the runtime (never the agent's configuration): CPU per execution and the longest timeoutMs. */
-  codeLimits?: { cpuMs: number; maxTimeoutMs: number };
+  /** The tenant's js_exec limits, set by the runtime (never the agent's configuration): CPU per execution, the longest timeoutMs, and the engine. */
+  codeLimits?: { cpuMs: number; maxTimeoutMs: number; engine?: CodeEngine };
 }
 export type WireMessage =
   | { type: "request"; id: string; method: string; params: any }

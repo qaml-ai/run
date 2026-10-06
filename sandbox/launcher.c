@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/prctl.h>
 #include <sys/ptrace.h>
 #include <sys/resource.h>
@@ -107,7 +108,7 @@ static struct timespec restart_at[MAX_SANDBOXES];
 static int failures[MAX_SANDBOXES];
 static struct timespec started_at[MAX_SANDBOXES];
 static sigset_t original_mask;
-static char *sandbox_argv[10];
+static char *sandbox_argv[14];
 
 static void listen_on(int index) {
   struct sockaddr_un address = { .sun_family = AF_UNIX };
@@ -216,9 +217,14 @@ int main(int argc, char **argv) {
   const char *min = getenv("AGENT_CODE_WORKERS_MIN"), *max = getenv("AGENT_CODE_WORKERS_MAX");
   if (min && *min && strspn(min, "0123456789") == strlen(min) && strlen(min) < 6) snprintf(sandbox_argv[n++] = min_arg, sizeof min_arg, "--workers-min=%s", min);
   if (max && *max && strspn(max, "0123456789") == strlen(max) && strlen(max) < 6) snprintf(sandbox_argv[n++] = max_arg, sizeof max_arg, "--workers-max=%s", max);
-  // Prototype (proto/v8-exec): AGENT_JS_EXEC=v8 has the sandbox processes run js_exec in v8-exec processes.
-  const char *engine = getenv("AGENT_JS_EXEC");
+  // js_exec's default engine and v8-exec's settings (src/v8-exec.ts), checked here, since the
+  // sandbox processes get no environment.
+  static char prespawn_arg[32], v8_max_arg[32];
+  const char *engine = getenv("AGENT_JS_EXEC"), *prespawn = getenv("AGENT_V8_PRESPAWN"), *v8_max = getenv("AGENT_V8_MAX"), *jitless = getenv("AGENT_V8_JITLESS");
   if (engine && !strcmp(engine, "v8")) sandbox_argv[n++] = "--engine=v8";
+  if (prespawn && *prespawn && strspn(prespawn, "0123456789") == strlen(prespawn) && strlen(prespawn) < 4) snprintf(sandbox_argv[n++] = prespawn_arg, sizeof prespawn_arg, "--v8-prespawn=%s", prespawn);
+  if (v8_max && *v8_max && strspn(v8_max, "0123456789") == strlen(v8_max) && strlen(v8_max) < 6) snprintf(sandbox_argv[n++] = v8_max_arg, sizeof v8_max_arg, "--v8-max=%s", v8_max);
+  if (jitless && (!strcmp(jitless, "0") || !strcasecmp(jitless, "false"))) sandbox_argv[n++] = "--v8-jitless=0";
   const char *hooks = getenv("AGENT_SANDBOX_TEST_HOOKS");
   if (hooks && !strcmp(hooks, "1")) {
     sandbox_argv[n++] = "--test-hooks";
