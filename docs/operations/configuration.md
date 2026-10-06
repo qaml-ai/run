@@ -82,18 +82,17 @@
 | `AGENT_STORAGE_RECONCILE_DAYS` | how often the storage charge first corrects tracked storage by listing Storage (default 7; 0: only the first time; see [Billing](billing.md)) |
 | `AGENT_SERVICE_NAME` | the `ServiceName` dimension on the `node_load` metrics (none when unset) |
 | `AGENT_HOSTING` | `process` (one Node process per awake agent) or `inline` (many agents per process) |
-| `AGENT_CODE_WORKERS_MAX` | at most how many js_exec executions tenants with a concurrency limit (`codeConcurrency`; self-serve ones by default) run at once on a node, together. By default what 40% of the process's memory (its cgroup limit in a container) affords at 128 MiB an execution, from 2 to 32 (6 on a 2 GB task); this only lowers it. Executions beyond it, or beyond their tenant's limit, wait their turn within their own timeout. Admin tenants without one are bounded only by `AGENT_V8_MAX` |
-| `AGENT_V8_PRESPAWN` | v8-exec processes each sandbox process keeps started ahead (default 2; none in the runtime process without sandbox processes) |
-| `AGENT_V8_MAX` | v8-exec processes running at once on a node, shared among its sandbox processes (default 64); more wait their turn |
+| `AGENT_CODE_WORKERS_MAX` | how many js_exec executions tenants with a concurrency limit (`codeConcurrency`; self-serve ones by default) run at once on a node, together (default 16; each holds about 20 MB while it waits on tools). Executions beyond it, or beyond their tenant's limit, wait their turn within their own timeout. Admin tenants without one are bounded only by `AGENT_V8_MAX` |
+| `AGENT_V8_PRESPAWN` | v8-exec processes the runtime keeps started ahead (default 2 under `agent-launcher`, else none; agent processes under `process` hosting keep none) |
+| `AGENT_V8_MAX` | v8-exec processes running at once in the runtime process (default 64); more wait their turn |
 | `AGENT_V8_JITLESS` | `false` lets V8 use its JIT compilers (default on: interpreted, no executable memory) |
 | `AGENT_V8_EXEC` | the v8-exec binary, which runs every js_exec (default `/usr/local/bin/v8-exec`, as the image has it, else the checkout's `npm run build:v8-exec` build). The runtime does not start if js_exec does not run |
-| `AGENT_SANDBOX_PROCESSES` | read by `agent-launcher` (the image's entrypoint): how many [sandbox processes](sandbox.md) run js_exec (default 2, at most 16; 0 runs it in the runtime process) |
-| `AGENT_SANDBOX_REQUIRED` | `1` (the image's default) refuses to start without sandbox processes |
+| `AGENT_SANDBOX_REQUIRED` | `1` (the image's default) refuses to start without `agent-launcher` confining js_exec and file parsing ([Sandbox](sandbox.md#layers)) |
 | `AGENT_OUTBOUND_ALLOW_HTTP` | `true` lets MCP servers, `web_fetch` and tenants' model endpoints (key scopes' `baseUrl`) use `http://` URLs (tests and development only) |
 | `AGENT_OUTBOUND_BLOCK_CIDRS` | ranges no tool source may reach, on top of the built-in private and reserved ranges, e.g. the VPC's CIDR (see [Outbound calls](../guides/tools.md#outbound-calls)) |
 | `AGENT_OUTBOUND_ALLOW_CIDRS` | exceptions to the built-in ranges, e.g. `127.0.0.1/32` for a local test server; never set in production |
 | `AGENT_OUTBOUND_ALLOW_ORIGINS` | exact origins (`scheme://host:port`, comma-separated) reachable despite the built-in ranges, over `http` too: an operator's own services, e.g. `http://app:3000` for a self-hosted runtime's application. Only that scheme, host and port; checked at each connection, and `AGENT_OUTBOUND_BLOCK_CIDRS` still applies. MCP servers, HTTP tools, model providers and webhooks may use them; `web_fetch`, `web_search` and renders never do ([Self-hosting](self-host.md#networking)) |
-| `AGENT_SANDBOX_SOCKETS` | set by `agent-launcher`: the sandbox processes' sockets. Without it, the runtime process runs js_exec in v8-exec processes of its own, as in development on macOS; the `listening` log line's `sandbox` field says which |
+| `AGENT_SANDBOX_DIR` | set by `agent-launcher`: where it takes requests for confined processes. Without it, the runtime process starts v8-exec and parse jobs as its own children, unconfined, as in development on macOS; the `listening` log line's `sandbox` field says which |
 
 Start a runtime on a VM using a trusted terminal. It always reads its tenants
 from `AGENT_TENANTS_FILE` or `AGENT_TENANTS_SECRET_ARN`, and does not start

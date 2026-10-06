@@ -52,7 +52,7 @@ export const FILE_LIMITS = Object.freeze({
   requestFileBytes: 24 * 1024 * 1024, requestImages: 100,
   /** File bytes the agent host keeps hydrated between model requests. */
   hydratedBytes: 32 * 1024 * 1024,
-  /** Parsing untrusted files (in a worker, in a sandbox process when there are some): input, time, memory and text out. */
+  /** Parsing untrusted files (in a worker of a parse job, parse-job.ts): input, time, memory and text out. */
   inspectBytes: 32 * 1024 * 1024, inspectMs: 10_000, inspectHeapMb: 256, inspectMemoryBytes: 512 * 1024 * 1024, extractedChars: 1_000_000,
   /** A text file's first lines, as its reference carries them: read from at most this many bytes, lines cut to a width. */
   headBytes: 1024, headLines: 5, headWidth: 200,

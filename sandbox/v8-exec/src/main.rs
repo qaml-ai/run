@@ -325,8 +325,8 @@ fn main() {
   let args: Vec<String> = std::env::args().collect();
   let flag = |name: &str| args.iter().position(|arg| arg == name).and_then(|i| args.get(i + 1)).cloned();
   let jitless = args.iter().any(|arg| arg == "--jitless");
-  // Not dumpable: processes of the same uid (the sandbox process, other executions' v8-exec
-  // processes) cannot read this one's memory through /proc/<pid>/mem, whatever Yama's ptrace_scope.
+  // Not dumpable: no process of the same uid (agent-launcher gives each one its own; without it,
+  // the runtime's) can read this one's memory through /proc/<pid>/mem, whatever Yama's ptrace_scope.
   // (Not under --seccomp-debug, so strace can read its calls' arguments.)
   #[cfg(target_os = "linux")]
   if !args.iter().any(|arg| arg == "--seccomp-debug") { unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) }; }

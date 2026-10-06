@@ -261,7 +261,7 @@ resource "aws_ecs_task_definition" "runtime" {
     # An init as PID 1 forwards signals and reaps the sandbox children. The
     # image's entrypoint (agent-launcher) starts as root and needs Fargate's
     # default SETUID, SETGID, CHOWN and KILL capabilities to run the runtime and
-    # the js_exec sandbox processes as their own uids: set no `user` here and
+    # the js_exec and file-parsing processes as uids of their own: set no `user` here and
     # drop none of those.
     linuxParameters = { initProcessEnabled = true }
     logConfiguration = {

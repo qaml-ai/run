@@ -4,7 +4,7 @@
 app (TypeScript / Python SDK, HTTP + SSE)
   -> any runtime node --forwarded to--> the node that owns the agent
       -> agent host (Pi loop, working-set transcript, compaction, retries)
-          -> v8-exec sandbox (a bare V8 isolate, a fresh process for every execution, under a sandbox process)
+          -> v8-exec sandbox (a bare V8 isolate, a fresh process for every execution, confined by agent-launcher)
               -> JSON tool calls -> back to the app's SDK callbacks
   control plane: Postgres (ownership, headers, accounts, schedules, channels, volume metadata)
   data plane: Storage (append logs and blobs, S3 in production)
