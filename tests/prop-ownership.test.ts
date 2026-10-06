@@ -146,7 +146,13 @@ class World {
   jump(ms: number) { return this.setTime(this.t + ms); }
   async published(node: string) {
     const { rows } = await this.base.query("select session, expires_at from runtime_nodes where node = $1", [node]);
-    for (const row of rows) this.expiries.set(row.session, Math.max(this.expiries.get(row.session) ?? 0, new Date(row.expires_at).getTime()));
+    for (const row of rows) {
+      this.expiries.set(row.session, Math.max(this.expiries.get(row.session) ?? 0, new Date(row.expires_at).getTime()));
+      // A registration whose answer was lost leaves the node unregistered under the same session; if peers reap that
+      // heartbeat, the node's next registration writes it again. Peers ended the old row, which named no claims (none
+      // is taken before a registration succeeds); the new one is live, so the earlier reap no longer applies.
+      this.nodes.find(candidate => candidate.name === node)?.reapedAlive.delete(row.session);
+    }
   }
   reaped(node: string, session: string) {
     const victim = this.nodes.find(candidate => candidate.name === node);
