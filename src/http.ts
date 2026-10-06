@@ -40,10 +40,17 @@ export function errorCode(error: unknown, status: number): string {
   return opening ?? STATUS_CODES[status] ?? (status >= 500 ? "INTERNAL" : "INVALID_REQUEST");
 }
 
-/** The headers an error answer carries: Retry-After, when the error says when to retry (a rate limit's 429). */
+/**
+ * The headers an error answer carries: Retry-After, when the error says when to retry (a rate limit's 429), and a
+ * per-tenant limit's X-RateLimit-* (see RateLimitState in rate-limits.ts).
+ */
 export function errorHeaders(error: unknown): Record<string, string> {
-  const after = (error as { retryAfter?: unknown } | undefined)?.retryAfter;
-  return typeof after === "number" && Number.isFinite(after) ? { "Retry-After": String(Math.max(1, Math.ceil(after))) } : {};
+  const { retryAfter: after, state } = (error ?? {}) as { retryAfter?: unknown; state?: { limit?: unknown; remaining?: unknown; reset?: unknown } };
+  const headers: Record<string, string> = typeof after === "number" && Number.isFinite(after) ? { "Retry-After": String(Math.max(1, Math.ceil(after))) } : {};
+  if (typeof state?.limit === "number" && typeof state.remaining === "number" && typeof state.reset === "number") {
+    Object.assign(headers, { "X-RateLimit-Limit": String(state.limit), "X-RateLimit-Remaining": String(state.remaining), "X-RateLimit-Reset": String(state.reset) });
+  }
+  return headers;
 }
 
 /** The status to answer an error with: its own, else 503 (retry) when the database is unreachable, else `fallback`. */

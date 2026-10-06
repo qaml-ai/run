@@ -124,7 +124,7 @@ export async function runtime(t: T, respond: (body: any, index: number) => objec
     const text = await response.text();
     let json: any = text;
     try { json = JSON.parse(text); } catch { /* not JSON */ }
-    return { status: response.status, json, text };
+    return { status: response.status, json, text, headers: response.headers };
   };
   /** Prompt an agent over the REST API and wait for the outcome of its turn. */
   const prompt = async (agent: string, text: string, token?: string, extra: Record<string, unknown> = {}) => {

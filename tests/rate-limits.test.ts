@@ -2,10 +2,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { transaction } from "../src/db.ts";
-import { clientAddress, clientKey, loopback, RateLimited, RateLimits, rateLimitConfig, type RateLimitConfig } from "../src/rate-limits.ts";
+import { clientAddress, clientKey, loopback, RateLimited, RateLimits, rateLimitConfig, rateLimitHeaders, type RateLimitConfig } from "../src/rate-limits.ts";
+import { errorHeaders } from "../src/http.ts";
+import { setTimeout as sleep } from "node:timers/promises";
 import { Tenants } from "../src/tenants.ts";
 import { testDatabase } from "./database.ts";
-import { OPERATOR, OTHER_OPERATOR, runtime } from "./runtime-server.ts";
+import { OPERATOR, OTHER_OPERATOR, runtime, until } from "./runtime-server.ts";
 import { cluster, token as clusterToken } from "./cluster-helpers.ts";
 
 const headers = (values: Record<string, string>) => (name: string) => values[name];
@@ -153,6 +155,107 @@ test("agent creates and runs per tenant: lower on free credit, none for admin te
   clock.now += 60_000;
   await tenantLimits.run("paid");
   await tenantLimits.agentCreate("paid");
+});
+
+test("a tenant's window as X-RateLimit-* headers: limit, what is left, and seconds until the clock minute turns over; a read counts nothing", async () => {
+  const { clock, limits: tenantLimits } = await limits({ agentCreates: 3, runs: 2 }, { exempt: tenant => tenant === "ops" });
+  // The clock is 10 s into its minute: windows align to the clock minute, so each resets in 50 s.
+  assert.deepEqual(await tenantLimits.agentCreate("paid", false), { limit: 3, remaining: 3, reset: 50 }, "nothing counted yet");
+  assert.deepEqual(await tenantLimits.agentCreate("paid"), { limit: 3, remaining: 2, reset: 50 });
+  assert.deepEqual(await tenantLimits.agentCreate("paid", false), { limit: 3, remaining: 2, reset: 50 }, "a read counts nothing");
+  clock.now += 20_000;
+  assert.deepEqual(await tenantLimits.agentCreate("paid"), { limit: 3, remaining: 1, reset: 30 });
+  assert.deepEqual(await tenantLimits.agentCreate("paid"), { limit: 3, remaining: 0, reset: 30 });
+  const refused = await refusal(tenantLimits.agentCreate("paid"));
+  assert.deepEqual(errorHeaders(refused), { "Retry-After": "30", "X-RateLimit-Limit": "3", "X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "30" });
+  // Each tenant sees its own window only, and runs have theirs.
+  assert.deepEqual(await tenantLimits.agentCreate("other"), { limit: 3, remaining: 2, reset: 30 });
+  assert.deepEqual(await tenantLimits.run("paid"), { limit: 2, remaining: 1, reset: 30 });
+  // No limit applies to an admin tenant, nor where the limit is 0: no headers.
+  assert.equal(await tenantLimits.agentCreate("ops"), undefined);
+  assert.deepEqual(rateLimitHeaders(undefined), {});
+  const { limits: unlimited } = await limits({ agentCreates: 0 });
+  assert.equal(await unlimited.agentCreate("paid"), undefined);
+  // Per-address limits are not the tenant's: their 429s carry Retry-After only.
+  const { limits: perAddress } = await limits({ authPerIp: 1 });
+  await perAddress.request("/oauth/token", "203.0.113.5");
+  assert.deepEqual(Object.keys(errorHeaders(await refusal(perAddress.request("/oauth/token", "203.0.113.5")))), ["Retry-After"]);
+  clock.now += 30_000;
+  assert.deepEqual(await tenantLimits.agentCreate("paid", false), { limit: 3, remaining: 3, reset: 60 }, "a new minute starts afresh");
+});
+
+/** Wait, if the clock minute is about to turn over, for the next one: fixed windows reset with it. */
+async function freshMinute() {
+  const into = Date.now() % 60_000;
+  if (into > 40_000) await sleep(60_000 - into + 200);
+}
+
+test("creates and runs answer with X-RateLimit-* headers; an upsert that changes nothing is not a create, and gives the same configHash", { timeout: 180_000 }, async t => {
+  const r = await runtime(t, () => ({ content: "ok" }), { AGENT_RATE_LIMIT_FREE_AGENT_CREATES: "3", AGENT_BILLING_ADMINS: "alice" }, { tenants: {
+    alice: { tokenSha256: sha(OPERATOR), apiKeys: { openrouter: "fixture-model-key" } },
+    bob: { tokenSha256: sha(OTHER_OPERATOR), apiKeys: { openrouter: "fixture-model-key" }, maxRunsPerMinute: 2 },
+  } });
+  const carol = (await r.call("/v1/tenants", { body: { id: "carol" } })).json.token.token as string;
+  const dave = (await r.call("/v1/tenants", { body: { id: "dave" } })).json.token.token as string;
+  const limitsOf = (headers: Headers) => ({ limit: headers.get("x-ratelimit-limit"), remaining: headers.get("x-ratelimit-remaining"), reset: Number(headers.get("x-ratelimit-reset")) });
+  const upsert = (key: string, body: object, token = carol) => r.call("/v1/agents", { body, token, headers: { "Idempotency-Key": key } });
+  await freshMinute();
+
+  const made = await upsert("triage", { systemPrompt: "Answer yes or no." });
+  assert.equal(made.status, 201, made.text);
+  assert.match(made.json.configHash, /^[0-9a-f]{64}$/);
+  const first = limitsOf(made.headers);
+  assert.deepEqual({ ...first, reset: undefined }, { limit: "3", remaining: "2", reset: undefined });
+  assert.ok(first.reset >= 1 && first.reset <= 60, `reset ${first.reset}`);
+  // The same configuration again, however often: the same agent and hash, nothing counted.
+  for (let i = 0; i < 5; i++) {
+    const again = await upsert("triage", { systemPrompt: "Answer yes or no." });
+    assert.equal(again.status, 201, again.text);
+    assert.equal(again.json.id, made.json.id);
+    assert.equal(again.json.configHash, made.json.configHash);
+    assert.equal(again.headers.get("x-ratelimit-remaining"), "2", "a no-op upsert counts nothing");
+  }
+  const listed = (await r.call("/v1/agents", { token: carol })).json.find((agent: { id: string }) => agent.id === made.json.id);
+  assert.equal(listed.configHash, made.json.configHash);
+  assert.equal((await r.call("/v1/agents/triage/credentials", { token: carol })).json.configHash, made.json.configHash);
+  // A change is a create: a new hash, which the agent has once its reconfigure applies.
+  const changed = await upsert("triage", { systemPrompt: "Answer yes, no or maybe." });
+  assert.equal(changed.headers.get("x-ratelimit-remaining"), "1");
+  assert.notEqual(changed.json.configHash, made.json.configHash);
+  await until(async () => (await r.call(`/v1/agents/${made.json.id}/requests/${changed.json.reconfigured.id}`, { token: carol })).json.state === "completed", "the upsert's reconfigure");
+  assert.equal((await r.call(`/v1/agents/${made.json.id}`, { token: carol })).json.configHash, changed.json.configHash);
+  assert.equal((await upsert("triage", { systemPrompt: "Answer yes, no or maybe." })).headers.get("x-ratelimit-remaining"), "1");
+  assert.equal((await r.call("/v1/agents", { body: {}, token: carol })).headers.get("x-ratelimit-remaining"), "0");
+  // Past the limit: 429 with Retry-After and the headers; a no-op upsert still goes through.
+  const refused = await upsert("another", {});
+  assert.equal(refused.status, 429);
+  assert.deepEqual({ ...limitsOf(refused.headers), reset: undefined }, { limit: "3", remaining: "0", reset: undefined });
+  assert.equal(refused.headers.get("retry-after"), refused.headers.get("x-ratelimit-reset"));
+  const noop = await upsert("triage", { systemPrompt: "Answer yes, no or maybe." });
+  assert.equal(noop.status, 201, noop.text);
+  assert.equal(noop.headers.get("x-ratelimit-remaining"), "0");
+  // Another tenant's window is its own: carol's state never shows in dave's headers.
+  assert.equal((await upsert("triage", {}, dave)).headers.get("x-ratelimit-remaining"), "2");
+
+  // Runs, over REST and over the agent's own token (the SDKs' path), by a tenant with a limit of its own and its own model key.
+  const agent = (await r.call("/v1/agents", { body: {}, token: OTHER_OPERATOR })).json;
+  const run = await r.call(`/v1/agents/${agent.id}/prompt`, { body: { text: "Is the sky blue?" }, token: OTHER_OPERATOR });
+  assert.equal(run.status, 202, run.text);
+  assert.deepEqual({ ...limitsOf(run.headers), reset: undefined }, { limit: "2", remaining: "1", reset: undefined });
+  const viaToken = await fetch(`${r.base}/clients/${agent.id}/requests`, { method: "POST", headers: { Authorization: `Bearer ${agent.token}`, "Content-Type": "application/json" }, body: JSON.stringify({ id: "run-2", method: "prompt", params: { text: "Is grass green?" } }) });
+  assert.equal(viaToken.status, 202);
+  assert.equal(viaToken.headers.get("x-ratelimit-remaining"), "0");
+  const over = await r.call(`/v1/agents/${agent.id}/prompt`, { body: { text: "And snow?" }, token: OTHER_OPERATOR });
+  assert.equal(over.status, 429);
+  assert.equal(over.headers.get("x-ratelimit-remaining"), "0");
+  // A retry of an accepted run is not counted again, and says nothing of the window.
+  const retried = await fetch(`${r.base}/clients/${agent.id}/requests`, { method: "POST", headers: { Authorization: `Bearer ${agent.token}`, "Content-Type": "application/json" }, body: JSON.stringify({ id: "run-2", method: "prompt", params: { text: "Is grass green?" } }) });
+  assert.equal(retried.status, 200);
+  assert.equal(retried.headers.get("x-ratelimit-remaining"), null);
+  // An admin tenant has no limit, so no headers.
+  const admin = await r.call("/v1/agents", { body: {} });
+  assert.equal(admin.status, 201);
+  assert.equal(admin.headers.get("x-ratelimit-limit"), null);
 });
 
 test("sign-ups per address per day count in the transaction that creates the account", async () => {

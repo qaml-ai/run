@@ -307,11 +307,11 @@ setInterval(() => void expireIdempotencyKeys(db).catch(error => console.error(JS
  * Provision an agent for `tenant` (POST /v1/agents), recording how long each step took (`create_timing`). `parent` is the run
  * that made it with a delegate call: the runtime's own, never a caller's.
  */
-async function createAgent(tenant: string, params: any, key?: string, parent?: { agentId: string; runId: string; toolCallId: string; depth: number }) {
+async function createAgent(tenant: string, params: any, key?: string, parent?: { agentId: string; runId: string; toolCallId: string; depth: number }, admit?: (unchanged: boolean) => Promise<unknown>) {
   const steps = new Steps();
   const made: { agent?: string; upsert: boolean } = { upsert: false };
   try {
-    const result = await provisionAgent(tenant, params, key, steps, made, parent);
+    const result = await provisionAgent(tenant, params, key, steps, made, parent, admit);
     recordCreate(steps, { tenant, ...made });
     return result;
   } catch (error) {
@@ -327,7 +327,8 @@ function parentModel(given: { provider?: unknown; id?: unknown; baseUrl?: unknow
   try { return resolveModel(`${given.provider}/${given.id}`); } catch { return undefined; }
 }
 
-async function provisionAgent(tenant: string, params: any, key: string | undefined, steps: Steps, outcome: { agent?: string; upsert: boolean }, parent?: { agentId: string; runId: string; toolCallId: string; depth: number }) {
+/** `admit` counts the create against the tenant's rate limit once the key's agent is known: told whether it changes nothing. */
+async function provisionAgent(tenant: string, params: any, key: string | undefined, steps: Steps, outcome: { agent?: string; upsert: boolean }, parent?: { agentId: string; runId: string; toolCallId: string; depth: number }, admit?: (unchanged: boolean) => Promise<unknown>) {
   // The application's tools are its attached MCP server's: the tools/list it declares.
   const { mcp: _mcp, subject: _subject, context: _context, keyScope, spendLimit: limit, modelHeaders: headers, builtins: asked, delegate: delegating, ...rest } = params ?? {};
   // The application's tools as it declared them, whose hash its connections are told (`toolsHash`).
@@ -362,7 +363,7 @@ async function provisionAgent(tenant: string, params: any, key: string | undefin
   const lifetime = ttl === undefined ? (key !== undefined ? null : undefined) : ttl === null ? null : ttl * 1000;
   const { reconfigure, ...made_ } = await clients.create(params.tools ?? [], config, key, { name: params.name, type: params.type }, tenant, lifetime, params.mounts,
     made && { definition: made.ref, provision: made.provision, overrides: made.overrides, sources: made.sources }, identity,
-    { keyScope, spendLimit, builtins, delegate, ...(parent ? { parent } : {}), ...(mcpTools !== undefined ? { toolsHash: createHash("sha256").update(JSON.stringify(mcpTools)).digest("hex") } : {}) }, steps);
+    { keyScope, spendLimit, builtins, delegate, ...(parent ? { parent } : {}), ...(mcpTools !== undefined ? { toolsHash: createHash("sha256").update(JSON.stringify(mcpTools)).digest("hex") } : {}), ...(admit ? { admit } : {}) }, steps);
   outcome.agent = made_.id;
   outcome.upsert = !!reconfigure;
   const warnings = await warningsFor(tenant, made ? made.sources : builtins && { builtins });

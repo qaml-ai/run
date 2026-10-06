@@ -1599,6 +1599,10 @@
           "model": {
             "type": "string"
           },
+          "configHash": {
+            "type": "string",
+            "description": "A hash of the agent's configuration as its upserts set it (model, instructions, tools, builtins, name…): an upsert of the same configuration gives the same hash, changes nothing and is not counted as an agent create. Opaque; compare it, never parse it. It may change once when the runtime changes how configurations are stored"
+          },
           "connected": {
             "type": "boolean",
             "description": "Whether an application serving its attached tools (an SDK's upsert with tools) is connected"
@@ -1643,6 +1647,7 @@
           "name",
           "type",
           "model",
+          "configHash",
           "connected",
           "running",
           "expiresAt",
@@ -1664,6 +1669,13 @@
               "number",
               "null"
             ]
+          },
+          "configHash": {
+            "type": "string",
+            "description": "The hash of the configuration this create or upsert asked for (see AgentSummary.configHash): the agent has it once `reconfigured` applies. The same as the agent's before: the upsert changed nothing, and was not counted as a create"
+          },
+          "reconfigured": {
+            "$ref": "#/components/schemas/RequestRecord"
           },
           "prompt": {
             "anyOf": [
@@ -1710,7 +1722,8 @@
         },
         "required": [
           "id",
-          "expiresAt"
+          "expiresAt",
+          "configHash"
         ],
         "additionalProperties": {}
       },
@@ -1869,7 +1882,8 @@
           "method",
           "state",
           "fingerprint"
-        ]
+        ],
+        "description": "An upsert of an existing agent: the configure request bringing it to this configuration between its turns"
       },
       "Outcome": {
         "type": "object",
@@ -2673,6 +2687,10 @@
               "number",
               "null"
             ]
+          },
+          "configHash": {
+            "type": "string",
+            "description": "The configuration it has (see AgentSummary.configHash)"
           }
         },
         "required": [
@@ -7838,6 +7856,26 @@
         "responses": {
           "201": {
             "description": "The agent and its scoped token",
+            "headers": {
+              "X-RateLimit-Limit": {
+                "description": "Agents the tenant may make a minute",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "description": "What is left of it this minute",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "description": "Seconds until the window resets: windows align to the clock minute (UTC)",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -8085,6 +8123,26 @@
         "responses": {
           "201": {
             "description": "A new agent with the source's configuration, a copy of its history to the fork point, and a fork of its workspace",
+            "headers": {
+              "X-RateLimit-Limit": {
+                "description": "Agents the tenant may make a minute",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "description": "What is left of it this minute",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "description": "Seconds until the window resets: windows align to the clock minute (UTC)",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -8517,6 +8575,26 @@
         "responses": {
           "202": {
             "description": "The accepted request",
+            "headers": {
+              "X-RateLimit-Limit": {
+                "description": "Runs the tenant may make a minute",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "description": "What is left of it this minute",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "description": "Seconds until the window resets: windows align to the clock minute (UTC)",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {

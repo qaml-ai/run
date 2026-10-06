@@ -35,7 +35,7 @@ import type { Help } from "./help.ts";
 import type { AccountDeletions } from "./account-deletion.ts";
 import { exportAccount, type ExportOptions } from "./account-export.ts";
 import { Readable } from "node:stream";
-import { clientAddress, type RateLimits } from "./rate-limits.ts";
+import { clientAddress, rateLimitHeaders, type RateLimits, type RateLimitState } from "./rate-limits.ts";
 
 /**
  * Tenant self-service REST API. Every console action goes through these routes,
@@ -61,7 +61,8 @@ export interface ApiContext {
   /** The model an agent of the tenant that names none gets. */
   defaultModel: (tenant: string) => Promise<string>;
   /** Provision an agent for a tenant. */
-  createAgent(tenant: string, params: any, idempotencyKey?: string): Promise<unknown>;
+  /** `admit` counts the create once the key's agent is known, told whether it changes nothing (an upsert of the same configuration). */
+  createAgent(tenant: string, params: any, idempotencyKey?: string, parent?: undefined, admit?: (unchanged: boolean) => Promise<unknown>): Promise<unknown>;
   verifyKeys?: boolean;
   scheduler?: Scheduler;
   channels?: Channels;
@@ -129,6 +130,15 @@ const json = (c: Context, status: number, value: unknown) => c.json(value, statu
 const content = (value: z.ZodType) => ({ content: { "application/json": { schema: value } } });
 const reply = (description: string, value: z.ZodType) => ({ description, ...content(value) });
 const failure = { default: reply("Error", schema.ApiError) };
+/**
+ * The X-RateLimit-* headers of a response that counts against a per-tenant limit (agent creates, runs), when one applies
+ * to the tenant. Windows are fixed and align to the clock minute; a 429 carries them too, with Retry-After.
+ */
+const rateLimited = (what: string) => ({
+  "X-RateLimit-Limit": { description: `${what} the tenant may make a minute`, schema: { type: "integer" as const } },
+  "X-RateLimit-Remaining": { description: "What is left of it this minute", schema: { type: "integer" as const } },
+  "X-RateLimit-Reset": { description: "Seconds until the window resets: windows align to the clock minute (UTC)", schema: { type: "integer" as const } },
+});
 const agentId = z.object({ id: z.string() });
 const binary = (description: string) => ({ description, content: { "application/octet-stream": { schema: z.string().openapi({ format: "binary" }) } } });
 
@@ -468,7 +478,7 @@ export function api(context: ApiContext) {
   route(createRoute({
     method: "post", path: "/v1/agents",
     request: { headers: z.object({ "idempotency-key": z.string().optional().openapi({ description: "Provisioning with the same key returns the same agent" }) }).extend(traceHeaders.shape), body: content(schema.AgentInput) },
-    responses: { 201: reply("The agent and its scoped token", schema.AgentCreated) },
+    responses: { 201: { ...reply("The agent and its scoped token", schema.AgentCreated), headers: rateLimited("Agents") } },
   }), async c => {
     const tenant = c.var.principal.tenant;
     const body = await readJson(c.req.raw.body, 18 * 1024 * 1024, {}) ?? {};
@@ -480,8 +490,11 @@ export function api(context: ApiContext) {
     const { prompt, ...params } = body;
     // A first prompt is checked before anything is made, and sent once the agent is: it runs when the agent has started.
     const first = prompt === undefined ? undefined : promptRequest(parse(schema.PromptInput, prompt), undefined, c.req.header("traceparent"));
-    await context.rateLimits?.agentCreate(tenant);
-    const created = await context.createAgent(tenant, params, c.req.header("idempotency-key")) as { id: string };
+    // Counted as the key's agent is found: an upsert that changes nothing is not a create, though its headers say where the tenant stands.
+    let counting: Promise<RateLimitState | undefined> | undefined;
+    const admit = (unchanged: boolean) => counting ??= context.rateLimits?.agentCreate(tenant, !unchanged) ?? Promise.resolve(undefined);
+    const created = await context.createAgent(tenant, params, c.req.header("idempotency-key"), undefined, admit) as { id: string };
+    for (const [name, value] of Object.entries(rateLimitHeaders(await counting))) c.header(name, value);
     // An agent its key already had comes back reconfigured: only a new one is told of (src/journey.ts).
     if (context.journey && !("reconfigured" in created)) {
       const { via } = c.var.principal;
@@ -522,14 +535,14 @@ export function api(context: ApiContext) {
   route(createRoute({
     method: "post", path: "/v1/agents/{id}/fork",
     request: { params: agentId, headers: z.object({ "idempotency-key": z.string().optional().openapi({ description: "The fork's key, when the body gives none" }) }), body: content(schema.AgentForkInput) },
-    responses: { 201: reply("A new agent with the source's configuration, a copy of its history to the fork point, and a fork of its workspace", schema.AgentForked), 409: reply("FORK_POINT_RUNNING: atMessage is in a turn that has not ended; or the key names another agent", schema.ApiError) },
+    responses: { 201: { ...reply("A new agent with the source's configuration, a copy of its history to the fork point, and a fork of its workspace", schema.AgentForked), headers: rateLimited("Agents") }, 409: reply("FORK_POINT_RUNNING: atMessage is in a turn that has not ended; or the key names another agent", schema.ApiError) },
   }), async c => {
     const { key: given, name, atMessage, ttlSeconds, subject, context: identityContext, systemPromptAppend, modelHeaders } = parse(schema.AgentForkInput, await readJson(c.req.raw.body, 64 * 1024, {}));
     const identity = identityInput({ subject, context: identityContext });
     const key = given ?? c.req.header("idempotency-key");
     validTtl(ttlSeconds);
     const tenant = c.var.principal.tenant;
-    await context.rateLimits?.agentCreate(tenant);
+    for (const [name, value] of Object.entries(rateLimitHeaders(await context.rateLimits?.agentCreate(tenant)))) c.header(name, value);
     // Lives as long as a create's agent would: with a key until deleted, without one a day, unless it says.
     const ttlMs = ttlSeconds === undefined ? (key !== undefined ? null : undefined) : ttlSeconds === null ? null : ttlSeconds * 1000;
     return json(c, 201, withoutToken(c, await clients.fork(c.req.param("id")!, tenant, { key, name, atMessage, ttlMs, identity, systemPromptAppend, ...(modelHeaders !== undefined ? { modelHeaders: modelHeadersInput(modelHeaders) } : {}) })));
@@ -595,10 +608,12 @@ export function api(context: ApiContext) {
     const stopped = await clients.abortAgent(c.req.param("id")!, c.var.principal.tenant, queued);
     return json(c, 200, { aborted: true, cancelled: stopped ? stopped.cancelled : [] });
   });
-  route(createRoute({ method: "post", path: "/v1/agents/{id}/prompt", request: { params: agentId, headers: traceHeaders, body: content(schema.PromptInput) }, responses: { 202: reply("The accepted request", schema.RequestRecord) } }), async c => {
+  route(createRoute({ method: "post", path: "/v1/agents/{id}/prompt", request: { params: agentId, headers: traceHeaders, body: content(schema.PromptInput) }, responses: { 202: { ...reply("The accepted request", schema.RequestRecord), headers: rateLimited("Runs") } } }), async c => {
     // Room for inline files (FILE_LIMITS.inlineBytes, as base64); larger ones are uploaded first.
     const body = parse(schema.PromptInput, await readJson(c.req.raw.body, 6 * 1024 * 1024, {}));
-    return json(c, 202, await clients.submit(c.req.param("id")!, c.var.principal.tenant, promptRequest(body, c.req.header("idempotency-key"), c.req.header("traceparent"))));
+    const record = await clients.submit(c.req.param("id")!, c.var.principal.tenant, promptRequest(body, c.req.header("idempotency-key"), c.req.header("traceparent")),
+      rate => { for (const [name, value] of Object.entries(rateLimitHeaders(rate))) c.header(name, value); });
+    return json(c, 202, record);
   });
   route(createRoute({
     method: "put", path: "/v1/agents/{id}/uploads/{requestId}/{name}", request: { params: agentId.extend({ requestId: z.string(), name: z.string() }), body: binary("The file's bytes, streamed") },

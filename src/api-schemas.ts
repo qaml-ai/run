@@ -307,6 +307,7 @@ export const AgentSummary = z.object({
   name: z.string().openapi({ description: "Its name; its id when it was given none" }),
   type: z.string(),
   model: z.string(),
+  configHash: z.string().openapi({ description: "A hash of the agent's configuration as its upserts set it (model, instructions, tools, builtins, name…): an upsert of the same configuration gives the same hash, changes nothing and is not counted as an agent create. Opaque; compare it, never parse it. It may change once when the runtime changes how configurations are stored" }),
   connected: z.boolean().openapi({ description: "Whether an application serving its attached tools (an SDK's upsert with tools) is connected" }),
   running: z.boolean().openapi({ description: "Whether it is loaded in a runtime node's memory now, idle or not. It does not mean a turn is going: a request's state says that" }),
   expiresAt: z.number().nullable(),
@@ -353,11 +354,14 @@ export const AgentCredentials = z.object({
   id: z.string(),
   token: z.string().openapi({ description: "The agent's scoped credential for /clients routes" }),
   expiresAt: z.number().nullable(),
+  configHash: z.string().optional().openapi({ description: "The configuration it has (see AgentSummary.configHash)" }),
 }).openapi("AgentCredentials");
 export const AgentCreated = z.looseObject({
   id: z.string(),
   token: z.string().optional().openapi({ description: "The agent's scoped credential for /clients routes; absent for an OAuth access token's caller, which may not hold one" }),
   expiresAt: z.number().nullable(),
+  configHash: z.string().openapi({ description: "The hash of the configuration this create or upsert asked for (see AgentSummary.configHash): the agent has it once `reconfigured` applies. The same as the agent's before: the upsert changed nothing, and was not counted as a create" }),
+  reconfigured: RequestRecord.optional().openapi({ description: "An upsert of an existing agent: the configure request bringing it to this configuration between its turns" }),
   prompt: z.union([RequestRecord, z.object({ error: z.object({ status: z.number(), code: z.string(), message: z.string() }) })]).optional()
     .openapi({ description: "The first prompt's request, when one was given: accepted, or refused (spend limit, capacity, model) with why, the agent made regardless; send it again with POST /v1/agents/{id}/prompt" }),
   warnings: z.array(z.string()).optional().openapi({ description: "Builtins the agent has that its tenant cannot use yet, and how to fix it: web_search without a key for any of its search providers (add one with PUT /v1/providers/{provider}/key)" }),

@@ -20,6 +20,7 @@ import { FRAME_BYTES, outcomeEnding, type ClientEvent, type Outcome, type Reques
 import { agentMetadata, type AgentMetadata } from "../shared/agent-metadata.ts";
 import { scheduleInput, type Scheduler } from "./scheduler.ts";
 import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, readJson } from "./http.ts";
+import { rateLimitHeaders, type RateLimitState } from "./rate-limits.ts";
 import { VolumeService, type Mount } from "./volumes.ts";
 import { databaseUnavailable, type Db, type Sql } from "./db.ts";
 import { LostClaim, underClaim, type Claim, type Ownership } from "./ownership.ts";
@@ -495,8 +496,11 @@ export interface ClientSessionOptions {
   codeCapacity?: number;
   /** Why a tenant may not start any run, code executions included (spent prepaid credit). Checked when a run is accepted and when it starts. */
   creditLimit?: (tenant: string) => Promise<Refusal | undefined>;
-  /** Count a run the tenant starts against its rate limit; throws (429) past it. Checked when a run is accepted, not for retries. */
-  runRate?: (tenant: string) => Promise<void>;
+  /**
+   * Count a run the tenant starts against its rate limit; throws (429) past it. Checked when a run is accepted, not for
+   * retries. Where the tenant then stands (X-RateLimit-* on the answer), when a limit applies.
+   */
+  runRate?: (tenant: string) => Promise<RateLimitState | undefined | void>;
   /** Called with each finished assistant message that reports token usage, and each compaction summary's. */
   onUsage?: (tenant: string, agentId: string, message: UsageRecord) => void;
   /** Whether the tenant has a webhook endpoint for run events; without it, runs write none. */
@@ -2138,7 +2142,7 @@ export class ClientSessions {
    * (`origin.definition`), and `origin.provision` stands for its configuration in the
    * idempotency check, so a retry after the definition changed returns the same agent.
    */
-  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, given: string | undefined, metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string; spendLimit?: number; toolsHash?: string; builtins?: string[]; delegate?: DelegateSettings; parent?: SessionHeader["parent"]; fork?: { id: string; from: ForkedFrom; records: TranscriptRecord[] } } = {}, steps = new Steps()): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
+  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, given: string | undefined, metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string; spendLimit?: number; toolsHash?: string; builtins?: string[]; delegate?: DelegateSettings; parent?: SessionHeader["parent"]; fork?: { id: string; from: ForkedFrom; records: TranscriptRecord[] }; admit?: (unchanged: boolean) => Promise<unknown> } = {}, steps = new Steps()): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
     metadata = agentMetadata(metadata);
     validateDefinitions(definitions);
     // The caller's key, shown in listings; an agent made without one gets a key nothing else knows.
@@ -2154,10 +2158,14 @@ export class ClientSessions {
     const changes = (header: SessionHeader) => ({ reconfigure: { ...this.reconfiguration(header, definitions, safeConfig, metadata, mounts, origin, identity, provisionHash, own), ...(access.toolsHash ? { toolsHash: access.toolsHash } : {}) } });
     // An agent's own sources are its builtins (and their settings); one made from a definition has the definition's.
     const sources: Sources | undefined = origin ? origin.sources : own.builtins ? own : undefined;
+    // The caller counts the create (its rate limit) now, told whether the key's agent has this configuration already:
+    // an upsert that changes nothing makes nothing.
+    const known = this.sessions.get(id)?.header ?? existing?.value;
+    await access.admit?.(!!known && known.tenant === tenant && known.provisionHash === provisionHash && !known.revoked && !expired(known.expiresAt));
     if (existing) {
       if (existing.value.tenant !== tenant) throw new HttpError(409, "Idempotency key belongs to another tenant");
       const changed = changes(existing.value);
-      if (await steps.time("route", this.ownerElsewhere(id))) return { id, token, expiresAt: existing.value.expiresAt, running: true, ...changed };
+      if (await steps.time("route", this.ownerElsewhere(id))) return { id, token, expiresAt: existing.value.expiresAt, configHash: provisionHash, running: true, ...changed };
     }
     // A key with no agent a moment ago needs no second read: unless a create here is making it, this one does.
     let session = existing || this.sessions.has(id) || this.loading.has(id) ? await steps.time("load", this.load(id)) : undefined;
@@ -2232,7 +2240,7 @@ export class ClientSessions {
     if (created) void this.ensureStarted(session).catch(error => {
       if (!session.header.revoked) console.error(JSON.stringify({ type: "agent_start_failed", agent: id, tenant, error: safeError(error) }));
     });
-    return { id, token, expiresAt: session.header.expiresAt, ...changed };
+    return { id, token, expiresAt: session.header.expiresAt, configHash: provisionHash, ...changed };
   }
 
   /**
@@ -2365,7 +2373,7 @@ export class ClientSessions {
   /** A tenant's live agents. `running` covers agents served by any node. */
   async list(tenant: string) {
     const { rows } = await this.db.query(`
-      select a.id, a.header->>'key' as key, a.name, a.type, a.model, a.expires_at, a.resume_failures, a.resume_after, a.header->'parent'->>'agentId' as parent, n.node is not null as served from agents a
+      select a.id, a.header->>'key' as key, a.name, a.type, a.model, a.expires_at, a.resume_failures, a.resume_after, a.header->'parent'->>'agentId' as parent, a.header->>'provisionHash' as config_hash, n.node is not null as served from agents a
       left join actor_owners o on o.actor = a.id
       left join runtime_nodes n on n.node = o.node and n.session = o.session and n.expires_at > now()
       where a.tenant = $1 and not a.revoked and (a.expires_at is null or a.expires_at > $2) order by a.id`, [tenant, Date.now()]);
@@ -2373,7 +2381,9 @@ export class ClientSessions {
       const local = this.sessions.get(row.id);
       const response = local?.response;
       const running = this.supervisor.agents.has(row.id) || (!local && row.served);
-      return { id: row.id as string, key: row.key as string | null, name: row.name as string, type: row.type as string, model: row.model as string, connected: !!response && !response.destroyed, running: running as boolean, expiresAt: row.expires_at as number | null,
+      // The configuration it has: equal hashes, equal configurations (an upsert of it changes nothing).
+      const configHash = (local?.header.provisionHash ?? row.config_hash) as string;
+      return { id: row.id as string, key: row.key as string | null, name: row.name as string, type: row.type as string, model: row.model as string, configHash, connected: !!response && !response.destroyed, running: running as boolean, expiresAt: row.expires_at as number | null,
         resume: row.resume_failures ? { failures: row.resume_failures as number, after: Number(row.resume_after) } : null, ...(row.parent ? { parentAgentId: row.parent as string } : {}) };
     });
   }
@@ -2390,12 +2400,14 @@ export class ClientSessions {
    * upsert would set it to what the caller passes). The token is the one `create` gave: derived from the key and its
    * generation, so only an agent made with a key has one to give again; or, once rotated (`rotateToken`), the latest.
    */
-  async credentials(tenant: string, ref: string): Promise<{ id: string; token: string; expiresAt: number | null }> {
+  async credentials(tenant: string, ref: string): Promise<{ id: string; token: string; expiresAt: number | null; configHash?: string }> {
     // By id alone: a purged agent's tombstone keeps only its id, and still holds its key's generation.
-    const live = async (id: string) => (await this.db.query("select tenant, header->>'key' as key, (header->>'tokenRotation')::int as rotation, expires_at, revoked from agents where id = $1", [id])).rows[0] as { tenant: string | null; key: string | null; rotation: number | null; expires_at: number | null; revoked: boolean } | undefined;
+    const live = async (id: string) => (await this.db.query("select tenant, header->>'key' as key, (header->>'tokenRotation')::int as rotation, header->>'provisionHash' as config_hash, expires_at, revoked from agents where id = $1", [id])).rows[0] as { tenant: string | null; key: string | null; rotation: number | null; config_hash: string | null; expires_at: number | null; revoked: boolean } | undefined;
     const alive = (row: { tenant: string | null; expires_at: number | null; revoked: boolean }) => row.tenant === tenant && !row.revoked && !expired(row.expires_at === null ? null : Number(row.expires_at));
-    const found = (id: string, scoped: string, row: { rotation: number | null; expires_at: number | null }) =>
-      ({ id, token: this.agentToken(tenant, scoped, id, row.rotation ?? 0), expiresAt: row.expires_at === null ? null : Number(row.expires_at) });
+    const found = (id: string, scoped: string, row: { rotation: number | null; config_hash: string | null; expires_at: number | null }) => {
+      const configHash = this.sessions.get(id)?.header.provisionHash ?? row.config_hash;
+      return { id, token: this.agentToken(tenant, scoped, id, row.rotation ?? 0), expiresAt: row.expires_at === null ? null : Number(row.expires_at), ...(configHash ? { configHash } : {}) };
+    };
     if (validSessionId(ref)) {
       const row = await live(ref);
       if (row && alive(row)) {
@@ -2821,7 +2833,8 @@ export class ClientSessions {
       // A W3C traceparent header: the run continues the caller's trace.
       const traceparent = c.req.header("traceparent");
       if (traceparent && request?.params && typeof request.params === "object" && request.params.traceparent === undefined) request.params.traceparent = traceparent;
-      const { status, record } = await this.accept(c.var.session, request);
+      const { status, record, rate } = await this.accept(c.var.session, request);
+      for (const [name, value] of Object.entries(rateLimitHeaders(rate))) c.header(name, value);
       return json(c, status, record);
     });
     app.get(`${agent}/requests/:request`, c => this.settled(c, c.var.session, c.req.param("request")));
@@ -2865,7 +2878,7 @@ export class ClientSessions {
    * Accept an idempotent request: 200 with the existing record for a retried ID,
    * or 202 once the new record is durable and the work has started.
    */
-  private async accept(session: Session, body: any, trusted = false): Promise<{ status: 200 | 202; record: RequestRecord }> {
+  private async accept(session: Session, body: any, trusted = false): Promise<{ status: 200 | 202; record: RequestRecord; rate?: RateLimitState }> {
     if (!validId(body?.id) || !REQUEST_METHODS.includes(body.method) || !body.params || typeof body.params !== "object" || Array.isArray(body.params)) throw new HttpError(400, "Invalid request");
     // Only the runtime resumes a suspension, once its inputs have settled.
     if (body.method === "resume" && (!trusted || Object.keys(body.params).length !== 1 || !validId(body.params.suspension))) throw new HttpError(400, "Answer the agent's inputs to resume its turn");
@@ -2932,7 +2945,7 @@ export class ClientSessions {
       // A resumed turn acts for whoever the suspended one did.
       if (body.method === "resume") actor = session.requests.get(params.suspension)?.actor;
     } catch (error) { throw new HttpError(400, errorText(error)); }
-    if (isRun && body.method !== "resume") await this.options.runRate?.(session.header.tenant);
+    const rate = isRun && body.method !== "resume" ? await this.options.runRate?.(session.header.tenant) ?? undefined : undefined;
     const limited = body.method === "resume" ? undefined : await this.runLimit(session, body.method);
     if (limited) throw limited;
     const trace = isRun ? await this.traceFor(session, traceparent, body.method === "resume" ? session.requests.get(params.suspension)?.trace : undefined) : undefined;
@@ -2987,11 +3000,11 @@ export class ClientSessions {
       if (params.whileRunning === "steer") {
         const steer = await this.steerTurn(session, params) ? "accepted" : "queued";
         const current = session.requests.get(record.id);
-        if (current?.state === "running") return { status: 202, record: visible(this.upsertRequest(session, { ...current, steer })) };
+        if (current?.state === "running") return { status: 202, record: visible(this.upsertRequest(session, { ...current, steer })), ...(rate ? { rate } : {}) };
         // Taken already, before the answer came back.
-        if (current) return { status: 202, record: visible({ ...current, steer }) };
+        if (current) return { status: 202, record: visible({ ...current, steer }), ...(rate ? { rate } : {}) };
       }
-      return { status: 202, record: visible(record) };
+      return { status: 202, record: visible(record), ...(rate ? { rate } : {}) };
     } finally {
       if (admitting) { session.admitting!--; this.releaseBusy(session); }
     }
@@ -3219,14 +3232,16 @@ export class ClientSessions {
     return (await this.options.volumes.readRange(session.header.tenant, ref, 0, ref.size)).toString("base64");
   }
 
-  /** Submit a request to a tenant's agent on the tenant's behalf (REST API and console). */
-  async submit(id: string, tenant: string, body: { id: string; method: string; params: Record<string, unknown> }) {
+  /** Submit a request to a tenant's agent on the tenant's behalf (REST API and console); `rate` hears where a run left the tenant's rate limit. */
+  async submit(id: string, tenant: string, body: { id: string; method: string; params: Record<string, unknown> }, rate?: (state: RateLimitState) => void) {
     if (await this.owns(id, tenant)) await this.roomFor(id);
     const session = (await this.owns(id, tenant)) ? await this.load(id) : undefined;
     if (!session) throw new HttpError(404, "Unknown agent");
     if (session.fault) throw session.fault;
     session.lastActive = Date.now();
-    return (await this.accept(session, body, true)).record;
+    const accepted = await this.accept(session, body, true);
+    if (accepted.rate) rate?.(accepted.rate);
+    return accepted.record;
   }
 
   private async execute(session: Session, record: RequestRecord, params: any, method: RequestMethod = record.method) {
