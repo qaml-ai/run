@@ -3,7 +3,7 @@
 A hosted runtime for durable agents. Applications define tools in their own
 code with the TypeScript or Python SDK (or serve them over HTTP); the runtime runs
 the model loop, keeps each agent's history and files (with compaction), executes
-model-written code in a QuickJS/WebAssembly sandbox, and wakes agents when there
+model-written code in a V8 sandbox (a fresh process per execution), and wakes agents when there
 is work. Most agents are asleep at any time, and any node can load one.
 
 Live at <https://run.camelai.com> (REST API under `/v1`, described by

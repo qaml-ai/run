@@ -46,7 +46,7 @@ try {
   assert.match(typescript, /HOLD release: APP-41/);
   assert.match(python, /"quantity": 32/);
   assert.match(python, /"quantity": 24/);
-  console.log("\nBoth client-owned applications updated through QuickJS → SSE + HTTP → local functions.");
+  console.log("\nBoth client-owned applications updated through the V8 sandbox → SSE + HTTP → local functions.");
 } finally {
   for (const child of clients) child.kill("SIGTERM");
   if (server.exitCode === null) {

@@ -3,7 +3,7 @@
 A hands-on preview of an agent URL with chat, configuration, traces and run
 reviews. Two applications expose ordinary SDK functions: a TypeScript release
 board and a Python/SQLite cafe inventory planner. Each has its own agent process;
-generated code runs in the existing QuickJS/WASM sandbox. No production services
+generated code runs in the existing V8 sandbox (v8-exec). No production services
 or customer data are connected.
 
 ## Start

@@ -1,4 +1,4 @@
-# Hosted agent runtime: the HTTP/SSE service, agent processes and the js_exec sandboxes (QuickJS, and V8 in v8-exec).
+# Hosted agent runtime: the HTTP/SSE service, agent processes and the js_exec sandboxes (V8, in v8-exec).
 # Build from the repository root: docker build -t agent-runtime .
 
 # agent-launcher (sandbox/launcher.c): starts the sandbox processes and the runtime. Static, so the

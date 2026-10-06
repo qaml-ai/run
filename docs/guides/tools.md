@@ -425,7 +425,7 @@ an agent's Configuration tab.
 ## Tools from code: `js_exec`
 
 The model can write JavaScript that calls any of its tools, in a sandbox
-(QuickJS in WebAssembly) that can reach nothing else: `await
+(a bare V8 isolate in a process of its own) that can reach nothing else: `await
 tools.shop__getOrder({ id })`, `Promise.all` for parallel calls, `fs` over its
 files, `tools.search(query)` to find tools in a large catalog, `tools.describe(name)`
 for a schema. Code runs for at most 60 seconds, 2 s of CPU and 256 tool calls; see

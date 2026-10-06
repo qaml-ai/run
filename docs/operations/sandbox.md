@@ -1,24 +1,16 @@
 # Sandbox boundary and remaining production work
 
-## Engines
+js_exec runs on V8: a bare V8 isolate in a process of its own per execution, `v8-exec`
+(`sandbox/v8-exec`, `src/v8-exec.ts`), started for one execution and killed when it ends, inside
+the [sandbox processes](#layers). See [The V8 engine](#the-v8-engine-v8-exec). Each
+`code_execution` metric line carries `Engine: v8`, and the runtime does not start if js_exec does
+not run (the `listening` log line's `sandbox` field says where it runs).
 
-Two engines run js_exec, each inside the [sandbox processes](#layers):
-
-- **QuickJS** (`quickjs`): QuickJS compiled to WebAssembly, on pooled worker threads that each
-  restore a snapshot between executions (`src/quickjs-sandbox.ts`). The limits and layers below
-  describe it unless they say otherwise.
-- **V8** (`v8`): a bare V8 isolate in a process of its own per execution, `v8-exec`
-  (`sandbox/v8-exec`, `src/v8-exec.ts`), started for one execution and killed when it ends. See
-  [The V8 engine](#the-v8-engine-v8-exec).
-
-`AGENT_JS_EXEC` (`quickjs` or `v8`; default `quickjs`) is the runtime's engine. A tenant's own
-overrides it: an admin tenant's tenants-file entry (`"codeEngine": "quickjs"`), or a self-serve
-tenant's `PUT /v1/tenants/{id}/limits` with `{"codeEngine": "v8"}` (`null` returns it to the
-runtime's). An agent takes its engine when its host starts, so a change reaches agents as they next
-load. Each `code_execution` metric line names the engine that ran it (`Engine`), and the `listening`
-log line's `sandbox` field reports the default (`engine`) and whether each engine runs (`engines`);
-the runtime does not start if its default does not. Plan for a rollout: V8 the default, the
-heaviest tenants pinned to `quickjs` in the tenants file, then their pins removed one by one.
+Until October 2026 a second engine, QuickJS compiled to WebAssembly on pooled worker threads, was
+the default, and a tenant could be pinned to either (`codeEngine`). It is gone: a tenants-file
+entry with `"codeEngine": "quickjs"` stops the runtime loading the file (remove it with
+`infra/tenant.sh clear-engine <tenant>` before deploying), `PUT /v1/tenants/{id}/limits` refuses a
+`codeEngine` other than `null` (which clears one stored before), and `AGENT_JS_EXEC` is ignored.
 
 ## Limits of an execution
 
@@ -26,39 +18,29 @@ Scripts default to a 30-second external deadline. A tenant may ask for at most
 60 seconds (`timeoutMs`; admin tenants 120 s), unless its operator set another
 (`codeMaxTimeoutMs`, at most 120 s); a longer `timeoutMs` is cut to it.
 
-Each execution may keep its worker thread busy for 2 seconds (`codeCpuMs` per
-tenant, at most 30 s). Time waiting on tools does not count. This is enforced
-twice. The QuickJS interrupt handler stops guest code between bytecodes. The
-pool's watchdog (`src/codemode.ts`) reads the worker thread's event-loop
-utilization every 50 ms from outside it and terminates the thread at the budget
-plus 250 ms, whatever it is doing. That covers built-ins that never reach the
-interrupt handler (a long `indexOf`, a huge BigInt's digits) and preparing the
-source. Busy time is CPU time while the host has a core for the thread; on an
-oversubscribed host it also counts the wait for one, so an execution there is
-stopped sooner. A cancelled guest that has not unwound 250 ms later has its
-worker terminated and replaced too.
+Each execution may use 2 seconds of CPU (`codeCpuMs` per tenant, at most 30 s).
+Time waiting on tools does not count. v8-exec enforces it from a watchdog thread,
+and `RLIMIT_CPU` behind it ([CPU](#the-v8-engine-v8-exec)).
 
-Every invocation has fixed 32 MiB WebAssembly memory, a 16 MiB QuickJS
-allocation limit and a 256 KiB interpreter stack limit. These are guest limits;
-each worker thread's own JavaScript heap is capped at 128 MiB.
+The guest's V8 heap is capped at 128 MiB (reaching it ends the execution) and its
+ArrayBuffers at 128 MiB besides (past it, a catchable `RangeError`).
 
 Nothing the model or a tenant supplies is parsed on the runtime's own thread.
-The worker strips TypeScript (sucrase, which can take exponential time on
-hostile input) and compiles the code, under the CPU budget. On the host,
-tool-argument checks skip the tenant's `pattern` and `patternProperties`
-regular expressions, which could backtrack for hours; the tool checks those
-itself. A failed check of arguments over 16 KiB names no fields. `tools.search`
-reads at most 500 characters and 32 words of a query.
+v8-exec strips TypeScript (oxc, in linear time) and compiles the code, under the
+CPU budget. On the host, tool-argument checks skip the tenant's `pattern` and
+`patternProperties` regular expressions, which could backtrack for hours; the
+tool checks those itself. A failed check of arguments over 16 KiB names no
+fields. `tools.search` reads at most 500 characters and 32 words of a query.
 
-**Fairness.** An execution keeps its worker, about 85-100 MB resident, while it
-waits on tools. Tenants with a concurrency limit therefore share what 40% of the
-task's memory affords at 128 MiB a worker, at least 2 and at most 32: 6 on a
-2 GB task. Each such tenant may run 4 at once (2 on free credit; `codeConcurrency`
-per tenant). Executions beyond that wait for a turn, tenant by tenant in
-rotation, within their own `timeoutMs`, so a busy tenant delays only its own.
-Admin tenants have no limit unless their entry sets one: they are admitted at
-once and bounded only by the pool's workers (at most 32 a node,
-`AGENT_CODE_WORKERS_MAX`), as before. Their memory is the operator's to plan for.
+**Fairness.** An execution keeps its v8-exec process while it waits on tools.
+Tenants with a concurrency limit therefore share what 40% of the task's memory
+affords at 128 MiB an execution (its heap limit), at least 2 and at most 32: 6 on
+a 2 GB task (`AGENT_CODE_WORKERS_MAX` lowers it). Each such tenant may run 4 at
+once (2 on free credit; `codeConcurrency` per tenant). Executions beyond that wait
+for a turn, tenant by tenant in rotation, within their own `timeoutMs`, so a busy
+tenant delays only its own. Admin tenants have no limit unless their entry sets
+one: they are admitted at once and bounded only by the v8-exec processes a node
+runs at once (`AGENT_V8_MAX`, 64). Their memory is the operator's to plan for.
 
 **Stuck agents.** Under `process` hosting the supervisor pings each agent
 process every 5 s and kills one that leaves a ping unanswered for 30 s. A run
@@ -76,7 +58,7 @@ pending calls are cancelled. Cancellation cannot undo effects already dispatched
 Guest requests cannot change the executable, memory limits, workspace or tools.
 Script failures, timeouts and cancellation leave the agent process available.
 Tool RPCs are correlated by unique IDs, so reverse completion order is safe.
-External side effects cannot be rolled back by a worker termination or AbortSignal.
+External side effects cannot be rolled back by a killed process or AbortSignal.
 Adapters must honor cancellation and must implement idempotency for writes.
 
 ## Layers
@@ -84,28 +66,21 @@ Adapters must honor cancellation and must implement idempotency for writes.
 The guest has ECMAScript built-ins plus `tools`, `fs` (the file tools over its
 mounts, answered by the runtime), `text` and captured `console` methods. There is
 no `process`, `Bun`, `require`, host filesystem, `fetch`, sockets,
-workers, timers, shared memory or nested WebAssembly. Every module import is
+workers, timers, shared memory or WebAssembly. Every module import is
 denied, including `node:`, `file:`, `data:` and HTTP URLs. `eval` and function
-constructors stay inside QuickJS; they never create host functions.
+constructors stay inside the guest's V8 context; they never create host functions.
 
 Guest code is contained by layers, each assuming the one inside it failed:
 
-1. **QuickJS compiled to WebAssembly.** A worker (`src/code-worker.ts`)
-   compiles the QuickJS module once. It then builds one instance, runtime and
-   context in a fixed, bounded WASM memory, runs the bootstrap, and snapshots
-   that memory before any guest code runs. Every execution starts from the
-   snapshot with a fresh `Math.random` seed. When it ends, however it ends, the
-   whole memory is written back to the snapshot: the snapshot's pages where it
-   has any, and zeros everywhere else, including pages the guest grew. Globals,
-   prototypes, heap and stack therefore never carry over, and the memory holds no
-   guest's data between executions (`tests/sandbox-snapshot.test.ts`). A failure
-   outside the guest's own errors (a trap, say) drops the image, and the next
-   execution builds a new one. One worker runs one execution at a time, for any
-   tenant in turn. Guest code only ever sees the QuickJS heap, never the worker's
-   Node globals, `process.env`, modules or the filesystem.
-2. **A separate process with its own uid.** The workers run in sandbox
+1. **A bare V8 isolate in a process of its own.** v8-exec has no Node: its one
+   context holds the ECMAScript built-ins and the bootstrap's helpers, and
+   nothing else. Nothing is reused between executions, so no globals, heap or
+   memory carry over, and a process serves one tenant's one execution. It
+   confines itself further (no JIT, a seccomp allowlist, rlimits): see
+   [Confinement](#the-v8-engine-v8-exec).
+2. **A separate process with its own uid.** v8-exec runs under sandbox
    processes (`src/sandbox-server.ts`, `AGENT_SANDBOX_PROCESSES`, default 2),
-   not in the runtime. The image's entrypoint, `agent-launcher`
+   not under the runtime. The image's entrypoint, `agent-launcher`
    (`sandbox/launcher.c`), starts as root under the container's init and runs
    the runtime as `node` (uid 1000) and sandbox process *i* as uid 1001 + *i*
    (group `sandbox`, no supplementary groups), so a sandbox process cannot read
@@ -124,7 +99,7 @@ Guest code is contained by layers, each assuming the one inside it failed:
    the filter), `kexec`, module loading and `reboot`; other architectures' calls
    kill it. It is a denylist: Node, V8, libuv and glibc use a syscall set that
    shifts with their versions and the kernel, and an allowlist that misses one
-   crashes rare paths.
+   crashes rare paths. Its v8-exec processes inherit all of it.
 
 The launcher binds one unix socket per sandbox process at
 `/run/agent-sandbox/<i>.sock` (root:node 0660, in a root:node 0710 directory, so
@@ -142,15 +117,15 @@ requests, output events and the execution's answer, rebuilt from checked fields;
 it caps the number of messages, holds output to the caller's character and event
 limits, validates the result, and enforces tool schemas, call count, concurrency,
 and result and transfer size limits on its side, as it always has. Cancellation
-reaches a guest spinning in QuickJS through a shared flag its interrupt handler
-polls, and one awaiting a tool through the closed connection and message port.
+kills the execution's v8-exec process.
 
 Without the launcher (macOS, tests, not root, or `AGENT_SANDBOX_PROCESSES=0`),
-js_exec runs on the same pool of worker threads inside the runtime process
-(`src/codemode.ts`), with layer 1 only; the `listening` log line says which mode
-is active, and the image sets `AGENT_SANDBOX_REQUIRED=1` so production cannot
-start that way. `tests/image-isolation.ts` boots the image and proves the other
-layers from inside a sandbox process.
+the runtime process spawns v8-exec itself (`src/codemode.ts`), with layer 1
+only; the `listening` log line says which mode is active, and the image sets
+`AGENT_SANDBOX_REQUIRED=1` so production cannot start that way. Running from a
+checkout needs the binary built first (`npm run build:v8-exec`; or
+`AGENT_V8_EXEC` names one). `tests/image-isolation.ts` boots the image and
+proves the other layers from inside a sandbox process.
 
 What guest code can reach on the host, all through the trusted bootstrap
 (`src/sandbox-bootstrap.ts`) and never as globals:
@@ -166,39 +141,30 @@ What guest code can reach on the host, all through the trusted bootstrap
 
 Arguments cross as strings the host copies out after checking their length;
 guest objects are never read from the host, so getters, proxies and `toJSON`
-run inside QuickJS under its limits. Host errors surface as plain guest
+run inside the guest under its limits. Host errors surface as plain guest
 `Error`s whose stacks are guest frames only. The module loader rejects every
-import. The interrupt handler and memory limits are not guest-callable.
-
-The WASM linear memory has equal initial and maximum sizes, and initialization
-checks that QuickJS actually uses that memory. This matters because the pinned
-QuickJS package's `setMemoryLimit` alone can undercount large arrays/strings:
-[upstream report #271](https://github.com/justjake/quickjs-emscripten/issues/271).
-Regression tests allocate retained bulk arrays and strings beyond the nominal
-heap limit and verify that the fixed WASM boundary stops them.
+import. The watchdog and memory limits are not guest-callable.
 
 The supervisor, Pi process, tool schemas and tool implementations remain trusted
 code with OS access.
 
 The tests cover known escape patterns and limits; they are not a security audit
-or proof against engine vulnerabilities. A worker, and a sandbox process, serve
-many tenants' executions in turn. The snapshot restore removes what a guest left
-in QuickJS's memory, but an escape out of WASM into the worker could persist
-there and see later executions routed to it. Shared-VM operation still needs resource quotas around the
-sandbox, tool-specific authorization, controlled egress for tool hosts, and a
-maintained engine/security update process.
+or proof against engine vulnerabilities. A sandbox process serves many tenants'
+executions in turn, each in a fresh v8-exec process. Shared-VM operation still
+needs resource quotas around the sandbox, tool-specific authorization,
+controlled egress for tool hosts, and a maintained engine/security update process.
 
 ## The V8 engine: v8-exec
 
 `v8-exec` is a Rust program on the [`v8` crate](https://crates.io/crates/v8) (rusty_v8's
 prebuilt V8, the same V8 as Deno's): no Node, so no Node built-ins, modules, `process`, file system
 or network to lock down. A sandbox process (or, without sandbox processes, the runtime) spawns it
-for one execution, with no environment and only its three pipes, and speaks the same frames to it
-as to a QuickJS worker over stdin and stdout. Nothing is reused between executions: there is no
-snapshot to restore, and a cancelled or timed-out execution's process is killed (SIGKILL).
+for one execution, with no environment and only its three pipes, and speaks the codemode frames to
+it over stdin and stdout. Nothing is reused between executions, and a cancelled or timed-out
+execution's process is killed (SIGKILL).
 
 **What code sees.** One V8 context holding the ECMAScript built-ins and `tools`, `fs`, `text` and
-`console` from the same bootstrap as QuickJS's (`src/sandbox-bootstrap.ts`). There is no
+`console` from the bootstrap (`src/sandbox-bootstrap.ts`). There is no
 `SharedArrayBuffer`, `Atomics` or `WebAssembly`; every `import()` is refused. `Intl` works: ICU
 data is compiled in (any locale; `en-US` and UTC by default). TypeScript is stripped in the process
 by [oxc](https://oxc.rs) (types removed, enums and parameter properties compiled), in linear time.
@@ -214,8 +180,8 @@ by [oxc](https://oxc.rs) (types removed, enums and parameter properties compiled
   counted by the process's allocator and refused past 128 MiB, as a catchable `RangeError`.
   `RLIMIT_DATA` (512 MiB of writable mappings) backs both; `RLIMIT_AS` cannot, since V8 reserves
   about 17 GB of address space it never touches.
-- **Wall time and cancellation.** The runtime's timer and abort, as for QuickJS, kill the process.
-- **Output, tool calls and transfer.** The same bounds as QuickJS's, in the process and again in the runtime.
+- **Wall time and cancellation.** The runtime's timer and abort kill the process.
+- **Output, tool calls and transfer.** Bounded in the process and again in the runtime.
 
 **Confinement.** On top of what it inherits from its sandbox process (uid, `no_new_privs`, no
 capabilities, agent-launcher's seccomp denylist), the process confines itself before any of the
@@ -223,8 +189,7 @@ guest's code is parsed:
 
 - **No JIT** (`AGENT_V8_JITLESS`, on by default): V8 interprets, so its optimizing compilers, the
   usual source of V8 exploits, never run, and no memory is ever executable. CPU-bound code runs
-  about 3 times slower than with the JIT (still several times faster than QuickJS); code that
-  mostly waits on tools does not notice.
+  about 3 times slower than with the JIT; code that mostly waits on tools does not notice.
 - **A seccomp allowlist** (`sandbox/v8-exec/src/seccomp.rs`) on all its threads: memory
   (`mmap`, `munmap`, `mprotect`, `madvise`, `mremap`, `brk`), `read` and `write` on its pipes,
   clocks and sleeps, futexes, signal masks, `getpid`/`gettid`/`getrandom`, exit. Any other call
@@ -241,23 +206,16 @@ guest's code is parsed:
   executions') cannot read its memory.
 
 **Processes.** Each sandbox process runs at most `AGENT_V8_MAX` (64 by default, shared among the
-sandbox processes) at once; more wait their turn within their timeout. When V8 is the default,
-each sandbox process keeps 2 started ahead (`AGENT_V8_PRESPAWN`), past V8's setup and waiting for
-an execution, so most executions skip the 3 ms start. A process waiting on tools holds about
-20 MB resident (4 MB proportional: the binary's pages are shared), against 45-100 MB for a QuickJS
-worker. A process that cannot be started, or that the kernel killed (seccomp, rlimits, the OOM
+sandbox processes) at once; more wait their turn within their timeout. Each sandbox process
+keeps 2 started ahead (`AGENT_V8_PRESPAWN`), past V8's setup and waiting for an execution, so
+most executions skip the 3 ms start. A process waiting on tools holds about 20 MB resident (4 MB
+proportional: the binary's pages are shared). A process that cannot be started, or that the kernel killed (seccomp, rlimits, the OOM
 killer), writes a `v8_exec` metric line (`Event`: `spawn_failed` or `killed`) and fails its
 execution with what happened.
 
-**Compared with QuickJS**, as agents see it: V8's error messages and stack traces; `Intl`,
-`Temporal`, `DisposableStack` and `SuppressedError` exist, `InternalError` does not; heap exhaustion
-ends the execution instead of throwing; ArrayBuffers may hold 128 MiB, not 32. Code runs 4-10 times
-faster. A trivial execution costs about 3 ms of CPU against QuickJS's 0.4 ms, mostly V8 starting.
-
 **What it does not protect against.** A V8 bug reachable from the interpreter still gives native
 code in the process; it then has the allowlist above, its sandbox process's uid and filter, and
-nothing of the runtime's. It shares no memory with other executions (unlike a QuickJS worker,
-which serves many tenants in turn). V8's own heap sandbox is not on: rusty_v8 publishes no
+nothing of the runtime's. It shares no memory with other executions. V8's own heap sandbox is not on: rusty_v8 publishes no
 prebuilt library with it.
 
 ## Parsing untrusted files

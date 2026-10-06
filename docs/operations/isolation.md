@@ -8,7 +8,7 @@ tenant's agent is not found. Tests prove tenant A cannot list, read, prompt,
 inspect or delete tenant B's agents. Per-tenant limits bound hosted agents
 (`maxAgents`), model spend (`maxMonthlyCost`) and, for prepaid tenants, credit.
 
-- **Generated code:** QuickJS/WASM confines generated JavaScript to the exposed
+- **Generated code:** v8-exec (a bare V8 isolate per execution) confines generated JavaScript to the exposed
   capabilities. Tenant ownership is enforced by the runtime around it, not by
   the sandbox.
 - **Application tools:** Tool implementations are trusted code in the tenant's

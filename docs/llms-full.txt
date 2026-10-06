@@ -946,7 +946,7 @@ an agent's Configuration tab.
 ## Tools from code: `js_exec`
 
 The model can write JavaScript that calls any of its tools, in a sandbox
-(QuickJS in WebAssembly) that can reach nothing else: `await
+(a bare V8 isolate in a process of its own) that can reach nothing else: `await
 tools.shop__getOrder({ id })`, `Promise.all` for parallel calls, `fs` over its
 files, `tools.search(query)` to find tools in a large catalog, `tools.describe(name)`
 for a schema. Code runs for at most 60 seconds, 2 s of CPU and 256 tool calls; see
@@ -4794,7 +4794,7 @@ reading them and sending them input do not count; only runs do.
 | Wall time | 30 s by default, at most 60 s (`timeoutMs`; a longer one is cut to it). Admin tenants may ask for 120 s; an operator can set a tenant's maximum up to 120 s (`codeMaxTimeoutMs`) |
 | CPU time | 2 s of keeping its thread busy, TypeScript stripping included (time waiting on tools does not count). Enforced from outside the guest: an execution past it is stopped whatever it is doing, with `Codemode CPU limit exceeded`. An operator can set a tenant's up to 30 s (`codeCpuMs`) |
 | Executions at once | 4 per tenant on each node (2 on free credit; `codeConcurrency`), all such tenants together within what the node's memory affords (6 on a 2 GB node). Executions past it wait their turn, tenants in rotation, within their own `timeoutMs`. Admin tenants are not limited unless their entry sets it |
-| Memory | QuickJS: 32 MiB WebAssembly memory, 16 MiB QuickJS heap, 256 KiB stack. V8 (`codeEngine: "v8"`): a 128 MiB heap (reaching it ends the execution) and 128 MiB of ArrayBuffers (past it, a `RangeError`) |
+| Memory | a 128 MiB V8 heap (reaching it ends the execution) and 128 MiB of ArrayBuffers (past it, a `RangeError`) |
 | Output | 32,000 characters by default, at most 128,000 (`maxOutputCharacters`); 1,024 chunks |
 | Tool calls | 256 per script, at most 32 in flight |
 | Tool traffic | arguments at most 128 KiB of JSON a call, results at most 1 MiB, 8 MiB in all |
