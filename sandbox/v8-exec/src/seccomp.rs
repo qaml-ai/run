@@ -4,7 +4,7 @@
 //
 // What is left is what running JavaScript needs: memory (mmap/munmap/mprotect/madvise/mremap/brk),
 // the two pipes (read/write), time (clock_gettime, the watchdog's sleep), futexes, signal masks,
-// and exiting. No socket, no fork or clone, no exec, no ioctl; openat fails (EACCES). Under --jitless, no
+// and exiting. No socket, no fork or clone, no exec, no ioctl; openat and prctl fail. Under --jitless, no
 // executable memory either: mmap and mprotect with PROT_EXEC kill the process.
 //
 // Syscall numbers come from the libc crate for the target, so x86_64's and aarch64's tables both
@@ -13,15 +13,16 @@
 
 #[cfg(target_os = "linux")]
 #[allow(non_snake_case)]
-pub fn install(jitless: bool, debug: bool) -> Result<(), String> {
+pub fn install(jitless: bool, debug: Debug) -> Result<(), String> {
   use libc::*;
   #[cfg(target_arch = "x86_64")]
   const ARCH: u32 = 0xC000_003E; // AUDIT_ARCH_X86_64
   #[cfg(target_arch = "aarch64")]
   const ARCH: u32 = 0xC000_00B7; // AUDIT_ARCH_AARCH64
   const RET_ALLOW: u32 = 0x7fff_0000;
-  // --seccomp-debug (scripts/v8-syscalls.ts): a call outside the list fails with ENOSYS instead, so strace shows it.
-  let RET_KILL_PROCESS: u32 = if debug { 0x0005_0000 | ENOSYS as u32 } else { 0x8000_0000 };
+  // scripts/v8-syscalls.ts: under --seccomp-debug a call outside the list fails with ENOSYS instead, so strace
+  // shows it; under --seccomp-trap it raises SIGSYS, whose handler (main.rs) prints its number and exits.
+  let RET_KILL_PROCESS: u32 = match debug { Debug::Off => 0x8000_0000, Debug::Errno => 0x0005_0000 | ENOSYS as u32, Debug::Trap => 0x0003_0000 };
   const LD_W_ABS: u16 = 0x20; // BPF_LD | BPF_W | BPF_ABS
   const JEQ_K: u16 = 0x15; // BPF_JMP | BPF_JEQ | BPF_K
   const JSET_K: u16 = 0x45; // BPF_JMP | BPF_JSET | BPF_K
@@ -38,6 +39,11 @@ pub fn install(jitless: bool, debug: bool) -> Result<(), String> {
     SYS_rt_sigprocmask, SYS_rt_sigreturn, SYS_rt_sigaction, SYS_sigaltstack, SYS_restart_syscall,
     SYS_getpid, SYS_gettid, SYS_getrandom,
     SYS_exit, SYS_exit_group,
+    // What glibc calls when the kernel's vDSO cannot answer (a VM whose clock source has no vDSO
+    // support): getcpu for sched_getcpu, and on x86_64 time(); clock_gettime and gettimeofday are above.
+    SYS_getcpu,
+    #[cfg(target_arch = "x86_64")]
+    SYS_time,
   ];
   let mut program: Vec<sock_filter> = Vec::new();
   let mut push = |code: u16, jt: u8, jf: u8, k: u32| program.push(sock_filter { code, jt, jf, k });
@@ -59,6 +65,19 @@ pub fn install(jitless: bool, debug: bool) -> Result<(), String> {
     push(JEQ_K, 0, 1, nr as u32);
     push(RET_K, 0, 0, RET_ALLOW);
   }
+  // tgkill to this process only: abort() (a V8 CHECK failing, a Rust panic) raises SIGABRT with it, and
+  // should end the process as an abort, not as a seccomp kill. (x86_64 glibc's abort uses tgkill; V8's
+  // own crashes trap without a call.)
+  push(JEQ_K, 0, 3, SYS_tgkill as u32);
+  push(LD_W_ABS, 0, 0, 16); // seccomp_data.args[0], low word: the thread group
+  push(JEQ_K, 0, 1, unsafe { getpid() } as u32);
+  push(RET_K, 0, 0, RET_ALLOW);
+  push(LD_W_ABS, 0, 0, NR);
+  // prctl fails with EINVAL rather than killing: on x86_64, V8 names the anonymous memory it maps as its
+  // heap grows (PR_SET_VMA, seen at the CPU limit and in long regular expressions) and does without the
+  // names. Failing every option keeps the rest of prctl (dumpable, no_new_privs, ...) out of reach.
+  push(JEQ_K, 0, 1, SYS_prctl as u32);
+  push(RET_K, 0, 0, 0x0005_0000 | EINVAL as u32); // SECCOMP_RET_ERRNO
   // openat fails with EACCES rather than killing: V8 and glibc open a few files of their own as they
   // run (/proc/self/maps for the main thread's stack bounds, /sys/devices/system/cpu/online and
   // /proc/stat to count CPUs, as the heap grows) and get on without them. Nothing is opened.
@@ -77,4 +96,8 @@ pub fn install(jitless: bool, debug: bool) -> Result<(), String> {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn install(_jitless: bool, _debug: bool) -> Result<(), String> { Ok(()) }
+pub fn install(_jitless: bool, _debug: Debug) -> Result<(), String> { Ok(()) }
+
+/// How a call outside the list ends: killing the process, or for tracing it, failing with ENOSYS or trapping.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Debug { Off, Errno, Trap }

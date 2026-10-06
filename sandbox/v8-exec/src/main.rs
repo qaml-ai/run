@@ -48,6 +48,8 @@ static ARRAY_BUFFERS: AtomicUsize = AtomicUsize::new(0);
 /// Set when the allocator refuses a backing store: V8 then collects garbage as a last resort, which
 /// calls the near-heap-limit callback, and it should not end the execution for that.
 static REFUSED: AtomicBool = AtomicBool::new(false);
+/// The execution's request id, once it has arrived: what V8's out-of-memory handler answers.
+static EXECUTION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 struct Exec {
   remaining: usize,
@@ -197,6 +199,13 @@ fn import_cb<'s>(
   let error = v8::Exception::error(scope, message);
   scope.throw_exception(error);
   None
+}
+
+/// V8 out of heap for good (one allocation past what near_heap_limit could make room for, such as a
+/// huge array): it would abort the process. Answer as the heap limit does instead, and exit.
+unsafe extern "C" fn out_of_memory(_location: *const std::ffi::c_char, _details: &v8::OomDetails) {
+  REASON.store(2, Ordering::SeqCst);
+  answer_and_exit(EXECUTION.get().map_or("", |id| id.as_str()), Err(limit_message()));
 }
 
 unsafe extern "C" fn near_heap_limit(data: *mut c_void, current: usize, _initial: usize) -> usize {
@@ -350,6 +359,7 @@ fn main() {
   isolate.set_host_import_module_dynamically_callback(import_cb);
   let handle: &'static v8::IsolateHandle = Box::leak(Box::new(isolate.thread_safe_handle()));
   isolate.add_near_heap_limit_callback(near_heap_limit, handle as *const _ as *mut c_void);
+  isolate.set_oom_error_handler(out_of_memory);
 
   v8::scope!(let scope, isolate);
   let context = v8::Context::new(scope, Default::default());
@@ -362,6 +372,7 @@ fn main() {
   let mut stdin = std::io::stdin().lock();
   let Some(request) = read_frame(&mut stdin) else { return };
   let id = request["id"].as_str().unwrap_or("").to_string();
+  let _ = EXECUTION.set(id.clone());
   if request["type"] != "request" || request["method"] != "execute" { answer_and_exit(&id, Err("v8-exec takes one execute request".into())); }
   let params = &request["params"];
   let code = params["code"].as_str().unwrap_or("").to_string();
@@ -394,7 +405,9 @@ fn main() {
   // guest's code is parsed, TypeScript stripping included.
   if !args.iter().any(|arg| arg == "--no-seccomp") {
     let _ = started_rx.recv();
-    if let Err(error) = seccomp::install(jitless, args.iter().any(|arg| arg == "--seccomp-debug")) { answer_and_exit(&id, Err(format!("v8-exec could not install its seccomp filter: {error}"))); }
+    let debug = if args.iter().any(|arg| arg == "--seccomp-debug") { seccomp::Debug::Errno }
+      else if args.iter().any(|arg| arg == "--seccomp-trap") { trap_sigsys(); seccomp::Debug::Trap } else { seccomp::Debug::Off };
+    if let Err(error) = seccomp::install(jitless, debug) { answer_and_exit(&id, Err(format!("v8-exec could not install its seccomp filter: {error}"))); }
   }
   // Test hook (tests/v8-exec.test.ts): a call the filter does not allow, which must kill the process.
   if args.iter().any(|arg| arg == "--test-forbidden-syscall") { unsafe { libc::getuid() }; }
@@ -491,6 +504,29 @@ fn main() {
     result
   });
   answer_and_exit(&id, Ok(result));
+}
+
+/// --seccomp-trap: print the number of the call the filter refused ("seccomp: syscall <n>") to stderr, and exit 99.
+fn trap_sigsys() {
+  #[cfg(target_os = "linux")]
+  unsafe {
+    extern "C" fn on_sigsys(_signal: libc::c_int, info: *mut libc::siginfo_t, context: *mut c_void) {
+      // siginfo_t's SIGSYS fields: _call_addr at 16, _syscall (an int) at 24, on both 64-bit Linux ABIs.
+      let number = unsafe { *(info as *const u8).add(24).cast::<i32>() };
+      // Its first argument, from the registers the call was made with.
+      let context = context as *const libc::ucontext_t;
+      #[cfg(target_arch = "x86_64")]
+      let first = unsafe { (*context).uc_mcontext.gregs[libc::REG_RDI as usize] as u64 };
+      #[cfg(target_arch = "aarch64")]
+      let first = unsafe { (*context).uc_mcontext.regs[0] };
+      let text = format!("seccomp: syscall {number} (first argument {first:#x})\n");
+      unsafe { libc::write(2, text.as_ptr().cast(), text.len()); libc::_exit(99) };
+    }
+    let mut action: libc::sigaction = std::mem::zeroed();
+    action.sa_sigaction = on_sigsys as usize;
+    action.sa_flags = libc::SA_SIGINFO;
+    libc::sigaction(libc::SIGSYS, &action, std::ptr::null_mut());
+  }
 }
 
 fn helper<'s>(scope: &mut v8::PinScope<'s, '_>, helpers: v8::Local<'s, v8::Array>, index: u32) -> v8::Local<'s, v8::Function> {

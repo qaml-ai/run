@@ -20,6 +20,13 @@ const snippets = [
   "while (true) {}",
   "return [new Intl.NumberFormat('de-DE').format(1234.5), new Date(0).toLocaleString(), ['b', 'a'].sort(new Intl.Collator('de').compare)]",
   "enum E { A } return E.A",
+  // tests/sandbox.test.ts's CPU, stack and hostile-serialization cases.
+  "while (true) await Promise.resolve();",
+  "function recurse() { return recurse() + 1; } return recurse();",
+  "return { toJSON() { while (true) {} } };",
+  'throw { get message() { while (true) {} } };',
+  "return new Array(1e9).fill(0).length",
+  "return /(a+)+$/.test('a'.repeat(40) + '!')",
 ];
 const all = new Set<string>(), afterRequest = new Set<string>(), killedBy = new Set<string>();
 const dir = mkdtempSync("/tmp/v8-syscalls-");
@@ -54,4 +61,23 @@ for (const [index, code] of snippets.entries()) {
     if (!readFileSync(join(dir, file), "utf8").includes("execve(")) for (const line of readFileSync(join(dir, file), "utf8").split("\n")) { const name = /^([a-z0-9_]+)\(/.exec(line)?.[1]; if (name) afterRequest.add(name); }
   }
 }
-console.log(JSON.stringify({ jitless, killedBy: [...killedBy], total: all.size, afterRequest: afterRequest.size, afterRequestCalls: [...afterRequest].sort(), all: [...all].sort() }, null, 1));
+// Then each again without strace (which changes timing), under --seccomp-trap: the filter's refusals as numbers.
+// --repeat N runs each N times there, for calls that only happen now and then.
+const trapped = new Set<string>();
+const repeat = Number(process.argv[process.argv.indexOf("--repeat") + 1]) || 1;
+// --parallel N runs N at once, as test files do: refusals that depend on timing under load show up there.
+const parallel = Number(process.argv[process.argv.indexOf("--parallel") + 1]) || 1;
+const queue = snippets.flatMap(code => Array(process.argv.includes("--repeat") ? repeat : 1).fill(code));
+await Promise.all(Array.from({ length: process.argv.includes("--parallel") ? parallel : 1 }, async () => { for (let code = queue.shift(); code !== undefined; code = queue.shift()) {
+  const child = spawn(v8ExecBinary(), ["--max-data-mb", "512", ...(jitless ? ["--jitless"] : []), "--seccomp-trap"], { stdio: ["pipe", "pipe", "pipe"] });
+  let stderr = "";
+  child.stderr!.on("data", chunk => { stderr += chunk; });
+  const done = new Promise<void>(resolve => child.once("close", () => resolve()));
+  const write = frames(child.stdout as Socket, (message: any) => {
+    if (message.type === "request") write({ type: "response", id: message.id, result: JSON.stringify({ a: 1 }) });
+  }, undefined, child.stdin as Socket);
+  write({ type: "request", id: "x", method: "execute", params: { code, tools: ["echo"], timeoutMs: 10_000, maxOutputCharacters: 1000, cpuMs: 2000 } });
+  await done;
+  for (const match of stderr.matchAll(/seccomp: syscall (\d+ \(first argument \w+\))/g)) trapped.add(`${match[1]} (${code.slice(0, 40)})`);
+} }));
+console.log(JSON.stringify({ jitless, trapped: [...trapped], killedBy: [...killedBy], total: all.size, afterRequest: afterRequest.size, afterRequestCalls: [...afterRequest].sort(), all: [...all].sort() }, null, 1));

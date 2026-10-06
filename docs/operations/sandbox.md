@@ -228,11 +228,14 @@ guest's code is parsed:
 - **A seccomp allowlist** (`sandbox/v8-exec/src/seccomp.rs`) on all its threads: memory
   (`mmap`, `munmap`, `mprotect`, `madvise`, `mremap`, `brk`), `read` and `write` on its pipes,
   clocks and sleeps, futexes, signal masks, `getpid`/`gettid`/`getrandom`, exit. Any other call
-  kills the process (SIGSYS), except `openat`, which fails with `EACCES` (V8 and glibc read
-  `/proc/self/maps` and CPU counts as they go, and do without). Under no-JIT, `mmap` or `mprotect`
+  kills the process (SIGSYS), with three exceptions: `openat` fails with `EACCES` (V8 and glibc read
+  `/proc/self/maps` and CPU counts as they go, and do without); `prctl` fails with `EINVAL` (V8 on
+  x86_64 names the memory it maps, `PR_SET_VMA`); and `tgkill` is allowed to the process itself, so an
+  `abort()` ends as one. If V8 runs out of heap for good (one allocation past it), the process answers
+  `Codemode memory limit exceeded` rather than aborting. Under no-JIT, `mmap` or `mprotect`
   asking for executable memory kills it too. The filter checks the architecture (x86_64 or
   aarch64; other ABIs are killed), and fails closed: an execution whose process cannot install it
-  fails. `scripts/v8-syscalls.ts` traces what the process calls, to update the list.
+  fails. `scripts/v8-syscalls.ts` traces what the process calls (with strace, and `--seccomp-trap`, which prints a refused call and its first argument), to update the list.
 - **Rlimits it cannot lift:** no processes (`RLIMIT_NPROC` 0), no file writes (`RLIMIT_FSIZE` 0),
   no core dumps, and not dumpable, so processes of its own uid (its sandbox process, other
   executions') cannot read its memory.
