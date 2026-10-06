@@ -167,6 +167,16 @@ asyncio.run(main())
   every process upserts the agent from that definition with no `tools`. Served tools also keep working through your
   deploys and restarts, which tools attached to a process don't. See
   https://run.camelai.com/docs/guides/tools.md#several-processes-workers-and-deploys.
+- **Tools and js_exec.** Besides your tools as tools of their own, the model gets `js_exec`, a sandbox where it
+  writes code that calls them (`tools.<name>(args)`), and by default it can call any of your tools from there (an
+  agent's tools are `exposure: "both"` up to 10 of them, `"codemode"` past that). Mark a tool
+  `exposure: "direct"` (Python `@tool(exposure="direct")`) when it must be called on its own: when the app renders
+  its arguments as they stream in, or must see each call as it happens. See
+  https://run.camelai.com/docs/guides/tools.md#keeping-tools-out-of-js_exec.
+- **Limits to design around.** On free credit an account may create 10 agents a minute (`upsert` and `fork` each
+  count; `agents.get(key)` does not) and start 60 runs a minute; paid, 60 and 600. Past either, calls get 429
+  `RATE_LIMITED` (the SDKs wait and retry). So make one agent per user or conversation and reuse it; don't make one per
+  request, per message or per test. See https://run.camelai.com/docs/reference/limits.md#rate-limits.
 - **Data back, not prose.** When the code needs an object (classification, extraction, a triage decision), pass a
   schema: `agent.run(text, { output: zodSchema })` gives a typed `run.output`; Python `output=PydanticModel`. Don't
   parse JSON out of `run.text`. See https://run.camelai.com/docs/guides/structured-output.md.
@@ -174,14 +184,17 @@ asyncio.run(main())
 ## 4. Verify with one real run
 
 Write a short check script that:
-1. upserts the agent under a **fresh key for each check** (the app's own key with a timestamp, e.g.
-   `` `my-project-assistant-check-${Date.now()}` ``). An agent keeps its history, so a rerun on the app's stable key
-   can answer from what it already said and call no tool;
-2. calls `agent.run("<a message that needs the tool>")`;
-3. prints `run.status`, `run.text` and the tools it called: `run.toolCalls.map(call => call.tool)` (Python
-   `[call["tool"] for call in run.tool_calls]`), and any `run.toolErrors` (Python `run.tool_errors`);
-4. deletes the check agent (`await agent.delete()`) and closes the client (`await agents.close()`, or the
-   `async with` block).
+1. upserts **one check agent** for the script, under a fresh key (the app's own key with a timestamp, e.g.
+   `` `my-project-assistant-check-${Date.now()}` ``), so it starts with no history: an agent remembers, and on the
+   app's stable key it could answer from what it already said and call no tool. Make it once, not once per check: an
+   account on free credit may create only 10 agents a minute (upserts and forks count);
+2. runs each check on that agent: `agent.run("<a message that needs the tool>")`, one run per check. The agent
+   remembers earlier checks in the script, so give each one a question it cannot answer from them (a different
+   order, a different record);
+3. prints, for each run, `run.status`, `run.text` and the tools it called: `run.toolCalls.map(call => call.tool)`
+   (Python `[call["tool"] for call in run.tool_calls]`), and any `run.toolErrors` (Python `run.tool_errors`);
+4. deletes the check agent at the end (`await agent.delete()`, in a `finally`) and closes the client
+   (`await agents.close()`, or the `async with` block).
 
 Run it with the key loaded. For example, use `node --env-file=.env.local check.mjs` for TypeScript. For Python, use
 the project's dotenv setup, or `(set -a; . ./.env; set +a; python check.py)`.
@@ -199,6 +212,7 @@ transcript and tool calls appear.
 | `INSUFFICIENT_CREDIT` / 402 | Tell the user: verify a card for starting credit (no charge), or add credit, at https://run.camelai.com/console/billing |
 | `APPLICATION_NOT_CONNECTED` | No process is serving the agent's tools. Run the script that calls `upsert`. |
 | 401 | The key is wrong or revoked. Go back to step 1. |
+| `RATE_LIMITED` / 429 | Too many agents made or runs started this minute (10 and 60 on free credit). Reuse one agent instead of making one per check or request. |
 
 The full list is at https://run.camelai.com/docs/reference/errors.md.
 

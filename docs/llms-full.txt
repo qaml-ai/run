@@ -238,6 +238,11 @@ const agent = await agents.upsert("user-123", { model, instructions, tools });
   made; changing them is a 409 that names the field. Delete it and upsert again
   to start over.
 - A deleted key makes a fresh agent the next time, with a new id and token.
+- Make an agent once per user, conversation or job, and reuse it. Creating one
+  is rate limited: 10 a minute on free credit (60 paid), and every `upsert` and
+  fork counts, while `agents.get(key)` does not; runs are 60 a minute on free
+  credit (600 paid). An agent per request or per test hits the limit. See
+  [Rate limits](https://run.camelai.com/docs/reference/limits.md#rate-limits).
 - Over REST, the key is the `Idempotency-Key` of `POST /v1/agents`.
 
 Every agent also has an **id** (`client_…`), which is safe to log and store, and
@@ -580,10 +585,36 @@ async def refund(order_id: str, context: ToolContext) -> dict:
 - **`needsApproval: true`** (`needs_approval=True`) makes a person approve each
   call first, and `context.confirm/ask/requireUrl` ask from inside the tool; see
   [Human input](https://run.camelai.com/docs/guides/human-input.md).
-- **`exposure`**: `"direct"` (the model calls it as a tool), `"codemode"` (only
-  from code in `js_exec`, as `tools.<name>(args)`), or `"both"`. By default a
-  source of up to 10 tools is `both` and a larger one `codemode`, so big catalogs
-  do not crowd the model's context.
+- **`exposure`** (`@tool(exposure=...)` in Python): `"direct"` (the model calls
+  it as a tool), `"codemode"` (only from code in `js_exec`, as
+  `tools.<name>(args)`), or `"both"`. By default a source of up to 10 tools is
+  `both` and a larger one `codemode`, so big catalogs do not crowd the model's
+  context. **So by default the model can call your tools from `js_exec`**, your
+  attached and served tools included, and it may well batch them in code. See
+  [Keeping tools out of js_exec](https://run.camelai.com/docs/guides/tools.md#keeping-tools-out-of-js_exec).
+
+### Keeping tools out of js_exec
+
+Code the model writes in `js_exec` can call every tool whose exposure is
+`codemode` or `both`. That is what makes large catalogs cheap (the model loops,
+filters and calls several tools in one step), but it also means a tool your app
+expected to see called on its own may be called from code instead: its call is
+then inside `js_exec`'s, its arguments do not stream as `toolcall_delta` events,
+and a page that renders a tool's arguments as they are written sees nothing
+until the code has run.
+
+To keep a tool out of `js_exec`, make it `direct`:
+
+| Where the tool comes from | Set |
+|---|---|
+| Your process (`tools` in `upsert`) | `exposure: "direct"` on the tool; Python `@tool(exposure="direct")` |
+| A served or MCP server named in a definition | `"exposure": "direct"` on the server entry (every tool), or `_meta["agent-runtime/exposure"]` on a tool in its `tools/list` (that tool; it beats the server's) |
+| An OpenAPI source | `"exposure": "direct"` on the source |
+
+A tool with `needsApproval` is always direct. The console's agent page shows each
+tool's exposure (**Tools the model gets**), and `GET /v1/agents/:id` its
+`toolSources`. `js_exec` itself stays: it still runs code, with `fs` and
+`fetch`, and the tools left in it.
 
 ## Attached tools: in your process
 
@@ -2141,6 +2172,19 @@ its history carries over. `?available=true` answers `[]` when your account has
 no key any model can use (a self-hosted runtime before its first key, say); that
 response's `X-Camelrun-Hint` header says how to set one.
 
+Each model in the list says whether it streams tool-call arguments as it writes
+them (`toolCallStreaming`; the console's **Tool args** column). With `true`,
+`toolcall_delta` events arrive while the model writes a call's arguments, so a
+page that renders what a tool writes (a section, a card, a form) can show it as it
+is written. With `false`, the arguments arrived in one piece when the call was
+complete, at least sometimes, so you cannot count on streaming: Gemini, most GLM
+4.x and Mercury 2 through OpenRouter do this, for example, and some models do it
+only on some of the hosts a gateway routes them to. `"unknown"` means the model
+has not been measured (or its probe failed), not that it streams. The values come
+from probing each model through the runtime several times
+(`scripts/probe-tool-streaming.ts`); a latency-first app that renders tool output
+should pick a model that says `true`.
+
 A model on a server of your own that speaks OpenAI's or Anthropic's API (vLLM,
 Ollama, a gateway, a hosted API the catalog lacks) is named the same way once
 you add its server as a provider, your account's or a key scope's: see
@@ -2517,6 +2561,13 @@ const agent = await agents.upsert(`ticket-${ticket.id}`, { definition: definitio
 
 Saving a definition lists its MCP servers: credentials a server refuses are a
 400 that says so, and the answer's `toolSources` shows what each offers.
+
+Each MCP server and OpenAPI source takes `exposure`: `"direct"` (the model calls
+its tools itself), `"codemode"` (only from code in `js_exec`) or `"both"`. Left
+out, a source of up to 10 tools is `both` and a larger one `codemode`, so by
+default the model can call them from `js_exec`. Set `"direct"` on a source whose
+tools must never be called from code; see
+[Keeping tools out of js_exec](https://run.camelai.com/docs/guides/tools.md#keeping-tools-out-of-js_exec).
 
 A `description` (1–1,000 characters) says what its agents are for; models see it
 as the description of each agent's [MCP tool](https://run.camelai.com/docs/guides/mcp-server.md), and as what it is
@@ -3677,9 +3728,15 @@ tool({ description, input: schema.Object({...}), execute: (args, context) => res
 ```
 
 ```python
-@tool(name=None, description=None, timeout=None, needs_approval=None)
+@tool(name=None, description=None, timeout=None, needs_approval=None, exposure=None)
 def or_async_def(arg: str, context: ToolContext): ...
 ```
+
+`exposure` is how the model may call the tool: `"direct"` (as a tool of its
+own), `"codemode"` (only from code in `js_exec`) or `"both"`. Left out, it is
+`both` for an agent with up to 10 tools and `codemode` past that, so the model
+can call your tools from `js_exec` unless they say `"direct"`; see
+[Keeping tools out of js_exec](https://run.camelai.com/docs/guides/tools.md#keeping-tools-out-of-js_exec).
 
 `context` (`ToolContext`):
 
@@ -4540,6 +4597,10 @@ token does not receive unless it lists them in `events`.
 Only `text_delta` is reply text. `thinking_*` is the model's reasoning, and
 `toolcall_delta` is JSON. The SDKs' `stream()` yields only reply text, and the
 watcher (`@camelai/run/watch`) folds all of them for you.
+Not every model streams a tool call's arguments: some send them in one
+`toolcall_delta` when the call is complete. `GET /v1/models` says which
+(`toolCallStreaming`: `true`, `false` or `"unknown"`); see
+[Models and keys](https://run.camelai.com/docs/guides/models-and-keys.md#choosing-a-model).
 
 Messages (`message` fields, and history) are one of:
 
@@ -4662,7 +4723,7 @@ wait out `Retry-After` and retry.
 | `password_failures`: failed email and password sign-ins (an unknown address counts as a wrong password) | email address, and client address | 10 per 15 minutes per address; 20 per 15 minutes per client address. Past either, sign-in answers 429, even with the right password, until the window turns over |
 | `email_requests`: requests that mail a link (email sign-up, password reset, adding a password), where the runtime has account mail | client address | 10 an hour |
 | `emails`: those mails to one address, whether or not it has an account | email address | 5 a UTC day |
-| `agent_creates`: `POST /v1/agents` (upserts too) | account | 60 a minute; 10 on free credit |
+| `agent_creates`: `POST /v1/agents` (upserts too) and forks (`POST /v1/agents/:id/fork`) | account | 60 a minute; 10 on free credit |
 | `runs`: runs started (prompt, continue, execute), however sent: REST, SDKs, MCP, schedules, channels | account | 600 a minute; 60 on free credit |
 
 - A client address is the caller's IP address; an IPv6 address counts with the

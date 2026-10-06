@@ -193,9 +193,15 @@ tool({ description, input: schema.Object({...}), execute: (args, context) => res
 ```
 
 ```python
-@tool(name=None, description=None, timeout=None, needs_approval=None)
+@tool(name=None, description=None, timeout=None, needs_approval=None, exposure=None)
 def or_async_def(arg: str, context: ToolContext): ...
 ```
+
+`exposure` is how the model may call the tool: `"direct"` (as a tool of its
+own), `"codemode"` (only from code in `js_exec`) or `"both"`. Left out, it is
+`both` for an agent with up to 10 tools and `codemode` past that, so the model
+can call your tools from `js_exec` unless they say `"direct"`; see
+[Keeping tools out of js_exec](../guides/tools.md#keeping-tools-out-of-js_exec).
 
 `context` (`ToolContext`):
 

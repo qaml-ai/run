@@ -20,7 +20,7 @@ wait out `Retry-After` and retry.
 | `password_failures`: failed email and password sign-ins (an unknown address counts as a wrong password) | email address, and client address | 10 per 15 minutes per address; 20 per 15 minutes per client address. Past either, sign-in answers 429, even with the right password, until the window turns over |
 | `email_requests`: requests that mail a link (email sign-up, password reset, adding a password), where the runtime has account mail | client address | 10 an hour |
 | `emails`: those mails to one address, whether or not it has an account | email address | 5 a UTC day |
-| `agent_creates`: `POST /v1/agents` (upserts too) | account | 60 a minute; 10 on free credit |
+| `agent_creates`: `POST /v1/agents` (upserts too) and forks (`POST /v1/agents/:id/fork`) | account | 60 a minute; 10 on free credit |
 | `runs`: runs started (prompt, continue, execute), however sent: REST, SDKs, MCP, schedules, channels | account | 600 a minute; 60 on free credit |
 
 - A client address is the caller's IP address; an IPv6 address counts with the

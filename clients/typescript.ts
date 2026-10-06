@@ -95,6 +95,15 @@ export interface Tool<T = any> {
    */
   timeoutMs?: number;
   resultFormat?: "json" | "content";
+  /**
+   * How the model may call this tool. `"direct"`: only as a tool of its own, never from code. `"codemode"`: only from
+   * code it runs in `js_exec` (as `tools.<name>(args)`). `"both"`: either way.
+   *
+   * Default: `"both"` when the agent has up to 10 of these tools, else `"codemode"`. So by default the model can call
+   * your tools from js_exec: set `"direct"` on a tool the model must call as itself, e.g. one whose arguments a page
+   * renders as they stream in (`toolcall_delta`), or one whose calls you want to see one by one rather than inside code.
+   * A tool with `needsApproval` is always direct.
+   */
   exposure?: "direct" | "codemode" | "both";
   executionMode?: "sequential" | "parallel";
   input: Record<string, unknown>;
@@ -378,7 +387,11 @@ export interface DelegateSettings { agents?: AgentTarget[]; instructions?: boole
 /** A volume the agent's file tools see at `path`; `notify` prompts the agent when others change files there. */
 /** How a tool source is authenticated: a stored bearer token, or identity tokens the runtime signs for each request. */
 export type SourceAuth = { type: "bearer"; token: string } | { type: "runtime" };
-/** Options every tool source takes. `exposure` defaults to both for a source of up to 10 tools, else codemode. */
+/**
+ * Options every tool source takes. `exposure` (direct: the model calls the tools itself; codemode: only from code in
+ * js_exec; both) defaults to both for a source of up to 10 tools, else codemode; `"direct"` keeps them out of js_exec.
+ * A tool's own exposure (its `_meta["agent-runtime/exposure"]` in tools/list) beats the source's.
+ */
 interface SourceOptions { name: string; headers?: Record<string, string>; auth?: SourceAuth; audience?: string; allowTools?: string[]; denyTools?: string[]; exposure?: "direct" | "codemode" | "both"; timeoutMs?: number }
 export interface DefinitionInput {
   name: string;

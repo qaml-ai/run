@@ -12,7 +12,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Progress } from "@/components/ui/progress";
 import { Textarea } from "@/components/ui/textarea";
 import { StatusPanel } from "@/components/brand";
-import { ConfirmButton, CopyButton, EmptyState, ErrorAlert, PageHeader } from "@/components/common";
+import { ConfirmButton, CopyButton, EmptyState, ErrorAlert, LearnMore, PageHeader } from "@/components/common";
 import { FileBrowser, FileCard } from "@/components/files";
 import { api, formatBytes, formatTime, putFile, useApi, type AgentDetail, type FileRef, type Mount, type RequestRecord, type RunFiles, type ToolSource } from "@/lib/api";
 import { Link, navigate } from "@/lib/router";
@@ -188,6 +188,12 @@ function TryIt({ agentId, onDone }: { agentId: string; onDone: () => void }) {
   );
 }
 
+/** What each exposure means, for its badge. */
+const EXPOSURE_HELP: Record<string, string> = {
+  direct: "direct: the model calls it as a tool of its own; never from js_exec",
+  codemode: "codemode: only from code the model runs in js_exec",
+  both: "both: as a tool of its own, or from code in js_exec",
+};
 const SOURCE_KINDS: Record<ToolSource["kind"], string> = {
   channel: "Channel", application: "Your application", files: "File tools", builtin: "Built-in", mcp: "MCP server", openapi: "OpenAPI",
 };
@@ -226,6 +232,13 @@ function ToolSources({ agentId, sources }: { agentId: string; sources: ToolSourc
         <ErrorAlert error={error} />
         {shown?.refreshed && <p className="text-muted-foreground text-xs">MCP servers were listed just now. A running agent takes their changes at its next start.</p>}
         {list.length === 0 && <p className="text-muted-foreground text-sm">No tools.</p>}
+        {list.length > 0 && (
+          <p className="text-muted-foreground text-xs">
+            Tools marked <span className="font-mono">codemode</span> or <span className="font-mono">both</span> can be called from code the model runs in js_exec.
+            To keep one out of js_exec, set its <span className="font-mono">exposure</span> to <span className="font-mono">"direct"</span>: on the tool in your code, or on the server in its definition.{" "}
+            <LearnMore page="tools">How</LearnMore>
+          </p>
+        )}
         {list.map(source => (
           <div key={`${source.kind}:${source.name}`} className="rounded-md border p-3">
             <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -244,7 +257,7 @@ function ToolSources({ agentId, sources }: { agentId: string; sources: ToolSourc
                 <div key={tool.name} className={tool.excluded ? "opacity-60" : undefined}>
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="font-mono text-sm">{tool.name}</span>
-                    {tool.exposure && <Badge variant="outline" title="direct: declared to the model; codemode: from js_exec; both">{tool.exposure}</Badge>}
+                    {tool.exposure && <Badge variant="outline" title={EXPOSURE_HELP[tool.exposure]}>{tool.exposure}</Badge>}
                     {tool.excluded && <Badge variant="destructive" title={tool.excluded}>not offered</Badge>}
                   </div>
                   <div className="text-muted-foreground line-clamp-3 text-xs">{tool.excluded ? `${tool.excluded}. ` : ""}{tool.description}</div>

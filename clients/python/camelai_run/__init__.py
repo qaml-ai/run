@@ -182,6 +182,10 @@ class Tool:
     needs_approval: object = None
     # Seconds one call may go without an answer (1 to 1200; default 15); each context.progress() restarts it.
     timeout: float | None = None
+    # How the model may call it: "direct" (only as a tool of its own, never from code), "codemode" (only from code in
+    # js_exec, as tools.<name>(...)) or "both". Default: both when the agent has up to 10 tools, else codemode, so the
+    # model can call it from js_exec unless it says "direct".
+    exposure: str | None = None
 
     def definition(self):
         return {"name": self.name, "description": self.description, "parameters": self.parameters}
@@ -189,7 +193,8 @@ class Tool:
     def mcp_tool(self):
         """This tool as an attached MCP server lists it (tools/list)."""
         meta = {**({"agent-runtime/needsApproval": True} if self.needs_approval else {}),
-                **({"agent-runtime/timeoutMs": int(self.timeout * 1000)} if self.timeout else {})}
+                **({"agent-runtime/timeoutMs": int(self.timeout * 1000)} if self.timeout else {}),
+                **({"agent-runtime/exposure": self.exposure} if self.exposure else {})}
         return {"name": self.name, "description": self.description, "inputSchema": self.parameters, **({"_meta": meta} if meta else {})}
 
     async def __call__(self, **arguments):
@@ -205,12 +210,17 @@ def _call_tool_result(result):
     return {"content": [{"type": "text", "text": text}], **({"structuredContent": result} if isinstance(result, dict) else {})}
 
 
-def tool(function=None, *, name=None, description=None, needs_approval=None, timeout=None):
+def tool(function=None, *, name=None, description=None, needs_approval=None, timeout=None, exposure=None):
     """Expose a function (async, or plain: it runs in a thread) as a tool; its JSON schema comes from the
     annotations and its description from the docstring. Return any JSON value (None is fine); raise to tell
     the model the call failed. `timeout`: seconds one call may take (default 15); context.progress() restarts it.
     With needs_approval (True, or a function of the arguments and context), the user approves each call, shown
-    as the runtime sees it, before it runs; such a tool is declared to the model directly."""
+    as the runtime sees it, before it runs; such a tool is declared to the model directly.
+    `exposure`: "direct" (the model calls it only as a tool of its own, never from code in js_exec), "codemode" (only
+    from js_exec) or "both". Default: both for an agent with up to 10 tools, else codemode, so the model can call it
+    from js_exec unless it is "direct"."""
+    if exposure not in (None, "direct", "codemode", "both"):
+        raise ValueError('exposure is "direct", "codemode" or "both"')
     def decorate(fn):
         hints = get_type_hints(fn)
         properties, required = {}, []
@@ -229,7 +239,7 @@ def tool(function=None, *, name=None, description=None, needs_approval=None, tim
             if parameter.default is parameter.empty:
                 required.append(key)
         return Tool(name or fn.__name__, description or inspect.getdoc(fn) or fn.__name__,
-                    {"type": "object", "properties": properties, "required": required, "additionalProperties": False}, fn, with_context, needs_approval, timeout)
+                    {"type": "object", "properties": properties, "required": required, "additionalProperties": False}, fn, with_context, needs_approval, timeout, exposure)
     return decorate(function) if function else decorate
 
 

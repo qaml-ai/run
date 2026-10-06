@@ -344,6 +344,15 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
             return {"sku": sku, "key": context.idempotency_key}
 
         self.assertEqual(lookup.mcp_tool()["_meta"], {"agent-runtime/timeoutMs": 60000})
+
+        @tool(exposure="direct")
+        def render(text: str) -> dict:
+            """Kept out of js_exec: the model calls it as a tool of its own"""
+            return {}
+
+        self.assertEqual(render.mcp_tool()["_meta"], {"agent-runtime/exposure": "direct"})
+        with self.assertRaises(ValueError):
+            tool(exposure="sometimes")
         agent = await self.make([lookup])
         self.call("lookup", {"sku": "A1"})
         stream = agent.stream("look up A1")

@@ -59,10 +59,36 @@ async def refund(order_id: str, context: ToolContext) -> dict:
 - **`needsApproval: true`** (`needs_approval=True`) makes a person approve each
   call first, and `context.confirm/ask/requireUrl` ask from inside the tool; see
   [Human input](human-input.md).
-- **`exposure`**: `"direct"` (the model calls it as a tool), `"codemode"` (only
-  from code in `js_exec`, as `tools.<name>(args)`), or `"both"`. By default a
-  source of up to 10 tools is `both` and a larger one `codemode`, so big catalogs
-  do not crowd the model's context.
+- **`exposure`** (`@tool(exposure=...)` in Python): `"direct"` (the model calls
+  it as a tool), `"codemode"` (only from code in `js_exec`, as
+  `tools.<name>(args)`), or `"both"`. By default a source of up to 10 tools is
+  `both` and a larger one `codemode`, so big catalogs do not crowd the model's
+  context. **So by default the model can call your tools from `js_exec`**, your
+  attached and served tools included, and it may well batch them in code. See
+  [Keeping tools out of js_exec](#keeping-tools-out-of-js_exec).
+
+### Keeping tools out of js_exec
+
+Code the model writes in `js_exec` can call every tool whose exposure is
+`codemode` or `both`. That is what makes large catalogs cheap (the model loops,
+filters and calls several tools in one step), but it also means a tool your app
+expected to see called on its own may be called from code instead: its call is
+then inside `js_exec`'s, its arguments do not stream as `toolcall_delta` events,
+and a page that renders a tool's arguments as they are written sees nothing
+until the code has run.
+
+To keep a tool out of `js_exec`, make it `direct`:
+
+| Where the tool comes from | Set |
+|---|---|
+| Your process (`tools` in `upsert`) | `exposure: "direct"` on the tool; Python `@tool(exposure="direct")` |
+| A served or MCP server named in a definition | `"exposure": "direct"` on the server entry (every tool), or `_meta["agent-runtime/exposure"]` on a tool in its `tools/list` (that tool; it beats the server's) |
+| An OpenAPI source | `"exposure": "direct"` on the source |
+
+A tool with `needsApproval` is always direct. The console's agent page shows each
+tool's exposure (**Tools the model gets**), and `GET /v1/agents/:id` its
+`toolSources`. `js_exec` itself stays: it still runs code, with `fs` and
+`fetch`, and the tools left in it.
 
 ## Attached tools: in your process
 
