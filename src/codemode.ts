@@ -1,12 +1,16 @@
 import { Rpc } from "./rpc.ts";
 import { errorText, type ToolBridge, type WireMessage } from "./protocol.ts";
 import { jsonWithinLimit, SANDBOX_LIMITS } from "./limits.ts";
-import { FS_CALLS, HOST_CALLS } from "./sandbox-bootstrap.ts";
 import { namespaces, searchQuery, searchTools } from "./tool-search.ts";
 import { validateDefinitions, validateToolCall } from "./tool-policy.ts";
 import { v8Exec } from "./v8-exec.ts";
 import { sandboxDir } from "./sandbox.ts";
 import { parse } from "./inspect.ts";
+
+/** Calls answered by the host rather than a tool, as the bootstrap (sandbox/v8-exec/src/bootstrap.js) makes them: no tool name contains a dot. */
+export const HOST_CALLS = Object.freeze({ search: "tools.search", describe: "tools.describe", namespaces: "tools.namespaces" });
+/** The bootstrap's `fs` calls: the runtime's file tools over the agent's mounts, whoever else has tools of those names. */
+export const FS_CALLS = Object.freeze(["fs.readFile", "fs.writeFile", "fs.stat", "fs.list", "fs.remove"]);
 
 /** One execution's link to its guest: its v8-exec process (v8-exec.ts). */
 export interface Guest {

@@ -7,7 +7,7 @@
 //   out: {type:"request", id, method:"tool", params:{name, args}}, {type:"event", event:{type:"output", text}},
 //        and one {type:"response", id, result:{output, truncated, returned, cpuMs}} or {..., error}
 // There is no Node here: the guest's realm is a bare V8 context holding the ECMAScript built-ins,
-// `tools`, `fs`, `console` and `text` (src/sandbox-bootstrap.ts), and nothing else.
+// `tools`, `fs`, `console` and `text` (bootstrap.js), and nothing else.
 //
 // Limits, from the inside out: V8's heap limit (a near-heap-limit callback terminates), a
 // counting ArrayBuffer allocator, a watchdog thread that terminates at the CPU budget and exits

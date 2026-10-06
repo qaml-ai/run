@@ -8,8 +8,7 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import type { Socket } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
-import { executeCode } from "../src/codemode.ts";
-import { SANDBOX_BOOTSTRAP } from "../src/sandbox-bootstrap.ts";
+import { executeCode, FS_CALLS, HOST_CALLS } from "../src/codemode.ts";
 import { frames } from "../src/sandbox-wire.ts";
 import { V8Exec, v8ExecBinary } from "../src/v8-exec.ts";
 import type { ToolBridge } from "../src/protocol.ts";
@@ -28,9 +27,13 @@ function hanging() {
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const run = (pool: V8Exec, code: string, bridge = none) => executeCode({ code, bridge, pool }).then(result => JSON.parse(result.output.at(-1)!));
 
-test("the binary's bootstrap is src/sandbox-bootstrap.ts's", { skip }, () => {
-  const compiled = readFileSync(new URL("../sandbox/v8-exec/src/bootstrap.js", import.meta.url), "utf8");
-  assert.ok(compiled.endsWith(SANDBOX_BOOTSTRAP), "run scripts/gen-v8-bootstrap.ts");
+test("the bootstrap calls the host by the names the runtime answers", () => {
+  const bootstrap = readFileSync(new URL("../sandbox/v8-exec/src/bootstrap.js", import.meta.url), "utf8");
+  const hostCalls = [...bootstrap.matchAll(/call\("(tools\.\w+)"/g)].map(match => match[1]);
+  assert.deepEqual(hostCalls.sort(), Object.values(HOST_CALLS).sort());
+  assert.match(bootstrap, /call\("fs\." \+ name/);
+  const fsCalls = [...bootstrap.matchAll(/fsCall\("(\w+)"/g)].map(match => `fs.${match[1]}`);
+  assert.deepEqual([...new Set(fsCalls)].sort(), [...FS_CALLS].sort());
 });
 
 for (const jitless of [true, false]) {

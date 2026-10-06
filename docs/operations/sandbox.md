@@ -129,7 +129,7 @@ checkout needs the binary built first (`npm run build:v8-exec`; or
 proves the other layers from inside a parse job and a v8-exec process.
 
 What guest code can reach on the host, all through the trusted bootstrap
-(`src/sandbox-bootstrap.ts`) and never as globals:
+(`sandbox/v8-exec/src/bootstrap.js`) and never as globals:
 
 - `call(name, argsJson)`: a string name of at most 80 characters and a JSON
   string of at most 128 KiB. It returns a promise settled with the result as a
@@ -165,7 +165,7 @@ codemode frames to it. Nothing is reused between executions, and a cancelled or 
 execution's process is killed (SIGKILL).
 
 **What code sees.** One V8 context holding the ECMAScript built-ins and `tools`, `fs`, `text` and
-`console` from the bootstrap (`src/sandbox-bootstrap.ts`). There is no
+`console` from the bootstrap (`sandbox/v8-exec/src/bootstrap.js`). There is no
 `SharedArrayBuffer`, `Atomics` or `WebAssembly`; every `import()` is refused. `Intl` works: ICU
 data is compiled in (any locale; `en-US` and UTC by default). TypeScript is stripped in the process
 by [oxc](https://oxc.rs) (types removed, enums and parameter properties compiled), in linear time.
