@@ -239,7 +239,7 @@ const MODEL_RUNS = ["prompt", "continue"];
 /** A running run's active time is reported at least this often. */
 const ACTIVE_REPORT_MS = 60_000;
 /** Resumes of one run's turn before it fails as uncertain, so a turn that kills its node cannot loop. Hand-offs at a step boundary are not resumes. */
-const MAX_RESUMES = 2;
+export const MAX_RESUMES = 2;
 /** A run's latest hand-offs its record keeps (`handoffs`): one per deploy or drain it outlived. */
 const MAX_HANDOFFS_KEPT = 20;
 /** What a run handed off at a step boundary had gathered for its outcome, which its next owner takes over (`takeOver`). */
@@ -248,6 +248,26 @@ type Carried = { usage?: RunUsage; childSpend?: number; spendLimit?: number; too
 export const ORPHANS_CHANNEL = "agent_runtime_orphans";
 /** A model turn that began can continue from its transcript on another node; a code execution cannot. */
 const resumable = (request: RequestRecord) => ["prompt", "continue", "resume"].includes(request.method) && !!request.began;
+/**
+ * What a load does with a request its journal left running (no process anywhere runs it now): a queued one (its params
+ * kept: it never began, or it is configuration) runs; a model turn that began resumes from its transcript, up to
+ * MAX_RESUMES times (a hand-off at a step boundary is not one); anything else that began has an unknown outcome, and
+ * ends `uncertain`.
+ */
+export function loadDecision(request: RequestRecord): "queued" | "resume" | "uncertain" {
+  if (request.params !== undefined) return "queued";
+  // Counted when the resumed run begins (see `run`), so a load that fails, or hands the agent back, spends none.
+  // A turn handed off at a step boundary lost nothing and is not a resume: it always goes on.
+  if (resumable(request) && (request.handedOff || (request.resumes ?? 0) < MAX_RESUMES)) return "resume";
+  return "uncertain";
+}
+/**
+ * The event cursor a load starts from, given the agent's stored one: where its last owner stopped cleanly, else above
+ * any id an earlier process can have used, as far as `now` (ms, this node's clock) and the stored cursor tell.
+ */
+export function startingCursor(stored: number | undefined, clean: boolean, now: number) {
+  return clean && stored !== undefined ? stored : Math.max(now * 1000, (stored ?? 0) + 1);
+}
 /** Requests an agent may have accepted but not finished, queued runs included. */
 const MAX_OPEN_REQUESTS = 32;
 const REQUEST_METHODS = [...RUN_METHODS, "status", "abort", "steer", "configure"];
@@ -649,10 +669,9 @@ export class ClientSessions {
     const queued: RequestRecord[] = [];
     const resumed: RequestRecord[] = [];
     for (const request of [...session.running.values()]) {
-      if (request.params !== undefined) queued.push(request);
-      // Counted when the resumed run begins (see `run`), so a load that fails, or hands the agent back, spends none.
-      // A turn handed off at a step boundary lost nothing and is not a resume: it always goes on.
-      else if (resumable(request) && (request.handedOff || (request.resumes ?? 0) < MAX_RESUMES)) resumed.push(request);
+      const decision = loadDecision(request);
+      if (decision === "queued") queued.push(request);
+      else if (decision === "resume") resumed.push(request);
       else this.upsertRequest(session, { ...request, state: "completed", endedAt: Date.now(), outcome: { error: "The runtime restarted during this request", uncertain: true }, ...(RUN_METHODS.includes(request.method) ? { announce: true as const } : {}) });
     }
     await log.flush(true);
@@ -932,7 +951,7 @@ export class ClientSessions {
   private async startCursor(id: string, claim: Claim | undefined) {
     const row = (await this.db.query("select last_cursor, cursor_clean from agents where id = $1", [id])).rows[0];
     const stored = row?.last_cursor === null || row?.last_cursor === undefined ? undefined : Number(row.last_cursor);
-    const cursor = row?.cursor_clean && stored !== undefined ? stored : Math.max(Date.now() * 1000, (stored ?? 0) + 1);
+    const cursor = startingCursor(stored, !!row?.cursor_clean, Date.now());
     await underClaim(this.db, claim, sql => sql.query("update agents set cursor_clean = false where id = $1", [id]));
     return cursor;
   }

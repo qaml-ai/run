@@ -61,10 +61,10 @@ export interface HostIO {
 }
 
 /** Tools a lost node's open call to is made again on resume, not closed as unknown: each is keyed by its call (multi-agent.ts). */
-const RERUN = ["delegate"];
+export const RERUN = ["delegate"];
 
 /** The latest assistant message's tool calls that have no result yet. */
-function openCalls(messages: AgentMessage[]): ToolCall[] {
+export function openCalls(messages: AgentMessage[]): ToolCall[] {
   const open = new Map<string, ToolCall>();
   for (const message of messages) {
     if (message.role === "assistant") { open.clear(); for (const part of message.content) if (part.type === "toolCall") open.set(part.id, part); }
