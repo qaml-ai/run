@@ -9,6 +9,27 @@ between yours and the new one first.
 
 Changes on main since the last tag.
 
+### js_exec on V8 (opt in)
+
+- A second js_exec engine: V8, in a process of its own per execution (`v8-exec`, in the image at
+  `/usr/local/bin/v8-exec`), jitless, under a seccomp allowlist of its own inside the sandbox
+  processes ([The V8 engine](sandbox.md#the-v8-engine-v8-exec)). QuickJS stays the default:
+  `AGENT_JS_EXEC=v8` makes V8 the runtime's engine, and a tenant's `codeEngine` (tenants file, or
+  `PUT /v1/tenants/{id}/limits`) overrides it either way. Nothing changes until one is set.
+- What agents on V8 notice: V8's error messages (`Cannot read properties of undefined (reading 'x')`
+  where QuickJS said `cannot read property 'x' of undefined`); no `InternalError` (deep recursion
+  throws a `RangeError`, `Maximum call stack size exceeded`, where QuickJS said `stack overflow`);
+  `Intl` and `Temporal` exist; **running out of heap (128 MiB) ends the execution** with
+  `Codemode memory limit exceeded` instead of throwing an error code can catch, while ArrayBuffers
+  may hold 128 MiB (32 under QuickJS). CPU-bound code runs 4-10 times faster; a trivial execution
+  takes about 3 ms instead of 0.4 ms.
+- `code_execution` metric lines carry `Engine` (a dimension), and new `ErrorClass` values:
+  `memory_limit`, `sandbox_seccomp`, `sandbox_rlimit`, `spawn_failed`. Sandbox processes write
+  `v8_exec` lines (`Event`: `spawn_failed`, `killed`). The `listening` line's `sandbox` field
+  has `engine` and `engines`.
+- New settings: `AGENT_JS_EXEC`, `AGENT_V8_PRESPAWN`, `AGENT_V8_MAX`, `AGENT_V8_JITLESS`,
+  `AGENT_V8_EXEC` ([Configuration](configuration.md)). The image is about 50 MB larger.
+
 ### Console sessions
 
 - Console sessions are stored in Postgres (`console_sessions`, migration 053); the cookie carries only a random

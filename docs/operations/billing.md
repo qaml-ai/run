@@ -171,7 +171,8 @@ apply it within a minute); an admin tenant's is `maxStorageGb` in the tenants fi
 an unbilled tenant has none unless that sets one. The same call takes the tenant's
 [rate limits](../reference/limits.md#rate-limits), `{agentCreatesPerMinute, runsPerMinute}`,
 and its [js_exec limits](../reference/limits.md#js_exec-code-the-model-writes-and-execute),
-`{codeCpuMs, codeMaxTimeoutMs, codeConcurrency}`, in place of its plan's (null returns to it).
+`{codeCpuMs, codeMaxTimeoutMs, codeConcurrency}`, in place of its plan's (null returns to it), and the
+engine that runs its js_exec, `{codeEngine: "quickjs" | "v8"}` ([Engines](sandbox.md#engines)).
 
 `GET /v1/billing` has the balance, this month by kind, recent entries and the
 rates and `startingCredit: {status, amount, cardCheck?}` (the recorded award, not current
