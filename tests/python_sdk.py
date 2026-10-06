@@ -19,7 +19,7 @@ import httpx
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "clients" / "python"))
-from camelai_run import _answer_for, _origin, AgentError, AgentRuntime, Agents, RunError, RuntimeTokenError, TestRuntime, ToolContext, _answer_mcp, _tool_context, serve_tools, tool, verify_runtime_token
+from camelai_run import AgentClient, _answer_for, _origin, AgentError, AgentRuntime, Agents, RunError, RuntimeTokenError, TestRuntime, ToolContext, _answer_mcp, _tool_context, serve_tools, tool, verify_runtime_token
 
 DATABASE_URL = os.environ.get("AGENT_TEST_DATABASE_URL", "postgres://postgres:test@127.0.0.1:55432/postgres")
 
@@ -1022,6 +1022,44 @@ class RateLimitRetryTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(refusals), 8)
         finally:
             await runtime.close()
+
+
+class ReconnectHintTest(unittest.IsolatedAsyncioTestCase):
+    """A stream the runtime closes on purpose (event: reconnect) is reconnected at once; one that just ends, after a backoff."""
+
+    async def reconnects(self, hinted):
+        import httpx
+        starts = []
+
+        def answer(request):
+            if request.url.path.endswith("/state"):
+                return httpx.Response(200, json={"cursor": 7, "requests": []})
+            starts.append((time.monotonic(), request.headers.get("last-event-id")))
+            body = 'event: ready\ndata: {"connection": "c1"}\n\nid: 7\ndata: {"type": "event", "event": {"type": "agent_start"}}\n\n'
+            # Only the first stream is closed on purpose; the next one just ends.
+            if hinted and len(starts) == 1:
+                body += 'event: reconnect\nretry: 0\ndata: {"type": "reconnect", "reason": "drain", "retryMs": 0}\n\n'
+            return httpx.Response(200, content=body.encode(), headers={"Content-Type": "text/event-stream"})
+
+        client = AgentClient("http://127.0.0.1:1", {"id": "client_" + "a" * 40, "token": "t"}, [], attach=False)
+        await client.http.aclose()
+        client.http = httpx.AsyncClient(transport=httpx.MockTransport(answer))
+        try:
+            await client.connect()
+            for _ in range(100):
+                if len(starts) >= 2:
+                    break
+                await asyncio.sleep(0.01)
+        finally:
+            await client.close(drain=0)
+        self.assertGreaterEqual(len(starts), 2)
+        # The reconnect resumes after the last event it had.
+        self.assertEqual(starts[1][1], "7")
+        return starts[1][0] - starts[0][0]
+
+    async def test_a_hinted_close_reconnects_at_once_and_an_unhinted_one_backs_off(self):
+        self.assertLess(await self.reconnects(True), 0.2)
+        self.assertGreaterEqual(await self.reconnects(False), 0.24)
 
 
 class VersionTest(unittest.TestCase):

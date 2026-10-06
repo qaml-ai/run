@@ -1109,6 +1109,8 @@ export class AgentClient {
     let backoff = 250;
     while (!this.closed && this.wanted()) {
       this.stream = new AbortController();
+      // The runtime closed the stream on purpose (its node is leaving, or the agent moved): reconnect at once.
+      let hinted = false;
       let watchdog: ReturnType<typeof setTimeout> | undefined;
       const touch = () => { clearTimeout(watchdog); watchdog = setTimeout(() => this.stream?.abort(), 20_000); };
       touch();
@@ -1164,6 +1166,7 @@ export class AgentClient {
                 backoff = 250; this.ready.resolve(); this.options.onConnection?.(true);
                 continue;
               }
+              if (lines.includes("event: reconnect")) { hinted = true; continue; }
               const idLine = lines.find(line => line.startsWith("id:"));
               // The runtime's MCP messages are live only: no id, never replayed, no cursor.
               if (!idLine) {
@@ -1200,7 +1203,7 @@ export class AgentClient {
           this.pending.clear(); this.report(error); break;
         } else if (this.switching) this.switching = false; else this.report(error);
       } finally { clearTimeout(watchdog); this.options.onConnection?.(false); }
-      if (!this.closed && this.wanted()) { await pause(backoff); backoff = Math.min(5000, backoff * 2); }
+      if (!this.closed && this.wanted() && !hinted) { await pause(backoff); backoff = Math.min(5000, backoff * 2); }
     }
   }
 

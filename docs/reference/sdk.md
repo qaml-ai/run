@@ -417,6 +417,8 @@ application keeps serving its tools.
 
 ## Unreleased
 
+- A stream the runtime closes on purpose (`event: reconnect`: a drain, or the agent moved) is reconnected at
+  once, resuming with `Last-Event-ID`; other closes keep their backoff. All the SDKs' event readers do this.
 - `run`, `stream` and `client.prompt` take `history: "none"` (Python `history="none"`): the run sees the
   agent's instructions and its own message only, for many independent questions to one agent without an
   agent create each. `upsert` takes `codeMode: false` (`code_mode=False`, definitions too): no `js_exec`,

@@ -9,6 +9,13 @@ between yours and the new one first.
 
 Changes on main since the last tag.
 
+### Reconnect hint on purposeful closes
+
+- A stream the runtime closes on purpose (a drain, a retiring node, an idle agent released, an agent now
+  served elsewhere) ends with `event: reconnect` (`{type: "reconnect", reason: "drain" | "moved", retryMs: 0}`,
+  `retry: 0`), and the SDKs reconnect at once with `Last-Event-ID` instead of backing off
+  ([events](../reference/events.md#event-reconnect)).
+
 ### Free-tier limits
 
 - Free credit's busy agents 8 → 20 and runs 60 → 240 a minute; paid limits are unchanged.

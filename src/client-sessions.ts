@@ -392,6 +392,15 @@ const subagentReaders = new WeakSet<ServerResponse>();
 const isSubagent = (data: ClientEvent | TurnSnapshot) => data.type === "event" && SUBAGENT_EVENTS.includes(data.event?.type);
 /** Whether a request's client has gone: its connection closed before the response was written. */
 const gone = (c: Context<ClientEnv>) => c.env.incoming.destroyed || c.env.outgoing.destroyed || !!c.env.outgoing.socket?.destroyed;
+/**
+ * Why the runtime closes an event stream on purpose: its node is leaving (`drain`: a deploy, a scale-in) or the agent is
+ * served elsewhere now (`moved`). The stream's last frame says so (`reconnectFrame`), so the subscriber reconnects at
+ * once, with Last-Event-ID, instead of backing off as after a failure.
+ */
+export type ReconnectReason = "drain" | "moved";
+/** The last frame of a stream closed on purpose: no `id` (it is no event, and moves no cursor), and `retry: 0` for EventSource. */
+export const reconnectFrame = (reason: ReconnectReason) => `event: reconnect\nretry: 0\ndata: ${JSON.stringify({ type: "reconnect", reason, retryMs: 0 })}\n\n`;
+
 /** Write an SSE frame, cutting off a subscriber that does not keep up. */
 function send(res: ServerResponse, frame: string) {
   if (res.destroyed) return;
@@ -1077,12 +1086,12 @@ export class ClientSessions {
     if (node) void this.db.query("select pg_notify('agent_runtime_loaded', $1)", [`${node} ${id}`]).catch(() => {});
   }
 
-  /** Another node loaded an agent: end the idle watchers and polls this node holds for it, so they reconnect to it. */
-  loadedElsewhere(id: string) {
+  /** Another node loaded an agent (or this one is leaving): end the idle watchers and polls this node holds for it, so they reconnect to it. */
+  loadedElsewhere(id: string, reason: ReconnectReason = "moved") {
     const entry = this.idle.get(id);
     if (!entry) return;
     this.idle.delete(id);
-    for (const res of entry.watchers) res.end();
+    for (const res of entry.watchers) if (!res.destroyed) res.end(reconnectFrame(reason));
     for (const wake of [...entry.polls]) wake();
   }
 
@@ -1150,9 +1159,12 @@ export class ClientSessions {
     return session.response ? [session.response, ...session.watchers] : [...session.watchers];
   }
 
-  /** Close every event stream (`destroy`: cut off, not ended cleanly), and answer waiting polls, so subscribers reconnect. */
-  private endStreams(session: Session, destroy = false) {
-    for (const res of this.streams(session)) if (destroy) res.destroy(); else res.end();
+  /**
+   * Close every event stream (`destroy`: cut off, not ended cleanly), and answer waiting polls, so subscribers reconnect.
+   * Closed on purpose (`reconnect`), each stream's last frame tells its subscriber to reconnect at once.
+   */
+  private endStreams(session: Session, destroy = false, reconnect?: ReconnectReason) {
+    for (const res of this.streams(session)) if (destroy) res.destroy(); else if (!res.destroyed) res.end(reconnect ? reconnectFrame(reconnect) : undefined);
     for (const wake of [...session.polls]) wake();
   }
 
@@ -2580,7 +2592,7 @@ export class ClientSessions {
     if (session.handedBack) return;
     session.handedBack = true;
     this.idleWatchers(session);
-    session.response?.end();
+    if (session.response && !session.response.destroyed) session.response.end(reconnectFrame("moved"));
     await this.db.query("update agents set resume_after = $2 where id = $1", [session.header.id, Date.now() + this.sweepMs]).catch(() => {});
     await this.unload(session);
   }
@@ -4054,7 +4066,7 @@ export class ClientSessions {
       try { await this.interrupt(session, "The runtime stopped during this request", true); }
       catch { /* Already faulted; the next load recovers conservatively from storage. */ }
       await this.unload(session);
-      this.endStreams(session);
+      this.endStreams(session, false, "drain");
     })().finally(() => this.leavingWork.delete(work));
     this.leavingWork.add(work);
     return work;
@@ -4083,10 +4095,10 @@ export class ClientSessions {
         if (this.working(session) || session.inflight) continue;
         await this.supervisor.stop(session.header.id, { flush: false }).catch(() => {});
         await this.unload(session);
-        this.endStreams(session);
+        this.endStreams(session, false, "drain");
       }
       // Idle watchers reconnect to a node that stays.
-      for (const id of [...this.idle.keys()]) this.loadedElsewhere(id);
+      for (const id of [...this.idle.keys()]) this.loadedElsewhere(id, "drain");
     } finally { this.releasing = false; }
   }
 
@@ -4216,8 +4228,8 @@ export class ClientSessions {
       catch { /* Already faulted; the next load recovers conservatively from storage. */ }
       await this.unload(session);
       // Closed after release, so the client's reconnect finds the next owner rather than this node.
-      this.endStreams(session);
+      this.endStreams(session, false, "drain");
     }
-    for (const id of [...this.idle.keys()]) this.loadedElsewhere(id);
+    for (const id of [...this.idle.keys()]) this.loadedElsewhere(id, "drain");
   }
 }

@@ -288,3 +288,25 @@ test("a watcher that cannot reach the runtime says it may be CORS, not just \"Fa
   try { await until(() => errors.length > 0, "an error"); assert.match(errors[0], /CORS/); }
   finally { watcher.close(); }
 });
+
+test("a watcher takes the runtime's reconnect hint as no event, and reconnects at once with Last-Event-ID", async t => {
+  const requests: { at: number; cursor: string | null }[] = [];
+  const events: unknown[] = [];
+  const fetcher = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = new URL(String(input)).pathname;
+    if (!path.endsWith("/events")) return new Response("[]", { headers: { "Content-Type": "application/json" } });
+    requests.push({ at: Date.now(), cursor: new Headers(init?.headers).get("last-event-id") });
+    const frames = requests.length === 1
+      ? 'event: ready\ndata: {}\n\nid: 5\ndata: {"type":"event","event":{"type":"agent_start"}}\n\nevent: reconnect\nretry: 0\ndata: {"type":"reconnect","reason":"drain","retryMs":0}\n\n'
+      : "event: ready\ndata: {}\n\n";
+    // The second stream stays open until the watcher closes.
+    const body = requests.length === 1 ? frames : new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(frames)); init?.signal?.addEventListener("abort", () => controller.close()); } });
+    return new Response(body, { headers: { "Content-Type": "text/event-stream" } });
+  };
+  const watcher = watchAgent({ url: "http://127.0.0.1:1", agentId: "client_" + "a".repeat(40), token: "t", fetch: fetcher as typeof fetch, onEvent: event => events.push(event) });
+  t.after(() => watcher.close());
+  await until(() => requests.length >= 2, "the watcher to reconnect");
+  assert.ok(requests[1].at - requests[0].at < 200, `reconnected after ${requests[1].at - requests[0].at} ms`);
+  assert.equal(requests[1].cursor, "5");
+  assert.ok(!events.some(event => (event as { type?: string }).type === "reconnect"), "the hint is not an event");
+});

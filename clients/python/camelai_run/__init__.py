@@ -1009,6 +1009,8 @@ class AgentClient:
     async def _events(self):
         backoff = 0.25
         while not self.closed and (not self.lazy or self.listeners):
+            # The runtime closed the stream on purpose (its node is leaving, or the agent moved): reconnect at once.
+            hinted = False
             try:
                 # One application serves an agent's tools at a time: a reconnect names the connection it held; takeover replaces another's, once.
                 mode = ("&watch=1" if not self.attach else "&takeover=true" if self.takeover and not self.connection else "") + ("&subagents=1" if self.subagents else "")
@@ -1056,6 +1058,9 @@ class AgentClient:
                                 backoff = 0.25
                                 self.ready.set()
                                 continue
+                            if "event: reconnect" in lines:
+                                hinted = True
+                                continue
                             id_line = next((line for line in lines if line.startswith("id:")), None)
                             # The runtime's MCP messages are live only: no id, never replayed, no cursor.
                             if id_line is None:
@@ -1096,8 +1101,9 @@ class AgentClient:
                 elif not self.closed:
                     self._report(error)
             if not self.closed:
-                await asyncio.sleep(backoff)
-                backoff = min(5, backoff * 2)
+                await asyncio.sleep(0 if hinted else backoff)
+                if not hinted:
+                    backoff = min(5, backoff * 2)
 
     def _receive(self, event):
         if event["type"] == "response":
