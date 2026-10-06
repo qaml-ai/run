@@ -51,7 +51,9 @@ export class V8Exec {
     // No environment, and no descriptors besides the three pipes.
     const child = spawn(this.binary, this.args, { stdio: ["pipe", "pipe", "ignore"], env: {} });
     child.stdin!.on("error", () => {});
-    child.once("error", error => recordV8Exec({ event: "spawn_failed", code: (error as NodeJS.ErrnoException).code }));
+    // A binary that is not installed (ENOENT) is not a failure to count: the "listening" line reports the engine as
+    // unavailable, and a metric line here would print before it.
+    child.once("error", error => { const code = (error as NodeJS.ErrnoException).code; if (code !== "ENOENT") recordV8Exec({ event: "spawn_failed", code }); });
     return child;
   }
 
