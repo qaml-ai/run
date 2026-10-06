@@ -193,7 +193,8 @@ export function sessionConfig(input: any, defaultModel: AgentConfig['model'], de
   });
   if (input.initialMessages !== undefined) validateInitialMessages(input.initialMessages);
   if (input.fileTools !== undefined && typeof input.fileTools !== 'boolean') throw new Error('fileTools must be true or false');
-  return { model, ...updates, ...(input.fileTools === false ? { fileTools: false } : {}), ...(input.initialMessages !== undefined ? { initialMessages: input.initialMessages } : {}) };
+  if (input.codeMode !== undefined && typeof input.codeMode !== 'boolean') throw new Error('codeMode must be true or false');
+  return { model, ...updates, ...(input.fileTools === false ? { fileTools: false } : {}), ...(input.codeMode === false ? { codeMode: false } : {}), ...(input.initialMessages !== undefined ? { initialMessages: input.initialMessages } : {}) };
 }
 
 /**
@@ -202,8 +203,9 @@ export function sessionConfig(input: any, defaultModel: AgentConfig['model'], de
  */
 export function configurationUpdate(input: any, endpoints?: ModelEndpoints, custom?: CustomProviders): Pick<AgentConfig, 'systemPrompt' | 'systemPromptAppend' | 'thinkingLevel' | 'modelHeaders' | 'runLimits'> & { tools?: AgentConfig['tools']; model?: AgentConfig['model']; keyScope?: string | null } {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid configuration');
-  for (const key of Object.keys(input)) if (!['systemPrompt', 'systemPromptAppend', 'thinkingLevel', 'mcp', 'model', 'keyScope', 'modelHeaders', 'tools', 'fileTools', 'runLimits'].includes(key)) throw new Error(`Unsupported scoped configuration field: ${key}`);
+  for (const key of Object.keys(input)) if (!['systemPrompt', 'systemPromptAppend', 'thinkingLevel', 'mcp', 'model', 'keyScope', 'modelHeaders', 'tools', 'fileTools', 'codeMode', 'runLimits'].includes(key)) throw new Error(`Unsupported scoped configuration field: ${key}`);
   if (input.fileTools !== undefined && typeof input.fileTools !== 'boolean') throw new Error('fileTools must be true or false');
+  if (input.codeMode !== undefined && typeof input.codeMode !== 'boolean') throw new Error('codeMode must be true or false');
   if (input.keyScope !== undefined && input.keyScope !== null) checkScope(input.keyScope);
   // Replaced whole; null or {} removes them.
   if (input.modelHeaders !== undefined) input = { ...input, modelHeaders: modelHeadersInput(input.modelHeaders) };

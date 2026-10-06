@@ -67,6 +67,11 @@ export interface AgentConfig {
   tools: ToolDefinition[];
   /** false: the model gets no file tools but present_file; its mounts stay open to fs in js_exec. */
   fileTools?: boolean;
+  /**
+   * false: no js_exec. The model calls every tool directly, and its prompt carries only the runtime text its tools need
+   * (none for an agent without tools): for a tool-less agent, or one with a few tools of its own.
+   */
+  codeMode?: boolean;
   /** Where the agent's volumes are mounted, for its prompt's summary of its environment. */
   mounts?: { path: string; mode: "ro" | "rw" }[];
   initialMessages?: AgentMessage[];

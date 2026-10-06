@@ -1957,6 +1957,10 @@
             "type": "boolean",
             "description": "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; the mounts stay open to fs in js_exec, attachments and tool outputs. For applications with file tools of their own"
           },
+          "codeMode": {
+            "type": "boolean",
+            "description": "false: no js_exec (code mode). The model calls every tool directly, and the system prompt carries only the runtime text those tools need: for an agent with no tools (with fileTools: false too, and no builtins or tool sources), only the application's instructions and a short note on who sent each message. For a tool-less agent, such as a classifier. Best set when the agent is made: changed later, its tools change, while a conversation under way keeps the runtime text it began with"
+          },
           "ttlSeconds": {
             "type": [
               "integer",
@@ -2379,6 +2383,13 @@
                   false
                 ],
                 "description": "Present when the model gets no file tools but present_file"
+              },
+              "codeMode": {
+                "type": "boolean",
+                "enum": [
+                  false
+                ],
+                "description": "Present when the agent has no js_exec, and the model calls every tool directly"
               },
               "keyScope": {
                 "type": [
@@ -4831,6 +4842,10 @@
             "type": "boolean",
             "description": "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; the mounts stay open to fs in js_exec, attachments and tool outputs. For applications with file tools of their own"
           },
+          "codeMode": {
+            "type": "boolean",
+            "description": "false: its agents get no js_exec and call every tool directly (AgentInput.codeMode)"
+          },
           "limits": {
             "$ref": "#/components/schemas/DefinitionLimits"
           },
@@ -5229,6 +5244,10 @@
           "fileTools": {
             "type": "boolean",
             "description": "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; the mounts stay open to fs in js_exec, attachments and tool outputs. For applications with file tools of their own"
+          },
+          "codeMode": {
+            "type": "boolean",
+            "description": "false: its agents get no js_exec and call every tool directly (AgentInput.codeMode)"
           },
           "limits": {
             "$ref": "#/components/schemas/DefinitionLimits"
@@ -5691,6 +5710,13 @@
               "null"
             ],
             "description": "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; the mounts stay open to fs in js_exec, attachments and tool outputs. For applications with file tools of their own"
+          },
+          "codeMode": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "false: its agents get no js_exec and call every tool directly (AgentInput.codeMode)"
           },
           "limits": {
             "allOf": [

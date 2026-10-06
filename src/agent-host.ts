@@ -18,6 +18,7 @@ import { boundedContext, importedHistory, interruptedTurnRepairs, validateInitia
 import { backgroundTokens, compactionNeed, compactionSettings, contextTokens, explicitKeyStream, MODEL_INTERRUPTED, modelKeyFailure, runCompaction, type ModelGate } from "./compaction.ts";
 import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
 import { isStalled, streamTimeouts } from "./model-stream.ts";
+import { forcedToolChoice } from "./tool-choice.ts";
 import { describeFile, documentPayload, FILE_LIMITS, nativeBlock, unseen, validFileRef, type FileRef } from "./files.ts";
 import { CHUNK_BYTES, chunksOf, type HistoryChunk } from "./history-pages.ts";
 import { observeTurns, recordCodeExecution } from "./metrics.ts";
@@ -28,6 +29,9 @@ import { imageHeader } from "./image-header.ts";
 const LAG_READ_MS = 60_000;
 /** How long a stopping agent waits to index its settled turns (see `index`). */
 export const HISTORY_FLUSH_MS = 5_000;
+
+/** Model requests of one structured run that may force final_output (see `outputChoice`). */
+const FORCED_OUTPUT_REQUESTS = 3;
 
 /** Images one agent scales down at once for its requests (`fitImage`). */
 const FIT_CONCURRENCY = 2;
@@ -113,10 +117,17 @@ export function createAgentHost(hostIO: HostIO) {
   let steers: { message: AgentMessage; whileRunning: boolean }[] = [];
   /** What the current run's final_output call gave, once the model made one that fit its schema. */
   let output: { value: unknown } | undefined;
+  /**
+   * Requests of the current run that may still force final_output (`outputChoice`), whether its reminder does, and
+   * whether the latest request did.
+   */
+  let forcing = { left: 0, reminding: false, last: false };
   /** In a run with history: "none", the system message as it stands: its requests lead with it, and carry only the run's own messages (`freshTurn`). */
   let fresh: SystemMessage | undefined;
   /** Calls a lost node left open that are safe to make again (`RERUN`): made again before the resumed turn continues. */
   let rerun: ToolCall[] = [];
+  /** js_exec, which an agent has unless its codeMode is false; made at init. */
+  let jsExec: AgentTool | undefined;
   /** Model requests wait for the node's lease, and are cut (`interrupt`) when it goes stale. */
   const gate: ModelGate = { wait: signal => leased(signal), open: new Set() };
 
@@ -431,6 +442,37 @@ export function createAgentHost(hostIO: HostIO) {
   }
 
   /**
+   * The tool_choice of a structured run's next model request: final_output, forced from the first request when it is
+   * the only tool the model has, and once the model has answered in text (`remindOfOutput`) when it has others, where the
+   * provider can force it (`forcedToolChoice`; elsewhere the reminder alone asks for it). At most FORCED_OUTPUT_REQUESTS
+   * a run, so a model whose calls never fit the schema still ends its turn.
+   */
+  function outputChoice(model: AgentConfig["model"]): unknown {
+    forcing.last = false;
+    const tools = agent!.state.tools;
+    if (output || forcing.left <= 0 || !tools.some(tool => tool.name === OUTPUT_TOOL)) return undefined;
+    const sole = tools.every(tool => tool.name === OUTPUT_TOOL);
+    if (!sole && !forcing.reminding) return undefined;
+    const choice = forcedToolChoice(model, OUTPUT_TOOL, { sole, thinking: (config.thinkingLevel ?? "off") !== "off" });
+    if (choice !== undefined) { forcing.left--; forcing.last = true; }
+    return choice;
+  }
+
+  /**
+   * A request with final_output forced that the provider refused (one that takes no such tool_choice): taken back, as
+   * a failed response is, and asked again without forcing for the rest of the run.
+   */
+  async function unforced(signal: AbortSignal) {
+    const last = agent!.state.messages.at(-1) as AssistantMessage | undefined;
+    if (!forcing.last || signal.aborted || last?.role !== "assistant" || last.stopReason !== "error" || isRetryableAssistantError(last) || isContextOverflow(last, config.model.contextWindow)) return;
+    forcing = { left: 0, reminding: false, last: false };
+    await transcript.retract();
+    io.emit({ type: "message_retracted", index: transcript.total });
+    agent!.state.messages = agent!.state.messages.slice(0, -1);
+    await agent!.continue();
+  }
+
+  /**
    * Declare final_output with a prompt's schema, or take it away from a prompt without one. It stays declared
    * between runs (the tool set changes only when a schema does), and a turn continued or resumed keeps it.
    */
@@ -483,7 +525,9 @@ export function createAgentHost(hostIO: HostIO) {
     const text = content.filter(part => part.type === "text").map(part => part.text as string).join("\n");
     const limit = SANDBOX_LIMITS.outputCharacters;
     if (text.length <= limit) return content;
-    const mount = config.mounts?.find(entry => entry.path === "/workspace" && entry.mode === "rw") ?? config.mounts?.find(entry => entry.mode === "rw");
+    // Saved where the agent can read it: with its file tools, or fs in js_exec.
+    const readable = config.fileTools !== false || config.codeMode !== false;
+    const mount = readable ? config.mounts?.find(entry => entry.path === "/workspace" && entry.mode === "rw") ?? config.mounts?.find(entry => entry.mode === "rw") : undefined;
     // Named by the message that made the call too: providers may give calls in different turns the same id.
     const at = made(toolCallId).messageIndex;
     const path = mount && `${mount.path}/tool-results/${at !== undefined ? `${at}-` : ""}${toolCallId.replace(/[^A-Za-z0-9_.-]/g, "_")}.txt`;
@@ -495,8 +539,9 @@ export function createAgentHost(hostIO: HostIO) {
     return [...content.filter(part => part.type !== "text"), { type: "text", text: `${text.slice(0, limit)}\n\n[Result cut at ${limit.toLocaleString("en-US")} of ${text.length.toLocaleString("en-US")} characters.${where}]` }];
   }
 
+  /** The tools the model calls directly: those declared direct, or every one without js_exec (codeMode: false). */
   function directAgentTools(tools: AgentConfig["tools"]): AgentTool[] {
-    return tools.filter(tool => ["direct", "both"].includes(tool.exposure ?? "codemode")).map(tool => ({
+    return tools.filter(tool => config.codeMode === false || ["direct", "both"].includes(tool.exposure ?? "codemode")).map(tool => ({
         name: tool.name, label: tool.name, description: tool.description,
         parameters: tool.parameters as AgentTool["parameters"], executionMode: tool.executionMode,
         execute: async (toolCallId, args, signal) => {
@@ -649,7 +694,9 @@ export function createAgentHost(hostIO: HostIO) {
     const reminder: SystemMessage = { role: "system", content: "", sections: { [OUTPUT]: `${OUTPUT_INSTRUCTIONS}\n${OUTPUT_REMINDER}` }, timestamp: Date.now() };
     await declare(reminder, agent!.state.messages[0] as SystemMessage);
     agent!.state.messages = [...agent!.state.messages.slice(0, -1), reminder];
+    forcing.reminding = true;
     await agent!.continue();
+    await unforced(signal);
     await recoverFailedResponses(signal);
   }
 
@@ -764,7 +811,7 @@ export function createAgentHost(hostIO: HostIO) {
       }
       const directTools = directAgentTools(config.tools);
       const maxTimeoutMs = config.codeLimits?.maxTimeoutMs ?? SANDBOX_LIMITS.maxTimeoutMs;
-      const jsExec: AgentTool = {
+      jsExec = {
         name: "js_exec", label: "JavaScript",
         description: "Run JavaScript or TypeScript in a fresh sandbox. Return what you want to see: it comes back as JSON (a string as its own text), after any console.log lines. In scope: tools (await tools.<name>(args) gives the tool's result as data; tools.search, tools.namespaces and tools.describe find them) and fs for your files (readFile(path, { encoding: \"utf8\" }) gives a string, a Uint8Array without it; writeFile(path, string | Uint8Array); stat, list, remove); no network, imports, Node APIs or timers. Variables are gone after each execution; files persist. An execution gets timeoutMs of wall time (default " + Math.min(SANDBOX_LIMITS.timeoutMs, maxTimeoutMs) + ", at most " + maxTimeoutMs + "), tool calls included: raise it for slow tools." + " For example:\nconst tickets = [];\nfor (let page = 1; page; ) { const result = await tools.helpdesk__list_tickets({ status: \"open\", page }); tickets.push(...result.tickets); page = result.nextPage; }\nawait fs.writeFile(\"/workspace/tmp/tickets.json\", JSON.stringify(tickets)); // a later execution can read it back\nreturn { open: tickets.length, oldest: tickets[0]?.createdAt };",
         parameters: {
@@ -787,7 +834,11 @@ export function createAgentHost(hostIO: HostIO) {
           } finally { await io.cancelTools(); }
         },
       };
-      const tools = [jsExec, ...directTools];
+      const tools = [...config.codeMode === false ? [] : [jsExec], ...directTools];
+      // A request whose stream goes quiet ends as a retryable error (model-stream.ts), said on the run's stream as it happens.
+      const stream = explicitKeyStream(() => perCall() ? io.modelAuth() : undefined, () => config.modelHeaders, gate,
+        (model, reasoning) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts),
+        stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: config.model.provider, model: config.model.id }));
       agent = new Agent({
         initialState: {
           model: config.model,
@@ -797,10 +848,11 @@ export function createAgentHost(hostIO: HostIO) {
         getApiKey: () => config.apiKey,
         // Only the tenant's explicit key, never provider keys from the process environment. A model on the
         // tenant's own endpoint gets a fresh identity token for each call, and a key scope's agent its scope's current key.
-        // A request whose stream goes quiet ends as a retryable error (model-stream.ts), said on the run's stream as it happens.
-        streamFn: explicitKeyStream(() => perCall() ? io.modelAuth() : undefined, () => config.modelHeaders, gate,
-          (model, reasoning) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts),
-          stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: config.model.provider, model: config.model.id })),
+        // A structured run's request may force final_output (`outputChoice`).
+        streamFn: (model, context, options) => {
+          const toolChoice = outputChoice(model);
+          return stream(model, context, toolChoice === undefined ? options : { ...options, toolChoice } as typeof options);
+        },
         // Renders compaction summaries for the model (the default drops non-chat roles), and each message's sender.
         convertToLlm: messages => hydrate(convertToLlm(renderMessages(messages))),
         onPayload: payload => documents ? documentPayload(payload) : undefined,
@@ -871,14 +923,16 @@ export function createAgentHost(hostIO: HostIO) {
       if (params.systemPrompt !== undefined) config.systemPrompt = params.systemPrompt ?? undefined;
       if (params.systemPromptAppend !== undefined) config.systemPromptAppend = params.systemPromptAppend;
       if (params.fileTools !== undefined) config.fileTools = params.fileTools;
+      if (params.codeMode !== undefined) config.codeMode = params.codeMode;
       if (params.model !== undefined) { config.model = params.model; agent.state.model = params.model; }
       if (params.thinkingLevel !== undefined) { config.thinkingLevel = params.thinkingLevel; agent.state.thinkingLevel = params.thinkingLevel; }
       if (params.apiKey !== undefined) config.apiKey = params.apiKey;
       if (params.modelHeaders !== undefined) config.modelHeaders = params.modelHeaders;
       // Its stream timeouts apply from the next model request.
       if (params.runLimits !== undefined) config.runLimits = params.runLimits;
-      if (params.tools !== undefined) { config.tools = params.tools; agent.state.tools = [agent.state.tools.find(tool => tool.name === "js_exec")!, ...directAgentTools(config.tools)]; }
-      if (params.systemPrompt !== undefined || params.systemPromptAppend !== undefined || params.tools !== undefined || params.model !== undefined) await declareConfiguration();
+      if (params.tools !== undefined) config.tools = params.tools;
+      if (params.tools !== undefined || params.codeMode !== undefined) agent.state.tools = [...config.codeMode === false ? [] : [jsExec!], ...directAgentTools(config.tools)];
+      if (params.systemPrompt !== undefined || params.systemPromptAppend !== undefined || params.tools !== undefined || params.codeMode !== undefined || params.model !== undefined) await declareConfiguration();
       return { configured: true };
     }
     // Full history comes from the log; memory holds only the working set.
@@ -932,6 +986,7 @@ export function createAgentHost(hostIO: HostIO) {
     busy = true;
     stopped = undefined;
     output = undefined;
+    forcing = { left: FORCED_OUTPUT_REQUESTS, reminding: false, last: false };
     active = new AbortController();
     try {
       if (method === "prompt") await useOutput(params.output?.schema);
@@ -979,6 +1034,7 @@ export function createAgentHost(hostIO: HostIO) {
         if (params.history === "none") agent.state.messages = freshTurn(messages[0])!;
         await agent.prompt(messages);
       }
+      await unforced(active.signal);
       await recoverFailedResponses(active.signal);
       await remindOfOutput(active.signal);
       // Stopped at a step boundary for another node to continue (in any of the model calls above): the turn stays open
