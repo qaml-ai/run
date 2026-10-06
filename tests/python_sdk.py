@@ -553,6 +553,46 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(missing.exception.code, "output_missing")
         self.assertIsNone((await agent.run("hi")).output)
 
+    async def test_stateless_runs_one_call_stream_get_abort_and_no_agent_left(self):
+        from typing import Literal
+        from pydantic import BaseModel
+
+        class Vote(BaseModel):
+            vote: Literal["yes", "no"]
+
+        self.call("final_output", {"vote": "yes"})
+        run = await self.agents.run("Ship on Friday?", instructions="Vote yes or no.", output=Vote, metadata={"voter": "1"})
+        self.assertEqual(run.status, "completed")
+        self.assertIsInstance(run.output, Vote)
+        self.assertEqual(run.output.vote, "yes")
+        self.assertTrue(run.id.startswith("run_"))
+        self.assertEqual(len([message for message in self.bodies[-1]["messages"] if message["role"] == "user"]), 1)
+        again = await self.agents.runs.get(run.id)
+        self.assertEqual((again["status"], again["metadata"]), ("completed", {"voter": "1"}))
+        self.assertEqual([message["role"] for message in await self.agents.runs.messages(run.id)], ["user", "assistant", "toolResult"])
+        # The same key is the same run.
+        first = await self.agents.runs.create("Ship on Monday?", idempotency_key="k1", wait=True)
+        self.assertEqual((await self.agents.runs.create("Ship on Monday?", idempotency_key="k1", wait=True))["id"], first["id"])
+
+        self.call("js_exec", {"code": "return 1 + 1"})
+        self.script.append({"role": "assistant", "content": "two"})
+        stream = await self.agents.runs.stream("add", file_tools=False)
+        parts = [part async for part in stream]
+        self.assertEqual([part.type for part in parts], ["tool_call", "tool_result", "text", "done"])
+        self.assertEqual(parts[-1].run.text, "two")
+        self.assertEqual((await stream.result()).text, "two")
+
+        self.script.append({"role": "assistant", "content": "too late", "delayMs": 5000})
+        slow = await self.agents.runs.create("slow")
+        self.assertEqual(slow["status"], "running")
+        await asyncio.sleep(0.5)
+        await self.agents.runs.abort(slow["id"])
+        with self.assertRaises(RunError) as aborted:
+            await (await self.agents.runs.stream(run_id=slow["id"])).result()
+        self.assertEqual(aborted.exception.code, "aborted")
+        listed = await self.runtime.http.get(f"{self.url}/v1/agents", headers={"Authorization": f"Bearer {self.token}"})
+        self.assertEqual(listed.json(), [])
+
     async def test_parity_history_configure_tools_and_wait_for_request(self):
         agent = await self.make()
         # The same key sent again while its run goes on joins that run.

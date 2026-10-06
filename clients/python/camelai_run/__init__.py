@@ -28,7 +28,7 @@ import httpx
 __version__ = "0.11.0"
 
 __all__ = [
-    "Agents", "Agent", "Run", "RunInput", "InputDetail", "RunStream", "StreamPart",
+    "Agents", "Agent", "Run", "RunInput", "InputDetail", "RunStream", "StreamPart", "Runs", "StatelessRunStream",
     "tool", "Tool", "ToolContext", "InputRequired", "RuntimeIdentity", "identity_from_claims",
     "AgentError", "RunError",
     "AgentRuntime", "AgentClient", "AgentFiles", "Download", "Volume", "Telemetry", "DEFAULT_URL",
@@ -546,6 +546,77 @@ class AgentRuntime:
         except BaseException:
             await agent.close()
             raise
+
+    async def create_run(self, request, *, idempotency_key=None, wait=None, traceparent=None):
+        """Start a stateless run (POST /v1/runs): `request` is its configuration and input ({"input", "systemPrompt"?,
+        "model"?, "output"?, ...}). With `wait` (True: up to 60 s, or seconds) it answers once the run ends, else still
+        running. Retries are safe: each create has an Idempotency-Key (one of its own unless given)."""
+        body = _with_multi_agent(dict(request))
+        if wait is not None:
+            body["wait"] = wait
+        wait_seconds = 60 if wait is True else min(float(wait), 60) if wait else 0
+        return await _http(self.http, self.base, "/v1/runs", self._operator(), "POST", body, timeout=wait_seconds + 15,
+                           headers={"Idempotency-Key": idempotency_key or str(uuid.uuid4()), **_trace_header(traceparent)})
+
+    async def get_run(self, run_id, *, wait=0):
+        """A stateless run: running, or how it ended. `wait` (seconds, at most 25) waits for it to end first."""
+        wait = min(wait or 0, 25)
+        return await _http(self.http, self.base, f"/v1/runs/{quote(run_id, safe='')}" + (f"?wait={wait:g}" if wait else ""), self._operator(), timeout=wait + 15)
+
+    async def wait_for_run(self, run_id):
+        """A stateless run once it ends, however long it takes (cancel the task to stop waiting; abort_run stops the run)."""
+        while True:
+            run = await self.get_run(run_id, wait=25)
+            if run["status"] != "running":
+                return run
+
+    async def abort_run(self, run_id):
+        return await _http(self.http, self.base, f"/v1/runs/{quote(run_id, safe='')}/abort", self._operator(), "POST", {})
+
+    async def delete_run(self, run_id):
+        """Delete a run now, before its retention ends (a running one stops)."""
+        return await _http(self.http, self.base, f"/v1/runs/{quote(run_id, safe='')}", self._operator(), "DELETE")
+
+    async def run_messages(self, run_id):
+        """A run's messages: its input, the model's turns and tool results."""
+        return (await _http(self.http, self.base, f"/v1/runs/{quote(run_id, safe='')}/messages", self._operator()))["messages"]
+
+    async def run_events(self, run_id, *, last_event_id=None):
+        """A run's event stream, to its end (its "response" frame), as {"id", "data"}: reconnecting with Last-Event-ID
+        where the connection drops, so no event is missed or repeated where the stream still has them."""
+        cursor, failures = last_event_id or 0, 0
+        while True:
+            headers = {"Authorization": f"Bearer {self._operator()}", "Accept": "text/event-stream", **({"Last-Event-ID": str(cursor)} if cursor else {})}
+            try:
+                async with self.http.stream("GET", f"{self.base}/v1/runs/{quote(run_id, safe='')}/events", headers=headers, timeout=httpx.Timeout(10, read=60)) as response:
+                    if not response.is_success:
+                        await response.aread()
+                        error = AgentError(_error(response), response.status_code, retry_after=_retry_after(response))
+                        if response.status_code not in (502, 503) or failures >= 5:
+                            raise error
+                        failures += 1
+                        await asyncio.sleep(error.retry_after or 0.25 * 2 ** failures)
+                        continue
+                    failures, buffer = 0, ""
+                    async for chunk in response.aiter_text():
+                        buffer += chunk
+                        while "\n\n" in buffer:
+                            raw, buffer = buffer.split("\n\n", 1)
+                            lines = raw.split("\n")
+                            text = "\n".join(line[5:].lstrip() for line in lines if line.startswith("data:"))
+                            ids = [line[3:].strip() for line in lines if line.startswith("id:")]
+                            if not text or "event: ready" in lines or not ids or not ids[0].isdigit():
+                                continue
+                            cursor = int(ids[0])
+                            frame = {"id": cursor, "data": json.loads(text)}
+                            yield frame
+                            if frame["data"].get("type") == "response":
+                                return
+            except httpx.TransportError:
+                failures += 1
+                if failures > 5:
+                    raise
+                await asyncio.sleep(0.25 * 2 ** failures)
 
     def _operator(self):
         if not self.api_key:
@@ -1929,6 +2000,115 @@ class Agent:
         await self.close()
 
 
+def _stateless_run(view, output=None, throw_on_error=True):
+    """A stateless run's view as a Run: its output parsed by a pydantic model, and its failure raised unless throw_on_error is False."""
+    error, value = view.get("error"), view.get("output")
+    if value is not None and not error:
+        try:
+            value = _parsed_output(output, value)
+        except ValueError as invalid:
+            error = {"code": "output_invalid", "message": f"The output does not fit its schema: {invalid}"}
+    run = Run(view["id"], "failed" if error else view["status"], text=view.get("text") or "", output=value, error=error, usage=view.get("usage"),
+              files=view.get("files") or [], tool_errors=view.get("toolErrors") or [], tool_calls=view.get("toolCalls") or [],
+              source_errors=view.get("sourceErrors") or [], raw=view)
+    if run.error and throw_on_error:
+        raise RunError(run)
+    return run
+
+
+class StatelessRunStream:
+    """async for part in await agents.runs.stream(input, ...): the run's text as it is written, tool calls and results,
+    and last "done" with the run. `id` is the run's; await result() for the run. Breaking off stops the reading, not the run."""
+
+    def __init__(self, runtime, run_id, output, throw_on_error):
+        self.id, self._runtime, self._output, self._throw = run_id, runtime, output, throw_on_error
+
+    async def result(self):
+        return _stateless_run(await self._runtime.wait_for_run(self.id), self._output, self._throw)
+
+    async def __aiter__(self):
+        spoke, fresh = False, False
+        async for frame in self._runtime.run_events(self.id):
+            data = frame["data"]
+            if data.get("type") == "response":
+                break
+            event = data.get("event") or {} if data.get("type") == "event" else {}
+            kind = event.get("type")
+            if kind == "message_start" and (event.get("message") or {}).get("role") == "assistant":
+                fresh = True
+            elif kind == "message_update":
+                delta = event.get("assistantMessageEvent") or {}
+                if delta.get("type") == "text_delta" and delta.get("delta"):
+                    yield StreamPart("text", text=("\n\n" if fresh and spoke else "") + delta["delta"], raw=event)
+                    spoke, fresh = True, False
+            elif kind == "tool_execution_start":
+                yield StreamPart("tool_call", id=event.get("toolCallId"), name=event.get("toolName"), arguments=event.get("args"), raw=event)
+            elif kind == "tool_execution_end":
+                yield StreamPart("tool_result", id=event.get("toolCallId"), name=event.get("toolName"), output=_text_of(event.get("result")), is_error=bool(event.get("isError")), raw=event)
+        run = _stateless_run(await self._runtime.wait_for_run(self.id), self._output, False)
+        yield StreamPart("done", run=run)
+        if run.error and self._throw:
+            raise RunError(run)
+
+
+class Runs:
+    """Stateless runs (POST /v1/runs): a configuration and an input in, a result out, nothing carried over. See Agents.run."""
+
+    def __init__(self, runtime):
+        self.runtime = runtime
+
+    @staticmethod
+    def _request(input, *, instructions=None, instructions_append=None, model=None, definition=None, thinking_level=None, output=None, builtins=None, delegate=None,
+                 file_tools=None, mounts=None, files=None, user=None, metadata=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None,
+                 model_headers=None, name=None, retention_seconds=None):
+        parts = [{"type": "text", "text": input}]
+        for file in files or []:
+            entry = file if isinstance(file, dict) else {"data": file}
+            data = entry["data"]
+            parts.append({"type": "file", "data": base64.b64encode(bytes(data)).decode(), **{key: entry[key] for key in ("name", "contentType") if entry.get(key)}})
+        fields = {"input": input if len(parts) == 1 else parts, "systemPrompt": instructions, "systemPromptAppend": instructions_append, "model": model, "definition": definition,
+                  "thinkingLevel": thinking_level, "output": _output_request(output), "builtins": builtins, "delegate": delegate, "fileTools": file_tools, "mounts": mounts,
+                  "from": _sender(user) if user else None, "metadata": metadata, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit,
+                  "runLimits": run_limits, "modelHeaders": model_headers, "name": name, "retentionSeconds": retention_seconds}
+        return {key: value for key, value in fields.items() if value is not None}
+
+    async def create(self, input, *, idempotency_key=None, wait=None, traceparent=None, **config):
+        """Start a run and return at once, still running (or, with `wait`, once it ends within it): its view as a dict."""
+        return await self.runtime.create_run(self._request(input, **config), idempotency_key=idempotency_key, wait=wait, traceparent=traceparent)
+
+    async def get(self, run_id, *, wait=0):
+        """A run by its id, as a dict: running, or how it ended. `wait` (seconds, at most 25) waits for it to end first."""
+        return await self.runtime.get_run(run_id, wait=wait)
+
+    async def abort(self, run_id):
+        """Stop a running run: it ends failed, code "aborted"."""
+        return await self.runtime.abort_run(run_id)
+
+    async def delete(self, run_id):
+        """Delete a run's result, events and messages now, before its retention ends."""
+        return await self.runtime.delete_run(run_id)
+
+    async def messages(self, run_id):
+        return await self.runtime.run_messages(run_id)
+
+    def events(self, run_id, *, last_event_id=None):
+        """A run's raw event stream, to its end; see stream for one read into text, tool calls and the result."""
+        return self.runtime.run_events(run_id, last_event_id=last_event_id)
+
+    async def run(self, input, *, idempotency_key=None, throw_on_error=True, traceparent=None, **config):
+        """Run and wait for its result: see Agents.run."""
+        view = await self.create(input, idempotency_key=idempotency_key, wait=True, traceparent=traceparent, **config)
+        if view["status"] == "running":
+            view = await self.runtime.wait_for_run(view["id"])
+        return _stateless_run(view, config.get("output"), throw_on_error)
+
+    async def stream(self, input=None, *, run_id=None, idempotency_key=None, throw_on_error=True, traceparent=None, **config):
+        """Run, reading it as it happens (or, given run_id, follow that run). Returns a StatelessRunStream."""
+        if run_id is None:
+            run_id = (await self.create(input, idempotency_key=idempotency_key, traceparent=traceparent, **config))["id"]
+        return StatelessRunStream(self.runtime, run_id, config.get("output"), throw_on_error)
+
+
 class Agents:
     """Keyed agents you upsert and run.
 
@@ -1943,8 +2123,22 @@ class Agents:
 
     def __init__(self, api_key=None, *, url=None, connection="lazy"):
         self.runtime = AgentRuntime(url=url, api_key=api_key)
+        # Stateless runs: create, get, stream, abort, delete, messages; Agents.run is the one-call form.
+        self.runs = Runs(self.runtime)
         self._open = set()
         self.connection = connection
+
+    async def run(self, input, **options):
+        """A stateless run: a configuration and `input` in, its result (a Run) out, nothing carried over and no agent kept.
+        It is as durable as an agent's run (a node lost mid-run, or a deploy, goes on from its last step), and counts toward
+        busy agents and runs per minute as one does. Options: instructions, model, output (a pydantic model or JSON Schema),
+        definition, builtins ("web_fetch", "web_search", "delegate"), thinking_level, files (bytes, inline), user, metadata,
+        idempotency_key, spend_limit, run_limits, retention_seconds, throw_on_error. A failed run raises RunError unless
+        throw_on_error=False. For a conversation that carries over, upsert an agent instead.
+
+            run = await agents.run("Ship on Friday?", instructions="Vote yes or no.", output=Vote)
+        """
+        return await self.runs.run(input, **options)
 
     async def upsert(self, key, *, model=None, instructions=None, tools=None, definition=None, thinking_level=None, subject=None, context=None,
                      key_scope=None, spend_limit=None, run_limits=None, model_headers=None, mounts=None, name=None, instructions_append=None, file_tools=None,
