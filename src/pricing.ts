@@ -73,7 +73,8 @@ export function pricingFromEnvironment(env = process.env): Pricing {
   const usd = (name: string, fallback: number) => {
     if (env[name] === undefined) return fallback;
     const value = Number(env[name]);
-    if (!Number.isFinite(value) || value < 0) throw new Error(`${name} must be a non-negative number of USD`);
+    // Within integer micro-USD that the ledger can hold exactly (postLedger refuses any other amount).
+    if (!Number.isFinite(value) || value < 0 || !Number.isSafeInteger(micros(value))) throw new Error(`${name} must be a non-negative number of USD`);
     return micros(value);
   };
   const fee = env.AGENT_CREDIT_FEE_PERCENT === undefined ? DEFAULT_PRICING.purchaseFeeBps : Math.round(Number(env.AGENT_CREDIT_FEE_PERCENT) * 100);
