@@ -168,9 +168,6 @@ variable "runtime_env" {
     # against its credit, with the free limits (the Free usage tier, AGENT_FREE_HOURLY_SPEND_USD) until it buys some.
     AGENT_OPEN_SIGNUP = "true"
     AGENT_HOSTING     = "inline"
-    # js_exec on V8 (sandbox/v8-exec), one process per execution; a tenant's codeEngine overrides it
-    # (chiridion-prod and chiridion-staging are pinned to quickjs in the tenants secret while V8 soaks).
-    AGENT_JS_EXEC = "v8"
     # Operator tenants that may post manual credit adjustments (POST /v1/billing/adjustments).
     AGENT_BILLING_ADMINS = "miguel"
   }

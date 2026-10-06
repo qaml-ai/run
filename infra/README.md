@@ -213,8 +213,8 @@ aws logs filter-log-events --region us-west-2 --log-group-name /ecs/camelai-agen
   used idle agent is stopped; if none is idle, the request is refused (429 for a
   tenant's limit, 503 for the task's). A tenant's own `maxAgents`
   (`infra/tenant.sh set-limit`) replaces the per-tenant default.
-- Sandboxed code runs in the same task as agent state. Code runs in QuickJS
-  compiled to WebAssembly, in a per-execution child process; a separate
+- Sandboxed code runs in the same task as agent state. Code runs in a bare V8
+  isolate (v8-exec), a process per execution under a sandbox process; a separate
   isolation tier (gVisor/Firecracker) is only warranted if agents ever run
   native code.
 - Tool sources a tenant configures (MCP servers, OpenAPI APIs, `web_fetch`) are called from the task,

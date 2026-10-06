@@ -9,7 +9,7 @@
 #   tenant.sh link-github <tenant> <login>      # console sign-in as that GitHub account (by its numeric id, looked up now) uses this tenant
 #   tenant.sh set-limit <tenant> <n|default>    # busy agents across the fleet for this tenant (default: its usage tier, or AGENT_MAX_AGENTS_PER_TENANT)
 #   tenant.sh set-spend-limit <tenant> <usd|none>  # model spend per UTC month, e.g. 250 or 99.50 (default: none, unlimited)
-#   tenant.sh set-engine <tenant> <quickjs|v8|default>  # what runs its js_exec (default: the runtime's, AGENT_JS_EXEC)
+#   tenant.sh clear-engine <tenant>             # removes a js_exec engine pin (codeEngine): QuickJS is gone, a "quickjs" pin stops the runtime loading the file
 #   tenant.sh set-password <tenant> <email>     # console sign-in with this email and a password: read from stdin, else generated into a 0600 file
 #   tenant.sh set-password <tenant> --clear     # no more password sign-in for this tenant
 #
@@ -66,8 +66,7 @@ elif action == "spend":
     else: tenants[tenant]["maxMonthlyCost"] = float(os.environ["LIMIT"])
 elif action == "engine":
     if tenant not in tenants: sys.exit(f"No tenant {tenant}")
-    if os.environ["LIMIT"] == "default": tenants[tenant].pop("codeEngine", None)
-    else: tenants[tenant]["codeEngine"] = os.environ["LIMIT"]
+    tenants[tenant].pop("codeEngine", None)
 elif action == "remove":
     if tenants.pop(tenant, None) is None: sys.exit(f"No tenant {tenant}")
 json.dump(data, open(path, "w"))
@@ -97,7 +96,7 @@ reload() {
 case "$command" in
   list)
     python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))["tenants"]
-for id, v in sorted(t.items()): print(id + "\tproviders: " + (", ".join(sorted(v["apiKeys"])) or "(none)") + "\tmax agents: " + str(v.get("maxAgents", "default")) + "\tmonthly spend limit: " + ("$%.2f" % v["maxMonthlyCost"] if "maxMonthlyCost" in v else "none") + "\tjs_exec engine: " + v.get("codeEngine", "default"))' "$work/tenants.json" ;;
+for id, v in sorted(t.items()): print(id + "\tproviders: " + (", ".join(sorted(v["apiKeys"])) or "(none)") + "\tmax agents: " + str(v.get("maxAgents", "default")) + "\tmonthly spend limit: " + ("$%.2f" % v["maxMonthlyCost"] if "maxMonthlyCost" in v else "none") + ("\tcodeEngine: " + str(v["codeEngine"]) + " (remove it: clear-engine)" if "codeEngine" in v else ""))' "$work/tenants.json" ;;
   add)
     new_token; edit add; save; store_token
     echo "Next: echo -n \"\$KEY\" | $0 set-key $tenant anthropic"
@@ -128,12 +127,9 @@ for id, v in sorted(t.items()): print(id + "\tproviders: " + (", ".join(sorted(v
     if [[ "$limit" == none ]]; then echo "$tenant has no monthly spend limit."; else echo "$tenant may spend \$$limit per UTC month on models."; fi
     echo "At the limit, new model runs get 402 and a running turn ends after its current model response."
     reload ;;
-  set-engine)
-    limit=${3:-}
-    [[ "$limit" == quickjs || "$limit" == v8 || "$limit" == default ]] || { echo "Usage: $0 set-engine <tenant> <quickjs|v8|default>" >&2; exit 2; }
+  clear-engine)
     edit engine; save
-    if [[ "$limit" == default ]]; then echo "$tenant's js_exec runs on the runtime's engine (AGENT_JS_EXEC)."; else echo "$tenant's js_exec runs on $limit."; fi
-    echo "Its agents take it as they next load (an agent already loaded keeps its engine until it is)."
+    echo "$tenant has no codeEngine pin: its js_exec runs on V8, the only engine."
     reload ;;
   remove)
     edit remove; save; echo "Removed $tenant. Delete $SECRET_PREFIX/operator-token/$tenant when you no longer need it."; reload ;;
