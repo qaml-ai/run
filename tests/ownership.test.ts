@@ -153,6 +153,33 @@ test("an acquire that races a heartbeat expiring between its two statements retr
   assert.ok("claim" in taken && taken.claim.epoch === 2, "the second attempt takes the expired owner's actor");
 });
 
+// Found by prop-ownership-postgres (seed -1175392848, path 237; timing-dependent): b's acquire, its snapshot taken before
+// c's new heartbeat committed, waited on the row c was taking, then judged c's heartbeat by that snapshot (Postgres rechecks
+// the updated row, but its subqueries keep the statement's snapshot), so it took the actor from a live c.
+test("an acquire that waited on another node's takeover never takes the actor from it, however new its heartbeat", async t => {
+  const { db, url } = await testDatabase();
+  const a = await node(url, "http://a"), b = await node(url, "http://b");
+  t.after(async () => { await a.stop(); await b.stop(); });
+  const first = await a.ownership.acquire("client_race");
+  assert.ok("claim" in first);
+  await db.query("delete from runtime_nodes where node = 'http://a'");
+  // c joins and takes the actor in one transaction, so its heartbeat commits only after b's statement began.
+  const c = await (db as pg.Pool).connect();
+  t.after(() => c.release());
+  await c.query("begin");
+  await c.query("insert into runtime_nodes (node, session, expires_at) values ('http://c', gen_random_uuid(), now() + interval '1 minute')");
+  await c.query("update actor_owners set node = 'http://c', session = (select session from runtime_nodes where node = 'http://c'), epoch = epoch + 1 where actor = 'client_race'");
+  const taking = b.ownership.acquire("client_race");
+  for (let waited = 0; ; waited += 10) {
+    const { rows } = await db.query("select 1 from pg_stat_activity where wait_event_type = 'Lock' and query like '%insert into actor_owners%'");
+    if (rows.length) break;
+    assert.ok(waited < 5_000, "b's acquire waits on c's row");
+    await sleep(10);
+  }
+  await c.query("commit");
+  assert.deepEqual(await taking, { owner: "http://c" });
+});
+
 test("a node whose heartbeat row was replaced fences at once", async t => {
   const { url } = await testDatabase();
   const a = await node(url, "http://a");

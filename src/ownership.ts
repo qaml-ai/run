@@ -313,13 +313,16 @@ export class Ownership {
     const session = this.session;
     // Two statements see two clocks: a heartbeat can expire between them, leaving neither a claim nor an owner. Then try again.
     for (let attempt = 0; attempt < 3; attempt++) {
-      // Only while this node's own heartbeat is live, so peers never see an owner they would call dead.
+      // Only while this node's own heartbeat is live, so peers never see an owner they would call dead. Only the row this
+      // statement's snapshot saw is taken: one that changed while it waited (another node took it) is checked against
+      // that snapshot's heartbeats, which may not hold the new owner's yet, so it is left, and `owner` reads afresh.
       const { rows } = await this.db.query(`
         insert into actor_owners as o (actor, node, session, epoch)
         select $1, $2, $3, 1 where exists (select 1 from runtime_nodes where node = $2 and session = $3 and expires_at > now())
         on conflict (actor) do update set node = excluded.node, session = excluded.session, epoch = o.epoch + 1
-        where o.session is null or o.session = excluded.session
-          or not exists (select 1 from runtime_nodes n where n.node = o.node and n.session = o.session and n.expires_at > now())
+        where o.epoch = (select epoch from actor_owners where actor = $1)
+          and (o.session is null or o.session = excluded.session
+            or not exists (select 1 from runtime_nodes n where n.node = o.node and n.session = o.session and n.expires_at > now()))
         returning epoch`, [actor, this.node, session]);
       this.owners.delete(actor);
       if (rows[0]) return { claim: { actor, session, epoch: rows[0].epoch } };
