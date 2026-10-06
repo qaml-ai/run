@@ -300,11 +300,11 @@ export function recordWatchRefused(scope: "agent" | "tenant" | "node", tenant: s
  * call or tool calls), how long the turn took to reach the boundary from then, and how long the turn then waited
  * for the next owner to continue it.
  */
-export function recordHandoff(handoff: { tenant: string; agent: string; request: string; reason: string; step: string; boundaryWaitMs: number; latencyMs: number; handoffs: number; from?: string }) {
+export function recordHandoff(handoff: { tenant: string; agent: string; request: string; reason: string; step: string; boundaryWaitMs: number; latencyMs: number; handoffs: number; fromNode?: string }) {
   emit("turn_handed_off", {
     dimensions: { Reason: handoff.reason, Step: handoff.step }, rollups: [[], ["Reason"], ["Step"]],
     metrics: { Handoffs: 1, BoundaryWaitMs: [handoff.boundaryWaitMs, "Milliseconds"], HandoffLatencyMs: [handoff.latencyMs, "Milliseconds"] },
-    properties: { tenant: handoff.tenant, agent: handoff.agent, request: handoff.request, handoffs: handoff.handoffs, ...(handoff.from ? { from: handoff.from } : {}) },
+    properties: { tenant: handoff.tenant, agent: handoff.agent, request: handoff.request, handoffs: handoff.handoffs, ...(handoff.fromNode ? { fromNode: handoff.fromNode } : {}) },
   });
 }
 

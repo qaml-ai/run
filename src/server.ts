@@ -998,7 +998,7 @@ const workTimer = setInterval(() => {
   if (retiringSince !== undefined && !cutOff && Date.now() - retiringSince > retireMaxMs) {
     cutOff = true;
     console.log(JSON.stringify({ type: "retire_cap_reached", node, ms: Date.now() - retiringSince, inFlight: clients.inFlight() }));
-    void clients.handOffAll().catch(error => console.error(JSON.stringify({ type: "retire_handoff_failed", error: errorText(error) })));
+    void clients.handOffAll().catch(error => console.error(JSON.stringify({ type: "retire_handoff_failed", error: safeError(error) })));
   }
   if (retiringSince !== undefined) {
     void clients.releaseIdle().then(() => volumes.releaseIdle()).catch(error => console.error(JSON.stringify({ type: "retire_release_failed", error: errorText(error) })));
@@ -1078,7 +1078,7 @@ async function drain(signal: string) {
   // on human input, say) move at once. Alone, the node lets its turns finish instead: nobody could go on with them now.
   await step("hand-off", async () => { if (await ownership.peer()) clients.handOffTurns("drain"); });
   for (let tick = 0; clients.inFlight() && Date.now() < drainDeadline; tick++) {
-    if (tick % 10 === 0) void clients.releaseIdle().catch(error => console.error(JSON.stringify({ type: "drain_release_failed", error: errorText(error) })));
+    if (tick % 10 === 0) void clients.releaseIdle().catch(error => console.error(JSON.stringify({ type: "drain_release_failed", error: safeError(error) })));
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   const unfinished = clients.inFlight();

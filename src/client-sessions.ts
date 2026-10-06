@@ -3802,7 +3802,7 @@ export class ClientSessions {
     const last = record.handoffs?.at(-1);
     recordHandoff({
       tenant: session.header.tenant, agent: session.header.id, request: record.id, reason: last?.reason ?? "retire", step: handedOff?.step ?? "tool",
-      boundaryWaitMs: handedOff?.boundaryWaitMs ?? 0, latencyMs: last ? Math.max(0, Date.now() - last.at) : 0, handoffs: record.handoffs?.length ?? 1, ...(handedOff?.from ? { from: handedOff.from } : {}),
+      boundaryWaitMs: handedOff?.boundaryWaitMs ?? 0, latencyMs: last ? Math.max(0, Date.now() - last.at) : 0, handoffs: record.handoffs?.length ?? 1, ...(handedOff?.from ? { fromNode: handedOff.from } : {}),
     });
   }
 
