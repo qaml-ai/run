@@ -59,6 +59,14 @@ pub fn install(jitless: bool, debug: bool) -> Result<(), String> {
     push(JEQ_K, 0, 1, nr as u32);
     push(RET_K, 0, 0, RET_ALLOW);
   }
+  // tgkill to this process only: abort() (a V8 CHECK failing, a Rust panic) raises SIGABRT with it, and
+  // should end the process as an abort, not as a seccomp kill. (x86_64 glibc's abort uses tgkill; V8's
+  // own crashes trap without a call.)
+  push(JEQ_K, 0, 3, SYS_tgkill as u32);
+  push(LD_W_ABS, 0, 0, 16); // seccomp_data.args[0], low word: the thread group
+  push(JEQ_K, 0, 1, unsafe { getpid() } as u32);
+  push(RET_K, 0, 0, RET_ALLOW);
+  push(LD_W_ABS, 0, 0, NR);
   // openat fails with EACCES rather than killing: V8 and glibc open a few files of their own as they
   // run (/proc/self/maps for the main thread's stack bounds, /sys/devices/system/cpu/online and
   // /proc/stat to count CPUs, as the heap grows) and get on without them. Nothing is opened.

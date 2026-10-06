@@ -76,7 +76,7 @@ test("TypeScript that made sucrase backtrack for hours strips in linear time", {
 test("built-ins V8 cannot interrupt are killed just past the CPU budget", { skip, timeout: 30_000 }, async t => {
   const pool = new V8Exec();
   t.after(() => pool.close());
-  for (const code of ["return new Array(1e9).fill(0).length", "return /(a+)+$/.test('a'.repeat(40) + '!')", "while (true) {}"]) {
+  for (const code of ["return /(a+)+$/.test('a'.repeat(40) + '!')", "while (true) {}"]) {
     const started = performance.now();
     await assert.rejects(executeCode({ code, bridge: none, pool, timeoutMs: 60_000, limits: { cpuMs: 500 } }), /CPU limit exceeded: the execution kept its thread busy for over 500 ms/);
     const took = performance.now() - started;
@@ -88,6 +88,8 @@ test("memory: the heap is capped (the execution ends), ArrayBuffers are capped (
   const pool = new V8Exec();
   t.after(() => pool.close());
   await assert.rejects(executeCode({ code: "const a = []; for (;;) a.push({ x: Math.random(), y: [1, 2, 3] })", bridge: none, pool }), /Codemode memory limit exceeded/);
+  // One allocation past all the heap there is: V8 would abort; the process answers as at the limit.
+  await assert.rejects(executeCode({ code: "return new Array(1e9).fill(0).length", bridge: none, pool, limits: { cpuMs: 30_000 } }), /Codemode memory limit exceeded/);
   const [count, error] = await run(pool, "const a = []; try { for (;;) a.push(new Uint8Array(1 << 20)); } catch (error) { return [a.length, String(error)]; }");
   assert.ok(count < 128, String(count));
   assert.match(error, /RangeError: Array buffer allocation failed/);

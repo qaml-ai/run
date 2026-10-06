@@ -25,6 +25,8 @@ const snippets = [
   "function recurse() { return recurse() + 1; } return recurse();",
   "return { toJSON() { while (true) {} } };",
   'throw { get message() { while (true) {} } };',
+  "return new Array(1e9).fill(0).length",
+  "return /(a+)+$/.test('a'.repeat(40) + '!')",
 ];
 const all = new Set<string>(), afterRequest = new Set<string>(), killedBy = new Set<string>();
 const dir = mkdtempSync("/tmp/v8-syscalls-");
