@@ -1,0 +1,86 @@
+{
+  "node": "v22.21.1",
+  "platform": "darwin",
+  "arch": "arm64",
+  "runs": 200,
+  "latency": {
+    "quickjs": {
+      "return 1": {
+        "firstMs": 154.56,
+        "p50Ms": 0.23,
+        "p99Ms": 0.41,
+        "cpuMsPerExecution": 0.35
+      },
+      "typescript": {
+        "firstMs": 37.44,
+        "p50Ms": 0.41,
+        "p99Ms": 1.43,
+        "cpuMsPerExecution": 0.86
+      },
+      "cpu loop": {
+        "firstMs": 449.1,
+        "p50Ms": 440.2,
+        "p99Ms": 454.57,
+        "cpuMsPerExecution": 441.98
+      },
+      "json transform": {
+        "firstMs": 50.73,
+        "p50Ms": 46.84,
+        "p99Ms": 49.77,
+        "cpuMsPerExecution": 47.17
+      },
+      "50 tool calls": {
+        "firstMs": 5.91,
+        "p50Ms": 1.82,
+        "p99Ms": 4.16,
+        "cpuMsPerExecution": 2.97
+      },
+      "fs write+read": {
+        "firstMs": 1.69,
+        "p50Ms": 1.23,
+        "p99Ms": 1.56,
+        "cpuMsPerExecution": 1.35
+      }
+    }
+  },
+  "memory": {
+    "quickjs": {
+      "parentRssBeforeMb": 117.5,
+      "parentRssWaitingMb": 2605.5,
+      "perExecutionRssMb": 77.8,
+      "totalWaitingMb": 2605.5
+    }
+  },
+  "throughput": {
+    "quickjs": {
+      "return 1 @1": {
+        "perSecond": 6063,
+        "cpuMsPerExecution": 0.2
+      },
+      "json transform @1": {
+        "perSecond": 21,
+        "cpuMsPerExecution": 47.17
+      },
+      "return 1 @8": {
+        "perSecond": 19325,
+        "cpuMsPerExecution": 0.42
+      },
+      "json transform @8": {
+        "perSecond": 159,
+        "cpuMsPerExecution": 50.2
+      },
+      "return 1 @32": {
+        "perSecond": 17119,
+        "cpuMsPerExecution": 0.68
+      },
+      "json transform @32": {
+        "perSecond": 206,
+        "cpuMsPerExecution": 68.28
+      }
+    }
+  },
+  "binary": {
+    "path": "/Users/miguelsalinas/agent-runtime-wt/v8-exec/sandbox/v8-exec/target/release/v8-exec",
+    "mb": 43.2
+  }
+}

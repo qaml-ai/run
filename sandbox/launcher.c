@@ -107,7 +107,7 @@ static struct timespec restart_at[MAX_SANDBOXES];
 static int failures[MAX_SANDBOXES];
 static struct timespec started_at[MAX_SANDBOXES];
 static sigset_t original_mask;
-static char *sandbox_argv[9];
+static char *sandbox_argv[10];
 
 static void listen_on(int index) {
   struct sockaddr_un address = { .sun_family = AF_UNIX };
@@ -216,6 +216,9 @@ int main(int argc, char **argv) {
   const char *min = getenv("AGENT_CODE_WORKERS_MIN"), *max = getenv("AGENT_CODE_WORKERS_MAX");
   if (min && *min && strspn(min, "0123456789") == strlen(min) && strlen(min) < 6) snprintf(sandbox_argv[n++] = min_arg, sizeof min_arg, "--workers-min=%s", min);
   if (max && *max && strspn(max, "0123456789") == strlen(max) && strlen(max) < 6) snprintf(sandbox_argv[n++] = max_arg, sizeof max_arg, "--workers-max=%s", max);
+  // Prototype (proto/v8-exec): AGENT_JS_EXEC=v8 has the sandbox processes run js_exec in v8-exec processes.
+  const char *engine = getenv("AGENT_JS_EXEC");
+  if (engine && !strcmp(engine, "v8")) sandbox_argv[n++] = "--engine=v8";
   const char *hooks = getenv("AGENT_SANDBOX_TEST_HOOKS");
   if (hooks && !strcmp(hooks, "1")) {
     sandbox_argv[n++] = "--test-hooks";

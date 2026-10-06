@@ -8,6 +8,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev l
 COPY sandbox/launcher.c /src/launcher.c
 RUN gcc -O2 -Wall -Wextra -Werror -static -o /agent-launcher /src/launcher.c -lseccomp
 
+# v8-exec (sandbox/v8-exec, prototype): js_exec on a bare V8 isolate, one process per execution.
+# Built on the build machine's own architecture and cross-compiled to the target's: rusty_v8 ships
+# prebuilt static V8 libraries for both, so no V8 build and no emulated compile.
+FROM --platform=$BUILDPLATFORM rust:1.95-slim-bookworm AS v8exec
+ARG TARGETARCH
+RUN set -eux; case "$TARGETARCH" in \
+      arm64) triple=aarch64-unknown-linux-gnu; gnu=aarch64-linux-gnu; deb=arm64 ;; \
+      amd64) triple=x86_64-unknown-linux-gnu; gnu=x86_64-linux-gnu; deb=amd64 ;; \
+    esac; \
+    echo "$triple" > /triple; \
+    apt-get update; apt-get install -y --no-install-recommends ca-certificates curl "gcc-$(echo $gnu | tr _ -)" "libc6-dev-$deb-cross"; \
+    rm -rf /var/lib/apt/lists/*; \
+    rustup target add "$triple"
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc
+WORKDIR /src
+# The image is the toolchain rust-toolchain.toml pins; that file stays out so rustup uses this one, targets included.
+COPY sandbox/v8-exec/Cargo.toml sandbox/v8-exec/Cargo.lock ./
+COPY sandbox/v8-exec/src ./src
+RUN --mount=type=cache,target=/usr/local/cargo/registry --mount=type=cache,target=/src/target,id=v8exec-$TARGETARCH \
+    cargo build --release --locked --target "$(cat /triple)" && cp "target/$(cat /triple)/release/v8-exec" /v8-exec
+
 FROM node:22-bookworm-slim
 
 WORKDIR /app
@@ -50,6 +72,8 @@ RUN groupadd --gid 1001 sandbox \
  && useradd --uid 1001 --gid 1001 --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin sandbox \
  && mkdir -p /data && chown node:node /data && chmod 700 /data
 COPY --from=launcher /agent-launcher /usr/local/bin/agent-launcher
+# No startup snapshot of our own: measured, it saved nothing over V8's built-in one (bench/v8-exec-*.json).
+COPY --from=v8exec /v8-exec /usr/local/bin/v8-exec
 # No USER: the launcher starts as root, then runs the runtime as node (uid 1000) and the
 # sandbox processes as their own uids. The runtime refuses to start without them.
 ENV NODE_ENV=production \

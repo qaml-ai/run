@@ -1,0 +1,86 @@
+{
+  "node": "v22.23.3",
+  "platform": "linux",
+  "arch": "arm64",
+  "runs": 200,
+  "latency": {
+    "quickjs": {
+      "return 1": {
+        "firstMs": 349.58,
+        "p50Ms": 0.35,
+        "p99Ms": 1.11,
+        "cpuMsPerExecution": 0.45
+      },
+      "typescript": {
+        "firstMs": 76.04,
+        "p50Ms": 0.56,
+        "p99Ms": 2.21,
+        "cpuMsPerExecution": 1.02
+      },
+      "cpu loop": {
+        "firstMs": 461.58,
+        "p50Ms": 452.4,
+        "p99Ms": 469.52,
+        "cpuMsPerExecution": 454.41
+      },
+      "json transform": {
+        "firstMs": 53.7,
+        "p50Ms": 48.64,
+        "p99Ms": 50.92,
+        "cpuMsPerExecution": 48.84
+      },
+      "50 tool calls": {
+        "firstMs": 6.04,
+        "p50Ms": 1.74,
+        "p99Ms": 4.62,
+        "cpuMsPerExecution": 2.84
+      },
+      "fs write+read": {
+        "firstMs": 2.04,
+        "p50Ms": 1.39,
+        "p99Ms": 2.53,
+        "cpuMsPerExecution": 1.58
+      }
+    }
+  },
+  "memory": {
+    "quickjs": {
+      "parentRssBeforeMb": 146.1,
+      "parentRssWaitingMb": 1542.4,
+      "perExecutionRssMb": 43.6,
+      "totalWaitingMb": 1542.4
+    }
+  },
+  "throughput": {
+    "quickjs": {
+      "return 1 @1": {
+        "perSecond": 3337,
+        "cpuMsPerExecution": 0.34
+      },
+      "json transform @1": {
+        "perSecond": 21,
+        "cpuMsPerExecution": 49.04
+      },
+      "return 1 @8": {
+        "perSecond": 16136,
+        "cpuMsPerExecution": 0.44
+      },
+      "json transform @8": {
+        "perSecond": 138,
+        "cpuMsPerExecution": 57.21
+      },
+      "return 1 @32": {
+        "perSecond": 13382,
+        "cpuMsPerExecution": 0.88
+      },
+      "json transform @32": {
+        "perSecond": 179,
+        "cpuMsPerExecution": 88.73
+      }
+    }
+  },
+  "binary": {
+    "path": "/usr/local/bin/v8-exec",
+    "mb": 47.9
+  }
+}

@@ -22,6 +22,8 @@
     "reconcile:storage": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/reconcile-storage.ts",
     "bench:execute": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/bench-execute.ts",
     "bench:js-exec": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/bench-js-exec.ts",
+    "bench:v8-exec": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/bench-v8-exec.ts",
+    "build:v8-exec": "cd sandbox/v8-exec && cargo build --release",
     "bench:search": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/bench-search.ts",
     "bench:codemode": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/bench-codemode.ts",
     "test:studio": "node --experimental-strip-types --disable-warning=ExperimentalWarning studio/smoke.ts"

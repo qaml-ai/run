@@ -10,3 +10,4 @@ deploy
 **/__pycache__
 console/*
 !console/dist
+sandbox/v8-exec/target

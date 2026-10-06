@@ -33,7 +33,9 @@ const logs = () => { const out = spawnSync("docker", ["logs", name], { encoding:
 
 docker("run", "-d", "--init", "--name", name, ...(hostNetwork ? ["--network", "host"] : ["-p", `127.0.0.1:${port}:8790`]),
   "-v", `${tenants}:/etc/agent-runtime:ro`, "-e", "AGENT_TENANTS_FILE=/etc/agent-runtime/tenants.json", "-e", `AGENT_SESSION_SECRET=${token}`, "-e", `AGENT_DATABASE_URL=${database}`, "-e", "AGENT_HOSTING=inline",
-  "-e", "AGENT_SANDBOX_TEST_HOOKS=1", "-e", `AGENT_ISOLATION_CANARY=${canary}`, image);
+  "-e", "AGENT_SANDBOX_TEST_HOOKS=1", "-e", `AGENT_ISOLATION_CANARY=${canary}`,
+  // Prototype (proto/v8-exec): AGENT_JS_EXEC=v8 runs the same checks with js_exec in v8-exec processes.
+  ...(process.env.AGENT_JS_EXEC ? ["-e", `AGENT_JS_EXEC=${process.env.AGENT_JS_EXEC}`] : []), image);
 let failed = true;
 try {
   let healthy = false;
@@ -121,6 +123,20 @@ try {
 
   // js_exec end to end through the runtime, with a client tool call, and a sandbox process killed mid-execution.
   let kill = false;
+  // With AGENT_JS_EXEC=v8: the v8-exec process running the execution, read while it waits on the tool.
+  const v8Children: Record<string, string>[] = [];
+  const childScan = `
+    const fs = require("node:fs");
+    const found = [];
+    for (const pid of fs.readdirSync("/proc").filter(name => /^\\d+$/.test(name))) {
+      try {
+        if (!fs.readFileSync("/proc/" + pid + "/cmdline", "utf8").startsWith("/usr/local/bin/v8-exec")) continue;
+        const status = Object.fromEntries(fs.readFileSync("/proc/" + pid + "/status", "utf8").split("\\n").map(line => line.split(":\\t")));
+        const limits = fs.readFileSync("/proc/" + pid + "/limits", "utf8").split("\\n").filter(line => /cpu time|processes|file size/i.test(line)).map(line => line.replace(/\\s+/g, " ").trim());
+        found.push({ pid, Uid: status.Uid, Seccomp: status.Seccomp, NoNewPrivs: status.NoNewPrivs, CapEff: status.CapEff, Threads: status.Threads, environ: (() => { try { return fs.readFileSync("/proc/" + pid + "/environ", "utf8"); } catch (error) { return error.code; } })(), limits: limits.join("; ") });
+      } catch {}
+    }
+    process.stdout.write(JSON.stringify(found.length ? found : fs.readdirSync("/proc").filter(name => /^\\d+$/.test(name)).map(pid => { try { return { pid, cmd: fs.readFileSync("/proc/" + pid + "/cmdline", "utf8").replace(/\\0/g, " ") }; } catch { return { pid }; } })));`;
   const runtime = new AgentRuntime({ url, apiKey: token });
   const agent = await runtime.createAgent({
     name: "isolation", type: "isolation-test",
@@ -132,6 +148,14 @@ try {
           if (kill) {
             docker("exec", name, "sh", "-c", `kill -9 ${sandboxPids().join(" ")}`);
             await sleep(500);
+          } else if (process.env.AGENT_JS_EXEC === "v8") {
+            const found = JSON.parse(docker("exec", name, "node", "-e", childScan));
+            const [child] = found;
+            // What its own sandbox process (the same uid) can do to it: nothing, it is not dumpable.
+            const index = Number(String(child?.Uid).split("\t")[0]) - 1001;
+            const params = { pid: Number(child?.pid), sibling: Number(child?.pid), launcher: "/usr/local/bin/agent-launcher", paths: [`/proc/${child?.pid}/mem`, `/proc/${child?.pid}/environ`] };
+            const reply = child?.Uid ? JSON.parse(docker("exec", "-u", "node", name, "node", "-e", client, `/run/agent-sandbox/${index}.sock`, JSON.stringify(params))) : {};
+            v8Children.push(...found.map((entry: object) => ({ ...entry, fromParent: JSON.stringify({ files: reply.result?.files, native: reply.result?.native?.runtime, error: reply.error }) })));
           }
           return key === "answer" ? "42" : null;
         },
@@ -142,6 +166,23 @@ try {
     const executed = await agent.execute('const key: string = "answer"; return await tools.lookup({ key })');
     assert.deepEqual(executed.output, ["42"]);
     console.log("js_exec: ok through the sandbox processes, client tool included");
+    if (process.env.AGENT_JS_EXEC === "v8") {
+      assert.equal(v8Children.length, 1, JSON.stringify(v8Children));
+      assert.ok(v8Children[0].Uid, JSON.stringify(v8Children));
+      const [child] = v8Children;
+      assert.match(child.Uid, /^100[12]\b/, "The v8-exec process runs as its sandbox process's uid");
+      assert.equal(child.Seccomp, "2", "It inherits the seccomp filter");
+      assert.equal(child.NoNewPrivs, "1");
+      assert.equal(child.CapEff, "0000000000000000");
+      assert.ok(child.environ === "" || child.environ === "EACCES", `No environment to read: ${child.environ}`);
+      const fromParent = JSON.parse(child.fromParent);
+      assert.deepEqual(fromParent.files, { [`/proc/${child.pid}/mem`]: "EACCES", [`/proc/${child.pid}/environ`]: "EACCES" }, child.fromParent);
+      assert.deepEqual(fromParent.native, {
+        socket_inet: "EPERM", socket_unix: "EPERM", ptrace_attach: "EPERM", process_vm_readv: "EPERM",
+        unshare_user: "EPERM", io_uring_setup: "EPERM", bpf: "EPERM", environ: "EACCES", mem: "EACCES",
+      }, child.fromParent);
+      console.log(`v8-exec child: ${JSON.stringify(child)}`);
+    }
     const before = sandboxPids();
     kill = true;
     const outcome = await agent.execute('return await tools.lookup({ key: "answer" })').then(() => "completed", (error: Error) => error.message);

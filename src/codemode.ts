@@ -8,6 +8,7 @@ import { FILE_LIMITS, jsonWithinLimit, SANDBOX_LIMITS } from "./limits.ts";
 import { FS_CALLS, HOST_CALLS } from "./sandbox-bootstrap.ts";
 import { namespaces, searchQuery, searchTools } from "./tool-search.ts";
 import type { Returned } from "./quickjs-sandbox.ts";
+import { v8Exec } from "./v8-exec.ts";
 
 /** How long a cancelled guest gets to unwind before its worker is terminated and replaced. */
 const CANCEL_GRACE_MS = 250;
@@ -536,7 +537,10 @@ export async function executeCode(options: {
   // The deadline and cancellation hold from here, before anything looks at the code or waits for a turn.
   // Nothing of the code is parsed on this thread: the worker strips TypeScript and compiles it (quickjs-sandbox.ts).
   const started = performance.now();
-  const pool = options.pool ?? sandboxProcesses() ?? codePool();
+  // Prototype switch (proto/v8-exec): AGENT_JS_EXEC=v8 runs every execution meant for a local pool in a v8-exec process instead.
+  // The sandbox processes still come first: there (sandbox-server.ts --engine=v8) the v8-exec processes inherit their confinement.
+  const v8 = process.env.AGENT_JS_EXEC === "v8";
+  const pool = v8 && options.pool instanceof CodePool ? v8Exec() : options.pool ?? sandboxProcesses() ?? (v8 ? v8Exec() : codePool());
   // Tool calls still running, by name: a timeout while one runs names it and says timeoutMs can be raised.
   const pending = new Map<string, number>();
   const timedOut = () => {

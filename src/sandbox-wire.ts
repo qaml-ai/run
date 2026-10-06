@@ -10,7 +10,7 @@ export const MAX_FRAME_BYTES = 4 * 1024 * 1024;
  * Length-prefixed JSON frames over a stream socket, one execution per connection.
  * A frame that is oversized or not JSON destroys the socket.
  */
-export function frames(socket: Socket, onMessage: (message: unknown) => void, maxBytes = MAX_FRAME_BYTES) {
+export function frames(socket: Socket, onMessage: (message: unknown) => void, maxBytes = MAX_FRAME_BYTES, output: Pick<Socket, "cork" | "write" | "uncork"> = socket) {
   // Chunks are joined only once a whole frame has arrived, so a large frame is copied once.
   let chunks: Buffer[] = [];
   let size = 0;
@@ -38,9 +38,9 @@ export function frames(socket: Socket, onMessage: (message: unknown) => void, ma
     if (body.length > maxBytes) throw new Error("Sandbox frame exceeds size limit");
     const header = Buffer.allocUnsafe(4);
     header.writeUInt32BE(body.length);
-    socket.cork();
-    socket.write(header);
-    socket.write(body);
-    socket.uncork();
+    output.cork();
+    output.write(header);
+    output.write(body);
+    output.uncork();
   };
 }

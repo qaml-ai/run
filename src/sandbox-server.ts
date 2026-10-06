@@ -4,6 +4,7 @@ import { availableParallelism } from "node:os";
 import { CodePool, codeWorkers, INSPECT_FRAME_BYTES, localGuest, type Guest } from "./codemode.ts";
 import { frames } from "./sandbox-wire.ts";
 import { inspectHere } from "./inspect.ts";
+import { v8Exec } from "./v8-exec.ts";
 import { FILE_LIMITS, SANDBOX_LIMITS } from "./limits.ts";
 
 // One sandbox process: a CodePool serving executions over a unix socket, one per
@@ -22,12 +23,15 @@ const { values: args } = parseArgs({
     processes: { type: "string", default: "1" },
     /** Serve `probe` requests, which report this process's confinement (tests/image-isolation.ts). */
     "test-hooks": { type: "boolean", default: false },
+    /** Prototype (proto/v8-exec): `v8` runs each execution in its own v8-exec process instead of the QuickJS pool. */
+    engine: { type: "string", default: "quickjs" },
   },
 });
 const processes = Number(args.processes);
 const share = (total: number) => Math.ceil(total / processes);
+const v8 = args.engine === "v8" ? v8Exec() : undefined;
 const pool = new CodePool({
-  min: share(args["workers-min"] === undefined ? Math.min(4, availableParallelism()) : Number(args["workers-min"])),
+  min: v8 ? 0 : share(args["workers-min"] === undefined ? Math.min(4, availableParallelism()) : Number(args["workers-min"])),
   max: share(args["workers-max"] === undefined ? codeWorkers() : Number(args["workers-max"])),
 });
 
@@ -55,7 +59,7 @@ function serve(socket: Socket) {
     if (message.method !== "execute") return void socket.destroy();
     // The runtime's CPU budget for the execution, which this process's watchdog holds it to.
     const cpuMs = message.params?.cpuMs;
-    localGuest(pool, closed.signal, Number.isInteger(cpuMs) && cpuMs > 0 && cpuMs <= SANDBOX_LIMITS.maxCpuMs ? cpuMs : SANDBOX_LIMITS.cpuMs).then(acquired => {
+    (v8 ? Promise.resolve(v8.open()) : localGuest(pool, closed.signal, Number.isInteger(cpuMs) && cpuMs > 0 && cpuMs <= SANDBOX_LIMITS.maxCpuMs ? cpuMs : SANDBOX_LIMITS.cpuMs)).then(acquired => {
       if (socket.destroyed) return acquired.end(false);
       guest = acquired;
       acquired.listen(reply => {
