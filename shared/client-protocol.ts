@@ -33,6 +33,15 @@ export type RequestRecord = {
   params?: unknown;
   /** Times a new owner resumed this run's turn after the node running it was lost. */
   resumes?: number;
+  /**
+   * Times a node leaving the cluster (`retire`: a newer deploy replaced it; `drain`: it was stopped) handed this run's
+   * turn off at a step boundary, its next owner continuing with nothing lost: when, and why. Not resumes.
+   */
+  handoffs?: { reason: "retire" | "drain"; at: number }[];
+  /** The runtime's own: handed off at a step boundary and not yet begun again on its next owner. */
+  handedOff?: { step: "model" | "tool"; boundaryWaitMs: number; from?: string };
+  /** The runtime's own: what a handed-off run had gathered for its outcome (usage, tool calls, files), carried to its next owner. */
+  carried?: unknown;
   /** Who the application said is acting in this run: passed to its tool calls (`act` in identity tokens). */
   actor?: string;
   /** A `resume` run's suspension: the run whose turn waited on human input, which this one continues. */

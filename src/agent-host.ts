@@ -42,7 +42,7 @@ export interface HostIO {
   tool(name: string, args: Record<string, unknown>, call?: CallContext): Promise<any>;
   /** Abort the application tool calls this agent has in flight. */
   cancelTools(): Promise<unknown>;
-  /** Why the running turn must end before its next model request (a reached spend cap, or the run's own limits), if so. */
+  /** Why the running turn must end before its next model request (a reached spend cap, the run's own limits, or its node leaving), if so. */
   runLimit(): Promise<RunStop | undefined>;
   /** The agent's transcript, which its supervisor writes. */
   transcript: AppendLog<TranscriptRecord>;
@@ -87,7 +87,7 @@ export function createAgentHost(hostIO: HostIO) {
   let transcript: Transcript;
   let busy = false;
   let active: AbortController | undefined;
-  /** Why the current run ended early: a spend limit, or tool calls waiting on a person's input. */
+  /** Why the current run ended early: a spend limit, tool calls waiting on a person's input, or a hand-off (its node is leaving). */
   let stopped: { stopped: RunStop["stopped"] | "input_required"; error?: string; code?: string } | undefined;
   /** Messages a compaction folded into the summary during the current run, still in Pi's live state. */
   let dropped = new WeakSet<AgentMessage>();
@@ -764,6 +764,12 @@ export function createAgentHost(hostIO: HostIO) {
           try { limit = await io.runLimit(); }
           catch { return; /* Unknown spend never stops a turn. */ }
           if (!limit) return;
+          if (limit.stopped === "handoff") {
+            // Messages queued for the turn live only in this process: they go in at the next step, and the turn is handed off after it.
+            if (agent!.hasQueuedMessages()) return;
+            stopped = { stopped: "handoff" };
+            return { action: "end" };
+          }
           stopped = { stopped: limit.stopped, error: limit.message, code: limit.stopped };
           io.emit({ type: `${limit.stopped}_reached`, message: limit.message });
           return { action: "end" };
@@ -780,6 +786,8 @@ export function createAgentHost(hostIO: HostIO) {
           }
           return;
         }
+        // A turn handed off at a step boundary goes on elsewhere: for its subscribers it has not ended.
+        if (event.type === "agent_end" && stopped?.stopped === "handoff") return;
         // A call waiting on input has no result yet: the transcript keeps it open instead (`awaiting`).
         if (event.type === "message_end" && event.message.role === "user") steers = steers.filter(steer => steer.message !== event.message);
         if (event.type === "message_end" && !(event.message.role === "toolResult" && (event.message.details as { inputRequired?: boolean } | undefined)?.inputRequired)) {
@@ -867,11 +875,14 @@ export function createAgentHost(hostIO: HostIO) {
         }
         agent.state.messages = stateMessages();
         if (active.signal.aborted) return await abortedBeforeLoop();
+        // The answered calls were this run's step: a node leaving hands the turn off before the model is asked.
+        if (await handingOff()) return handedOff();
         await agent.continue();
       } else if (method === "continue") {
         if (rerun.length) {
           await rerunOpenCalls(active.signal);
           agent.state.messages = stateMessages();
+          if (await handingOff()) return handedOff();
         }
         if (active.signal.aborted) return await abortedBeforeLoop();
         await agent.continue();
@@ -885,6 +896,11 @@ export function createAgentHost(hostIO: HostIO) {
         if (active.signal.aborted) return await abortedBeforeLoop();
         // Images enter the transcript as requests carry them: scaled down once here, not on every request after.
         await agent.prompt(await fittedImages(promptMessages!));
+      }
+      // Stopped at a step boundary for another node to continue: the turn stays open (active) in the transcript.
+      if (handedOffHere()) {
+        if (transcript.failed !== undefined) throw transcript.failed;
+        return handedOff();
       }
       await recoverFailedResponses(active.signal);
       await remindOfOutput(active.signal);
@@ -921,10 +937,28 @@ export function createAgentHost(hostIO: HostIO) {
       busy = false;
       if (method !== "execute") {
         void index();
-        // After the turn: the summary is made while the agent waits for its next message.
-        compactInBackground();
+        // After the turn: the summary is made while the agent waits for its next message; not by one handing its turn off.
+        if (!handedOffHere()) compactInBackground();
       }
     }
+  }
+
+  /** Whether the current run stopped for a hand-off (a function, so the check is not narrowed away across awaits). */
+  const handedOffHere = () => stopped?.stopped === "handoff";
+
+  /** Whether the node is leaving, so the running turn stops at this step boundary (`RunStop` "handoff"). */
+  async function handingOff() {
+    if ((await io.runLimit().catch(() => undefined))?.stopped !== "handoff") return false;
+    stopped = { stopped: "handoff" };
+    return true;
+  }
+
+  /**
+   * A turn stopped at a step boundary for the next owner: left open (active) in the transcript, whose last message is a
+   * tool result or the user's, so the next owner calls the model again with nothing lost (see `init`'s resume).
+   */
+  function handedOff() {
+    return { messages: transcript.total, error: null, handedOff: true };
   }
 
   /**

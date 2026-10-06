@@ -183,7 +183,8 @@ export function observeTurns(model: () => { provider: string; id: string } | und
     // A limit's stop carries its reason as the error, but the turn did not fail.
     const limited = thrown === undefined && (result?.stopped === "spend_limit" || result?.stopped === "turn_limit") ? result.stopped as string : undefined;
     const error = thrown !== undefined ? "exception" : !limited && typeof result?.error === "string" && result.error ? errorClass(result.error) : "none";
-    const outcome = error !== "none" ? "failed" : result?.stopped === "input_required" ? "input_required" : limited ?? "completed";
+    // A turn handed off at a step boundary ends here and goes on on another node: its part here is a turn of its own.
+    const outcome = error !== "none" ? "failed" : result?.handedOff ? "handed_off" : result?.stopped === "input_required" ? "input_required" : limited ?? "completed";
     const { provider = "unknown", id = "unknown" } = model() ?? {};
     emit("turn_metrics", {
       dimensions: { Outcome: outcome, ErrorClass: error, Provider: provider, Model: id },
@@ -291,6 +292,20 @@ export function webhookBacklogLine(backlog: { pending: number; oldestAgeMs: numb
 /** An event stream subscriber (a watcher or a waiting poll) refused with 429 at the agent's, tenant's or node's limit. */
 export function recordWatchRefused(scope: "agent" | "tenant" | "node", tenant: string) {
   emit("watch_refused", { dimensions: { Scope: scope, Tenant: tenant }, rollups: [[], ["Scope"], ["Tenant"]], metrics: { WatchersRefused: 1 } });
+}
+
+/**
+ * A turn a node leaving the cluster handed off at a step boundary, as its next owner continues it (`turn_handed_off`):
+ * why the node left (`retire`: a newer deploy; `drain`: SIGTERM), what was in flight when it began leaving (a model
+ * call or tool calls), how long the turn took to reach the boundary from then, and how long the turn then waited
+ * for the next owner to continue it.
+ */
+export function recordHandoff(handoff: { tenant: string; agent: string; request: string; reason: string; step: string; boundaryWaitMs: number; latencyMs: number; handoffs: number; from?: string }) {
+  emit("turn_handed_off", {
+    dimensions: { Reason: handoff.reason, Step: handoff.step }, rollups: [[], ["Reason"], ["Step"]],
+    metrics: { Handoffs: 1, BoundaryWaitMs: [handoff.boundaryWaitMs, "Milliseconds"], HandoffLatencyMs: [handoff.latencyMs, "Milliseconds"] },
+    properties: { tenant: handoff.tenant, agent: handoff.agent, request: handoff.request, handoffs: handoff.handoffs, ...(handoff.from ? { from: handoff.from } : {}) },
+  });
 }
 
 /** How long each step of one operation took: each is timed on its own, so steps that run at once each show their own time. */

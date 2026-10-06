@@ -77,6 +77,7 @@ import { publicOrigins } from "./origins.ts";
 import { adminSite, adminSiteFromEnvironment } from "./admin-site.ts";
 import { AccountDeletions } from "./account-deletion.ts";
 import { RateLimits, rateLimitConfig } from "./rate-limits.ts";
+import { TOOL_DEADLINES } from "./tool-servers.ts";
 
 // Tenants (operator token hashes and provider keys) come from AGENT_TENANTS_FILE or AGENT_TENANTS_SECRET_ARN.
 const tenants = await tenantsFromEnvironment();
@@ -98,7 +99,10 @@ const maxAgentsPerTenant = positiveSetting("AGENT_MAX_AGENTS_PER_TENANT", Math.m
 const port = Number(process.env.PORT ?? 8790);
 const drainMs = Number(process.env.AGENT_DRAIN_TIMEOUT_MS ?? 100_000);
 if (!Number.isInteger(drainMs) || drainMs < 0) throw new Error("AGENT_DRAIN_TIMEOUT_MS must be a non-negative integer");
-const retireMaxMs = Number(process.env.AGENT_RETIRE_MAX_MS ?? 6 * 60 * 60_000);
+// A retiring node hands each running turn off at its next step boundary, so it waits only for the step in flight: by
+// default as long as the longest tool call may run (TOOL_DEADLINES.maxTotalMs, 20 min, with progress). A step that outlasts
+// it is handed off mid-step, its calls in flight closed as of unknown outcome.
+const retireMaxMs = Number(process.env.AGENT_RETIRE_MAX_MS ?? TOOL_DEADLINES.maxTotalMs);
 if (!Number.isInteger(retireMaxMs) || retireMaxMs < 0) throw new Error("AGENT_RETIRE_MAX_MS must be a non-negative integer");
 // Where js_exec and file parsing run, reported in the "listening" line; fails startup if either does not work, or if isolation is required but absent.
 const sandbox = await checkSandbox();
@@ -976,17 +980,26 @@ setTimeout(chargeStorage, Math.min(billingMs, 60_000)).unref();
  * Deploys and scale-in on ECS. While a turn runs the task is protected, so ECS
  * stops idle tasks instead. A task a newer deployment superseded retires once that
  * deployment runs all its tasks (or AGENT_RETIRE_WAIT_MS has passed) and a peer
- * that is not retiring has joined: it takes nothing new (its peers do), lets running
- * turns finish for up to AGENT_RETIRE_MAX_MS, gives up each agent and volume once
- * idle, and drops its protection when nothing runs, so ECS stops it and the SIGTERM
- * drain is empty. A retiring task left with no such peer serves again until one joins:
- * refusing work would leave it nowhere to go.
+ * that is not retiring has joined: it takes nothing new (its peers do), and each running
+ * turn finishes only the step it is in (its model call, or its latest response's tool
+ * calls), then is handed off to a peer at that boundary, which continues it at once
+ * (`handOffTurns`). Idle agents (one waiting on human input, say), queued runs and
+ * volumes move as soon as they are idle. A step still running AGENT_RETIRE_MAX_MS after
+ * the retirement began is handed off mid-step. With nothing left the task drops its
+ * protection, so ECS stops it and the SIGTERM drain is empty. A retiring task left with
+ * no such peer serves again until one joins: refusing work would leave it nowhere to go.
  */
 const protection = new TaskProtection({ uri: process.env.ECS_AGENT_URI, idleMs: Number(process.env.AGENT_PROTECTION_IDLE_MS ?? 30_000) });
 let retiringSince: number | undefined;
 let retired = false;
 let pausing = false;
+let cutOff = false;
 const workTimer = setInterval(() => {
+  if (retiringSince !== undefined && !cutOff && Date.now() - retiringSince > retireMaxMs) {
+    cutOff = true;
+    console.log(JSON.stringify({ type: "retire_cap_reached", node, ms: Date.now() - retiringSince, inFlight: clients.inFlight() }));
+    void clients.handOffAll().catch(error => console.error(JSON.stringify({ type: "retire_handoff_failed", error: errorText(error) })));
+  }
   if (retiringSince !== undefined) {
     void clients.releaseIdle().then(() => volumes.releaseIdle()).catch(error => console.error(JSON.stringify({ type: "retire_release_failed", error: errorText(error) })));
     if (!retired && !clients.inFlight() && !clients.sessions.size && !volumes.size) {
@@ -1000,6 +1013,8 @@ const workTimer = setInterval(() => {
         console.log(JSON.stringify({ type: "retire_paused", node, ms: Date.now() - retiringSince }));
         retiringSince = undefined;
         retired = false;
+        cutOff = false;
+        clients.handOffTurns(undefined);
         clients.draining = false;
         await ownership.undrain();
       }).catch(error => console.error(JSON.stringify({ type: "retire_pause_failed", error: errorText(error) }))).finally(() => { pausing = false; });
@@ -1015,6 +1030,7 @@ const retireTimer = superseded && setInterval(() => void superseded().then(async
   retiringSince = Date.now();
   console.log(JSON.stringify({ type: "retiring", node, inFlight: clients.inFlight(), agents: clients.sessions.size, volumes: volumes.size }));
   clients.draining = true;
+  clients.handOffTurns("retire");
   await ownership.drain();
 }).catch(error => console.error(JSON.stringify({ type: "ecs_service_check_failed", error: errorText(error) }))), Number(process.env.AGENT_ECS_POLL_MS ?? 30_000));
 if (retireTimer) retireTimer.unref();
@@ -1023,10 +1039,12 @@ if (retireTimer) retireTimer.unref();
  * Leave the cluster without dropping work. ECS deregisters the task from the load
  * balancer, sends SIGTERM, and SIGKILLs after the task's stopTimeout. /healthz fails
  * at once and this node takes no new agents or volumes: requests for ones it does
- * not hold go to a live peer, or get 503 and Retry-After. Turns and runs that began
- * finish, for up to AGENT_DRAIN_TIMEOUT_MS; runs that never began stay queued for
- * the next owner. Then everything is released, and only then are event streams
- * closed, so clients reconnect to the next owner. A second signal stops waiting.
+ * not hold go to a live peer, or get 503 and Retry-After. With a live peer, each running
+ * turn finishes only the step it is in and is handed off at that boundary; alone, turns
+ * finish. Either way it waits for up to AGENT_DRAIN_TIMEOUT_MS; runs that never began
+ * stay queued for the next owner. Then everything is released (a step still running is
+ * cut off, its calls in flight unknown), and only then are event streams closed, so
+ * clients reconnect to the next owner. A second signal stops waiting.
  */
 let drainDeadline = 0;
 let draining: Promise<void> | undefined;
@@ -1056,7 +1074,13 @@ async function drain(signal: string) {
     catch (error) { failed = true; console.error(JSON.stringify({ type: "drain_step_failed", step: name, error: errorText(error) })); }
   };
   await step("drain", () => ownership.drain());
-  while (clients.inFlight() && Date.now() < drainDeadline) await new Promise(resolve => setTimeout(resolve, 100));
+  // With a peer to continue them, running turns are handed off at their next step boundary, and idle agents (one waiting
+  // on human input, say) move at once. Alone, the node lets its turns finish instead: nobody could go on with them now.
+  await step("hand-off", async () => { if (await ownership.peer()) clients.handOffTurns("drain"); });
+  for (let tick = 0; clients.inFlight() && Date.now() < drainDeadline; tick++) {
+    if (tick % 10 === 0) void clients.releaseIdle().catch(error => console.error(JSON.stringify({ type: "drain_release_failed", error: errorText(error) })));
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
   const unfinished = clients.inFlight();
   await step("agents", () => clients.close());
   // The spans of the runs this node served or handed off, sent within a few seconds.

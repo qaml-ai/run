@@ -9,12 +9,16 @@ import type { SearchHit, SearchQuery } from "./tool-search.ts";
 export type CallContext = { toolCallId: string; innerCallId?: string; messageIndex?: number };
 import type { HistoryChunk } from "./history-pages.ts";
 export type RunLimits = { maxResponses?: number; maxSeconds?: number };
-/** Why a turn ended early on a limit: spend (the agent's, the run's or the tenant's), or the run's responses or time. */
-export type RunStop = { stopped: "spend_limit" | "turn_limit"; message: string };
+/**
+ * Why a turn ended early on a limit: spend (the agent's, the run's or the tenant's), or the run's responses or time.
+ * `handoff`: its node is leaving the cluster (a deploy retiring it, or a drain), so the turn stops at this step boundary
+ * and the next owner continues it from the transcript.
+ */
+export type RunStop = { stopped: "spend_limit" | "turn_limit" | "handoff"; message: string };
 export interface ToolBridge {
   definitions: ToolDefinition[];
   call(name: string, args: Record<string, unknown>, signal: AbortSignal, context?: CallContext): Promise<unknown>;
-  /** Why the running turn must end before its next model request: a spend limit reached, or the run's own limits (`RunStop`). */
+  /** Why the running turn must end before its next model request: a spend limit reached, the run's own limits, or its node leaving (`RunStop`). */
   runLimit?(): Promise<RunStop | undefined> | RunStop | undefined;
   /** Answer a `tools.search` query over the agent's code-mode tools, with the operator's rerankers. */
   search?(query: SearchQuery): Promise<SearchHit[]>;
