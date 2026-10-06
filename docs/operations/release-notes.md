@@ -9,6 +9,18 @@ between yours and the new one first.
 
 Changes on main since the last tag.
 
+### Faster resume after a crash, a drain or a deploy
+
+- A node that dies mid-turn is found by its peers within about 10 s, not after its 90 s lease: a
+  heartbeat three renewals late whose address refuses connections or does not answer is ended, and
+  its turns resume at once on another node ([Dead nodes](architecture.md)). Heartbeats are renewed
+  every 3 s (one write per node; it was every 15 s at the default lease). The lease stays 90 s, so a
+  node still rides out a database failover; an expired heartbeat is no longer renewed.
+- A node that gives up agents with runs open (a drain that timed out, a retirement leaving queued
+  runs) tells the others, which sweep at once: the work resumes within about a second, not at the
+  next 30 s sweep. Nodes also sweep as they start, and `AGENT_ORPHAN_SWEEP_MS` defaults to 10 s.
+- Nodes must reach each other's `AGENT_NODE_URL` (as forwarding already needs).
+
 ### Sandbox: no sandbox processes
 
 - js_exec and file parsing no longer go through long-lived Node "sandbox processes". `agent-launcher`

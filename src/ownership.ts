@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { connect } from "node:net";
 import { performance } from "node:perf_hooks";
 import { transaction, type Db, type Sql } from "./db.ts";
 import { HttpError } from "./http.ts";
@@ -29,16 +30,21 @@ export function underClaim<T>(db: Db, claim: Claim | undefined, work: (sql: Sql)
 
 /**
  * Which node serves each actor (an agent or a volume). Every node keeps one
- * heartbeat row, renewed every sixth of the TTL on the database's clock (and retried
- * every thirtieth while renewal fails, as in a database failover), and each
- * actor it serves has an ownership row naming the node's session and an epoch.
- * Renewal is one write per node however many actors it serves.
+ * heartbeat row, renewed every sixth of the TTL but at least every 3 s on the
+ * database's clock (and retried every thirtieth of the TTL while renewal fails, as in
+ * a database failover), and each actor it serves has an ownership row naming the
+ * node's session and an epoch. Renewal is one write per node however many actors it serves.
  *
  * A node takes an actor only when the row is released, already names this
  * session, or names a session whose heartbeat has expired; every acquire advances
  * the epoch. A node that cannot renew before its published expiry fences itself:
  * it stops serving everything it owns and rejoins under a new session, so peers
- * can take its actors as soon as they see the heartbeat expire.
+ * can take its actors as soon as they see the heartbeat expire. An expired heartbeat
+ * is never renewed: its node fences instead.
+ *
+ * The TTL is long, so a node rides out a database failover. A node that died is found
+ * sooner (`reap`): a peer ends a heartbeat three renewals late whose node refuses
+ * connections or does not answer them, which frees its actors at once.
  */
 export class Ownership {
   readonly node: string;
@@ -58,20 +64,34 @@ export class Ownership {
   private readonly owners = new Map<string, { node: string; until: number }>();
   private readonly cacheMs: number;
   private peers?: { nodes: string[]; until: number };
+  /** How often the heartbeat is renewed. */
+  readonly heartbeatMs: number;
+  private readonly alive?: (node: string) => Promise<boolean>;
+  private readonly reaped = new Set<(nodes: string[]) => void>();
+  private reaping = false;
   draining = false;
 
-  constructor(db: Db, options: { node: string; ttlMs?: number; cacheMs?: number }) {
+  /**
+   * `alive`, when given, says whether a peer whose heartbeat is late still runs (see `reap`); nodes use
+   * `probeNode`. It must answer true unless the peer's process is certainly gone.
+   */
+  constructor(db: Db, options: { node: string; ttlMs?: number; cacheMs?: number; alive?: (node: string) => Promise<boolean> }) {
     this.db = db;
     this.node = options.node;
     this.ttlMs = options.ttlMs ?? 90_000;
     this.cacheMs = options.cacheMs ?? 5_000;
+    this.heartbeatMs = Math.max(10, Math.min(Math.floor(this.ttlMs / 6), 3_000));
+    this.alive = options.alive;
   }
 
   async start() {
     await this.register();
-    this.timer ??= setInterval(() => void this.renew(), Math.max(10, Math.floor(this.ttlMs / 6)));
+    this.timer ??= setInterval(() => void this.renew(), this.heartbeatMs);
     this.timer.unref();
   }
+
+  /** Called with the peers `reap` ended, once their heartbeats are gone: their actors are free. */
+  onReaped(listener: (nodes: string[]) => void) { this.reaped.add(listener); }
 
   /** This node's current session. Rows it writes under it (busy-agents.ts) count only while its heartbeat is live. */
   get sessionId() { return this.session; }
@@ -101,16 +121,57 @@ export class Ownership {
     // Measured before the write, so the local deadline never passes the published expiry.
     const started = performance.now();
     try {
-      const { rowCount } = await this.db.query("update runtime_nodes set expires_at = now() + $3 * interval '1 millisecond' where node = $1 and session = $2", [this.node, session, this.ttlMs]);
+      // Only a live heartbeat is renewed: one that expired, or that a peer ended (`reap`), may have lost its actors.
+      const { rowCount } = await this.db.query("update runtime_nodes set expires_at = now() + $3 * interval '1 millisecond' where node = $1 and session = $2 and expires_at > now()", [this.node, session, this.ttlMs]);
       if (session !== this.session) return;
       if (!rowCount) this.fence("heartbeat_replaced");
-      else this.arm(started + this.ttlMs);
+      else {
+        this.arm(started + this.ttlMs);
+        if (this.alive) void this.reap().catch(error => console.error(JSON.stringify({ type: "reap_failed", error: (error as Error).message })));
+      }
     } catch (error) {
       console.error(JSON.stringify({ type: "heartbeat_renew_failed", error: (error as Error).message }));
       // Retry soon rather than a whole interval later: every second lost here is a second less of outage the node survives.
       this.retry ??= setTimeout(() => { this.retry = undefined; void this.renew(); }, Math.max(10, Math.floor(this.ttlMs / 30)));
       this.retry.unref();
     } finally { this.renewing = false; }
+  }
+
+  /**
+   * End the heartbeats of peers that died, so their actors are free without waiting out the TTL. A peer is
+   * a suspect once its last renewal is three of this node's heartbeats old; its heartbeat is ended only if
+   * `alive` says its process is gone, and only if it has not renewed since. A live process, even one whose
+   * event loop is stalled, still accepts connections (the kernel completes them), so a late heartbeat alone
+   * (a database outage, a slow renewal) never ends one: peers wait for its expiry, as before. Runs after
+   * each renewal, one at a time.
+   */
+  async reap(): Promise<string[]> {
+    if (!this.alive || this.reaping || !this.registered) return [];
+    const lateMs = this.ttlMs - 3 * this.heartbeatMs;
+    if (lateMs <= 0) return [];
+    this.reaping = true;
+    try {
+      const { rows } = await this.db.query(`
+        select node, session from runtime_nodes
+        where node <> $1 and expires_at > now() and expires_at < now() + $2 * interval '1 millisecond'`, [this.node, lateMs]);
+      const ended: string[] = [];
+      await Promise.all(rows.map(async ({ node, session }) => {
+        if (await this.alive!(node)) return;
+        const { rowCount } = await this.db.query(`
+          delete from runtime_nodes where node = $1 and session = $2 and expires_at > now() and expires_at < now() + $3 * interval '1 millisecond'`,
+          [node, session, lateMs]);
+        if (!rowCount) return;
+        ended.push(node);
+        console.log(JSON.stringify({ type: "node_reaped", node, by: this.node }));
+      }));
+      if (!ended.length) return ended;
+      for (const [actor, entry] of this.owners) if (ended.includes(entry.node)) this.owners.delete(actor);
+      this.peers = undefined;
+      for (const listener of this.reaped) {
+        try { listener(ended); } catch (error) { console.error(JSON.stringify({ type: "reap_listener_failed", error: (error as Error).message })); }
+      }
+      return ended;
+    } finally { this.reaping = false; }
   }
 
   /** Fence a tenth of the TTL before the deadline, so a slow timer or clock drift cannot outlast the published expiry. */
@@ -243,4 +304,27 @@ export class Ownership {
     this.session = randomUUID();
     await this.db.query("delete from runtime_nodes where node = $1 and session = $2", [this.node, session]);
   }
+}
+
+/** Errors that mean nothing listens at an address: the process exited, or its host is gone. */
+const GONE = new Set(["ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH", "EHOSTDOWN"]);
+
+/**
+ * Whether a node's process still runs, by opening a TCP connection to its address: false only when the
+ * connection is refused or the host unreachable, or nothing answers within `timeoutMs` (a stopped task's
+ * address drops it). A live process accepts even while its event loop is stalled. An address that is not
+ * a URL, a name that does not resolve here, or any other error answers true: nothing is known, so peers
+ * wait for the heartbeat to expire.
+ */
+export function probeNode(node: string, timeoutMs = 2_000): Promise<boolean> {
+  let url: URL;
+  try { url = new URL(node); } catch { return Promise.resolve(true); }
+  const port = Number(url.port || (url.protocol === "https:" ? 443 : 80));
+  return new Promise(resolve => {
+    const socket = connect({ host: url.hostname.replace(/^\[|\]$/g, ""), port });
+    const done = (alive: boolean) => { clearTimeout(timer); socket.destroy(); resolve(alive); };
+    const timer = setTimeout(() => done(false), timeoutMs);
+    socket.once("connect", () => done(true));
+    socket.once("error", error => done(!GONE.has((error as NodeJS.ErrnoException).code ?? "")));
+  });
 }

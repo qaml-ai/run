@@ -31,9 +31,10 @@ responses (`channel_send_failed` with `HTTP 429`).
 One node holds the Gateway, under the ownership claim
 `discord-managed:<applicationId>:shard:0`; every other node retries the claim
 every 10 seconds. A draining node releases it, so a deploy hands over within
-about 10 seconds. A node that dies holds it until its lease lapses
-(`AGENT_LEASE_TTL_MS`, 90 s in production), so a crash leaves Camel deaf for up
-to about 100 seconds. Discord does not replay messages to a new session:
+about 10 seconds. A node that dies holds it until a peer finds it dead (about
+10 s, see [Dead nodes](architecture.md)) or, when that cannot be told, until its
+lease lapses (`AGENT_LEASE_TTL_MS`, 90 s in production), so a crash usually
+leaves Camel deaf for about 20 seconds, at most about 100. Discord does not replay messages to a new session:
 mentions sent in that gap are not answered. Replies already queued are not lost;
 they are delivered by whichever node drains the channel queue. Two Gateways
 never answer one message twice: a node fences itself before its lease expires,

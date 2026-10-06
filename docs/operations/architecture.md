@@ -33,8 +33,8 @@ heartbeats and claims use `timestamptz` on the database clock.
 
 **Ownership.** An agent or volume is an actor, served by one node at a time.
 Each node keeps one heartbeat row (`runtime_nodes`: node, session, expiry) and
-renews it every sixth of `AGENT_LEASE_TTL_MS` with `now()` (every thirtieth
-while renewal fails): one write per node,
+renews it with `now()` every sixth of `AGENT_LEASE_TTL_MS`, at most 3 s (every
+thirtieth of the TTL while renewal fails): one write per node,
 however many actors it serves. Each actor has one `actor_owners` row naming a
 node's session and an epoch. A node takes an actor in one statement that
 succeeds only when the row is released, already names this session, or names a
@@ -42,8 +42,22 @@ session whose heartbeat has expired; every acquire advances the epoch. Header
 and log writes are conditional on the writer's session and epoch, so a node
 that lost an actor cannot write for it. A node
 that cannot renew fences itself before its published expiry: it stops every
-agent and volume it owns and rejoins under a new session. Requests for an actor
+agent and volume it owns and rejoins under a new session. An expired heartbeat
+is never renewed. Requests for an actor
 are forwarded to the node that `actor_owners` joined to live heartbeats names.
+
+**Dead nodes.** The lease is long so that a node rides out a database
+failover, but a node that died is found sooner. After each renewal a node looks
+for peers whose last renewal is three of its own renewals old (9 s in
+production) and opens a TCP connection to each one's address. If the connection
+is refused, the host is unreachable, or nothing answers within 2 s, the process
+is gone, and the node deletes that heartbeat (only if it has still not been
+renewed). Its actors are free at once, and every node sweeps for its unfinished
+work (`node_reaped` in the log). A live process accepts connections even while
+its event loop is stalled, so a pause or a database outage never ends a
+heartbeat this way: peers then wait for the expiry, as before. A node whose
+heartbeat a peer ended fences at its next renewal. Writes stay fenced by epoch
+whatever the timing.
 
 **Logs.** Journals, transcripts and volume trees are append logs: immutable
 segment objects in Storage (`<key>.log/<seq>`, and `snapshot-<seq>` after a
@@ -74,8 +88,11 @@ busy spell opens (`pending_runs`) and cleared when it unloads with none open. An
 agent so marked with no live owner (its node died mid-turn, or a drain left runs
 queued for the next owner) resumes when a node loads it: for a request that acts
 on it (a prompt, an application connecting), or in a sweep every node runs
-(`AGENT_ORPHAN_SWEEP_MS`, default 30 s, 0 for none), for as many such agents as
-it has room for, its tenant's quota included. Reads never load it: they answer
+for as many such agents as it has room for, its tenant's quota included. Nodes
+sweep as they start, when a peer gives up an agent with runs open (a drain, a
+retirement) or finds a dead node (both notify `agent_runtime_orphans`), and
+every `AGENT_ORPHAN_SWEEP_MS` (default 10 s, 0 for none) in case a notification
+was missed. Reads never load it: they answer
 from storage. A node without room for the work answers an acting request 503
 with `Retry-After`, to reach one with room; one that loaded the agent but lost
 its room before a run began gives it back, still marked, for an interval. A
@@ -102,7 +119,7 @@ read unchanged: their segments are ordinary segments.
 Multi-AZ failover (60–120 s direct; shorter through RDS Proxy, which holds
 client connections and queues statements while the writer moves). A node
 survives an outage of up to about 0.9 × TTL less the time since its last renewal
-(between 63 and 78 s at the default). Running turns pause at their next
+(between 78 and 81 s at the default). Running turns pause at their next
 durable write, whose tail insert is repeated (it is idempotent and fenced) for
 up to a lease, and carry on once the database is back. Requests that need the
 database answer 503 with `Retry-After`, and the pool replaces broken
