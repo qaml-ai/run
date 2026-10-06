@@ -20,6 +20,10 @@ Changes on main since the last tag.
   runs) tells the others, which sweep at once: the work resumes within about a second, not at the
   next 30 s sweep. Nodes also sweep as they start, and `AGENT_ORPHAN_SWEEP_MS` defaults to 10 s.
 - Nodes must reach each other's `AGENT_NODE_URL` (as forwarding already needs).
+- A node makes model and tool calls, runs js_exec and sends channel messages only while its lease is
+  fresh (renewed within 6 s), so one that peers took for dead stops before they resume its work; it
+  used to keep running turns for up to 81 s. While the database is away every node pauses these
+  effects, cutting model requests in flight, and resumes them when it is back ([Fresh leases](architecture.md)).
 
 ### Sandbox: no sandbox processes
 

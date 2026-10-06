@@ -5,62 +5,18 @@ import { once } from "node:events";
 import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
-import { createConnection, createServer, type Server, type Socket } from "node:net";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AgentRuntime, schema, tool } from "../clients/typescript.ts";
 import { testDatabase } from "./database.ts";
+import { databaseLink } from "./cluster-helpers.ts";
 
 const token = "failover-operator-token-at-least-24-chars";
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const TTL_MS = 3000;
-
-/**
- * A TCP proxy between a runtime node and Postgres that can fail the way a database
- * failover does: `reset` drops every connection and refuses new ones (a direct
- * connection to an instance that went away); `stall` holds traffic, old and new,
- * until the database is back (RDS Proxy queueing while the writer fails over).
- */
-async function databaseLink(target: URL) {
-  const links = new Set<{ client: Socket; server?: Socket; held: { toServer: Buffer[]; toClient: Buffer[] } }>();
-  let mode: "up" | "reset" | "stall" = "up";
-  const attach = (link: { client: Socket; server?: Socket; held: { toServer: Buffer[]; toClient: Buffer[] } }) => {
-    const server = link.server = createConnection({ host: target.hostname, port: Number(target.port) });
-    server.on("data", chunk => { if (mode === "stall") link.held.toClient.push(chunk); else link.client.write(chunk); });
-    server.on("error", () => link.client.destroy());
-    server.on("close", () => { link.client.destroy(); links.delete(link); });
-    for (const chunk of link.held.toServer.splice(0)) server.write(chunk);
-  };
-  const proxy: Server = createServer(client => {
-    if (mode === "reset") { client.destroy(); return; }
-    const link = { client, held: { toServer: [] as Buffer[], toClient: [] as Buffer[] } } as { client: Socket; server?: Socket; held: { toServer: Buffer[]; toClient: Buffer[] } };
-    links.add(link);
-    client.on("data", chunk => { if (mode === "stall" || !link.server) link.held.toServer.push(chunk); else link.server.write(chunk); });
-    client.on("error", () => link.server?.destroy());
-    client.on("close", () => { link.server?.destroy(); links.delete(link); });
-    if (mode === "up") attach(link);
-  }).listen(0, "127.0.0.1");
-  await once(proxy, "listening");
-  const url = new URL(target);
-  url.port = String((proxy.address() as { port: number }).port);
-  return {
-    url: url.toString(),
-    down(how: "reset" | "stall") {
-      mode = how;
-      if (how === "reset") for (const link of links) { link.client.destroy(); link.server?.destroy(); }
-    },
-    up() {
-      mode = "up";
-      for (const link of links) {
-        if (!link.server) attach(link);
-        else { for (const chunk of link.held.toServer.splice(0)) link.server.write(chunk); for (const chunk of link.held.toClient.splice(0)) link.client.write(chunk); }
-      }
-    },
-    close: () => { for (const link of links) { link.client.destroy(); link.server?.destroy(); } return new Promise(resolve => proxy.close(resolve)); },
-  };
-}
 
 /** One runtime node whose only way to its database is through `databaseLink`, with a short lease. */
 async function node(t: { after(fn: () => Promise<void>): void }) {

@@ -152,6 +152,7 @@ export class AgentSupervisor {
       if (method === "history") return this.historyRequest(id, handle, params);
       if (method === "code-slot") return this.codeSlot(handle, params?.id);
       if (method === "code-release") return this.releaseSlot(handle, params?.id);
+      if (method === "lease") return (await handle.bridge.lease?.()) ?? null;
       if (method !== "tool") throw new Error("Unknown tool");
       return this.dispatchTool(handle, params);
     };
@@ -278,6 +279,7 @@ export class AgentSupervisor {
       modelAuth: () => this.modelAuth(handle),
       fs: (op, args) => this.dispatchFs(handle, structuredClone({ op, args })),
       codeSlot: signal => handle.bridge.codeSlot?.(signal) ?? Promise.resolve(() => {}),
+      lease: async () => { await handle.bridge.lease?.(); },
       history: {
         indexed: () => this.historyRequest(id, handle, { op: "indexed" }), write: chunk => this.historyRequest(id, handle, { op: "write", chunk: structuredClone(chunk) }),
         read: from => this.historyRequest(id, handle, { op: "read", from }),
@@ -292,6 +294,14 @@ export class AgentSupervisor {
   private invoke(handle: Handle, method: string, params: any): Promise<any> {
     if (handle.kind === "process") return handle.rpc.request(method, params);
     return Promise.race([handle.host.handle(method, structuredClone(params)), handle.stopped]).then(result => result === undefined ? result : structuredClone(result));
+  }
+
+  /**
+   * Cut every agent's model requests in flight: this node's lease is no longer fresh (`Ownership.onStale`). Each is
+   * made again once it is, or by the agent's next owner.
+   */
+  interrupt() {
+    for (const handle of this.agents.values()) void this.invoke(handle, "interrupt", {}).catch(() => {});
   }
 
   /** No capacity for another agent; callers may stop an idle agent first. */

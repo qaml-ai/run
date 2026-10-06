@@ -59,6 +59,15 @@ heartbeat this way: peers then wait for the expiry, as before. A node whose
 heartbeat a peer ended fences at its next renewal. Writes stay fenced by epoch
 whatever the timing.
 
+**Fresh leases.** A node cut off from its peers and the database at once looks
+dead to them, yet may still reach model providers and tools. So model requests,
+tool calls, js_exec and channel sends go ahead only while the node's last
+successful renewal began less than two renewals ago (6 s in production), a
+renewal before any peer could suspect it. Past that, new effects wait, and model
+requests in flight are cut (`lease_interrupt` in the log) half a renewal later and
+made again once a renewal lands (`lease_fresh`), so a database failover pauses
+work without failing turns. Only at the lease's deadline does the node fence.
+
 **Logs.** Journals, transcripts and volume trees are append logs: immutable
 segment objects in Storage (`<key>.log/<seq>`, and `snapshot-<seq>` after a
 fold) plus a hot tail of rows in `log_records`, since an object write per

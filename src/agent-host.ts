@@ -15,7 +15,7 @@ import type { SearchHit, SearchQuery } from "./tool-search.ts";
 import type { AppendLog } from "../shared/append-log.ts";
 import { Transcript, readTranscriptLog, summaryMessage, type Backlog, type CompactionState, type TranscriptRecord } from "./transcript.ts";
 import { boundedContext, importedHistory, interruptedTurnRepairs, validateInitialMessages, validateUserMessages } from "./history.ts";
-import { backgroundTokens, compactionNeed, compactionSettings, contextTokens, explicitKeyStream, modelKeyFailure, runCompaction } from "./compaction.ts";
+import { backgroundTokens, compactionNeed, compactionSettings, contextTokens, explicitKeyStream, MODEL_INTERRUPTED, modelKeyFailure, runCompaction, type ModelGate } from "./compaction.ts";
 import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
 import { describeFile, documentPayload, FILE_LIMITS, nativeBlock, unseen, validFileRef, type FileRef } from "./files.ts";
 import { CHUNK_BYTES, chunksOf, type HistoryChunk } from "./history-pages.ts";
@@ -56,6 +56,8 @@ export interface HostIO {
   fs(op: string, args: Record<string, unknown>): Promise<unknown>;
   /** Wait for the tenant's turn to run js_exec on the node, until `signal` aborts; resolves with the function that gives it back. */
   codeSlot?(signal: AbortSignal): Promise<() => void>;
+  /** Wait until the node may act for the agent (its lease is fresh), before each model request and js_exec; rejects once it lost the agent. */
+  lease?(): Promise<void>;
   /** The agent's history index, which the supervisor writes: how many messages it has (null: it has none yet, or none is kept), and a chunk to add. */
   history?: { indexed(): Promise<number | null>; write(chunk: HistoryChunk): Promise<number>; read(from: number): Promise<Backlog> };
 }
@@ -112,6 +114,22 @@ export function createAgentHost(hostIO: HostIO) {
   let output: { value: unknown } | undefined;
   /** Calls a lost node left open that are safe to make again (`RERUN`): made again before the resumed turn continues. */
   let rerun: ToolCall[] = [];
+  /** Model requests wait for the node's lease, and are cut (`interrupt`) when it goes stale. */
+  const gate: ModelGate = { wait: signal => leased(signal), open: new Set() };
+
+  /** Wait for the node's lease (`HostIO.lease`), or until `signal` aborts. */
+  async function leased(signal?: AbortSignal) {
+    if (!io.lease) return;
+    signal?.throwIfAborted();
+    const waiting = io.lease();
+    if (!signal) return waiting;
+    const aborted = Promise.withResolvers<never>();
+    const abort = () => aborted.reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    waiting.catch(() => {});
+    try { await Promise.race([waiting, aborted.promise]); }
+    finally { signal.removeEventListener("abort", abort); }
+  }
 
   /**
    * Add what the history index lacks to it, in the background. Like the log's own segments, chunks
@@ -302,7 +320,7 @@ export function createAgentHost(hostIO: HostIO) {
       const keepRecentTokens = reason === "overflow" ? Math.max(1_000, Math.floor(contextTokens([...summaryView(), ...context]) * 0.2)) : undefined;
       const outcome = await runCompaction({
         // The summarizer reads messages as the model does, senders included; rendering keeps their count, so the cut still indexes the context.
-        context: renderMessages(context), offset, previous, model: config.model, apiKey: perCall() ? () => io.modelAuth() : apiKey, signal, keepRecentTokens, modelHeaders: config.modelHeaders,
+        context: renderMessages(context), offset, previous, model: config.model, apiKey: perCall() ? () => io.modelAuth() : apiKey, signal, keepRecentTokens, modelHeaders: config.modelHeaders, gate,
         onResponse: message => io.emit({ type: "compaction_usage", provider: message.provider, model: message.model, usage: message.usage, timestamp: message.timestamp, ...flag }),
       });
       if ("skipped" in outcome) {
@@ -414,6 +432,8 @@ export function createAgentHost(hostIO: HostIO) {
   async function runCode(options: Parameters<typeof executeCode>[0]) {
     const started = Date.now();
     let result: CodeResult | undefined, failure: unknown;
+    // Code makes tool calls and writes files: it starts only while the node's lease is fresh.
+    await leased(options.signal);
     try { return result = await executeCode({ ...options, limits: config.codeLimits, admit: io.codeSlot && (signal => io.codeSlot!(signal)) }); }
     catch (error) { failure = error; throw error; }
     finally {
@@ -637,13 +657,15 @@ export function createAgentHost(hostIO: HostIO) {
         attempt--;
         continue;
       }
+      // Cut by this node's stale lease: made again at once, as its gate allows, and not counted as a provider failure.
+      const interrupted = last.errorMessage === MODEL_INTERRUPTED;
       // A tenant's own endpoint has retried already: its errors (a credit gate's 402, say) end the turn.
-      if (!isRetryableAssistantError(last) || config.apiKey === IDENTITY_KEY) return;
-      if (attempt > policy.maxAttempts) {
+      if (!interrupted && (!isRetryableAssistantError(last) || config.apiKey === IDENTITY_KEY)) return;
+      if (!interrupted && attempt > policy.maxAttempts) {
         io.emit({ type: "auto_retry_end", success: false, attempt: attempt - 1, finalError: last.errorMessage });
         return;
       }
-      const delayMs = policy.baseDelayMs * 2 ** (attempt - 1);
+      const delayMs = interrupted ? 0 : policy.baseDelayMs * 2 ** (attempt - 1);
       // A node leaving asks again elsewhere: the failed attempt is taken back, and the turn handed off at that boundary.
       if (await handingOff()) {
         await transcript.retract();
@@ -749,7 +771,7 @@ export function createAgentHost(hostIO: HostIO) {
         getApiKey: () => config.apiKey,
         // Only the tenant's explicit key, never provider keys from the process environment. A model on the
         // tenant's own endpoint gets a fresh identity token for each call, and a key scope's agent its scope's current key.
-        streamFn: explicitKeyStream(() => perCall() ? io.modelAuth() : undefined, () => config.modelHeaders),
+        streamFn: explicitKeyStream(() => perCall() ? io.modelAuth() : undefined, () => config.modelHeaders, gate),
         // Renders compaction summaries for the model (the default drops non-chat roles), and each message's sender.
         convertToLlm: messages => hydrate(convertToLlm(renderMessages(messages))),
         onPayload: payload => documents ? documentPayload(payload) : undefined,
@@ -850,6 +872,13 @@ export function createAgentHost(hostIO: HostIO) {
       return params.whileRunning === "steer" ? { steered: true } : { queued: true, running: busy };
     }
     if (method === "abort") { active?.abort(); agent.abort(); return { aborted: true }; }
+    // The node's lease went stale: its model requests in flight are cut, and made again once it is fresh (`recoverFailedResponses`).
+    if (method === "interrupt") {
+      const open = [...gate.open];
+      gate.open.clear();
+      for (const request of open) request.abort();
+      return { interrupted: open.length };
+    }
     if (method !== "prompt" && method !== "execute" && method !== "continue" && method !== "resume") throw new Error(`Unknown method: ${method}`);
     if (busy) throw new Error("Agent is busy");
     if (transcript.failed !== undefined) throw new Error(`Session persistence failed: ${String(transcript.failed)}`);

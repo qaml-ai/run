@@ -34,6 +34,8 @@ export interface ToolBridge {
   background?(event: any): void;
   /** Wait for the tenant's turn to run js_exec on this node (codemode.ts `CodeGate`), until `signal` aborts; resolves with the function that gives it back. */
   codeSlot?(signal: AbortSignal): Promise<() => void>;
+  /** Wait until this node may act for the agent (`Ownership.whenFresh`), before a model request or js_exec; rejects once it lost the agent. */
+  lease?(): Promise<void>;
 }
 /** The `apiKey` of an agent whose model is on its tenant's own endpoint: each call gets a fresh identity token instead (`ToolBridge.modelAuth`). */
 export const IDENTITY_KEY = "agent-runtime:identity-token";

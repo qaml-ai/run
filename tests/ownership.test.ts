@@ -4,7 +4,7 @@ import { once } from "node:events";
 import { createServer } from "node:net";
 import pg from "pg";
 import type { Db } from "../src/db.ts";
-import { Ownership, probeNode } from "../src/ownership.ts";
+import { FRESH_RENEWALS, Ownership, probeNode, SUSPECT_RENEWALS } from "../src/ownership.ts";
 import { testDatabase } from "./database.ts";
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -281,6 +281,74 @@ test("an expired heartbeat is never renewed: its node fences instead", async t =
   await db.query("update runtime_nodes set expires_at = now() - interval '1 millisecond' where node = 'http://a'");
   await a.ownership.renew();
   assert.deepEqual(a.fences, ["heartbeat_replaced"]);
+  assert.equal(a.ownership.holds(held.claim), false);
+});
+
+test("a fresh lease ends a heartbeat before peers could suspect the node, from the same constants", () => {
+  for (const ttlMs of [1_500, 12_000, 90_000, 600_000]) {
+    const ownership = new Ownership({} as Db, { node: "http://a", ttlMs });
+    // New effects stop at freshMs; model requests in flight are cut at most half a heartbeat later; peers suspect at SUSPECT_RENEWALS.
+    assert.equal(ownership.freshMs, FRESH_RENEWALS * ownership.heartbeatMs);
+    assert.ok(ownership.freshMs + ownership.heartbeatMs / 2 < SUSPECT_RENEWALS * ownership.heartbeatMs);
+    assert.ok(ownership.freshMs < ttlMs * 0.9, "fresh ends before the fence");
+  }
+});
+
+test("a node cut off from the database stops being fresh two renewals in, cuts its model requests, waits, and goes on once a renewal lands, without fencing", async t => {
+  const { url } = await testDatabase();
+  const a = await node(url, "http://a", 1_500);
+  t.after(() => a.stop());
+  const held = await a.ownership.acquire("client_f");
+  assert.ok("claim" in held);
+  assert.equal(a.ownership.fresh(), true);
+  await a.ownership.whenFresh();
+  const cut: number[] = [];
+  a.ownership.onStale(() => cut.push(performance.now()));
+
+  const partitioned = performance.now();
+  a.link.partitioned = true;
+  for (; a.ownership.fresh(); await sleep(5)) assert.ok(performance.now() - partitioned < a.ownership.freshMs + 100, "the lease went stale");
+  const staleAfter = performance.now() - partitioned;
+  assert.ok(staleAfter <= a.ownership.freshMs + 50, `stale ${staleAfter} ms after the partition`);
+  assert.equal(a.ownership.holds(held.claim), true, "stale is not fenced: the claim holds until the deadline");
+  // An effect now waits.
+  let waited: number | undefined;
+  const waiting = a.ownership.whenFresh().then(() => { waited = performance.now(); });
+  await sleep(a.ownership.heartbeatMs);
+  assert.equal(waited, undefined, "effects wait while the lease is stale");
+  assert.equal(cut.length, 1, "model requests in flight were cut half a heartbeat after it went stale");
+  assert.ok(cut[0] - partitioned < SUSPECT_RENEWALS * a.ownership.heartbeatMs, "before peers could suspect the node");
+  // An effect that gives up waiting.
+  const aborted = new AbortController();
+  const abandoned = a.ownership.whenFresh(aborted.signal);
+  aborted.abort(new Error("run aborted"));
+  await assert.rejects(abandoned, /run aborted/);
+
+  const healed = performance.now();
+  a.link.partitioned = false;
+  await waiting;
+  assert.ok(waited! - healed < a.ownership.heartbeatMs + 200, "effects went on at the next renewal");
+  assert.equal(a.ownership.fresh(), true);
+  assert.deepEqual(a.fences, [], "a pause shorter than the lease never fences");
+  assert.equal(a.ownership.holds(held.claim), true);
+});
+
+test("an effect waiting on a stale lease gives up when the node fences, and the claim it held stays lost", async t => {
+  const { url } = await testDatabase();
+  const a = await node(url, "http://a", 600);
+  t.after(() => a.stop());
+  const held = await a.ownership.acquire("client_g");
+  assert.ok("claim" in held);
+  a.link.partitioned = true;
+  for (; a.ownership.fresh(); await sleep(5));
+  const waiting = a.ownership.whenFresh();
+  waiting.catch(() => {});
+  // At the deadline the node fences; a waiting effect then tries to rejoin, which the partition refuses.
+  await assert.rejects(waiting, /connection refused/);
+  assert.deepEqual(a.fences, ["heartbeat_expired"]);
+  a.link.partitioned = false;
+  await a.ownership.whenFresh();
+  assert.equal(a.ownership.fresh(), true, "rejoined under a new session");
   assert.equal(a.ownership.holds(held.claim), false);
 });
 

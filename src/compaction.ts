@@ -249,23 +249,51 @@ export function modelKeyFailure(error: string, model: { provider: string; id: st
   return undefined;
 }
 
-export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefined, modelHeaders?: () => Record<string, string> | null | undefined): StreamFn {
+/**
+ * How a node's lease (`Ownership.fresh`) bounds its model requests: each waits for `wait` before it starts, and is in
+ * `open` while it runs, so the host can cut them all when the lease goes stale (`interrupt`).
+ */
+export interface ModelGate { wait(signal?: AbortSignal): Promise<void>; open: Set<AbortController> }
+/** Why a model request was cut by its node's stale lease. Retryable (a lost connection): it is made again once the lease is fresh, or by the agent's next owner. */
+export const MODEL_INTERRUPTED = "Model request interrupted: this node's connection to its cluster was lost; it is made again once the node's lease is renewed";
+
+/** A signal for one model request that `gate` can cut, registered in `gate.open` until `done`. */
+function gatedSignal(gate: ModelGate | undefined, signal: AbortSignal | undefined) {
+  if (!gate) return { signal, cut: undefined, done: () => {} };
+  const cut = new AbortController();
+  gate.open.add(cut);
+  return { signal: signal ? AbortSignal.any([signal, cut.signal]) : cut.signal, cut, done: () => { gate.open.delete(cut); } };
+}
+
+export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefined, modelHeaders?: () => Record<string, string> | null | undefined, gate?: ModelGate): StreamFn {
   return (model, context, options) => {
     if (!options?.apiKey?.trim()) throw new Error(`No ${model.provider} API key is configured for this agent's model, ${model.provider}/${model.id}; set one with PUT /v1/providers/${model.provider}/key, or move the agent to a model you can use (GET /v1/models?available=true)`);
+    const apiKey = options.apiKey;
     const call = (credentials: Credentials) => {
       const sink: { cost?: number; credits?: number } = {};
-      const [target, callOptions] = authorize(model, options, credentials, sink, modelHeaders?.());
-      const stream = streamSimple(target, context, callOptions);
-      // The finished message carries the provider's own cost, when it reported one, as `usage.providerCost`.
-      const push = stream.push.bind(stream);
-      stream.push = event => {
-        if (event.type === "done" && sink.cost !== undefined) Object.assign(event.message.usage, { providerCost: sink.cost, providerCreditCost: sink.credits });
-        push(event);
-      };
-      return stream;
+      const { signal, cut, done } = gatedSignal(gate, options.signal);
+      try {
+        const [target, callOptions] = authorize(model, cut ? { ...options, signal } : options, credentials, sink, modelHeaders?.());
+        const stream = streamSimple(target, context, callOptions);
+        // The finished message carries the provider's own cost, when it reported one, as `usage.providerCost`.
+        const push = stream.push.bind(stream);
+        stream.push = event => {
+          if (event.type === "done" && sink.cost !== undefined) Object.assign(event.message.usage, { providerCost: sink.cost, providerCreditCost: sink.credits });
+          if (event.type === "done" || event.type === "error") done();
+          // Cut by the lease, not by the run: a failure the turn retries once the lease is fresh, not an abort that ends it.
+          if (event.type === "error" && cut?.signal.aborted && !options.signal?.aborted) {
+            event = { type: "error", reason: "error", error: { ...event.error, stopReason: "error", errorMessage: MODEL_INTERRUPTED } };
+          }
+          push(event);
+        };
+        return stream;
+      } catch (error) { done(); throw error; }
     };
-    const credentials = perCall?.();
-    return credentials ? credentials.then(call) : call({ apiKey: options.apiKey });
+    const start = () => {
+      const credentials = perCall?.();
+      return credentials ? credentials.then(call) : call({ apiKey });
+    };
+    return gate ? gate.wait(options.signal).then(start) : start();
   };
 }
 
@@ -275,11 +303,16 @@ export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefin
  * Every completed request is reported, so chunks and a run that fails after some are billed too.
  */
 type ApiKey = string | (() => Promise<Credentials>);
-function summarizer(apiKey: ApiKey, onResponse?: (message: AssistantMessage) => void, modelHeaders?: Record<string, string> | null): Complete {
+function summarizer(apiKey: ApiKey, onResponse?: (message: AssistantMessage) => void, modelHeaders?: Record<string, string> | null, gate?: ModelGate): Complete {
   return async (model, context, options) => {
     const sink: { cost?: number; credits?: number } = {};
-    const [target, callOptions] = authorize(model, options, typeof apiKey === "string" ? { apiKey } : await apiKey(), sink, modelHeaders);
-    const response = await completeSimple(target, context, callOptions);
+    await gate?.wait(options?.signal);
+    const { signal, cut, done } = gatedSignal(gate, options?.signal);
+    let response: AssistantMessage;
+    try {
+      const [target, callOptions] = authorize(model, cut ? { ...options, signal } : options, typeof apiKey === "string" ? { apiKey } : await apiKey(), sink, modelHeaders);
+      response = await completeSimple(target, context, callOptions);
+    } finally { done(); }
     if (sink.cost !== undefined) Object.assign(response.usage, { providerCost: sink.cost, providerCreditCost: sink.credits });
     if (response.stopReason !== "error") onResponse?.(response);
     return response;
@@ -321,6 +354,8 @@ export async function runCompaction(options: {
   onResponse?: (message: AssistantMessage) => void;
   /** The agent's own headers for its model calls. */
   modelHeaders?: Record<string, string> | null;
+  /** Its node's lease, which each summarization request waits for and is cut by (`ModelGate`). */
+  gate?: ModelGate;
 }): Promise<CompactionOutcome> {
   const { context, offset, previous, model, apiKey, signal } = options;
   const defaults = compactionSettings(model);
@@ -329,7 +364,7 @@ export async function runCompaction(options: {
   if (!prepared.ok) throw prepared.error;
   const preparation = prepared.value;
   if (!preparation) return { skipped: "Nothing before the recent context to summarize" };
-  const complete = summarizer(apiKey, options.onResponse, options.modelHeaders);
+  const complete = summarizer(apiKey, options.onResponse, options.modelHeaders, options.gate);
   // Leave room for the summarization prompt and the summary itself.
   const chunkBudget = Math.max(4_000, Math.floor((model.contextWindow - settings.reserveTokens) * 0.6));
   let tokens = 0;

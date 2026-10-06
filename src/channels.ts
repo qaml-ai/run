@@ -660,7 +660,7 @@ export class Channels {
     const today = await this.count(channel.id, `d${new Date().toISOString().slice(0, 10)}/turns`);
     if (today > channel.limits.turnsPerDay) return today === channel.limits.turnsPerDay + 1 ? reply("This assistant has reached its limit for today. Please try again tomorrow.") : this.finish(current);
     const { credentials } = this.secrets(channel);
-    void this.provider(channel.type).typing?.(credentials, item.conversationId).catch(() => {});
+    if (this.options.ownership?.fresh() !== false) void this.provider(channel.type).typing?.(credentials, item.conversationId).catch(() => {});
     const agent = await this.agentFor(channel, item.conversationId, inbound.sender, inbound.title);
     if (!await this.managedSubmissionAllowed(channel, current)) return this.finish(current);
     await this.syncManagedDefinition(channel, agent, item.id);
@@ -806,6 +806,8 @@ export class Channels {
     for (let index = item.sent ?? 0; index < steps.length; index++) {
       try {
         if (await provider.guard?.(channel, item.conversationId, "send") === false) return this.fenced(current, "send");
+        // Only while this node's lease is fresh: a node cut off from its peers and the database may have been taken for dead.
+        await this.options.ownership?.whenFresh();
         await steps[index]();
       }
       catch (error) {
@@ -927,7 +929,7 @@ export class Channels {
         const provider = this.provider(channel.type);
         if (!provider.typing) return;
         const { credentials } = this.secrets(channel);
-        const show = () => void provider.typing!(credentials, binding.conversationId).catch(() => {});
+        const show = () => { if (this.options.ownership?.fresh() !== false) void provider.typing!(credentials, binding.conversationId).catch(() => {}); };
         // The service clears the indicator after a few seconds; keep it up while the turn runs.
         const timer = setInterval(show, provider.typingMs ?? TYPING_MS);
         timer.unref();

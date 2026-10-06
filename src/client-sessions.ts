@@ -575,6 +575,7 @@ export class ClientSessions {
     this.heartbeat = setInterval(() => this.tick(), Math.min(5000, Math.max(50, Math.floor((options.idleMs ?? 5 * 60_000) / 2))));
     this.heartbeat.unref();
     options.ownership?.onFence(() => { for (const session of [...this.sessions.values()]) void this.lost(session); });
+    options.ownership?.onStale(() => this.supervisor.interrupt());
   }
 
   private journalKey(id: string) { return `${this.options.prefix ?? ""}${id}.journal`; }
@@ -1308,7 +1309,8 @@ export class ClientSessions {
         file: ref => this.fileData(session, ref),
         modelAuth: () => this.modelAuth(session),
         fs: (op, args, signal) => this.fsCall(session, op, args, signal),
-        search: query => this.searchTools(session, query),
+        search: async query => { await this.leased(session); return this.searchTools(session, query); },
+        lease: () => this.leased(session),
         background: event => this.backgroundEvent(session, event),
         history: {
           // One whose create failed before writing its row begins it now, and is indexed from its log.
@@ -1458,6 +1460,7 @@ export class ClientSessions {
     if (plan && plan.argumentsHash !== argumentsHash(call.name, call.args)) throw new Error("These are not the arguments the user answered for; the call did not run");
     const origin = await this.options.hooks?.origin?.({ id: session.header.id, tenant: session.header.tenant, claim: session.claim }, request?.id);
     await this.beforeEffect(session);
+    await this.leased(session, call.signal);
     // A server's progress reaches the event stream as an update of the model's tool call (js_exec's, for a call from code),
     // at most one per PROGRESS_MS: the latest of a burst is published at its window's end, and before the call's result.
     let progressed: (() => void) | undefined;
@@ -3521,6 +3524,17 @@ export class ClientSessions {
   private async beforeEffect(session: Session) {
     const beginning = session.beginning;
     if (beginning) await (beginning.durable ??= this.commit(session, true));
+  }
+
+  /**
+   * Wait until this node may act for the agent: its lease is fresh (`Ownership.whenFresh`), so no peer can have taken
+   * the agent over. Before each model request, tool call and js_exec. Rejects once the node lost the agent.
+   */
+  private async leased(session: Session, signal?: AbortSignal) {
+    const ownership = this.options.ownership;
+    if (!ownership || !session.claim) return;
+    await ownership.whenFresh(signal);
+    if (!ownership.holds(session.claim)) throw new HttpError(503, "This node lost ownership of the agent; retry");
   }
 
   private hook(name: "runStarted" | "runEnded", session: Session, record: RequestRecord) {

@@ -29,6 +29,15 @@ export function underClaim<T>(db: Db, claim: Claim | undefined, work: (sql: Sql)
   });
 }
 
+/** Peers suspect a node whose last renewal began this many heartbeats ago (`reap`). */
+export const SUSPECT_RENEWALS = 3;
+/**
+ * A node makes model and tool calls only while its last successful renewal began fewer than this many
+ * heartbeats ago (`fresh`). The heartbeat left before peers suspect it covers the gap between a check
+ * and the call it lets through, clock rate drift, and a late timer cutting a model request in flight.
+ */
+export const FRESH_RENEWALS = 2;
+
 /**
  * Which node serves each actor (an agent or a volume). Every node keeps one
  * heartbeat row, renewed every sixth of the TTL but at least every 3 s on the
@@ -46,6 +55,14 @@ export function underClaim<T>(db: Db, claim: Claim | undefined, work: (sql: Sql)
  * The TTL is long, so a node rides out a database failover. A node that died is found
  * sooner (`reap`): a peer ends a heartbeat three renewals late whose node refuses
  * connections or does not answer them, which frees its actors at once.
+ *
+ * So a node cut off from its peers and the database alike may be taken for dead while it
+ * still runs, long before its own deadline. Its database writes are fenced, but its model
+ * and tool calls are not database writes: those wait for a fresh lease instead (`fresh`),
+ * a successful renewal that began less than two heartbeats ago, one heartbeat before any
+ * peer could suspect the node. A node that is not fresh pauses its effects and cuts its
+ * model requests in flight (`onStale`); when a renewal succeeds again (a database failover
+ * ends) they go on. Only at the deadline does it fence.
  */
 export class Ownership {
   readonly node: string;
@@ -61,6 +78,16 @@ export class Ownership {
   private retry?: ReturnType<typeof setTimeout>;
   /** When the watchdog is due; `holds` checks it too, so a timer delayed by a blocked event loop cannot extend a claim. */
   private deadline = 0;
+  /** When the last successful renewal (or registration) began, on the same clock and from the same point as `deadline`. */
+  private renewedAt = -Infinity;
+  /** How long after `renewedAt` this node may still act (`fresh`). */
+  readonly freshMs: number;
+  /** Fires as the lease stops being fresh (see `stale`). */
+  private staleTimer?: ReturnType<typeof setTimeout>;
+  private staleSince?: number;
+  private readonly staled = new Set<() => void>();
+  /** Effects waiting for a fresh lease (`whenFresh`): woken by each successful renewal, and by a fence. */
+  private waiters?: PromiseWithResolvers<void>;
   /** Other nodes' actors, so forwarding needs no query per request; entries never outlive the owner's heartbeat. */
   private readonly owners = new Map<string, { node: string; until: number }>();
   private readonly cacheMs: number;
@@ -70,6 +97,7 @@ export class Ownership {
   private readonly alive?: (node: string) => Promise<boolean>;
   private readonly reaped = new Set<(nodes: string[]) => void>();
   private reaping = false;
+  private closed = false;
   draining = false;
 
   /**
@@ -82,6 +110,7 @@ export class Ownership {
     this.ttlMs = options.ttlMs ?? 90_000;
     this.cacheMs = options.cacheMs ?? 5_000;
     this.heartbeatMs = Math.max(10, Math.min(Math.floor(this.ttlMs / 6), 3_000));
+    this.freshMs = FRESH_RENEWALS * this.heartbeatMs;
     this.alive = options.alive;
   }
 
@@ -100,6 +129,41 @@ export class Ownership {
   /** Called when this node fences itself; everything it served must stop. */
   onFence(listener: (reason: string) => void) { this.fenced.add(listener); }
 
+  /** Called when this node's lease stops being fresh: model requests in flight must be cut (they are made again once it is). */
+  onStale(listener: () => void) { this.staled.add(listener); }
+
+  /**
+   * Whether this node may make side effects (model and tool calls, channel sends) now: its last successful renewal
+   * began less than `freshMs` ago, so no peer can have taken it for dead (they suspect it at `SUSPECT_RENEWALS`).
+   */
+  fresh() { return this.registered && performance.now() - this.renewedAt < this.freshMs; }
+
+  /**
+   * Wait for a fresh lease: at once while it is, else until a renewal succeeds (a database failover ends). A node
+   * that fenced (no later than its deadline) rejoins first, as an acquire would: claims it held stay lost (`holds`).
+   * Rejects when it cannot, once the node closed, or when `signal` aborts.
+   */
+  async whenFresh(signal?: AbortSignal): Promise<void> {
+    while (!this.fresh()) {
+      signal?.throwIfAborted();
+      if (this.closed) throw new HttpError(503, "This node is shutting down; retry");
+      if (!this.registered) { await this.register(); continue; }
+      const waiters = this.waiters ??= Promise.withResolvers<void>();
+      if (!signal) { await waiters.promise; continue; }
+      const aborted = Promise.withResolvers<void>();
+      const abort = () => aborted.resolve();
+      signal.addEventListener("abort", abort, { once: true });
+      try { await Promise.race([waiters.promise, aborted.promise]); }
+      finally { signal.removeEventListener("abort", abort); }
+    }
+  }
+
+  private wake() {
+    const waiters = this.waiters;
+    this.waiters = undefined;
+    waiters?.resolve();
+  }
+
   private register() {
     if (this.registered) return Promise.resolve();
     return this.registering ??= (async () => {
@@ -109,8 +173,8 @@ export class Ownership {
         insert into runtime_nodes (node, session, expires_at) values ($1, $2, now() + $3 * interval '1 millisecond')
         on conflict (node) do update set session = excluded.session, expires_at = excluded.expires_at, draining = false`, [this.node, session, this.ttlMs]);
       if (session !== this.session) return;
-      this.arm(started + this.ttlMs);
       this.registered = true;
+      this.arm(started);
     })().finally(() => { this.registering = undefined; });
   }
 
@@ -127,7 +191,7 @@ export class Ownership {
       if (session !== this.session) return;
       if (!rowCount) this.fence("heartbeat_replaced");
       else {
-        this.arm(started + this.ttlMs);
+        this.arm(started);
         if (this.alive) void this.reap().catch(error => console.error(JSON.stringify({ type: "reap_failed", error: safeError(error) })));
       }
     } catch (error) {
@@ -148,7 +212,7 @@ export class Ownership {
    */
   async reap(): Promise<string[]> {
     if (!this.alive || this.reaping || !this.registered) return [];
-    const lateMs = this.ttlMs - 3 * this.heartbeatMs;
+    const lateMs = this.ttlMs - SUSPECT_RENEWALS * this.heartbeatMs;
     if (lateMs <= 0) return [];
     this.reaping = true;
     try {
@@ -175,12 +239,50 @@ export class Ownership {
     } finally { this.reaping = false; }
   }
 
-  /** Fence a tenth of the TTL before the deadline, so a slow timer or clock drift cannot outlast the published expiry. */
-  private arm(deadline: number) {
+  /**
+   * After a successful write of the heartbeat that began at `started`: fence a tenth of the TTL before its expiry, so a
+   * slow timer or clock drift cannot outlast the published expiry, and act until `freshMs` after it.
+   */
+  private arm(started: number) {
     clearTimeout(this.watchdog);
-    this.deadline = deadline - this.ttlMs / 10;
+    this.deadline = started + this.ttlMs - this.ttlMs / 10;
     this.watchdog = setTimeout(() => this.fence("heartbeat_expired"), Math.max(0, this.deadline - performance.now()));
     this.watchdog.unref();
+    this.renewedAt = Math.max(this.renewedAt, started);
+    clearTimeout(this.staleTimer);
+    this.staleTimer = setTimeout(() => this.stale(), Math.max(0, this.renewedAt + this.freshMs - performance.now()));
+    this.staleTimer.unref();
+    if (this.fresh()) {
+      if (this.staleSince !== undefined) console.log(JSON.stringify({ type: "lease_fresh", node: this.node, staleMs: Math.round(performance.now() - this.staleSince) }));
+      this.staleSince = undefined;
+      this.wake();
+    }
+  }
+
+  /**
+   * The lease is no longer fresh: new effects wait (`whenFresh`). A renewal under way (one a blocked event loop
+   * delayed runs before this) gets half a heartbeat to land; then model requests in flight are cut. Even then
+   * they end, at the latest, two and a half heartbeats after the last renewal began, before peers suspect the node.
+   */
+  private stale() {
+    if (!this.registered) return;
+    // Timers run on a coarser clock than performance.now(), and may run a fraction of a millisecond early.
+    if (this.fresh()) {
+      this.staleTimer = setTimeout(() => this.stale(), Math.max(1, Math.ceil(this.renewedAt + this.freshMs - performance.now())));
+      this.staleTimer.unref();
+      return;
+    }
+    this.staleSince ??= performance.now();
+    console.error(JSON.stringify({ type: "lease_stale", node: this.node, sinceRenewalMs: Math.round(performance.now() - this.renewedAt) }));
+    void this.renew();
+    this.staleTimer = setTimeout(() => {
+      if (!this.registered || this.fresh()) return;
+      console.error(JSON.stringify({ type: "lease_interrupt", node: this.node, sinceRenewalMs: Math.round(performance.now() - this.renewedAt) }));
+      for (const listener of this.staled) {
+        try { listener(); } catch (error) { console.error(JSON.stringify({ type: "stale_listener_failed", error: safeError(error) })); }
+      }
+    }, Math.max(1, Math.floor(this.heartbeatMs / 2)));
+    this.staleTimer.unref();
   }
 
   /** Stop serving every actor, then rejoin under a new session on the next acquire. */
@@ -188,8 +290,13 @@ export class Ownership {
     if (!this.registered) return;
     console.error(JSON.stringify({ type: "self_fence", node: this.node, reason }));
     clearTimeout(this.watchdog);
+    clearTimeout(this.staleTimer);
     this.registered = false;
     this.session = randomUUID();
+    this.renewedAt = -Infinity;
+    this.staleSince = undefined;
+    // Effects waiting for a fresh lease give up: their claims are gone.
+    this.wake();
     for (const listener of this.fenced) {
       try { listener(reason); } catch (error) { console.error(JSON.stringify({ type: "fence_listener_failed", error: (error as Error).message })); }
     }
@@ -297,11 +404,14 @@ export class Ownership {
 
   /** Leave the cluster: dropping the heartbeat frees every actor this node still names. */
   async close() {
+    this.closed = true;
     clearInterval(this.timer);
     clearTimeout(this.watchdog);
     clearTimeout(this.retry);
+    clearTimeout(this.staleTimer);
     const session = this.session;
     this.registered = false;
+    this.wake();
     this.session = randomUUID();
     await this.db.query("delete from runtime_nodes where node = $1 and session = $2", [this.node, session]);
   }

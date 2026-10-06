@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
-import { createServer } from "node:net";
+import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -49,10 +49,18 @@ export async function cluster(t: { after(fn: () => Promise<void>): void }) {
       stdio: ["ignore", "pipe", "pipe"],
     });
     let errors = "";
-    child.stderr!.on("data", chunk => { errors = (errors + chunk).slice(-4096); process.stderr.write(chunk); });
+    const logs: any[] = [];
+    let pendingErrors = "";
+    child.stderr!.on("data", chunk => {
+      errors = (errors + chunk).slice(-4096);
+      process.stderr.write(chunk);
+      pendingErrors += chunk;
+      const lines = pendingErrors.split("\n");
+      pendingErrors = lines.pop()!;
+      for (const line of lines) { try { logs.push(JSON.parse(line)); } catch { /* not a log record */ } }
+    });
     children.push(child);
     const ready = Promise.withResolvers<void>();
-    const logs: any[] = [];
     let pending = "";
     child.stdout!.on("data", chunk => {
       pending += chunk;
@@ -71,7 +79,75 @@ export async function cluster(t: { after(fn: () => Promise<void>): void }) {
   });
   /** Which node owns an actor, read straight from the database. */
   const owner = async (id: string) => (await db.query("select node from actor_owners where actor = $1", [id])).rows[0]?.node as string | undefined;
-  return { start, owner, db };
+  return { start, owner, db, databaseUrl };
+}
+
+/**
+ * A TCP proxy between a runtime node and Postgres that can fail the way a database
+ * failover does: `reset` drops every connection and refuses new ones (a direct
+ * connection to an instance that went away); `stall` holds traffic, old and new,
+ * until the database is back (RDS Proxy queueing while the writer fails over).
+ */
+export async function databaseLink(target: URL) {
+  const links = new Set<{ client: Socket; server?: Socket; held: { toServer: Buffer[]; toClient: Buffer[] } }>();
+  let mode: "up" | "reset" | "stall" = "up";
+  const attach = (link: { client: Socket; server?: Socket; held: { toServer: Buffer[]; toClient: Buffer[] } }) => {
+    const server = link.server = createConnection({ host: target.hostname, port: Number(target.port) });
+    server.on("data", chunk => { if (mode === "stall") link.held.toClient.push(chunk); else link.client.write(chunk); });
+    server.on("error", () => link.client.destroy());
+    server.on("close", () => { link.client.destroy(); links.delete(link); });
+    for (const chunk of link.held.toServer.splice(0)) server.write(chunk);
+  };
+  const proxy: Server = createServer(client => {
+    if (mode === "reset") { client.destroy(); return; }
+    const link = { client, held: { toServer: [] as Buffer[], toClient: [] as Buffer[] } } as { client: Socket; server?: Socket; held: { toServer: Buffer[]; toClient: Buffer[] } };
+    links.add(link);
+    client.on("data", chunk => { if (mode === "stall" || !link.server) link.held.toServer.push(chunk); else link.server.write(chunk); });
+    client.on("error", () => link.server?.destroy());
+    client.on("close", () => { link.server?.destroy(); links.delete(link); });
+    if (mode === "up") attach(link);
+  }).listen(0, "127.0.0.1");
+  await once(proxy, "listening");
+  const url = new URL(target);
+  url.port = String((proxy.address() as { port: number }).port);
+  return {
+    url: url.toString(),
+    down(how: "reset" | "stall") {
+      mode = how;
+      if (how === "reset") for (const link of links) { link.client.destroy(); link.server?.destroy(); }
+    },
+    up() {
+      mode = "up";
+      for (const link of links) {
+        if (!link.server) attach(link);
+        else { for (const chunk of link.held.toServer.splice(0)) link.server.write(chunk); for (const chunk of link.held.toClient.splice(0)) link.client.write(chunk); }
+      }
+    },
+    close: () => { for (const link of links) { link.client.destroy(); link.server?.destroy(); } return new Promise(resolve => proxy.close(resolve)); },
+  };
+}
+
+/**
+ * A TCP forwarder in front of a node's port, which peers reach it by (its AGENT_NODE_URL). `cut` refuses every
+ * connection, old and new, as a node partitioned from its peers looks to them; requests sent to the node's own
+ * port still arrive (a model provider or a client the partition leaves reachable).
+ */
+export async function nodeLink(target: number) {
+  const sockets = new Set<Socket>();
+  const proxy: Server = createServer(client => {
+    const server = createConnection({ host: "127.0.0.1", port: target });
+    sockets.add(client).add(server);
+    client.pipe(server).pipe(client);
+    for (const socket of [client, server]) {
+      socket.on("error", () => { client.destroy(); server.destroy(); });
+      socket.on("close", () => { client.destroy(); server.destroy(); sockets.delete(socket); });
+    }
+  }).listen(0, "127.0.0.1");
+  await once(proxy, "listening");
+  return {
+    url: `http://127.0.0.1:${(proxy.address() as { port: number }).port}`,
+    cut: () => { proxy.close(); for (const socket of sockets) socket.destroy(); },
+  };
 }
 
 export const lookup = (calls: string[]) => ({
