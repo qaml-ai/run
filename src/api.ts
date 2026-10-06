@@ -929,12 +929,13 @@ export function api(context: ApiContext) {
     if (accounts.tenants.has(tenant)) throw new HttpError(409, `${tenant} is an admin tenant: set its limits in the tenants file`);
     const input = parse(schema.TenantLimitsInput, await readJson(c.req.raw.body, 4096, {}));
     // Each limit given is set, or with null removed (back to the plan's); those not given stay as they are.
-    const set: Record<string, number | string> = {}, removed: string[] = [];
+    // codeEngine is always cleared: QuickJS was removed, and an engine set before means nothing now.
+    const set: Record<string, number | string> = {}, removed: string[] = ["codeEngine"];
     if (input.maxStorageGb === null) removed.push("maxStorageBytes");
     else if (input.maxStorageGb !== undefined) set.maxStorageBytes = Math.round(input.maxStorageGb * 1e9);
     if (input.maxBusyAgents === null) removed.push("maxBusyAgents");
     else if (input.maxBusyAgents !== undefined) set.maxBusyAgents = input.maxBusyAgents;
-    for (const key of ["agentCreatesPerMinute", "runsPerMinute", "maxRunResponses", "maxRunSeconds", "codeCpuMs", "codeMaxTimeoutMs", "codeConcurrency", "codeEngine"] as const) {
+    for (const key of ["agentCreatesPerMinute", "runsPerMinute", "maxRunResponses", "maxRunSeconds", "codeCpuMs", "codeMaxTimeoutMs", "codeConcurrency"] as const) {
       if (input[key] === null) removed.push(key);
       else if (input[key] !== undefined) set[key] = input[key];
     }
@@ -943,13 +944,12 @@ export function api(context: ApiContext) {
     if (!row) throw new HttpError(404, `Unknown tenant ${tenant}`);
     accounts.billing.forgetLimits(tenant);
     console.log(JSON.stringify({ type: "tenant_limits_set", tenant, limits: row.limits, by }));
-    const { maxStorageBytes: bytes, maxBusyAgents: busy, agentCreatesPerMinute, runsPerMinute, maxRunResponses, maxRunSeconds, codeCpuMs, codeMaxTimeoutMs, codeConcurrency, codeEngine } = row.limits;
+    const { maxStorageBytes: bytes, maxBusyAgents: busy, agentCreatesPerMinute, runsPerMinute, maxRunResponses, maxRunSeconds, codeCpuMs, codeMaxTimeoutMs, codeConcurrency } = row.limits;
     return json(c, 200, { tenant, limits: {
       ...(typeof bytes === "number" ? { maxStorageGb: bytes / 1e9 } : {}), ...(typeof busy === "number" ? { maxBusyAgents: busy } : {}),
       ...(typeof agentCreatesPerMinute === "number" ? { agentCreatesPerMinute } : {}), ...(typeof runsPerMinute === "number" ? { runsPerMinute } : {}),
       ...(typeof maxRunResponses === "number" ? { maxRunResponses } : {}), ...(typeof maxRunSeconds === "number" ? { maxRunSeconds } : {}),
       ...(typeof codeCpuMs === "number" ? { codeCpuMs } : {}), ...(typeof codeMaxTimeoutMs === "number" ? { codeMaxTimeoutMs } : {}), ...(typeof codeConcurrency === "number" ? { codeConcurrency } : {}),
-      ...(codeEngine === "quickjs" || codeEngine === "v8" ? { codeEngine } : {}),
     } });
   });
   // Email and password sign-in: set by the platform operator for any tenant, or by an operator token for its own tenant (a

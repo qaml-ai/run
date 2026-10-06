@@ -206,22 +206,17 @@ int main(int argc, char **argv) {
   if (setenv("AGENT_SANDBOX_SOCKETS", sockets, 1)) die("setenv");
   umask(0022);
 
-  // Pool sizes, shared across the processes, are the only settings a sandbox process takes.
+  // How many there are and v8-exec's settings are the only settings a sandbox process takes.
   int n = 0;
-  static char min_arg[32], max_arg[32], processes_arg[32];
+  static char processes_arg[32];
   sandbox_argv[n++] = "node";
   sandbox_argv[n++] = "--experimental-strip-types";
   sandbox_argv[n++] = "--disable-warning=ExperimentalWarning";
   sandbox_argv[n++] = SANDBOX_ENTRY;
   snprintf(sandbox_argv[n++] = processes_arg, sizeof processes_arg, "--processes=%ld", count);
-  const char *min = getenv("AGENT_CODE_WORKERS_MIN"), *max = getenv("AGENT_CODE_WORKERS_MAX");
-  if (min && *min && strspn(min, "0123456789") == strlen(min) && strlen(min) < 6) snprintf(sandbox_argv[n++] = min_arg, sizeof min_arg, "--workers-min=%s", min);
-  if (max && *max && strspn(max, "0123456789") == strlen(max) && strlen(max) < 6) snprintf(sandbox_argv[n++] = max_arg, sizeof max_arg, "--workers-max=%s", max);
-  // js_exec's default engine and v8-exec's settings (src/v8-exec.ts), checked here, since the
-  // sandbox processes get no environment.
+  // v8-exec's settings (src/v8-exec.ts), checked here, since the sandbox processes get no environment.
   static char prespawn_arg[32], v8_max_arg[32];
-  const char *engine = getenv("AGENT_JS_EXEC"), *prespawn = getenv("AGENT_V8_PRESPAWN"), *v8_max = getenv("AGENT_V8_MAX"), *jitless = getenv("AGENT_V8_JITLESS");
-  if (engine && !strcmp(engine, "v8")) sandbox_argv[n++] = "--engine=v8";
+  const char *prespawn = getenv("AGENT_V8_PRESPAWN"), *v8_max = getenv("AGENT_V8_MAX"), *jitless = getenv("AGENT_V8_JITLESS");
   if (prespawn && *prespawn && strspn(prespawn, "0123456789") == strlen(prespawn) && strlen(prespawn) < 4) snprintf(sandbox_argv[n++] = prespawn_arg, sizeof prespawn_arg, "--v8-prespawn=%s", prespawn);
   if (v8_max && *v8_max && strspn(v8_max, "0123456789") == strlen(v8_max) && strlen(v8_max) < 6) snprintf(sandbox_argv[n++] = v8_max_arg, sizeof v8_max_arg, "--v8-max=%s", v8_max);
   if (jitless && (!strcmp(jitless, "0") || !strcasecmp(jitless, "false"))) sandbox_argv[n++] = "--v8-jitless=0";

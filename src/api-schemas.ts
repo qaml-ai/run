@@ -837,11 +837,11 @@ export const TenantLimitsInput = z.object({
   codeCpuMs: z.number().int().min(1).max(30_000).nullable().optional().openapi({ description: "CPU milliseconds one js_exec execution may use, in place of the runtime's (2,000); null returns to the runtime's" }),
   codeMaxTimeoutMs: z.number().int().min(1).max(120_000).nullable().optional().openapi({ description: "The longest timeoutMs (wall time) a js_exec execution may ask for, in place of the runtime's (60,000); null returns to the runtime's" }),
   codeConcurrency: z.number().int().min(1).max(1_000).nullable().optional().openapi({ description: "js_exec executions the tenant may run at once on one node, in place of its plan's (2 on free credit, else 4); null returns to the plan's" }),
-  codeEngine: z.enum(["quickjs", "v8"]).nullable().optional().openapi({ description: "What runs the tenant's js_exec: quickjs (WASM worker threads) or v8 (a process per execution), in place of the runtime's (AGENT_JS_EXEC); null returns to the runtime's. Reaches agents as they next load" }),
+  codeEngine: z.null({ error: "codeEngine was removed with QuickJS: js_exec runs on V8 only. Leave it out, or send null to clear one set before" }).optional().openapi({ deprecated: true, description: "Removed with QuickJS: js_exec runs on V8 only. null clears an engine set before; any other value is refused" }),
 }).strict().openapi("TenantLimitsInput");
 export const TenantLimits = z.object({
   tenant: z.string(),
-  limits: z.object({ maxStorageGb: z.number().optional(), maxBusyAgents: z.number().int().optional(), agentCreatesPerMinute: z.number().int().optional(), runsPerMinute: z.number().int().optional(), maxRunResponses: z.number().int().optional(), maxRunSeconds: z.number().int().optional(), codeCpuMs: z.number().int().optional(), codeMaxTimeoutMs: z.number().int().optional(), codeConcurrency: z.number().int().optional(), codeEngine: z.enum(["quickjs", "v8"]).optional() }).openapi({ description: "The limits set for the tenant; those absent are its plan's" }),
+  limits: z.object({ maxStorageGb: z.number().optional(), maxBusyAgents: z.number().int().optional(), agentCreatesPerMinute: z.number().int().optional(), runsPerMinute: z.number().int().optional(), maxRunResponses: z.number().int().optional(), maxRunSeconds: z.number().int().optional(), codeCpuMs: z.number().int().optional(), codeMaxTimeoutMs: z.number().int().optional(), codeConcurrency: z.number().int().optional() }).openapi({ description: "The limits set for the tenant; those absent are its plan's" }),
 }).openapi("TenantLimits");
 export const TenantPasswordInput = z.object({
   email: z.string().max(254).openapi({ description: "The address the tenant signs in with; another tenant's is refused (409)", example: "reviewer@example.com" }),

@@ -6,89 +6,37 @@ import { join } from "node:path";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
-import { CodeGate, CodePool, defaultCodeWorkers, executeCode } from "../src/codemode.ts";
+import { CodeGate, defaultCodeWorkers, executeCode } from "../src/codemode.ts";
 import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
 import { checkable, validateToolCall } from "../src/tool-policy.ts";
 import { keywordScores } from "../src/tool-search.ts";
-import { prepareCodeModeUserCode } from "../shared/code-mode-source.ts";
 import { codeErrorClass, recordCodeExecution, recordV8Exec, setMetricSink } from "../src/metrics.ts";
 import type { ToolBridge } from "../src/protocol.ts";
 import type { Api, Model } from "@earendil-works/pi-ai";
 
 // Hard limits on js_exec: nothing a tenant supplies runs on the runtime's thread, every execution's CPU is
-// bounded from outside its guest, and one tenant cannot take every sandbox worker on a node.
+// bounded from outside its guest, and one tenant cannot take every sandbox worker on a node. The executions
+// run on v8-exec (npm run build:v8-exec); tests/v8-exec.test.ts has its own workings.
 
-/** AGENT_JS_EXEC=v8: the same tests on v8-exec, but for those about QuickJS's and sucrase's own weak spots (tests/v8-exec.test.ts has V8's). */
-const v8 = process.env.AGENT_JS_EXEC === "v8";
 const none: ToolBridge = { definitions: [], call: async () => null };
-/** Sucrase backtracks exponentially on this: about a second at 19 levels, doubling with each. */
-const sucraseBomb = (levels: number) => `1<2; x = ${"a ? (b): c => ".repeat(levels)}d`;
-
-/** The longest the runtime's thread went without running a 10 ms timer while `work` ran. */
-async function longestStall(work: () => Promise<unknown>) {
-  let last = performance.now(), longest = 0;
-  const timer = setInterval(() => { const now = performance.now(); longest = Math.max(longest, now - last); last = now; }, 10);
-  try { await work(); } finally { clearInterval(timer); }
-  return Math.max(longest, performance.now() - last);
-}
-
-test("hostile TypeScript is stripped in the worker under the CPU budget: the runtime's thread never stalls, and abort works", { timeout: 60_000, skip: v8 && "sucrase's backtracking: v8-exec strips with oxc (tests/v8-exec.test.ts)" }, async t => {
-  const pool = new CodePool({ min: 1, max: 2 });
-  t.after(() => pool.close());
-  // Warm: the first execution loads tool policy on this thread.
-  assert.deepEqual((await executeCode({ code: "const n: number = 1; return n", bridge: none, pool })).output, ["1"]);
-  let error: Error | undefined;
-  const started = performance.now();
-  const stall = await longestStall(() => executeCode({ code: sucraseBomb(30), bridge: none, pool, timeoutMs: 60_000 }).catch(caught => { error = caught; }));
-  assert.match(String(error?.message), /CPU limit exceeded/);
-  assert.ok(performance.now() - started < 4_000, `stopped at its 2 s budget, not hours later (${Math.round(performance.now() - started)} ms)`);
-  assert.ok(stall < 200, `the runtime's thread kept running (longest stall ${Math.round(stall)} ms)`);
-
-  // Cancelled while the worker is deep in sucrase, the execution ends at once.
-  const controller = new AbortController();
-  const running = executeCode({ code: sucraseBomb(30), bridge: none, pool, signal: controller.signal, timeoutMs: 60_000 });
-  await sleep(300);
-  const aborted = performance.now();
-  controller.abort();
-  await assert.rejects(running, /aborted/);
-  assert.ok(performance.now() - aborted < 100);
-  // And the pool serves the next one.
-  assert.deepEqual((await executeCode({ code: "const f = <T,>(x: T) => x; return f<number>(2)", bridge: none, pool })).output, ["2"]);
-});
-
-test("built-ins QuickJS cannot interrupt are stopped at the CPU budget, not the wall-clock timeout", { timeout: 60_000, skip: v8 && "V8 runs these in milliseconds (tests/v8-exec.test.ts has V8's slow built-ins)" }, async t => {
-  const pool = new CodePool({ min: 1, max: 1 });
-  t.after(() => pool.close());
-  for (const [code, cpuMs] of [['return "a".repeat(2e6).indexOf("a".repeat(1e6) + "b")', 1_000], ['return BigInt("9".repeat(300000)).toString().length', 500]] as const) {
-    const started = performance.now();
-    await assert.rejects(executeCode({ code, bridge: none, pool, timeoutMs: 60_000, limits: { cpuMs } }), new RegExp(`CPU limit exceeded: the execution kept its thread busy for over ${cpuMs} ms`));
-    const took = performance.now() - started;
-    assert.ok(took >= cpuMs && took < cpuMs + 1_500, `${code}: ${Math.round(took)} ms`);
-  }
-  assert.deepEqual((await executeCode({ code: "return 1", bridge: none, pool })).output, ["1"]);
-});
 
 test("a hot loop is stopped at the CPU budget, which time spent waiting on tools does not count against", { timeout: 60_000 }, async t => {
-  const pool = new CodePool({ min: 1, max: 1 });
-  t.after(() => pool.close());
   const started = performance.now();
-  await assert.rejects(executeCode({ code: "while (true) {}", bridge: none, pool, timeoutMs: 60_000, limits: { cpuMs: 300 } }), /CPU (or wall-clock )?limit exceeded/);
+  await assert.rejects(executeCode({ code: "while (true) {}", bridge: none, timeoutMs: 60_000, limits: { cpuMs: 300 } }), /CPU (or wall-clock )?limit exceeded/);
   assert.ok(performance.now() - started < 1_500);
   // Two seconds of waiting on a tool, a moment of CPU: well within 300 ms of CPU.
   const slow: ToolBridge = { definitions: [{ name: "slow", description: "Waits", parameters: { type: "object" } }], call: () => sleep(2_000).then(() => "done") };
-  assert.deepEqual((await executeCode({ code: "return await tools.slow({})", bridge: slow, pool, limits: { cpuMs: 300 } })).output, ["done"]);
+  assert.deepEqual((await executeCode({ code: "return await tools.slow({})", bridge: slow, limits: { cpuMs: 300 } })).output, ["done"]);
 });
 
 test("a tenant's longest timeoutMs cuts a longer one, and its timeout says so", async t => {
-  const pool = new CodePool({ min: 1, max: 1 });
-  t.after(() => pool.close());
   const hang: ToolBridge = { definitions: [{ name: "hang", description: "Never answers", parameters: { type: "object" } }], call: (_name, _args, signal) => new Promise((_, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")))) };
   // Warm first, so a slow machine's worker start does not take the whole deadline before the tool is called.
-  await executeCode({ code: "return 1", bridge: hang, pool });
+  await executeCode({ code: "return 1", bridge: hang });
   const started = performance.now();
-  await assert.rejects(executeCode({ code: "await tools.hang({})", bridge: hang, pool, timeoutMs: 120_000, limits: { maxTimeoutMs: 1_500 } }), /timed out after 1500ms while tools\.hang was still running; external side effects may have completed$/);
+  await assert.rejects(executeCode({ code: "await tools.hang({})", bridge: hang, timeoutMs: 120_000, limits: { maxTimeoutMs: 1_500 } }), /timed out after 1500ms while tools\.hang was still running; external side effects may have completed$/);
   assert.ok(performance.now() - started < 4_000);
-  await assert.rejects(executeCode({ code: "await tools.hang({})", bridge: hang, pool, timeoutMs: 1_000, limits: { maxTimeoutMs: 1_500 } }), /Pass a larger timeoutMs \(at most 1500\)/);
+  await assert.rejects(executeCode({ code: "await tools.hang({})", bridge: hang, timeoutMs: 1_000, limits: { maxTimeoutMs: 1_500 } }), /Pass a larger timeoutMs \(at most 1500\)/);
 });
 
 test("the gate admits each tenant up to its own limit, and waiting tenants in turn", async () => {
@@ -131,12 +79,10 @@ test("the gate admits each tenant up to its own limit, and waiting tenants in tu
 });
 
 test("one tenant saturating its executions on a node does not stop another's", { timeout: 30_000 }, async t => {
-  const pool = new CodePool({ min: 2, max: 4 });
-  t.after(() => pool.close());
   const gate = new CodeGate(4);
   const release = Promise.withResolvers<void>();
   const hang: ToolBridge = { definitions: [{ name: "hang", description: "Blocks until released", parameters: { type: "object" } }], call: () => release.promise.then(() => "released") };
-  const run = (tenant: string, code: string, timeoutMs = 10_000) => executeCode({ code, bridge: hang, pool, timeoutMs, admit: signal => gate.acquire(tenant, 2, signal) });
+  const run = (tenant: string, code: string, timeoutMs = 10_000) => executeCode({ code, bridge: hang, timeoutMs, admit: signal => gate.acquire(tenant, 2, signal) });
   const held = [run("a", "return await tools.hang({})"), run("a", "return await tools.hang({})")];
   await sleep(200);
   // Tenant a's third waits for its turn (and times out waiting); tenant b runs at once.
@@ -147,8 +93,7 @@ test("one tenant saturating its executions on a node does not stop another's", {
   assert.equal(gate.running, 0);
 });
 
-test("tenants with a limit share what the node's memory affords; the pool itself keeps its old ceiling for admin tenants", () => {
-  assert.equal(new CodePool({ min: 0 }).max, 32);
+test("tenants with a limit share what the node's memory affords", () => {
   assert.equal(defaultCodeWorkers(2 * 1024 ** 3), 6);
   assert.equal(defaultCodeWorkers(512 * 1024 ** 2), 2);
   assert.equal(defaultCodeWorkers(64 * 1024 ** 3), 32);
@@ -173,10 +118,6 @@ test("host-side checks of guest input stay linear: tenant regexes are not run, a
   const tools = Array.from({ length: 4096 }, (_, i) => ({ name: `ns__tool_${i}`, description: `Tool number ${i} does things with records and files` }));
   keywordScores(tools, Array.from({ length: 20_000 }, (_, i) => `word${i}`).join(" "));
   assert.ok(performance.now() - started < 2_000, `search: ${Math.round(performance.now() - started)} ms`);
-
-  started = performance.now();
-  assert.equal(prepareCodeModeUserCode(`1${" ".repeat(64 * 1024)}x`.replace("x", "")).startsWith("return 1"), true);
-  assert.ok(performance.now() - started < 100, `trailing whitespace: ${Math.round(performance.now() - started)} ms`);
 });
 
 test("an agent process that stops answering is killed, and its turn is closed on restart", { timeout: 60_000, skip: (process.env.AGENT_HOSTING ?? "process") !== "process" && "agent processes only" }, async t => {
@@ -227,10 +168,10 @@ test("each execution writes a metric line with its duration, CPU and timeoutMs, 
   setMetricSink(line => lines.push(JSON.parse(line)));
   t.after(() => setMetricSink());
   recordCodeExecution({ tenant: "acme", ms: 1234, requestedTimeoutMs: 120_000, timeoutMs: 60_000, cpuMs: 12 });
-  recordCodeExecution({ tenant: "acme", engine: "v8", ms: 2300, timeoutMs: 30_000, error: new Error("Codemode CPU limit exceeded: the execution kept its thread busy for over 2000 ms") });
+  recordCodeExecution({ tenant: "acme", ms: 2300, timeoutMs: 30_000, error: new Error("Codemode CPU limit exceeded: the execution kept its thread busy for over 2000 ms") });
   recordV8Exec({ event: "killed", signal: "SIGSYS" });
   assert.deepEqual(lines.map(({ _aws, ...line }) => line), [
-    { type: "code_execution", tenant: "acme", timeoutMs: 60_000, requestedTimeoutMs: 120_000, ErrorClass: "none", Engine: "quickjs", CodeExecutions: 1, CodeDurationMs: 1234, CodeCpuMs: 12 },
+    { type: "code_execution", tenant: "acme", timeoutMs: 60_000, requestedTimeoutMs: 120_000, ErrorClass: "none", Engine: "v8", CodeExecutions: 1, CodeDurationMs: 1234, CodeCpuMs: 12 },
     { type: "code_execution", tenant: "acme", timeoutMs: 30_000, ErrorClass: "cpu_limit", Engine: "v8", CodeExecutions: 1, CodeDurationMs: 2300 },
     { type: "v8_exec", signal: "SIGSYS", Event: "killed", V8ExecFailures: 1 },
   ]);
@@ -250,17 +191,15 @@ test("each execution writes a metric line with its duration, CPU and timeoutMs, 
 });
 
 test("an admin tenant's executions waiting on slow tools are not held to the node's memory-sized capacity", { timeout: 30_000 }, async t => {
-  const pool = new CodePool({ min: 0, max: 16 });
-  t.after(() => pool.close());
   const gate = new CodeGate(2);
   const release = Promise.withResolvers<void>();
   let waiting = 0;
   const all = Promise.withResolvers<void>();
   const slow: ToolBridge = { definitions: [{ name: "analysis", description: "Slow", parameters: { type: "object" } }], call: () => { if (++waiting === 12) all.resolve(); return release.promise.then(() => "done"); } };
-  const runs = Array.from({ length: 12 }, () => executeCode({ code: "return await tools.analysis({})", bridge: slow, pool, timeoutMs: 20_000, admit: signal => gate.acquire("chiridion-prod", Infinity, signal) }));
+  const runs = Array.from({ length: 12 }, () => executeCode({ code: "return await tools.analysis({})", bridge: slow, timeoutMs: 20_000, admit: signal => gate.acquire("chiridion-prod", Infinity, signal) }));
   // All twelve wait on their tool at once, each holding a worker; a capped tenant still gets the gate's slots.
   await all.promise;
-  assert.deepEqual((await executeCode({ code: "return 3", bridge: slow, pool, admit: signal => gate.acquire("acme", 4, signal) })).output, ["3"]);
+  assert.deepEqual((await executeCode({ code: "return 3", bridge: slow, admit: signal => gate.acquire("acme", 4, signal) })).output, ["3"]);
   release.resolve();
   assert.equal((await Promise.all(runs)).length, 12);
 });

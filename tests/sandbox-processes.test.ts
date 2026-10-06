@@ -31,7 +31,7 @@ async function socketPath(t: Context) {
 async function sandboxProcess(t: Context, path?: string) {
   path ??= await socketPath(t);
   const child = spawn(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning",
-    fileURLToPath(new URL("../src/sandbox-server.ts", import.meta.url)), `--socket=${path}`, "--workers-min=1", "--workers-max=2"], { stdio: ["ignore", "inherit", "inherit"] });
+    fileURLToPath(new URL("../src/sandbox-server.ts", import.meta.url)), `--socket=${path}`, "--v8-prespawn=0"], { stdio: ["ignore", "inherit", "inherit"] });
   t.after(() => { child.kill("SIGKILL"); });
   for (let i = 0; i < 200; i++) {
     const socket = connect(path);
@@ -115,13 +115,11 @@ test("js_exec runs end to end through a sandbox process, tool calls included", a
   assert.equal(sandbox.processes[0].load, 0);
 });
 
-test("one sandbox process runs each execution on the engine it names", { skip: !existsSync(v8ExecBinary()) && "v8-exec is not built" }, async t => {
+test("one sandbox process runs each execution in a v8-exec process of its own", { skip: !existsSync(v8ExecBinary()) && "v8-exec is not built" }, async t => {
   const { path } = await sandboxProcess(t);
   const sandbox = new SandboxProcesses([path]);
-  // Intl tells them apart: QuickJS has none.
-  const engine = 'return [typeof Intl === "object" ? "v8" : "quickjs", (await tools.echo({ n: 1 })).n]';
-  assert.deepEqual((await executeCode({ code: engine, bridge: echo, pool: sandbox, limits: { engine: "quickjs" } })).output, ['["quickjs",1]']);
-  assert.deepEqual((await executeCode({ code: engine, bridge: echo, pool: sandbox, limits: { engine: "v8" } })).output, ['["v8",1]']);
+  const engine = 'return [typeof Intl, (await tools.echo({ n: 1 })).n]';
+  assert.deepEqual((await executeCode({ code: engine, bridge: echo, pool: sandbox })).output, ['["object",1]']);
   assert.equal(sandbox.processes[0].load, 0);
 });
 
@@ -142,21 +140,6 @@ test("timeouts and aborts cancel the execution in the sandbox process, which kee
   await assert.rejects(spinning, /aborted/);
   assert.equal(aborted, 1);
   assert.deepEqual((await executeCode({ code: "return 7", bridge: hang, pool: sandbox })).output, ["7"]);
-});
-
-test("guests stuck where the interrupt handler cannot reach cost a sandbox process none of its workers", async t => {
-  const { path } = await sandboxProcess(t);
-  const sandbox = new SandboxProcesses([path]);
-  // More than --workers-max: each stuck guest's worker is terminated and its slot refilled.
-  for (let i = 0; i < 4; i++) {
-    const controller = new AbortController();
-    // Aborted once inside one long native call (see tests/sandbox.test.ts, stuck()).
-    await assert.rejects(executeCode({
-      code: 'const digits = "9".repeat(300000); text("parsing"); return BigInt(digits).toString().length;',
-      bridge: echo, pool: sandbox, signal: controller.signal, timeoutMs: 60_000, onEvent: () => controller.abort(),
-    }), /aborted/);
-    assert.deepEqual((await executeCode({ code: "return 1", bridge: echo, pool: sandbox, timeoutMs: 10_000 })).output, ["1"]);
-  }
 });
 
 test("a sandbox process that dies fails its executions clearly, and one that comes back serves again", async t => {
@@ -246,12 +229,12 @@ test("executions go to the least-loaded sandbox process, ties round-robin", asyn
   const sandbox = new SandboxProcesses(processes);
   const guests = Array.from({ length: 4 }, () => sandbox.open());
   assert.deepEqual(sandbox.processes.map(process => process.load), [2, 2]);
-  guests[1].end(false);
-  guests[3].end(false);
+  guests[1].end();
+  guests[3].end();
   assert.deepEqual(sandbox.processes.map(process => process.load), [2, 0]);
   const next = [sandbox.open(), sandbox.open()];
   assert.deepEqual(sandbox.processes.map(process => process.load), [2, 2], "Both went to the process with fewer open");
-  for (const guest of [guests[0], guests[2], ...next]) guest.end(false);
+  for (const guest of [guests[0], guests[2], ...next]) guest.end();
   assert.deepEqual(sandbox.processes.map(process => process.load), [0, 0]);
 });
 

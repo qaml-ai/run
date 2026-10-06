@@ -112,11 +112,12 @@ export function codeErrorClass(message: string | null | undefined): string {
  * One js_exec execution: how long it took, the CPU its guest used (when it finished), the timeoutMs
  * it asked for and got, and how it ended, so its limits can be tuned from what executions need.
  */
-export function recordCodeExecution(execution: { tenant?: string; engine?: string; ms: number; requestedTimeoutMs?: number; timeoutMs: number; cpuMs?: number; error?: unknown }) {
+export function recordCodeExecution(execution: { tenant?: string; ms: number; requestedTimeoutMs?: number; timeoutMs: number; cpuMs?: number; error?: unknown }) {
   // Only the class goes in the line: a guest's error can echo what a user wrote.
   const failure = execution.error === undefined ? "none" : codeErrorClass(errorText(execution.error));
   emit("code_execution", {
-    dimensions: { ErrorClass: failure, Engine: execution.engine ?? "quickjs" },
+    // Engine stays a dimension, always v8 since QuickJS was removed, so the metric's series and dashboards carry on.
+    dimensions: { ErrorClass: failure, Engine: "v8" },
     rollups: [[], ["ErrorClass"], ["Engine"], ["Engine", "ErrorClass"]],
     metrics: { CodeExecutions: 1, CodeDurationMs: [execution.ms, "Milliseconds"], CodeCpuMs: execution.cpuMs === undefined ? undefined : [execution.cpuMs, "Milliseconds"] },
     properties: { tenant: execution.tenant, timeoutMs: execution.timeoutMs, ...(execution.requestedTimeoutMs !== undefined ? { requestedTimeoutMs: execution.requestedTimeoutMs } : {}) },

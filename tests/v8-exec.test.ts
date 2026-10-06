@@ -1,7 +1,6 @@
-// v8-exec: js_exec on V8, a process per execution (src/v8-exec.ts, sandbox/v8-exec). What
-// tests/sandbox.test.ts and tests/codemode-limits.test.ts check against the QuickJS pool's own
-// workings (its worker threads, the dying set), checked here for v8-exec, plus what only V8 has:
-// Intl, the seccomp allowlist, jitless. Needs the binary (npm run build:v8-exec); the seccomp
+// v8-exec: js_exec on V8, a process per execution (src/v8-exec.ts, sandbox/v8-exec). Its own
+// workings (processes killed, pre-spawned, waiting past `max`), and Intl, the seccomp allowlist and
+// jitless; tests/sandbox.test.ts and tests/codemode-limits.test.ts run js_exec end to end on it. Needs the binary (npm run build:v8-exec); the seccomp
 // tests need Linux (tests/image-isolation.ts runs them in the image as well).
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -65,7 +64,7 @@ for (const jitless of [true, false]) {
   });
 }
 
-test("TypeScript that made sucrase backtrack for hours strips in linear time", { skip, timeout: 30_000 }, async t => {
+test("TypeScript that makes a backtracking parser take hours strips in linear time", { skip, timeout: 30_000 }, async t => {
   const pool = new V8Exec();
   t.after(() => pool.close());
   const started = performance.now();

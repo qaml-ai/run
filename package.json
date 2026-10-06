@@ -21,7 +21,6 @@
     "docs": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/docs.ts",
     "reconcile:storage": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/reconcile-storage.ts",
     "bench:execute": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/bench-execute.ts",
-    "bench:js-exec": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/bench-js-exec.ts",
     "bench:v8-exec": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/bench-v8-exec.ts",
     "build:v8-exec": "cd sandbox/v8-exec && cargo build --release",
     "bench:search": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/bench-search.ts",
@@ -29,7 +28,7 @@
     "test:studio": "node --experimental-strip-types --disable-warning=ExperimentalWarning studio/smoke.ts"
   },
   "version": "0.1.0",
-  "description": "Hosted agent runtime: supervisor, durable agent state, QuickJS codemode sandbox, SDKs, console and Studio",
+  "description": "Hosted agent runtime: supervisor, durable agent state, V8 codemode sandbox, SDKs, console and Studio",
   "engines": {
     "node": ">=22.21.0"
   },
@@ -54,9 +53,7 @@
     "hono": "^4.13.8",
     "pg": "^8.13.1",
     "postal-mime": "^4.0.0",
-    "quickjs-emscripten": "0.32.0",
     "sharp": "0.35.5",
-    "sucrase": "^3.35.1",
     "typebox": "1.1.38",
     "undici": "^8.11.2",
     "unpdf": "^1.8.1",

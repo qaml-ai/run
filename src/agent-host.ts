@@ -16,7 +16,7 @@ import type { AppendLog } from "../shared/append-log.ts";
 import { Transcript, readTranscriptLog, summaryMessage, type Backlog, type CompactionState, type TranscriptRecord } from "./transcript.ts";
 import { boundedContext, importedHistory, interruptedTurnRepairs, validateInitialMessages, validateUserMessages } from "./history.ts";
 import { backgroundTokens, compactionNeed, compactionSettings, contextTokens, explicitKeyStream, modelKeyFailure, runCompaction } from "./compaction.ts";
-import { codeRequest, DEFAULT_RETRY, defaultCodeEngine, SANDBOX_LIMITS } from "./limits.ts";
+import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
 import { describeFile, documentPayload, FILE_LIMITS, nativeBlock, unseen, validFileRef, type FileRef } from "./files.ts";
 import { CHUNK_BYTES, chunksOf, type HistoryChunk } from "./history-pages.ts";
 import { observeTurns, recordCodeExecution } from "./metrics.ts";
@@ -418,7 +418,7 @@ export function createAgentHost(hostIO: HostIO) {
     catch (error) { failure = error; throw error; }
     finally {
       const maxTimeoutMs = Math.min(config.codeLimits?.maxTimeoutMs ?? SANDBOX_LIMITS.maxTimeoutMs, SANDBOX_LIMITS.maxTimeoutMs);
-      recordCodeExecution({ tenant: config.tenant, engine: config.codeLimits?.engine ?? defaultCodeEngine(), ms: Date.now() - started, requestedTimeoutMs: options.timeoutMs, timeoutMs: Math.min(options.timeoutMs ?? SANDBOX_LIMITS.timeoutMs, maxTimeoutMs), cpuMs: result?.cpuMs, error: failure });
+      recordCodeExecution({ tenant: config.tenant, ms: Date.now() - started, requestedTimeoutMs: options.timeoutMs, timeoutMs: Math.min(options.timeoutMs ?? SANDBOX_LIMITS.timeoutMs, maxTimeoutMs), cpuMs: result?.cpuMs, error: failure });
     }
   }
 
@@ -711,7 +711,7 @@ export function createAgentHost(hostIO: HostIO) {
       const maxTimeoutMs = config.codeLimits?.maxTimeoutMs ?? SANDBOX_LIMITS.maxTimeoutMs;
       const jsExec: AgentTool = {
         name: "js_exec", label: "JavaScript",
-        description: "Run JavaScript or TypeScript in a fresh QuickJS sandbox. Return what you want to see: it comes back as JSON (a string as its own text), after any console.log lines. In scope: tools (await tools.<name>(args) gives the tool's result as data; tools.search, tools.namespaces and tools.describe find them) and fs for your files (readFile(path, { encoding: \"utf8\" }) gives a string, a Uint8Array without it; writeFile(path, string | Uint8Array); stat, list, remove); no network, imports, Node APIs or timers. Variables are gone after each execution; files persist. An execution gets timeoutMs of wall time (default " + Math.min(SANDBOX_LIMITS.timeoutMs, maxTimeoutMs) + ", at most " + maxTimeoutMs + "), tool calls included: raise it for slow tools." + " For example:\nconst tickets = [];\nfor (let page = 1; page; ) { const result = await tools.helpdesk__list_tickets({ status: \"open\", page }); tickets.push(...result.tickets); page = result.nextPage; }\nawait fs.writeFile(\"/workspace/tmp/tickets.json\", JSON.stringify(tickets)); // a later execution can read it back\nreturn { open: tickets.length, oldest: tickets[0]?.createdAt };",
+        description: "Run JavaScript or TypeScript in a fresh sandbox. Return what you want to see: it comes back as JSON (a string as its own text), after any console.log lines. In scope: tools (await tools.<name>(args) gives the tool's result as data; tools.search, tools.namespaces and tools.describe find them) and fs for your files (readFile(path, { encoding: \"utf8\" }) gives a string, a Uint8Array without it; writeFile(path, string | Uint8Array); stat, list, remove); no network, imports, Node APIs or timers. Variables are gone after each execution; files persist. An execution gets timeoutMs of wall time (default " + Math.min(SANDBOX_LIMITS.timeoutMs, maxTimeoutMs) + ", at most " + maxTimeoutMs + "), tool calls included: raise it for slow tools." + " For example:\nconst tickets = [];\nfor (let page = 1; page; ) { const result = await tools.helpdesk__list_tickets({ status: \"open\", page }); tickets.push(...result.tickets); page = result.nextPage; }\nawait fs.writeFile(\"/workspace/tmp/tickets.json\", JSON.stringify(tickets)); // a later execution can read it back\nreturn { open: tickets.length, oldest: tickets[0]?.createdAt };",
         parameters: {
           type: "object", required: ["code"],
           properties: { code: { type: "string" }, description: { type: "string" }, timeoutMs: { type: "number" }, maxOutputCharacters: { type: "number" } },

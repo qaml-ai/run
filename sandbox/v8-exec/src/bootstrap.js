@@ -2,7 +2,7 @@
 (function(call, emit) {
   "use strict";
   // No shared-memory or blocking synchronization primitives are needed for
-  // tool orchestration. These are optional QuickJS built-ins, not host APIs.
+  // tool orchestration. These are ECMAScript built-ins, not host APIs.
   delete globalThis.SharedArrayBuffer;
   delete globalThis.Atomics;
   const stringify = JSON.stringify;

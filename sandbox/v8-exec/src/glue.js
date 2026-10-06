@@ -21,7 +21,7 @@
     if (ok) entry[0](text); else entry[1](new ErrorCtor(text));
   };
   const [install, formatError, finish] = bootstrap(call, emit);
-  // No shared memory and no WebAssembly: QuickJS had neither, and tool orchestration needs neither.
+  // No shared memory and no WebAssembly: tool orchestration needs neither.
   const lockdown = () => {
     for (const name of ["SharedArrayBuffer", "Atomics", "WebAssembly"]) delete globalThis[name];
   };

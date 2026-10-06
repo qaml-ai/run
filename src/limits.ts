@@ -1,11 +1,10 @@
 // Trusted host policy. Guest arguments cannot raise these limits.
 export const SANDBOX_LIMITS = Object.freeze({
-  wasmBytes: 32 * 1024 * 1024,
-  heapBytes: 16 * 1024 * 1024,
-  stackBytes: 256 * 1024,
+  /** One execution's V8 heap: v8-exec's HEAP_BYTES (sandbox/v8-exec/src/main.rs), for the system prompt. */
+  heapBytes: 128 * 1024 * 1024,
   /**
-   * One execution's CPU: what a tenant gets by default, and at most whatever is set for it. A worker
-   * thread busy this long (plus 250 ms grace) is terminated, whatever the guest is doing (codemode.ts).
+   * One execution's CPU: what a tenant gets by default, and at most whatever is set for it. v8-exec's
+   * watchdog terminates the guest at it, and its process 250 ms later (sandbox/v8-exec).
    */
   cpuMs: 2_000, maxCpuMs: 30_000,
   /**
@@ -28,23 +27,6 @@ export const SANDBOX_LIMITS = Object.freeze({
  * Admin tenants (the tenants file's) are not held to `concurrent` or `maxTimeoutMs` unless their entry sets them.
  */
 export const CODE_LIMITS = Object.freeze({ cpuMs: SANDBOX_LIMITS.cpuMs, maxTimeoutMs: 60_000, concurrent: 4, freeConcurrent: 2 });
-
-/**
- * What runs a tenant's js_exec: QuickJS in WASM on pooled worker threads (src/quickjs-sandbox.ts), or
- * V8 in a process of its own per execution (sandbox/v8-exec, src/v8-exec.ts). A tenant's own (a
- * tenants-file entry's `codeEngine`, or `tenants.limits`') wins over the runtime's (`defaultCodeEngine`).
- * An agent's engine is fixed when its host starts: a change reaches agents as they next load.
- */
-export type CodeEngine = "quickjs" | "v8";
-export const isCodeEngine = (value: unknown): value is CodeEngine => value === "quickjs" || value === "v8";
-
-/** The engine for tenants without one of their own: AGENT_JS_EXEC, else quickjs. */
-export function defaultCodeEngine(): CodeEngine {
-  const value = process.env.AGENT_JS_EXEC;
-  if (!value) return "quickjs";
-  if (!isCodeEngine(value)) throw new Error(`AGENT_JS_EXEC must be quickjs or v8, not ${JSON.stringify(value)}`);
-  return value;
-}
 
 /**
  * An agent's tool catalog. Most tools are reached from js_exec, where only names enter the

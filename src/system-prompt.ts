@@ -79,7 +79,7 @@ export function environmentSummary(config: Pick<AgentConfig, "mounts" | "model" 
     `- Tools only in js_exec: ${hidden.length ? `${hidden.length}, in ${namespaces.join(", ")}; find them with tools.search` : "none"}.`,
     ...config.tools.some(tool => tool.needsApproval) ? [`- The user approves each call of these tools before it runs, which pauses your turn until they answer: ${config.tools.filter(tool => tool.needsApproval).map(tool => tool.name).sort().join(", ")}.`] : [],
     ...config.tools.some(tool => tool.name === "ask_user") ? ["- When you are blocked on a choice only the user can make, ask them with ask_user; your turn pauses until they answer. Don't ask what you can find out yourself."] : [],
-    `- js_exec limits per execution: ${(config.codeLimits?.cpuMs ?? SANDBOX_LIMITS.cpuMs) / 1000} s of CPU, ${SANDBOX_LIMITS.heapBytes / 1024 / 1024} MB of memory, ${Math.min(SANDBOX_LIMITS.timeoutMs, maxTimeoutMs) / 1000} s (timeoutMs, up to ${maxTimeoutMs / 1000} s), ${SANDBOX_LIMITS.toolCalls} tool calls, ${SANDBOX_LIMITS.outputCharacters.toLocaleString("en-US")} output characters. QuickJS interprets slowly: process large data in one pass.`,
+    `- js_exec limits per execution: ${(config.codeLimits?.cpuMs ?? SANDBOX_LIMITS.cpuMs) / 1000} s of CPU, ${SANDBOX_LIMITS.heapBytes / 1024 / 1024} MB of memory, ${Math.min(SANDBOX_LIMITS.timeoutMs, maxTimeoutMs) / 1000} s (timeoutMs, up to ${maxTimeoutMs / 1000} s), ${SANDBOX_LIMITS.toolCalls} tool calls, ${SANDBOX_LIMITS.outputCharacters.toLocaleString("en-US")} output characters. Process large data in one pass.`,
   ].join("\n");
 }
 

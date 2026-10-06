@@ -191,7 +191,7 @@ test("an image whose scaling failed for now (its sandbox process crashed) is tri
   const directory = await mkdtemp(join(tmpdir(), "sbx-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const real = join(directory, "real.sock"), proxied = join(directory, "proxy.sock");
-  const child = spawn(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", fileURLToPath(new URL("../src/sandbox-server.ts", import.meta.url)), `--socket=${real}`, "--workers-min=1", "--workers-max=2"], { stdio: ["ignore", "inherit", "inherit"] });
+  const child = spawn(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", fileURLToPath(new URL("../src/sandbox-server.ts", import.meta.url)), `--socket=${real}`, "--v8-prespawn=0"], { stdio: ["ignore", "inherit", "inherit"] });
   t.after(() => { child.kill("SIGKILL"); });
   let dropped = 0;
   const proxy = createServer(client => {

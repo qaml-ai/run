@@ -9,7 +9,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
-import { codePool } from "../src/codemode.ts";
+import { v8Exec } from "../src/v8-exec.ts";
 import { localTools } from "./local-tools.ts";
 import { configuredModel } from "../src/model.ts";
 import { readTranscript } from "../src/transcript.ts";
@@ -159,7 +159,7 @@ test("the prompt summarizes the agent's environment from its configuration, and 
     "- You cannot see images or PDFs: read a PDF for its text.",
     "- Tools declared to you: lookup.",
     "- Tools only in js_exec: 3, in 1 without a namespace, crm (2); find them with tools.search.",
-    "- js_exec limits per execution: 2 s of CPU, 16 MB of memory, 30 s (timeoutMs, up to 120 s), 256 tool calls, 32,000 output characters. QuickJS interprets slowly: process large data in one pass.",
+    "- js_exec limits per execution: 2 s of CPU, 128 MB of memory, 30 s (timeoutMs, up to 120 s), 256 tool calls, 32,000 output characters. Process large data in one pass.",
   ].join("\n"));
   // Presented files reach the user by themselves: the model is told not to write links to them (it wrote sandbox:/workspace/... ones).
   assert.match(system(requests[0]), /present_file[^\n]*shown to the user[^\n]*never write a link/);
@@ -206,14 +206,14 @@ test("stopping an agent also stops its CPU-bound codemode execution", async t =>
   await supervisor.stop("a");
   await rejected;
   if (handle.kind === "process") {
-    // The sandbox worker is a thread of the agent's process, which is gone.
+    // The agent's process, which ran the execution's v8-exec process, is gone.
     assert.throws(() => process.kill(handle.child.pid!, 0), { code: "ESRCH" });
     return;
   }
-  // Inline, the guest is cancelled through the interrupt handler and its worker returns to the pool.
-  const pool = codePool();
-  for (let i = 0; i < 50 && [...pool.slots].some(slot => slot.state === "busy"); i++) await new Promise(resolve => setTimeout(resolve, 20));
-  assert.ok([...pool.slots].every(slot => slot.state !== "busy"), "Codemode execution survived agent shutdown");
+  // Inline, the execution's v8-exec process is killed.
+  const pool = v8Exec();
+  for (let i = 0; i < 50 && pool.running; i++) await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(pool.running, 0, "Codemode execution survived agent shutdown");
 });
 
 test("HTTP control plane authenticates operators, provisions agents, and deletes them", async t => {

@@ -11,7 +11,7 @@ import { BillingPayments, stripeId } from "./billing-payments.ts";
 import { CardCredit, CARD_CHECK } from "./card-credit.ts";
 import type { StorageUsage } from "./storage-usage.ts";
 import { safeError } from "./metrics.ts";
-import { CODE_LIMITS, defaultCodeEngine, isCodeEngine, SANDBOX_LIMITS, type CodeEngine } from "./limits.ts";
+import { CODE_LIMITS, SANDBOX_LIMITS } from "./limits.ts";
 
 /**
  * Prepaid credit. Tenants with `billing: "prepaid"` (every tenant created by sign-in)
@@ -142,7 +142,7 @@ export class Billing {
   /** Each tenant's balance, lifetime purchases and usage spend in the last hour, as last read. */
   private readonly accounts = new Map<string, Account & { until: number }>();
   private readonly reads = new Map<string, Promise<Account>>();
-  private readonly modes = new Map<string, { mode: BillingMode; maxStorageBytes?: number; agentCreatesPerMinute?: number; runsPerMinute?: number; maxRunResponses?: number; maxRunSeconds?: number; codeCpuMs?: number; codeMaxTimeoutMs?: number; codeConcurrency?: number; codeEngine?: CodeEngine; until: number }>();
+  private readonly modes = new Map<string, { mode: BillingMode; maxStorageBytes?: number; agentCreatesPerMinute?: number; runsPerMinute?: number; maxRunResponses?: number; maxRunSeconds?: number; codeCpuMs?: number; codeMaxTimeoutMs?: number; codeConcurrency?: number; until: number }>();
 
   constructor(options: BillingOptions) {
     this.options = options;
@@ -167,10 +167,10 @@ export class Billing {
     if (cached && cached.until > Date.now()) return cached;
     const row = (await this.db.query("select billing, limits from tenants where id = $1", [tenant])).rows[0];
     const set = (key: string) => Number.isSafeInteger(row?.limits?.[key]) ? { [key]: row.limits[key] as number } : {};
-    const entry: { mode: BillingMode; maxStorageBytes?: number; agentCreatesPerMinute?: number; runsPerMinute?: number; maxRunResponses?: number; maxRunSeconds?: number; codeCpuMs?: number; codeMaxTimeoutMs?: number; codeConcurrency?: number; codeEngine?: CodeEngine; until: number } = {
+    const entry: { mode: BillingMode; maxStorageBytes?: number; agentCreatesPerMinute?: number; runsPerMinute?: number; maxRunResponses?: number; maxRunSeconds?: number; codeCpuMs?: number; codeMaxTimeoutMs?: number; codeConcurrency?: number; until: number } = {
       mode: (row?.billing === "prepaid" ? "prepaid" : "none") as BillingMode, ...set("maxStorageBytes"), ...set("agentCreatesPerMinute"), ...set("runsPerMinute"),
       ...set("maxRunResponses"), ...set("maxRunSeconds"), ...set("codeCpuMs"), ...set("codeMaxTimeoutMs"), ...set("codeConcurrency"),
-      ...(isCodeEngine(row?.limits?.codeEngine) ? { codeEngine: row.limits.codeEngine as CodeEngine } : {}), until: Date.now() + MODE_CACHE_MS,
+      until: Date.now() + MODE_CACHE_MS,
     };
     this.modes.set(tenant, entry);
     return entry;
@@ -199,16 +199,15 @@ export class Billing {
    * The js_exec limits set for the tenant: an admin tenant's entry (absent: the default CPU, and no other limit below the
    * runtime's), else a self-serve tenant's `tenants.limits`, else `CODE_LIMITS` (on free credit, `freeConcurrent` at once).
    */
-  async codeLimits(tenant: string): Promise<{ cpuMs: number; maxTimeoutMs: number; concurrent: number; engine: CodeEngine }> {
+  async codeLimits(tenant: string): Promise<{ cpuMs: number; maxTimeoutMs: number; concurrent: number }> {
     if (this.tenants.has(tenant)) {
       const own = this.tenants.codeLimits(tenant);
-      return { cpuMs: own.cpuMs ?? CODE_LIMITS.cpuMs, maxTimeoutMs: own.maxTimeoutMs ?? SANDBOX_LIMITS.maxTimeoutMs, concurrent: own.concurrent ?? Infinity, engine: own.engine ?? defaultCodeEngine() };
+      return { cpuMs: own.cpuMs ?? CODE_LIMITS.cpuMs, maxTimeoutMs: own.maxTimeoutMs ?? SANDBOX_LIMITS.maxTimeoutMs, concurrent: own.concurrent ?? Infinity };
     }
     const row = await this.row(tenant);
     return {
       cpuMs: Math.min(row.codeCpuMs ?? CODE_LIMITS.cpuMs, SANDBOX_LIMITS.maxCpuMs), maxTimeoutMs: Math.min(row.codeMaxTimeoutMs ?? CODE_LIMITS.maxTimeoutMs, SANDBOX_LIMITS.maxTimeoutMs),
       concurrent: row.codeConcurrency ?? (await this.onFreeCredit(tenant) ? CODE_LIMITS.freeConcurrent : CODE_LIMITS.concurrent),
-      engine: row.codeEngine ?? defaultCodeEngine(),
     };
   }
 

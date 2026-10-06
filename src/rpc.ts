@@ -55,9 +55,9 @@ export function childProcess(entry: string, cwd: string, runtime = process.execP
     cwd,
     detached,
     // No inherited provider keys, supervisor token, NODE_OPTIONS, or preload hooks. One agent
-    // runs one js_exec at a time: it starts a sandbox worker on demand and lets it go when idle.
+    // runs one js_exec at a time, in a v8-exec process or a sandbox process.
     env: {
-      PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: cwd, TMPDIR: cwd, AGENT_CODE_WORKERS_MIN: "0",
+      PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: cwd, TMPDIR: cwd,
       // Where agent-launcher's sandbox processes listen, when it started them.
       ...(process.env.AGENT_SANDBOX_SOCKETS ? { AGENT_SANDBOX_SOCKETS: process.env.AGENT_SANDBOX_SOCKETS } : {}),
       // The outbound policy (outbound.ts): the agent calls endpoints tenants give for their models.

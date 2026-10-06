@@ -1,7 +1,7 @@
 // v8-exec: one js_exec execution in a fresh process, on a bare V8 isolate.
 //
 // The parent (src/v8-exec.ts) spawns this per execution and speaks length-prefixed JSON frames
-// over stdin/stdout, the same messages a QuickJS worker exchanged over its MessagePort:
+// over stdin/stdout (the runtime's codemode wire messages, src/codemode.ts):
 //   in:  {type:"request", id, method:"execute", params:{code, tools, timeoutMs, maxOutputCharacters, cpuMs}}
 //        then {type:"response", id, result|error} for each tool call
 //   out: {type:"request", id, method:"tool", params:{name, args}}, {type:"event", event:{type:"output", text}},
@@ -131,7 +131,7 @@ fn throw(scope: &mut v8::PinScope, message: &str, type_error: bool) {
   scope.throw_exception(error);
 }
 
-/// `send(id, name, json)`: a tool call, checked here as QuickJS's host function did, then sent to the parent.
+/// `send(id, name, json)`: a tool call, checked here, then sent to the parent.
 fn send_cb(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue<v8::Value>) {
   let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
   let (name, json) = (args.get(1), args.get(2));
@@ -158,7 +158,7 @@ fn send_cb(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v
   EXEC.with(|exec| exec.borrow_mut().outbox.push(frame));
 }
 
-/// `emit(text, flags)`: output, bounded as QuickJS's host function bounded it. Flags: 1, cut at
+/// `emit(text, flags)`: output, bounded here. Flags: 1, cut at
 /// 128,000 characters; 2, the value code returned; 4, rendered as JSON.
 fn emit_cb(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue<v8::Value>) {
   let text = args.get(0);
@@ -218,7 +218,7 @@ unsafe extern "C" fn near_heap_limit(data: *mut c_void, current: usize, _initial
 }
 
 // ArrayBuffer backing stores live outside the V8 heap: count them, and refuse past the bound
-// (the guest sees a RangeError, as QuickJS's fixed memory gave it).
+// (the guest sees a RangeError).
 unsafe extern "C" fn ab_allocate(_: &AtomicUsize, len: usize) -> *mut c_void {
   if ARRAY_BUFFERS.fetch_add(len, Ordering::SeqCst) + len > ARRAY_BUFFER_BYTES { ARRAY_BUFFERS.fetch_sub(len, Ordering::SeqCst); REFUSED.store(true, Ordering::SeqCst); return std::ptr::null_mut(); }
   let ptr = libc::calloc(len.max(1), 1);
@@ -263,7 +263,7 @@ fn run<'s>(scope: &mut v8::PinScope<'s, '_>, source: &str, name: &str) -> v8::Lo
 const STRIP_PREFIX: &str = "async function __camelTypeStrip__() {\n";
 const STRIP_SUFFIX: &str = "\n}";
 
-/// TypeScript to JavaScript, as sucrase did: wrapped so top-level return and await parse, then
+/// TypeScript to JavaScript: wrapped so top-level return and await parse, then
 /// oxc's TypeScript transform (types removed, enums and parameter properties compiled) and
 /// reprinted. Anything it cannot parse is left as it is, for V8 to report.
 fn strip_typescript(code: &str) -> String {
@@ -297,7 +297,7 @@ fn has_word(text: &str, word: &str) -> bool {
   })
 }
 
-/// shared/code-mode-source.ts's prepareCodeModeUserCode: code without a `return` returns its last expression.
+/// Code without a `return` returns its last expression.
 fn prepare(code: &str) -> String {
   if code.trim().is_empty() || has_word(code, "return") { return code.to_string(); }
   let body = code.trim_end();
@@ -419,7 +419,7 @@ fn main() {
   let tools = v8::String::new(tc, &tools).unwrap();
   install.call(tc, undefined, &[tools.into()]).expect("install");
 
-  // As quickjs-sandbox.ts did: code without a "<" is compiled as it is, and stripped only if that
+  // Code without a "<" is compiled as it is, and stripped only if that
   // fails; a "<" may be a generic call, which JavaScript reads as comparisons, so it is stripped first.
   let generic = code.contains('<');
   let mut promise = compile(tc, lockdown, &if generic { strip_typescript(&code) } else { code.clone() });

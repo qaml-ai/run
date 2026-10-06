@@ -18,8 +18,8 @@ import { createAgentHost, HISTORY_FLUSH_MS } from "./agent-host.ts";
 /**
  * How agents run. "process": each agent is its own Node process (strong memory
  * isolation, ~50 MB each). "inline": many agents share this process, each
- * bounded by its compacted working set. Model-written code runs in QuickJS on the
- * hosting process's worker pool either way.
+ * bounded by its compacted working set. Model-written code runs in v8-exec
+ * processes either way (in sandbox processes when agent-launcher started them).
  */
 export type Hosting = "process" | "inline";
 type Common = { bridge: ToolBridge; calls: Set<AbortController>; listeners: Set<(event: any) => void>; transcript: AppendLog<TranscriptRecord> };

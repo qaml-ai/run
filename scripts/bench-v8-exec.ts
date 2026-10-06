@@ -1,19 +1,18 @@
-// js_exec engines side by side, through executeCode on this machine: today's QuickJS worker pool
-// (in-process CodePool) against v8-exec, a process per execution (jitless as deployed, with V8's
-// JIT, and pre-spawned). Run QuickJS and V8 in separate invocations: a parent holding 32 QuickJS
-// workers (their WASM reservations) spawns processes several times slower.
-//   npm run bench:v8-exec -- --engines quickjs; npm run bench:v8-exec -- --engines v8,v8-jit,v8-prespawn
-// Build the binary first: npm run build:v8-exec.
+// js_exec on v8-exec, a process per execution, through executeCode on this machine: jitless as
+// deployed, with V8's JIT, and pre-spawned, side by side.
+//   npm run bench:v8-exec [-- --engines v8,v8-jit,v8-prespawn]
+// Build the binary first: npm run build:v8-exec. bench/v8-exec-*.json hold earlier runs (the
+// *-quickjs.json ones, of the QuickJS engine js_exec had before).
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { CodePool, executeCode } from "../src/codemode.ts";
+import { executeCode } from "../src/codemode.ts";
 import { V8Exec } from "../src/v8-exec.ts";
 import type { ToolBridge } from "../src/protocol.ts";
 
 const { values: args } = parseArgs({ options: {
   runs: { type: "string", default: "200" },
-  engines: { type: "string", default: "quickjs,v8,v8-jit,v8-prespawn" },
+  engines: { type: "string", default: "v8,v8-jit,v8-prespawn" },
   cases: { type: "string", default: "" },
   concurrency: { type: "string", default: "1,8,32" },
   seconds: { type: "string", default: "5" },
@@ -52,9 +51,8 @@ const cases: Record<string, string> = {
 };
 const selectedCases = args.cases ? args.cases.split(",") : Object.keys(cases);
 
-type Engine = { name: string; pool: CodePool | V8Exec; close(): unknown };
+type Engine = { name: string; pool: V8Exec; close(): unknown };
 function engine(name: string, size = 1): Engine {
-  if (name === "quickjs") { const pool = new CodePool({ min: size, max: 32 }); return { name, pool, close: () => pool.close() }; }
   const options = {
     // v8: as deployed (jitless); v8-jit: with V8's compilers; v8-prespawn: jitless, processes started ahead.
     v8: { jitless: true }, "v8-jit": { jitless: false },
@@ -87,7 +85,7 @@ function memory(pids: number[]): { rssMb: number; pssMb?: number } {
   return { rssMb: round(out.split("\n").filter(Boolean).reduce((sum, line) => sum + Number(line.trim()), 0) / 1024, 1) };
 }
 
-async function exec(pool: CodePool | V8Exec, code: string) {
+async function exec(pool: V8Exec, code: string) {
   const result = await executeCode({ code, bridge, pool, timeoutMs: 60_000, limits: { cpuMs: 30_000 } });
   if (!result.output.length) throw new Error(`no output for ${code}`);
   return result;
@@ -107,7 +105,7 @@ for (const name of args.phases.includes("latency") ? args.engines.split(",") : [
     for (let i = 0; i < 20; i++) await exec(e.pool, code);
     const latencies: number[] = [];
     const cpu = process.cpuUsage();
-    const childCpu = e.pool instanceof V8Exec ? e.pool.processCpuMs : 0;
+    const childCpu = e.pool.processCpuMs;
     for (let i = 0; i < runs; i++) {
       started = performance.now();
       await exec(e.pool, code);
@@ -115,10 +113,10 @@ for (const name of args.phases.includes("latency") ? args.engines.split(",") : [
     }
     const used = process.cpuUsage(cpu);
     const parentCpu = (used.user + used.system) / 1000 / runs;
-    const childCpuPer = e.pool instanceof V8Exec ? (e.pool.processCpuMs - childCpu) / runs : 0;
+    const childCpuPer = (e.pool.processCpuMs - childCpu) / runs;
     report.latency[name][label] = {
       firstMs: round(firstMs), p50Ms: round(percentile(latencies, 0.5)), p99Ms: round(percentile(latencies, 0.99)),
-      cpuMsPerExecution: round(parentCpu + childCpuPer), ...(e.pool instanceof V8Exec ? { childCpuMs: round(childCpuPer) } : {}),
+      cpuMsPerExecution: round(parentCpu + childCpuPer), childCpuMs: round(childCpuPer),
     };
     if (!args.json) console.error(name, label, JSON.stringify(report.latency[name][label]));
   }
@@ -127,8 +125,7 @@ for (const name of args.phases.includes("latency") ? args.engines.split(",") : [
 
 // Memory: 32 executions at once, each waiting on a tool (the chiridion case: camel__ tools that take minutes).
 for (const name of args.phases.includes("memory") ? args.engines.split(",") : []) {
-  // No warm QuickJS workers before: the parent's growth is then what 32 waiting executions hold.
-  const e = name === "quickjs" ? { name, pool: new CodePool({ min: 0, max: 32 }), close() { return (this.pool as CodePool).close(); } } : engine(name, 32);
+  const e = engine(name, 32);
   await sleep(500);
   const before = memory([process.pid]);
   let entered = 0;
@@ -140,13 +137,12 @@ for (const name of args.phases.includes("memory") ? args.engines.split(",") : []
   await all.promise;
   await sleep(300);
   const self = memory([process.pid]);
-  const children = e.pool instanceof V8Exec ? memory([...e.pool.pids]) : { rssMb: 0 };
+  const children = memory([...e.pool.pids]);
   release.resolve();
   await Promise.all(running);
   report.memory[name] = {
     parentRssBeforeMb: before.rssMb, parentRssWaitingMb: self.rssMb,
-    ...(e.pool instanceof V8Exec ? { childrenRssMb: children.rssMb, childrenPssMb: children.pssMb, perExecutionRssMb: round(children.rssMb / 32, 1), perExecutionPssMb: children.pssMb && round(children.pssMb / 32, 1) }
-      : { perExecutionRssMb: round((self.rssMb - before.rssMb) / 32, 1) }),
+    childrenRssMb: children.rssMb, childrenPssMb: children.pssMb, perExecutionRssMb: round(children.rssMb / 32, 1), perExecutionPssMb: children.pssMb && round(children.pssMb / 32, 1),
     totalWaitingMb: round(self.rssMb + children.rssMb, 1),
   };
   if (!args.json) console.error(name, "memory", JSON.stringify(report.memory[name]));
@@ -163,12 +159,12 @@ for (const name of args.phases.includes("throughput") ? args.engines.split(",") 
       let done = 0;
       const until = performance.now() + Number(args.seconds) * 1000;
       const cpu = process.cpuUsage();
-      const childCpu = e.pool instanceof V8Exec ? e.pool.processCpuMs : 0;
+      const childCpu = e.pool.processCpuMs;
       const started = performance.now();
       await Promise.all(Array.from({ length: concurrency }, async () => { while (performance.now() < until) { await exec(e.pool, cases[label]); done++; } }));
       const seconds = (performance.now() - started) / 1000;
       const used = process.cpuUsage(cpu);
-      const totalCpu = (used.user + used.system) / 1000 + (e.pool instanceof V8Exec ? e.pool.processCpuMs - childCpu : 0);
+      const totalCpu = (used.user + used.system) / 1000 + e.pool.processCpuMs - childCpu;
       report.throughput[name][`${label} @${concurrency}`] = { perSecond: round(done / seconds, 0), cpuMsPerExecution: round(totalCpu / done) };
       if (!args.json) console.error(name, label, concurrency, JSON.stringify(report.throughput[name][`${label} @${concurrency}`]));
     }

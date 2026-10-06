@@ -1,7 +1,7 @@
-// Trusted source, evaluated only inside QuickJS. Captured host capabilities
+// Trusted source, evaluated only inside the guest's V8 context (v8-exec compiles it in:
+// scripts/gen-v8-bootstrap.ts). Captured host capabilities
 // accept/return strings; their JS wrappers and prototypes belong to the guest.
-// It runs once per sandbox image, before the snapshot that every execution starts
-// from (quickjs-sandbox.ts), and returns what the host calls per execution:
+// It runs before guest code, and returns what the host calls per execution:
 // `install`, which defines `tools` from that execution's tool names, the error formatter, and
 // `finish`, which sends what the code returned.
 
@@ -14,7 +14,7 @@ export const SANDBOX_BOOTSTRAP = `
 (function(call, emit) {
   "use strict";
   // No shared-memory or blocking synchronization primitives are needed for
-  // tool orchestration. These are optional QuickJS built-ins, not host APIs.
+  // tool orchestration. These are ECMAScript built-ins, not host APIs.
   delete globalThis.SharedArrayBuffer;
   delete globalThis.Atomics;
   const stringify = JSON.stringify;
