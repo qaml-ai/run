@@ -20,6 +20,11 @@ const snippets = [
   "while (true) {}",
   "return [new Intl.NumberFormat('de-DE').format(1234.5), new Date(0).toLocaleString(), ['b', 'a'].sort(new Intl.Collator('de').compare)]",
   "enum E { A } return E.A",
+  // tests/sandbox.test.ts's CPU, stack and hostile-serialization cases.
+  "while (true) await Promise.resolve();",
+  "function recurse() { return recurse() + 1; } return recurse();",
+  "return { toJSON() { while (true) {} } };",
+  'throw { get message() { while (true) {} } };',
 ];
 const all = new Set<string>(), afterRequest = new Set<string>(), killedBy = new Set<string>();
 const dir = mkdtempSync("/tmp/v8-syscalls-");
