@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
-import { CodeGate, defaultCodeWorkers, executeCode } from "../src/codemode.ts";
+import { codeCapacity, CodeGate, executeCode } from "../src/codemode.ts";
 import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
 import { checkable, validateToolCall } from "../src/tool-policy.ts";
 import { keywordScores } from "../src/tool-search.ts";
@@ -93,10 +93,18 @@ test("one tenant saturating its executions on a node does not stop another's", {
   assert.equal(gate.running, 0);
 });
 
-test("tenants with a limit share what the node's memory affords", () => {
-  assert.equal(defaultCodeWorkers(2 * 1024 ** 3), 6);
-  assert.equal(defaultCodeWorkers(512 * 1024 ** 2), 2);
-  assert.equal(defaultCodeWorkers(64 * 1024 ** 3), 32);
+test("tenants with a limit share 16 executions at once on a node, or AGENT_CODE_WORKERS_MAX", () => {
+  const configured = process.env.AGENT_CODE_WORKERS_MAX;
+  try {
+    delete process.env.AGENT_CODE_WORKERS_MAX;
+    assert.equal(codeCapacity(), 16);
+    for (const [value, capacity] of [["4", 4], ["40", 40], ["", 16]] as const) {
+      process.env.AGENT_CODE_WORKERS_MAX = value;
+      assert.equal(codeCapacity(), capacity);
+    }
+  } finally {
+    if (configured === undefined) delete process.env.AGENT_CODE_WORKERS_MAX; else process.env.AGENT_CODE_WORKERS_MAX = configured;
+  }
 });
 
 test("host-side checks of guest input stay linear: tenant regexes are not run, and large inputs get no quadratic work", () => {

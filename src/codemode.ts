@@ -1,4 +1,3 @@
-import { totalmem } from "node:os";
 import { Rpc } from "./rpc.ts";
 import { errorText, type ToolBridge, type WireMessage } from "./protocol.ts";
 import { jsonWithinLimit, SANDBOX_LIMITS } from "./limits.ts";
@@ -21,24 +20,14 @@ export interface Guest {
 }
 
 /**
- * Executions a node runs at once for tenants with a concurrency limit (`CodeGate`): what a
- * fraction of the memory this process may use (its cgroup's limit in a container) affords at an
- * execution's typical peak, so their executions cannot take a task's memory. A v8-exec process may
- * hold a 128 MiB V8 heap and 128 MiB of ArrayBuffers, though most stay far below.
- */
-export function defaultCodeWorkers(memory = Math.min(process.constrainedMemory?.() || Infinity, totalmem())) {
-  return Math.max(2, Math.min(32, Math.floor(memory * CODE_MEMORY_SHARE / CODE_WORKER_BYTES)));
-}
-const CODE_MEMORY_SHARE = 0.4;
-const CODE_WORKER_BYTES = 128 * 1024 * 1024;
-
-/**
  * How many js_exec executions tenants with a concurrency limit may run together on this node (`CodeGate`):
- * what its memory affords (`defaultCodeWorkers`), within AGENT_CODE_WORKERS_MAX if set.
+ * AGENT_CODE_WORKERS_MAX, or 16. An execution waiting on tools holds its v8-exec process, about 20 MB
+ * resident; 16 at once is about 320 MB, or a sixth of a 2 GB task.
  */
 export function codeCapacity() {
-  return Math.min(defaultCodeWorkers(), process.env.AGENT_CODE_WORKERS_MAX ? Number(process.env.AGENT_CODE_WORKERS_MAX) : Infinity);
+  return Number(process.env.AGENT_CODE_WORKERS_MAX) || DEFAULT_CODE_CAPACITY;
 }
+const DEFAULT_CODE_CAPACITY = 16;
 
 /** Tool calls, output events and the answer: more than this from one execution means the sandbox is misbehaving. */
 const GUEST_MESSAGE_LIMIT = SANDBOX_LIMITS.toolCalls + SANDBOX_LIMITS.outputEvents + 8;
@@ -116,12 +105,12 @@ async function hostCall(bridge: ToolBridge, name: string, args: unknown) {
 export type CodeLimits = { cpuMs: number; maxTimeoutMs: number; concurrent: number };
 
 /**
- * Admits js_exec executions on a node: at most `capacity` at once (what its memory affords), and
+ * Admits js_exec executions on a node: at most `capacity` at once (`codeCapacity`), and
  * at most `limit` of them for any one tenant. Executions waiting are admitted a tenant at a time,
  * in turn, so a tenant that keeps every slot it may have busy cannot hold back another's. A tenant
  * without a limit (an admin tenant's, Infinity) is admitted at once and not counted: only the
  * v8-exec process limit (AGENT_V8_MAX) bounds it, so the runtime's own heavy users never queue
- * behind the memory-sized capacity.
+ * behind the capacity.
  */
 export class CodeGate {
   readonly capacity: number;

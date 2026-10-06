@@ -417,7 +417,7 @@ export interface ClientSessionOptions {
   runLimitsFor?: (tenant: string) => Promise<Required<RunLimits>>;
   /** A tenant's js_exec limits: CPU per execution, the longest timeoutMs, and executions at once on this node. Default `CODE_LIMITS`. */
   codeLimitsFor?: (tenant: string) => Promise<CodeLimits>;
-  /** js_exec executions this node runs at once for tenants with a concurrency limit, together; default what its memory affords (`codeCapacity`). */
+  /** js_exec executions this node runs at once for tenants with a concurrency limit, together; default `codeCapacity`. */
   codeCapacity?: number;
   /** Why a tenant may not start any run, code executions included (spent prepaid credit). Checked when a run is accepted and when it starts. */
   creditLimit?: (tenant: string) => Promise<Refusal | undefined>;
