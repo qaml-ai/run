@@ -4,9 +4,10 @@ import { once } from "node:events";
 import { AgentRuntime, schema, tool } from "../clients/typescript.ts";
 import { balancer, cluster, fakeEcs, fakeModel, sleep, token, toolMessages, until } from "./cluster-helpers.ts";
 
-// A periodic sweep too slow to matter: what moves a turn below is the leaving node telling its peers. AGENT_HOSTING=inline
+// A periodic sweep too slow to matter: what moves a turn below is the leaving node telling its peers. Tool calls wait on
+// the test, so they get two minutes rather than 15 s (a loaded runner is slow to retire a node). AGENT_HOSTING=inline
 // runs them as on ECS.
-const QUIET = { AGENT_ORPHAN_SWEEP_MS: "600000", ...(process.env.AGENT_HOSTING ? { AGENT_HOSTING: process.env.AGENT_HOSTING } : {}) };
+const QUIET = { AGENT_ORPHAN_SWEEP_MS: "600000", AGENT_TOOL_TIMEOUT_MS: "120000", ...(process.env.AGENT_HOSTING ? { AGENT_HOSTING: process.env.AGENT_HOSTING } : {}) };
 type Node = Awaited<ReturnType<Awaited<ReturnType<typeof cluster>>["start"]>> & { ecs?: Awaited<ReturnType<typeof fakeEcs>> };
 type T = Parameters<typeof cluster>[0];
 
