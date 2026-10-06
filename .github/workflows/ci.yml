@@ -55,6 +55,34 @@ jobs:
         with: { node-version: 22, cache: npm }
       - run: npm ci
       - run: npm run test:shard -- ${{ matrix.shard }}/4
+  v8-exec:
+    # js_exec's V8 engine (sandbox/v8-exec), built here on x86_64 (the image job runs it on ARM64): its own
+    # tests, seccomp included, and the js_exec suites on it (AGENT_JS_EXEC=v8).
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: { POSTGRES_PASSWORD: test }
+        ports: ["5432:5432"]
+        options: --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 20
+    env:
+      AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      # The toolchain is sandbox/v8-exec/rust-toolchain.toml's; rusty_v8's prebuilt V8 library is cached with the target dir.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            sandbox/v8-exec/target
+          key: v8-exec-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('sandbox/v8-exec/Cargo.lock', 'sandbox/v8-exec/rust-toolchain.toml') }}
+      - run: npm ci
+      - run: npm run build:v8-exec -- --locked
+      - run: node --experimental-strip-types --disable-warning=ExperimentalWarning --test --test-timeout=300000 tests/v8-exec.test.ts tests/code-engine.test.ts
+      - run: node --experimental-strip-types --disable-warning=ExperimentalWarning --test --test-timeout=300000 tests/sandbox.test.ts tests/codemode-limits.test.ts tests/code-mode-source.test.ts
+        env: { AGENT_JS_EXEC: v8 }
   image:
     # The deployed image installs only runtime dependencies; prove it migrates its database, starts and serves,
     # with js_exec isolated in sandbox processes. Built natively for production's ARM64 (Graviton).
@@ -99,6 +127,11 @@ jobs:
       # then js_exec end to end, and a killed sandbox process restarted.
       - run: node --experimental-strip-types --disable-warning=ExperimentalWarning tests/image-isolation.ts
         env: { IMAGE: "agent-runtime:ci", DATABASE_URL: "postgres://postgres:test@127.0.0.1:5432/postgres" }
+      # The same with V8 the default engine: the v8-exec process under its sandbox process and its own seccomp filter.
+      - run: node --experimental-strip-types --disable-warning=ExperimentalWarning tests/image-isolation.ts
+        env: { IMAGE: "agent-runtime:ci", DATABASE_URL: "postgres://postgres:test@127.0.0.1:5432/postgres", AGENT_JS_EXEC: v8 }
+      # And the image's v8-exec on ARM64, seccomp included, as the node user.
+      - run: docker run --rm --user node --entrypoint node -v "$PWD:/w:ro" -w /w agent-runtime:ci --experimental-strip-types --disable-warning=ExperimentalWarning --test --test-timeout=300000 tests/v8-exec.test.ts
   publish:
     # Main's production image goes to ECR while the tests run, from the layers the image job caches, so the
     # deploy (which waits for all of CI) only rolls it out. The deploy role trusts only the production
