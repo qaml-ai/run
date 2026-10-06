@@ -3,6 +3,7 @@ import { connect } from "node:net";
 import { performance } from "node:perf_hooks";
 import { transaction, type Db, type Sql } from "./db.ts";
 import { HttpError } from "./http.ts";
+import { safeError } from "./metrics.ts";
 
 /** This node's ownership of one actor. Writes that only the owner may make are conditional on it. */
 export interface Claim { actor: string; session: string; epoch: number }
@@ -127,7 +128,7 @@ export class Ownership {
       if (!rowCount) this.fence("heartbeat_replaced");
       else {
         this.arm(started + this.ttlMs);
-        if (this.alive) void this.reap().catch(error => console.error(JSON.stringify({ type: "reap_failed", error: (error as Error).message })));
+        if (this.alive) void this.reap().catch(error => console.error(JSON.stringify({ type: "reap_failed", error: safeError(error) })));
       }
     } catch (error) {
       console.error(JSON.stringify({ type: "heartbeat_renew_failed", error: (error as Error).message }));
@@ -168,7 +169,7 @@ export class Ownership {
       for (const [actor, entry] of this.owners) if (ended.includes(entry.node)) this.owners.delete(actor);
       this.peers = undefined;
       for (const listener of this.reaped) {
-        try { listener(ended); } catch (error) { console.error(JSON.stringify({ type: "reap_listener_failed", error: (error as Error).message })); }
+        try { listener(ended); } catch (error) { console.error(JSON.stringify({ type: "reap_listener_failed", error: safeError(error) })); }
       }
       return ended;
     } finally { this.reaping = false; }
