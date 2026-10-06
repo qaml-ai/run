@@ -152,5 +152,5 @@ test("over the API: uploads need credit, stop at the free limit with STORAGE_LIM
   assert.deepEqual((await call("/v1/tenants/lab-store/limits", { method: "PUT", body: { maxStorageGb: 2 }, token: OPS })).json, { tenant: "lab-store", limits: { maxStorageGb: 2, maxBusyAgents: 40 } });
   assert.deepEqual(await busy(), { busy: 0, limit: 40, source: "tenant" });
   assert.deepEqual((await call("/v1/tenants/lab-store/limits", { method: "PUT", body: { maxBusyAgents: null }, token: OPS })).json, { tenant: "lab-store", limits: { maxStorageGb: 2 } });
-  assert.equal((await busy()).limit, 8, "back to its tier's");
+  assert.equal((await busy()).limit, 20, "back to its tier's");
 });
