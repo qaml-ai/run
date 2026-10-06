@@ -9,6 +9,7 @@
 #   tenant.sh link-github <tenant> <login>      # console sign-in as that GitHub account (by its numeric id, looked up now) uses this tenant
 #   tenant.sh set-limit <tenant> <n|default>    # busy agents across the fleet for this tenant (default: its usage tier, or AGENT_MAX_AGENTS_PER_TENANT)
 #   tenant.sh set-spend-limit <tenant> <usd|none>  # model spend per UTC month, e.g. 250 or 99.50 (default: none, unlimited)
+#   tenant.sh set-engine <tenant> <quickjs|v8|default>  # what runs its js_exec (default: the runtime's, AGENT_JS_EXEC)
 #   tenant.sh set-password <tenant> <email>     # console sign-in with this email and a password: read from stdin, else generated into a 0600 file
 #   tenant.sh set-password <tenant> --clear     # no more password sign-in for this tenant
 #
@@ -21,7 +22,7 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 source "$here/config.sh"
 aws() { command aws --region "$REGION" "$@"; }
-usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 command=${1:-}; tenant=${2:-}
 [[ -n "$command" ]] || usage
@@ -63,11 +64,15 @@ elif action == "spend":
     if tenant not in tenants: sys.exit(f"No tenant {tenant}")
     if os.environ["LIMIT"] == "none": tenants[tenant].pop("maxMonthlyCost", None)
     else: tenants[tenant]["maxMonthlyCost"] = float(os.environ["LIMIT"])
+elif action == "engine":
+    if tenant not in tenants: sys.exit(f"No tenant {tenant}")
+    if os.environ["LIMIT"] == "default": tenants[tenant].pop("codeEngine", None)
+    else: tenants[tenant]["codeEngine"] = os.environ["LIMIT"]
 elif action == "remove":
     if tenants.pop(tenant, None) is None: sys.exit(f"No tenant {tenant}")
 json.dump(data, open(path, "w"))
 PY
-# edit <add|token|key|github|limit|spend|remove>: stdin stays free for the API key.
+# edit <add|token|key|github|limit|spend|engine|remove>: stdin stays free for the API key.
 edit() { TENANT="$tenant" PROVIDER="${provider:-}" TOKEN_SHA="${token_sha:-}" GITHUB_LOGIN="${login:-}" GITHUB_ID="${github_id:-}" LIMIT="${limit:-}" python3 "$work/edit.py" "$work/tenants.json" "$1"; }
 save() { aws secretsmanager put-secret-value --secret-id "$SECRET_PREFIX/tenants" --secret-string "file://$work/tenants.json" >/dev/null; }
 new_token() {
@@ -92,7 +97,7 @@ reload() {
 case "$command" in
   list)
     python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))["tenants"]
-for id, v in sorted(t.items()): print(id + "\tproviders: " + (", ".join(sorted(v["apiKeys"])) or "(none)") + "\tmax agents: " + str(v.get("maxAgents", "default")) + "\tmonthly spend limit: " + ("$%.2f" % v["maxMonthlyCost"] if "maxMonthlyCost" in v else "none"))' "$work/tenants.json" ;;
+for id, v in sorted(t.items()): print(id + "\tproviders: " + (", ".join(sorted(v["apiKeys"])) or "(none)") + "\tmax agents: " + str(v.get("maxAgents", "default")) + "\tmonthly spend limit: " + ("$%.2f" % v["maxMonthlyCost"] if "maxMonthlyCost" in v else "none") + "\tjs_exec engine: " + v.get("codeEngine", "default"))' "$work/tenants.json" ;;
   add)
     new_token; edit add; save; store_token
     echo "Next: echo -n \"\$KEY\" | $0 set-key $tenant anthropic"
@@ -122,6 +127,13 @@ for id, v in sorted(t.items()): print(id + "\tproviders: " + (", ".join(sorted(v
     edit spend; save
     if [[ "$limit" == none ]]; then echo "$tenant has no monthly spend limit."; else echo "$tenant may spend \$$limit per UTC month on models."; fi
     echo "At the limit, new model runs get 402 and a running turn ends after its current model response."
+    reload ;;
+  set-engine)
+    limit=${3:-}
+    [[ "$limit" == quickjs || "$limit" == v8 || "$limit" == default ]] || { echo "Usage: $0 set-engine <tenant> <quickjs|v8|default>" >&2; exit 2; }
+    edit engine; save
+    if [[ "$limit" == default ]]; then echo "$tenant's js_exec runs on the runtime's engine (AGENT_JS_EXEC)."; else echo "$tenant's js_exec runs on $limit."; fi
+    echo "Its agents take it as they next load (an agent already loaded keeps its engine until it is)."
     reload ;;
   remove)
     edit remove; save; echo "Removed $tenant. Delete $SECRET_PREFIX/operator-token/$tenant when you no longer need it."; reload ;;
