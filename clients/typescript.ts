@@ -355,6 +355,8 @@ export interface CreateAgentOptions extends AgentOptions {
   systemPromptAppend?: string;
   /** false: no file tools (read, write, edit, ls, glob, grep) for an application with file tools of its own. */
   fileTools?: boolean;
+  /** false: no js_exec; the model calls every tool directly, and a tool-less agent's prompt is little more than its instructions. */
+  codeMode?: boolean;
   name?: string;
   type?: string;
   /**
@@ -406,6 +408,10 @@ export interface DefinitionInput {
   /** What its agents are for: shown to models as the description of each agent's MCP tool (/v1/agents/:id/mcp). */
   description?: string;
   model?: string; systemPrompt?: string; thinkingLevel?: ThinkingLevel;
+  /** false: its agents get no file tools but present_file. */
+  fileTools?: boolean;
+  /** false: its agents get no js_exec, and call every tool directly. */
+  codeMode?: boolean;
   limits?: { ttlSeconds?: number | null }; mounts?: unknown[]; builtins?: Builtin[];
   /** Who its agents may hand tasks to (sub-agents); it adds the delegate builtin. */
   delegate?: DelegateSettings;
@@ -454,6 +460,8 @@ export interface ProviderSummary {
 /** An agent as GET /v1/agents lists it. */
 export interface AgentSummary {
   id: string; key: string | null; name: string; type: string; model: string; connected: boolean; running: boolean; expiresAt: number | null; resume: { failures: number; after: number } | null;
+  /** A hash of its configuration: equal hashes, equal configurations (an upsert of it changes nothing, and is not counted as a create). */
+  configHash: string;
   /** A sub-agent's parent: the agent whose delegate call made it. */
   parentAgentId?: string;
 }
@@ -742,7 +750,7 @@ const AGENT_KEY = /^[A-Za-z0-9_-]{1,80}$/;
 const REQUEST_ID = AGENT_KEY;
 /** A create request's fields, from the options given. */
 function provisioning(options: CreateAgentOptions) {
-  const fields = ["subject", "context", "keyScope", "spendLimit", "runLimits", "modelHeaders", "definition", "mounts", "model", "thinkingLevel", "initialMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "builtins", "delegate", "prompt"] as const;
+  const fields = ["subject", "context", "keyScope", "spendLimit", "runLimits", "modelHeaders", "definition", "mounts", "model", "thinkingLevel", "initialMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "delegate", "prompt"] as const;
   return withMultiAgent(Object.fromEntries(fields.filter(field => options[field] !== undefined).map(field => [field, options[field]])));
 }
 /** `delegate` settings bring their builtin: given the settings, the builtin is added. */
@@ -813,14 +821,14 @@ export class AgentRuntime {
    * The agent for `key`: made if there is none, set to `options` if it differs. Returns its credentials;
    * connect with `connectAgent`. Keyed agents live until they are deleted.
    */
-  async upsertAgent(key: string, options: CreateAgentOptions): Promise<{ session: SessionCredentials; reconfigured?: { id: string }; prompt?: { id: string; state: "running" | "completed"; [field: string]: unknown } | { error: { status: number; code: string; message: string } } }> {
+  async upsertAgent(key: string, options: CreateAgentOptions): Promise<{ session: SessionCredentials; configHash?: string; reconfigured?: { id: string }; prompt?: { id: string; state: "running" | "completed"; [field: string]: unknown } | { error: { status: number; code: string; message: string } } }> {
     const apiKey = this.options.apiKey;
     if (!apiKey) throw new AgentError("Set apiKey to provision an agent");
     if (!AGENT_KEY.test(key)) throw new AgentError(`An agent's key is 1 to 80 letters, digits, _ and -: ${JSON.stringify(key.slice(0, 100))} is not`);
     const server = options.mcp ?? toolServer(options.tools ?? {});
     // The key is the agent's idempotency key: the same key is the same agent, reconfigured when its configuration differs.
     const answer = await this.transport.json("/v1/agents", apiKey, "POST", { mcp: { tools: await server.listTools() }, ...provisioning(options) }, true, { "Idempotency-Key": key, ...traceHeader(options.traceparent) });
-    return { session: { id: answer.id, token: answer.token, expiresAt: answer.expiresAt ?? null }, ...(answer.reconfigured ? { reconfigured: answer.reconfigured } : {}), ...(answer.prompt ? { prompt: answer.prompt } : {}) };
+    return { session: { id: answer.id, token: answer.token, expiresAt: answer.expiresAt ?? null }, ...(answer.configHash ? { configHash: answer.configHash } : {}), ...(answer.reconfigured ? { reconfigured: answer.reconfigured } : {}), ...(answer.prompt ? { prompt: answer.prompt } : {}) };
   }
   async createAgent(options: CreateAgentOptions): Promise<AgentClient> {
     const key = this.options.apiKey;
@@ -889,7 +897,8 @@ export class AgentRuntime {
     return { session: { id: answer.id, token: answer.token, expiresAt: answer.expiresAt ?? null }, forkedFrom: answer.forkedFrom };
   }
   /** An existing agent's credentials, by its id or the key it was made with, its configuration untouched (404 when there is none). */
-  agentCredentials(keyOrId: string): Promise<SessionCredentials> { return this.transport.json(`/v1/agents/${encodeURIComponent(keyOrId)}/credentials`, this.operator()); }
+  /** An existing agent's credentials, by key or id, with its `configHash`. */
+  agentCredentials(keyOrId: string): Promise<SessionCredentials & { configHash?: string }> { return this.transport.json(`/v1/agents/${encodeURIComponent(keyOrId)}/credentials`, this.operator()); }
   definitions(): Promise<Definition[]> { return this.transport.json("/v1/definitions", this.operator()); }
   deleteDefinition(id: string): Promise<{ deleted: boolean }> { return this.transport.json(`/v1/definitions/${encodeURIComponent(id)}`, this.operator(), "DELETE", undefined, false); }
   mounts(agentId: string): Promise<Mount[]> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/mounts`, this.operator()); }
@@ -1406,8 +1415,8 @@ export class AgentClient {
    * budget: it ends before its next model request once it has spent that; the agent's spendLimit is unchanged.
    * `output: { schema }` (a JSON Schema for an object) asks for structured output: the run ends with an answer that fits it, as `output`.
    */
-  async prompt(text: string, options?: RunRequestOptions & { files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; whileRunning?: "queue" | "steer"; spendLimit?: { usd: number }; output?: { schema: Record<string, unknown> } }) {
-    const result = await this.message("prompt", text, options, { ...(options?.actor ? { actor: options.actor } : {}), ...(options?.whileRunning === "steer" ? { whileRunning: "steer" } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}), ...(options?.spendLimit ? { spendLimit: options.spendLimit } : {}), ...(options?.output ? { output: options.output } : {}) });
+  async prompt(text: string, options?: RunRequestOptions & { files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; whileRunning?: "queue" | "steer"; spendLimit?: { usd: number }; output?: { schema: Record<string, unknown> }; history?: "full" | "none" }) {
+    const result = await this.message("prompt", text, options, { ...(options?.actor ? { actor: options.actor } : {}), ...(options?.whileRunning === "steer" ? { whileRunning: "steer" } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}), ...(options?.spendLimit ? { spendLimit: options.spendLimit } : {}), ...(options?.output ? { output: options.output } : {}), ...(options?.history === "none" ? { history: "none" } : {}) });
     // A steered message's request completes as the running turn takes it, naming the turn: its outcome is the turn's.
     const into = options?.whileRunning === "steer" && isRecord(result) && typeof result.steeredInto === "string" && !("reply" in result) ? result.steeredInto : undefined;
     return into ? this.waitForRequest(into, { ...(options?.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}), ...(options?.signal ? { signal: options.signal } : {}) }) : result;

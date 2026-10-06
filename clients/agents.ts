@@ -47,6 +47,12 @@ export interface AgentConfig {
   /** false: no file tools (read, write, edit, ls, glob, grep), for an application with file tools of its own. */
   fileTools?: boolean;
   /**
+   * false: no js_exec (code mode). The model calls every tool directly, and the prompt carries only the runtime text its
+   * tools need: with fileTools: false and no tools, just your instructions and a short note on who sent each message.
+   * For a tool-less agent (a classifier, a one-line answerer). Best set when the agent is made.
+   */
+  codeMode?: boolean;
+  /**
    * Tools that run in this process (`tool({...})`). An agent with them is attached to this process: it
    * answers the agent's tool calls, one process at a time. Serverless or several processes: serve
    * tools over HTTP (`serveTools`) and name them in a definition instead.
@@ -200,6 +206,12 @@ export interface RunOptions {
    */
   output?: OutputSchema;
   /**
+   * What the model sees of the agent's history: "full" (default), or "none": only the instructions (and tools) and this
+   * message, as a new conversation would, without making an agent. The run is still recorded in the history, and later
+   * runs without "none" see it. For many independent questions to one agent. Not with whileRunning: "steer".
+   */
+  history?: "full" | "none";
+  /**
    * A W3C trace context (`00-<trace-id>-<span-id>-<flags>`) to continue: when the tenant exports telemetry
    * (`agents.runtime.telemetry.set`), the run's spans join this trace under that span. Not part of the run's idempotency.
    */
@@ -263,9 +275,11 @@ export class Agents {
   async upsert(key: string, config: AgentConfig = {}): Promise<Agent> {
     if (!this.runtime.options.apiKey) throw new AgentError("No API key: set CAMELAI_API_KEY (or pass apiKey). Create one at https://run.camelai.com/console/tokens. Coding agents: read https://run.camelai.com/SKILL.md");
     const options = createOptions(config);
-    const { session } = await this.runtime.upsertAgent(key, options);
+    const { session, configHash } = await this.runtime.upsertAgent(key, options);
     // The upsert declared these tools already (between the agent's turns, if it runs).
-    return this.connect(session, config, { ...options, syncTools: false });
+    const agent = await this.connect(session, config, { ...options, syncTools: false });
+    agent.configHash = configHash;
+    return agent;
   }
 
   /**
@@ -274,7 +288,10 @@ export class Agents {
    */
   async get(keyOrId: string, config: Pick<AgentConfig, "tools" | "mcp" | "onEvent" | "onInput" | "onError" | "onConnection" | "takeover" | "attach" | "connection"> = {}): Promise<Agent> {
     if (!this.runtime.options.apiKey) throw new AgentError("No API key: set CAMELAI_API_KEY (or pass apiKey). Create one at https://run.camelai.com/console/tokens. Coding agents: read https://run.camelai.com/SKILL.md");
-    return this.agent(await this.runtime.agentCredentials(keyOrId), config);
+    const { configHash, ...session } = await this.runtime.agentCredentials(keyOrId);
+    const agent = await this.agent(session, config);
+    agent.configHash = configHash;
+    return agent;
   }
 
   /**
@@ -325,6 +342,11 @@ export class Agent {
   readonly client: AgentClient;
   /** For an agent `fork` made: the agent and message it was forked from (GET /v1/agents/{id} has it for any fork). */
   forkedFrom?: ForkedFrom;
+  /**
+   * From `upsert` and `get`: a hash of the agent's configuration (from upsert, the one it asked for). Equal hashes are
+   * equal configurations; `agents.runtime.listAgents()` has every agent's, to compare without keeping a manifest.
+   */
+  configHash?: string;
   private readonly closed: () => void;
   private readonly agents?: Agents;
   constructor(client: AgentClient, closed: () => void = () => {}, agents?: Agents) { this.client = client; this.id = client.id; this.closed = closed; this.agents = agents; }
@@ -515,6 +537,7 @@ function promptOptions(id: string, options: RunOptions) {
     ...(options.signal ? { signal: options.signal } : {}), ...(options.whileRunning ? { whileRunning: options.whileRunning } : {}),
     ...(options.allowDisconnected ? { allowDisconnected: true } : {}), ...(options.spendLimit ? { spendLimit: options.spendLimit } : {}),
     ...(options.output ? { output: outputRequest(options.output) } : {}), ...(options.traceparent ? { traceparent: options.traceparent } : {}),
+    ...(options.history === "none" ? { history: "none" as const } : {}),
   };
 }
 

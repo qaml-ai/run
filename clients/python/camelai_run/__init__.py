@@ -711,11 +711,11 @@ class Telemetry:
 
 def _provisioning(tools, *, definition=None, name=None, type=None, system_prompt=None, model=None, thinking_level=None, mounts=None,
                   subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, system_prompt_append=None, file_tools=None, builtins=None,
-                  delegate=None, prompt=None):
+                  delegate=None, prompt=None, code_mode=None):
     """A create request's body: the tools as the attached MCP server's tools/list, and the fields given."""
     optional = {"definition": definition, "name": name, "type": type, "systemPrompt": system_prompt, "model": model, "thinkingLevel": thinking_level,
                 "mounts": mounts, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit, "runLimits": run_limits, "modelHeaders": model_headers,
-                "systemPromptAppend": system_prompt_append, "fileTools": file_tools, "builtins": builtins, "delegate": delegate, "prompt": prompt}
+                "systemPromptAppend": system_prompt_append, "fileTools": file_tools, "codeMode": code_mode, "builtins": builtins, "delegate": delegate, "prompt": prompt}
     return _with_multi_agent({"mcp": {"tools": [item.mcp_tool() for item in tools]}, **{key: value for key, value in optional.items() if value is not None}})
 
 
@@ -1312,7 +1312,7 @@ class AgentClient:
                                            **({"metadata": metadata} if metadata else {})}, idempotency_key=request_id, **options)
 
     async def prompt(self, text, *, actor=None, from_=None, files=None, metadata=None, while_running=None, idempotency_key=None, allow_disconnected=False,
-                     spend_limit=None, output=None, **options):
+                     spend_limit=None, output=None, history=None, **options):
         """`from_` ({"id", "name"?, "username"?}) says who sent the message: the model sees it in a block only
         the runtime can write, and its id is the turn's actor. `actor` names someone else acting (`act` in
         identity tokens) without telling the model. `files` are attached: bytes, a local path (str or Path),
@@ -1323,11 +1323,12 @@ class AgentClient:
         the message to a running turn, and returns with that turn's outcome (steer_message returns as soon as the turn has it). `spend_limit` ({"usd": n}) is this run's own budget:
         it ends before its next model request once it has spent that; the agent's spend limit is unchanged. `output`
         ({"schema": a JSON Schema for an object}) asks for structured output: the run ends with an answer that fits it, as "output".
+        history="none" shows the model only the instructions (and tools) and this message, not the agent's history before it.
         `traceparent` (a W3C trace context) makes the run continue the caller's trace when the tenant exports telemetry."""
         result = await self._message("prompt", text, from_=from_, files=files, metadata=metadata, idempotency_key=idempotency_key,
                                      extra={**({"actor": actor} if actor else {}), **({"whileRunning": "steer"} if while_running == "steer" else {}),
                                             **({"allowDisconnected": True} if allow_disconnected else {}), **({"spendLimit": spend_limit} if spend_limit is not None else {}),
-                                            **({"output": output} if output is not None else {})},
+                                            **({"output": output} if output is not None else {}), **({"history": "none"} if history == "none" else {})},
                                      **options)
         # A steered message's request completes as the running turn takes it, naming the turn: its outcome is the turn's.
         if while_running == "steer" and isinstance(result, dict) and isinstance(result.get("steeredInto"), str) and "reply" not in result:
@@ -1747,6 +1748,9 @@ class Agent:
         self.client, self.id, self._closed, self._agents = client, client.id, closed, agents
         # For an agent fork() made: {"agentId", "atMessage"}, the agent and message it was forked from.
         self.forked_from = None
+        # From upsert and get: a hash of the agent's configuration (from upsert, the one it asked for). Equal hashes are equal
+        # configurations; runtime.list_agents() has every agent's "configHash", to compare without keeping a manifest.
+        self.config_hash = None
 
     def __repr__(self):
         return f"Agent(id={self.id!r})"
@@ -1762,7 +1766,7 @@ class Agent:
         return self.client.files
 
     async def run(self, text, *, user=None, files=None, metadata=None, idempotency_key=None, timeout=None, throw_on_error=True, while_running=None,
-                  allow_disconnected=False, spend_limit=None, output=None, traceparent=None):
+                  allow_disconnected=False, spend_limit=None, output=None, traceparent=None, history=None):
         """Send a message and wait for the run it starts: its reply, or the input it waits on. There is no timeout
         unless `timeout` (seconds) says so, and that only stops the wait. `user` (your user id, or {"id", "name"?}) is
         who sent it: the model sees who, and tools get it as identity.user. A failed run raises RunError (with the run)
@@ -1772,24 +1776,27 @@ class Agent:
         JSON Schema dict for an object) asks for structured output: the agent ends the run with an answer that fits it, as run.output (an
         instance of the model); a run that ends without one fails (code "output_missing"). Not with while_running="steer".
         `traceparent` (a W3C trace context, "00-<trace-id>-<span-id>-<flags>") makes the run's spans continue that trace
-        when the tenant exports telemetry (runtime.telemetry.set); it is not part of the run's idempotency."""
+        when the tenant exports telemetry (runtime.telemetry.set); it is not part of the run's idempotency.
+        history="none" shows the model only the instructions (and tools) and this message, as a new conversation would, without
+        making an agent: for many independent questions to one agent. The run is still recorded in the history, and later runs
+        without it see it. Not with while_running="steer"."""
         return await self._run(text, idempotency_key or str(uuid.uuid4()), user=user, files=files, metadata=metadata, timeout=timeout,
                                throw_on_error=throw_on_error, while_running=while_running, allow_disconnected=allow_disconnected, spend_limit=spend_limit,
-                               output=output, traceparent=traceparent)
+                               output=output, traceparent=traceparent, history=history)
 
     def stream(self, text, *, user=None, files=None, metadata=None, idempotency_key=None, timeout=None, throw_on_error=True, while_running=None,
-               allow_disconnected=False, spend_limit=None, output=None, traceparent=None):
+               allow_disconnected=False, spend_limit=None, output=None, traceparent=None, history=None):
         """Send a message and read the run as it happens: text as it is written, tool calls and results, the input it
         waits on and, last, "done" with the run."""
         return RunStream(self, text, {"user": user, "files": files, "metadata": metadata, "idempotency_key": idempotency_key, "timeout": timeout,
                                       "throw_on_error": throw_on_error, "while_running": while_running, "allow_disconnected": allow_disconnected,
-                                      "spend_limit": spend_limit, "output": output, "traceparent": traceparent})
+                                      "spend_limit": spend_limit, "output": output, "traceparent": traceparent, "history": history})
 
     async def _run(self, text, request_id, *, user=None, files=None, metadata=None, timeout=None, throw_on_error=True, while_running=None,
-                   allow_disconnected=False, spend_limit=None, output=None, traceparent=None):
+                   allow_disconnected=False, spend_limit=None, output=None, traceparent=None, history=None):
         pending = self.client.prompt(text, from_=_sender(user) if user else None, files=files, metadata=metadata, idempotency_key=request_id,
                                      timeout=timeout, while_running=while_running, allow_disconnected=allow_disconnected, spend_limit=spend_limit,
-                                     output=_output_request(output), traceparent=traceparent)
+                                     output=_output_request(output), traceparent=traceparent, history=history)
         return await self._settle(request_id, pending, throw_on_error, output)
 
     async def _settle(self, request_id, pending, throw_on_error, output=None):
@@ -1935,7 +1942,8 @@ class Agents:
 
     async def upsert(self, key, *, model=None, instructions=None, tools=None, definition=None, thinking_level=None, subject=None, context=None,
                      key_scope=None, spend_limit=None, run_limits=None, model_headers=None, mounts=None, name=None, instructions_append=None, file_tools=None,
-                     builtins=None, delegate=None, subagents=False, on_event=None, on_input=None, on_error=None, attach=None, takeover=False, connection=None):
+                     builtins=None, delegate=None, subagents=False, on_event=None, on_input=None, on_error=None, attach=None, takeover=False, connection=None,
+                     code_mode=None):
         """The agent for `key` (your name for it: "support-triage", or "user-123"), made now if there is none, and set
         to this configuration if it differs. The same key is the same agent, with its history and files, until
         agent.delete(); any number of processes may upsert it. `tools` (@tool functions) run in this process, which
@@ -1944,21 +1952,28 @@ class Agents:
         ("web_fetch", "web_search", "schedule", "ask_user"), without a definition. `delegate` ({"agents": [...]}) lets it hand
         tasks to sub-agents (its builtin comes with it; see the multi-agent guide); subagents=True delivers its sub-agents'
         progress as events.
-        attach=False declares the tools without serving them (another process does); takeover=True replaces the process serving them now."""
+        attach=False declares the tools without serving them (another process does); takeover=True replaces the process serving them now.
+        code_mode=False gives the agent no js_exec: the model calls every tool directly, and with file_tools=False and no tools its
+        prompt is little more than your instructions (for a tool-less agent). An upsert of the configuration the agent has
+        already is not counted as an agent create; agent.config_hash says which configuration it asked for."""
         tools = list(tools or [])
         session = await self.runtime.upsert_agent(key, tools=tools, definition=definition, system_prompt=instructions, model=model, thinking_level=thinking_level,
                                                   subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits,
                                                   model_headers=model_headers, mounts=mounts, name=name, system_prompt_append=instructions_append, file_tools=file_tools, builtins=builtins,
-                                                  delegate=delegate)
+                                                  delegate=delegate, code_mode=code_mode)
         # The upsert declared these tools already (between the agent's turns, if it runs).
-        return await self.agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error, attach=attach, takeover=takeover, subagents=subagents,
-                                connection=connection, _sync=False)
+        agent = await self.agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error, attach=attach, takeover=takeover, subagents=subagents,
+                                 connection=connection, _sync=False)
+        agent.config_hash = session.get("configHash")
+        return agent
 
     async def get(self, key_or_id, *, tools=None, on_event=None, on_input=None, on_error=None, attach=None, takeover=False, connection=None):
         """The existing agent with this key (or id), without changing it: upsert sets an agent to what it is given, get
         takes it as it is. AgentError with status 404 when there is none. Pass `tools` to serve them too."""
         session = await self.runtime.agent_credentials(key_or_id)
-        return await self.agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error, attach=attach, takeover=takeover, connection=connection)
+        agent = await self.agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error, attach=attach, takeover=takeover, connection=connection)
+        agent.config_hash = session.get("configHash")
+        return agent
 
     async def fork(self, agent_id, *, key=None, name=None, at_message=None, ttl_seconds=_DEFAULT, subject=None, context=None, instructions_append=None,
                    model_headers=_DEFAULT, tools=None, on_event=None, on_input=None, on_error=None, attach=None, takeover=False, connection=None):

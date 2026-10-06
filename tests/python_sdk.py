@@ -485,6 +485,27 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         resumed = await run.inputs[0].answer(True)
         self.assertEqual((resumed.status, resumed.text, done), ("completed", "seen", ["d1"]))
 
+    async def test_code_mode_false_history_none_and_config_hash(self):
+        # A tool-less agent: no js_exec, no file tools; the same upsert again is the same configuration.
+        agent = await self.agents.upsert("yes-no", instructions="Answer yes or no.", code_mode=False, file_tools=False)
+        again = await self.agents.upsert("yes-no", instructions="Answer yes or no.", code_mode=False, file_tools=False)
+        self.assertRegex(agent.config_hash, r"^[0-9a-f]{64}$")
+        self.assertEqual(again.config_hash, agent.config_hash)
+        self.assertEqual((await self.agents.get("yes-no")).config_hash, agent.config_hash)
+        self.assertIn("configHash", next(item for item in await self.runtime.list_agents() if item["id"] == agent.id))
+        await agent.run("First question")
+        self.call("final_output", {"yes": True})
+        run = await agent.run("Second question", history="none", output={"type": "object", "properties": {"yes": {"type": "boolean"}}, "required": ["yes"]})
+        self.assertEqual(run.output, {"yes": True})
+        body = self.bodies[-1]
+        # Only the run's own message; final_output is the only tool, so it is forced from the first request.
+        users = [message for message in body["messages"] if message["role"] == "user"]
+        self.assertEqual(len(users), 1)
+        self.assertIn("Second question", json.dumps(users[0]))
+        self.assertEqual([item["function"]["name"] for item in body["tools"]], ["final_output"])
+        self.assertEqual(body["tool_choice"], {"type": "function", "function": {"name": "final_output"}})
+        self.assertNotIn("js_exec", json.dumps(body))
+
     async def test_run_with_output_returns_a_pydantic_model_or_the_json_schema_value(self):
         from typing import Literal
         from pydantic import BaseModel, field_validator
