@@ -37,6 +37,11 @@ Agents (an agent is its key or its id, client_…)
   agents delete <agent> --yes      Stop it and purge its history and files
   run <agent> <message…> [--wait s] [--no-wait] [--from user] [--steer] [--allow-disconnected] [--traceparent tp]
   runs get <agent> <requestId> [--wait s]
+
+Stateless runs (a configuration and a message in, the result out; nothing carried over, no agent kept)
+  run --stateless <message…> [--definition key|id] [--model m] [--prompt text] [--thinking level]
+                  [--request-id key] [--wait s] [--no-wait]
+  runs get <runId> [--wait s]
   history <agent> [--limit n]
   abort <agent>
   inputs [agent]                   Questions and approvals waiting on someone
@@ -79,7 +84,7 @@ const OPTIONS = {
   wait: { type: "string" }, "no-wait": { type: "boolean" }, from: { type: "string" }, steer: { type: "boolean" }, "allow-disconnected": { type: "boolean" }, "request-id": { type: "string" },
   limit: { type: "string" }, key: { type: "string" }, text: { type: "string" }, in: { type: "string" }, at: { type: "string" }, every: { type: "string" },
   traceparent: { type: "string" }, header: { type: "string", multiple: true }, protocol: { type: "string" }, "sample-rate": { type: "string" },
-  content: { type: "boolean" }, "no-content": { type: "boolean" },
+  content: { type: "boolean" }, "no-content": { type: "boolean" }, stateless: { type: "boolean" },
 } as const;
 
 type Flags = ReturnType<typeof parseArgs<{ options: typeof OPTIONS; allowPositionals: true }>>["values"];
@@ -154,6 +159,10 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
       case "agents": return await agents(args, flags, api, print);
       case "definitions": return await definitions(args, flags, api, print);
       case "run": {
+        if (flags.stateless) {
+          if (!args.length) throw new UsageError("Usage: camelrun run --stateless <message…> [--definition d] [--model m] [--prompt text]");
+          return printRun(await ops.statelessRun(api(), args.join(" "), { wait: waitSeconds(flags), requestId: flags["request-id"], definition: flags.definition, model: flags.model, prompt: flags.prompt, thinking: flags.thinking, from: flags.from, traceparent: flags.traceparent }), print, io);
+        }
         const [agent, ...words] = args;
         if (!agent || !words.length) throw new UsageError("Usage: camelrun run <agent> <message…>");
         const result = await ops.run(api(), agent, words.join(" "), { wait: waitSeconds(flags), from: flags.from, steer: flags.steer, allowDisconnected: flags["allow-disconnected"], requestId: flags["request-id"], traceparent: flags.traceparent });
@@ -161,7 +170,14 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
       }
       case "runs": {
         const [sub, agent, requestId] = args;
-        if (sub !== "get" || !agent || !requestId) throw new UsageError("Usage: camelrun runs get <agent> <requestId> [--wait s]");
+        // A stateless run is its id alone.
+        if (sub === "get" && agent?.startsWith("run_") && !requestId) {
+          const client = api(), wait = flags.wait ? Number(flags.wait) : 0;
+          let run = await client.get(`/v1/runs/${enc(agent)}${wait ? `?wait=${Math.min(25, wait)}` : ""}`);
+          for (const deadline = Date.now() + wait * 1000; run.status === "running" && Date.now() < deadline;) run = await client.get(`/v1/runs/${enc(agent)}?wait=${Math.max(1, Math.min(25, Math.ceil((deadline - Date.now()) / 1000)))}`);
+          return printRun(ops.statelessSummary(run), print, io);
+        }
+        if (sub !== "get" || !agent || !requestId) throw new UsageError("Usage: camelrun runs get <agent> <requestId> [--wait s], or camelrun runs get <runId> [--wait s]");
         const client = api();
         return printRun(await ops.waitFor(client, await client.agentId(agent), requestId, flags.wait ? Number(flags.wait) : 0), print, io);
       }
@@ -403,10 +419,10 @@ function waitSeconds(flags: Flags) {
 function printRun(result: ops.RunSummary, print: (value: unknown, human?: () => string) => void, io: Io) {
   print(result, () => {
     switch (result.status) {
-      case "running": return `Still running: camelrun runs get ${result.agent} ${result.requestId} --wait 60`;
+      case "running": return `Still running: camelrun runs get ${result.agent ? `${result.agent} ` : ""}${result.requestId} --wait 60`;
       case "failed": return `Failed (${result.error?.code}): ${result.error?.message}`;
       case "input_required": return [result.text, ...(result.inputs ?? []).map(input => `Waiting on ${input.kind} ${input.id}: ${input.message ?? JSON.stringify(input.detail)}\n  camelrun answer ${result.agent} ${input.id} <value>`)].filter(Boolean).join("\n");
-      default: return [result.text || "(no reply)", ...(result.toolErrors ?? []).map(error => `tool error: ${JSON.stringify(error)}`)].join("\n");
+      default: return [result.output !== undefined ? JSON.stringify(result.output, null, 2) : result.text || "(no reply)", ...(result.toolErrors ?? []).map(error => `tool error: ${JSON.stringify(error)}`)].join("\n");
     }
   });
   if (result.status === "failed") return 1;

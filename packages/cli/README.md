@@ -26,6 +26,9 @@ agents:
   - key: support
 ```
 
+A one-off question needs no agent: `camelrun run --stateless "Ship on Friday?" --prompt "Vote yes or no."`
+answers with nothing carried over and no agent kept (`--definition` takes a definition's configuration).
+
 Output is JSON when stdout is not a terminal (or with `--json`); exit code 2 means a run waits
 on a person (`camelrun inputs`, `camelrun answer`).
 

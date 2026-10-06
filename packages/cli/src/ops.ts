@@ -58,7 +58,8 @@ export function redact(value: unknown): unknown {
 const redactAll = (value: unknown): unknown => value && typeof value === "object" ? Object.fromEntries(Object.keys(value).map(key => [key, "***"])) : "***";
 
 export interface RunSummary {
-  agent: string; requestId: string;
+  /** The agent's id; none for a stateless run, whose `requestId` is its run's id (run_…). */
+  agent?: string; requestId: string;
   /** running: it has not ended yet (poll it with `camelrun runs get`, or the get_run tool). */
   status: "running" | "completed" | "input_required" | "failed";
   text?: string;
@@ -67,6 +68,8 @@ export interface RunSummary {
   toolErrors?: unknown[];
   files?: unknown[];
   usage?: unknown;
+  /** A stateless run's structured output. */
+  output?: unknown;
 }
 
 /** A request record as a run: what it said, what it waits on, or why it failed. */
@@ -111,6 +114,32 @@ export async function run(api: Api, agent: string, text: string, options: { wait
     ...(options.from ? { from: { id: options.from } } : {}), ...(options.steer ? { whileRunning: "steer" } : {}),
   }, options.traceparent ? { traceparent: options.traceparent } : {});
   return options.wait === 0 ? summarize(id, record) : waitFor(api, id, record.id, options.wait ?? Infinity, options.signal);
+}
+
+/**
+ * A stateless run (POST /v1/runs): a configuration and a message, nothing carried over and no agent kept; waits up to
+ * `wait` seconds (default: until it ends). `requestId` is its Idempotency-Key: a retry is the same run.
+ */
+export async function statelessRun(api: Api, text: string, options: { wait?: number; requestId?: string; definition?: string; model?: string; prompt?: string; thinking?: string; from?: string; traceparent?: string; signal?: AbortSignal } = {}): Promise<RunSummary> {
+  const wait = options.wait ?? Infinity;
+  const body = {
+    input: text, ...(options.definition ? { definition: options.definition } : {}), ...(options.model ? { model: options.model } : {}), ...(options.prompt ? { systemPrompt: options.prompt } : {}),
+    ...(options.thinking ? { thinkingLevel: options.thinking } : {}), ...(options.from ? { from: { id: options.from } } : {}), wait: Math.min(wait, 60),
+  };
+  let run = await api.call("POST", "/v1/runs", body, { "Idempotency-Key": options.requestId ?? `cli_${globalThis.crypto.randomUUID()}`, ...(options.traceparent ? { traceparent: options.traceparent } : {}) });
+  for (const deadline = Date.now() + wait * 1000; run.status === "running" && Date.now() < deadline && !options.signal?.aborted;) {
+    run = await api.get(`/v1/runs/${enc(run.id)}?wait=${Math.max(1, Math.min(25, Math.ceil((deadline - Date.now()) / 1000)))}`);
+  }
+  return statelessSummary(run);
+}
+
+/** A stateless run's view as a run summary. */
+export function statelessSummary(run: any): RunSummary {
+  return {
+    requestId: run.id, status: run.status, ...(run.text ? { text: run.text } : {}), ...(run.error ? { error: { code: run.error.code, message: run.error.message } } : {}),
+    ...(run.toolErrors?.length ? { toolErrors: run.toolErrors } : {}), ...(run.files?.length ? { files: run.files } : {}), ...(run.usage ? { usage: run.usage } : {}),
+    ...(run.output !== undefined ? { output: run.output } : {}),
+  };
 }
 
 /** Answer an input the way the SDK does: true/false for an approval, text or { question: answer } for questions, fields for a form. */
