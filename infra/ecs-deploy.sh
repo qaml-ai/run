@@ -14,7 +14,8 @@
 # target group. Old tasks retire in the background, once the new ones run and
 # have joined (they serve until then). A task running turns
 # protects itself from being stopped, and ECS waits for that protection to end,
-# up to AGENT_RETIRE_MAX_MS (default 6 h). Each old task is then deregistered
+# for its turns to reach a step boundary and move to a new task, up to
+# AGENT_RETIRE_MAX_MS (default 20 min). Each old task is then deregistered
 # (15 s on the ALB), gets SIGTERM, and has 120 s to drain. The service's
 # rolloutState stays IN_PROGRESS until the last one is gone. A rollout whose
 # new tasks fail is rolled back automatically (circuit breaker); this script

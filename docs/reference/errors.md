@@ -114,7 +114,9 @@ ended (`running`, `completed`): a failed run is `state: "completed"`,
 A failed model response that is retried is retracted from history (`message_retracted`); the last one stays, with its `errorMessage`. A run
 whose node was lost mid-turn resumes on another (`turn_resumed`), with any tool
 call whose answer was lost marked "outcome unknown" for the model; tool calls
-are never sent twice.
+are never sent twice. A deploy or drain loses nothing: the node finishes the
+step in flight and hands the turn off at that boundary (`turn_resumed` with
+`handoff`; the run's `handoffs` records it).
 
 ## Tool errors
 

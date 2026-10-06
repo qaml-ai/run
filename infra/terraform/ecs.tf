@@ -294,7 +294,8 @@ resource "aws_ecs_service" "runtime" {
 
   # The runtime protects its task from scale-in while turns run, and ECS waits
   # for protected old tasks during a deploy: a deploy can last as long as the
-  # longest turn (the runtime caps it at AGENT_RETIRE_MAX_MS, default 6 h). The
+  # longest step in flight (turns move to new tasks at their next step boundary;
+  # the runtime caps it at AGENT_RETIRE_MAX_MS, default 20 min). The
   # circuit breaker counts failed task launches, not elapsed time, so waiting
   # on protected tasks never trips it.
   deployment_circuit_breaker {

@@ -139,11 +139,14 @@ is dropped when its node answers 503 or cannot be reached.
 2. takes no new agents or volumes: requests for ones it does not hold are
    forwarded to a live peer that is not draining, or, with none, answered 503
    with `Retry-After: 1`; ones it holds it keeps serving;
-3. waits, up to `AGENT_DRAIN_TIMEOUT_MS`, for turns and runs that began (and
-   other open requests) to finish; runs that never began stay queued for the
-   next owner, which starts them when it loads the agent;
-4. stops its agents and hands off what is still running (its next owner resumes
-   those turns; see [Turn handoff](#turn-handoff)), releases every agent and
+3. with a live peer, hands each running turn off at its next step boundary (see
+   [Step boundary hand-off](#step-handoff)) and gives up idle agents (one waiting
+   on human input, say) at once; alone, it lets turns finish instead, as nobody
+   could go on with them now. Either way it waits, up to `AGENT_DRAIN_TIMEOUT_MS`,
+   for turns and runs that began (and other open requests); runs that never began
+   stay queued for the next owner, which starts them when it loads the agent;
+4. stops its agents and hands off what is still running mid-step (its next owner
+   resumes those turns; see [Turn handoff](#turn-handoff)), releases every agent and
    volume, then closes event streams so clients reconnect to the next owner,
    deletes its heartbeat, and exits 0.
 
@@ -169,14 +172,37 @@ SIGTERM, and turns can run far longer, so tasks avoid being stopped mid-turn:
   cannot keep it) and a peer that is not retiring has joined; until then it serves
   as before, so a deploy never leaves work with nowhere to go. Retiring, it takes no
   new agents or volumes (requests for them go to a live peer, as when draining; a
-  request a peer forwarded to it by a stale cache goes on once more), lets running turns finish for up to
-  `AGENT_RETIRE_MAX_MS` (default 6 h), gives up each agent and volume as soon as
-  nothing runs on it (closing its event stream so the client reconnects to the new
-  owner), and clears protection once idle. ECS then stops it and the drain finds
-  nothing to do. `/healthz` stays 200 while retiring: ECS replaces tasks that fail
+  request a peer forwarded to it by a stale cache goes on once more), hands each
+  running turn off at its next step boundary (see [Step boundary hand-off](#step-handoff)),
+  gives up each agent and volume as soon as nothing runs on it (closing its event
+  stream so the client reconnects to the new owner), and clears protection once
+  idle. A step still running `AGENT_RETIRE_MAX_MS` (default 20 min, the longest a
+  tool call may run) after the retirement began is handed off mid-step, as a
+  drain's end does (`retire_cap_reached`). ECS then stops it and the drain finds
+  nothing to do. A code execution (`execute`) has no steps: it finishes, up to the cap. `/healthz` stays 200 while retiring: ECS replaces tasks that fail
   their health check, protected or not, so the task keeps the load balancer's
   traffic and hands it on. A retiring task that finds no such peer any more serves
   again (`retire_paused`), and retires once one joins.
+
+<a id="step-handoff"></a>**Step boundary hand-off.** A node leaving the cluster
+(retiring, or draining with a live peer) does not keep whole turns. Each running
+turn finishes only the step it is in, the model call in flight, or all the tool
+calls of the latest response, and stops before its next model call, its transcript
+ending in a tool result or the user's message. The node records the hand-off on the
+run (`handoffs`: reason `retire` or `drain`, and when), with what the run gathered
+for its outcome (usage, tool calls, files), releases the agent, and tells its peers;
+one loads it at once and calls the model again, with nothing lost. A prompt steered
+into the turn that it has not taken yet goes in at one more step first. Watchers
+and the application's connection reconnect to the new owner and read on from their
+last event id: the stream goes on without a gap or a repeat (`turn_resumed` with
+`handoff`, then `turn_opened`), and the run's outcome is published once, by the node
+that finishes it. Such a hand-off is not a resume: it does not count against the two
+resumes a run has. The next owner logs `turn_handed_off` (`Reason`, `Step`: `model`
+or `tool`, what was in flight when the node began leaving; `BoundaryWaitMs`, how long
+the turn took to reach the boundary; `HandoffLatencyMs`, from the boundary to the
+continuation, about half a second). Mixed versions: a node without this hands turns
+off as before (mid-step at its drain's end), and one that loads a turn handed off at
+a boundary resumes it, counting one resume.
 
 <a id="turn-handoff"></a>**Turn handoff.** When a node loads an agent whose last
 run began and never finished (its node crashed, was killed, or drained out of
@@ -203,7 +229,8 @@ dimension sets listed:
 
 | line (`type`) | when | metrics | dimensions |
 | --- | --- | --- | --- |
-| `turn_metrics` | a turn (prompt, continue, resume) ends | `Turns`, `TurnDurationMs`, `TimeToFirstTokenMs`, `ModelResponses`, `ModelRetries`, `ToolCalls`, `ToolErrors` | `Outcome` (completed, failed, input_required, spend_limit, turn_limit), `ErrorClass`, `Provider`+`Model` |
+| `turn_metrics` | a turn (prompt, continue, resume) ends | `Turns`, `TurnDurationMs`, `TimeToFirstTokenMs`, `ModelResponses`, `ModelRetries`, `ToolCalls`, `ToolErrors` | `Outcome` (completed, failed, input_required, spend_limit, turn_limit, handed_off: its part on a node that handed it off at a step boundary), `ErrorClass`, `Provider`+`Model` |
+| `turn_handed_off` | a node continues a turn another node handed off at a step boundary | `Handoffs`, `BoundaryWaitMs`, `HandoffLatencyMs` | `Reason` (retire, drain), `Step` (model, tool) |
 | `model_error` | a model response fails (retried or not) | `ModelErrors` | `Provider`+`Model`, `ErrorClass` |
 | `run_events` | run events are written to the outbox | `RunsStarted`, `RunsResumed`, `RunsCompleted`, `RunsInputRequired`, `RunsSpendLimited`, `RunsTurnLimited`, `RunsFailed`, `RunsUncertain` | `Tenant` |
 | `run_failed` | the same, per failed run | `RunsFailedByClass` | `ErrorClass`, `Tenant`+`ErrorClass` |

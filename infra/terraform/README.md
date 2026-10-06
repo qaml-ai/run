@@ -141,9 +141,12 @@ and the RDS instance also have deletion protection in AWS.
   when every task is busy, the desired count drops but the extra tasks keep
   running until their turns finish.
   - **Retiring.** A task superseded by a newer deployment keeps `/healthz` at
-    200 while it finishes long turns. It takes no new actors: it forwards
-    requests for anything it doesn't hold to a live peer, and releases each
-    actor it holds once that actor goes idle. So the ALB may keep routing to it.
+    200 while it finishes the step each running turn is in (its model call, or
+    its latest response's tool calls), then hands the turn off at that boundary
+    to a peer, which continues it within about a second. It takes no new actors:
+    it forwards requests for anything it doesn't hold to a live peer, and
+    releases each actor it holds once that actor goes idle or its turn is handed
+    off. So the ALB may keep routing to it.
   - **Why it doesn't fail `/healthz`.** AWS documents scale-in protection as
     guarding tasks only against "scale-in events from either service auto
     scaling or deployments" ([task scale-in protection][tsp];
@@ -152,22 +155,26 @@ and the RDS instance also have deletion protection in AWS.
     as a separate mechanism ([ALB health checks for ECS][hc]), so a protected
     task that returned 503 would be killed, along with its turns.
   - **Knobs** (runtime defaults, not set by Terraform):
-    `AGENT_RETIRE_MAX_MS=21600000`, `AGENT_ECS_POLL_MS=30000`,
+    `AGENT_RETIRE_MAX_MS=1200000`, `AGENT_ECS_POLL_MS=30000`,
     `AGENT_PROTECTION_IDLE_MS=30000`. `AGENT_ECS_SERVICE` is required for
     retirement. `ECS_AGENT_URI` and `ECS_CONTAINER_METADATA_URI_V4` come from
     Fargate.
-  - **How long protection lasts.** `AGENT_RETIRE_MAX_MS` (6 h) bounds how long
-    a task holds protection. The runtime must keep refreshing it within the
-    2880-minute limit.
+  - **How long protection lasts.** `AGENT_RETIRE_MAX_MS` (20 min, the longest
+    a tool call may run) bounds how long a retiring task waits for the steps in
+    flight; past it, the runtime hands what still runs off mid-step and clears
+    protection. Scale-in protection (no deploy) still lasts while turns run, and
+    the runtime refreshes it within the 2880-minute limit.
 - **Stopping a task** (deploy, scale-in, rebalancing):
   0. If the task is protected, ECS waits until the runtime clears protection
-     (its turns have finished, or `AGENT_RETIRE_MAX_MS`, default 6 h, passed).
+     (its turns have finished or been handed off at a step boundary, or
+     `AGENT_RETIRE_MAX_MS`, default 20 min, passed).
   1. ECS deregisters the task. The ALB sends it no new requests, and its open
      connections, including SSE streams, stay up for the 15 s deregistration
      delay. After that, clients reconnect to another task. A longer delay would
      only postpone SIGTERM.
-  2. ECS sends SIGTERM. The runtime drains its agents (about 100 s,
-     `AGENT_DRAIN_TIMEOUT_MS` 100000, which fits `stopTimeout`), and `/healthz`
+  2. ECS sends SIGTERM. The runtime drains its agents: running turns are
+     handed off at their next step boundary, for up to 100 s
+     (`AGENT_DRAIN_TIMEOUT_MS` 100000, which fits `stopTimeout`), and `/healthz`
      returns 503. That's only a backstop, since the task is already
      deregistered. The container runs with `initProcessEnabled`, so an init
      is PID 1: it forwards the signal and reaps sandbox children.
@@ -179,7 +186,7 @@ and the RDS instance also have deletion protection in AWS.
   `/healthz`. It counts failed task launches, not time, so old tasks that stay
   protected for hours never trip it. A deployment's `rolloutState` stays
   `IN_PROGRESS` until its last old task is gone: up to `AGENT_RETIRE_MAX_MS`
-  (6 h) + 15 s + 120 s. The runtime notices a newer deployment and retires
+  (20 min) + 15 s + 120 s, usually the longest step in flight. The runtime notices a newer deployment and retires
   itself once idle. Don't make CI wait on `services-stable` or on
   `rolloutState = COMPLETED`; wait as `ecs-deploy.sh` does.
 
@@ -281,9 +288,10 @@ The script does this:
 6. Checks `/healthz` through Cloudflare and the ALB.
 
 It does **not** wait for the old tasks to stop. They retire in the background,
-each once its running turns end (at most `AGENT_RETIRE_MAX_MS`, default 6 h),
-then drain as above. The script prints the command to follow them. A deploy
-interrupts no turns. Two deploys in a row are fine: a task superseded twice
+each once its running turns have reached a step boundary and moved to a new
+task (at most `AGENT_RETIRE_MAX_MS`, default 20 min), then drain as above. The
+script prints the command to follow them. A deploy interrupts no turns: they go
+on on the new tasks, losing nothing, unless one step outlasts the cap. Two deploys in a row are fine: a task superseded twice
 retires the same way.
 
 When Terraform changes environment or cpu/memory, it registers a new revision

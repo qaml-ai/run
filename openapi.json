@@ -1770,6 +1770,33 @@
             "type": "string",
             "description": "A prompt with whileRunning: steer that a running turn took: that turn's request, whose outcome this shares"
           },
+          "resumes": {
+            "type": "number",
+            "description": "Times a node resumed this run's turn after the node running it was lost (its calls in flight closed as of unknown outcome); at most 2"
+          },
+          "handoffs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "enum": [
+                    "retire",
+                    "drain"
+                  ]
+                },
+                "at": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "reason",
+                "at"
+              ]
+            },
+            "description": "Times a node leaving the cluster (retire: a newer deploy replaced it; drain: it was stopped) handed this run's turn off at a step boundary, and the next owner continued it with nothing lost. Not resumes"
+          },
           "outcome": {
             "$ref": "#/components/schemas/Outcome"
           },
