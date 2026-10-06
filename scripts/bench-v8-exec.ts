@@ -1,10 +1,9 @@
 // js_exec engines side by side, through executeCode on this machine: today's QuickJS worker pool
-// (in-process CodePool) against v8-exec, a process per execution (with and without its startup
-// snapshot, --jitless, and a pre-spawned variant).
-//   npm run bench:v8-exec [-- --runs 200 --engines quickjs,v8,v8-prespawn --json]
-// Build the binary first: cd sandbox/v8-exec && cargo build --release, then make its snapshots
-// (target/release/v8-exec --make-snapshot target/release/v8-exec.snapshot, and with --jitless
-// into v8-exec.jitless.snapshot).
+// (in-process CodePool) against v8-exec, a process per execution (jitless as deployed, with V8's
+// JIT, and pre-spawned). Run QuickJS and V8 in separate invocations: a parent holding 32 QuickJS
+// workers (their WASM reservations) spawns processes several times slower.
+//   npm run bench:v8-exec -- --engines quickjs; npm run bench:v8-exec -- --engines v8,v8-jit,v8-prespawn
+// Build the binary first: npm run build:v8-exec.
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
@@ -14,7 +13,7 @@ import type { ToolBridge } from "../src/protocol.ts";
 
 const { values: args } = parseArgs({ options: {
   runs: { type: "string", default: "200" },
-  engines: { type: "string", default: "quickjs,v8,v8-nosnapshot,v8-jitless,v8-prespawn" },
+  engines: { type: "string", default: "quickjs,v8,v8-jit,v8-prespawn" },
   cases: { type: "string", default: "" },
   concurrency: { type: "string", default: "1,8,32" },
   seconds: { type: "string", default: "5" },
@@ -57,8 +56,9 @@ type Engine = { name: string; pool: CodePool | V8Exec; close(): unknown };
 function engine(name: string, size = 1): Engine {
   if (name === "quickjs") { const pool = new CodePool({ min: size, max: 32 }); return { name, pool, close: () => pool.close() }; }
   const options = {
-    v8: {}, "v8-nosnapshot": { snapshot: false as const }, "v8-jitless": { jitless: true },
-    "v8-prespawn": { prespawn: Math.max(2, Math.min(size, 8)) },
+    // v8: as deployed (jitless); v8-jit: with V8's compilers; v8-prespawn: jitless, processes started ahead.
+    v8: { jitless: true }, "v8-jit": { jitless: false },
+    "v8-prespawn": { jitless: true, prespawn: Math.max(2, Math.min(size, 8)) },
   }[name];
   if (!options) throw new Error(`Unknown engine ${name}`);
   const pool = new V8Exec({ ...options, max: 64 });

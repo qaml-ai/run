@@ -11,13 +11,15 @@ import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
 import { checkable, validateToolCall } from "../src/tool-policy.ts";
 import { keywordScores } from "../src/tool-search.ts";
 import { prepareCodeModeUserCode } from "../shared/code-mode-source.ts";
-import { codeErrorClass, recordCodeExecution, setMetricSink } from "../src/metrics.ts";
+import { codeErrorClass, recordCodeExecution, recordV8Exec, setMetricSink } from "../src/metrics.ts";
 import type { ToolBridge } from "../src/protocol.ts";
 import type { Api, Model } from "@earendil-works/pi-ai";
 
 // Hard limits on js_exec: nothing a tenant supplies runs on the runtime's thread, every execution's CPU is
 // bounded from outside its guest, and one tenant cannot take every sandbox worker on a node.
 
+/** AGENT_JS_EXEC=v8: the same tests on v8-exec, but for those about QuickJS's and sucrase's own weak spots (tests/v8-exec.test.ts has V8's). */
+const v8 = process.env.AGENT_JS_EXEC === "v8";
 const none: ToolBridge = { definitions: [], call: async () => null };
 /** Sucrase backtracks exponentially on this: about a second at 19 levels, doubling with each. */
 const sucraseBomb = (levels: number) => `1<2; x = ${"a ? (b): c => ".repeat(levels)}d`;
@@ -30,7 +32,7 @@ async function longestStall(work: () => Promise<unknown>) {
   return Math.max(longest, performance.now() - last);
 }
 
-test("hostile TypeScript is stripped in the worker under the CPU budget: the runtime's thread never stalls, and abort works", { timeout: 60_000 }, async t => {
+test("hostile TypeScript is stripped in the worker under the CPU budget: the runtime's thread never stalls, and abort works", { timeout: 60_000, skip: v8 && "sucrase's backtracking: v8-exec strips with oxc (tests/v8-exec.test.ts)" }, async t => {
   const pool = new CodePool({ min: 1, max: 2 });
   t.after(() => pool.close());
   // Warm: the first execution loads tool policy on this thread.
@@ -54,7 +56,7 @@ test("hostile TypeScript is stripped in the worker under the CPU budget: the run
   assert.deepEqual((await executeCode({ code: "const f = <T,>(x: T) => x; return f<number>(2)", bridge: none, pool })).output, ["2"]);
 });
 
-test("built-ins QuickJS cannot interrupt are stopped at the CPU budget, not the wall-clock timeout", { timeout: 60_000 }, async t => {
+test("built-ins QuickJS cannot interrupt are stopped at the CPU budget, not the wall-clock timeout", { timeout: 60_000, skip: v8 && "V8 runs these in milliseconds (tests/v8-exec.test.ts has V8's slow built-ins)" }, async t => {
   const pool = new CodePool({ min: 1, max: 1 });
   t.after(() => pool.close());
   for (const [code, cpuMs] of [['return "a".repeat(2e6).indexOf("a".repeat(1e6) + "b")', 1_000], ['return BigInt("9".repeat(300000)).toString().length', 500]] as const) {
@@ -225,16 +227,24 @@ test("each execution writes a metric line with its duration, CPU and timeoutMs, 
   setMetricSink(line => lines.push(JSON.parse(line)));
   t.after(() => setMetricSink());
   recordCodeExecution({ tenant: "acme", ms: 1234, requestedTimeoutMs: 120_000, timeoutMs: 60_000, cpuMs: 12 });
-  recordCodeExecution({ tenant: "acme", ms: 2300, timeoutMs: 30_000, error: new Error("Codemode CPU limit exceeded: the execution kept its thread busy for over 2000 ms") });
+  recordCodeExecution({ tenant: "acme", engine: "v8", ms: 2300, timeoutMs: 30_000, error: new Error("Codemode CPU limit exceeded: the execution kept its thread busy for over 2000 ms") });
+  recordV8Exec({ event: "killed", signal: "SIGSYS" });
   assert.deepEqual(lines.map(({ _aws, ...line }) => line), [
-    { type: "code_execution", tenant: "acme", timeoutMs: 60_000, requestedTimeoutMs: 120_000, ErrorClass: "none", CodeExecutions: 1, CodeDurationMs: 1234, CodeCpuMs: 12 },
-    { type: "code_execution", tenant: "acme", timeoutMs: 30_000, ErrorClass: "cpu_limit", CodeExecutions: 1, CodeDurationMs: 2300 },
+    { type: "code_execution", tenant: "acme", timeoutMs: 60_000, requestedTimeoutMs: 120_000, ErrorClass: "none", Engine: "quickjs", CodeExecutions: 1, CodeDurationMs: 1234, CodeCpuMs: 12 },
+    { type: "code_execution", tenant: "acme", timeoutMs: 30_000, ErrorClass: "cpu_limit", Engine: "v8", CodeExecutions: 1, CodeDurationMs: 2300 },
+    { type: "v8_exec", signal: "SIGSYS", Event: "killed", V8ExecFailures: 1 },
   ]);
   for (const [message, expected] of [
     ["Codemode timed out after 500ms waiting for a sandbox worker (all 4 busy)", "timeout_waiting_worker"],
     ["Codemode timed out after 30000ms while tools.camel__analysis_exec was still running; external side effects may have completed", "timeout_tool"],
     ["Codemode CPU or wall-clock limit exceeded", "guest_limit"],
     ["Codemode worker exited", "worker_exited"],
+    ["Codemode memory limit exceeded", "memory_limit"],
+    ["RangeError: Array buffer allocation failed", "memory_limit"],
+    ["Codemode sandbox process exited (SIGSYS: a system call outside its seccomp allowlist)", "sandbox_seccomp"],
+    ["Codemode sandbox process exited (SIGXCPU: a resource limit)", "sandbox_rlimit"],
+    ["Codemode sandbox process exited (SIGKILL)", "worker_exited"],
+    ["Codemode sandbox process could not start (ENOENT)", "spawn_failed"],
     ["Error: file not found: /workspace/x.csv", "guest_error"],
   ]) assert.equal(codeErrorClass(message), expected, message);
 });

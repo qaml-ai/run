@@ -5,16 +5,18 @@ import type { Socket } from "node:net";
 import { frames } from "./sandbox-wire.ts";
 import type { Guest } from "./codemode.ts";
 import type { WireMessage } from "./protocol.ts";
+import { recordV8Exec } from "./metrics.ts";
 
 /**
- * js_exec as a process per execution: sandbox/v8-exec, a bare V8 isolate, spawned for one
- * execution and killed when it ends. It inherits whatever confines this process (in the image,
- * agent-launcher's uid, no_new_privs and seccomp). Nothing is reused: no pool to keep clean, no
- * snapshot to restore, no watchdog here. The child holds itself to its CPU budget and memory
- * (and RLIMIT_CPU backs that up); the wall clock is executeCode's timer, which kills it.
+ * js_exec on V8, a process per execution: sandbox/v8-exec, a bare V8 isolate (no Node), spawned for
+ * one execution and killed when it ends. Nothing is reused, so there is no pool to keep clean and
+ * no watchdog here. It inherits whatever confines this process (in the image, a sandbox process's
+ * uid, no_new_privs and agent-launcher's seccomp filter), and confines itself further: its own CPU,
+ * heap and ArrayBuffer limits, rlimits, and a seccomp allowlist before guest code. The wall clock
+ * is executeCode's timer, which kills it.
  *
  * `prespawn` keeps that many processes started ahead, each past V8's setup and waiting for its
- * one execution; `max` bounds processes running at once, further executions waiting for one.
+ * one execution; `max` bounds processes running executions at once, further ones waiting for one.
  */
 export class V8Exec {
   readonly binary: string;
@@ -24,32 +26,32 @@ export class V8Exec {
   running = 0;
   /** CPU the processes that answered used in all, startup included, as each reported it (scripts/bench-v8-exec.ts). */
   processCpuMs = 0;
-  /** Pids of the processes running executions now (scripts/bench-v8-exec.ts reads their memory). */
+  /** Pids of the processes running executions now. */
   readonly pids = new Set<number>();
   private readonly ready: ChildProcess[] = [];
   private readonly waiting: (() => void)[] = [];
 
-  constructor(options: { binary?: string; snapshot?: string | false; jitless?: boolean; max?: number; prespawn?: number; maxAddressSpaceMb?: number; maxDataMb?: number } = {}) {
+  constructor(options: { binary?: string; jitless?: boolean; seccomp?: boolean; max?: number; prespawn?: number; maxDataMb?: number } = {}) {
     this.binary = options.binary ?? v8ExecBinary();
-    const snapshot = options.snapshot === undefined ? `${this.binary}${options.jitless ? ".jitless" : ""}.snapshot` : options.snapshot;
+    const jitless = options.jitless ?? envFlag("AGENT_V8_JITLESS", true);
+    const seccomp = options.seccomp ?? envFlag("AGENT_V8_SECCOMP", true);
     this.args = [
-      ...(options.jitless ? ["--jitless"] : []),
-      ...(snapshot && existsSync(snapshot) ? ["--snapshot", snapshot] : []),
-      ...(options.maxAddressSpaceMb ? ["--max-address-space-mb", String(options.maxAddressSpaceMb)] : []),
-      ...(options.maxDataMb ? ["--max-data-mb", String(options.maxDataMb)] : []),
+      ...(jitless ? ["--jitless"] : []),
+      ...(seccomp ? [] : ["--no-seccomp"]),
+      // RLIMIT_DATA, behind the heap (128 MB) and ArrayBuffer (128 MB) limits: Linux counts what is mapped writable.
+      "--max-data-mb", String(options.maxDataMb ?? 512),
     ];
     this.max = options.max ?? 64;
-    // The memory backstop on Linux: RLIMIT_DATA, 512 MB (RLIMIT_AS cannot be used: V8 reserves ~17 GB of address space).
-    if (options.maxDataMb === undefined && process.platform === "linux") this.args.push("--max-data-mb", "512");
     this.prespawn = options.prespawn ?? 0;
+    if (!Number.isInteger(this.max) || this.max < 1 || !Number.isInteger(this.prespawn) || this.prespawn < 0) throw new Error("Invalid v8-exec process limits");
     this.refill();
   }
 
   private spawn() {
-    // No environment, no inherited descriptors besides the three pipes.
+    // No environment, and no descriptors besides the three pipes.
     const child = spawn(this.binary, this.args, { stdio: ["pipe", "pipe", "ignore"], env: {} });
-    child.on("error", () => {});
     child.stdin!.on("error", () => {});
+    child.once("error", error => recordV8Exec({ event: "spawn_failed", code: (error as NodeJS.ErrnoException).code }));
     return child;
   }
 
@@ -64,22 +66,29 @@ export class V8Exec {
     const queued: WireMessage[] = [];
     let deliver: (message: unknown) => void = () => {};
     let onClose: (reason: string) => void = () => {};
-    let ended = false;
+    let ended = false, answered = false, closed = false;
+    const close = (reason: string) => { if (!closed) { closed = true; onClose(reason); } };
     const start = () => {
       this.running++;
-      child = this.ready.shift() ?? this.spawn();
+      const proc = child = this.ready.shift() ?? this.spawn();
       this.refill();
-      write = frames(child.stdout as Socket, message => {
-        const cpu = (message as { result?: { processCpuMs?: unknown } })?.result?.processCpuMs;
-        if (typeof cpu === "number") this.processCpuMs += cpu;
+      write = frames(proc.stdout as Socket, message => {
+        const reply = message as { type?: string; result?: { processCpuMs?: unknown } };
+        if (reply?.type === "response") answered = true;
+        if (typeof reply?.result?.processCpuMs === "number") this.processCpuMs += reply.result.processCpuMs;
         deliver(message);
-      }, undefined, child.stdin as Socket);
-      const pid = child.pid;
+      }, undefined, proc.stdin as Socket);
+      const pid = proc.pid;
       if (pid) this.pids.add(pid);
-      child.once("close", (code, signal) => {
+      proc.once("error", error => { release(); close(`Codemode sandbox process could not start (${(error as NodeJS.ErrnoException).code ?? "error"})`); });
+      proc.once("close", (code, signal) => {
         if (pid) this.pids.delete(pid);
         release();
-        onClose(signal === "SIGXCPU" ? "Codemode CPU limit exceeded: the sandbox process reached RLIMIT_CPU" : `Codemode sandbox process exited (${signal ?? code})`);
+        // Killed by something other than this side: the kernel for its rlimits or seccomp, or the OOM killer.
+        if (!ended && !answered && signal) recordV8Exec({ event: "killed", signal });
+        close(signal === "SIGSYS" ? "Codemode sandbox process exited (SIGSYS: a system call outside its seccomp allowlist)"
+          : signal === "SIGXCPU" || (signal === "SIGKILL" && !ended) ? `Codemode sandbox process exited (${signal}: a resource limit)`
+          : `Codemode sandbox process exited (${signal ?? code})`);
       });
       for (const message of queued.splice(0)) guest.send(message);
     };
@@ -96,7 +105,7 @@ export class V8Exec {
         if (!write) return void queued.push(message);
         try { write(message); } catch { child!.kill("SIGKILL"); }
       },
-      listen(onMessage, close) { deliver = onMessage; onClose = close; },
+      listen(onMessage, onClosed) { deliver = onMessage; onClose = onClosed; },
       end: () => {
         if (ended) return;
         ended = true;
@@ -115,7 +124,12 @@ export class V8Exec {
   }
 }
 
-/** The v8-exec binary: AGENT_V8_EXEC, the image's, or this checkout's release build. */
+const envFlag = (name: string, fallback: boolean) => {
+  const value = process.env[name];
+  return value === undefined || value === "" ? fallback : !/^(0|false|no|off)$/i.test(value);
+};
+
+/** The v8-exec binary: AGENT_V8_EXEC, the image's, or this checkout's release build (npm run build:v8-exec). */
 export function v8ExecBinary() {
   if (process.env.AGENT_V8_EXEC) return process.env.AGENT_V8_EXEC;
   if (existsSync("/usr/local/bin/v8-exec")) return "/usr/local/bin/v8-exec";
@@ -123,7 +137,10 @@ export function v8ExecBinary() {
 }
 
 let shared: V8Exec | undefined;
-/** The process-wide runner, prespawning AGENT_V8_PRESPAWN processes. */
+/**
+ * This process's runner, for executions on V8 without sandbox processes: AGENT_V8_PRESPAWN processes
+ * started ahead (none by default), AGENT_V8_MAX at once (64).
+ */
 export function v8Exec() {
-  return shared ??= new V8Exec({ prespawn: Number(process.env.AGENT_V8_PRESPAWN ?? 0), jitless: process.env.AGENT_V8_JITLESS === "1" });
+  return shared ??= new V8Exec({ prespawn: Number(process.env.AGENT_V8_PRESPAWN || 0), max: Number(process.env.AGENT_V8_MAX || 64) });
 }

@@ -1,4 +1,4 @@
-# Hosted agent runtime: the HTTP/SSE service, agent processes and the QuickJS sandbox.
+# Hosted agent runtime: the HTTP/SSE service, agent processes and the js_exec sandboxes (QuickJS, and V8 in v8-exec).
 # Build from the repository root: docker build -t agent-runtime .
 
 # agent-launcher (sandbox/launcher.c): starts the sandbox processes and the runtime. Static, so the
@@ -8,10 +8,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev l
 COPY sandbox/launcher.c /src/launcher.c
 RUN gcc -O2 -Wall -Wextra -Werror -static -o /agent-launcher /src/launcher.c -lseccomp
 
-# v8-exec (sandbox/v8-exec, prototype): js_exec on a bare V8 isolate, one process per execution.
+# v8-exec (sandbox/v8-exec): js_exec on a bare V8 isolate, one process per execution (src/v8-exec.ts).
 # Built on the build machine's own architecture and cross-compiled to the target's: rusty_v8 ships
 # prebuilt static V8 libraries for both, so no V8 build and no emulated compile.
-FROM --platform=$BUILDPLATFORM rust:1.95-slim-bookworm AS v8exec
+FROM --platform=$BUILDPLATFORM rust:1.95.0-slim-bookworm AS v8exec
 ARG TARGETARCH
 RUN set -eux; case "$TARGETARCH" in \
       arm64) triple=aarch64-unknown-linux-gnu; gnu=aarch64-linux-gnu; deb=arm64 ;; \
@@ -24,7 +24,8 @@ RUN set -eux; case "$TARGETARCH" in \
 ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
     CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc
 WORKDIR /src
-# The image is the toolchain rust-toolchain.toml pins; that file stays out so rustup uses this one, targets included.
+# This image is the toolchain sandbox/v8-exec/rust-toolchain.toml pins (keep the two in step); the file stays
+# out so rustup uses the image's, with its cross targets.
 COPY sandbox/v8-exec/Cargo.toml sandbox/v8-exec/Cargo.lock ./
 COPY sandbox/v8-exec/src ./src
 RUN --mount=type=cache,target=/usr/local/cargo/registry --mount=type=cache,target=/src/target,id=v8exec-$TARGETARCH \

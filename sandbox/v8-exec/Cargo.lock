@@ -164,6 +164,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "deno_core_icudata"
+version = "0.78.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b963d2d79672b4c379e4511acccd27bb35b4c1b32a93f596d52ff14a064293bc"
+
+[[package]]
 name = "diplomat"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1453,6 +1459,7 @@ dependencies = [
 name = "v8-exec"
 version = "0.1.0"
 dependencies = [
+ "deno_core_icudata",
  "libc",
  "oxc",
  "serde_json",

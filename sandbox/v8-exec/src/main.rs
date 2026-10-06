@@ -11,14 +11,17 @@
 //
 // Limits, from the inside out: V8's heap limit (a near-heap-limit callback terminates), a
 // counting ArrayBuffer allocator, a watchdog thread that terminates at the CPU budget and exits
-// 250 ms later if V8 has not stopped, RLIMIT_CPU/RLIMIT_AS/RLIMIT_FSIZE/RLIMIT_NPROC as backstops
-// the guest cannot lift, and the parent's wall-clock timer, which kills the process.
+// 250 ms later if V8 has not stopped, RLIMIT_CPU/RLIMIT_DATA/RLIMIT_FSIZE/RLIMIT_NPROC as backstops
+// the guest cannot lift, a seccomp allowlist installed before guest code (seccomp.rs), and the
+// parent's wall-clock timer, which kills the process. ICU data is compiled in, so Intl works.
 
 use std::ffi::c_void;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
+
+mod seccomp;
 
 const BOOTSTRAP: &str = include_str!("bootstrap.js");
 const GLUE: &str = include_str!("glue.js");
@@ -229,11 +232,6 @@ static AB_VTABLE: v8::RustAllocatorVtable<AtomicUsize> = v8::RustAllocatorVtable
   allocate: ab_allocate, allocate_uninitialized: ab_allocate_uninitialized, free: ab_free, drop: ab_drop,
 };
 
-fn external_references() -> Vec<v8::ExternalReference> {
-  use v8::MapFnTo;
-  vec![v8::ExternalReference { function: send_cb.map_fn_to() }, v8::ExternalReference { function: emit_cb.map_fn_to() }]
-}
-
 /// Compile the bootstrap and glue in the current context: `[deliver, install, formatError, finish]`.
 fn setup<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Array> {
   let send = v8::Function::new(scope, send_cb).unwrap();
@@ -320,48 +318,33 @@ fn main() {
   let jitless = args.iter().any(|arg| arg == "--jitless");
   // Not dumpable: processes of the same uid (the sandbox process, other executions' v8-exec
   // processes) cannot read this one's memory through /proc/<pid>/mem, whatever Yama's ptrace_scope.
+  // (Not under --seccomp-debug, so strace can read its calls' arguments.)
   #[cfg(target_os = "linux")]
-  unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
+  if !args.iter().any(|arg| arg == "--seccomp-debug") { unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) }; }
   // No core files, and no files written at all: stdout is a pipe, which RLIMIT_FSIZE leaves alone.
   set_rlimit(libc::RLIMIT_CORE as _, 0, 0);
-  if flag("--make-snapshot").is_none() { set_rlimit(libc::RLIMIT_FSIZE as _, 0, 0); }
-  // RLIMIT_AS is no use against V8, which reserves ~17 GB of address space up front (it stays for
-  // measurement); RLIMIT_DATA counts only the writable memory it actually maps.
-  if let Some(mb) = flag("--max-address-space-mb").and_then(|mb| mb.parse::<u64>().ok()) {
-    set_rlimit(libc::RLIMIT_AS as _, mb << 20, mb << 20);
-  }
+  set_rlimit(libc::RLIMIT_FSIZE as _, 0, 0);
+  // Memory the process may map writable, a backstop behind the heap and ArrayBuffer limits.
+  // (RLIMIT_AS cannot do this: V8 reserves ~17 GB of address space up front.)
   if let Some(mb) = flag("--max-data-mb").and_then(|mb| mb.parse::<u64>().ok()) {
     set_rlimit(libc::RLIMIT_DATA as _, mb << 20, mb << 20);
   }
 
   // One thread for V8: no compiler or GC helper threads. (WebAssembly is deleted from the global in glue.js.)
+  // One malloc arena: glibc makes one per thread otherwise, reading /sys (openat) to size them, which
+  // the seccomp filter would kill when the watchdog thread first allocates.
+  #[cfg(target_os = "linux")]
+  unsafe { libc::mallopt(libc::M_ARENA_MAX, 1) };
   v8::V8::set_flags_from_string(&format!("--single-threaded --enable-sharedarraybuffer-per-context{}", if jitless { " --jitless" } else { "" }));
   v8::V8::initialize_platform(v8::new_single_threaded_default_platform(false).make_shared());
+  // ICU data compiled in (deno_core_icudata, ICU 78, the version V8 is built with): Intl works, in en-US and UTC.
+  v8::icu::set_common_data_78(deno_core_icudata::ICU_DATA).expect("ICU data");
+  v8::icu::set_default_locale("en-US");
+  let _ = v8::icu::set_default_time_zone("UTC");
   v8::V8::initialize();
 
-  if let Some(path) = flag("--make-snapshot") {
-    let mut creator = v8::Isolate::snapshot_creator(Some(external_references().into()), None);
-    {
-      v8::scope!(let scope, &mut creator);
-      let context = v8::Context::new(scope, Default::default());
-      let scope = &mut v8::ContextScope::new(scope, context);
-      let helpers = setup(scope);
-      let key = v8::String::new(scope, "__camelGlue").unwrap();
-      context.global(scope).set(scope, key.into(), helpers.into());
-      scope.set_default_context(context);
-    }
-    let blob = creator.create_blob(v8::FunctionCodeHandling::Keep).expect("snapshot");
-    std::fs::write(&path, &*blob).expect("write snapshot");
-    return;
-  }
-
   let allocator = unsafe { v8::new_rust_allocator(&AB_HANDLE as *const AtomicUsize, &AB_VTABLE) };
-  let mut params = v8::CreateParams::default().heap_limits(0, HEAP_BYTES).array_buffer_allocator(allocator);
-  let snapshot = flag("--snapshot").map(|path| std::fs::read(path).expect("read snapshot"));
-  if let Some(bytes) = snapshot {
-    params = params.snapshot_blob(v8::StartupData::from(bytes)).external_references(external_references().into());
-  }
-  let snapshotted = params_has_snapshot(&args);
+  let params = v8::CreateParams::default().heap_limits(0, HEAP_BYTES).array_buffer_allocator(allocator);
   let isolate = &mut v8::Isolate::new(params);
   isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
   isolate.set_host_import_module_dynamically_callback(import_cb);
@@ -371,13 +354,7 @@ fn main() {
   v8::scope!(let scope, isolate);
   let context = v8::Context::new(scope, Default::default());
   let scope = &mut v8::ContextScope::new(scope, context);
-  let helpers = if snapshotted {
-    let key = v8::String::new(scope, "__camelGlue").unwrap();
-    let global = context.global(scope);
-    let helpers = global.get(scope, key.into()).unwrap();
-    global.delete(scope, key.into());
-    v8::Local::<v8::Array>::try_from(helpers).unwrap()
-  } else { setup(scope) };
+  let helpers = setup(scope);
   let (deliver, install, format_error, finish) = (helper(scope, helpers, 0), helper(scope, helpers, 1), helper(scope, helpers, 2), helper(scope, helpers, 3));
   let lockdown = helper(scope, helpers, 4);
 
@@ -397,7 +374,10 @@ fn main() {
   // RLIMIT_CPU (whole seconds, past both) kills a process that got around the watchdog.
   let started = cpu_ms();
   let watchdog_id = id.clone();
+  // The filter below covers this thread too, so it must be past its own start-up first.
+  let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
   std::thread::spawn(move || loop {
+    let _ = started_tx.send(());
     std::thread::sleep(Duration::from_millis(5));
     if DONE.load(Ordering::SeqCst) { return; }
     if cpu_ms() - started < budget as f64 { continue; }
@@ -410,6 +390,16 @@ fn main() {
   set_rlimit(libc::RLIMIT_CPU as _, seconds, seconds + 1);
   #[cfg(target_os = "linux")]
   set_rlimit(libc::RLIMIT_NPROC as _, 0, 0);
+  // From here on, only the system calls seccomp.rs allows (it fails closed): before any of the
+  // guest's code is parsed, TypeScript stripping included.
+  if !args.iter().any(|arg| arg == "--no-seccomp") {
+    let _ = started_rx.recv();
+    if let Err(error) = seccomp::install(jitless, args.iter().any(|arg| arg == "--seccomp-debug")) { answer_and_exit(&id, Err(format!("v8-exec could not install its seccomp filter: {error}"))); }
+  }
+  // Test hook (tests/v8-exec.test.ts): a call the filter does not allow, which must kill the process.
+  if args.iter().any(|arg| arg == "--test-forbidden-syscall") { unsafe { libc::getuid() }; }
+  // And executable memory, which under --jitless must kill it too.
+  if args.iter().any(|arg| arg == "--test-exec-memory") { unsafe { libc::mmap(std::ptr::null_mut(), 4096, libc::PROT_READ | libc::PROT_EXEC, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, -1, 0) }; }
 
   v8::tc_scope!(let tc, scope);
   let undefined: v8::Local<v8::Value> = v8::undefined(tc).into();
@@ -518,5 +508,3 @@ fn compile<'s>(scope: &mut v8::PinScope<'s, '_>, lockdown: v8::Local<'s, v8::Fun
   lockdown.call(scope, undefined, &[])?;
   script.run(scope)
 }
-
-fn params_has_snapshot(args: &[String]) -> bool { args.iter().any(|arg| arg == "--snapshot") }

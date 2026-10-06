@@ -87,6 +87,10 @@ export function safeError(error: unknown): string {
 
 const CODE_CLASSES: [string, RegExp][] = [
   ["cpu_limit", /^Codemode CPU limit exceeded/],
+  ["memory_limit", /^Codemode memory limit exceeded|Array buffer allocation failed/],
+  ["sandbox_seccomp", /^Codemode sandbox process exited \(SIGSYS/],
+  ["sandbox_rlimit", /^Codemode sandbox process exited \(\w+: a resource limit/],
+  ["spawn_failed", /^Codemode sandbox process could not start/],
   ["guest_limit", /^Codemode CPU or wall-clock limit exceeded/],
   ["timeout_waiting_worker", /^Codemode timed out after \d+ms waiting for a sandbox worker/],
   ["timeout_tool", /^Codemode timed out after \d+ms while tools\./],
@@ -108,14 +112,28 @@ export function codeErrorClass(message: string | null | undefined): string {
  * One js_exec execution: how long it took, the CPU its guest used (when it finished), the timeoutMs
  * it asked for and got, and how it ended, so its limits can be tuned from what executions need.
  */
-export function recordCodeExecution(execution: { tenant?: string; ms: number; requestedTimeoutMs?: number; timeoutMs: number; cpuMs?: number; error?: unknown }) {
+export function recordCodeExecution(execution: { tenant?: string; engine?: string; ms: number; requestedTimeoutMs?: number; timeoutMs: number; cpuMs?: number; error?: unknown }) {
   // Only the class goes in the line: a guest's error can echo what a user wrote.
   const failure = execution.error === undefined ? "none" : codeErrorClass(errorText(execution.error));
   emit("code_execution", {
-    dimensions: { ErrorClass: failure },
-    rollups: [[], ["ErrorClass"]],
+    dimensions: { ErrorClass: failure, Engine: execution.engine ?? "quickjs" },
+    rollups: [[], ["ErrorClass"], ["Engine"], ["Engine", "ErrorClass"]],
     metrics: { CodeExecutions: 1, CodeDurationMs: [execution.ms, "Milliseconds"], CodeCpuMs: execution.cpuMs === undefined ? undefined : [execution.cpuMs, "Milliseconds"] },
     properties: { tenant: execution.tenant, timeoutMs: execution.timeoutMs, ...(execution.requestedTimeoutMs !== undefined ? { requestedTimeoutMs: execution.requestedTimeoutMs } : {}) },
+  });
+}
+
+/**
+ * A v8-exec process that did not get to answer: it could not be started (`code`, the spawn's errno),
+ * or something other than the runtime killed it (`signal`: SIGSYS for its seccomp allowlist, SIGXCPU
+ * or SIGKILL for its rlimits or the OOM killer). Written by the sandbox process that ran it.
+ */
+export function recordV8Exec(event: { event: "spawn_failed" | "killed"; code?: string; signal?: string }) {
+  emit("v8_exec", {
+    dimensions: { Event: event.event },
+    rollups: [["Event"]],
+    metrics: { V8ExecFailures: 1 },
+    properties: { ...(event.code ? { code: event.code } : {}), ...(event.signal ? { signal: event.signal } : {}) },
   });
 }
 

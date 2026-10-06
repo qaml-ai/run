@@ -1,6 +1,7 @@
 // Linux, with strace: the system calls a v8-exec process makes, in all and once its execution has
-// arrived (what a filter installed after V8's setup would have to allow).
-//   node --experimental-strip-types scripts/v8-syscalls.ts [--jitless]
+// arrived (what sandbox/v8-exec/src/seccomp.rs must allow), and any its seccomp filter killed it for.
+// --no-seccomp traces without the filter, to see what a change needs.
+//   node --experimental-strip-types scripts/v8-syscalls.ts [--jit] [--no-seccomp]
 import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -8,7 +9,7 @@ import type { Socket } from "node:net";
 import { frames } from "../src/sandbox-wire.ts";
 import { v8ExecBinary } from "../src/v8-exec.ts";
 
-const jitless = process.argv.includes("--jitless");
+const jitless = !process.argv.includes("--jit");
 const snippets = [
   "return 1",
   "const x: number = 2; return x",
@@ -17,12 +18,14 @@ const snippets = [
   "const a = []; for (;;) a.push({ x: Math.random() })",
   "const a = []; try { for (;;) a.push(new Uint8Array(1 << 20)); } catch { return a.length }",
   "while (true) {}",
+  "return [new Intl.NumberFormat('de-DE').format(1234.5), new Date(0).toLocaleString(), ['b', 'a'].sort(new Intl.Collator('de').compare)]",
+  "enum E { A } return E.A",
 ];
-const all = new Set<string>(), afterRequest = new Set<string>();
+const all = new Set<string>(), afterRequest = new Set<string>(), killedBy = new Set<string>();
 const dir = mkdtempSync("/tmp/v8-syscalls-");
 for (const [index, code] of snippets.entries()) {
   const out = join(dir, String(index));
-  const child = spawn("strace", ["-f", "-ff", "-qq", "-o", out, v8ExecBinary(), "--max-data-mb", "512", ...(jitless ? ["--jitless"] : [])], { stdio: ["pipe", "pipe", "ignore"] });
+  const child = spawn("strace", ["-f", "-ff", "-qq", "-o", out, v8ExecBinary(), "--max-data-mb", "512", ...(jitless ? ["--jitless"] : []), ...(process.argv.includes("--no-seccomp") ? ["--no-seccomp"] : ["--seccomp-debug"])], { stdio: ["pipe", "pipe", "ignore"] });
   const done = new Promise<void>(resolve => child.once("close", () => resolve()));
   const write = frames(child.stdout as Socket, (message: any) => {
     if (message.type === "request") write({ type: "response", id: message.id, result: JSON.stringify({ a: 1 }) });
@@ -32,6 +35,8 @@ for (const [index, code] of snippets.entries()) {
   for (const file of readdirSync(dir).filter(name => name.startsWith(`${index}.`))) {
     let arrived = false, reads = 0;
     for (const line of readFileSync(join(dir, file), "utf8").split("\n")) {
+      // Under --seccomp-debug, what the filter refuses fails with ENOSYS (without it, the call would kill the process).
+      if (/ = -1 ENOSYS/.test(line) && arrived) killedBy.add(line.slice(0, 160));
       const name = /^([a-z0-9_]+)\(/.exec(line)?.[1];
       if (!name) continue;
       all.add(name);
@@ -39,8 +44,14 @@ for (const [index, code] of snippets.entries()) {
       // The execute frame arrives in the first read from stdin (buffered: header and body together).
       if (/^read\(0, /.test(line) && ++reads === 1) arrived = true;
     }
+    // A filter's kill shows as the thread's last call, which never returned.
+    const lines = readFileSync(join(dir, file), "utf8").split("\n");
+    if (lines.some(line => line.includes("killed by SIGSYS"))) {
+      const last = lines.filter(line => /^[a-z0-9_]+\(/.test(line)).at(-1) ?? "";
+      if (!/ = /.test(last)) killedBy.add(last.slice(0, 120));
+    }
     // Threads other than main (the watchdog) start after the request: everything they do counts.
     if (!readFileSync(join(dir, file), "utf8").includes("execve(")) for (const line of readFileSync(join(dir, file), "utf8").split("\n")) { const name = /^([a-z0-9_]+)\(/.exec(line)?.[1]; if (name) afterRequest.add(name); }
   }
 }
-console.log(JSON.stringify({ jitless, total: all.size, afterRequest: afterRequest.size, afterRequestCalls: [...afterRequest].sort(), all: [...all].sort() }, null, 1));
+console.log(JSON.stringify({ jitless, killedBy: [...killedBy], total: all.size, afterRequest: afterRequest.size, afterRequestCalls: [...afterRequest].sort(), all: [...all].sort() }, null, 1));
