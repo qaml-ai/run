@@ -172,7 +172,7 @@ export function tools(api: () => Api, options: { local?: LocalFiles } = {}): Too
     return ops.waitFor(client, await client.agentId(agent), requestId, wait ?? 50);
   }, read);
   tool("agent_history", "Read agent history", "An agent's latest messages, in whole turns: text, tool calls and tool results. Changes nothing.", { agent, limit: z.number().int().min(1).max(500).optional().describe("Default 20") }, ({ agent, limit }) => ops.history(api(), agent, limit), read);
-  tool("abort_agent", "Stop agent's turn", "Stop an agent: its running turn ends, and the runs queued behind it are cancelled, so nothing runs after it. The agent and its history stay.", { agent }, async ({ agent }) => {
+  tool("abort_agent", "Stop agent's turn", "Stop an agent's running turn; the turn's unfinished work is cancelled. The agent and its history stay.", { agent }, async ({ agent }) => {
     const client = api();
     return client.call("POST", `/v1/agents/${enc(await client.agentId(agent))}/abort`, {});
   }, destructive);
