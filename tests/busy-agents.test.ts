@@ -64,7 +64,7 @@ test("the 429 names the tier, the limit and what unlocks the next tier", () => {
   const error = busyLimitError({ limit: 8, source: "tier", tier: "Free", paid: 0, next: { tier: "Tier 1", paid: micros(5), limit: 25 } }, 8);
   assert.equal(error.status, 429);
   assert.equal(error.code, "BUSY_AGENT_LIMIT");
-  assert.equal(error.message, "This account has 8 agents busy, the most its usage tier (Free) allows; retry when one finishes. Tier 1 (25 busy agents) applies once the account has paid $5 in total for credit.");
+  assert.equal(error.message, "This account has 8 agents busy, the most its usage tier (Free) allows; retry when one finishes. $5 more of credit unlocks Tier 1: 25 busy agents (it applies once the account has paid $5 in total).");
   assert.deepEqual(errorFields(error), { busyAgents: { busy: 8, limit: 8, source: "tier", tier: "Free", paid: 0, next: { tier: "Tier 1", paid: micros(5), limit: 25 } } });
   const top = busyLimitError({ limit: 1000, source: "tier", tier: "Tier 4", paid: micros(1200) }, 1000);
   assert.equal(top.message, "This account has 1000 agents busy, the most its usage tier (Tier 4) allows; retry when one finishes.");
@@ -92,7 +92,7 @@ test("busy limits: a tenant's own maxAgents wins, prepaid tenants get their tier
     const limit = await accounts.billing.busyLimit(tenant);
     return limit.source === "tier" ? [limit.tier, limit.limit, limit.next?.tier, limit.next?.paid] : [limit.source, limit.limit];
   };
-  assert.deepEqual(await tier(here, "payg"), ["Free", 8, "Tier 1", micros(5)]);
+  assert.deepEqual(await tier(here, "payg"), ["Free", 20, "Tier 1", micros(5)]);
   assert.deepEqual(await tier(here, "ops"), ["default", 40], "not prepaid: the deployment's default");
   assert.deepEqual(await tier(here, "vip"), ["tenant", 3], "the tenant's own limit");
   // An unbilled operator tenant with its own limit keeps it: never a tier, though it has paid nothing.
@@ -102,7 +102,7 @@ test("busy limits: a tenant's own maxAgents wins, prepaid tenants get their tier
 
   // Starting credit and adjustments are not payments.
   await here.billing.post([{ tenant: "payg", kind: "grant", amount: micros(5), key: "g1" }, { tenant: "payg", kind: "adjustment", amount: micros(100), key: "adj1" }]);
-  assert.deepEqual(await tier(here, "payg"), ["Free", 8, "Tier 1", micros(5)]);
+  assert.deepEqual(await tier(here, "payg"), ["Free", 20, "Tier 1", micros(5)]);
   // The other node has the tenant's balance cached; the tier is read afresh, so a payment counts there at once.
   await there.billing.account("payg");
   await here.billing.post([{ tenant: "payg", kind: "purchase", amount: micros(5), key: "p1" }]);
@@ -123,9 +123,9 @@ test("busy limits: a tenant's own maxAgents wins, prepaid tenants get their tier
   // A self-serve tenant (a row, not in the tenants file): the operator's maxBusyAgents (tenants.limits) wins over its
   // tier, and is read afresh, so a change applies at once on every node; removed, the tier applies again.
   await db.query("insert into tenants (id, created_at, billing) values ('selfie', $1, 'prepaid')", [Date.now()]);
-  assert.deepEqual(await tier(there, "selfie"), ["Free", 8, "Tier 1", micros(5)]);
+  assert.deepEqual(await tier(there, "selfie"), ["Free", 20, "Tier 1", micros(5)]);
   await db.query(`update tenants set limits = limits || '{"maxBusyAgents": 40}' where id = 'selfie'`);
   assert.deepEqual(await tier(there, "selfie"), ["tenant", 40]);
   await db.query("update tenants set limits = limits - 'maxBusyAgents' where id = 'selfie'");
-  assert.deepEqual(await tier(there, "selfie"), ["Free", 8, "Tier 1", micros(5)]);
+  assert.deepEqual(await tier(there, "selfie"), ["Free", 20, "Tier 1", micros(5)]);
 });

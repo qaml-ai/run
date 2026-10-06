@@ -70,7 +70,7 @@ export interface RateLimitConfig {
   /** Requests that mail a link (sign-up, a password reset, adding an address) per client address an hour, and mails per email address a day. */
   emailRequestsPerIp: number;
   emailsPerAddress: number;
-  /** Agents a tenant may create a minute (POST /v1/agents), and on free credit. */
+  /** Agents a tenant may create a minute (POST /v1/agents), and on free credit: an anti-abuse guard, not a product limit. */
   agentCreates: number;
   freeAgentCreates: number;
   /** Runs (prompt, continue, execute) a tenant may start a minute, and on free credit. */
@@ -104,10 +104,12 @@ export function rateLimitConfig(env: NodeJS.ProcessEnv = process.env): RateLimit
     passwordFailuresPerEmail: count("AGENT_RATE_LIMIT_PASSWORD_FAILURES_PER_EMAIL", 10),
     emailRequestsPerIp: count("AGENT_RATE_LIMIT_EMAIL_REQUESTS_PER_IP", perAddress ? 10 : 0),
     emailsPerAddress: count("AGENT_RATE_LIMIT_EMAILS_PER_ADDRESS", 5),
-    agentCreates: count("AGENT_RATE_LIMIT_AGENT_CREATES", 60),
-    freeAgentCreates: count("AGENT_RATE_LIMIT_FREE_AGENT_CREATES", 10),
+    // Making an agent costs almost nothing: creates are limited only against abuse, the same for every account. Busy
+    // agents (usage tiers), spend and storage are what an account designs around.
+    agentCreates: count("AGENT_RATE_LIMIT_AGENT_CREATES", 600),
+    freeAgentCreates: count("AGENT_RATE_LIMIT_FREE_AGENT_CREATES", 600),
     runs: count("AGENT_RATE_LIMIT_RUNS", 600),
-    freeRuns: count("AGENT_RATE_LIMIT_FREE_RUNS", 60),
+    freeRuns: count("AGENT_RATE_LIMIT_FREE_RUNS", 240),
     exempt: new Set((env.AGENT_RATE_LIMIT_EXEMPT ?? "").split(",").map(value => value.trim().toLowerCase()).filter(Boolean)),
   };
 }
@@ -280,16 +282,31 @@ export class RateLimits {
     return this.perTenant(tenant, "runs", "runs", "runs started", true);
   }
 
-  private async perTenant(tenant: string, limit: "agentCreates" | "runs", name: string, what: string, counted: boolean): Promise<RateLimitState | undefined> {
+  /**
+   * A tenant's per-minute limit of `limit` (none: undefined), whether it is free credit's, and what buying credit would
+   * raise it to (`paid`, when that is more).
+   */
+  async tenantLimit(tenant: string, limit: "agentCreates" | "runs"): Promise<{ max: number; free: boolean; paid?: number } | undefined> {
     const own = await this.options.override?.(tenant, limit);
     if (own === undefined && this.options.exempt?.(tenant)) return;
     const free = own === undefined && await this.options.free(tenant);
     const max = own ?? (free ? this.config[limit === "runs" ? "freeRuns" : "freeAgentCreates"] : this.config[limit]);
     if (!max) return;
+    const paid = this.config[limit];
+    return { max, free, ...(free && (!paid || paid > max) ? { paid } : {}) };
+  }
+
+  private async perTenant(tenant: string, limit: "agentCreates" | "runs", name: string, what: string, counted: boolean): Promise<RateLimitState | undefined> {
+    const applies = await this.tenantLimit(tenant, limit);
+    if (!applies) return;
+    const { max, free, paid } = applies;
+    // On free credit, what buying credit unlocks; a create limit is only against abuse.
+    const upgrade = paid !== undefined ? `; buying credit raises it to ${paid ? `${paid} a minute` : "no limit"}` : "";
+    const message = limit === "runs" ? `Too many ${what}: at most ${max} a minute for this account${free ? ` on free credit${upgrade}` : ""}`
+      : `Too many ${what}: at most ${max} a minute for this account (a limit against abuse${free ? `, on free credit${upgrade}` : ""}). Upsert an agent you have instead of making new ones`;
     const key = `${name}:${tenant}`, windowMs = 60_000, now = this.now();
     // Only this tenant's own counter is read: its key is the tenant's, never another's.
-    const row = counted ? await this.counted(this.options.db, key, { name, scope: "tenant", max, windowSeconds: 60 },
-      `Too many ${what}: at most ${max} a minute for this account${free ? " on free credit" : ""}`)
+    const row = counted ? await this.counted(this.options.db, key, { name, scope: "tenant", max, windowSeconds: 60 }, message)
       : (await this.options.db.query("select count, window_start from rate_limits where key = $1 and window_start = $2", [key, Math.floor(now / windowMs) * windowMs])).rows[0] as { count: number; window_start: string | number } | undefined;
     const start = row ? Number(row.window_start) : Math.floor(now / windowMs) * windowMs;
     return { limit: max, remaining: Math.max(0, max - (row?.count ?? 0)), reset: Math.max(1, Math.ceil((start + windowMs - now) / 1000)) };

@@ -87,7 +87,7 @@ export interface ApiContext {
   /** Deleting accounts (`DELETE /v1/account`, and the operator's `DELETE /v1/tenants/{id}`). */
   accountDeletions?: AccountDeletions;
   /** Counts agent creates (POST /v1/agents) against the tenant's rate limit; throws 429 past it. */
-  rateLimits?: Pick<RateLimits, "agentCreate">;
+  rateLimits?: Pick<RateLimits, "agentCreate" | "tenantLimit">;
   /** The caller's address (Get Help's per-source limit); by default the load balancer's, as `clientAddress` reads it without Cloudflare. */
   clientAddress?: (c: Context) => string | undefined;
 }
@@ -759,7 +759,11 @@ export function api(context: ApiContext) {
   });
 
   route(createRoute({ method: "get", path: "/v1/billing", responses: { 200: reply("Prepaid credit: balance, this month, recent entries and rates", schema.Billing) } }),
-    async c => json(c, 200, await accounts.billing.summary(c.var.principal.tenant)));
+    async c => {
+      const tenant = c.var.principal.tenant;
+      const [summary, runs] = await Promise.all([accounts.billing.summary(tenant), context.rateLimits?.tenantLimit(tenant, "runs")]);
+      return json(c, 200, { ...summary, runsPerMinute: runs ? { limit: runs.max, ...(runs.paid !== undefined ? { afterPurchase: runs.paid || null } : {}) } : null });
+    });
   const alertService = async (tenant: string, sending = false) => {
     if (await accounts.billing.mode(tenant) !== "prepaid") throw new HttpError(400, "Billing alerts are only available for prepaid accounts");
     if (!context.billingAlerts || (sending && !context.billingAlerts.emailEnabled)) throw new HttpError(503, "Billing email is not configured on this runtime");

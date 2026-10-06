@@ -765,6 +765,10 @@ export const Billing = z.object({
   freeCredit: z.boolean().openapi({ description: "Whether the tenant has only ever had free credit, which comes with tighter limits" }),
   checkout: z.boolean().openapi({ description: "Whether credit can be bought here (POST /v1/billing/checkout)" }),
   busyAgents: BusyAgents.openapi({ description: "How many agents may be busy at once, and why: a tier moves up as soon as a payment lands" }),
+  runsPerMinute: z.object({
+    limit: z.number().int().openapi({ description: "Runs the account may start a minute" }),
+    afterPurchase: z.number().int().nullable().optional().openapi({ description: "On free credit: what buying credit raises it to (null: no limit)" }),
+  }).nullable().optional().openapi({ description: "The account's run rate limit; null when none applies" }),
   startingCredit: z.object({
     status: z.enum(["granted", "not_eligible", "not_granted", "not_applicable"]),
     amount: micros("The amount of starting credit actually awarded, independent of the current grant setting"),

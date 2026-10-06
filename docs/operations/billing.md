@@ -141,13 +141,13 @@ so webhook retries and races settle once. `startingCredit.cardCheck: {amount}` i
 own provider key still requires credit for agent time. A prepaid tenant that
 has never bought credit (grants and adjustments do not count; a full refund puts it
 back) is on **free credit**, with tighter limits: the Free usage tier's busy agents
-(8 at once across the runtime, unless an admin set its `maxAgents`), and at most
+(20 at once across the runtime, unless an admin set its `maxAgents`), 240 runs a minute (600 paid), and at most
 `AGENT_FREE_HOURLY_SPEND_USD` ($1) of usage charges in any hour, past which runs get
 429 and a running turn ends as above. Both lift with the first purchase.
 
 **Usage tiers.** A prepaid tenant's busy-agent limit grows with what it has paid for
 credit in total (`credit_accounts.purchased`: purchases net of refunds; grants and
-adjustments do not count): Free 8, $5 or more 25, $50 100, $250 250, $1,000 1,000
+adjustments do not count): Free 20, $5 or more 25, $50 100, $250 250, $1,000 1,000
 (`AGENT_USAGE_TIERS`; see [limits](../reference/limits.md#usage-tiers)). The tier is
 computed from that row each time an agent becomes busy, in the same transaction that
 counts its busy agents, so it moves up the moment a purchase posts, on every node, with

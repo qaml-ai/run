@@ -12,12 +12,12 @@ export type BusyLimit =
   | { limit: number; source: "tenant" | "default" }
   | { limit: number; source: "tier"; tier: string; paid: number; next?: { tier: string; paid: number; limit: number } };
 
-/** The 429 for a tenant at its busy-agent limit: it names the limit, its tier and what the next tier takes. */
+/** The 429 for a tenant at its busy-agent limit: it names the limit, its tier, and what buying credit unlocks next. */
 export function busyLimitError(limit: BusyLimit, busy: number) {
   const dollars = (amount: number) => `$${(amount / MICROS).toFixed(2).replace(/\.00$/, "")}`;
   const why = limit.source === "tier" ? `the most its usage tier (${limit.tier}) allows` : "the most this account allows";
   const next = limit.source === "tier" && limit.next
-    ? ` ${limit.next.tier} (${limit.next.limit} busy agents) applies once the account has paid ${dollars(limit.next.paid)} in total for credit.` : "";
+    ? ` ${dollars(Math.max(0, limit.next.paid - limit.paid))} more of credit unlocks ${limit.next.tier}: ${limit.next.limit} busy agents (it applies once the account has paid ${dollars(limit.next.paid)} in total).` : "";
   return new HttpError(429, `This account has ${busy} agents busy, ${why}; retry when one finishes.${next}`, "BUSY_AGENT_LIMIT", { busyAgents: { busy, ...limit } });
 }
 

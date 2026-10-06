@@ -23,10 +23,12 @@ const agent = await agents.upsert("user-123", { model, instructions, tools });
   made; changing them is a 409 that names the field. Delete it and upsert again
   to start over.
 - A deleted key makes a fresh agent the next time, with a new id and token.
-- Make an agent once per user, conversation or job, and reuse it. Creating one
-  is rate limited: 10 a minute on free credit (60 paid), and every `upsert` and
-  fork counts, while `agents.get(key)` does not; runs are 60 a minute on free
-  credit (600 paid). An agent per request or per test hits the limit. See
+- Make an agent once per user, conversation or job, and reuse it. Creating
+  agents is cheap and limited only against abuse (600 a minute; an upsert that
+  changes nothing does not count). The limit to design around is **busy
+  agents**: how many may run at once, 20 on free credit and more with each
+  [usage tier](reference/limits.md#usage-tiers). Runs are limited to 240 a
+  minute on free credit (600 once you buy credit). See
   [Rate limits](reference/limits.md#rate-limits).
 - Over REST, the key is the `Idempotency-Key` of `POST /v1/agents`.
 

@@ -3816,6 +3816,29 @@
           "busyAgents": {
             "$ref": "#/components/schemas/BusyAgents"
           },
+          "runsPerMinute": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "limit": {
+                "type": "integer",
+                "description": "Runs the account may start a minute"
+              },
+              "afterPurchase": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "description": "On free credit: what buying credit raises it to (null: no limit)"
+              }
+            },
+            "required": [
+              "limit"
+            ],
+            "description": "The account's run rate limit; null when none applies"
+          },
           "startingCredit": {
             "type": "object",
             "properties": {

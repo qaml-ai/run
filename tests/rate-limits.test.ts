@@ -41,7 +41,7 @@ test("per-address limits count an IPv6 /64 as one client, Workers by their zone,
 test("rate limits are configured from the environment, each 0 for none", () => {
   const defaults = rateLimitConfig({ AGENT_TRUST_CF_CONNECTING_IP: "true" });
   assert.deepEqual({ ...defaults, exempt: [...defaults.exempt] }, {
-    cloudflare: true, apiPerIp: 600, authPerIp: 20, signupsPerIp: 5, passwordFailuresPerIp: 20, passwordFailuresPerEmail: 10, emailRequestsPerIp: 10, emailsPerAddress: 5, agentCreates: 60, freeAgentCreates: 10, runs: 600, freeRuns: 60, exempt: [],
+    cloudflare: true, apiPerIp: 600, authPerIp: 20, signupsPerIp: 5, passwordFailuresPerIp: 20, passwordFailuresPerEmail: 10, emailRequestsPerIp: 10, emailsPerAddress: 5, agentCreates: 600, freeAgentCreates: 600, runs: 600, freeRuns: 240, exempt: [],
   });
   // Without Cloudflare, the address may be a shared proxy's: per-address limits are the operator's to set. Failures per email address stay.
   assert.deepEqual(rateLimitConfig({}), { ...defaults, cloudflare: false, apiPerIp: 0, authPerIp: 0, signupsPerIp: 0, passwordFailuresPerIp: 0, emailRequestsPerIp: 0 });
@@ -139,14 +139,14 @@ test("agent creates and runs per tenant: lower on free credit, none for admin te
   for (let i = 0; i < 3; i++) await tenantLimits.agentCreate("paid");
   const refused = await refusal(tenantLimits.agentCreate("paid"));
   assert.deepEqual(refused.limit, { name: "agent_creates", scope: "tenant", max: 3, windowSeconds: 60 });
-  assert.match(refused.message, /at most 3 a minute for this account$/);
+  assert.match(refused.message, /at most 3 a minute for this account \(a limit against abuse\)\. Upsert an agent you have instead of making new ones$/);
   await tenantLimits.agentCreate("free");
-  assert.match((await refusal(tenantLimits.agentCreate("free"))).message, /at most 1 a minute for this account on free credit/);
+  assert.match((await refusal(tenantLimits.agentCreate("free"))).message, /at most 1 a minute for this account \(a limit against abuse, on free credit; buying credit raises it to 3 a minute\)/);
 
   for (let i = 0; i < 2; i++) await tenantLimits.run("paid");
   assert.deepEqual((await refusal(tenantLimits.run("paid"))).limit, { name: "runs", scope: "tenant", max: 2, windowSeconds: 60 });
   await tenantLimits.run("free");
-  await refusal(tenantLimits.run("free"));
+  assert.match((await refusal(tenantLimits.run("free"))).message, /at most 1 a minute for this account on free credit; buying credit raises it to 2 a minute$/);
   const checked = freeChecks();
   for (let i = 0; i < 4; i++) await tenantLimits.run("ops");
   await refusal(tenantLimits.run("ops"));
@@ -201,6 +201,10 @@ test("creates and runs answer with X-RateLimit-* headers; an upsert that changes
   const upsert = (key: string, body: object, token = carol) => r.call("/v1/agents", { body, token, headers: { "Idempotency-Key": key } });
   await freshMinute();
 
+  // The default limits: busy agents and runs on free credit, and what buying credit raises them to; creates only against abuse.
+  const billing = (await r.call("/v1/billing", { token: carol })).json;
+  assert.deepEqual(billing.runsPerMinute, { limit: 240, afterPurchase: 600 });
+  assert.deepEqual({ limit: billing.busyAgents.limit, next: billing.busyAgents.next }, { limit: 20, next: { tier: "Tier 1", paid: 5_000_000, limit: 25 } });
   const made = await upsert("triage", { systemPrompt: "Answer yes or no." });
   assert.equal(made.status, 201, made.text);
   assert.match(made.json.configHash, /^[0-9a-f]{64}$/);

@@ -133,6 +133,8 @@ export interface Billing {
   billing: "prepaid" | "none"; balance: number; purchased: number; freeCredit: boolean; checkout: boolean;
   /** How many agents may be busy at once, and why; a prepaid tenant's tier moves up as soon as a payment lands. */
   busyAgents: BusyAgents;
+  /** The account's run rate limit (null: none), and on free credit what buying credit raises it to. */
+  runsPerMinute?: { limit: number; afterPurchase?: number | null } | null;
   /** `cardCheck`: verifying a card (POST /v1/billing/card-check) would add this much starting credit. */
   startingCredit: { status: "granted" | "not_eligible" | "not_granted" | "not_applicable"; amount: number; cardCheck?: { amount: number } };
   month: { since: number } & Record<LedgerKind, number>;

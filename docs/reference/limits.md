@@ -10,7 +10,8 @@ past a count or rate limit, 409 or 429 (with `Retry-After`). See
 Past one, the API answers 429 with `code: "RATE_LIMITED"`, `Retry-After` (in
 seconds), and the limit it hit in `limit`:
 `{"name": "runs", "scope": "tenant", "max": 600, "windowSeconds": 60}`. The SDKs
-wait out `Retry-After` and retry.
+wait out `Retry-After` and retry. `GET /v1/billing` has the account's run limit
+(`runsPerMinute: {limit, afterPurchase?}`), and the console's Billing page shows it.
 
 | Limit (`limit.name`) | Scope | Value |
 | --- | --- | --- |
@@ -20,8 +21,8 @@ wait out `Retry-After` and retry.
 | `password_failures`: failed email and password sign-ins (an unknown address counts as a wrong password) | email address, and client address | 10 per 15 minutes per address; 20 per 15 minutes per client address. Past either, sign-in answers 429, even with the right password, until the window turns over |
 | `email_requests`: requests that mail a link (email sign-up, password reset, adding a password), where the runtime has account mail | client address | 10 an hour |
 | `emails`: those mails to one address, whether or not it has an account | email address | 5 a UTC day |
-| `agent_creates`: `POST /v1/agents` (an upsert that changes its agent too) and forks (`POST /v1/agents/:id/fork`) | account | 60 a minute; 10 on free credit |
-| `runs`: runs started (prompt, continue, execute), however sent: REST, SDKs, MCP, schedules, channels | account | 600 a minute; 60 on free credit |
+| `agent_creates`: `POST /v1/agents` (an upsert that changes its agent too) and forks (`POST /v1/agents/:id/fork`) | account | 600 a minute, against abuse only: making agents costs almost nothing. Design around [busy agents](#usage-tiers) instead |
+| `runs`: runs started (prompt, continue, execute), however sent: REST, SDKs, MCP, schedules, channels | account | 600 a minute; 240 on free credit (the 429 says buying credit raises it) |
 
 - A client address is the caller's IP address; an IPv6 address counts with the
   rest of its `/64`. The runtime's own calls (hosted MCP tools calling the API)
@@ -80,7 +81,7 @@ Starting credit and other grants do not count. A payment moves the account up as
 
 | Tier | Paid in total | Agents busy at once |
 | --- | --- | --- |
-| Free | nothing yet | 8 |
+| Free | nothing yet | 20 |
 | Tier 1 | $5 | 25 |
 | Tier 2 | $50 | 100 |
 | Tier 3 | $250 | 250 |
@@ -96,9 +97,9 @@ At the limit, a run (a prompt, `continue` or `execute`) gets 429 with `Retry-Aft
 
 ```json
 {
-  "error": "This account has 8 agents busy, the most its usage tier (Free) allows; retry when one finishes. Tier 1 (25 busy agents) applies once the account has paid $5 in total for credit.",
+  "error": "This account has 20 agents busy, the most its usage tier (Free) allows; retry when one finishes. $5 more of credit unlocks Tier 1: 25 busy agents (it applies once the account has paid $5 in total).",
   "code": "BUSY_AGENT_LIMIT",
-  "busyAgents": { "busy": 8, "limit": 8, "source": "tier", "tier": "Free", "paid": 0, "next": { "tier": "Tier 1", "paid": 5000000, "limit": 25 } }
+  "busyAgents": { "busy": 20, "limit": 20, "source": "tier", "tier": "Free", "paid": 0, "next": { "tier": "Tier 1", "paid": 5000000, "limit": 25 } }
 }
 ```
 
