@@ -32,6 +32,31 @@ test("a torn final record from a crash is dropped, but corruption elsewhere is a
   await assert.rejects(fileAppendLog(path).read(), /Corrupt append log record 3/);
 });
 
+test("a writer after a crash appends after the last whole record, not onto a torn one", async t => {
+  // Found by prop-append-log: the next record was glued onto the torn line, then dropped with it as torn.
+  const path = join(await directory(t), "log.jsonl");
+  await appendFile(path, '{"n":1}\n{"n":');
+  const log = fileAppendLog<{ n: number }>(path);
+  assert.deepEqual(await log.read(), [{ n: 1 }]);
+  log.append({ n: 3 });
+  await log.flush(true);
+  log.append({ n: 4 });
+  await log.flush(true);
+  await log.close();
+  assert.equal(await readFile(path, "utf8"), '{"n":1}\n{"n":3}\n{"n":4}\n');
+});
+
+test("a writer after a crash keeps a whole final record that lost only its newline", async t => {
+  const path = join(await directory(t), "log.jsonl");
+  await appendFile(path, '{"n":1}\n{"n":2}');
+  const log = fileAppendLog<{ n: number }>(path);
+  assert.deepEqual(await log.read(), [{ n: 1 }, { n: 2 }]);
+  log.append({ n: 3 });
+  await log.flush(true);
+  await log.close();
+  assert.deepEqual(await fileAppendLog(path).read(), [{ n: 1 }, { n: 2 }, { n: 3 }]);
+});
+
 test("rewrite folds the log from a snapshot taken inside the write sequence", async t => {
   const path = join(await directory(t), "log.jsonl");
   const log = fileAppendLog<{ n: number }>(path);

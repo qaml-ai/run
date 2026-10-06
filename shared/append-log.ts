@@ -26,6 +26,43 @@ export interface AppendLog<T> {
   close(): Promise<void>;
 }
 
+/**
+ * Before a writer appends to a log a crash may have left without a final newline, end that line as `read` sees
+ * it: drop it if it is torn, or terminate it if it parses. Appending after it would otherwise glue the next
+ * record onto it, and `read` would drop that record as torn (or, once more follow, fail on a corrupt record).
+ */
+async function endLastLine(path: string) {
+  let file: FileHandle;
+  try { file = await open(path, "r+"); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+  try {
+    const { size } = await file.stat();
+    if (!size) return;
+    const last = Buffer.alloc(1);
+    await file.read(last, 0, 1, size - 1);
+    if (last[0] === 0x0a) return;
+    // Find where the final line starts, reading backwards.
+    const chunk = Buffer.alloc(64 * 1024);
+    let start = size;
+    let newline = -1;
+    while (start > 0 && newline < 0) {
+      const length = Math.min(chunk.length, start);
+      start -= length;
+      await file.read(chunk, 0, length, start);
+      const at = chunk.subarray(0, length).lastIndexOf(0x0a);
+      if (at >= 0) newline = start + at;
+    }
+    const begin = newline + 1;
+    const line = Buffer.alloc(size - begin);
+    await file.read(line, 0, line.length, begin);
+    let parses = true;
+    try { JSON.parse(line.toString("utf8")); } catch { parses = false; }
+    if (parses) await file.write("\n", size);
+    else await file.truncate(begin);
+    await file.datasync();
+  } finally { await file.close(); }
+}
+
 /** JSONL file implementation for a single process that owns `path`. */
 export function fileAppendLog<T>(path: string): AppendLog<T> {
   let buffer: string[] = [];
@@ -42,6 +79,7 @@ export function fileAppendLog<T>(path: string): AppendLog<T> {
     if (closed) throw new Error("Append log closed");
     if (!handle) {
       await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+      await endLastLine(path);
       handle = await open(path, "a", 0o600);
     }
     return handle;
