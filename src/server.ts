@@ -12,7 +12,7 @@ import { expireIdempotencyKeys } from "./idempotency.ts";
 import { DOCS_SITE, loadDocs, loadRegistry, SKILL_PATHS } from "./docs.ts";
 import { StorageGc } from "./storage-gc.ts";
 import { modelHeadersInput, resolveModel, sessionConfig } from "./session-config.ts";
-import { ClientSessions, ORPHANS_CHANNEL, RUN_LIMITS, spendInput } from "./client-sessions.ts";
+import { ClientSessions, ORPHANS_CHANNEL, RUN_LIMITS, spendInput, type SessionHooks } from "./client-sessions.ts";
 import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts";
 import { StorageUsage } from "./storage-usage.ts";
 import { postgresTail, sweepTails } from "./log-tail.ts";
@@ -26,6 +26,7 @@ import { BillingMailer, billingMailConfig } from "./billing-mailer.ts";
 import { Help, helpConfig } from "./help.ts";
 import { MailTransport } from "./mail-transport.ts";
 import { ConsoleAuth } from "./console-auth.ts";
+import { emailAt, Journey, JOURNEY_META, journeyApp, journeyConfig } from "./journey.ts";
 import { Passwords } from "./passwords.ts";
 import { AccountMail, accountMailConfig } from "./account-mail.ts";
 import { EmailAccounts } from "./email-accounts.ts";
@@ -55,7 +56,7 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { createAdaptorServer, type HttpBindings } from "@hono/node-server";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, readJson, readText, signInHint } from "./http.ts";
-import type { RequestRecord } from "../shared/client-protocol.ts";
+import { outcomeEnding, type RequestRecord } from "../shared/client-protocol.ts";
 import type { HistoryPage } from "./history-pages.ts";
 import { VersionConflict, VolumeService } from "./volumes.ts";
 import { FILE_LIMITS, FileLinks } from "./files.ts";
@@ -211,12 +212,20 @@ const rateLimits = new RateLimits({
 rateLimits.start();
 /** Who sent a request: its address and the key per-address limits count it under (none for the runtime's own calls). */
 const requestClient = (c: Context) => rateLimits.client(name => c.req.header(name), (c.env as HttpBindings | undefined)?.incoming?.socket?.remoteAddress);
+// Journey events for the operator's own analytics store: nothing unless AGENT_JOURNEY_URL is set (src/journey.ts).
+const journeySettings = journeyConfig(process.env, secrets.journeySecret);
+const journey = journeySettings && new Journey({
+  db, publicUrl, ...journeySettings,
+  internal: (tenant, email) => tenants.has(tenant) || emailAt(journeySettings.internalEmailDomains, email),
+});
+journey?.start(Number(process.env.AGENT_SCHEDULER_INTERVAL_MS ?? 5_000));
+accounts.billing.journey = journey;
 // Sign-up, password reset and adding a password by email, when AGENT_ACCOUNT_EMAIL_FROM configures account mail
 // (sign-up only with open sign-up). Without it none of them is offered.
 const accountMailSettings = accountMailConfig(process.env, publicUrl, openSignup);
 const accountMail = accountMailSettings && new AccountMail(accountMailSettings);
 const consoleAuth = new ConsoleAuth({
-  accounts, publicUrl, github, google, passwords: new Passwords(db),
+  accounts, publicUrl, github, google, passwords: new Passwords(db), journey,
   email: accountMail ? new EmailAccounts({ accounts, mail: accountMail, openSignup }) : undefined,
   emailLimit: (c, email) => rateLimits.emailRequest(requestClient(c).key, email),
   admitSignup: c => { const { key } = requestClient(c); return sql => rateLimits.signup(sql, key); },
@@ -374,6 +383,12 @@ async function serveConsole(c: Context) {
     catch { return c.body("The console is not built on this host", 404, { "Content-Type": "text/plain" }); }
   }
   const type = asset ? CONTENT_TYPES[extname(file)] ?? "application/octet-stream" : CONTENT_TYPES[".html"];
+  // Where journey events are on, the shell tells the console to report its pages, and a browser arriving from elsewhere is noted (src/journey.ts).
+  if (!asset && journey) {
+    body = Buffer.from(body.toString("utf8").replace("</head>", `${JOURNEY_META}</head>`));
+    const { setCookie } = await journey.arrival(c.req.raw);
+    if (setCookie) c.header("Set-Cookie", setCookie, { append: true });
+  }
   return c.body(new Uint8Array(body), 200, {
     "Content-Type": type,
     "Cache-Control": asset && relative.startsWith("assets/") ? "public, max-age=31536000, immutable" : "no-store",
@@ -588,7 +603,14 @@ const clients = new ClientSessions(supervisor, {
   creditLimit: tenant => accounts.billing.creditLimit(tenant),
   db, storage, prefix: "client-sessions/", ownership, volumes, links,
   get scheduler() { return scheduler; },
-  get hooks() { return channels.hooks; },
+  // Channels' hooks, and where journey events are on, each run's end (src/journey.ts): the day's activity, and an account's first run.
+  get hooks() {
+    return !journey ? channels.hooks : { ...channels.hooks, runEnded: (agent, record) => {
+      channels.hooks.runEnded?.(agent, record);
+      const ending = outcomeEnding(record.outcome);
+      void journey.runEnded(agent.tenant, { completed: ending.error === undefined && !ending.stopped, at: record.endedAt });
+    } } satisfies SessionHooks;
+  },
   definitionFor: async (tenant, id) => {
     const { revision, spec } = await definitions.read(tenant, id);
     const config = sessionConfig({ model: spec.model, systemPrompt: spec.systemPrompt, thinkingLevel: spec.thinkingLevel }, spec.model === undefined ? await defaultModelFor(tenant) : model, process.env.AGENT_SYSTEM_PROMPT, tenants.modelEndpoints(tenant), await modelProviders.resolvable(tenant));
@@ -877,12 +899,14 @@ app.route("/", channels.app);
 // Browser tokens: HMACs under a key derived from the session secret, so any node checks any node's.
 const browserTokens = new BrowserTokens(sessionSecret);
 if (billingMailer) app.route("/", billingMailer.feedback());
-app.route("/", api({ accounts, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return `${chosen.provider}/${chosen.id}`; }, keyScopes, webhooks, telemetry, scheduler, accountDeletions, ...(process.env.AGENT_IDEMPOTENCY_LOCK_MS ? { idempotencyLockMs: Number(process.env.AGENT_IDEMPOTENCY_LOCK_MS) } : {}), channels, volumes, definitions, links, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, historyPage: historyPageAnywhere, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false",
+app.route("/", api({ accounts, journey, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return `${chosen.provider}/${chosen.id}`; }, keyScopes, webhooks, telemetry, scheduler, accountDeletions, ...(process.env.AGENT_IDEMPOTENCY_LOCK_MS ? { idempotencyLockMs: Number(process.env.AGENT_IDEMPOTENCY_LOCK_MS) } : {}), channels, volumes, definitions, links, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, historyPage: historyPageAnywhere, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false",
   rateLimits, clientAddress: c => requestClient(c).address,
   billingAdmins: (process.env.AGENT_BILLING_ADMINS ?? "").split(",").map(value => value.trim()).filter(Boolean) }));
-app.get("/console", c => c.redirect("/console/", 302));
+if (journey) app.route("/", journeyApp(journey, consoleAuth, c => requestClient(c).key));
+// The query goes along: a link from the operator's site says in it where the visitor came from (src/journey.ts).
+app.get("/console", c => c.redirect(`/console/${new URL(c.req.url).search}`, 302));
 app.get("/console/*", serveConsole);
-app.get("/", c => c.redirect("/console/", 302));
+app.get("/", c => c.redirect(`/console/${new URL(c.req.url).search}`, 302));
 app.route("/", clients.app);
 
 // Everything below is for operator tokens, and never for browsers.

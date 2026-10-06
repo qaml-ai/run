@@ -4,6 +4,7 @@ import type { Channels } from "./channels.ts";
 import type { Definitions } from "./definitions.ts";
 import type { HistoryPage } from "./history-pages.ts";
 import { HttpError } from "./http.ts";
+import { journeyKept, type Journey } from "./journey.ts";
 import type { OAuth } from "./oauth.ts";
 import type { VolumeService } from "./volumes.ts";
 import type { Webhooks } from "./webhooks.ts";
@@ -30,6 +31,8 @@ export interface ExportOptions {
    * by default this node's view, which is whole only when no other node serves the agent.
    */
   historyPage?: (id: string, tenant: string, query: { before?: string; limit?: string }) => Promise<HistoryPage>;
+  /** Journey events (src/journey.ts), where the operator configured them: the store is asked for what it holds of the account. */
+  journey?: Journey;
 }
 
 const README = `This archive holds everything camelRun stores for your account, as of the time it was made.
@@ -49,6 +52,11 @@ volumes/<id>/volume.json   each volume's name and size
 volumes/<id>/files/...     each volume's files
 billing/ledger.jsonl       your credit ledger, one entry per line, newest first
 billing/usage.json         model usage per day and model
+analytics/account.json     only if this service measures how its website and console are used: the ids your account is known by there, and what was noted of it here
+analytics/summary.json     what the operator's analytics store says of how your account came to be
+analytics/events-*.json    the events it holds of your account, oldest first
+analytics/touches-*.json   where your browser came from, as it holds it
+analytics/google-copies-*.json  what it prepared or sent to Google Analytics of those events, and whether it did
 `;
 
 const json = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`;
@@ -139,6 +147,25 @@ export async function* exportAccount(options: ExportOptions, tenant: string): As
     }
   })());
   yield* zip.file("billing/usage.json", json(await accounts.usage(tenant, 0)));
+
+  // Journey events, where this runtime ever sent any of the account: what it keeps itself, then what the operator's store holds.
+  const kept = await journeyKept(accounts.db, tenant);
+  if (kept) {
+    const journey = options.journey;
+    yield* zip.file("analytics/account.json", json({ ...kept, store: journey ? "asked: see summary.json, events-*.json and touches-*.json" : "not configured on this runtime now: what it holds is not in this archive" }));
+    if (journey) {
+      let summary: { status: string; account: unknown; consent: unknown } | undefined;
+      for (const kind of ["events", "touches"] as const) {
+        let page = 0, copies = 0;
+        for await (const { status, account, consent, records, googleCopies } of journey.stored(kept.accountRef, kind)) {
+          summary ??= { status, account, consent };
+          if (records.length) yield* zip.file(`analytics/${kind}-${String(++page).padStart(5, "0")}.json`, json(records));
+          if (googleCopies.length) yield* zip.file(`analytics/google-copies-${String(++copies).padStart(5, "0")}.json`, json(googleCopies));
+        }
+      }
+      yield* zip.file("analytics/summary.json", json(summary));
+    }
+  }
   yield* zip.end();
 }
 

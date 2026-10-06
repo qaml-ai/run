@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Tenants } from "./tenants.ts";
 import { transaction, type Db, type Sql } from "./db.ts";
+import type { Journey } from "./journey.ts";
 import type { Storage } from "../shared/storage.ts";
 import { HttpError } from "./http.ts";
 import { DEFAULT_PRICING, MICROS, storageCharge, usageTier, type Pricing } from "./pricing.ts";
@@ -139,6 +140,8 @@ export class Billing {
   readonly payments?: BillingPayments;
   readonly autoTopup?: AutoTopup;
   readonly cardCredit?: CardCredit;
+  /** Journey events (src/journey.ts), where the operator configured them: a payment's are written in its transaction. */
+  journey?: Pick<Journey, "cardVerified" | "creditPurchased" | "autoTopupEnabled">;
   /** Each tenant's balance, lifetime purchases and usage spend in the last hour, as last read. */
   private readonly accounts = new Map<string, Account & { until: number }>();
   private readonly reads = new Map<string, Promise<Account>>();
@@ -497,7 +500,10 @@ export class Billing {
     const refunds = await this.refundEntries(sql, purchase, paymentIntent);
     await sql.query("update billing_disputes set tenant = $2 where payment_intent = $1 and tenant is null", [paymentIntent, purchase.tenant]);
     const disputes = await this.disputeEntries(sql, purchase, paymentIntent, refunds);
-    return postLedger(sql, [purchase, ...refunds, ...disputes]);
+    const posted = await postLedger(sql, [purchase, ...refunds, ...disputes]);
+    // Told of once: only when this call is the one that added the purchase.
+    if (this.journey && posted.some(entry => entry.kind === "purchase")) await this.journey.creditPurchased(sql, { tenant: purchase.tenant, amountMinor: Math.round(purchase.amount / CENT), payment: paymentIntent });
+    return posted;
   }
 
   /**

@@ -17,6 +17,7 @@ import { DOCS } from "@/lib/docs";
 import { groupOf, NAV, TABS } from "@/lib/nav";
 import { navProgress, startFrom, useOnboarding } from "@/lib/onboarding";
 import { Link, usePath } from "@/lib/router";
+import { reportPages } from "@/lib/journey";
 import { cn } from "@/lib/utils";
 import { AccountPage } from "@/pages/account";
 import { AgentsPage } from "@/pages/agents";
@@ -169,6 +170,7 @@ function SignOut() {
   );
 }
 
+reportPages();
 createRoot(document.getElementById("root")!).render(
   <StrictMode><TooltipProvider>{location.pathname === "/console/billing/confirm" ? <BillingConfirmationPage /> : location.pathname === "/console/billing/unsubscribe" ? <BillingUnsubscribePage />
     // A mailed link: its token is in the fragment (finishing a sign-up or adding a password, or resetting one).
