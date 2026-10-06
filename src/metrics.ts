@@ -124,7 +124,7 @@ export function recordCodeExecution(execution: { tenant?: string; engine?: strin
 }
 
 /**
- * A v8-exec process that did not get to answer: it could not be started (`code`, the spawn's errno),
+ * A v8-exec process that did not get to answer: it could not be started (`code`, the spawn's errno, logged as `errno`),
  * or something other than the runtime killed it (`signal`: SIGSYS for its seccomp allowlist, SIGXCPU
  * or SIGKILL for its rlimits or the OOM killer). Written by the sandbox process that ran it.
  */
@@ -133,7 +133,7 @@ export function recordV8Exec(event: { event: "spawn_failed" | "killed"; code?: s
     dimensions: { Event: event.event },
     rollups: [["Event"]],
     metrics: { V8ExecFailures: 1 },
-    properties: { ...(event.code ? { code: event.code } : {}), ...(event.signal ? { signal: event.signal } : {}) },
+    properties: { ...(event.code ? { errno: event.code } : {}), ...(event.signal ? { signal: event.signal } : {}) },
   });
 }
 
