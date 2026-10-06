@@ -2,7 +2,7 @@
  * Linux, Docker: boots the built image the way ECS runs it (as root, under an init) and proves the
  * processes agent-launcher confines (v8-exec for js_exec, parse jobs for files) are confined, from
  * inside them:
- *   IMAGE=agent-runtime:ci DATABASE_URL=postgres://... node --experimental-strip-types tests/image-isolation.ts
+ *   IMAGE=agent-runtime:ci DATABASE_URL=postgres://... [AGENT_HOSTING=process] node --experimental-strip-types tests/image-isolation.ts
  * DATABASE_URL is as the container sees it; the container shares the host network on
  * Linux and publishes its port elsewhere (use host.docker.internal there).
  */
@@ -35,7 +35,7 @@ const docker = (...args: string[]) => execFileSync("docker", args, { encoding: "
 const logs = () => { const out = spawnSync("docker", ["logs", name], { encoding: "utf8" }); return out.stdout + out.stderr; };
 
 docker("run", "-d", "--init", "--name", name, ...(hostNetwork ? ["--network", "host"] : ["-p", `127.0.0.1:${port}:8790`]),
-  "-v", `${tenants}:/etc/agent-runtime:ro`, "-e", "AGENT_TENANTS_FILE=/etc/agent-runtime/tenants.json", "-e", `AGENT_SESSION_SECRET=${token}`, "-e", `AGENT_DATABASE_URL=${database}`, "-e", "AGENT_HOSTING=inline",
+  "-v", `${tenants}:/etc/agent-runtime:ro`, "-e", "AGENT_TENANTS_FILE=/etc/agent-runtime/tenants.json", "-e", `AGENT_SESSION_SECRET=${token}`, "-e", `AGENT_DATABASE_URL=${database}`, "-e", `AGENT_HOSTING=${process.env.AGENT_HOSTING ?? "inline"}`,
   "-e", "AGENT_SANDBOX_TEST_HOOKS=1", "-e", `AGENT_ISOLATION_CANARY=${canary}`, image);
 let failed = true;
 try {
