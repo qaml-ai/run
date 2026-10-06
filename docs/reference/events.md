@@ -60,7 +60,8 @@ report `APPLICATION_REPLACED` to `onError`).
 
 ### Cursors and gaps
 
-Event ids rise. The runtime buffers each agent's recent events in memory (the
+Event ids rise, and an id is never reused, even after the agent moves to another
+node. The runtime buffers each agent's recent events in memory (the
 last 512, at most 2 MiB) for replay. A `Last-Event-ID` behind that buffer (after
 a long disconnect, or after the agent moved to another node) cannot be replayed:
 without a snapshot (the application's connection without `?snapshot=1`, or a
