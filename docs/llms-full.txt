@@ -285,6 +285,26 @@ A `Run` has:
 | `files` | files the run wrote |
 | `usage` | what its model calls used, where the runtime reports it; `subagentCostUsd`, what its sub-agents spent |
 
+### Runs without the history
+
+`history: "none"` (Python `history="none"`) runs a message as a new
+conversation would: the model sees the agent's instructions and tools as they
+are now, and this message, not the messages before it. One agent can then answer
+many independent questions without making an agent for each (creates are
+[rate limited](https://run.camelai.com/docs/reference/limits.md#rate-limits); runs far less).
+
+```ts
+const run = await agent.run("Is a hot dog a sandwich?", { history: "none", output: Verdict });
+```
+
+The run is still recorded in the agent's history, its user message marked
+`history: "none"`, for audit and for the console. Runs that do not say `none`
+see it as they see any other message. Such a run is never compacted after, since
+it read nothing to compact; a later run with the whole history compacts first if
+it must. It is for a prompt that starts its own turn, not `whileRunning: "steer"`.
+Resumed after a person answers it, or continued on another node, the run stays
+without the history.
+
 `run()` has no timeout: runs can take minutes, and a run waiting on a person can
 wait for days. Pass an `AbortSignal` (Python: `timeout=`) to stop waiting; the
 run itself goes on, and `agent.abort()` stops it: the running turn ends, and the
@@ -354,7 +374,8 @@ const earlier = await agent.fork({ atMessage: 4 }); // history through message 4
   it began with.
 
 A fork is an agent like any other: it counts toward your agents and their
-storage. The copy costs only storage; its history and files share stored content
+storage, and against the `agent_creates` rate limit (`atMessage: 0` included).
+To run one message without the history, send it with `history: "none"` instead. The copy costs only storage; its history and files share stored content
 with the source. Over REST it is `POST /v1/agents/{id}/fork` with `{key?, name?,
 atMessage?, ttlSeconds?, subject?, context?, systemPromptAppend?, modelHeaders?}` (the key may be
 the `Idempotency-Key` header instead);
@@ -991,6 +1012,25 @@ for a schema. Code runs for at most 60 seconds, 2 s of CPU and 256 tool calls; s
 [Limits](https://run.camelai.com/docs/reference/limits.md). `agent.client.execute(code)` runs code
 yourself, outside the model's history, which is handy for testing tools.
 
+### Without code: `codeMode: false`
+
+An agent made with `codeMode: false` (Python `code_mode=False`, in a definition
+too) has no `js_exec`. The model calls every tool directly, whatever its
+`exposure`, and the runtime's part of the system prompt covers only the tools
+it has, with nothing about code. With `fileTools: false` as well and no tools of
+any source, it has no tools at all (not even `present_file`), and the system
+prompt is your instructions plus a short note on who sent each message: for an
+agent that answers in a line, a classifier or a judge, a request goes from about
+2,000 input tokens to a few hundred.
+
+```ts
+const voice = await agents.upsert("voice-12", { instructions, codeMode: false, fileTools: false });
+```
+
+Set it when the agent is made. Changed later by an upsert, the agent's tools
+change at once, while a conversation already under way keeps the runtime text
+it began with (its prompt's cached prefix).
+
 ## Tool search
 
 Code finds tools with `tools.search(query)` (or `tools.search(query, { namespace,
@@ -1234,12 +1274,38 @@ curl -s https://run.camelai.com/v1/agents/$AGENT/prompt -H "Authorization: Beare
 | Outcome | What you get |
 | --- | --- |
 | The model called `final_output` with arguments that fit | `status: "completed"`, `output` set, and `text` with anything the model said alongside |
-| The model answered in prose | That answer is discarded and the model is asked once more, with a reminder. If it answers in prose again: `status: "failed"`, `error.code: "output_missing"`, and `text` with what it said |
+| The model answered in prose | That answer is discarded and the model is asked once more, with a reminder, and with `final_output` forced where the provider allows it (see [Forcing the tool](https://run.camelai.com/docs/guides/structured-output.md#forcing-the-tool)). If it answers in prose again: `status: "failed"`, `error.code: "output_missing"`, and `text` with what it said |
 | The answer fit the JSON Schema but failed your zod or pydantic schema | `status: "failed"`, `error.code: "output_invalid"` |
 | It waits on a person (an approval, a question) | `input_required`. Answering resumes the run, which still ends with `output` |
 
 Calls whose arguments do not fit are not failures. The model sees them as tool
 errors and calls again.
+
+## Forcing the tool
+
+Instructions that ask for a plain-text reply ("answer in one line") can win over
+the schema: a model then answers in prose and never calls `final_output`. So the
+runtime makes the call with the provider's `tool_choice`:
+
+- When `final_output` is the agent's only tool (an agent with `codeMode: false`,
+  `fileTools: false` and no tools of its own), every request of the run forces
+  it, from the first: the model cannot answer in prose.
+- When it has other tools, the first requests leave the choice to the model, so
+  it can use them; once it answers in prose, the reminder's request forces
+  `final_output`.
+
+| Provider API | Forced with |
+| --- | --- |
+| Anthropic, and Anthropic models on Bedrock | `{type: "tool", name: "final_output"}`, unless the agent's `thinkingLevel` is on: Anthropic refuses a forced tool with extended thinking, so those get the reminder only |
+| OpenAI Responses, Azure | `{type: "function", name: "final_output"}` |
+| Chat Completions (OpenRouter, DeepSeek, Z.ai, Workers AI, your own providers), Mistral | `{type: "function", function: {name: "final_output"}}` |
+| Google, OpenAI Codex | `any` / `required`, only when `final_output` is the only tool |
+
+A provider or model that refuses the parameter (some hosts of open models, and
+Claude models that take no forced tool) fails the request: the runtime takes
+that failure back and asks again without forcing, for the rest of the run, so it
+costs one refused request. A run forces at most three requests, so a model
+whose calls never fit the schema still ends its turn.
 
 ## Notes
 
@@ -2224,6 +2290,21 @@ reach yet). A run on a key the provider refuses fails with `model_key_invalid`.
 A self-hosted runtime's operator can also give an account keys, and route its
 model calls through a gateway of the operator's own: see
 [Billing](https://run.camelai.com/docs/operations/billing.md) and [Model endpoints](https://run.camelai.com/docs/operations/model-endpoints.md).
+
+### Prompt caching
+
+The runtime marks the system prompt and tools (and the latest message) as a
+cached prefix on Anthropic's API and on Bedrock's Claude models; OpenAI and
+others cache on their own. The prefix is the same bytes from run to run (no
+dates or ids in it; files and the sender of a message go in the messages), so
+from an agent's second run on, `usage.cacheRead` counts what came from the cache.
+A provider caches only a prefix past its minimum: on Anthropic 1,024 tokens for
+Sonnet 5 and Opus 4.8, 2,048 for Opus 4.7, 4,096 for Haiku 4.5 and Opus 4.6.
+An agent's runtime prompt and tools come to about 2,000 tokens, so on Haiku 4.5
+a short-instruction agent caches nothing (`cacheRead: 0`) until its prefix
+passes 4,096 tokens; on Sonnet 5 its second run reads about 2,400 tokens from
+the cache. An agent that needs no tools can drop most of that prefix instead
+(`codeMode: false`; see [Tools](https://run.camelai.com/docs/guides/tools.md#without-code-codemode-false)).
 
 ## Key scopes
 
@@ -3617,6 +3698,7 @@ brought to `config` if it differs. Returns a connected `Agent`. See
 | `subject`, `context` | `subject=`, `context=` | whom it acts for, and claims for its tools; fixed at creation |
 | `keyScope`, `spendLimit`, `runLimits`, `modelHeaders` | `key_scope=`, `spend_limit=`, `run_limits=`, `model_headers=` | see [Models and keys](https://run.camelai.com/docs/guides/models-and-keys.md) |
 | `mounts`, `fileTools` | `mounts=`, `file_tools=` | its volumes (fixed at creation), and whether it has file tools |
+| `codeMode` | `code_mode=` | `false`: no `js_exec`; every tool is called directly, and an agent with no tools at all gets little more than its instructions as its system prompt. See [Tools](https://run.camelai.com/docs/guides/tools.md#without-code-codemode-false) |
 | `name` | `name=` | a label, shown in the console |
 | `builtins` | `builtins=` | tools the runtime answers itself, without a definition: `web_fetch`, `web_search`, `schedule`, `ask_user`, `delegate` |
 | `delegate` | `delegate=` | sub-agents it may hand tasks to (`{ agents, instructions?, maxDepth?, maxParallel? }`); brings its builtin. See [Multi-agent](https://run.camelai.com/docs/guides/multi-agent.md) |
@@ -3643,6 +3725,13 @@ only (an API token, an OAuth grant, a console session): a browser token gets
 
 `agents.agent(session, { tools, … })` connects to an agent you hold the
 credentials of (`{id, token}`) without changing it.
+
+`agent.configHash` (Python `agent.config_hash`), from `upsert` and `get`, is a
+hash of the agent's configuration (from `upsert`, the one it asked for). Equal
+hashes are equal configurations: an upsert that changes nothing returns the
+hash the agent has, and is not counted as an agent create. Every agent's is in
+`agents.runtime.listAgents()` (`list_agents()`), so a deploy script can tell
+what changed without keeping a manifest. It is opaque: compare it, never parse it.
 
 ### `Agent`
 
@@ -3673,6 +3762,7 @@ Run options (`run`, `stream`):
 | `idempotencyKey` | `idempotency_key=` | the run's id: the same key returns the same run, joining it if it is still going |
 | `signal` | `timeout=` | stop waiting; the run goes on |
 | `throwOnError` | `throw_on_error=` | `false`: return a failed run instead of throwing `RunError` |
+| `history` | `history=` | `"none"`: the model sees the instructions and this message only, not the agent's history; the run is still recorded. See [Runs without the history](https://run.camelai.com/docs/concepts.md#runs-without-the-history) |
 | `whileRunning` | `while_running=` | `"queue"` (default) or `"steer"` |
 | `spendLimit` | `spend_limit=` | `{usd}`: this run's own budget; see [Spend limits](https://run.camelai.com/docs/guides/models-and-keys.md#spend-limits) |
 | `allowDisconnected` | `allow_disconnected=` | run even with nobody serving the agent's tools (else refused: `APPLICATION_NOT_CONNECTED`) |
@@ -3950,6 +4040,12 @@ application keeps serving its tools.
 
 ## Unreleased
 
+- `run`, `stream` and `client.prompt` take `history: "none"` (Python `history="none"`): the run sees the
+  agent's instructions and its own message only, for many independent questions to one agent without an
+  agent create each. `upsert` takes `codeMode: false` (`code_mode=False`, definitions too): no `js_exec`,
+  and a tool-less agent's system prompt shrinks to its instructions and a sender note.
+- `agent.configHash` (`config_hash`) from `upsert` and `get`, and `configHash` on `listAgents()`: an upsert
+  of the configuration an agent has is not counted as an agent create.
 - Agent handles connect lazily: `new Agents()` (`Agents()`) handles hold their
   event stream only while `agent.stream()` reads a run, instead of from
   `upsert`/`get` until `close()`, so a server with many agents holds no idle
@@ -4764,7 +4860,7 @@ wait out `Retry-After` and retry.
 | `password_failures`: failed email and password sign-ins (an unknown address counts as a wrong password) | email address, and client address | 10 per 15 minutes per address; 20 per 15 minutes per client address. Past either, sign-in answers 429, even with the right password, until the window turns over |
 | `email_requests`: requests that mail a link (email sign-up, password reset, adding a password), where the runtime has account mail | client address | 10 an hour |
 | `emails`: those mails to one address, whether or not it has an account | email address | 5 a UTC day |
-| `agent_creates`: `POST /v1/agents` (upserts too) and forks (`POST /v1/agents/:id/fork`) | account | 60 a minute; 10 on free credit |
+| `agent_creates`: `POST /v1/agents` (an upsert that changes its agent too) and forks (`POST /v1/agents/:id/fork`) | account | 60 a minute; 10 on free credit |
 | `runs`: runs started (prompt, continue, execute), however sent: REST, SDKs, MCP, schedules, channels | account | 600 a minute; 60 on free credit |
 
 - A client address is the caller's IP address; an IPv6 address counts with the
@@ -4775,6 +4871,21 @@ wait out `Retry-After` and retry.
   minutes, the hour, or the UTC day), so `Retry-After` is the time to the next window.
 - A retried request (the same request id or `Idempotency-Key`) that the runtime
   answers from its record is not a new run.
+- An upsert whose configuration equals the agent's (the same `configHash`) is
+  not an agent create: deploying 50 unchanged agents counts nothing. A fork
+  counts, `atMessage: 0` included: it makes an agent (and a copy of its
+  workspace). For a run without the history, send `history: "none"` instead.
+- **Headers.** Answers that count against `agent_creates` (creates, upserts,
+  forks) or `runs` (`POST /v1/agents/{id}/prompt`, and the SDKs' requests)
+  carry `X-RateLimit-Limit` (the account's limit a minute),
+  `X-RateLimit-Remaining` (what is left of it this minute) and
+  `X-RateLimit-Reset` (seconds until the window resets), and so do their 429s,
+  with `Retry-After` equal to `X-RateLimit-Reset`. Windows are fixed and align
+  to the clock minute (UTC), not to your first request: 60 runs at 12:00:59
+  and 60 more at 12:01:00 are both allowed. The headers say only the calling
+  account's own counts. An account with no limit (an admin tenant) gets none,
+  and neither does a retried request. A create with a first `prompt` carries
+  the create's.
 - Admin tenants (the operator's own, from its tenants file) are not rate
   limited: neither their account limits, nor `api_requests` for requests made
   with their tokens, browser tokens or console sessions. An admin tenant's
@@ -5002,7 +5113,7 @@ Error bodies are `{"error": "<message, for people>", "code": "<for code>"}`
 (`type: "error"` too on some routes). The message may change; the code does not,
 so switch on `code` (the SDKs' `AgentError.code`). Codes may be added: treat an
 unknown one by its status. A conflict about an input also carries the input as it
-now is (`"input"`), and a rate limit's 429 the limit it hit (`"limit"`). Every 429 and 503 has `Retry-After`; the SDKs honour it and
+now is (`"input"`), and a rate limit's 429 the limit it hit (`"limit"`). Every 429 and 503 has `Retry-After` (and a per-account rate limit's 429 its `X-RateLimit-*` headers: see [Rate limits](https://run.camelai.com/docs/reference/limits.md#rate-limits)); the SDKs honour it and
 retry.
 
 | Status | `code` | Meaning |

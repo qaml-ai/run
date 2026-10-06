@@ -173,10 +173,16 @@ asyncio.run(main())
   `exposure: "direct"` (Python `@tool(exposure="direct")`) when it must be called on its own: when the app renders
   its arguments as they stream in, or must see each call as it happens. See
   https://run.camelai.com/docs/guides/tools.md#keeping-tools-out-of-js_exec.
-- **Limits to design around.** On free credit an account may create 10 agents a minute (`upsert` and `fork` each
-  count; `agents.get(key)` does not) and start 60 runs a minute; paid, 60 and 600. Past either, calls get 429
-  `RATE_LIMITED` (the SDKs wait and retry). So make one agent per user or conversation and reuse it; don't make one per
-  request, per message or per test. See https://run.camelai.com/docs/reference/limits.md#rate-limits.
+- **Limits to design around.** On free credit an account may create 10 agents a minute (`upsert` that changes the
+  agent and `fork` each count; an `upsert` of an unchanged configuration and `agents.get(key)` do not) and start 60
+  runs a minute; paid, 60 and 600. Past either, calls get 429 `RATE_LIMITED` (the SDKs wait and retry); responses
+  carry `X-RateLimit-Remaining` and `-Reset`. So make one agent per user or conversation and reuse it; don't make one
+  per request, per message or per test. For independent one-off questions, run them on one agent with
+  `history: "none"` (the model sees only the instructions and that message). See
+  https://run.camelai.com/docs/reference/limits.md#rate-limits.
+- **Tool-less agents.** An agent that only answers (a classifier, a judge, a one-line reply) needs no runtime tools:
+  `upsert(key, { instructions, codeMode: false, fileTools: false })` drops `js_exec` and the runtime's tool rules, so
+  each request is your instructions and the message, a few hundred tokens instead of about 2,000.
 - **Data back, not prose.** When the code needs an object (classification, extraction, a triage decision), pass a
   schema: `agent.run(text, { output: zodSchema })` gives a typed `run.output`; Python `output=PydanticModel`. Don't
   parse JSON out of `run.text`. See https://run.camelai.com/docs/guides/structured-output.md.

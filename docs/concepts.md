@@ -70,6 +70,26 @@ A `Run` has:
 | `files` | files the run wrote |
 | `usage` | what its model calls used, where the runtime reports it; `subagentCostUsd`, what its sub-agents spent |
 
+### Runs without the history
+
+`history: "none"` (Python `history="none"`) runs a message as a new
+conversation would: the model sees the agent's instructions and tools as they
+are now, and this message, not the messages before it. One agent can then answer
+many independent questions without making an agent for each (creates are
+[rate limited](reference/limits.md#rate-limits); runs far less).
+
+```ts
+const run = await agent.run("Is a hot dog a sandwich?", { history: "none", output: Verdict });
+```
+
+The run is still recorded in the agent's history, its user message marked
+`history: "none"`, for audit and for the console. Runs that do not say `none`
+see it as they see any other message. Such a run is never compacted after, since
+it read nothing to compact; a later run with the whole history compacts first if
+it must. It is for a prompt that starts its own turn, not `whileRunning: "steer"`.
+Resumed after a person answers it, or continued on another node, the run stays
+without the history.
+
 `run()` has no timeout: runs can take minutes, and a run waiting on a person can
 wait for days. Pass an `AbortSignal` (Python: `timeout=`) to stop waiting; the
 run itself goes on, and `agent.abort()` stops it: the running turn ends, and the
@@ -139,7 +159,8 @@ const earlier = await agent.fork({ atMessage: 4 }); // history through message 4
   it began with.
 
 A fork is an agent like any other: it counts toward your agents and their
-storage. The copy costs only storage; its history and files share stored content
+storage, and against the `agent_creates` rate limit (`atMessage: 0` included).
+To run one message without the history, send it with `history: "none"` instead. The copy costs only storage; its history and files share stored content
 with the source. Over REST it is `POST /v1/agents/{id}/fork` with `{key?, name?,
 atMessage?, ttlSeconds?, subject?, context?, systemPromptAppend?, modelHeaders?}` (the key may be
 the `Idempotency-Key` header instead);

@@ -458,6 +458,25 @@ for a schema. Code runs for at most 60 seconds, 2 s of CPU and 256 tool calls; s
 [Limits](../reference/limits.md). `agent.client.execute(code)` runs code
 yourself, outside the model's history, which is handy for testing tools.
 
+### Without code: `codeMode: false`
+
+An agent made with `codeMode: false` (Python `code_mode=False`, in a definition
+too) has no `js_exec`. The model calls every tool directly, whatever its
+`exposure`, and the runtime's part of the system prompt covers only the tools
+it has, with nothing about code. With `fileTools: false` as well and no tools of
+any source, it has no tools at all (not even `present_file`), and the system
+prompt is your instructions plus a short note on who sent each message: for an
+agent that answers in a line, a classifier or a judge, a request goes from about
+2,000 input tokens to a few hundred.
+
+```ts
+const voice = await agents.upsert("voice-12", { instructions, codeMode: false, fileTools: false });
+```
+
+Set it when the agent is made. Changed later by an upsert, the agent's tools
+change at once, while a conversation already under way keeps the runtime text
+it began with (its prompt's cached prefix).
+
 ## Tool search
 
 Code finds tools with `tools.search(query)` (or `tools.search(query, { namespace,

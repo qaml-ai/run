@@ -19,7 +19,7 @@ Error bodies are `{"error": "<message, for people>", "code": "<for code>"}`
 (`type: "error"` too on some routes). The message may change; the code does not,
 so switch on `code` (the SDKs' `AgentError.code`). Codes may be added: treat an
 unknown one by its status. A conflict about an input also carries the input as it
-now is (`"input"`), and a rate limit's 429 the limit it hit (`"limit"`). Every 429 and 503 has `Retry-After`; the SDKs honour it and
+now is (`"input"`), and a rate limit's 429 the limit it hit (`"limit"`). Every 429 and 503 has `Retry-After` (and a per-account rate limit's 429 its `X-RateLimit-*` headers: see [Rate limits](limits.md#rate-limits)); the SDKs honour it and
 retry.
 
 | Status | `code` | Meaning |

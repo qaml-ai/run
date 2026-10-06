@@ -9,6 +9,23 @@ between yours and the new one first.
 
 Changes on main since the last tag.
 
+### Builder DX: fresh runs, forced structured output, no-op upserts, rate-limit headers, lean prompts
+
+- A prompt's `history: "none"` shows the model the system prompt (as it stands) and that message only.
+  The run is recorded as usual (its user message carries `history: "none"`) and later runs see it; no
+  background compaction follows such a run. See [Runs without the history](../concepts.md#runs-without-the-history).
+- Structured output forces `final_output` with the provider's own `tool_choice`: from the first request
+  when it is the model's only tool, and on the output reminder otherwise; never with Anthropic thinking on;
+  a provider that refuses it is asked again unforced; at most three forced requests a run
+  ([Forcing the tool](../guides/structured-output.md#forcing-the-tool)).
+- `codeMode: false` on agents, upserts and definitions: no `js_exec`, every tool direct, and the runtime's
+  prompt text only for the tools the agent has; with `fileTools: false` and no tools, none but a sender note
+  (about 2,000 input tokens down to a few hundred). The default prompt is unchanged, byte for byte.
+- An upsert whose configuration equals the agent's is not counted against `agent_creates`. Creates,
+  upserts, list, `GET /v1/agents/{id}` and `credentials` return `configHash`.
+- Creates, forks and runs answer with `X-RateLimit-Limit`, `-Remaining` and `-Reset` (seconds; windows
+  align to the clock minute), and so do their 429s ([Rate limits](../reference/limits.md#rate-limits)).
+
 ### Faster resume after a crash, a drain or a deploy
 
 - A node that dies mid-turn is found by its peers within about 10 s, not after its 90 s lease: a

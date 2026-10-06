@@ -20,7 +20,7 @@ wait out `Retry-After` and retry.
 | `password_failures`: failed email and password sign-ins (an unknown address counts as a wrong password) | email address, and client address | 10 per 15 minutes per address; 20 per 15 minutes per client address. Past either, sign-in answers 429, even with the right password, until the window turns over |
 | `email_requests`: requests that mail a link (email sign-up, password reset, adding a password), where the runtime has account mail | client address | 10 an hour |
 | `emails`: those mails to one address, whether or not it has an account | email address | 5 a UTC day |
-| `agent_creates`: `POST /v1/agents` (upserts too) and forks (`POST /v1/agents/:id/fork`) | account | 60 a minute; 10 on free credit |
+| `agent_creates`: `POST /v1/agents` (an upsert that changes its agent too) and forks (`POST /v1/agents/:id/fork`) | account | 60 a minute; 10 on free credit |
 | `runs`: runs started (prompt, continue, execute), however sent: REST, SDKs, MCP, schedules, channels | account | 600 a minute; 60 on free credit |
 
 - A client address is the caller's IP address; an IPv6 address counts with the
@@ -31,6 +31,21 @@ wait out `Retry-After` and retry.
   minutes, the hour, or the UTC day), so `Retry-After` is the time to the next window.
 - A retried request (the same request id or `Idempotency-Key`) that the runtime
   answers from its record is not a new run.
+- An upsert whose configuration equals the agent's (the same `configHash`) is
+  not an agent create: deploying 50 unchanged agents counts nothing. A fork
+  counts, `atMessage: 0` included: it makes an agent (and a copy of its
+  workspace). For a run without the history, send `history: "none"` instead.
+- **Headers.** Answers that count against `agent_creates` (creates, upserts,
+  forks) or `runs` (`POST /v1/agents/{id}/prompt`, and the SDKs' requests)
+  carry `X-RateLimit-Limit` (the account's limit a minute),
+  `X-RateLimit-Remaining` (what is left of it this minute) and
+  `X-RateLimit-Reset` (seconds until the window resets), and so do their 429s,
+  with `Retry-After` equal to `X-RateLimit-Reset`. Windows are fixed and align
+  to the clock minute (UTC), not to your first request: 60 runs at 12:00:59
+  and 60 more at 12:01:00 are both allowed. The headers say only the calling
+  account's own counts. An account with no limit (an admin tenant) gets none,
+  and neither does a retried request. A create with a first `prompt` carries
+  the create's.
 - Admin tenants (the operator's own, from its tenants file) are not rate
   limited: neither their account limits, nor `api_requests` for requests made
   with their tokens, browser tokens or console sessions. An admin tenant's

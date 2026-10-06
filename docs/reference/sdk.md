@@ -75,6 +75,7 @@ brought to `config` if it differs. Returns a connected `Agent`. See
 | `subject`, `context` | `subject=`, `context=` | whom it acts for, and claims for its tools; fixed at creation |
 | `keyScope`, `spendLimit`, `runLimits`, `modelHeaders` | `key_scope=`, `spend_limit=`, `run_limits=`, `model_headers=` | see [Models and keys](../guides/models-and-keys.md) |
 | `mounts`, `fileTools` | `mounts=`, `file_tools=` | its volumes (fixed at creation), and whether it has file tools |
+| `codeMode` | `code_mode=` | `false`: no `js_exec`; every tool is called directly, and an agent with no tools at all gets little more than its instructions as its system prompt. See [Tools](../guides/tools.md#without-code-codemode-false) |
 | `name` | `name=` | a label, shown in the console |
 | `builtins` | `builtins=` | tools the runtime answers itself, without a definition: `web_fetch`, `web_search`, `schedule`, `ask_user`, `delegate` |
 | `delegate` | `delegate=` | sub-agents it may hand tasks to (`{ agents, instructions?, maxDepth?, maxParallel? }`); brings its builtin. See [Multi-agent](../guides/multi-agent.md) |
@@ -101,6 +102,13 @@ only (an API token, an OAuth grant, a console session): a browser token gets
 
 `agents.agent(session, { tools, … })` connects to an agent you hold the
 credentials of (`{id, token}`) without changing it.
+
+`agent.configHash` (Python `agent.config_hash`), from `upsert` and `get`, is a
+hash of the agent's configuration (from `upsert`, the one it asked for). Equal
+hashes are equal configurations: an upsert that changes nothing returns the
+hash the agent has, and is not counted as an agent create. Every agent's is in
+`agents.runtime.listAgents()` (`list_agents()`), so a deploy script can tell
+what changed without keeping a manifest. It is opaque: compare it, never parse it.
 
 ### `Agent`
 
@@ -131,6 +139,7 @@ Run options (`run`, `stream`):
 | `idempotencyKey` | `idempotency_key=` | the run's id: the same key returns the same run, joining it if it is still going |
 | `signal` | `timeout=` | stop waiting; the run goes on |
 | `throwOnError` | `throw_on_error=` | `false`: return a failed run instead of throwing `RunError` |
+| `history` | `history=` | `"none"`: the model sees the instructions and this message only, not the agent's history; the run is still recorded. See [Runs without the history](../concepts.md#runs-without-the-history) |
 | `whileRunning` | `while_running=` | `"queue"` (default) or `"steer"` |
 | `spendLimit` | `spend_limit=` | `{usd}`: this run's own budget; see [Spend limits](../guides/models-and-keys.md#spend-limits) |
 | `allowDisconnected` | `allow_disconnected=` | run even with nobody serving the agent's tools (else refused: `APPLICATION_NOT_CONNECTED`) |
@@ -408,6 +417,12 @@ application keeps serving its tools.
 
 ## Unreleased
 
+- `run`, `stream` and `client.prompt` take `history: "none"` (Python `history="none"`): the run sees the
+  agent's instructions and its own message only, for many independent questions to one agent without an
+  agent create each. `upsert` takes `codeMode: false` (`code_mode=False`, definitions too): no `js_exec`,
+  and a tool-less agent's system prompt shrinks to its instructions and a sender note.
+- `agent.configHash` (`config_hash`) from `upsert` and `get`, and `configHash` on `listAgents()`: an upsert
+  of the configuration an agent has is not counted as an agent create.
 - Agent handles connect lazily: `new Agents()` (`Agents()`) handles hold their
   event stream only while `agent.stream()` reads a run, instead of from
   `upsert`/`get` until `close()`, so a server with many agents holds no idle
