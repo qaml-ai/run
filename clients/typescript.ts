@@ -289,6 +289,14 @@ export interface AgentOptions {
    * (a child's event, its streamed text left out) and `subagent_end`. Default false: none of them.
    */
   subagents?: boolean;
+  /**
+   * When the client holds the agent's event stream. "eager" (the default here): from `connect` until `close`.
+   * "lazy": only while something needs it (a `listen`er, such as `Agent.stream()`'s, for as long as it listens),
+   * so an idle handle holds no connection; requests then settle by asking for their outcome (a long poll of up
+   * to 25 s at a time). Clients that serve tools (`attach`), or have `onEvent`, `onInput` or `onConnection`, need
+   * the stream throughout, so they are eager whatever this says. A lazy client's `connect` checks nothing.
+   */
+  connection?: "eager" | "lazy";
 }
 /**
  * Human input a suspended turn waits on (its run ends with `stopped: "input_required"` and these in
@@ -667,14 +675,14 @@ class Transport {
     const fetcher = options.fetch;
     this.fetcher = fetcher ? (input, init) => fetcher(input, init) : globalThis.fetch.bind(globalThis);
   }
-  async json(path: string, token: string, method = "GET", body?: unknown, retry = true, headers: Record<string, string> = {}, timeoutMs = 10_000): Promise<any> {
+  async json(path: string, token: string, method = "GET", body?: unknown, retry = true, headers: Record<string, string> = {}, timeoutMs = 10_000, signal?: AbortSignal): Promise<any> {
     const data = body === undefined ? undefined : JSON.stringify(body);
     if (data && byteLength(data) > FRAME_BYTES) throw new AgentError("Request exceeds transport limit");
     for (let attempt = 0; ; attempt++) {
       try {
         const response = await this.fetcher(this.base + path, {
           method, headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", ...headers }, body: data,
-          redirect: "manual", signal: AbortSignal.timeout(timeoutMs),
+          redirect: "manual", signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
         });
         await rejectRedirect(response);
         const value = await (response.ok ? response.json() : response.json().catch(() => ({}))) as any;
@@ -682,6 +690,7 @@ class Transport {
         return value;
       } catch (error) {
         const limited = error instanceof AgentError && error.status === 429;
+        if (signal?.aborted) throw error;
         if (limited ? attempt >= RATE_LIMIT_ATTEMPTS - 1 : !retry || attempt >= 3 || (error instanceof AgentError && error.status < 500)) throw error;
         // Honour the runtime's Retry-After, with jitter so refused callers do not return together; else back off exponentially.
         const backoff = Math.min(10_000, (limited ? 500 : 100) * 2 ** attempt);
@@ -1028,12 +1037,21 @@ export class AgentClient {
   private attaching: boolean;
   /** The stream was cut on purpose, to reconnect in another mode: not an error to report. */
   private switching = false;
+  /** Holds the event stream only while something needs it (`connection: "lazy"`); see `wanted`. */
+  private lazy: boolean;
+  /** Whether the event stream's loop runs (set and cleared in the same tick as it starts and ends). */
+  private streaming = false;
+  /** Cuts a lazy client's outcome polls when it closes. */
+  private readonly polls = new AbortController();
+  /** Wakes a lazy client's outcome polls when the stream stops, or the client closes. */
+  private readonly stopped = new Set<() => void>();
 
   constructor(runtime: RuntimeOptions, session: SessionCredentials, options: AgentOptions) {
     if (!/^client_[a-f0-9]{40}$/.test(session.id)) throw new AgentError("Invalid session id");
     this.id = session.id;
     this.session = redacted(session);
     this.attaching = options.attach !== false;
+    this.lazy = options.connection === "lazy" && !this.attaching && !options.onEvent && !options.onInput && !options.onConnection;
     this.tools = { ...options.tools };
     this.server = options.mcp ?? toolServer(this.tools);
     this.options = options;
@@ -1049,16 +1067,38 @@ export class AgentClient {
 
   async connect() {
     if (this.closed) throw new AgentError("Client closed");
-    this.loop ??= this.events();
+    if (this.fatal) throw this.fatal;
+    if (!this.wanted()) return;
+    this.start();
     await Promise.race([this.ready.promise, new Promise<never>((_, reject) => {
       const timer = setTimeout(() => reject(new AgentError("Timed out connecting to agent")), 10_000);
       this.ready.promise.finally(() => clearTimeout(timer)).catch(() => {});
     })]);
   }
 
+  /** Start the event stream's loop, unless it runs. */
+  private start() {
+    if (this.streaming) return;
+    this.streaming = true;
+    this.loop = this.events();
+  }
+
+  /** Whether the event stream is needed now: always, unless lazy; then while something listens. */
+  private wanted() { return !this.lazy || this.listeners.size > 0; }
+
   private async events() {
+    try { await this.stream_(); }
+    finally {
+      // Stopped while idle (lazy): the next connect starts afresh, from a snapshot, as a new client would.
+      this.streaming = false; this.switching = false;
+      for (const wake of this.stopped) wake();
+      if (!this.closed && !this.fatal) { this.ready = Promise.withResolvers<void>(); this.ready.promise.catch(() => {}); this.connection = undefined; this.cursor = 0; }
+    }
+  }
+
+  private async stream_() {
     let backoff = 250;
-    while (!this.closed) {
+    while (!this.closed && this.wanted()) {
       this.stream = new AbortController();
       let watchdog: ReturnType<typeof setTimeout> | undefined;
       const touch = () => { clearTimeout(watchdog); watchdog = setTimeout(() => this.stream?.abort(), 20_000); };
@@ -1151,7 +1191,7 @@ export class AgentClient {
           this.pending.clear(); this.report(error); break;
         } else if (this.switching) this.switching = false; else this.report(error);
       } finally { clearTimeout(watchdog); this.options.onConnection?.(false); }
-      if (!this.closed) { await pause(backoff); backoff = Math.min(5000, backoff * 2); }
+      if (!this.closed && this.wanted()) { await pause(backoff); backoff = Math.min(5000, backoff * 2); }
     }
   }
 
@@ -1182,7 +1222,16 @@ export class AgentClient {
   /** @internal Hear every event as it arrives (synchronously, before onEvent); returns the unsubscribe. */
   listen(listener: (event: AgentEvent, requestId?: string) => void): () => void {
     this.listeners.add(listener);
-    return () => { this.listeners.delete(listener); };
+    // A lazy client connects for its first listener, and lets the stream go with its last.
+    if (this.lazy && !this.closed && !this.fatal) this.start();
+    return () => {
+      if (!this.listeners.delete(listener) || !this.lazy || this.listeners.size || !this.streaming) return;
+      // A listener that comes before the loop ends keeps it going: it waits for the next connection, not this one.
+      this.ready = Promise.withResolvers<void>();
+      this.ready.promise.catch(() => {});
+      this.switching = true;
+      this.stream?.abort();
+    };
   }
   /** Resolves once onEvent has handled every event received so far. */
   drained(): Promise<void> { return this.dispatching; }
@@ -1215,8 +1264,43 @@ export class AgentClient {
    * ask for its status now and then, so an event lost on the way can never strand the caller.
    */
   private async outcome(id: string, result: Promise<any>) {
+    if (this.lazy) { void this.poll(id, result); return await result; }
     const poll = setInterval(() => void this.requestStatus(id).then(record => { if (record.outcome) this.settle(id, record.outcome); }, () => {}), this.pollMs);
     try { return await result; } finally { clearInterval(poll); }
+  }
+
+  /**
+   * A lazy client's way to a request's outcome: ask for it, waiting up to 25 s each time, until it settles or the
+   * client closes. While a listener holds the stream, the outcome comes as an event after the run's others (asking
+   * could settle it before its last events arrive), so then it only asks every `pollMs`, as an eager client does.
+   * A refusal for good (the token revoked, the agent gone) fails the request.
+   */
+  private async poll(id: string, result: Promise<unknown>) {
+    let backoff = 250;
+    const settled = result.then(() => {}, () => {});
+    while (this.pending.has(id) && !this.closed) {
+      if (this.streaming) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const stopped = Promise.withResolvers<void>();
+        this.stopped.add(stopped.resolve);
+        await Promise.race([settled, stopped.promise, new Promise<void>(resolve => { timer = setTimeout(resolve, this.pollMs); })]);
+        clearTimeout(timer); this.stopped.delete(stopped.resolve);
+        if (!this.pending.has(id) || this.closed || !this.streaming) continue;
+      }
+      try {
+        const record = await this.transport.json(this.path(`/requests/${encodeURIComponent(id)}${this.streaming ? "" : "?wait=25"}`), this.session.token, "GET", undefined, true, {}, 35_000, this.polls.signal);
+        backoff = 250;
+        if (record.outcome) this.settle(id, record.outcome);
+      } catch (error) {
+        if (this.closed) return;
+        if (error instanceof AgentError && [401, 403, 404, 410].includes(error.status)) {
+          this.pending.get(id)?.reject(Object.assign(error, { requestId: error.requestId ?? id }));
+          this.pending.delete(id);
+          return;
+        }
+        await pause(backoff); backoff = Math.min(5000, backoff * 2);
+      }
+    }
   }
 
   private async sync(): Promise<SessionState> {
@@ -1256,6 +1340,8 @@ export class AgentClient {
     const id = options.idempotencyKey ?? globalThis.crypto.randomUUID();
     if (!REQUEST_ID.test(id)) throw new AgentError(`An idempotency key is 1 to 80 letters, digits, _ and -: ${JSON.stringify(id.slice(0, 100))} is not`, 400);
     options.signal?.throwIfAborted();
+    // A lazy client that is wanted to listen (stream()) connects first, so the listener sees the run from its start.
+    if (this.lazy && this.listeners.size) await this.connect();
     const deferred = this.waiter(id, options, "Request timed out; it may still be running: requestStatus() or waitForRequest() observe it");
     try {
       const record = await this.transport.json(this.path("/requests"), this.session.token, "POST", { id, method, params }, true, traceHeader(options.traceparent));
@@ -1424,8 +1510,10 @@ export class AgentClient {
   /** Connect again, attached (answering tool calls) or not. */
   private async reconnect(attach: boolean) {
     this.attaching = attach;
+    // Serving tools needs the stream throughout.
+    if (attach) this.lazy = false;
     this.ready = Promise.withResolvers<void>();
-    this.switching = true;
+    this.switching = this.streaming;
     this.stream?.abort();
     await this.connect();
   }
@@ -1490,7 +1578,7 @@ export class AgentClient {
 
   private async shutdown(drainMs: number) {
     await this.drain(drainMs);
-    this.closed = true; this.stream?.abort();
+    this.closed = true; this.stream?.abort(); this.polls.abort();
     for (const controller of this.active.values()) controller.abort();
     for (const [id, waiter] of this.pending) waiter.reject(new AgentError("Client closed; request may still be running", 0, id));
     this.pending.clear();

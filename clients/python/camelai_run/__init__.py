@@ -525,15 +525,20 @@ class AgentRuntime:
         # The key is the agent's idempotency key: the same key is the same agent, reconfigured when its configuration differs.
         return await _http(self.http, self.base, "/v1/agents", self.api_key, "POST", _provisioning(tools, **fields), headers={"Idempotency-Key": key, **_trace_header(traceparent)})
 
-    async def connect_agent(self, session, *, tools, on_event=None, on_error=None, on_input=None, attach=True, takeover=False, sync_tools=True, subagents=False):
+    async def connect_agent(self, session, *, tools, on_event=None, on_error=None, on_input=None, attach=True, takeover=False, sync_tools=True, subagents=False, connection="eager"):
         """`on_event(event, request_id)` hears every event, for display (a run's result is the truth): a plain or async
         function, called in order apart from the connection, so a slow one never holds up tool calls; what it raises goes
         to on_error. `on_input(input)` hears each question, approval or setup step the agent's turn now waits on: return an
         answer ({"action", "content"?, "from"?, "actor"?}) to give it at once, or None to answer later with answer().
         `attach=False` follows the agent and runs it without answering its tool calls, as any number of processes may; one
         process at a time answers them, and another fails with APPLICATION_CONNECTED unless `takeover=True` replaces it.
-        `subagents=True` also delivers the agent's sub-agents' progress: subagent_start, subagent_event and subagent_end."""
-        agent = AgentClient(self.base, session, tools, on_event, on_error, on_input, attach=attach, takeover=takeover, sync_tools=sync_tools, subagents=subagents)
+        `subagents=True` also delivers the agent's sub-agents' progress: subagent_start, subagent_event and subagent_end.
+        `connection` says when the client holds the agent's event stream: "eager" (the default here), from connect until
+        close; "lazy", only while something listens (Agent.stream), so an idle client holds no connection, and requests
+        settle by asking for their outcome (a long poll of up to 25 s at a time). A client that serves tools (attach), or
+        has on_event or on_input, needs the stream throughout, so it is eager whatever this says."""
+        agent = AgentClient(self.base, session, tools, on_event, on_error, on_input, attach=attach, takeover=takeover, sync_tools=sync_tools, subagents=subagents,
+                            connection=connection)
         self.agents.append(agent)
         try:
             await agent.connect()
@@ -863,7 +868,7 @@ class AgentClient:
     # How often a request still waiting for its result asks for its status, in case the result's event was lost.
     poll_interval = 30
 
-    def __init__(self, base, session, tools, on_event=None, on_error=None, on_input=None, attach=True, takeover=False, sync_tools=True, subagents=False):
+    def __init__(self, base, session, tools, on_event=None, on_error=None, on_input=None, attach=True, takeover=False, sync_tools=True, subagents=False, connection="eager"):
         import re
         if not re.fullmatch(r"client_[a-f0-9]{40}", session["id"]):
             raise ValueError("Invalid session id")
@@ -903,6 +908,8 @@ class AgentClient:
         self.dispatcher = None
         self.dropped = 0
         self.listeners = set()
+        # Holds the event stream only while something listens (connection="lazy"); serving tools, on_event and on_input need it throughout.
+        self.lazy = connection == "lazy" and not attach and not on_event and not on_input
 
     def __repr__(self):
         return f"AgentClient(id={self.id!r})"
@@ -913,14 +920,41 @@ class AgentClient:
     async def connect(self):
         if self.closed:
             raise AgentError("Client closed")
-        if self.events is None:
-            self.events = asyncio.Queue()
-            self.dispatcher = asyncio.create_task(self._dispatch())
-        if not self.runner:
-            self.runner = asyncio.create_task(self._events())
+        if self.fatal:
+            raise self.fatal
+        # A lazy client connects only while something listens.
+        if self.lazy and not self.listeners:
+            return
+        self._start()
         await asyncio.wait_for(self.ready.wait(), 10)
         if self.fatal:
             raise self.fatal
+
+    def _start(self):
+        """Start the event stream's loop, unless it runs."""
+        if self.events is None:
+            self.events = asyncio.Queue()
+            self.dispatcher = asyncio.create_task(self._dispatch())
+        if not self.runner or self.runner.done():
+            self.runner = asyncio.create_task(self._events())
+
+    def listen(self, listener):
+        """Hear every event as it arrives (before on_event); returns the function that stops it. A lazy client connects
+        for its first listener, and lets the stream go with its last."""
+        self.listeners.add(listener)
+        if self.lazy and not self.closed and not self.fatal:
+            self._start()
+
+        def unlisten():
+            if listener not in self.listeners:
+                return
+            self.listeners.discard(listener)
+            if self.lazy and not self.listeners and self.runner and not self.runner.done():
+                self.runner.cancel()
+                self.runner = None
+                # The next connect starts afresh, from a snapshot, as a new client would.
+                self.ready, self.connection, self.cursor = asyncio.Event(), None, 0
+        return unlisten
 
     async def _sync_tools(self, declared):
         """Declare this client's tools when they differ from what the agent has (its toolsHash, over the JSON the runtime keeps)."""
@@ -974,7 +1008,7 @@ class AgentClient:
 
     async def _events(self):
         backoff = 0.25
-        while not self.closed:
+        while not self.closed and (not self.lazy or self.listeners):
             try:
                 # One application serves an agent's tools at a time: a reconnect names the connection it held; takeover replaces another's, once.
                 mode = ("&watch=1" if not self.attach else "&takeover=true" if self.takeover and not self.connection else "") + ("&subagents=1" if self.subagents else "")
@@ -1092,11 +1126,49 @@ class AgentClient:
     async def _outcome(self, request_id, future):
         """A request's result arrives as an event; a reconnect also settles from /state. As a last resort,
         ask for its status now and then, so an event lost on the way can never strand the caller."""
+        if self.lazy:
+            return await self._polled(request_id, future)
         while not (await asyncio.wait({future}, timeout=self.poll_interval))[0]:
             try:
                 record = await self.request_status(request_id)
             except Exception:
                 continue
+            if "outcome" in record:
+                self._settle(request_id, record["outcome"])
+        return future.result()
+
+    async def _polled(self, request_id, future):
+        """A lazy client's way to a request's outcome: ask for it, waiting up to 25 s each time, until it settles. While
+        something listens, the outcome comes as an event after the run's others (asking could settle it before its last
+        events arrive), so then it asks only every poll_interval, as an eager client does. A refusal for good (the token
+        revoked, the agent gone) fails the request."""
+        backoff = 0.25
+        while not future.done():
+            streaming = self.runner is not None and not self.runner.done()
+            if streaming and (await asyncio.wait({future}, timeout=self.poll_interval))[0]:
+                break
+            poll = asyncio.ensure_future(self.request_status(request_id, wait=None if streaming else 25))
+            try:
+                await asyncio.wait({future, poll}, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                if not poll.done():
+                    poll.cancel()
+                    await asyncio.gather(poll, return_exceptions=True)
+            if future.done():
+                break
+            try:
+                record = poll.result()
+            except AgentError as error:
+                if error.status in (401, 403, 404, 410):
+                    raise
+                await asyncio.sleep(backoff)
+                backoff = min(5, backoff * 2)
+                continue
+            except Exception:
+                await asyncio.sleep(backoff)
+                backoff = min(5, backoff * 2)
+                continue
+            backoff = 0.25
             if "outcome" in record:
                 self._settle(request_id, record["outcome"])
         return future.result()
@@ -1168,6 +1240,9 @@ class AgentClient:
         import re
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", request_id):
             raise AgentError(f"An idempotency key is 1 to 80 letters, digits, _ and -: {request_id!r} is not", 400)
+        # A lazy client that something listens to (Agent.stream) connects first, so the listener sees the run from its start.
+        if self.lazy and self.listeners:
+            await self.connect()
         future = self._waiter(request_id)
         try:
             record = await _http(self.http, self.base, self.path + "/requests", self.session["token"], "POST",
@@ -1331,9 +1406,12 @@ class AgentClient:
             # Tools that run here now: answer the agent's calls, as its application.
             if tools and not self.attach:
                 self.attach = True
+                # Serving tools needs the stream throughout.
+                self.lazy = False
                 self.ready.clear()
-                self.runner.cancel()
-                await asyncio.gather(self.runner, return_exceptions=True)
+                if self.runner:
+                    self.runner.cancel()
+                    await asyncio.gather(self.runner, return_exceptions=True)
                 self.runner = None
                 await self.connect()
         return result
@@ -1637,10 +1715,9 @@ class RunStream:
             elif kind in ("subagent_start", "subagent_end"):
                 self._parts.put_nowait(StreamPart(kind, id=event.get("toolCallId"), agent_id=event.get("agentId"), name=event.get("name"), status=event.get("status"), raw=event))
 
-        self._listen = listen
-        agent.client.listeners.add(listen)
+        self._unlisten = agent.client.listen(listen)
         self._task = asyncio.ensure_future(agent._run(text, self.id, throw_on_error=False, **options))
-        self._task.add_done_callback(lambda task: (agent.client.listeners.discard(listen), self._parts.put_nowait(None)))
+        self._task.add_done_callback(lambda task: (self._unlisten(), self._parts.put_nowait(None)))
 
     async def result(self):
         run = await self._task
@@ -1660,7 +1737,7 @@ class RunStream:
             if run.error and self._throw:
                 raise RunError(run)
         finally:
-            self._agent.client.listeners.discard(self._listen)
+            self._unlisten()
 
 
 class Agent:
@@ -1846,15 +1923,19 @@ class Agents:
             agent = await agents.upsert("support-triage", model="anthropic/claude-sonnet-5-5", instructions="...")
             print((await agent.run("Hello")).text)
 
-    api_key defaults to CAMELAI_API_KEY; url to CAMELAI_BASE_URL, else https://run.camelai.com."""
+    api_key defaults to CAMELAI_API_KEY; url to CAMELAI_BASE_URL, else https://run.camelai.com. `connection` is when agent
+    handles hold their event stream: "lazy" (the default) only while agent.stream() reads a run, so a server holding many
+    agents holds no idle connections; "eager" from the start until close. A handle that serves tools, or has on_event or
+    on_input, needs the stream throughout, so it holds it from the start either way. Each call may say otherwise."""
 
-    def __init__(self, api_key=None, *, url=None):
+    def __init__(self, api_key=None, *, url=None, connection="lazy"):
         self.runtime = AgentRuntime(url=url, api_key=api_key)
         self._open = set()
+        self.connection = connection
 
     async def upsert(self, key, *, model=None, instructions=None, tools=None, definition=None, thinking_level=None, subject=None, context=None,
                      key_scope=None, spend_limit=None, run_limits=None, model_headers=None, mounts=None, name=None, instructions_append=None, file_tools=None,
-                     builtins=None, delegate=None, subagents=False, on_event=None, on_input=None, on_error=None, attach=None, takeover=False):
+                     builtins=None, delegate=None, subagents=False, on_event=None, on_input=None, on_error=None, attach=None, takeover=False, connection=None):
         """The agent for `key` (your name for it: "support-triage", or "user-123"), made now if there is none, and set
         to this configuration if it differs. The same key is the same agent, with its history and files, until
         agent.delete(); any number of processes may upsert it. `tools` (@tool functions) run in this process, which
@@ -1870,29 +1951,31 @@ class Agents:
                                                   model_headers=model_headers, mounts=mounts, name=name, system_prompt_append=instructions_append, file_tools=file_tools, builtins=builtins,
                                                   delegate=delegate)
         # The upsert declared these tools already (between the agent's turns, if it runs).
-        return await self.agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error, attach=attach, takeover=takeover, subagents=subagents, _sync=False)
+        return await self.agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error, attach=attach, takeover=takeover, subagents=subagents,
+                                connection=connection, _sync=False)
 
-    async def get(self, key_or_id, *, tools=None, on_event=None, on_input=None, on_error=None, attach=None, takeover=False):
+    async def get(self, key_or_id, *, tools=None, on_event=None, on_input=None, on_error=None, attach=None, takeover=False, connection=None):
         """The existing agent with this key (or id), without changing it: upsert sets an agent to what it is given, get
         takes it as it is. AgentError with status 404 when there is none. Pass `tools` to serve them too."""
         session = await self.runtime.agent_credentials(key_or_id)
-        return await self.agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error, attach=attach, takeover=takeover)
+        return await self.agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error, attach=attach, takeover=takeover, connection=connection)
 
     async def fork(self, agent_id, *, key=None, name=None, at_message=None, ttl_seconds=_DEFAULT, subject=None, context=None, instructions_append=None,
-                   model_headers=_DEFAULT, tools=None, on_event=None, on_input=None, on_error=None, attach=None, takeover=False):
+                   model_headers=_DEFAULT, tools=None, on_event=None, on_input=None, on_error=None, attach=None, takeover=False, connection=None):
         """A new agent forked from `agent_id` (see Agent.fork). Pass `tools` to serve them, as for get."""
         answer = await self.runtime.fork_agent(agent_id, key=key, name=name, at_message=at_message, ttl_seconds=ttl_seconds, subject=subject,
                                                context=context, instructions_append=instructions_append, model_headers=model_headers)
-        agent = await self.agent(answer, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error, attach=attach, takeover=takeover)
+        agent = await self.agent(answer, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error, attach=attach, takeover=takeover, connection=connection)
         agent.forked_from = answer.get("forkedFrom")
         return agent
 
-    async def agent(self, session, *, tools=None, on_event=None, on_input=None, on_error=None, attach=None, takeover=False, subagents=False, _sync=True):
+    async def agent(self, session, *, tools=None, on_event=None, on_input=None, on_error=None, attach=None, takeover=False, subagents=False, connection=None, _sync=True):
         """An agent you hold the credentials of ({"id", "token"}, from another process say). Tools that differ from those
         the agent has are declared as it connects."""
         tools = list(tools or [])
         client = await self.runtime.connect_agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error,
-                                                  attach=bool(tools) if attach is None else attach, takeover=takeover, sync_tools=_sync, subagents=subagents)
+                                                  attach=bool(tools) if attach is None else attach, takeover=takeover, sync_tools=_sync, subagents=subagents,
+                                                  connection=connection or self.connection)
         agent = Agent(client, self._open.discard, self)
         self._open.add(agent)
         return agent

@@ -158,6 +158,42 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([(part.type, part.agent_id) for part in parts if part.type.startswith("subagent_")], [("subagent_start", child), ("subagent_end", child)])
         self.assertIn("helped", json.dumps(self.bodies[-1]))
 
+    async def test_lazy_handles_hold_no_stream_while_idle_run_without_one_and_stream_for_a_run(self):
+        streaming = lambda agent: agent.client.runner is not None and not agent.client.runner.done()
+        # 50 handles on 4 agents (a tenant runs a few agents at once): none holds a stream after upsert or get.
+        keys = ["yes", "no", "maybe", "unsure"]
+        handles = [await self.agents.upsert(key, instructions="Answer yes or no.") for key in keys]
+        while len(handles) < 50:
+            handles.append(await self.agents.get(keys[len(handles) % len(keys)]))
+        self.assertFalse(any(streaming(agent) for agent in handles))
+        runs = await asyncio.gather(*(agent.run("Is water wet?") for agent in handles[:4]))
+        self.assertEqual([run.text for run in runs], ["seen"] * 4)
+        self.assertFalse(any(streaming(agent) for agent in handles), "a run settles without a stream")
+        # stream() connects for its run, sees it from the start, and lets the stream go once it ended.
+        for attempt in range(2):
+            self.script.append({"role": "assistant", "content": f"streamed {attempt}", "delayMs": 200})
+            parts = [part async for part in handles[0].stream("go")]
+            self.assertEqual([part.type for part in parts], ["text", "done"])
+            self.assertEqual(parts[0].text, f"streamed {attempt}")
+            await asyncio.sleep(0.05)
+            self.assertFalse(streaming(handles[0]))
+        # Handles that need the stream hold it from the start: on_event, or connection="eager".
+        watched = await self.agents.get("yes", on_event=lambda event: None)
+        eager = await self.agents.get("yes", connection="eager")
+        self.assertTrue(streaming(watched) and streaming(eager))
+        # A lazy run whose agent is deleted while it runs ends rather than waiting for good.
+        slow = await self.agents.upsert("deleted-mid-run")
+        self.script.append({"role": "assistant", "content": "late", "delayMs": 1500})
+        pending = asyncio.ensure_future(slow.run("slow", throw_on_error=False))
+        await asyncio.sleep(0.3)
+        deleted = await self.runtime.http.delete(f"{self.url}/v1/agents/{slow.id}", headers={"Authorization": f"Bearer {self.token}"})
+        self.assertEqual(deleted.status_code, 200)
+        try:
+            run = await asyncio.wait_for(pending, 10)
+            self.assertEqual(run.status, "failed")
+        except AgentError as error:
+            self.assertIn(error.status, (404, 410))
+
     async def test_a_tool_process_that_dies_mid_run_the_restarted_one_serves_its_calls_and_the_same_key_fetches_it(self):
         @tool
         async def slow(value: str) -> dict:

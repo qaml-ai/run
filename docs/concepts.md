@@ -191,7 +191,10 @@ hears `APPLICATION_REPLACED` and goes on without serving the tools.
 Any number of processes can **run** an agent without serving its tools: an
 agent upserted without local tools, or with `attach: false`, follows the
 agent's stream read-only. That is how serverless functions, webhook handlers and
-second services run agents whose tools are served elsewhere.
+second services run agents whose tools are served elsewhere. Such a handle
+connects lazily: it holds the stream only while `agent.stream()` reads a run (or
+an `onEvent` handler listens), and `agent.run()` asks for its outcome instead,
+so a server holding many agents holds no idle connections.
 
 A run of an agent with attached tools while no process serves them is refused
 up front, with `APPLICATION_NOT_CONNECTED` (after a few seconds' grace for a

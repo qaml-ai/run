@@ -29,6 +29,11 @@ export interface AgentsOptions {
   /** Opens a local file to attach by its path; the Node entry sets it. */
   openFile?: RuntimeOptions["openFile"];
   pollMs?: number;
+  /**
+   * When agent handles hold their event stream (see `AgentConfig.connection`). Default "lazy": a handle connects
+   * only while a run streams (`agent.stream()`), so a server holding many agents holds no idle connections.
+   */
+  connection?: "eager" | "lazy";
 }
 
 /** An agent's configuration: what `upsert` makes it, or changes it to. */
@@ -79,6 +84,13 @@ export interface AgentConfig {
   onInput?: AgentOptions["onInput"];
   onError?: (error: Error) => void;
   onConnection?: (connected: boolean) => void;
+  /**
+   * When this handle holds the agent's event stream. "lazy" (the default, unless `AgentsOptions.connection` says
+   * otherwise): only while `agent.stream()` reads a run; `agent.run()` waits for its outcome without one. A handle
+   * that serves tools, or has `onEvent`, `onInput` or `onConnection`, needs the stream throughout, so it holds it
+   * from the start whatever this says. "eager": from the start until `close()`.
+   */
+  connection?: "eager" | "lazy";
   /** Replace the process that serves this agent's tools now, instead of failing with APPLICATION_CONNECTED. */
   takeover?: boolean;
   /**
@@ -234,7 +246,9 @@ export class Agents {
   /** The lower-level client: definitions, volumes, mounts, inbox. */
   readonly runtime: AgentRuntime;
   private readonly open = new Set<Agent>();
+  private readonly connection: "eager" | "lazy";
   constructor(options: AgentsOptions = {}) {
+    this.connection = options.connection ?? "lazy";
     const apiKey = options.apiKey ?? env("CAMELAI_API_KEY") ?? env("AGENT_RUNTIME_TOKEN");
     this.runtime = new AgentRuntime({
       ...options, url: options.url ?? env("CAMELAI_BASE_URL") ?? env("AGENT_URL"), ...(apiKey ? { apiKey } : {}),
@@ -258,7 +272,7 @@ export class Agents {
    * The existing agent with this key (or id), without changing it: `upsert` sets an agent to the config it is given,
    * `get` takes it as it is. Throws an AgentError with status 404 when there is none. Pass `tools` to serve them too.
    */
-  async get(keyOrId: string, config: Pick<AgentConfig, "tools" | "mcp" | "onEvent" | "onInput" | "onError" | "onConnection" | "takeover" | "attach"> = {}): Promise<Agent> {
+  async get(keyOrId: string, config: Pick<AgentConfig, "tools" | "mcp" | "onEvent" | "onInput" | "onError" | "onConnection" | "takeover" | "attach" | "connection"> = {}): Promise<Agent> {
     if (!this.runtime.options.apiKey) throw new AgentError("No API key: set CAMELAI_API_KEY (or pass apiKey). Create one at https://run.camelai.com/console/tokens. Coding agents: read https://run.camelai.com/SKILL.md");
     return this.agent(await this.runtime.agentCredentials(keyOrId), config);
   }
@@ -267,7 +281,7 @@ export class Agents {
    * A new agent forked from `agentId` (see `agent.fork`): its configuration, a copy of its history and a fork of its
    * workspace, each its own from then on. Pass `tools` to serve them, as for `get`.
    */
-  async fork(agentId: string, options: ForkOptions & Pick<AgentConfig, "tools" | "mcp" | "onEvent" | "onInput" | "onError" | "onConnection" | "takeover" | "attach"> = {}): Promise<Agent> {
+  async fork(agentId: string, options: ForkOptions & Pick<AgentConfig, "tools" | "mcp" | "onEvent" | "onInput" | "onError" | "onConnection" | "takeover" | "attach" | "connection"> = {}): Promise<Agent> {
     const { key, name, atMessage, ttlSeconds, subject, context, instructionsAppend, modelHeaders, ...config } = options;
     const { session, forkedFrom } = await this.runtime.forkAgent(agentId, { key, name, atMessage, ttlSeconds, subject, context, instructionsAppend, modelHeaders });
     const agent = await this.agent(session, config);
@@ -276,13 +290,13 @@ export class Agents {
   }
 
   /** An agent you hold the credentials of (`agent.session` from another process, say). */
-  async agent(session: SessionCredentials, config: Pick<AgentConfig, "tools" | "mcp" | "onEvent" | "onInput" | "onError" | "onConnection" | "takeover" | "attach"> = {}): Promise<Agent> {
+  async agent(session: SessionCredentials, config: Pick<AgentConfig, "tools" | "mcp" | "onEvent" | "onInput" | "onError" | "onConnection" | "takeover" | "attach" | "connection"> = {}): Promise<Agent> {
     return this.connect(session, config, createOptions(config));
   }
 
   private async connect(session: SessionCredentials, config: AgentConfig, options: AgentOptions) {
     const attach = config.attach ?? (!!config.mcp || Object.keys(config.tools ?? {}).length > 0);
-    const client = await this.runtime.connectAgent(session, { ...options, attach });
+    const client = await this.runtime.connectAgent(session, { ...options, attach, connection: config.connection ?? this.connection });
     const agent = new Agent(client, () => this.open.delete(agent), this);
     this.open.add(agent);
     return agent;
@@ -475,7 +489,7 @@ export class Agent {
    * then on: try another direction without losing this one. By default the history ends with the last turn that ended
    * (never mid-turn); `atMessage` ends it at a history index or a request's turn. The same `key` returns the same fork.
    */
-  fork(options: ForkOptions & Pick<AgentConfig, "tools" | "mcp" | "onEvent" | "onInput" | "onError" | "onConnection" | "takeover" | "attach"> = {}): Promise<Agent> {
+  fork(options: ForkOptions & Pick<AgentConfig, "tools" | "mcp" | "onEvent" | "onInput" | "onError" | "onConnection" | "takeover" | "attach" | "connection"> = {}): Promise<Agent> {
     if (!this.agents) throw new AgentError("fork needs the Agents this agent came from (agents.upsert, get or agent)");
     return this.agents.fork(this.id, options);
   }

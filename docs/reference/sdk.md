@@ -44,6 +44,16 @@ synchronous code (a script, a Django view, a Celery task), run it with
   calls it is running, up to `drainMs` (Python `drain=`, seconds; default 25 s),
   while new calls go to another process: call it on SIGTERM. See [deploying a
   tool process](../guides/tools.md#deploying-a-tool-process).
+- `connection` (Python `connection=`) says when agent handles hold their event
+  stream. `"lazy"`, the default: only while `agent.stream()` reads a run, so a
+  server holding many agents (50 keyed agents behind one page, say) holds no idle
+  connections, and `agent.run()` waits for its outcome by asking for it (`GET
+  /clients/:id/requests/:id?wait=25`, again until it settles). A handle that serves
+  tools, or has `onEvent`, `onInput` or `onConnection` (`on_event`, `on_input`),
+  needs the stream throughout, so it holds it from `upsert`/`get` until `close()`
+  whatever this says. `"eager"` holds it from the start for every handle. Each
+  `upsert`, `get`, `fork` and `agent` call may say otherwise (`connection`).
+  The lower-level `connectAgent` (`connect_agent`) stays eager unless asked.
 - `agents.runtime` is the lower-level `AgentRuntime`: definitions, volumes,
   mounts, `listAgents()`, `browserToken(agentId)`, `inbox()`, `toolSources(agentId)`.
 
@@ -242,7 +252,7 @@ available and stable for code that needs the wire's shape: `agents.runtime`,
 | --- | --- | --- |
 | `runtime.upsertAgent(key, options)` | `runtime.upsert_agent(key, …)` | upsert, returning credentials (not connected) |
 | `runtime.createAgent({ tools, ttlSeconds, idempotencyKey, … })` | `runtime.create_agent(tools=[...], …)` | provision and connect; with `idempotencyKey`, the same as an upsert |
-| `runtime.connectAgent(session, { tools, attach, takeover })` | `runtime.connect_agent(session, tools=, attach=, takeover=)` | connect with stored credentials |
+| `runtime.connectAgent(session, { tools, attach, takeover, connection })` | `runtime.connect_agent(session, tools=, attach=, takeover=, connection=)` | connect with stored credentials (`connection: "lazy"`: see [Agents](#agents)) |
 | `runtime.browserToken(agentId, options)` | `runtime.browser_token(agent_id, …)` | a browser token |
 | `runtime.me()` | `runtime.me()` | who the API key is: `tenant`, your tenant's id, which `serveTools` takes |
 | `runtime.setProvider(name, config)`, `providers()`, `deleteProvider(name)` | `set_provider(name, base_url=, models=, api_key=, headers=)`, `providers()`, `delete_provider(name)` | a provider of your own: any OpenAI-compatible server and its models; see [Custom models](../guides/custom-models.md) |
@@ -307,8 +317,14 @@ run = await agent.run("Summarize ticket 123", traceparent=traceparent)
 
 ### Events, reconnects and replay
 
-The SDK holds one SSE stream per agent (`GET /clients/:id/events`) and
-reconnects with backoff. The runtime numbers events and replays them from memory
+An eager client (and a lazy one, while something listens) holds one SSE stream
+per agent (`GET /clients/:id/events`) and reconnects with backoff. A lazy client
+without a listener holds none: each request it is waiting on asks for its own
+outcome, a long poll of up to 25 s at a time, and a refusal for good (401, 403,
+404, 410) fails it. When a listener comes (`agent.stream()`), the client
+connects before sending the run, so the listener sees it from its start, and
+lets the stream go once the last listener is gone; the next stream starts from a
+snapshot, as a new client does. The runtime numbers events and replays them from memory
 from `Last-Event-ID`: up to 512 events or about 2 MiB. Where it cannot (a
 restarted node, a cursor too old), the SDK asks for a snapshot of the running
 turn instead (`?snapshot=1`), and recovers every settled request's outcome from
@@ -391,6 +407,16 @@ changing its history with `agent.client.setMetadata({ name, type })`
 application keeps serving its tools.
 
 ## Unreleased
+
+- Agent handles connect lazily: `new Agents()` (`Agents()`) handles hold their
+  event stream only while `agent.stream()` reads a run, instead of from
+  `upsert`/`get` until `close()`, so a server with many agents holds no idle
+  connections. Handles that serve tools or have `onEvent`, `onInput` or
+  `onConnection` are unchanged. `connection: "eager"` (Python `connection="eager"`)
+  on `Agents` or a single call keeps the old behaviour; the lower-level
+  `connectAgent` / `connect_agent` take `connection: "lazy"` to opt in. A lazy
+  handle's `upsert`/`get` no longer waits for a connection, so an unreachable
+  stream shows up at the first run rather than there.
 
 - Telemetry: `runtime.telemetry.get()`, `set(…)`, `test()` and `clear()` manage the
   tenant's OpenTelemetry trace export, and a `traceparent` option (Python
