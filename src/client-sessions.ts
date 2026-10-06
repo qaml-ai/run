@@ -2451,8 +2451,9 @@ export class ClientSessions {
    */
   async credentials(tenant: string, ref: string): Promise<{ id: string; token: string; expiresAt: number | null; configHash?: string }> {
     // By id alone: a purged agent's tombstone keeps only its id, and still holds its key's generation.
-    const live = async (id: string) => (await this.db.query("select tenant, header->>'key' as key, (header->>'tokenRotation')::int as rotation, header->>'provisionHash' as config_hash, expires_at, revoked from agents where id = $1", [id])).rows[0] as { tenant: string | null; key: string | null; rotation: number | null; config_hash: string | null; expires_at: number | null; revoked: boolean } | undefined;
-    const alive = (row: { tenant: string | null; expires_at: number | null; revoked: boolean }) => row.tenant === tenant && !row.revoked && !expired(row.expires_at === null ? null : Number(row.expires_at));
+    const live = async (id: string) => (await this.db.query("select tenant, header->>'key' as key, (header->>'tokenRotation')::int as rotation, header->>'provisionHash' as config_hash, expires_at, revoked, header->'run' is not null as run from agents where id = $1", [id])).rows[0] as { tenant: string | null; key: string | null; rotation: number | null; config_hash: string | null; expires_at: number | null; revoked: boolean; run: boolean } | undefined;
+    // A stateless run's session is no agent: it has no credentials to give.
+    const alive = (row: { tenant: string | null; expires_at: number | null; revoked: boolean; run: boolean }) => row.tenant === tenant && !row.revoked && !row.run && !expired(row.expires_at === null ? null : Number(row.expires_at));
     const found = (id: string, scoped: string, row: { rotation: number | null; config_hash: string | null; expires_at: number | null }) => {
       const configHash = this.sessions.get(id)?.header.provisionHash ?? row.config_hash;
       return { id, token: this.agentToken(tenant, scoped, id, row.rotation ?? 0), expiresAt: row.expires_at === null ? null : Number(row.expires_at), ...(configHash ? { configHash } : {}) };
@@ -2589,7 +2590,7 @@ export class ClientSessions {
    */
   async mcpView(id: string, authorization: string) {
     const header = this.sessions.get(id)?.header ?? (await this.readHeader(id))?.value;
-    if (!header || header.revoked || header.purged || expired(header.expiresAt)) return undefined;
+    if (!header || header.revoked || header.purged || header.run || expired(header.expiresAt)) return undefined;
     const own = authorization.startsWith("Bearer ") && timingSafeEqual(Buffer.from(hash(authorization.slice(7)), "hex"), Buffer.from(header.digest, "hex"));
     return { tenant: header.tenant, own, name: header.metadata?.name ?? header.key, definition: header.definition?.id };
   }

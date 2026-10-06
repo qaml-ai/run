@@ -58,6 +58,7 @@ test("a stateless run takes its configuration and input and answers with its res
   assert.deepEqual((await r.call("/v1/agents")).json, []);
   assert.equal((await r.call(`/v1/agents/${session(run.id)}`)).status, 404);
   assert.equal((await r.call(`/v1/agents/${session(run.id)}/history`)).status, 404);
+  assert.equal((await r.call(`/v1/agents/${session(run.id)}/credentials`)).status, 404, "it has no token to give");
   await r.call(`/v1/agents/${session(run.id)}`, { method: "DELETE" });
   assert.equal((await r.call(`/v1/runs/${run.id}`)).json.status, "completed", "the agents API cannot delete it");
   // It made no volume, and its session's agent stopped as it ended.
