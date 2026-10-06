@@ -206,7 +206,7 @@ what it holds: sign-ups, first runs and payments by day, the accounts active in 
 events, each account named by its `account_ref` and nothing else. The runtime asks on the viewer's behalf
 (`src/admin-report.ts`), signed with a secret of its own (`AGENT_JOURNEY_REPORT_SECRET_ARN`), which never
 reaches the browser and cannot sign an event or a deletion; only someone Cloudflare Access signed in, and
-listed in `AGENT_ADMIN_EMAILS` where that is set, is answered, and each report asked for is logged with who
+listed in the required `AGENT_ADMIN_EMAILS` allowlist, is answered, and each report asked for is logged with who
 asked (`admin_report_viewed`). An erased account is in none of them.
 
 **Export.** An account journey ever knew has `analytics/` in its export (see [Export](#export)): `account.json`,

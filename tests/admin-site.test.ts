@@ -36,7 +36,7 @@ test("the admin site answers only on its hostname, to people Cloudflare Access s
   const access = async (claims?: Parameters<typeof token>[0]) => ({ "cf-access-jwt-assertion": await token(claims) });
 
   const { call, prompt, base } = await runtime(t, () => ({ role: "assistant", content: "hi", usage: { prompt_tokens: 10, completion_tokens: 1 } }),
-    { AGENT_BILLING_ADMINS: "ops", AGENT_PRICE_AGENT_HOUR_USD: "0", AGENT_ADMIN_HOST: HOST, AGENT_ADMIN_ACCESS_TEAM: team, AGENT_ADMIN_ACCESS_AUD: AUD }, tenantsFile);
+    { AGENT_BILLING_ADMINS: "ops", AGENT_PRICE_AGENT_HOUR_USD: "0", AGENT_ADMIN_HOST: HOST, AGENT_ADMIN_EMAILS: "teammate@camelai.com", AGENT_ADMIN_ACCESS_TEAM: team, AGENT_ADMIN_ACCESS_AUD: AUD }, tenantsFile);
 
   // Without a valid Access token for this application, nothing: not the page, not the stats, not the rest of the runtime.
   assert.equal((await get(base, "/api/stats")).status, 401);

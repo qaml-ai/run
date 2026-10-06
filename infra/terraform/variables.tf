@@ -223,7 +223,7 @@ variable "admin_access_team" {
 }
 
 variable "admin_emails" {
-  description = "The addresses that may use the admin site, of those its Access application admits (AGENT_ADMIN_EMAILS). Empty: everyone it admits."
+  description = "The addresses that may use the admin site, of those its Access application admits (AGENT_ADMIN_EMAILS). Empty: admin access is disabled until an explicit list is configured."
   type        = list(string)
   default     = []
 }

@@ -152,7 +152,7 @@ async function site(t: T, options: Partial<AdminSiteOptions> = {}) {
   const consoleDir = await mkdtemp(join(tmpdir(), "admin-site-"));
   await writeFile(join(consoleDir, "admin.html"), "<title>admin</title>");
   const app = new Hono();
-  app.use(adminSite({ host: HOST, team: TEAM, audience: AUD, db, consoleDir, keys, ...options }));
+  app.use(adminSite({ host: HOST, team: TEAM, audience: AUD, db, consoleDir, keys, emails: [ADMIN], ...options }));
   app.all("*", c => c.text("runtime"));
   const token = (claims: { email?: string | null; iss?: string; aud?: string; exp?: string } = {}, key = privateKey) =>
     new SignJWT(claims.email === null ? { common_name: "service-token" } : { email: claims.email ?? ADMIN }).setProtectedHeader({ alg: "RS256", kid: "fixture" })
@@ -212,12 +212,6 @@ test("the admin site is for the listed addresses only, of those Cloudflare Acces
   assert.equal((await call("/api/stats", { method: "POST" })).status, 404);
   assert.equal((await call("/api/product-signals", { method: "DELETE" })).status, 404);
   assert.equal((await call("/api/report")).status, 404);
-});
-
-test("without a list, the admin site is for everyone Access signs in", async t => {
-  const { call, token } = await site(t);
-  assert.equal((await call("/api/stats", { token: await token({ email: "teammate@example.test" }) })).status, 200);
-  assert.equal((await call("/api/stats", { token: null })).status, 401);
 });
 
 test("product signals default to today in Chicago and refuse a range they cannot count", async t => {
@@ -383,4 +377,17 @@ test("the admin site's settings are refused where they could not work", () => {
   assert.throws(() => adminSiteFromEnvironment(env, { ...context, journey, reportSecret: EVENT_SECRET }), /must not be AGENT_JOURNEY_SECRET/);
   assert.throws(() => adminSiteFromEnvironment(env, { ...context, journey, reportSecret: "whsec_c2hvcnQ=" }), /whsec_<base64 of 16 bytes or more>/);
   assert.throws(() => adminSiteFromEnvironment(env, { ...context, journey, reportSecret: "a-plain-password-of-some-length" }), /Standard Webhooks secret/);
+});
+
+
+test("an unset or empty admin list never grants access to everyone signed in", async t => {
+  for (const emails of [undefined, []]) {
+    const { call } = await site(t, { emails });
+    for (const path of ["/", "/api/stats", "/api/product-signals"]) {
+      const result = await call(path);
+      assert.equal(result.status, 503);
+      assert.equal(result.cache, "no-store");
+    }
+    assert.equal((await call("/api/report", { body: {} })).status, 503);
+  }
 });

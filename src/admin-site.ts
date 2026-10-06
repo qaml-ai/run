@@ -29,7 +29,7 @@ export interface AdminSiteOptions {
   consoleDir: string;
   /** The keys tokens are checked with; by default the team's, fetched and cached. */
   keys?: JWTVerifyGetKey;
-  /** Who of those Access signs in may use the site, as lower-case addresses. Unset: everyone Access admits. */
+  /** Who of those Access signs in may use the site, as lower-case addresses. Unset or empty: admin access is not configured. */
   emails?: string[];
   /** Whether journey events are on (src/journey.ts), which is what records an account's first run. */
   tracking?: boolean;
@@ -97,7 +97,8 @@ export function adminSite(options: AdminSiteOptions): MiddlewareHandler {
     const email = await viewer(c);
     if (!email) return c.text("Sign in through Cloudflare Access", 401, { "Cache-Control": "no-store" });
     // Signed in, but not one of those the site is for: nothing of it, the page included.
-    if (options.emails && !options.emails.includes(email.toLowerCase())) return c.text("This account may not use the admin site", 403, { "Cache-Control": "no-store" });
+    if (!options.emails?.length) return c.text("Admin access is not configured", 503, { "Cache-Control": "no-store" });
+    if (!options.emails.includes(email.toLowerCase())) return c.text("This account may not use the admin site", 403, { "Cache-Control": "no-store" });
     if (c.req.method === "POST" && c.req.path === "/api/report") return report(c, options, email);
     if (c.req.method !== "GET" && c.req.method !== "HEAD") return c.text("Not found", 404);
     if (c.req.path === "/api/stats") {

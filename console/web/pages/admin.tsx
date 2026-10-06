@@ -1,3 +1,4 @@
+import { AdminAnalytics } from "./admin-analytics";
 import { useState, type ReactNode } from "react";
 import { Users } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -10,13 +11,13 @@ import { formatCost, formatMicros, formatNumber, formatTime, useApi, type AdminS
 const percent = (part: number, whole: number) => whole ? `${Math.round(part / whole * 100)}%` : "—";
 
 /** The team's view of every tenant: sign-ups, how far they got, and usage (the admin site, src/admin-site.ts). */
-export function AdminPage() {
+export function PlatformOverview() {
   const [days, setDays] = useState("14");
   const stats = useApi<AdminStats>(`/api/stats?days=${days}`, 60_000);
   const data = stats.data;
   return (
     <>
-      <PageHeader title="Admin" description={<>Every tenant on this runtime. Sign-ups are self-serve accounts; days are UTC.{data && <> Signed in as {data.viewer}.</>}</>}
+      <PageHeader title="Platform overview" description={<>Existing signup snapshots, account totals and usage. This view keeps its own UTC day range.{data && <> Signed in as {data.viewer}.</>}</>}
         actions={
           <Select value={days} onValueChange={setDays}>
             <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
@@ -110,4 +111,9 @@ export function AdminPage() {
 
 function Sub({ children }: { children: ReactNode }) {
   return <div className="text-muted-foreground mt-1 text-xs">{children}</div>;
+}
+
+export function AdminPage() {
+  const [overview,setOverview] = useState(false);
+  return <><AdminAnalytics/><details className="mt-10 border-t pt-5" onToggle={e=>setOverview(e.currentTarget.open)}><summary className="cursor-pointer text-sm font-medium">Existing platform overview · lifetime totals and UTC usage</summary>{overview && <div className="pt-6"><PlatformOverview/></div>}</details></>;
 }
