@@ -23,11 +23,16 @@ const record = fc.record({
   params: fc.option(fc.oneof(fc.constant({}), fc.dictionary(fc.string({ maxLength: 4 }), fc.jsonValue({ maxDepth: 1 }))), { nil: undefined }),
   began: fc.option(fc.nat(), { nil: undefined }), resumes: fc.option(fc.nat({ max: 5 }), { nil: undefined }), startedAt: fc.option(fc.nat(), { nil: undefined }),
   handedOff: fc.option(fc.record({ step: fc.constantFrom("model" as const, "tool" as const), boundaryWaitMs: fc.nat() }), { nil: undefined }),
+  abortedAt: fc.option(fc.nat(), { nil: undefined }),
 }, { requiredKeys: ["id", "fingerprint", "method", "state"] }) as fc.Arbitrary<RequestRecord>;
 
-test("load decision: queued work always runs; only a begun model turn resumes, below the cap (or handed off); nothing else is resumed", async t => {
+test("load decision: a stopped run ends; queued work always runs; only a begun model turn resumes, below the cap (or handed off); nothing else is resumed", async t => {
   await check(t, fc.property(record, request => {
     const decision = loadDecision(request);
+    // The agent was stopped in it (abortedAt is written durably before the stop reaches the turn): it never resumes nor
+    // runs, whatever else the record says; it ends aborted.
+    if (request.abortedAt !== undefined) return assert.equal(decision, "aborted");
+    assert.notEqual(decision, "aborted", "only a stopped run ends aborted");
     // Work that kept its params never began (or is configuration, which is idempotent): it is never dropped or failed.
     if (request.params !== undefined) return assert.equal(decision, "queued");
     const turn = ["prompt", "continue", "resume"].includes(request.method) && !!request.began;

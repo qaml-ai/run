@@ -307,6 +307,10 @@
               "error": {
                 "type": "string"
               },
+              "code": {
+                "type": "string",
+                "description": "The failure's name, where it has one: cancelled (a stop cancelled it before it began), aborted, model_stream_stalled, turn_limit, spend_limit, output_missing..."
+              },
               "uncertain": {
                 "type": "boolean",
                 "description": "A restart cut it short: its effects are unknown"
@@ -1768,7 +1772,19 @@
           },
           "steeredInto": {
             "type": "string",
-            "description": "A prompt with whileRunning: steer that a running turn took: that turn's request, whose outcome this shares"
+            "description": "A prompt with whileRunning: steer that a running turn took: that turn's request. This request completes as the turn takes the message; the turn's request has the turn's outcome (reply, output...)"
+          },
+          "steer": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "queued"
+            ],
+            "description": "A prompt with whileRunning: steer, as it was accepted: accepted, the running turn reads it after its current step; queued, no turn could take it, so it runs as a turn of its own"
+          },
+          "abortedAt": {
+            "type": "number",
+            "description": "When the agent was stopped while this run was going: it ends as aborted, and is never resumed elsewhere"
           },
           "resumes": {
             "type": "number",
@@ -1866,7 +1882,7 @@
             "type": "boolean"
           }
         },
-        "description": "result.stopped is input_required when the turn waits on human input, listed in result.inputs. A run's result also has reply, replyIndex, files, toolErrors and toolCalls: every tool call it made (the first 100), as {tool, toolCallId?, innerCallId?, ok, code?, agentId?} (agentId: the child a delegate call ran), without arguments or results. result.output is a structured answer, for a prompt sent with output. result.usage.subagentCostUsd is what its children spent"
+        "description": "result.code names a run's failure where it has a name: cancelled (a stop cancelled it before it began), aborted (stopped while it ran), model_stream_stalled (its model stopped answering, past every retry), turn_limit, spend_limit, output_missing, model_key_missing, model_key_invalid. result.stopped is input_required when the turn waits on human input, listed in result.inputs. A run's result also has reply, replyIndex, files, toolErrors and toolCalls: every tool call it made (the first 100), as {tool, toolCallId?, innerCallId?, ok, code?, agentId?} (agentId: the child a delegate call ran), without arguments or results. result.output is a structured answer, for a prompt sent with output. result.usage.subagentCostUsd is what its children spent"
       },
       "AgentInput": {
         "type": "object",
@@ -2114,7 +2130,19 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 31536000,
-            "description": "Seconds one run may take from when it began; default and at most the runtime's maximum (7,200, 2 hours, unless its operator set another)"
+            "description": "Seconds one run may take from when it began; default and at most the runtime's maximum (7,200, 2 hours, unless its operator set another). A turn still inside a model request or tool call 60 seconds past it is aborted then, with stopped \"turn_limit\""
+          },
+          "firstTokenSeconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3600,
+            "description": "Seconds one model request may wait for the model's first token (text, thinking or a tool call) before it fails as stalled and is retried; default the runtime's (120, or 300 for a reasoning model at thinkingLevel high and up)"
+          },
+          "idleSeconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3600,
+            "description": "Seconds a model response may go quiet once it streams before it fails as stalled and is retried; default the runtime's (45)"
           }
         },
         "additionalProperties": false,
@@ -2173,7 +2201,7 @@
               "queue",
               "steer"
             ],
-            "description": "What happens if the agent is working on a turn when this arrives. queue (default): it runs as the next turn. steer: the running turn takes it after its current step, and this request ends with that turn (steeredInto names it); if the turn ends first, it runs as a turn of its own. With no turn running, both start one"
+            "description": "What happens if the agent is working on a turn when this arrives. queue (default): it runs as the next turn. steer: the running turn takes it after its current step. The 202 says so at once (steer: \"accepted\"; \"queued\" when no turn could take it), and this request completes as soon as the turn takes the message (steeredInto names the turn, whose own request has its outcome; a steer_taken event marks it), so steered messages never wait for the turn's end, nor count against the agent's queue once taken. If the turn ends first, it runs as a turn of its own. With no turn running, both start one"
           },
           "spendLimit": {
             "allOf": [
@@ -2411,6 +2439,21 @@
               "forkedFrom": {
                 "$ref": "#/components/schemas/ForkedFrom"
               },
+              "busy": {
+                "type": "boolean",
+                "description": "Whether the agent has a run open: one going (activeRun) or queued (queuedRuns). From its request records, as its state and a status request say it too"
+              },
+              "activeRun": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The run that has begun and not ended, if any"
+              },
+              "queuedRuns": {
+                "type": "integer",
+                "description": "Runs accepted and waiting behind it (prompts, steered messages not yet read, continues, executions, resumes)"
+              },
               "cursor": {
                 "type": "number"
               },
@@ -2447,6 +2490,9 @@
               "delegate",
               "spendLimit",
               "runLimits",
+              "busy",
+              "activeRun",
+              "queuedRuns",
               "cursor",
               "events",
               "requests"
@@ -2758,6 +2804,21 @@
             },
             "description": "Recent requests (the running ones and the latest settled), with their outcomes"
           },
+          "busy": {
+            "type": "boolean",
+            "description": "Whether the agent has a run open: one going (activeRun) or queued (queuedRuns). From its request records, as its state and a status request say it too"
+          },
+          "activeRun": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The run that has begun and not ended, if any"
+          },
+          "queuedRuns": {
+            "type": "integer",
+            "description": "Runs accepted and waiting behind it (prompts, steered messages not yet read, continues, executions, resumes)"
+          },
           "resume": {
             "type": "object",
             "properties": {
@@ -2777,7 +2838,10 @@
         },
         "required": [
           "cursor",
-          "requests"
+          "requests",
+          "busy",
+          "activeRun",
+          "queuedRuns"
         ]
       },
       "HistoryPage": {
@@ -2909,6 +2973,42 @@
           }
         }
       },
+      "Aborted": {
+        "type": "object",
+        "properties": {
+          "aborted": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "cancelled": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The ids of the queued runs the stop cancelled"
+          }
+        },
+        "required": [
+          "aborted",
+          "cancelled"
+        ]
+      },
+      "AbortInput": {
+        "type": "object",
+        "properties": {
+          "queued": {
+            "type": "string",
+            "enum": [
+              "cancel",
+              "keep"
+            ],
+            "description": "cancel (default): the runs queued behind the running one (prompts, steered messages not yet read, continues, executions) are cancelled too, each ending with code cancelled, so nothing runs after the stop. keep: only the running turn is stopped, and the next queued run starts"
+          }
+        },
+        "additionalProperties": false
+      },
       "Upload": {
         "type": "object",
         "properties": {
@@ -3014,7 +3114,19 @@
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 31536000,
-                "description": "Seconds one run may take from when it began; default and at most the runtime's maximum (7,200, 2 hours, unless its operator set another)"
+                "description": "Seconds one run may take from when it began; default and at most the runtime's maximum (7,200, 2 hours, unless its operator set another). A turn still inside a model request or tool call 60 seconds past it is aborted then, with stopped \"turn_limit\""
+              },
+              "firstTokenSeconds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3600,
+                "description": "Seconds one model request may wait for the model's first token (text, thinking or a tool call) before it fails as stalled and is retried; default the runtime's (120, or 300 for a reasoning model at thinkingLevel high and up)"
+              },
+              "idleSeconds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3600,
+                "description": "Seconds a model response may go quiet once it streams before it fails as stalled and is retried; default the runtime's (45)"
               }
             },
             "additionalProperties": false,
@@ -4702,7 +4814,7 @@
                 "$ref": "#/components/schemas/RunLimits"
               },
               {
-                "description": "The most one run may take. At either, the turn ends before its next model request, after the tool calls of the response that reached it, with stopped \"turn_limit\" and code turn_limit; send another message to continue. Values above the runtime's maximums count as those"
+                "description": "The most one run may take, and how long its model requests may go quiet. At maxResponses or maxSeconds, the turn ends before its next model request, after the tool calls of the response that reached it, with stopped \"turn_limit\" and code turn_limit; send another message to continue. Values above the runtime's maximums count as those. A model request that stalls (firstTokenSeconds, idleSeconds) is retried like other transient provider errors; when retries run out the run fails with code model_stream_stalled"
               }
             ]
           },
@@ -5101,7 +5213,7 @@
                 "$ref": "#/components/schemas/RunLimits"
               },
               {
-                "description": "The most one run may take. At either, the turn ends before its next model request, after the tool calls of the response that reached it, with stopped \"turn_limit\" and code turn_limit; send another message to continue. Values above the runtime's maximums count as those"
+                "description": "The most one run may take, and how long its model requests may go quiet. At maxResponses or maxSeconds, the turn ends before its next model request, after the tool calls of the response that reached it, with stopped \"turn_limit\" and code turn_limit; send another message to continue. Values above the runtime's maximums count as those. A model request that stalls (firstTokenSeconds, idleSeconds) is retried like other transient provider errors; when retries run out the run fails with code model_stream_stalled"
               }
             ]
           },
@@ -5577,7 +5689,7 @@
                   "object",
                   "null"
                 ],
-                "description": "The most one run may take. At either, the turn ends before its next model request, after the tool calls of the response that reached it, with stopped \"turn_limit\" and code turn_limit; send another message to continue. Values above the runtime's maximums count as those"
+                "description": "The most one run may take, and how long its model requests may go quiet. At maxResponses or maxSeconds, the turn ends before its next model request, after the tool calls of the response that reached it, with stopped \"turn_limit\" and code turn_limit; send another message to continue. Values above the runtime's maximums count as those. A model request that stalls (firstTokenSeconds, idleSeconds) is retried like other transient provider errors; when retries run out the run fails with code model_stream_stalled"
               }
             ]
           },
@@ -8336,24 +8448,23 @@
             "in": "header"
           }
         ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AbortInput"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
-            "description": "The running turn is aborted",
+            "description": "The agent is stopped: its running turn is aborted, and the runs queued behind it are cancelled (unless queued: \"keep\")",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "aborted": {
-                      "type": "boolean",
-                      "enum": [
-                        true
-                      ]
-                    }
-                  },
-                  "required": [
-                    "aborted"
-                  ]
+                  "$ref": "#/components/schemas/Aborted"
                 }
               }
             }

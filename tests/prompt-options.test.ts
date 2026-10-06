@@ -57,10 +57,12 @@ test("whileRunning: steer hands a running turn the message; with no turn running
   assert.equal((await r.call(`/v1/agents/${agent}/prompt`, { body: steer })).json.startedAt, steered.json.startedAt, "a retry returns the same request");
   assert.equal((await r.call(`/v1/agents/${agent}/prompt`, { body: { ...steer, text: "else" } })).status, 409);
 
+  assert.equal(steered.json.steer, "accepted", "the running turn has it");
+  // It completes as the turn takes it, naming the turn; the turn's own request has the turn's outcome.
   const done = await until(async () => { const record = await byId(r, agent, "steer-1"); return record.state === "completed" && record; }, "the steered request");
-  const turn = await byId(r, agent, first.json.id);
   assert.equal(done.steeredInto, "turn-1");
-  assert.deepEqual(done.outcome, turn.outcome, "it ends with the turn that took it");
+  assert.deepEqual(done.outcome, { result: { steeredInto: "turn-1" } });
+  const turn = await until(async () => { const record = await byId(r, agent, first.json.id); return record.state === "completed" && record; }, "the turn");
   assert.equal(turn.outcome.result.reply, "answer 1: also this");
   assert.equal(r.model.bodies.length, 2, "the running turn answered it; no turn of its own");
   const history = (await r.call(`/v1/agents/${agent}/history`)).json.messages;
@@ -70,6 +72,7 @@ test("whileRunning: steer hands a running turn the message; with no turn running
   // Idle: it starts a turn, as a queued prompt would.
   const idle = await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "idle now", requestId: "steer-2", whileRunning: "steer" } });
   assert.equal(idle.status, 202, idle.text);
+  assert.equal(idle.json.steer, "queued", "no turn could take it: it runs as its own");
   const own = await until(async () => { const record = await byId(r, agent, "steer-2"); return record.state === "completed" && record; }, "its own turn");
   assert.equal(own.steeredInto, undefined);
   assert.equal(own.outcome.result.reply, "answer 2: idle now");
@@ -77,13 +80,14 @@ test("whileRunning: steer hands a running turn the message; with no turn running
   for (const bad of ["now", 1]) assert.equal((await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "x", whileRunning: bad } })).status, 400);
 });
 
-test("a steered message the running turn did not take (it was aborted) runs once, as a turn of its own", async t => {
+test("a steered message the running turn did not take (it was aborted, keeping the queue) runs once, as a turn of its own", async t => {
   const r = await runtime(t, (body, index) => ({ role: "assistant", content: `answer ${index}: ${userTexts(body).at(-1)}`, ...(index === 0 ? { delayMs: 3_000 } : {}) }));
   const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
   await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "first", requestId: "turn-1" } });
   await until(() => r.model.bodies.length === 1, "the turn's model call");
   assert.equal((await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "also this", requestId: "steer-1", whileRunning: "steer" } })).status, 202);
-  assert.equal((await r.call(`/v1/agents/${agent}/abort`, { body: {} })).status, 200);
+  // A plain abort would cancel it too (loop-reliability.test.ts); queued: "keep" stops the turn only.
+  assert.equal((await r.call(`/v1/agents/${agent}/abort`, { body: { queued: "keep" } })).status, 200);
   const own = await until(async () => { const record = await byId(r, agent, "steer-1"); return record.state === "completed" && record; }, "the steered request");
   assert.equal(own.steeredInto, undefined);
   assert.equal(own.outcome.result.reply, "answer 1: also this");

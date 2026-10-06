@@ -8,7 +8,11 @@ import type { SearchHit, SearchQuery } from "./tool-search.ts";
 /** A tool call from the model: its id, its place in js_exec's code if made there, and the history index of the assistant message that made it. */
 export type CallContext = { toolCallId: string; innerCallId?: string; messageIndex?: number };
 import type { HistoryChunk } from "./history-pages.ts";
-export type RunLimits = { maxResponses?: number; maxSeconds?: number };
+/**
+ * The most one run may take (model responses, seconds), and how long one of its model requests may go quiet: before its
+ * first token (`firstTokenSeconds`) and between events once it streams (`idleSeconds`; model-stream.ts).
+ */
+export type RunLimits = { maxResponses?: number; maxSeconds?: number; firstTokenSeconds?: number; idleSeconds?: number };
 /**
  * Why a turn ended early on a limit: spend (the agent's, the run's or the tenant's), or the run's responses or time.
  * `handoff`: its node is leaving the cluster (a deploy retiring it, or a drain), so the turn stops at this step boundary
@@ -69,6 +73,8 @@ export interface AgentConfig {
   modelHeaders?: Record<string, string> | null;
   /** Host policy for retrying transient provider errors. */
   retry?: { maxAttempts: number; baseDelayMs: number };
+  /** The runtime's timeouts for a model stream that goes quiet (model-stream.ts), set by the runtime; an agent's `runLimits` may set its own. */
+  streamTimeouts?: { firstTokenMs?: number; idleMs?: number };
   /** A run that began elsewhere will resume: leave an interrupted turn open to continue it. */
   resume?: boolean;
   /** The agent's tenant, set by the runtime, for its metric lines. */

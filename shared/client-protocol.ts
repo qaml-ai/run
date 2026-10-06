@@ -48,8 +48,18 @@ export type RequestRecord = {
   suspension?: string;
   /** The application's key-value data sent with a message (prompt, steer), also kept on the message. */
   metadata?: Record<string, string>;
-  /** A prompt sent with `whileRunning: "steer"` that a running turn took: that turn's request, whose outcome it shares. */
+  /**
+   * A prompt sent with `whileRunning: "steer"` that a running turn took: that turn's request. The prompt's request completes
+   * as the turn takes it (the model has seen it then); the turn's own request has the turn's outcome.
+   */
   steeredInto?: string;
+  /**
+   * For a prompt sent with `whileRunning: "steer"`, as it was accepted: `accepted`, the running turn will read it after its
+   * current step; `queued`, no turn could take it, so it runs as a turn of its own.
+   */
+  steer?: "accepted" | "queued";
+  /** When the agent was stopped (aborted) while this run was going: it ends as aborted, and no node resumes it. */
+  abortedAt?: number;
   /** The runtime's own: an ended run whose webhook event (`run.completed` or `run.failed`) is not written yet. */
   announce?: true;
   /**

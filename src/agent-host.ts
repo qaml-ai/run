@@ -17,6 +17,7 @@ import { Transcript, readTranscriptLog, summaryMessage, type Backlog, type Compa
 import { boundedContext, importedHistory, interruptedTurnRepairs, validateInitialMessages, validateUserMessages } from "./history.ts";
 import { backgroundTokens, compactionNeed, compactionSettings, contextTokens, explicitKeyStream, MODEL_INTERRUPTED, modelKeyFailure, runCompaction, type ModelGate } from "./compaction.ts";
 import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
+import { isStalled, streamTimeouts } from "./model-stream.ts";
 import { describeFile, documentPayload, FILE_LIMITS, nativeBlock, unseen, validFileRef, type FileRef } from "./files.ts";
 import { CHUNK_BYTES, chunksOf, type HistoryChunk } from "./history-pages.ts";
 import { observeTurns, recordCodeExecution } from "./metrics.ts";
@@ -659,8 +660,9 @@ export function createAgentHost(hostIO: HostIO) {
       }
       // Cut by this node's stale lease: made again at once, as its gate allows, and not counted as a provider failure.
       const interrupted = last.errorMessage === MODEL_INTERRUPTED;
-      // A tenant's own endpoint has retried already: its errors (a credit gate's 402, say) end the turn.
-      if (!interrupted && (!isRetryableAssistantError(last) || config.apiKey === IDENTITY_KEY)) return;
+      // A tenant's own endpoint has retried already: its errors (a credit gate's 402, say) end the turn. A stream that went
+      // quiet is the runtime's own timeout, which no endpoint could have retried: it is retried here like any.
+      if (!interrupted && (!isRetryableAssistantError(last) || (config.apiKey === IDENTITY_KEY && !isStalled(last.errorMessage)))) return;
       if (!interrupted && attempt > policy.maxAttempts) {
         io.emit({ type: "auto_retry_end", success: false, attempt: attempt - 1, finalError: last.errorMessage });
         return;
@@ -771,7 +773,10 @@ export function createAgentHost(hostIO: HostIO) {
         getApiKey: () => config.apiKey,
         // Only the tenant's explicit key, never provider keys from the process environment. A model on the
         // tenant's own endpoint gets a fresh identity token for each call, and a key scope's agent its scope's current key.
-        streamFn: explicitKeyStream(() => perCall() ? io.modelAuth() : undefined, () => config.modelHeaders, gate),
+        // A request whose stream goes quiet ends as a retryable error (model-stream.ts), said on the run's stream as it happens.
+        streamFn: explicitKeyStream(() => perCall() ? io.modelAuth() : undefined, () => config.modelHeaders, gate,
+          (model, reasoning) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts),
+          stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: config.model.provider, model: config.model.id })),
         // Renders compaction summaries for the model (the default drops non-chat roles), and each message's sender.
         convertToLlm: messages => hydrate(convertToLlm(renderMessages(messages))),
         onPayload: payload => documents ? documentPayload(payload) : undefined,
@@ -846,6 +851,8 @@ export function createAgentHost(hostIO: HostIO) {
       if (params.thinkingLevel !== undefined) { config.thinkingLevel = params.thinkingLevel; agent.state.thinkingLevel = params.thinkingLevel; }
       if (params.apiKey !== undefined) config.apiKey = params.apiKey;
       if (params.modelHeaders !== undefined) config.modelHeaders = params.modelHeaders;
+      // Its stream timeouts apply from the next model request.
+      if (params.runLimits !== undefined) config.runLimits = params.runLimits;
       if (params.tools !== undefined) { config.tools = params.tools; agent.state.tools = [agent.state.tools.find(tool => tool.name === "js_exec")!, ...directAgentTools(config.tools)]; }
       if (params.systemPrompt !== undefined || params.systemPromptAppend !== undefined || params.tools !== undefined || params.model !== undefined) await declareConfiguration();
       return { configured: true };
@@ -871,13 +878,24 @@ export function createAgentHost(hostIO: HostIO) {
       }
       return params.whileRunning === "steer" ? { steered: true } : { queued: true, running: busy };
     }
-    if (method === "abort") { active?.abort(); agent.abort(); return { aborted: true }; }
     // The node's lease went stale: its model requests in flight are cut, and made again once it is fresh (`recoverFailedResponses`).
     if (method === "interrupt") {
       const open = [...gate.open];
       gate.open.clear();
       for (const request of open) request.abort();
       return { interrupted: open.length };
+    }
+    if (method === "abort") {
+      // The runtime's own stop of a run past its time limit: the run ends as that limit's, not as aborted.
+      if (busy && (params?.stopped === "turn_limit" || params?.stopped === "spend_limit")) stopped = { stopped: params.stopped, error: String(params.message ?? ""), code: params.stopped };
+      // A stop of the agent (not just its turn): messages held for the turn or the next one are dropped too, so nothing runs after it.
+      if (params?.clearQueued) {
+        steers = [];
+        agent.clearAllQueues();
+      }
+      active?.abort();
+      agent.abort();
+      return { aborted: true };
     }
     if (method !== "prompt" && method !== "execute" && method !== "continue" && method !== "resume") throw new Error(`Unknown method: ${method}`);
     if (busy) throw new Error("Agent is busy");
@@ -952,8 +970,11 @@ export function createAgentHost(hostIO: HostIO) {
       const error = agent.state.errorMessage ?? answered.error;
       // A run that asked for structured output and ended without it, nor stopped for a reason of its own, failed.
       const missing = !given && !error && !stopped && agent.state.tools.some(tool => tool.name === OUTPUT_TOOL);
+      // Why it failed, when the remedy is the caller's (a key) or worth telling apart: a model whose stream went quiet past
+      // every retry, or a run aborted (stopped by its caller).
+      const failure = error ? modelKeyFailure(error, config.model) ?? (isStalled(error) ? { code: "model_stream_stalled" } : active.signal.aborted || last?.stopReason === "aborted" ? { code: "aborted" } : {}) : {};
       return {
-        messages: transcript.total, ...answered, error, ...(error ? modelKeyFailure(error, config.model) : {}), ...(stopped ?? {}), ...(given ? { output: given.value } : {}),
+        messages: transcript.total, ...answered, error, ...failure, ...(stopped ?? {}), ...(given ? { output: given.value } : {}),
         ...(missing ? { error: `The model ended its turn without calling ${OUTPUT_TOOL}, so the run has no output in its schema`, code: "output_missing" } : {}),
       };
     } finally {
@@ -1004,7 +1025,7 @@ export function createAgentHost(hostIO: HostIO) {
    */
   async function abortedBeforeLoop() {
     await transcript.setActive(false);
-    return { messages: transcript.total, error: "The run was aborted" };
+    return { messages: transcript.total, error: "The run was aborted", code: "aborted", ...(stopped ?? {}) };
   }
 
   type Settled = { content: unknown[]; isError?: boolean; details?: unknown };

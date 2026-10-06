@@ -51,6 +51,8 @@ function emit(type: string, line: Parameters<typeof metricLine>[1]) {
 
 const CLASSES: [string, RegExp][] = [
   ["runtime_restart", /runtime restarted/i],
+  // The runtime's own timeout on a model stream that went quiet (model-stream.ts), ahead of the timeouts providers report.
+  ["stream_stalled", /^Model stream stalled/],
   ["rate_limit", /\b429\b|rate.?limit|too many requests/i],
   ["overloaded", /overloaded|\b529\b/i],
   ["context_overflow", /context.{0,20}(length|window|limit)|too long|maximum context|exceeds? the (maximum|context)/i],

@@ -1,5 +1,5 @@
 import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
-import { completeSimple, getProviders, streamSimple, type Api, type Model } from "@earendil-works/pi-ai/compat";
+import { getProviders, streamSimple, type Api, type Model } from "@earendil-works/pi-ai/compat";
 import { compact, estimateContextTokens, estimateTokens, generateSummary, prepareCompaction, shouldCompact, type CompactionSettings, type Complete } from "./pi-harness/compaction.ts";
 import { BedrockRuntimeClient } from "@aws-sdk/client-bedrock-runtime";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
@@ -10,6 +10,7 @@ import type { Credentials } from "./protocol.ts";
 import { guardedModelFetch, guardedNodeAgents } from "./outbound.ts";
 import { reasoningFloor } from "./pi-catalog.ts";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
+import { streamTimeouts, watchedStream, type Stall, type StreamTimeouts } from "./model-stream.ts";
 
 /**
  * Context compaction on top of Pi's compaction functions (vendored from pi-agent-core 0.87.1 in
@@ -265,29 +266,33 @@ function gatedSignal(gate: ModelGate | undefined, signal: AbortSignal | undefine
   return { signal: signal ? AbortSignal.any([signal, cut.signal]) : cut.signal, cut, done: () => { gate.open.delete(cut); } };
 }
 
-export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefined, modelHeaders?: () => Record<string, string> | null | undefined, gate?: ModelGate): StreamFn {
+export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefined, modelHeaders?: () => Record<string, string> | null | undefined, gate?: ModelGate,
+  timeouts?: (model: Model<Api>, reasoning: string | undefined) => StreamTimeouts, onStall?: (stall: Stall) => void): StreamFn {
   return (model, context, options) => {
     if (!options?.apiKey?.trim()) throw new Error(`No ${model.provider} API key is configured for this agent's model, ${model.provider}/${model.id}; set one with PUT /v1/providers/${model.provider}/key, or move the agent to a model you can use (GET /v1/models?available=true)`);
     const apiKey = options.apiKey;
+    // A provider's stream that goes quiet is ended (model-stream.ts), and so is one the turn's abort or the lease reaches, at once.
+    const limits = timeouts?.(model, options.reasoning ?? reasoningFloor(model)) ?? streamTimeouts(model, options.reasoning ?? reasoningFloor(model));
     const call = (credentials: Credentials) => {
-      const sink: { cost?: number; credits?: number } = {};
       const { signal, cut, done } = gatedSignal(gate, options.signal);
-      try {
-        const [target, callOptions] = authorize(model, cut ? { ...options, signal } : options, credentials, sink, modelHeaders?.());
-        const stream = streamSimple(target, context, callOptions);
+      return watchedStream(model, (watched, activity) => {
+        const sink: { cost?: number; credits?: number } = {};
+        const [target, callOptions] = authorize(model, options, credentials, sink, modelHeaders?.());
+        const observe = callOptions.onProviderStreamEvent;
+        const stream = streamSimple(target, context, { ...callOptions, signal: watched, onProviderStreamEvent: (event: unknown, at: Model<Api>) => { activity(event); return observe?.(event, at); } });
         // The finished message carries the provider's own cost, when it reported one, as `usage.providerCost`.
         const push = stream.push.bind(stream);
         stream.push = event => {
           if (event.type === "done" && sink.cost !== undefined) Object.assign(event.message.usage, { providerCost: sink.cost, providerCreditCost: sink.credits });
-          if (event.type === "done" || event.type === "error") done();
-          // Cut by the lease, not by the run: a failure the turn retries once the lease is fresh, not an abort that ends it.
-          if (event.type === "error" && cut?.signal.aborted && !options.signal?.aborted) {
-            event = { type: "error", reason: "error", error: { ...event.error, stopReason: "error", errorMessage: MODEL_INTERRUPTED } };
-          }
           push(event);
         };
         return stream;
-      } catch (error) { done(); throw error; }
+      }, limits, signal, onStall, event => {
+        done();
+        // Cut by the lease, not by the run: a failure the turn retries once the lease is fresh, not an abort that ends it.
+        if (event.type === "error" && cut?.signal.aborted && !options.signal?.aborted) return { type: "error", reason: "error", error: { ...event.error, stopReason: "error", errorMessage: MODEL_INTERRUPTED } };
+        return event;
+      });
     };
     const start = () => {
       const credentials = perCall?.();
@@ -298,7 +303,7 @@ export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefin
 }
 
 /**
- * Pi's summarizer only needs `completeSimple`; bind the tenant's key (or per-call credentials:
+ * Pi's summarizer only needs a completion; bind the tenant's key (or per-call credentials:
  * a fresh identity token for its own endpoint, a key scope's entry) and never the environment.
  * Every completed request is reported, so chunks and a run that fails after some are billed too.
  */
@@ -307,11 +312,13 @@ function summarizer(apiKey: ApiKey, onResponse?: (message: AssistantMessage) => 
   return async (model, context, options) => {
     const sink: { cost?: number; credits?: number } = {};
     await gate?.wait(options?.signal);
-    const { signal, cut, done } = gatedSignal(gate, options?.signal);
+    const { signal, done } = gatedSignal(gate, options?.signal);
     let response: AssistantMessage;
     try {
-      const [target, callOptions] = authorize(model, cut ? { ...options, signal } : options, typeof apiKey === "string" ? { apiKey } : await apiKey(), sink, modelHeaders);
-      response = await completeSimple(target, context, callOptions);
+      const [target, callOptions] = authorize(model, options, typeof apiKey === "string" ? { apiKey } : await apiKey(), sink, modelHeaders);
+      // Watched like a turn's requests: a summary whose stream goes quiet fails (the context is left as it is) rather than hold the turn.
+      response = await watchedStream(model, (watched, activity) => streamSimple(target, context, { ...callOptions, signal: watched, onProviderStreamEvent: (event: unknown) => activity(event) }),
+        streamTimeouts(model, callOptions?.reasoning), signal).result();
     } finally { done(); }
     if (sink.cost !== undefined) Object.assign(response.usage, { providerCost: sink.cost, providerCreditCost: sink.credits });
     if (response.stopReason !== "error") onResponse?.(response);

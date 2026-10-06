@@ -95,7 +95,7 @@ test("SDK system prompts are agent-scoped and persisted across host restarts", a
   const resumed = await runtime.connectAgent(agent.session, { tools: {} });
   f.clients.push(resumed);
   // Reading status does not wake a sleeping agent; running work does.
-  assert.deepEqual(await resumed.status(), { running: false });
+  assert.deepEqual(await resumed.status(), { running: false, busy: false, activeRun: null, queuedRuns: 0 });
   await resumed.execute("return 1");
   assert.ok((await resumed.status()).pid);
   assert.deepEqual((await f.header(agent.session.id)).metadata, { name: "October release", type: "release-reviewer" });

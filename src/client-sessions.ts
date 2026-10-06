@@ -157,8 +157,6 @@ type Session = {
   toolErrors?: ToolError[];
   /** The running run's tool calls (the first OUTPUT_TOOL_CALLS), for its outcome. */
   toolCalls?: RunToolCall[];
-  /** Prompts sent with `whileRunning: "steer"` that a running turn took, each with that turn's request: they end with it. */
-  steered?: Map<string, string>;
   /** The model run in progress (prompt, continue, resume) and what its events have finished, for snapshots. */
   turn?: { requestId: string; start?: number; messages: unknown[]; count: number; bytes: number; truncated?: boolean };
   /** The application's attached MCP server, over the connection `response` is. */
@@ -234,6 +232,9 @@ const RUN_OVERRUN_MS = 60_000;
  * idempotent assignment) until it settles.
  */
 const QUEUED_METHODS = [...RUN_METHODS, "configure"];
+/** Queued runs a stop cancels (`stop`): what callers asked for. A `resume` closes a suspended turn, and is the runtime's. */
+const CANCELLABLE = ["prompt", "continue", "execute"];
+const CANCELLED = "Cancelled: the agent was stopped before this run began";
 /** Runs that call the model; code executions do not, so spend limits leave them alone. */
 const MODEL_RUNS = ["prompt", "continue"];
 /** A running run's active time is reported at least this often. */
@@ -246,15 +247,29 @@ const MAX_HANDOFFS_KEPT = 20;
 type Carried = { usage?: RunUsage; childSpend?: number; spendLimit?: number; toolCalls?: RunToolCall[]; toolErrors?: ToolError[]; files?: WrittenFile[]; presented?: (FileRef & { caption?: string })[] };
 /** Notified, as `<node> <agent>`, when a node gives up an agent with runs open, or ends a dead peer's heartbeat: nodes sweep at once. */
 export const ORPHANS_CHANNEL = "agent_runtime_orphans";
+/**
+ * Whether an agent is busy, from its request records alone: the one source every view of it (GET /v1/agents/{id}, its
+ * state, a `status` request) reads, so they never disagree. Busy while any run is open, running or queued; `activeRun`
+ * is the run that has begun, and `queuedRuns` how many wait behind it.
+ */
+export function activityOf(records: Iterable<RequestRecord>) {
+  let activeRun: string | null = null, queuedRuns = 0;
+  for (const record of records) {
+    if (record.state !== "running" || !RUN_METHODS.includes(record.method)) continue;
+    if (record.began) activeRun = record.id; else queuedRuns++;
+  }
+  return { busy: activeRun !== null || queuedRuns > 0, activeRun, queuedRuns };
+}
 /** A model turn that began can continue from its transcript on another node; a code execution cannot. */
 const resumable = (request: RequestRecord) => ["prompt", "continue", "resume"].includes(request.method) && !!request.began;
 /**
  * What a load does with a request its journal left running (no process anywhere runs it now): a queued one (its params
  * kept: it never began, or it is configuration) runs; a model turn that began resumes from its transcript, up to
  * MAX_RESUMES times (a hand-off at a step boundary is not one); anything else that began has an unknown outcome, and
- * ends `uncertain`.
+ * ends `uncertain`. A run the agent was stopped in (`abortedAt`) is never resumed nor run: it ends `aborted`.
  */
-export function loadDecision(request: RequestRecord): "queued" | "resume" | "uncertain" {
+export function loadDecision(request: RequestRecord): "queued" | "resume" | "uncertain" | "aborted" {
+  if (request.abortedAt) return "aborted";
   if (request.params !== undefined) return "queued";
   // Counted when the resumed run begins (see `run`), so a load that fails, or hands the agent back, spends none.
   // A turn handed off at a step boundary lost nothing and is not a resume: it always goes on.
@@ -438,6 +453,10 @@ export interface ClientSessionOptions {
   /** Stop an agent's process, and unload its session, after this long without activity. */
   idleMs?: number;
   retry?: AgentConfig["retry"];
+  /** How long a model request may go quiet before it fails as stalled (model-stream.ts); an agent's runLimits may set its own. */
+  streamTimeouts?: AgentConfig["streamTimeouts"];
+  /** How far past its time limit a run may get before it is aborted (twice this: its agent stopped); RUN_OVERRUN_MS by default. */
+  runOverrunMs?: number;
   /** Durable wake-ups for agents (`/clients/:id/schedules`). */
   scheduler?: Scheduler;
   /**
@@ -449,7 +468,7 @@ export interface ClientSessionOptions {
    * The most one run of a tenant's agents may take, whatever its agent asks (`runLimits`): model responses (compaction
    * summaries count) and seconds from when it began; Infinity for no limit. Default 1,000 responses and 2 hours (`RUN_LIMITS`).
    */
-  runLimitsFor?: (tenant: string) => Promise<Required<RunLimits>>;
+  runLimitsFor?: (tenant: string) => Promise<Required<Pick<RunLimits, "maxResponses" | "maxSeconds">>>;
   /** A tenant's js_exec limits: CPU per execution, the longest timeoutMs, and executions at once on this node. Default `CODE_LIMITS`. */
   codeLimitsFor?: (tenant: string) => Promise<CodeLimits>;
   /** js_exec executions this node runs at once for tenants with a concurrency limit, together; default `codeCapacity`. */
@@ -517,7 +536,7 @@ export function spendInput(value: unknown): number | null {
 }
 const dollars = (usd: number) => `$${Number(usd.toFixed(6))}`;
 /** The runtime's default maximums for one run, which an agent's own `runLimits` may lower (ClientSessionsOptions.runLimitsFor). */
-export const RUN_LIMITS: Readonly<Required<RunLimits>> = Object.freeze({ maxResponses: 1_000, maxSeconds: 2 * 3_600 });
+export const RUN_LIMITS: Readonly<Required<Pick<RunLimits, "maxResponses" | "maxSeconds">>> = Object.freeze({ maxResponses: 1_000, maxSeconds: 2 * 3_600 });
 const duration = (seconds: number) => {
   const [count, unit] = seconds % 3_600 === 0 ? [seconds / 3_600, "hour"] : seconds % 60 === 0 ? [seconds / 60, "minute"] : [seconds, "second"];
   return `${count} ${unit}${count === 1 ? "" : "s"}`;
@@ -676,6 +695,11 @@ export class ClientSessions {
       const decision = loadDecision(request);
       if (decision === "queued") queued.push(request);
       else if (decision === "resume") resumed.push(request);
+      // Stopped before its node was lost: it ends as the stop left it, never resumed.
+      else if (decision === "aborted") {
+        const { params: _params, ...rest } = request;
+        this.upsertRequest(session, { ...rest, state: "completed", endedAt: Date.now(), outcome: { result: { error: "The run was aborted", code: "aborted" } }, ...(RUN_METHODS.includes(request.method) ? { announce: true as const } : {}) });
+      }
       else this.upsertRequest(session, { ...request, state: "completed", endedAt: Date.now(), outcome: { error: "The runtime restarted during this request", uncertain: true }, ...(RUN_METHODS.includes(request.method) ? { announce: true as const } : {}) });
     }
     await log.flush(true);
@@ -711,11 +735,12 @@ export class ClientSessions {
     const base = { agentId, requestId: record.id, method: record.method, ...(record.actor ? { actor: record.actor } : {}), ...(record.metadata ? { metadata: record.metadata } : {}) };
     if (record.state === "running") return webhookEvent("run.started", tenant, { ...base, ...(record.resumes ? { resumes: record.resumes } : {}) }, `run.started:${agentId}:${record.id}`);
     const outcome = record.outcome ?? { error: "No outcome was recorded" };
-    const result = (outcome.result ?? {}) as { stopped?: string; inputs?: { id: string }[]; replyIndex?: number; messages?: number };
+    const result = (outcome.result ?? {}) as { stopped?: string; inputs?: { id: string }[]; replyIndex?: number; messages?: number; code?: unknown };
     const { error } = outcomeEnding(outcome);
     const ended = { ...base, ...(record.steeredInto ? { steeredInto: record.steeredInto } : {}), usage: usage ?? null };
     const key = `run.ended:${agentId}:${record.id}`;
-    if (error !== undefined) return webhookEvent("run.failed", tenant, { ...ended, error, ...(outcome.uncertain ? { uncertain: true } : {}) }, key);
+    // Its code, where the run's outcome has one: `cancelled` (a stop cancelled it before it began), `aborted`, `model_stream_stalled`...
+    if (error !== undefined) return webhookEvent("run.failed", tenant, { ...ended, error, ...(typeof result.code === "string" ? { code: result.code } : {}), ...(outcome.uncertain ? { uncertain: true } : {}) }, key);
     return webhookEvent("run.completed", tenant, {
       ...ended, ...(result.stopped ? { stopped: result.stopped } : {}), ...(result.inputs?.length ? { inputIds: result.inputs.map(input => input.id) } : {}),
       ...(typeof result.replyIndex === "number" ? { replyIndex: result.replyIndex } : {}), ...(typeof result.messages === "number" ? { messageCount: result.messages } : {}),
@@ -1294,7 +1319,7 @@ export class ClientSessions {
       // Its tool servers are listed (remote MCP servers connected to) before its host starts.
       const definitions = await steps.time("tools", this.toolset(session));
       const { cpuMs, maxTimeoutMs } = await this.codeLimits(session.header.tenant);
-      const result = await steps.time("init", this.supervisor.start(session.header.id, { ...session.header.config, apiKey, mounts: (session.header.mounts ?? []).map(({ path, mode }) => ({ path, mode })), ...(this.options.retry ? { retry: this.options.retry } : {}), ...(session.resuming.size ? { resume: true } : {}), tenant: session.header.tenant, codeLimits: { cpuMs, maxTimeoutMs } }, {
+      const result = await steps.time("init", this.supervisor.start(session.header.id, { ...session.header.config, apiKey, mounts: (session.header.mounts ?? []).map(({ path, mode }) => ({ path, mode })), ...(this.options.retry ? { retry: this.options.retry } : {}), ...(this.options.streamTimeouts ? { streamTimeouts: this.options.streamTimeouts } : {}), ...(session.resuming.size ? { resume: true } : {}), tenant: session.header.tenant, codeLimits: { cpuMs, maxTimeoutMs } }, {
         definitions,
         codeSlot: async signal => this.codeGate.acquire(session.header.tenant, (await this.codeLimits(session.header.tenant)).concurrent, signal),
         runLimit: async () => {
@@ -1773,6 +1798,40 @@ export class ClientSessions {
   private markAborted(session: Session) {
     const run = this.runningRun(session);
     if (run) (session.aborted ??= new Set()).add(run.id);
+  }
+
+  /**
+   * Stop the agent (an abort): its running run ends, aborted, and unless `queued` is "keep", every run queued behind it
+   * that has not begun is cancelled, each ending with code `cancelled` and a `run_cancelled` event, as are the messages
+   * the agent holds for its turn (steers), so nothing runs after the stop. A `resume` that closes a suspended turn
+   * without the model (an abort queues one) and configuration still go ahead. The running run is marked aborted durably
+   * first (`abortedAt`), so no node resumes it should this one be lost before it ends. Returns the cancelled runs' ids.
+   */
+  private async stop(session: Session, queued: "cancel" | "keep" = "cancel"): Promise<string[]> {
+    const id = session.header.id;
+    const announcing = queued === "cancel" && await (this.options.runEvents?.(session.header.tenant) ?? false);
+    const now = Date.now();
+    const run = this.runningRun(session);
+    if (run && !run.abortedAt) this.upsertRequest(session, { ...run, abortedAt: now });
+    const cancelled: RequestRecord[] = [];
+    if (queued === "cancel") {
+      for (const record of [...session.running.values()]) {
+        if (record.began || !CANCELLABLE.includes(record.method)) continue;
+        const { params: _params, ...rest } = record;
+        cancelled.push(this.upsertRequest(session, { ...rest, state: "completed", endedAt: now, outcome: { result: { error: CANCELLED, code: "cancelled" } }, ...(announcing ? { announce: true as const } : {}) }));
+      }
+    }
+    if (run || cancelled.length) await this.commit(session, true);
+    for (const record of cancelled) {
+      this.publish(session, { type: "event", requestId: record.id, event: { type: "run_cancelled", reason: "stopped" } });
+      this.publish(session, { type: "response", id: record.id, outcome: record.outcome! });
+    }
+    const unannounced = cancelled.filter(record => record.announce);
+    if (unannounced.length) void this.announce(session, unannounced);
+    this.markAborted(session);
+    this.abortChildren(session);
+    if (this.supervisor.agents.has(id)) await this.supervisor.request(id, "abort", queued === "cancel" ? { clearQueued: true } : {});
+    return cancelled.map(record => record.id);
   }
 
   /**
@@ -2312,7 +2371,7 @@ export class ClientSessions {
       ...(session.header.parent ? { parentAgentId: session.header.parent.agentId, parentRunId: session.header.parent.runId } : {}),
       spendLimit: await this.spendOf(session).then(spend => spend && { usd: spend.usd, spent: spend.spent }), runLimits: session.header.config.runLimits ?? null,
       ...(session.header.forkedFrom ? { forkedFrom: session.header.forkedFrom } : {}),
-      cursor: session.cursor, events: session.events.map(({ id, data }) => ({ id, data })), requests: [...session.requests.values()].map(visible) };
+      ...activityOf(session.running.values()), cursor: session.cursor, events: session.events.map(({ id, data }) => ({ id, data })), requests: [...session.requests.values()].map(visible) };
   }
 
   /**
@@ -2375,11 +2434,14 @@ export class ClientSessions {
     if (this.unloaded(id)) {
       // Its cursor is where a stream of it picks up (see `idleCursor`); undefined: a node has just taken it.
       const cursor = await this.idleCursor(id);
-      if (cursor !== undefined && this.unloaded(id)) return { cursor, requests: await this.storedRequests(id), ...await this.resumeState(id) };
+      if (cursor !== undefined && this.unloaded(id)) {
+        const requests = await this.storedRequests(id);
+        return { cursor, requests, ...activityOf(requests), ...await this.resumeState(id) };
+      }
     }
     const session = await this.load(id);
     if (!session) throw new HttpError(404, "Unknown agent");
-    return { cursor: session.cursor, requests: [...session.requests.values()].map(visible) };
+    return { cursor: session.cursor, requests: [...session.requests.values()].map(visible), ...activityOf(session.running.values()) };
   }
 
   /** A tenant's view of one agent's history; undefined when the agent is not theirs. */
@@ -2501,17 +2563,18 @@ export class ClientSessions {
   }
 
   /** Abort the running turn of a tenant's agent. Returns false when the agent is not theirs. */
-  async abortAgent(id: string, tenant: string) {
+  /**
+   * Stop a tenant's agent (`stop`): its running turn, and unless `queued` is "keep", the runs queued behind it. Returns
+   * the cancelled runs' ids, or false when the agent is not theirs.
+   */
+  async abortAgent(id: string, tenant: string, queued: "cancel" | "keep" = "cancel"): Promise<false | { cancelled: string[] }> {
     if (!await this.owns(id, tenant)) return false;
-    if (this.options.inputs) {
-      const session = await this.load(id);
-      if (session) await this.cancelInputs(session, "aborted");
-    }
-    await this.sessions.get(id)?.starting?.catch(() => {});
-    const session = this.sessions.get(id);
-    if (session) { this.markAborted(session); this.abortChildren(session); }
-    if (this.supervisor.agents.has(id)) await this.supervisor.request(id, "abort");
-    return true;
+    const session = await this.load(id);
+    if (!session) return false;
+    await session.starting?.catch(() => {});
+    const cancelled = await this.stop(session, queued);
+    if (this.options.inputs) await this.cancelInputs(session, "aborted");
+    return { cancelled };
   }
 
   /**
@@ -2691,7 +2754,7 @@ export class ClientSessions {
     app.put(`${agent}/uploads/:request/:name`, async c => json(c, 201, await this.upload(c.var.session, c.req.param("request"), c.req.param("name"), body(c) as AsyncIterable<Uint8Array>, c.req.header("content-type"))));
     app.get(`${agent}/state`, c => {
       const session = c.var.session;
-      return json(c, 200, { cursor: session.cursor, requests: [...session.requests.values()].map(visible) });
+      return json(c, 200, { cursor: session.cursor, requests: [...session.requests.values()].map(visible), ...activityOf(session.running.values()) });
     });
     app.post(`${agent}/requests`, async c => {
       const request = await readJson(body(c), FRAME_BYTES);
@@ -2797,6 +2860,7 @@ export class ClientSessions {
     // An output schema shapes the turn a prompt starts: a steer joins one already running.
     if (params.output !== undefined && (body.method !== "prompt" || params.whileRunning === "steer")) throw new HttpError(400, "output is for a prompt that starts its own turn (not whileRunning: steer)");
     if (params.whileRunning === "queue") delete params.whileRunning;
+    if (body.method === "abort" && (Object.keys(params).some(key => key !== "queued") || ![undefined, "cancel", "keep"].includes(params.queued))) throw new HttpError(400, "An abort takes { queued?: \"cancel\" | \"keep\" }: whether the runs queued behind the running one are cancelled too (the default) or kept");
     // A message records the request that sent it, so an application can match it to its own.
     if (isMessage) params.requestId = body.id;
     try {
@@ -2859,7 +2923,14 @@ export class ClientSessions {
       await this.commit(session, true);
       if (queued) this.enqueue(session, record, params);
       else void this.run(session, record, params);
-      if (params.whileRunning === "steer") await this.steerTurn(session, params);
+      // A steer is answered at once: the running turn has it (accepted), or it runs as a turn of its own (queued).
+      if (params.whileRunning === "steer") {
+        const steer = await this.steerTurn(session, params) ? "accepted" : "queued";
+        const current = session.requests.get(record.id);
+        if (current?.state === "running") return { status: 202, record: visible(this.upsertRequest(session, { ...current, steer })) };
+        // Taken already, before the answer came back.
+        if (current) return { status: 202, record: visible({ ...current, steer }) };
+      }
       return { status: 202, record: visible(record) };
     } finally {
       if (admitting) { session.admitting!--; this.releaseBusy(session); }
@@ -2910,14 +2981,14 @@ export class ClientSessions {
   }
 
   /**
-   * Offer a prompt sent with `whileRunning: "steer"` to the running turn, if any. The prompt is queued
-   * already: if the turn takes it (its message ends in the turn's events), it ends with that turn;
-   * if not (the turn ended first, or stopped), the agent drops it and it runs as a turn of its own.
+   * Offer a prompt sent with `whileRunning: "steer"` to the running turn, if any; true when the turn accepted it. The
+   * prompt is queued already: if the turn takes it (its message ends in the turn's events), its request completes then
+   * (`steerTaken`); if not (the turn ended first, or stopped), the agent drops it and it runs as a turn of its own.
    */
-  private async steerTurn(session: Session, params: Record<string, unknown>) {
-    if (!session.turn) return;
-    try { await this.supervisor.request(session.header.id, "steer", params); }
-    catch { /* Not running after all: the queued prompt runs. */ }
+  private async steerTurn(session: Session, params: Record<string, unknown>): Promise<boolean> {
+    if (!session.turn) return false;
+    try { return !!(await this.supervisor.request(session.header.id, "steer", params))?.steered; }
+    catch { return false; /* Not running after all: the queued prompt runs. */ }
   }
 
   /**
@@ -3107,10 +3178,14 @@ export class ClientSessions {
     // An agent still starting answers nothing yet: wait for it (should it fail, it is not running).
     await session.starting?.catch(() => {});
     const live = this.supervisor.agents.has(id);
-    if (record.method === "status" && !live) return { running: false };
+    // Whether the agent is busy comes from its run records (`activityOf`), as every other view of it says: not from its process.
+    if (record.method === "status") return live ? { ...await this.supervisor.request(id, "status", {}), running: true, ...activityOf(session.running.values()) } : { running: false, ...activityOf(session.running.values()) };
     // Aborting a suspended turn cancels its inputs: the turn is closed without the model. Its children are aborted too.
-    if (record.method === "abort") { this.markAborted(session); this.abortChildren(session); await this.cancelInputs(session, "aborted"); }
-    if (record.method === "abort" && !live) return { aborted: false, running: false };
+    if (record.method === "abort") {
+      const cancelled = await this.stop(session, params?.queued === "keep" ? "keep" : "cancel");
+      await this.cancelInputs(session, "aborted");
+      return live ? { aborted: true, cancelled } : { aborted: false, running: false, cancelled };
+    }
     if (record.method === "configure") {
       const applied = params.definition !== undefined ? await this.definitionUpdate(session, params.definition) : undefined;
       // An upsert's own fields (see `reconfiguration`): what the agent is called, and the configuration it now matches.
@@ -3184,13 +3259,13 @@ export class ClientSessions {
           if (event?.type === "compaction_usage" && event.usage) {
             this.tally(session, record.id, this.compactionUsage(session, event, run));
           }
-          // A prompt steered into this turn has been taken: it ends with the turn.
+          // A prompt steered into this turn has been taken: the model has it now, and its request completes (`steerTaken`).
           const taken = event?.type === "message_end" && event.message?.role === "user" ? event.message.requestId : undefined;
-          if (taken && taken !== record.id && session.running.get(taken)?.method === "prompt") (session.steered ??= new Map()).set(taken, record.id);
           // What the turn is doing, for a hand-off's step kind: a model call, until its response's tool calls run.
           if (event?.type === "turn_start") session.step = "model";
           else if (event?.type === "tool_execution_start") session.step = "tool";
           this.publish(session, { type: "event", requestId: record.id, event });
+          if (taken && taken !== record.id && session.running.get(taken)?.method === "prompt") this.steerTaken(session, taken, record.id);
         } : undefined);
     } finally { session.retries = undefined; }
   }
@@ -3279,6 +3354,8 @@ export class ClientSessions {
           throw error;
         }
         if (this.draining || session.handedBack) return;
+        // Cancelled while it waited to start (a stop): it never begins.
+        if (session.requests.get(record.id)?.state !== "running") return;
         // Work taken over runs: any put-off loads of it are over.
         if (session.inherited?.delete(record.id)) void this.db.query("update agents set resume_failures = 0, resume_after = null where id = $1 and resume_failures > 0", [session.header.id]).catch(() => {});
         // Durable before any side effect: after a crash this run is "began", never repeated.
@@ -3353,20 +3430,18 @@ export class ClientSessions {
       session.runLimits?.delete(record.id);
       session.childSpend?.delete(record.id);
       session.aborted?.delete(record.id);
-      const steered = this.endSteered(session, record.id, value, announcing);
       try { await this.commit(session, true); }
       catch { return; /* The fault is reported to every later request. */ }
       if (run) {
         this.hook("runEnded", session, completed);
         const usage = session.usage;
         session.usage = undefined;
-        // With this run's event (and those of prompts steered into it), any an earlier failure left.
+        // With this run's event, any an earlier failure left.
         const unannounced = [...session.requests.values()].filter(request => request.announce);
         if (unannounced.length) void this.announce(session, unannounced, usage);
       }
       session.lastActive = Date.now();
       this.publish(session, { type: "response", id: record.id, outcome: value });
-      for (const id of steered) this.publish(session, { type: "response", id, outcome: value });
       if (run && completed.trace?.sampled) {
         // A run that never began (refused at a limit, or failed starting) has a span too.
         const spans = session.spans?.requestId === record.id ? session.spans : await this.spansFor(session, completed);
@@ -3386,19 +3461,24 @@ export class ClientSessions {
     });
   }
 
-  /** Complete the prompts steered into the turn `turn` with its outcome; their queued runs then do nothing. */
-  private endSteered(session: Session, turn: string, outcome: Outcome, announcing: boolean) {
-    const ended: string[] = [];
-    for (const [id, into] of session.steered ?? []) {
-      if (into !== turn) continue;
-      session.steered!.delete(id);
-      const queued = session.running.get(id);
-      if (!queued) continue;
-      const { params: _params, ...rest } = queued;
-      this.upsertRequest(session, { ...rest, state: "completed", outcome, endedAt: Date.now(), steeredInto: turn, ...(announcing ? { announce: true as const } : {}) });
-      ended.push(id);
-    }
-    return ended;
+  /**
+   * A prompt steered into the running turn `turn` was taken: the model has it. Its request completes now, not when the turn
+   * ends (a turn fed constantly may never end), so it no longer counts against the agent's open requests; its outcome names
+   * the turn (`steeredInto`), whose own request has the turn's outcome. Its queued run then does nothing. Should this node
+   * stop before the record is durable, the run finds the message in history already and does not run it again.
+   */
+  private steerTaken(session: Session, id: string, turn: string) {
+    const queued = session.running.get(id);
+    if (!queued) return;
+    const { params: _params, ...rest } = queued;
+    const outcome: Outcome = { result: { steeredInto: turn } };
+    const done = this.upsertRequest(session, { ...rest, state: "completed", outcome, endedAt: Date.now(), steeredInto: turn, ...(session.announcing ? { announce: true as const } : {}) });
+    void (async () => {
+      await this.commit(session, true);
+      this.publish(session, { type: "event", requestId: id, event: { type: "steer_taken", steeredInto: turn } });
+      this.publish(session, { type: "response", id, outcome });
+      if (done.announce) void this.announce(session, [done]);
+    })().catch(() => { /* The fault is reported to every later request. */ });
   }
 
   /** The agent's spend limit, read once per load; its owner keeps it current. */
@@ -3928,20 +4008,30 @@ export class ClientSessions {
   }
 
   /**
-   * A run past its time limit (`runLimitsFor`'s maxSeconds) by `RUN_OVERRUN_MS` is aborted, and its agent stopped by
+   * A run past its time limit (the agent's maxSeconds, within `runLimitsFor`'s) by `RUN_OVERRUN_MS` (`runOverrunMs`) is aborted, and its agent stopped by
    * twice that: the limit is otherwise checked only between model requests, and a turn stuck inside one
    * step would hold its agent (and its busy slot) forever. The next start closes the interrupted turn.
    */
   private async overrun(session: Session, now: number) {
     const run = [...session.running.values()].find(record => RUN_METHODS.includes(record.method) && record.began);
-    if (!run || now - run.began! < RUN_OVERRUN_MS) return;
-    const { maxSeconds } = await this.options.runLimitsFor?.(session.header.tenant) ?? RUN_LIMITS;
+    const overrunMs = this.options.runOverrunMs ?? RUN_OVERRUN_MS;
+    if (!run || now - run.began! < overrunMs) return;
+    // The run's own limit (the agent's runLimits, within the runtime's), as `turnLimit` counts it: not only the runtime's,
+    // which an admin tenant does not have at all.
+    const maxSeconds = await this.maxSeconds(session);
     const over = now - run.began! - maxSeconds * 1000;
     const id = session.header.id;
-    if (over < RUN_OVERRUN_MS || !this.supervisor.agents.has(id) || !session.running.has(run.id)) return;
+    if (!(over >= overrunMs) || !this.supervisor.agents.has(id) || !session.running.has(run.id)) return;
     console.error(JSON.stringify({ type: "run_overrun", agent: id, request: run.id, maxSeconds, overMs: over }));
-    if (over < 2 * RUN_OVERRUN_MS) await this.supervisor.request(id, "abort");
+    // The abort ends the model request or tool call in flight at once (model-stream.ts), and the run as its time limit's.
+    if (over < 2 * overrunMs) await this.supervisor.request(id, "abort", { stopped: "turn_limit", message: `This run stopped at its time limit of ${duration(maxSeconds)}. Send another message to continue` });
     else await this.supervisor.stop(id, { flush: false });
+  }
+
+  /** The most seconds the agent's runs may take: its own runLimits' maxSeconds within the runtime's maximum for its tenant. */
+  private async maxSeconds(session: Session) {
+    const most = await this.options.runLimitsFor?.(session.header.tenant) ?? RUN_LIMITS;
+    return Math.min(session.header.config.runLimits?.maxSeconds ?? most.maxSeconds, most.maxSeconds);
   }
 
   /** A session unloading keeps its watchers, idle, and answers its polls. */

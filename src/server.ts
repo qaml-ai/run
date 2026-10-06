@@ -13,6 +13,7 @@ import { DOCS_SITE, loadDocs, loadRegistry, SKILL_PATHS } from "./docs.ts";
 import { StorageGc } from "./storage-gc.ts";
 import { modelHeadersInput, resolveModel, sessionConfig } from "./session-config.ts";
 import { ClientSessions, ORPHANS_CHANNEL, RUN_LIMITS, spendInput, type SessionHooks } from "./client-sessions.ts";
+import { STREAM_TIMEOUTS } from "./model-stream.ts";
 import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts";
 import { StorageUsage } from "./storage-usage.ts";
 import { postgresTail, sweepTails } from "./log-tail.ts";
@@ -158,6 +159,12 @@ if (!Number.isInteger(toolTimeoutMs) || toolTimeoutMs < 1 || toolTimeoutMs > 15 
 const runLimits = { maxResponses: Number(process.env.AGENT_MAX_RUN_RESPONSES ?? RUN_LIMITS.maxResponses), maxSeconds: Number(process.env.AGENT_MAX_RUN_SECONDS ?? RUN_LIMITS.maxSeconds) };
 if (!Number.isSafeInteger(runLimits.maxResponses) || runLimits.maxResponses < 1) throw new Error("AGENT_MAX_RUN_RESPONSES must be a positive integer");
 if (!Number.isSafeInteger(runLimits.maxSeconds) || runLimits.maxSeconds < 1) throw new Error("AGENT_MAX_RUN_SECONDS must be a positive integer");
+// How long a model request may go quiet before it fails as stalled and is retried (model-stream.ts): before its first
+// token, and between events once it streams. An agent's runLimits (firstTokenSeconds, idleSeconds) set its own.
+const streamTimeouts = { firstTokenMs: Number(process.env.AGENT_MODEL_FIRST_TOKEN_SECONDS ?? STREAM_TIMEOUTS.firstTokenMs / 1000) * 1000, idleMs: Number(process.env.AGENT_MODEL_IDLE_SECONDS ?? STREAM_TIMEOUTS.idleMs / 1000) * 1000 };
+for (const [name, ms] of [["AGENT_MODEL_FIRST_TOKEN_SECONDS", streamTimeouts.firstTokenMs], ["AGENT_MODEL_IDLE_SECONDS", streamTimeouts.idleMs]] as const) {
+  if (!Number.isSafeInteger(ms) || ms < 1000 || ms > 3_600_000) throw new Error(`${name} must be an integer from 1 to 3600`);
+}
 const idleMs = Number(process.env.AGENT_IDLE_MS ?? 5 * 60_000);
 if (!Number.isInteger(idleMs) || idleMs < 1000) throw new Error("AGENT_IDLE_MS must be an integer of at least 1000");
 const publicUrl = (process.env.AGENT_PUBLIC_URL ?? `http://127.0.0.1:${port}`).replace(/\/+$/, "");
@@ -562,7 +569,7 @@ const clients = new ClientSessions(supervisor, {
   tracing: telemetry,
   // A self-hosted runtime configured by its environment takes keys there too.
   ...(process.env.AGENT_TENANT ? { modelKeyHint: "On this self-hosted runtime, AGENT_TENANT_API_KEYS in its environment sets keys too ({\"anthropic\": \"sk-ant-...\"}; restart it after)." } : {}),
-  secret: sessionSecret, toolTimeoutMs, idleMs, maxAgentsPerTenant, ...(process.env.AGENT_SNAPSHOT_BYTES ? { snapshotBytes: Number(process.env.AGENT_SNAPSHOT_BYTES) } : {}), orphanSweepMs: orphanMs, watcherLimitFor: tenant => tenants.maxWatchers(tenant), busyAgents, agentLimitFor: async tenant => {
+  secret: sessionSecret, toolTimeoutMs, idleMs, streamTimeouts, ...(process.env.AGENT_RUN_OVERRUN_MS ? { runOverrunMs: Number(process.env.AGENT_RUN_OVERRUN_MS) } : {}), maxAgentsPerTenant, ...(process.env.AGENT_SNAPSHOT_BYTES ? { snapshotBytes: Number(process.env.AGENT_SNAPSHOT_BYTES) } : {}), orphanSweepMs: orphanMs, watcherLimitFor: tenant => tenants.maxWatchers(tenant), busyAgents, agentLimitFor: async tenant => {
     // Agents hosted on this node stay within the tenant's busy limit too: its own, or its tier's (else the default).
     const { limit, source } = await accounts.billing.busyLimit(tenant);
     return source === "default" ? undefined : limit;

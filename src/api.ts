@@ -587,9 +587,13 @@ export function api(context: ApiContext) {
     const minted = context.browserTokens.mint(c.var.principal.tenant, id, await readJson(c.req.raw.body, 16 * 1024, {}));
     return json(c, 201, { ...minted, agentId: id, ...(context.browserUrl ? { url: context.browserUrl } : {}) });
   });
-  route(createRoute({ method: "post", path: "/v1/agents/{id}/abort", request: { params: agentId }, responses: { 200: reply("The running turn is aborted", z.object({ aborted: z.literal(true) })) } }), async c => {
-    await clients.abortAgent(c.req.param("id")!, c.var.principal.tenant);
-    return json(c, 200, { aborted: true });
+  route(createRoute({
+    method: "post", path: "/v1/agents/{id}/abort", request: { params: agentId, body: { ...content(schema.AbortInput), required: false } },
+    responses: { 200: reply("The agent is stopped: its running turn is aborted, and the runs queued behind it are cancelled (unless queued: \"keep\")", schema.Aborted) },
+  }), async c => {
+    const { queued } = parse(schema.AbortInput, await readJson(c.req.raw.body, 1024, {}));
+    const stopped = await clients.abortAgent(c.req.param("id")!, c.var.principal.tenant, queued);
+    return json(c, 200, { aborted: true, cancelled: stopped ? stopped.cancelled : [] });
   });
   route(createRoute({ method: "post", path: "/v1/agents/{id}/prompt", request: { params: agentId, headers: traceHeaders, body: content(schema.PromptInput) }, responses: { 202: reply("The accepted request", schema.RequestRecord) } }), async c => {
     // Room for inline files (FILE_LIMITS.inlineBytes, as base64); larger ones are uploaded first.

@@ -167,7 +167,7 @@ export const WebhookEvents = {
     steeredInto: z.string().optional().openapi({ description: "A prompt sent with whileRunning: steer that a running turn took: that turn's request" }),
   }), "A run ended without an error"),
   "run.failed": envelope("run.failed", z.object({
-    ...runFacts, usage: runUsage, error: z.string(), uncertain: z.boolean().optional().openapi({ description: "A restart cut it short: its effects are unknown" }), steeredInto: z.string().optional(),
+    ...runFacts, usage: runUsage, error: z.string(), code: z.string().optional().openapi({ description: "The failure's name, where it has one: cancelled (a stop cancelled it before it began), aborted, model_stream_stalled, turn_limit, spend_limit, output_missing..." }), uncertain: z.boolean().optional().openapi({ description: "A restart cut it short: its effects are unknown" }), steeredInto: z.string().optional(),
   }), "A run ended with an error: the runtime's, or the model's"),
   "input.requested": envelope("input.requested", z.object({
     agentId: z.string(), requestId: z.string(), inputId: z.string(), toolCallId: z.string(), kind: z.enum(["question", "approval", "form", "url"]), expiresAt: z.number(),
@@ -219,9 +219,11 @@ export const SpendLimitInput = z.object({ usd: z.number().min(0).max(1_000_000) 
 
 export const RunLimits = z.strictObject({
   maxResponses: z.number().int().min(1).max(1_000_000).optional().openapi({ description: "Model responses one run may make, compaction summaries included; default and at most the runtime's maximum (1,000 unless its operator set another)" }),
-  maxSeconds: z.number().int().min(1).max(31_536_000).optional().openapi({ description: "Seconds one run may take from when it began; default and at most the runtime's maximum (7,200, 2 hours, unless its operator set another)" }),
+  maxSeconds: z.number().int().min(1).max(31_536_000).optional().openapi({ description: "Seconds one run may take from when it began; default and at most the runtime's maximum (7,200, 2 hours, unless its operator set another). A turn still inside a model request or tool call 60 seconds past it is aborted then, with stopped \"turn_limit\"" }),
+  firstTokenSeconds: z.number().int().min(1).max(3_600).optional().openapi({ description: "Seconds one model request may wait for the model's first token (text, thinking or a tool call) before it fails as stalled and is retried; default the runtime's (120, or 300 for a reasoning model at thinkingLevel high and up)" }),
+  idleSeconds: z.number().int().min(1).max(3_600).optional().openapi({ description: "Seconds a model response may go quiet once it streams before it fails as stalled and is retried; default the runtime's (45)" }),
 }).openapi("RunLimits", {
-  description: "The most one run may take. At either, the turn ends before its next model request, after the tool calls of the response that reached it, with stopped \"turn_limit\" and code turn_limit; send another message to continue. Values above the runtime's maximums count as those",
+  description: "The most one run may take, and how long its model requests may go quiet. At maxResponses or maxSeconds, the turn ends before its next model request, after the tool calls of the response that reached it, with stopped \"turn_limit\" and code turn_limit; send another message to continue. Values above the runtime's maximums count as those. A model request that stalls (firstTokenSeconds, idleSeconds) is retried like other transient provider errors; when retries run out the run fails with code model_stream_stalled",
 });
 
 export const ModelHeaders = z.record(z.string(), z.string()).openapi("ModelHeaders", {
@@ -245,6 +247,13 @@ export const DelegateSettings = z.strictObject({
   maxDepth: z.number().int().min(1).max(5).optional().openapi({ description: "How deep delegation may go: a child is depth 1, its child depth 2. Default 2" }),
   maxParallel: z.number().int().min(1).max(16).optional().openapi({ description: "delegate calls of one run in flight at once; more wait their turn. Default 4" }),
 }).openapi("DelegateSettings", { description: "With the delegate builtin: who the model may hand tasks to, and how deep and wide. See the multi-agent guide" });
+export const AbortInput = z.strictObject({
+  queued: z.enum(["cancel", "keep"]).optional().openapi({ description: "cancel (default): the runs queued behind the running one (prompts, steered messages not yet read, continues, executions) are cancelled too, each ending with code cancelled, so nothing runs after the stop. keep: only the running turn is stopped, and the next queued run starts" }),
+}).openapi("AbortInput");
+export const Aborted = z.object({
+  aborted: z.literal(true),
+  cancelled: z.array(z.string()).openapi({ description: "The ids of the queued runs the stop cancelled" }),
+}).openapi("Aborted");
 export const PromptInput = z.object({
   text: z.string({ error: SEND_TEXT }).refine(text => !!text.trim(), SEND_TEXT),
   actor: z.string().optional().openapi({ description: "Who is acting in this turn (a user id in your app): `act` in its tools' identity tokens" }),
@@ -255,7 +264,7 @@ export const PromptInput = z.object({
   }).optional().openapi({ description: "Who sent this message. The model sees it in a block only the runtime can write; `from.id` is also the turn's actor unless `actor` is given" }),
   requestId: z.string().optional().openapi({ description: "Idempotency: retrying with the same id returns the same request. The user message records it, so a UI can match its own bubble" }),
   allowDisconnected: z.boolean().optional().openapi({ description: "Run even though the agent's tools need its application and none is connected (else 409 APPLICATION_NOT_CONNECTED): its calls then fail as not connected" }),
-  whileRunning: z.enum(["queue", "steer"]).optional().openapi({ description: "What happens if the agent is working on a turn when this arrives. queue (default): it runs as the next turn. steer: the running turn takes it after its current step, and this request ends with that turn (steeredInto names it); if the turn ends first, it runs as a turn of its own. With no turn running, both start one" }),
+  whileRunning: z.enum(["queue", "steer"]).optional().openapi({ description: "What happens if the agent is working on a turn when this arrives. queue (default): it runs as the next turn. steer: the running turn takes it after its current step. The 202 says so at once (steer: \"accepted\"; \"queued\" when no turn could take it), and this request completes as soon as the turn takes the message (steeredInto names the turn, whose own request has its outcome; a steer_taken event marks it), so steered messages never wait for the turn's end, nor count against the agent's queue once taken. If the turn ends first, it runs as a turn of its own. With no turn running, both start one" }),
   spendLimit: SpendLimitInput.optional().openapi({ description: "This run's own budget in USD: it ends before its next model request once it has spent this. The agent's spendLimit is unchanged and counts the run too" }),
   output: z.strictObject({
     schema: z.record(z.string(), z.unknown()).openapi({ description: "A JSON Schema for an object (type: \"object\"; at most 64 KB)", example: { type: "object", properties: { sentiment: { type: "string", enum: ["positive", "neutral", "negative"] } }, required: ["sentiment"] } }),
@@ -307,6 +316,12 @@ export const AgentSummary = z.object({
 
 const Outcome = z.object({ result: z.unknown().optional(), error: z.string().optional(), uncertain: z.boolean().optional() }).openapi("Outcome");
 
+/** Whether an agent is busy, from its run records: GET /v1/agents/{id}, its state and a status request all say the same. */
+const Activity = z.object({
+  busy: z.boolean().openapi({ description: "Whether the agent has a run open: one going (activeRun) or queued (queuedRuns). From its request records, as its state and a status request say it too" }),
+  activeRun: z.string().nullable().openapi({ description: "The run that has begun and not ended, if any" }),
+  queuedRuns: z.number().int().openapi({ description: "Runs accepted and waiting behind it (prompts, steered messages not yet read, continues, executions, resumes)" }),
+});
 export const RequestRecord = z.object({
   id: z.string(),
   method: z.enum(["prompt", "execute", "status", "abort", "continue", "steer", "configure", "resume"]).openapi({ description: "resume: the runtime continuing a turn that waited on human input, once its inputs settled" }),
@@ -319,10 +334,12 @@ export const RequestRecord = z.object({
   code: z.string().optional(),
   suspension: z.string().optional().openapi({ description: "resume: the request whose turn waited on human input" }),
   metadata: z.record(z.string(), z.string()).optional().openapi({ description: "The metadata sent with the message" }),
-  steeredInto: z.string().optional().openapi({ description: "A prompt with whileRunning: steer that a running turn took: that turn's request, whose outcome this shares" }),
   resumes: z.number().optional().openapi({ description: "Times a node resumed this run's turn after the node running it was lost (its calls in flight closed as of unknown outcome); at most 2" }),
   handoffs: z.array(z.object({ reason: z.enum(["retire", "drain"]), at: z.number() })).optional().openapi({ description: "Times a node leaving the cluster (retire: a newer deploy replaced it; drain: it was stopped) handed this run's turn off at a step boundary, and the next owner continued it with nothing lost. Not resumes" }),
-  outcome: Outcome.optional().openapi({ description: "result.stopped is input_required when the turn waits on human input, listed in result.inputs. A run's result also has reply, replyIndex, files, toolErrors and toolCalls: every tool call it made (the first 100), as {tool, toolCallId?, innerCallId?, ok, code?, agentId?} (agentId: the child a delegate call ran), without arguments or results. result.output is a structured answer, for a prompt sent with output. result.usage.subagentCostUsd is what its children spent" }),
+  steeredInto: z.string().optional().openapi({ description: "A prompt with whileRunning: steer that a running turn took: that turn's request. This request completes as the turn takes the message; the turn's request has the turn's outcome (reply, output...)" }),
+  steer: z.enum(["accepted", "queued"]).optional().openapi({ description: "A prompt with whileRunning: steer, as it was accepted: accepted, the running turn reads it after its current step; queued, no turn could take it, so it runs as a turn of its own" }),
+  abortedAt: z.number().optional().openapi({ description: "When the agent was stopped while this run was going: it ends as aborted, and is never resumed elsewhere" }),
+  outcome: Outcome.optional().openapi({ description: "result.code names a run's failure where it has a name: cancelled (a stop cancelled it before it began), aborted (stopped while it ran), model_stream_stalled (its model stopped answering, past every retry), turn_limit, spend_limit, output_missing, model_key_missing, model_key_invalid. result.stopped is input_required when the turn waits on human input, listed in result.inputs. A run's result also has reply, replyIndex, files, toolErrors and toolCalls: every tool call it made (the first 100), as {tool, toolCallId?, innerCallId?, ok, code?, agentId?} (agentId: the child a delegate call ran), without arguments or results. result.output is a structured answer, for a prompt sent with output. result.usage.subagentCostUsd is what its children spent" }),
   error: z.string().optional().openapi({ description: "An ended request's error, from its outcome: the runtime's (outcome.error) or the model's (outcome.result.error). Absent when it succeeded" }),
   stopped: z.enum(["input_required", "spend_limit", "turn_limit"]).optional().openapi({ description: "Why an ended run stopped early (outcome.result.stopped)" }),
   status: z.enum(["completed", "input_required", "failed"]).optional().openapi({ description: "How an ended request ended (state says only that it ended): failed when it has an error or stopped at a spend or turn limit; input_required when it waits on people. Absent while running" }),
@@ -426,6 +443,7 @@ export const AgentDetail = AgentSummary.extend({
   spendLimit: z.object({ usd: z.number(), spent: z.number().openapi({ description: "Model spend since the limit was set" }) }).nullable(),
   runLimits: RunLimits.nullable().openapi({ description: "Its own run limits, as set; null: the runtime's" }),
   forkedFrom: ForkedFrom.optional().openapi({ description: "For a fork (POST /v1/agents/{id}/fork): the agent and message it was forked from" }),
+  ...Activity.shape,
   cursor: z.number(),
   events: z.array(z.object({ id: z.number(), data: z.unknown() })),
   requests: z.array(RequestRecord),
@@ -434,6 +452,7 @@ export const AgentDetail = AgentSummary.extend({
 export const SessionState = z.object({
   cursor: z.number().openapi({ description: "The agent's latest event id: a stream opened with it as Last-Event-ID continues from here" }),
   requests: z.array(RequestRecord).openapi({ description: "Recent requests (the running ones and the latest settled), with their outcomes" }),
+  ...Activity.shape,
   resume: z.object({ failures: z.number(), after: z.number() }).optional().openapi({ description: "For an agent no node holds, whose unfinished work's loads are put off: how many times, and until when" }),
 }).openapi("SessionState");
 export const EventPoll = z.object({
