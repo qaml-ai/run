@@ -80,14 +80,6 @@ jobs:
           key: v8-exec-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('sandbox/v8-exec/Cargo.lock', 'sandbox/v8-exec/rust-toolchain.toml') }}
       - run: npm ci
       - run: npm run build:v8-exec -- --locked
-      # TEMPORARY (x86_64 seccomp debugging): refused calls, each snippet 25 times under --seccomp-trap.
-      - run: |
-          sudo apt-get install -y strace >/dev/null
-          node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/v8-syscalls.ts --repeat 40 | head -12
-          node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/v8-syscalls.ts --jit --repeat 40 | head -12
-          node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/v8-syscalls.ts --repeat 60 --parallel 6 | head -12
-          for i in 1 2 3 4 5 6; do AGENT_JS_EXEC=v8 AGENT_V8_SECCOMP=trap node --experimental-strip-types --disable-warning=ExperimentalWarning --test tests/sandbox.test.ts tests/codemode-limits.test.ts tests/code-mode-source.test.ts 2>&1 | grep -E "seccomp: syscall|^# fail"; done
-        continue-on-error: true
       - run: node --experimental-strip-types --disable-warning=ExperimentalWarning --test --test-timeout=300000 tests/v8-exec.test.ts tests/code-engine.test.ts
       - run: node --experimental-strip-types --disable-warning=ExperimentalWarning --test --test-timeout=300000 tests/sandbox.test.ts tests/codemode-limits.test.ts tests/code-mode-source.test.ts
         env: { AGENT_JS_EXEC: v8 }

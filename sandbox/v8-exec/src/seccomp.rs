@@ -39,6 +39,11 @@ pub fn install(jitless: bool, debug: Debug) -> Result<(), String> {
     SYS_rt_sigprocmask, SYS_rt_sigreturn, SYS_rt_sigaction, SYS_sigaltstack, SYS_restart_syscall,
     SYS_getpid, SYS_gettid, SYS_getrandom,
     SYS_exit, SYS_exit_group,
+    // What glibc calls when the kernel's vDSO cannot answer (a VM whose clock source has no vDSO
+    // support): getcpu for sched_getcpu, and on x86_64 time(); clock_gettime and gettimeofday are above.
+    SYS_getcpu,
+    #[cfg(target_arch = "x86_64")]
+    SYS_time,
   ];
   let mut program: Vec<sock_filter> = Vec::new();
   let mut push = |code: u16, jt: u8, jf: u8, k: u32| program.push(sock_filter { code, jt, jf, k });
