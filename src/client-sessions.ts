@@ -1036,7 +1036,7 @@ export class ClientSessions {
     }, error => {
       session.reserving = undefined;
       if (error instanceof LostClaim) return;
-      console.error(JSON.stringify({ type: "event_reserve_failed", agent: id, error: errorText(error) }));
+      console.error(JSON.stringify({ type: "event_reserve_failed", agent: id, error: safeError(error) }));
       if (session.held) setTimeout(() => this.reserveEvents(session), 1_000).unref();
     });
   }
@@ -4157,7 +4157,7 @@ export class ClientSessions {
     await underClaim(this.db, session.claim, sql => sql.query("update agents set last_cursor = $2, cursor_clean = true, pending_runs = $3 where id = $1",
       [session.header.id, session.cursor, session.running.size > 0])).catch(() => {});
     // Spend no transcript record carried (a compaction's or a child's after the agent's last record).
-    await this.spendWrite(session, 0)?.().catch(error => console.error(JSON.stringify({ type: "agent_spend_write_failed", agent: session.header.id, error: errorText(error) })));
+    await this.spendWrite(session, 0)?.().catch(error => console.error(JSON.stringify({ type: "agent_spend_write_failed", agent: session.header.id, error: safeError(error) })));
     // Runs left open are its next owner's to count.
     await this.releaseBusy(session, true);
     if (session.claim) await this.options.ownership!.release(session.claim).catch(() => {});
