@@ -139,13 +139,16 @@ test("runs count against busy agents and runs per minute, as agent runs do, and 
   // One runtime whose model answers slowly, to keep a run busy; another whose model answers at once.
   const r = await runtime(t, () => ({ role: "assistant", content: "done" }), {}, tenants);
   const slow = await runtime(t, () => ({ role: "assistant", content: "slow", delayMs: 3_000 }), {}, tenants);
-  const busy = (await slow.call("/v1/runs", { body: { input: "hold the slot" } })).json;
+  const busy = (await slow.call("/v1/runs", { body: { input: "hold the slot" }, headers: { "Idempotency-Key": "busy-1" } })).json;
   assert.equal(busy.status, "running");
   const refused = await slow.call("/v1/runs", { body: { input: "one too many" } });
   assert.equal(refused.status, 429, refused.text);
   assert.equal(refused.json.code, "BUSY_AGENT_LIMIT");
-  // A refused run leaves nothing behind.
-  assert.equal((await slow.db.query("select count(*)::int as n from agents where not revoked")).rows[0].n, 1);
+  // A refused run is turned away before anything is made for it: no session, not even a deleted one.
+  assert.equal((await slow.db.query("select count(*)::int as n from agents")).rows[0].n, 1);
+  // The busy run's own key still answers it: the check is for new runs.
+  const retried = await slow.call("/v1/runs", { body: { input: "hold the slot" }, headers: { "Idempotency-Key": "busy-1" } });
+  assert.equal(retried.json.id, busy.id, retried.text);
   assert.equal((await slow.call(`/v1/runs/${busy.id}?wait=10`)).json.status, "completed");
   // Three runs a minute (each a run), though one agent create a minute: creates are not counted. The minute is a fixed
   // window, so one may end among the runs: at most twice three get through.
@@ -154,6 +157,7 @@ test("runs count against busy agents and runs per minute, as agent runs do, and 
   assert.ok(started >= 3 && started <= 6, `${started} runs started`);
   assert.equal(limited!.status, 429, limited!.text);
   assert.equal(limited!.json.limit.name, "runs");
+  assert.equal((await r.db.query("select count(*)::int as n from agents")).rows[0].n, started, "the refused run made no session");
   assert.equal((await r.call("/v1/agents", { body: {} })).status, 201, "the create budget is untouched");
 });
 
@@ -249,4 +253,18 @@ test("the TypeScript SDK: agents.run in one call, runs.stream as it happens, run
   await agents.runs.abort((await agents.runs.create({ input: "slow", idempotencyKey: "slow-2" })).id);
   await assert.rejects(agents.runs.run({ input: "slow", idempotencyKey: "slow-2" }), (error: unknown) => error instanceof RunError && error.run.error?.code === "aborted");
   assert.deepEqual(await agents.runtime.listAgents(), [], "no agents were made");
+});
+
+test("a run whose model stalls ends failed with model_stream_stalled, never hanging busy", { timeout: 60_000 }, async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "never", delayMs: 15_000 }));
+  const started = Date.now();
+  const created = (await r.call("/v1/runs", { body: { input: "hello?", runLimits: { firstTokenSeconds: 1 } } })).json;
+  let run = created;
+  while (run.status === "running" && Date.now() - started < 45_000) run = (await r.call(`/v1/runs/${created.id}?wait=10`)).json;
+  assert.equal(run.status, "failed", JSON.stringify(run));
+  assert.equal(run.error.code, "model_stream_stalled");
+  assert.ok(Date.now() - started < 30_000);
+  assert.ok(r.model.bodies.length >= 3, "the first request and its retries");
+  // Not busy any more: the next run is accepted.
+  assert.equal((await r.call("/v1/runs", { body: { input: "again" } })).status, 202);
 });

@@ -283,12 +283,21 @@ export class RateLimits {
   }
 
   /**
+   * Refuse, as `run` would, when `tenant` has no runs left this minute, without counting one: a stateless run checks this
+   * before it makes anything, and `run` still counts it when it is accepted.
+   */
+  async runsLeft(tenant: string) {
+    const state = await this.perTenant(tenant, "runs", "runs", "runs started", false);
+    if (state && state.remaining <= 0) this.refuse({ name: "runs", scope: "tenant", max: state.limit, windowSeconds: 60 }, state.reset, `Too many runs started: at most ${state.limit} a minute for this account; retry after Retry-After`);
+  }
+
+  /**
    * A tenant's per-minute limit of `limit` (none: undefined), whether it is free credit's, and what buying credit would
    * raise it to (`paid`, when that is more).
    */
   async tenantLimit(tenant: string, limit: "agentCreates" | "runs"): Promise<{ max: number; free: boolean; paid?: number } | undefined> {
     const own = await this.options.override?.(tenant, limit);
-    if (own === undefined && this.options.exempt?.(tenant)) return;
+    if (own === undefined && this.options.exempt?.(tenant)) return undefined;
     const free = own === undefined && await this.options.free(tenant);
     const max = own ?? (free ? this.config[limit === "runs" ? "freeRuns" : "freeAgentCreates"] : this.config[limit]);
     if (!max) return;

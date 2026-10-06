@@ -25,6 +25,11 @@ export interface RunsContext {
   requestAnywhere?: (agent: string, tenant: string, requestId: string, waitMs: number, signal?: AbortSignal) => Promise<RequestRecord | undefined>;
   /** How long an ended run is kept by default (AGENT_RUN_RETENTION_SECONDS; default a day). */
   runRetentionSeconds?: number;
+  /**
+   * Refuse a new run now if the tenant has no runs left this minute or is at its busy-agent limit, without counting:
+   * a burst past either is turned away before a session is made for each. Accepting the run still decides.
+   */
+  runPrecheck?: (tenant: string) => Promise<void>;
 }
 
 /** The longest a request waits for a run to end (a proxy in front may cut a quiet response off after 100 s). */
@@ -117,6 +122,8 @@ export function runRoutes(route: Route, context: () => RunsContext) {
     const fingerprint = createHash("sha256").update(canonical(asked)).digest("hex");
     const given = c.req.header("idempotency-key");
     const key = given !== undefined ? `run-${createHash("sha256").update(given).digest("hex").slice(0, 40)}` : randomUUID();
+    // A run its key already names is answered as it is; a new one is refused cheaply at a limit.
+    if (context().runPrecheck && !(given !== undefined && await clients.owns(clients.agentId(tenant, key), tenant))) await context().runPrecheck!(tenant);
     // No volume unless the run needs files: its inputs', or file tools it asks for.
     const params = { ...config, type: "run", ...(name !== undefined ? { name } : {}), mounts: mounts ?? (files.length || config.fileTools ? undefined : []) };
     const made = await createRun(tenant, params, key, { retentionMs, fingerprint, ttlMs: RUN_BOUND_MS + retentionMs });

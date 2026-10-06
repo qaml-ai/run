@@ -76,6 +76,15 @@ export class BusyAgents {
     });
   }
 
+  /**
+   * The 429 `hold` would answer for a new busy agent of `tenant` now, without taking a slot: a stateless run checks this
+   * before it makes anything, and `hold` still decides when the run is accepted.
+   */
+  async check(tenant: string): Promise<HttpError | undefined> {
+    const [busy, limit] = await Promise.all([busyCount(this.db, tenant), this.limitFor(tenant, this.db)]);
+    return busy >= limit.limit ? busyLimitError(limit, busy) : undefined;
+  }
+
   /** `agent` is no longer busy here. */
   async release(agent: string) {
     await this.db.query("delete from busy_agents where agent = $1 and node = $2", [agent, this.ownership.node]);

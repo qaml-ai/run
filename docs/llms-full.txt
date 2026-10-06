@@ -1320,9 +1320,11 @@ await agents.runs.abort(run.id);     // a running one
 await agents.runs.messages(run.id);  // within its retention
 ```
 
-An event stream replays what it still holds after `Last-Event-ID`. A run that
-ended a while ago answers its stream with its `response` frame alone; its
-messages are at `/messages` for as long as it is kept.
+**Events are replayable only for a short while.** A run's event stream replays
+what it holds after `Last-Event-ID` while the run is going and for about five
+minutes after it ends (while its node still holds it). After that, `/events`
+answers with the run's `response` frame alone, and the record of what happened is
+`/messages` (and `GET /v1/runs/{id}`), kept for the whole retention window.
 
 ## Idempotency
 
@@ -1345,6 +1347,12 @@ completed step:
   twice (`resumes`). A tool call that completed is not made again. A model call
   that was in flight is simply asked again. A tool call that was in flight when
   the node died has an unknown outcome, which the model is told, as for an agent.
+  As for an agent, a run resumed after its node died reports in `usage` and
+  `toolCalls` only what happened on the node that finished it; its messages have
+  every step.
+- A model that stalls (no first token within `runLimits.firstTokenSeconds`, or
+  silent mid-answer for `runLimits.idleSeconds`) is retried, then the run ends
+  `failed` with code `model_stream_stalled`: it never hangs.
 
 ## Limits and billing
 
@@ -1356,14 +1364,21 @@ run's id is the `requestId` in usage webhooks and traces.
 
 A run that cannot start (busy agents at their limit, runs per minute, no credit)
 is refused with the same errors as an agent's prompt, and leaves nothing behind.
+Busy agents and runs per minute are checked before anything is made, so a burst
+past either is turned away cheaply (429 `BUSY_AGENT_LIMIT` or `RATE_LIMITED`, with
+`Retry-After`).
 
 ## Notes
 
-- A run cannot wait on people: `ask_user` and `schedule` are not among its
-  built-ins, and a definition's approval policy ends it `input_required`.
-- Tools served by your process (`tools`, an attached MCP server) need an agent:
-  a run has no process connected. Serve them over HTTP (`serveTools`) and name
-  them in a definition instead.
+- **A run cannot wait on people.** `ask_user` and `schedule` are not among its
+  built-ins. A tool that asks for approval or input (a definition's approval
+  policy, an MCP server's elicitation) ends the run with status
+  `input_required`, and for a run that is final: there is no way to answer it
+  and resume. Use an agent for work that needs a person's go-ahead.
+- **MCP servers and OpenAPI specs come through a definition.** Name one with
+  `definition`; a run takes no inline `mcpServers`. Tools served by your process
+  (`tools`, an attached MCP server) need an agent: a run has no process connected.
+  Serve them over HTTP (`serveTools`) and name them in a definition instead.
 - The CLI runs one with `camelrun run --stateless "…" [--definition key]`.
 
 ---

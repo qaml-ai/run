@@ -70,6 +70,8 @@ export interface ApiContext {
   requestAnywhere?: RunsContext["requestAnywhere"];
   /** How long an ended run is kept, by default. */
   runRetentionSeconds?: number;
+  /** A new run's cheap check of its tenant's runs per minute and busy agents, before anything is made. */
+  runPrecheck?: RunsContext["runPrecheck"];
   verifyKeys?: boolean;
   scheduler?: Scheduler;
   channels?: Channels;
