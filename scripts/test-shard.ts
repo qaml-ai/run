@@ -12,7 +12,8 @@ import { fileURLToPath } from "node:url";
  * so any machine will do).
  */
 const DEFAULT_SECONDS = 5;
-const TEST_ARGS = ["--experimental-strip-types", "--test", "--test-timeout=120000"];
+// Per test file as well as per test: the longest cluster files (tests/cluster-fresh-lease-*) run past two minutes on a CI runner.
+const TEST_ARGS = ["--experimental-strip-types", "--test", "--test-timeout=240000"];
 const tests = new URL("../tests/", import.meta.url);
 const timingsFile = new URL("timings.json", tests);
 const files = readdirSync(tests).filter(name => name.endsWith(".test.ts")).sort();
