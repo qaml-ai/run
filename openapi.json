@@ -5917,6 +5917,415 @@
           "revision"
         ]
       },
+      "Run": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "run_…"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "running",
+              "completed",
+              "input_required",
+              "failed"
+            ],
+            "description": "running until it ends; then completed, failed, or input_required (a tool asked for approval or input, which a run cannot wait on: it ends there)"
+          },
+          "text": {
+            "type": "string",
+            "description": "The final reply's text (\"\" while running, or when it said nothing)"
+          },
+          "output": {
+            "description": "For a run with output: the answer, which fits its schema"
+          },
+          "error": {
+            "$ref": "#/components/schemas/RunFailure"
+          },
+          "usage": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {},
+            "description": "What its model calls used: responses, input, output, cacheRead, cacheWrite, costUsd (and subagentCostUsd)"
+          },
+          "toolCalls": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": {}
+            }
+          },
+          "toolErrors": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": {}
+            }
+          },
+          "sourceErrors": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": {}
+            }
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": {}
+            }
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "createdAt": {
+            "type": "number"
+          },
+          "startedAt": {
+            "type": "number",
+            "description": "When it began running"
+          },
+          "endedAt": {
+            "type": "number"
+          },
+          "expiresAt": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Once it ended: when its result, events and messages are deleted. null while it runs"
+          },
+          "resumes": {
+            "type": "number",
+            "description": "Times it was resumed after the node running it was lost (at most 2)"
+          },
+          "handoffs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "enum": [
+                    "retire",
+                    "drain"
+                  ]
+                },
+                "at": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "reason",
+                "at"
+              ]
+            },
+            "description": "Times a node leaving the cluster handed it to another at a step boundary, with nothing lost"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "text",
+          "error",
+          "usage",
+          "toolCalls",
+          "toolErrors",
+          "sourceErrors",
+          "files",
+          "expiresAt"
+        ]
+      },
+      "RunFailure": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Stable: model_error, runtime_error, output_missing, spend_limit, turn_limit, aborted…"
+          },
+          "message": {
+            "type": "string"
+          },
+          "uncertain": {
+            "type": "boolean",
+            "description": "The runtime could not tell whether the run's work took effect"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ]
+      },
+      "RunInput": {
+        "type": "object",
+        "properties": {
+          "input": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/RunInputPart"
+                },
+                "minItems": 1
+              }
+            ],
+            "description": "What the run is asked: text, or parts (text and inline files). Files are saved in a workspace volume the run gets for them"
+          },
+          "definition": {
+            "type": "string",
+            "description": "Take the configuration from this definition (its key or id; GET /v1/definitions): model, system prompt, thinking level, tool sources. Fields given here override it, as for an agent"
+          },
+          "model": {
+            "type": "string",
+            "description": "A model id from GET /v1/models; the runtime default when omitted"
+          },
+          "systemPrompt": {
+            "type": "string"
+          },
+          "systemPromptAppend": {
+            "type": "string",
+            "maxLength": 32000
+          },
+          "thinkingLevel": {
+            "type": "string",
+            "enum": [
+              "off",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "builtins": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "web_fetch",
+                "web_search",
+                "delegate"
+              ]
+            },
+            "maxItems": 8,
+            "description": "Tools the runtime answers itself. Not schedule or ask_user: a run has no later and no one to ask"
+          },
+          "delegate": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DelegateSettings"
+              },
+              {
+                "description": "With the delegate builtin: who the model may hand tasks to, and how deep and wide. See the multi-agent guide"
+              }
+            ]
+          },
+          "fileTools": {
+            "type": "boolean",
+            "description": "true: the run gets a workspace volume and file tools. Default: none, unless input has files"
+          },
+          "mounts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Mount"
+            },
+            "description": "Existing volumes for the run's file tools"
+          },
+          "output": {
+            "type": "object",
+            "properties": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": {},
+                "description": "A JSON Schema for an object (type: \"object\"; at most 64 KB)",
+                "example": {
+                  "type": "object",
+                  "properties": {
+                    "sentiment": {
+                      "type": "string",
+                      "enum": [
+                        "positive",
+                        "neutral",
+                        "negative"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "sentiment"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "schema"
+            ],
+            "additionalProperties": false,
+            "description": "Structured output: the agent ends this run by calling a final_output tool whose arguments are the schema, checked against it (a call that does not fit goes back to the model with what is wrong). The run's outcome.result.output is that object. A model that answers in text instead is asked once more, with a reminder; a run that still ends without an output fails with code output_missing. The tool stays declared until a prompt without output. Not with whileRunning: steer"
+          },
+          "keyScope": {
+            "type": "string"
+          },
+          "modelHeaders": {
+            "$ref": "#/components/schemas/ModelHeaders"
+          },
+          "spendLimit": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SpendLimitInput"
+              },
+              {
+                "description": "The run's budget in USD: it ends before its next model request once it has spent this"
+              }
+            ]
+          },
+          "runLimits": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/RunLimits"
+              },
+              {
+                "description": "The most one run may take. At either, the turn ends before its next model request, after the tool calls of the response that reached it, with stopped \"turn_limit\" and code turn_limit; send another message to continue. Values above the runtime's maximums count as those"
+              }
+            ]
+          },
+          "subject": {
+            "type": "string",
+            "description": "Who the run acts for (a user id in your app): `sub` in its tool servers' identity tokens"
+          },
+          "context": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Claims your tool servers need, as `ctx` in its identity tokens; at most 4 KB"
+          },
+          "actor": {
+            "type": "string",
+            "description": "Who is acting in this turn (a user id in your app): `act` in its tools' identity tokens"
+          },
+          "from": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "The sender's id in your app; the model may rely on it"
+              },
+              "name": {
+                "type": "string",
+                "description": "Display name, chosen by the sender"
+              },
+              "username": {
+                "type": "string",
+                "description": "Handle, chosen by the sender"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false,
+            "description": "Who sent this message. The model sees it in a block only the runtime can write; `from.id` is also the turn's actor unless `actor` is given"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Your own key-value data about this message (its source, a client-side id): at most 16 keys of 1–64 characters, values of at most 512. Kept on the user message (history, events, snapshots) and the request, and sent with its run's webhook events; never shown to the model",
+            "example": {
+              "source": "web",
+              "clientMessageId": "m_123"
+            }
+          },
+          "name": {
+            "type": "string",
+            "description": "A name for the run, in its traces"
+          },
+          "wait": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "number",
+                "minimum": 0
+              }
+            ],
+            "description": "Wait for the run to end before answering: true for up to 60 seconds, or a number of seconds (at most 60). It answers 200 with the ended run, or 202 with it still running when the wait ends. Default: answer at once, 202. ?wait=<seconds> does the same"
+          },
+          "retentionSeconds": {
+            "type": "integer",
+            "minimum": 60,
+            "maximum": 604800,
+            "description": "How long the run's result, events and messages are kept once it ends, before they are deleted: 60 to 604800 seconds. Default: the runtime's (86400)"
+          }
+        },
+        "required": [
+          "input"
+        ],
+        "additionalProperties": false
+      },
+      "RunInputPart": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "text"
+                ]
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "file"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "data": {
+                "type": "string",
+                "description": "The file's bytes, base64: at most 4 MiB across a run's inline files"
+              },
+              "contentType": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "data"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
       "MountsInput": {
         "type": "object",
         "properties": {
@@ -12427,6 +12836,315 @@
                   "items": {
                     "$ref": "#/components/schemas/DefinitionAgent"
                   }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Seconds to wait for the run to end (at most 60 on create, 25 here): it answers as soon as it does, else when the wait ends, still running"
+            },
+            "required": false,
+            "description": "Seconds to wait for the run to end (at most 60 on create, 25 here): it answers as soon as it does, else when the wait ends, still running",
+            "name": "wait",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Sending the same key with the same body returns the same run (while it is kept); the key with another body is a 409"
+            },
+            "required": false,
+            "description": "Sending the same key with the same body returns the same run (while it is kept); the key with another body is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The run, ended (with wait)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Run"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "The run, still running: GET /v1/runs/{id} or its events for the rest",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Run"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/{id}": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The run's id (run_…)"
+            },
+            "required": true,
+            "description": "The run's id (run_…)",
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Seconds to wait for the run to end (at most 60 on create, 25 here): it answers as soon as it does, else when the wait ends, still running"
+            },
+            "required": false,
+            "description": "Seconds to wait for the run to end (at most 60 on create, 25 here): it answers as soon as it does, else when the wait ends, still running",
+            "name": "wait",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The run: running, or how it ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Run"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The run's id (run_…)"
+            },
+            "required": true,
+            "description": "The run's id (run_…)",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The run is deleted now, before its retention ends: running, it stops",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "deleted"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/{id}/events": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The run's id (run_…)"
+            },
+            "required": true,
+            "description": "The run's id (run_…)",
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Resume after this event id. Without one, or one the stream no longer has, it starts with a snapshot of the run so far"
+            },
+            "required": false,
+            "description": "Resume after this event id. Without one, or one the stream no longer has, it starts with a snapshot of the run so far",
+            "name": "last-event-id",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Server-sent events as an agent's (`id: <cursor>`, `data: <ClientEvent>`), after a `ready` frame, ending with the run's `response`. A run that ended a while ago answers with its response alone; its messages are at /messages",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/{id}/messages": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The run's id (run_…)"
+            },
+            "required": true,
+            "description": "The run's id (run_…)",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The run's messages: its input, the model's turns and tool results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/History"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/{id}/abort": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The run's id (run_…)"
+            },
+            "required": true,
+            "description": "The run's id (run_…)",
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The run is aborted: it ends failed, code aborted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "aborted": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "aborted"
+                  ]
                 }
               }
             }

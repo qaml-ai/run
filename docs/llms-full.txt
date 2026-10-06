@@ -202,6 +202,10 @@ never loses the run: `run()` (or `stream.result()`) still resolves with it.
   process serving its tools went away mid-call: check them.
 - `agents.close()` let the process exit. The agent stays in the runtime.
 
+One answer per input, with nothing to remember (classify, extract, vote)?
+Skip the agent: `await agents.run({ instructions, input, output })` is one call,
+and keeps nothing between runs. See [Stateless runs](https://run.camelai.com/docs/guides/stateless-runs.md).
+
 Next: [Concepts](https://run.camelai.com/docs/concepts.md), then the guide for what you are building:
 [a chat in your app](https://run.camelai.com/docs/frontend.md) (`npm create @camelai/run-app`),
 [tools](https://run.camelai.com/docs/guides/tools.md), [asking people](https://run.camelai.com/docs/guides/human-input.md),
@@ -313,6 +317,14 @@ run itself goes on, and `agent.abort()` stops it: the running turn ends, and the
 runs queued behind it are cancelled (code `cancelled`), so nothing runs after the
 stop (`abort({ queued: "keep" })` stops the running turn only). A failed run throws a
 `RunError` carrying the run, unless you pass `throwOnError: false`.
+
+### Stateless runs
+
+When each answer should stand alone (classify, extract, vote, judge), there is
+no agent to keep: `agents.run({ instructions, input, output })` (REST:
+`POST /v1/runs`) takes a configuration and an input and returns the result,
+with nothing carried over and no agent made. It is as durable as an agent's run
+and counts against the same limits. See [Stateless runs](https://run.camelai.com/docs/guides/stateless-runs.md).
 
 ### Long conversations
 
@@ -1203,6 +1215,156 @@ as text: a question's numbered options, the call to approve, the URL, a
 confirmation. The next message from someone allowed to answer, if it fits (an
 option's number or label, `approve`/`yes` or `deny`/`no`, `done`), is the answer;
 anything else is a new message. See [Channels](https://run.camelai.com/docs/guides/channels.md).
+
+---
+
+<!-- https://run.camelai.com/docs/guides/stateless-runs.md -->
+
+# Stateless runs
+
+A stateless run is one call: a configuration and an input in, the result out.
+Nothing carries over between runs and no agent is kept, so fifty runs with the
+same configuration are fifty independent answers, not one conversation.
+
+```ts
+import { Agents } from "@camelai/run";
+import { z } from "zod";
+
+const agents = new Agents(); // CAMELAI_API_KEY
+const run = await agents.run({
+  instructions: "You review release plans. Vote yes or no, with one reason.",
+  input: "Ship the billing migration on Friday afternoon?",
+  output: z.object({ vote: z.enum(["yes", "no"]), reason: z.string() }),
+});
+run.output; // { vote: "no", reason: "…" }
+```
+
+```python
+from camelai_run import Agents
+from pydantic import BaseModel
+from typing import Literal
+
+class Vote(BaseModel):
+    vote: Literal["yes", "no"]
+    reason: str
+
+async with Agents() as agents:
+    run = await agents.run("Ship the billing migration on Friday afternoon?",
+                           instructions="You review release plans. Vote yes or no, with one reason.", output=Vote)
+    print(run.output.vote)
+```
+
+```bash
+curl -s https://run.camelai.com/v1/runs -H "Authorization: Bearer $CAMELAI_API_KEY" \
+  -H "Content-Type: application/json" -d '{
+    "systemPrompt": "You review release plans. Vote yes or no, with one reason.",
+    "input": "Ship the billing migration on Friday afternoon?",
+    "wait": true
+  }'
+# 200 with the ended run, or 202 with it still running: GET /v1/runs/<id>?wait=25 for the rest.
+```
+
+## Runs or agents
+
+| | Stateless run (`POST /v1/runs`) | Agent (`POST /v1/agents`, `agents.upsert`) |
+| --- | --- | --- |
+| History | None: each run starts empty | Kept: each run continues the conversation |
+| Lifetime | Its result is kept for a retention window (a day by default), then deleted | Until you delete it (keyed) |
+| Tools | Built-ins (`web_fetch`, `web_search`, `delegate`), a definition's MCP servers and OpenAPI specs, `js_exec` | Also tools served by your process (`tools`), schedules and human input |
+| Listed in `GET /v1/agents` | No | Yes |
+| Use it for | Classify, extract, vote, judge, summarize: one answer per input | Chats, assistants, anything that remembers |
+
+Use a run when the answer depends only on what you send. Use an agent when it
+should remember, wait on a person, or call tools that run in your process.
+
+## What a run takes
+
+The fields an agent takes, plus the input:
+
+- `input`: a string, or parts: `[{ "type": "text", "text": "…" }, { "type": "file", "name": "a.pdf", "data": "<base64>" }]`.
+  Files (at most 4 MiB in all) give the run a workspace volume to hold them.
+- `definition`: a definition's key or id, so the configuration is not sent each
+  time. Fields given alongside override it, as for an agent.
+- `model`, `systemPrompt`, `systemPromptAppend`, `thinkingLevel`, `builtins`
+  (`web_fetch`, `web_search`, `delegate`), `delegate`, `keyScope`, `modelHeaders`,
+  `runLimits`, `subject`, `context`.
+- `output`: a schema for a structured answer (see [Structured output](https://run.camelai.com/docs/guides/structured-output.md)).
+- `spendLimit`: the run's budget in USD.
+- `fileTools: true`: a workspace and file tools. Without files or this, a run has
+  no volume at all.
+- `actor`, `from`, `metadata`: who sent it, and your own data, kept on the run.
+- `retentionSeconds`: how long its result, events and messages are kept once it
+  ends (60 to 604800; the runtime's default is a day).
+- `wait`: `true` (up to 60 seconds) or a number of seconds to wait for the end.
+
+The SDKs take the same configuration with their usual names (`instructions`,
+`output` as zod, TypeBox or pydantic).
+
+## Following a run
+
+| | |
+| --- | --- |
+| `GET /v1/runs/{id}` | The run: `status` (`running`, `completed`, `failed`, `input_required`), `text`, `output`, `error`, `usage`, `toolCalls`, `toolErrors`. `?wait=25` waits for its end first |
+| `GET /v1/runs/{id}/events` | Its events as server-sent events, ending with its `response`. Reconnect with `Last-Event-ID` and the stream picks up after it |
+| `GET /v1/runs/{id}/messages` | Its messages: the input, the model's turns, tool results |
+| `POST /v1/runs/{id}/abort` | Stop it: it ends `failed`, code `aborted` |
+| `DELETE /v1/runs/{id}` | Delete it now, before its retention ends |
+
+```ts
+const stream = await agents.runs.stream({ instructions: "…", input: "…" });
+for await (const part of stream) if (part.type === "text") process.stdout.write(part.text);
+const run = await stream.result();
+
+await agents.runs.get(run.id);       // as it ended
+await agents.runs.abort(run.id);     // a running one
+await agents.runs.messages(run.id);  // within its retention
+```
+
+An event stream replays what it still holds after `Last-Event-ID`. A run that
+ended a while ago answers its stream with its `response` frame alone; its
+messages are at `/messages` for as long as it is kept.
+
+## Idempotency
+
+Send an `Idempotency-Key` (the SDKs' `idempotencyKey`, `idempotency_key`) and
+the same key with the same body is the same run, while it is kept: a retry after
+a lost response never starts a second one. The same key with another body is a
+409 `IDEMPOTENCY_CONFLICT`. Without a key every create is a new run (the SDKs
+make one up per call, so their own retries are safe).
+
+## Durability
+
+A run is as durable as an agent's run, within itself. If the node running it
+dies, or a deploy retires it, the run goes on on another node from its last
+completed step:
+
+- A node that retires (a deploy) lets the step in flight finish, then hands the
+  run to another node at that step boundary. Nothing is lost and nothing runs
+  twice (`handoffs` lists them).
+- A node that dies: another node resumes the run from its transcript, at most
+  twice (`resumes`). A tool call that completed is not made again. A model call
+  that was in flight is simply asked again. A tool call that was in flight when
+  the node died has an unknown outcome, which the model is told, as for an agent.
+
+## Limits and billing
+
+A run counts as an agent's run does: against runs per minute, and against busy
+agents while it runs (concurrency is what a run costs). It is not an agent create,
+so creating runs does not count against agent creates, and it takes no place among
+your agents. Model usage, agent time and web tools are billed as for agents. The
+run's id is the `requestId` in usage webhooks and traces.
+
+A run that cannot start (busy agents at their limit, runs per minute, no credit)
+is refused with the same errors as an agent's prompt, and leaves nothing behind.
+
+## Notes
+
+- A run cannot wait on people: `ask_user` and `schedule` are not among its
+  built-ins, and a definition's approval policy ends it `input_required`.
+- Tools served by your process (`tools`, an attached MCP server) need an agent:
+  a run has no process connected. Serve them over HTTP (`serveTools`) and name
+  them in a definition instead.
+- The CLI runs one with `camelrun run --stateless "…" [--definition key]`.
 
 ---
 
@@ -3793,6 +3955,44 @@ const fork = await agent.fork({ key: "support-b", atMessage: 5 });
 await fork.run("Try the other approach");
 ```
 
+### `agents.run(config)` and `agents.runs`
+
+A stateless run ([guide](https://run.camelai.com/docs/guides/stateless-runs.md)): a configuration and an
+input in, a `Run` out, nothing carried over and no agent made.
+
+```ts
+const run = await agents.run({ instructions: "Vote yes or no.", input: "Ship on Friday?", output: Vote });
+```
+
+```python
+run = await agents.run("Ship on Friday?", instructions="Vote yes or no.", output=Vote)
+```
+
+`config` takes an agent's configuration (`model`, `instructions`,
+`instructionsAppend`, `definition`, `builtins`: `web_fetch`, `web_search`,
+`delegate`; `delegate`, `thinkingLevel`, `subject`, `context`, `keyScope`,
+`runLimits`, `modelHeaders`, `mounts`, `fileTools`, `name`) and the run's own:
+`input`, `files` (inline bytes), `output`, `user`, `metadata`, `idempotencyKey`,
+`spendLimit`, `retentionSeconds`, `signal`, `throwOnError`, `traceparent`
+(Python: snake_case keywords, `input` first). It resolves with a `Run` (no
+`inputs`), and throws a `RunError` when the run failed unless
+`throwOnError: false`.
+
+| `agents.runs.` | |
+| --- | --- |
+| `create(config, { wait })` | start one; resolves at once with the runtime's view (`StatelessRun`: `status` `running`…), or with `wait` once it ends within it |
+| `get(id, { wait })` | the run, as it is or as it ended (`wait`: seconds, at most 25) |
+| `stream(config)` / `stream(id)` | resolves with a stream of its parts (as an agent's, without `input_required`), `done` last; `result()` is the run |
+| `abort(id)` | stop it: it ends `failed`, code `aborted` |
+| `delete(id)` | delete it before its retention ends |
+| `messages(id)` | its messages |
+| `events(id, { lastEventId })` | its raw event frames, to its `response`, reconnecting with `Last-Event-ID` |
+
+Python's `agents.runs.stream(input, …)` or `stream(run_id=…)` resolves with a
+`StatelessRunStream`. The lower level is `runtime.createRun`, `getRun`,
+`waitForRun`, `abortRun`, `deleteRun`, `runMessages` and `runEvents` (Python:
+`create_run`, `get_run`, …).
+
 ### `Run`
 
 `{ id, status, text, output?, inputs, error, usage, files, toolErrors, toolCalls, sourceErrors, raw }`
@@ -4067,6 +4267,11 @@ application keeps serving its tools.
   `RequestRecord`, `TelemetrySettings`, `TelemetryInput` and `TelemetryTestResult`;
   Python's `create_agent` takes `prompt=`.
 - CLI: `camelrun telemetry get|set|test|clear`, and `run --traceparent`.
+- Stateless runs: `agents.run({ instructions, input, output })` (Python
+  `agents.run(input, …)`) runs once with nothing carried over and no agent made;
+  `agents.runs` creates, reads, streams, aborts and deletes them. See
+  [Stateless runs](https://run.camelai.com/docs/guides/stateless-runs.md). CLI: `camelrun run --stateless`,
+  `camelrun runs get <runId>`.
 
 ## 0.15.0 (TypeScript) / 0.11.0 (Python), 2026-10-03
 
@@ -4324,6 +4529,8 @@ its id (`def_…`).
 | `agents delete <agent> --yes` | stop an agent and purge its history and files |
 | `run <agent> <message…>` | send a message and print the reply |
 | `runs get <agent> <requestId> [--wait s]` | a run's result |
+| `run --stateless <message…> [--definition d] [--model m] [--prompt text] [--thinking level] [--request-id key]` | a [stateless run](https://run.camelai.com/docs/guides/stateless-runs.md): the answer, with nothing carried over and no agent kept |
+| `runs get <runId> [--wait s]` | a stateless run's result |
 | `history <agent> [--limit n]` | its latest messages, tool calls included |
 | `abort <agent>` | stop it: its running turn, and the runs queued behind it |
 | `inputs [agent]` / `answer <agent> <inputId> <value>` | questions and approvals waiting on someone, and answering them |
@@ -4988,6 +5195,10 @@ reading them and sending them input do not count; only runs do.
 | A quiet model stream | a model request that sends nothing before its first token (text, thinking or a tool call) for 120 s (300 s for a reasoning model at `thinkingLevel` high and up), or nothing for 45 s once it streams, is ended as stalled and retried like other transient failures; keep-alives do not count. `runLimits.firstTokenSeconds` and `runLimits.idleSeconds` set an agent's or definition's own (1 to 3,600); the operator sets the runtime's (`AGENT_MODEL_FIRST_TOKEN_SECONDS`, `AGENT_MODEL_IDLE_SECONDS`). Past every retry the run fails with code `model_stream_stalled` |
 | Wait | none beyond a run's time limit; a turn waiting on people (`input_required`) is not running, and may wait for days. The SDKs have no default timeout |
 | `Idempotency-Key` header (any other POST) | 1–255 characters; its answer is kept for 24 hours |
+| Stateless run (`POST /v1/runs`) body | 7 MiB, with inline files (4 MiB of files in all) |
+| A stateless run's `wait` | at most 60 seconds on create, 25 on `GET /v1/runs/{id}`; it then answers with the run still running |
+| A stateless run's retention | its result, events and messages are kept for a day after it ends (`retentionSeconds`: 60 to 604800; the operator's default is `AGENT_RUN_RETENTION_SECONDS`), then deleted. Its `Idempotency-Key` names it for as long. A run whose end was never recorded (its node died at that moment) is deleted 7 days after its retention would have begun |
+| Stateless runs and limits | each counts against runs per minute and busy agents, as an agent's run does; not against agent creates or the agents a tenant has |
 
 ## Files
 

@@ -92,6 +92,8 @@ its id (`def_…`).
 | `agents delete <agent> --yes` | stop an agent and purge its history and files |
 | `run <agent> <message…>` | send a message and print the reply |
 | `runs get <agent> <requestId> [--wait s]` | a run's result |
+| `run --stateless <message…> [--definition d] [--model m] [--prompt text] [--thinking level] [--request-id key]` | a [stateless run](../guides/stateless-runs.md): the answer, with nothing carried over and no agent kept |
+| `runs get <runId> [--wait s]` | a stateless run's result |
 | `history <agent> [--limit n]` | its latest messages, tool calls included |
 | `abort <agent>` | stop it: its running turn, and the runs queued behind it |
 | `inputs [agent]` / `answer <agent> <inputId> <value>` | questions and approvals waiting on someone, and answering them |

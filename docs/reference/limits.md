@@ -125,6 +125,10 @@ reading them and sending them input do not count; only runs do.
 | A quiet model stream | a model request that sends nothing before its first token (text, thinking or a tool call) for 120 s (300 s for a reasoning model at `thinkingLevel` high and up), or nothing for 45 s once it streams, is ended as stalled and retried like other transient failures; keep-alives do not count. `runLimits.firstTokenSeconds` and `runLimits.idleSeconds` set an agent's or definition's own (1 to 3,600); the operator sets the runtime's (`AGENT_MODEL_FIRST_TOKEN_SECONDS`, `AGENT_MODEL_IDLE_SECONDS`). Past every retry the run fails with code `model_stream_stalled` |
 | Wait | none beyond a run's time limit; a turn waiting on people (`input_required`) is not running, and may wait for days. The SDKs have no default timeout |
 | `Idempotency-Key` header (any other POST) | 1–255 characters; its answer is kept for 24 hours |
+| Stateless run (`POST /v1/runs`) body | 7 MiB, with inline files (4 MiB of files in all) |
+| A stateless run's `wait` | at most 60 seconds on create, 25 on `GET /v1/runs/{id}`; it then answers with the run still running |
+| A stateless run's retention | its result, events and messages are kept for a day after it ends (`retentionSeconds`: 60 to 604800; the operator's default is `AGENT_RUN_RETENTION_SECONDS`), then deleted. Its `Idempotency-Key` names it for as long. A run whose end was never recorded (its node died at that moment) is deleted 7 days after its retention would have begun |
+| Stateless runs and limits | each counts against runs per minute and busy agents, as an agent's run does; not against agent creates or the agents a tenant has |
 
 ## Files
 

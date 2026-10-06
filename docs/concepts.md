@@ -99,6 +99,14 @@ runs queued behind it are cancelled (code `cancelled`), so nothing runs after th
 stop (`abort({ queued: "keep" })` stops the running turn only). A failed run throws a
 `RunError` carrying the run, unless you pass `throwOnError: false`.
 
+### Stateless runs
+
+When each answer should stand alone (classify, extract, vote, judge), there is
+no agent to keep: `agents.run({ instructions, input, output })` (REST:
+`POST /v1/runs`) takes a configuration and an input and returns the result,
+with nothing carried over and no agent made. It is as durable as an agent's run
+and counts against the same limits. See [Stateless runs](guides/stateless-runs.md).
+
 ### Long conversations
 
 An agent's history can outgrow its model's context window, so the runtime

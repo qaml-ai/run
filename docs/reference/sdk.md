@@ -168,6 +168,44 @@ const fork = await agent.fork({ key: "support-b", atMessage: 5 });
 await fork.run("Try the other approach");
 ```
 
+### `agents.run(config)` and `agents.runs`
+
+A stateless run ([guide](../guides/stateless-runs.md)): a configuration and an
+input in, a `Run` out, nothing carried over and no agent made.
+
+```ts
+const run = await agents.run({ instructions: "Vote yes or no.", input: "Ship on Friday?", output: Vote });
+```
+
+```python
+run = await agents.run("Ship on Friday?", instructions="Vote yes or no.", output=Vote)
+```
+
+`config` takes an agent's configuration (`model`, `instructions`,
+`instructionsAppend`, `definition`, `builtins`: `web_fetch`, `web_search`,
+`delegate`; `delegate`, `thinkingLevel`, `subject`, `context`, `keyScope`,
+`runLimits`, `modelHeaders`, `mounts`, `fileTools`, `name`) and the run's own:
+`input`, `files` (inline bytes), `output`, `user`, `metadata`, `idempotencyKey`,
+`spendLimit`, `retentionSeconds`, `signal`, `throwOnError`, `traceparent`
+(Python: snake_case keywords, `input` first). It resolves with a `Run` (no
+`inputs`), and throws a `RunError` when the run failed unless
+`throwOnError: false`.
+
+| `agents.runs.` | |
+| --- | --- |
+| `create(config, { wait })` | start one; resolves at once with the runtime's view (`StatelessRun`: `status` `running`…), or with `wait` once it ends within it |
+| `get(id, { wait })` | the run, as it is or as it ended (`wait`: seconds, at most 25) |
+| `stream(config)` / `stream(id)` | resolves with a stream of its parts (as an agent's, without `input_required`), `done` last; `result()` is the run |
+| `abort(id)` | stop it: it ends `failed`, code `aborted` |
+| `delete(id)` | delete it before its retention ends |
+| `messages(id)` | its messages |
+| `events(id, { lastEventId })` | its raw event frames, to its `response`, reconnecting with `Last-Event-ID` |
+
+Python's `agents.runs.stream(input, …)` or `stream(run_id=…)` resolves with a
+`StatelessRunStream`. The lower level is `runtime.createRun`, `getRun`,
+`waitForRun`, `abortRun`, `deleteRun`, `runMessages` and `runEvents` (Python:
+`create_run`, `get_run`, …).
+
 ### `Run`
 
 `{ id, status, text, output?, inputs, error, usage, files, toolErrors, toolCalls, sourceErrors, raw }`
@@ -442,6 +480,11 @@ application keeps serving its tools.
   `RequestRecord`, `TelemetrySettings`, `TelemetryInput` and `TelemetryTestResult`;
   Python's `create_agent` takes `prompt=`.
 - CLI: `camelrun telemetry get|set|test|clear`, and `run --traceparent`.
+- Stateless runs: `agents.run({ instructions, input, output })` (Python
+  `agents.run(input, …)`) runs once with nothing carried over and no agent made;
+  `agents.runs` creates, reads, streams, aborts and deletes them. See
+  [Stateless runs](../guides/stateless-runs.md). CLI: `camelrun run --stateless`,
+  `camelrun runs get <runId>`.
 
 ## 0.15.0 (TypeScript) / 0.11.0 (Python), 2026-10-03
 

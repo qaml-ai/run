@@ -155,6 +155,12 @@ asyncio.run(main())
   view, a Celery task), run it with `asyncio.run(...)`. Python names are snake_case: `run.tool_errors`,
   `throw_on_error=False`, `context.idempotency_key`, a stream part's `is_error`.
 
+- **Runs or agents.** An agent keeps its history: right for chats, assistants and anything that remembers. When each
+  answer stands alone (classify, extract, vote, judge, summarize one input), use a stateless run instead:
+  `agents.run({ instructions, input, output })` (Python `agents.run(input, instructions=…, output=…)`, REST
+  `POST /v1/runs`) is one call, keeps nothing between runs, and makes no agent, so it never uses up agent creates.
+  Don't make an agent per input. A run has no tools from this process (`tools`); give it built-ins or a definition's
+  served tools. See https://run.camelai.com/docs/guides/stateless-runs.md.
 - **Keys.** `upsert(key, …)` with the same key is the same agent, with its history. Choose a stable key.
 - **Branching.** To branch a conversation (a user edits an earlier message, or you try another approach), fork the
   agent: `agent.fork({ key, atMessage })` copies its configuration, history and files into a new agent. Don't rebuild
