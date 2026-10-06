@@ -13,15 +13,16 @@
 
 #[cfg(target_os = "linux")]
 #[allow(non_snake_case)]
-pub fn install(jitless: bool, debug: bool) -> Result<(), String> {
+pub fn install(jitless: bool, debug: Debug) -> Result<(), String> {
   use libc::*;
   #[cfg(target_arch = "x86_64")]
   const ARCH: u32 = 0xC000_003E; // AUDIT_ARCH_X86_64
   #[cfg(target_arch = "aarch64")]
   const ARCH: u32 = 0xC000_00B7; // AUDIT_ARCH_AARCH64
   const RET_ALLOW: u32 = 0x7fff_0000;
-  // --seccomp-debug (scripts/v8-syscalls.ts): a call outside the list fails with ENOSYS instead, so strace shows it.
-  let RET_KILL_PROCESS: u32 = if debug { 0x0005_0000 | ENOSYS as u32 } else { 0x8000_0000 };
+  // scripts/v8-syscalls.ts: under --seccomp-debug a call outside the list fails with ENOSYS instead, so strace
+  // shows it; under --seccomp-trap it raises SIGSYS, whose handler (main.rs) prints its number and exits.
+  let RET_KILL_PROCESS: u32 = match debug { Debug::Off => 0x8000_0000, Debug::Errno => 0x0005_0000 | ENOSYS as u32, Debug::Trap => 0x0003_0000 };
   const LD_W_ABS: u16 = 0x20; // BPF_LD | BPF_W | BPF_ABS
   const JEQ_K: u16 = 0x15; // BPF_JMP | BPF_JEQ | BPF_K
   const JSET_K: u16 = 0x45; // BPF_JMP | BPF_JSET | BPF_K
@@ -85,4 +86,8 @@ pub fn install(jitless: bool, debug: bool) -> Result<(), String> {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn install(_jitless: bool, _debug: bool) -> Result<(), String> { Ok(()) }
+pub fn install(_jitless: bool, _debug: Debug) -> Result<(), String> { Ok(()) }
+
+/// How a call outside the list ends: killing the process, or for tracing it, failing with ENOSYS or trapping.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Debug { Off, Errno, Trap }

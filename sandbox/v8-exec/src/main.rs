@@ -405,7 +405,9 @@ fn main() {
   // guest's code is parsed, TypeScript stripping included.
   if !args.iter().any(|arg| arg == "--no-seccomp") {
     let _ = started_rx.recv();
-    if let Err(error) = seccomp::install(jitless, args.iter().any(|arg| arg == "--seccomp-debug")) { answer_and_exit(&id, Err(format!("v8-exec could not install its seccomp filter: {error}"))); }
+    let debug = if args.iter().any(|arg| arg == "--seccomp-debug") { seccomp::Debug::Errno }
+      else if args.iter().any(|arg| arg == "--seccomp-trap") { trap_sigsys(); seccomp::Debug::Trap } else { seccomp::Debug::Off };
+    if let Err(error) = seccomp::install(jitless, debug) { answer_and_exit(&id, Err(format!("v8-exec could not install its seccomp filter: {error}"))); }
   }
   // Test hook (tests/v8-exec.test.ts): a call the filter does not allow, which must kill the process.
   if args.iter().any(|arg| arg == "--test-forbidden-syscall") { unsafe { libc::getuid() }; }
@@ -502,6 +504,23 @@ fn main() {
     result
   });
   answer_and_exit(&id, Ok(result));
+}
+
+/// --seccomp-trap: print the number of the call the filter refused ("seccomp: syscall <n>") to stderr, and exit 99.
+fn trap_sigsys() {
+  #[cfg(target_os = "linux")]
+  unsafe {
+    extern "C" fn on_sigsys(_signal: libc::c_int, info: *mut libc::siginfo_t, _context: *mut c_void) {
+      // siginfo_t's SIGSYS fields: _call_addr at 16, _syscall (an int) at 24, on both 64-bit Linux ABIs.
+      let number = unsafe { *(info as *const u8).add(24).cast::<i32>() };
+      let text = format!("seccomp: syscall {number}\n");
+      unsafe { libc::write(2, text.as_ptr().cast(), text.len()); libc::_exit(99) };
+    }
+    let mut action: libc::sigaction = std::mem::zeroed();
+    action.sa_sigaction = on_sigsys as usize;
+    action.sa_flags = libc::SA_SIGINFO;
+    libc::sigaction(libc::SIGSYS, &action, std::ptr::null_mut());
+  }
 }
 
 fn helper<'s>(scope: &mut v8::PinScope<'s, '_>, helpers: v8::Local<'s, v8::Array>, index: u32) -> v8::Local<'s, v8::Function> {

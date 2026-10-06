@@ -61,4 +61,18 @@ for (const [index, code] of snippets.entries()) {
     if (!readFileSync(join(dir, file), "utf8").includes("execve(")) for (const line of readFileSync(join(dir, file), "utf8").split("\n")) { const name = /^([a-z0-9_]+)\(/.exec(line)?.[1]; if (name) afterRequest.add(name); }
   }
 }
-console.log(JSON.stringify({ jitless, killedBy: [...killedBy], total: all.size, afterRequest: afterRequest.size, afterRequestCalls: [...afterRequest].sort(), all: [...all].sort() }, null, 1));
+// Then each again without strace (which changes timing), under --seccomp-trap: the filter's refusals as numbers.
+const trapped = new Set<string>();
+for (const code of snippets) {
+  const child = spawn(v8ExecBinary(), ["--max-data-mb", "512", ...(jitless ? ["--jitless"] : []), "--seccomp-trap"], { stdio: ["pipe", "pipe", "pipe"] });
+  let stderr = "";
+  child.stderr!.on("data", chunk => { stderr += chunk; });
+  const done = new Promise<void>(resolve => child.once("close", () => resolve()));
+  const write = frames(child.stdout as Socket, (message: any) => {
+    if (message.type === "request") write({ type: "response", id: message.id, result: JSON.stringify({ a: 1 }) });
+  }, undefined, child.stdin as Socket);
+  write({ type: "request", id: "x", method: "execute", params: { code, tools: ["echo"], timeoutMs: 10_000, maxOutputCharacters: 1000, cpuMs: 2000 } });
+  await done;
+  for (const match of stderr.matchAll(/seccomp: syscall (\d+)/g)) trapped.add(`${match[1]} (${code.slice(0, 40)})`);
+}
+console.log(JSON.stringify({ jitless, trapped: [...trapped], killedBy: [...killedBy], total: all.size, afterRequest: afterRequest.size, afterRequestCalls: [...afterRequest].sort(), all: [...all].sort() }, null, 1));
