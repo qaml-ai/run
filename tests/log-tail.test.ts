@@ -196,6 +196,30 @@ test("an append's effects commit in its transaction, under its fence, once: not 
   assert.deepEqual(await effects(), [1, 3]);
 });
 
+test("a rewrite after a failed write commits that write's effects once, whether or not it had landed", async t => {
+  const { db } = await testDatabase();
+  await db.query("create table effects (n int)");
+  const effect = (n: number) => async (sql?: { query(text: string, values?: unknown[]): Promise<unknown> }) => { await sql!.query("insert into effects values ($1)", [n]); };
+  for (const landed of [true, false]) {
+    const real = postgresTail(db, { unfenced: true });
+    let fail = true;
+    // The first append fails: after it committed (its answer lost), or before.
+    const tail: LogTail = { ...real, append: async (key, claim, rows, effects) => {
+      if (!fail) return real.append(key, claim, rows, effects);
+      fail = false;
+      if (landed) await real.append(key, claim, rows, effects);
+      throw new Error("connection reset");
+    } };
+    const key = `sessions/agent_${landed}/transcript`;
+    const log = memoryStorage(tail).log<{ n: number }>(key);
+    log.append({ n: 1 }, effect(landed ? 1 : 2));
+    await assert.rejects(log.flush(true), /connection reset/);
+    await log.rewrite(() => [{ n: 1 }]);
+    assert.deepEqual(await memoryStorage(real).log(key).read(), [{ n: 1 }]);
+  }
+  assert.deepEqual((await db.query("select n from effects order by n")).rows.map(row => row.n), [1, 2]);
+});
+
 test("a stale owner's compaction keeps the blobs its successor names again", async t => {
   const { db } = await testDatabase();
   const real = postgresTail(db);
