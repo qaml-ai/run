@@ -209,8 +209,8 @@ export class Tenants {
   /** The tenant's own model endpoints, if its entry has any. */
   modelEndpoints(id: string) { return this.byId.get(id)?.modelEndpoints; }
 
-  /** The platform's key for `provider`. */
-  platformKey(provider: string): string | undefined { return this.platform[provider]; }
+  /** The platform's key for `provider`, if the file gives one. */
+  platformKey(provider: string): string | undefined { return Object.hasOwn(this.platform, provider) ? this.platform[provider] : undefined; }
 
   /** Providers the platform has keys for. Names only. */
   platformProviders() { return Object.keys(this.platform); }
@@ -219,7 +219,11 @@ export class Tenants {
   providers(id: string) { return Object.keys(this.byId.get(id)?.apiKeys ?? {}); }
 
   /** The key an admin configured for agents of `tenantId` to use for `provider`. */
-  apiKey(tenantId: string, provider: string): string | undefined { return this.byId.get(tenantId)?.apiKeys[provider]; }
+  apiKey(tenantId: string, provider: string): string | undefined {
+    // Only keys the file gives: a provider named after an object's own members ("constructor") has none.
+    const keys = this.byId.get(tenantId)?.apiKeys;
+    return keys && Object.hasOwn(keys, provider) ? keys[provider] : undefined;
+  }
 }
 
 function validEndpoints(tenant: string, endpoints: unknown) {

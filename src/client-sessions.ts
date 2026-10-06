@@ -275,7 +275,10 @@ const REQUEST_METHODS = [...RUN_METHODS, "status", "abort", "steer", "configure"
 const UPSERT_KEYS = ["provisionHash", "name", "type", "tools", "fileTools", "toolsHash"];
 /** A batch of answers from a request: `{ answers: [{ id, action, content?, from?, actor? }] }`. */
 export const answerList = (body: any) => {
-  if (!Array.isArray(body?.answers)) throw new HttpError(400, "Send { answers: [{ id, action, content?, from?, actor? }] }");
+  // Each answer an object, and its id not one: a null in the list, or an id like {"toString": null}, is the caller's
+  // mistake (400), not a TypeError (500).
+  const valid = (answer: any) => !!answer && typeof answer === "object" && !Array.isArray(answer) && (answer.id === null || typeof answer.id !== "object");
+  if (!Array.isArray(body?.answers) || !body.answers.every(valid)) throw new HttpError(400, "Send { answers: [{ id, action, content?, from?, actor? }] }");
   return body.answers.map(({ id, ...answer }: any) => ({ id: String(id), body: answer }));
 };
 /** The id of the run that resumes a suspension: one per suspension, so every path that resumes it makes the same request. */
