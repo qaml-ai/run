@@ -309,6 +309,8 @@ export function segmentLog<T>(store: SegmentStore, key: string, tail: LogTail, c
   /** What this writer knows is in the tail above Storage. */
   let tailRecords = 0, tailBytes = 0;
   let fenced: Error | undefined;
+  /** A write failed, and its batch, back at the front of the buffer, may have landed at `next`: tried again, it goes there again. */
+  let retrying = false;
   let closing: Promise<void> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let chain: Promise<void> = Promise.resolve();
@@ -392,8 +394,8 @@ export function segmentLog<T>(store: SegmentStore, key: string, tail: LogTail, c
     if (!buffer.length) return;
     const batch = buffer;
     buffer = [];
-    try { await insert(batch, false); }
-    catch (error) { if (!fenced) buffer = batch.concat(buffer); throw error; }
+    try { await insert(batch, false); retrying = false; }
+    catch (error) { if (!fenced) { buffer = batch.concat(buffer); retrying = true; } throw error; }
     if (tailRecords >= TAIL_RECORDS || tailBytes >= TAIL_BYTES) void serialize(compact).catch(() => {});
   };
 
@@ -420,7 +422,8 @@ export function segmentLog<T>(store: SegmentStore, key: string, tail: LogTail, c
         if (row.snapshot) records = parsed;
         else records.push(parsed);
       }
-      next = Math.max(through, rows.at(-1)?.seq ?? -1) + 1;
+      // A batch being retried goes where it may have landed already, not after itself.
+      if (!retrying) next = Math.max(through, rows.at(-1)?.seq ?? -1) + 1;
       return records;
     }),
     append(record) {
@@ -441,7 +444,12 @@ export function segmentLog<T>(store: SegmentStore, key: string, tail: LogTail, c
         if (fenced) throw fenced;
         const records = snapshot();
         buffer = [];
-        await insert([JSON.stringify(records)], true);
+        // A failed write's batch is dropped here, not written again: wherever it landed, the snapshot goes after it.
+        if (retrying) { next = undefined; retrying = false; }
+        // Nor is a failed snapshot tried again, and it may have landed too (its answer lost): the next write finds
+        // its position afresh rather than colliding with it.
+        try { await insert([JSON.stringify(records)], true); }
+        catch (error) { next = undefined; throw error; }
         appended = 0;
       });
     },

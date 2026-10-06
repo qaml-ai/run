@@ -40,3 +40,6 @@ export async function check<Ts>(t: TestContext, property: fc.IProperty<Ts> | fc.
 }
 
 export { fc };
+
+/** Wait for every task the event loop has, including I/O callbacks, `turns` times over. */
+export async function turns(count = 3) { for (let index = 0; index < count; index++) await new Promise(resolve => setImmediate(resolve)); }

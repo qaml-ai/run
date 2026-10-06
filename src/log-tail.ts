@@ -68,16 +68,20 @@ export function postgresTail(db: Db, options: { retryMs?: number; unfenced?: boo
 /**
  * Insert rows under the claim. Rows present before this statement count when they
  * match exactly (this writer's own earlier attempt); any other row at one of these
- * sequence numbers, or a claim that is no longer current, makes the append fail.
+ * sequence numbers, or a claim that is no longer current, makes the append fail,
+ * and then it inserts none of its rows: a failed append never leaves a later record
+ * without an earlier one.
  */
 async function insert(db: Db, key: string, claim: Claim | undefined, rows: TailRow[]) {
   const { rows: [result] } = await db.query(`
     with owner as (select from actor_owners where actor = $2 and session = $3 and epoch = $4 for share),
     held as (select $3::uuid is null or exists (select from owner) as ok),
     r as (select * from unnest($5::bigint[], $6::boolean[], $7::text[], $8::text[]) as r(seq, snapshot, body, blob)),
+    taken as (select exists (select from r join log_records l on l.log_key = $1 and l.seq = r.seq
+      and not (l.snapshot = r.snapshot and l.body is not distinct from r.body and l.blob is not distinct from r.blob)) as yes),
     inserted as (
       insert into log_records (log_key, seq, actor, snapshot, body, blob)
-      select $1, r.seq, $2, r.snapshot, r.body, r.blob from r where (select ok from held)
+      select $1, r.seq, $2, r.snapshot, r.body, r.blob from r where (select ok from held) and not (select yes from taken)
       on conflict (log_key, seq) do nothing
       returning seq)
     select (select ok from held) as ok, (select count(*) from inserted)::int + (select count(*) from r join log_records l

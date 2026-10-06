@@ -63,8 +63,10 @@
   },
   "devDependencies": {
     "@ai-sdk/react": "^4.0.121",
+    "@electric-sql/pglite": "^0.5.8",
     "@fontsource-variable/figtree": "^5.3.0",
     "@fontsource-variable/geist-mono": "^5.3.0",
+    "@sinonjs/fake-timers": "^15.4.0",
     "@tailwindcss/postcss": "^4",
     "@testing-library/dom": "^10.4.2",
     "@testing-library/react": "^16.3.3",
