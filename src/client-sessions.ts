@@ -2932,6 +2932,9 @@ export class ClientSessions {
     if (params.spendLimit !== undefined && (!MODEL_RUNS.includes(body.method) || spendInput(params.spendLimit) === null)) throw new HttpError(400, "spendLimit is {usd}, for a model run (prompt, continue)");
     // An output schema shapes the turn a prompt starts: a steer joins one already running.
     if (params.output !== undefined && (body.method !== "prompt" || params.whileRunning === "steer")) throw new HttpError(400, "output is for a prompt that starts its own turn (not whileRunning: steer)");
+    // So is what the model sees of the history before it: all of it (full), or none (the system prompt and this message alone).
+    if (params.history !== undefined && (body.method !== "prompt" || params.whileRunning === "steer" || !["full", "none"].includes(params.history))) throw new HttpError(400, 'history is "full" or "none", for a prompt that starts its own turn (not whileRunning: steer)');
+    if (params.history === "full") delete params.history;
     if (params.whileRunning === "queue") delete params.whileRunning;
     if (body.method === "abort" && (Object.keys(params).some(key => key !== "queued") || ![undefined, "cancel", "keep"].includes(params.queued))) throw new HttpError(400, "An abort takes { queued?: \"cancel\" | \"keep\" }: whether the runs queued behind the running one are cancelled too (the default) or kept");
     // A message records the request that sent it, so an application can match it to its own.

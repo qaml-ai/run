@@ -113,6 +113,8 @@ export function createAgentHost(hostIO: HostIO) {
   let steers: { message: AgentMessage; whileRunning: boolean }[] = [];
   /** What the current run's final_output call gave, once the model made one that fit its schema. */
   let output: { value: unknown } | undefined;
+  /** In a run with history: "none", the system message as it stands: its requests lead with it, and carry only the run's own messages (`freshTurn`). */
+  let fresh: SystemMessage | undefined;
   /** Calls a lost node left open that are safe to make again (`RERUN`): made again before the resumed turn continues. */
   let rerun: ToolCall[] = [];
   /** Model requests wait for the node's lease, and are cut (`interrupt`) when it goes stale. */
@@ -190,9 +192,24 @@ export function createAgentHost(hostIO: HostIO) {
   /** Pi's messages from the transcript: what a run starts from. */
   function stateMessages(): AgentMessage[] { return [leading(), ...transcript.view()]; }
 
-  /** The model's context: the leading system message, the current summary, and live messages not yet folded into it. */
+  /** The model's context: the leading system message, the current summary, and live messages not yet folded into it. A fresh run's: its own system message and messages. */
   function liveView(messages: AgentMessage[]): AgentMessage[] {
-    return [leading(), ...summaryView(), ...messages.filter((message, index) => !(index === 0 && message.role === "system") && message.role !== "compactionSummary" && !dropped.has(message))];
+    return [fresh ?? leading(), ...fresh ? [] : summaryView(), ...messages.filter((message, index) => !(index === 0 && message.role === "system") && message.role !== "compactionSummary" && !dropped.has(message))];
+  }
+
+  /**
+   * Begin a run that sees no history (a prompt's history: "none", which its user message records): Pi's state is the
+   * system message as it stands (the leading one with every change since), then the run's own messages, from `first` on.
+   * Its messages are still history, which later runs see. Continued or resumed, a turn whose last user message says so
+   * stays fresh; undefined (the whole history) otherwise.
+   */
+  function freshTurn(first?: AgentMessage): AgentMessage[] | undefined {
+    first ??= transcript.context.findLast(message => message.role === "user");
+    if ((first as { history?: string } | undefined)?.history !== "none") return undefined;
+    const all = stateMessages();
+    const at = all.indexOf(first!);
+    fresh = getCurrentSystemMessage(at < 0 ? all : all.slice(0, at))!;
+    return [fresh, ...at < 0 ? [] : all.slice(at)];
   }
 
   /** Record a system message after the leading one, pinning `current` as that first, in one commit (`Transcript.declareSystem`). */
@@ -597,18 +614,25 @@ export function createAgentHost(hostIO: HostIO) {
     }));
   }
 
-  /** The user messages a request adds: given whole, or as text and attached files; marked with its sender (if any), request and metadata. */
+  /**
+   * The user messages a request adds: given whole, or as text and attached files; marked with its sender (if any), request
+   * and metadata, and a prompt's `history: "none"` (only the runtime marks it: see `freshTurn`).
+   */
   function userMessages(params: Record<string, any>): AgentMessage[] {
     const marks = { from: senderInput(params.from), requestId: params.requestId, metadata: params.metadata };
+    const marked = (messages: AgentMessage[]) => messages.map(message => {
+      const { history: _history, ...rest } = message as AgentMessage & { history?: string };
+      return (params.history === "none" ? { ...rest, history: "none" } : rest) as AgentMessage;
+    });
     if (params.message !== undefined) {
       const messages = (Array.isArray(params.message) ? params.message : [params.message]) as AgentMessage[];
       validateUserMessages(messages);
-      return stamp(messages, marks);
+      return marked(stamp(messages, marks));
     }
     if (typeof params.text !== "string" || !params.text.trim()) throw new Error("Prompt text is required");
     const files = params.files ?? [];
     if (!Array.isArray(files) || files.length > FILE_LIMITS.attachments || !files.every(validFileRef)) throw new Error("Invalid attached files");
-    return stamp([{ role: "user", content: [{ type: "text", text: params.text }, ...files], timestamp: Date.now() } as AgentMessage], marks);
+    return marked(stamp([{ role: "user", content: [{ type: "text", text: params.text }, ...files], timestamp: Date.now() } as AgentMessage], marks));
   }
 
   /**
@@ -927,7 +951,7 @@ export function createAgentHost(hostIO: HostIO) {
           await transcript.setActive(false);
           return { messages: transcript.total, error: null, ...(transcript.awaiting.length ? { stopped: "input_required" } : {}) };
         }
-        agent.state.messages = stateMessages();
+        agent.state.messages = freshTurn() ?? stateMessages();
         if (active.signal.aborted) return await abortedBeforeLoop();
         // The answered calls were this run's step: a node leaving hands the turn off before the model is asked.
         if (await handingOff()) return handedOff();
@@ -939,6 +963,8 @@ export function createAgentHost(hostIO: HostIO) {
           if (await handingOff()) return handedOff();
         }
         if (active.signal.aborted) return await abortedBeforeLoop();
+        const own = freshTurn();
+        if (own) agent.state.messages = own;
         await agent.continue();
       }
       else {
@@ -949,7 +975,9 @@ export function createAgentHost(hostIO: HostIO) {
         }
         if (active.signal.aborted) return await abortedBeforeLoop();
         // Images enter the transcript as requests carry them: scaled down once here, not on every request after.
-        await agent.prompt(await fittedImages(promptMessages!));
+        const messages = await fittedImages(promptMessages!);
+        if (params.history === "none") agent.state.messages = freshTurn(messages[0])!;
+        await agent.prompt(messages);
       }
       await recoverFailedResponses(active.signal);
       await remindOfOutput(active.signal);
@@ -986,6 +1014,8 @@ export function createAgentHost(hostIO: HostIO) {
         for (const steer of steers) agent.steer(steer.message);
       }
       // Release what compaction folded away: the next run starts from summary + kept messages.
+      const wasFresh = !!fresh;
+      fresh = undefined;
       if (method !== "execute" && transcript.failed === undefined) {
         agent.state.messages = stateMessages();
         dropped = new WeakSet();
@@ -995,8 +1025,9 @@ export function createAgentHost(hostIO: HostIO) {
       busy = false;
       if (method !== "execute") {
         void index();
-        // After the turn: the summary is made while the agent waits for its next message; not by one handing its turn off.
-        if (!handedOffHere()) compactInBackground();
+        // After the turn: the summary is made while the agent waits for its next message; not by one handing its turn off,
+        // nor after a run that saw no history (a run that does see it compacts first, if it must).
+        if (!handedOffHere() && !wasFresh) compactInBackground();
       }
     }
   }

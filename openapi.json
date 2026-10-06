@@ -2258,6 +2258,14 @@
             "additionalProperties": false,
             "description": "Structured output: the agent ends this run by calling a final_output tool whose arguments are the schema, checked against it (a call that does not fit goes back to the model with what is wrong). The run's outcome.result.output is that object. A model that answers in text instead is asked once more, with a reminder; a run that still ends without an output fails with code output_missing. The tool stays declared until a prompt without output. Not with whileRunning: steer"
           },
+          "history": {
+            "type": "string",
+            "enum": [
+              "full",
+              "none"
+            ],
+            "description": "What the model sees of the agent's history in this run. full (default): all of it. none: only the system prompt (instructions, tools) and this message, as a new conversation would, without making an agent. The run is still recorded in the history (its user message carries history: \"none\"), and later runs that do not say none see it. Not with whileRunning: steer"
+          },
           "metadata": {
             "type": "object",
             "additionalProperties": {
