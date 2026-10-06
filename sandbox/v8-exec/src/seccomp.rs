@@ -71,11 +71,8 @@ pub fn install(jitless: bool, debug: Debug) -> Result<(), String> {
   // prctl fails with EINVAL rather than killing: on x86_64, V8 names the anonymous memory it maps as its
   // heap grows (PR_SET_VMA, seen at the CPU limit and in long regular expressions) and does without the
   // names. Failing every option keeps the rest of prctl (dumpable, no_new_privs, ...) out of reach.
-  // (--seccomp-trap reports it, with its option, to check what asks.)
-  if debug != Debug::Trap {
-    push(JEQ_K, 0, 1, SYS_prctl as u32);
-    push(RET_K, 0, 0, 0x0005_0000 | EINVAL as u32); // SECCOMP_RET_ERRNO
-  }
+  push(JEQ_K, 0, 1, SYS_prctl as u32);
+  push(RET_K, 0, 0, 0x0005_0000 | EINVAL as u32); // SECCOMP_RET_ERRNO
   // openat fails with EACCES rather than killing: V8 and glibc open a few files of their own as they
   // run (/proc/self/maps for the main thread's stack bounds, /sys/devices/system/cpu/online and
   // /proc/stat to count CPUs, as the heap grows) and get on without them. Nothing is opened.
