@@ -514,13 +514,15 @@ test("js_exec's fs reads and writes bytes and text within the mounts, and write 
     await fs.writeFile("notes/a.txt", "héllo");
     const text = await fs.readFile("/workspace/notes/a.txt", { encoding: "utf8" });
     const odd = await fs.readFile("/workspace/notes/a.txt");
+    const nodeStyle = await fs.readFile("/workspace/notes/a.txt", "utf8");
     await tools.write({ path: "/workspace/pic.png", content: "${PNG.toString("base64")}", encoding: "base64" });
     const pic = await tools.read({ path: "/workspace/pic.png", encoding: "base64" });
     const removed = await fs.remove("/workspace/notes/a.txt");
-    return { written, same, text, odd: odd.length, stat: await fs.stat("/workspace/bin/data.bin"), dir: await fs.stat("/workspace/bin"), list: await fs.list("/workspace"), pic, removed };`)).output[0]);
+    return { written, same, text, nodeStyle, odd: odd.length, stat: await fs.stat("/workspace/bin/data.bin"), dir: await fs.stat("/workspace/bin"), list: await fs.list("/workspace"), pic, removed };`)).output[0]);
   assert.deepEqual([value.written.path, value.written.size, value.written.contentType], ["/workspace/bin/data.bin", 700 * 1024, "application/x-test"]);
   assert.equal(value.same, true);
   assert.equal(value.text, "héllo");
+  assert.equal(value.nodeStyle, "héllo", "Node's readFile(path, \"utf8\") form");
   assert.equal(value.odd, 6, "bytes by default");
   assert.deepEqual([value.stat.type, value.stat.size, value.stat.contentType], ["file", 700 * 1024, "application/x-test"]);
   assert.deepEqual(value.dir, { path: "/workspace/bin", type: "directory" });

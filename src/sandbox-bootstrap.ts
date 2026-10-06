@@ -57,7 +57,8 @@ export const SANDBOX_BOOTSTRAP = `
   const fsCall = async (name, args) => parse(await call("fs." + name, stringify(args)));
   const fs = Object.freeze({
     readFile: async (path, options) => {
-      const encoding = options && options.encoding;
+      // Node's two forms: readFile(path, "utf8") and readFile(path, { encoding: "utf8" }).
+      const encoding = typeof options === "string" ? options : options && options.encoding;
       const read = await fsCall("readFile", encoding ? { path, encoding } : { path });
       return typeof read.text === "string" ? read.text : fromBase64(read.data);
     },
