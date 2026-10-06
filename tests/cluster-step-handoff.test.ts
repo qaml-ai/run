@@ -170,6 +170,39 @@ test("(b) a retiring node lets the model stream in flight complete (and its tool
   assert.equal(record.handoffs.length, 1);
 });
 
+test("(b2) a model call that fails while its node retires is not retried there: the failed attempt is taken back and the new node asks again", { timeout: 90_000 }, async t => {
+  const c = await cluster(t);
+  const gate = Promise.withResolvers<void>();
+  t.after(() => gate.resolve());
+  let b: Node | undefined;
+  // Every call fails (503, retryable) until B has taken the turn over; A's first one waits for the retirement.
+  const model = await fakeModel(t, async (_body, index) => {
+    if (b && handedOff(b).length) return { role: "assistant", content: "asked again on b" };
+    if (index === 0) await gate.promise;
+    return { status: 503 };
+  });
+  const a = await ecsNode(t, c, "a", model.env);
+  b = await ecsNode(t, c, "b", model.env);
+  const created = await new AgentRuntime({ url: a.url, apiKey: token }).createAgent({ tools: {}, idempotencyKey: "fails-while-retiring" });
+  await created.close();
+  const client = await new AgentRuntime({ url: a.url, fetch: balancer([a, b]).fetch }).connectAgent(created.session, { tools: {} });
+  t.after(() => client.close());
+  const run = client.prompt("go", { idempotencyKey: "failing-turn", timeoutMs: 60_000 });
+  await until(() => model.bodies.length === 1, "A to call the model");
+  await retire(a);
+  gate.resolve();
+  const result = await run;
+  assert.equal(result.reply, "asked again on b");
+  assert.equal(result.error ?? null, null);
+  const [line] = handedOff(b);
+  assert.equal(line?.Step, "model", JSON.stringify(line));
+  const record = (await api(b.url, `/v1/agents/${created.session.id}/requests/failing-turn`)).json;
+  assert.equal(record.resumes, undefined);
+  assert.equal(record.handoffs.length, 1);
+  const history = (await api(b.url, `/v1/agents/${created.session.id}/history`)).json.messages;
+  assert.ok(!history.some((message: any) => message.stopReason === "error"), "the failed attempt is not history");
+});
+
 test("(c) a step that outlasts the retire cap is handed off mid-step: its call in flight is closed as of unknown outcome", { timeout: 90_000 }, async t => {
   const c = await cluster(t);
   const model = await fakeModel(t, (body, index) => index === 0 ? slowCall(0) : { role: "assistant", content: unknown(body) ? "noted the unknown outcome" : "unexpected" });

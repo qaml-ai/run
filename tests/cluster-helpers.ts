@@ -91,6 +91,8 @@ export async function fakeModel(t: { after(fn: () => Promise<void>): void }, res
     bodies.push(body);
     const delta = await respond(body, bodies.length - 1) as any;
     if (!delta) return;
+    // `{ status }`: the provider fails the request, as an overloaded one would.
+    if (delta.status) return void res.writeHead(delta.status, { "Content-Type": "application/json" }).end(JSON.stringify({ error: { message: `fixture error ${delta.status}` } }));
     res.writeHead(200, { "Content-Type": "text/event-stream" });
     for (const [content, finish_reason] of [[delta, null], [{}, delta.tool_calls ? "tool_calls" : "stop"]]) res.write(`data: ${JSON.stringify({ id: "fixture", object: "chat.completion.chunk", choices: [{ index: 0, delta: content, finish_reason }] })}\n\n`);
     res.end("data: [DONE]\n\n");

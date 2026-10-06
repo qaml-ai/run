@@ -644,6 +644,13 @@ export function createAgentHost(hostIO: HostIO) {
         return;
       }
       const delayMs = policy.baseDelayMs * 2 ** (attempt - 1);
+      // A node leaving asks again elsewhere: the failed attempt is taken back, and the turn handed off at that boundary.
+      if (await handingOff()) {
+        await transcript.retract();
+        io.emit({ type: "message_retracted", index: transcript.total });
+        agent!.state.messages = agent!.state.messages.slice(0, -1);
+        return;
+      }
       io.emit({ type: "auto_retry_start", attempt, maxAttempts: policy.maxAttempts, delayMs, errorMessage: last.errorMessage ?? "Unknown error" });
       // The failed attempt is not history: drop it from the log and the live state, and say so on the stream.
       await transcript.retract();
@@ -897,13 +904,14 @@ export function createAgentHost(hostIO: HostIO) {
         // Images enter the transcript as requests carry them: scaled down once here, not on every request after.
         await agent.prompt(await fittedImages(promptMessages!));
       }
-      // Stopped at a step boundary for another node to continue: the turn stays open (active) in the transcript.
+      await recoverFailedResponses(active.signal);
+      await remindOfOutput(active.signal);
+      // Stopped at a step boundary for another node to continue (in any of the model calls above): the turn stays open
+      // (active) in the transcript.
       if (handedOffHere()) {
         if (transcript.failed !== undefined) throw transcript.failed;
         return handedOff();
       }
-      await recoverFailedResponses(active.signal);
-      await remindOfOutput(active.signal);
       if (transcript.failed !== undefined) throw transcript.failed;
       await transcript.setActive(false);
       // Set by finishTurn as the turn ran.
