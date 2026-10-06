@@ -131,8 +131,8 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
       }
       case "models": {
         const models: any[] = await api().get(`/v1/models${flags.available ? "?available=true" : ""}`);
-        print(models.map(({ id, name, available, contextWindow, reasoning, cost }) => ({ id, name, available, contextWindow, reasoning, cost })),
-          () => table(models, ["id", "available", "contextWindow", "reasoning"]));
+        print(models.map(({ id, name, available, contextWindow, reasoning, cost, toolCallStreaming }) => ({ id, name, available, contextWindow, reasoning, cost, toolCallStreaming })),
+          () => table(models, ["id", "available", "contextWindow", "reasoning", "toolCallStreaming"]));
         return 0;
       }
       case "init": {

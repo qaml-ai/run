@@ -86,6 +86,8 @@ export interface Provider { id: string; kind: "model" | "search" | "fetch"; mode
 export interface Model {
   id: string; provider: string; modelId: string; name: string; api: string; reasoning: boolean; input: string[];
   contextWindow: number; maxTokens: number; cost: { input: number; output: number; cacheRead: number; cacheWrite: number }; available: boolean;
+  /** Whether tool-call arguments stream as the model writes them (true), arrive in one piece (false), or were not measured. */
+  toolCallStreaming: boolean | "unknown";
 }
 export interface AgentSummary {
   id: string; name: string; type: string; model: string; connected: boolean; running: boolean; expiresAt: number | null;

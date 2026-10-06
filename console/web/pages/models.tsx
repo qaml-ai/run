@@ -126,6 +126,13 @@ export function ModelsPage({ me }: { me: Me }) {
 
 const perMillion = (value: number) => value ? `$${value.toFixed(2)}` : "—";
 
+/** Measured, never guessed: a model not measured says so. */
+function ToolStreaming({ value }: { value: Model["toolCallStreaming"] }) {
+  if (value === true) return <span className="text-xs" title="Tool-call arguments arrive as toolcall_delta events while the model writes them">Streamed</span>;
+  if (value === false) return <span className="text-muted-foreground text-xs" title="Tool-call arguments arrive in one piece once the call is complete">One piece</span>;
+  return <span className="text-muted-foreground text-xs" title="Not measured for this model">Unknown</span>;
+}
+
 function ModelCatalog({ providers }: { providers: Provider[] }) {
   const [provider, setProvider] = useState("anthropic");
   const [query, setQuery] = useState("");
@@ -162,6 +169,7 @@ function ModelCatalog({ providers }: { providers: Provider[] }) {
                 <TableHead className="hidden text-right md:table-cell">Max output</TableHead>
                 <TableHead className="text-right">Input $/M</TableHead>
                 <TableHead className="text-right">Output $/M</TableHead>
+                <TableHead className="hidden lg:table-cell" title="Whether tool-call arguments stream as the model writes them, so a page can render a section as it is written">Tool args</TableHead>
                 <TableHead />
               </TableRow>
             </TableHeader>
@@ -176,10 +184,11 @@ function ModelCatalog({ providers }: { providers: Provider[] }) {
                   <TableCell className="hidden text-right font-mono tabular-nums md:table-cell">{formatNumber(model.maxTokens)}</TableCell>
                   <TableCell className="text-right font-mono tabular-nums">{perMillion(model.cost.input)}</TableCell>
                   <TableCell className="text-right font-mono tabular-nums">{perMillion(model.cost.output)}</TableCell>
+                  <TableCell className="hidden lg:table-cell"><ToolStreaming value={model.toolCallStreaming} /></TableCell>
                   <TableCell>{model.available ? <Badge>Usable</Badge> : <Badge variant="outline">Needs key</Badge>}</TableCell>
                 </TableRow>
               ))}
-              {shown.length === 0 && <TableRow><TableCell colSpan={6} className="text-muted-foreground py-8 text-center">No matching models.</TableCell></TableRow>}
+              {shown.length === 0 && <TableRow><TableCell colSpan={7} className="text-muted-foreground py-8 text-center">No matching models.</TableCell></TableRow>}
             </TableBody>
           </Table>
         </div>

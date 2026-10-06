@@ -11,6 +11,19 @@ its history carries over. `?available=true` answers `[]` when your account has
 no key any model can use (a self-hosted runtime before its first key, say); that
 response's `X-Camelrun-Hint` header says how to set one.
 
+Each model in the list says whether it streams tool-call arguments as it writes
+them (`toolCallStreaming`; the console's **Tool args** column). With `true`,
+`toolcall_delta` events arrive while the model writes a call's arguments, so a
+page that renders what a tool writes (a section, a card, a form) can show it as it
+is written. With `false`, the arguments arrived in one piece when the call was
+complete, at least sometimes, so you cannot count on streaming: Gemini, most GLM
+4.x and Mercury 2 through OpenRouter do this, for example, and some models do it
+only on some of the hosts a gateway routes them to. `"unknown"` means the model
+has not been measured (or its probe failed), not that it streams. The values come
+from probing each model through the runtime several times
+(`scripts/probe-tool-streaming.ts`); a latency-first app that renders tool output
+should pick a model that says `true`.
+
 A model on a server of your own that speaks OpenAI's or Anthropic's API (vLLM,
 Ollama, a gateway, a hosted API the catalog lacks) is named the same way once
 you add its server as a provider, your account's or a key scope's: see

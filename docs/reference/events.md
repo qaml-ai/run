@@ -190,6 +190,10 @@ token does not receive unless it lists them in `events`.
 Only `text_delta` is reply text. `thinking_*` is the model's reasoning, and
 `toolcall_delta` is JSON. The SDKs' `stream()` yields only reply text, and the
 watcher (`@camelai/run/watch`) folds all of them for you.
+Not every model streams a tool call's arguments: some send them in one
+`toolcall_delta` when the call is complete. `GET /v1/models` says which
+(`toolCallStreaming`: `true`, `false` or `"unknown"`); see
+[Models and keys](../guides/models-and-keys.md#choosing-a-model).
 
 Messages (`message` fields, and history) are one of:
 

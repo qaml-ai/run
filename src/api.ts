@@ -9,7 +9,7 @@ import { answerList, type ClientSessions } from "./client-sessions.ts";
 import { personal, type ConsoleAuth } from "./console-auth.ts";
 import { checkNewPassword, checkPassword, normalizeEmail } from "./passwords.ts";
 import type { OAuth } from "./oauth.ts";
-import { listModels, listProviders, modelInfo, providerInfo } from "./catalog.ts";
+import { listModels, listProviders, modelInfo, providerInfo, toolCallStreaming } from "./catalog.ts";
 import { modelHeadersInput, resolveModel } from "./session-config.ts";
 import { checkProviderKey } from "./key-check.ts";
 import { errorText } from "./protocol.ts";
@@ -444,10 +444,11 @@ export function api(context: ApiContext) {
     const available = c.req.query("available") === "true";
     const supported = new Set(listProviders().filter(entry => entry.apiKey).map(entry => entry.id));
     const keyed = await accounts.keyedProviders(c.var.principal.tenant);
-    // The models declared on the tenant's own endpoints come first; they need no key.
+    // The models declared on the tenant's own endpoints come first; they need no key. An endpoint relays the upstream
+    // model it names (`<provider>/<model id>`), so that model's measured tool-call streaming is the endpoint's.
     const endpoints = accounts.tenants.modelEndpoints(c.var.principal.tenant) ?? {};
     const own = Object.entries(endpoints).filter(([provider]) => [undefined, provider].includes(c.req.query("provider")))
-      .flatMap(([provider, endpoint]) => Object.keys(endpoint.models ?? {}).map(id => ({ ...modelInfo(resolveModel(`${provider}/${id}`, endpoints)), available: true })));
+      .flatMap(([provider, endpoint]) => Object.keys(endpoint.models ?? {}).map(id => ({ ...modelInfo(resolveModel(`${provider}/${id}`, endpoints)), toolCallStreaming: toolCallStreaming(id), available: true })));
     // Then the tenant's own providers' declared models, which need no key of the tenant's.
     const custom = await context.modelProviders?.resolvable(c.var.principal.tenant, c.req.query("keyScope") ? checkScope(c.req.query("keyScope")) : undefined) ?? {};
     const declared = Object.entries(custom).filter(([provider]) => [undefined, provider].includes(c.req.query("provider")))

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { getProviders } from "@earendil-works/pi-ai/compat";
 import { getModels } from "./pi-catalog.ts";
 import type { Api, Model } from "@earendil-works/pi-ai";
@@ -41,6 +42,23 @@ export interface ModelInfo {
   maxTokens: number;
   /** USD per million tokens. */
   cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
+  /**
+   * Whether the model streams tool-call arguments as it writes them. true: `toolcall_delta` events arrived as the
+   * arguments were generated in every probe, so a page can render a section while it is written. false: they arrived in
+   * one piece once the call was complete, in at least one probe (some models do this only on some hosts), so an app
+   * cannot count on streaming. "unknown": not measured. Measured by scripts/probe-tool-streaming.ts.
+   */
+  toolCallStreaming: boolean | "unknown";
+}
+
+const MEASURED: Record<string, boolean> = JSON.parse(readFileSync(new URL("./tool-streaming.json", import.meta.url), "utf8")).models;
+
+/**
+ * The measured tool-call streaming of a catalog model (`provider/model-id`, as GET /v1/models names it). Never guessed:
+ * a model not measured, through another gateway, or of a tenant's own provider is "unknown".
+ */
+export function toolCallStreaming(reference: string): boolean | "unknown" {
+  return Object.hasOwn(MEASURED, reference) ? MEASURED[reference] : "unknown";
 }
 
 const models = (provider: string) => getModels(provider);
@@ -75,6 +93,7 @@ export const modelInfo = (model: Model<Api>): ModelInfo => ({
   id: `${model.provider}/${model.id}`, provider: model.provider, modelId: model.id, name: model.name, api: model.provider === "openrouter" ? openRouterApi(model.api) : model.api,
   reasoning: model.reasoning, input: model.input, contextWindow: model.contextWindow, maxTokens: model.maxTokens,
   cost: { input: model.cost.input, output: model.cost.output, cacheRead: model.cost.cacheRead, cacheWrite: model.cost.cacheWrite },
+  toolCallStreaming: toolCallStreaming(`${model.provider}/${model.id}`),
 });
 
 export function listModels(provider?: string): ModelInfo[] {

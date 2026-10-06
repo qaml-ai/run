@@ -193,6 +193,7 @@ export const Model = z.object({
   contextWindow: z.number(),
   maxTokens: z.number(),
   cost: z.object({ input: z.number(), output: z.number(), cacheRead: z.number(), cacheWrite: z.number() }).openapi({ description: "USD per million tokens" }),
+  toolCallStreaming: z.union([z.boolean(), z.literal("unknown")]).openapi({ description: "Whether the model streams tool-call arguments as it writes them. true: toolcall_delta events arrived while the call was generated in every probe, so a client can render a section as it is written. false: the arguments came in one piece when the call was complete, in at least one probe, so streaming cannot be counted on. \"unknown\": not measured" }),
   available: z.boolean().openapi({ description: "Whether this tenant has a key for the provider" }),
 }).openapi("Model");
 
