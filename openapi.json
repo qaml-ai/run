@@ -6139,6 +6139,10 @@
             "type": "boolean",
             "description": "true: the run gets a workspace volume and file tools. Default: none, unless input has files"
           },
+          "codeMode": {
+            "type": "boolean",
+            "description": "true: the model gets js_exec. Default: true when the run has tools (builtins, a definition, files), false for a tool-less run, whose model then sees only your instructions"
+          },
           "mounts": {
             "type": "array",
             "items": {

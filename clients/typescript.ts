@@ -1013,6 +1013,8 @@ export interface RunRequest {
   builtins?: ("web_fetch" | "web_search" | "delegate")[]; delegate?: DelegateSettings;
   /** true: a workspace volume and file tools. Default: none, unless the input has files. */
   fileTools?: boolean; mounts?: Mount[];
+  /** js_exec. Default: on for a run with tools, off for a tool-less one. */
+  codeMode?: boolean;
   output?: { schema: Record<string, unknown> };
   keyScope?: string; modelHeaders?: Record<string, string>;
   /** The run's budget (USD). */

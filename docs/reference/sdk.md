@@ -184,7 +184,8 @@ run = await agents.run("Ship on Friday?", instructions="Vote yes or no.", output
 `config` takes an agent's configuration (`model`, `instructions`,
 `instructionsAppend`, `definition`, `builtins`: `web_fetch`, `web_search`,
 `delegate`; `delegate`, `thinkingLevel`, `subject`, `context`, `keyScope`,
-`runLimits`, `modelHeaders`, `mounts`, `fileTools`, `name`) and the run's own:
+`runLimits`, `modelHeaders`, `mounts`, `fileTools`, `codeMode`, `name`; a run with
+no tools defaults to `codeMode: false` and `fileTools: false`) and the run's own:
 `input`, `files` (inline bytes), `output`, `user`, `metadata`, `idempotencyKey`,
 `spendLimit`, `retentionSeconds`, `signal`, `throwOnError`, `traceparent`
 (Python: snake_case keywords, `input` first). It resolves with a `Run` (no

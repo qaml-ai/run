@@ -61,6 +61,38 @@ async function mcpServer(t: T) {
 }
 const effect = (step: number) => ({ role: "assistant", tool_calls: [{ index: 0, id: `call_${step}`, type: "function", function: { name: "ops__effect", arguments: JSON.stringify({ step }) } }] });
 
+/**
+ * Follow a run's event stream as a client does, from whichever node is up and not draining, reconnecting with
+ * Last-Event-ID: every raw frame, and when each request started. Ends with the run's response frame.
+ */
+function follow(nodes: { url: string; child: { exitCode: number | null; signalCode: NodeJS.Signals | null }; logs: any[] }[], runId: string) {
+  const frames: string[] = [], starts: number[] = [];
+  let cursor = 0, turn = 0;
+  const done = (async () => {
+    for (const deadline = Date.now() + 90_000; Date.now() < deadline;) {
+      const up = nodes.filter(node => node.child.exitCode === null && node.child.signalCode === null && !node.logs.some(entry => entry.type === "retiring" || entry.type === "drain_started"));
+      const node = up[turn++ % up.length];
+      starts.push(Date.now());
+      try {
+        const response = await fetch(`${node.url}/v1/runs/${runId}/events`, { headers: { Authorization: `Bearer ${token}`, ...(cursor ? { "Last-Event-ID": String(cursor) } : {}) } });
+        if (!response.ok || !response.body) { await response.body?.cancel(); await sleep(100); continue; }
+        let buffer = "";
+        for await (const chunk of response.body.pipeThrough(new TextDecoderStream())) {
+          buffer += chunk;
+          for (let end; (end = buffer.indexOf("\n\n")) !== -1; buffer = buffer.slice(end + 2)) {
+            const frame = buffer.slice(0, end);
+            frames.push(frame);
+            const id = frame.split("\n").find(line => line.startsWith("id:"));
+            if (id) cursor = Number(id.slice(3));
+            if (/"type":"response"/.test(frame)) return;
+          }
+        }
+      } catch { /* cut off: reconnect */ }
+    }
+  })();
+  return { frames, starts, done };
+}
+
 async function definition(base: string, url: string) {
   const made = await api(base, "/v1/definitions", { name: "Ops", mcpServers: [{ name: "ops", url, exposure: "direct" }] });
   assert.equal(made.status, 201, JSON.stringify(made.json));
@@ -123,6 +155,7 @@ test("a run on a retiring node finishes its tool call there, and is handed off a
   const runId = created.json.id, session = `client_${runId.slice(4)}`;
   await entered;
   assert.equal(await c.owner(session), a.url);
+  const watcher = follow([a, b], runId);
   // A newer deploy supersedes A: it retires, but lets its step finish.
   ecsA.state.revision++;
   ecsA.state.created = Date.now() / 1000;
@@ -144,4 +177,13 @@ test("a run on a retiring node finishes its tool call there, and is handed off a
   assert.equal(line.request, runId);
   assert.equal(await c.owner(session), b.url);
   assert.equal(run.usage.responses, 2, "usage counts both nodes' responses");
+  // The run's stream on A ended with a reconnect hint, and picked up on B with every event once, through its response.
+  await watcher.done;
+  const hint = watcher.frames.findIndex(frame => frame.includes("event: reconnect"));
+  assert.ok(hint >= 0, "a reconnect hint");
+  assert.match(watcher.frames[hint], /"reason":"drain"/);
+  assert.ok(watcher.starts.length >= 2, "it reconnected");
+  const ids = watcher.frames.flatMap(frame => frame.split("\n").filter(line => line.startsWith("id:")).map(line => Number(line.slice(3))));
+  assert.deepEqual(ids, [...new Set(ids)].sort((x, y) => x - y), "every event once, in order");
+  assert.match(watcher.frames.at(-1)!, /continued on b/);
 });

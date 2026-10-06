@@ -64,6 +64,9 @@ test("a stateless run takes its configuration and input and answers with its res
   // It made no volume, and its session's agent stopped as it ended.
   assert.equal((await r.db.query("select count(*)::int as n from volumes")).rows[0].n, 0);
   assert.deepEqual((await r.db.query("select header->'mounts' as mounts from agents where id = $1", [session(run.id)])).rows[0].mounts, []);
+  // Its event ids are reserved before they are used, as an agent's are: an owner after a crash starts above them.
+  const cursor = (await r.db.query("select reserved_cursor, last_cursor from agents where id = $1", [session(run.id)])).rows[0];
+  assert.ok(Number(cursor.reserved_cursor) > 0, JSON.stringify(cursor));
   // Another tenant does not see it.
   assert.equal((await r.call(`/v1/runs/${run.id}`, { token: OTHER_OPERATOR })).status, 404);
   assert.equal((await r.call("/v1/runs/run_nope")).status, 404);
@@ -163,7 +166,7 @@ test("runs count against busy agents and runs per minute, as agent runs do, and 
 
 test("a run's event stream follows it to its end, and picks up after Last-Event-ID without a gap or a repeat", async t => {
   const r = await runtime(t, (_body, index) => index === 0 ? { ...toolCall("js_exec", { code: "return 6 * 7" }), delayMs: 300 } : { role: "assistant", content: "it is 42", delayMs: 800 });
-  const created = (await r.call("/v1/runs", { body: { input: "compute" } })).json;
+  const created = (await r.call("/v1/runs", { body: { input: "compute", codeMode: true } })).json;
   // Read until the first tool call ends, then drop the connection.
   const head = await frames(r.base, created.id, { stop: frame => frame.data.event?.type === "tool_execution_end" });
   assert.ok(head.length > 0);
@@ -233,7 +236,7 @@ test("the TypeScript SDK: agents.run in one call, runs.stream as it happens, run
   assert.deepEqual(again.metadata, { voter: "1" });
   assert.deepEqual((await agents.runs.messages(voted.id)).map(message => message.role), ["user", "assistant", "toolResult"]);
 
-  const stream = await agents.runs.stream({ input: "add" });
+  const stream = await agents.runs.stream({ input: "add", codeMode: true });
   const parts = [];
   for await (const part of stream) parts.push(part);
   assert.deepEqual(parts.map(part => part.type), ["tool_call", "tool_result", "text", "done"]);
@@ -267,4 +270,21 @@ test("a run whose model stalls ends failed with model_stream_stalled, never hang
   assert.ok(r.model.bodies.length >= 3, "the first request and its retries");
   // Not busy any more: the next run is accepted.
   assert.equal((await r.call("/v1/runs", { body: { input: "again" } })).status, 202);
+});
+
+test("a run with no tools gets none: no js_exec and no file tools, only its instructions; one with tools, or that asks, has js_exec", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
+  const names = (body: any) => (body.tools ?? []).map((tool: any) => tool.function.name);
+  const system = (body: any) => body.messages.filter((message: any) => message.role === "system" || message.role === "developer").map((message: any) => typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text ?? "").join("")).join("\n");
+  await r.call("/v1/runs", { body: { input: "bare", systemPrompt: "Answer yes or no.", wait: true } });
+  assert.deepEqual(names(r.model.bodies[0]), []);
+  assert.doesNotMatch(system(r.model.bodies[0]), /js_exec/);
+  assert.match(system(r.model.bodies[0]), /Answer yes or no\./);
+  // Asked for: what the run sets wins.
+  await r.call("/v1/runs", { body: { input: "with code", codeMode: true, wait: true } });
+  assert.ok(names(r.model.bodies[1]).includes("js_exec"));
+  // A run with a tool of the runtime's keeps js_exec by default.
+  await r.call("/v1/runs", { body: { input: "with a builtin", builtins: ["web_fetch"], wait: true } });
+  assert.ok(names(r.model.bodies[2]).includes("js_exec"));
+  assert.ok(names(r.model.bodies[2]).includes("web_fetch") || JSON.stringify(r.model.bodies[2]).includes("web_fetch"));
 });

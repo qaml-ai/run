@@ -576,7 +576,7 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
 
         self.call("js_exec", {"code": "return 1 + 1"})
         self.script.append({"role": "assistant", "content": "two"})
-        stream = await self.agents.runs.stream("add", file_tools=False)
+        stream = await self.agents.runs.stream("add", code_mode=True)
         parts = [part async for part in stream]
         self.assertEqual([part.type for part in parts], ["tool_call", "tool_result", "text", "done"])
         self.assertEqual(parts[-1].run.text, "two")

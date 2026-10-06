@@ -124,8 +124,14 @@ export function runRoutes(route: Route, context: () => RunsContext) {
     const key = given !== undefined ? `run-${createHash("sha256").update(given).digest("hex").slice(0, 40)}` : randomUUID();
     // A run its key already names is answered as it is; a new one is refused cheaply at a limit.
     if (context().runPrecheck && !(given !== undefined && await clients.owns(clients.agentId(tenant, key), tenant))) await context().runPrecheck!(tenant);
-    // No volume unless the run needs files: its inputs', or file tools it asks for.
-    const params = { ...config, type: "run", ...(name !== undefined ? { name } : {}), mounts: mounts ?? (files.length || config.fileTools ? undefined : []) };
+    // No volume unless the run needs files: its inputs', or file tools it asks for. A run with no tools at all (no
+    // definition, builtins, delegate, files or mounts) has no js_exec or file tools either, unless it asks: its model
+    // sees only the instructions and the input. What a run sets itself wins.
+    const toolless = config.definition === undefined && !config.builtins?.length && !config.delegate && !files.length && !mounts?.length && !config.fileTools;
+    const params = {
+      ...toolless ? { codeMode: false, fileTools: false } : {}, ...config, type: "run", ...(name !== undefined ? { name } : {}),
+      mounts: mounts ?? (files.length || config.fileTools ? undefined : []),
+    };
     const made = await createRun(tenant, params, key, { retentionMs, fingerprint, ttlMs: RUN_BOUND_MS + retentionMs });
     const runId = runIdOf(made.id);
     let record: RequestRecord;

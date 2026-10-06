@@ -385,6 +385,7 @@ export const RunInput = z.strictObject({
   builtins: z.array(z.enum(["web_fetch", "web_search", "delegate"])).max(8).optional().openapi({ description: "Tools the runtime answers itself. Not schedule or ask_user: a run has no later and no one to ask" }),
   delegate: DelegateSettings.optional(),
   fileTools: z.boolean().optional().openapi({ description: "true: the run gets a workspace volume and file tools. Default: none, unless input has files" }),
+  codeMode: z.boolean().optional().openapi({ description: "true: the model gets js_exec. Default: true when the run has tools (builtins, a definition, files), false for a tool-less run, whose model then sees only your instructions" }),
   mounts: z.array(Mount).optional().openapi({ description: "Existing volumes for the run's file tools" }),
   output: PromptInput.shape.output,
   keyScope: z.string().optional(),

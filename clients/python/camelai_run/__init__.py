@@ -2060,7 +2060,7 @@ class Runs:
     @staticmethod
     def _request(input, *, instructions=None, instructions_append=None, model=None, definition=None, thinking_level=None, output=None, builtins=None, delegate=None,
                  file_tools=None, mounts=None, files=None, user=None, metadata=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None,
-                 model_headers=None, name=None, retention_seconds=None):
+                 model_headers=None, name=None, retention_seconds=None, code_mode=None):
         parts = [{"type": "text", "text": input}]
         for file in files or []:
             entry = file if isinstance(file, dict) else {"data": file}
@@ -2069,7 +2069,7 @@ class Runs:
         fields = {"input": input if len(parts) == 1 else parts, "systemPrompt": instructions, "systemPromptAppend": instructions_append, "model": model, "definition": definition,
                   "thinkingLevel": thinking_level, "output": _output_request(output), "builtins": builtins, "delegate": delegate, "fileTools": file_tools, "mounts": mounts,
                   "from": _sender(user) if user else None, "metadata": metadata, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit,
-                  "runLimits": run_limits, "modelHeaders": model_headers, "name": name, "retentionSeconds": retention_seconds}
+                  "runLimits": run_limits, "modelHeaders": model_headers, "name": name, "retentionSeconds": retention_seconds, "codeMode": code_mode}
         return {key: value for key, value in fields.items() if value is not None}
 
     async def create(self, input, *, idempotency_key=None, wait=None, traceparent=None, **config):

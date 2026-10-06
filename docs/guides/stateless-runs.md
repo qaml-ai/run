@@ -70,6 +70,11 @@ The fields an agent takes, plus the input:
 - `spendLimit`: the run's budget in USD.
 - `fileTools: true`: a workspace and file tools. Without files or this, a run has
   no volume at all.
+- `codeMode`: whether the model gets `js_exec`. A run with no tools at all (no
+  definition, `builtins`, `delegate`, files or mounts) gets neither `js_exec` nor
+  file tools, so its model sees only your instructions and the input: right for a
+  classifier or a vote. A run with tools keeps `js_exec`. Set `codeMode` (or
+  `fileTools`) to have it otherwise; what you set wins.
 - `actor`, `from`, `metadata`: who sent it, and your own data, kept on the run.
 - `retentionSeconds`: how long its result, events and messages are kept once it
   ends (60 to 604800; the runtime's default is a day).
