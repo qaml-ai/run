@@ -370,6 +370,60 @@ export const AgentCreated = z.looseObject({
 }).openapi("AgentCreated");
 
 const Sender = z.strictObject({ id: z.string(), name: z.string().optional(), username: z.string().optional() });
+
+const RunInputPart = z.union([
+  z.strictObject({ type: z.literal("text"), text: z.string() }),
+  z.strictObject({ type: z.literal("file"), name: z.string().optional(), data: z.string().openapi({ description: "The file's bytes, base64: at most 4 MiB across a run's inline files" }), contentType: z.string().optional() }),
+]).openapi("RunInputPart");
+export const RunInput = z.strictObject({
+  input: z.union([z.string(), z.array(RunInputPart).min(1)]).openapi({ description: "What the run is asked: text, or parts (text and inline files). Files are saved in a workspace volume the run gets for them" }),
+  definition: z.string().optional().openapi({ description: "Take the configuration from this definition (its key or id; GET /v1/definitions): model, system prompt, thinking level, tool sources. Fields given here override it, as for an agent" }),
+  model: z.string().optional().openapi({ description: "A model id from GET /v1/models; the runtime default when omitted" }),
+  systemPrompt: z.string().optional(),
+  systemPromptAppend: z.string().max(32_000).optional(),
+  thinkingLevel: z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]).optional(),
+  builtins: z.array(z.enum(["web_fetch", "web_search", "delegate"])).max(8).optional().openapi({ description: "Tools the runtime answers itself. Not schedule or ask_user: a run has no later and no one to ask" }),
+  delegate: DelegateSettings.optional(),
+  fileTools: z.boolean().optional().openapi({ description: "true: the run gets a workspace volume and file tools. Default: none, unless input has files" }),
+  mounts: z.array(Mount).optional().openapi({ description: "Existing volumes for the run's file tools" }),
+  output: PromptInput.shape.output,
+  keyScope: z.string().optional(),
+  modelHeaders: ModelHeaders.optional(),
+  spendLimit: SpendLimitInput.optional().openapi({ description: "The run's budget in USD: it ends before its next model request once it has spent this" }),
+  runLimits: RunLimits.optional(),
+  subject: z.string().optional().openapi({ description: "Who the run acts for (a user id in your app): `sub` in its tool servers' identity tokens" }),
+  context: z.record(z.string(), z.unknown()).optional().openapi({ description: "Claims your tool servers need, as `ctx` in its identity tokens; at most 4 KB" }),
+  actor: PromptInput.shape.actor,
+  from: PromptInput.shape.from,
+  metadata: PromptInput.shape.metadata,
+  name: z.string().optional().openapi({ description: "A name for the run, in its traces" }),
+  wait: z.union([z.boolean(), z.number().min(0)]).optional().openapi({ description: "Wait for the run to end before answering: true for up to 60 seconds, or a number of seconds (at most 60). It answers 200 with the ended run, or 202 with it still running when the wait ends. Default: answer at once, 202. ?wait=<seconds> does the same" }),
+  retentionSeconds: z.number().int().min(60).max(7 * 86_400).optional().openapi({ description: "How long the run's result, events and messages are kept once it ends, before they are deleted: 60 to 604800 seconds. Default: the runtime's (86400)" }),
+}).openapi("RunInput");
+const RunFailure = z.object({
+  code: z.string().openapi({ description: "Stable: model_error, runtime_error, output_missing, spend_limit, turn_limit, aborted…" }),
+  message: z.string(),
+  uncertain: z.boolean().optional().openapi({ description: "The runtime could not tell whether the run's work took effect" }),
+}).openapi("RunFailure");
+export const Run = z.object({
+  id: z.string().openapi({ description: "run_…" }),
+  status: z.enum(["running", "completed", "input_required", "failed"]).openapi({ description: "running until it ends; then completed, failed, or input_required (a tool asked for approval or input, which a run cannot wait on: it ends there)" }),
+  text: z.string().openapi({ description: "The final reply's text (\"\" while running, or when it said nothing)" }),
+  output: z.unknown().optional().openapi({ description: "For a run with output: the answer, which fits its schema" }),
+  error: RunFailure.nullable(),
+  usage: z.record(z.string(), z.unknown()).nullable().openapi({ description: "What its model calls used: responses, input, output, cacheRead, cacheWrite, costUsd (and subagentCostUsd)" }),
+  toolCalls: z.array(z.record(z.string(), z.unknown())),
+  toolErrors: z.array(z.record(z.string(), z.unknown())),
+  sourceErrors: z.array(z.record(z.string(), z.unknown())),
+  files: z.array(z.record(z.string(), z.unknown())),
+  metadata: z.record(z.string(), z.string()).optional(),
+  createdAt: z.number().optional(),
+  startedAt: z.number().optional().openapi({ description: "When it began running" }),
+  endedAt: z.number().optional(),
+  expiresAt: z.number().nullable().openapi({ description: "Once it ended: when its result, events and messages are deleted. null while it runs" }),
+  resumes: z.number().optional().openapi({ description: "Times it was resumed after the node running it was lost (at most 2)" }),
+  handoffs: z.array(z.object({ reason: z.enum(["retire", "drain"]), at: z.number() })).optional().openapi({ description: "Times a node leaving the cluster handed it to another at a step boundary, with nothing lost" }),
+}).openapi("Run");
 export const Input = z.object({
   id: z.string(), agent: z.string(), tenant: z.string(),
   requestId: z.string().openapi({ description: "The run that suspended waiting on it" }),

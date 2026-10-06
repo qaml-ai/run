@@ -12,7 +12,7 @@ import { expireIdempotencyKeys } from "./idempotency.ts";
 import { DOCS_SITE, loadDocs, loadRegistry, SKILL_PATHS } from "./docs.ts";
 import { StorageGc } from "./storage-gc.ts";
 import { modelHeadersInput, resolveModel, sessionConfig } from "./session-config.ts";
-import { ClientSessions, ORPHANS_CHANNEL, RUN_LIMITS, spendInput, type SessionHooks } from "./client-sessions.ts";
+import { ClientSessions, ORPHANS_CHANNEL, RUN_LIMITS, runSessionOf, spendInput, type RunSettings, type SessionHooks } from "./client-sessions.ts";
 import { STREAM_TIMEOUTS } from "./model-stream.ts";
 import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts";
 import { StorageUsage } from "./storage-usage.ts";
@@ -165,6 +165,9 @@ const streamTimeouts = { firstTokenMs: Number(process.env.AGENT_MODEL_FIRST_TOKE
 for (const [name, ms] of [["AGENT_MODEL_FIRST_TOKEN_SECONDS", streamTimeouts.firstTokenMs], ["AGENT_MODEL_IDLE_SECONDS", streamTimeouts.idleMs]] as const) {
   if (!Number.isSafeInteger(ms) || ms < 1000 || ms > 3_600_000) throw new Error(`${name} must be an integer from 1 to 3600`);
 }
+// How long a stateless run's result, events and messages are kept once it ends, unless the run says (POST /v1/runs).
+const runRetentionSeconds = Number(process.env.AGENT_RUN_RETENTION_SECONDS ?? 86_400);
+if (!Number.isInteger(runRetentionSeconds) || runRetentionSeconds < 1) throw new Error("AGENT_RUN_RETENTION_SECONDS must be a positive integer");
 const idleMs = Number(process.env.AGENT_IDLE_MS ?? 5 * 60_000);
 if (!Number.isInteger(idleMs) || idleMs < 1000) throw new Error("AGENT_IDLE_MS must be an integer of at least 1000");
 const publicUrl = (process.env.AGENT_PUBLIC_URL ?? `http://127.0.0.1:${port}`).replace(/\/+$/, "");
@@ -307,11 +310,11 @@ setInterval(() => void expireIdempotencyKeys(db).catch(error => console.error(JS
  * Provision an agent for `tenant` (POST /v1/agents), recording how long each step took (`create_timing`). `parent` is the run
  * that made it with a delegate call: the runtime's own, never a caller's.
  */
-async function createAgent(tenant: string, params: any, key?: string, parent?: { agentId: string; runId: string; toolCallId: string; depth: number }, admit?: (unchanged: boolean) => Promise<unknown>) {
+async function createAgent(tenant: string, params: any, key?: string, parent?: { agentId: string; runId: string; toolCallId: string; depth: number }, admit?: (unchanged: boolean) => Promise<unknown>, run?: RunSettings & { ttlMs: number }) {
   const steps = new Steps();
   const made: { agent?: string; upsert: boolean } = { upsert: false };
   try {
-    const result = await provisionAgent(tenant, params, key, steps, made, parent, admit);
+    const result = await provisionAgent(tenant, params, key, steps, made, parent, admit, run);
     recordCreate(steps, { tenant, ...made });
     return result;
   } catch (error) {
@@ -327,8 +330,9 @@ function parentModel(given: { provider?: unknown; id?: unknown; baseUrl?: unknow
   try { return resolveModel(`${given.provider}/${given.id}`); } catch { return undefined; }
 }
 
-/** `admit` counts the create against the tenant's rate limit once the key's agent is known: told whether it changes nothing. */
-async function provisionAgent(tenant: string, params: any, key: string | undefined, steps: Steps, outcome: { agent?: string; upsert: boolean }, parent?: { agentId: string; runId: string; toolCallId: string; depth: number }, admit?: (unchanged: boolean) => Promise<unknown>) {
+/** `admit` counts the create against the tenant's rate limit once the key's agent is known: told whether it changes nothing.
+ * `run`: a stateless run's session (POST /v1/runs), which lives `ttlMs` at most and is never reconfigured. */
+async function provisionAgent(tenant: string, params: any, key: string | undefined, steps: Steps, outcome: { agent?: string; upsert: boolean }, parent?: { agentId: string; runId: string; toolCallId: string; depth: number }, admit?: (unchanged: boolean) => Promise<unknown>, run?: RunSettings & { ttlMs: number }) {
   // The application's tools are its attached MCP server's: the tools/list it declares.
   const { mcp: _mcp, subject: _subject, context: _context, keyScope, spendLimit: limit, modelHeaders: headers, builtins: asked, delegate: delegating, ...rest } = params ?? {};
   // The application's tools as it declared them, whose hash its connections are told (`toolsHash`).
@@ -360,10 +364,10 @@ async function provisionAgent(tenant: string, params: any, key: string | undefin
   validTtl(ttl);
   // An agent made with a key is one the application comes back to: it lives until deleted, unless it says otherwise.
   // One made without is a scratch agent nothing can find again once its id is lost: it lives a day, unless it says.
-  const lifetime = ttl === undefined ? (key !== undefined ? null : undefined) : ttl === null ? null : ttl * 1000;
+  const lifetime = run ? run.ttlMs : ttl === undefined ? (key !== undefined ? null : undefined) : ttl === null ? null : ttl * 1000;
   const { reconfigure, ...made_ } = await clients.create(params.tools ?? [], config, key, { name: params.name, type: params.type }, tenant, lifetime, params.mounts,
     made && { definition: made.ref, provision: made.provision, overrides: made.overrides, sources: made.sources }, identity,
-    { keyScope, spendLimit, builtins, delegate, ...(parent ? { parent } : {}), ...(mcpTools !== undefined ? { toolsHash: createHash("sha256").update(JSON.stringify(mcpTools)).digest("hex") } : {}), ...(admit ? { admit } : {}) }, steps);
+    { keyScope, spendLimit, builtins, delegate, ...(parent ? { parent } : {}), ...(run ? { run: { retentionMs: run.retentionMs, fingerprint: run.fingerprint } } : {}), ...(mcpTools !== undefined ? { toolsHash: createHash("sha256").update(JSON.stringify(mcpTools)).digest("hex") } : {}), ...(admit ? { admit } : {}) }, steps);
   outcome.agent = made_.id;
   outcome.upsert = !!reconfigure;
   const warnings = await warningsFor(tenant, made ? made.sources : builtins && { builtins });
@@ -412,7 +416,9 @@ async function serveConsole(c: Context) {
  * `/internal/agents/<id>`; volumes are `/v1/volumes/<id>` or `/internal/volumes/<id>`.
  */
 async function route(url = ""): Promise<{ node: string; actor?: string } | undefined> {
-  const agent = /^\/(?:clients|v1\/agents|registry|internal\/agents)\/(client_[a-f0-9]{40})(?:[/?]|$)/.exec(url)?.[1];
+  // A stateless run is its session's: run_<hex> is served where client_<hex> is.
+  const run = /^\/v1\/runs\/(run_[a-f0-9]{40})(?:[/?]|$)/.exec(url)?.[1];
+  const agent = run ? runSessionOf(run) : /^\/(?:clients|v1\/agents|registry|internal\/agents)\/(client_[a-f0-9]{40})(?:[/?]|$)/.exec(url)?.[1];
   const volume = agent ? undefined : /^\/(?:v1\/volumes|internal\/volumes)\/(vol_[a-f0-9]{24})(?:[/?]|$)/.exec(url)?.[1];
   const actor = agent ?? volume;
   if (actor) {
@@ -908,7 +914,8 @@ app.route("/", channels.app);
 const browserTokens = new BrowserTokens(sessionSecret);
 if (billingMailer) app.route("/", billingMailer.feedback());
 app.route("/", api({ accounts, journey, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return `${chosen.provider}/${chosen.id}`; }, keyScopes, webhooks, telemetry, scheduler, accountDeletions, ...(process.env.AGENT_IDEMPOTENCY_LOCK_MS ? { idempotencyLockMs: Number(process.env.AGENT_IDEMPOTENCY_LOCK_MS) } : {}), channels, volumes, definitions, links, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, historyPage: historyPageAnywhere, verifyKeys: process.env.AGENT_VERIFY_KEYS !== "false",
-  rateLimits, clientAddress: c => requestClient(c).address,
+  rateLimits, clientAddress: c => requestClient(c).address, runRetentionSeconds, requestAnywhere,
+  createRun: (tenant, params, key, run) => createAgent(tenant, params, key, undefined, undefined, run) as Promise<{ id: string; existing?: boolean }>,
   billingAdmins: (process.env.AGENT_BILLING_ADMINS ?? "").split(",").map(value => value.trim()).filter(Boolean) }));
 if (journey) app.route("/", journeyApp(journey, consoleAuth, c => requestClient(c).key));
 // The query goes along: a link from the operator's site says in it where the visitor came from (src/journey.ts).

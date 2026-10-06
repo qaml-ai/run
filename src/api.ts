@@ -24,6 +24,7 @@ import { providerInput, type ModelProviders } from "./model-providers.ts";
 import type { Webhooks } from "./webhooks.ts";
 import type { Telemetry } from "./telemetry.ts";
 import { definitionRoutes } from "./definitions-api.ts";
+import { runRoutes, type RunsContext } from "./runs.ts";
 import type { RequestRecord } from "../shared/client-protocol.ts";
 import * as schema from "./api-schemas.ts";
 import { normalizePath, VOLUME_LIMITS, type VolumeService } from "./volumes.ts";
@@ -63,6 +64,12 @@ export interface ApiContext {
   /** Provision an agent for a tenant. */
   /** `admit` counts the create once the key's agent is known, told whether it changes nothing (an upsert of the same configuration). */
   createAgent(tenant: string, params: any, idempotencyKey?: string, parent?: undefined, admit?: (unchanged: boolean) => Promise<unknown>): Promise<unknown>;
+  /** Make a stateless run's session (`/v1/runs`); without it there are no runs. */
+  createRun?: RunsContext["createRun"];
+  /** One of an agent's requests once it settles or a wait passes, wherever the agent is served (a run's wait). */
+  requestAnywhere?: RunsContext["requestAnywhere"];
+  /** How long an ended run is kept, by default. */
+  runRetentionSeconds?: number;
   verifyKeys?: boolean;
   scheduler?: Scheduler;
   channels?: Channels;
@@ -106,6 +113,7 @@ const OAUTH_ROUTES = [
   /^(?:GET|DELETE) \/v1\/agents\/[^/]+$/,
   /^(?:GET|POST|PUT|PATCH|DELETE) \/v1\/agents\/[^/]+\/(?:abort|configuration|events|fork|history|inputs|inputs\/[^/]+|mounts|prompt|requests\/[^/]+|schedules|schedules\/[^/]+|state|uploads\/[^/]+\/[^/]+)$/,
   /^(?:GET|POST|PATCH|DELETE) \/v1\/definitions(?:\/[^/]+(?:\/agents)?)?$/,
+  /^(?:POST \/v1\/runs|(?:GET|DELETE) \/v1\/runs\/[^/]+|GET \/v1\/runs\/[^/]+\/(?:events|messages)|POST \/v1\/runs\/[^/]+\/abort)$/,
 ];
 /** An agent's token is for the application that serves it, which an OAuth grant is not: its answers leave it out. */
 const withoutToken = <T extends object>(c: Context<Env>, made: T): T => {
@@ -264,13 +272,13 @@ export function api(context: ApiContext) {
   });
   app.use("/v1/agents/:id/*", async (c, next) => {
     // credentials takes a key as well as an id, and looks it up within the tenant itself.
-    if (!c.req.path.endsWith("/credentials") && !await clients.owns(c.req.param("id")!, c.var.principal.tenant)) throw new HttpError(404, "Unknown agent");
+    if (!c.req.path.endsWith("/credentials") && !await clients.owns(c.req.param("id")!, c.var.principal.tenant, true)) throw new HttpError(404, "Unknown agent");
     await next();
   });
   // Idempotency-Key on every POST: an agent's is its own key (create or upsert), and a prompt's its request's id.
   app.use("/v1/*", idempotency({
     db: () => clients.db, tenant: c => c.var.principal.tenant, lockMs: context.idempotencyLockMs,
-    skip: path => path === "/v1/agents" || path === "/v1/definitions" || /^\/v1\/agents\/[^/]+\/(?:prompt|fork)$/.test(path),
+    skip: path => path === "/v1/agents" || path === "/v1/definitions" || path === "/v1/runs" || /^\/v1\/agents\/[^/]+\/(?:prompt|fork)$/.test(path),
     // Answers with a secret shown once: API tokens (a new tenant's too), signing secrets, browser tokens, signed links.
     secret: path => /^\/v1\/(?:tokens|tenants|webhooks|webhooks\/[^/]+\/secret|usage-webhook\/secret|agents\/[^/]+\/(?:browser-tokens|links|credentials\/rotate)|volumes\/[^/]+\/links)$/.test(path),
   }));
@@ -529,7 +537,7 @@ export function api(context: ApiContext) {
     responses: { 200: reply("A new token for the agent: the old one stops working at once, and connections made with it close. The application serving the agent reconnects with this one; credentials gives it from now on", schema.AgentCredentials) },
   }), async c => json(c, 200, await clients.rotateToken(c.req.param("id")!, c.var.principal.tenant)));
   route(createRoute({ method: "delete", path: "/v1/agents/{id}", request: { params: agentId }, responses: { 200: reply("The agent is deleted: it stops at once, and its stored data is purged shortly after", schema.Deleted) } }), async c => {
-    await clients.destroyAgent(c.req.param("id")!, c.var.principal.tenant);
+    await clients.destroyAgent(c.req.param("id")!, c.var.principal.tenant, true);
     return json(c, 200, { deleted: true });
   });
   route(createRoute({
@@ -1039,6 +1047,7 @@ export function api(context: ApiContext) {
 
   channelRoutes(route, () => context.channels);
   definitionRoutes(route, () => context);
+  runRoutes(route, () => context);
 
   route(createRoute({ method: "get", path: "/v1/agents/{id}/mounts", request: { params: agentId }, responses: { 200: reply("The agent's mounts", z.array(schema.Mount)) } }),
     async c => json(c, 200, (await clients.inspect(c.req.param("id")!, c.var.principal.tenant)).mounts));

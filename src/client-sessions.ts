@@ -85,7 +85,17 @@ interface SessionHeader {
   forkedFrom?: ForkedFrom;
   /** A child its parent's delegate call made (multi-agent.ts): the parent agent, its run and call, and how deep in the chain it is. */
   parent?: { agentId: string; runId: string; toolCallId: string; depth: number };
+  /**
+   * A stateless run's single-use session (POST /v1/runs): hidden from the agents list, its one prompt's request is the run.
+   * Once the run ends its data is kept `retentionMs`, then purged as an expired agent's is. `fingerprint`: the request
+   * that made it, so its Idempotency-Key with another request is refused.
+   */
+  run?: RunSettings;
 }
+export type RunSettings = { retentionMs: number; fingerprint: string };
+/** A stateless run's id (`run_<hex>`) for its session's (`client_<hex>`), and back: one hex, so routing finds its owner. */
+export const runIdOf = (sessionId: string) => `run_${sessionId.slice("client_".length)}`;
+export const runSessionOf = (runId: string) => /^run_[a-f0-9]{40}$/.test(runId) ? `client_${runId.slice("run_".length)}` : undefined;
 export type ForkedFrom = { agentId: string; atMessage: number | null };
 /**
  * An agent's own sources (one without a definition) once a configuration gives builtins or delegate: what it leaves out
@@ -617,6 +627,8 @@ export class ClientSessions {
   private handingOff?: { reason: "retire" | "drain"; since: number };
   /** Agents being given up as this node leaves (`park`, `handOffAll`): in flight until they are released. */
   private readonly leavingWork = new Set<Promise<void>>();
+  /** Stateless runs' sessions being made here, whose slots are reserved before their header is: not the tenant's agents. */
+  private readonly creatingRuns = new Set<string>();
 
   constructor(supervisor: AgentSupervisor, options: ClientSessionOptions) {
     if (!options.storage && !options.root) throw new Error("ClientSessions needs storage or root");
@@ -1267,6 +1279,12 @@ export class ClientSessions {
       const shown = reader ? reader.show(event.data) : event.data;
       if (shown !== undefined) send(res, `id: ${event.id}\ndata: ${JSON.stringify(shown)}\n\n`);
     }
+    // A stateless run's stream ends with the run: with its response, replayed or, past what is buffered, as it ended.
+    const ended = mode === "watch" && session.header.run ? session.requests.get(runIdOf(session.header.id)) : undefined;
+    if (ended?.state === "completed") {
+      if (!events.some(event => event.data.type === "response" && event.data.id === ended.id)) send(res, `id: ${session.cursor}\ndata: ${JSON.stringify({ type: "response", id: ended.id, outcome: ended.outcome })}\n\n`);
+      res.end();
+    }
     return RESPONSE_ALREADY_SENT;
   }
 
@@ -1312,14 +1330,17 @@ export class ClientSessions {
     return !!session.starting || session.settling > 0 || session.inflight > 0 || session.running.size > 0;
   }
 
-  /** The tenant's agents on this node but `id`: hosted, starting, or with a slot reserved (a create not yet loaded). */
+  /**
+   * The tenant's agents on this node but `id`: hosted, starting, or with a slot reserved (a create not yet loaded). Stateless
+   * runs are not agents here: each is busy while it is hosted, so the tenant's busy limit bounds them.
+   */
   private tenantAgents(tenant: string, id?: string) {
     const ids = new Set<string>();
     for (const session of this.sessions.values()) {
       const other = session.header.id;
-      if (session.header.tenant === tenant && (this.supervisor.agents.has(other) || this.supervisor.starting.has(other))) ids.add(other);
+      if (session.header.tenant === tenant && !session.header.run && (this.supervisor.agents.has(other) || this.supervisor.starting.has(other))) ids.add(other);
     }
-    for (const [other, owner] of this.supervisor.reserved) if (owner === tenant) ids.add(other);
+    for (const [other, owner] of this.supervisor.reserved) if (owner === tenant && !this.sessions.get(other)?.header.run && !this.creatingRuns.has(other)) ids.add(other);
     if (id) ids.delete(id);
     return ids.size;
   }
@@ -1352,8 +1373,9 @@ export class ClientSessions {
    * them, so concurrent starts cannot together pass either limit. The slot is
    * held until the supervisor starts the agent or `unreserve` gives it back.
    */
-  private async makeRoom(id: string, tenant: string) {
-    const { quota, source } = await this.quota(tenant);
+  private async makeRoom(id: string, tenant: string, run = false) {
+    // A stateless run takes no place in its tenant's quota of agents (see `tenantAgents`), only one on the node.
+    const { quota, source } = run ? { quota: undefined, source: "default" } : await this.quota(tenant);
     const evict = async (idle: Session | undefined) => { if (idle) await this.supervisor.stop(idle.header.id); return !!idle; };
     const reject = (status: 429 | 503, limit: string, value: number, message: string) => {
       console.log(JSON.stringify({ type: "quota_rejected", level: "info", tenant, agent: id, limit, value, source: limit === "agentsPerTenant" ? source : "node", status }));
@@ -1383,7 +1405,7 @@ export class ClientSessions {
     const id = session.header.id;
     const steps = new Steps();
     return session.starting ??= (async () => {
-      await steps.time("room", this.makeRoom(id, session.header.tenant));
+      await steps.time("room", this.makeRoom(id, session.header.tenant, !!session.header.run));
       // Read before any response is counted against it.
       await steps.time("spend", this.spendOf(session));
       const [{ key: apiKey, platform }, priced] = await steps.time("key", Promise.all([this.apiKey(session, session.header.config.model.provider, session.header.keyScope), this.options.catalogPriced?.(session.header.tenant)]));
@@ -2157,13 +2179,20 @@ export class ClientSessions {
    * (`origin.definition`), and `origin.provision` stands for its configuration in the
    * idempotency check, so a retry after the definition changed returns the same agent.
    */
-  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, given: string | undefined, metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string; spendLimit?: number; toolsHash?: string; builtins?: string[]; delegate?: DelegateSettings; parent?: SessionHeader["parent"]; fork?: { id: string; from: ForkedFrom; records: TranscriptRecord[] }; admit?: (unchanged: boolean) => Promise<unknown> } = {}, steps = new Steps()): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
+  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, given: string | undefined, metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string; spendLimit?: number; toolsHash?: string; builtins?: string[]; delegate?: DelegateSettings; parent?: SessionHeader["parent"]; fork?: { id: string; from: ForkedFrom; records: TranscriptRecord[] }; admit?: (unchanged: boolean) => Promise<unknown>; run?: RunSettings } = {}, steps = new Steps()): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
     metadata = agentMetadata(metadata);
     validateDefinitions(definitions);
     // The caller's key, shown in listings; an agent made without one gets a key nothing else knows.
     const key = given ?? randomUUID();
     if (!validId(key)) throw new HttpError(400, "Invalid provisioning idempotency key");
     const { id, token, existing } = await steps.time("lookup", this.keyed(tenant, key));
+    // A stateless run's key names one run: the same request again is that run, as it is; another request is refused.
+    const sameRun = (header: SessionHeader) => {
+      if (header.tenant !== tenant || header.run?.fingerprint !== access.run!.fingerprint) throw new HttpError(409, "This Idempotency-Key was used for another run; use another key", "IDEMPOTENCY_CONFLICT");
+      return { id, token, expiresAt: header.expiresAt, existing: true };
+    };
+    const ranAlready = access.run && (this.sessions.get(id)?.header ?? existing?.value);
+    if (ranAlready) return sameRun(ranAlready);
     // A fork's volume was made for the id its key had a moment ago: another generation now (it was deleted meanwhile) is a retry.
     if (access.fork && access.fork.id !== id) throw new HttpError(503, "The fork's key changed agents while it was made; retry");
     const { apiKey: _key, ...safeConfig } = config;
@@ -2192,6 +2221,7 @@ export class ClientSessions {
     if (session) {
       if (session.header.tenant !== tenant) throw new HttpError(409, "Idempotency key belongs to another tenant");
       if (session.header.revoked || expired(session.header.expiresAt)) throw new HttpError(410, "Session expired or revoked");
+      if (access.run) return sameRun(session.header);
       changed = changes(session.header);
     } else {
       // Loads and creates of this agent here wait for this one (see `load`).
@@ -2204,7 +2234,8 @@ export class ClientSessions {
       let claim: Claim | undefined;
       try {
         // Capacity is reserved before anything is persisted: an agent refused for it leaves nothing behind.
-        await steps.time("room", this.makeRoom(id, tenant));
+        if (access.run) this.creatingRuns.add(id);
+        await steps.time("room", this.makeRoom(id, tenant, !!access.run));
         const granted = this.options.volumes ? await steps.time("mounts", this.options.volumes.mountsFor(tenant, id, mounts)) : undefined;
         const ownership = this.options.ownership;
         if (ownership) {
@@ -2215,7 +2246,7 @@ export class ClientSessions {
         // A new agent's first ids are reserved with its row (`writeHeader`).
         const cursor = Date.now() * 1000;
         session = {
-          header: { version: 3, id, tenant, digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(sources ? { sources } : {}), ...(origin?.overrides?.length ? { overrides: origin.overrides } : {}), ...(identity ? { identity } : {}), ...(access.keyScope ? { keyScope: access.keyScope } : {}), ...(access.toolsHash ? { toolsHash: access.toolsHash } : {}), ...(given !== undefined ? { key: given } : {}), ...(access.fork ? { forkedFrom: access.fork.from } : {}), ...(access.parent ? { parent: access.parent } : {}) },
+          header: { version: 3, id, tenant, digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(sources ? { sources } : {}), ...(origin?.overrides?.length ? { overrides: origin.overrides } : {}), ...(identity ? { identity } : {}), ...(access.keyScope ? { keyScope: access.keyScope } : {}), ...(access.toolsHash ? { toolsHash: access.toolsHash } : {}), ...(given !== undefined ? { key: given } : {}), ...(access.fork ? { forkedFrom: access.fork.from } : {}), ...(access.parent ? { parent: access.parent } : {}), ...(access.run ? { run: access.run } : {}) },
           claim, requests: new Map(), running: new Map(), log: this.storage.log<JournalRecord>(this.journalKey(id), claim),
           cursor, reserved: cursor + this.eventBlock, events: [], eventBytes: 0, watchers: new Set(), polls: new Set(), inflight: 0, runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
         };
@@ -2247,7 +2278,7 @@ export class ClientSessions {
         }
         await this.discard(session!);
         throw error;
-      }
+      } finally { this.creatingRuns.delete(id); }
     }
     // Creating records the agent: its host starts in the background, so the response does not wait on listing its tool
     // servers, and a prompt sent meanwhile waits on the same start. A start that fails is only logged: the agent exists,
@@ -2385,13 +2416,13 @@ export class ClientSessions {
     await deleteTail(sql, id, [this.journalKey(id), AgentSupervisor.transcriptKey(id)]);
   }
 
-  /** A tenant's live agents. `running` covers agents served by any node. */
+  /** A tenant's live agents (not its stateless runs' sessions). `running` covers agents served by any node. */
   async list(tenant: string) {
     const { rows } = await this.db.query(`
       select a.id, a.header->>'key' as key, a.name, a.type, a.model, a.expires_at, a.resume_failures, a.resume_after, a.header->'parent'->>'agentId' as parent, a.header->>'provisionHash' as config_hash, n.node is not null as served from agents a
       left join actor_owners o on o.actor = a.id
       left join runtime_nodes n on n.node = o.node and n.session = o.session and n.expires_at > now()
-      where a.tenant = $1 and not a.revoked and (a.expires_at is null or a.expires_at > $2) order by a.id`, [tenant, Date.now()]);
+      where a.tenant = $1 and not a.revoked and (a.expires_at is null or a.expires_at > $2) and a.header->'run' is null order by a.id`, [tenant, Date.now()]);
     return rows.map(row => {
       const local = this.sessions.get(row.id);
       const response = local?.response;
@@ -2403,10 +2434,13 @@ export class ClientSessions {
     });
   }
 
-  /** Whether `id` is one of `tenant`'s live agents (one read, not a listing). */
-  async owns(id: string, tenant: string) {
+  /**
+   * Whether `id` is one of `tenant`'s live agents (one read, not a listing); with `agentsOnly`, not a stateless run's
+   * session, which the agents API does not show.
+   */
+  async owns(id: string, tenant: string, agentsOnly = false) {
     if (!validSessionId(id)) return false;
-    const { rowCount } = await this.db.query("select 1 from agents where id = $1 and tenant = $2 and not revoked and (expires_at is null or expires_at > $3)", [id, tenant, Date.now()]);
+    const { rowCount } = await this.db.query(`select 1 from agents where id = $1 and tenant = $2 and not revoked and (expires_at is null or expires_at > $3)${agentsOnly ? " and header->'run' is null" : ""}`, [id, tenant, Date.now()]);
     return !!rowCount;
   }
 
@@ -2501,6 +2535,51 @@ export class ClientSessions {
     const header = (await this.owns(id, tenant)) ? this.sessions.get(id)?.header ?? (await this.readHeader(id))?.value : undefined;
     if (!header || header.purged) throw new HttpError(404, "Unknown agent");
     return this.watchAgent(c as Context<ClientEnv>, header, c.req.query("poll") === "1" ? "poll" : "watch", reader);
+  }
+
+  /** A tenant's stateless run's session header (`id`: the session's), or 404. */
+  private async runHeader(id: string, tenant: string) {
+    const header = (await this.owns(id, tenant)) ? this.sessions.get(id)?.header ?? (await this.readHeader(id))?.value : undefined;
+    if (!header?.run || header.purged) throw new HttpError(404, "Unknown run");
+    return header;
+  }
+
+  /**
+   * A tenant's stateless run (`id`: its session's) and its request, once it ends or `waitMs` passes (at most 25 s). A run
+   * that ended is read from storage where no node holds it; one still open is waited on where it is loaded, or loaded here
+   * (which resumes it, if the node running it was lost).
+   */
+  async runRecord(id: string, tenant: string, waitMs = 0, signal?: AbortSignal): Promise<{ header: SessionHeader; record: RequestRecord }> {
+    const header = await this.runHeader(id, tenant);
+    const requestId = runIdOf(id);
+    if (this.unloaded(id)) {
+      const stored = (await this.storedRequests(id)).find(record => record.id === requestId);
+      if (stored && (stored.state === "completed" || waitMs <= 0)) return { header, record: stored };
+    }
+    const record = await this.awaitRequest(id, tenant, requestId, waitMs, signal);
+    if (!record) throw new HttpError(404, "Unknown run");
+    return { header: this.sessions.get(id)?.header ?? header, record };
+  }
+
+  /**
+   * A tenant's stateless run's event stream: its events after `Last-Event-ID` (or a snapshot, as a watcher gets one),
+   * ending with its response. A run that ended where no node holds it any more answers with its response alone.
+   */
+  async runEvents(c: Context, id: string, tenant: string) {
+    const header = await this.runHeader(id, tenant);
+    const requestId = runIdOf(id);
+    if (this.unloaded(id)) {
+      const ended = (await this.storedRequests(id)).find(record => record.id === requestId && record.state === "completed");
+      if (ended) {
+        const res = (c as Context<ClientEnv>).env.outgoing;
+        const cursor = await this.idleCursor(id) ?? 0;
+        res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", "X-Accel-Buffering": "no" });
+        res.write(`event: ready\ndata: ${JSON.stringify({ version: 5, runId: requestId, watch: true })}\n\n`);
+        res.end(`id: ${cursor}\ndata: ${JSON.stringify({ type: "response", id: requestId, outcome: ended.outcome })}\n\n`);
+        return RESPONSE_ALREADY_SENT;
+      }
+    }
+    return this.watchAgent(c as Context<ClientEnv>, header, "watch");
   }
 
   /**
@@ -2693,8 +2772,8 @@ export class ClientSessions {
   }
 
   /** Revoke a tenant's agent, stop it and unload it; the purge sweep, started now, then deletes its data. */
-  async destroyAgent(id: string, tenant: string) {
-    if (!await this.owns(id, tenant)) return false;
+  async destroyAgent(id: string, tenant: string, agentsOnly = false) {
+    if (!await this.owns(id, tenant, agentsOnly)) return false;
     await this.delete(id);
     return true;
   }
@@ -3535,6 +3614,7 @@ export class ClientSessions {
       }
       session.lastActive = Date.now();
       this.publish(session, { type: "response", id: record.id, outcome: value });
+      if (run && session.header.run && record.id === runIdOf(session.header.id)) void this.runEnded(session);
       if (run && completed.trace?.sampled) {
         // A run that never began (refused at a limit, or failed starting) has a span too.
         const spans = session.spans?.requestId === record.id ? session.spans : await this.spansFor(session, completed);
@@ -3543,6 +3623,19 @@ export class ClientSessions {
       }
     } finally { session.settling--; }
     await this.fold(session);
+  }
+
+  /**
+   * A stateless run ended: its streams end with it, its data is kept for its retention from now (then purged, as an
+   * expired agent's is), and its agent stops at once, so its place on the node is free. Should this node stop first, its
+   * session expires at the bound it was made with.
+   */
+  private async runEnded(session: Session) {
+    this.endStreams(session);
+    session.header.expiresAt = Date.now() + session.header.run!.retentionMs;
+    try { await this.writeHeader(session); }
+    catch (error) { console.error(JSON.stringify({ type: "run_retention_failed", agent: session.header.id, error: safeError(error) })); }
+    await this.supervisor.stop(session.header.id).catch(() => {});
   }
 
   /** Count a model response's usage toward the webhook event of its run's end. */
