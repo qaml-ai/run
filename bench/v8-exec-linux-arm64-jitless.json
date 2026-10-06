@@ -1,0 +1,253 @@
+{
+  "node": "v22.23.3",
+  "platform": "linux",
+  "arch": "arm64",
+  "runs": 200,
+  "latency": {
+    "v8": {
+      "return 1": {
+        "firstMs": 259.02,
+        "p50Ms": 3.38,
+        "p99Ms": 4.65,
+        "cpuMsPerExecution": 3.53,
+        "childCpuMs": 2.59
+      },
+      "typescript": {
+        "firstMs": 3.48,
+        "p50Ms": 3.64,
+        "p99Ms": 4.99,
+        "cpuMsPerExecution": 3.68,
+        "childCpuMs": 2.7
+      },
+      "cpu loop": {
+        "firstMs": 124.8,
+        "p50Ms": 120.82,
+        "p99Ms": 126.83,
+        "cpuMsPerExecution": 121.54,
+        "childCpuMs": 120.09
+      },
+      "json transform": {
+        "firstMs": 13.21,
+        "p50Ms": 13.02,
+        "p99Ms": 14.71,
+        "cpuMsPerExecution": 13,
+        "childCpuMs": 11.84
+      },
+      "50 tool calls": {
+        "firstMs": 9.25,
+        "p50Ms": 6.7,
+        "p99Ms": 8.16,
+        "cpuMsPerExecution": 6.65,
+        "childCpuMs": 3.96
+      },
+      "fs write+read": {
+        "firstMs": 4.29,
+        "p50Ms": 4.12,
+        "p99Ms": 5.58,
+        "cpuMsPerExecution": 4.37,
+        "childCpuMs": 2.98
+      }
+    },
+    "v8-jit": {
+      "return 1": {
+        "firstMs": 4.09,
+        "p50Ms": 3.25,
+        "p99Ms": 4.37,
+        "cpuMsPerExecution": 3.35,
+        "childCpuMs": 2.46
+      },
+      "typescript": {
+        "firstMs": 4.13,
+        "p50Ms": 3.41,
+        "p99Ms": 4.87,
+        "cpuMsPerExecution": 3.35,
+        "childCpuMs": 2.54
+      },
+      "cpu loop": {
+        "firstMs": 39.95,
+        "p50Ms": 39.17,
+        "p99Ms": 41.27,
+        "cpuMsPerExecution": 39.24,
+        "childCpuMs": 38.15
+      },
+      "json transform": {
+        "firstMs": 13,
+        "p50Ms": 12.87,
+        "p99Ms": 15.38,
+        "cpuMsPerExecution": 12.86,
+        "childCpuMs": 11.6
+      },
+      "50 tool calls": {
+        "firstMs": 7.52,
+        "p50Ms": 6.89,
+        "p99Ms": 8.59,
+        "cpuMsPerExecution": 6.75,
+        "childCpuMs": 4.17
+      },
+      "fs write+read": {
+        "firstMs": 4.31,
+        "p50Ms": 4.93,
+        "p99Ms": 6.44,
+        "cpuMsPerExecution": 5.22,
+        "childCpuMs": 3.44
+      }
+    },
+    "v8-prespawn": {
+      "return 1": {
+        "firstMs": 2.61,
+        "p50Ms": 1.63,
+        "p99Ms": 2.52,
+        "cpuMsPerExecution": 3.65,
+        "childCpuMs": 2.79
+      },
+      "typescript": {
+        "firstMs": 1.83,
+        "p50Ms": 1.83,
+        "p99Ms": 2.6,
+        "cpuMsPerExecution": 4.11,
+        "childCpuMs": 2.91
+      },
+      "cpu loop": {
+        "firstMs": 120.21,
+        "p50Ms": 119.85,
+        "p99Ms": 123.08,
+        "cpuMsPerExecution": 121.77,
+        "childCpuMs": 120.47
+      },
+      "json transform": {
+        "firstMs": 11.78,
+        "p50Ms": 11.73,
+        "p99Ms": 13.21,
+        "cpuMsPerExecution": 13.77,
+        "childCpuMs": 12.51
+      },
+      "50 tool calls": {
+        "firstMs": 3.33,
+        "p50Ms": 4.26,
+        "p99Ms": 6.39,
+        "cpuMsPerExecution": 6.44,
+        "childCpuMs": 4.06
+      },
+      "fs write+read": {
+        "firstMs": 3.17,
+        "p50Ms": 2.78,
+        "p99Ms": 4.31,
+        "cpuMsPerExecution": 5.08,
+        "childCpuMs": 3.37
+      }
+    }
+  },
+  "memory": {
+    "v8": {
+      "parentRssBeforeMb": 131.7,
+      "parentRssWaitingMb": 131.7,
+      "childrenRssMb": 557.6,
+      "childrenPssMb": 0,
+      "perExecutionRssMb": 17.4,
+      "perExecutionPssMb": 0,
+      "totalWaitingMb": 689.3
+    },
+    "v8-jit": {
+      "parentRssBeforeMb": 131.7,
+      "parentRssWaitingMb": 131.8,
+      "childrenRssMb": 656.1,
+      "childrenPssMb": 0,
+      "perExecutionRssMb": 20.5,
+      "perExecutionPssMb": 0,
+      "totalWaitingMb": 787.9
+    },
+    "v8-prespawn": {
+      "parentRssBeforeMb": 131.8,
+      "parentRssWaitingMb": 131.8,
+      "childrenRssMb": 557.6,
+      "childrenPssMb": 0,
+      "perExecutionRssMb": 17.4,
+      "perExecutionPssMb": 0,
+      "totalWaitingMb": 689.4
+    }
+  },
+  "throughput": {
+    "v8": {
+      "return 1 @1": {
+        "perSecond": 251,
+        "cpuMsPerExecution": 4.06
+      },
+      "json transform @1": {
+        "perSecond": 74,
+        "cpuMsPerExecution": 13.42
+      },
+      "return 1 @8": {
+        "perSecond": 900,
+        "cpuMsPerExecution": 3.34
+      },
+      "json transform @8": {
+        "perSecond": 557,
+        "cpuMsPerExecution": 13.4
+      },
+      "return 1 @32": {
+        "perSecond": 898,
+        "cpuMsPerExecution": 3.31
+      },
+      "json transform @32": {
+        "perSecond": 632,
+        "cpuMsPerExecution": 14.76
+      }
+    },
+    "v8-jit": {
+      "return 1 @1": {
+        "perSecond": 291,
+        "cpuMsPerExecution": 3.39
+      },
+      "json transform @1": {
+        "perSecond": 80,
+        "cpuMsPerExecution": 12.33
+      },
+      "return 1 @8": {
+        "perSecond": 863,
+        "cpuMsPerExecution": 3.35
+      },
+      "json transform @8": {
+        "perSecond": 587,
+        "cpuMsPerExecution": 12.61
+      },
+      "return 1 @32": {
+        "perSecond": 814,
+        "cpuMsPerExecution": 3.47
+      },
+      "json transform @32": {
+        "perSecond": 625,
+        "cpuMsPerExecution": 13.73
+      }
+    },
+    "v8-prespawn": {
+      "return 1 @1": {
+        "perSecond": 673,
+        "cpuMsPerExecution": 3.39
+      },
+      "json transform @1": {
+        "perSecond": 87,
+        "cpuMsPerExecution": 13.33
+      },
+      "return 1 @8": {
+        "perSecond": 849,
+        "cpuMsPerExecution": 3.41
+      },
+      "json transform @8": {
+        "perSecond": 512,
+        "cpuMsPerExecution": 15.7
+      },
+      "return 1 @32": {
+        "perSecond": 825,
+        "cpuMsPerExecution": 3.46
+      },
+      "json transform @32": {
+        "perSecond": 576,
+        "cpuMsPerExecution": 15.72
+      }
+    }
+  },
+  "binary": {
+    "path": "/usr/local/bin/v8-exec",
+    "mb": 58.4
+  }
+}
