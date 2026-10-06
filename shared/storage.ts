@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { link, mkdir, open, readdir, readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { fileAppendLog, type AppendLog } from "./append-log.ts";
+import { fileAppendLog, type AppendLog, type CommitEffect } from "./append-log.ts";
 import type { Claim } from "../src/ownership.ts";
 
 /**
@@ -251,8 +251,11 @@ export interface LogTail {
   /** The log's rows in seq order. */
   rows(key: string): Promise<TailRow[]>;
   last(key: string): Promise<number | undefined>;
-  /** Insert rows; false when `claim` is no longer current (or another writer took a seq). */
-  append(key: string, claim: Claim | undefined, rows: TailRow[]): Promise<boolean>;
+  /**
+   * Insert rows; false when `claim` is no longer current (or another writer took a seq). `effects` run in the same
+   * transaction, under the same fence, when it inserts them, and not when they were there already (a repeated append).
+   */
+  append(key: string, claim: Claim | undefined, rows: TailRow[], effects?: CommitEffect[]): Promise<boolean>;
   /**
    * One compaction at a time per log, holding `claim`: `fold` moves the rows to
    * Storage and returns the seq Storage now covers through; rows up to it are then
@@ -304,6 +307,8 @@ async function mapLimit<T, R>(items: T[], limit: number, work: (item: T) => Prom
  */
 export function segmentLog<T>(store: SegmentStore, key: string, tail: LogTail, claim?: Claim, options: { coalesceMs?: number } = {}): AppendLog<T> {
   let buffer: string[] = [];
+  /** The buffered records' effects, committed with them. */
+  let effects: CommitEffect[] = [];
   let next: number | undefined;
   let appended = 0;
   /** What this writer knows is in the tail above Storage. */
@@ -335,7 +340,7 @@ export function segmentLog<T>(store: SegmentStore, key: string, tail: LogTail, c
     return records;
   };
 
-  async function insert(texts: string[], snapshot: boolean) {
+  async function insert(texts: string[], snapshot: boolean, effects: CommitEffect[]) {
     const first = await position();
     const rows = await Promise.all(texts.map(async (text, index): Promise<TailRow> => {
       if (Buffer.byteLength(text) <= BLOB_BYTES) return { seq: first + index, snapshot, body: text, blob: null };
@@ -344,7 +349,7 @@ export function segmentLog<T>(store: SegmentStore, key: string, tail: LogTail, c
       try { await store.create(`blob-${hash}`, text); } catch (error) { if (!(error instanceof PreconditionFailed)) throw error; }
       return { seq: first + index, snapshot, body: null, blob: hash };
     }));
-    if (!await tail.append(key, claim, rows)) throw fence();
+    if (!await tail.append(key, claim, rows, effects)) throw fence();
     next = first + rows.length;
     tailRecords += rows.length;
     for (const row of rows) tailBytes += row.body?.length ?? 0;
@@ -392,10 +397,14 @@ export function segmentLog<T>(store: SegmentStore, key: string, tail: LogTail, c
   const write = async () => {
     if (fenced) throw fenced;
     if (!buffer.length) return;
-    const batch = buffer;
+    const batch = buffer, done = effects;
     buffer = [];
-    try { await insert(batch, false); retrying = false; }
-    catch (error) { if (!fenced) { buffer = batch.concat(buffer); retrying = true; } throw error; }
+    effects = [];
+    try { await insert(batch, false, done); retrying = false; }
+    catch (error) {
+      if (!fenced) { buffer = batch.concat(buffer); effects = done.concat(effects); retrying = true; }
+      throw error;
+    }
     if (tailRecords >= TAIL_RECORDS || tailBytes >= TAIL_BYTES) void serialize(compact).catch(() => {});
   };
 
@@ -426,9 +435,10 @@ export function segmentLog<T>(store: SegmentStore, key: string, tail: LogTail, c
       if (!retrying) next = Math.max(through, rows.at(-1)?.seq ?? -1) + 1;
       return records;
     }),
-    append(record) {
+    append(record, effect) {
       if (closing) throw new Error("Append log closed");
       buffer.push(JSON.stringify(record));
+      if (effect) effects.push(effect);
       appended++;
     },
     flush(durable = false) {
@@ -442,13 +452,20 @@ export function segmentLog<T>(store: SegmentStore, key: string, tail: LogTail, c
     rewrite(snapshot) {
       return serialize(async () => {
         if (fenced) throw fenced;
+        // A failed batch with effects is written again first, as a flush would: whether it had landed decides
+        // whether its effects ran, so they run once.
+        if (retrying && effects.length) await write();
         const records = snapshot();
+        // The snapshot holds the buffered records: their effects commit with it.
+        const carried = effects;
         buffer = [];
+        effects = [];
         // A failed write's batch is dropped here, not written again: wherever it landed, the snapshot goes after it.
         if (retrying) { next = undefined; retrying = false; }
         // Nor is a failed snapshot tried again, and it may have landed too (its answer lost): the next write finds
         // its position afresh rather than colliding with it.
-        try { await insert([JSON.stringify(records)], true); }
+        try { await insert([JSON.stringify(records)], true, carried); }
+        // Its effects are dropped with it: they committed if it landed, and its records are lost with them if not.
         catch (error) { next = undefined; throw error; }
         appended = 0;
       });

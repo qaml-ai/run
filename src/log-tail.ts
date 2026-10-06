@@ -1,6 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { databaseUnavailable, transaction, type Db, type Sql } from "./db.ts";
 import type { LogTail, TailRow } from "../shared/storage.ts";
+import type { CommitEffect } from "../shared/append-log.ts";
 import { LostClaim, underClaim, type Claim } from "./ownership.ts";
 
 /**
@@ -14,7 +15,9 @@ import { LostClaim, underClaim, type Claim } from "./ownership.ts";
  * Storage: no one takes the actor over, or compacts the same log, meanwhile.
  *
  * An append is idempotent: rows already there with the same content count as
- * written, so an append whose connection dropped may be repeated. While the
+ * written, so an append whose connection dropped may be repeated. Its effects
+ * (`CommitEffect`) commit in its transaction, while it holds that lock, only
+ * when it inserts the rows: a repeat that finds them there runs none again. While the
  * database is unreachable (a failover) it is repeated for up to `retryMs`, so a
  * durable flush waits the outage out instead of failing the turn or session that
  * made it. The fence still holds: a node that lost the actor meanwhile inserts
@@ -33,11 +36,16 @@ export function postgresTail(db: Db, options: { retryMs?: number; unfenced?: boo
     async last(key) {
       return (await db.query("select max(seq) as seq from log_records where log_key = $1", [key])).rows[0].seq ?? undefined;
     },
-    async append(key, claim, rows) {
+    async append(key, claim, rows, effects = []) {
       required(claim, key);
       const deadline = Date.now() + (options.retryMs ?? 0);
+      const append = () => !effects.length ? insert(db, key, claim, rows).then(result => result.written) : transaction(db, async sql => {
+        const result = await insert(sql, key, claim, rows);
+        if (result.written && result.inserted) for (const effect of effects) await effect(sql);
+        return result.written;
+      });
       for (let delay = 100; ; delay = Math.min(delay * 2, 2_000)) {
-        try { return await insert(db, key, claim, rows); }
+        try { return await append(); }
         catch (error) {
           if (!databaseUnavailable(error) || Date.now() + delay > deadline) throw error;
           await sleep(delay);
@@ -70,9 +78,10 @@ export function postgresTail(db: Db, options: { retryMs?: number; unfenced?: boo
  * match exactly (this writer's own earlier attempt); any other row at one of these
  * sequence numbers, or a claim that is no longer current, makes the append fail,
  * and then it inserts none of its rows: a failed append never leaves a later record
- * without an earlier one.
+ * without an earlier one. Whether every row is written, and whether this statement
+ * inserted them.
  */
-async function insert(db: Db, key: string, claim: Claim | undefined, rows: TailRow[]) {
+async function insert(db: Sql, key: string, claim: Claim | undefined, rows: TailRow[]) {
   const { rows: [result] } = await db.query(`
     with owner as (select from actor_owners where actor = $2 and session = $3 and epoch = $4 for share),
     held as (select $3::uuid is null or exists (select from owner) as ok),
@@ -84,10 +93,10 @@ async function insert(db: Db, key: string, claim: Claim | undefined, rows: TailR
       select $1, r.seq, $2, r.snapshot, r.body, r.blob from r where (select ok from held) and not (select yes from taken)
       on conflict (log_key, seq) do nothing
       returning seq)
-    select (select ok from held) as ok, (select count(*) from inserted)::int + (select count(*) from r join log_records l
+    select (select ok from held) as ok, (select count(*) from inserted)::int as inserted, (select count(*) from inserted)::int + (select count(*) from r join log_records l
       on l.log_key = $1 and l.seq = r.seq and l.snapshot = r.snapshot and l.body is not distinct from r.body and l.blob is not distinct from r.blob)::int as written`,
     [key, claim?.actor ?? null, claim?.session ?? null, claim?.epoch ?? null, ...columns(rows)]);
-  return result.ok && result.written === rows.length;
+  return { written: result.ok && result.written === rows.length, inserted: result.inserted > 0 };
 }
 
 function columns(rows: TailRow[]) {

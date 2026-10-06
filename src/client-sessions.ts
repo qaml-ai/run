@@ -14,7 +14,7 @@ import { outputInput, validateDefinitions } from "./tool-policy.ts";
 import { importedHistory, validateUserMessages } from "./history.ts";
 import { forkCut, recordedMessages, type Backlog, type TranscriptRecord } from "./transcript.ts";
 import { canonical } from "../shared/durable-json.ts";
-import type { AppendLog } from "../shared/append-log.ts";
+import type { AppendLog, CommitEffect } from "../shared/append-log.ts";
 import { fileStorage, type Storage } from "../shared/storage.ts";
 import { FRAME_BYTES, outcomeEnding, type ClientEvent, type Outcome, type RequestMethod, type RequestRecord, type TurnSnapshot } from "../shared/client-protocol.ts";
 import { agentMetadata, type AgentMetadata } from "../shared/agent-metadata.ts";
@@ -121,6 +121,11 @@ type Session = {
   log: AppendLog<JournalRecord>;
   /** Streamed events live only in memory; durable state is recovered through /state. */
   cursor: number; events: BufferedEvent[]; eventBytes: number;
+  /**
+   * The highest event id reserved for this owner (`reserveEvents`), and the next block's reservation while it is made.
+   * Events past the reservation wait in `held`, in order, until it is extended.
+   */
+  reserved: number; reserving?: Promise<void>; held?: ClientEvent[];
   /** The application's connection: its event stream, which carries its attached MCP server. */
   response?: ServerResponse; starting?: Promise<unknown>;
   /** Read-only subscribers (`/events?watch=1`): each gets every event, and none replaces another or the application's connection. */
@@ -191,6 +196,8 @@ type Session = {
   catalogPriced?: boolean;
   /** Its spend limit and what it has spent since it was set (`agent_spend_limits`); null when it has none, undefined until read. */
   spend?: SpendLimit | null;
+  /** Spend counted that no transcript record has carried yet (`spent`), for the next to write. */
+  unwritten?: number;
   /** Since when a run's active time has not been reported (`onActive`). */
   activeSince?: number;
   /** What the running run wrote and handed over with present_file, for its outcome. */
@@ -276,13 +283,24 @@ export function loadDecision(request: RequestRecord): "queued" | "resume" | "unc
   if (resumable(request) && (request.handedOff || (request.resumes ?? 0) < MAX_RESUMES)) return "resume";
   return "uncertain";
 }
+/** Event ids an owner reserves at a time (`reserveEvents`): one write per block, made when half of it is left. */
+export const EVENT_BLOCK = 10_000;
+/**
+ * An agent's stored event cursor (the `agents` row): where its last owner stopped (`last`; `clean` when nothing was
+ * published after it), and the highest id any owner reserved (`reserved`). Every id published was reserved first.
+ */
+export type StoredCursor = { last?: number; clean: boolean; reserved?: number };
 /**
  * The event cursor a load starts from, given the agent's stored one: where its last owner stopped cleanly, else above
- * any id an earlier process can have used, as far as `now` (ms, this node's clock) and the stored cursor tell.
+ * every id reserved, so above any id an earlier owner can have published, whatever its clock said. Ids stay
+ * microseconds of `now` (ms, this node's clock) where that is higher, which bounds nothing.
  */
-export function startingCursor(stored: number | undefined, clean: boolean, now: number) {
-  return clean && stored !== undefined ? stored : Math.max(now * 1000, (stored ?? 0) + 1);
+export function startingCursor(stored: StoredCursor | undefined, now: number) {
+  if (stored?.clean && stored.last !== undefined) return stored.last;
+  return Math.max(now * 1000, Math.max(stored?.last ?? 0, stored?.reserved ?? 0) + 1);
 }
+const storedCursor = (row: { last_cursor: number | null; cursor_clean: boolean; reserved_cursor: number | null }): StoredCursor =>
+  ({ clean: row.cursor_clean, ...row.last_cursor === null ? {} : { last: Number(row.last_cursor) }, ...row.reserved_cursor === null ? {} : { reserved: Number(row.reserved_cursor) } });
 /** Requests an agent may have accepted but not finished, queued runs included. */
 const MAX_OPEN_REQUESTS = 32;
 const REQUEST_METHODS = [...RUN_METHODS, "status", "abort", "steer", "configure"];
@@ -406,6 +424,8 @@ const visible = ({ params: _params, announce: _announce, handedOff: _handedOff, 
 
 export interface ClientSessionOptions {
   secret: string; toolTimeoutMs?: number; ttlMs?: number; eventBytes?: number;
+  /** Event ids reserved at a time (default EVENT_BLOCK); tests set fewer, to reserve often. */
+  eventBlock?: number;
   /** Said after a run's `model_key_missing` error: where else this runtime takes keys (a self-host's environment). */
   modelKeyHint?: string;
   /** The most a snapshot takes, one frame (default FRAME_BYTES); tests make it small. */
@@ -543,6 +563,8 @@ const duration = (seconds: number) => {
 };
 /** A model response's cost as the runtime counts it. */
 const responseCost = (usage: any) => usageCost(usage).usd;
+/** A model response that is billed, and counted against spend limits: one the provider completed, with usage. */
+const billed = (message: any) => message?.role === "assistant" && !!message.usage && message.stopReason !== "error";
 /** A provider key and whether it is the platform's rather than the tenant's own. */
 export type ProviderKey = { key: string; platform: boolean };
 /** An agent, and this node's claim on it: hooks write what the agent owns under it. */
@@ -617,8 +639,8 @@ export class ClientSessions {
     try {
       const { rows } = session.revision === undefined
         ? await this.db.query(`
-            insert into agents (id, tenant, header, name, type, model, expires_at, revoked, revision) values ($1, $2, $3, $4, $5, $6, $7, $8, 1)
-            on conflict (id) do nothing returning revision`, columns)
+            insert into agents (id, tenant, header, name, type, model, expires_at, revoked, revision, reserved_cursor) values ($1, $2, $3, $4, $5, $6, $7, $8, 1, $9)
+            on conflict (id) do nothing returning revision`, [...columns, session.reserved])
         // The ownership row is locked (FOR SHARE) as in a journal append, so a takeover waits for this write instead of racing it.
         : await this.db.query(`
             with owner as (select from actor_owners where actor = $1 and session = $10 and epoch = $11 for share)
@@ -682,7 +704,7 @@ export class ClientSessions {
     const log = this.storage.log<JournalRecord>(this.journalKey(id), claim);
     const session: Session = {
       header, revision: stored.revision, claim, requests: new Map(), running: new Map(), log,
-      cursor: await this.startCursor(id, claim), events: [], eventBytes: 0, watchers: new Set(), polls: new Set(), inflight: 0, runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
+      ...await this.startCursor(id, claim), events: [], eventBytes: 0, watchers: new Set(), polls: new Set(), inflight: 0, runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
     };
     for (const record of await log.read()) this.apply(session, record);
     if (header.version !== 3 || header.id !== id) throw new Error("Invalid client session header");
@@ -849,6 +871,12 @@ export class ClientSessions {
 
   private publish(session: Session, data: ClientEvent) {
     if (this.closed || session.fault) return;
+    // Past the ids reserved, events wait for the next block, and any after them with them, so they keep their order.
+    if (session.held || session.cursor >= session.reserved) {
+      (session.held ??= []).push(data);
+      this.reserveEvents(session);
+      return;
+    }
     if (data.type === "event" && (session.spans || this.options.tracing)) this.traceEvent(session, data.requestId, data.event);
     const nested = isSubagent(data);
     // A message_update is its delta alone; the runtime keeps the latest message it updates, for snapshots.
@@ -870,6 +898,7 @@ export class ClientSessions {
       text = JSON.stringify(data);
     }
     const event: BufferedEvent = { id: ++session.cursor, bytes: Buffer.byteLength(text), data };
+    if (session.reserved - session.cursor <= this.eventBlock / 2) this.reserveEvents(session);
     session.events.push(event);
     session.eventBytes += event.bytes;
     session.lastActive = Date.now();
@@ -972,17 +1001,44 @@ export class ClientSessions {
     watch.release();
   }
 
+  private get eventBlock() { return this.options.eventBlock ?? EVENT_BLOCK; }
+
   /**
-   * The cursor a loaded session starts from: where its last owner stopped cleanly (nothing was
-   * published since, so a subscriber holding it resumes without a gap), else above any id an earlier
-   * process can have used. Marked unclean before any event, so a crash of this one never reuses an id.
+   * The cursor a loaded session starts from (`startingCursor`): where its last owner stopped cleanly
+   * (nothing was published since, so a subscriber holding it resumes without a gap), else above every
+   * id reserved. Marked unclean, and its first block of ids reserved, before any event, under the
+   * claim: a crash of this owner never lets a successor reuse an id it published.
    */
-  private async startCursor(id: string, claim: Claim | undefined) {
-    const row = (await this.db.query("select last_cursor, cursor_clean from agents where id = $1", [id])).rows[0];
-    const stored = row?.last_cursor === null || row?.last_cursor === undefined ? undefined : Number(row.last_cursor);
-    const cursor = startingCursor(stored, !!row?.cursor_clean, Date.now());
-    await underClaim(this.db, claim, sql => sql.query("update agents set cursor_clean = false where id = $1", [id]));
-    return cursor;
+  private async startCursor(id: string, claim: Claim | undefined): Promise<{ cursor: number; reserved: number }> {
+    return underClaim(this.db, claim, async sql => {
+      const row = (await sql.query("select last_cursor, cursor_clean, reserved_cursor from agents where id = $1 for update", [id])).rows[0];
+      const cursor = startingCursor(row && storedCursor(row), Date.now());
+      const reserved = Math.max(cursor + this.eventBlock, Number(row?.reserved_cursor ?? 0));
+      await sql.query("update agents set cursor_clean = false, reserved_cursor = $2 where id = $1", [id, reserved]);
+      return { cursor, reserved };
+    });
+  }
+
+  /**
+   * Reserve the next block of event ids, under the claim: the next owner starts above it. Begun when half
+   * the reserved ids are left, so events wait on it (`held`) only when a block runs out first. A node that
+   * lost the claim reserves nothing more, so it publishes no id past what it reserved.
+   */
+  private reserveEvents(session: Session) {
+    if (session.reserving || session.fault || this.closed) return;
+    const id = session.header.id, through = session.cursor + this.eventBlock;
+    session.reserving = underClaim(this.db, session.claim, sql => sql.query("update agents set reserved_cursor = greatest(coalesce(reserved_cursor, 0), $2) where id = $1", [id, through])).then(() => {
+      session.reserving = undefined;
+      session.reserved = Math.max(session.reserved, through);
+      const held = session.held ?? [];
+      session.held = undefined;
+      for (const data of held) this.publish(session, data);
+    }, error => {
+      session.reserving = undefined;
+      if (error instanceof LostClaim) return;
+      console.error(JSON.stringify({ type: "event_reserve_failed", agent: id, error: errorText(error) }));
+      if (session.held) setTimeout(() => this.reserveEvents(session), 1_000).unref();
+    });
   }
 
   /**
@@ -993,8 +1049,9 @@ export class ClientSessions {
   private async idleCursor(id: string): Promise<number | undefined> {
     const row = (await this.db.query("select last_cursor, cursor_clean from agents where id = $1", [id])).rows[0];
     if (row?.cursor_clean && row.last_cursor !== null) return Number(row.last_cursor);
+    // Above every id reserved, as `startingCursor` starts.
     const { rows } = await this.db.query(`
-      update agents set last_cursor = greatest($2::bigint, coalesce(last_cursor, 0) + 1), cursor_clean = true
+      update agents set last_cursor = greatest($2::bigint, greatest(coalesce(last_cursor, 0), coalesce(reserved_cursor, 0)) + 1), cursor_clean = true
       where id = $1 and not cursor_clean and not exists (
         select from actor_owners o join runtime_nodes n on n.node = o.node and n.session = o.session and n.expires_at > now() where o.actor = $1)
       returning last_cursor`, [id, Date.now() * 1000]);
@@ -1337,6 +1394,7 @@ export class ClientSessions {
         search: async query => { await this.leased(session); return this.searchTools(session, query); },
         lease: () => this.leased(session),
         background: event => this.backgroundEvent(session, event),
+        committing: record => this.spendEffect(session, record),
         history: {
           // One whose create failed before writing its row begins it now, and is indexed from its log.
           indexed: async () => (await this.historyIndex.indexed(id)) ?? (await this.historyIndex.begin(id), 0),
@@ -2131,10 +2189,12 @@ export class ClientSessions {
           if ("owner" in acquired) throw new NotOwner(acquired.owner);
           claim = acquired.claim;
         }
+        // A new agent's first ids are reserved with its row (`writeHeader`).
+        const cursor = Date.now() * 1000;
         session = {
           header: { version: 3, id, tenant, digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(sources ? { sources } : {}), ...(origin?.overrides?.length ? { overrides: origin.overrides } : {}), ...(identity ? { identity } : {}), ...(access.keyScope ? { keyScope: access.keyScope } : {}), ...(access.toolsHash ? { toolsHash: access.toolsHash } : {}), ...(given !== undefined ? { key: given } : {}), ...(access.fork ? { forkedFrom: access.fork.from } : {}), ...(access.parent ? { parent: access.parent } : {}) },
           claim, requests: new Map(), running: new Map(), log: this.storage.log<JournalRecord>(this.journalKey(id), claim),
-          cursor: Date.now() * 1000, events: [], eventBytes: 0, watchers: new Set(), polls: new Set(), inflight: 0, runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
+          cursor, reserved: cursor + this.eventBlock, events: [], eventBytes: 0, watchers: new Set(), polls: new Set(), inflight: 0, runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
         };
         // FileRefs its initial messages or a fork's history carry are its own now: their chunks are pinned to it before it
         // exists, so there is never an agent without them (a pin left by a create that failed only keeps chunks stored).
@@ -3249,11 +3309,11 @@ export class ClientSessions {
           const via = this.endpoint(session) ? `${session.header.config.model.provider}/` : "";
           const { identity, keyScope } = session.header;
           const run = { requestId: record.id, ...(record.actor ? { actor: record.actor } : {}), ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) };
-          if (event?.type === "message_end" && event.message?.role === "assistant" && event.message.usage && event.message.stopReason !== "error") {
-            const chars = event.message.stopReason === "aborted" ? JSON.stringify(event.message.content ?? []).length : undefined;
-            const usage = this.billable(session, event.message.usage, event.message.provider, event.message.model, chars);
+          if (billed(event?.type === "message_end" ? event.message : undefined)) {
+            const usage = this.responseUsage(session, event.message);
             this.options.onUsage?.(session.header.tenant, id, { ...event.message, usage, ...run, provider: via + event.message.provider, platform: !!session.platformKey });
-            this.spent(session, responseCost(usage));
+            // Its spend was written with the transcript record (`spendEffect`).
+            this.counted(session, responseCost(usage));
             this.tally(session, record.id, usage);
           }
           if (event?.type === "compaction_usage" && event.usage) {
@@ -3495,10 +3555,10 @@ export class ClientSessions {
    * never from the agent's stored model; one that reported no usage is charged an estimate, and logged. An unbilled
    * tenant's (an admin tenant's) is as the provider reported it, as its usage events say.
    */
-  private billable(session: Session, usage: any, provider: string, model: string, abortedChars?: number) {
+  private billable(session: Session, usage: any, provider: string, model: string, abortedChars?: number, quiet = false) {
     if (!session.platformKey || !session.catalogPriced) return usage;
     const priced = platformUsage(usage, provider, model, abortedChars === undefined ? undefined : { chars: abortedChars });
-    if (priced.estimated || !priced.known) {
+    if (!quiet && (priced.estimated || !priced.known)) {
       console.log(JSON.stringify({ type: "platform_usage_untrusted", tenant: session.header.tenant, agent: session.header.id, provider, model, estimated: priced.estimated, known: priced.known, aborted: abortedChars !== undefined, usd: priced.usage.cost.total }));
     }
     return priced.usage;
@@ -3510,6 +3570,8 @@ export class ClientSessions {
     if (usd === null) await this.db.query("delete from agent_spend_limits where agent = $1", [id]);
     else await this.db.query("insert into agent_spend_limits (agent, usd, spent, set_at) values ($1, $2, 0, $3) on conflict (agent) do update set usd = excluded.usd, spent = 0, set_at = excluded.set_at", [id, usd, setAt]);
     session.spend = usd === null ? null : { usd, spent: 0, setAt };
+    // What the replaced limit had counted is dropped with it.
+    session.unwritten = 0;
   }
 
   /**
@@ -3534,14 +3596,49 @@ export class ClientSessions {
     this.publish(session, { type: "event", requestId: "", event });
   }
 
-  /** Count a model response's cost against the agent's spend limit, if it has one. */
+  /** A billed model response's usage, as `billable` prices it. `quiet`: logged already, or to be. */
+  private responseUsage(session: Session, message: any, quiet = false) {
+    const chars = message.stopReason === "aborted" ? JSON.stringify(message.content ?? []).length : undefined;
+    return this.billable(session, message.usage, message.provider, message.model, chars, quiet);
+  }
+
+  /** Count spend against the agent's spend limit, if it has one, in this owner's count. */
+  private counted(session: Session, cost: number) {
+    if (session.spend && cost > 0) session.spend.spent += cost;
+  }
+
+  /**
+   * Count spend no transcript record carries (a compaction's response, a child's run): it is written with the agent's
+   * next transcript record (`spendEffect`), or as it unloads.
+   */
   private spent(session: Session, cost: number) {
+    if (!session.spend || !(cost > 0)) return;
+    this.counted(session, cost);
+    session.unwritten = (session.unwritten ?? 0) + cost;
+  }
+
+  /**
+   * What a transcript record commits (`ToolBridge.committing`): a model response's cost, and spend counted since that no
+   * record carries, added to the agent's spend in the transaction that writes the record, under the claim. So spend is
+   * never lost apart from the history it paid for: a new owner reads what the history it loads cost. Only the owner
+   * writes, and an increment for a limit replaced since (`set_at`) is dropped: a new limit counts from zero.
+   */
+  private spendEffect(session: Session, record: TranscriptRecord): CommitEffect | undefined {
+    if (!session.spend) return undefined;
+    const message = record.t === "message" ? record.message : undefined;
+    return this.spendWrite(session, billed(message) ? responseCost(this.responseUsage(session, message, true)) : 0);
+  }
+
+  /** The write of `cost` to the agent's spend, with the spend counted that no record carried yet; undefined when there is none. */
+  private spendWrite(session: Session, cost: number): CommitEffect | undefined {
     const spend = session.spend;
-    if (!spend || !(cost > 0)) return;
-    spend.spent += cost;
-    // Only the owner writes, and a limit set since is not charged: every write adds to the current one's count.
-    void this.db.query("update agent_spend_limits set spent = spent + $2 where agent = $1 and set_at = $3", [session.header.id, cost, spend.setAt])
-      .catch(error => console.error(JSON.stringify({ type: "agent_spend_write_failed", agent: session.header.id, error: errorText(error) })));
+    if (!spend) return undefined;
+    cost += session.unwritten ?? 0;
+    if (!(cost > 0)) return undefined;
+    session.unwritten = 0;
+    const { id } = session.header, { setAt } = spend;
+    const write = (sql: Sql) => sql.query("update agent_spend_limits set spent = spent + $2 where agent = $1 and set_at = $3", [id, cost, setAt]).then(() => {});
+    return sql => sql ? write(sql) : underClaim(this.db, session.claim, write);
   }
 
   /** The tenant's js_exec limits. */
@@ -4059,6 +4156,8 @@ export class ClientSessions {
     // Runs still open (queued ones a drain leaves for the next owner) keep it marked for a sweep to load; none clears the mark.
     await underClaim(this.db, session.claim, sql => sql.query("update agents set last_cursor = $2, cursor_clean = true, pending_runs = $3 where id = $1",
       [session.header.id, session.cursor, session.running.size > 0])).catch(() => {});
+    // Spend no transcript record carried (a compaction's or a child's after the agent's last record).
+    await this.spendWrite(session, 0)?.().catch(error => console.error(JSON.stringify({ type: "agent_spend_write_failed", agent: session.header.id, error: errorText(error) })));
     // Runs left open are its next owner's to count.
     await this.releaseBusy(session, true);
     if (session.claim) await this.options.ownership!.release(session.claim).catch(() => {});

@@ -9,7 +9,7 @@ import { validateDefinitions, validateToolCall } from "./tool-policy.ts";
 import { searchQuery, searchTools } from "./tool-search.ts";
 import { jsonWithinLimit, SANDBOX_LIMITS } from "./limits.ts";
 import type { Storage } from "../shared/storage.ts";
-import { fileAppendLog, type AppendLog } from "../shared/append-log.ts";
+import { fileAppendLog, type AppendLog, type CommitEffect } from "../shared/append-log.ts";
 import { readTranscript, readTranscriptLog, Transcript, transcriptPath, type TranscriptRecord } from "./transcript.ts";
 import type { HistoryChunk } from "./history-pages.ts";
 import type { Claim } from "./ownership.ts";
@@ -119,7 +119,8 @@ export class AgentSupervisor {
       const directory = resolve(join(this.root, id));
       await mkdir(directory, { recursive: true, mode: 0o700 });
       const storage = this.options.storage;
-      const transcript = storage ? storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id), claim) : fileAppendLog<TranscriptRecord>(transcriptPath(directory));
+      const log = storage ? storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id), claim) : fileAppendLog<TranscriptRecord>(transcriptPath(directory));
+      const transcript = bridge.committing ? committing(log, bridge.committing) : log;
       const init = { ...config, id, directory, tools: bridge.definitions };
       return this.hosting === "inline" ? await this.startInline(id, init, bridge, transcript) : await this.startProcess(id, directory, init, bridge, transcript);
     } finally { this.starting.delete(id); }
@@ -379,4 +380,16 @@ export class AgentSupervisor {
     await this.flush([...this.agents.keys()]);
     await Promise.all([...[...this.agents.keys()].map(id => this.stop(id, { flush: false })), ...this.stopping.values()]);
   }
+}
+
+/** `log` with each record appended with what commits with it (`ToolBridge.committing`). */
+function committing<T>(log: AppendLog<T>, effect: (record: T) => CommitEffect | undefined): AppendLog<T> {
+  return {
+    read: () => log.read(),
+    append: record => log.append(record, effect(record)),
+    flush: durable => log.flush(durable),
+    rewrite: snapshot => log.rewrite(snapshot),
+    get appendedSinceRewrite() { return log.appendedSinceRewrite; },
+    close: () => log.close(),
+  };
 }

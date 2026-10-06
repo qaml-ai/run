@@ -24,6 +24,26 @@ test("appends are buffered until flushed and survive reopening", async t => {
   assert.deepEqual(await fileAppendLog(path).read(), [{ n: 1 }, { n: 2 }, { n: 3 }]);
 });
 
+test("an effect runs once, alone, before the records it goes with; one that fails keeps them for the next write", async t => {
+  const path = join(await directory(t), "log.jsonl");
+  const log = fileAppendLog<{ n: number }>(path);
+  const ran: string[] = [];
+  let fail = true;
+  log.append({ n: 1 }, async sql => {
+    assert.equal(sql, undefined);
+    ran.push(String((await fileAppendLog(path).read()).length));
+    if (fail) throw new Error("effect failed");
+  });
+  await assert.rejects(log.flush(true), /effect failed/);
+  assert.deepEqual(await fileAppendLog(path).read(), []);
+  fail = false;
+  await log.flush(true);
+  await log.flush(true);
+  assert.deepEqual(await fileAppendLog(path).read(), [{ n: 1 }]);
+  assert.deepEqual(ran, ["0", "0"], "before the record was written, and not again once it ran");
+  await log.close();
+});
+
 test("a torn final record from a crash is dropped, but corruption elsewhere is an error", async t => {
   const path = join(await directory(t), "log.jsonl");
   await appendFile(path, '{"n":1}\n{"n":2}\n{"n":');

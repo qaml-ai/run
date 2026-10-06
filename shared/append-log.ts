@@ -2,6 +2,14 @@ import { mkdir, open, readFile, rename, type FileHandle } from "node:fs/promises
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { closeSync, fsyncSync, openSync } from "node:fs";
+import type { Sql } from "../src/db.ts";
+
+/**
+ * Database work that commits with the record it is appended with (`AppendLog.append`): in the transaction that first
+ * writes the record, under the same fence, and never again. A log whose writes are not database transactions (a file)
+ * runs it alone, with no `sql`, just before it writes the record.
+ */
+export type CommitEffect = (sql?: Sql) => Promise<void>;
 
 /**
  * Append-only record log. Writers append records cheaply and choose when a
@@ -11,8 +19,8 @@ import { closeSync, fsyncSync, openSync } from "node:fs";
 export interface AppendLog<T> {
   /** Every record since the last rewrite. A torn final record from a crash is dropped. */
   read(): Promise<T[]>;
-  /** Buffer a record; it is written by the next `flush`. */
-  append(record: T): void;
+  /** Buffer a record; it is written by the next `flush`, with `effect` (see `CommitEffect`). */
+  append(record: T, effect?: CommitEffect): void;
   /** Write buffered records. `durable` waits for them to reach stable storage. */
   flush(durable?: boolean): Promise<void>;
   /**
@@ -66,6 +74,9 @@ async function endLastLine(path: string) {
 /** JSONL file implementation for a single process that owns `path`. */
 export function fileAppendLog<T>(path: string): AppendLog<T> {
   let buffer: string[] = [];
+  let effects: CommitEffect[] = [];
+  // Before the records they go with: one that fails stays, with the records, for the next write.
+  const effected = async () => { while (effects.length) { await effects[0](); effects.shift(); } };
   let handle: FileHandle | undefined;
   let chain: Promise<void> = Promise.resolve();
   let appended = 0;
@@ -102,14 +113,16 @@ export function fileAppendLog<T>(path: string): AppendLog<T> {
       }
       return records;
     },
-    append(record) {
+    append(record, effect) {
       if (closed) throw new Error("Append log closed");
       buffer.push(JSON.stringify(record));
+      if (effect) effects.push(effect);
       appended++;
     },
     flush(durable = false) {
       return serialize(async () => {
         const file = await opened();
+        await effected();
         if (buffer.length) {
           const batch = buffer;
           buffer = [];
@@ -121,6 +134,8 @@ export function fileAppendLog<T>(path: string): AppendLog<T> {
     },
     rewrite(snapshot) {
       return serialize(async () => {
+        // The snapshot holds the buffered records: their effects go with it.
+        await effected();
         const records = snapshot();
         buffer = [];
         await mkdir(dirname(path), { recursive: true, mode: 0o700 });

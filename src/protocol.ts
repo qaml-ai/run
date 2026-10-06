@@ -8,6 +8,8 @@ import type { SearchHit, SearchQuery } from "./tool-search.ts";
 /** A tool call from the model: its id, its place in js_exec's code if made there, and the history index of the assistant message that made it. */
 export type CallContext = { toolCallId: string; innerCallId?: string; messageIndex?: number };
 import type { HistoryChunk } from "./history-pages.ts";
+import type { CommitEffect } from "../shared/append-log.ts";
+import type { TranscriptRecord } from "./transcript.ts";
 /**
  * The most one run may take (model responses, seconds), and how long one of its model requests may go quiet: before its
  * first token (`firstTokenSeconds`) and between events once it streams (`idleSeconds`; model-stream.ts).
@@ -40,6 +42,8 @@ export interface ToolBridge {
   codeSlot?(signal: AbortSignal): Promise<() => void>;
   /** Wait until this node may act for the agent (`Ownership.whenFresh`), before a model request or js_exec; rejects once it lost the agent. */
   lease?(): Promise<void>;
+  /** What commits with a transcript record, in the transaction that writes it (a model response's spend): called as it is appended. */
+  committing?(record: TranscriptRecord): CommitEffect | undefined;
 }
 /** The `apiKey` of an agent whose model is on its tenant's own endpoint: each call gets a fresh identity token instead (`ToolBridge.modelAuth`). */
 export const IDENTITY_KEY = "agent-runtime:identity-token";

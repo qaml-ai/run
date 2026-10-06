@@ -1,6 +1,6 @@
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type pg from "pg";
 import { Accounts } from "../src/accounts.ts";
 import { accrueUsage, postLedger, type LedgerEntry, type LedgerKind, type UsageCharge } from "../src/billing.ts";
@@ -11,7 +11,11 @@ import { platformUsage } from "../src/platform-pricing.ts";
 import { activeCharge, DEFAULT_PRICING, MICROS, purchaseFee, storageCharge, usageTier, usageTiers, pricingFromEnvironment } from "../src/pricing.ts";
 import { Tenants } from "../src/tenants.ts";
 import { usageCost } from "../src/webhooks.ts";
-import type { Storage } from "../shared/storage.ts";
+import { memoryStorage, type Storage } from "../shared/storage.ts";
+import type { AppendLog, CommitEffect } from "../shared/append-log.ts";
+import { postgresTail } from "../src/log-tail.ts";
+import type { Claim } from "../src/ownership.ts";
+import type { TranscriptRecord } from "../src/transcript.ts";
 import type { AgentSupervisor } from "../src/supervisor.ts";
 import { testDatabase } from "./database.ts";
 import { check, fc } from "./prop-helpers.ts";
@@ -19,7 +23,8 @@ import { check, fc } from "./prop-helpers.ts";
 /**
  * I4 (billing equals service) and I5 (spend limits hold), at the unit level: the pricing arithmetic, the ledger
  * (`postLedger`, `accrueUsage`) on real Postgres against a model of balances, usage flushes under lost commits, and an
- * agent's spend counter (`ClientSessions.spent`) under failed writes (hypothesis H3).
+ * agent's spend counter, committed with its transcript (`ClientSessions.spendEffect`), under failed commits and
+ * takeovers (hypothesis H3).
  */
 
 // --- Pricing arithmetic (pure) ---------------------------------------------------------------------------------------
@@ -254,108 +259,203 @@ test("usage flushes: a commit that fails, or whose answer is lost, is retried an
 
 // --- Agent spend limits (I5, H3) -------------------------------------------------------------------------------------
 
-type SpendSession = { header: { id: string; tenant: string }; spend?: { usd: number; spent: number; setAt: number } | null };
+type SpendLimit = { usd: number; spent: number; setAt: number };
+type SpendSession = { header: { id: string; tenant: string }; claim?: Claim; spend?: SpendLimit | null; unwritten?: number };
 type SpendInternals = {
+  spendEffect(session: SpendSession, record: TranscriptRecord): CommitEffect | undefined;
+  spendWrite(session: SpendSession, cost: number): CommitEffect | undefined;
+  counted(session: SpendSession, cost: number): void;
   spent(session: SpendSession, cost: number): void;
   setSpendLimit(session: SpendSession, usd: number | null): Promise<void>;
-  spendOf(session: SpendSession): Promise<{ usd: number; spent: number; setAt: number } | null>;
+  spendOf(session: SpendSession): Promise<SpendLimit | null>;
   agentSpendLimit(session: SpendSession): Promise<string | undefined>;
   close(): Promise<void>;
 };
-/** A node whose spend writes go to `pool`, failing while `failing()` says so; `settled` waits for the ones in flight. */
-function spendNode(pool: pg.Pool, failing: () => boolean) {
-  const inflight = new Set<Promise<unknown>>();
-  const wrapped = new Proxy(pool, {
-    get(target, property, receiver) {
-      if (property !== "query") return Reflect.get(target, property, receiver);
-      return (text: string, values?: unknown[]) => {
-        const done = text.startsWith("update agent_spend_limits") && failing() ? Promise.reject(new Error("connection reset")) : target.query(text, values);
-        inflight.add(done);
-        void done.catch(() => {}).finally(() => inflight.delete(done));
-        return done;
-      };
-    },
-  }) as Db;
-  const supervisor = { agents: new Map(), flush: async () => {}, stop: async () => {} } as unknown as AgentSupervisor;
-  const node = new ClientSessions(supervisor, { secret: "s".repeat(32), db: wrapped, storage: {} as Storage }) as unknown as SpendInternals;
-  return { node, settled: async () => { while (inflight.size) await Promise.allSettled([...inflight]); } };
-}
 const spendCleanup: (() => Promise<void>)[] = [];
 after(async () => { for (const cleanup of spendCleanup) await cleanup(); });
+function spendNode() {
+  const supervisor = { agents: new Map(), flush: async () => {}, stop: async () => {} } as unknown as AgentSupervisor;
+  const node = new ClientSessions(supervisor, { secret: "s".repeat(32), db, storage: {} as Storage }) as unknown as SpendInternals;
+  spendCleanup.push(() => node.close());
+  return node;
+}
 
-type SpendStep = { t: "response"; usd: number; fails: boolean } | { t: "reset"; usd: number } | { t: "takeover" };
+/**
+ * How a transcript commit (a transaction) fails: rolled back before its commit, applied with its answer lost, or its
+ * spend write failing inside it. Each transaction takes the next fault.
+ */
+type CommitFault = "none" | "before-commit" | "lost-ack" | "spend-write";
+function failingCommits(pool: pg.Pool, faults: CommitFault[]): Db {
+  const connect = async () => {
+    const client = await pool.connect();
+    let fault: CommitFault = "none";
+    return new Proxy(client, {
+      get(target, property, receiver) {
+        if (property !== "query") return Reflect.get(target, property, receiver);
+        return async (text: unknown, ...rest: unknown[]) => {
+          if (text === "begin") fault = faults.shift() ?? "none";
+          if (fault === "spend-write" && typeof text === "string" && text.startsWith("update agent_spend_limits")) throw new Error("connection reset in the spend write");
+          if (text === "commit") {
+            if (fault === "before-commit") throw new Error("connection reset before commit");
+            if (fault === "lost-ack") { await target.query("commit"); throw new Error("connection reset after commit"); }
+          }
+          return (target.query as (...args: unknown[]) => unknown)(text, ...rest);
+        };
+      },
+    });
+  };
+  // Its own methods bound to it: `query` takes a client through `this.connect`, with a callback.
+  return new Proxy(pool, { get: (target, property) => property === "connect" ? connect : typeof target[property as keyof pg.Pool] === "function" ? (target[property as keyof pg.Pool] as Function).bind(target) : Reflect.get(target, property) }) as Db;
+}
+
+/** A model response as the agent's transcript records it; `id` tells the test which it was. */
+const response = (id: number, usd: number): TranscriptRecord => ({ t: "message", message: { role: "assistant", content: [], api: "anthropic-messages", provider: "anthropic", model: "m", stopReason: "stop", timestamp: id, usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: usd } } } as never });
+
+/**
+ * One agent's transcript and spend across owners. Each owner holds a claim (its `actor_owners` epoch) and appends to
+ * the agent's transcript (a segment log over a Postgres tail, as on S3), each record with what commits with it
+ * (`spendEffect`, as `AgentSupervisor` appends it), and counts in memory what its runs see (`counted`, `spent`).
+ */
+async function spendAgent() {
+  const agent = `agent-${run()}`;
+  const faults: CommitFault[] = [];
+  const storage = memoryStorage(postgresTail(failingCommits(db, faults)));
+  const key = `sessions/${agent}/transcript`;
+  const node = spendNode();
+  let epoch = 0;
+  /** What each record carried to the agent's spend when it committed, by its id. */
+  const carried = new Map<number, number>();
+  let ids = 0;
+  const owner = async () => {
+    const claim: Claim = { actor: agent, session: randomUUID(), epoch: ++epoch };
+    await db.query("insert into actor_owners (actor, node, session, epoch) values ($1, 'node', $2, $3) on conflict (actor) do update set node = excluded.node, session = excluded.session, epoch = excluded.epoch", [agent, claim.session, claim.epoch]);
+    const session: SpendSession = { header: { id: agent, tenant: "t" }, claim };
+    const log: AppendLog<TranscriptRecord> = storage.log(key, claim);
+    await node.spendOf(session);
+    return {
+      session, log, broken: false,
+      /** Commit a model response, as its agent does: true once it is durable (and its run sees it), false if the commit failed. */
+      async respond(usd: number, fault: CommitFault) {
+        const record = response(++ids, usd);
+        const pending = session.unwritten ?? 0;
+        carried.set(ids, usd + pending);
+        const effect = node.spendEffect(session, record);
+        log.append(record, effect);
+        // A record with nothing to commit with it is one statement, not a transaction: no fault reaches it.
+        if (effect) faults.push(fault);
+        try { await log.flush(true); }
+        catch { this.broken = true; return false; }
+        finally { faults.length = 0; }
+        node.counted(session, usd);
+        return true;
+      },
+    };
+  };
+  /** What the history holds from record `from` on, and what it cost the agent (its responses, and what they carried). */
+  const history = async () => {
+    const records = await storage.log<TranscriptRecord>(key).read();
+    return { length: records.length, cost: (from: number) => records.slice(from).reduce((sum, record) => sum + (record.t === "message" ? carried.get(record.message.timestamp) ?? 0 : 0), 0) };
+  };
+  return { agent, node, owner, history, faults };
+}
+
+type SpendStep =
+  | { t: "response"; usd: number; fault: CommitFault }
+  | { t: "compaction"; usd: number }
+  | { t: "reset"; usd: number }
+  | { t: "takeover"; clean: boolean };
+/** A cost: none, or at least a hundredth of a cent (fast-check's doubles lean to values too small to tell apart). */
+const usd = (max: number) => fc.oneof(fc.constant(0), fc.integer({ min: 1, max: max * 10_000 }).map(n => n / 10_000));
 const spendStep: fc.Arbitrary<SpendStep> = fc.oneof(
-  { weight: 6, arbitrary: fc.record({ t: fc.constant("response" as const), usd: fc.double({ min: 0, max: 0.5, noNaN: true }), fails: fc.boolean() }) },
-  { weight: 1, arbitrary: fc.record({ t: fc.constant("reset" as const), usd: fc.double({ min: 0, max: 5, noNaN: true }) }) },
-  { weight: 2, arbitrary: fc.constant({ t: "takeover" as const }) },
+  { weight: 8, arbitrary: fc.record({ t: fc.constant("response" as const), usd: usd(0.5), fault: fc.constantFrom<CommitFault>("none", "none", "none", "before-commit", "lost-ack", "spend-write") }) },
+  { weight: 1, arbitrary: fc.record({ t: fc.constant("compaction" as const), usd: usd(0.2) }) },
+  { weight: 1, arbitrary: fc.record({ t: fc.constant("reset" as const), usd: usd(5) }) },
+  { weight: 2, arbitrary: fc.record({ t: fc.constant("takeover" as const), clean: fc.boolean() }) },
 );
 
 /**
- * Spend an agent's budget across owners: each response adds its cost (`spent`, fire-and-forget, as model responses do);
- * a reset sets a new limit (`setSpendLimit`); a takeover is a new owner reading the stored row (`spendOf`) once the old
- * owner's writes have landed. Returns, at each takeover, what the new owner read and what was really spent since the
- * limit was set.
+ * Spend an agent's budget across owners, checking I5 as it goes:
+ * - a new owner reads exactly what the history it loads cost since the limit was set: a spend write never lands, or
+ *   fails, apart from the commit of the response it is for, whatever fails, and a stale owner's commit is fenced;
+ * - an owner's count is what its history cost, plus what it counted that no record has carried yet, so a response
+ *   starts only while the agent is under its limit: only the response in flight may take it past.
  */
-async function spendAcross(steps: SpendStep[], options: { failures: boolean }) {
-  const agent = `agent-${run()}`;
-  let fail = false;
-  const owner = () => { const made = spendNode(db, () => fail); spendCleanup.push(() => made.node.close()); return made; };
-  let current = owner();
-  let session: SpendSession = { header: { id: agent, tenant: "t" } };
-  await current.node.setSpendLimit(session, 1);
-  // What was really spent since the limit was set, and what this owner's own count should say (from what it read).
-  let truth = 0, counted = 0;
-  const reads: { read: number; truth: number; limit: number }[] = [];
-  // Every run ends with a takeover, so what was written is always read back.
-  for (const step of [...steps, { t: "takeover" as const }]) {
-    if (step.t === "response") {
-      fail = options.failures && step.fails;
-      current.node.spent(session, step.usd);
-      fail = false;
-      if (step.usd > 0) { truth += step.usd; counted += step.usd; }
-      // The owner's own count adds every response to what it started from.
-      assert.ok(Math.abs(session.spend!.spent - counted) < 1e-9);
-    } else if (step.t === "reset") {
-      await current.settled();
-      await current.node.setSpendLimit(session, step.usd);
-      truth = counted = 0;
+async function spendAcross(steps: SpendStep[]) {
+  const { node, owner, history } = await spendAgent();
+  let current = await owner();
+  await node.setSpendLimit(current.session, 1);
+  // Since the limit was set: the history from `base` on, spend written with no record (`extra`), and spend counted that
+  // rides on the owner's next record (`riding`).
+  let limit = 1, base = 0, extra = 0, riding = 0;
+  for (const step of [...steps, { t: "takeover" as const, clean: true }]) {
+    if (step.t === "takeover") {
+      if (step.clean) {
+        // As `unload`: the transcript closed (a failed commit is written now), then spend no record carried.
+        await current.log.close();
+        await node.spendWrite(current.session, 0)?.();
+        extra += riding;
+      }
+      const stale = current;
+      current = await owner();
+      // A stale owner's commit after the takeover is fenced, its spend with it.
+      if (!step.clean && await stale.respond(0.125, "none")) assert.fail("a stale owner committed after a takeover");
+      riding = 0;
+      const { cost } = await history();
+      const read = current.session.spend!;
+      assert.ok(Math.abs(read.spent - (cost(base) + extra)) < 1e-9, `the new owner read ${read.spent} spent; its history cost ${cost(base)}, and ${extra} more was written`);
+      assert.equal(read.usd, limit);
+      assert.equal(!!(await node.agentSpendLimit(current.session)), read.spent >= read.usd, "refused exactly when what it read reaches the limit");
+      continue;
+    }
+    if (current.broken) continue;
+    if (step.t === "reset") {
+      await node.setSpendLimit(current.session, step.usd);
+      ({ length: base } = await history());
+      limit = step.usd;
+      extra = riding = 0;
+    } else if (step.t === "compaction") {
+      node.spent(current.session, step.usd);
+      if (step.usd > 0) riding += step.usd;
     } else {
-      await current.settled();
-      current = owner();
-      session = { header: { id: agent, tenant: "t" } };
-      const spend = await current.node.spendOf(session);
-      reads.push({ read: spend!.spent, truth, limit: spend!.usd });
-      counted = spend!.spent;
-      // Refused exactly when what it read reaches the limit.
-      assert.equal(!!(await current.node.agentSpendLimit(session)), spend!.spent >= spend!.usd);
+      const { cost } = await history();
+      const counted = current.session.spend!.spent;
+      assert.ok(Math.abs(counted - (cost(base) + extra + riding)) < 1e-9, `the owner counts ${counted}; its history cost ${cost(base)}, ${extra} more was written, and ${riding} rides on the next record`);
+      // A run's next model call: refused once the agent's count reaches its limit.
+      if (await node.agentSpendLimit(current.session)) continue;
+      assert.ok(cost(base) + extra < limit);
+      // What rode on it is the record's, whether or not it commits.
+      await current.respond(step.usd, step.fault);
+      riding = 0;
     }
   }
-  await current.settled();
-  return reads;
 }
 
-test("spend limits: with writes that land, a new owner reads exactly what was spent since the limit was set", async t => {
-  await check(t, fc.asyncProperty(fc.array(spendStep, { minLength: 1, maxLength: 25 }), async steps => {
-    for (const { read, truth } of await spendAcross(steps, { failures: false })) assert.ok(Math.abs(read - truth) < 1e-9, `read ${read}, spent ${truth}`);
-  }), { runs: 40 });
+test("spend limits: a new owner reads exactly what the history it loads cost, whatever commits fail", async t => {
+  await check(t, fc.asyncProperty(fc.array(spendStep, { minLength: 1, maxLength: 25 }), spendAcross), { runs: 40 });
 });
 
 /**
- * H3 CONFIRMED (lost increments): `spent()` (src/client-sessions.ts) updates `agent_spend_limits` fire-and-forget,
- * once, and only logs a failure, while the owner's in-memory count goes on. The next owner reads the stored row, which
- * lacks every failed increment, so the agent may spend past its limit by the sum of all failed writes, across any
- * number of takeovers: the overshoot is unbounded, not "the responses in flight". Minimized: one response whose write
- * fails, then a takeover — the new owner reads 0 spent (MINIMAL_H3 below; the property shrinks to it).
- * Also needs L2 (not testable here): a takeover reading before the old owner's in-flight writes land (bounded by them),
- * and a reset racing increments (a write for the old limit is skipped by its `set_at` check: correct as tested above).
+ * H3 (fixed): `spent()` updated `agent_spend_limits` fire-and-forget, once, and only logged a failure, while the owner's
+ * count went on: the next owner read a row lacking every failed increment, so an agent could spend past its limit by
+ * the sum of all failed writes, across any number of takeovers. A response's spend now commits in the transaction that
+ * appends it to the transcript, under the claim: the two land, or fail, together.
  */
-const MINIMAL_H3: SpendStep[] = [{ t: "response", usd: 0.25, fails: true }, { t: "takeover" }];
-test("H3 minimized: a failed spend write is lost to the next owner", { todo: "H3 confirmed: lost spend increments" }, async () => {
-  const [{ read, truth }] = await spendAcross(MINIMAL_H3, { failures: true });
-  assert.equal(read, truth, `the new owner read ${read} spent; ${truth} was`);
+test("H3 minimized: a spend write that fails fails its response's commit, so the next owner reads what its history cost", async () => {
+  const { node, owner, history } = await spendAgent();
+  const first = await owner();
+  await node.setSpendLimit(first.session, 1);
+  assert.equal(await first.respond(0.25, "spend-write"), false);
+  assert.equal((await history()).length, 0, "the response is not history");
+  const second = await owner();
+  assert.equal(second.session.spend!.spent, 0);
+  // Its answer lost: the response is history, and its spend was written once, though written again on close.
+  assert.equal(await second.respond(0.5, "lost-ack"), false);
+  await second.log.close();
+  const third = await owner();
+  assert.equal((await history()).length, 1);
+  assert.equal(third.session.spend!.spent, 0.5);
 });
-test("H3: spend writes that fail are never retried, so a new owner under-counts", { todo: "H3 confirmed: lost spend increments" }, async t => {
-  await check(t, fc.asyncProperty(fc.array(spendStep, { minLength: 1, maxLength: 25 }), async steps => {
-    for (const { read, truth } of await spendAcross(steps, { failures: true })) assert.ok(Math.abs(read - truth) < 1e-9, `read ${read}, spent ${truth}`);
-  }), { runs: 25 });
+test("H3: no failed commit makes a new owner under-count", async t => {
+  const steps = fc.array(fc.oneof(spendStep, fc.record({ t: fc.constant("response" as const), usd: usd(0.5), fault: fc.constantFrom<CommitFault>("before-commit", "lost-ack", "spend-write") })), { minLength: 1, maxLength: 25 });
+  await check(t, fc.asyncProperty(steps, spendAcross), { runs: 25 });
 });
