@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import fc from "fast-check";
 import { fileAppendLog, type AppendLog } from "../shared/append-log.ts";
-import { check } from "./prop-helpers.ts";
+import { check, replayableCommands } from "./prop-helpers.ts";
 
 /**
  * Model-based test of `fileAppendLog` (shared/append-log.ts), the single-host log: a JSONL file. The model is the
@@ -72,7 +72,7 @@ before(async () => { root = await mkdtemp(join(tmpdir(), "prop-append-log-")); }
 after(() => rm(root, { recursive: true, force: true }));
 
 test("fileAppendLog keeps every acknowledged record, in order, across crashes that tear the last write (I2, I7)", async t => {
-  await check(t, fc.asyncProperty(fc.commands(commands, { maxCommands: 30 }), async cmds => {
+  await check(t, fc.asyncProperty(replayableCommands(commands, { maxCommands: 30 }), async cmds => {
     const path = join(root, `log-${++runs}.jsonl`);
     const world: World = { path, writer: fileAppendLog<Rec>(path), durable: 0 };
     const model: Model = { committed: [], pending: [], next: 0 };

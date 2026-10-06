@@ -7,7 +7,7 @@ import FakeTimers from "@sinonjs/fake-timers";
 import { LostClaim, Ownership, underClaim, type Claim } from "../src/ownership.ts";
 import type { Db } from "../src/db.ts";
 import { pgliteDb, type PgliteDb } from "./pglite.ts";
-import { check, turns } from "./prop-helpers.ts";
+import { check, replayableCommands, turns } from "./prop-helpers.ts";
 
 /**
  * Model-based test of the ownership lease (src/ownership.ts) on PGlite, with every clock virtual: the database's
@@ -376,7 +376,7 @@ const clocks = fc.array(fc.record({ offset: fc.integer({ min: 0, max: 1_000_000 
 const seen = { acquires: 0, notRunning: 0, acquireErrors: {} as Record<string, number>, owners: 0, claims: 0, takeovers: 0, committed: 0, fenced: 0, reapedAlive: 0, dual: 0, longestDualMs: 0 };
 
 test("ownership: one holder per epoch, epochs only grow, and no claim outlives its published expiry (I1, I6)", async t => {
-  await check(t, fc.asyncProperty(clocks, fc.commands(commands, { maxCommands: 40, size: "max" }), (cl, cmds) => withCluster(cl, async world => {
+  await check(t, fc.asyncProperty(clocks, replayableCommands(commands, { maxCommands: 40, size: "max" }), (cl, cmds) => withCluster(cl, async world => {
     await fc.asyncModelRun(() => ({ model: {}, real: world }), cmds);
     await world.advance(2 * TTL);
     seen.longestDualMs = Math.max(seen.longestDualMs, world.dualMs);

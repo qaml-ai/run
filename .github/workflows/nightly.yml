@@ -10,6 +10,7 @@ on:
       scale: { description: "PROP_SCALE: multiplier on each property's PR run count", default: "100" }
       seed: { description: "PROP_SEED: replay one seed (with path)", default: "" }
       path: { description: "PROP_PATH: the failing path fast-check printed", default: "" }
+      replay_path: { description: "PROP_REPLAY_PATH: a command sequence's replay path, from the printed replay command", default: "" }
 concurrency: { group: nightly, cancel-in-progress: false }
 jobs:
   properties:
@@ -26,6 +27,7 @@ jobs:
       PROP_SCALE: ${{ inputs.scale || '100' }}
       PROP_SEED: ${{ inputs.seed }}
       PROP_PATH: ${{ inputs.path }}
+      PROP_REPLAY_PATH: ${{ inputs.replay_path }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

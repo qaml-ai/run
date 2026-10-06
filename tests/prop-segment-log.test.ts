@@ -9,7 +9,7 @@ import { postgresTail } from "../src/log-tail.ts";
 import type { Claim } from "../src/ownership.ts";
 import type { Db } from "../src/db.ts";
 import { pgliteDb, type PgliteDb } from "./pglite.ts";
-import { check, turns } from "./prop-helpers.ts";
+import { check, replayableCommands, turns } from "./prop-helpers.ts";
 
 /**
  * Model-based test of `segmentLog` (shared/storage.ts) over `postgresTail` (src/log-tail.ts) on PGlite,
@@ -380,7 +380,7 @@ async function withLog(work: (model: Model, world: World) => Promise<void>) {
 }
 
 test("segmentLog over postgresTail keeps every acknowledged record, in order, through crashes, takeovers and faults (I2, I7)", async t => {
-  await check(t, fc.asyncProperty(fc.commands(commands, { maxCommands: 40 }), cmds => withLog(async (model, world) => {
+  await check(t, fc.asyncProperty(replayableCommands(commands, { maxCommands: 40 }), cmds => withLog(async (model, world) => {
     await fc.asyncModelRun(() => ({ model, real: world }), cmds);
     // Everything appended is acknowledged by a last durable flush, and the log is exactly the model's.
     world.proc.fault = undefined;
