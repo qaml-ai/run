@@ -2,10 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { once } from "node:events";
-import { connect, createServer } from "node:net";
 import { fileURLToPath } from "node:url";
-import { setTimeout as sleep } from "node:timers/promises";
 import { crc32, deflateSync } from "node:zlib";
 import sharp from "sharp";
 import { FILE_LIMITS } from "../src/limits.ts";
@@ -21,6 +18,7 @@ import { createAgentHost, type HostIO } from "../src/agent-host.ts";
 import { Transcript, type TranscriptRecord } from "../src/transcript.ts";
 import { fileAppendLog } from "../shared/append-log.ts";
 import { OPERATOR, runtime, until } from "./runtime-server.ts";
+import { fakeLauncher } from "./fake-launcher.ts";
 
 /** A real image with some detail, so encoders cannot make it trivially small. */
 async function picture(width: number, height: number, format: "png" | "jpeg" | "webp" | "gif" = "png") {
@@ -186,36 +184,30 @@ test("inline images enter the transcript scaled down: a user message's, and an M
   assert.ok(JSON.stringify(sent.at(-1)).includes(result.data));
 });
 
-test("an image whose scaling failed for now (its sandbox process crashed) is tried again on the next request, not held as omitted", async t => {
-  // A real sandbox process behind a proxy that drops the first request to scale an image, as a crash would.
-  const directory = await mkdtemp(join(tmpdir(), "sbx-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const real = join(directory, "real.sock"), proxied = join(directory, "proxy.sock");
-  const child = spawn(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", fileURLToPath(new URL("../src/sandbox-server.ts", import.meta.url)), `--socket=${real}`, "--v8-prespawn=0"], { stdio: ["ignore", "inherit", "inherit"] });
-  t.after(() => { child.kill("SIGKILL"); });
+test("an image whose scaling failed for now (its parse job crashed) is tried again on the next request, not held as omitted", async t => {
+  // The launcher's parse jobs, but the first one asked to scale an image dies before answering, as a crash would.
   let dropped = 0;
-  const proxy = createServer(client => {
-    client.on("error", () => {});
+  const launcher = await fakeLauncher(t, (kind, client) => {
+    if (kind !== "parse") return false;
+    client.resume();
     let head = Buffer.alloc(0);
     const first = (chunk: Buffer) => {
       head = Buffer.concat([head, chunk]);
       if (head.length < 4 || head.length < 4 + head.readUInt32BE(0)) return;
       client.off("data", first);
       if (head.subarray(4, 4 + head.readUInt32BE(0)).toString().includes('"fit":true') && !dropped++) return void client.destroy();
-      const upstream = connect(real);
-      upstream.on("error", () => client.destroy());
-      client.on("close", () => upstream.destroy());
-      upstream.write(head);
-      client.pipe(upstream).pipe(client);
+      const job = spawn(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", fileURLToPath(new URL("../src/parse-job.ts", import.meta.url))], { stdio: ["pipe", "pipe", "inherit"], env: {} });
+      client.on("close", () => job.kill("SIGKILL"));
+      job.stdin.on("error", () => {});
+      job.stdin.write(head);
+      client.pipe(job.stdin);
+      job.stdout.pipe(client);
     };
     client.on("data", first);
+    return true;
   });
-  proxy.listen(proxied);
-  await once(proxy, "listening");
-  t.after(() => new Promise(resolve => proxy.close(resolve)));
-  for (let i = 0; i < 200 && !(await new Promise(resolve => { const probe = connect(real); probe.once("connect", () => { probe.destroy(); resolve(true); }); probe.once("error", () => resolve(false)); })); i++) await sleep(25);
 
-  const server = await runtime(t, () => ({ role: "assistant", content: "seen" }), { AGENT_SANDBOX_SOCKETS: proxied });
+  const server = await runtime(t, () => ({ role: "assistant", content: "seen" }), { AGENT_SANDBOX_DIR: launcher.dir });
   const agent = (await server.call("/v1/agents", { body: { name: "retry" } })).json.id;
   const uploaded = await (await fetch(`${server.base}/v1/agents/${agent}/uploads/turn-1/shot.png`, { method: "PUT", body: await picture(2400, 1800), headers: { Authorization: `Bearer ${OPERATOR}` } })).json();
   const sent = await server.call(`/v1/agents/${agent}/prompt`, { body: { text: "Look", requestId: "turn-1", files: [{ path: uploaded.path }] } });

@@ -100,7 +100,7 @@ const drainMs = Number(process.env.AGENT_DRAIN_TIMEOUT_MS ?? 100_000);
 if (!Number.isInteger(drainMs) || drainMs < 0) throw new Error("AGENT_DRAIN_TIMEOUT_MS must be a non-negative integer");
 const retireMaxMs = Number(process.env.AGENT_RETIRE_MAX_MS ?? 6 * 60 * 60_000);
 if (!Number.isInteger(retireMaxMs) || retireMaxMs < 0) throw new Error("AGENT_RETIRE_MAX_MS must be a non-negative integer");
-// Where js_exec runs, reported in the "listening" line; fails startup if isolation is required but absent.
+// Where js_exec and file parsing run, reported in the "listening" line; fails startup if either does not work, or if isolation is required but absent.
 const sandbox = await checkSandbox();
 // How tools.search ranks: keywords alone, or fused with the operator's rerank stages.
 // The key: a dedicated one if set (AGENT_TOOL_SEARCH_API_KEY, or the tool-search secret), else the

@@ -1,12 +1,24 @@
 import { totalmem } from "node:os";
-import { connect } from "node:net";
 import { Rpc } from "./rpc.ts";
 import { errorText, type ToolBridge, type WireMessage } from "./protocol.ts";
-import { frames } from "./sandbox-wire.ts";
-import { FILE_LIMITS, jsonWithinLimit, SANDBOX_LIMITS } from "./limits.ts";
+import { jsonWithinLimit, SANDBOX_LIMITS } from "./limits.ts";
 import { FS_CALLS, HOST_CALLS } from "./sandbox-bootstrap.ts";
 import { namespaces, searchQuery, searchTools } from "./tool-search.ts";
+import { validateDefinitions, validateToolCall } from "./tool-policy.ts";
 import { v8Exec } from "./v8-exec.ts";
+import { sandboxDir } from "./sandbox.ts";
+import { parse } from "./inspect.ts";
+
+/** One execution's link to its guest: its v8-exec process (v8-exec.ts). */
+export interface Guest {
+  /** Whether the execution has started, rather than waiting in a queue. */
+  readonly dispatched: boolean;
+  send(message: WireMessage): void;
+  /** Messages from the guest, unvalidated; `onClose` when its process goes away first. */
+  listen(onMessage: (message: unknown) => void, onClose: (reason: string) => void): void;
+  /** Cancel the guest and let its process go. */
+  end(): void;
+}
 
 /**
  * Executions a node runs at once for tenants with a concurrency limit (`CodeGate`): what a
@@ -20,117 +32,6 @@ export function defaultCodeWorkers(memory = Math.min(process.constrainedMemory?.
 const CODE_MEMORY_SHARE = 0.4;
 const CODE_WORKER_BYTES = 128 * 1024 * 1024;
 
-/** One execution's link to its guest: a v8-exec process of this process's own, or a sandbox process. */
-export interface Guest {
-  /** Whether the execution has started, rather than waiting in a queue. */
-  readonly dispatched: boolean;
-  send(message: WireMessage): void;
-  /** Messages from the guest, unvalidated; `onClose` when its process goes away first. */
-  listen(onMessage: (message: unknown) => void, onClose: (reason: string) => void): void;
-  /** Cancel the guest and let its process go. */
-  end(): void;
-}
-
-/**
- * One sandbox process (src/sandbox-server.ts), reached over the unix socket the
- * launcher bound for it: a connection per execution, closed to cancel it.
- */
-export class SandboxProcess {
-  readonly path: string;
-  /** Executions this process has open to it. */
-  load = 0;
-  constructor(path: string) { this.path = path; }
-
-  open(): Guest {
-    const socket = connect(this.path);
-    this.load++;
-    let failure: Error | undefined;
-    let ended = false;
-    let deliver: (message: unknown) => void = () => {};
-    const guest = {
-      dispatched: false,
-      send(message: WireMessage) {
-        try { write(message); } catch (error) { socket.destroy(error as Error); }
-      },
-      listen(onMessage: (message: unknown) => void, onClose: (reason: string) => void) {
-        deliver = onMessage;
-        socket.once("close", () => onClose(`Codemode sandbox process exited${failure ? ` (${failure.message})` : ""}`));
-      },
-      end: () => {
-        if (ended) return;
-        ended = true;
-        this.load--;
-        socket.destroy();
-      },
-    };
-    socket.on("error", error => { failure ??= error; });
-    const write = frames(socket, message => {
-      if (!guest.dispatched && (message as { type?: unknown })?.type === "dispatched") guest.dispatched = true;
-      else deliver(message);
-    });
-    return guest;
-  }
-
-  /**
-   * Parse an untrusted file here (inspect.ts): the request, then its bytes in frames of 2 MiB,
-   * answered by one response; for an image scaled down to `fit`, its bytes come first in frames the
-   * same way, and the result carries them as `data`. The answer is as untrusted as the process; the caller checks it.
-   */
-  inspect(bytes: Uint8Array, text: boolean, fit = false): Promise<unknown> {
-    const socket = connect(this.path);
-    this.load++;
-    const done = Promise.withResolvers<unknown>();
-    const timer = setTimeout(() => socket.destroy(new Error("the sandbox process took too long")), FILE_LIMITS.inspectMs + 2_000);
-    socket.on("error", error => done.reject(error));
-    socket.once("close", () => { this.load--; clearTimeout(timer); done.reject(new Error("the sandbox process closed the connection")); });
-    const data: Buffer[] = [];
-    let received = 0;
-    const write = frames(socket, (message: any) => {
-      if (fit && message?.type === "data" && typeof message.data === "string") {
-        data.push(Buffer.from(message.data, "base64"));
-        received += data.at(-1)!.length;
-        if (received > FILE_LIMITS.requestImageBytes) socket.destroy();
-        return;
-      }
-      if (message?.type !== "response") return void socket.destroy();
-      if (message.error !== undefined) done.reject(new Error(String(message.error).slice(0, 300)));
-      else done.resolve(data.length && message.result && typeof message.result === "object" ? { ...message.result, data: Buffer.concat(data) } : message.result);
-      socket.end();
-    });
-    try {
-      write({ type: "request", id: "inspect", method: "inspect", params: { size: bytes.length, text, ...(fit ? { fit } : {}) } });
-      for (let offset = 0; offset < bytes.length; offset += INSPECT_FRAME_BYTES) write({ type: "data", data: Buffer.from(bytes.subarray(offset, offset + INSPECT_FRAME_BYTES)).toString("base64") });
-    } catch (error) { socket.destroy(error as Error); }
-    return done.promise;
-  }
-}
-/** Bytes per frame to a sandbox process: base64 of this stays well under a frame's 4 MiB. */
-export const INSPECT_FRAME_BYTES = 2 * 1024 * 1024;
-
-/** The sandbox processes the launcher started; each execution goes to the least loaded, ties round-robin. */
-export class SandboxProcesses {
-  readonly processes: SandboxProcess[];
-  private next = 0;
-  constructor(paths: string[]) {
-    if (!paths.length) throw new Error("No sandbox processes");
-    this.processes = paths.map(path => new SandboxProcess(path));
-  }
-
-  open(): Guest { return this.pick().open(); }
-
-  /** The least loaded process, ties round-robin. */
-  pick(): SandboxProcess {
-    const count = this.processes.length;
-    let pick = this.processes[this.next % count];
-    for (let i = 1; i < count; i++) {
-      const candidate = this.processes[(this.next + i) % count];
-      if (candidate.load < pick.load) pick = candidate;
-    }
-    this.next = this.processes.indexOf(pick) + 1;
-    return pick;
-  }
-}
-
 /**
  * How many js_exec executions tenants with a concurrency limit may run together on this node (`CodeGate`):
  * what its memory affords (`defaultCodeWorkers`), within AGENT_CODE_WORKERS_MAX if set.
@@ -139,24 +40,11 @@ export function codeCapacity() {
   return Math.min(defaultCodeWorkers(), process.env.AGENT_CODE_WORKERS_MAX ? Number(process.env.AGENT_CODE_WORKERS_MAX) : Infinity);
 }
 
-let sandboxes: SandboxProcesses | null | undefined;
-/**
- * The sandbox processes agent-launcher started (AGENT_SANDBOX_SOCKETS, which it sets), or
- * undefined without them: then js_exec runs in v8-exec processes of this process's own.
- */
-export function sandboxProcesses(): SandboxProcesses | undefined {
-  if (sandboxes === undefined) {
-    const paths = (process.env.AGENT_SANDBOX_SOCKETS ?? "").split(",").filter(Boolean);
-    sandboxes = paths.length ? new SandboxProcesses(paths) : null;
-  }
-  return sandboxes ?? undefined;
-}
-
 /** Tool calls, output events and the answer: more than this from one execution means the sandbox is misbehaving. */
 const GUEST_MESSAGE_LIMIT = SANDBOX_LIMITS.toolCalls + SANDBOX_LIMITS.outputEvents + 8;
 
 /**
- * Everything a guest sends is untrusted: a sandbox process could be compromised.
+ * Everything a guest sends is untrusted: its v8-exec process could be compromised.
  * Keep only the checked fields of the messages a guest may send.
  */
 function guestMessage(value: any): WireMessage {
@@ -305,7 +193,7 @@ export async function executeCode(options: {
   code: string; bridge: ToolBridge; signal?: AbortSignal;
   timeoutMs?: number; maxOutputCharacters?: number;
   onEvent?: (event: unknown) => void;
-  /** Where to run: by default the sandbox processes, or without them v8-exec processes of this process's own. */
+  /** Where to run: by default this process's v8-exec runner (`v8Exec`). */
   pool?: { open(): Guest };
   /**
    * The tenant's limits: CPU (`SANDBOX_LIMITS.cpuMs` by default) and the longest timeoutMs (`SANDBOX_LIMITS.maxTimeoutMs`;
@@ -327,8 +215,7 @@ export async function executeCode(options: {
   // The deadline and cancellation hold from here, before anything looks at the code or waits for a turn.
   // Nothing of the code is parsed on this thread: v8-exec strips TypeScript and compiles it (sandbox/v8-exec).
   const started = performance.now();
-  // The sandbox processes come first: their v8-exec processes inherit their confinement (sandbox-server.ts).
-  const pool = options.pool ?? sandboxProcesses() ?? v8Exec();
+  const pool = options.pool ?? v8Exec();
   // Tool calls still running, by name: a timeout while one runs names it and says timeoutMs can be raised.
   const pending = new Map<string, number>();
   const timedOut = () => {
@@ -351,8 +238,6 @@ export async function executeCode(options: {
   options.signal?.addEventListener("abort", abort, { once: true });
   if (options.signal?.aborted) abort();
   try {
-    // Loaded here: sandbox processes import this module for Guest alone, and typebox would cost each about 25 MB.
-    const { validateDefinitions, validateToolCall } = await import("./tool-policy.ts");
     validateDefinitions(options.bridge.definitions);
     // Code gets the tools' names; their schemas and search are answered here (hostCall).
     const names = options.bridge.definitions.map(tool => tool.name);
@@ -435,18 +320,22 @@ export async function executeCode(options: {
 }
 
 /**
- * Where js_exec runs, for the startup log. With sandbox processes, each must answer `return 1`
- * first; without them, this process's v8-exec must. With AGENT_SANDBOX_REQUIRED=1 (the image sets
- * it), running without sandbox processes is an error.
+ * Where untrusted code and files run, for the startup log: js_exec must answer `return 1`, and a parse
+ * job must read an image's header, or the runtime does not start. Under agent-launcher they are
+ * confined ("isolated"); without it, this process's own children ("in-process"), which
+ * AGENT_SANDBOX_REQUIRED=1 (the image sets it) refuses.
  */
 export async function checkSandbox(): Promise<Record<string, unknown>> {
-  const processes = sandboxProcesses();
-  const reason = "no sandbox processes: agent-launcher starts them when run as root on Linux with AGENT_SANDBOX_PROCESSES > 0";
-  if (!processes && process.env.AGENT_SANDBOX_REQUIRED === "1") throw new Error(`AGENT_SANDBOX_REQUIRED=1, but ${reason}`);
+  const isolated = sandboxDir() !== undefined;
+  const reason = "no agent-launcher: it confines js_exec and file parsing when the image runs as root on Linux";
+  if (!isolated && process.env.AGENT_SANDBOX_REQUIRED === "1") throw new Error(`AGENT_SANDBOX_REQUIRED=1, but ${reason}`);
   const started = performance.now();
   const bridge: ToolBridge = { definitions: [], call: async () => null };
-  const targets: ({ open(): Guest } | undefined)[] = processes ? processes.processes : [undefined];
-  try { await Promise.all(targets.map(pool => executeCode({ code: "return 1", bridge, pool, timeoutMs: 60_000 }))); }
+  try { await executeCode({ code: "return 1", bridge, timeoutMs: 60_000 }); }
   catch (error) { throw new Error(`js_exec does not run: ${errorText(error)}`); }
-  return { mode: processes ? "isolated" : "in-process", ...(processes ? { processes: processes.processes.length } : { reason }), ms: Math.round(performance.now() - started) };
+  // A 1×1 PNG.
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
+  const parsed = await parse(png, false).catch(error => errorText(error));
+  if ((parsed as { media?: { width?: unknown } })?.media?.width !== 1) throw new Error(`Files cannot be parsed: ${typeof parsed === "string" ? parsed : JSON.stringify(parsed)}`);
+  return { mode: isolated ? "isolated" : "in-process", ...(isolated ? {} : { reason }), ms: Math.round(performance.now() - started) };
 }

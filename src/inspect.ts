@@ -1,21 +1,22 @@
-import { Worker } from "node:worker_threads";
+import { fileURLToPath } from "node:url";
 import { FILE_LIMITS } from "./limits.ts";
 import { errorText } from "./protocol.ts";
-import { sandboxProcesses } from "./codemode.ts";
+import { Confined } from "./sandbox.ts";
+import { INSPECT_FRAME_BYTES } from "./sandbox-wire.ts";
 import { textual, type FileRef, type Media } from "./files.ts";
 import { imageHeader } from "./image-header.ts";
 import type { FileEntry, VolumeService } from "./volumes.ts";
 
 /**
- * Parsing untrusted files: an image's format and size, a PDF's pages and text. It never runs on
- * the runtime's main thread, which holds secrets and database credentials. With sandbox
- * processes (production) it runs in one of them: its own uid, no environment, no sockets, a
- * seccomp filter; an exploit there reaches nothing, and a crash takes down only that process,
- * which the launcher restarts. Without them (development) it runs on a worker thread here.
- * Either way the worker has a V8 heap limit, a deadline, and a ceiling on the process's resident
- * memory: pdf.js inflates streams into ArrayBuffers, which heap limits do not count, so a small
- * compressed "bomb" is stopped by the ceiling. Inspecting an image reads only its header; an
- * image is decoded only to scale it down for a model request (`fitImage`).
+ * Parsing untrusted files: an image's format and size, a PDF's pages and text, an image scaled down.
+ * Decoding never runs in the runtime's process, which holds secrets and database credentials, but in
+ * a process of its own per file (parse-job.ts, `parse`): under agent-launcher (production) its own
+ * uid, no environment, no sockets, a seccomp filter; an exploit there reaches nothing, and a crash
+ * takes down only that file's process. In it the parser runs on a worker thread with a V8 heap
+ * limit, a deadline, and a ceiling on the process's resident memory: pdf.js inflates streams into
+ * ArrayBuffers, which heap limits do not count, so a small compressed "bomb" is stopped by the
+ * ceiling. Inspecting an image reads only its header, here (image-header.ts: a few bounds-checked
+ * reads); an image is decoded only to scale it down for a model request (`fitImage`).
  */
 export type Inspection = { media: Media; text?: string; truncated?: boolean };
 /**
@@ -27,28 +28,51 @@ export type Fitted = { data: Buffer; mimeType: string; width: number; height: nu
 const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 const none = (reason: string): Inspection => ({ media: { kind: "none", reason } });
 
-/** How the worker scales an image down for a model request (inspect-worker.ts). */
-const FIT = { side: FILE_LIMITS.requestImageSide, bytes: FILE_LIMITS.requestImageBytes, pixels: FILE_LIMITS.imageSide ** 2, ms: FILE_LIMITS.inspectMs };
+/** Parse jobs this process runs at once; more wait their turn. Each may grow to the memory ceiling above. */
+const PARSE_CONCURRENCY = 2;
+let parsing = 0;
+const waitingToParse: (() => void)[] = [];
 
-/** Parse `bytes` on a worker thread of this process, within the limits above; `fit` scales an image down for a model request. */
-export function inspectHere(bytes: Uint8Array, text: boolean, fit = false): Promise<unknown> {
-  const worker = new Worker(new URL("./inspect-worker.ts", import.meta.url), {
-    workerData: { bytes, text, maxChars: FILE_LIMITS.extractedChars, ...(fit ? { fit: FIT } : {}) }, env: {},
-    resourceLimits: { maxOldGenerationSizeMb: FILE_LIMITS.inspectHeapMb, maxYoungGenerationSizeMb: 32 },
-  });
+/**
+ * Parse an untrusted file in a process of its own (parse-job.ts): the request, then its bytes in
+ * frames of 2 MiB, answered by one response; for an image scaled down to `fit`, its bytes come
+ * first in frames the same way, and the result carries them as `data`. The answer is as untrusted
+ * as the process; the caller checks it.
+ */
+export async function parse(bytes: Uint8Array, text: boolean, fit = false): Promise<unknown> {
+  while (parsing >= PARSE_CONCURRENCY) await new Promise<void>(resolve => waitingToParse.push(resolve));
+  parsing++;
+  const job = new Confined("parse", { command: process.execPath, args: [...NODE_ARGS, fileURLToPath(new URL("./parse-job.ts", import.meta.url))], stderr: "inherit" });
   const done = Promise.withResolvers<unknown>();
-  // Stopped from outside, not by what the file holds: the caller may try again (`fitImage`).
-  const stop = (reason: string) => { done.resolve({ ...none(`could not be read (${reason})`), transient: true }); void worker.terminate(); };
-  const baseline = process.memoryUsage.rss();
-  const watchdog = setInterval(() => { if (process.memoryUsage.rss() - baseline > FILE_LIMITS.inspectMemoryBytes) stop("it needs too much memory"); }, 20);
-  const timer = setTimeout(() => stop("it took too long"), FILE_LIMITS.inspectMs);
-  worker.once("message", done.resolve);
-  worker.once("error", error => stop(errorText(error)));
-  worker.once("exit", () => stop("its parser stopped"));
-  return done.promise.finally(() => { clearInterval(watchdog); clearTimeout(timer); void worker.terminate(); });
+  const timer = setTimeout(() => done.reject(new Error("the parser took too long")), FILE_LIMITS.inspectMs + 2_000);
+  const data: Buffer[] = [];
+  let received = 0;
+  job.listen((message: any) => {
+    if (fit && message?.type === "data" && typeof message.data === "string") {
+      data.push(Buffer.from(message.data, "base64"));
+      received += data.at(-1)!.length;
+      if (received > FILE_LIMITS.requestImageBytes) done.reject(new Error("the parser sent too much"));
+      return;
+    }
+    if (message?.type !== "response") return done.reject(new Error("the parser sent an invalid message"));
+    if (message.error !== undefined) done.reject(new Error(String(message.error).slice(0, 300)));
+    else done.resolve(data.length && message.result && typeof message.result === "object" ? { ...message.result, data: Buffer.concat(data) } : message.result);
+  }, ({ code, signal, error }) => done.reject(new Error(error ? `the parser could not start (${error})` : `the parser exited (${signal ?? code ?? "no status"})`)));
+  try {
+    job.send({ type: "request", id: "inspect", method: "inspect", params: { size: bytes.length, text, ...(fit ? { fit } : {}) } });
+    for (let offset = 0; offset < bytes.length; offset += INSPECT_FRAME_BYTES) job.send({ type: "data", data: Buffer.from(bytes.subarray(offset, offset + INSPECT_FRAME_BYTES)).toString("base64") });
+    return await done.promise;
+  } finally {
+    clearTimeout(timer);
+    job.kill();
+    parsing--;
+    waitingToParse.shift()?.();
+  }
 }
+/** How Node runs this checkout's TypeScript (none under Bun). */
+const NODE_ARGS = process.execPath.toLowerCase().includes("bun") ? [] : ["--experimental-strip-types", "--disable-warning=ExperimentalWarning"];
 
-/** What a worker or sandbox process answered, rebuilt from checked fields: neither is trusted. */
+/** What a parse job answered, rebuilt from checked fields: it is not trusted. */
 export function inspection(value: any): Inspection {
   const media = value?.media;
   const count = (n: unknown): n is number => Number.isSafeInteger(n) && (n as number) >= 0;
@@ -61,11 +85,17 @@ export function inspection(value: any): Inspection {
   return none(typeof media?.reason === "string" ? media.reason.slice(0, 300) : "could not be read");
 }
 
-/** Inspect bytes where it is safe to: in a sandbox process if there are any, else on a worker thread here. `text` extracts a PDF's text too. */
+/**
+ * What bytes are: an image's type and size from its header, read here (a few bounds-checked bytes, as
+ * `fitImage` reads them); a PDF's pages, and with `text` its text, in a parse job (`parse`).
+ */
 export async function inspect(bytes: Uint8Array, text = false): Promise<Inspection> {
   if (bytes.length > FILE_LIMITS.inspectBytes) return none(`larger than ${FILE_LIMITS.inspectBytes} bytes`);
-  const processes = sandboxProcesses();
-  try { return inspection(await (processes ? processes.pick().inspect(bytes, text) : inspectHere(bytes, text))); }
+  const data = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const header = imageHeader(data);
+  if (header) return inspection({ media: { kind: "image", ...header } });
+  if (data.subarray(0, 5).toString("latin1") !== "%PDF-") return none("not an image or PDF the model can view");
+  try { return inspection(await parse(bytes, text)); }
   catch (error) { return none(`could not be read (${errorText(error)})`); }
 }
 
@@ -84,10 +114,9 @@ export async function fitImage(bytes: Buffer): Promise<Fitted> {
   const size = header ? `${header.width}×${header.height} px` : "not an image the model can view";
   if (!header) return { omitted: size };
   if (bytes.length > FILE_LIMITS.inspectBytes) return { omitted: `${size}, larger than ${FILE_LIMITS.inspectBytes} bytes` };
-  if (header.width * header.height > FIT.pixels) return { omitted: `${size}, too many pixels to scale down` };
-  const processes = sandboxProcesses();
+  if (header.width * header.height > FILE_LIMITS.imageSide ** 2) return { omitted: `${size}, too many pixels to scale down` };
   let answer: any;
-  try { answer = await (processes ? processes.pick().inspect(bytes, false, true) : inspectHere(bytes, false, true)); }
+  try { answer = await parse(bytes, false, true); }
   catch (error) { return { omitted: `${size}, could not be resized (${errorText(error)})`, transient: true }; }
   // As untrusted as any answer: the bytes must be an image a model takes, as large as they say and within the caps.
   const data = answer?.data instanceof Uint8Array ? Buffer.from(answer.data.buffer, answer.data.byteOffset, answer.data.byteLength) : undefined;

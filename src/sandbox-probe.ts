@@ -2,9 +2,9 @@ import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { connect } from "node:net";
 
-// Test hook only (sandbox-server --test-hooks): what a sandbox process can reach,
+// Test hook only (parse-job --test-hooks): what a confined process can reach,
 // reported from inside it. The native checks, against the runtime and a sibling
-// sandbox process, run in a child, which inherits this process's uid and seccomp filter.
+// confined process, run in a child, which inherits this process's uid and seccomp filter.
 export async function probe(params: { pid: number; sibling: number; paths: string[]; launcher: string }) {
   const outcome = (fn: () => unknown) => { try { fn(); return "ok"; } catch (error) { return (error as NodeJS.ErrnoException).code ?? String(error); } };
   const status = Object.fromEntries(readFileSync("/proc/self/status", "utf8").split("\n")
