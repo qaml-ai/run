@@ -22,6 +22,7 @@ export class V8Exec {
   readonly binary: string;
   readonly args: string[];
   readonly max: number;
+  readonly trap: boolean;
   prespawn: number;
   running = 0;
   /** CPU the processes that answered used in all, startup included, as each reported it (scripts/bench-v8-exec.ts). */
@@ -35,9 +36,12 @@ export class V8Exec {
     this.binary = options.binary ?? v8ExecBinary();
     const jitless = options.jitless ?? envFlag("AGENT_V8_JITLESS", true);
     const seccomp = options.seccomp ?? envFlag("AGENT_V8_SECCOMP", true);
+    // AGENT_V8_SECCOMP=trap (debugging): a refused call is reported on this process's stderr, by number, instead of killing silently.
+    this.trap = process.env.AGENT_V8_SECCOMP === "trap";
     this.args = [
       ...(jitless ? ["--jitless"] : []),
       ...(seccomp ? [] : ["--no-seccomp"]),
+      ...(this.trap ? ["--seccomp-trap"] : []),
       // RLIMIT_DATA, behind the heap (128 MB) and ArrayBuffer (128 MB) limits: Linux counts what is mapped writable.
       "--max-data-mb", String(options.maxDataMb ?? 512),
     ];
@@ -49,7 +53,7 @@ export class V8Exec {
 
   private spawn() {
     // No environment, and no descriptors besides the three pipes.
-    const child = spawn(this.binary, this.args, { stdio: ["pipe", "pipe", "ignore"], env: {} });
+    const child = spawn(this.binary, this.args, { stdio: ["pipe", "pipe", this.trap ? "inherit" : "ignore"], env: {} });
     child.stdin!.on("error", () => {});
     // A binary that is not installed (ENOENT) is not a failure to count: the "listening" line reports the engine as
     // unavailable, and a metric line here would print before it.
