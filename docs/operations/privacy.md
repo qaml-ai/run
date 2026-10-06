@@ -201,6 +201,14 @@ naming only the `account_ref`, so the store deletes its copy. That event waits u
 however long, and is queued even on a runtime whose journey events have since been switched off (it is
 sent when they are on again).
 
+**Reports.** The team's admin site (`AGENT_ADMIN_HOST`, see [configuration](configuration.md)) can ask the store
+what it holds: sign-ups, first runs and payments by day, the accounts active in a range, and one account's
+events, each account named by its `account_ref` and nothing else. The runtime asks on the viewer's behalf
+(`src/admin-report.ts`), signed with a secret of its own (`AGENT_JOURNEY_REPORT_SECRET_ARN`), which never
+reaches the browser and cannot sign an event or a deletion; only someone Cloudflare Access signed in, and
+listed in `AGENT_ADMIN_EMAILS` where that is set, is answered, and each report asked for is logged with who
+asked (`admin_report_viewed`). An erased account is in none of them.
+
 **Export.** An account journey ever knew has `analytics/` in its export (see [Export](#export)): `account.json`,
 what this runtime keeps of it (its `account_ref`, its sign-up visitor id, what its browser last said, what it
 has done once, and events still to be sent); and, where journey events are configured, what the store holds,

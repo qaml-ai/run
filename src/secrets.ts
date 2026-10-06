@@ -62,8 +62,17 @@ export async function runtimeSecrets(env = process.env) {
   }
   // Journey events' signing secret (src/journey.ts): named only where the operator set one.
   const journeySecret = journeyArn ? (await read(journeyArn)).trim() : env.AGENT_JOURNEY_SECRET;
+  // The secret the admin site asks the journey store's reports with (src/admin-report.ts). Like Stripe's, the secret
+  // may exist before anyone stores its value: until then the site says reports are not configured.
+  const reportArn = exclusive(["AGENT_JOURNEY_REPORT_SECRET"], "AGENT_JOURNEY_REPORT_SECRET_ARN");
+  let journeyReportSecret = env.AGENT_JOURNEY_REPORT_SECRET;
+  if (reportArn) {
+    try { journeyReportSecret = (await read(reportArn)).trim() || undefined; }
+    catch (error) { if ((error as Error).name !== "ResourceNotFoundException") throw error; journeyReportSecret = undefined; }
+  }
   return {
     ...(journeySecret === undefined ? {} : { journeySecret }),
+    ...(journeyReportSecret ? { journeyReportSecret } : {}),
     toolSearchKey,
     sessionSecret: sessionArn ? await read(sessionArn) : env.AGENT_SESSION_SECRET,
     secretsKey: keyArn ? await read(keyArn) : env.AGENT_SECRETS_KEY,

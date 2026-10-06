@@ -2,15 +2,16 @@
 # of its own, proxied like the others. Cloudflare Access signs the team in. Its application ("camelRun admin":
 # Google Workspace only, the reusable "camelAI employees" policy) is managed in the Zero Trust dashboard or with
 # the cf CLI, like the account's other Access apps; its AUD tag is admin_access_aud. The runtime checks each
-# request's Access token itself, so the site answers nothing without it. An empty admin_hostname turns it all off.
+# request's Access token itself, so the site answers nothing without it; admin_emails narrows it to the addresses
+# listed, whoever else the policy admits. An empty admin_hostname turns it all off.
 
 locals {
   admin_enabled = var.admin_hostname != ""
-  admin_environment = local.admin_enabled ? {
+  admin_environment = local.admin_enabled ? merge({
     AGENT_ADMIN_HOST        = var.admin_hostname
     AGENT_ADMIN_ACCESS_TEAM = var.admin_access_team
     AGENT_ADMIN_ACCESS_AUD  = var.admin_access_aud
-  } : {}
+  }, length(var.admin_emails) > 0 ? { AGENT_ADMIN_EMAILS = join(",", var.admin_emails) } : {}) : {}
 }
 
 resource "aws_acm_certificate" "admin" {

@@ -735,7 +735,7 @@ accountDeletions.start(Number(process.env.AGENT_SCHEDULER_INTERVAL_MS ?? 5_000))
 type Env = { Bindings: HttpBindings; Variables: { tenant: string } };
 const app = new Hono<Env>();
 // The team's admin site, behind Cloudflare Access on a hostname of its own (src/admin-site.ts): answered before anything else.
-const adminSiteOptions = adminSiteFromEnvironment(process.env, { db, consoleDir });
+const adminSiteOptions = adminSiteFromEnvironment(process.env, { db, consoleDir, journey: journeySettings && { url: journeySettings.url, secret: journeySettings.secret }, reportSecret: secrets.journeyReportSecret });
 if (adminSiteOptions) app.use(adminSite(adminSiteOptions));
 // On an alias, the pages people use move to the public URL, whose host their sign-in cookies and OAuth callbacks belong to.
 // Everything else (the API, MCP, OAuth's token endpoint, webhooks, links) is served on every origin alike.

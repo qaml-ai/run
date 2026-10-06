@@ -270,6 +270,10 @@ test("runtime credentials including billing email load once from Secrets Manager
   await assert.rejects(runtimeSecrets({ ...env, AGENT_TOOL_SEARCH_API_KEY: "x" }), /AGENT_TOOL_SEARCH_API_KEY or AGENT_TOOL_SEARCH_SECRET_ARN, not both/);
   // The Stripe secret exists before anyone stores its value: purchases stay off rather than the runtime failing to start.
   assert.equal((await runtimeSecrets({ ...env, AGENT_STRIPE_SECRET_ARN: arn("stripe-unset") })).stripe, undefined);
+  // The admin site's report secret is named only where set, and one with no value yet leaves reports off.
+  assert.equal((await runtimeSecrets({ AGENT_JOURNEY_REPORT_SECRET: "whsec_plain" })).journeyReportSecret, "whsec_plain");
+  assert.equal("journeyReportSecret" in await runtimeSecrets({ ...env, AGENT_JOURNEY_REPORT_SECRET_ARN: arn("journey-report-unset") }), false);
+  await assert.rejects(runtimeSecrets({ ...env, AGENT_JOURNEY_REPORT_SECRET: "x", AGENT_JOURNEY_REPORT_SECRET_ARN: arn("journey-report-unset") }), /AGENT_JOURNEY_REPORT_SECRET or AGENT_JOURNEY_REPORT_SECRET_ARN, not both/);
   // Google sign-in likewise stays off until its client is stored.
   assert.equal((await runtimeSecrets({ ...env, AGENT_GOOGLE_OAUTH_SECRET_ARN: arn("google-unset") })).google, undefined);
   await assert.rejects(runtimeSecrets({ ...env, GOOGLE_CLIENT_ID: "x" }), /GOOGLE_CLIENT_ID\/GOOGLE_CLIENT_SECRET or AGENT_GOOGLE_OAUTH_SECRET_ARN, not both/);

@@ -83,6 +83,20 @@ Changes on main since the last tag.
   changes: no cookie is read or set, no row is written and nothing is sent.
 - `/` and `/console` keep the query string when they redirect to `/console/`.
 
+### Admin site
+
+- `AGENT_ADMIN_EMAILS` narrows the admin site to the addresses it lists: anyone else Cloudflare Access signs in
+  gets a 403. Unset, the default, the site is for everyone the Access application admits, as before.
+- `GET /api/product-signals` on the admin site: self-serve sign-ups and credit purchases (count, paying accounts
+  and amount in cents) for a range of calendar days (`start_date`, `end_date`, `time_zone`; today in
+  `America/Chicago` by default, 366 days at most), in total and by day, from the runtime's own tables. An
+  account's first completed run is counted from journey events' record of it, and is `null` with
+  `activation_coverage` saying why where that is not known (journey events off, or not yet on for those days).
+  Accounts being or already erased, tenants an operator made and staff journey events know are not counted.
+- `POST /api/report` on the admin site asks the journey store for a report (`AGENT_JOURNEY_URL`, signed with
+  `AGENT_JOURNEY_REPORT_SECRET` or its ARN, a secret of its own). Without one it answers
+  `503 {"error":"report_not_configured"}`; `/api/stats` is unchanged.
+
 ### Console sessions
 
 - Console sessions are stored in Postgres (`console_sessions`, migration 053); the cookie carries only a random
