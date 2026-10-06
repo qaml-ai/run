@@ -131,11 +131,22 @@ test("a process that connects with other tools than the agent has declares them;
   }, "the new tools to be declared");
 });
 
-test("steer is a run: with no turn running, it starts one and resolves with it; run itself queues", async t => {
-  const { make, r } = await setup(t, () => ({ role: "assistant", content: "noted" }));
+test("steer answers as soon as the runtime has the message; with wait it is a run: with no turn running, it starts one and resolves with it", async t => {
+  const { make, r } = await setup(t, (_body, index) => ({ role: "assistant", content: `noted ${index}`, ...(index === 0 ? { delayMs: 1_500 } : {}) }));
   const agent = await make();
-  assert.equal((await agent.steer("Also check the logs")).text, "noted");
-  assert.equal(r.model.bodies.length, 1);
+  // With no turn running, it starts one: queued, as its own run.
+  const receipt = await agent.steer("Also check the logs", { idempotencyKey: "steer-1" });
+  assert.deepEqual(receipt, { id: "steer-1", status: "queued" });
+  await until(() => r.model.bodies.length === 1, "its turn's model request");
+  // Into a running turn: accepted at once (or taken already), not when the turn ends; the turn's request has the outcome.
+  const steered = await agent.steer("And the metrics", { idempotencyKey: "steer-2" });
+  assert.ok(steered.status === "accepted" || (steered.status === "taken" && steered.steeredInto === "steer-1"), JSON.stringify(steered));
+  assert.equal((await agent.client.waitForRequest("steer-1")).reply, "noted 1");
+  assert.equal(r.model.bodies.length, 2, "the running turn answered the steer");
+  // wait: true resolves with the run that took it.
+  assert.equal((await agent.steer("Last thing", { wait: true })).text, "noted 2");
+  // The lower level's prompt with whileRunning: "steer" still resolves with that turn's outcome.
+  assert.equal((await agent.client.prompt("One more", { whileRunning: "steer" })).reply, "noted 3");
   assert.equal("followUp" in agent, false);
   assert.equal("followUp" in agent.client, false);
 });

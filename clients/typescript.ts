@@ -338,8 +338,8 @@ export interface CreateAgentOptions extends AgentOptions {
   keyScope?: string;
   /** The most the agent may spend on model calls from now on (USD); PATCH /v1/agents/:id/configuration sets a new one. */
   spendLimit?: { usd: number };
-  /** The most one run may take: model responses, and seconds; the runtime's maximums (1,000 and 2 hours by default) apply over them. At either, the run stops with `stopped: "turn_limit"`. */
-  runLimits?: { maxResponses?: number; maxSeconds?: number };
+  /** The most one run may take: model responses, and seconds; the runtime's maximums (1,000 and 2 hours by default) apply over them. At either, the run stops with `stopped: "turn_limit"`. `firstTokenSeconds` and `idleSeconds`: how long a model request may go quiet (before its first token, between events) before it fails as stalled and is retried. */
+  runLimits?: { maxResponses?: number; maxSeconds?: number; firstTokenSeconds?: number; idleSeconds?: number };
   /** Non-secret headers for each of its model calls, e.g. cf-aig-metadata; never auth headers. */
   modelHeaders?: Record<string, string>;
   systemPrompt?: string;
@@ -514,6 +514,17 @@ export type Attachment = Uint8Array | Blob | string | { name?: string; data: Uin
 /** A file in the agent's mounts, at the path the agent sees it. */
 export interface AgentFile { path: string; version: number; size: number; updatedAt: number; by?: string; contentType: string }
 export interface Schedule { id: string; agent: string; text?: string; code?: string; dueAt: number; everySeconds?: number; createdAt: number }
+/**
+ * A steered message as the runtime took it (`steerMessage`, `agent.steer`): `accepted`, the running turn reads it after
+ * its current step; `taken`, it has read it already, in the turn `steeredInto` names; `queued`, no turn was running, so it
+ * runs as a turn of its own (the request `id`).
+ */
+export interface SteerReceipt { id: string; status: "accepted" | "taken" | "queued"; steeredInto?: string }
+export function steerReceipt(record: RequestRecord): SteerReceipt {
+  if (record.steeredInto) return { id: record.id, status: "taken", steeredInto: record.steeredInto };
+  // A runtime from before steer receipts answers with the queued request alone: the running turn may still take it.
+  return { id: record.id, status: record.steer ?? "accepted" };
+}
 /**
  * `idempotencyKey`: the request's id; sending the same key again returns the same request, never a second one.
  * `signal`: stop waiting (the request goes on; `abort()` stops the agent's turn). `timeoutMs`: the same, after a time.
@@ -1304,12 +1315,37 @@ export class AgentClient {
    * `from.id` is the turn's actor. `actor` names someone else acting (`act` in identity tokens) without telling the model.
    * `metadata` is the application's own key-value data about the message (at most 16 string values): the
    * stored message and its request carry it, with the request's id, in history, events and webhooks; the model never sees it.
-   * `whileRunning: "steer"` hands the message to a running turn, and resolves with that turn's outcome. `spendLimit` is this run's own
+   * `whileRunning: "steer"` hands the message to a running turn, and resolves with that turn's outcome (`steerMessage` returns as
+   * soon as the turn has it instead). `spendLimit` is this run's own
    * budget: it ends before its next model request once it has spent that; the agent's spendLimit is unchanged.
    * `output: { schema }` (a JSON Schema for an object) asks for structured output: the run ends with an answer that fits it, as `output`.
    */
-  prompt(text: string, options?: RunRequestOptions & { files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; whileRunning?: "queue" | "steer"; spendLimit?: { usd: number }; output?: { schema: Record<string, unknown> } }) {
-    return this.message("prompt", text, options, { ...(options?.actor ? { actor: options.actor } : {}), ...(options?.whileRunning === "steer" ? { whileRunning: "steer" } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}), ...(options?.spendLimit ? { spendLimit: options.spendLimit } : {}), ...(options?.output ? { output: options.output } : {}) });
+  async prompt(text: string, options?: RunRequestOptions & { files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; whileRunning?: "queue" | "steer"; spendLimit?: { usd: number }; output?: { schema: Record<string, unknown> } }) {
+    const result = await this.message("prompt", text, options, { ...(options?.actor ? { actor: options.actor } : {}), ...(options?.whileRunning === "steer" ? { whileRunning: "steer" } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}), ...(options?.spendLimit ? { spendLimit: options.spendLimit } : {}), ...(options?.output ? { output: options.output } : {}) });
+    // A steered message's request completes as the running turn takes it, naming the turn: its outcome is the turn's.
+    const into = options?.whileRunning === "steer" && isRecord(result) && typeof result.steeredInto === "string" && !("reply" in result) ? result.steeredInto : undefined;
+    return into ? this.waitForRequest(into, { ...(options?.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}), ...(options?.signal ? { signal: options.signal } : {}) }) : result;
+  }
+
+  /**
+   * Hand a message to the running turn (`whileRunning: "steer"`) and return as soon as the runtime has it, without waiting
+   * for the turn: `accepted`, the running turn reads it after its current step; `taken`, it has read it already
+   * (`steeredInto` names the turn, whose request has the turn's outcome); `queued`, no turn was running, so it starts one.
+   * A `steer_taken` event on the agent's stream says when the model has it. A taken steer no longer counts against the
+   * agent's open requests, however long its turn goes on.
+   */
+  async steerMessage(text: string, options?: RequestOptions & { files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; allowDisconnected?: boolean }): Promise<SteerReceipt> {
+    if (this.closed || this.closing || this.fatal) throw this.fatal ?? new AgentError("Client closed");
+    const id = options?.idempotencyKey ?? globalThis.crypto.randomUUID();
+    if (!REQUEST_ID.test(id)) throw new AgentError(`An idempotency key is 1 to 80 letters, digits, _ and -: ${JSON.stringify(id.slice(0, 100))} is not`, 400);
+    const files = options?.files?.length ? await this.attach(id, options.files) : undefined;
+    const params = {
+      text, ...(files ? { files } : {}), whileRunning: "steer", ...(options?.actor ? { actor: options.actor } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}),
+      ...(options?.from ? { from: options.from } : {}), ...(options?.metadata ? { metadata: options.metadata } : {}),
+    };
+    const record = await this.transport.json(this.path("/requests"), this.session.token, "POST", { id, method: "prompt", params }, true, traceHeader(options?.traceparent)) as RequestRecord;
+    if (record.outcome) this.settle(id, record.outcome);
+    return steerReceipt(record);
   }
 
   /**
@@ -1405,8 +1441,13 @@ export class AgentClient {
   }
   schedules(): Promise<Schedule[]> { return this.http("/schedules"); }
   unschedule(id: string) { return this.http(`/schedules/${encodeURIComponent(id)}`, "DELETE", undefined, false); }
+  /** The agent's process (when loaded) and whether it is busy: `busy`, `activeRun`, `queuedRuns`, as GET /v1/agents/{id} and its state say too. */
   status() { return this.request("status"); }
-  abort() { return this.request("abort"); }
+  /**
+   * Stop the agent: its running turn ends (code `aborted`), and the runs queued behind it are cancelled (code
+   * `cancelled`), so nothing runs after the stop; `queued: "keep"` stops the running turn only. Resolves with the ids it cancelled.
+   */
+  abort(options: { queued?: "cancel" | "keep" } = {}): Promise<{ aborted: boolean; cancelled?: string[] }> { return this.request("abort", options.queued ? { queued: options.queued } : {}); }
   /**
    * A request's record. `wait` (seconds, at most 25): while it runs, answer once it settles, or when the wait ends
    * with it still running: one call that waits, with no stream connected.

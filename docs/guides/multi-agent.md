@@ -122,7 +122,7 @@ The model calls `delegate` directly, never from `js_exec`.
 ### Cancelling
 
 Aborting the parent's run (`agent.abort()`, `POST /v1/agents/{id}/abort`)
-aborts the sub-agents it is waiting on. So does deleting the parent. A named
+aborts the sub-agents it is waiting on (and cancels the parent's queued runs). So does deleting the parent. A named
 agent is aborted only while it runs the parent's task, never another.
 
 ### When a node is lost

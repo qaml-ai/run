@@ -96,6 +96,8 @@ export async function waitFor(api: Api, agentId: string, requestId: string, seco
   const deadline = Date.now() + seconds * 1000;
   for (let delay = 250; ; delay = Math.min(delay * 1.5, 2000)) {
     const record = await api.get(`/v1/agents/${enc(agentId)}/requests/${enc(requestId)}`);
+    // A steered message completes as the running turn reads it: the turn's own request has the run's outcome.
+    if (record.state === "completed" && typeof record.steeredInto === "string" && record.steeredInto !== requestId && Date.now() + delay <= deadline && !signal?.aborted) { requestId = record.steeredInto; continue; }
     if (record.state === "completed" || Date.now() + delay > deadline || signal?.aborted) return summarize(agentId, record);
     await new Promise(resolve => setTimeout(resolve, delay));
   }

@@ -12,7 +12,7 @@
 import {
   AgentClient, AgentError, AgentRuntime, RunError, toolServer,
   type AgentFiles, type Builtin, type DelegateSettings, type RecordedMessage, type AgentInput, type AgentOptions, type Attachment, type CreateAgentOptions, type HistoryPage, type InputAnswer,
-  type ForkedFrom, type ForkOptions, type Mount, type RunResult, type RunUsage, type RuntimeOptions, type Sender, type SessionCredentials, type ToolError, type RunToolCall, type ToolServer, type Tools, type AgentFile,
+  type ForkedFrom, type ForkOptions, type Mount, type RunResult, type RunUsage, type RuntimeOptions, type Sender, type SessionCredentials, type ToolError, type RunToolCall, type ToolServer, type Tools, type AgentFile, type SteerReceipt,
 } from "./typescript.ts";
 import type { AgentEvent, ThinkingLevel } from "./types.ts";
 import type { Static, TSchema } from "typebox";
@@ -68,8 +68,8 @@ export interface AgentConfig {
   keyScope?: string;
   /** The most it may spend on model calls from now on (USD). */
   spendLimit?: { usd: number };
-  /** The most one run may take: model responses, and seconds (within the runtime's 1,000 and 2 hours by default). */
-  runLimits?: { maxResponses?: number; maxSeconds?: number };
+  /** The most one run may take: model responses, and seconds (within the runtime's 1,000 and 2 hours by default); and how long a model request may go quiet before it fails as stalled and is retried: before its first token (default 120 s, 300 for a reasoning model thinking high or more) and between events (default 45 s). */
+  runLimits?: { maxResponses?: number; maxSeconds?: number; firstTokenSeconds?: number; idleSeconds?: number };
   modelHeaders?: Record<string, string>;
   mounts?: Mount[];
   name?: string;
@@ -447,17 +447,29 @@ export class Agent {
   async history(): Promise<RecordedMessage[]> { return (await this.client.history()).messages; }
   historyPage(options: { before?: number; limit?: number } = {}): Promise<HistoryPage> { return this.client.historyPage(options); }
   /**
-   * A message for the running turn, which reads it after its current step and answers with it in mind; with
-   * no turn running, it starts one. Resolves with the run that took it: `run(text, { whileRunning: "steer" })`.
+   * A message for the running turn, which reads it after its current step and answers with it in mind; with no turn
+   * running, it starts one. Resolves as soon as the runtime has it, with a receipt: `accepted` (the turn reads it next),
+   * `taken` (it has, in the turn `steeredInto`) or `queued` (it runs as a turn of its own, `id`). A turn that never ends
+   * takes any number of steers. `wait: true` waits for the run that took it instead, as `run(text, { whileRunning: "steer" })`.
    */
-  steer(text: string, options: Omit<RunOptions, "whileRunning"> = {}) { return this.run(text, { ...options, whileRunning: "steer" }); }
+  steer(text: string, options?: Omit<RunOptions, "whileRunning" | "output" | "spendLimit" | "throwOnError"> & { wait?: false }): Promise<SteerReceipt>;
+  steer(text: string, options: Omit<RunOptions, "whileRunning"> & { wait: true }): Promise<Run>;
+  steer(text: string, options: Omit<RunOptions, "whileRunning"> & { wait?: boolean } = {}): Promise<SteerReceipt | Run> {
+    const { wait, ...rest } = options;
+    if (wait) return this.run(text, { ...rest, whileRunning: "steer" });
+    const { whileRunning: _whileRunning, spendLimit: _spendLimit, output: _output, ...message } = promptOptions(rest.idempotencyKey ?? globalThis.crypto.randomUUID(), rest);
+    return this.client.steerMessage(text, message);
+  }
   /** Change its model, instructions, thinking level or tools between runs. */
   configure(config: Pick<AgentConfig, "model" | "instructions" | "thinkingLevel" | "tools" | "mcp">) {
     const { instructions, ...rest } = config;
     return this.client.configure({ ...rest, ...(instructions !== undefined ? { systemPrompt: instructions } : {}) });
   }
-  /** Stop the running turn. */
-  abort() { return this.client.abort(); }
+  /**
+   * Stop the agent: its running turn, and the runs queued behind it (each fails with code `cancelled`), so nothing runs
+   * after the stop. `queued: "keep"` stops the running turn only.
+   */
+  abort(options: { queued?: "cancel" | "keep" } = {}) { return this.client.abort(options); }
   /**
    * A new agent with this one's configuration, a copy of its history and a fork of its workspace, each its own from
    * then on: try another direction without losing this one. By default the history ends with the last turn that ended

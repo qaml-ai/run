@@ -646,6 +646,14 @@ class AgentRuntime:
         await self.close()
 
 
+def _steer_receipt(record):
+    """A steered message as the runtime took it: taken (steeredInto names the turn), accepted, or queued as a turn of its own."""
+    if record.get("steeredInto"):
+        return {"id": record["id"], "status": "taken", "steeredInto": record["steeredInto"]}
+    # A runtime from before steer receipts answers with the queued request alone: the running turn may still take it.
+    return {"id": record["id"], "status": record.get("steer") or "accepted"}
+
+
 def _trace_header(traceparent):
     """The W3C `traceparent` header, when there is one to send."""
     return {"traceparent": traceparent} if traceparent else {}
@@ -1237,15 +1245,40 @@ class AgentClient:
         uploaded to the agent's workspace (uploads/<request>/<name>) first, then attached by path. `metadata` is the
         application's own key-value data about the message (a dict of at most 16 strings): the stored message and
         its request carry it, with the request's id, in history, events and webhooks; the model never sees it. `while_running="steer"` hands
-        the message to a running turn, and returns with that turn's outcome. `spend_limit` ({"usd": n}) is this run's own budget:
+        the message to a running turn, and returns with that turn's outcome (steer_message returns as soon as the turn has it). `spend_limit` ({"usd": n}) is this run's own budget:
         it ends before its next model request once it has spent that; the agent's spend limit is unchanged. `output`
         ({"schema": a JSON Schema for an object}) asks for structured output: the run ends with an answer that fits it, as "output".
         `traceparent` (a W3C trace context) makes the run continue the caller's trace when the tenant exports telemetry."""
-        return await self._message("prompt", text, from_=from_, files=files, metadata=metadata, idempotency_key=idempotency_key,
-                                   extra={**({"actor": actor} if actor else {}), **({"whileRunning": "steer"} if while_running == "steer" else {}),
-                                          **({"allowDisconnected": True} if allow_disconnected else {}), **({"spendLimit": spend_limit} if spend_limit is not None else {}),
-                                          **({"output": output} if output is not None else {})},
-                                   **options)
+        result = await self._message("prompt", text, from_=from_, files=files, metadata=metadata, idempotency_key=idempotency_key,
+                                     extra={**({"actor": actor} if actor else {}), **({"whileRunning": "steer"} if while_running == "steer" else {}),
+                                            **({"allowDisconnected": True} if allow_disconnected else {}), **({"spendLimit": spend_limit} if spend_limit is not None else {}),
+                                            **({"output": output} if output is not None else {})},
+                                     **options)
+        # A steered message's request completes as the running turn takes it, naming the turn: its outcome is the turn's.
+        if while_running == "steer" and isinstance(result, dict) and isinstance(result.get("steeredInto"), str) and "reply" not in result:
+            return await self.wait_for_request(result["steeredInto"], timeout=options.get("timeout"))
+        return result
+
+    async def steer_message(self, text, *, actor=None, from_=None, files=None, metadata=None, idempotency_key=None, allow_disconnected=False, traceparent=None):
+        """Hand a message to the running turn (while_running="steer") and return as soon as the runtime has it, without
+        waiting for the turn: {"id", "status", "steeredInto"?}. status "accepted": the running turn reads it after its current
+        step; "taken": it has read it already (steeredInto names the turn, whose request has the turn's outcome); "queued": no
+        turn was running, so it starts one. A steer_taken event on the agent's stream says when the model has it. A taken
+        steer no longer counts against the agent's open requests, however long its turn goes on."""
+        if self.closed or self.closing or self.fatal:
+            raise self.fatal or AgentError("Client closed")
+        request_id = idempotency_key or str(uuid.uuid4())
+        import re
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", request_id):
+            raise AgentError(f"An idempotency key is 1 to 80 letters, digits, _ and -: {request_id!r} is not", 400)
+        attached = await self._attach(request_id, files) if files else None
+        params = {"text": text, **({"files": attached} if attached else {}), "whileRunning": "steer", **({"actor": actor} if actor else {}),
+                  **({"allowDisconnected": True} if allow_disconnected else {}), **({"from": from_} if from_ else {}), **({"metadata": metadata} if metadata else {})}
+        record = await _http(self.http, self.base, self.path + "/requests", self.session["token"], "POST",
+                             {"id": request_id, "method": "prompt", "params": params}, headers=_trace_header(traceparent))
+        if "outcome" in record:
+            self._settle(request_id, record["outcome"])
+        return _steer_receipt(record)
 
     async def _attach(self, request_id, files):
         names, attached = set(), []
@@ -1318,10 +1351,14 @@ class AgentClient:
         return await self._http(f"/schedules/{quote(schedule_id, safe='')}", "DELETE", None, retry=False)
 
     async def status(self):
+        """The agent's process (when loaded) and whether it is busy: busy, activeRun, queuedRuns, as GET /v1/agents/{id} and its state say too."""
         return await self.request("status")
 
-    async def abort(self):
-        return await self.request("abort")
+    async def abort(self, *, queued=None):
+        """Stop the agent: its running turn ends (code "aborted"), and the runs queued behind it are cancelled (code
+        "cancelled"), so nothing runs after the stop; queued="keep" stops the running turn only. Returns
+        {"aborted", "cancelled": [ids]}."""
+        return await self.request("abort", {"queued": queued} if queued else {})
 
     async def outcomes(self):
         return await self._http("/state")
@@ -1734,18 +1771,27 @@ class Agent:
     async def history_page(self, *, before=None, limit=50):
         return await self.client.history_page(before=before, limit=limit)
 
-    async def steer(self, text, **options):
+    async def steer(self, text, *, wait=False, **options):
         """A message for the running turn, which reads it after its current step; with no turn running, it starts one.
-        Returns the run that took it: run(text, while_running="steer")."""
-        return await self.run(text, **options, while_running="steer")
+        Returns as soon as the runtime has it, with a receipt {"id", "status", "steeredInto"?}: "accepted" (the turn reads it
+        next), "taken" (it has, in the turn steeredInto) or "queued" (it runs as a turn of its own, id). A turn that never
+        ends takes any number of steers. wait=True waits for the run that took it instead: run(text, while_running="steer")."""
+        if wait:
+            return await self.run(text, **options, while_running="steer")
+        user = options.pop("user", None)
+        unknown = set(options) - {"files", "metadata", "idempotency_key", "allow_disconnected", "traceparent"}
+        if unknown:
+            raise TypeError(f"steer() takes {', '.join(sorted(unknown))} only with wait=True")
+        return await self.client.steer_message(text, from_=_sender(user) if user else None, **options)
 
     async def configure(self, *, model=None, instructions=None, thinking_level=None, tools=None):
         """Change its model, instructions, thinking level or tools between runs."""
         return await self.client.configure(model=model, system_prompt=instructions, thinking_level=thinking_level, tools=tools)
 
-    async def abort(self):
-        """Stop the running turn."""
-        return await self.client.abort()
+    async def abort(self, *, queued=None):
+        """Stop the agent: its running turn, and the runs queued behind it (each fails with code "cancelled"), so nothing
+        runs after the stop. queued="keep" stops the running turn only."""
+        return await self.client.abort(queued=queued)
 
     async def fork(self, *, key=None, name=None, at_message=None, ttl_seconds=_DEFAULT, subject=None, context=None, instructions_append=None,
                    model_headers=_DEFAULT, tools=None, on_event=None, on_input=None, on_error=None, attach=None, takeover=False):

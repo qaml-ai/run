@@ -434,9 +434,15 @@ export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: Age
         const accepted = await call(`${path}/prompt`, {
           text, requestId: clientId, from, ...(metadata ? { metadata } : {}), ...(whileRunning ? { whileRunning } : {}),
         });
-        // Waiting, it is answered once its run ends (a steered message's, once the turn it joined does).
-        if (wait === undefined || accepted.state === "completed") return sent(accepted);
-        return sent(await get(`${path}/requests/${encodeURIComponent(accepted.id)}?wait=${wait}`));
+        // Waiting, it is answered once its run ends (a steered message's, once the turn it joined does: its own request
+        // completes as that turn reads it, naming the turn, whose request has the answer).
+        if (wait === undefined || (accepted.state === "completed" && !accepted.steeredInto)) return sent(accepted);
+        const until = Date.now() + wait * 1000;
+        const settled = accepted.state === "completed" ? accepted : await get(`${path}/requests/${encodeURIComponent(accepted.id)}?wait=${wait}`);
+        const left = Math.floor((until - Date.now()) / 1000);
+        if (settled.state !== "completed" || !settled.steeredInto || left <= 0) return sent(settled);
+        const turn = await get(`${path}/requests/${encodeURIComponent(settled.steeredInto)}?wait=${left}`);
+        return sent({ ...turn, id: settled.id, steeredInto: settled.steeredInto });
       }
       case "wait": {
         // Ask again about a message sent before (its clientId), without sending it again.

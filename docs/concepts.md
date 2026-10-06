@@ -47,7 +47,9 @@ A message to an agent starts a **run**: the model loop, with every tool call it
 makes, until the model answers or something stops it. One run at a time: a
 message sent while a run is going waits for it (`whileRunning: "queue"`, the
 default) or joins it (`whileRunning: "steer"`: the running turn reads it after its
-current step).
+current step). A steer is answered at once (`agent.steer()` returns a receipt:
+`accepted`, `taken` or `queued`), and its request completes as the turn reads it,
+so a turn fed messages constantly never fills the agent's queue.
 
 ```ts
 const run = await agent.run("Summarize ticket 123", { user: "alice" });
@@ -70,7 +72,9 @@ A `Run` has:
 
 `run()` has no timeout: runs can take minutes, and a run waiting on a person can
 wait for days. Pass an `AbortSignal` (Python: `timeout=`) to stop waiting; the
-run itself goes on, and `agent.abort()` stops it. A failed run throws a
+run itself goes on, and `agent.abort()` stops it: the running turn ends, and the
+runs queued behind it are cancelled (code `cancelled`), so nothing runs after the
+stop (`abort({ queued: "keep" })` stops the running turn only). A failed run throws a
 `RunError` carrying the run, unless you pass `throwOnError: false`.
 
 ### Long conversations

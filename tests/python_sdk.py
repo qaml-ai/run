@@ -194,6 +194,33 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
             await crashed.close(drain=0)
             await restarted.close(drain=0)
 
+    async def test_steer_answers_once_the_runtime_has_it_and_abort_cancels_the_queue(self):
+        agent = await self.agents.upsert("py-steer")
+        # With no turn running, a steer starts one (queued); into a running turn it is accepted at once, not at the turn's end.
+        self.script.append({"role": "assistant", "content": "first", "delayMs": 1500})
+        self.script.append({"role": "assistant", "content": "with the steer"})
+        self.assertEqual(await agent.steer("start", idempotency_key="py-steer-1"), {"id": "py-steer-1", "status": "queued"})
+        while len(self.bodies) < 1:
+            await asyncio.sleep(0.05)
+        receipt = await agent.steer("also this", idempotency_key="py-steer-2")
+        self.assertIn(receipt["status"], ("accepted", "taken"))
+        self.assertEqual((await agent.client.wait_for_request("py-steer-1"))["reply"], "with the steer")
+        # wait=True waits for the run that took it.
+        self.assertEqual((await agent.steer("now", wait=True)).text, "seen")
+        # A stop ends the running turn and cancels what waits behind it.
+        self.script.append({"role": "assistant", "content": "slow", "delayMs": 3000})
+        running = asyncio.create_task(agent.run("slow one", idempotency_key="py-slow", throw_on_error=False))
+        while len(self.bodies) < 4:
+            await asyncio.sleep(0.05)
+        queued = asyncio.create_task(agent.run("queued", idempotency_key="py-queued", throw_on_error=False))
+        while (await agent.client.status())["queuedRuns"] < 1:
+            await asyncio.sleep(0.05)
+        stopped = await agent.abort()
+        self.assertEqual(stopped["cancelled"], ["py-queued"])
+        self.assertEqual((await queued).error["code"], "cancelled")
+        self.assertEqual((await running).status, "failed")
+        self.assertFalse((await agent.client.status())["busy"])
+
     async def test_get_takes_an_existing_agent_by_key_or_id_without_changing_it(self):
         made = await self.agents.upsert("kept", instructions="Be terse.")
         by_key = await self.agents.get("kept")

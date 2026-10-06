@@ -93,7 +93,7 @@ its id (`def_…`).
 | `run <agent> <message…>` | send a message and print the reply |
 | `runs get <agent> <requestId> [--wait s]` | a run's result |
 | `history <agent> [--limit n]` | its latest messages, tool calls included |
-| `abort <agent>` | stop its running turn |
+| `abort <agent>` | stop it: its running turn, and the runs queued behind it |
 | `inputs [agent]` / `answer <agent> <inputId> <value>` | questions and approvals waiting on someone, and answering them |
 | `schedules list\|add\|delete <agent>` | wake-ups: `add --text t --in 3600 [--every 86400]` |
 | `definitions list\|get\|agents\|delete` | definitions, and the revision each agent has |

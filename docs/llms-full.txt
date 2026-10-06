@@ -262,7 +262,9 @@ A message to an agent starts a **run**: the model loop, with every tool call it
 makes, until the model answers or something stops it. One run at a time: a
 message sent while a run is going waits for it (`whileRunning: "queue"`, the
 default) or joins it (`whileRunning: "steer"`: the running turn reads it after its
-current step).
+current step). A steer is answered at once (`agent.steer()` returns a receipt:
+`accepted`, `taken` or `queued`), and its request completes as the turn reads it,
+so a turn fed messages constantly never fills the agent's queue.
 
 ```ts
 const run = await agent.run("Summarize ticket 123", { user: "alice" });
@@ -285,7 +287,9 @@ A `Run` has:
 
 `run()` has no timeout: runs can take minutes, and a run waiting on a person can
 wait for days. Pass an `AbortSignal` (Python: `timeout=`) to stop waiting; the
-run itself goes on, and `agent.abort()` stops it. A failed run throws a
+run itself goes on, and `agent.abort()` stops it: the running turn ends, and the
+runs queued behind it are cancelled (code `cancelled`), so nothing runs after the
+stop (`abort({ queued: "keep" })` stops the running turn only). A failed run throws a
 `RunError` carrying the run, unless you pass `throwOnError: false`.
 
 ### Long conversations
@@ -2089,7 +2093,7 @@ Every event is an envelope:
 | --- | --- | --- |
 | `run.started` | A run (`method`: `prompt`, `continue`, `resume`, `execute`) began | `agentId`, `requestId`, `method`, `actor`, `metadata`; `resumes` when a node resumed a turn whose node was lost |
 | `run.completed` | It ended without an error | as above, and `usage`; `stopped` (`input_required` with `inputIds`, `spend_limit` or `turn_limit`) if it stopped early; `replyIndex` and `messageCount`; `steeredInto` for a message a running turn took |
-| `run.failed` | It ended with an error, the runtime's or the model's | as above, and `usage`, `error`, and `uncertain` when a restart cut it short |
+| `run.failed` | It ended with an error, the runtime's or the model's | as above, and `usage`, `error`, `code` where the error has a name (`cancelled`: a stop cancelled it before it began; `aborted`; `model_stream_stalled`; `turn_limit`…), and `uncertain` when a restart cut it short |
 | `input.requested` | The agent asks a person for input (the run waits) | `agentId`, `requestId`, `inputId`, `toolCallId`, `kind`, `expiresAt` |
 | `input.resolved` | An input settled | `agentId`, `requestId`, `inputId`, `state` |
 | `usage.recorded` | A model response's usage was counted | `agentId`, `requestId`, `subject`, `actor`, `context`, `keyScope`, `provider`, `model`, `kind` (`response` or `compaction`), tokens, `cost: {usd, source}`, `at` |
@@ -2766,7 +2770,7 @@ The model calls `delegate` directly, never from `js_exec`.
 ### Cancelling
 
 Aborting the parent's run (`agent.abort()`, `POST /v1/agents/{id}/abort`)
-aborts the sub-agents it is waiting on. So does deleting the parent. A named
+aborts the sub-agents it is waiting on (and cancels the parent's queued runs). So does deleting the parent. A named
 agent is aborted only while it runs the parent's task, never another.
 
 ### When a node is lost
@@ -3636,11 +3640,11 @@ credentials of (`{id, token}`) without changing it.
 | `agent.stream(text, options)` | `agent.stream(text, …)` | the run as it happens: `for await` / `async for` over parts |
 | `agent.pendingInputs()` | `pending_inputs()` | inputs waiting on people, each with `answer()` |
 | `agent.history()`, `historyPage({ before, limit })` | `history()`, `history_page(before=, limit=)` | the whole history (a list of messages, oldest first), or a page of whole turns |
-| `agent.steer(text)` | `steer()` | `run` with `whileRunning: "steer"` (joins the running turn, else starts one): the run that took the message |
+| `agent.steer(text, options)` | `steer(text, …)` | hand the running turn a message (else start one), answered as soon as the runtime has it: `{id, status: "accepted" \| "taken" \| "queued", steeredInto?}`. `wait: true` (`wait=True`) resolves with the run that took it instead, as `run(text, { whileRunning: "steer" })` |
 | `agent.configure({ model, instructions, thinkingLevel, tools })` | `configure(…)` | change it between runs |
 | `agent.schedule({ text, inSeconds, at, everySeconds })` | `schedule(…)` | wake it later; `schedules()`, `unschedule(id)` |
 | `agent.files` | `agent.files` | `list`, `download`, `upload`, `link` by the paths the agent sees |
-| `agent.abort()` | `abort()` | stop the running turn |
+| `agent.abort({ queued })` | `abort(queued=)` | stop the agent: its running turn, and the runs queued behind it (each fails with code `cancelled`); `queued: "keep"` stops the running turn only. Resolves with `{aborted, cancelled}` |
 | `agent.fork({ key, name, atMessage, ttlSeconds })` | `fork(key=, name=, at_message=, ttl_seconds=)` | a new agent with its configuration, a copy of its history and of its files: see [Forking](https://run.camelai.com/docs/reference/sdk.md#agentforkoptions) |
 | `agent.delete()` | `delete()` | delete it, its history and files |
 | `agent.close()` | `close()` | close this process's connection |
@@ -3792,7 +3796,9 @@ available and stable for code that needs the wire's shape: `agents.runtime`,
 | `client.requestStatus(id, { wait })`, `outcomes()` | `request_status(id, wait=)`, `outcomes()` | a request's record (`wait`: seconds, at most 25, to wait for it to settle first); every request's state |
 | `client.answer(inputId, { action, content, from })`, `inputs(state)` | `answer(input_id, action=, …)`, `inputs(state=)` | inputs, raw |
 | `client.execute(code)` | `execute(code)` | run code in the sandbox with the agent's tools, outside its history |
-| `client.steer(text)` | `steer()` | the legacy `steer` request, which holds the message for the running (or next) turn; new code uses `prompt` with `whileRunning: "steer"` |
+| `client.steerMessage(text, options)` | `steer_message(text, …)` | `prompt` with `whileRunning: "steer"`, answered as soon as the runtime has it: `{id, status: "accepted" \| "taken" \| "queued", steeredInto?}` (`client.prompt(text, { whileRunning: "steer" })` waits for the turn that took it) |
+| `client.status()`, `client.abort({ queued })` | `status()`, `abort(queued=)` | whether the agent is busy (`busy`, `activeRun`, `queuedRuns`, as `GET /v1/agents/{id}` says too); stop it (its running turn, and unless `queued: "keep"` the runs queued behind it) |
+| `client.steer(text)` | `steer()` | the legacy `steer` request, which holds the message for the running (or next) turn; new code uses `steerMessage` |
 | `client.setMetadata({ name, type })` | `set_metadata(name=, type=)` | rename or regroup |
 | `client.destroy()`, `close()` | same | delete the agent; close the connection |
 
@@ -4190,7 +4196,7 @@ its id (`def_…`).
 | `run <agent> <message…>` | send a message and print the reply |
 | `runs get <agent> <requestId> [--wait s]` | a run's result |
 | `history <agent> [--limit n]` | its latest messages, tool calls included |
-| `abort <agent>` | stop its running turn |
+| `abort <agent>` | stop it: its running turn, and the runs queued behind it |
 | `inputs [agent]` / `answer <agent> <inputId> <value>` | questions and approvals waiting on someone, and answering them |
 | `schedules list\|add\|delete <agent>` | wake-ups: `add --text t --in 3600 [--every 86400]` |
 | `definitions list\|get\|agents\|delete` | definitions, and the revision each agent has |
@@ -4645,6 +4651,9 @@ See [Multi-agent](https://run.camelai.com/docs/guides/multi-agent.md). The `suba
 | --- | --- | --- |
 | `auto_retry_start` | `attempt`, `maxAttempts`, `delayMs`, `errorMessage` | a transient provider failure (overload, rate limit, 5xx, dropped stream) is being retried; the failed response was retracted |
 | `auto_retry_end` | `success`, `attempt`, `finalError?` | retrying ended |
+| `model_stream_stalled` | `phase` (`first_token`, `idle`), `ms`, `provider`, `model` | the model's stream went quiet (nothing before its first token for `runLimits.firstTokenSeconds`, or nothing mid-response for `idleSeconds`), so the runtime ended the request; it is retried like any transient failure, and when retries run out the run fails with code `model_stream_stalled`. Provider keep-alives do not count as an answer |
+| `steer_taken` | `steeredInto` | a prompt sent with `whileRunning: "steer"` (its id is the frame's `requestId`) was read by the running turn `steeredInto`: the model has it, and its request has completed |
+| `run_cancelled` | `reason` (`stopped`) | a run queued behind the running one was cancelled by a stop (`POST /v1/agents/:id/abort`) before it began; its `response` follows, with code `cancelled` |
 | `compaction_start` | `reason`, `background?` | the conversation is being summarized to fit the model's context. With `background: true` it is made between or alongside runs, outside any run's request (`requestId` is empty), and nothing waits for it |
 | `compaction_end` | `reason`, `background?`, and `skipped`, or `tokensBefore`, `summarizedMessages`, `keptMessages`, or `error` | summarizing ended |
 | `compaction_usage` *internal* | `provider`, `model`, `usage`, `timestamp`, `background?` | what the summary's model call used |
@@ -4663,7 +4672,7 @@ A prompt's `response.outcome.result` (and `GET …/requests/:id`'s `outcome`):
 | `replyIndex` | that message's index in the agent's history |
 | `messages` | how many messages the agent's history holds after the run |
 | `error` | the model's error (a provider refusal after retries), or `null` |
-| `code` | a stable name for `error`, where the runtime gives one: `model_key_missing` (no key for the agent's model), `model_key_invalid` (the provider refused the key), `output_missing` (a structured run ended without its output), `spend_limit`, `turn_limit` |
+| `code` | a stable name for `error`, where the runtime gives one: `model_key_missing` (no key for the agent's model), `model_key_invalid` (the provider refused the key), `output_missing` (a structured run ended without its output), `model_stream_stalled` (the model stopped answering mid-request, past every retry), `aborted` (the agent was stopped while the run went), `cancelled` (a stop cancelled the run before it began), `spend_limit`, `turn_limit` |
 | `stopped` | why the run stopped early: `input_required` (it waits on `inputs`), `spend_limit` or `turn_limit` (its model responses or time, see [run limits](https://run.camelai.com/docs/guides/models-and-keys.md#run-limits)), with the reason in `error` |
 | `inputs` | when `stopped` is `input_required`: the pending inputs (as `input_required` carries them) |
 | `files` | files the run wrote (at most 100): `{path, version, size, contentType, …}` |
@@ -4674,8 +4683,10 @@ A prompt's `response.outcome.result` (and `GET …/requests/:id`'s `outcome`):
 | `usage` | what its model responses used: `{responses, input, output, cacheRead, cacheWrite, costUsd}`, and `subagentCostUsd` when its sub-agents spent something (theirs, apart from `costUsd`) |
 
 An `execute` request's result is `{output: string[], truncated}` (plus `files`,
-`presented`, `toolErrors`, `toolCalls`, `sourceErrors` as above). A steered prompt shares its
-turn's outcome, and its record names the turn's request as `steeredInto`.
+`presented`, `toolErrors`, `toolCalls`, `sourceErrors` as above). A steered prompt's request
+completes as soon as the running turn reads its message, with `{steeredInto}` as its result and on
+its record: the turn's own request has the turn's outcome. Its 202 says how it was taken at once
+(`steer`: `accepted` by the running turn, or `queued` as a turn of its own).
 
 The SDKs turn this into a typed `Run`: `status` (`completed`, `input_required`,
 `failed`), `text`, `output`, `inputs`, `error: {code, message, uncertain?}`, `files`,
@@ -4692,7 +4703,7 @@ dedupe by `id`. See [Webhooks](https://run.camelai.com/docs/guides/webhooks.md).
 | --- | --- |
 | `run.started` | `agentId`, `requestId`, `method` (`prompt`, `continue`, `resume`, `execute`), `actor?`, `metadata?`, `resumes?` |
 | `run.completed` | the above, `usage` (`{responses, input, output, cacheRead, cacheWrite, costUsd}` or null), `stopped?`, `inputIds?`, `replyIndex?`, `messageCount?`, `steeredInto?` |
-| `run.failed` | the above, `usage`, `error`, `uncertain?`, `steeredInto?` |
+| `run.failed` | the above, `usage`, `error`, `code?` (the outcome's code: `cancelled`, `aborted`, `model_stream_stalled`, `turn_limit`…), `uncertain?`, `steeredInto?` |
 | `input.requested` | `agentId`, `requestId`, `inputId`, `toolCallId`, `kind`, `expiresAt` |
 | `input.resolved` | `agentId`, `requestId`, `inputId`, `state` |
 | `usage.recorded` | `agentId`, `requestId`, `subject`, `actor`, `context`, `keyScope`, `provider`, `model`, `kind` (`response`, `compaction`), `input`, `output`, `cacheRead`, `cacheWrite`, `reasoning?`, `cost: {usd, source}`, `at` |
@@ -4808,7 +4819,8 @@ reading them and sending them input do not count; only runs do.
 | `configure` body | 1 MiB |
 | Provider retries within a turn | 3 attempts, backing off from 2 s (overload, rate limits, 5xx, dropped streams); context overflow is not retried |
 | Model responses in one run | 1,000, compaction summaries included; `runLimits.maxResponses` lowers it for an agent or a definition, and the operator sets the maximum (`AGENT_MAX_RUN_RESPONSES`, or per tenant `maxRunResponses`; admin tenants have none unless their entry sets one). At it, the turn stops before its next model request: `stopped: "turn_limit"` |
-| A run's time | 2 hours from when it began, checked before each model request; `runLimits.maxSeconds` lowers it, the operator sets the maximum (`AGENT_MAX_RUN_SECONDS`, or per tenant `maxRunSeconds`; none for admin tenants unless set). `stopped: "turn_limit"` too; send another message to continue |
+| A run's time | 2 hours from when it began, checked before each model request; `runLimits.maxSeconds` lowers it, the operator sets the maximum (`AGENT_MAX_RUN_SECONDS`, or per tenant `maxRunSeconds`; none for admin tenants unless set). `stopped: "turn_limit"` too; send another message to continue. A turn still inside one model request or tool call 60 s past its limit is aborted there, and its agent stopped at 120 s |
+| A quiet model stream | a model request that sends nothing before its first token (text, thinking or a tool call) for 120 s (300 s for a reasoning model at `thinkingLevel` high and up), or nothing for 45 s once it streams, is ended as stalled and retried like other transient failures; keep-alives do not count. `runLimits.firstTokenSeconds` and `runLimits.idleSeconds` set an agent's or definition's own (1 to 3,600); the operator sets the runtime's (`AGENT_MODEL_FIRST_TOKEN_SECONDS`, `AGENT_MODEL_IDLE_SECONDS`). Past every retry the run fails with code `model_stream_stalled` |
 | Wait | none beyond a run's time limit; a turn waiting on people (`input_required`) is not running, and may wait for days. The SDKs have no default timeout |
 | `Idempotency-Key` header (any other POST) | 1–255 characters; its answer is kept for 24 hours |
 

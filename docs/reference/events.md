@@ -238,6 +238,9 @@ See [Multi-agent](../guides/multi-agent.md). The `subagent_*` events reach only 
 | --- | --- | --- |
 | `auto_retry_start` | `attempt`, `maxAttempts`, `delayMs`, `errorMessage` | a transient provider failure (overload, rate limit, 5xx, dropped stream) is being retried; the failed response was retracted |
 | `auto_retry_end` | `success`, `attempt`, `finalError?` | retrying ended |
+| `model_stream_stalled` | `phase` (`first_token`, `idle`), `ms`, `provider`, `model` | the model's stream went quiet (nothing before its first token for `runLimits.firstTokenSeconds`, or nothing mid-response for `idleSeconds`), so the runtime ended the request; it is retried like any transient failure, and when retries run out the run fails with code `model_stream_stalled`. Provider keep-alives do not count as an answer |
+| `steer_taken` | `steeredInto` | a prompt sent with `whileRunning: "steer"` (its id is the frame's `requestId`) was read by the running turn `steeredInto`: the model has it, and its request has completed |
+| `run_cancelled` | `reason` (`stopped`) | a run queued behind the running one was cancelled by a stop (`POST /v1/agents/:id/abort`) before it began; its `response` follows, with code `cancelled` |
 | `compaction_start` | `reason`, `background?` | the conversation is being summarized to fit the model's context. With `background: true` it is made between or alongside runs, outside any run's request (`requestId` is empty), and nothing waits for it |
 | `compaction_end` | `reason`, `background?`, and `skipped`, or `tokensBefore`, `summarizedMessages`, `keptMessages`, or `error` | summarizing ended |
 | `compaction_usage` *internal* | `provider`, `model`, `usage`, `timestamp`, `background?` | what the summary's model call used |
@@ -256,7 +259,7 @@ A prompt's `response.outcome.result` (and `GET …/requests/:id`'s `outcome`):
 | `replyIndex` | that message's index in the agent's history |
 | `messages` | how many messages the agent's history holds after the run |
 | `error` | the model's error (a provider refusal after retries), or `null` |
-| `code` | a stable name for `error`, where the runtime gives one: `model_key_missing` (no key for the agent's model), `model_key_invalid` (the provider refused the key), `output_missing` (a structured run ended without its output), `spend_limit`, `turn_limit` |
+| `code` | a stable name for `error`, where the runtime gives one: `model_key_missing` (no key for the agent's model), `model_key_invalid` (the provider refused the key), `output_missing` (a structured run ended without its output), `model_stream_stalled` (the model stopped answering mid-request, past every retry), `aborted` (the agent was stopped while the run went), `cancelled` (a stop cancelled the run before it began), `spend_limit`, `turn_limit` |
 | `stopped` | why the run stopped early: `input_required` (it waits on `inputs`), `spend_limit` or `turn_limit` (its model responses or time, see [run limits](../guides/models-and-keys.md#run-limits)), with the reason in `error` |
 | `inputs` | when `stopped` is `input_required`: the pending inputs (as `input_required` carries them) |
 | `files` | files the run wrote (at most 100): `{path, version, size, contentType, …}` |
@@ -267,8 +270,10 @@ A prompt's `response.outcome.result` (and `GET …/requests/:id`'s `outcome`):
 | `usage` | what its model responses used: `{responses, input, output, cacheRead, cacheWrite, costUsd}`, and `subagentCostUsd` when its sub-agents spent something (theirs, apart from `costUsd`) |
 
 An `execute` request's result is `{output: string[], truncated}` (plus `files`,
-`presented`, `toolErrors`, `toolCalls`, `sourceErrors` as above). A steered prompt shares its
-turn's outcome, and its record names the turn's request as `steeredInto`.
+`presented`, `toolErrors`, `toolCalls`, `sourceErrors` as above). A steered prompt's request
+completes as soon as the running turn reads its message, with `{steeredInto}` as its result and on
+its record: the turn's own request has the turn's outcome. Its 202 says how it was taken at once
+(`steer`: `accepted` by the running turn, or `queued` as a turn of its own).
 
 The SDKs turn this into a typed `Run`: `status` (`completed`, `input_required`,
 `failed`), `text`, `output`, `inputs`, `error: {code, message, uncertain?}`, `files`,
@@ -285,7 +290,7 @@ dedupe by `id`. See [Webhooks](../guides/webhooks.md).
 | --- | --- |
 | `run.started` | `agentId`, `requestId`, `method` (`prompt`, `continue`, `resume`, `execute`), `actor?`, `metadata?`, `resumes?` |
 | `run.completed` | the above, `usage` (`{responses, input, output, cacheRead, cacheWrite, costUsd}` or null), `stopped?`, `inputIds?`, `replyIndex?`, `messageCount?`, `steeredInto?` |
-| `run.failed` | the above, `usage`, `error`, `uncertain?`, `steeredInto?` |
+| `run.failed` | the above, `usage`, `error`, `code?` (the outcome's code: `cancelled`, `aborted`, `model_stream_stalled`, `turn_limit`…), `uncertain?`, `steeredInto?` |
 | `input.requested` | `agentId`, `requestId`, `inputId`, `toolCallId`, `kind`, `expiresAt` |
 | `input.resolved` | `agentId`, `requestId`, `inputId`, `state` |
 | `usage.recorded` | `agentId`, `requestId`, `subject`, `actor`, `context`, `keyScope`, `provider`, `model`, `kind` (`response`, `compaction`), `input`, `output`, `cacheRead`, `cacheWrite`, `reasoning?`, `cost: {usd, source}`, `at` |

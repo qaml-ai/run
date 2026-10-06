@@ -101,11 +101,11 @@ credentials of (`{id, token}`) without changing it.
 | `agent.stream(text, options)` | `agent.stream(text, …)` | the run as it happens: `for await` / `async for` over parts |
 | `agent.pendingInputs()` | `pending_inputs()` | inputs waiting on people, each with `answer()` |
 | `agent.history()`, `historyPage({ before, limit })` | `history()`, `history_page(before=, limit=)` | the whole history (a list of messages, oldest first), or a page of whole turns |
-| `agent.steer(text)` | `steer()` | `run` with `whileRunning: "steer"` (joins the running turn, else starts one): the run that took the message |
+| `agent.steer(text, options)` | `steer(text, …)` | hand the running turn a message (else start one), answered as soon as the runtime has it: `{id, status: "accepted" \| "taken" \| "queued", steeredInto?}`. `wait: true` (`wait=True`) resolves with the run that took it instead, as `run(text, { whileRunning: "steer" })` |
 | `agent.configure({ model, instructions, thinkingLevel, tools })` | `configure(…)` | change it between runs |
 | `agent.schedule({ text, inSeconds, at, everySeconds })` | `schedule(…)` | wake it later; `schedules()`, `unschedule(id)` |
 | `agent.files` | `agent.files` | `list`, `download`, `upload`, `link` by the paths the agent sees |
-| `agent.abort()` | `abort()` | stop the running turn |
+| `agent.abort({ queued })` | `abort(queued=)` | stop the agent: its running turn, and the runs queued behind it (each fails with code `cancelled`); `queued: "keep"` stops the running turn only. Resolves with `{aborted, cancelled}` |
 | `agent.fork({ key, name, atMessage, ttlSeconds })` | `fork(key=, name=, at_message=, ttl_seconds=)` | a new agent with its configuration, a copy of its history and of its files: see [Forking](#agentforkoptions) |
 | `agent.delete()` | `delete()` | delete it, its history and files |
 | `agent.close()` | `close()` | close this process's connection |
@@ -257,7 +257,9 @@ available and stable for code that needs the wire's shape: `agents.runtime`,
 | `client.requestStatus(id, { wait })`, `outcomes()` | `request_status(id, wait=)`, `outcomes()` | a request's record (`wait`: seconds, at most 25, to wait for it to settle first); every request's state |
 | `client.answer(inputId, { action, content, from })`, `inputs(state)` | `answer(input_id, action=, …)`, `inputs(state=)` | inputs, raw |
 | `client.execute(code)` | `execute(code)` | run code in the sandbox with the agent's tools, outside its history |
-| `client.steer(text)` | `steer()` | the legacy `steer` request, which holds the message for the running (or next) turn; new code uses `prompt` with `whileRunning: "steer"` |
+| `client.steerMessage(text, options)` | `steer_message(text, …)` | `prompt` with `whileRunning: "steer"`, answered as soon as the runtime has it: `{id, status: "accepted" \| "taken" \| "queued", steeredInto?}` (`client.prompt(text, { whileRunning: "steer" })` waits for the turn that took it) |
+| `client.status()`, `client.abort({ queued })` | `status()`, `abort(queued=)` | whether the agent is busy (`busy`, `activeRun`, `queuedRuns`, as `GET /v1/agents/{id}` says too); stop it (its running turn, and unless `queued: "keep"` the runs queued behind it) |
+| `client.steer(text)` | `steer()` | the legacy `steer` request, which holds the message for the running (or next) turn; new code uses `steerMessage` |
 | `client.setMetadata({ name, type })` | `set_metadata(name=, type=)` | rename or regroup |
 | `client.destroy()`, `close()` | same | delete the agent; close the connection |
 
