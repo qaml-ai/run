@@ -1770,22 +1770,6 @@
             },
             "description": "The metadata sent with the message"
           },
-          "steeredInto": {
-            "type": "string",
-            "description": "A prompt with whileRunning: steer that a running turn took: that turn's request. This request completes as the turn takes the message; the turn's request has the turn's outcome (reply, output...)"
-          },
-          "steer": {
-            "type": "string",
-            "enum": [
-              "accepted",
-              "queued"
-            ],
-            "description": "A prompt with whileRunning: steer, as it was accepted: accepted, the running turn reads it after its current step; queued, no turn could take it, so it runs as a turn of its own"
-          },
-          "abortedAt": {
-            "type": "number",
-            "description": "When the agent was stopped while this run was going: it ends as aborted, and is never resumed elsewhere"
-          },
           "resumes": {
             "type": "number",
             "description": "Times a node resumed this run's turn after the node running it was lost (its calls in flight closed as of unknown outcome); at most 2"
@@ -1812,6 +1796,22 @@
               ]
             },
             "description": "Times a node leaving the cluster (retire: a newer deploy replaced it; drain: it was stopped) handed this run's turn off at a step boundary, and the next owner continued it with nothing lost. Not resumes"
+          },
+          "steeredInto": {
+            "type": "string",
+            "description": "A prompt with whileRunning: steer that a running turn took: that turn's request. This request completes as the turn takes the message; the turn's request has the turn's outcome (reply, output...)"
+          },
+          "steer": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "queued"
+            ],
+            "description": "A prompt with whileRunning: steer, as it was accepted: accepted, the running turn reads it after its current step; queued, no turn could take it, so it runs as a turn of its own"
+          },
+          "abortedAt": {
+            "type": "number",
+            "description": "When the agent was stopped while this run was going: it ends as aborted, and is never resumed elsewhere"
           },
           "outcome": {
             "$ref": "#/components/schemas/Outcome"

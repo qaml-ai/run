@@ -5,10 +5,11 @@ import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Api, Model } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, type Api, type Model } from "@earendil-works/pi-ai";
 import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
 import { errorClass } from "../src/metrics.ts";
-import { STREAM_TIMEOUTS, streamTimeouts } from "../src/model-stream.ts";
+import { STREAM_TIMEOUTS, streamTimeouts, watchedStream } from "../src/model-stream.ts";
+import { responses } from "./provider-fixtures.ts";
 
 type T = { after: (fn: () => Promise<void> | void) => void };
 const chunk = (delta: object, finish_reason: string | null = null) => `data: ${JSON.stringify({ id: "fixture", object: "chat.completion.chunk", choices: [{ index: 0, delta, finish_reason }] })}\n\n`;
@@ -143,4 +144,59 @@ test("a model the runtime has no stall timeouts set for gets the defaults: longe
   assert.equal(streamTimeouts({ reasoning: false }, "high").firstTokenMs, 120_000, "a level a model without reasoning ignores");
   assert.deepEqual(streamTimeouts({ reasoning: true }, "high", { firstTokenSeconds: 30, idleSeconds: 10 }), { firstTokenMs: 30_000, idleMs: 10_000 }, "the agent's own");
   assert.deepEqual(streamTimeouts({ reasoning: false }, undefined, null, { firstTokenMs: 90_000, idleMs: 20_000 }), { firstTokenMs: 90_000, idleMs: 20_000 }, "the runtime's");
+});
+
+/** An OpenAI Responses provider: each request gets `reply(index)`'s events, the stream simply ending after the last. */
+async function responsesProvider(t: T, reply: (index: number) => object[]) {
+  let requests = 0;
+  const server = createServer(async (req, res) => {
+    for await (const _ of req) { /* the body */ }
+    const events = reply(requests++);
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    for (const event of events) res.write(`event: ${(event as { type: string }).type}\ndata: ${JSON.stringify(event)}\n\n`);
+    res.end();
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(async () => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
+  const model = {
+    id: "fixture", name: "Fixture", api: "openai-responses", provider: "openai", baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
+    reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 1024,
+  } as Model<Api>;
+  return { model, requests: () => requests };
+}
+const message = (text: string) => ({ type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text, annotations: [] }] });
+/** The events of a response cut off before its terminal event (response.completed), as a dropped provider stream leaves it. */
+const cutOff = (text: string) => responses([message(text)]).events.slice(0, -1);
+
+test("a provider stream that ends before its terminal event (OpenAI Responses) is retried, and past its retries fails the run: never silent", { timeout: 30_000 }, async t => {
+  const { model, requests } = await responsesProvider(t, index => index === 0 ? cutOff("half an ans") : responses([message("whole answer")]).events);
+  const { supervisor, events, prompt } = await agent(t, model);
+  const result = await prompt("Hello");
+  assert.equal(result.error, null);
+  assert.equal(result.reply, "whole answer");
+  assert.equal(requests(), 2);
+  assert.ok(events.some(event => event.type === "auto_retry_start" && /ended before a terminal response event/.test(event.errorMessage)));
+  assert.doesNotMatch(JSON.stringify((await supervisor.request("a", "history")).messages), /half an ans/);
+
+  // Every attempt is cut off: the run ends with the provider's error, and the agent is idle for the next message.
+  const always = await responsesProvider(t, () => cutOff("cut"));
+  const second = await agent(t, always.model);
+  const failed = await second.prompt("Hello");
+  assert.match(failed.error, /ended before a terminal response event/);
+  assert.equal(always.requests(), 3, "the first request and both retries");
+  assert.ok(second.events.some(event => event.type === "auto_retry_end" && !event.success));
+  assert.equal((await second.supervisor.request("a", "status")).busy, false);
+});
+
+test("a stream that ends with no terminal event at all is ended as a failure, not left waiting", async () => {
+  const model = { id: "fixture", api: "openai-completions", provider: "openai" } as Model<Api>;
+  const stream = watchedStream(model, () => {
+    const inner = createAssistantMessageEventStream();
+    queueMicrotask(() => inner.end());
+    return inner;
+  }, { firstTokenMs: 60_000, idleMs: 60_000 });
+  const result = await stream.result();
+  assert.equal(result.stopReason, "error");
+  assert.match(result.errorMessage!, /ended without a final event/);
 });

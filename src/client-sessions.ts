@@ -269,7 +269,7 @@ const resumable = (request: RequestRecord) => ["prompt", "continue", "resume"].i
  * ends `uncertain`. A run the agent was stopped in (`abortedAt`) is never resumed nor run: it ends `aborted`.
  */
 export function loadDecision(request: RequestRecord): "queued" | "resume" | "uncertain" | "aborted" {
-  if (request.abortedAt) return "aborted";
+  if (request.abortedAt !== undefined) return "aborted";
   if (request.params !== undefined) return "queued";
   // Counted when the resumed run begins (see `run`), so a load that fails, or hands the agent back, spends none.
   // A turn handed off at a step boundary lost nothing and is not a resume: it always goes on.
@@ -1812,7 +1812,7 @@ export class ClientSessions {
     const announcing = queued === "cancel" && await (this.options.runEvents?.(session.header.tenant) ?? false);
     const now = Date.now();
     const run = this.runningRun(session);
-    if (run && !run.abortedAt) this.upsertRequest(session, { ...run, abortedAt: now });
+    if (run && run.abortedAt === undefined) this.upsertRequest(session, { ...run, abortedAt: now });
     const cancelled: RequestRecord[] = [];
     if (queued === "cancel") {
       for (const record of [...session.running.values()]) {

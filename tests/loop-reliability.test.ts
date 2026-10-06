@@ -147,6 +147,22 @@ test("stopping an agent ends its turn and cancels the runs queued behind it, so 
   assert.equal((await settled(r, agent.id, "q-3")).outcome.result.reply, "answer: kept");
 });
 
+test("a stop drops the messages the agent holds for its next turn (the legacy steer): the next prompt never reads them", { timeout: 60_000 }, async t => {
+  const model = await provider(t, body => ({ role: "assistant", content: `answer: ${userTexts(body).join(" + ")}` }));
+  const r = await runtime(t, () => ({}), { AGENT_BASE_URL: model.url });
+  const agent = (await r.call("/v1/agents", { body: {} })).json as { id: string; token: string };
+  await prompt(r, agent.id, { text: "warm up", requestId: "warm" });
+  await settled(r, agent.id, "warm");
+  // Held for the running turn, else the next one; none is running, so it waits for the next.
+  const held = await r.call(`/clients/${agent.id}/requests`, { token: agent.token, body: { id: "held-1", method: "steer", params: { text: "held message" } } });
+  assert.equal(held.status, 202, held.text);
+  await until(async () => (await r.call(`/clients/${agent.id}/requests/held-1`, { token: agent.token })).json.state === "completed", "the steer to be held");
+  assert.equal((await r.call(`/v1/agents/${agent.id}/abort`, { body: {} })).status, 200);
+  await prompt(r, agent.id, { text: "after the stop", requestId: "after" });
+  assert.equal((await settled(r, agent.id, "after")).outcome.result.reply, "answer: warm up + after the stop");
+  assert.doesNotMatch(JSON.stringify(model.bodies.at(-1)), /held message/);
+});
+
 test("every view of an agent agrees whether it is busy: during a stall, and after a stop", { timeout: 60_000 }, async t => {
   const { r, agent, steer } = await stalledWithQueue(t);
   const during = await views(r, agent);
