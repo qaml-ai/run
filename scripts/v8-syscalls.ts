@@ -62,8 +62,10 @@ for (const [index, code] of snippets.entries()) {
   }
 }
 // Then each again without strace (which changes timing), under --seccomp-trap: the filter's refusals as numbers.
+// --repeat N runs each N times there, for calls that only happen now and then.
 const trapped = new Set<string>();
-for (const code of snippets) {
+const repeat = Number(process.argv[process.argv.indexOf("--repeat") + 1]) || 1;
+for (const code of snippets.flatMap(code => Array(process.argv.includes("--repeat") ? repeat : 1).fill(code))) {
   const child = spawn(v8ExecBinary(), ["--max-data-mb", "512", ...(jitless ? ["--jitless"] : []), "--seccomp-trap"], { stdio: ["pipe", "pipe", "pipe"] });
   let stderr = "";
   child.stderr!.on("data", chunk => { stderr += chunk; });
