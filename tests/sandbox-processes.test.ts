@@ -185,9 +185,7 @@ test("a launcher that cannot be reached fails the execution and the parse clearl
 test("without the launcher js_exec and parsing run in processes of this one's own, unless isolation is required", { skip }, async () => {
   assert.equal(process.env.AGENT_SANDBOX_DIR, undefined);
   assert.equal((await checkSandbox()).mode, "in-process");
-  process.env.AGENT_SANDBOX_REQUIRED = "1";
-  try { await assert.rejects(checkSandbox(), /AGENT_SANDBOX_REQUIRED=1, but no agent-launcher/); }
-  finally { delete process.env.AGENT_SANDBOX_REQUIRED; }
+  await assert.rejects(checkSandbox({ required: true }), /AGENT_SANDBOX_REQUIRED=1, but no agent-launcher/);
   assert.deepEqual((await executeCode({ code: "return 1", bridge: echo })).output, ["1"]);
 });
 

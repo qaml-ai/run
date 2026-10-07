@@ -264,15 +264,18 @@ function capped(response: Response, url: URL, maxBytes: number, done: () => void
 /** The operator's outbound policy variables, which an agent's process is given too (it calls tenants' model endpoints). */
 export const OUTBOUND_ENV = ["AGENT_OUTBOUND_ALLOW_HTTP", "AGENT_OUTBOUND_ALLOW_CIDRS", "AGENT_OUTBOUND_BLOCK_CIDRS", "AGENT_OUTBOUND_ALLOW_ORIGINS"];
 
-let modelOutbound: Outbound | undefined;
-const outboundForModels = () => modelOutbound ??= outboundFromEnvironment();
+let processOutbound: Outbound | undefined;
+/**
+ * This process's own policy, from its environment: for model calls made without a node's. An agent process's environment
+ * carries its node's (`agentProcessEnv`); an inline agent is given its node's (HostIO.modelOutbound).
+ */
+export const outboundOfProcess = () => processOutbound ??= outboundFromEnvironment();
 
 /**
  * node:http agents for `url`, for SDKs that take no fetch (Bedrock's): its scheme and a literal address are checked
  * now, and each connection's lookup checks the addresses a host name resolves to, as the guard's own fetch does.
  */
-export function guardedNodeAgents(url: string) {
-  const outbound = outboundForModels();
+export function guardedNodeAgents(url: string, outbound: Outbound) {
   const lookup = outbound.lookupFor(outbound.check(url));
   return { httpAgent: new HttpAgent({ lookup, keepAlive: true }), httpsAgent: new HttpsAgent({ lookup, keepAlive: true }) };
 }
@@ -280,8 +283,7 @@ export function guardedNodeAgents(url: string) {
  * The fetch for a model call to an endpoint a tenant gave (a key scope's `baseUrl`, a custom provider's): through the
  * outbound guard, like any URL a tenant gives. A model's reply streams for as long as it takes; its start has ten minutes.
  */
-export function guardedModelFetch(): typeof fetch {
-  const outbound = outboundForModels();
+export function guardedModelFetch(outbound: Outbound): typeof fetch {
   return (input, init) => outbound.fetch(String(input), { ...init as RequestInit, stream: true, timeoutMs: 600_000, maxBytes: 1024 * 1024 * 1024 });
 }
 

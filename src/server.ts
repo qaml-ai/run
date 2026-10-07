@@ -1,9 +1,11 @@
 import { nodeConfig } from "./node-config.ts";
 import { createNode, nodeDeps } from "./node.ts";
+import { setMetricService } from "./metrics.ts";
 
 // The runtime server: one node (src/node.ts) configured by this process's environment. What belongs to the process is
 // here: its signals, and exiting once the node has left the cluster.
 const config = nodeConfig(process.env);
+setMetricService(config.serviceName);
 const node = await createNode(config, await nodeDeps(config));
 process.on("SIGHUP", () => void node.reloadTenants());
 // The first signal drains; a second one stops waiting for running turns.

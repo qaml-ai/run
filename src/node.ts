@@ -66,6 +66,7 @@ import { nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from
 import { recordCreate, safeError, Steps, webhookBacklogLine } from "./metrics.ts";
 import { runtimeSecrets, managedDiscordSecrets } from "./secrets.ts";
 import { checkSandbox, type CodeExecutor } from "./codemode.ts";
+import { V8Exec } from "./v8-exec.ts";
 import { pricingFromEnvironment } from "./pricing.ts";
 import { searchProvidersFromEnvironment, WebSearch } from "./web-search.ts";
 import { WebRender } from "./web-render.ts";
@@ -135,11 +136,13 @@ export async function nodeDeps(config: NodeConfig): Promise<NodeDeps> {
   const secrets = await runtimeSecrets(env);
   sessionSecretOf(secrets);
   // Fails startup if js_exec or file parsing does not work, or if isolation is required but absent.
-  const sandbox = await checkSandbox();
+  // The node's js_exec runner, which inline agents use (agent processes start their own, from agentEnv).
+  const codeExecutor = new V8Exec(config.v8);
+  const sandbox = await checkSandbox({ executor: codeExecutor, required: config.sandboxRequired });
   const db = await databaseFromEnvironment(env);
   const address = await taskAddress(env);
   return {
-    tenants, secrets, db, listen: handlers => listenFromEnvironment(handlers, env), sandbox, address,
+    tenants, secrets, db, listen: handlers => listenFromEnvironment(handlers, env), sandbox, address, codeExecutor,
     supersession: () => supersession(env), managedDiscord: () => managedDiscordSecrets(env),
   };
 }
@@ -217,7 +220,14 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       await new Promise(resolve => setTimeout(resolve, 1_000));
     }
   }
-  const supervisor = new AgentSupervisor(join(root, "sessions"), { runtime: config.runtime, maxAgents, hosting, ...(distributed ? { storage } : {}), ...(deps.codeExecutor ? { codeExecutor: deps.codeExecutor } : {}) });
+  // Every call to a URL a tenant configured (MCP servers, web_fetch, model endpoints) goes through one guard: public addresses
+  // only, but for origins the operator allows (AGENT_OUTBOUND_ALLOW_ORIGINS), which web_fetch, search and render never reach
+  // (`withoutOrigins`).
+  const outbound = outboundFromEnvironment(env);
+  const supervisor = new AgentSupervisor(join(root, "sessions"), {
+    runtime: config.runtime, maxAgents, hosting, ...(distributed ? { storage } : {}), ...(deps.codeExecutor ? { codeExecutor: deps.codeExecutor } : {}),
+    agentEnv: config.agentEnv, historyBacklogBytes: config.historyBacklogBytes, modelOutbound: outbound,
+  });
   const model = configuredModel(env);
   // Where people are sent (the public URL), other names served in full (an earlier domain), and the issuer tokens name.
   const origins = publicOrigins(env, `http://127.0.0.1:${port}`);
@@ -286,9 +296,6 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   });
   const { consoleDir } = config;
 
-  // Every call to a URL a tenant configured (MCP servers, web_fetch) goes through one guard: public addresses only, but for
-  // origins the operator allows (AGENT_OUTBOUND_ALLOW_ORIGINS), which web_fetch, search and render never reach (`withoutOrigins`).
-  const outbound = outboundFromEnvironment(env);
   const mcp = new McpConnections({ outbound });
   // Identity tokens for tool servers with auth "runtime", verified against /.well-known/jwks.json.
   const signer = new RuntimeSigner({ db, accounts, issuer: origins.issuer });
@@ -618,7 +625,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     tracing: telemetry,
     // A self-hosted runtime configured by its environment takes keys there too.
     ...(config.selfHostedTenant ? { modelKeyHint: "On this self-hosted runtime, AGENT_TENANT_API_KEYS in its environment sets keys too ({\"anthropic\": \"sk-ant-...\"}; restart it after)." } : {}),
-    secret: sessionSecret, toolTimeoutMs, idleMs, streamTimeouts, ...(config.runOverrunMs !== undefined ? { runOverrunMs: config.runOverrunMs } : {}), maxAgentsPerTenant, ...(config.snapshotBytes !== undefined ? { snapshotBytes: config.snapshotBytes } : {}), orphanSweepMs: orphanMs, watcherLimitFor: tenant => tenants.maxWatchers(tenant), busyAgents, agentLimitFor: async tenant => {
+    secret: sessionSecret, toolTimeoutMs, idleMs, streamTimeouts, ...(config.runOverrunMs !== undefined ? { runOverrunMs: config.runOverrunMs } : {}), maxAgentsPerTenant, codeCapacity: config.codeCapacity, ...(config.snapshotBytes !== undefined ? { snapshotBytes: config.snapshotBytes } : {}), orphanSweepMs: orphanMs, watcherLimitFor: tenant => tenants.maxWatchers(tenant), busyAgents, agentLimitFor: async tenant => {
       // Agents hosted on this node stay within the tenant's busy limit too: its own, or its tier's (else the default).
       const { limit, source } = await accounts.billing.busyLimit(tenant);
       return source === "default" ? undefined : limit;
@@ -1187,6 +1194,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     journey?.stop();
     clearInterval(idempotencyTimer);
     clearTimeout(firstCharge);
+    deps.codeExecutor?.close?.();
     await step("database", () => db.end());
     console.log(JSON.stringify({ type: "drain_finished", node, ms: Date.now() - started, unfinished }));
     if (failed) throw new Error("Drain finished with errors");

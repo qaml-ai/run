@@ -15,6 +15,7 @@ import type { HistoryChunk } from "./history-pages.ts";
 import type { Claim } from "./ownership.ts";
 import { createAgentHost, HISTORY_FLUSH_MS } from "./agent-host.ts";
 import type { CodeExecutor } from "./codemode.ts";
+import type { Outbound } from "./outbound.ts";
 import { buggify } from "./buggify.ts";
 
 /**
@@ -36,6 +37,12 @@ export type SupervisorOptions = {
   pingMs?: number; unresponsiveMs?: number;
   /** Where inline agents run js_exec (src/codemode.ts): this process's v8-exec runner unless given. Agent processes always use their own. */
   codeExecutor?: CodeExecutor;
+  /** What agent processes are told of the node's settings (`agentProcessEnv`); this process's own unless given. */
+  agentEnv?: Record<string, string>;
+  /** The outbound policy inline agents' model calls go through (agent processes get it in `agentEnv`). */
+  modelOutbound?: Outbound;
+  /** The history backlog's bound for inline agents (agent processes get it in `agentEnv`). */
+  historyBacklogBytes?: number;
 };
 
 export class AgentSupervisor {
@@ -133,7 +140,7 @@ export class AgentSupervisor {
   }
 
   private async startProcess(id: string, directory: string, init: AgentConfig, bridge: ToolBridge, transcript: AppendLog<TranscriptRecord>) {
-    const { child, rpc } = childProcess("./agent-child.ts", directory, this.options.runtime, true, id);
+    const { child, rpc } = childProcess("./agent-child.ts", directory, this.options.runtime, true, id, this.options.agentEnv);
     const handle: ProcessHandle = { kind: "process", bridge, child, rpc, calls: new Set(), listeners: new Set(), transcript, slots: new Map() };
     this.agents.set(id, handle);
     this.starting.delete(id);
@@ -287,6 +294,8 @@ export class AgentSupervisor {
       fs: (op, args) => this.dispatchFs(handle, structuredClone({ op, args })),
       codeSlot: signal => handle.bridge.codeSlot?.(signal) ?? Promise.resolve(() => {}),
       ...(this.options.codeExecutor ? { codeExecutor: this.options.codeExecutor } : {}),
+      ...(this.options.historyBacklogBytes ? { historyBacklogBytes: this.options.historyBacklogBytes } : {}),
+      ...(this.options.modelOutbound ? { modelOutbound: this.options.modelOutbound } : {}),
       lease: async () => { await handle.bridge.lease?.(); },
       history: {
         indexed: () => this.historyRequest(id, handle, { op: "indexed" }), write: chunk => this.historyRequest(id, handle, { op: "write", chunk: structuredClone(chunk) }),

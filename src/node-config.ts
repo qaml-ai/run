@@ -4,16 +4,20 @@ import type { Hosting } from "./supervisor.ts";
 import { RUN_LIMITS } from "./client-sessions.ts";
 import { STREAM_TIMEOUTS } from "./model-stream.ts";
 import { TOOL_DEADLINES } from "./tool-servers.ts";
+import { codeCapacity } from "./codemode.ts";
+import { v8Settings } from "./v8-exec.ts";
+import { BACKLOG_BYTES } from "./transcript.ts";
+import { agentProcessEnv } from "./rpc.ts";
 
 /**
  * A node's settings, read from its environment once and checked before anything starts. `createNode` (node.ts) reads
  * process.env nowhere itself: `env` is the node's environment, for the helpers that read sections of their own (the
  * tenants file, secrets, the database, storage, pricing, outbound policy, mail, rate limits...), each of which takes it
- * as an argument. Some settings are still the process's, read from process.env by the modules that use them, so every
- * node in a process shares them: v8-exec's (the `v8Exec` runner, src/v8-exec.ts), AGENT_SANDBOX_REQUIRED and
- * AGENT_CODE_WORKERS_MAX (src/codemode.ts), AGENT_SANDBOX_DIR (src/sandbox.ts), the outbound policy model calls use
- * (`guardedModelFetch`, src/outbound.ts), AGENT_HISTORY_BACKLOG_BYTES (src/transcript.ts), AGENT_SERVICE_NAME in metric
- * lines (src/metrics.ts), and what an agent process inherits (src/rpc.ts).
+ * as an argument. Its agent processes are told its settings (`agentEnv`), not the process's.
+ *
+ * Two settings stay the process's, so nodes sharing one (a simulation) share them: AGENT_SANDBOX_DIR (src/sandbox.ts),
+ * the agent-launcher that started this process and confines all its children, and AGENT_SERVICE_NAME's dimension on
+ * metric lines (src/metrics.ts), which server.ts sets for the process.
  */
 export type NodeConfig = ReturnType<typeof nodeConfig>;
 
@@ -91,6 +95,15 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     leaseTtlMs: Number(env.AGENT_LEASE_TTL_MS ?? 90_000),
     runtime: env.AGENT_RUNTIME,
     serviceName: env.AGENT_SERVICE_NAME,
+    // js_exec: the node's v8-exec runner, its executions at once for tenants with a limit, and whether startup requires
+    // agent-launcher's confinement (AGENT_SANDBOX_REQUIRED=1; the image sets it).
+    v8: v8Settings(env),
+    codeCapacity: codeCapacity(env),
+    sandboxRequired: env.AGENT_SANDBOX_REQUIRED === "1",
+    // The most of an agent's history its host keeps in memory (AGENT_HISTORY_BACKLOG_BYTES).
+    historyBacklogBytes: Number(env.AGENT_HISTORY_BACKLOG_BYTES) || BACKLOG_BYTES,
+    // What its agent processes are told of these settings.
+    agentEnv: agentProcessEnv(env),
     systemPrompt: env.AGENT_SYSTEM_PROMPT,
     schedulerIntervalMs: Number(env.AGENT_SCHEDULER_INTERVAL_MS ?? 5_000),
     consoleDir: resolve(env.AGENT_CONSOLE_DIR ?? fileURLToPath(new URL("../console/dist", import.meta.url))),
