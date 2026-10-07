@@ -61,11 +61,11 @@ test("two nodes taking busy slots for one tenant at once never pass its limit; f
 });
 
 test("the 429 names the tier, the limit and what unlocks the next tier", () => {
-  const error = busyLimitError({ limit: 8, source: "tier", tier: "Free", paid: 0, next: { tier: "Tier 1", paid: micros(5), limit: 25 } }, 8);
+  const error = busyLimitError({ limit: 8, source: "tier", tier: "Free", paid: 0, next: { tier: "Tier 1", paid: micros(5), limit: 50 } }, 8);
   assert.equal(error.status, 429);
   assert.equal(error.code, "BUSY_AGENT_LIMIT");
-  assert.equal(error.message, "This account has 8 agents busy, the most its usage tier (Free) allows; retry when one finishes. $5 more of credit unlocks Tier 1: 25 busy agents (it applies once the account has paid $5 in total).");
-  assert.deepEqual(errorFields(error), { busyAgents: { busy: 8, limit: 8, source: "tier", tier: "Free", paid: 0, next: { tier: "Tier 1", paid: micros(5), limit: 25 } } });
+  assert.equal(error.message, "This account has 8 agents busy, the most its usage tier (Free) allows; retry when one finishes. $5 more of credit unlocks Tier 1: 50 busy agents (it applies once the account has paid $5 in total).");
+  assert.deepEqual(errorFields(error), { busyAgents: { busy: 8, limit: 8, source: "tier", tier: "Free", paid: 0, next: { tier: "Tier 1", paid: micros(5), limit: 50 } } });
   const top = busyLimitError({ limit: 1000, source: "tier", tier: "Tier 4", paid: micros(1200) }, 1000);
   assert.equal(top.message, "This account has 1000 agents busy, the most its usage tier (Tier 4) allows; retry when one finishes.");
   assert.equal(busyLimitError({ limit: 200, source: "tenant" }, 200).message, "This account has 200 agents busy, the most this account allows; retry when one finishes.");
@@ -106,19 +106,19 @@ test("busy limits: a tenant's own maxAgents wins, prepaid tenants get their tier
   // The other node has the tenant's balance cached; the tier is read afresh, so a payment counts there at once.
   await there.billing.account("payg");
   await here.billing.post([{ tenant: "payg", kind: "purchase", amount: micros(5), key: "p1" }]);
-  assert.deepEqual(await tier(there, "payg"), ["Tier 1", 25, "Tier 2", micros(50)]);
+  assert.deepEqual(await tier(there, "payg"), ["Tier 1", 50, "Tier 2", micros(50)]);
   await here.billing.post([{ tenant: "payg", kind: "purchase", amount: micros(60), key: "p2" }]);
   assert.deepEqual(await tier(there, "payg"), ["Tier 2", 100, "Tier 3", micros(250)]);
   // A refund takes its amount back out.
   await here.billing.post([{ tenant: "payg", kind: "refund", amount: -micros(20), key: "r1" }]);
-  assert.deepEqual(await tier(there, "payg"), ["Tier 1", 25, "Tier 2", micros(50)]);
+  assert.deepEqual(await tier(there, "payg"), ["Tier 1", 50, "Tier 2", micros(50)]);
   // A tenant's own limit wins over any tier.
   await here.billing.post([{ tenant: "vip", kind: "purchase", amount: micros(2000), key: "p3" }]);
   assert.deepEqual(await tier(there, "vip"), ["tenant", 3]);
 
   // GET /v1/billing shows it, with how many are busy now.
   const summary = await there.billing.summary("payg");
-  assert.deepEqual(summary.busyAgents, { busy: 0, limit: 25, source: "tier", tier: "Tier 1", paid: micros(45), next: { tier: "Tier 2", paid: micros(50), limit: 100 } });
+  assert.deepEqual(summary.busyAgents, { busy: 0, limit: 50, source: "tier", tier: "Tier 1", paid: micros(45), next: { tier: "Tier 2", paid: micros(50), limit: 100 } });
 
   // A self-serve tenant (a row, not in the tenants file): the operator's maxBusyAgents (tenants.limits) wins over its
   // tier, and is read afresh, so a change applies at once on every node; removed, the tier applies again.

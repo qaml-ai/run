@@ -82,7 +82,7 @@ Starting credit and other grants do not count. A payment moves the account up as
 | Tier | Paid in total | Agents busy at once |
 | --- | --- | --- |
 | Free | nothing yet | 20 |
-| Tier 1 | $5 | 25 |
+| Tier 1 | $5 | 50 |
 | Tier 2 | $50 | 100 |
 | Tier 3 | $250 | 250 |
 | Tier 4 | $1,000 | 1,000 |
@@ -97,7 +97,7 @@ At the limit, a run (a prompt, `continue` or `execute`) gets 429 with `Retry-Aft
 
 ```json
 {
-  "error": "This account has 20 agents busy, the most its usage tier (Free) allows; retry when one finishes. $5 more of credit unlocks Tier 1: 25 busy agents (it applies once the account has paid $5 in total).",
+  "error": "This account has 20 agents busy, the most its usage tier (Free) allows; retry when one finishes. $5 more of credit unlocks Tier 1: 50 busy agents (it applies once the account has paid $5 in total).",
   "code": "BUSY_AGENT_LIMIT",
   "busyAgents": { "busy": 20, "limit": 20, "source": "tier", "tier": "Free", "paid": 0, "next": { "tier": "Tier 1", "paid": 5000000, "limit": 25 } }
 }

@@ -204,7 +204,7 @@ test("creates and runs answer with X-RateLimit-* headers; an upsert that changes
   // The default limits: busy agents and runs on free credit, and what buying credit raises them to; creates only against abuse.
   const billing = (await r.call("/v1/billing", { token: carol })).json;
   assert.deepEqual(billing.runsPerMinute, { limit: 240, afterPurchase: 600 });
-  assert.deepEqual({ limit: billing.busyAgents.limit, next: billing.busyAgents.next }, { limit: 20, next: { tier: "Tier 1", paid: 5_000_000, limit: 25 } });
+  assert.deepEqual({ limit: billing.busyAgents.limit, next: billing.busyAgents.next }, { limit: 20, next: { tier: "Tier 1", paid: 5_000_000, limit: 50 } });
   const made = await upsert("triage", { systemPrompt: "Answer yes or no." });
   assert.equal(made.status, 201, made.text);
   assert.match(made.json.configHash, /^[0-9a-f]{64}$/);

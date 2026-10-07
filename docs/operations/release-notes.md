@@ -22,7 +22,7 @@ Changes on main since the last tag.
 - Agent creates are limited only against abuse: 600 a minute for every account, free credit included (it
   was 10 free, 60 paid); `AGENT_RATE_LIMIT_AGENT_CREATES` and `AGENT_RATE_LIMIT_FREE_AGENT_CREATES` still set it.
 - `BUSY_AGENT_LIMIT` and a free account's runs 429 say what buying credit unlocks ("$5 more of credit
-  unlocks Tier 1: 25 busy agents"); `GET /v1/billing` adds `runsPerMinute`, and the console shows both.
+  unlocks Tier 1: 50 busy agents"); `GET /v1/billing` adds `runsPerMinute`, and the console shows both.
 
 ### Builder DX: fresh runs, forced structured output, no-op upserts, rate-limit headers, lean prompts
 

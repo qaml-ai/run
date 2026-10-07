@@ -66,7 +66,7 @@ test("pricing: defaults, environment overrides in USD, and the purchase fee in w
 
 test("usage tiers: the defaults, AGENT_USAGE_TIERS, its validation, and which tier an amount paid is in", () => {
   assert.deepEqual(DEFAULT_PRICING.tiers.map(tier => [tier.name, tier.paid, tier.busyAgents]),
-    [["Free", 0, 20], ["Tier 1", micros(5), 25], ["Tier 2", micros(50), 100], ["Tier 3", micros(250), 250], ["Tier 4", micros(1000), 1000]]);
+    [["Free", 0, 20], ["Tier 1", micros(5), 50], ["Tier 2", micros(50), 100], ["Tier 3", micros(250), 250], ["Tier 4", micros(1000), 1000]]);
   const at = (paid: number) => { const { tier, next } = usageTier(DEFAULT_PRICING.tiers, paid); return [tier.name, next?.name]; };
   assert.deepEqual(at(0), ["Free", "Tier 1"]);
   assert.deepEqual(at(-micros(5)), ["Free", "Tier 1"], "refunds beyond purchases stay free");

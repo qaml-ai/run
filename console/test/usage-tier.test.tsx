@@ -13,9 +13,9 @@ describe("TierSection", () => {
   });
 
   it("says the run limit, and on free credit what buying credit raises it to", () => {
-    const busy = { busy: 0, limit: 20, source: "tier" as const, tier: "Free", paid: 0, next: { tier: "Tier 1", paid: 5_000_000, limit: 25 } };
+    const busy = { busy: 0, limit: 20, source: "tier" as const, tier: "Free", paid: 0, next: { tier: "Tier 1", paid: 5_000_000, limit: 50 } };
     const { container } = render(<TierSection busy={busy} runs={{ limit: 240, afterPurchase: 600 }} />);
-    expect(container.textContent).toContain("$5.00 more of credit unlocks Tier 1: 25 busy agents");
+    expect(container.textContent).toContain("$5.00 more of credit unlocks Tier 1: 50 busy agents");
     expect(container.textContent).toContain("Up to 240 runs started a minute; buying credit raises it to 600");
     expect(container.textContent).toContain("Creating agents is limited only against abuse");
   });
