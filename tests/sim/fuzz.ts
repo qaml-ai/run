@@ -8,7 +8,7 @@ import { runPlan, type RunResult } from "./run.ts";
 import { generatePlan, type Plan } from "./workload.ts";
 
 /** A plan the corpus keeps: what it covered, when it was found and how it was made. */
-export type Entry = { plan: Plan; features: number[]; goals: string[]; found: number; worker: number; how: string[]; adds: number };
+export type Entry = { plan: Plan; features: number[]; goals: string[]; found: number; worker: number; how: string[]; adds: number; behaviours?: number };
 
 export type FuzzOptions = {
   /** When the whole fuzzing run began (epoch ms), and when it stops starting runs. */
@@ -91,7 +91,8 @@ export async function fuzz(options: FuzzOptions) {
     catch (thrown) { error = thrown as Error; }
     const features = await coverage.take();
     runs++;
-    if (result) for (const feature of assertionFeatures(result)) features.add(feature);
+    const behaviour = result ? assertionFeatures(result) : new Set<number>();
+    for (const feature of behaviour) features.add(feature);
     const failures = result?.failures ?? [`run: ${error?.message ?? error}`];
     if (failures.length) await failure(plan, result, failures, error);
     const fresh = [...features].filter(feature => !seen.has(feature));
@@ -99,7 +100,9 @@ export async function fuzz(options: FuzzOptions) {
     if (!fresh.length) return;
     for (const feature of fresh) seen.add(feature);
     for (const goal of newGoals) { goals.add(goal); say(JSON.stringify({ t: Math.round(elapsed() / 1000), worker, goal })); }
-    const entry: Entry = { plan, features: [...features], goals: result?.reached ?? [], found: elapsed(), worker, how, adds: fresh.length };
+    // What it added beyond blocks: an assertion passed more often, held for the first time, a goal reached.
+    const behaviours = [...behaviour].filter(feature => fresh.includes(feature)).length;
+    const entry: Entry = { plan, features: [...features], goals: result?.reached ?? [], found: elapsed(), worker, how, adds: fresh.length, behaviours };
     const name = `${hash(JSON.stringify(plan)).toString(16).padStart(8, "0")}.json`;
     writeFileSync(join(options.corpus, name), JSON.stringify(entry));
     known.add(name);
@@ -138,18 +141,19 @@ export async function fuzz(options: FuzzOptions) {
     if (runs % 20 === 0) sync();
     let plan: Plan, how: string[];
     const roll = random.float();
-    if (options.random || !corpus.length || roll < 0.1) {
+    if (options.random || !corpus.length || roll < 0.2) {
       plan = generatePlan(`f${options.startedAt}-${worker}-${runs}`);
       how = ["fresh"];
     } else {
-      // Plans that added more, newer ones, and ones that reached a goal few plans reach are drawn more often.
+      // Plans that added behaviour (an assertion or goal: weighted well above blocks), newer ones, and ones that reached a
+      // goal few plans reach are drawn more often.
       const reaching = new Map<string, number>();
       for (const { entry } of corpus) for (const goal of entry.goals) reaching.set(goal, (reaching.get(goal) ?? 0) + 1);
-      const weights = corpus.map(({ entry }, index) => 1 + Math.log2(1 + entry.adds) + (index >= corpus.length - 20 ? 2 : 0) + (entry.goals.some(goal => reaching.get(goal)! <= 3) ? 5 : 0));
+      const weights = corpus.map(({ entry }, index) => 1 + 0.5 * Math.log2(1 + entry.adds) + 4 * (entry.behaviours ?? 0) + (index >= corpus.length - 20 ? 1 : 0) + (entry.goals.some(goal => reaching.get(goal)! <= 3) ? 8 : 0));
       let pick = random.float() * weights.reduce((a, b) => a + b, 0), chosen = 0;
       while ((pick -= weights[chosen]) > 0 && chosen < corpus.length - 1) chosen++;
       const parent = corpus[chosen].entry.plan;
-      if (roll < 0.3) { plan = branch(parent, random); how = ["branch"]; }
+      if (roll < 0.4) { plan = branch(parent, random); how = ["branch"]; }
       else {
         const other = random.float() < 0.2 ? corpus[random.int(corpus.length)].entry.plan : undefined;
         ({ plan, how } = mutate(parent, random, other));
