@@ -103,12 +103,20 @@ export type NodeDeps = {
 type RuntimeSecrets = Awaited<ReturnType<typeof runtimeSecrets>>;
 type ManagedDiscordSecrets = NonNullable<Awaited<ReturnType<typeof managedDiscordSecrets>>>;
 
-/** The real dependencies, from a node's environment. */
+/** Derives client session tokens. It must stay stable, or re-provisioning returns tokens that no longer verify. */
+function sessionSecretOf(secrets: RuntimeSecrets) {
+  const secret = secrets.sessionSecret;
+  if (!secret || secret.length < 32) throw new Error("Set AGENT_SESSION_SECRET (or AGENT_SESSION_SECRET_ARN) to at least 32 random characters");
+  return secret;
+}
+
+/** The real dependencies, from a node's environment; checked in the order the server always checked them. */
 export async function nodeDeps(config: NodeConfig): Promise<NodeDeps> {
   const { env } = config;
   // Tenants (operator token hashes and provider keys) come from AGENT_TENANTS_FILE or AGENT_TENANTS_SECRET_ARN.
   const tenants = await tenantsFromEnvironment(env);
   const secrets = await runtimeSecrets(env);
+  sessionSecretOf(secrets);
   // Fails startup if js_exec or file parsing does not work, or if isolation is required but absent.
   const sandbox = await checkSandbox();
   const db = await databaseFromEnvironment(env);
@@ -147,9 +155,7 @@ type Env = { Bindings: HttpBindings; Variables: { tenant: string } };
 export async function createNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNode> {
   const { env, root, port, maxAgents, maxAgentsPerTenant, retireMaxMs, leaseTtlMs, orphanMs, hosting, toolTimeoutMs, runLimits, streamTimeouts, runRetentionSeconds, idleMs, publicUrl, systemPrompt } = config;
   const { tenants, secrets, db, sandbox } = deps;
-  // Derives client session tokens. It must stay stable, or re-provisioning returns tokens that no longer verify.
-  const sessionSecret = secrets.sessionSecret;
-  if (!sessionSecret || sessionSecret.length < 32) throw new Error("Set AGENT_SESSION_SECRET (or AGENT_SESSION_SECRET_ARN) to at least 32 random characters");
+  const sessionSecret = sessionSecretOf(secrets);
   // How tools.search ranks: keywords alone, or fused with the operator's rerank stages.
   // The key: a dedicated one if set (AGENT_TOOL_SEARCH_API_KEY, or the tool-search secret), else the
   // platform's OpenRouter key from the tenants file, read at each search so a reload takes effect.
