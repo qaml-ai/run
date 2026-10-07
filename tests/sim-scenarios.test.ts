@@ -165,3 +165,16 @@ test("an acquire tries again when its own heartbeat was ended between its statem
   assert.deepEqual(result.failures, []);
   assert.ok(result.reached.includes("an acquire tried again after a heartbeat expired between its statements"), result.reached.join(", "));
 });
+
+test("an acquire tries again when the owner's heartbeat expired between its insert and its owner query (corpus acquire-owner-expiry)", async () => {
+  // a owns the agent and crashes. b, off the database, is prompted: its route fails (it pauses as it hears that), so it
+  // serves the agent itself once back. Its acquire's insert still sees a's heartbeat live, and b pauses as it hears so;
+  // by the time it asks who owns the agent, a's heartbeat has expired: no owner, so it tries again, and takes it.
+  const plan: Plan = JSON.parse(readFileSync(new URL("./sim/corpus/acquire-owner-expiry.json", import.meta.url), "utf8"));
+  const result = await runPlan(plan, { quiet: true });
+  assert.deepEqual(result.failures, []);
+  assert.ok(result.reached.includes("an acquire tried again after a heartbeat expired between its statements"), result.reached.join(", "));
+  // The acquire's insert took nothing the first time, and the prompt was accepted once b had the agent.
+  assert.ok(result.ownership["insert actor_owners: none"] >= 1, JSON.stringify(result.ownership));
+  assert.equal(result.history.find(event => event.op.op === "prompt")?.status, 202);
+});

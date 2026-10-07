@@ -3,6 +3,9 @@ import { BUGGIFY_SITES } from "./hooks.ts";
 import { generatePlan, type Op, type Plan } from "./workload.ts";
 
 type Random = ReturnType<typeof prng>;
+
+/** Statements a pause at a database answer is aimed at: taking an actor, finding its owner, renewing a heartbeat. */
+const OWNERSHIP_STATEMENTS = ["insert into actor_owners", "from actor_owners o join runtime_nodes", "update runtime_nodes", "select node from runtime_nodes"];
 type Step = Plan["steps"][number];
 
 /**
@@ -56,6 +59,7 @@ export function randomStep(plan: Plan, random: Random): Step {
     () => ({ op: "watch", agent, node, forMs: 1_000 + random.int(20_000) }),
     () => ({ op: "deploy", node }),
     () => ({ op: "pause", node, ms: (1 + random.int(10)) * heartbeat }),
+    () => ({ op: "pauseOnDb", node, ms: (1 + random.int(10)) * heartbeat, ...(random.float() < 0.7 ? { statement: pick(OWNERSHIP_STATEMENTS) } : {}) }),
     () => ({ op: "isolate", node }),
     () => ({ op: "crash", node }),
     () => ({ op: "restart", node }),
@@ -84,7 +88,8 @@ function retarget(step: Step, plan: Plan, random: Random): Step {
   const { agents } = counts(plan);
   if ("node" in op && random.float() < 0.5) op.node = pick(plan.nodes);
   if ("agent" in op && op.op !== "create" && random.float() < 0.5) op.agent = random.int(agents);
-  if (op.op === "pause") op.ms = Math.max(1, Math.round(op.ms * (0.25 + random.float() * 3)));
+  if (op.op === "pause" || op.op === "pauseOnDb") op.ms = Math.max(1, Math.round(op.ms * (0.25 + random.float() * 3)));
+  if (op.op === "pauseOnDb" && random.float() < 0.3) op.statement = random.float() < 0.2 ? undefined : pick(OWNERSHIP_STATEMENTS);
   if (op.op === "watch") op.forMs = 500 + random.int(30_000);
   if (op.op === "schedule") op.inSeconds = 1 + random.int(30);
   if (op.op === "partition") {
