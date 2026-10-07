@@ -15,6 +15,7 @@ import { StorageGc } from "./storage-gc.ts";
 import { modelHeadersInput, resolveModel, sessionConfig } from "./session-config.ts";
 import { ClientSessions, ORPHANS_CHANNEL, runSessionOf, spendInput, type RunSettings, type SessionHooks } from "./client-sessions.ts";
 import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts";
+import type { LogTail, Storage, StorageMeter } from "../shared/storage.ts";
 import { StorageUsage } from "./storage-usage.ts";
 import { postgresTail, sweepTails } from "./log-tail.ts";
 import { databaseFromEnvironment, listenFromEnvironment, migrate, type Db } from "./db.ts";
@@ -117,6 +118,11 @@ export type NodeDeps = {
   random?: Random;
   /** Where inline agents run js_exec: this process's v8-exec runner unless given (src/codemode.ts). */
   codeExecutor?: CodeExecutor;
+  /**
+   * The data plane every node shares, given the node's log tail and storage meter: AGENT_STORAGE's unless given (a
+   * simulation's in-memory store).
+   */
+  storage?: (tail: LogTail, meter: StorageMeter) => Storage | Promise<Storage>;
 };
 type RuntimeSecrets = Awaited<ReturnType<typeof runtimeSecrets>>;
 type ManagedDiscordSecrets = NonNullable<Awaited<ReturnType<typeof managedDiscordSecrets>>>;
@@ -165,6 +171,8 @@ export type RuntimeNode = {
   close(): Promise<void>;
   /** Read the tenants again (SIGHUP): a bad file or secret is rejected whole, and the tenants loaded before stay. */
   reloadTenants(): Promise<void>;
+  /** Run `work` as this node: in its context, if it was given one (a simulation calling in), else as it is. */
+  run<T>(work: () => T): T;
 };
 type Env = { Bindings: HttpBindings; Variables: { tenant: string } };
 
@@ -179,7 +187,7 @@ export async function createNode(config: NodeConfig, deps: NodeDeps): Promise<Ru
   const node = await runFor(context, () => buildNode(config, deps));
   return {
     ...node, start: () => runFor(context, node.start), drain: signal => runFor(context, () => node.drain(signal)),
-    close: () => runFor(context, node.close), reloadTenants: () => runFor(context, node.reloadTenants),
+    close: () => runFor(context, node.close), reloadTenants: () => runFor(context, node.reloadTenants), run: work => runFor(context, work),
   };
 }
 
@@ -204,8 +212,10 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   // A durable flush while the database is away waits up to a lease for it; by then the node has fenced anyway.
   // What each agent, volume and tenant stores is tracked as objects are written and deleted, for the storage charge.
   const storageUsage = new StorageUsage(db);
-  const storage = await openStorage(storageDescriptor, postgresTail(db, { retryMs: leaseTtlMs }), storageUsage.meter);
-  const distributed = storageDescriptor.kind === "s3" || !!(storageDescriptor.kind === "file" && storageDescriptor.shared);
+  const tail = postgresTail(db, { retryMs: leaseTtlMs });
+  const storage = deps.storage ? await deps.storage(tail, storageUsage.meter) : await openStorage(storageDescriptor, tail, storageUsage.meter);
+  // Storage given to the node is shared, as S3 is.
+  const distributed = !!deps.storage || storageDescriptor.kind === "s3" || !!(storageDescriptor.kind === "file" && storageDescriptor.shared);
   const node = nodeUrl(env, port, deps.address);
   // A peer whose heartbeat is late and whose address no longer accepts connections has died: its actors are freed at once.
   const ownership = new Ownership(db, { node, ttlMs: leaseTtlMs, alive: peer => probeNode(peer) });
@@ -1011,7 +1021,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       server.off("error", reject);
       // Without AGENT_PUBLIC_URL the issuer is where this node listens: known only now when PORT is 0.
       if (!config.publicUrlSet) signer.issuer = links.publicUrl = origins.canonical = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
-      console.log(JSON.stringify({ type: "listening", address: server.address(), node, tenants: tenants.source, hosting, storage: storageDescriptor.kind, github: github ? (github.open ? "open" : "org") : false, google: !!google, accountEmail: accountMailSettings?.provider ?? false, keyStorage: accounts.canStoreKeys, sandbox, toolSearch: rerankers.length ? rerankers.map(stage => stage.kind).join(",") : "keyword", stripe: stripe ? (stripe.live ? "live" : "test") : false }));
+      console.log(JSON.stringify({ type: "listening", address: server.address(), node, tenants: tenants.source, hosting, storage: deps.storage ? "given" : storageDescriptor.kind, github: github ? (github.open ? "open" : "org") : false, google: !!google, accountEmail: accountMailSettings?.provider ?? false, keyStorage: accounts.canStoreKeys, sandbox, toolSearch: rerankers.length ? rerankers.map(stage => stage.kind).join(",") : "keyword", stripe: stripe ? (stripe.live ? "live" : "test") : false }));
       resolve(server.address() as AddressInfo);
     });
     // As soon as it listens, as before: whether a newer deployment replaced this task (ECS only).
@@ -1208,6 +1218,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   return {
     node, app, server, start,
     reloadTenants: () => reloadTenants(true),
+    run: work => work(),
     drain: (signal = "drain") => leave(signal, config.drainMs),
     close: () => leave("close", 0),
   };

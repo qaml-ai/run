@@ -141,10 +141,12 @@ function fileSegments(directory: string): SegmentStore {
   };
 }
 
-/** In-process storage for tests. `puts` counts object writes, as S3 would bill them. */
-export function memoryStorage(tail: LogTail, meter?: StorageMeter): Storage & { logs: Map<string, Map<string, string>>; blobs: Map<string, Uint8Array>; puts: number } {
-  const logs = new Map<string, Map<string, string>>();
-  const blobs = new Map<string, Uint8Array>();
+/**
+ * In-process storage for tests. `puts` counts object writes, as S3 would bill them. `objects` are the store's contents:
+ * nodes given the same share one bucket, each with its own tail and meter.
+ */
+export function memoryStorage(tail: LogTail, meter?: StorageMeter, objects: { logs: Map<string, Map<string, string>>; blobs: Map<string, Uint8Array> } = { logs: new Map(), blobs: new Map() }): Storage & { logs: Map<string, Map<string, string>>; blobs: Map<string, Uint8Array>; puts: number } {
+  const { logs, blobs } = objects;
   const segments = (key: string) => meteredSegments(memorySegments(logs, validKey(key), () => storage.puts++), key, meter);
   const storage = {
     logs, blobs, puts: 0, metered: !!meter,
