@@ -3,6 +3,7 @@ import { createRequire, syncBuiltinESMExports } from "node:module";
 import type { BinaryLike, ScryptOptions } from "node:crypto";
 import FakeTimers from "@sinonjs/fake-timers";
 import { nodeContext, type Clock, type Random } from "../../src/node-context.ts";
+import { SimSocket } from "./duplex.ts";
 
 const require = createRequire(import.meta.url);
 const crypto = require("node:crypto") as typeof import("node:crypto");
@@ -63,6 +64,8 @@ export class SimEnv {
   /** Each node's pending timers, by its clock (which is how code running for it is told apart), and the crashed nodes'. */
   private readonly timers = new Map<Clock, Set<unknown>>();
   private readonly crashed = new Set<Clock>();
+  /** Paused nodes: what is waiting for each to run again (its timers that came due, its sockets' data), in order. */
+  private readonly paused = new Map<Clock, { queue: (() => void)[]; timers: Set<unknown>; resumed: PromiseWithResolvers<void> }>();
 
   /** `quiet`: the console's lines go to `logs` only, not to the terminal. */
   constructor(seed: string, start = Date.UTC(2030, 0, 1), quiet = false) {
@@ -99,14 +102,24 @@ export class SimEnv {
       if (!mine) this.timers.set(node, mine = new Set());
       const pending = mine;
       // A one-off timer that ran is no longer pending.
-      const timer: ReturnType<typeof setTimeout> = set(once ? (...given: unknown[]) => { pending.delete(timer); callback(...given); } : callback, ms, ...args);
+      // A paused node's timer that comes due runs when it resumes, once, as a stopped process's late timer does.
+      const run = (...given: unknown[]) => {
+        const pause = this.paused.get(node);
+        if (!pause) return callback(...given);
+        if (pause.timers.has(timer)) return;
+        pause.timers.add(timer);
+        // Unless it is cleared before the node gets to it.
+        pause.queue.push(() => { if (!cleared.has(timer as object)) callback(...given); });
+      };
+      const timer: ReturnType<typeof setTimeout> = set(once ? (...given: unknown[]) => { pending.delete(timer); run(...given); } : run, ms, ...args);
       pending.add(timer);
       owners.set(timer, pending);
       return timer;
     }) as typeof setTimeout;
     const owners = new WeakMap<object, Set<unknown>>();
+    const cleared = new WeakSet<object>();
     const unowned = (clear: typeof clearTimeout) => ((timer?: ReturnType<typeof setTimeout>) => {
-      if (timer && typeof timer === "object") owners.get(timer)?.delete(timer);
+      if (timer && typeof timer === "object") { owners.get(timer)?.delete(timer); cleared.add(timer); }
       clear(timer);
     }) as typeof clearTimeout;
     patch(globalThis, "clearTimeout", unowned(globalThis.clearTimeout));
@@ -168,6 +181,10 @@ export class SimEnv {
       }) as typeof console.log);
     }
 
+    // Sockets deliver to their node through `deliver`, so a paused node reads nothing.
+    patch(SimSocket, "gate", (owner, work) => this.deliver(owner as Clock, work));
+    patch(SimSocket, "owner", () => nodeContext()?.clock);
+
     // Files: synchronous, so they finish where they start.
     patch(fsPromises, "mkdir", (async (path: string, options?: object) => fs.mkdirSync(path, options as never)) as typeof fsPromises.mkdir);
     patch(fsPromises, "rm", (async (path: string, options?: object) => fs.rmSync(path, options as never)) as typeof fsPromises.rm);
@@ -191,6 +208,34 @@ export class SimEnv {
     for (const timer of this.timers.get(clock) ?? []) clearTimeout(timer as never);
     this.timers.delete(clock);
   }
+
+  /**
+   * A node's process stops for `ms` (SIGSTOP, a long GC pause, a starved CPU): none of its timers run and nothing reaches
+   * it (sockets, the database, notifications) until it resumes; then what came due runs at once, late, in order.
+   * Peers and the database go on. Settles when it resumes.
+   */
+  pause(clock: Clock, ms: number) {
+    if (this.paused.has(clock) || this.crashed.has(clock)) return Promise.resolve();
+    const pause = { queue: [] as (() => void)[], timers: new Set<unknown>(), resumed: Promise.withResolvers<void>() };
+    this.paused.set(clock, pause);
+    // The world's timer, not the node's: a paused node's own timers wait.
+    this.world.runInAsyncScope(() => setTimeout(() => {
+      this.paused.delete(clock);
+      for (const work of pause.queue) work();
+      pause.resumed.resolve();
+    }, ms));
+    return pause.resumed.promise;
+  }
+  /** Whether a node is paused now. */
+  isPaused(clock: Clock) { return this.paused.has(clock); }
+  /** Resolves once `clock`'s node is running (at once unless it is paused). */
+  whenRunning(clock: Clock): Promise<void> { return this.paused.get(clock)?.resumed.promise ?? Promise.resolve(); }
+  /** Run `work` for `clock`'s node now, or when it resumes if it is paused (in order with what else waits). */
+  deliver(clock: Clock | undefined, work: () => void) {
+    const pause = clock && this.paused.get(clock);
+    if (pause) pause.queue.push(work); else work();
+  }
+  private readonly world = new AsyncResource("SimEnv");
 
   /** The clock of a node off by `skew`: its own wall and monotonic time, on the simulation's timers. */
   nodeClock(skew: ClockSkew): Clock {

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { nodeConfig } from "../../src/node-config.ts";
 import { createNode, type NodeDeps, type RuntimeNode } from "../../src/node.ts";
-import type { Clock } from "../../src/node-context.ts";
+import { nodeContext, type Clock } from "../../src/node-context.ts";
 import { runtimeSecrets } from "../../src/secrets.ts";
 import { tenantsFromEnvironment } from "../../src/tenants.ts";
 import { memoryStorage } from "../../shared/storage.ts";
@@ -72,6 +72,7 @@ export class Sim {
     this.net.add("client.sim");
     this.model = model;
     this.nodeEnv = nodeEnv;
+    hooks.where = () => { const node = nodeContext()?.clock; return { at: env.elapsed, ...(node ? { node: env.names.get(node) } : {}) }; };
   }
 
   /**
@@ -106,14 +107,14 @@ export class Sim {
     const incarnation = (this.incarnations.get(name) ?? 0) + 1;
     this.incarnations.set(name, incarnation);
     let dead = false;
-    const db = this.db.connection(host);
     const clock = this.env.nodeClock(skew);
+    const db = this.db.connection(host, () => this.env.whenRunning(clock));
     this.env.names.set(clock, `${name}#${incarnation}`);
     const deps: NodeDeps = {
       tenants: await tenantsFromEnvironment(config.env),
       secrets: await runtimeSecrets(config.env),
       db,
-      listen: this.db.listen(host, () => dead),
+      listen: this.db.listen(host, () => dead, work => this.env.deliver(clock, work)),
       sandbox: { mode: "simulated" },
       network: this.net.networkFor(host),
       clock,
@@ -160,6 +161,16 @@ export class Sim {
     node.kill();
     this.env.crash(node.clock);
     this.net.remove(node.host);
+  }
+
+  /**
+   * Node `name`'s process stops for `ms` and then goes on (SIGSTOP and SIGCONT, a long GC pause): see SimEnv.pause.
+   * Settles when it resumes.
+   */
+  pause(name: string, ms: number) {
+    const node = this.nodes.get(name);
+    if (!node || node.crashed) throw new Error(`Node ${name} is not running`);
+    return this.env.pause(node.clock, ms);
   }
 
   /** Start a crashed node again, as it was started: a new process (a new session) at the same address. */

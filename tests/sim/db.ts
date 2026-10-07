@@ -61,10 +61,12 @@ export class SimDb {
    * `node`'s view of the database: its own pool. Ending it ends nothing shared. `kill` is its process dying: every
    * query from then on fails, as the server dropped its connections (an open transaction rolls back on release).
    */
-  connection(node: string): Db & { kill(): void } {
+  connection(node: string, gate: () => Promise<void> = async () => {}): Db & { kill(): void } {
     let ended = false, killed = false;
+    // A paused node hears the answer once it runs again (`gate`).
+    const answered = <T>(result: Promise<T>) => result.then(async value => { await gate(); return value; }, async error => { await gate(); throw error; });
     const query = (text: string, values?: unknown[]) => ended ? Promise.reject(new Error("Cannot use a pool after calling end on the pool"))
-      : killed ? Promise.reject(unavailable()) : this.exclusive(() => killed ? Promise.reject(unavailable()) : this.run(node, text, values));
+      : killed ? Promise.reject(unavailable()) : answered(this.exclusive(() => killed ? Promise.reject(unavailable()) : this.run(node, text, values)));
     return {
       query: query as Db["query"],
       connect: () => new Promise<DbClient>((resolve, reject) => {
@@ -78,7 +80,7 @@ export class SimDb {
           resolve({
             query: (async (text: string, values?: unknown[]) => {
               if (killed) { broken = true; throw unavailable(); }
-              try { return await this.run(node, text, values); }
+              try { return await answered(this.run(node, text, values)); }
               catch (error) { if (this.down.has(node)) broken = true; throw error; }
             }) as DbClient["query"],
             release: () => { if (broken) void this.pglite.exec("rollback").catch(() => {}).finally(release); else release(); },
@@ -94,12 +96,12 @@ export class SimDb {
   }
 
   /** `node`'s LISTEN connection: each channel's notifications, unless the node is cut off or `dead` says it died. */
-  listen(node: string, dead: () => boolean = () => false) {
+  listen(node: string, dead: () => boolean = () => false, deliver: (work: () => void) => void = work => work()) {
     return async (handlers: Record<string, (payload: string) => void>) => {
       // Notifications reach the node as itself (the context it listened in), whoever's NOTIFY sent them.
       const asNode = new AsyncResource("SimListen");
       const stops = await Promise.all(Object.entries(handlers).map(([channel, handler]) =>
-        this.scope.runInAsyncScope(() => this.pglite.listen(channel, payload => { if (!this.down.has(node) && !dead()) asNode.runInAsyncScope(() => handler(payload)); }))));
+        this.scope.runInAsyncScope(() => this.pglite.listen(channel, payload => { if (!this.down.has(node) && !dead()) deliver(() => asNode.runInAsyncScope(() => handler(payload))); }))));
       return { close: async () => { for (const stop of stops) await stop(); } };
     };
   }

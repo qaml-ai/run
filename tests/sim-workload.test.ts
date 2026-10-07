@@ -23,3 +23,11 @@ test("a plan replays exactly: the same seed, the same trace", async () => {
   assert.equal(second.hash, first.hash);
   assert.ok(plan.steps.some(step => step.op.op === "crash") || plan.steps.some(step => step.op.op === "partition"));
 });
+
+test("pauses of one to ten heartbeats and isolations (peers reap the node on a timed-out probe): one executor per agent holds", async () => {
+  for (const seed of ["p1", "p2", "p3"]) {
+    const plan = generatePlan(seed, { faults: ["pause", "partition"] });
+    const result = await runPlan(plan);
+    assert.deepEqual(result.failures, [], `npm run sim -- --replay of generatePlan("${seed}", { faults: ["pause", "partition"] })`);
+  }
+});
