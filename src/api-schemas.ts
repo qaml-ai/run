@@ -6,7 +6,7 @@ const SEND_TEXT = "Send {\"text\": \"...\"}";
 
 export const ERROR_CODES = {
   INVALID_REQUEST: "400: the request is malformed or invalid", UNAUTHORIZED: "401: no valid token", PAYMENT_REQUIRED: "402", FORBIDDEN: "403: the token may not do this",
-  NOT_FOUND: "404", CONFLICT: "409", GONE: "410", TOO_LARGE: "413", RATE_LIMITED: "429: retry after Retry-After", UNAVAILABLE: "503: retry after Retry-After", INTERNAL: "500",
+  NOT_FOUND: "404", CONFLICT: "409", GONE: "410", TOO_LARGE: "413", RATE_LIMITED: "429: retry after Retry-After", UNAVAILABLE: "503: retry after Retry-After", DATABASE_RETRY: "503: the database refused the request for now (a conflict with another, or a statement timeout); retry after Retry-After", INTERNAL: "500",
   BUSY_AGENT_LIMIT: "429: the tenant has as many agents busy as it may (the body's busyAgents, a BusyAgents, says the limit, its usage tier and the next); retry after Retry-After",
   SPEND_LIMIT: "402: a spend limit (the agent's, or the tenant's monthly cap) is reached", INSUFFICIENT_CREDIT: "402: the tenant's prepaid credit is spent", STORAGE_LIMIT: "507: the tenant's storage limit would be passed; the body has limit and used, in bytes",
   IDEMPOTENCY_CONFLICT: "409: the Idempotency-Key or request id was used for another request", IDEMPOTENCY_IN_PROGRESS: "409: the first request with this Idempotency-Key is still running; retry",

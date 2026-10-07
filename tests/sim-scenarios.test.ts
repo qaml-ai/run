@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Sim, TOKEN } from "./sim/sim.ts";
+import type { SimDb } from "./sim/db.ts";
 import { runPlan } from "./sim/run.ts";
 import type { Plan } from "./sim/workload.ts";
 
@@ -177,4 +178,21 @@ test("an acquire tries again when the owner's heartbeat expired between its inse
   // The acquire's insert took nothing the first time, and the prompt was accepted once b had the agent.
   assert.ok(result.ownership["insert actor_owners: none"] >= 1, JSON.stringify(result.ownership));
   assert.equal(result.history.find(event => event.op.op === "prompt")?.status, 202);
+});
+
+test("a request the database refuses for now (a statement timeout) is answered 503 DATABASE_RETRY with Retry-After, not 400", async t => {
+  const sim = await Sim.create({ seed: 34, respond: () => ({ content: "ok" }) });
+  t.after(() => sim.close());
+  await sim.start("a");
+  const agent = (await sim.call("a", "/v1/agents", { body: {} })).json.id;
+  // Every statement times out from here on.
+  const db = sim.db as SimDb;
+  db.errors = { rate: 1, codes: ["57014"], random: { float: () => 0, int: () => 0 } };
+  const response = await sim.asWorld(() => sim.net.networkFor("client.sim").fetch(`http://a.sim/v1/agents/${agent}/prompt`, {
+    method: "POST", headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" }, body: JSON.stringify({ text: "hello" }),
+  }));
+  db.errors = undefined;
+  assert.equal(response.status, 503);
+  assert.equal(response.headers.get("retry-after"), "1");
+  assert.equal((await response.json()).code, "DATABASE_RETRY");
 });

@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { secretReader } from "./secrets.ts";
+import { sometimes } from "./assert.ts";
+import { clock, random } from "./node-context.ts";
 
 /**
  * The control plane: Postgres holds every piece of small mutable state and all
@@ -52,6 +54,24 @@ const UNAVAILABLE_MESSAGES = /^(Connection terminated|Query read timeout|timeout
  * a network blip) rather than that the query was wrong. Requests that fail this way
  * answer 503 so clients retry; the pool replaces broken connections by itself.
  */
+/**
+ * Whether an error means the database refused this statement for now, though it is up: a serialization failure
+ * (40001), a deadlock (40P01) or a statement timeout (57014). Not an outage, so leases and fencing pay it no mind, but
+ * the request was fine: it answers 503 (DATABASE_RETRY) with Retry-After, and a transaction meets the first two by
+ * running again from the top (`transaction`).
+ */
+export function databaseRetryable(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const code = (error as { code?: unknown }).code;
+  if (typeof code === "string" && RETRYABLE_CODES.has(code)) return true;
+  return error instanceof AggregateError && error.errors.some(databaseRetryable);
+}
+/** The errors a transaction runs again for: it lost a race with another, and nothing it did was kept. */
+const RERUN_CODES = new Set(["40001", "40P01"]);
+const RETRYABLE_CODES = new Set([...RERUN_CODES, "57014"]);
+/** How many times a transaction runs in all when it keeps losing races (`transaction`). */
+const TRANSACTION_ATTEMPTS = 3;
+
 export function databaseUnavailable(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   const code = (error as { code?: unknown }).code;
@@ -221,7 +241,24 @@ async function migrateOnce(db: Db, directory: string, lockTimeoutMs: number) {
   });
 }
 
+/**
+ * Run `work` in a transaction on one connection. One that loses a race (a serialization failure, a deadlock) runs again
+ * from the top, up to TRANSACTION_ATTEMPTS times in all, after a short random wait so the two do not collide again;
+ * past that, the error goes to the caller (a request answers 503 DATABASE_RETRY).
+ */
 export async function transaction<T>(db: Db, work: (sql: Sql) => Promise<T>): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try { return await transactionOnce(db, work); }
+    catch (error) {
+      const code = (error as { code?: unknown }).code;
+      if (attempt >= TRANSACTION_ATTEMPTS || typeof code !== "string" || !RERUN_CODES.has(code)) throw error;
+      sometimes(true, "a transaction that lost a race ran again");
+      await clock().sleep(Math.floor((10 + random().float() * 40) * attempt));
+    }
+  }
+}
+
+async function transactionOnce<T>(db: Db, work: (sql: Sql) => Promise<T>): Promise<T> {
   const client = await db.connect();
   // A checked-out client whose connection drops emits 'error'; unheard, that would crash the process.
   // The statement in flight fails too, and a broken client is dropped from the pool, not reused.

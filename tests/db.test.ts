@@ -10,7 +10,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import pg from "pg";
-import { databaseFromEnvironment, databaseUnavailable, migrate, rotatingPool, transaction } from "../src/db.ts";
+import { databaseFromEnvironment, databaseRetryable, databaseUnavailable, migrate, rotatingPool, transaction } from "../src/db.ts";
+import { errorCode, errorHeaders, errorStatus } from "../src/http.ts";
 import { testDatabase } from "./database.ts";
 
 const MIGRATIONS = readdirSync(fileURLToPath(new URL("../migrations", import.meta.url))).filter(name => name.endsWith(".sql")).sort();
@@ -176,4 +177,47 @@ test("a migration waiting on a lock gives up after lock_timeout instead of stall
   }
   // Once the lock is gone, it applies.
   assert.deepEqual(await migrate(db, undefined, { lockTimeoutMs: 300 }), MIGRATIONS.filter(name => name >= "022_agent_cursor.sql"));
+});
+
+test("a serialization failure, a deadlock or a statement timeout is retryable, not an outage: 503 DATABASE_RETRY with Retry-After", () => {
+  for (const code of ["40001", "40P01", "57014"]) {
+    const error = Object.assign(new Error("refused for now"), { code });
+    assert.equal(databaseRetryable(error), true, code);
+    assert.equal(databaseUnavailable(error), false, code);
+    assert.equal(errorStatus(error, 400), 503, code);
+    assert.equal(errorCode(error, 503), "DATABASE_RETRY", code);
+    assert.deepEqual(errorHeaders(error), { "Retry-After": "1" }, code);
+  }
+  assert.equal(databaseRetryable(Object.assign(new Error("syntax"), { code: "42601" })), false);
+  assert.equal(errorStatus(Object.assign(new Error("syntax"), { code: "42601" }), 400), 400);
+});
+
+test("a transaction that loses a race runs again from the top, a few times at most; a statement timeout does not", async () => {
+  // A fake pool whose transactions fail with `codes`, one per attempt, then succeed.
+  const pool = (codes: string[]) => {
+    let attempts = 0;
+    const statements: string[] = [];
+    const db = {
+      query: async () => ({ rows: [], rowCount: 0 }),
+      connect: async () => ({
+        query: async (text: string) => {
+          statements.push(text);
+          if (text === "select 1" && attempts < codes.length) throw Object.assign(new Error("refused"), { code: codes[attempts] });
+          return { rows: [], rowCount: 0 };
+        },
+        release: () => { attempts++; }, on: () => {}, off: () => {},
+      }),
+    } as any;
+    return { db, statements, attempts: () => attempts };
+  };
+  const twice = pool(["40001", "40P01"]);
+  assert.equal(await transaction(twice.db, async sql => { await sql.query("select 1"); return "done"; }), "done");
+  assert.equal(twice.attempts(), 3);
+  assert.deepEqual(twice.statements.filter(text => text !== "select 1"), ["begin", "rollback", "begin", "rollback", "begin", "commit"]);
+  const always = pool(["40001", "40001", "40001", "40001"]);
+  await assert.rejects(transaction(always.db, sql => sql.query("select 1")), (error: any) => error.code === "40001");
+  assert.equal(always.attempts(), 3);
+  const timeout = pool(["57014"]);
+  await assert.rejects(transaction(timeout.db, sql => sql.query("select 1")), (error: any) => error.code === "57014");
+  assert.equal(timeout.attempts(), 1);
 });
