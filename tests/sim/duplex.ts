@@ -16,10 +16,18 @@ export function socketPair(options: { local?: string; remote?: string } = {}): [
 }
 
 export class SimSocket extends Duplex {
+  /** Set by the simulation: hands each delivery to the reading node now, or once it runs again (a paused node). */
+  static gate: (owner: unknown, work: () => void) => void = (_owner, work) => work();
+  /** Who reads this end, as `owner()` tells at `bind`: a paused owner reads nothing until it resumes. */
+  static owner: () => unknown = () => undefined;
   private scope?: AsyncResource;
+  private reader: unknown;
   /** Deliver what this end reads in the current async context from now on. */
-  bind() { this.scope = new AsyncResource("SimSocket"); return this; }
-  private deliver(work: () => void) { if (this.scope) this.scope.runInAsyncScope(work); else work(); }
+  bind() { this.scope = new AsyncResource("SimSocket"); this.reader = SimSocket.owner(); return this; }
+  private deliver(work: () => void) {
+    const run = () => { if (this.scope) this.scope.runInAsyncScope(work); else work(); };
+    if (this.reader) SimSocket.gate(this.reader, run); else run();
+  }
   peer?: SimSocket;
   readonly remoteAddress: string;
   readonly remotePort = 40000;

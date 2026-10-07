@@ -35,6 +35,10 @@ export class SimHooks {
   /** Each site's probability, for the sites this run enables. */
   readonly plan: Record<string, number>;
   readonly fired = new Map<string, number>();
+  /** Each time a site fired: when (virtual ms since the start, by the base clock) and for which node (by its clock's name). */
+  readonly firings: { site: string; at: number; node?: string }[] = [];
+  /** Set by the simulation: who is asking, for `firings`. */
+  where: () => { at: number; node?: string } = () => ({ at: 0 });
   readonly checked = new Map<string, Checked>();
   readonly violations: string[] = [];
 
@@ -47,6 +51,7 @@ export class SimHooks {
       const rate = this.plan[site];
       if (rate === undefined || !(random.float() < (probability ?? rate))) return false;
       this.fired.set(site, (this.fired.get(site) ?? 0) + 1);
+      this.firings.push({ site, ...this.where() });
       return true;
     });
     const record = (kind: Checked["kind"], message: string, held: boolean) => {

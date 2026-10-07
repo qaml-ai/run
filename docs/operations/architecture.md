@@ -306,11 +306,14 @@ real I/O:
 - `SimEnv` provides fake timers and seeded randomness, per node, through the node context.
 - A fake model provider logs which node it served.
 
-It can crash, drain (a deploy) and restart nodes, partition links (refused or blackholed), cut a node off the
-database, skew clocks, and turn BUGGIFY sites on (`SimHooks`, swarm style). A plan is explicit data: nodes, settings, model latency and
+It can crash, drain (a deploy), pause (SIGSTOP: a node's timers and I/O wait while its peers go on) and restart nodes,
+partition links (refused or blackholed), isolate a node from its peers and the database while it still reaches the
+model (peers reap it on a timed-out probe), cut a node off the database, skew clocks, and turn BUGGIFY sites on
+(`SimHooks`, swarm style). A plan is explicit data: nodes, settings, model latency and
 timed steps (`tests/sim/workload.ts`). `runPlan` (`tests/sim/run.ts`) runs one, then checks it:
 - every accepted run ends with one outcome that stays (I3);
-- no agent has model calls on two nodes at once outside a fault (I1);
+- no agent has model calls on two nodes at once, faults included (I1; a paused node's open call does not count while
+  it is stopped and for a heartbeat after);
 - no model calls come after an acknowledged abort (I9);
 - watchers' streams only move forward, and an event id is never two events (I8);
 - no assertion is violated and there is no real I/O.

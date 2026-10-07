@@ -40,7 +40,7 @@ function runOf(body: any): number | undefined {
  * Run `plan` in a fresh simulation: start its nodes, issue its steps at their virtual times as concurrent clients would,
  * then heal every fault, restart every crashed node and let the cluster settle; then check what happened (`check`).
  */
-export async function runPlan(plan: Plan, options: { quiet?: boolean } = {}): Promise<RunResult> {
+export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: (sim: Sim, agents: Map<number, string>) => Promise<void> } = {}): Promise<RunResult> {
   const modelRandom = prng(`${plan.seed}:model`);
   const [low, high] = plan.modelDelayMs;
   const sim = await Sim.create({
@@ -135,6 +135,12 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean } = {}): Pr
         case "partition":
           if (op.b === "db") { databaseCut.add(op.a); sim.databaseDown(op.a); } else sim.partition(op.a, op.b, op.how);
           break;
+        case "pause": if (!sim.nodes.get(op.node)?.crashed) pending.push(sim.pause(op.node, op.ms)); break;
+        case "isolate":
+          for (const peer of plan.nodes) if (peer !== op.node) sim.partition(op.node, peer, "blackhole");
+          databaseCut.add(op.node);
+          sim.databaseDown(op.node);
+          break;
         case "heal":
           sim.heal();
           for (const node of databaseCut) sim.databaseDown(node, false);
@@ -198,16 +204,35 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean } = {}): Pr
       const agent = call.run === undefined ? undefined : agentOf.get(call.run);
       if (agent !== undefined) byAgent.set(agent, [...byAgent.get(agent) ?? [], call]);
     }
-    const faultTimes = history.filter(event => ["crash", "partition", "databaseDown", "deploy"].includes(event.op.op)).map(event => event.invoked);
+    const faultTimes = history.filter(event => ["crash", "partition", "databaseDown", "deploy", "pause", "isolate"].includes(event.op.op)).map(event => event.invoked);
+    // A paused node acts on nothing while it is stopped, and cuts what its lease no longer covers as soon as it runs
+    // again: a call of its open across a pause counts as its execution only outside the pause and the heartbeat after.
+    const heartbeat = Math.min(Math.floor(plan.leaseTtlMs / 6), 3_000);
+    const pauses = history.filter(event => event.op.op === "pause").map(event => ({ host: `${(event.op as { node: string }).node}.sim`, from: event.invoked, to: event.invoked + (event.op as { ms: number }).ms + heartbeat }));
     // A call whose node died stopped being anyone's execution then, whatever the model went on sending.
     const deaths = history.filter(event => event.op.op === "crash").map(event => ({ host: `${(event.op as { node: string }).node}.sim`, at: event.invoked }));
     // And one its node cut (a stale lease interrupts its model requests) ended when the node hung up.
     const until = (call: (typeof served)[number]) => Math.min(call.until, call.closedAt === undefined ? Infinity : call.closedAt - sim.env.start, ...deaths.filter(death => death.host === call.from && death.at >= call.at).map(death => death.at));
+    /** When a call was its node's execution: from its start to its end, less the pauses of its node. */
+    const acting = (call: (typeof served)[number]) => {
+      let spans: [number, number][] = [[call.at, until(call)]];
+      for (const pause of pauses) {
+        if (pause.host !== call.from) continue;
+        spans = spans.flatMap(([from, to]): [number, number][] => to <= pause.from || from >= pause.to ? [[from, to]] : [[from, Math.max(from, pause.from)], [Math.min(to, pause.to), to]].filter(([a, b]) => b > a) as [number, number][]);
+      }
+      return spans;
+    };
+    const overlapOf = (x: (typeof served)[number], y: (typeof served)[number]) => {
+      let total = 0;
+      for (const [a, b] of acting(x)) for (const [c, d] of acting(y)) total += Math.max(0, Math.min(b, d) - Math.max(a, c));
+      return total;
+    };
     for (const [agent, calls] of byAgent) {
       for (let i = 0; i < calls.length; i++) for (let j = i + 1; j < calls.length; j++) {
         const [x, y] = [calls[i], calls[j]];
-        if (x.from === y.from || until(x) <= y.at || until(y) <= x.at) continue;
-        const overlap = Math.min(until(x), until(y)) - Math.max(x.at, y.at);
+        if (x.from === y.from) continue;
+        const overlap = overlapOf(x, y);
+        if (!overlap) continue;
         const faulted = faultTimes.some(at => at <= Math.max(x.at, y.at));
         failures.push(`I1: agent-${agent} had model calls on ${x.from} (run-${x.run}) and ${y.from} (run-${y.run}) at once for ${overlap} ms${faulted ? " after a fault" : ""}`);
       }
@@ -239,6 +264,8 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean } = {}): Pr
     }
 
     for (const violation of sim.hooks.violations) failures.push(`assertion: ${violation}`);
+    // For debugging a plan: look at the cluster as the run left it.
+    await options.inspect?.(sim, agents);
     for (const leak of sim.env.leaks) failures.push(`real I/O: ${leak.split("\n").slice(0, 3).join(" ")}`);
 
     const trace = [...sim.env.timerTrace, ...sim.db.statements, ...sim.net.connections, ...served.map(call => JSON.stringify([call.from, call.at, call.run])), ...history.map(event => JSON.stringify([event.op, event.invoked, event.ended, event.result, event.status]))];

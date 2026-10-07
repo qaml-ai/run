@@ -10,6 +10,13 @@ export type Op =
   | { op: "watch"; agent: number; node: string; forMs: number }
   /** A deploy takes the node out: it drains, then exits (and a `restart` brings a new process). */
   | { op: "deploy"; node: string }
+  /** The node's process stops for `ms` and goes on (SIGSTOP, a GC pause): its timers and I/O wait, its peers do not. */
+  | { op: "pause"; node: string; ms: number }
+  /**
+   * The node is cut off from its peers (blackholed: their liveness probes time out, so they reap it as dead) and from the
+   * database, while it still reaches the model and clients: the reap-by-probe-timeout path (H1). A `heal` ends it.
+   */
+  | { op: "isolate"; node: string }
   | { op: "crash"; node: string }
   | { op: "restart"; node: string }
   | { op: "partition"; a: string; b: string; how: "refused" | "blackhole" }
@@ -37,7 +44,7 @@ export type Plan = {
 };
 
 /** Which fault classes a run uses: each run enables a random subset (swarm testing). */
-export const FAULTS = ["crash", "partition", "database", "abort", "buggify", "skew", "deploy", "watch"] as const;
+export const FAULTS = ["crash", "partition", "database", "abort", "buggify", "skew", "deploy", "watch", "pause"] as const;
 
 /**
  * A plan for `seed`: 2 or 3 nodes, a few agents made at once, then prompts and the faults the run enabled, over a
@@ -75,9 +82,13 @@ export function generatePlan(seed: string, options: { steps?: number; durationMs
       down.set(node, "crash");
       steps.push({ at, op: { op: "crash", node } });
       steps.push({ at: at + 2_000 + random.int(15_000), op: { op: "restart", node } });
+    } else if (roll < 0.85 && faults.has("pause") && live.length) {
+      // From one to ten heartbeats (a sixth of the lease each).
+      steps.push({ at, op: { op: "pause", node: pick(live), ms: (1 + random.int(10)) * Math.floor(leaseTtlMs / 6) } });
     } else if (roll < 0.9 && faults.has("partition") && nodes.length > 1) {
       const a = pick(nodes), b = pick(nodes.filter(node => node !== a));
-      steps.push({ at, op: { op: "partition", a, b: random.float() < 0.3 ? "db" : b, how: random.float() < 0.5 ? "refused" : "blackhole" } });
+      const kind = random.float();
+      steps.push({ at, op: kind < 0.25 ? { op: "isolate", node: a } : { op: "partition", a, b: kind < 0.45 ? "db" : b, how: random.float() < 0.5 ? "refused" : "blackhole" } });
       steps.push({ at: at + 1_000 + random.int(leaseTtlMs * 2), op: { op: "heal" } });
     } else if (faults.has("database") && live.length > 1) {
       const node = pick(live);
