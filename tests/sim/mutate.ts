@@ -87,10 +87,12 @@ export function randomStep(plan: Plan, random: Random): Step {
     () => ({ op: "clockJump", node, ms: random.int(20_001) - 10_000 }),
     () => ({ op: "failover", ms: 500 + random.int(plan.leaseTtlMs) }),
     () => ({ op: "schedule", agent, schedule: 0, inSeconds: 1 + random.int(20), node }),
-    () => ({ op: "create", agent: random.int(agents + 1), node }),
+    () => ({ op: "create", agent: random.int(agents + 1), node, ...(random.float() < 0.3 ? { ttlSeconds: 60 * (1 + random.int(30)) } : {}) }),
+    () => ({ op: "deleteAgent", agent, node }),
     ...volumes ? [
       () => ({ op: "write", volume: random.int(volumes), write: 0, node }) as Op,
       () => ({ op: "forkVolume", volume: random.int(volumes), fork: 0, node }) as Op,
+      () => ({ op: "deleteVolume", volume: random.int(volumes), node }) as Op,
     ] : [() => ({ op: "volume", volume: 0, node }) as Op],
   ];
   return { at, op: pick(ops)() };

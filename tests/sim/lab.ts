@@ -19,16 +19,18 @@ import { generatePlan, type Plan } from "./workload.ts";
 
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 /** Caps per call: virtual time a plan spans, its steps and nodes, seeds per batch, fuzzing minutes, wall time of a batch. */
-export const CAPS = { durationMs: 30 * 60_000, steps: 400, nodes: 5, seeds: 100, fuzzMinutes: 30, batchWallMs: 15 * 60_000, branches: 10 };
+export const CAPS = { durationMs: 26 * 3_600_000, steps: 400, nodes: 5, seeds: 100, fuzzMinutes: 30, batchWallMs: 15 * 60_000, branches: 10 };
 
 const Node = z.string().regex(/^[a-z]$/).describe("a node's name: one letter");
 const Count = z.number().int().min(0).max(10_000);
 const Op = z.discriminatedUnion("op", [
-  z.object({ op: z.literal("create"), agent: Count, node: Node }).describe("A client makes agent N (Idempotency-Key agent-N: making it again is the same agent)"),
+  z.object({ op: z.literal("create"), agent: Count, node: Node, ttlSeconds: z.number().int().min(60).max(31_622_400).optional() }).describe("A client makes agent N (Idempotency-Key agent-N: making it again is the same agent)"),
   z.object({ op: z.literal("prompt"), agent: Count, run: Count, node: Node, key: z.literal("requestId").optional() }).describe("A client prompts agent N as run M (Idempotency-Key run-M, or with key requestId the body's requestId; each run number once per plan)"),
   z.object({ op: z.literal("retry"), agent: Count, run: Count, node: Node }).describe("A client sends run M's prompt again with the same key (a retry after a lost answer), to any node; checked by I14"),
   z.object({ op: z.literal("clockJump"), node: Node, ms: z.number().int().min(-120_000).max(120_000) }).describe("The node's wall clock jumps by ms, forward or back (its monotonic clock does not). Beyond about a minute in total, nodes' signed requests to each other expire"),
   z.object({ op: z.literal("failover"), ms: z.number().int().min(1).max(600_000) }).describe("The database fails over: every node's connections drop for ms"),
+  z.object({ op: z.literal("deleteAgent"), agent: Count, node: Node }).describe("A client deletes agent N: it is purged shortly after (I18)"),
+  z.object({ op: z.literal("deleteVolume"), volume: Count, node: Node }).describe("A client deletes volume N: the storage GC purges it after its grace (I18)"),
   z.object({ op: z.literal("abort"), agent: Count, node: Node }).describe("A client stops agent N's runs"),
   z.object({ op: z.literal("watch"), agent: Count, node: Node, forMs: z.number().int().min(1).max(600_000) }).describe("A client watches agent N's events for forMs, resuming after the last event its lane saw"),
   z.object({ op: z.literal("deploy"), node: Node }).describe("The node drains and exits, as a deploy replaces it (restart brings a new process)"),
@@ -60,6 +62,8 @@ export const PlanSchema = z.object({
   dbSpikes: z.object({ rate: z.number().min(0).max(1), ms: z.tuple([z.number().int().min(0), z.number().int().min(0).max(30_000)]) }).optional().describe("Now and then (at rate) a query's round trip is drawn from ms instead: a database stall. The tail opens races a steady latency never does"),
   buggify: z.union([z.literal(false), z.literal("swarm"), z.record(z.string(), z.number().min(0).max(1))]).describe("false: none; swarm: a random subset of sites at random rates; or chosen sites and their rates"),
   steps: z.array(z.object({ at: z.number().int().min(0), op: Op })).max(CAPS.steps).describe("Each step at its virtual ms from the start"),
+  startAt: z.string().datetime().optional().describe("When the run starts (default 2030-01-01T00:00Z): near a day's or month's end, for billing"),
+  env: z.record(z.string().regex(/^AGENT_[A-Z_]+$/), z.string().max(100)).optional().describe("Settings for every node (AGENT_*): a long run's timers, retention, billing interval, GC"),
   durationMs: z.number().int().min(1_000).max(CAPS.durationMs).describe("Virtual ms the steps span; then every fault heals, crashed nodes restart, and the run settles and is checked"),
 });
 
@@ -72,6 +76,9 @@ export const CHECKERS = {
   I11: "A fork (agent or volume) holds what was there when it was asked for (a failed run exactly when its source's history has it), and nothing asked for after it was made",
   I13: "A schedule fires once it is due, and its prompt is delivered (once)",
   I15: "What a run that succeeded said is kept: its prompt, and its answer after it, are in its agent's history",
+  I16: "Storage is charged once a day: no day twice, and every day the run spent two billing intervals in",
+  I17: "Storage is reconciled on schedule; with no node lost and a sound store, metered usage is what the store holds",
+  I18: "A deleted or expired agent, and a deleted volume past the GC's grace, leaves no object, tail row or live record",
   I14: "A prompt sent again with its key is one request: every answer names the first's, none is refused as another, and its prompt is in the history once",
   assertion: "No always() failed and no unreachable() was reached in the runtime's code",
   "real I/O": "Nothing touched the real network, disk or clock (the leak detector)",

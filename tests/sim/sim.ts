@@ -96,14 +96,14 @@ export class Sim {
    * A world for `seed`, its database migrated; `respond` is the model's script; `env` applies to every node; `buggify`
    * says which BUGGIFY sites fire. Installs the simulation's environment and hooks for the process until `close`.
    */
-  static async create(options: { seed: string | number; respond: (body: any, served: Served[]) => Answer; env?: Record<string, string>; buggify?: BuggifyPlan; quiet?: boolean; database?: "pglite" | "postgres"; dbLatencyMs?: [number, number]; dbSpikes?: { rate: number; ms: [number, number] }; storageFaults?: boolean }) {
+  static async create(options: { seed: string | number; respond: (body: any, served: Served[]) => Answer; env?: Record<string, string>; buggify?: BuggifyPlan; quiet?: boolean; database?: "pglite" | "postgres"; dbLatencyMs?: [number, number]; dbSpikes?: { rate: number; ms: [number, number] }; storageFaults?: boolean; start?: number }) {
     const seed = String(options.seed);
     // The nightly mode runs on a real Postgres server, on the machine's clock: not deterministic, but it has real
     // sessions whose transactions interleave (SIM_DATABASE=postgres, or `database`).
     const postgres = (options.database ?? process.env.SIM_DATABASE) === "postgres";
     const db = postgres ? await PostgresDb.create() : await SimDb.create(prng(`${seed}:sql`).float() * 2 - 1);
     await db.migrate();
-    const sim = new Sim(seed, new SimEnv(seed, undefined, options.quiet, postgres), new SimHooks(seed, options.buggify ?? false), db, options.respond, options.env ?? {});
+    const sim = new Sim(seed, new SimEnv(seed, options.start, options.quiet, postgres), new SimHooks(seed, options.buggify ?? false), db, options.respond, options.env ?? {});
     sim.dbLatencyMs = options.dbLatencyMs;
     sim.dbSpikes = options.dbSpikes;
     sim.faultyStorage = !!options.storageFaults;

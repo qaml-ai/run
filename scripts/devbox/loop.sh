@@ -14,7 +14,7 @@ home=$HOME/camelrun-ci; dir=$home/loop; mkdir -p $dir
 exec 8>$dir/lock
 flock -n 8 || exit 0
 echo $$ > $dir/pid
-batch=${SIM_BATCH:-5000}; pg=${SIM_POSTGRES_SEEDS:-100}; every=${IMAGE_EVERY:-3}
+batch=${SIM_BATCH:-5000}; pg=${SIM_POSTGRES_SEEDS:-100}; long=${SIM_LONG_SEEDS:-24}; every=${IMAGE_EVERY:-3}
 # The simulator is deterministic, so it can use most of the box (the soak, timing-sensitive, runs alone before it).
 export SIM_SHARDS=${SIM_SHARDS:-12}
 cycle=$(cat $dir/cycle 2>/dev/null || echo 0)
@@ -26,7 +26,7 @@ while [ ! -e $dir/stop ]; do
   ( cd $home && PROP_SCALE=50 ./soak-seq.sh 1 >> $dir/soak.out 2>&1 ); soak=$?
   [ -e $dir/stop ] && break
   from=$(cat $dir/next-seed 2>/dev/null || echo 15001)
-  ( cd $home && SIM_NOWAIT=1 SIM_POSTGRES_SEEDS=$pg ./sim-nightly.sh $from $((from + batch - 1)) origin/main >> $dir/sim.out 2>&1 ); sim=$?
+  ( cd $home && SIM_NOWAIT=1 SIM_POSTGRES_SEEDS=$pg SIM_LONG_SEEDS=$long ./sim-nightly.sh $from $((from + batch - 1)) origin/main >> $dir/sim.out 2>&1 ); sim=$?
   echo $((from + batch)) > $dir/next-seed
   image=-
   if [ $((cycle % every)) -eq 0 ] && [ ! -e $dir/stop ]; then

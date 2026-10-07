@@ -6,7 +6,9 @@
 # and minimized there (<seed>.min.json); shard and minimizer logs go there too. Then, when the checkout has the fuzzer,
 # as long again of coverage-guided fuzzing (`--fuzz`, on <shards> workers) from the corpus kept across batches
 # (SIM_CORPUS, default ~/camelrun-ci/sim/corpus); each new kind of failure it finds, minimized, goes to <outdir>/fuzz.
-# SIM_FUZZ=0 skips it. Exits 1 if any seed failed or the fuzzer found a failure.
+# SIM_FUZZ=0 skips it. SIM_LONG_SEEDS (a count) runs that many long plans too (`--long`: hours of virtual time each;
+# their failures, sim-failures/long-<seed>.json, are copied but not minimized: each run takes a minute or two).
+# Exits 1 if any seed failed or the fuzzer found a failure.
 set -uo pipefail
 from=$1; to=$2; shards=$3; out=$4
 mkdir -p "$out"
@@ -20,6 +22,11 @@ for (( i = 0; i < shards; i++ )); do
 done
 status=0
 for pid in "${pids[@]}"; do wait $pid || status=1; done
+# Long plans (hours of virtual time each: billing days, reconciles, purges, GC), SIM_LONG_SEEDS of them from <from> on.
+if [ -n "${SIM_LONG_SEEDS:-}" ] && grep -q -- '--long' scripts/sim.ts; then
+  last=$(( from + SIM_LONG_SEEDS - 1 ))
+  npm run -s sim -- --long --seeds $from-$last --jobs $shards > /dev/null 2> "$out/long-$from-$last.log" || status=1
+fi
 if [ "${SIM_FUZZ:-1}" != 0 ] && grep -q -- '--fuzz' scripts/sim.ts; then
   # Half the batch's time: as long as the seeds took, at least a minute.
   minutes=$(( ($(date +%s) - seeded + 59) / 60 ))

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { storageOwner } from "../../src/storage-usage.ts";
 import { prng } from "./env.ts";
 import { Sim, TOKEN } from "./sim.ts";
 import type { Op, Plan } from "./workload.ts";
@@ -49,7 +50,7 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
   const [low, high] = plan.modelDelayMs;
   const sim = await Sim.create({
     seed: plan.seed, buggify: plan.buggify, quiet: options.quiet ?? true, ...(plan.dbLatencyMs ? { dbLatencyMs: plan.dbLatencyMs } : {}), ...(plan.dbSpikes ? { dbSpikes: plan.dbSpikes } : {}), storageFaults: !!plan.storageFaults,
-    env: { AGENT_LEASE_TTL_MS: String(plan.leaseTtlMs), AGENT_ORPHAN_SWEEP_MS: "2000" },
+    env: { AGENT_LEASE_TTL_MS: String(plan.leaseTtlMs), AGENT_ORPHAN_SWEEP_MS: "2000", ...plan.env }, ...(plan.startAt ? { start: Date.parse(plan.startAt) } : {}),
     respond: body => ({ content: `done ${runOf(body) ?? "?"}`, delayMs: low + modelRandom.int(high - low + 1) }),
   });
   const history: Event[] = [];
@@ -72,6 +73,9 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
   const volumes = new Map<number, string>();
   const writes = new Map<number, { volume: number; invoked: number; ended: number }>();
   const volumeForks = new Map<number, { volume: number; id: string; invoked: number; ended: number }>();
+  /** Agents made to expire (when, virtual ms), and agents and volumes deleted (when): their data is purged (I18). */
+  const expiring = new Map<number, number>();
+  const deletedAgents = new Map<number, number>(), deletedVolumes = new Map<number, number>();
   /** Every write tried, acknowledged or not, by when it was asked: a fork may hold one whose answer was lost. */
   const tried = new Map<number, { volume: number; invoked: number }>();
   try {
@@ -81,10 +85,10 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
     sim.storageFaults = plan.storageFaults;
 
     /** A client call, recorded; a node that cannot be reached (crashed, partitioned) fails it as unknown. */
-    const client = (op: Op, node: string, path: string, body?: unknown, headers?: Record<string, string>) => {
+    const client = (op: Op, node: string, path: string, body?: unknown, headers?: Record<string, string>, method?: string) => {
       const event: Event = { op, invoked: sim.env.elapsed };
       history.push(event);
-      const call = sim.request(node, path, { body, headers }).then(answer => {
+      const call = sim.request(node, path, { body, headers, ...(method ? { method } : {}) }).then(answer => {
         Object.assign(event, { ended: sim.env.elapsed, status: answer.status, result: answer.status < 300 ? "ok" : answer.status >= 500 ? "info" : "fail", detail: answer.json });
         return answer;
       }, error => { Object.assign(event, { ended: sim.env.elapsed, result: "info", detail: String(error?.cause?.code ?? error) }); return undefined; });
@@ -127,10 +131,28 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
     const restart = (node: string): Promise<unknown> => sim.restart(node, { drive: false }).catch(() => new Promise(resolve => setTimeout(resolve, 1_000)).then(() => sim.nodes.get(node)?.crashed ? restart(node) : undefined));
     const apply = (op: Op) => sim.asWorld(() => {
       switch (op.op) {
-        case "create":
-          void client(op, op.node, "/v1/agents", { name: `agent-${op.agent}` }, { "Idempotency-Key": `agent-${op.agent}` })
-            .then(answer => { if (answer?.status === 201 || answer?.status === 200) agents.set(op.agent, answer.json.id); });
+        case "create": {
+          const madeAt = sim.env.elapsed;
+          void client(op, op.node, "/v1/agents", { name: `agent-${op.agent}`, ...(op.ttlSeconds ? { ttlSeconds: op.ttlSeconds } : {}) }, { "Idempotency-Key": `agent-${op.agent}` })
+            .then(answer => {
+              if (answer?.status !== 201 && answer?.status !== 200) return;
+              agents.set(op.agent, answer.json.id);
+              if (op.ttlSeconds && !expiring.has(op.agent)) expiring.set(op.agent, madeAt + op.ttlSeconds * 1000);
+            });
           return;
+        }
+        case "deleteAgent": {
+          const agent = agents.get(op.agent);
+          if (!agent) return;
+          void client(op, op.node, `/v1/agents/${agent}`, undefined, undefined, "DELETE").then(answer => { if (answer?.status === 200 && !deletedAgents.has(op.agent)) deletedAgents.set(op.agent, sim.env.elapsed); });
+          return;
+        }
+        case "deleteVolume": {
+          const volume = volumes.get(op.volume);
+          if (!volume) return;
+          void client(op, op.node, `/v1/volumes/${volume}`, undefined, undefined, "DELETE").then(answer => { if (answer?.status === 200 && !deletedVolumes.has(op.volume)) deletedVolumes.set(op.volume, sim.env.elapsed); });
+          return;
+        }
         case "prompt":
         case "retry": {
           const agent = agents.get(op.agent);
@@ -251,6 +273,15 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
     // Schedules due late in the run get their time to fire: a scan, and the slowest model call.
     const lastDue = Math.max(0, ...[...schedules.values()].map(schedule => schedule.at));
     if (lastDue + 10_000 + high > sim.env.elapsed) await sim.advance(lastDue + 10_000 + high - sim.env.elapsed);
+
+    // What deletion and expiry took away is not checked as kept: agents deleted or due to expire by the checks' end, and
+    // deleted volumes, with their runs, forks of theirs, schedules and writes. I18 checks they are gone.
+    const goneAgents = new Set([...deletedAgents.keys(), ...[...expiring].filter(([, at]) => at <= sim.env.elapsed + 10 * 60_000).map(([agent]) => agent)]);
+    for (const [run, entry] of runs) if (goneAgents.has(entry.agent)) { runs.delete(run); answers.delete(run); }
+    for (const [fork, entry] of forks) if (goneAgents.has(entry.agent)) forks.delete(fork);
+    for (const [schedule, entry] of schedules) if (goneAgents.has(entry.agent)) schedules.delete(schedule);
+    for (const [write, entry] of writes) if (deletedVolumes.has(entry.volume)) writes.delete(write);
+    for (const [fork, entry] of volumeForks) if (deletedVolumes.has(entry.volume)) volumeForks.delete(fork);
 
     // I3: every accepted run ends, with exactly one outcome, within the recovery bound.
     const live = () => [...sim.nodes.values()].filter(node => !node.crashed).map(node => node.name);
@@ -429,6 +460,56 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
       const history = (await sim.call(live()[0], `/v1/agents/${agents.get(agent)}/history`)).json?.messages ?? [];
       const times = history.filter((message: any) => message.role === "user" && runOf({ messages: [message] }) === run).length;
       if (times > 1) failures.push(`I14: run-${run}'s prompt, sent again with its key, is in agent-${agent}'s history ${times} times`);
+    }
+
+    // I16: the storage charge runs once a day: no day is charged twice, and every day the run spent long enough in (two
+    // billing intervals past its midnight, or past the start) is charged.
+    const billingMs = Number(plan.env?.AGENT_BILLING_INTERVAL_MS ?? 60 * 60_000);
+    const charged = new Map<string, number>();
+    for (const log of sim.env.logs) if (log.line.includes('"storage_charged"')) { const day = JSON.parse(log.line).day as string; charged.set(day, (charged.get(day) ?? 0) + 1); }
+    for (const [day, times] of charged) if (times > 1) failures.push(`I16: day ${day} was charged for storage ${times} times`);
+    const ranUntil = sim.env.start + plan.durationMs;
+    for (let midnight = sim.env.start; midnight + 2 * billingMs <= ranUntil; midnight = Date.UTC(new Date(midnight).getUTCFullYear(), new Date(midnight).getUTCMonth(), new Date(midnight).getUTCDate() + 1)) {
+      const day = new Date(midnight).toISOString().slice(0, 10);
+      if (!charged.has(day)) failures.push(`I16: day ${day} was never charged for storage, though the run spent ${Math.round((ranUntil - midnight) / 60_000)} minutes in it`);
+    }
+    // I17: storage reconciled on schedule (daily, as long plans set it): its day is the last day charged. And with no
+    // node lost and a sound store, what metering tracked is what the store holds.
+    if (plan.env?.AGENT_STORAGE_RECONCILE_DAYS === "1" && charged.size) {
+      const last = [...charged.keys()].sort().at(-1);
+      const reconciled = (await sim.db.query("select to_char(done_day, 'YYYY-MM-DD') as day from billing_jobs where name = 'storage-reconcile'")).rows[0]?.day;
+      if (reconciled !== last) failures.push(`I17: storage was last reconciled on ${reconciled ?? "no day"}, not on ${last}, the last day charged`);
+    }
+    {
+      const listed = new Map<string, number>();
+      const count = (key: string, bytes: number) => { const owner = storageOwner(key); if (owner) listed.set(`${owner.kind}:${owner.id}`, (listed.get(`${owner.kind}:${owner.id}`) ?? 0) + bytes); };
+      for (const [key, objects] of sim.objects.logs) for (const [name, body] of objects) count(`${key}.log/${name}`, Buffer.byteLength(body));
+      for (const [key, data] of sim.objects.blobs) count(key, data.byteLength);
+      const metered = new Map((await sim.db.query("select kind, owner, bytes from storage_usage")).rows.map(row => [`${row.kind}:${row.owner}`, Number(row.bytes)]));
+      const drift = [...new Set([...listed.keys(), ...metered.keys()])].filter(owner => (listed.get(owner) ?? 0) !== (metered.get(owner) ?? 0));
+      const lost = plan.storageFaults || plan.steps.some(step => ["crash", "deploy", "isolate"].includes(step.op.op));
+      if (drift.length) (lost ? notes : failures).push(`I17: metered storage differs from the store for ${drift.length} owners (${drift.slice(0, 3).map(owner => `${owner}: ${metered.get(owner) ?? 0} metered, ${listed.get(owner) ?? 0} stored`).join("; ")})`);
+    }
+    // I18: what is deleted or expired is purged: no object, tail row or live record of it is left once the purge has had
+    // its time (a few minutes for an agent; the GC's grace and interval for a volume).
+    const now = sim.env.elapsed;
+    for (const [index, since] of [...deletedAgents, ...[...expiring].filter(([agent]) => !deletedAgents.has(agent))]) {
+      const id = agents.get(index);
+      if (!id || since > now - 5 * 60_000) continue;
+      const objects = [...sim.objects.logs.keys(), ...sim.objects.blobs.keys()].filter(key => storageOwner(key)?.id === id || key.includes(`${id}.`));
+      const rows = Number((await sim.db.query("select count(*) as n from log_records where log_key like $1", [`%${id}%`])).rows[0].n);
+      const purged = (await sim.db.query("select purged_at from agents where id = $1", [id])).rows[0]?.purged_at;
+      if (objects.length || rows || purged == null) failures.push(`I18: agent-${index}, ${deletedAgents.has(index) ? "deleted" : "expired"} ${Math.round((now - since) / 60_000)} minutes before, is not purged: ${objects.length} objects, ${rows} tail rows${purged == null ? ", no purged_at" : ""}`);
+    }
+    if (plan.env?.AGENT_GC_ENABLED === "true") {
+      const wait = Number(plan.env.AGENT_GC_GRACE_MS ?? 86_400_000) + Number(plan.env.AGENT_GC_INTERVAL_MS ?? 21_600_000) + Number(plan.env.AGENT_GC_POLL_MS ?? 60_000) + 5 * 60_000;
+      for (const [index, since] of deletedVolumes) {
+        const id = volumes.get(index);
+        if (!id || since > now - wait) continue;
+        const objects = [...sim.objects.logs.keys(), ...sim.objects.blobs.keys()].filter(key => key.startsWith(`volumes/${id}/`) || key.startsWith(`volumes/${id}.`));
+        const purged = (await sim.db.query("select purged_at from volumes where id = $1", [id])).rows[0]?.purged_at;
+        if (objects.length || purged == null) failures.push(`I18: volume-${index}, deleted ${Math.round((now - since) / 60_000)} minutes before, is not purged: ${objects.length} objects${purged == null ? ", no purged_at" : ""}`);
+      }
     }
 
     for (const violation of sim.hooks.violations) failures.push(`assertion: ${violation}`);
