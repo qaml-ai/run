@@ -64,6 +64,15 @@ jobs:
         with: { name: v8-exec, path: sandbox/v8-exec/target/release }
       - run: chmod +x sandbox/v8-exec/target/release/v8-exec
       - run: npm ci
+      # The service's 100 connections run out when a shard's busiest files run together (each test has its own pools):
+      # raise them as the devbox's runs do. A service container takes no server flags, so set it and restart.
+      - name: Postgres max_connections 300
+        run: |
+          id=$(docker ps -q --filter ancestor=postgres:16-alpine)
+          docker exec "$id" psql -U postgres -c "alter system set max_connections = 300"
+          docker restart "$id"
+          until docker exec "$id" pg_isready -U postgres -h 127.0.0.1; do sleep 1; done
+          docker exec "$id" psql -U postgres -tAc "show max_connections"
       - run: npm run test:shard -- ${{ matrix.shard }}/4
   sim:
     # The deterministic simulator (tests/sim, npm run sim): ten fixed seeds, each run twice and required to replay to the
