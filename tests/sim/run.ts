@@ -46,7 +46,7 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
   const modelRandom = prng(`${plan.seed}:model`);
   const [low, high] = plan.modelDelayMs;
   const sim = await Sim.create({
-    seed: plan.seed, buggify: plan.buggify, quiet: options.quiet ?? true,
+    seed: plan.seed, buggify: plan.buggify, quiet: options.quiet ?? true, ...(plan.dbLatencyMs ? { dbLatencyMs: plan.dbLatencyMs } : {}),
     env: { AGENT_LEASE_TTL_MS: String(plan.leaseTtlMs), AGENT_ORPHAN_SWEEP_MS: "2000" },
     respond: body => ({ content: `done ${runOf(body) ?? "?"}`, delayMs: low + modelRandom.int(high - low + 1) }),
   });

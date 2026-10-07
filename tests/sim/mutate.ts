@@ -100,8 +100,9 @@ const shift = (random: Random) => (random.float() < 0.5 ? 1 + random.int(50) : 1
 /** The plan's settings: the lease, the model's latency, a node's skew, the BUGGIFY plan, or the seed (every other draw). */
 function retune(plan: Plan, random: Random): Plan {
   const pick = <T>(items: readonly T[]) => items[random.int(items.length)];
-  switch (random.int(5)) {
+  switch (random.int(6)) {
     case 0: return { ...plan, leaseTtlMs: pick([3_000, 6_000, 12_000]) };
+    case 4: return { ...plan, dbLatencyMs: random.float() < 0.2 ? undefined : [0, pick([1, 5, 20, 200, 1_000])] };
     case 1: return { ...plan, modelDelayMs: [50, pick([200, 2_000, 8_000, 20_000])] };
     case 2: return { ...plan, skews: { ...plan.skews, [pick(plan.nodes)]: random.int(10_001) - 5_000 } };
     case 3: {

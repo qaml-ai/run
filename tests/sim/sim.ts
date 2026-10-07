@@ -48,6 +48,8 @@ function guarded<K, V>(map: Map<K, V>, dead: () => boolean): Map<K, V> {
  */
 export class Sim {
   readonly seed: string;
+  /** Each pool query's round trip, drawn per node from [min, max] virtual ms (missing: none); see Plan.dbLatencyMs. */
+  dbLatencyMs?: [number, number];
   readonly env: SimEnv;
   /** BUGGIFY decisions and the assertions recorded. */
   readonly hooks: SimHooks;
@@ -80,14 +82,16 @@ export class Sim {
    * A world for `seed`, its database migrated; `respond` is the model's script; `env` applies to every node; `buggify`
    * says which BUGGIFY sites fire. Installs the simulation's environment and hooks for the process until `close`.
    */
-  static async create(options: { seed: string | number; respond: (body: any, served: Served[]) => Answer; env?: Record<string, string>; buggify?: BuggifyPlan; quiet?: boolean; database?: "pglite" | "postgres" }) {
+  static async create(options: { seed: string | number; respond: (body: any, served: Served[]) => Answer; env?: Record<string, string>; buggify?: BuggifyPlan; quiet?: boolean; database?: "pglite" | "postgres"; dbLatencyMs?: [number, number] }) {
     const seed = String(options.seed);
     // The nightly mode runs on a real Postgres server, on the machine's clock: not deterministic, but it has real
     // sessions whose transactions interleave (SIM_DATABASE=postgres, or `database`).
     const postgres = (options.database ?? process.env.SIM_DATABASE) === "postgres";
     const db = postgres ? await PostgresDb.create() : await SimDb.create(prng(`${seed}:sql`).float() * 2 - 1);
     await db.migrate();
-    return new Sim(seed, new SimEnv(seed, undefined, options.quiet, postgres), new SimHooks(seed, options.buggify ?? false), db, options.respond, options.env ?? {});
+    const sim = new Sim(seed, new SimEnv(seed, undefined, options.quiet, postgres), new SimHooks(seed, options.buggify ?? false), db, options.respond, options.env ?? {});
+    sim.dbLatencyMs = options.dbLatencyMs;
+    return sim;
   }
 
   /** Start node `name` (reachable at http://<name>.sim), with `env` over the world's, its clock off by `skew`. */
@@ -112,7 +116,10 @@ export class Sim {
     this.incarnations.set(name, incarnation);
     let dead = false;
     const clock = this.env.nodeClock(skew);
-    const db = this.db.connection(host, () => this.env.whenRunning(clock));
+    // Each process draws its queries' round trips from its own stream, so one node's queries do not shift another's.
+    const latencyRandom = prng(`${this.seed}:db:${name}#${incarnation}`);
+    const [low, high] = this.dbLatencyMs ?? [0, 0];
+    const db = this.db.connection(host, () => this.env.whenRunning(clock), () => high > 0 ? low + latencyRandom.int(high - low + 1) : 0);
     this.env.names.set(clock, `${name}#${incarnation}`);
     const deps: NodeDeps = {
       tenants: await tenantsFromEnvironment(config.env),

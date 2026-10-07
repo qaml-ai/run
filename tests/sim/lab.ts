@@ -49,6 +49,7 @@ export const PlanSchema = z.object({
   skews: z.record(z.string(), z.number().int().min(-600_000).max(600_000)).describe("Each node's wall-clock skew, ms (missing: 0)"),
   leaseTtlMs: z.number().int().min(1_000).max(120_000).describe("The ownership lease; a heartbeat is a sixth of it"),
   modelDelayMs: z.tuple([z.number().int().min(0), z.number().int().min(0).max(120_000)]).describe("Each model call's latency, drawn from [min, max] ms"),
+  dbLatencyMs: z.tuple([z.number().int().min(0), z.number().int().min(0).max(5_000)]).optional().describe("Each pool query's round trip to the database, drawn from [min, max] ms (missing: none, so a request's statements share one instant and one now())"),
   buggify: z.union([z.literal(false), z.literal("swarm"), z.record(z.string(), z.number().min(0).max(1))]).describe("false: none; swarm: a random subset of sites at random rates; or chosen sites and their rates"),
   steps: z.array(z.object({ at: z.number().int().min(0), op: Op })).max(CAPS.steps).describe("Each step at its virtual ms from the start"),
   durationMs: z.number().int().min(1_000).max(CAPS.durationMs).describe("Virtual ms the steps span; then every fault heals, crashed nodes restart, and the run settles and is checked"),

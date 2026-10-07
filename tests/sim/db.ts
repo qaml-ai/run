@@ -12,7 +12,7 @@ const INT8 = 20;
  */
 export interface WorldDb {
   readonly statements: string[];
-  connection(node: string, gate?: () => Promise<void>): Db & { kill(): void };
+  connection(node: string, gate?: () => Promise<void>, latency?: () => number): Db & { kill(): void };
   listen(node: string, dead?: () => boolean, deliver?: (work: () => void) => void): (handlers: Record<string, (payload: string) => void>) => Promise<{ close(): Promise<void> }>;
   setDown(node: string, down: boolean): void;
   migrate(): Promise<void>;
@@ -77,12 +77,14 @@ export class SimDb implements WorldDb {
    * `node`'s view of the database: its own pool. Ending it ends nothing shared. `kill` is its process dying: every
    * query from then on fails, as the server dropped its connections (an open transaction rolls back on release).
    */
-  connection(node: string, gate: () => Promise<void> = async () => {}): Db & { kill(): void } {
+  connection(node: string, gate: () => Promise<void> = async () => {}, latency: () => number = () => 0): Db & { kill(): void } {
     let ended = false, killed = false;
     // A paused node hears the answer once it runs again (`gate`).
     const answered = <T>(result: Promise<T>) => result.then(async value => { await gate(); return value; }, async error => { await gate(); throw error; });
+    // A pool query's round trip (`latency`, virtual ms): it reaches the server that much later, on the node's timers.
+    const travel = async () => { const ms = latency(); if (ms > 0) await new Promise(resolve => setTimeout(resolve, ms)); };
     const query = (text: string, values?: unknown[]) => ended ? Promise.reject(new Error("Cannot use a pool after calling end on the pool"))
-      : killed ? Promise.reject(unavailable()) : answered(this.exclusive(() => killed ? Promise.reject(unavailable()) : this.run(node, text, values)));
+      : killed ? Promise.reject(unavailable()) : answered(travel().then(() => this.exclusive(() => killed ? Promise.reject(unavailable()) : this.run(node, text, values))));
     return {
       query: query as Db["query"],
       connect: () => new Promise<DbClient>((resolve, reject) => {
