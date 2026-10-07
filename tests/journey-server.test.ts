@@ -177,5 +177,6 @@ test("an email sign-up is an account made when its mailed link is finished, in t
     ["run_auth_started", visitor, null, { method: "password", auth_surface: "console" }],
   ]);
   // The address is in no event.
-  assert.ok(!JSON.stringify(events).includes("ada") && !JSON.stringify(events).includes("elsewhere"));
+  // The address in full: "ada" alone turns up in random hex ids now and then.
+  assert.ok(!/ada@|ada%40|elsewhere/.test(JSON.stringify(events)));
 });
