@@ -272,3 +272,29 @@ frame's file and line, and the text's size.
 
 Schedules and channel work items are claimed with `FOR UPDATE SKIP LOCKED` and a
 claim deadline, so one node delivers each; a crashed node's claims lapse.
+
+**Simulation seams.** A node is built by `createNode(config, deps)` (`src/node.ts`); `src/server.ts`
+only reads the environment (`nodeConfig`, `src/node-config.ts`), makes the real dependencies
+(`nodeDeps`), handles signals and listens. Several nodes can share a process, which is how a
+deterministic simulation runs a cluster: each gets its own configuration and dependencies, and stops
+everything it started when it drains. What a node is given rather than finds for itself:
+- `db`, a `Db` (`src/db.ts`): queries, a connection for a transaction, `end`. `pg.Pool` in production;
+  an in-process Postgres or a fault-injecting wrapper in a simulation. LISTEN is `listen`, a dependency
+  of its own.
+- `network`, `clock` and `random` (`src/node-context.ts`). A node given any of them runs in an
+  `AsyncLocalStorage` context of its own, and its code reads them through `network()`, `clock()` and
+  `random()` wherever it runs. Production never sets them, and the real ones apply. Code reaches the
+  network only through `network()`. It uses `clock()` for the lease and where process-wide fake timers
+  cannot reach (`timers/promises`, `performance` imported from `node:perf_hooks`), and `random()` for
+  what is not cryptographic. Everything else reads `Date.now`, timers and `node:crypto`, which a
+  simulator fakes for the whole process.
+- `codeExecutor` (`src/codemode.ts`): where inline agents run js_exec; v8-exec unless given.
+- `buggify(site)` (`src/buggify.ts`) marks points where a simulator may make something unusual but legal
+  happen. Examples: a failed heartbeat renewal, a tail append whose answer is lost, a reap probe that
+  times out, a compaction now, a stalled model stream, a tool call that fails, a drain that stops
+  waiting.
+- `always`, `sometimes`, `reachable` and `unreachable` (`src/assert.ts`) are recorded by a simulator.
+
+  In production `buggify` is always false. A failed `always` or a reached `unreachable` logs one
+  `{"type":"assert"}` line per message, and nothing else does anything. The hooks cost a few
+  nanoseconds per call and allocate nothing (`npm run bench:sim-hooks`).
