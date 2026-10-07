@@ -7,9 +7,29 @@ import { secretReader } from "./secrets.ts";
 /**
  * The control plane: Postgres holds every piece of small mutable state and all
  * coordination (ownership, claims, counters, indexes). Storage keeps bulk data.
+ *
+ * `Db` is what the runtime asks of it, and all it may: queries, a connection held for a transaction (`transaction`),
+ * the pool's counts for the node's load line, and ending it. pg.Pool is the production one; a simulation passes another
+ * (an in-process Postgres, or a wrapper that injects faults). LISTEN has a connection of its own (NodeDeps.listen), and
+ * NOTIFY is a query. Answers are as pg gives them with the parser below: bigint columns as numbers.
  */
-export type Db = pg.Pool;
-export type Sql = Pick<pg.Pool | pg.PoolClient, "query">;
+export type Db = Sql & {
+  connect(): Promise<DbClient>;
+  end(): Promise<void>;
+  readonly totalCount: number;
+  readonly idleCount: number;
+  readonly waitingCount: number;
+};
+/** Anything a query runs on: the pool, or the connection a transaction holds. */
+export type Sql = { query<R = any>(text: string, values?: unknown[]): Promise<Rows<R>> };
+/** A query's answer: its rows, and how many rows it returned or changed. */
+export type Rows<R = any> = { rows: R[]; rowCount: number | null };
+/** A connection taken from the pool: released when done, with the error that broke it (so it is dropped, not reused). */
+export type DbClient = Sql & {
+  release(error?: Error): void;
+  on(event: "error", listener: (error: Error) => void): unknown;
+  off(event: "error", listener: (error: Error) => void): unknown;
+};
 
 // bigint columns hold millisecond times and counts, all well inside 2^53.
 pg.types.setTypeParser(pg.types.builtins.INT8, Number);
@@ -49,7 +69,7 @@ export function databaseUnavailable(error: unknown): boolean {
  * AGENT_DATABASE_QUERY_TIMEOUT_MS bounds a query (default 30000; 0 for none), so a
  * connection that went dark in a failover fails the query instead of hanging it.
  */
-export async function databaseFromEnvironment(env = process.env): Promise<Db> {
+export async function databaseFromEnvironment(env = process.env): Promise<pg.Pool> {
   const max = Number(env.AGENT_DATABASE_POOL_SIZE ?? 10);
   if (!Number.isInteger(max) || max < 1) throw new Error("AGENT_DATABASE_POOL_SIZE must be a positive integer");
   const queryTimeout = Number(env.AGENT_DATABASE_QUERY_TIMEOUT_MS ?? 30_000);
@@ -131,7 +151,7 @@ export async function listenFromEnvironment(handlers: Record<string, (payload: s
  * every ten minutes and whenever a new connection fails authentication, and that
  * connection is retried once, so a rotation never takes the runtime down.
  */
-export async function rotatingPool(options: Omit<pg.PoolConfig, "user" | "password"> & { credentials: () => Promise<Credentials> }): Promise<Db> {
+export async function rotatingPool(options: Omit<pg.PoolConfig, "user" | "password"> & { credentials: () => Promise<Credentials> }): Promise<pg.Pool> {
   const { credentials, ...config } = options;
   let current = await credentials();
   if (!current?.username || !current.password) throw new Error("The database secret needs username and password");
@@ -161,7 +181,7 @@ export async function rotatingPool(options: Omit<pg.PoolConfig, "user" | "passwo
 }
 
 // An idle connection dropped by the server must not crash the process; the next query reconnects.
-function logErrors(pool: Db) {
+function logErrors(pool: pg.Pool) {
   pool.on("error", error => console.error(JSON.stringify({ type: "database_connection_error", error: error.message })));
   return pool;
 }
@@ -201,7 +221,7 @@ async function migrateOnce(db: Db, directory: string, lockTimeoutMs: number) {
   });
 }
 
-export async function transaction<T>(db: Db, work: (sql: pg.PoolClient) => Promise<T>): Promise<T> {
+export async function transaction<T>(db: Db, work: (sql: Sql) => Promise<T>): Promise<T> {
   const client = await db.connect();
   // A checked-out client whose connection drops emits 'error'; unheard, that would crash the process.
   // The statement in flight fails too, and a broken client is dropped from the pool, not reused.

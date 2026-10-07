@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { nodeConfig } from "../src/node-config.ts";
 import { createNode, nodeDeps, type RuntimeNode } from "../src/node.ts";
+import type { Db } from "../src/db.ts";
 import { freePort, sha, token } from "./cluster-helpers.ts";
 import { testDatabase } from "./database.ts";
 import { fakeModel, lastUser, until } from "./runtime-server.ts";
@@ -28,6 +29,7 @@ test("two nodes run in one process, each serving its own agents and forwarding t
   const { db, url: databaseUrl } = await testDatabase();
   hook.enable();
   const nodes: RuntimeNode[] = [];
+  const counted = countingDb();
   t.after(async () => { for (const node of nodes) await node.close().catch(() => {}); });
   for (const name of ["a", "b"]) {
     const port = await freePort();
@@ -37,7 +39,9 @@ test("two nodes run in one process, each serving its own agents and forwarding t
       AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_SESSION_SECRET: "in-process-session-secret-with-32-chars!", AGENT_SECRETS_KEY: randomBytes(32).toString("hex"),
       AGENT_PROVIDER: "openrouter", AGENT_MODEL: "openai/gpt-4o-mini", AGENT_BASE_URL: model.url, AGENT_SERVICE_NAME: `node-${name}`,
     });
-    const node = await createNode(config, await nodeDeps(config));
+    // Node b's database is not a pg.Pool: anything with Db's methods will do.
+    const deps = await nodeDeps(config);
+    const node = await createNode(config, name === "b" ? { ...deps, db: counted.wrap(deps.db) } : deps);
     nodes.push(node);
     assert.equal((await node.start()).port, port);
   }
@@ -71,6 +75,8 @@ test("two nodes run in one process, each serving its own agents and forwarding t
   // A request to the other node goes to the agent's owner, in the same process.
   const forwarded = await prompt(b, agents[0], "via b");
   assert.equal(forwarded.outcome.result.reply, "answered: via b");
+  // Node b's queries and transactions all went through the Db it was given.
+  assert.ok(counted.queries > 0 && counted.transactions > 0, JSON.stringify(counted));
 
   // Both leave: the database shows neither, and neither leaves an interval running.
   for (const node of nodes.splice(0)) await node.close();
@@ -81,3 +87,22 @@ test("two nodes run in one process, each serving its own agents and forwarding t
   });
   hook.disable();
 });
+
+/** A Db that wraps another, counting queries and the connections transactions take. */
+function countingDb() {
+  const counts = { queries: 0, transactions: 0 };
+  return Object.assign(counts, {
+    wrap: (pool: Db): Db => ({
+      query: (text, values) => { counts.queries++; return pool.query(text, values); },
+      connect: async () => {
+        counts.transactions++;
+        const client = await pool.connect();
+        return { query: (text, values) => { counts.queries++; return client.query(text, values); }, release: error => client.release(error), on: (event, listener) => client.on(event, listener), off: (event, listener) => client.off(event, listener) };
+      },
+      end: () => pool.end(),
+      get totalCount() { return pool.totalCount; },
+      get idleCount() { return pool.idleCount; },
+      get waitingCount() { return pool.waitingCount; },
+    }),
+  });
+}
