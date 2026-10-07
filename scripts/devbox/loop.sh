@@ -14,6 +14,8 @@ exec 8>$dir/lock
 flock -n 8 || exit 0
 echo $$ > $dir/pid
 batch=${SIM_BATCH:-5000}; pg=${SIM_POSTGRES_SEEDS:-100}; every=${IMAGE_EVERY:-3}
+# The simulator is deterministic, so it can use most of the box (the soak, timing-sensitive, runs alone before it).
+export SIM_SHARDS=${SIM_SHARDS:-12}
 cycle=$(cat $dir/cycle 2>/dev/null || echo 0)
 while [ ! -e $dir/stop ]; do
   cycle=$((cycle + 1)); echo $cycle > $dir/cycle
