@@ -97,12 +97,18 @@ function retarget(step: Step, plan: Plan, random: Random): Step {
 /** A shift in time: small (who goes first within a few ms) or large (another phase of the run). */
 const shift = (random: Random) => (random.float() < 0.5 ? 1 + random.int(50) : 100 + random.int(5_000)) * (random.float() < 0.5 ? -1 : 1);
 
-/** The plan's settings: the lease, the model's latency, a node's skew, the BUGGIFY plan, or the seed (every other draw). */
+/**
+ * The plan's settings: the lease, the model's and the database's latency (and its spikes), a node's skew, the BUGGIFY
+ * plan, or the seed (every other draw).
+ */
 function retune(plan: Plan, random: Random): Plan {
   const pick = <T>(items: readonly T[]) => items[random.int(items.length)];
-  switch (random.int(6)) {
+  switch (random.int(7)) {
     case 0: return { ...plan, leaseTtlMs: pick([3_000, 6_000, 12_000]) };
     case 4: return { ...plan, dbLatencyMs: random.float() < 0.2 ? undefined : [0, pick([1, 5, 20, 200, 1_000])] };
+    case 5: return random.float() < 0.2 ? { ...plan, dbSpikes: undefined } : {
+      ...plan, dbLatencyMs: plan.dbLatencyMs ?? [1, 5], dbSpikes: { rate: pick([0.005, 0.01, 0.02, 0.05]), ms: pick([[200, 800], [100, 400], [500, 2_000]] as [number, number][]) },
+    };
     case 1: return { ...plan, modelDelayMs: [50, pick([200, 2_000, 8_000, 20_000])] };
     case 2: return { ...plan, skews: { ...plan.skews, [pick(plan.nodes)]: random.int(10_001) - 5_000 } };
     case 3: {

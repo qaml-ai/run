@@ -50,6 +50,12 @@ export type Plan = {
    * statements all run at one virtual instant and see one now(); with some, time passes between them, as on a real server.
    */
   dbLatencyMs?: [number, number];
+  /**
+   * Now and then a query's round trip is far longer (a stall: a checkpoint, a lock, a network hiccup): at `rate`, drawn
+   * from `ms` instead. A tail like this is what opens the races a steady latency never does (a peer's statement slower
+   * than an owner's last renewal by more than the lease's margin).
+   */
+  dbSpikes?: { rate: number; ms: [number, number] };
   buggify: BuggifyPlan;
   steps: { at: number; op: Op }[];
   /** Virtual ms the steps span; then every fault heals, and the run settles. */
@@ -121,11 +127,15 @@ export function generatePlan(seed: string, options: { steps?: number; durationMs
     for (const [node] of down) if (steps.some(step => step.at <= at && (step.op.op === "restart" || step.op.op === "databaseUp") && step.op.node === node)) down.delete(node);
   }
   steps.sort((a, b) => a.at - b.at || 0);
+  // A database with a tail for some seeds, from a stream of its own, so every other draw of the plan stays as it was.
+  const latency = prng(`${seed}:db-latency`);
+  const tail = latency.float() < 0.3 ? { dbLatencyMs: [1, 5] as [number, number], dbSpikes: { rate: 0.01 + latency.int(2) * 0.01, ms: [200, 800] as [number, number] } } : {};
   return {
     seed, nodes, leaseTtlMs, durationMs,
     skews: Object.fromEntries(nodes.map(node => [node, faults.has("skew") ? random.int(10_001) - 5_000 : 0])),
     modelDelayMs: [50, pick([200, 2_000, 8_000])],
     buggify: faults.has("buggify") ? "swarm" : false,
     steps,
+    ...tail,
   };
 }

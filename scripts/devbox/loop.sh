@@ -3,7 +3,7 @@
 # Each cycle, on the latest origin/main:
 #   1. a soak round (soak-seq.sh: property tests at PROP_SCALE=50, then the full suite);
 #   2. a simulator batch of SIM_BATCH seeds (sim-nightly.sh), continuing from the last batch's seeds, with
-#      SIM_POSTGRES_SEEDS of them also against real Postgres;
+#      SIM_POSTGRES_SEEDS of them also against real Postgres, then as long again of fuzzing from the kept corpus;
 #   3. every IMAGE_EVERY cycles, the image check (image-check.sh: the amd64 image's isolation and v8-exec tests).
 # Results: soak/rounds.tsv and soak/failures.tsv, sim/nights.tsv and sim-failures/<stamp>/, soak/images.tsv, and one
 # line per cycle in loop/cycles.tsv. cron starts it (every 10 minutes, a no-op while it runs: it holds loop/lock);

@@ -10,13 +10,17 @@ The nightly simulator run on the CI devbox (`camel-devbox`). It runs beside `ci-
     itself.
   - It holds `~/camelrun-ci/sim/lock` (flock), so two runs never overlap.
   - It writes one line per run to `~/camelrun-ci/sim/nights.tsv`.
-  - It exits 1 if any seed failed.
+  - It exits 1 if any seed failed or the fuzzer found a failure.
   - Environment: `SIM_SHARDS` sets the number of processes (default 4). `SIM_NOWAIT=1` skips the wait, for a short
     manual run.
 - `sim-shards.sh <from> <to> <shards> <outdir>` runs inside the checkout.
   - It splits the seeds over `<shards>` processes.
   - When `SIM_POSTGRES_SEEDS` is set (a count) in its environment and the checkout's simulator has `--postgres`, it then
-    runs that many seeds on ci-run's own Postgres. This pass has not run on the devbox yet.
+    runs that many seeds on ci-run's own Postgres.
+  - Then, when the checkout has `--fuzz`, it fuzzes for as long as the seeds took (half the batch), on `<shards>`
+    workers, from a corpus kept across batches (`SIM_CORPUS`, default `~/camelrun-ci/sim/corpus`). Each new kind of
+    failure the fuzzer finds is minimized and copied to `<outdir>/fuzz/`, and counts in `nights.tsv`. `SIM_FUZZ=0`
+    skips it.
   - It copies every failing seed's plan to `<outdir>` (`~/camelrun-ci/sim-failures/<stamp>/`), then minimizes it
     there (`<seed>.min.json`). Postgres failures go to `<outdir>/postgres/` and are not minimized, because those runs
     are not deterministic.
