@@ -80,6 +80,8 @@ import { publicOrigins } from "./origins.ts";
 import { adminSite, adminSiteFromEnvironment } from "./admin-site.ts";
 import { AccountDeletions } from "./account-deletion.ts";
 import { RateLimits, rateLimitConfig } from "./rate-limits.ts";
+import { buggify } from "./buggify.ts";
+import { sometimes } from "./assert.ts";
 
 /**
  * What a node is given rather than finds for itself: its operators' tenants, its secrets, the control-plane database and
@@ -1159,11 +1161,14 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     // With a peer to continue them, running turns are handed off at their next step boundary, and idle agents (one waiting
     // on human input, say) move at once. Alone, the node lets its turns finish instead: nobody could go on with them now.
     await step("hand-off", async () => { if (await ownership.peer()) clients.handOffTurns("drain"); });
+    // A second signal may come at any moment, and the node stops waiting for its turns.
+    if (buggify("drain.stop_waiting")) drainDeadline = 0;
     for (let tick = 0; clients.inFlight() && Date.now() < drainDeadline; tick++) {
       if (tick % 10 === 0) void clients.releaseIdle().catch(error => console.error(JSON.stringify({ type: "drain_release_failed", error: safeError(error) })));
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     const unfinished = clients.inFlight();
+    sometimes(unfinished > 0, "a drain released turns still running");
     await step("agents", () => clients.close());
     // The spans of the runs this node served or handed off, sent within a few seconds.
     await step("telemetry", () => telemetry.close());

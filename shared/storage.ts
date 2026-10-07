@@ -3,6 +3,8 @@ import { link, mkdir, open, readdir, readFile, rm, stat } from "node:fs/promises
 import { join } from "node:path";
 import { fileAppendLog, type AppendLog, type CommitEffect } from "./append-log.ts";
 import type { Claim } from "../src/ownership.ts";
+import { buggify } from "../src/buggify.ts";
+import { sometimes } from "../src/assert.ts";
 
 /**
  * The data plane: bulk state that is appended or written once. Coordination and
@@ -376,6 +378,7 @@ export function segmentLog<T>(store: SegmentStore, key: string, tail: LogTail, c
       const size = (name: string) => listing.bytes?.get(name) ?? 0;
       const pendingBytes = pending.reduce((sum, sequence) => sum + size(segmentName(sequence)), 0) + texts.reduce((sum, text) => sum + Buffer.byteLength(text) + 1, 0);
       const fold = pending.length >= FOLD_SEGMENTS || pendingBytes > Math.max(FOLD_BYTES, base === undefined ? 0 : size(`snapshot-${segmentName(base)}`));
+      sometimes(fold, "a compaction folded a log into a snapshot");
       if (start < 0 && !fold) await store.create(segmentName(last), texts.join("\n") + "\n");
       else {
         // A rewrite among the rows replaces everything before it; otherwise fold Storage's records and the rows into one snapshot.
@@ -405,7 +408,7 @@ export function segmentLog<T>(store: SegmentStore, key: string, tail: LogTail, c
       if (!fenced) { buffer = batch.concat(buffer); effects = done.concat(effects); retrying = true; }
       throw error;
     }
-    if (tailRecords >= TAIL_RECORDS || tailBytes >= TAIL_BYTES) void serialize(compact).catch(() => {});
+    if (tailRecords >= TAIL_RECORDS || tailBytes >= TAIL_BYTES || buggify("storage.compact.now")) void serialize(compact).catch(() => {});
   };
 
   return {

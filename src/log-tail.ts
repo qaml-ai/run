@@ -3,6 +3,8 @@ import type { LogTail, TailRow } from "../shared/storage.ts";
 import type { CommitEffect } from "../shared/append-log.ts";
 import { LostClaim, underClaim, type Claim } from "./ownership.ts";
 import { clock } from "./node-context.ts";
+import { buggify } from "./buggify.ts";
+import { reachable } from "./assert.ts";
 
 /**
  * Logs' hot tails in `log_records`. An append is one multi-row insert, fenced in
@@ -45,9 +47,14 @@ export function postgresTail(db: Db, options: { retryMs?: number; unfenced?: boo
         return result.written;
       });
       for (let delay = 100; ; delay = Math.min(delay * 2, 2_000)) {
-        try { return await append(); }
-        catch (error) {
+        try {
+          const written = await append();
+          // Written, and the answer lost on the way back: the append is repeated, and finds its rows there.
+          if (written && buggify("tail.append.lost_ack")) throw Object.assign(new Error("Connection terminated (BUGGIFY: the append's answer was lost)"), { code: "ECONNRESET" });
+          return written;
+        } catch (error) {
           if (!databaseUnavailable(error) || Date.now() + delay > deadline) throw error;
+          reachable("a tail append was repeated while the database was unavailable");
           await clock().sleep(delay);
         }
       }

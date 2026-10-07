@@ -15,6 +15,7 @@ import type { HistoryChunk } from "./history-pages.ts";
 import type { Claim } from "./ownership.ts";
 import { createAgentHost, HISTORY_FLUSH_MS } from "./agent-host.ts";
 import type { CodeExecutor } from "./codemode.ts";
+import { buggify } from "./buggify.ts";
 
 /**
  * How agents run. "process": each agent is its own Node process (strong memory
@@ -96,6 +97,8 @@ export class AgentSupervisor {
     const controller = new AbortController();
     handle.calls.add(controller);
     try {
+      // A tool call may fail before its tool hears of it.
+      if (buggify("tool.call.fails")) throw new Error("BUGGIFY: the tool call failed before it was sent");
       const result = await handle.bridge.call(checked.tool.name, checked.args, controller.signal, params.toolCallId ? { toolCallId: params.toolCallId, ...(params.innerCallId ? { innerCallId: params.innerCallId } : {}), ...(Number.isSafeInteger(params.messageIndex) ? { messageIndex: params.messageIndex } : {}) } : undefined);
       controller.signal.throwIfAborted();
       return JSON.parse(jsonWithinLimit(result, SANDBOX_LIMITS.resultBytes, "Tool result"));

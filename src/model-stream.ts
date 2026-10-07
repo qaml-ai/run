@@ -1,4 +1,6 @@
 import { createAssistantMessageEventStream, type Api, type AssistantMessage, type AssistantMessageEvent, type AssistantMessageEventStream, type Model } from "@earendil-works/pi-ai";
+import { buggify } from "./buggify.ts";
+import { reachable } from "./assert.ts";
 
 /**
  * How long a model request may go quiet before the runtime gives up on it. A provider's stream can stop partway
@@ -95,7 +97,9 @@ export function watchedStream(
     const phase = started ? "idle" : "first_token";
     const limit = started ? timeouts.idleMs : timeouts.firstTokenMs;
     const deadline = (started ? last : began) + limit;
-    if (now < deadline) { timer = setTimeout(check, deadline - now); timer.unref?.(); return; }
+    // A provider may go quiet at any moment.
+    if (now < deadline && !buggify("model.stream.stall")) { timer = setTimeout(check, deadline - now); timer.unref?.(); return; }
+    reachable("a model stream stalled");
     const seconds = Math.round(limit / 1000);
     const message = phase === "first_token"
       ? `${STALLED}: ${model.provider}/${model.id} sent nothing within ${seconds}s of the request (timed out before its first token)`
