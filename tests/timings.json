@@ -81,7 +81,7 @@
     "purge.test.ts": 7.6,
     "reasoning.test.ts": 4.9,
     "registry.test.ts": 0.9,
-    "runs.test.ts": 150.0,
+    "runs.test.ts": 90.0,
     "runtime.test.ts": 11.6,
     "sandbox-processes.test.ts": 7.5,
     "sandbox.test.ts": 12.5,
