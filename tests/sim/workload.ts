@@ -22,7 +22,15 @@ export type Op =
   | { op: "partition"; a: string; b: string; how: "refused" | "blackhole" }
   | { op: "heal" }
   | { op: "databaseDown"; node: string }
-  | { op: "databaseUp"; node: string };
+  | { op: "databaseUp"; node: string }
+  /** A fork of an agent: the fork's history is the source's up to the fork point, and later turns stay apart (I11). */
+  | { op: "fork"; agent: number; fork: number; node: string }
+  /** A schedule that prompts the agent `inSeconds` later: once due, it fires, once (I13). */
+  | { op: "schedule"; agent: number; schedule: number; inSeconds: number; node: string }
+  /** Volumes: one made, a file written (each write its own path and content), a volume forked (I2, I11). */
+  | { op: "volume"; volume: number; node: string }
+  | { op: "write"; volume: number; write: number; node: string }
+  | { op: "forkVolume"; volume: number; fork: number; node: string };
 
 /**
  * A run of the simulation as explicit data: the cluster, its settings, the model's latency, the BUGGIFY plan and every
@@ -44,7 +52,7 @@ export type Plan = {
 };
 
 /** Which fault classes a run uses: each run enables a random subset (swarm testing). */
-export const FAULTS = ["crash", "partition", "database", "abort", "buggify", "skew", "deploy", "watch", "pause"] as const;
+export const FAULTS = ["crash", "partition", "database", "abort", "buggify", "skew", "deploy", "watch", "pause", "forks", "schedules", "volumes"] as const;
 
 /**
  * A plan for `seed`: 2 or 3 nodes, a few agents made at once, then prompts and the faults the run enabled, over a
@@ -61,14 +69,22 @@ export function generatePlan(seed: string, options: { steps?: number; durationMs
   const agents = 2 + random.int(3);
   const steps: Plan["steps"] = [];
   for (let agent = 0; agent < agents; agent++) steps.push({ at: agent * 10, op: { op: "create", agent, node: pick(nodes) } });
-  let run = 0;
+  const volumes = faults.has("volumes") ? 1 + random.int(2) : 0;
+  for (let volume = 0; volume < volumes; volume++) steps.push({ at: 50 + volume * 10, op: { op: "volume", volume, node: pick(nodes) } });
+  let run = 0, forks = 0, schedules = 0, writes = 0, volumeForks = 0;
   const count = options.steps ?? 30;
   const down = new Map<string, "crash" | "database">();
   for (let index = 0; index < count; index++) {
     const at = 1_000 + Math.floor((index / count) * (durationMs * 0.7)) + random.int(500);
     const roll = random.float();
     const live = nodes.filter(node => !down.has(node));
-    if (roll < 0.5 || !faults.size) steps.push({ at, op: { op: "prompt", agent: random.int(agents), run: run++, node: pick(live.length ? live : nodes) } });
+    const any = () => pick(live.length ? live : nodes);
+    if (volumes && random.float() < 0.3) {
+      // Volume traffic rides along with the rest: writes mostly, now and then a fork.
+      steps.push({ at, op: random.float() < 0.85 ? { op: "write", volume: random.int(volumes), write: writes++, node: any() } : { op: "forkVolume", volume: random.int(volumes), fork: volumeForks++, node: any() } });
+    } else if (faults.has("forks") && random.float() < 0.08) steps.push({ at, op: { op: "fork", agent: random.int(agents), fork: forks++, node: any() } });
+    else if (faults.has("schedules") && random.float() < 0.08) steps.push({ at, op: { op: "schedule", agent: random.int(agents), schedule: schedules++, inSeconds: 1 + random.int(20), node: any() } });
+    else if (roll < 0.5 || !faults.size) steps.push({ at, op: { op: "prompt", agent: random.int(agents), run: run++, node: any() } });
     else if (roll < 0.6 && faults.has("watch")) steps.push({ at, op: { op: "watch", agent: random.int(agents), node: pick(live.length ? live : nodes), forMs: 1_000 + random.int(20_000) } });
     else if (roll < 0.65 && faults.has("deploy") && live.length > 1) {
       const node = pick(live);

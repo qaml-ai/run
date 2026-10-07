@@ -58,6 +58,16 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
   const watched = new Map<number, { node: string; from: number; events: { id: number; data: string }[]; status?: number }[]>();
   /** The last event id each agent's watcher lane saw, which its next connection resumes after. */
   const lastSeen = new Map<number, number>();
+  /** Agent forks made: of which agent, the fork's id, and when the call was made and answered. */
+  const forks = new Map<number, { agent: number; id: string; invoked: number; ended: number }>();
+  /** Schedules made (201). */
+  const schedules = new Map<number, { agent: number; at: number }>();
+  /** Volumes made, writes acknowledged, and volume forks made. */
+  const volumes = new Map<number, string>();
+  const writes = new Map<number, { volume: number; invoked: number; ended: number }>();
+  const volumeForks = new Map<number, { volume: number; id: string; invoked: number; ended: number }>();
+  /** Every write tried, acknowledged or not, by when it was asked: a fork may hold one whose answer was lost. */
+  const tried = new Map<number, { volume: number; invoked: number }>();
   try {
     for (const node of plan.nodes) await sim.start(node, {}, { skewMs: plan.skews[node] ?? 0 });
 
@@ -130,6 +140,46 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
           return;
         }
         case "deploy": if (!sim.nodes.get(op.node)?.crashed) pending.push(sim.drain(op.node)); break;
+        case "fork": {
+          const agent = agents.get(op.agent);
+          if (!agent) return;
+          const invoked = sim.env.elapsed;
+          void client(op, op.node, `/v1/agents/${agent}/fork`, { key: `fork-${op.fork}` })
+            .then(answer => { if (answer?.status === 201) forks.set(op.fork, { agent: op.agent, id: answer.json.id, invoked, ended: sim.env.elapsed }); });
+          return;
+        }
+        case "schedule": {
+          const agent = agents.get(op.agent);
+          if (!agent) return;
+          void client(op, op.node, `/v1/agents/${agent}/schedules`, { text: `sched-${op.schedule} agent-${op.agent}`, inSeconds: op.inSeconds })
+            .then(answer => { if (answer?.status === 201) schedules.set(op.schedule, { agent: op.agent, at: sim.env.elapsed + op.inSeconds * 1000 }); });
+          return;
+        }
+        case "volume":
+          void client(op, op.node, "/v1/volumes", { name: `volume-${op.volume}` }).then(answer => { if (answer?.status === 201) volumes.set(op.volume, answer.json.id); });
+          return;
+        case "write": {
+          const volume = volumes.get(op.volume);
+          if (!volume) return;
+          const invoked = sim.env.elapsed;
+          tried.set(op.write, { volume: op.volume, invoked });
+          const event: Event = { op, invoked };
+          history.push(event);
+          const call = sim.request(op.node, `/v1/volumes/${volume}/files/f-${op.write}.txt`, { method: "PUT", raw: `content-${op.write}` }).then(answer => {
+            Object.assign(event, { ended: sim.env.elapsed, status: answer.status, result: answer.status < 300 ? "ok" : answer.status >= 500 ? "info" : "fail" });
+            if (answer.status === 201) writes.set(op.write, { volume: op.volume, invoked, ended: sim.env.elapsed });
+          }, error => { Object.assign(event, { ended: sim.env.elapsed, result: "info", detail: String(error?.cause?.code ?? error) }); });
+          pending.push(call);
+          return;
+        }
+        case "forkVolume": {
+          const volume = volumes.get(op.volume);
+          if (!volume) return;
+          const invoked = sim.env.elapsed;
+          void client(op, op.node, `/v1/volumes/${volume}/fork`, { name: `fork-${op.fork}` })
+            .then(answer => { if (answer?.status === 201) volumeForks.set(op.fork, { volume: op.volume, id: answer.json.id, invoked, ended: sim.env.elapsed }); });
+          return;
+        }
         case "crash": if (!sim.nodes.get(op.node)?.crashed) sim.crash(op.node); break;
         case "restart": if (sim.nodes.get(op.node)?.crashed) pending.push(restart(op.node)); break;
         case "partition":
@@ -169,6 +219,10 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
     for (const node of sim.nodes.values()) if (node.crashed) await sim.restart(node.name);
     const healedAt = sim.env.elapsed;
     const failures: string[] = [], notes: string[] = [];
+
+    // Schedules due late in the run get their time to fire: a scan, and the slowest model call.
+    const lastDue = Math.max(0, ...[...schedules.values()].map(schedule => schedule.at));
+    if (lastDue + 10_000 + high > sim.env.elapsed) await sim.advance(lastDue + 10_000 + high - sim.env.elapsed);
 
     // I3: every accepted run ends, with exactly one outcome, within the recovery bound.
     const live = () => [...sim.nodes.values()].filter(node => !node.crashed).map(node => node.name);
@@ -261,6 +315,49 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
           byId.set(id, data);
         }
       }
+    }
+
+    // I2: every acknowledged volume write reads back, whole, on every live node.
+    for (const [write, { volume }] of writes) {
+      for (const node of live()) {
+        const answer = await sim.call(node, `/v1/volumes/${volumes.get(volume)}/files/f-${write}.txt`);
+        if (answer.status !== 200 || answer.json !== `content-${write}`) failures.push(`I2: write ${write} to volume-${volume} was acknowledged, but ${node} reads ${answer.status} ${JSON.stringify(answer.json).slice(0, 80)}`);
+      }
+    }
+    // I11 (volumes): a fork holds every write acknowledged before it was asked for, and none asked for after it answered.
+    for (const [fork, { volume, id, invoked, ended }] of volumeForks) {
+      const listed = await sim.call(live()[0], `/v1/volumes/${id}/files?limit=1000`);
+      const paths = new Set<string>((listed.json?.files ?? []).map((file: { path: string }) => file.path));
+      for (const [write, done] of writes) if (done.volume === volume && done.ended < invoked && !paths.has(`/f-${write}.txt`)) failures.push(`I11: volume fork ${fork} of volume-${volume} lacks write ${write}, acknowledged before the fork was asked for`);
+      for (const [write, asked] of tried) if (asked.volume === volume && asked.invoked > ended && paths.has(`/f-${write}.txt`)) failures.push(`I11: volume fork ${fork} of volume-${volume} has write ${write}, asked for after the fork was made`);
+    }
+    // I11 (agents): a fork's history is its source's up to the fork point: every run of the source that ended before
+    // the fork was asked for, and no run accepted after it was made.
+    const runsIn = async (agent: string) => {
+      const answer = await sim.call(live()[0], `/v1/agents/${agent}/history`);
+      const messages: any[] = answer.json?.messages ?? [];
+      return new Set(messages.filter(message => message.role === "user").map(message => runOf({ messages: [message] })).filter((run): run is number => run !== undefined));
+    };
+    for (const [fork, { agent, id, invoked, ended }] of forks) {
+      const has = await runsIn(id);
+      for (const [run, record] of records) {
+        if (runs.get(run)!.agent !== agent) continue;
+        const endedAt = Number(record.endedAt) - sim.env.start;
+        if (endedAt < invoked && !record.outcome?.error && !has.has(run)) failures.push(`I11: fork ${fork} of agent-${agent} lacks run-${run}, which ended before the fork was asked for`);
+      }
+      for (const [run, { agent: of, acceptedAt }] of runs) if (of === agent && acceptedAt > ended && has.has(run)) failures.push(`I11: fork ${fork} of agent-${agent} has run-${run}, accepted after the fork was made`);
+    }
+    // I13: a schedule made fires once it is due, exactly once. A delivery that failed (its agent's node was down) is
+    // tried again once its claim times out (a minute, src/scheduler.ts), so the bound is that past the later of its due
+    // time and recovery.
+    if (schedules.size) {
+      const by = Math.max(healedAt, ...[...schedules.values()].map(schedule => schedule.at)) + 60_000 + 10_000 + high;
+      if (by > sim.env.elapsed) await sim.advance(by - sim.env.elapsed);
+    }
+    for (const [schedule, { agent }] of schedules) {
+      const answer = await sim.call(live()[0], `/v1/agents/${agents.get(agent)}/history`);
+      const fired = (answer.json?.messages ?? []).filter((message: any) => message.role === "user" && JSON.stringify(message.content).includes(`sched-${schedule} `)).length;
+      if (fired !== 1) failures.push(`I13: schedule ${schedule} of agent-${agent} fired ${fired} times`);
     }
 
     for (const violation of sim.hooks.violations) failures.push(`assertion: ${violation}`);
