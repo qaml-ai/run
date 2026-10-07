@@ -6,6 +6,10 @@ export type Op =
   | { op: "create"; agent: number; node: string }
   | { op: "prompt"; agent: number; run: number; node: string }
   | { op: "abort"; agent: number; node: string }
+  /** A client watching the agent's events for `forMs`, resuming after the last event its lane saw. */
+  | { op: "watch"; agent: number; node: string; forMs: number }
+  /** A deploy takes the node out: it drains, then exits (and a `restart` brings a new process). */
+  | { op: "deploy"; node: string }
   | { op: "crash"; node: string }
   | { op: "restart"; node: string }
   | { op: "partition"; a: string; b: string; how: "refused" | "blackhole" }
@@ -33,7 +37,7 @@ export type Plan = {
 };
 
 /** Which fault classes a run uses: each run enables a random subset (swarm testing). */
-export const FAULTS = ["crash", "partition", "database", "abort", "buggify", "skew"] as const;
+export const FAULTS = ["crash", "partition", "database", "abort", "buggify", "skew", "deploy", "watch"] as const;
 
 /**
  * A plan for `seed`: 2 or 3 nodes, a few agents made at once, then prompts and the faults the run enabled, over a
@@ -57,7 +61,14 @@ export function generatePlan(seed: string, options: { steps?: number; durationMs
     const at = 1_000 + Math.floor((index / count) * (durationMs * 0.7)) + random.int(500);
     const roll = random.float();
     const live = nodes.filter(node => !down.has(node));
-    if (roll < 0.6 || !faults.size) steps.push({ at, op: { op: "prompt", agent: random.int(agents), run: run++, node: pick(live.length ? live : nodes) } });
+    if (roll < 0.5 || !faults.size) steps.push({ at, op: { op: "prompt", agent: random.int(agents), run: run++, node: pick(live.length ? live : nodes) } });
+    else if (roll < 0.6 && faults.has("watch")) steps.push({ at, op: { op: "watch", agent: random.int(agents), node: pick(live.length ? live : nodes), forMs: 1_000 + random.int(20_000) } });
+    else if (roll < 0.65 && faults.has("deploy") && live.length > 1) {
+      const node = pick(live);
+      down.set(node, "crash");
+      steps.push({ at, op: { op: "deploy", node } });
+      steps.push({ at: at + 5_000 + random.int(20_000), op: { op: "restart", node } });
+    }
     else if (roll < 0.7 && faults.has("abort")) steps.push({ at, op: { op: "abort", agent: random.int(agents), node: pick(live.length ? live : nodes) } });
     else if (roll < 0.8 && faults.has("crash") && live.length > 1) {
       const node = pick(live);
