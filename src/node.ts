@@ -96,9 +96,13 @@ export type NodeDeps = {
   sandbox: Record<string, unknown>;
   /** This task's private address on ECS, where peers reach it. */
   address?: string;
-  /** Whether a newer deployment of this task's ECS service has replaced it: on ECS only. */
-  superseded?: () => Promise<"current" | "waiting" | "superseded">;
-  managedDiscord?: ManagedDiscordSecrets;
+  /**
+   * On ECS, a check of whether a newer deployment of this task's service has replaced it (undefined off ECS). Looked up
+   * once the node has started listening, so an ECS metadata fetch never delays that.
+   */
+  supersession?: () => Promise<(() => Promise<"current" | "waiting" | "superseded">) | undefined>;
+  /** Managed Discord's credentials, read where the node sets up its channels (undefined: managed Discord is off). */
+  managedDiscord?: () => Promise<ManagedDiscordSecrets | undefined>;
 };
 type RuntimeSecrets = Awaited<ReturnType<typeof runtimeSecrets>>;
 type ManagedDiscordSecrets = NonNullable<Awaited<ReturnType<typeof managedDiscordSecrets>>>;
@@ -121,9 +125,10 @@ export async function nodeDeps(config: NodeConfig): Promise<NodeDeps> {
   const sandbox = await checkSandbox();
   const db = await databaseFromEnvironment(env);
   const address = await taskAddress(env);
-  const managedDiscord = await managedDiscordSecrets(env);
-  const superseded = await supersession(env).catch(error => { console.error(JSON.stringify({ type: "ecs_service_unavailable", error: errorText(error) })); return undefined; });
-  return { tenants, secrets, db, listen: handlers => listenFromEnvironment(handlers, env), sandbox, address, superseded, managedDiscord };
+  return {
+    tenants, secrets, db, listen: handlers => listenFromEnvironment(handlers, env), sandbox, address,
+    supersession: () => supersession(env), managedDiscord: () => managedDiscordSecrets(env),
+  };
 }
 
 /** A runtime node: its HTTP surface, and the handles that start it and take it out of the cluster. */
@@ -682,7 +687,7 @@ export async function createNode(config: NodeConfig, deps: NodeDeps): Promise<Ru
   scheduler.start(config.schedulerIntervalMs);
   // Email channels, when the runtime has a domain SES receives for: mail arrives through SNS at one shared route.
   const emailOptions: EmailOptions | undefined = config.email && { db, ...config.email };
-  const managedDiscordConfig = deps.managedDiscord;
+  const managedDiscordConfig = await deps.managedDiscord?.();
   const managedDiscord = managedDiscordConfig ? new ManagedDiscord({
     ...managedDiscordConfig, db, consoleAuth, channels: () => channels, ownership, node, publicUrl,
     apiUrl: config.channelApis.discord,
@@ -979,6 +984,8 @@ export async function createNode(config: NodeConfig, deps: NodeDeps): Promise<Ru
       console.log(JSON.stringify({ type: "listening", address: server.address(), node, tenants: tenants.source, hosting, storage: storageDescriptor.kind, github: github ? (github.open ? "open" : "org") : false, google: !!google, accountEmail: accountMailSettings?.provider ?? false, keyStorage: accounts.canStoreKeys, sandbox, toolSearch: rerankers.length ? rerankers.map(stage => stage.kind).join(",") : "keyword", stripe: stripe ? (stripe.live ? "live" : "test") : false }));
       resolve(server.address() as AddressInfo);
     });
+    // As soon as it listens, as before: whether a newer deployment replaced this task (ECS only).
+    void watchRetirement();
   });
   // A bad tenants file or secret is rejected whole; the tenants loaded before stay in force.
   const reloadTenants = (announce: boolean) => tenants.reload().then(
@@ -1074,16 +1081,20 @@ export async function createNode(config: NodeConfig, deps: NodeDeps): Promise<Ru
     void protection.update(clients.inFlight() > 0 && !capped);
   }, 1_000);
   workTimer.unref();
-  const { superseded } = deps;
-  const retireTimer = superseded && setInterval(() => void superseded().then(async state => {
-    if (state !== "superseded" || retiringSince !== undefined || draining || !await ownership.peer()) return;
-    retiringSince = Date.now();
-    console.log(JSON.stringify({ type: "retiring", node, inFlight: clients.inFlight(), agents: clients.sessions.size, volumes: volumes.size }));
-    clients.draining = true;
-    clients.handOffTurns("retire");
-    await ownership.drain();
-  }).catch(error => console.error(JSON.stringify({ type: "ecs_service_check_failed", error: errorText(error) }))), config.ecs.pollMs);
-  if (retireTimer) retireTimer.unref();
+  let retireTimer: ReturnType<typeof setInterval> | undefined;
+  async function watchRetirement() {
+    const superseded = await deps.supersession?.().catch(error => { console.error(JSON.stringify({ type: "ecs_service_unavailable", error: errorText(error) })); return undefined; });
+    if (!superseded || draining) return;
+    retireTimer = setInterval(() => void superseded().then(async state => {
+      if (state !== "superseded" || retiringSince !== undefined || draining || !await ownership.peer()) return;
+      retiringSince = Date.now();
+      console.log(JSON.stringify({ type: "retiring", node, inFlight: clients.inFlight(), agents: clients.sessions.size, volumes: volumes.size }));
+      clients.draining = true;
+      clients.handOffTurns("retire");
+      await ownership.drain();
+    }).catch(error => console.error(JSON.stringify({ type: "ecs_service_check_failed", error: errorText(error) }))), config.ecs.pollMs);
+    retireTimer.unref();
+  }
 
   /**
    * Leave the cluster without dropping work. ECS deregisters the task from the load

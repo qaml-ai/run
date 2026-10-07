@@ -6,9 +6,14 @@ import { STREAM_TIMEOUTS } from "./model-stream.ts";
 import { TOOL_DEADLINES } from "./tool-servers.ts";
 
 /**
- * A node's settings, read from its environment once and checked before anything starts (`createNode` in node.ts reads no
- * process.env). `env` is that environment, for the helpers that read sections of their own (the tenants file, secrets,
- * the database, storage, pricing, outbound policy, mail, rate limits...), each of which takes it as an argument.
+ * A node's settings, read from its environment once and checked before anything starts. `createNode` (node.ts) reads
+ * process.env nowhere itself: `env` is the node's environment, for the helpers that read sections of their own (the
+ * tenants file, secrets, the database, storage, pricing, outbound policy, mail, rate limits...), each of which takes it
+ * as an argument. Some settings are still the process's, read from process.env by the modules that use them, so every
+ * node in a process shares them: v8-exec's (the `v8Exec` runner, src/v8-exec.ts), AGENT_SANDBOX_REQUIRED and
+ * AGENT_CODE_WORKERS_MAX (src/codemode.ts), AGENT_SANDBOX_DIR (src/sandbox.ts), the outbound policy model calls use
+ * (`guardedModelFetch`, src/outbound.ts), AGENT_HISTORY_BACKLOG_BYTES (src/transcript.ts), AGENT_SERVICE_NAME in metric
+ * lines (src/metrics.ts), and what an agent process inherits (src/rpc.ts).
  */
 export type NodeConfig = ReturnType<typeof nodeConfig>;
 
