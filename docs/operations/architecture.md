@@ -309,7 +309,9 @@ real I/O:
 It can crash, drain (a deploy), pause (SIGSTOP: a node's timers and I/O wait while its peers go on) and restart nodes,
 partition links (refused or blackholed), isolate a node from its peers and the database while it still reaches the
 model (peers reap it on a timed-out probe), cut a node off the database, skew clocks, and turn BUGGIFY sites on
-(`SimHooks`, swarm style). A plan is explicit data: nodes, settings, model latency and
+(`SimHooks`, swarm style). The database can take time: each query's round trip is drawn per node
+(`dbLatencyMs`), with a rare far longer one (`dbSpikes`, a stall), so time passes between a request's statements and
+the races that need it can happen; the generator gives some seeds such a tail. A plan is explicit data: nodes, settings, model latency and
 timed steps (`tests/sim/workload.ts`). `runPlan` (`tests/sim/run.ts`) runs one, then checks it:
 - every accepted run ends with one outcome that stays (I3);
 - no agent has model calls on two nodes at once, faults included (I1; a paused node's open call does not count while

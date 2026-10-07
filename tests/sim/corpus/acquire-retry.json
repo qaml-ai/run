@@ -1,0 +1,87 @@
+{
+ "seed": "acquire-retry",
+ "nodes": [
+  "a",
+  "b",
+  "c"
+ ],
+ "leaseTtlMs": 3000,
+ "durationMs": 15000,
+ "skews": {
+  "a": 0,
+  "b": 0,
+  "c": 0
+ },
+ "modelDelayMs": [
+  50,
+  100
+ ],
+ "buggify": false,
+ "steps": [
+  {
+   "at": 0,
+   "op": {
+    "op": "create",
+    "agent": 0,
+    "node": "c"
+   }
+  },
+  {
+   "at": 500,
+   "op": {
+    "op": "crash",
+    "node": "c"
+   }
+  },
+  {
+   "at": 900,
+   "op": {
+    "op": "partition",
+    "a": "a",
+    "b": "b",
+    "how": "refused"
+   }
+  },
+  {
+   "at": 1000,
+   "op": {
+    "op": "databaseDown",
+    "node": "b"
+   }
+  },
+  {
+   "at": 2600,
+   "op": {
+    "op": "databaseUp",
+    "node": "b"
+   }
+  },
+  {
+   "at": 2600,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 1,
+    "node": "b"
+   }
+  },
+  {
+   "at": 2650,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 2,
+    "node": "b"
+   }
+  },
+  {
+   "at": 2700,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 3,
+    "node": "b"
+   }
+  }
+ ]
+}

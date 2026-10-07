@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { Sim, TOKEN } from "./sim/sim.ts";
 import { runPlan } from "./sim/run.ts";
 import type { Plan } from "./sim/workload.ts";
@@ -120,4 +121,47 @@ test("a run that ends at a load past its resumes settles the turn it left open, 
   const result = await runPlan(plan, { quiet: true, inspect: async (sim, agents) => { run = (await sim.call("a", `/v1/agents/${agents.get(0)}/requests/run-0`)).json; } });
   assert.deepEqual(result.failures, []);
   assert.equal(run?.outcome?.uncertain, true, JSON.stringify(run?.outcome));
+});
+
+test("parallel children on a cluster: an abort of the parent sent to another node aborts every child it waits on (cluster-multi-agent)", async t => {
+  // The parent fans out to three children whose model never answers; the abort goes to b, a's peer.
+  const system = (body: any) => JSON.stringify(body.messages.filter((message: any) => message.role === "system"));
+  const call = (id: string, task: string) => ({ index: Number(id.slice(1)) - 1, id, type: "function", function: { name: "delegate", arguments: JSON.stringify({ instructions: "You are SLOW.", task }) } });
+  const sim = await Sim.create({ seed: 33, respond: body => {
+    if (system(body).includes("SLOW")) return { stall: true };
+    if (body.messages.at(-1).role === "tool") return { content: "after" };
+    return { tool_calls: [call("c1", "one"), call("c2", "two"), call("c3", "three")] };
+  } });
+  t.after(() => sim.close());
+  await sim.start("a");
+  await sim.start("b");
+  const parent = (await sim.call("a", "/v1/agents", { body: { builtins: ["delegate"], delegate: { instructions: true } } })).json.id;
+  assert.equal((await sim.call("a", `/v1/agents/${parent}/prompt`, { body: { text: "go", requestId: "fan-out" } })).status, 202);
+  await sim.until(() => sim.model.served.filter(served => system(served.body).includes("SLOW")).length === 3, "three children running at once");
+  const aborted = sim.env.elapsed;
+  assert.equal((await sim.call("b", `/v1/agents/${parent}/abort`, { body: {} })).status, 200);
+  const record = await outcome(sim, "b", parent, "fan-out");
+  assert.ok(record.outcome, JSON.stringify(record));
+  const children = (await sim.call("b", "/v1/agents")).json.filter((agent: any) => agent.parentAgentId === parent);
+  assert.equal(children.length, 3);
+  for (const child of children) {
+    const run = await sim.until(async () => {
+      const found = (await sim.call("b", `/v1/agents/${child.id}`)).json.requests.find((request: any) => request.method === "prompt");
+      return found?.state === "completed" && found;
+    }, `child ${child.id} to end`, 15_000);
+    assert.ok(run.endedAt - sim.env.start - aborted < 15_000, "at the abort, not when the model would have answered");
+  }
+  // Every child's model call was cut, none answered.
+  assert.ok(sim.model.served.filter(served => system(served.body).includes("SLOW")).every(served => served.closedAt !== undefined));
+  assert.deepEqual(sim.hooks.violations, []);
+});
+
+test("an acquire tries again when its own heartbeat was ended between its statements: a peer that cannot reach it reaped it (corpus acquire-retry)", async () => {
+  // b is cut off the database long enough to look dead to a, which cannot reach it (refused) and ends its heartbeat;
+  // b, back on the database and still registered, takes an agent whose owner died: its insert finds its own heartbeat
+  // gone, the owner query finds none, and it tries again (then 503s and fences, and the next prompt takes the agent).
+  const plan: Plan = JSON.parse(readFileSync(new URL("./sim/corpus/acquire-retry.json", import.meta.url), "utf8"));
+  const result = await runPlan(plan, { quiet: true });
+  assert.deepEqual(result.failures, []);
+  assert.ok(result.reached.includes("an acquire tried again after a heartbeat expired between its statements"), result.reached.join(", "));
 });
