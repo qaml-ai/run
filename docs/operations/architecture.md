@@ -322,4 +322,7 @@ timed steps (`tests/sim/workload.ts`). `runPlan` (`tests/sim/run.ts`) runs one, 
 
 A seed replays exactly, which its trace hash checks. To run plans, use `npm run sim -- --seeds 1-200`
 (`--twice` checks determinism). A failing plan is written to `sim-failures/<seed>.json`; run it again with
-`npm run sim -- --replay <file>`, or cut it down to the steps it needs with `--minimize <file>` (ddmin).
+`npm run sim -- --replay <file>`, or cut it down to the steps it needs with `--minimize <file>` (ddmin). The nightly
+mode, `npm run sim -- --postgres`, runs the same plans and checkers on a real Postgres server (`PostgresDb`) on the
+machine's clock: not deterministic, but its sessions' transactions really interleave, which PGlite's one session
+cannot show.

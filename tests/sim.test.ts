@@ -51,3 +51,16 @@ test("a seed runs the same way every time, and another seed does not", async () 
   assert.equal(again.hash, first.hash);
   assert.notEqual(other.hash, first.hash);
 });
+
+test("the nightly mode runs the same simulator on a real Postgres server, on the machine's clock", async t => {
+  const sim = await Sim.create({ seed: 2, database: "postgres", respond: () => ({ content: "from a real database" }) });
+  t.after(() => sim.close());
+  assert.equal(sim.env.realTime, true);
+  await sim.start("a");
+  await sim.start("b");
+  const agent = (await sim.call("a", "/v1/agents", { body: {} })).json.id;
+  const id = (await sim.call("b", `/v1/agents/${agent}/prompt`, { body: { text: "hi" } })).json.id;
+  const record = await sim.until(async () => { const r = (await sim.call("a", `/v1/agents/${agent}/requests/${id}`)).json; return r.state === "completed" && r; }, "the turn");
+  assert.equal(record.outcome.result.reply, "from a real database");
+  assert.ok(sim.db.statements.length > 0);
+});

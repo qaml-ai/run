@@ -4,6 +4,8 @@
 //   npm run sim -- --seed 42 --twice        run one seed twice and check both runs hash the same
 //   npm run sim -- --replay sim-failures/42.json    run a saved plan again
 //   npm run sim -- --minimize sim-failures/42.json  cut a failing plan down to the steps it needs (sim-failures/42.min.json)
+//   npm run sim -- --postgres --seeds 1-20  the nightly mode: a real Postgres server (AGENT_TEST_DATABASE_URL) on the
+//                                            machine's clock, for what PGlite's one session cannot show; not deterministic
 // A failing run writes <out>/<seed>.json (--out, default sim-failures): its plan as data (replay it as is), its failures,
 // history and logs; with --minimize-failures it is also cut down to <seed>.min.json.
 import { spawn } from "node:child_process";
@@ -18,10 +20,12 @@ import { minimize } from "../tests/sim/minimize.ts";
 const { values } = parseArgs({
   options: {
     seed: { type: "string" }, seeds: { type: "string" }, replay: { type: "string" }, minimize: { type: "string" }, twice: { type: "boolean" },
-    steps: { type: "string" }, jobs: { type: "string" }, out: { type: "string" }, "minimize-failures": { type: "boolean" },
+    steps: { type: "string" }, jobs: { type: "string" }, out: { type: "string" }, "minimize-failures": { type: "boolean" }, postgres: { type: "boolean" },
   },
 });
 const out = values.out ?? "sim-failures";
+// Read by Sim.create, here and in --jobs' processes.
+if (values.postgres) process.env.SIM_DATABASE = "postgres";
 const say = (line: string) => process.stderr.write(`${line}\n`);
 
 /** Cut a failing plan down and save it beside the original as <seed>.min.json. */
@@ -78,7 +82,7 @@ const started = performance.now();
 for (const plan of plans) {
   const result = await runPlan(plan);
   const failures = [...result.failures];
-  if (values.twice) {
+  if (values.twice && !values.postgres) {
     const again = await runPlan(plan);
     if (again.hash !== result.hash) failures.push(`determinism: the second run hashed ${again.hash}, the first ${result.hash}`);
   }
