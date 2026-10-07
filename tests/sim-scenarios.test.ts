@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Sim } from "./sim/sim.ts";
+import { createHash } from "node:crypto";
+import { Sim, TOKEN } from "./sim/sim.ts";
 
 // Cluster scenarios (tests/cluster-*.test.ts) in the simulator: the same steps, on virtual time, so they run the same
 // way every time instead of racing real timers.
@@ -51,4 +52,36 @@ test("a draining node finishes the turn in flight, leaves the queued run for the
   assert.deepEqual(sim.model.served.map(served => served.from), ["a.sim", "b.sim"]);
   assert.equal(await owner(sim, agent), "http://b.sim");
   assert.equal((await sim.db.pglite.query("select from runtime_nodes where node = 'http://a.sim'")).rows.length, 0, "a deleted its heartbeat");
+});
+
+test("a tenant's own maxAgents replaces the default limit, and an idle agent makes room under the default (api maxAgents)", async t => {
+  const BOB = "bob-operator-token-at-least-24-chars";
+  const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+  const tenants = {
+    alice: { tokenSha256: sha(TOKEN), apiKeys: { openrouter: "sim-model-key" } },
+    bob: { tokenSha256: sha(BOB), apiKeys: { openrouter: "sim-model-key" }, maxAgents: 2 },
+  };
+  // A turn that says "hold" waits on a model that never answers: its agent is busy, so nothing evicts it.
+  const sim = await Sim.create({
+    seed: 33, env: { AGENT_TENANTS_JSON: JSON.stringify({ tenants }), AGENT_MAX_AGENTS: "10", AGENT_MAX_AGENTS_PER_TENANT: "1" },
+    respond: body => JSON.stringify(body.messages).includes("hold") ? { stall: true } : { content: "ok" },
+  });
+  t.after(() => sim.close());
+  await sim.start("a");
+  const create = (token: string, key: string) => sim.request("a", "/v1/agents", { body: {}, token, headers: { "Idempotency-Key": key } });
+  const statuses = (results: { status: number }[]) => results.map(result => result.status).sort();
+  // Three concurrent starts for bob (his own limit, 2), two for alice (the default, 1).
+  const [bobs, alices] = await sim.env.settle(Promise.all([Promise.all(["b1", "b2", "b3"].map(key => create(BOB, key))), Promise.all(["a1", "a2"].map(key => create(TOKEN, key)))]));
+  assert.deepEqual(statuses(bobs), [201, 201, 429]);
+  assert.deepEqual(statuses(alices), [201, 429]);
+  const refused = ["b1", "b2", "b3"][bobs.findIndex(result => result.status === 429)];
+  // Bob's two agents are busy, so nothing can be evicted for the refused one.
+  for (const agent of bobs.filter(result => result.status === 201).map(result => result.json)) {
+    assert.equal((await sim.call("a", `/v1/agents/${agent.id}/prompt`, { body: { text: "hold" }, token: BOB })).status, 202);
+  }
+  await sim.until(() => sim.model.served.length === 2, "bob's two turns to be waiting on the model");
+  assert.equal((await sim.env.settle(create(BOB, refused))).status, 429);
+  // Alice's one agent settled after creation is idle: it makes room for another under the default, the first time.
+  await sim.advance(1_000);
+  assert.equal((await sim.env.settle(create(TOKEN, "a3"))).status, 201, "alice's idle agent makes room under the default");
 });
