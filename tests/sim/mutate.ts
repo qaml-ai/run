@@ -167,11 +167,10 @@ export function mutate(plan: Plan, random: Random, other?: Plan): { plan: Plan; 
 }
 
 /**
- * Prefix branching: the plan's steps before its `k`th, then a fresh random rest, from a generated plan of the same
+ * Prefix branching: the plan's first `k` steps (by default a random number of them), then a fresh random rest, from a generated plan of the same
  * shape, so a state the corpus reached is explored onward in new ways.
  */
-export function branch(plan: Plan, random: Random): Plan {
-  const k = random.int(plan.steps.length + 1);
+export function branch(plan: Plan, random: Random, k = random.int(plan.steps.length + 1)): Plan {
   const kept = plan.steps.slice(0, k);
   const from = kept.at(-1)?.at ?? 0;
   const fresh = generatePlan(`${plan.seed.split("~")[0]}~branch-${random.int(1 << 30)}`, { durationMs: plan.durationMs });

@@ -24,6 +24,8 @@ export type FuzzOptions = {
   random?: boolean;
   /** Cut each new failure down to the steps it needs. */
   minimizeFailures?: boolean;
+  /** Coverage already started in this process (V8 keeps one count per process): it is shared, not started again. */
+  coverage?: Coverage;
   say?: (line: string) => void;
 };
 
@@ -65,8 +67,8 @@ export async function fuzz(options: FuzzOptions) {
   mkdirSync(options.corpus, { recursive: true });
   mkdirSync(options.failures, { recursive: true });
   const random = prng(`fuzz:${options.startedAt}:${worker}`);
-  const coverage = new Coverage();
-  await coverage.start();
+  const coverage = options.coverage ?? new Coverage();
+  if (!options.coverage) await coverage.start();
   const seen = new Set<number>();
   const goals = new Set<string>();
   const corpus: { name: string; entry: Entry }[] = [];
@@ -165,7 +167,7 @@ export async function fuzz(options: FuzzOptions) {
       say(JSON.stringify({ t: Math.round(elapsed() / 1000), worker, runs, kept, corpus: corpus.length, features: seen.size, goals: goals.size, failed }));
     }
   }
-  await coverage.stop();
+  if (!options.coverage) await coverage.stop();
   const summary = { worker, runs, kept, corpus: corpus.length, features: seen.size, goals: goals.size, failed };
   say(JSON.stringify(summary));
   return summary;

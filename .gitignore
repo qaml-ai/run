@@ -19,3 +19,4 @@ bench/search/results/raw.json
 sim-failures/
 sim-corpus/
 sim-corpus-*/
+sim-mcp/

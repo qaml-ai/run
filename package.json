@@ -25,6 +25,7 @@
     "bench:v8-exec": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/bench-v8-exec.ts",
     "build:v8-exec": "cd sandbox/v8-exec && cargo build --release",
     "sim": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/sim.ts",
+    "sim:mcp": "node --experimental-strip-types --disable-warning=ExperimentalWarning tests/sim/mcp.ts",
     "bench:sim-hooks": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/bench-sim-hooks.ts",
     "bench:search": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/bench-search.ts",
     "bench:codemode": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/bench-codemode.ts",
