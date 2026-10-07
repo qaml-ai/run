@@ -11,6 +11,7 @@ import { guardedModelFetch, guardedNodeAgents } from "./outbound.ts";
 import { reasoningFloor } from "./pi-catalog.ts";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { streamTimeouts, watchedStream, type Stall, type StreamTimeouts } from "./model-stream.ts";
+import { network } from "./node-context.ts";
 
 /**
  * Context compaction on top of Pi's compaction functions (vendored from pi-agent-core 0.87.1 in
@@ -109,7 +110,7 @@ const codexOptions = (token: string) => ({
   fetch: (url: string | URL | Request, init?: RequestInit) => {
     const headers = new Headers(init?.headers);
     headers.set("Authorization", `Bearer ${token}`);
-    return fetch(url, { ...init, headers });
+    return network().fetch(url, { ...init, headers });
   },
 });
 
@@ -182,7 +183,7 @@ function callFetch(sink: { cost?: number; credits?: number }, plan: { rebase?: {
       bearer.set("authorization", `Bearer ${plan.bearer}`);
       headers = bearer;
     }
-    const response = await (plan.base ?? fetch)(url, { ...init, headers });
+    const response = await (plan.base ?? network().fetch)(url, { ...init, headers });
     if (!response.body) return response;
     const decoder = new TextDecoder();
     let pending = "";

@@ -9,6 +9,7 @@ import { transaction, type Db } from "./db.ts";
 import { HttpError, readJson } from "./http.ts";
 import { managedBuiltinsRefusal } from "./builtins.ts";
 import { underClaim, type Claim, type Ownership } from "./ownership.ts";
+import { network } from "./node-context.ts";
 
 const ID = /^\d{1,20}$/;
 const VIEW_AND_SEND = (1n << 10n) | (1n << 11n);
@@ -188,7 +189,7 @@ export class ManagedDiscord {
   }
   private async bot(path: string, method: "GET" | "DELETE" = "GET") {
     await this.cooldown();
-    const response = await fetch(`${this.base}${path}`, { method, headers: { Authorization: `Bot ${this.options.botToken}` }, signal: AbortSignal.timeout(15_000) });
+    const response = await network().fetch(`${this.base}${path}`, { method, headers: { Authorization: `Bot ${this.options.botToken}` }, signal: AbortSignal.timeout(15_000) });
     if (!response.ok) {
       if (response.status === 429) {
         const body = await response.json().catch(() => ({})) as any;
@@ -496,7 +497,7 @@ export class ManagedDiscord {
         if (!attempt || !state) throw new HttpError(400, "This Discord authorization expired or was started from another session; add Camel to Discord again");
         if (c.req.query("error")) throw new HttpError(400, "Discord authorization was cancelled");
         const code = c.req.query("code"); if (!code) throw new HttpError(400, "Discord authorization did not return a code");
-        const response = await fetch(`${this.base}/oauth2/token`, {
+        const response = await network().fetch(`${this.base}/oauth2/token`, {
           method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
           body: new URLSearchParams({ client_id: this.options.applicationId, client_secret: this.options.clientSecret, grant_type: "authorization_code", code, redirect_uri: new URL("/console/discord/callback", this.options.publicUrl).href }), signal: AbortSignal.timeout(15_000),
         });
@@ -510,7 +511,7 @@ export class ManagedDiscord {
         const guild = attested ?? (ID.test(c.req.query("guild_id") ?? "") ? c.req.query("guild_id")! : "");
         if (typeof grant?.access_token !== "string" || !ID.test(guild)) throw new HttpError(400, "Discord did not add Camel to a server; choose a server and try again");
         if (attempt.guild_id && attempt.guild_id !== guild) throw new HttpError(400, "Camel was added to a different server than the one chosen; try again");
-        const me = await fetch(`${this.base}/users/@me`, { headers: { Authorization: `Bearer ${grant.access_token}` }, signal: AbortSignal.timeout(15_000) }).then(answer => answer.ok ? answer.json() as Promise<any> : undefined, () => undefined);
+        const me = await network().fetch(`${this.base}/users/@me`, { headers: { Authorization: `Bearer ${grant.access_token}` }, signal: AbortSignal.timeout(15_000) }).then(answer => answer.ok ? answer.json() as Promise<any> : undefined, () => undefined);
         if (!ID.test(me?.id ?? "")) throw new HttpError(403, "Discord could not verify your identity");
         // With Requires OAuth2 Code Grant on, the bot joins as the code is exchanged: give Discord a moment to show it.
         let server: any;

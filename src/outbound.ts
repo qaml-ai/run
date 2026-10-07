@@ -1,8 +1,8 @@
-import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP, type LookupFunction } from "node:net";
 import { Agent as HttpAgent } from "node:http";
 import { Agent as HttpsAgent } from "node:https";
-import { Agent, fetch as undiciFetch, type RequestInit as UndiciRequestInit, type Response as UndiciResponse } from "undici";
+import { Agent, type RequestInit as UndiciRequestInit, type Response as UndiciResponse } from "undici";
+import { network } from "./node-context.ts";
 
 /**
  * The one way the runtime calls URLs that tenants give it (MCP servers, HTTP tools,
@@ -129,7 +129,7 @@ export class Outbound {
     this.allow = (policy.allow ?? []).map(cidr);
     this.block = (policy.block ?? []).map(cidr);
     this.origins = new Set((policy.origins ?? []).map(exactOrigin));
-    this.resolve = policy.resolve ?? (hostname => dnsLookup(hostname, { all: true, verbatim: true }));
+    this.resolve = policy.resolve ?? (hostname => network().resolve(hostname));
     const lookupFor = (origin: boolean): LookupFunction => (hostname, options, callback) => {
       this.addresses(hostname, origin).then(addresses => {
         const usable = options.family ? addresses.filter(entry => entry.family === options.family) : addresses;
@@ -227,7 +227,7 @@ export class Outbound {
         if (url.origin === origin) for (const [name, value] of Object.entries(secrets ?? {})) headers.set(name, value);
         let response: UndiciResponse;
         try {
-          response = await undiciFetch(url, { ...request, method, headers, body, redirect: "manual", signal: aborted, dispatcher: this.permits(url) ? this.originDispatcher : this.dispatcher } as unknown as UndiciRequestInit);
+          response = await network().guardedFetch(url, { ...request, method, headers, body, redirect: "manual", signal: aborted, dispatcher: this.permits(url) ? this.originDispatcher : this.dispatcher } as unknown as UndiciRequestInit);
         } catch (error) {
           throw (error as { cause?: unknown }).cause instanceof OutboundBlocked ? (error as { cause: Error }).cause : aborted.aborted && aborted.reason instanceof Error ? aborted.reason : error;
         }

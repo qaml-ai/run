@@ -1,4 +1,4 @@
-import { request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { readFile } from "node:fs/promises";
 import { join, extname, normalize, sep } from "node:path";
@@ -18,6 +18,7 @@ import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts
 import { StorageUsage } from "./storage-usage.ts";
 import { postgresTail, sweepTails } from "./log-tail.ts";
 import { databaseFromEnvironment, listenFromEnvironment, migrate, type Db } from "./db.ts";
+import { network, runFor, type Network } from "./node-context.ts";
 import { Ownership, probeNode } from "./ownership.ts";
 import { BusyAgents } from "./busy-agents.ts";
 import { tenantsFromEnvironment, type Tenants } from "./tenants.ts";
@@ -103,6 +104,11 @@ export type NodeDeps = {
   supersession?: () => Promise<(() => Promise<"current" | "waiting" | "superseded">) | undefined>;
   /** Managed Discord's credentials, read where the node sets up its channels (undefined: managed Discord is off). */
   managedDiscord?: () => Promise<ManagedDiscordSecrets | undefined>;
+  /**
+   * How the node reaches other nodes and the outside world (src/node-context.ts): the real network unless given. A node
+   * given one runs in a context of its own, so its code finds it wherever it runs; several can share a process.
+   */
+  network?: Network;
 };
 type RuntimeSecrets = Awaited<ReturnType<typeof runtimeSecrets>>;
 type ManagedDiscordSecrets = NonNullable<Awaited<ReturnType<typeof managedDiscordSecrets>>>;
@@ -158,6 +164,16 @@ type Env = { Bindings: HttpBindings; Variables: { tenant: string } };
  * starts is its own and stops when it drains, so several nodes can share a process.
  */
 export async function createNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNode> {
+  if (!deps.network) return buildNode(config, deps);
+  const context = { network: deps.network };
+  const node = await runFor(context, () => buildNode(config, deps));
+  return {
+    ...node, start: () => runFor(context, node.start), drain: signal => runFor(context, () => node.drain(signal)),
+    close: () => runFor(context, node.close), reloadTenants: () => runFor(context, node.reloadTenants),
+  };
+}
+
+async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNode> {
   const { env, root, port, maxAgents, maxAgentsPerTenant, retireMaxMs, leaseTtlMs, orphanMs, hosting, toolTimeoutMs, runLimits, streamTimeouts, runRetentionSeconds, idleMs, publicUrl, systemPrompt } = config;
   const { tenants, secrets, db, sandbox } = deps;
   const sessionSecret = sessionSecretOf(secrets);
@@ -455,7 +471,7 @@ export async function createNode(config: NodeConfig, deps: NodeDeps): Promise<Ru
   function signedPost(owner: string, path: string, payload: unknown, timeoutMs = 15_000, signal?: AbortSignal) {
     const body = JSON.stringify(payload);
     const timestamp = String(Date.now());
-    return fetch(new URL(path, owner), {
+    return network().fetch(new URL(path, owner), {
       method: "POST", body, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
       headers: { "Content-Type": "application/json", "x-agent-runtime-internal": `${timestamp}.${internalSignature(timestamp, path, body)}` },
     });
@@ -566,7 +582,7 @@ export async function createNode(config: NodeConfig, deps: NodeDeps): Promise<Ru
     // The host it was sent to goes along, so the owner answers as that origin (origins.of).
     const hop = String(Date.now());
     const headers = { ...req.headers, host: target.host, "x-forwarded-host": req.headers["x-forwarded-host"] ?? req.headers.host, [FORWARDED]: typeof via === "string" ? `${via},${node}` : node, [HOP]: `${hop}.${hopSignature(hop, req.url ?? "/")}` };
-    const upstream = httpRequest(target, { method: req.method, headers }, answer => {
+    const upstream = network().request(target, { method: req.method, headers }, answer => {
       // The node no longer serves the actor (it moved, or the node is draining): look it up afresh next time.
       if (answer.statusCode === 503) ownership.forget(actor);
       res.writeHead(answer.statusCode ?? 502, answer.headers);

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ToolDefinition } from "../shared/client-protocol.ts";
+import { network } from "./node-context.ts";
 
 /**
  * `tools.search` in js_exec. Keyword ranking always runs, needs nothing, and is the answer
@@ -300,7 +301,7 @@ export type KeySource = string | (() => string | undefined);
 async function post(url: string, key: KeySource, body: unknown, signal: AbortSignal) {
   const apiKey = typeof key === "function" ? key() : key;
   if (!apiKey) throw new Error("No API key for tool search: set platformKeys.openrouter in the tenants file, or AGENT_TOOL_SEARCH_API_KEY");
-  const response = await fetch(url, { method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(body), signal });
+  const response = await network().fetch(url, { method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(body), signal });
   const text = await response.text();
   if (!response.ok) throw new Error(`${new URL(url).host} answered ${response.status}: ${text.slice(0, 200)}`);
   return JSON.parse(text);
