@@ -60,7 +60,9 @@ export async function fakeModel(t: T, respond: (body: any, index: number) => obj
     bodies.push(body);
     keys.push(req.headers.authorization ?? "");
     headers.push(req.headers);
-    const { usage, delayMs, httpStatus, ...delta } = respond(body, bodies.length - 1) as any;
+    // `wait`: a promise the answer waits for (a barrier between concurrent calls), before any `delayMs`.
+    const { usage, delayMs, httpStatus, wait, ...delta } = respond(body, bodies.length - 1) as any;
+    if (wait) await wait;
     if (delayMs) await sleep(delayMs);
     // A provider refusing the request: `httpStatus` with an OpenAI-style error.
     if (httpStatus) { res.writeHead(httpStatus, { "Content-Type": "application/json" }).end(JSON.stringify({ error: { message: delta.message ?? "Refused", type: "invalid_request_error" } })); return; }
