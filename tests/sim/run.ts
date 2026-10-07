@@ -10,7 +10,7 @@ export type Event = { op: Op; invoked: number; ended?: number; result?: "ok" | "
 export type RunResult = {
   plan: Plan;
   failures: string[];
-  /** Findings that are allowed but worth a number (a stale node's model calls after a partition, H1). */
+  /** Findings worth reading that are not failures. */
   notes: string[];
   history: Event[];
   reached: string[];
@@ -185,7 +185,9 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean } = {}): Pr
       if (JSON.stringify(again.json?.outcome) !== JSON.stringify(record.outcome)) failures.push(`I3: run-${run}'s outcome changed after it ended`);
     }
 
-    // I1: one executor per agent: model calls for one agent from two nodes overlap only while a fault separates them.
+    // I1: one executor per agent: no two nodes have model calls for one agent in flight at once, faults or not. A node
+    // whose lease goes stale cuts its model requests before its peers could take its agents (FRESH_RENEWALS before
+    // SUSPECT_RENEWALS), so even a partitioned node's calls end first; a dead node's end when it died.
     // The model logs the base clock's time; the history counts from the start.
     const served = sim.model.served.map(call => ({ ...call, at: call.at - sim.env.start, run: runOf(call.body), until: call.at - sim.env.start + (call.answer.delayMs ?? 0) }));
     const agentOf = new Map(plan.steps.flatMap(step => step.op.op === "prompt" ? [[step.op.run, step.op.agent] as const] : []));
@@ -194,15 +196,18 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean } = {}): Pr
       const agent = call.run === undefined ? undefined : agentOf.get(call.run);
       if (agent !== undefined) byAgent.set(agent, [...byAgent.get(agent) ?? [], call]);
     }
-    const faultTimes = history.filter(event => ["crash", "partition", "databaseDown"].includes(event.op.op)).map(event => event.invoked);
+    const faultTimes = history.filter(event => ["crash", "partition", "databaseDown", "deploy"].includes(event.op.op)).map(event => event.invoked);
+    // A call whose node died stopped being anyone's execution then, whatever the model went on sending.
+    const deaths = history.filter(event => event.op.op === "crash").map(event => ({ host: `${(event.op as { node: string }).node}.sim`, at: event.invoked }));
+    // And one its node cut (a stale lease interrupts its model requests) ended when the node hung up.
+    const until = (call: (typeof served)[number]) => Math.min(call.until, call.closedAt === undefined ? Infinity : call.closedAt - sim.env.start, ...deaths.filter(death => death.host === call.from && death.at >= call.at).map(death => death.at));
     for (const [agent, calls] of byAgent) {
       for (let i = 0; i < calls.length; i++) for (let j = i + 1; j < calls.length; j++) {
         const [x, y] = [calls[i], calls[j]];
-        if (x.from === y.from || x.until <= y.at || y.until <= x.at) continue;
-        const overlap = Math.min(x.until, y.until) - Math.max(x.at, y.at);
+        if (x.from === y.from || until(x) <= y.at || until(y) <= x.at) continue;
+        const overlap = Math.min(until(x), until(y)) - Math.max(x.at, y.at);
         const faulted = faultTimes.some(at => at <= Math.max(x.at, y.at));
-        if (faulted) notes.push(`I1: agent-${agent} had model calls on ${x.from} and ${y.from} at once for ${overlap} ms after a fault`);
-        else failures.push(`I1: agent-${agent} had model calls on ${x.from} (run-${x.run}) and ${y.from} (run-${y.run}) at once, with no fault`);
+        failures.push(`I1: agent-${agent} had model calls on ${x.from} (run-${x.run}) and ${y.from} (run-${y.run}) at once for ${overlap} ms${faulted ? " after a fault" : ""}`);
       }
     }
 
