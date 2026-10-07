@@ -298,3 +298,22 @@ everything it started when it drains. What a node is given rather than finds for
   In production `buggify` is always false. A failed `always` or a reached `unreachable` logs one
   `{"type":"assert"}` line per message, and nothing else does anything. The hooks cost a few
   nanoseconds per call and allocate nothing (`npm run bench:sim-hooks`).
+
+**The simulator.** `tests/sim/` runs several of these nodes in one process on simulated infrastructure, with no
+real I/O:
+- `SimNet` gives HTTP between hosts over in-memory sockets.
+- `SimDb` is one PGlite shared by all nodes.
+- `SimEnv` provides fake timers and seeded randomness, per node, through the node context.
+- A fake model provider logs which node it served.
+
+It can crash and restart nodes, partition links (refused or blackholed), cut a node off the database, skew clocks,
+and turn BUGGIFY sites on (`SimHooks`, swarm style). A plan is explicit data: nodes, settings, model latency and
+timed steps (`tests/sim/workload.ts`). `runPlan` (`tests/sim/run.ts`) runs one, then checks it:
+- every accepted run ends with one outcome that stays (I3);
+- no agent has model calls on two nodes at once outside a fault (I1);
+- no model calls come after an acknowledged abort (I9);
+- no assertion is violated and there is no real I/O.
+
+A seed replays exactly, which its trace hash checks. To run plans, use `npm run sim -- --seeds 1-200`
+(`--twice` checks determinism). A failing plan is written to `sim-failures/<seed>.json`; run it again with
+`npm run sim -- --replay <file>`.

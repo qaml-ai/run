@@ -52,16 +52,20 @@ export class SimEnv {
   readonly random: ReturnType<typeof prng>;
   readonly start: number;
   readonly leaks: string[] = [];
+  /** What nodes and the world wrote to the console, with the virtual time and who wrote it (`names` maps a node's clock to its name). */
+  readonly logs: { at: number; by: string; line: string }[] = [];
+  readonly names = new Map<Clock, string>();
   private readonly restore: (() => void)[] = [];
   private readonly baseClock: Clock;
   /** Each node's pending timers, by its clock (which is how code running for it is told apart), and the crashed nodes'. */
   private readonly timers = new Map<Clock, Set<unknown>>();
   private readonly crashed = new Set<Clock>();
 
-  constructor(seed: string, start = Date.UTC(2030, 0, 1)) {
+  /** `quiet`: the console's lines go to `logs` only, not to the terminal. */
+  constructor(seed: string, start = Date.UTC(2030, 0, 1), quiet = false) {
     this.start = start;
     this.random = prng(`world:${seed}`);
-    this.clock = FakeTimers.install({ now: start, toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date", "performance", "hrtime"], loopLimit: 10_000_000 });
+    this.clock = FakeTimers.install({ now: start, toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date", "performance", "hrtime"], loopLimit: 10_000_000, shouldClearNativeTimers: true });
     const clock = this.clock;
     this.baseClock = this.nodeClock({});
     const nowOf = () => nodeContext()?.clock ?? this.baseClock;
@@ -127,6 +131,16 @@ export class SimEnv {
     patch(crypto, "randomFillSync", ((view: ArrayBufferView) => fill(view)) as typeof crypto.randomFillSync);
     patch(globalThis.crypto, "getRandomValues", ((view: ArrayBufferView) => fill(view)) as typeof globalThis.crypto.getRandomValues);
     patch(globalThis.crypto, "randomUUID", uuid);
+
+    // The console: every line kept, with when and by whom.
+    for (const method of ["log", "error", "warn", "info"] as const) {
+      const original = console[method];
+      patch(console, method, ((...args: unknown[]) => {
+        const node = nodeContext()?.clock;
+        this.logs.push({ at: this.clock.now - start, by: node ? this.names.get(node) ?? "node" : "world", line: args.map(String).join(" ") });
+        if (!quiet) original.apply(console, args);
+      }) as typeof console.log);
+    }
 
     // Files: synchronous, so they finish where they start.
     patch(fsPromises, "mkdir", (async (path: string, options?: object) => fs.mkdirSync(path, options as never)) as typeof fsPromises.mkdir);
