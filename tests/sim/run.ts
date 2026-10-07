@@ -332,7 +332,8 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
       for (const [write, asked] of tried) if (asked.volume === volume && asked.invoked > ended && paths.has(`/f-${write}.txt`)) failures.push(`I11: volume fork ${fork} of volume-${volume} has write ${write}, asked for after the fork was made`);
     }
     // I11 (agents): a fork's history is its source's up to the fork point: every run of the source that ended before
-    // the fork was asked for, and no run accepted after it was made.
+    // the fork was asked for (but one a stop cancelled before it began, which never entered the history), and no run
+    // accepted after it was made.
     const runsIn = async (agent: string) => {
       const answer = await sim.call(live()[0], `/v1/agents/${agent}/history`);
       const messages: any[] = answer.json?.messages ?? [];
@@ -344,7 +345,7 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
         if (runs.get(run)!.agent !== agent) continue;
         // endedAt is the owner node's clock: allow for the most any node's is off.
         const endedAt = Number(record.endedAt) - sim.env.start + Math.max(0, ...Object.values(plan.skews).map(Math.abs));
-        if (endedAt < invoked && !record.outcome?.error && !has.has(run)) failures.push(`I11: fork ${fork} of agent-${agent} lacks run-${run}, which ended before the fork was asked for`);
+        if (endedAt < invoked && record.outcome?.result?.code !== "cancelled" && !has.has(run)) failures.push(`I11: fork ${fork} of agent-${agent} lacks run-${run}, which ended before the fork was asked for`);
       }
       for (const [run, { agent: of, acceptedAt }] of runs) if (of === agent && acceptedAt > ended && has.has(run)) failures.push(`I11: fork ${fork} of agent-${agent} has run-${run}, accepted after the fork was made`);
     }
