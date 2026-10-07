@@ -89,7 +89,8 @@ test("built-ins V8 cannot interrupt are killed just past the CPU budget", { skip
 test("memory: the heap is capped (the execution ends), ArrayBuffers are capped (a catchable RangeError)", { skip, timeout: 30_000 }, async t => {
   const pool = new V8Exec();
   t.after(() => pool.close());
-  await assert.rejects(executeCode({ code: "const a = []; for (;;) a.push({ x: Math.random(), y: [1, 2, 3] })", bridge: none, pool }), /Codemode memory limit exceeded/);
+  // CPU to spare: on a slow machine, filling the heap takes longer than the default 2 s budget.
+  await assert.rejects(executeCode({ code: "const a = []; for (;;) a.push({ x: Math.random(), y: [1, 2, 3] })", bridge: none, pool, limits: { cpuMs: 30_000 } }), /Codemode memory limit exceeded/);
   // One allocation past all the heap there is: V8 would abort; the process answers as at the limit.
   await assert.rejects(executeCode({ code: "return new Array(1e9).fill(0).length", bridge: none, pool, limits: { cpuMs: 30_000 } }), /Codemode memory limit exceeded/);
   const [count, error] = await run(pool, "const a = []; try { for (;;) a.push(new Uint8Array(1 << 20)); } catch (error) { return [a.length, String(error)]; }");

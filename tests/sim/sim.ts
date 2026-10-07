@@ -197,12 +197,12 @@ export class Sim {
    * The same call without running the clock: for a driver that issues calls while it moves time itself. A node that
    * cannot be reached fails it (a TypeError, as fetch's).
    */
-  request(node: string, path: string, init: { method?: string; body?: unknown; token?: string; headers?: Record<string, string>; timeoutMs?: number } = {}): Promise<{ status: number; json: any }> {
+  request(node: string, path: string, init: { method?: string; body?: unknown; raw?: string; token?: string; headers?: Record<string, string>; timeoutMs?: number } = {}): Promise<{ status: number; json: any }> {
     return this.asWorld(async () => {
       const response = await this.net.networkFor("client.sim").fetch(`http://${node}.sim${path}`, {
-        method: init.method ?? (init.body === undefined ? "GET" : "POST"),
-        headers: { Authorization: `Bearer ${init.token ?? TOKEN}`, ...(init.body === undefined ? {} : { "Content-Type": "application/json" }), ...init.headers },
-        body: init.body === undefined ? undefined : JSON.stringify(init.body),
+        method: init.method ?? (init.body === undefined && init.raw === undefined ? "GET" : "POST"),
+        headers: { Authorization: `Bearer ${init.token ?? TOKEN}`, ...(init.body === undefined ? {} : { "Content-Type": "application/json" }), ...(init.raw === undefined ? {} : { "Content-Type": "text/plain" }), ...init.headers },
+        body: init.raw ?? (init.body === undefined ? undefined : JSON.stringify(init.body)),
         // As a client gives up on a node that never answers (a blackholed link).
         signal: AbortSignal.timeout(init.timeoutMs ?? 60_000),
       });

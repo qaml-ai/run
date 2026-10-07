@@ -31,3 +31,10 @@ test("pauses of one to ten heartbeats and isolations (peers reap the node on a t
     assert.deepEqual(result.failures, [], `npm run sim -- --replay of generatePlan("${seed}", { faults: ["pause", "partition"] })`);
   }
 });
+
+test("agent forks, schedules and volumes under faults: writes read back everywhere (I2), forks hold what they should (I11), schedules fire once (I13)", async () => {
+  for (const seed of ["o1", "o2"]) {
+    const result = await runPlan(generatePlan(seed, { faults: ["forks", "schedules", "volumes", "crash", "pause", "database"] }));
+    assert.deepEqual(result.failures, []);
+  }
+});

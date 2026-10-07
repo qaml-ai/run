@@ -316,6 +316,8 @@ timed steps (`tests/sim/workload.ts`). `runPlan` (`tests/sim/run.ts`) runs one, 
   it is stopped and for a heartbeat after);
 - no model calls come after an acknowledged abort (I9);
 - watchers' streams only move forward, and an event id is never two events (I8);
+- every acknowledged volume write reads back on every node (I2); a fork (of an agent or a volume) holds what was
+  there when it was asked for and nothing made after (I11); a schedule fires once it is due, exactly once (I13);
 - no assertion is violated and there is no real I/O.
 
 A seed replays exactly, which its trace hash checks. To run plans, use `npm run sim -- --seeds 1-200`
