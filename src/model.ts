@@ -2,12 +2,12 @@ import { getModel } from "./pi-catalog.ts";
 import { resolveModel } from "./session-config.ts";
 import type { Api, Model } from "@earendil-works/pi-ai";
 
-export function configuredModel(): Model<Api> {
-  const provider = process.env.AGENT_PROVIDER ?? "anthropic";
-  const id = process.env.AGENT_MODEL ?? "claude-sonnet-5-5";
+export function configuredModel(env: NodeJS.ProcessEnv = process.env): Model<Api> {
+  const provider = env.AGENT_PROVIDER ?? "anthropic";
+  const id = env.AGENT_MODEL ?? "claude-sonnet-5-5";
   const model = getModel(provider, id);
   if (!model) throw new Error(`Unknown Pi model: ${provider}/${id}`);
-  return { ...model, ...(process.env.AGENT_BASE_URL ? { baseUrl: process.env.AGENT_BASE_URL } : {}) };
+  return { ...model, ...(env.AGENT_BASE_URL ? { baseUrl: env.AGENT_BASE_URL } : {}) };
 }
 
 /** The same model as the default, on the other providers a tenant may have keys for, most preferred first. */
