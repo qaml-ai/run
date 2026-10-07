@@ -12,7 +12,8 @@ import type { Db } from "../src/db.ts";
 import { REAL_NETWORK, type Network } from "../src/node-context.ts";
 import { freePort, sha, token } from "./cluster-helpers.ts";
 import { testDatabase } from "./database.ts";
-import { fakeModel, lastUser, until } from "./runtime-server.ts";
+import { fakeModel, lastUser, toolCall, toolResults, until } from "./runtime-server.ts";
+import { fakeExecutor } from "./fake-executor.ts";
 
 // Two runtime nodes in one process (createNode, src/node.ts), each with its own configuration, sharing a database and
 // storage as a cluster does: what a simulation runs many of.
@@ -23,7 +24,13 @@ test("two nodes run in one process, each serving its own agents and forwarding t
     init(id, type, _trigger, resource) { if (type === "Timeout" && (resource as { _repeat?: unknown })._repeat) intervals.set(id, new Error().stack!.split("\n").filter(line => line.includes("file://")).slice(0, 3).join("\n")); },
     destroy(id) { intervals.delete(id); },
   });
-  const model = await fakeModel(t, body => ({ role: "assistant", content: `answered: ${lastUser(body)}` }));
+  // "code: <script>" asks for js_exec once; its result is the answer.
+  const model = await fakeModel(t, body => {
+    const asked = lastUser(body), results = toolResults(body);
+    if (asked.startsWith("code: ") && !results.length) return toolCall("js_exec", { code: asked.slice(6) });
+    return { role: "assistant", content: results.length ? `ran: ${results.join(" ")}` : `answered: ${asked}` };
+  });
+  const executor = fakeExecutor();
   const root = await mkdtemp(join(tmpdir(), "agent-in-process-"));
   t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
   writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(token), apiKeys: { openrouter: "fixture-key" } } } }));
@@ -43,7 +50,7 @@ test("two nodes run in one process, each serving its own agents and forwarding t
     });
     // Node b's database is not a pg.Pool: anything with Db's methods will do. Its network is its own too.
     const deps = await nodeDeps(config);
-    const node = await createNode(config, name === "b" ? { ...deps, db: counted.wrap(deps.db), network: recorded.network } : deps);
+    const node = await createNode(config, name === "b" ? { ...deps, db: counted.wrap(deps.db), network: recorded.network, codeExecutor: executor } : deps);
     nodes.push(node);
     assert.equal((await node.start()).port, port);
   }
@@ -84,6 +91,10 @@ test("two nodes run in one process, each serving its own agents and forwarding t
   const toModel = recorded.calls.filter(call => call.startsWith(`fetch ${model.url}`));
   assert.equal(toModel.length, 1, recorded.calls.join("\n"));
   assert.ok(recorded.calls.includes(`request ${a}/v1/agents/${agents[0]}/prompt`), recorded.calls.join("\n"));
+  // Node b's agents run js_exec on the executor it was given.
+  const ran = await prompt(b, agents[1], "code: print hi\nreturn 42");
+  assert.equal(executor.opened, 1);
+  assert.match(ran.outcome.result.reply, /^ran: .*hi.*42/s);
 
   // Both leave: the database shows neither, and neither leaves an interval running.
   for (const node of nodes.splice(0)) await node.close();

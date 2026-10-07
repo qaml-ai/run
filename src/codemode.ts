@@ -24,6 +24,14 @@ export interface Guest {
 }
 
 /**
+ * Where js_exec runs: each execution opens a guest and talks to it over its wire. In production, this process's v8-exec
+ * runner (`v8Exec`, src/v8-exec.ts); a simulation passes one that runs in-process, with the latency and failures it chooses.
+ */
+export interface CodeExecutor {
+  open(): Guest;
+}
+
+/**
  * How many js_exec executions tenants with a concurrency limit may run together on this node (`CodeGate`):
  * AGENT_CODE_WORKERS_MAX, or 16. An execution waiting on tools holds its v8-exec process, about 20 MB
  * resident; 16 at once is about 320 MB, or a sixth of a 2 GB task.
@@ -187,7 +195,7 @@ export async function executeCode(options: {
   timeoutMs?: number; maxOutputCharacters?: number;
   onEvent?: (event: unknown) => void;
   /** Where to run: by default this process's v8-exec runner (`v8Exec`). */
-  pool?: { open(): Guest };
+  pool?: CodeExecutor;
   /**
    * The tenant's limits: CPU (`SANDBOX_LIMITS.cpuMs` by default) and the longest timeoutMs (`SANDBOX_LIMITS.maxTimeoutMs`;
    * a longer timeoutMs is cut to it).

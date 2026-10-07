@@ -5,7 +5,7 @@ import {
   getCurrentSystemMessage, getCurrentTools, getSystemMessageText, getToolStateChanges, isContextOverflow, isRetryableAssistantError, toToolDeclaration, validateToolArguments,
   type AssistantMessage, type Message, type SystemMessage, type Tool, type ToolCall,
 } from "@earendil-works/pi-ai";
-import { executeCode, presentResult, type CodeResult } from "./codemode.ts";
+import { executeCode, presentResult, type CodeExecutor, type CodeResult } from "./codemode.ts";
 import { scriptValue } from "./mcp-results.ts";
 import { errorText, IDENTITY_KEY, SCOPE_KEY, type AgentConfig, type CallContext, type Credentials, type RunStop, type ToolBridge } from "./protocol.ts";
 import { applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS, leadingSystemMessage, OUTPUT, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER, OUTPUT_TOOL } from "./system-prompt.ts";
@@ -61,6 +61,8 @@ export interface HostIO {
   fs(op: string, args: Record<string, unknown>): Promise<unknown>;
   /** Wait for the tenant's turn to run js_exec on the node, until `signal` aborts; resolves with the function that gives it back. */
   codeSlot?(signal: AbortSignal): Promise<() => void>;
+  /** Where js_exec runs: this process's v8-exec runner unless given (an inline host's node may give its own). */
+  codeExecutor?: CodeExecutor;
   /** Wait until the node may act for the agent (its lease is fresh), before each model request and js_exec; rejects once it lost the agent. */
   lease?(): Promise<void>;
   /** The agent's history index, which the supervisor writes: how many messages it has (null: it has none yet, or none is kept), and a chunk to add. */
@@ -494,7 +496,7 @@ export function createAgentHost(hostIO: HostIO) {
     let result: CodeResult | undefined, failure: unknown;
     // Code makes tool calls and writes files: it starts only while the node's lease is fresh.
     await leased(options.signal);
-    try { return result = await executeCode({ ...options, limits: config.codeLimits, admit: io.codeSlot && (signal => io.codeSlot!(signal)) }); }
+    try { return result = await executeCode({ ...options, limits: config.codeLimits, admit: io.codeSlot && (signal => io.codeSlot!(signal)), ...(io.codeExecutor ? { pool: io.codeExecutor } : {}) }); }
     catch (error) { failure = error; throw error; }
     finally {
       const maxTimeoutMs = Math.min(config.codeLimits?.maxTimeoutMs ?? SANDBOX_LIMITS.maxTimeoutMs, SANDBOX_LIMITS.maxTimeoutMs);

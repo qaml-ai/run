@@ -65,7 +65,7 @@ import { FILE_LIMITS, FileLinks } from "./files.ts";
 import { nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from "./ecs.ts";
 import { recordCreate, safeError, Steps, webhookBacklogLine } from "./metrics.ts";
 import { runtimeSecrets, managedDiscordSecrets } from "./secrets.ts";
-import { checkSandbox } from "./codemode.ts";
+import { checkSandbox, type CodeExecutor } from "./codemode.ts";
 import { pricingFromEnvironment } from "./pricing.ts";
 import { searchProvidersFromEnvironment, WebSearch } from "./web-search.ts";
 import { WebRender } from "./web-render.ts";
@@ -112,6 +112,8 @@ export type NodeDeps = {
   network?: Network;
   clock?: Clock;
   random?: Random;
+  /** Where inline agents run js_exec: this process's v8-exec runner unless given (src/codemode.ts). */
+  codeExecutor?: CodeExecutor;
 };
 type RuntimeSecrets = Awaited<ReturnType<typeof runtimeSecrets>>;
 type ManagedDiscordSecrets = NonNullable<Awaited<ReturnType<typeof managedDiscordSecrets>>>;
@@ -213,7 +215,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       await new Promise(resolve => setTimeout(resolve, 1_000));
     }
   }
-  const supervisor = new AgentSupervisor(join(root, "sessions"), { runtime: config.runtime, maxAgents, hosting, ...(distributed ? { storage } : {}) });
+  const supervisor = new AgentSupervisor(join(root, "sessions"), { runtime: config.runtime, maxAgents, hosting, ...(distributed ? { storage } : {}), ...(deps.codeExecutor ? { codeExecutor: deps.codeExecutor } : {}) });
   const model = configuredModel(env);
   // Where people are sent (the public URL), other names served in full (an earlier domain), and the issuer tokens name.
   const origins = publicOrigins(env, `http://127.0.0.1:${port}`);

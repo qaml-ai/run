@@ -14,6 +14,7 @@ import { readTranscript, readTranscriptLog, Transcript, transcriptPath, type Tra
 import type { HistoryChunk } from "./history-pages.ts";
 import type { Claim } from "./ownership.ts";
 import { createAgentHost, HISTORY_FLUSH_MS } from "./agent-host.ts";
+import type { CodeExecutor } from "./codemode.ts";
 
 /**
  * How agents run. "process": each agent is its own Node process (strong memory
@@ -32,6 +33,8 @@ export type SupervisorOptions = {
   runtime?: string; maxAgents?: number; storage?: Storage; hosting?: Hosting; /** How long stopping agents wait, all together, to index their settled turns (default 5 s). */ historyFlushMs?: number;
   /** An agent process is pinged this often, and killed once a ping has gone this long unanswered (default 5 s and 30 s). */
   pingMs?: number; unresponsiveMs?: number;
+  /** Where inline agents run js_exec (src/codemode.ts): this process's v8-exec runner unless given. Agent processes always use their own. */
+  codeExecutor?: CodeExecutor;
 };
 
 export class AgentSupervisor {
@@ -280,6 +283,7 @@ export class AgentSupervisor {
       modelAuth: () => this.modelAuth(handle),
       fs: (op, args) => this.dispatchFs(handle, structuredClone({ op, args })),
       codeSlot: signal => handle.bridge.codeSlot?.(signal) ?? Promise.resolve(() => {}),
+      ...(this.options.codeExecutor ? { codeExecutor: this.options.codeExecutor } : {}),
       lease: async () => { await handle.bridge.lease?.(); },
       history: {
         indexed: () => this.historyRequest(id, handle, { op: "indexed" }), write: chunk => this.historyRequest(id, handle, { op: "write", chunk: structuredClone(chunk) }),
