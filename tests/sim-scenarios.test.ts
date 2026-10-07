@@ -13,7 +13,7 @@ async function prompt(sim: Sim, node: string, agent: string, text: string) {
 }
 const outcome = (sim: Sim, node: string, agent: string, id: string) =>
   sim.until(async () => { const record = (await sim.call(node, `/v1/agents/${agent}/requests/${id}`)).json; return record?.state === "completed" && record; }, `request ${id}`);
-const owner = async (sim: Sim, agent: string) => (await sim.db.pglite.query<{ node: string }>("select node from actor_owners where actor = $1", [agent])).rows[0]?.node;
+const owner = async (sim: Sim, agent: string) => (await sim.db.query("select node from actor_owners where actor = $1", [agent])).rows[0]?.node as string | undefined;
 
 test("a turn still running when the drain times out is handed off and resumed by the next owner (cluster-handoff)", async t => {
   // The first model call never answers; the next does.
@@ -51,7 +51,7 @@ test("a draining node finishes the turn in flight, leaves the queued run for the
   assert.equal((await outcome(sim, "b", agent, second)).outcome.result.reply, "answer 1");
   assert.deepEqual(sim.model.served.map(served => served.from), ["a.sim", "b.sim"]);
   assert.equal(await owner(sim, agent), "http://b.sim");
-  assert.equal((await sim.db.pglite.query("select from runtime_nodes where node = 'http://a.sim'")).rows.length, 0, "a deleted its heartbeat");
+  assert.equal((await sim.db.query("select from runtime_nodes where node = 'http://a.sim'")).rows.length, 0, "a deleted its heartbeat");
 });
 
 test("a tenant's own maxAgents replaces the default limit, and an idle agent makes room under the default (api maxAgents)", async t => {

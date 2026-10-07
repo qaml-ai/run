@@ -10,7 +10,8 @@ import { runtimeSecrets } from "../../src/secrets.ts";
 import { tenantsFromEnvironment } from "../../src/tenants.ts";
 import { memoryStorage } from "../../shared/storage.ts";
 import { fakeExecutor } from "../fake-executor.ts";
-import { SimDb } from "./db.ts";
+import { SimDb, type WorldDb } from "./db.ts";
+import { PostgresDb } from "./postgres.ts";
 import { prng, SimEnv, type ClockSkew } from "./env.ts";
 import { fakeModel, type Answer, type Served } from "./fakes/model.ts";
 import { SimNet } from "./net.ts";
@@ -50,7 +51,7 @@ export class Sim {
   readonly env: SimEnv;
   /** BUGGIFY decisions and the assertions recorded. */
   readonly hooks: SimHooks;
-  readonly db: SimDb;
+  readonly db: WorldDb;
   readonly net = new SimNet();
   /** The object store every node shares (S3's stand-in). */
   readonly objects = { logs: new Map<string, Map<string, string>>(), blobs: new Map<string, Uint8Array>() };
@@ -62,7 +63,7 @@ export class Sim {
   /** Work done as no node at all: the fakes, the database, the client. */
   private readonly world = new AsyncResource("SimWorld");
 
-  private constructor(seed: string, env: SimEnv, hooks: SimHooks, db: SimDb, respond: (body: any, served: Served[]) => Answer, nodeEnv: Record<string, string>) {
+  private constructor(seed: string, env: SimEnv, hooks: SimHooks, db: WorldDb, respond: (body: any, served: Served[]) => Answer, nodeEnv: Record<string, string>) {
     this.seed = seed;
     this.env = env;
     this.hooks = hooks;
@@ -79,11 +80,14 @@ export class Sim {
    * A world for `seed`, its database migrated; `respond` is the model's script; `env` applies to every node; `buggify`
    * says which BUGGIFY sites fire. Installs the simulation's environment and hooks for the process until `close`.
    */
-  static async create(options: { seed: string | number; respond: (body: any, served: Served[]) => Answer; env?: Record<string, string>; buggify?: BuggifyPlan; quiet?: boolean }) {
+  static async create(options: { seed: string | number; respond: (body: any, served: Served[]) => Answer; env?: Record<string, string>; buggify?: BuggifyPlan; quiet?: boolean; database?: "pglite" | "postgres" }) {
     const seed = String(options.seed);
-    const db = await SimDb.create(prng(`${seed}:sql`).float() * 2 - 1);
+    // The nightly mode runs on a real Postgres server, on the machine's clock: not deterministic, but it has real
+    // sessions whose transactions interleave (SIM_DATABASE=postgres, or `database`).
+    const postgres = (options.database ?? process.env.SIM_DATABASE) === "postgres";
+    const db = postgres ? await PostgresDb.create() : await SimDb.create(prng(`${seed}:sql`).float() * 2 - 1);
     await db.migrate();
-    return new Sim(seed, new SimEnv(seed, undefined, options.quiet), new SimHooks(seed, options.buggify ?? false), db, options.respond, options.env ?? {});
+    return new Sim(seed, new SimEnv(seed, undefined, options.quiet, postgres), new SimHooks(seed, options.buggify ?? false), db, options.respond, options.env ?? {});
   }
 
   /** Start node `name` (reachable at http://<name>.sim), with `env` over the world's, its clock off by `skew`. */

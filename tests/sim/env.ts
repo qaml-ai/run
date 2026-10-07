@@ -50,7 +50,10 @@ export type ClockSkew = { skewMs?: number; drift?: number };
  * What stays real: process.nextTick, queueMicrotask and setImmediate, whose order the program fixes.
  */
 export class SimEnv {
-  readonly clock: ReturnType<typeof FakeTimers.install>;
+  /** The simulation's clock: fake timers, or (realTime) the machine's own, paced by real sleeps. */
+  readonly clock: { readonly now: number; tickAsync(ms: number): Promise<unknown>; uninstall(): unknown };
+  /** Whether time is the machine's (the real-Postgres mode): runs are then not deterministic, and real I/O is expected. */
+  readonly realTime: boolean;
   readonly random: ReturnType<typeof prng>;
   readonly start: number;
   readonly leaks: string[] = [];
@@ -67,11 +70,19 @@ export class SimEnv {
   /** Paused nodes: what is waiting for each to run again (its timers that came due, its sockets' data), in order. */
   private readonly paused = new Map<Clock, { queue: (() => void)[]; timers: Set<unknown>; resumed: PromiseWithResolvers<void> }>();
 
-  /** `quiet`: the console's lines go to `logs` only, not to the terminal. */
-  constructor(seed: string, start = Date.UTC(2030, 0, 1), quiet = false) {
-    this.start = start;
+  /**
+   * `quiet`: the console's lines go to `logs` only, not to the terminal. `realTime`: keep the machine's clock and timers
+   * (for a real database, whose I/O takes real time); everything else (per-node contexts, crashes, pauses, seeded
+   * randomness) is as in a simulated run, but the order of events is the machine's.
+   */
+  constructor(seed: string, start = Date.UTC(2030, 0, 1), quiet = false, realTime = false) {
+    this.realTime = realTime;
+    const machine = { now: Date.now.bind(Date), setTimeout: globalThis.setTimeout };
+    this.start = realTime ? machine.now() : start;
     this.random = prng(`world:${seed}`);
-    this.clock = FakeTimers.install({ now: start, toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date", "performance", "hrtime"], loopLimit: 10_000_000, shouldClearNativeTimers: true });
+    this.clock = realTime
+      ? { get now() { return machine.now(); }, tickAsync: (ms: number) => new Promise<number>(resolve => machine.setTimeout(() => resolve(machine.now()), ms)), uninstall: () => [] }
+      : FakeTimers.install({ now: start, toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date", "performance", "hrtime"], loopLimit: 10_000_000, shouldClearNativeTimers: true });
     const clock = this.clock;
     this.baseClock = this.nodeClock({});
     const nowOf = () => nodeContext()?.clock ?? this.baseClock;
@@ -132,7 +143,8 @@ export class SimEnv {
     // (and, through setTimeout, the caller's node) instead.
     patch(AbortSignal, "timeout", ((ms: number) => {
       const controller = new AbortController();
-      setTimeout(() => controller.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")), ms);
+      // Unref'd, as the real one is: a pending timeout keeps nothing alive.
+      setTimeout(() => controller.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")), ms).unref?.();
       return controller.signal;
     }) as typeof AbortSignal.timeout);
 
@@ -193,7 +205,7 @@ export class SimEnv {
     // Real I/O started while installed.
     const REAL = new Set(["TCPWRAP", "TCPCONNECTWRAP", "TCPSERVERWRAP", "GETADDRINFOREQWRAP", "FSREQCALLBACK", "FSREQPROMISE", "PROCESSWRAP", "PIPEWRAP", "ZLIB", "WORKER", "UDPWRAP", "TLSWRAP"]);
     const hook = createHook({
-      init: (_id, type) => { if (REAL.has(type)) this.leaks.push(`${type}\n${new Error().stack!.split("\n").filter(line => line.includes("file://")).slice(0, 6).join("\n")}`); },
+      init: (_id, type) => { if (REAL.has(type) && !realTime) this.leaks.push(`${type}\n${new Error().stack!.split("\n").filter(line => line.includes("file://")).slice(0, 6).join("\n")}`); },
     });
     hook.enable();
     this.restore.push(() => hook.disable());
