@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { nodeConfig } from "../src/node-config.ts";
 import { createNode, nodeDeps, type RuntimeNode } from "../src/node.ts";
 import type { Db } from "../src/db.ts";
+import { REAL_NETWORK, type Network } from "../src/node-context.ts";
 import { freePort, sha, token } from "./cluster-helpers.ts";
 import { testDatabase } from "./database.ts";
 import { fakeModel, lastUser, until } from "./runtime-server.ts";
@@ -30,6 +31,7 @@ test("two nodes run in one process, each serving its own agents and forwarding t
   hook.enable();
   const nodes: RuntimeNode[] = [];
   const counted = countingDb();
+  const recorded = recordingNetwork();
   t.after(async () => { for (const node of nodes) await node.close().catch(() => {}); });
   for (const name of ["a", "b"]) {
     const port = await freePort();
@@ -39,9 +41,9 @@ test("two nodes run in one process, each serving its own agents and forwarding t
       AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_SESSION_SECRET: "in-process-session-secret-with-32-chars!", AGENT_SECRETS_KEY: randomBytes(32).toString("hex"),
       AGENT_PROVIDER: "openrouter", AGENT_MODEL: "openai/gpt-4o-mini", AGENT_BASE_URL: model.url, AGENT_SERVICE_NAME: `node-${name}`,
     });
-    // Node b's database is not a pg.Pool: anything with Db's methods will do.
+    // Node b's database is not a pg.Pool: anything with Db's methods will do. Its network is its own too.
     const deps = await nodeDeps(config);
-    const node = await createNode(config, name === "b" ? { ...deps, db: counted.wrap(deps.db) } : deps);
+    const node = await createNode(config, name === "b" ? { ...deps, db: counted.wrap(deps.db), network: recorded.network } : deps);
     nodes.push(node);
     assert.equal((await node.start()).port, port);
   }
@@ -77,6 +79,11 @@ test("two nodes run in one process, each serving its own agents and forwarding t
   assert.equal(forwarded.outcome.result.reply, "answered: via b");
   // Node b's queries and transactions all went through the Db it was given.
   assert.ok(counted.queries > 0 && counted.transactions > 0, JSON.stringify(counted));
+  // And whatever node b's code reached outside went through its network, wherever that code ran (its inline agent's
+  // model call too); node a's never did: b's one model call, then the prompt for a's agent forwarded to a.
+  const toModel = recorded.calls.filter(call => call.startsWith(`fetch ${model.url}`));
+  assert.equal(toModel.length, 1, recorded.calls.join("\n"));
+  assert.ok(recorded.calls.includes(`request ${a}/v1/agents/${agents[0]}/prompt`), recorded.calls.join("\n"));
 
   // Both leave: the database shows neither, and neither leaves an interval running.
   for (const node of nodes.splice(0)) await node.close();
@@ -105,4 +112,15 @@ function countingDb() {
       get waitingCount() { return pool.waitingCount; },
     }),
   });
+}
+
+/** The real network, recording what goes through it: `fetch <url>` and `request <url>`. */
+function recordingNetwork() {
+  const calls: string[] = [];
+  const network: Network = {
+    ...REAL_NETWORK,
+    fetch: (input, init) => { calls.push(`fetch ${input instanceof Request ? input.url : String(input)}`); return REAL_NETWORK.fetch(input, init); },
+    request: ((url: URL, ...rest: unknown[]) => { calls.push(`request ${url}`); return (REAL_NETWORK.request as (...args: unknown[]) => unknown)(url, ...rest); }) as Network["request"],
+  };
+  return { calls, network };
 }

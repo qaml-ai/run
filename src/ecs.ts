@@ -1,3 +1,4 @@
+import { network } from "./node-context.ts";
 /** This task's private IPv4 from the ECS container metadata endpoint; undefined off ECS. */
 export async function taskAddress(env = process.env): Promise<string | undefined> {
   if (!env.ECS_CONTAINER_METADATA_URI_V4) return undefined;
@@ -9,7 +10,7 @@ export async function taskAddress(env = process.env): Promise<string | undefined
 }
 
 async function metadata(url: string) {
-  const response = await fetch(url, { signal: AbortSignal.timeout(5_000) });
+  const response = await network().fetch(url, { signal: AbortSignal.timeout(5_000) });
   if (!response.ok) throw new Error(`ECS container metadata answered HTTP ${response.status}`);
   return response.json() as Promise<any>;
 }
@@ -111,7 +112,7 @@ export class TaskProtection {
   private async write(enabled: boolean, now: number) {
     this.writing = true;
     try {
-      const response = await fetch(`${this.uri}/task-protection/v1/state`, {
+      const response = await network().fetch(`${this.uri}/task-protection/v1/state`, {
         method: "PUT", headers: { "Content-Type": "application/json" }, signal: AbortSignal.timeout(5_000),
         body: JSON.stringify(enabled ? { ProtectionEnabled: true, ExpiresInMinutes: this.expiresMinutes } : { ProtectionEnabled: false }),
       });

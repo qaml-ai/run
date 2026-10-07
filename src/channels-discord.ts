@@ -1,6 +1,7 @@
 import { HttpError } from "./http.ts";
 import { safeError } from "./metrics.ts";
 import { fetchFile, SendError, type ChannelProvider, type Gateway, type GatewayHandlers, type Inbound } from "./channels.ts";
+import { network } from "./node-context.ts";
 
 /** Discord's attachment limit in servers without boosts (and DMs without Nitro): larger files are sent as a link. */
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
@@ -63,7 +64,7 @@ export function discord(options: {
   };
   async function call(credentials: Record<string, string>, method: "GET" | "POST", path: string, body?: Record<string, unknown> | FormData) {
     const form = body instanceof FormData;
-    const response = await fetch(`${base}${path}`, {
+    const response = await network().fetch(`${base}${path}`, {
       method, headers: { Authorization: `Bot ${token(credentials)}`, ...(body && !form ? { "Content-Type": "application/json" } : {}) },
       ...(body ? { body: form ? body : JSON.stringify(body) } : {}), signal: AbortSignal.timeout(form ? 120_000 : 15_000),
     }).catch(error => { throw new SendError(`Discord ${method} ${path.split("/")[1]} failed: ${error instanceof Error ? error.name : "network error"}`, false); });

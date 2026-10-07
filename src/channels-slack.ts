@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { HttpError } from "./http.ts";
 import { fetchFile, SendError, type ChannelProvider, type Inbound } from "./channels.ts";
+import { network } from "./node-context.ts";
 
 /** Slack takes files up to 1 GB; the runtime sends up to this (read into memory), and a link past it. */
 const MAX_FILE_BYTES = 100 * 1024 * 1024;
@@ -44,7 +45,7 @@ export function slack(options: { apiUrl?: string } = {}): ChannelProvider {
   // Most methods take JSON; files.getUploadURLExternal takes only form fields.
   async function call(credentials: Record<string, string>, method: string, body: Record<string, unknown> | URLSearchParams = {}) {
     const form = body instanceof URLSearchParams;
-    const response = await fetch(`${base}/${method}`, {
+    const response = await network().fetch(`${base}/${method}`, {
       method: "POST", headers: { "Content-Type": form ? "application/x-www-form-urlencoded" : "application/json; charset=utf-8", Authorization: `Bearer ${token(credentials)}` },
       body: form ? body : JSON.stringify(body), signal: AbortSignal.timeout(15_000),
     }).catch(error => { throw new SendError(`Slack ${method} failed: ${error instanceof Error ? error.name : "network error"}`, false); });
@@ -130,7 +131,7 @@ export function slack(options: { apiUrl?: string } = {}): ChannelProvider {
     async sendFile(credentials, conversationId, file, caption) {
       const { upload_url, file_id } = await call(credentials, "files.getUploadURLExternal", new URLSearchParams({ filename: file.name, length: String(file.size) }));
       if (typeof upload_url !== "string" || !/^https?:\/\//.test(upload_url)) throw new SendError("Slack gave no upload URL", false);
-      const uploaded = await fetch(upload_url, { method: "POST", body: await file.blob(), redirect: "error", signal: AbortSignal.timeout(120_000) })
+      const uploaded = await network().fetch(upload_url, { method: "POST", body: await file.blob(), redirect: "error", signal: AbortSignal.timeout(120_000) })
         .catch(error => { throw new SendError(`Slack file upload failed: ${error instanceof Error ? error.name : "network error"}`, false); });
       if (!uploaded.ok) throw new SendError(`Slack file upload failed: HTTP ${uploaded.status}`, false);
       const { channel, thread_ts } = target(conversationId);

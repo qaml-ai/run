@@ -7,6 +7,7 @@ import type { Sql } from "./db.ts";
 import type { Journey, JourneyMethod } from "./journey.ts";
 import { checkNewPassword, MAX_PASSWORD, normalizeEmail, type Passwords } from "./passwords.ts";
 import { LINK_GONE, type EmailAccounts } from "./email-accounts.ts";
+import { network } from "./node-context.ts";
 
 /**
  * Console sign-in. Sessions live in Postgres (`console_sessions`); the cookie (HttpOnly, Secure, SameSite=Lax)
@@ -71,7 +72,7 @@ const sha256 = (value: string) => createHash("sha256").update(value).digest("hex
 const same = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 /** An issuer's OpenID configuration, read at each sign-in. */
 async function discover(issuer: string) {
-  const response = await fetch(new URL("/.well-known/openid-configuration", issuer), { signal: AbortSignal.timeout(10_000) });
+  const response = await network().fetch(new URL("/.well-known/openid-configuration", issuer), { signal: AbortSignal.timeout(10_000) });
   const config = response.ok ? await response.json() as { issuer?: string; authorization_endpoint?: string; token_endpoint?: string; jwks_uri?: string } : {};
   if (config.issuer !== issuer || !config.authorization_endpoint || !config.token_endpoint || !config.jwks_uri) throw new Error("Google sign-in is unavailable; try again");
   return config as Required<typeof config>;
@@ -231,7 +232,7 @@ export class ConsoleAuth {
         return fail(c, "Sign-in expired or was tampered with; try again", [clearState, clearNext]);
       }
       try {
-        const exchange = await fetch(new URL("/login/oauth/access_token", github.webUrl ?? "https://github.com"), {
+        const exchange = await network().fetch(new URL("/login/oauth/access_token", github.webUrl ?? "https://github.com"), {
           method: "POST", headers: { Accept: "application/json", "Content-Type": "application/json" },
           body: JSON.stringify({ client_id: github.clientId, client_secret: github.clientSecret, code, redirect_uri: new URL("/console/auth/callback", this.options.publicUrl).href }),
           signal: AbortSignal.timeout(10_000),
@@ -246,7 +247,7 @@ export class ConsoleAuth {
         // An existing account may still sign in if only the creation time is unavailable.
         for (let attempt = 0; attempt < 2; attempt++) {
           try {
-            const response = await fetch(`${api}/user`, { headers, signal: AbortSignal.timeout(10_000) });
+            const response = await network().fetch(`${api}/user`, { headers, signal: AbortSignal.timeout(10_000) });
             if (!response.ok) continue;
             const profile = await response.json() as Profile;
             if (!profile.login || !Number.isSafeInteger(profile.id) || profile.id! <= 0) continue;
@@ -257,7 +258,7 @@ export class ConsoleAuth {
         }
         if (!user?.login || !user.id) throw new Error("GitHub account details are unavailable; try signing in again");
         if (!github.open) {
-          const membership = await fetch(`${api}/user/memberships/orgs/${encodeURIComponent(github.org)}`, { headers, signal: AbortSignal.timeout(10_000) });
+          const membership = await network().fetch(`${api}/user/memberships/orgs/${encodeURIComponent(github.org)}`, { headers, signal: AbortSignal.timeout(10_000) });
           const member = membership.ok && (await membership.json() as { state?: string }).state === "active";
           if (!member) throw new Error(`Only members of the ${github.org} GitHub organization can sign in`);
         }
@@ -301,13 +302,13 @@ export class ConsoleAuth {
       try {
         const issuer = google.issuer ?? GOOGLE_ISSUER;
         const config = await discover(issuer);
-        const exchange = await fetch(config.token_endpoint, {
+        const exchange = await network().fetch(config.token_endpoint, {
           method: "POST", headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" }, signal: AbortSignal.timeout(10_000),
           body: new URLSearchParams({ grant_type: "authorization_code", code, code_verifier: verifier, client_id: google.clientId, client_secret: google.clientSecret, redirect_uri: new URL("/console/auth/google/callback", this.options.publicUrl).href }),
         });
         const { id_token: idToken } = await exchange.json().catch(() => ({})) as { id_token?: string };
         if (!exchange.ok || typeof idToken !== "string") throw new Error("Google did not complete sign-in; try again");
-        const keys = await fetch(config.jwks_uri, { signal: AbortSignal.timeout(10_000) }).then(response => response.json()) as JSONWebKeySet;
+        const keys = await network().fetch(config.jwks_uri, { signal: AbortSignal.timeout(10_000) }).then(response => response.json()) as JSONWebKeySet;
         let claims;
         // Google's tokens name their issuer with or without the scheme; the signature, audience and expiry are checked here too.
         try { ({ payload: claims } = await jwtVerify(idToken, createLocalJWKSet(keys), { issuer: [issuer, issuer.replace(/^https:\/\//, "")], audience: google.clientId, algorithms: ["RS256"] })); }

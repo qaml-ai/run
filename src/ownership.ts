@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { connect } from "node:net";
 import { performance } from "node:perf_hooks";
 import { transaction, type Db, type Sql } from "./db.ts";
 import { HttpError } from "./http.ts";
 import { safeError } from "./metrics.ts";
+import { network } from "./node-context.ts";
 
 /** This node's ownership of one actor. Writes that only the owner may make are conditional on it. */
 export interface Claim { actor: string; session: string; epoch: number }
@@ -435,7 +435,7 @@ export function probeNode(node: string, timeoutMs = 2_000): Promise<boolean> {
   try { url = new URL(node); } catch { return Promise.resolve(true); }
   const port = Number(url.port || (url.protocol === "https:" ? 443 : 80));
   return new Promise(resolve => {
-    const socket = connect({ host: url.hostname.replace(/^\[|\]$/g, ""), port });
+    const socket = network().connect({ host: url.hostname.replace(/^\[|\]$/g, ""), port });
     const done = (alive: boolean) => { clearTimeout(timer); socket.destroy(); resolve(alive); };
     const timer = setTimeout(() => done(false), timeoutMs);
     socket.once("connect", () => done(true));
