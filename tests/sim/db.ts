@@ -53,15 +53,19 @@ export class SimDb {
     if (down) this.down.add(node); else this.down.delete(node);
   }
 
-  /** `node`'s view of the database: its own pool. Ending it ends nothing shared. */
-  connection(node: string): Db {
-    let ended = false;
-    const query = (text: string, values?: unknown[]) => ended ? Promise.reject(new Error("Cannot use a pool after calling end on the pool")) : this.exclusive(() => this.run(node, text, values));
+  /**
+   * `node`'s view of the database: its own pool. Ending it ends nothing shared. `kill` is its process dying: every
+   * query from then on fails, as the server dropped its connections (an open transaction rolls back on release).
+   */
+  connection(node: string): Db & { kill(): void } {
+    let ended = false, killed = false;
+    const query = (text: string, values?: unknown[]) => ended ? Promise.reject(new Error("Cannot use a pool after calling end on the pool"))
+      : killed ? Promise.reject(unavailable()) : this.exclusive(() => killed ? Promise.reject(unavailable()) : this.run(node, text, values));
     return {
       query: query as Db["query"],
       connect: () => new Promise<DbClient>((resolve, reject) => {
         if (ended) return reject(new Error("Cannot use a pool after calling end on the pool"));
-        if (this.down.has(node)) return reject(unavailable());
+        if (this.down.has(node) || killed) return reject(unavailable());
         void this.exclusive(() => new Promise<void>(release => {
           const listeners = new Set<(error: Error) => void>();
           // A transaction its node could not finish (cut off mid-way) is rolled back here, as the server would on the
@@ -69,6 +73,7 @@ export class SimDb {
           let broken = false;
           resolve({
             query: (async (text: string, values?: unknown[]) => {
+              if (killed) { broken = true; throw unavailable(); }
               try { return await this.run(node, text, values); }
               catch (error) { if (this.down.has(node)) broken = true; throw error; }
             }) as DbClient["query"],
@@ -79,15 +84,18 @@ export class SimDb {
         }));
       }),
       end: async () => { ended = true; },
+      kill: () => { killed = true; },
       totalCount: 0, idleCount: 0, waitingCount: 0,
     };
   }
 
-  /** `node`'s LISTEN connection: each channel's notifications, unless the node is cut off. */
-  listen(node: string) {
+  /** `node`'s LISTEN connection: each channel's notifications, unless the node is cut off or `dead` says it died. */
+  listen(node: string, dead: () => boolean = () => false) {
     return async (handlers: Record<string, (payload: string) => void>) => {
+      // Notifications reach the node as itself (the context it listened in), whoever's NOTIFY sent them.
+      const asNode = new AsyncResource("SimListen");
       const stops = await Promise.all(Object.entries(handlers).map(([channel, handler]) =>
-        this.pglite.listen(channel, payload => { if (!this.down.has(node)) handler(payload); })));
+        this.scope.runInAsyncScope(() => this.pglite.listen(channel, payload => { if (!this.down.has(node) && !dead()) asNode.runInAsyncScope(() => handler(payload)); }))));
       return { close: async () => { for (const stop of stops) await stop(); } };
     };
   }

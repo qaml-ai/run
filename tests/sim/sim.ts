@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { nodeConfig } from "../../src/node-config.ts";
 import { createNode, type NodeDeps, type RuntimeNode } from "../../src/node.ts";
+import type { Clock } from "../../src/node-context.ts";
 import { runtimeSecrets } from "../../src/secrets.ts";
 import { tenantsFromEnvironment } from "../../src/tenants.ts";
 import { memoryStorage } from "../../shared/storage.ts";
@@ -13,12 +14,27 @@ import { SimDb } from "./db.ts";
 import { prng, SimEnv, type ClockSkew } from "./env.ts";
 import { fakeModel, type Answer, type Served } from "./fakes/model.ts";
 import { SimNet } from "./net.ts";
+import { SimHooks, type BuggifyPlan } from "./hooks.ts";
 
 export const TOKEN = "simulation-operator-token-at-least-24-chars";
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 
-/** A runtime node in the simulation: its handles, and how to reach it. */
-export type SimNode = { name: string; host: string; url: string; runtime: RuntimeNode };
+/** A runtime node in the simulation: its handles, how to reach it, and how it was started (to start it again). */
+export type SimNode = { name: string; host: string; url: string; runtime: RuntimeNode; clock: Clock; crashed: boolean; kill(): void; started: { env: Record<string, string>; skew: ClockSkew } };
+
+/** `map`, refusing changes once `dead()` (a crashed node's writes never land); maps it holds are guarded too. */
+function guarded<K, V>(map: Map<K, V>, dead: () => boolean): Map<K, V> {
+  return new Proxy(map, {
+    get(target, name) {
+      const value = Reflect.get(target, name, target);
+      if (name === "set" || name === "delete" || name === "clear") {
+        return (...args: unknown[]) => { if (dead()) throw new Error("The node crashed"); return (value as (...args: unknown[]) => unknown).apply(target, args); };
+      }
+      if (name === "get") return (key: K) => { const found = target.get(key); return found instanceof Map ? guarded(found, dead) : found; };
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
 
 /**
  * A simulated cluster in this process: runtime nodes (createNode) on one SimDb, one in-memory object store and one
@@ -28,6 +44,8 @@ export type SimNode = { name: string; host: string; url: string; runtime: Runtim
 export class Sim {
   readonly seed: string;
   readonly env: SimEnv;
+  /** BUGGIFY decisions and the assertions recorded. */
+  readonly hooks: SimHooks;
   readonly db: SimDb;
   readonly net = new SimNet();
   /** The object store every node shares (S3's stand-in). */
@@ -36,12 +54,14 @@ export class Sim {
   readonly model: { served: Served[] };
   private readonly root = mkdtempSync(join(tmpdir(), "agent-sim-"));
   private readonly nodeEnv: Record<string, string>;
+  private readonly incarnations = new Map<string, number>();
   /** Work done as no node at all: the fakes, the database, the client. */
   private readonly world = new AsyncResource("SimWorld");
 
-  private constructor(seed: string, env: SimEnv, db: SimDb, respond: (body: any, served: Served[]) => Answer, nodeEnv: Record<string, string>) {
+  private constructor(seed: string, env: SimEnv, hooks: SimHooks, db: SimDb, respond: (body: any, served: Served[]) => Answer, nodeEnv: Record<string, string>) {
     this.seed = seed;
     this.env = env;
+    this.hooks = hooks;
     this.db = db;
     const model = fakeModel(respond, address => this.net.hostOf(address));
     this.net.add("model.sim", model.server, work => this.world.runInAsyncScope(work));
@@ -51,19 +71,20 @@ export class Sim {
   }
 
   /**
-   * A world for `seed`, its database migrated; `respond` is the model's script; `env` applies to every node. Installs the
-   * simulation's environment for the process until `close`.
+   * A world for `seed`, its database migrated; `respond` is the model's script; `env` applies to every node; `buggify`
+   * says which BUGGIFY sites fire. Installs the simulation's environment and hooks for the process until `close`.
    */
-  static async create(options: { seed: string | number; respond: (body: any, served: Served[]) => Answer; env?: Record<string, string> }) {
+  static async create(options: { seed: string | number; respond: (body: any, served: Served[]) => Answer; env?: Record<string, string>; buggify?: BuggifyPlan }) {
     const db = await SimDb.create();
     await db.migrate();
     const seed = String(options.seed);
-    return new Sim(seed, new SimEnv(seed), db, options.respond, options.env ?? {});
+    return new Sim(seed, new SimEnv(seed), new SimHooks(seed, options.buggify ?? false), db, options.respond, options.env ?? {});
   }
 
   /** Start node `name` (reachable at http://<name>.sim), with `env` over the world's, its clock off by `skew`. */
   async start(name: string, env: Record<string, string> = {}, skew: ClockSkew = {}): Promise<SimNode> {
     const host = `${name}.sim`, url = `http://${host}`;
+    if (this.nodes.get(name) && !this.nodes.get(name)!.crashed) throw new Error(`Node ${name} is running`);
     this.net.add(host);
     const config = nodeConfig({
       PATH: process.env.PATH, PORT: "80", AGENT_NODE_URL: url, AGENT_PUBLIC_URL: url, AGENT_DATA_DIR: join(this.root, name),
@@ -73,31 +94,66 @@ export class Sim {
       AGENT_PROVIDER: "openrouter", AGENT_MODEL: "openai/gpt-4o-mini", AGENT_BASE_URL: "http://model.sim/v1",
       ...this.nodeEnv, ...env,
     });
+    // Each start of a node is a new process: its own randomness and clock, which a crash ends.
+    const incarnation = (this.incarnations.get(name) ?? 0) + 1;
+    this.incarnations.set(name, incarnation);
+    let dead = false;
+    const db = this.db.connection(host);
+    const clock = this.env.nodeClock(skew);
     const deps: NodeDeps = {
       tenants: await tenantsFromEnvironment(config.env),
       secrets: await runtimeSecrets(config.env),
-      db: this.db.connection(host),
-      listen: this.db.listen(host),
+      db,
+      listen: this.db.listen(host, () => dead),
       sandbox: { mode: "simulated" },
       network: this.net.networkFor(host),
-      clock: this.env.nodeClock(skew),
-      random: prng(`${this.seed}:${name}`),
+      clock,
+      random: prng(`${this.seed}:${name}:${incarnation}`),
       codeExecutor: fakeExecutor(),
-      storage: (tail, meter) => memoryStorage(tail, meter, this.objects),
+      storage: (tail, meter) => memoryStorage(tail, meter, { logs: guarded(this.objects.logs, () => dead), blobs: guarded(this.objects.blobs, () => dead) }),
     };
     const runtime = await this.env.settle(createNode(config, deps));
     this.net.add(host, runtime.server, work => runtime.run(work));
-    const node = { name, host, url, runtime };
+    const node: SimNode = { name, host, url, runtime, clock, crashed: false, kill: () => { dead = true; db.kill(); }, started: { env, skew } };
     this.nodes.set(name, node);
     return node;
   }
 
+  /**
+   * Node `name`'s process dies (SIGKILL, a lost host): its timers stop, its connections drop and new ones are refused,
+   * its database connections fail, and nothing it was writing lands. Peers find out as in production: its heartbeat
+   * goes stale, and probes are refused.
+   */
+  crash(name: string) {
+    const node = this.nodes.get(name);
+    if (!node || node.crashed) throw new Error(`Node ${name} is not running`);
+    node.crashed = true;
+    node.kill();
+    this.env.crash(node.clock);
+    this.net.remove(node.host);
+  }
+
+  /** Start a crashed node again, as it was started: a new process (a new session) at the same address. */
+  restart(name: string) {
+    const node = this.nodes.get(name);
+    if (!node?.crashed) throw new Error(`Node ${name} has not crashed`);
+    return this.start(name, node.started.env, node.started.skew);
+  }
+
+  /** Cut `a` off from `b` (both ways), as a partition does: connections are refused, or (blackhole) never answer. */
+  partition(a: string, b: string, how: "refused" | "blackhole" = "refused") { this.net.cut(this.hostOf(a), this.hostOf(b), how); }
+  /** Heal every partition. */
+  heal() { this.net.heal(); }
+  /** Cut node `name` off from the database (a failover, a network fault), or let it back. */
+  databaseDown(name: string, down = true) { this.db.setDown(this.hostOf(name), down); }
+  private hostOf(name: string) { return name.includes(".") ? name : `${name}.sim`; }
+
   /** Call the API on `node` as the operator (or with `token`), as a client on the simulated network does. */
-  call(node: string, path: string, init: { method?: string; body?: unknown; token?: string } = {}) {
+  call(node: string, path: string, init: { method?: string; body?: unknown; token?: string; headers?: Record<string, string> } = {}) {
     return this.env.settle(this.world.runInAsyncScope(async () => {
       const response = await this.net.networkFor("client.sim").fetch(`http://${node}.sim${path}`, {
         method: init.method ?? (init.body === undefined ? "GET" : "POST"),
-        headers: { Authorization: `Bearer ${init.token ?? TOKEN}`, ...(init.body === undefined ? {} : { "Content-Type": "application/json" }) },
+        headers: { Authorization: `Bearer ${init.token ?? TOKEN}`, ...(init.body === undefined ? {} : { "Content-Type": "application/json" }), ...init.headers },
         body: init.body === undefined ? undefined : JSON.stringify(init.body),
       });
       const text = await response.text();
@@ -123,9 +179,10 @@ export class Sim {
   /** Stop every node (without waiting for turns), the database and the environment. */
   async close() {
     try {
-      for (const node of this.nodes.values()) await this.env.settle(node.runtime.close()).catch(() => {});
+      for (const node of this.nodes.values()) if (!node.crashed) await this.env.settle(node.runtime.close()).catch(() => {});
       this.nodes.clear();
     } finally {
+      this.hooks.uninstall();
       this.env.uninstall();
       await this.db.close();
       rmSync(this.root, { recursive: true, force: true });
