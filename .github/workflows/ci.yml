@@ -65,6 +65,28 @@ jobs:
       - run: chmod +x sandbox/v8-exec/target/release/v8-exec
       - run: npm ci
       - run: npm run test:shard -- ${{ matrix.shard }}/4
+  sim:
+    # The deterministic simulator (tests/sim, npm run sim): ten fixed seeds, each run twice and required to replay to the
+    # same trace, and 50 fresh seeds drawn from the run's id. A failing seed prints the commands that reproduce it, and
+    # its plan, history and logs are kept as the sim-failures artifact (npm run sim -- --replay <file>).
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - name: fixed seeds, twice each
+        run: npm run -s sim -- --seeds 1-10 --twice --jobs 2
+      - name: fresh seeds
+        if: ${{ !cancelled() }}
+        run: |
+          from=$(( 100000 + (GITHUB_RUN_ID % 1000000) * 50 ))
+          echo "seeds $from-$((from + 49)) (rerun one: npm run sim -- --seed <n>)"
+          npm run -s sim -- --seeds $from-$((from + 49)) --jobs 2
+      - uses: actions/upload-artifact@v4
+        if: ${{ failure() }}
+        with: { name: sim-failures, path: sim-failures/, if-no-files-found: ignore }
   v8-exec:
     # js_exec's engine (sandbox/v8-exec), built here on x86_64 for the test shards, which run its tests
     # (seccomp included) and every js_exec suite on it; the image job builds and runs it on ARM64.

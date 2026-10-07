@@ -40,8 +40,8 @@ type Timer = ReturnType<typeof setTimeout>;
 /**
  * A node's time. Code calls it for the lease clock (src/ownership.ts) and where a simulator's process-wide fake timers
  * cannot reach: timers/promises, and performance imported from node:perf_hooks. Everything else reads the globals
- * (Date.now, performance.now, setTimeout, AbortSignal.timeout...), which @sinonjs/fake-timers fakes for the whole process,
- * consulting the node's clock for its skew.
+ * (Date.now, performance.now, setTimeout...), which @sinonjs/fake-timers fakes for the whole process, consulting the
+ * node's clock for its skew; AbortSignal.timeout, on Node's internal timers, the simulator replaces itself.
  */
 export type Clock = {
   /** Milliseconds since the epoch, as Date.now. */

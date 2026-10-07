@@ -27,9 +27,13 @@ export class SimDb {
 
   private constructor(pglite: PGlite) { this.pglite = pglite; }
 
-  /** A database with every migration applied, as the runtime's own `migrate` would (it finds them applied). */
-  static async create() {
+  /**
+   * A database for a run. `seed` seeds SQL's random() (the orphan sweep orders by it), which would otherwise draw from
+   * the machine's entropy. (gen_random_uuid() still does; nothing on simulated paths orders by what it makes.)
+   */
+  static async create(seed = 0) {
     const pglite = await PGlite.create({ parsers: { [INT8]: (value: string) => Number(value) } });
+    await pglite.query("select setseed($1)", [seed]);
     return new SimDb(pglite);
   }
 
@@ -42,7 +46,7 @@ export class SimDb {
 
   private async run(node: string, text: string, values?: unknown[]): Promise<Rows> {
     if (this.down.has(node)) throw unavailable();
-    this.statements.push(`${node}: ${text.trim().split(/\s+/, 1)[0]}`);
+    this.statements.push(`${this.scope.runInAsyncScope(() => Date.now())} ${node}: ${text.trim().replace(/\s+/g, " ").slice(0, 70)} ${JSON.stringify(values ?? []).slice(0, 200)}`);
     const result = await this.scope.runInAsyncScope(() => this.pglite.query<Record<string, unknown>>(text, values as unknown[]));
     // PGlite counts only changed rows; pg counts a select's rows too.
     return { rows: result.rows, rowCount: result.affectedRows || result.rows.length };

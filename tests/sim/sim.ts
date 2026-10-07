@@ -79,14 +79,18 @@ export class Sim {
    * says which BUGGIFY sites fire. Installs the simulation's environment and hooks for the process until `close`.
    */
   static async create(options: { seed: string | number; respond: (body: any, served: Served[]) => Answer; env?: Record<string, string>; buggify?: BuggifyPlan; quiet?: boolean }) {
-    const db = await SimDb.create();
-    await db.migrate();
     const seed = String(options.seed);
+    const db = await SimDb.create(prng(`${seed}:sql`).float() * 2 - 1);
+    await db.migrate();
     return new Sim(seed, new SimEnv(seed, undefined, options.quiet), new SimHooks(seed, options.buggify ?? false), db, options.respond, options.env ?? {});
   }
 
   /** Start node `name` (reachable at http://<name>.sim), with `env` over the world's, its clock off by `skew`. */
-  async start(name: string, env: Record<string, string> = {}, skew: ClockSkew = {}): Promise<SimNode> {
+  /**
+   * `drive` (default true) runs the clock until the node has started. A driver that moves time itself passes false:
+   * two loops moving one clock would interleave by how fast the real machine runs.
+   */
+  async start(name: string, env: Record<string, string> = {}, skew: ClockSkew = {}, options: { drive?: boolean } = {}): Promise<SimNode> {
     const host = `${name}.sim`, url = `http://${host}`;
     if (this.nodes.get(name) && !this.nodes.get(name)!.crashed) throw new Error(`Node ${name} is running`);
     this.net.add(host);
@@ -119,7 +123,7 @@ export class Sim {
     };
     let runtime: RuntimeNode;
     // A node that fails to start exits, as the process would: nothing it began goes on.
-    try { runtime = await this.env.settle(createNode(config, deps)); }
+    try { runtime = await (options.drive === false ? createNode(config, deps) : this.env.settle(createNode(config, deps))); }
     catch (error) { dead = true; db.kill(); this.env.crash(clock); throw error; }
     this.net.add(host, runtime.server, work => runtime.run(work));
     const ended = Promise.withResolvers<void>();
@@ -159,10 +163,10 @@ export class Sim {
   }
 
   /** Start a crashed node again, as it was started: a new process (a new session) at the same address. */
-  restart(name: string) {
+  restart(name: string, options: { drive?: boolean } = {}) {
     const node = this.nodes.get(name);
     if (!node?.crashed) throw new Error(`Node ${name} has not crashed`);
-    return this.start(name, node.started.env, node.started.skew);
+    return this.start(name, node.started.env, node.started.skew, options);
   }
 
   /** Cut `a` off from `b` (both ways), as a partition does: connections are refused, or (blackhole) never answer. */
@@ -204,10 +208,13 @@ export class Sim {
   /** Move virtual time on by `ms`. */
   advance(ms: number) { return this.env.advance(ms); }
 
-  /** Run until `check` returns something truthy, polling every `everyMs` virtual ms, failing past `limitMs`. */
+  /**
+   * Run until `check` returns something truthy, polling every `everyMs` virtual ms, failing past `limitMs`. A check that
+   * waits on the simulation (a `call`) runs the clock itself; between checks this moves it.
+   */
   async until<V>(check: () => V | Promise<V>, what: string, limitMs = 60_000, everyMs = 50): Promise<NonNullable<V>> {
     for (const deadline = this.env.elapsed + limitMs; ;) {
-      const value = await this.env.settle(Promise.resolve(check()));
+      const value = await check();
       if (value) return value as NonNullable<V>;
       if (this.env.elapsed >= deadline) throw new Error(`Timed out (virtual ${limitMs} ms) waiting for ${what}`);
       await this.env.advance(everyMs);
