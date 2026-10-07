@@ -306,14 +306,15 @@ real I/O:
 - `SimEnv` provides fake timers and seeded randomness, per node, through the node context.
 - A fake model provider logs which node it served.
 
-It can crash and restart nodes, partition links (refused or blackholed), cut a node off the database, skew clocks,
-and turn BUGGIFY sites on (`SimHooks`, swarm style). A plan is explicit data: nodes, settings, model latency and
+It can crash, drain (a deploy) and restart nodes, partition links (refused or blackholed), cut a node off the
+database, skew clocks, and turn BUGGIFY sites on (`SimHooks`, swarm style). A plan is explicit data: nodes, settings, model latency and
 timed steps (`tests/sim/workload.ts`). `runPlan` (`tests/sim/run.ts`) runs one, then checks it:
 - every accepted run ends with one outcome that stays (I3);
 - no agent has model calls on two nodes at once outside a fault (I1);
 - no model calls come after an acknowledged abort (I9);
+- watchers' streams only move forward, and an event id is never two events (I8);
 - no assertion is violated and there is no real I/O.
 
 A seed replays exactly, which its trace hash checks. To run plans, use `npm run sim -- --seeds 1-200`
 (`--twice` checks determinism). A failing plan is written to `sim-failures/<seed>.json`; run it again with
-`npm run sim -- --replay <file>`.
+`npm run sim -- --replay <file>`, or cut it down to the steps it needs with `--minimize <file>` (ddmin).

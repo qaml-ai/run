@@ -20,7 +20,11 @@ export const TOKEN = "simulation-operator-token-at-least-24-chars";
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 
 /** A runtime node in the simulation: its handles, how to reach it, and how it was started (to start it again). */
-export type SimNode = { name: string; host: string; url: string; runtime: RuntimeNode; clock: Clock; crashed: boolean; kill(): void; started: { env: Record<string, string>; skew: ClockSkew } };
+export type SimNode = {
+  name: string; host: string; url: string; runtime: RuntimeNode; clock: Clock; crashed: boolean; kill(): void; started: { env: Record<string, string>; skew: ClockSkew };
+  /** Settles when the node's process ends (a crash, or the exit after a drain). */
+  ended: Promise<void>;
+};
 
 /** `map`, refusing changes once `dead()` (a crashed node's writes never land); maps it holds are guarded too. */
 function guarded<K, V>(map: Map<K, V>, dead: () => boolean): Map<K, V> {
@@ -118,7 +122,8 @@ export class Sim {
     try { runtime = await this.env.settle(createNode(config, deps)); }
     catch (error) { dead = true; db.kill(); this.env.crash(clock); throw error; }
     this.net.add(host, runtime.server, work => runtime.run(work));
-    const node: SimNode = { name, host, url, runtime, clock, crashed: false, kill: () => { dead = true; db.kill(); }, started: { env, skew } };
+    const ended = Promise.withResolvers<void>();
+    const node: SimNode = { name, host, url, runtime, clock, crashed: false, kill: () => { dead = true; db.kill(); ended.resolve(); }, started: { env, skew }, ended: ended.promise };
     this.nodes.set(name, node);
     return node;
   }
@@ -131,6 +136,22 @@ export class Sim {
   crash(name: string) {
     const node = this.nodes.get(name);
     if (!node || node.crashed) throw new Error(`Node ${name} is not running`);
+    node.crashed = true;
+    node.kill();
+    this.env.crash(node.clock);
+    this.net.remove(node.host);
+  }
+
+  /**
+   * Node `name` leaves as a deploy takes it out: SIGTERM's drain (turns handed to peers or finished, then everything
+   * released), then its process exits.
+   */
+  async drain(name: string) {
+    const node = this.nodes.get(name);
+    if (!node || node.crashed) throw new Error(`Node ${name} is not running`);
+    // A node that crashes while it drains never finishes draining.
+    await Promise.race([node.runtime.drain("SIGTERM").catch(() => {}), node.ended]);
+    if (node.crashed) return;
     node.crashed = true;
     node.kill();
     this.env.crash(node.clock);
@@ -161,12 +182,14 @@ export class Sim {
    * The same call without running the clock: for a driver that issues calls while it moves time itself. A node that
    * cannot be reached fails it (a TypeError, as fetch's).
    */
-  request(node: string, path: string, init: { method?: string; body?: unknown; token?: string; headers?: Record<string, string> } = {}): Promise<{ status: number; json: any }> {
+  request(node: string, path: string, init: { method?: string; body?: unknown; token?: string; headers?: Record<string, string>; timeoutMs?: number } = {}): Promise<{ status: number; json: any }> {
     return this.asWorld(async () => {
       const response = await this.net.networkFor("client.sim").fetch(`http://${node}.sim${path}`, {
         method: init.method ?? (init.body === undefined ? "GET" : "POST"),
         headers: { Authorization: `Bearer ${init.token ?? TOKEN}`, ...(init.body === undefined ? {} : { "Content-Type": "application/json" }), ...init.headers },
         body: init.body === undefined ? undefined : JSON.stringify(init.body),
+        // As a client gives up on a node that never answers (a blackholed link).
+        signal: AbortSignal.timeout(init.timeoutMs ?? 60_000),
       });
       const text = await response.text();
       let json: any;

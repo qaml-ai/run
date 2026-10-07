@@ -2,14 +2,25 @@
 //   npm run sim -- --seeds 1-200            run seeds 1 to 200
 //   npm run sim -- --seed 42 --twice        run one seed twice and check both runs hash the same
 //   npm run sim -- --replay sim-failures/42.json    run a saved plan again
+//   npm run sim -- --minimize sim-failures/42.json  cut a failing plan down to the steps it needs (sim-failures/42.min.json)
 // A failing run writes sim-failures/<seed>.json: its plan as data (replay it as is), its failures and history.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { generatePlan, type Plan } from "../tests/sim/workload.ts";
 import { runPlan } from "../tests/sim/run.ts";
 import { COVERAGE_GOALS } from "../tests/sim/hooks.ts";
+import { minimize } from "../tests/sim/minimize.ts";
 
-const { values } = parseArgs({ options: { seed: { type: "string" }, seeds: { type: "string" }, replay: { type: "string" }, twice: { type: "boolean" }, steps: { type: "string" } } });
+const { values } = parseArgs({ options: { seed: { type: "string" }, seeds: { type: "string" }, replay: { type: "string" }, minimize: { type: "string" }, twice: { type: "boolean" }, steps: { type: "string" } } });
+if (values.minimize) {
+  const plan: Plan = JSON.parse(readFileSync(values.minimize, "utf8")).plan;
+  const smaller = await minimize(plan, async candidate => (await runPlan(candidate)).failures, line => process.stderr.write(`${line}\n`));
+  const result = await runPlan(smaller);
+  const file = values.minimize.replace(/\.json$/, ".min.json");
+  writeFileSync(file, JSON.stringify(result, null, 2));
+  process.stderr.write(`${JSON.stringify({ steps: smaller.steps.length, failures: result.failures, file })}\n`);
+  process.exit(0);
+}
 const plans: Plan[] = [];
 if (values.replay) plans.push(JSON.parse(readFileSync(values.replay, "utf8")).plan);
 else {
@@ -27,7 +38,7 @@ for (const plan of plans) {
     if (again.hash !== result.hash) failures.push(`determinism: the second run hashed ${again.hash}, the first ${result.hash}`);
   }
   for (const goal of result.reached) reached.add(goal);
-  const summary = { seed: plan.seed, nodes: plan.nodes.length, steps: plan.steps.length, served: result.served, fired: result.fired, notes: result.notes, failures, hash: result.hash.slice(0, 12) };
+  const summary = { seed: plan.seed, nodes: plan.nodes.length, steps: plan.steps.length, served: result.served, watched: result.watchedEvents, fired: result.fired, notes: result.notes, failures, hash: result.hash.slice(0, 12) };
   process.stderr.write(`${JSON.stringify(summary)}\n`);
   if (failures.length) {
     failed++;
