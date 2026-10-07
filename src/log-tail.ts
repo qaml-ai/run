@@ -66,7 +66,8 @@ export function postgresTail(db: Db, options: { retryMs?: number; unfenced?: boo
       const holds = async (sql: Sql, share: boolean) => !claim || !!(await sql.query(`select from actor_owners where actor = $1 and session = $2 and epoch = $3${share ? " for share" : ""}`, [claim.actor, claim.session, claim.epoch])).rowCount;
       // The lock is the connection's, not a transaction's: the connection stays checked out, idle, while `fold` writes
       // to Storage. Another compaction of the log under way (another node's, or this one's before a takeover) moves the
-      // rows: this one leaves them to it.
+      // rows: this one leaves them to it. Every statement goes on this one connection, so compactions waiting on a full
+      // pool never hold one connection while they wait for another.
       const lock = await db.connect();
       let broken: Error | undefined;
       const lost = (error: Error) => { broken = error; };
@@ -76,17 +77,22 @@ export function postgresTail(db: Db, options: { retryMs?: number; unfenced?: boo
         locked = !!(await lock.query("select pg_try_advisory_lock(hashtext($1)) as locked", [`log:${key}`])).rows[0]?.locked;
         sometimes(!locked, "a compaction found another of its log under way, and left the rows to it");
         if (!locked) return true;
-        if (!await holds(db, false)) return false;
-        const { rows } = await db.query("select seq, snapshot, body, blob from log_records where log_key = $1 order by seq", [key]);
+        if (!await holds(lock, false)) return false;
+        const { rows } = await lock.query("select seq, snapshot, body, blob from log_records where log_key = $1 order by seq", [key]);
         if (!rows.length) return true;
         // Storage's writes, with no transaction open.
         const through = await fold(rows);
         // The rows go only while the claim holds, in one short transaction; else they stay, covered by what is stored.
-        return await transaction(db, async sql => {
-          if (!await holds(sql, true)) return false;
-          await sql.query("delete from log_records where log_key = $1 and seq <= $2", [key, through]);
-          return true;
-        });
+        await lock.query("begin");
+        try {
+          const held = await holds(lock, true);
+          if (held) await lock.query("delete from log_records where log_key = $1 and seq <= $2", [key, through]);
+          await lock.query("commit");
+          return held;
+        } catch (error) {
+          await lock.query("rollback").catch(() => { broken ??= error as Error; });
+          throw error;
+        }
       } finally {
         if (locked) await lock.query("select pg_advisory_unlock(hashtext($1))", [`log:${key}`]).catch(error => { broken ??= error as Error; });
         lock.off("error", lost);

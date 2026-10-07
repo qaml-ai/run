@@ -101,7 +101,13 @@ async function race(scheduler: fc.Scheduler, opsA: Op[], opsB: Op[], contender: 
         catch (error) { if (!(error instanceof LostClaim)) throw error; committed = false; seen.fencedWrites++; }
         effects.push({ node: names[index], committed });
       } else {
-        if (!await tails[index].compact(key, claim, async rows => { moved.push(...rows); return rows.at(-1)!.seq; })) seen.fencedCompactions++;
+        // As segmentLog's fold does: what Storage covers already (a compaction whose rows stayed, its claim lost after
+        // it wrote) is not stored again.
+        if (!await tails[index].compact(key, claim, async rows => {
+          const covered = Math.max(-1, ...moved.map(row => row.seq));
+          moved.push(...rows.filter(row => row.seq > covered));
+          return rows.at(-1)!.seq;
+        })) seen.fencedCompactions++;
       }
     }
   };
@@ -127,7 +133,10 @@ async function race(scheduler: fc.Scheduler, opsA: Op[], opsB: Op[], contender: 
   for (const result of results) if (result && "owner" in result) assert.equal(result.owner, winner, "a successor that lost is told who owns the actor");
 
   // I2/I7: the log is gap-free; acknowledged appends are in it, rejected ones are not; A's records precede the successor's.
-  const tail = await tails[0].rows(key);
+  // Read as segmentLog reads: Storage, then the tail's rows past what Storage covers (a compaction whose claim was lost
+  // after it wrote leaves its rows in the tail too).
+  const covered = Math.max(-1, ...moved.map(row => row.seq));
+  const tail = (await tails[0].rows(key)).filter(row => row.seq > covered);
   const log = [...moved, ...tail].sort((a, b) => a.seq - b.seq);
   assert.deepEqual(log.map(row => row.seq), log.map((_, index) => index), "the log is gap-free, each sequence number once");
   const bodies = new Set(log.map(row => row.body));
