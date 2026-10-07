@@ -21,7 +21,7 @@ stamp=$(date -u +%Y%m%dT%H%M%SZ); out=$root/sim-failures/$stamp
 started=$(date +%s)
 $root/ci-run "$ref" $root/sim-shards.sh $from $to $shards $out > $dir/$stamp.log 2>&1; status=$?
 commit=$(grep -m1 -oE "^   at [0-9a-f]{7}" $dir/$stamp.log | awk '{print $2}')
-failed=$(( $(ls $out 2>/dev/null | grep -E '^[0-9]+\.json$' | wc -l) + $(ls $out/fuzz 2>/dev/null | grep -E '^[0-9a-f]{8}\.json$' | wc -l) ))
+failed=$(( $(ls $out 2>/dev/null | grep -E '^(long-)?[0-9]+\.json$' | wc -l) + $(ls $out/fuzz 2>/dev/null | grep -E '^[0-9a-f]{8}\.json$' | wc -l) ))
 # The coverage goals no shard reached.
 never=$(python3 -c 'import json,sys; s=[set(json.loads(open(f).read().strip().splitlines()[-1]).get("neverReached",[])) for f in sys.argv[1:]]; print(json.dumps(sorted(set.intersection(*s)) if s else []))' $out/shard-*.log 2>/dev/null)
 printf "%s\t%s\tseeds %s-%s\tstatus=%s\tfailed=%s\t%ss\tnever reached: %s\tfailures: %s\n" "$stamp" "$commit" $from $to $status $failed $(( $(date +%s) - started )) "$never" "$out" >> $dir/nights.tsv

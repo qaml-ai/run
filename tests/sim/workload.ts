@@ -3,7 +3,11 @@ import type { BuggifyPlan } from "./hooks.ts";
 
 /** One thing the workload does: a client call, or a fault. Agents and runs are numbered; their ids come at run time. */
 export type Op =
-  | { op: "create"; agent: number; node: string }
+  /** `ttlSeconds`: the agent expires that long after it is made, and is purged (I18). */
+  | { op: "create"; agent: number; node: string; ttlSeconds?: number }
+  /** A client deletes agent N, or volume N: its data is purged shortly after (I18). */
+  | { op: "deleteAgent"; agent: number; node: string }
+  | { op: "deleteVolume"; volume: number; node: string }
   /** `requestId`: the run's key goes in the body's requestId rather than the Idempotency-Key header. */
   | { op: "prompt"; agent: number; run: number; node: string; key?: "requestId" }
   /**
@@ -87,6 +91,10 @@ export type Plan = {
   steps: { at: number; op: Op }[];
   /** Virtual ms the steps span; then every fault heals, and the run settles. */
   durationMs: number;
+  /** When the run starts (ISO time; default 2030-01-01T00:00Z): near a day's or a month's end, say. */
+  startAt?: string;
+  /** Settings for every node, over the run's (a long run's slower timers, retention, billing's interval). */
+  env?: Record<string, string>;
 };
 
 /** Which fault classes a run uses: each run enables a random subset (swarm testing). */
@@ -203,5 +211,72 @@ export function generatePlan(seed: string, options: { steps?: number; durationMs
     steps,
     ...tail,
     ...extra,
+  };
+}
+
+/** Where long plans start: just before a month's end (and a day's), before a day's end, or mid-day. */
+const LONG_STARTS = ["2030-01-31T23:00:00Z", "2030-02-28T22:30:00Z", "2030-03-03T23:20:00Z", "2030-06-30T23:40:00Z", "2030-05-14T09:00:00Z"];
+
+/**
+ * A long plan for `seed`: hours of virtual time (2 to 26), starting near a day's or month's end, so the billing day,
+ * the storage reconcile (daily here), retention, purges and storage GC (hourly here) all come round. Bursts of
+ * client work every 10 to 40 minutes on a few agents (some made to expire, some deleted) and volumes (one deleted late),
+ * and now and then a fault; then the checkers, with I16 to I18 for what the hours do. The nodes' timers run as in
+ * production, or slower, so an hour of virtual time takes seconds.
+ */
+export function generateLongPlan(seed: string, options: { hours?: number } = {}): Plan {
+  const random = prng(`${seed}:long`);
+  const pick = <T>(items: readonly T[]) => items[random.int(items.length)];
+  const hours = options.hours ?? 2 + random.int(25);
+  const durationMs = hours * 3_600_000;
+  const nodes = ["a", "b", "c"].slice(0, 2 + random.int(2));
+  const leaseTtlMs = pick([12_000, 30_000]);
+  const agents = 3 + random.int(4);
+  const steps: Plan["steps"] = [];
+  for (let agent = 0; agent < agents; agent++) {
+    // A few agents expire within the run: purged once their time is up.
+    const ttlSeconds = random.float() < 0.3 ? 60 * (1 + random.int(Math.max(1, hours * 30))) : undefined;
+    steps.push({ at: agent * 10, op: { op: "create", agent, node: pick(nodes), ...(ttlSeconds ? { ttlSeconds } : {}) } });
+  }
+  const volumes = 1 + random.int(2);
+  for (let volume = 0; volume < volumes; volume++) steps.push({ at: 100 + volume * 10, op: { op: "volume", volume, node: pick(nodes) } });
+  let run = 0, write = 0, fork = 0, volumeFork = 0, schedule = 0;
+  const deleted = new Set<number>();
+  for (let at = 60_000; at < durationMs - 600_000; at += 600_000 + random.int(1_800_000)) {
+    for (let index = 0, burst = 3 + random.int(8); index < burst; index++) {
+      const when = at + index * (500 + random.int(5_000));
+      const live = [...Array(agents).keys()].filter(agent => !deleted.has(agent));
+      const agent = live.length ? pick(live) : 0;
+      const roll = random.float();
+      if (roll < 0.55) steps.push({ at: when, op: { op: "prompt", agent, run: run++, node: pick(nodes) } });
+      else if (roll < 0.75) steps.push({ at: when, op: { op: "write", volume: random.int(volumes), write: write++, node: pick(nodes) } });
+      else if (roll < 0.8) steps.push({ at: when, op: { op: "fork", agent, fork: fork++, node: pick(nodes) } });
+      else if (roll < 0.84) steps.push({ at: when, op: { op: "forkVolume", volume: random.int(volumes), fork: volumeFork++, node: pick(nodes) } });
+      else if (roll < 0.88) steps.push({ at: when, op: { op: "schedule", agent, schedule: schedule++, inSeconds: 1 + random.int(600), node: pick(nodes) } });
+      else if (roll < 0.9 && live.length > 1) { deleted.add(agent); steps.push({ at: when, op: { op: "deleteAgent", agent, node: pick(nodes) } }); }
+      else if (roll < 0.93) steps.push({ at: when, op: { op: "abort", agent, node: pick(nodes) } });
+      else if (roll < 0.96) {
+        const node = pick(nodes);
+        steps.push({ at: when, op: { op: "crash", node } }, { at: when + 5_000 + random.int(60_000), op: { op: "restart", node } });
+      } else if (roll < 0.98 && nodes.length > 1) {
+        steps.push({ at: when, op: { op: "partition", a: nodes[0], b: nodes[1], how: pick(["refused", "blackhole"] as const) } }, { at: when + 1_000 + random.int(leaseTtlMs * 2), op: { op: "heal" } });
+      } else {
+        const node = pick(nodes);
+        steps.push({ at: when, op: { op: "databaseDown", node } }, { at: when + 1_000 + random.int(leaseTtlMs * 2), op: { op: "databaseUp", node } });
+      }
+    }
+  }
+  // A volume deleted with hours to go, so the storage GC purges it before the end.
+  if (volumes > 1 && hours >= 4) steps.push({ at: Math.floor(durationMs / 3), op: { op: "deleteVolume", volume: volumes - 1, node: pick(nodes) } });
+  steps.sort((a, b) => a.at - b.at);
+  return {
+    seed, nodes, leaseTtlMs, durationMs, startAt: pick(LONG_STARTS),
+    skews: Object.fromEntries(nodes.map(node => [node, random.int(4_001) - 2_000])),
+    modelDelayMs: [50, pick([200, 2_000])], buggify: random.float() < 0.3 ? "swarm" : false,
+    env: {
+      AGENT_SCHEDULER_INTERVAL_MS: "5000", AGENT_ORPHAN_SWEEP_MS: "10000", AGENT_BILLING_INTERVAL_MS: "600000", AGENT_STORAGE_RECONCILE_DAYS: "1",
+      AGENT_GC_ENABLED: "true", AGENT_GC_GRACE_MS: "3600000", AGENT_GC_INTERVAL_MS: "3600000", AGENT_GC_POLL_MS: "60000",
+    },
+    steps,
   };
 }

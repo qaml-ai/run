@@ -17,6 +17,8 @@ The nightly simulator run on the CI devbox (`camel-devbox`). It runs beside `ci-
   - It splits the seeds over `<shards>` processes.
   - When `SIM_POSTGRES_SEEDS` is set (a count) in its environment and the checkout's simulator has `--postgres`, it then
     runs that many seeds on ci-run's own Postgres.
+  - When `SIM_LONG_SEEDS` is set (`loop.sh` sets 24) and the checkout has `--long`, it runs that many long plans:
+    hours of virtual time each, across day and month ends, for billing, reconciles, purges and storage GC.
   - Then, when the checkout has `--fuzz`, it fuzzes for as long as the seeds took (half the batch), on `<shards>`
     workers, from a corpus kept across batches (`SIM_CORPUS`, default `~/camelrun-ci/sim/corpus`). Each new kind of
     failure the fuzzer finds is minimized and copied to `<outdir>/fuzz/`, and counts in `nights.tsv`. `SIM_FUZZ=0`

@@ -6,6 +6,7 @@
 //   npm run sim -- --minimize sim-failures/42.json  cut a failing plan down to the steps it needs (sim-failures/42.min.json)
 //   npm run sim -- --postgres --seeds 1-20  the nightly mode: a real Postgres server (AGENT_TEST_DATABASE_URL) on the
 //                                            machine's clock, for what PGlite's one session cannot show; not deterministic
+//   npm run sim -- --long --seeds 1-4       long plans: hours of virtual time (--hours to choose), across day and month ends
 //   npm run sim -- --fuzz 60 --jobs 8       coverage-guided: 60 minutes of plans mutated from a corpus (sim-corpus/,
 //                                            begun from tests/sim/corpus/), kept when they cover something new; each new
 //                                            kind of failure saved once to <out>/fuzz/ and minimized. --random: random
@@ -16,7 +17,7 @@ import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { generatePlan, type Plan } from "../tests/sim/workload.ts";
+import { generateLongPlan, generatePlan, type Plan } from "../tests/sim/workload.ts";
 import { runPlan, type RunResult } from "../tests/sim/run.ts";
 import { COVERAGE_GOALS } from "../tests/sim/hooks.ts";
 import { minimize } from "../tests/sim/minimize.ts";
@@ -26,6 +27,7 @@ const { values } = parseArgs({
   options: {
     seed: { type: "string" }, seeds: { type: "string" }, replay: { type: "string" }, minimize: { type: "string" }, twice: { type: "boolean" },
     steps: { type: "string" }, jobs: { type: "string" }, out: { type: "string" }, "minimize-failures": { type: "boolean" }, postgres: { type: "boolean" },
+    long: { type: "boolean" }, hours: { type: "string" },
     fuzz: { type: "string" }, random: { type: "boolean" }, corpus: { type: "string" }, worker: { type: "string" }, started: { type: "string" },
   },
 });
@@ -109,7 +111,9 @@ if (jobs > 1 && !values.replay) {
 
 const plans: Plan[] = [];
 if (values.replay) plans.push(JSON.parse(readFileSync(values.replay, "utf8")).plan);
-else for (const seed of seeds(values.seeds ?? values.seed ?? "1")) plans.push(generatePlan(seed, values.steps ? { steps: Number(values.steps) } : {}));
+else for (const seed of seeds(values.seeds ?? values.seed ?? "1")) {
+  plans.push(values.long ? generateLongPlan(`long-${seed}`, values.hours ? { hours: Number(values.hours) } : {}) : generatePlan(seed, values.steps ? { steps: Number(values.steps) } : {}));
+}
 let failed = 0;
 const reached = new Set<string>();
 const started = performance.now();

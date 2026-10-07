@@ -328,8 +328,13 @@ timed steps (`tests/sim/workload.ts`). `runPlan` (`tests/sim/run.ts`) runs one, 
 - every acknowledged volume write reads back on every node (I2); a fork (of an agent or a volume) holds what was
   there when it was asked for and nothing made after (I11); a schedule fires once it is due, exactly once (I13); a
   prompt sent again with its key is the same request, and its prompt is in the history once (I14); what a run that
-  succeeded said, its prompt and its answer, is in its agent's history (I15);
+  succeeded said, its prompt and its answer, is in its agent's history (I15); storage is charged once a day (I16) and
+  reconciled on schedule, and metered exactly when no node was lost (I17); what is deleted or expires is purged (I18);
 - no assertion is violated and there is no real I/O.
+
+Long plans (`npm run sim -- --long`, `generateLongPlan`) run hours of virtual time (2 to 26), starting near a day's or a
+month's end, with bursts of work, agents made to expire or deleted, a volume deleted, and production's timers or slower
+ones (an hour takes seconds): billing days, the storage reconcile, purges and the storage GC all come round.
 
 A seed replays exactly, which its trace hash checks. To run plans, use `npm run sim -- --seeds 1-200`
 (`--twice` checks determinism). A failing plan is written to `sim-failures/<seed>.json`; run it again with

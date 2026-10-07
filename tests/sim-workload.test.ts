@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { FAULTS, generatePlan, type Plan } from "./sim/workload.ts";
+import { FAULTS, generateLongPlan, generatePlan, type Plan } from "./sim/workload.ts";
+import { normalize } from "./sim/mutate.ts";
 import { runPlan } from "./sim/run.ts";
 
 // Generated workloads in the simulator (npm run sim runs many more): clients making agents, prompting and watching them
@@ -76,4 +77,34 @@ test("an object store that is slow, refuses requests, throttles and loses answer
   const result = await runPlan(plan);
   assert.deepEqual(result.failures, []);
   assert.ok(result.served > 0);
+});
+
+test("a long plan across a month's end: charged once a day (I16), reconciled on schedule and metered exactly (I17), deleted and expired agents and a deleted volume purged (I18)", async () => {
+  const long = generateLongPlan("long-test", { hours: 3 });
+  const faults = new Set(["crash", "restart", "partition", "heal", "databaseDown", "databaseUp", "deleteAgent", "deleteVolume", "create", "volume"]);
+  const plan: Plan = {
+    ...long, startAt: "2030-01-31T23:00:00Z", buggify: false, nodes: ["a", "b"], skews: { a: 0, b: 0 },
+    env: { ...long.env, AGENT_GC_GRACE_MS: "1800000", AGENT_GC_INTERVAL_MS: "1800000" },
+    steps: [
+      { at: 0, op: { op: "create", agent: 0, node: "a" } },
+      { at: 10, op: { op: "create", agent: 1, node: "b" } },
+      { at: 20, op: { op: "create", agent: 2, node: "a", ttlSeconds: 1_800 } },
+      { at: 100, op: { op: "volume", volume: 0, node: "a" } },
+      { at: 110, op: { op: "volume", volume: 1, node: "b" } },
+      ...long.steps.filter(step => !faults.has(step.op.op)).map(step => {
+        const op = { ...step.op } as any;
+        if ("node" in op) op.node = op.node === "c" ? "a" : op.node;
+        if ("agent" in op) op.agent %= 3;
+        if ("volume" in op) op.volume %= 2;
+        return { at: step.at, op };
+      }),
+      { at: 600_000, op: { op: "deleteAgent", agent: 1, node: "a" } },
+      { at: 900_000, op: { op: "deleteVolume", volume: 1, node: "b" } },
+    ].sort((a, b) => a.at - b.at),
+  };
+  const result = await runPlan(normalize(plan));
+  assert.deepEqual(result.failures, []);
+  assert.deepEqual(result.notes, []);
+  const charged = result.logs.filter(log => log.line.includes('"storage_charged"')).map(log => JSON.parse(log.line).day);
+  assert.deepEqual([...new Set(charged)], ["2030-01-31", "2030-02-01"]);
 });
