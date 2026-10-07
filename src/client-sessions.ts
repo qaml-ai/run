@@ -874,12 +874,19 @@ export class ClientSessions {
   }
   private commitLater(session: Session) { void this.commit(session, false).catch(() => {}); }
 
-  private fail(session: Session, error: unknown) {
+  private fail(session: Session, error: unknown, release = true) {
     if (session.fault) return;
     // A failed disk commit must never turn into a successful retry from memory.
     session.fault = new Error(`Session persistence failed: ${errorText(error)}`);
     this.endStreams(session, true);
     this.closeAttached(session);
+    // Still its owner (a write failed, or its answer was lost, without the lease lapsing): nothing would ever fence it,
+    // so give the agent up as a drain does. Its next load, here or on a peer, reads what the journal holds and resumes
+    // a turn that had begun; a faulted session kept loaded would hold the agent, and its runs, until this node stopped.
+    if (release && !this.closed && !session.leaving && this.sessions.get(session.header.id) === session) {
+      console.error(JSON.stringify({ type: "session_fault_released", agent: session.header.id, running: session.running.size, error: safeError(error) }));
+      void this.leave(session);
+    }
   }
 
   /**
@@ -4311,7 +4318,7 @@ export class ClientSessions {
     session.busy = false;
     session.spans?.abandon("This node lost ownership of the agent");
     session.spans = undefined;
-    this.fail(session, new Error("This node lost ownership of the agent"));
+    this.fail(session, new Error("This node lost ownership of the agent"), false);
     this.endStreams(session, true);
     if (this.sessions.get(session.header.id) === session) this.sessions.delete(session.header.id);
     // Its claim is gone, so it could write no chunk: its next owner's start catches up.
