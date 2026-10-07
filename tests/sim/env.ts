@@ -31,8 +31,11 @@ export function prng(seed: string) {
   return random;
 }
 
-/** What a simulated node's clock is off by: `skewMs` on its wall clock, `drift` on its monotonic clock's rate. */
-export type ClockSkew = { skewMs?: number; drift?: number };
+/**
+ * What a simulated node's clock is off by: `skewMs` on its wall clock (a jump changes it while the node runs), `wallDrift`
+ * on its wall clock's rate, `drift` on its monotonic clock's rate.
+ */
+export type ClockSkew = { skewMs?: number; drift?: number; wallDrift?: number };
 
 /**
  * The simulation's environment, for the whole process (one simulation at a time):
@@ -254,7 +257,7 @@ export class SimEnv {
     const clock = this.clock;
     const start = this.start;
     return {
-      now: () => clock.now + (skew.skewMs ?? 0),
+      now: () => clock.now + (skew.skewMs ?? 0) + Math.round((clock.now - start) * (skew.wallDrift ?? 0)),
       monotonic: () => (clock.now - start) * (1 + (skew.drift ?? 0)),
       setTimeout: (callback, ms) => setTimeout(callback, ms),
       clearTimeout: timer => clearTimeout(timer),

@@ -29,12 +29,20 @@ export function normalize(plan: Plan): Plan {
     else made.add(op.volume);
   }
   const next = { run: 0, fork: 0, schedule: 0, write: 0, volumeFork: 0 };
+  // A retry names its run by number: it follows its prompt's new number, and one whose prompt is gone goes with it.
+  const renumbered = new Map<number, number>();
   for (const { op } of steps) {
-    if (op.op === "prompt") op.run = next.run++;
+    if (op.op === "prompt") { const run = next.run++; if (!renumbered.has(op.run)) renumbered.set(op.run, run); op.run = run; }
     else if (op.op === "fork") op.fork = next.fork++;
     else if (op.op === "schedule") op.schedule = next.schedule++;
     else if (op.op === "write") op.write = next.write++;
     else if (op.op === "forkVolume") op.fork = next.volumeFork++;
+  }
+  for (let index = 0; index < steps.length; index++) {
+    const op = steps[index].op;
+    if (op.op !== "retry") continue;
+    if (renumbered.has(op.run)) op.run = renumbered.get(op.run)!;
+    else steps.splice(index--, 1);
   }
   return { ...plan, steps };
 }
@@ -71,6 +79,13 @@ export function randomStep(plan: Plan, random: Random): Step {
     () => ({ op: "databaseDown", node }),
     () => ({ op: "databaseUp", node }),
     () => ({ op: "fork", agent, fork: 0, node }),
+    () => {
+      const prompts = plan.steps.filter(step => step.op.op === "prompt");
+      const prompt = prompts.length ? prompts[random.int(prompts.length)].op as Extract<Op, { op: "prompt" }> : undefined;
+      return prompt ? { op: "retry", agent: prompt.agent, run: prompt.run, node } : { op: "prompt", agent, run: 0, node };
+    },
+    () => ({ op: "clockJump", node, ms: random.int(20_001) - 10_000 }),
+    () => ({ op: "failover", ms: 500 + random.int(plan.leaseTtlMs) }),
     () => ({ op: "schedule", agent, schedule: 0, inSeconds: 1 + random.int(20), node }),
     () => ({ op: "create", agent: random.int(agents + 1), node }),
     ...volumes ? [
@@ -92,6 +107,9 @@ function retarget(step: Step, plan: Plan, random: Random): Step {
   if (op.op === "pauseOnDb" && random.float() < 0.3) op.statement = random.float() < 0.2 ? undefined : pick(OWNERSHIP_STATEMENTS);
   if (op.op === "watch") op.forMs = 500 + random.int(30_000);
   if (op.op === "schedule") op.inSeconds = 1 + random.int(30);
+  if (op.op === "clockJump") op.ms = random.int(20_001) - 10_000;
+  if (op.op === "failover") op.ms = 500 + random.int(plan.leaseTtlMs * 2);
+  if (op.op === "prompt" && random.float() < 0.3) op.key = op.key ? undefined : "requestId";
   if (op.op === "partition") {
     op.how = op.how === "refused" ? "blackhole" : "refused";
     if (random.float() < 0.5) op.a = pick(plan.nodes);
@@ -108,7 +126,9 @@ const shift = (random: Random) => (random.float() < 0.5 ? 1 + random.int(50) : 1
  */
 function retune(plan: Plan, random: Random): Plan {
   const pick = <T>(items: readonly T[]) => items[random.int(items.length)];
-  switch (random.int(7)) {
+  switch (random.int(9)) {
+    case 6: return { ...plan, drifts: random.float() < 0.2 ? undefined : Object.fromEntries(plan.nodes.map(node => [node, { wall: (random.int(201) - 100) / 10_000, monotonic: (random.int(201) - 100) / 100_000 }])) };
+    case 7: return { ...plan, dbErrors: random.float() < 0.2 ? undefined : { rate: pick([0.001, 0.005, 0.02, 0.05]), codes: ["40001", "40P01", "57014", "ECONNRESET"].filter(() => random.float() < 0.6).concat(["ECONNRESET"]) } };
     case 0: return { ...plan, leaseTtlMs: pick([3_000, 6_000, 12_000]) };
     case 4: return { ...plan, dbLatencyMs: random.float() < 0.2 ? undefined : [0, pick([1, 5, 20, 200, 1_000])] };
     case 5: return random.float() < 0.2 ? { ...plan, dbSpikes: undefined } : {

@@ -25,7 +25,10 @@ const Node = z.string().regex(/^[a-z]$/).describe("a node's name: one letter");
 const Count = z.number().int().min(0).max(10_000);
 const Op = z.discriminatedUnion("op", [
   z.object({ op: z.literal("create"), agent: Count, node: Node }).describe("A client makes agent N (Idempotency-Key agent-N: making it again is the same agent)"),
-  z.object({ op: z.literal("prompt"), agent: Count, run: Count, node: Node }).describe("A client prompts agent N as run M (Idempotency-Key run-M; each run number once per plan)"),
+  z.object({ op: z.literal("prompt"), agent: Count, run: Count, node: Node, key: z.literal("requestId").optional() }).describe("A client prompts agent N as run M (Idempotency-Key run-M, or with key requestId the body's requestId; each run number once per plan)"),
+  z.object({ op: z.literal("retry"), agent: Count, run: Count, node: Node }).describe("A client sends run M's prompt again with the same key (a retry after a lost answer), to any node; checked by I14"),
+  z.object({ op: z.literal("clockJump"), node: Node, ms: z.number().int().min(-120_000).max(120_000) }).describe("The node's wall clock jumps by ms, forward or back (its monotonic clock does not). Beyond about a minute in total, nodes' signed requests to each other expire"),
+  z.object({ op: z.literal("failover"), ms: z.number().int().min(1).max(600_000) }).describe("The database fails over: every node's connections drop for ms"),
   z.object({ op: z.literal("abort"), agent: Count, node: Node }).describe("A client stops agent N's runs"),
   z.object({ op: z.literal("watch"), agent: Count, node: Node, forMs: z.number().int().min(1).max(600_000) }).describe("A client watches agent N's events for forMs, resuming after the last event its lane saw"),
   z.object({ op: z.literal("deploy"), node: Node }).describe("The node drains and exits, as a deploy replaces it (restart brings a new process)"),
@@ -51,6 +54,8 @@ export const PlanSchema = z.object({
   leaseTtlMs: z.number().int().min(1_000).max(120_000).describe("The ownership lease; a heartbeat is a sixth of it"),
   modelDelayMs: z.tuple([z.number().int().min(0), z.number().int().min(0).max(120_000)]).describe("Each model call's latency, drawn from [min, max] ms"),
   dbLatencyMs: z.tuple([z.number().int().min(0), z.number().int().min(0).max(5_000)]).optional().describe("Each pool query's round trip to the database, drawn from [min, max] ms (missing: none, so a request's statements share one instant and one now())"),
+  dbErrors: z.object({ rate: z.number().min(0).max(1), codes: z.array(z.enum(["40001", "40P01", "57014", "ECONNRESET"])).min(1) }).optional().describe("The database answers some statements (at rate) with these errors until recovery: serialization failure, deadlock, statement timeout (before taking effect), or a reset connection (before, or after taking effect: its answer lost)"),
+  drifts: z.record(z.string(), z.object({ wall: z.number().min(-0.5).max(0.5).optional(), monotonic: z.number().min(-0.5).max(0.5).optional() })).optional().describe("Each node's clock rates off true, as fractions: its wall clock's and its monotonic clock's (the lease's margin is a tenth)"),
   dbSpikes: z.object({ rate: z.number().min(0).max(1), ms: z.tuple([z.number().int().min(0), z.number().int().min(0).max(30_000)]) }).optional().describe("Now and then (at rate) a query's round trip is drawn from ms instead: a database stall. The tail opens races a steady latency never does"),
   buggify: z.union([z.literal(false), z.literal("swarm"), z.record(z.string(), z.number().min(0).max(1))]).describe("false: none; swarm: a random subset of sites at random rates; or chosen sites and their rates"),
   steps: z.array(z.object({ at: z.number().int().min(0), op: Op })).max(CAPS.steps).describe("Each step at its virtual ms from the start"),
@@ -65,6 +70,7 @@ export const CHECKERS = {
   I9: "No model call for an agent comes after its abort was acknowledged",
   I11: "A fork (agent or volume) holds what was there when it was asked for (a failed run exactly when its source's history has it), and nothing asked for after it was made",
   I13: "A schedule fires once it is due, and its prompt is delivered (once)",
+  I14: "A prompt sent again with its key is one request: every answer names the first's, none is refused as another, and its prompt is in the history once",
   assertion: "No always() failed and no unreachable() was reached in the runtime's code",
   "real I/O": "Nothing touched the real network, disk or clock (the leak detector)",
   determinism: "With twice: the second run of the plan hashes the same as the first",
@@ -166,6 +172,8 @@ export class SimLab {
       const twice = numbers.filter((number, index) => numbers.indexOf(number) !== index);
       if (twice.length) errors.push(`${kind}: ${key} ${[...new Set(twice)].join(", ")} used twice (each must be unique: a shared number is one request)`);
     }
+    const prompted = new Set(plan.steps.flatMap(step => step.op.op === "prompt" ? [step.op.run] : []));
+    plan.steps.forEach(({ op }, index) => { if (op.op === "retry" && !prompted.has(op.run)) errors.push(`steps.${index}.op: a retry of run ${op.run}, which no prompt makes`); });
     if (typeof plan.buggify === "object") for (const site of Object.keys(plan.buggify)) if (!BUGGIFY_SITES.includes(site)) errors.push(`buggify: no site ${site}`);
     return errors.length ? { errors } : { plan, errors };
   }

@@ -56,6 +56,14 @@ export class SimDb implements WorldDb {
   /** Every statement, for the trace: `node: first word`. */
   readonly statements: string[] = [];
   readonly outcomes = new Map<string, number>();
+  /**
+   * Errors the server answers some statements with, at `rate`, drawn from `random` (seeded): a serialization failure
+   * (40001), a deadlock (40P01) or a statement timeout (57014), each before the statement takes effect; or the connection
+   * reset (ECONNRESET), before it or after it took effect (its answer lost). A transaction a reset breaks rolls back.
+   */
+  errors?: { rate: number; codes: string[]; random: { float(): number; int(n: number): number } };
+  /** Errors injected, by code. */
+  readonly injected = new Map<string, number>();
 
   private constructor(pglite: PGlite) { this.pglite = pglite; }
 
@@ -78,9 +86,17 @@ export class SimDb implements WorldDb {
 
   private async run(node: string, text: string, values?: unknown[]): Promise<Rows> {
     if (this.down.has(node)) throw unavailable();
+    // Not on begin or rollback; on a commit, as a server does: the transaction is rolled back, and the commit fails.
+    const verb = text.trim().split(/\s+/, 1)[0].toLowerCase();
+    const injected = this.errors && verb !== "begin" && verb !== "rollback" && this.errors.random.float() < this.errors.rate ? this.errors.codes[this.errors.random.int(this.errors.codes.length)] : undefined;
+    const after = injected === "ECONNRESET" && verb !== "commit" && this.errors!.random.float() < 0.5;
+    if (injected) this.injected.set(injected, (this.injected.get(injected) ?? 0) + 1);
+    if (injected && verb === "commit") await this.scope.runInAsyncScope(() => this.pglite.exec("rollback"));
+    if (injected && !after) throw serverError(injected);
     this.statements.push(`${this.scope.runInAsyncScope(() => Date.now())} ${node}: ${text.trim().replace(/\s+/g, " ").slice(0, 70)} ${JSON.stringify(values ?? []).slice(0, 200)}`);
     const result = await this.scope.runInAsyncScope(() => this.pglite.query<Record<string, unknown>>(text, values as unknown[]));
     // PGlite counts only changed rows; pg counts a select's rows too.
+    if (after) throw serverError(injected!);
     const rowCount = result.affectedRows || result.rows.length;
     const outcome = ownershipOutcome(text, rowCount);
     if (outcome) this.outcomes.set(outcome, (this.outcomes.get(outcome) ?? 0) + 1);
@@ -118,9 +134,10 @@ export class SimDb implements WorldDb {
             query: (async (text: string, values?: unknown[]) => {
               if (killed) { broken = true; throw unavailable(); }
               try { return await answered(this.run(node, text, values), text); }
-              catch (error) { if (this.down.has(node)) broken = true; throw error; }
+              catch (error) { if (this.down.has(node) || (error as { code?: string }).code === "ECONNRESET") broken = true; throw error; }
             }) as DbClient["query"],
-            release: () => { if (broken) void this.pglite.exec("rollback").catch(() => {}).finally(release); else release(); },
+            // Released with an error, pg destroys the connection, and the server rolls back what it held.
+            release: error => { if (broken || error) void this.pglite.exec("rollback").catch(() => {}).finally(release); else release(); },
             on: (_event, listener) => listeners.add(listener),
             off: (_event, listener) => listeners.delete(listener),
           });
@@ -164,3 +181,12 @@ export class SimDb implements WorldDb {
 }
 
 const unavailable = () => Object.assign(new Error("connect ECONNREFUSED (simulated database outage)"), { code: "ECONNREFUSED" });
+
+/** What a server (or the connection to it) answers when it refuses a statement, as pg reports it. */
+export function serverError(code: string) {
+  const message = {
+    "40001": "could not serialize access due to concurrent update", "40P01": "deadlock detected",
+    "57014": "canceling statement due to statement timeout", ECONNRESET: "Connection terminated unexpectedly",
+  }[code] ?? `simulated database error ${code}`;
+  return Object.assign(new Error(message), { code, simulated: true });
+}

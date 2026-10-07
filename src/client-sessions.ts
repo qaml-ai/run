@@ -48,6 +48,7 @@ import { BackgroundSpans, inputSpans, RunSpans, type ToolSource, type Tracing } 
 import { newSpanId, newTraceId, parseTraceparent, sampledAt } from "./otlp.ts";
 import { definitionId, delegateSettings, delegateTool, MULTI_AGENT_LIMITS, PARENT_KEYS, SUBAGENT_EVENTS, type AgentTarget, type DelegateSettings } from "./multi-agent.ts";
 import { random } from "./node-context.ts";
+import { sometimes } from "./assert.ts";
 
 /** Another live node owns this agent; the server forwards the request there. */
 export class NotOwner extends HttpError {
@@ -3044,6 +3045,7 @@ export class ClientSessions {
     };
     // A retried ID returns the committed record, including its outcome after a lost ack.
     const retried = existing();
+    sometimes(!!retried, "a request sent again with its id got the first one's record");
     if (retried) return { status: 200, record: visible(retried) };
     if (session.running.size >= MAX_OPEN_REQUESTS) throw new HttpError(429, "Too many requests queued for this agent");
     // A spend limit applies at once, ahead of queued runs, so an application can set an allowance and then prompt.

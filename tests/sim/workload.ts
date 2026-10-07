@@ -4,7 +4,17 @@ import type { BuggifyPlan } from "./hooks.ts";
 /** One thing the workload does: a client call, or a fault. Agents and runs are numbered; their ids come at run time. */
 export type Op =
   | { op: "create"; agent: number; node: string }
-  | { op: "prompt"; agent: number; run: number; node: string }
+  /** `requestId`: the run's key goes in the body's requestId rather than the Idempotency-Key header. */
+  | { op: "prompt"; agent: number; run: number; node: string; key?: "requestId" }
+  /**
+   * A client sends run `run`'s prompt again, with the same key (as a retry after a lost answer does), to `node`: before
+   * the first answered, or after; checked by I14.
+   */
+  | { op: "retry"; agent: number; run: number; node: string }
+  /** The node's wall clock jumps by `ms` (NTP stepping it, a VM restored): forward or back. Monotonic time does not. */
+  | { op: "clockJump"; node: string; ms: number }
+  /** The database fails over: every node's connections drop for `ms` (the new primary's promotion and reconnects). */
+  | { op: "failover"; ms: number }
   | { op: "abort"; agent: number; node: string }
   /** A client watching the agent's events for `forMs`, resuming after the last event its lane saw. */
   | { op: "watch"; agent: number; node: string; forMs: number }
@@ -61,6 +71,13 @@ export type Plan = {
    * than an owner's last renewal by more than the lease's margin).
    */
   dbSpikes?: { rate: number; ms: [number, number] };
+  /**
+   * Errors the database answers some statements with, at `rate`: 40001 (serialization), 40P01 (deadlock), 57014
+   * (statement timeout), ECONNRESET (the connection reset, before the statement or after it took effect).
+   */
+  dbErrors?: { rate: number; codes: string[] };
+  /** Each node's clock rates off true: `wall` on its wall clock, `monotonic` on its monotonic clock (fractions, ±). */
+  drifts?: Record<string, { wall?: number; monotonic?: number }>;
   buggify: BuggifyPlan;
   steps: { at: number; op: Op }[];
   /** Virtual ms the steps span; then every fault heals, and the run settles. */
@@ -140,6 +157,28 @@ export function generatePlan(seed: string, options: { steps?: number; durationMs
     steps.push({ at: 1_000 + between.int(Math.floor(durationMs * 0.7)), op: { op: "pauseOnDb", node: nodes[between.int(nodes.length)], ms: (1 + between.int(10)) * Math.floor(leaseTtlMs / 6), ...(statement ? { statement } : {}) } });
     steps.sort((a, b) => a.at - b.at);
   }
+  // Clocks, database errors and failovers, and clients retrying: for some seeds each, from a stream of its own.
+  const more = prng(`${seed}:faults-2`);
+  const extra: Partial<Plan> = {};
+  if (more.float() < 0.25) {
+    // Wall clocks jump (ten seconds at most each, so they stay within the minute nodes' signed requests to each other
+    // allow) and drift; monotonic clocks drift a little, well inside the lease's margin (a tenth of it).
+    for (let jumps = 1 + more.int(3); jumps > 0; jumps--) steps.push({ at: 1_000 + more.int(Math.floor(durationMs * 0.7)), op: { op: "clockJump", node: nodes[more.int(nodes.length)], ms: more.int(20_001) - 10_000 } });
+    extra.drifts = Object.fromEntries(nodes.map(node => [node, { wall: (more.int(201) - 100) / 10_000, monotonic: (more.int(201) - 100) / 100_000 }]));
+  }
+  if (more.float() < 0.2) extra.dbErrors = { rate: [0.001, 0.005, 0.02][more.int(3)], codes: ["40001", "40P01", "57014", "ECONNRESET"].filter(() => more.float() < 0.6) };
+  if (extra.dbErrors && !extra.dbErrors.codes.length) delete extra.dbErrors;
+  if (more.float() < 0.15) steps.push({ at: 1_000 + more.int(Math.floor(durationMs * 0.7)), op: { op: "failover", ms: 500 + more.int(leaseTtlMs) } });
+  if (more.float() < 0.3) {
+    // Retries of some prompts, soon (while the first is in flight) or late, to any node; some keyed by requestId.
+    const prompts = steps.filter(step => step.op.op === "prompt");
+    for (const step of prompts) {
+      const op = step.op as Extract<Op, { op: "prompt" }>;
+      if (more.float() < 0.25) op.key = "requestId";
+      if (more.float() < 0.3) steps.push({ at: step.at + (more.float() < 0.5 ? more.int(50) : 500 + more.int(10_000)), op: { op: "retry", agent: op.agent, run: op.run, node: nodes[more.int(nodes.length)] } });
+    }
+  }
+  steps.sort((a, b) => a.at - b.at);
   // A database with a tail for some seeds, from a stream of its own, so every other draw of the plan stays as it was.
   const latency = prng(`${seed}:db-latency`);
   const tail = latency.float() < 0.3 ? { dbLatencyMs: [1, 5] as [number, number], dbSpikes: { rate: 0.01 + latency.int(2) * 0.01, ms: [200, 800] as [number, number] } } : {};
@@ -150,5 +189,6 @@ export function generatePlan(seed: string, options: { steps?: number; durationMs
     buggify: faults.has("buggify") ? "swarm" : false,
     steps,
     ...tail,
+    ...extra,
   };
 }

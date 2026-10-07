@@ -54,6 +54,8 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
   });
   const history: Event[] = [];
   const agents = new Map<number, string>();
+  /** Every answer a run's prompt got (the first and its retries): the request each named. */
+  const answers = new Map<number, { status?: number; id?: string }[]>();
   /** Accepted runs: their agent and request id. */
   const runs = new Map<number, { agent: number; id: string; askedAt: number; acceptedAt: number }>();
   const pending: Promise<unknown>[] = [];
@@ -73,7 +75,9 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
   /** Every write tried, acknowledged or not, by when it was asked: a fork may hold one whose answer was lost. */
   const tried = new Map<number, { volume: number; invoked: number }>();
   try {
-    for (const node of plan.nodes) await sim.start(node, {}, { skewMs: plan.skews[node] ?? 0 });
+    for (const node of plan.nodes) await sim.start(node, {}, { skewMs: plan.skews[node] ?? 0, wallDrift: plan.drifts?.[node]?.wall, drift: plan.drifts?.[node]?.monotonic });
+    // The database refuses some statements from here on (a node that cannot start for it is restarted, as ECS would).
+    if (plan.dbErrors && "errors" in sim.db) sim.db.errors = { ...plan.dbErrors, random: prng(`${plan.seed}:db-errors`) };
 
     /** A client call, recorded; a node that cannot be reached (crashed, partitioned) fails it as unknown. */
     const client = (op: Op, node: string, path: string, body?: unknown, headers?: Record<string, string>) => {
@@ -126,14 +130,28 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
           void client(op, op.node, "/v1/agents", { name: `agent-${op.agent}` }, { "Idempotency-Key": `agent-${op.agent}` })
             .then(answer => { if (answer?.status === 201 || answer?.status === 200) agents.set(op.agent, answer.json.id); });
           return;
-        case "prompt": {
+        case "prompt":
+        case "retry": {
           const agent = agents.get(op.agent);
           if (!agent) return;
           const askedAt = sim.env.elapsed;
-          void client(op, op.node, `/v1/agents/${agent}/prompt`, { text: `run-${op.run} agent-${op.agent}` }, { "Idempotency-Key": `run-${op.run}` })
-            .then(answer => { if (answer?.status === 202) runs.set(op.run, { agent: op.agent, id: answer.json.id, askedAt, acceptedAt: sim.env.elapsed }); });
+          // A retry is keyed as its run's first prompt was.
+          const byBody = plan.steps.some(step => step.op.op === "prompt" && step.op.run === op.run && step.op.key === "requestId");
+          const text = `run-${op.run} agent-${op.agent}`;
+          void client(op, op.node, `/v1/agents/${agent}/prompt`, byBody ? { text, requestId: `run-${op.run}` } : { text }, byBody ? {} : { "Idempotency-Key": `run-${op.run}` })
+            .then(answer => {
+              if (!answer) return;
+              answers.set(op.run, [...answers.get(op.run) ?? [], { status: answer.status, id: answer.json?.id }]);
+              if ((answer.status === 202 || answer.status === 200) && !runs.has(op.run)) runs.set(op.run, { agent: op.agent, id: answer.json.id, askedAt, acceptedAt: sim.env.elapsed });
+            });
           return;
         }
+        case "clockJump": sim.jumpClock(op.node, op.ms); break;
+        case "failover":
+          // Every node's connections drop; the new primary takes them back `ms` later.
+          for (const node of plan.nodes) sim.databaseDown(node);
+          setTimeout(() => { for (const node of plan.nodes) if (!databaseCut.has(node)) sim.databaseDown(node, false); }, op.ms);
+          break;
         case "abort": {
           const agent = agents.get(op.agent);
           if (agent) void client(op, op.node, `/v1/agents/${agent}/abort`, {});
@@ -218,6 +236,8 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
     // slowest model call to finish what it holds.
     sim.heal();
     for (const node of plan.nodes) sim.databaseDown(node, false);
+    // The database stops refusing statements, too: what follows is recovery, then the checkers' reads.
+    if ("errors" in sim.db) sim.db.errors = undefined;
     await sim.env.settle(Promise.allSettled(pending), 10 * 60_000).catch(() => {
       const open = history.filter(event => event.ended === undefined).map(event => `${event.op.op} at ${event.invoked}`);
       throw new Error(`Calls still open 10 virtual minutes after recovery: ${open.join(", ") || "(a restart, drain or watch)"}`);
@@ -256,6 +276,10 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
       if (JSON.stringify(again.json?.outcome) !== JSON.stringify(record.outcome)) failures.push(`I3: run-${run}'s outcome changed after it ended`);
     }
 
+    // The most any node's wall clock is off the true time (skew, jumps, drift): times nodes record are read with it.
+    const clockSlack = Math.max(0, ...plan.nodes.map(node => Math.abs(plan.skews[node] ?? 0)
+      + plan.steps.reduce((sum, step) => sum + (step.op.op === "clockJump" && step.op.node === node ? Math.abs(step.op.ms) : 0), 0)
+      + Math.abs(plan.drifts?.[node]?.wall ?? 0) * sim.env.elapsed));
     // I1: one executor per agent: no two nodes have model calls for one agent in flight at once, faults or not. A node
     // whose lease goes stale cuts its model requests before its peers could take its agents (FRESH_RENEWALS before
     // SUSPECT_RENEWALS), so even a partitioned node's calls end first; a dead node's end when it died.
@@ -356,7 +380,7 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
       for (const [run, record] of records) {
         if (runs.get(run)!.agent !== agent) continue;
         // endedAt is the owner node's clock: allow for the most any node's is off.
-        const endedAt = Number(record.endedAt) - sim.env.start + Math.max(0, ...Object.values(plan.skews).map(Math.abs));
+        const endedAt = Number(record.endedAt) - sim.env.start + clockSlack;
         const inHistory = (record.outcome?.error === undefined && record.outcome?.result?.error === undefined) || source.has(run);
         if (endedAt < invoked && record.outcome?.result?.code !== "cancelled" && inHistory && !has.has(run)) failures.push(`I11: fork ${fork} of agent-${agent} lacks run-${run}, which ended before the fork was asked for`);
       }
@@ -367,7 +391,7 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
     // tried again once its claim times out (a minute, src/scheduler.ts), so the bound is that past the later of its due
     // time and recovery.
     if (schedules.size) {
-      const by = Math.max(healedAt, ...[...schedules.values()].map(schedule => schedule.at)) + 60_000 + 10_000 + high;
+      const by = Math.max(healedAt, ...[...schedules.values()].map(schedule => schedule.at)) + 60_000 + 10_000 + high + clockSlack;
       if (by > sim.env.elapsed) await sim.advance(by - sim.env.elapsed);
     }
     // Firing is delivering its prompt under an id derived from the schedule, so a repeat is the same request: the
@@ -375,6 +399,20 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
     for (const [schedule, { agent, request }] of schedules) {
       const answer = await sim.call(live()[0], `/v1/agents/${agents.get(agent)}/requests/${request}`);
       if (answer.status !== 200) failures.push(`I13: schedule ${schedule} of agent-${agent} never delivered its prompt (${request}: ${answer.status})`);
+    }
+
+    // I14: a prompt sent again with its key is the same request: every answer that names one names the first's, no retry
+    // is refused as a different request, and the run's prompt is in its agent's history once at most.
+    for (const [run, given] of answers) {
+      if (given.length < 2 || !runs.has(run)) continue;
+      const { agent, id } = runs.get(run)!;
+      const named = [...new Set(given.filter(answer => answer.status !== undefined && answer.status < 300).map(answer => answer.id))];
+      if (named.length > 1 || (named.length === 1 && named[0] !== id)) failures.push(`I14: run-${run}'s prompt, sent ${given.length} times with one key, was answered as requests ${named.join(", ")}`);
+      const refused = given.filter(answer => answer.status === 409 || answer.status === 422);
+      if (refused.length) failures.push(`I14: run-${run}'s prompt sent again with its key was refused (${refused.map(answer => answer.status).join(", ")})`);
+      const history = (await sim.call(live()[0], `/v1/agents/${agents.get(agent)}/history`)).json?.messages ?? [];
+      const times = history.filter((message: any) => message.role === "user" && runOf({ messages: [message] }) === run).length;
+      if (times > 1) failures.push(`I14: run-${run}'s prompt, sent again with its key, is in agent-${agent}'s history ${times} times`);
     }
 
     for (const violation of sim.hooks.violations) failures.push(`assertion: ${violation}`);
