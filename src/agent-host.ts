@@ -14,7 +14,7 @@ import { renderMessages, senderInput, stamp } from "./sender.ts";
 import type { SearchHit, SearchQuery } from "./tool-search.ts";
 import type { AppendLog } from "../shared/append-log.ts";
 import { Transcript, readTranscriptLog, summaryMessage, type Backlog, type CompactionState, type TranscriptRecord } from "./transcript.ts";
-import { boundedContext, importedHistory, interruptedTurnRepairs, validateInitialMessages, validateUserMessages } from "./history.ts";
+import { boundedContext, closeInterruptedTurn, importedHistory, interruptedTurnRepairs, validateInitialMessages, validateUserMessages } from "./history.ts";
 import { backgroundTokens, compactionNeed, compactionSettings, contextTokens, explicitKeyStream, MODEL_INTERRUPTED, modelKeyFailure, runCompaction, type ModelGate } from "./compaction.ts";
 import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
 import { isStalled, streamTimeouts } from "./model-stream.ts";
@@ -781,8 +781,7 @@ export function createAgentHost(hostIO: HostIO) {
       let resume: { continue: true } | { finished: { messages: number; error: string | null; reply?: string; stopped?: string; output?: unknown } } | undefined;
       if (transcript.active && transcript.awaiting.length) {
         // The turn had suspended for input when its node stopped: its other calls are closed as unknown, and it stays suspended.
-        await transcript.append(interruptedTurnRepairs(transcript.context, false, transcript.awaiting));
-        await transcript.setActive(false);
+        await closeInterruptedTurn(transcript);
         if (config.resume) resume = { finished: { messages: transcript.total, error: null, stopped: "input_required" } };
         recovered = true;
       } else if (transcript.active && config.resume) {
@@ -808,8 +807,7 @@ export function createAgentHost(hostIO: HostIO) {
         recovered = true;
       } else if (transcript.active) {
         // Close the interrupted turn instead of refusing work until an operator intervenes.
-        await transcript.append(interruptedTurnRepairs(transcript.context));
-        await transcript.setActive(false);
+        await closeInterruptedTurn(transcript);
         recovered = true;
       } else if (transcript.total === 0 && config.initialMessages?.length) {
         validateInitialMessages(config.initialMessages);

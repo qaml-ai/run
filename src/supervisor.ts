@@ -17,6 +17,7 @@ import { createAgentHost, HISTORY_FLUSH_MS } from "./agent-host.ts";
 import type { CodeExecutor } from "./codemode.ts";
 import type { Outbound } from "./outbound.ts";
 import { buggify } from "./buggify.ts";
+import { closeInterruptedTurn } from "./history.ts";
 
 /**
  * How agents run. "process": each agent is its own Node process (strong memory
@@ -87,6 +88,24 @@ export class AgentSupervisor {
     const log = this.options.storage ? this.options.storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id), claim) : fileAppendLog<TranscriptRecord>(transcriptPath(resolve(join(this.root, id))));
     try { await log.rewrite(() => records); }
     finally { await log.close(); }
+  }
+
+  /**
+   * Settle the turn a stopped agent's transcript holds open (`closeInterruptedTurn`), under its owner's `claim`, without
+   * starting it: for a run ended with no host to end it (one past its resumes, or stopped before its node was lost). The
+   * same records the agent's next start would write, written before the run is seen to end. Whether there was a turn to settle.
+   */
+  async closeTurn(id: string, claim?: Claim): Promise<boolean> {
+    if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id)) throw new Error("Invalid agent id");
+    await this.stopping.get(id);
+    // A running agent's host writes its own transcript.
+    if (this.agents.has(id) || this.starting.has(id)) throw new Error("Agent is running");
+    const log = this.options.storage ? this.options.storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id), claim) : fileAppendLog<TranscriptRecord>(transcriptPath(resolve(join(this.root, id))));
+    try {
+      const transcript = new Transcript(log);
+      await transcript.load();
+      return await closeInterruptedTurn(transcript);
+    } finally { await log.close(); }
   }
 
   /** Delete a stopped agent's transcript and local directory. */

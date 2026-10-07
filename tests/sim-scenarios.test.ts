@@ -110,3 +110,14 @@ test("an abort that reaches a resumed turn before the agent has it settles the t
   // Ended by its agent, which closed the turn: an aborted run.
   assert.equal(run?.outcome?.result?.code, "aborted", JSON.stringify(run?.outcome));
 });
+
+test("a run that ends at a load past its resumes settles the turn it left open, so a fork holds it (seed 2)", async () => {
+  // Minimized from seed 2: database outages fence agent-0 and move it until run-0 has been resumed twice; the next load
+  // ends it uncertain, with no host to close its turn, and nothing did until the agent next started: a fork 40 s later
+  // ended before it (atMessage null) though every node's history showed run-0's prompt.
+  const plan: Plan = {"seed": "2", "nodes": ["a", "b", "c"], "leaseTtlMs": 6000, "durationMs": 60000, "skews": {"a": 3412, "b": 3958, "c": 80}, "modelDelayMs": [50, 200], "buggify": "swarm", "steps": [{"at": 0, "op": {"op": "create", "agent": 0, "node": "a"}}, {"at": 20, "op": {"op": "create", "agent": 2, "node": "b"}}, {"at": 1324, "op": {"op": "prompt", "agent": 0, "run": 0, "node": "a"}}, {"at": 5674, "op": {"op": "prompt", "agent": 2, "run": 1, "node": "b"}}, {"at": 6936, "op": {"op": "databaseDown", "node": "a"}}, {"at": 12684, "op": {"op": "databaseDown", "node": "b"}}, {"at": 15736, "op": {"op": "databaseUp", "node": "a"}}, {"at": 18094, "op": {"op": "databaseDown", "node": "c"}}, {"at": 55944, "op": {"op": "fork", "agent": 0, "fork": 4, "node": "a"}}]};
+  let run: any;
+  const result = await runPlan(plan, { quiet: true, inspect: async (sim, agents) => { run = (await sim.call("a", `/v1/agents/${agents.get(0)}/requests/run-0`)).json; } });
+  assert.deepEqual(result.failures, []);
+  assert.equal(run?.outcome?.uncertain, true, JSON.stringify(run?.outcome));
+});

@@ -739,8 +739,14 @@ export class ClientSessions {
     // transcript, a bounded number of times; anything else that began has an unknown outcome.
     const queued: RequestRecord[] = [];
     const resumed: RequestRecord[] = [];
-    for (const request of [...session.running.values()]) {
-      const decision = loadDecision(request);
+    const decisions = [...session.running.values()].map(request => ({ request, decision: loadDecision(request) }));
+    // A model turn that began ends here, with no host to end it (past its resumes, or stopped before its node was lost): the
+    // turn it left open is settled in the transcript first, as the agent's next start would, so the run is never seen to
+    // end before its turn has (a fork, a history page). A failed write fails the load, which leaves the run to the next.
+    if (decisions.some(({ request, decision }) => (decision === "aborted" || decision === "uncertain") && resumable(request)) && !decisions.some(({ decision }) => decision === "resume")) {
+      await this.supervisor.closeTurn(id, claim);
+    }
+    for (const { request, decision } of decisions) {
       if (decision === "queued") queued.push(request);
       else if (decision === "resume") resumed.push(request);
       // Stopped before its node was lost: it ends as the stop left it, never resumed.
@@ -3634,6 +3640,13 @@ export class ClientSessions {
     // run on seeing this one end is never refused for it. Released here, the agent is no longer counted for this run.
     if (RUN_METHODS.includes(record.method)) {
       await this.releaseBusy(session, false, record.id);
+      if (this.closed || session.fault || session.leaving || session.requests.get(record.id)?.state !== "running") return;
+    }
+    // A model turn that began and ends with no host (a resumed one whose agent failed to start, or one whose agent is gone):
+    // the turn it left open is settled first, as at a load. A failed write gives the session up, and the run to the next load.
+    if (resumable(record) && !this.supervisor.agents.has(session.header.id)) {
+      try { await this.supervisor.closeTurn(session.header.id, session.claim); }
+      catch (error) { this.fail(session, error, "transcript"); return; }
       if (this.closed || session.fault || session.leaving || session.requests.get(record.id)?.state !== "running") return;
     }
     const { params: _params, ...finished } = record;
