@@ -476,9 +476,10 @@ export function segmentLog<T>(store: SegmentStore, key: string, tail: LogTail, c
       });
     },
     get appendedSinceRewrite() { return appended; },
-    close() {
+    close(discard = false) {
       if (timer) { clearTimeout(timer); timer = undefined; }
-      return closing ??= serialize(async () => { await write(); await compact(); }).catch(() => {});
+      if (discard && !closing) { buffer = []; effects = []; }
+      return closing ??= serialize(async () => { if (discard) return; await write(); await compact(); }).catch(() => {});
     },
   };
 }

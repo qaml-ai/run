@@ -8,7 +8,7 @@ import {
 import { executeCode, presentResult, type CodeExecutor, type CodeResult } from "./codemode.ts";
 import type { Outbound } from "./outbound.ts";
 import { scriptValue } from "./mcp-results.ts";
-import { errorText, IDENTITY_KEY, SCOPE_KEY, type AgentConfig, type CallContext, type Credentials, type RunStop, type ToolBridge } from "./protocol.ts";
+import { errorText, IDENTITY_KEY, PERSISTENCE_FAILED, SCOPE_KEY, type AgentConfig, type CallContext, type Credentials, type RunStop, type ToolBridge } from "./protocol.ts";
 import { applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS, leadingSystemMessage, OUTPUT, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER, OUTPUT_TOOL } from "./system-prompt.ts";
 import { renderMessages, senderInput, stamp } from "./sender.ts";
 import type { SearchHit, SearchQuery } from "./tool-search.ts";
@@ -984,7 +984,7 @@ export function createAgentHost(hostIO: HostIO) {
     }
     if (method !== "prompt" && method !== "execute" && method !== "continue" && method !== "resume") throw new Error(`Unknown method: ${method}`);
     if (busy) throw new Error("Agent is busy");
-    if (transcript.failed !== undefined) throw new Error(`Session persistence failed: ${String(transcript.failed)}`);
+    if (transcript.failed !== undefined) throw new Error(`${PERSISTENCE_FAILED}: ${String(transcript.failed)}`);
     // A prompt a turn took as a steer before the node running it stopped: it is in the history already, compacted or not.
     if (method === "prompt" && params.requestId && transcript.requests.has(params.requestId)) {
       return { messages: transcript.total, error: null, taken: true };
@@ -1180,5 +1180,14 @@ export function createAgentHost(hostIO: HostIO) {
     await transcript?.log.close();
   }
 
-  return { handle: turns.wrap(handle), dispose };
+  /** Once the transcript failed, any request it ends says so, for the session to give the agent up (and reload it). */
+  async function handled(method: string, params: any): Promise<any> {
+    try { return await handle(method, params); }
+    catch (error) {
+      if (transcript?.failed !== undefined && !errorText(error).startsWith(PERSISTENCE_FAILED)) throw new Error(`${PERSISTENCE_FAILED}: ${errorText(error)}`);
+      throw error;
+    }
+  }
+
+  return { handle: turns.wrap(handled), dispose };
 }

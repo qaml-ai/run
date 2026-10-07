@@ -106,3 +106,61 @@ async function faulty(seed: number) {
 test("a run with BUGGIFY, a crash and a restart replays the same way from its seed", async () => {
   assert.equal(await faulty(21), await faulty(21));
 });
+
+test("a turn whose commits lose their answers past the retry window is given up and resumed from storage, not left running (seed 2686)", async t => {
+  // From the turn's model call on, every append's answer is lost: the commits after it are repeated until the window
+  // closes, and the session faults with its lease still healthy, the turn begun in its journal and not ended.
+  let armed = false;
+  const sim = await Sim.create({ seed: 14, respond: (body, served) => {
+    if (served.length === 0) { sim.hooks.plan["tail.append.lost_ack"] = 1; armed = true; }
+    return echo(1_000)(body);
+  } });
+  t.after(() => sim.close());
+  await sim.start("a");
+  await sim.start("b");
+  const agent = (await sim.call("a", "/v1/agents", { body: {} })).json.id;
+  const released = () => sim.env.logs.filter(log => log.line.includes('"session_fault_released"'));
+  const id = await prompt(sim, "a", agent, "begin");
+  await sim.until(() => released().length > 0, "the faulted session to be given up", 30_000).catch(() => {});
+  assert.ok(armed);
+  delete sim.hooks.plan["tail.append.lost_ack"];
+  // Its next load resumes it from storage, rather than it being left running on a node that can no longer write it.
+  const record = await ended(sim, agent, id);
+  assert.equal(record.outcome.error, undefined, JSON.stringify(record.outcome));
+  // Its answer was written with the answers lost (as they were): the next owner finds it there and calls the model no more.
+  assert.equal(sim.model.served.length, 1);
+  assert.equal(released().length, 1);
+  assert.equal(released()[0].by, "a#1");
+  assert.match(released()[0].line, /"store":"(journal|transcript)"/);
+  // The agent takes new work afterwards, wherever it is served now.
+  const next = await ended(sim, agent, await prompt(sim, "b", agent, "after"));
+  assert.equal(next.outcome.error, undefined, JSON.stringify(next.outcome));
+  const history = (await sim.call("b", `/v1/agents/${agent}/history`)).json;
+  const said = history.messages.filter((message: any) => message.role === "user" && Array.isArray(message.content)).map((message: any) => message.content[0].text);
+  assert.deepEqual(said, ["begin", "after"]);
+  assert.deepEqual(sim.hooks.violations, []);
+  assert.deepEqual(sim.env.leaks, []);
+});
+
+test("an agent whose appends keep losing their answers is given up once per sweep interval, not in a loop", async t => {
+  const sim = await Sim.create({ seed: 15, respond: (body, served) => {
+    if (served.length === 0) sim.hooks.plan["tail.append.lost_ack"] = 1;
+    return echo(1_000)(body);
+  } });
+  t.after(() => sim.close());
+  await sim.start("a");
+  await sim.start("b");
+  const agent = (await sim.call("a", "/v1/agents", { body: {} })).json.id;
+  const id = await prompt(sim, "a", agent, "begin");
+  await sim.until(() => sim.model.served.length === 1, "the model call");
+  const from = sim.env.elapsed;
+  await sim.env.advance(120_000);
+  const since = (type: string) => sim.env.logs.filter(log => log.at >= from && log.line.includes(`"${type}"`)).length;
+  assert.ok(since("session_fault_released") >= 1 && since("session_fault_released") <= 6, `released ${since("session_fault_released")} times in two minutes`);
+  assert.ok(since("agent_resume_failed") <= 6, `${since("agent_resume_failed")} failed loads in two minutes`);
+  delete sim.hooks.plan["tail.append.lost_ack"];
+  await ended(sim, agent, id, 3_600_000);
+  const next = await ended(sim, agent, await prompt(sim, "b", agent, "after"));
+  assert.equal(next.outcome.error, undefined, JSON.stringify(next.outcome));
+  assert.deepEqual(sim.hooks.violations, []);
+});

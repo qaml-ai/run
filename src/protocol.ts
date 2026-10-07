@@ -46,6 +46,8 @@ export interface ToolBridge {
   committing?(record: TranscriptRecord): CommitEffect | undefined;
 }
 /** The `apiKey` of an agent whose model is on its tenant's own endpoint: each call gets a fresh identity token instead (`ToolBridge.modelAuth`). */
+/** How an error says the agent's storage failed a write: nothing more is written until a reload reads what it holds. */
+export const PERSISTENCE_FAILED = "Session persistence failed";
 export const IDENTITY_KEY = "agent-runtime:identity-token";
 /** The `apiKey` of an agent with a key scope: each call reads the scope's current entry (`ToolBridge.modelAuth`), so a rotated key applies at once. */
 export const SCOPE_KEY = "agent-runtime:key-scope";

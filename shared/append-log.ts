@@ -31,7 +31,8 @@ export interface AppendLog<T> {
   rewrite(snapshot: () => T[]): Promise<void>;
   /** Records appended since the last rewrite (for deciding when to fold). */
   readonly appendedSinceRewrite: number;
-  close(): Promise<void>;
+  /** Write what is buffered and stop; `discard`: stop without writing it (a writer whose state is no longer what is stored). */
+  close(discard?: boolean): Promise<void>;
 }
 
 /**
