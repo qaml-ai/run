@@ -331,6 +331,9 @@ test("storage is charged once a UTC day, pro rata, to prepaid tenants by what th
   const june = Date.parse("2026-06-15T12:00:00Z");
   const charge = (day: number, options: { usage?: StorageUsage; node?: string } = {}) =>
     accounts.billing.chargeStorage(storage, options.usage ?? usage, options.node ?? "node-a", { now: june + day * DAY });
+  // The writes above are this node's to flush (within 5 s, on a node): flushed after another node's reconciliation,
+  // they would count twice, an error the reconciliation leaves to the next one.
+  await usage.flush();
   const runs = await Promise.all([charge(0), (await accountsOn(db, pricing)).billing.chargeStorage(storage, new StorageUsage(db), "node-b", { now: june })]);
   assert.deepEqual(runs.sort(), [false, true], "one node runs the day's job");
   assert.equal(await charge(0), false, "the day is done");
