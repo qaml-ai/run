@@ -1,5 +1,6 @@
 import { AsyncResource, createHook } from "node:async_hooks";
 import { createRequire, syncBuiltinESMExports } from "node:module";
+import type { BinaryLike, ScryptOptions } from "node:crypto";
 import FakeTimers from "@sinonjs/fake-timers";
 import { nodeContext, type Clock, type Random } from "../../src/node-context.ts";
 
@@ -55,6 +56,8 @@ export class SimEnv {
   /** What nodes and the world wrote to the console, with the virtual time and who wrote it (`names` maps a node's clock to its name). */
   readonly logs: { at: number; by: string; line: string }[] = [];
   readonly names = new Map<Clock, string>();
+  /** With SIM_TRACE_TIMERS set: every timer that fired, when, for whom and where it was set (for finding where runs part). */
+  readonly timerTrace: string[] = [];
   private readonly restore: (() => void)[] = [];
   private readonly baseClock: Clock;
   /** Each node's pending timers, by its clock (which is how code running for it is told apart), and the crashed nodes'. */
@@ -80,8 +83,15 @@ export class SimEnv {
     // Timers belong to the node that set them, so a crash can take them all, and a crashed node sets none.
     // Fake timers run their callbacks from the simulation's loop, not in the async context that set them as real timers
     // do: each callback is bound to its setter's context, so a node's timer runs as that node.
+    const tracing = !!process.env.SIM_TRACE_TIMERS;
     const owned = (set: typeof setTimeout, once: boolean) => ((given: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
-      const callback = AsyncResource.bind(given);
+      let callback = AsyncResource.bind(given);
+      if (tracing) {
+        const site = new Error().stack!.split("\n").slice(2).find(line => !line.includes("tests/sim/env.ts") && !line.includes("node:"))?.trim() ?? "?";
+        const by = nodeContext()?.clock;
+        const run = callback;
+        callback = ((...given: unknown[]) => { this.timerTrace.push(`${this.clock.now - start} ${by ? this.names.get(by) : "world"} ${site.replace(/\(.*\/(src|tests|node_modules)\//, "($1/")}`); return run(...given); }) as typeof callback;
+      }
       const node = nodeContext()?.clock;
       if (!node) return set(callback, ms, ...args);
       if (this.crashed.has(node)) { const dead = set(() => {}, 0); clearTimeout(dead); return dead; }
@@ -104,6 +114,14 @@ export class SimEnv {
     const fakeSetTimeout = globalThis.setTimeout, fakeSetInterval = globalThis.setInterval;
     patch(globalThis, "setTimeout", owned(fakeSetTimeout, true));
     patch(globalThis, "setInterval", owned(fakeSetInterval as unknown as typeof setTimeout, false) as unknown as typeof setInterval);
+
+    // AbortSignal.timeout runs on Node's internal timers, which fake timers do not reach: one on the simulation's clock
+    // (and, through setTimeout, the caller's node) instead.
+    patch(AbortSignal, "timeout", ((ms: number) => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")), ms);
+      return controller.signal;
+    }) as typeof AbortSignal.timeout);
 
     // Randomness: the node's stream, else the world's.
     const source = () => nodeContext()?.random ?? this.random;
@@ -129,6 +147,14 @@ export class SimEnv {
       return value;
     }) as typeof crypto.randomInt);
     patch(crypto, "randomFillSync", ((view: ArrayBufferView) => fill(view)) as typeof crypto.randomFillSync);
+    // Key derivation runs on libuv's thread pool, which finishes in real time: done synchronously instead, its callback
+    // on the next tick.
+    patch(crypto, "scrypt", ((password: BinaryLike, salt: BinaryLike, keylen: number, options: ScryptOptions | ((error: Error | null, key: Buffer) => void), callback?: (error: Error | null, key: Buffer) => void) => {
+      if (typeof options === "function") { callback = options; options = {}; }
+      let key: Buffer;
+      try { key = crypto.scryptSync(password, salt, keylen, options); } catch (error) { process.nextTick(callback!, error as Error, Buffer.alloc(0)); return; }
+      process.nextTick(callback!, null, key);
+    }) as typeof crypto.scrypt);
     patch(globalThis.crypto, "getRandomValues", ((view: ArrayBufferView) => fill(view)) as typeof globalThis.crypto.getRandomValues);
     patch(globalThis.crypto, "randomUUID", uuid);
 
@@ -190,19 +216,29 @@ export class SimEnv {
   /** Virtual milliseconds since the simulation began. */
   get elapsed() { return this.clock.now - this.start; }
 
+  /** Whether something is moving the clock now: only one may, or runs would interleave by the real machine's speed. */
+  private driving = false;
+  private async drive<T>(work: () => Promise<T>): Promise<T> {
+    if (this.driving) throw new Error("The simulation's clock is already being moved: settle and advance may not run at once");
+    this.driving = true;
+    try { return await work(); } finally { this.driving = false; }
+  }
+
   /** Move time on by `ms`, running every timer that comes due and what it starts. */
-  advance(ms: number) { return this.clock.tickAsync(ms); }
+  advance(ms: number) { return this.drive(() => this.clock.tickAsync(ms)); }
 
   /** Run until `promise` settles, `stepMs` of virtual time at a time, failing past `limitMs`. */
-  async settle<T>(promise: Promise<T>, limitMs = 10 * 60_000, stepMs = 10): Promise<T> {
+  settle<T>(promise: Promise<T>, limitMs = 10 * 60_000, stepMs = 10): Promise<T> {
     let settled = false;
     const watched = promise.finally(() => { settled = true; });
     watched.catch(() => {});
-    for (const deadline = this.elapsed + limitMs; !settled;) {
-      if (this.elapsed >= deadline) throw new Error(`Still pending after ${limitMs} virtual ms`);
-      await this.clock.tickAsync(stepMs);
-    }
-    return watched;
+    return this.drive(async () => {
+      for (const deadline = this.elapsed + limitMs; !settled;) {
+        if (this.elapsed >= deadline) throw new Error(`Still pending after ${limitMs} virtual ms`);
+        await this.clock.tickAsync(stepMs);
+      }
+      return watched;
+    });
   }
 
   uninstall() {

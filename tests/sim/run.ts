@@ -22,6 +22,8 @@ export type RunResult = {
   logs: { at: number; by: string; line: string }[];
   elapsedMs: number;
   hash: string;
+  /** What the hash is of, line by line, for finding where two runs of one plan part ways. */
+  trace: string[];
 };
 
 const RUN = /\brun-(\d+)\b/;
@@ -103,7 +105,7 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean } = {}): Pr
     };
 
     /** Start a crashed node again; one that cannot start yet (no database) is tried again a second later, as ECS would. */
-    const restart = (node: string): Promise<unknown> => sim.restart(node).catch(() => new Promise(resolve => setTimeout(resolve, 1_000)).then(() => sim.nodes.get(node)?.crashed ? restart(node) : undefined));
+    const restart = (node: string): Promise<unknown> => sim.restart(node, { drive: false }).catch(() => new Promise(resolve => setTimeout(resolve, 1_000)).then(() => sim.nodes.get(node)?.crashed ? restart(node) : undefined));
     const apply = (op: Op) => sim.asWorld(() => {
       switch (op.op) {
         case "create":
@@ -239,11 +241,11 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean } = {}): Pr
     for (const violation of sim.hooks.violations) failures.push(`assertion: ${violation}`);
     for (const leak of sim.env.leaks) failures.push(`real I/O: ${leak.split("\n").slice(0, 3).join(" ")}`);
 
-    const trace = JSON.stringify({ statements: sim.db.statements, connections: sim.net.connections, served: served.map(call => [call.from, call.at, call.run]), history: history.map(event => [event.op, event.invoked, event.ended, event.result, event.status]) });
+    const trace = [...sim.env.timerTrace, ...sim.db.statements, ...sim.net.connections, ...served.map(call => JSON.stringify([call.from, call.at, call.run])), ...history.map(event => JSON.stringify([event.op, event.invoked, event.ended, event.result, event.status]))];
     return {
       plan, failures, notes, history, reached: sim.hooks.reached, fired: Object.fromEntries(sim.hooks.fired), served: served.length, logs: sim.env.logs,
       watchedEvents: [...watched.values()].flat().reduce((sum, connection) => sum + connection.events.length, 0),
-      elapsedMs: sim.env.elapsed, hash: createHash("sha256").update(trace).digest("hex"),
+      elapsedMs: sim.env.elapsed, hash: createHash("sha256").update(trace.join("\n")).digest("hex"), trace,
     };
   } finally {
     await sim.close();
