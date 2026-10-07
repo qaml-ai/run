@@ -471,6 +471,9 @@ export function createAgentChat(options: AgentChatOptions): AgentChat {
   let fatal = false;
   let destroyed = false;
   let local: LocalSend[] = [];
+  // The run has started replying to the last send: it stays "streaming" until it ends, through tool calls and the gap
+  // before the next message (when the send's echo can lag behind the reply, on a slow connection).
+  let replying = false;
   const answering = new Map<string, ChatError | null>();
   const files = new Map<string, { url: string; expiresAt?: number }>();
   let fileUrls = new Map<string, string>();
@@ -521,7 +524,9 @@ export function createAgentChat(options: AgentChatOptions): AgentChat {
     const waiting = local.some(send => send.status !== "failed");
     // A run whose answer just ended is still finishing: not a new wait.
     const last = messages.at(-1);
-    const streaming = messages.some(message => message.role === "assistant" && message.streaming) || (!!view?.running && !waiting && last?.role === "assistant");
+    const streamingNow = messages.some(message => message.role === "assistant" && message.streaming) || (!!view?.running && !waiting && last?.role === "assistant");
+    replying = !!view?.running && (replying || streamingNow);
+    const streaming = streamingNow || replying;
     const status: ChatStatus = fatal ? "error"
       : streaming ? "streaming"
       : waiting || view?.running ? "submitted"
@@ -636,6 +641,7 @@ export function createAgentChat(options: AgentChatOptions): AgentChat {
         ...(sendOptions.whileRunning ?? options.whileRunning ? { whileRunning: sendOptions.whileRunning ?? options.whileRunning } : {}),
       };
       local = [...local, send];
+      replying = false;
       emit();
       await deliver(send);
       return { id: send.id };
