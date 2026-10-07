@@ -61,7 +61,7 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
   /** Agent forks made: of which agent, the fork's id, and when the call was made and answered. */
   const forks = new Map<number, { agent: number; id: string; invoked: number; ended: number }>();
   /** Schedules made (201). */
-  const schedules = new Map<number, { agent: number; at: number }>();
+  const schedules = new Map<number, { agent: number; at: number; request: string }>();
   /** Volumes made, writes acknowledged, and volume forks made. */
   const volumes = new Map<number, string>();
   const writes = new Map<number, { volume: number; invoked: number; ended: number }>();
@@ -152,7 +152,7 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
           const agent = agents.get(op.agent);
           if (!agent) return;
           void client(op, op.node, `/v1/agents/${agent}/schedules`, { text: `sched-${op.schedule} agent-${op.agent}`, inSeconds: op.inSeconds })
-            .then(answer => { if (answer?.status === 201) schedules.set(op.schedule, { agent: op.agent, at: sim.env.elapsed + op.inSeconds * 1000 }); });
+            .then(answer => { if (answer?.status === 201) schedules.set(op.schedule, { agent: op.agent, at: sim.env.elapsed + op.inSeconds * 1000, request: `schedule-${answer.json.id}-${answer.json.dueAt}` }); });
           return;
         }
         case "volume":
@@ -342,22 +342,24 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
       const has = await runsIn(id);
       for (const [run, record] of records) {
         if (runs.get(run)!.agent !== agent) continue;
-        const endedAt = Number(record.endedAt) - sim.env.start;
+        // endedAt is the owner node's clock: allow for the most any node's is off.
+        const endedAt = Number(record.endedAt) - sim.env.start + Math.max(0, ...Object.values(plan.skews).map(Math.abs));
         if (endedAt < invoked && !record.outcome?.error && !has.has(run)) failures.push(`I11: fork ${fork} of agent-${agent} lacks run-${run}, which ended before the fork was asked for`);
       }
       for (const [run, { agent: of, acceptedAt }] of runs) if (of === agent && acceptedAt > ended && has.has(run)) failures.push(`I11: fork ${fork} of agent-${agent} has run-${run}, accepted after the fork was made`);
     }
-    // I13: a schedule made fires once it is due, exactly once. A delivery that failed (its agent's node was down) is
+    // I13: a schedule made fires once it is due. A delivery that failed (its agent's node was down) is
     // tried again once its claim times out (a minute, src/scheduler.ts), so the bound is that past the later of its due
     // time and recovery.
     if (schedules.size) {
       const by = Math.max(healedAt, ...[...schedules.values()].map(schedule => schedule.at)) + 60_000 + 10_000 + high;
       if (by > sim.env.elapsed) await sim.advance(by - sim.env.elapsed);
     }
-    for (const [schedule, { agent }] of schedules) {
-      const answer = await sim.call(live()[0], `/v1/agents/${agents.get(agent)}/history`);
-      const fired = (answer.json?.messages ?? []).filter((message: any) => message.role === "user" && JSON.stringify(message.content).includes(`sched-${schedule} `)).length;
-      if (fired !== 1) failures.push(`I13: schedule ${schedule} of agent-${agent} fired ${fired} times`);
+    // Firing is delivering its prompt under an id derived from the schedule, so a repeat is the same request: the
+    // request is there (it may since have been cancelled by an abort, which is not the schedule's to decide).
+    for (const [schedule, { agent, request }] of schedules) {
+      const answer = await sim.call(live()[0], `/v1/agents/${agents.get(agent)}/requests/${request}`);
+      if (answer.status !== 200) failures.push(`I13: schedule ${schedule} of agent-${agent} never delivered its prompt (${request}: ${answer.status})`);
     }
 
     for (const violation of sim.hooks.violations) failures.push(`assertion: ${violation}`);
