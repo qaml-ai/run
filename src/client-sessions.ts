@@ -5,7 +5,7 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { HttpBindings } from "@hono/node-server";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import type { AgentConfig, Credentials, RunLimits, ToolDefinition } from "./protocol.ts";
-import { errorText } from "./protocol.ts";
+import { errorText, PERSISTENCE_FAILED } from "./protocol.ts";
 import { enqueueEvents, usageCost, webhookEvent, type WebhookEvent } from "./webhooks.ts";
 import { AgentSupervisor } from "./supervisor.ts";
 import { platformUsage } from "./platform-pricing.ts";
@@ -683,7 +683,7 @@ export class ClientSessions {
         if (session.revision !== undefined) session.unsettled = true;
         throw error;
       }
-      this.fail(session, error);
+      this.fail(session, error, "header");
       throw session.fault;
     }
   }
@@ -870,23 +870,37 @@ export class ClientSessions {
   private async commit(session: Session, durable: boolean) {
     if (session.fault) throw session.fault;
     try { await session.log.flush(durable); }
-    catch (error) { this.fail(session, error); throw session.fault; }
+    catch (error) { this.fail(session, error, "journal"); throw session.fault; }
   }
   private commitLater(session: Session) { void this.commit(session, false).catch(() => {}); }
 
-  private fail(session: Session, error: unknown, release = true) {
+  /** Fault the session: what it holds is no longer known to be stored. With `store` (the write that failed), the agent is given up too. */
+  private fail(session: Session, error: unknown, store?: "journal" | "header" | "transcript") {
     if (session.fault) return;
-    // A failed disk commit must never turn into a successful retry from memory.
-    session.fault = new Error(`Session persistence failed: ${errorText(error)}`);
+    // A failed disk commit must never turn into a successful retry from memory. Retryable: the agent is given up, and
+    // the next load goes on from what was stored.
+    const text = errorText(error);
+    session.fault = new HttpError(503, text.startsWith(PERSISTENCE_FAILED) ? text : `${PERSISTENCE_FAILED}: ${text}`);
     this.endStreams(session, true);
     this.closeAttached(session);
-    // Still its owner (a write failed, or its answer was lost, without the lease lapsing): nothing would ever fence it,
-    // so give the agent up as a drain does. Its next load, here or on a peer, reads what the journal holds and resumes
-    // a turn that had begun; a faulted session kept loaded would hold the agent, and its runs, until this node stopped.
-    if (release && !this.closed && !session.leaving && this.sessions.get(session.header.id) === session) {
-      console.error(JSON.stringify({ type: "session_fault_released", agent: session.header.id, running: session.running.size, error: safeError(error) }));
-      void this.leave(session);
-    }
+    if (store) this.releaseFaulted(session, store, error);
+  }
+
+  /**
+   * Give up an agent whose session faulted while this node still holds it, as a drain does (`leave`), so the next load,
+   * here or on a peer, goes on from its journal: a turn that began resumes there (at most MAX_RESUMES times). Sweeps
+   * leave it for an interval first, so a database that keeps failing its writes is not retried in a loop; a load that
+   * fails backs off as any does (`deferResume`), and a lease that lapses meanwhile fences instead (`lost`).
+   */
+  private releaseFaulted(session: Session, store: string, error: unknown) {
+    const id = session.header.id;
+    if (this.closed || session.leaving || this.sessions.get(id) !== session) return;
+    if (session.claim && !this.options.ownership!.holds(session.claim)) return;
+    console.error(JSON.stringify({ type: "session_fault_released", agent: id, store, running: session.running.size, error: safeError(error) }));
+    void (async () => {
+      await this.db.query("update agents set resume_after = greatest(coalesce(resume_after, 0), $2) where id = $1", [id, Date.now() + this.sweepMs]).catch(() => {});
+      await this.leave(session);
+    })();
   }
 
   /**
@@ -902,7 +916,7 @@ export class ClientSessions {
     };
     prune(session.requests, record => record.endedAt ?? record.startedAt ?? 0);
     try { await session.log.rewrite(() => this.snapshot(session)); }
-    catch (error) { this.fail(session, error); }
+    catch (error) { this.fail(session, error, "journal"); }
   }
 
   private publish(session: Session, data: ClientEvent) {
@@ -3598,7 +3612,12 @@ export class ClientSessions {
         value = { result: { ...value.result as object, inputs } };
       }
     }
-    catch (error) { value = { error: errorText(error) }; }
+    catch (error) {
+      value = { error: errorText(error) };
+      // Its host's transcript failed a write: only a reload knows what it holds, so the agent is given up as a fault of
+      // the session's own would, and the turn goes on from storage, not from this host's memory.
+      if (value.error.startsWith(PERSISTENCE_FAILED)) this.fail(session, error, "transcript");
+    }
     if (RUN_METHODS.includes(record.method)) session.outputs = undefined;
     this.reportActive(session, false);
     session.beginning = undefined;
@@ -4292,7 +4311,8 @@ export class ClientSessions {
   /** Drop a session from memory and give up ownership so any node can serve it next. */
   private async unload(session: Session) {
     if (this.sessions.get(session.header.id) === session) this.sessions.delete(session.header.id);
-    await session.log.close().catch(() => {});
+    // A faulted session's records past its failed commit are dropped: the journal as stored is what its next load goes on from.
+    await session.log.close(!!session.fault).catch(() => {});
     // A revoked agent's logs are never read again.
     if (session.header.revoked) await underClaim(this.db, session.claim, sql => deleteTail(sql, session.header.id)).catch(() => {});
     // What its runs reported, so a page of it unloaded knows whether its index is behind (see `historyPage`).
@@ -4300,8 +4320,9 @@ export class ClientSessions {
     await this.db.query("update agent_history_index set reported = greatest(reported, $2) where agent = $1", [session.header.id, reported]).catch(() => {});
     // Nothing is published after this: the next owner goes on from this cursor.
     // Runs still open (queued ones a drain leaves for the next owner) keep it marked for a sweep to load; none clears the mark.
+    // A faulted session's journal may be behind it (a run ended here but not durably), so it stays marked: its next load decides.
     await underClaim(this.db, session.claim, sql => sql.query("update agents set last_cursor = $2, cursor_clean = true, pending_runs = $3 where id = $1",
-      [session.header.id, session.cursor, session.running.size > 0])).catch(() => {});
+      [session.header.id, session.cursor, session.running.size > 0 || !!session.fault])).catch(() => {});
     // Spend no transcript record carried (a compaction's or a child's after the agent's last record).
     await this.spendWrite(session, 0)?.().catch(error => console.error(JSON.stringify({ type: "agent_spend_write_failed", agent: session.header.id, error: safeError(error) })));
     // Runs left open are its next owner's to count.
@@ -4318,7 +4339,7 @@ export class ClientSessions {
     session.busy = false;
     session.spans?.abandon("This node lost ownership of the agent");
     session.spans = undefined;
-    this.fail(session, new Error("This node lost ownership of the agent"), false);
+    this.fail(session, new Error("This node lost ownership of the agent"));
     this.endStreams(session, true);
     if (this.sessions.get(session.header.id) === session) this.sessions.delete(session.header.id);
     // Its claim is gone, so it could write no chunk: its next owner's start catches up.
