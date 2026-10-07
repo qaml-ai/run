@@ -469,7 +469,8 @@ test("a browser that comes here first is given its visitor id, and the store is 
   // The touch: the page as its route, the other site's host, and of the query only what names a campaign.
   const [touch] = await touches();
   assert.deepEqual(touch, { attribution_id: visitor, touch: { page_host: "run.example.test", page_path: "/console/agents/:agent_id", referrer_host: "news.ycombinator.com", campaign: { utm_source: "newsletter", utm_campaign: "launch" }, occurred_at: arrived!.body.occurred_at } });
-  assert.ok(!/ada|art_secret|client_abc|item/.test(JSON.stringify([await outbox(), await touches()])));
+  // The email in full: "ada" alone turns up in random hex ids now and then.
+  assert.ok(!/ada@|ada%40|example\.com|art_secret|client_abc|item/.test(JSON.stringify([await outbox(), await touches()])));
 });
 
 test("how a browser arrived is told from its link and where it came from; a reload or a return visit is no arrival", async t => {
