@@ -106,11 +106,16 @@ export function interruptedTurnRepairs(messages: AgentMessage[], close = true, a
  * suspended; any other gets a runtime notice, so a later continue does not resubmit it. Whether there was one to settle.
  */
 export async function closeInterruptedTurn(transcript: Transcript): Promise<boolean> {
-  if (!transcript.active) return false;
-  const awaiting = transcript.awaiting;
-  await transcript.append(interruptedTurnRepairs(transcript.context, !awaiting.length, awaiting));
-  await transcript.setActive(false);
-  return true;
+  let closed = false;
+  // One commit, its records worked out as of every earlier one: a turn closed already is left alone, and a call that has
+  // a result (one an earlier close gave it, too) is never answered again.
+  await transcript.commit(() => {
+    if (!transcript.active) return [];
+    closed = true;
+    const awaiting = transcript.awaiting;
+    return [...interruptedTurnRepairs(transcript.context, !awaiting.length, awaiting).map(message => ({ t: "message" as const, message })), { t: "turn" as const, active: false }];
+  });
+  return closed;
 }
 
 export function recoverInterruptedTurn(messages: AgentMessage[]): AgentMessage[] {

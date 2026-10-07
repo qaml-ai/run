@@ -710,6 +710,8 @@ export class ClientSessions {
   private async read(id: string): Promise<Session | undefined> {
     const stored = await this.readHeader(id);
     if (!stored || stored.value.purged) return undefined;
+    // A closed node loads nothing: it would hold the agent with no one to run or release it (`close` has unloaded its agents).
+    if (this.closed) throw new HttpError(503, "This node is stopping; retry");
     // Take ownership before reading the journal, so no other node appends meanwhile.
     const ownership = this.options.ownership;
     let claim: Claim | undefined;
@@ -758,6 +760,7 @@ export class ClientSessions {
     }
     await log.flush(true);
     if (claim && !this.options.ownership!.holds(claim)) throw new HttpError(503, "This node lost ownership of the agent; retry");
+    if (this.closed) throw new HttpError(503, "This node is stopping; retry");
     this.sessions.set(id, session);
     this.loaded(session);
     session.inherited = new Set([...resumed, ...queued].map(record => record.id));
