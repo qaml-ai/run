@@ -838,12 +838,15 @@ export class ClientSessions {
     });
   }
 
-  /** Give the agent's busy slot up once it has no run open or being accepted (`unloading`: it is leaving this node). */
-  private releaseBusy(session: Session, unloading = false) {
+  /**
+   * Give the agent's busy slot up once it has no run open or being accepted (`unloading`: it is leaving this node).
+   * `ending`: a run that has finished but is not yet marked so, which no longer keeps the agent busy.
+   */
+  private releaseBusy(session: Session, unloading = false, ending?: string) {
     const busy = this.options.busyAgents;
     if (!busy) return Promise.resolve();
     return this.busyStep(session, async () => {
-      if (!session.busy || (!unloading && (session.admitting || [...session.running.values()].some(record => RUN_METHODS.includes(record.method))))) return;
+      if (!session.busy || (!unloading && (session.admitting || [...session.running.values()].some(record => record.id !== ending && RUN_METHODS.includes(record.method))))) return;
       session.busy = false;
       // Kept on failure, so a later release (at the latest, the unload) tries again.
       try { await busy.release(session.header.id); }
@@ -1920,6 +1923,8 @@ export class ClientSessions {
         cancelled.push(this.upsertRequest(session, { ...rest, state: "completed", endedAt: now, outcome: { result: { error: CANCELLED, code: "cancelled" } }, ...(announcing ? { announce: true as const } : {}) }));
       }
     }
+    // The cancelled runs' slot (when nothing else holds the agent busy) is free before they are seen to end.
+    if (cancelled.length) await this.releaseBusy(session);
     if (run || cancelled.length) await this.commit(session, true);
     for (const record of cancelled) {
       this.publish(session, { type: "event", requestId: record.id, event: { type: "run_cancelled", reason: "stopped" } });
@@ -3594,6 +3599,12 @@ export class ClientSessions {
     if (this.closed || session.fault || session.leaving || session.requests.get(record.id)?.state !== "running") return;
     // Stopped at a step boundary as this node leaves: the next owner continues it.
     if (RUN_METHODS.includes(record.method) && (value.result as { handedOff?: unknown } | undefined)?.handedOff) return this.park(session, record, value.result as Record<string, unknown>);
+    // The slot is free before the run is seen to end (its record, its response, its event): a client that starts the next
+    // run on seeing this one end is never refused for it. Released here, the agent is no longer counted for this run.
+    if (RUN_METHODS.includes(record.method)) {
+      await this.releaseBusy(session, false, record.id);
+      if (this.closed || session.fault || session.leaving || session.requests.get(record.id)?.state !== "running") return;
+    }
     const { params: _params, ...finished } = record;
     // Until the response is published, a drain or release must not close the stream and drop it.
     session.settling++;
