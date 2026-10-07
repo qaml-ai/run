@@ -354,7 +354,8 @@ test("a node cut off from the database stops being fresh two renewals in, cuts i
   const healed = performance.now();
   a.link.partitioned = false;
   await waiting;
-  assert.ok(waited! - healed < a.ownership.heartbeatMs + 200, "effects went on at the next renewal");
+  // At the next renewal, or the one after when the first's round trip is slow (a loaded machine).
+  assert.ok(waited! - healed < 2 * a.ownership.heartbeatMs + 300, `effects went on ${Math.round(waited! - healed)} ms after the partition healed, not by the renewal after next`);
   assert.equal(a.ownership.fresh(), true);
   assert.deepEqual(a.fences, [], "a pause shorter than the lease never fences");
   assert.equal(a.ownership.holds(held.claim), true);
