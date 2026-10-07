@@ -54,6 +54,9 @@ export class SimEnv {
   readonly leaks: string[] = [];
   private readonly restore: (() => void)[] = [];
   private readonly baseClock: Clock;
+  /** Each node's pending timers, by its clock (which is how code running for it is told apart), and the crashed nodes'. */
+  private readonly timers = new Map<Clock, Set<unknown>>();
+  private readonly crashed = new Set<Clock>();
 
   constructor(seed: string, start = Date.UTC(2030, 0, 1)) {
     this.start = start;
@@ -70,12 +73,33 @@ export class SimEnv {
     patch(Date, "now", () => nowOf().now());
     patch(performance, "now", () => nowOf().monotonic());
     void clock;
+    // Timers belong to the node that set them, so a crash can take them all, and a crashed node sets none.
     // Fake timers run their callbacks from the simulation's loop, not in the async context that set them as real timers
     // do: each callback is bound to its setter's context, so a node's timer runs as that node.
-    const bound = <S extends (callback: (...args: any[]) => void, ms?: number, ...args: any[]) => unknown>(set: S) =>
-      ((callback: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => set(AsyncResource.bind(callback), ms, ...args)) as unknown as S;
-    patch(globalThis, "setTimeout", bound(globalThis.setTimeout));
-    patch(globalThis, "setInterval", bound(globalThis.setInterval));
+    const owned = (set: typeof setTimeout, once: boolean) => ((given: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
+      const callback = AsyncResource.bind(given);
+      const node = nodeContext()?.clock;
+      if (!node) return set(callback, ms, ...args);
+      if (this.crashed.has(node)) { const dead = set(() => {}, 0); clearTimeout(dead); return dead; }
+      let mine = this.timers.get(node);
+      if (!mine) this.timers.set(node, mine = new Set());
+      const pending = mine;
+      // A one-off timer that ran is no longer pending.
+      const timer: ReturnType<typeof setTimeout> = set(once ? (...given: unknown[]) => { pending.delete(timer); callback(...given); } : callback, ms, ...args);
+      pending.add(timer);
+      owners.set(timer, pending);
+      return timer;
+    }) as typeof setTimeout;
+    const owners = new WeakMap<object, Set<unknown>>();
+    const unowned = (clear: typeof clearTimeout) => ((timer?: ReturnType<typeof setTimeout>) => {
+      if (timer && typeof timer === "object") owners.get(timer)?.delete(timer);
+      clear(timer);
+    }) as typeof clearTimeout;
+    patch(globalThis, "clearTimeout", unowned(globalThis.clearTimeout));
+    patch(globalThis, "clearInterval", unowned(globalThis.clearInterval as typeof clearTimeout) as typeof clearInterval);
+    const fakeSetTimeout = globalThis.setTimeout, fakeSetInterval = globalThis.setInterval;
+    patch(globalThis, "setTimeout", owned(fakeSetTimeout, true));
+    patch(globalThis, "setInterval", owned(fakeSetInterval as unknown as typeof setTimeout, false) as unknown as typeof setInterval);
 
     // Randomness: the node's stream, else the world's.
     const source = () => nodeContext()?.random ?? this.random;
@@ -116,6 +140,16 @@ export class SimEnv {
     });
     hook.enable();
     this.restore.push(() => hook.disable());
+  }
+
+  /**
+   * A node's process dies: its pending timers never run, and it sets no more. (Its I/O is cut by the network, database
+   * and store; code of it still awaiting something finds every call failing.)
+   */
+  crash(clock: Clock) {
+    this.crashed.add(clock);
+    for (const timer of this.timers.get(clock) ?? []) clearTimeout(timer as never);
+    this.timers.delete(clock);
   }
 
   /** The clock of a node off by `skew`: its own wall and monotonic time, on the simulation's timers. */

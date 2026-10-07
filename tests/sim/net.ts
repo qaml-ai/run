@@ -16,6 +16,8 @@ export class SimNet {
   private readonly cuts = new Map<string, "refused" | "blackhole">();
   /** Every connection made, for the trace: `from -> to`. */
   readonly connections: string[] = [];
+  /** Connections open now, with their ends. */
+  private readonly open = new Set<{ from: string; to: string; ends: Duplex[] }>();
 
   /**
    * Add a host, served by `server` (none: a host that only makes requests, such as a client). `enter` runs work as the
@@ -25,10 +27,15 @@ export class SimNet {
     const known = this.hosts.get(host);
     this.hosts.set(host, { address: known?.address ?? `10.0.${Math.floor(this.hosts.size / 250)}.${(this.hosts.size % 250) + 1}`, server, enter });
   }
-  /** A host that went away (a crashed node): connections to it are refused until it is added again. */
+  /** A host that went away (a crashed node): its connections drop, and new ones are refused until it is added again. */
   remove(host: string) {
     const known = this.hosts.get(host);
     if (known) known.server = undefined;
+    for (const connection of this.open) {
+      if (connection.from !== host && connection.to !== host) continue;
+      this.open.delete(connection);
+      for (const end of connection.ends) end.destroy();
+    }
   }
   address(host: string) {
     const known = this.hosts.get(host);
@@ -65,6 +72,9 @@ export class SimNet {
     this.connections.push(`${from} -> ${to}`);
     const [client, server] = socketPair({ local: this.hosts.get(from)?.address, remote: target.address });
     client.bind();
+    const connection = { from, to, ends: [client, server] };
+    this.open.add(connection);
+    client.once("close", () => this.open.delete(connection));
     const accept = () => { server.bind(); target.server!.emit("connection", server); };
     if (target.enter) target.enter(accept); else accept();
     return client;
