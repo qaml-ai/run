@@ -996,6 +996,8 @@ export function createAgentHost(hostIO: HostIO) {
     forcing = { left: FORCED_OUTPUT_REQUESTS, reminding: false, last: false };
     active = new AbortController();
     try {
+      // Aborted before this host had it (its session's `aborted`): a turn resumed from the transcript is open here, and is closed.
+      if (method === "continue" && params?.aborted) return await abortedBeforeLoop();
       if (method === "prompt") await useOutput(params.output?.schema);
       if (method === "execute") {
         const { returned: _returned, cpuMs: _cpuMs, ...result } = await runCode({ ...codeRequest(params), bridge: bridge(active.signal), signal: active.signal, onEvent: event => io.emit(event) });
@@ -1019,6 +1021,7 @@ export function createAgentHost(hostIO: HostIO) {
         if (await handingOff()) return handedOff();
         await agent.continue();
       } else if (method === "continue") {
+        if (active.signal.aborted) return await abortedBeforeLoop();
         if (rerun.length) {
           await rerunOpenCalls(active.signal);
           agent.state.messages = stateMessages();
@@ -1115,10 +1118,15 @@ export function createAgentHost(hostIO: HostIO) {
 
   /**
    * An abort that came after the run began but before Pi's loop did: Pi's own abort found no loop to stop, so the run ends
-   * here, checked in the same tick as each loop starts.
+   * here, checked in the same tick as each loop starts. The turn is settled in the transcript before the run is seen to
+   * end: a turn resumed from it (a lost node's) may still have calls open, those to make again (`RERUN`) among them, which
+   * are closed as unknown, never made; calls waiting on a person stay open.
    */
   async function abortedBeforeLoop() {
-    await transcript.setActive(false);
+    rerun = [];
+    const repairs = interruptedTurnRepairs(transcript.context, false, transcript.awaiting);
+    if (repairs.length) await transcript.append(repairs);
+    if (transcript.active) await transcript.setActive(false);
     return { messages: transcript.total, error: "The run was aborted", code: "aborted", ...(stopped ?? {}) };
   }
 
