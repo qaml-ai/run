@@ -12,7 +12,10 @@ const INT8 = 20;
  */
 export interface WorldDb {
   readonly statements: string[];
-  connection(node: string, gate?: () => Promise<void>, latency?: () => number): Db & { kill(): void };
+  /** How the ownership statements came out (`ownershipOutcome`), counted: what the fuzzer reads as behaviour. */
+  readonly outcomes: Map<string, number>;
+  /** `gate` is called with each answer's statement before the node hears it: it waits while the node is paused. */
+  connection(node: string, gate?: (text: string) => Promise<void>, latency?: () => number): Db & { kill(): void };
   listen(node: string, dead?: () => boolean, deliver?: (work: () => void) => void): (handlers: Record<string, (payload: string) => void>) => Promise<{ close(): Promise<void> }>;
   setDown(node: string, down: boolean): void;
   migrate(): Promise<void>;
@@ -21,6 +24,18 @@ export interface WorldDb {
   close(): Promise<void>;
 }
 const MIGRATIONS = new URL("../../migrations/", import.meta.url);
+
+/**
+ * What an ownership statement (on actor_owners or runtime_nodes) came to: which statement (its table and verb) and
+ * whether it found or changed a row. A renewal that found its heartbeat gone, an acquire that took nothing, an owner
+ * query that found none: the paths a race takes, which coverage of the code that runs them does not tell apart.
+ */
+export function ownershipOutcome(text: string, rowCount: number) {
+  const flat = text.trim().replace(/\s+/g, " ").toLowerCase();
+  const table = /\b(actor_owners|runtime_nodes)\b/.exec(flat)?.[1];
+  if (!table) return undefined;
+  return `${flat.split(" ", 1)[0]} ${table}${flat.includes(" join ") ? " join" : ""}: ${rowCount ? "rows" : "none"}`;
+}
 
 /**
  * The simulated database: one PGlite (Postgres in WASM, in this process), shared by every node, each through its own
@@ -40,6 +55,7 @@ export class SimDb implements WorldDb {
   private readonly down = new Set<string>();
   /** Every statement, for the trace: `node: first word`. */
   readonly statements: string[] = [];
+  readonly outcomes = new Map<string, number>();
 
   private constructor(pglite: PGlite) { this.pglite = pglite; }
 
@@ -65,7 +81,10 @@ export class SimDb implements WorldDb {
     this.statements.push(`${this.scope.runInAsyncScope(() => Date.now())} ${node}: ${text.trim().replace(/\s+/g, " ").slice(0, 70)} ${JSON.stringify(values ?? []).slice(0, 200)}`);
     const result = await this.scope.runInAsyncScope(() => this.pglite.query<Record<string, unknown>>(text, values as unknown[]));
     // PGlite counts only changed rows; pg counts a select's rows too.
-    return { rows: result.rows, rowCount: result.affectedRows || result.rows.length };
+    const rowCount = result.affectedRows || result.rows.length;
+    const outcome = ownershipOutcome(text, rowCount);
+    if (outcome) this.outcomes.set(outcome, (this.outcomes.get(outcome) ?? 0) + 1);
+    return { rows: result.rows, rowCount };
   }
 
   /** Cut `node` off from the database, or (up) let it back. */
@@ -77,14 +96,14 @@ export class SimDb implements WorldDb {
    * `node`'s view of the database: its own pool. Ending it ends nothing shared. `kill` is its process dying: every
    * query from then on fails, as the server dropped its connections (an open transaction rolls back on release).
    */
-  connection(node: string, gate: () => Promise<void> = async () => {}, latency: () => number = () => 0): Db & { kill(): void } {
+  connection(node: string, gate: (text: string) => Promise<void> = async () => {}, latency: () => number = () => 0): Db & { kill(): void } {
     let ended = false, killed = false;
     // A paused node hears the answer once it runs again (`gate`).
-    const answered = <T>(result: Promise<T>) => result.then(async value => { await gate(); return value; }, async error => { await gate(); throw error; });
+    const answered = <T>(result: Promise<T>, text: string) => result.then(async value => { await gate(text); return value; }, async error => { await gate(text); throw error; });
     // A pool query's round trip (`latency`, virtual ms): it reaches the server that much later, on the node's timers.
     const travel = async () => { const ms = latency(); if (ms > 0) await new Promise(resolve => setTimeout(resolve, ms)); };
     const query = (text: string, values?: unknown[]) => ended ? Promise.reject(new Error("Cannot use a pool after calling end on the pool"))
-      : killed ? Promise.reject(unavailable()) : answered(travel().then(() => this.exclusive(() => killed ? Promise.reject(unavailable()) : this.run(node, text, values))));
+      : killed ? Promise.reject(unavailable()) : answered(travel().then(() => this.exclusive(() => killed ? Promise.reject(unavailable()) : this.run(node, text, values))), text);
     return {
       query: query as Db["query"],
       connect: () => new Promise<DbClient>((resolve, reject) => {
@@ -98,7 +117,7 @@ export class SimDb implements WorldDb {
           resolve({
             query: (async (text: string, values?: unknown[]) => {
               if (killed) { broken = true; throw unavailable(); }
-              try { return await answered(this.run(node, text, values)); }
+              try { return await answered(this.run(node, text, values), text); }
               catch (error) { if (this.down.has(node)) broken = true; throw error; }
             }) as DbClient["query"],
             release: () => { if (broken) void this.pglite.exec("rollback").catch(() => {}).finally(release); else release(); },

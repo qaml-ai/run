@@ -13,6 +13,11 @@ export type Op =
   /** The node's process stops for `ms` and goes on (SIGSTOP, a GC pause): its timers and I/O wait, its peers do not. */
   | { op: "pause"; node: string; ms: number }
   /**
+   * The node stops for `ms` as it next hears a database answer (to a statement containing `statement`, if given, such
+   * as "insert into actor_owners"): between two statements of one request, where a race needs time to pass.
+   */
+  | { op: "pauseOnDb"; node: string; ms: number; statement?: string }
+  /**
    * The node is cut off from its peers (blackholed: their liveness probes time out, so they reap it as dead) and from the
    * database, while it still reaches the model and clients: the reap-by-probe-timeout path (H1). A `heal` ends it.
    */
@@ -127,6 +132,14 @@ export function generatePlan(seed: string, options: { steps?: number; durationMs
     for (const [node] of down) if (steps.some(step => step.at <= at && (step.op.op === "restart" || step.op.op === "databaseUp") && step.op.node === node)) down.delete(node);
   }
   steps.sort((a, b) => a.at - b.at || 0);
+  // For some seeds with pauses, one at a node's next database answer (to an ownership statement, mostly), from a stream
+  // of its own as the tail below is.
+  const between = prng(`${seed}:db-pause`);
+  if (faults.has("pause") && between.float() < 0.3) {
+    const statement = [undefined, "insert into actor_owners", "from actor_owners o join runtime_nodes", "update runtime_nodes"][between.int(4)];
+    steps.push({ at: 1_000 + between.int(Math.floor(durationMs * 0.7)), op: { op: "pauseOnDb", node: nodes[between.int(nodes.length)], ms: (1 + between.int(10)) * Math.floor(leaseTtlMs / 6), ...(statement ? { statement } : {}) } });
+    steps.sort((a, b) => a.at - b.at);
+  }
   // A database with a tail for some seeds, from a stream of its own, so every other draw of the plan stays as it was.
   const latency = prng(`${seed}:db-latency`);
   const tail = latency.float() < 0.3 ? { dbLatencyMs: [1, 5] as [number, number], dbSpikes: { rate: 0.01 + latency.int(2) * 0.01, ms: [200, 800] as [number, number] } } : {};

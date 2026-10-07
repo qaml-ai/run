@@ -30,6 +30,7 @@ const Op = z.discriminatedUnion("op", [
   z.object({ op: z.literal("watch"), agent: Count, node: Node, forMs: z.number().int().min(1).max(600_000) }).describe("A client watches agent N's events for forMs, resuming after the last event its lane saw"),
   z.object({ op: z.literal("deploy"), node: Node }).describe("The node drains and exits, as a deploy replaces it (restart brings a new process)"),
   z.object({ op: z.literal("pause"), node: Node, ms: z.number().int().min(1).max(600_000) }).describe("The node's process stops for ms (SIGSTOP, a GC pause): its timers and I/O wait, its peers go on"),
+  z.object({ op: z.literal("pauseOnDb"), node: Node, ms: z.number().int().min(1).max(600_000), statement: z.string().max(200).optional() }).describe("The node stops for ms as it next hears a database answer (to a statement containing `statement`, case-insensitive, if given: e.g. 'insert into actor_owners', 'from actor_owners o join runtime_nodes', 'update runtime_nodes'): between two statements of one request"),
   z.object({ op: z.literal("isolate"), node: Node }).describe("The node is blackholed from its peers (their probes time out, they reap it) and cut off the database; it still reaches the model and clients. heal ends it"),
   z.object({ op: z.literal("crash"), node: Node }).describe("The node's process dies at once"),
   z.object({ op: z.literal("restart"), node: Node }).describe("A crashed or drained node starts again as a new process"),
@@ -176,10 +177,11 @@ export class SimLab {
     try {
       result = await runPlan(plan, { inspect: capture(plan, snapshot) });
     } catch (error) {
-      result = { plan, failures: [`run: ${(error as Error).message}`], notes: [], history: [], reached: [], checked: {}, fired: {}, served: 0, watchedEvents: 0, logs: [], elapsedMs: 0, hash: "", trace: [] };
+      result = { plan, failures: [`run: ${(error as Error).message}`], notes: [], history: [], reached: [], checked: {}, ownership: {}, fired: {}, served: 0, watchedEvents: 0, logs: [], elapsedMs: 0, hash: "", trace: [] };
     }
     const features = await this.coverage.take();
     for (const goal of result.reached) features.add(hash(`goal:${goal}`));
+    for (const outcome of Object.keys(result.ownership)) features.add(hash(`ownership:${outcome}`));
     const fresh = [...features].filter(feature => !this.seen.has(feature));
     for (const feature of fresh) this.seen.add(feature);
     const newlyHeld = Object.entries(result.checked).filter(([message, { held }]) => held > 0 && !this.held.has(message)).map(([message]) => message);

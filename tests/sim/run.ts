@@ -14,6 +14,8 @@ export type RunResult = {
   notes: string[];
   history: Event[];
   reached: string[];
+  /** How its ownership statements came out (which statement, and whether it found or changed a row), counted. */
+  ownership: Record<string, number>;
   /** Every assertion the run passed through: how often, and how often it held. */
   checked: Record<string, { kind: string; hits: number; held: number }>;
   fired: Record<string, number>;
@@ -189,6 +191,7 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
           if (op.b === "db") { databaseCut.add(op.a); sim.databaseDown(op.a); } else sim.partition(op.a, op.b, op.how);
           break;
         case "pause": if (!sim.nodes.get(op.node)?.crashed) pending.push(sim.pause(op.node, op.ms)); break;
+        case "pauseOnDb": sim.pauseAtDbAnswer(op.node, op.ms, op.statement); break;
         case "isolate":
           for (const peer of plan.nodes) if (peer !== op.node) sim.partition(op.node, peer, "blackhole");
           databaseCut.add(op.node);
@@ -264,11 +267,11 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
       const agent = call.run === undefined ? undefined : agentOf.get(call.run);
       if (agent !== undefined) byAgent.set(agent, [...byAgent.get(agent) ?? [], call]);
     }
-    const faultTimes = history.filter(event => ["crash", "partition", "databaseDown", "deploy", "pause", "isolate"].includes(event.op.op)).map(event => event.invoked);
+    const faultTimes = [...history.filter(event => ["crash", "partition", "databaseDown", "deploy", "isolate"].includes(event.op.op)).map(event => event.invoked), ...sim.pauses.map(pause => pause.at)];
     // A paused node acts on nothing while it is stopped, and cuts what its lease no longer covers as soon as it runs
     // again: a call of its open across a pause counts as its execution only outside the pause and the heartbeat after.
     const heartbeat = Math.min(Math.floor(plan.leaseTtlMs / 6), 3_000);
-    const pauses = history.filter(event => event.op.op === "pause").map(event => ({ host: `${(event.op as { node: string }).node}.sim`, from: event.invoked, to: event.invoked + (event.op as { ms: number }).ms + heartbeat }));
+    const pauses = sim.pauses.map(pause => ({ host: `${pause.node}.sim`, from: pause.at, to: pause.at + pause.ms + heartbeat }));
     // A call whose node died stopped being anyone's execution then, whatever the model went on sending.
     const deaths = history.filter(event => event.op.op === "crash").map(event => ({ host: `${(event.op as { node: string }).node}.sim`, at: event.invoked }));
     // And one its node cut (a stale lease interrupts its model requests) ended when the node hung up.
@@ -381,7 +384,7 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
 
     const trace = [...sim.env.timerTrace, ...sim.db.statements, ...sim.net.connections, ...served.map(call => JSON.stringify([call.from, call.at, call.run])), ...history.map(event => JSON.stringify([event.op, event.invoked, event.ended, event.result, event.status]))];
     return {
-      plan, failures, notes, history, reached: sim.hooks.reached, checked: Object.fromEntries(sim.hooks.checked), fired: Object.fromEntries(sim.hooks.fired), served: served.length, logs: sim.env.logs,
+      plan, failures, notes, history, reached: sim.hooks.reached, checked: Object.fromEntries(sim.hooks.checked), ownership: Object.fromEntries(sim.db.outcomes), fired: Object.fromEntries(sim.hooks.fired), served: served.length, logs: sim.env.logs,
       watchedEvents: [...watched.values()].flat().reduce((sum, connection) => sum + connection.events.length, 0),
       elapsedMs: sim.env.elapsed, hash: createHash("sha256").update(trace.join("\n")).digest("hex"), trace,
     };

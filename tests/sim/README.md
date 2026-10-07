@@ -38,19 +38,22 @@ claude mcp add camelrun-sim-devbox -- ssh camel-devbox 'cd ~/agent-runtime && np
 
 Runs are recorded under `sim-mcp/` (gitignored), so `inspect` and `replay` work on any run of the session.
 
-## An example session: the goal nothing has reached
+## An example session: a race between two statements
 
-The goal is "an acquire tried again after a heartbeat expired between its statements" (src/ownership.ts). An acquire's
-insert has to see the current owner's heartbeat as live, and the next statement has to see it as expired. Two
-statements at one virtual time see one `now()`, so time must pass between them. One way is a pause: a paused node's
-database answers wait until the pause ends.
+The goal "an acquire tried again after a heartbeat expired between its statements" (src/ownership.ts) needs an
+acquire's insert to see the current owner's heartbeat as live, and its next statement to see it as expired. Two
+statements at one virtual time see one `now()`, so time must pass between them, and `pauseOnDb` puts it exactly there:
+the node stops as it hears the answer to a given statement. `tests/sim/corpus/acquire-owner-expiry.json` is such a
+plan; this is how one finds it.
 
-1. Call `goals` with `context: 6`. It shows the acquire loop and confirms the goal is not reached.
-2. Call `schema`. The ops you need are `create`, `prompt`, `crash`, `pause` and `isolate`, and `leaseTtlMs`.
-3. Write a plan with nodes a and b, a 3000 ms lease, and the agent made on a. Prompt it through b, so b asks a and a
-   owns it. Crash a. Then, just before a's heartbeat expires, prompt the agent through b again, so b tries to take
-   it, and pause b for a few heartbeats right then.
-4. Call `run_plan`. Read `newGoals`. If the goal was missed, use `inspect` with `logs: "/acquire|heartbeat|owner/"` and
-   `state: true` to see when a's heartbeat ended relative to b's acquire.
-5. Shift the timing, by hand or with `branch` (`k` = the steps before the pause, `n` = 10).
-6. Once a run reaches the goal, call `corpus_add` with a note, so the fuzzer builds on it.
+1. Call `goals` with `context: 8`. It shows the acquire loop: an insert, then an owner query.
+2. Call `schema`. You need `create`, `prompt`, `crash`, `databaseDown`/`databaseUp` and `pauseOnDb`.
+3. Make the agent on a and crash a: its heartbeat now expires on its own, a lease later. b serves an agent it does not
+   own only if its route (an owner query) fails, so cut b off the database and prompt through b with a `pauseOnDb` on
+   `from actor_owners o join runtime_nodes`: b hears the failure late, the database is back by then
+   (`databaseUp`), and b takes the agent itself.
+4. Arm a second `pauseOnDb` on `insert into actor_owners` for longer than what is left of a's heartbeat. The insert sees
+   a as live and takes nothing; b hears that after a's heartbeat expired, so its owner query finds no one.
+5. Call `run_plan` and read `newGoals`. If it was missed, `inspect` with `logs: "/heartbeat|fence|reap/"` and
+   `state: true` shows the timings; `branch` (`k` = the steps before the pauses) varies the rest.
+6. Keep it with `corpus_add`, with a note.

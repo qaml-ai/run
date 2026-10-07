@@ -64,6 +64,10 @@ export class Sim {
   private readonly root = mkdtempSync(join(tmpdir(), "agent-sim-"));
   private readonly nodeEnv: Record<string, string>;
   private readonly incarnations = new Map<string, number>();
+  /** Every pause a node took, when (virtual ms) and for how long: the checkers excuse what a stopped node could not do. */
+  readonly pauses: { node: string; at: number; ms: number }[] = [];
+  /** Pauses armed to start as a node next hears a database answer (to a statement that matches, if one is given). */
+  private readonly dbPauses = new Map<string, { ms: number; statement?: string }>();
   /** Work done as no node at all: the fakes, the database, the client. */
   private readonly world = new AsyncResource("SimWorld");
 
@@ -127,7 +131,17 @@ export class Sim {
       if (spikes && latencyRandom.float() < spikes.rate) return spikes.ms[0] + latencyRandom.int(spikes.ms[1] - spikes.ms[0] + 1);
       return high > 0 ? low + latencyRandom.int(high - low + 1) : 0;
     };
-    const db = this.db.connection(host, () => this.env.whenRunning(clock), latency);
+    // A pause armed for this node's next database answer starts as the answer arrives: the node hears it only after.
+    const gate = (text: string) => {
+      const armed = this.dbPauses.get(name);
+      if (armed && !this.env.isPaused(clock) && (!armed.statement || text.replace(/\s+/g, " ").toLowerCase().includes(armed.statement.toLowerCase()))) {
+        this.dbPauses.delete(name);
+        this.pauses.push({ node: name, at: this.env.elapsed, ms: armed.ms });
+        void this.env.pause(clock, armed.ms);
+      }
+      return this.env.whenRunning(clock);
+    };
+    const db = this.db.connection(host, gate, latency);
     this.env.names.set(clock, `${name}#${incarnation}`);
     const deps: NodeDeps = {
       tenants: await tenantsFromEnvironment(config.env),
@@ -189,8 +203,15 @@ export class Sim {
   pause(name: string, ms: number) {
     const node = this.nodes.get(name);
     if (!node || node.crashed) throw new Error(`Node ${name} is not running`);
+    if (!this.env.isPaused(node.clock)) this.pauses.push({ node: name, at: this.env.elapsed, ms });
     return this.env.pause(node.clock, ms);
   }
+
+  /**
+   * Node `name` stops for `ms` as it next hears a database answer (to a statement containing `statement`, if given):
+   * between a request's statements, exactly where a race needs time to pass, which a pause at a fixed time rarely is.
+   */
+  pauseAtDbAnswer(name: string, ms: number, statement?: string) { this.dbPauses.set(name, { ms, ...(statement ? { statement } : {}) }); }
 
   /** Start a crashed node again, as it was started: a new process (a new session) at the same address. */
   restart(name: string, options: { drive?: boolean } = {}) {

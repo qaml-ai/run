@@ -306,7 +306,8 @@ real I/O:
 - `SimEnv` provides fake timers and seeded randomness, per node, through the node context.
 - A fake model provider logs which node it served.
 
-It can crash, drain (a deploy), pause (SIGSTOP: a node's timers and I/O wait while its peers go on) and restart nodes,
+It can crash, drain (a deploy), pause (SIGSTOP: a node's timers and I/O wait while its peers go on; also as a node
+next hears a database answer, to a given statement, so time passes between two statements of one request) and restart nodes,
 partition links (refused or blackholed), isolate a node from its peers and the database while it still reaches the
 model (peers reap it on a timed-out probe), cut a node off the database, skew clocks, and turn BUGGIFY sites on
 (`SimHooks`, swarm style). The database can take time: each query's round trip is drawn per node
@@ -332,7 +333,9 @@ cannot show.
 **Fuzzing.** `npm run sim -- --fuzz <minutes> --jobs <n>` searches for plans rather than drawing them at random
 (`tests/sim/fuzz.ts`):
 - It measures each run by what it covered: V8's block coverage of `src/` and `shared/`, read in-process through the
-  inspector (`tests/sim/coverage.ts`); the coverage goals reached; and how often each assertion was passed.
+  inspector (`tests/sim/coverage.ts`); the coverage goals reached; how often each assertion was passed; and how the
+  ownership statements came out (an acquire that took nothing, a renewal that found its heartbeat gone), which the code
+  they run does not tell apart.
 - A plan that covers something no kept plan did goes to the corpus, `sim-corpus/` (begun from `tests/sim/corpus/`).
 - New plans are mostly mutations of kept ones (`tests/sim/mutate.ts`): steps inserted, deleted, swapped, duplicated,
   shifted in time or aimed elsewhere; settings changed (lease, model latency, skew, BUGGIFY sites, seed); another

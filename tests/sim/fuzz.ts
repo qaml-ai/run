@@ -45,6 +45,8 @@ export function failureSignature(failure: string, error?: Error) {
 function assertionFeatures(result: RunResult) {
   const features = new Set<number>();
   for (const goal of result.reached) features.add(hash(`goal:${goal}`));
+  // A path an ownership race took (an acquire that took nothing, a renewal that found its heartbeat gone): seen at all.
+  for (const outcome of Object.keys(result.ownership ?? {})) features.add(hash(`ownership:${outcome}`));
   for (const [message, { hits, held }] of Object.entries(result.checked)) {
     features.add(hash(`assert:${message}:${hits === 1 ? 1 : hits < 8 ? 2 : 3}`));
     if (held) features.add(hash(`held:${message}`));

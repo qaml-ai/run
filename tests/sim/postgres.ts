@@ -2,7 +2,7 @@ import { AsyncResource } from "node:async_hooks";
 import { randomBytes } from "node:crypto";
 import pg from "pg";
 import { migrate, type Db, type DbClient, type Rows } from "../../src/db.ts";
-import type { WorldDb } from "./db.ts";
+import { ownershipOutcome, type WorldDb } from "./db.ts";
 
 const URL_ = process.env.AGENT_TEST_DATABASE_URL ?? "postgres://postgres:test@127.0.0.1:55432/postgres";
 const unavailable = () => Object.assign(new Error("connect ECONNREFUSED (simulated database outage)"), { code: "ECONNREFUSED" });
@@ -16,6 +16,7 @@ const unavailable = () => Object.assign(new Error("connect ECONNREFUSED (simulat
  */
 export class PostgresDb implements WorldDb {
   readonly statements: string[] = [];
+  readonly outcomes = new Map<string, number>();
   private readonly url: string;
   private readonly schema: string;
   private readonly admin: pg.Pool;
@@ -51,24 +52,28 @@ export class PostgresDb implements WorldDb {
     if (down) this.down.add(node); else this.down.delete(node);
   }
 
-  connection(node: string, gate: () => Promise<void> = async () => {}): Db & { kill(): void } {
+  connection(node: string, gate: (text: string) => Promise<void> = async () => {}): Db & { kill(): void } {
     const pool = new pg.Pool({ connectionString: this.url, max: 4, connectionTimeoutMillis: 10_000 });
     pool.on("error", () => {});
     this.pools.add(pool);
     let killed = false;
     const refused = () => killed || this.down.has(node);
-    const answered = <T>(result: Promise<T>) => result.then(async value => { await gate(); return value; }, async error => { await gate(); throw error; });
+    const answered = <T>(result: Promise<T>, text: string) => result.then(async value => { await gate(text); return value; }, async error => { await gate(text); throw error; });
     const run = (sql: Pick<pg.Pool, "query">, text: string, values?: unknown[]) => {
       if (refused()) return Promise.reject(unavailable());
       this.statements.push(`${node}: ${text.trim().split(/\s+/, 1)[0]}`);
-      return answered(this.scope.runInAsyncScope(() => sql.query(text, values as unknown[])) as Promise<Rows>);
+      return answered((this.scope.runInAsyncScope(() => sql.query(text, values as unknown[])) as Promise<Rows>).then(rows => {
+        const outcome = ownershipOutcome(text, rows.rowCount ?? 0);
+        if (outcome) this.outcomes.set(outcome, (this.outcomes.get(outcome) ?? 0) + 1);
+        return rows;
+      }), text);
     };
     return {
       query: ((text: string, values?: unknown[]) => run(pool, text, values)) as Db["query"],
       connect: async () => {
         if (refused()) throw unavailable();
         const client = await this.scope.runInAsyncScope(() => pool.connect());
-        await gate();
+        await gate("connect");
         let broken: Error | undefined;
         return {
           query: (async (text: string, values?: unknown[]) => {
