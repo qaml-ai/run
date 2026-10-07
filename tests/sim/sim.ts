@@ -74,11 +74,11 @@ export class Sim {
    * A world for `seed`, its database migrated; `respond` is the model's script; `env` applies to every node; `buggify`
    * says which BUGGIFY sites fire. Installs the simulation's environment and hooks for the process until `close`.
    */
-  static async create(options: { seed: string | number; respond: (body: any, served: Served[]) => Answer; env?: Record<string, string>; buggify?: BuggifyPlan }) {
+  static async create(options: { seed: string | number; respond: (body: any, served: Served[]) => Answer; env?: Record<string, string>; buggify?: BuggifyPlan; quiet?: boolean }) {
     const db = await SimDb.create();
     await db.migrate();
     const seed = String(options.seed);
-    return new Sim(seed, new SimEnv(seed), new SimHooks(seed, options.buggify ?? false), db, options.respond, options.env ?? {});
+    return new Sim(seed, new SimEnv(seed, undefined, options.quiet), new SimHooks(seed, options.buggify ?? false), db, options.respond, options.env ?? {});
   }
 
   /** Start node `name` (reachable at http://<name>.sim), with `env` over the world's, its clock off by `skew`. */
@@ -100,6 +100,7 @@ export class Sim {
     let dead = false;
     const db = this.db.connection(host);
     const clock = this.env.nodeClock(skew);
+    this.env.names.set(clock, `${name}#${incarnation}`);
     const deps: NodeDeps = {
       tenants: await tenantsFromEnvironment(config.env),
       secrets: await runtimeSecrets(config.env),
@@ -112,7 +113,10 @@ export class Sim {
       codeExecutor: fakeExecutor(),
       storage: (tail, meter) => memoryStorage(tail, meter, { logs: guarded(this.objects.logs, () => dead), blobs: guarded(this.objects.blobs, () => dead) }),
     };
-    const runtime = await this.env.settle(createNode(config, deps));
+    let runtime: RuntimeNode;
+    // A node that fails to start exits, as the process would: nothing it began goes on.
+    try { runtime = await this.env.settle(createNode(config, deps)); }
+    catch (error) { dead = true; db.kill(); this.env.crash(clock); throw error; }
     this.net.add(host, runtime.server, work => runtime.run(work));
     const node: SimNode = { name, host, url, runtime, clock, crashed: false, kill: () => { dead = true; db.kill(); }, started: { env, skew } };
     this.nodes.set(name, node);
@@ -150,7 +154,15 @@ export class Sim {
 
   /** Call the API on `node` as the operator (or with `token`), as a client on the simulated network does. */
   call(node: string, path: string, init: { method?: string; body?: unknown; token?: string; headers?: Record<string, string> } = {}) {
-    return this.env.settle(this.world.runInAsyncScope(async () => {
+    return this.env.settle(this.request(node, path, init));
+  }
+
+  /**
+   * The same call without running the clock: for a driver that issues calls while it moves time itself. A node that
+   * cannot be reached fails it (a TypeError, as fetch's).
+   */
+  request(node: string, path: string, init: { method?: string; body?: unknown; token?: string; headers?: Record<string, string> } = {}): Promise<{ status: number; json: any }> {
+    return this.asWorld(async () => {
       const response = await this.net.networkFor("client.sim").fetch(`http://${node}.sim${path}`, {
         method: init.method ?? (init.body === undefined ? "GET" : "POST"),
         headers: { Authorization: `Bearer ${init.token ?? TOKEN}`, ...(init.body === undefined ? {} : { "Content-Type": "application/json" }), ...init.headers },
@@ -160,8 +172,11 @@ export class Sim {
       let json: any;
       try { json = JSON.parse(text); } catch { json = text; }
       return { status: response.status, json };
-    }));
+    });
   }
+
+  /** Run `work` as no node (a client, a driver): the base clock and the world's randomness. */
+  asWorld<T>(work: () => T): T { return this.world.runInAsyncScope(work); }
 
   /** Move virtual time on by `ms`. */
   advance(ms: number) { return this.env.advance(ms); }
