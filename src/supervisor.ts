@@ -53,6 +53,8 @@ export class AgentSupervisor {
   readonly reserved = new Map<string, string | undefined>();
   /** Agents being stopped. They are already out of `agents`, so no new work reaches a dying agent. */
   private readonly stopping = new Map<string, Promise<void>>();
+  /** Turns being closed without their agent (`closeTurn`): the latest close of each, which the next one and a start wait for. */
+  private readonly closing = new Map<string, Promise<void>>();
   readonly root: string;
   readonly options: SupervisorOptions;
   /**
@@ -97,6 +99,16 @@ export class AgentSupervisor {
    */
   async closeTurn(id: string, claim?: Claim): Promise<boolean> {
     if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id)) throw new Error("Invalid agent id");
+    // One at a time per agent, each reading the transcript as the one before left it: two closes of one turn (a load's and
+    // a run's, or two loads') never both answer its open calls. Across nodes, the owner's claim fences the write instead.
+    const current = (this.closing.get(id) ?? Promise.resolve()).then(() => this.closeTurnNow(id, claim));
+    const settled = current.then(() => {}, () => {});
+    this.closing.set(id, settled);
+    try { return await current; }
+    finally { if (this.closing.get(id) === settled) this.closing.delete(id); }
+  }
+
+  private async closeTurnNow(id: string, claim?: Claim): Promise<boolean> {
     await this.stopping.get(id);
     // A running agent's host writes its own transcript.
     if (this.agents.has(id) || this.starting.has(id)) throw new Error("Agent is running");
@@ -143,6 +155,8 @@ export class AgentSupervisor {
   async start(id: string, config: Omit<AgentConfig, "id" | "directory" | "tools">, bridge: ToolBridge, claim?: Claim) {
     if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id)) throw new Error("Invalid agent id");
     await this.stopping.get(id);
+    // A close of its turn writes first: the agent then loads the transcript as it left it.
+    await this.closing.get(id);
     validateDefinitions(bridge.definitions);
     if (this.agents.has(id) || this.starting.has(id)) throw new Error("Agent already exists");
     if (!this.reserved.delete(id) && this.full) throw Object.assign(new Error("Agent capacity reached"), { status: 503 });

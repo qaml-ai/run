@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { fixture } from "./client-fixture.ts";
@@ -9,6 +11,8 @@ import { fileAppendLog } from "../shared/append-log.ts";
 import { fileStorage } from "../shared/storage.ts";
 import { MAX_RESUMES } from "../src/client-sessions.ts";
 import type { RequestRecord } from "../shared/client-protocol.ts";
+import { AgentSupervisor } from "../src/supervisor.ts";
+import { interruptedTurnRepairs } from "../src/history.ts";
 
 /**
  * A run that ends with no host to end it (past its resumes or stopped before its node was lost, at a load; or resumed
@@ -105,4 +109,61 @@ test("a resumed run whose agent fails to start ends only once the turn it left o
   assert.ok(starts >= 1, "the resume tried to start the agent");
   assert.match(String(ended.outcome?.error), /could not start/);
   assertSettled(await records());
+});
+
+/** A supervisor over a fresh directory, and an agent's transcript there holding a lost turn (`awaiting`: one call waits on a person). */
+async function lostTranscript(t: { after(fn: () => unknown): void }, awaiting: boolean) {
+  const root = await mkdtemp(join(tmpdir(), "close-turn-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const supervisor = new AgentSupervisor(root);
+  const id = "agent";
+  const path = transcriptPath(join(root, id));
+  await mkdir(join(root, id), { recursive: true });
+  const transcript = new Transcript(fileAppendLog<TranscriptRecord>(path));
+  await transcript.load();
+  await transcript.setActive(true);
+  await transcript.append([user("research it"), fauxAssistantMessage([fauxToolCall("lookup", {}, { id: "look" }), fauxToolCall("approve", {}, { id: "ask" })], { stopReason: "toolUse" })]);
+  if (awaiting) await transcript.await(["ask"]);
+  await transcript.log.close();
+  return { supervisor, id, records: () => fileAppendLog<TranscriptRecord>(path).read() };
+}
+
+const notices = (records: TranscriptRecord[]) => replayed(records).context.filter(message => message.role === "user" && JSON.stringify(message).includes("Runtime notice")).length;
+
+for (const awaiting of [false, true]) {
+  const kind = awaiting ? "a turn waiting on a person" : "a lost turn";
+  test(`closing ${kind} again, after or alongside another close, answers each open call once (closeTurn is idempotent)`, async t => {
+    const { supervisor, id, records } = await lostTranscript(t, awaiting);
+    // One after the other: the second finds the turn settled.
+    assert.equal(await supervisor.closeTurn(id), true);
+    assert.equal(await supervisor.closeTurn(id), false);
+    assertSettled(await records(), awaiting);
+    assert.equal(notices(await records()), awaiting ? 0 : 1);
+  });
+
+  test(`closes of ${kind} made at once (a load's and a run's, or two loads') are one close`, async t => {
+    const { supervisor, id, records } = await lostTranscript(t, awaiting);
+    const closed = await Promise.all([supervisor.closeTurn(id), supervisor.closeTurn(id), supervisor.closeTurn(id)]);
+    assert.deepEqual(closed.filter(Boolean).length, 1, "exactly one of them settled it");
+    assertSettled(await records(), awaiting);
+    assert.equal(notices(await records()), awaiting ? 0 : 1);
+  });
+}
+
+test("a turn's repairs never answer a call that has its result already", () => {
+  const messages = [user("research it"), fauxAssistantMessage([fauxToolCall("lookup", {}, { id: "look" }), fauxToolCall("approve", {}, { id: "ask" })], { stopReason: "toolUse" }) as AgentMessage];
+  const first = interruptedTurnRepairs(messages, false, ["ask"]);
+  assert.deepEqual(first.map(message => (message as { toolCallId?: string }).toolCallId), ["look"]);
+  assert.deepEqual(interruptedTurnRepairs([...messages, ...first], false, ["ask"]), [], "repaired already: nothing more");
+  assert.deepEqual(interruptedTurnRepairs([...messages, ...first], false).map(message => (message as { toolCallId?: string }).toolCallId), ["ask"], "only the call still open");
+});
+
+test("a closed node loads no agent: a request it is still sent answers 503, and the next owner alone settles the turn", async t => {
+  const fx = await fixture(t);
+  const agent = await fx.start({});
+  const id = agent.session.id;
+  await fx.sessions.close();
+  const response = await fetch(`${fx.url}/clients/${id}/requests/turn-1`, { headers: { Authorization: `Bearer ${agent.session.token}` } });
+  assert.equal(response.status, 503);
+  await response.body?.cancel();
 });
