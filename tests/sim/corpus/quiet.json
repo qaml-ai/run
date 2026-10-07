@@ -1,0 +1,314 @@
+{
+ "seed": "corpus-q",
+ "nodes": [
+  "a",
+  "b"
+ ],
+ "leaseTtlMs": 3000,
+ "durationMs": 60000,
+ "skews": {
+  "a": 0,
+  "b": 0
+ },
+ "modelDelayMs": [
+  50,
+  8000
+ ],
+ "buggify": false,
+ "steps": [
+  {
+   "at": 0,
+   "op": {
+    "op": "create",
+    "agent": 0,
+    "node": "b"
+   }
+  },
+  {
+   "at": 10,
+   "op": {
+    "op": "create",
+    "agent": 1,
+    "node": "b"
+   }
+  },
+  {
+   "at": 20,
+   "op": {
+    "op": "create",
+    "agent": 2,
+    "node": "a"
+   }
+  },
+  {
+   "at": 1250,
+   "op": {
+    "op": "prompt",
+    "agent": 2,
+    "run": 0,
+    "node": "b"
+   }
+  },
+  {
+   "at": 2753,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 1,
+    "node": "b"
+   }
+  },
+  {
+   "at": 4065,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 2,
+    "node": "a"
+   }
+  },
+  {
+   "at": 5660,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 3,
+    "node": "a"
+   }
+  },
+  {
+   "at": 6721,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 4,
+    "node": "a"
+   }
+  },
+  {
+   "at": 8330,
+   "op": {
+    "op": "prompt",
+    "agent": 2,
+    "run": 5,
+    "node": "b"
+   }
+  },
+  {
+   "at": 9644,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 6,
+    "node": "a"
+   }
+  },
+  {
+   "at": 11094,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 7,
+    "node": "b"
+   }
+  },
+  {
+   "at": 12229,
+   "op": {
+    "op": "prompt",
+    "agent": 2,
+    "run": 8,
+    "node": "b"
+   }
+  },
+  {
+   "at": 13768,
+   "op": {
+    "op": "prompt",
+    "agent": 2,
+    "run": 9,
+    "node": "b"
+   }
+  },
+  {
+   "at": 15095,
+   "op": {
+    "op": "prompt",
+    "agent": 2,
+    "run": 10,
+    "node": "a"
+   }
+  },
+  {
+   "at": 16408,
+   "op": {
+    "op": "prompt",
+    "agent": 2,
+    "run": 11,
+    "node": "a"
+   }
+  },
+  {
+   "at": 17830,
+   "op": {
+    "op": "prompt",
+    "agent": 2,
+    "run": 12,
+    "node": "b"
+   }
+  },
+  {
+   "at": 19395,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 13,
+    "node": "b"
+   }
+  },
+  {
+   "at": 20759,
+   "op": {
+    "op": "prompt",
+    "agent": 2,
+    "run": 14,
+    "node": "a"
+   }
+  },
+  {
+   "at": 22034,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 15,
+    "node": "b"
+   }
+  },
+  {
+   "at": 23437,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 16,
+    "node": "a"
+   }
+  },
+  {
+   "at": 25077,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 17,
+    "node": "b"
+   }
+  },
+  {
+   "at": 26644,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 18,
+    "node": "a"
+   }
+  },
+  {
+   "at": 27680,
+   "op": {
+    "op": "prompt",
+    "agent": 2,
+    "run": 19,
+    "node": "a"
+   }
+  },
+  {
+   "at": 29435,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 20,
+    "node": "b"
+   }
+  },
+  {
+   "at": 30689,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 21,
+    "node": "b"
+   }
+  },
+  {
+   "at": 31883,
+   "op": {
+    "op": "prompt",
+    "agent": 2,
+    "run": 22,
+    "node": "b"
+   }
+  },
+  {
+   "at": 33213,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 23,
+    "node": "a"
+   }
+  },
+  {
+   "at": 34996,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 24,
+    "node": "a"
+   }
+  },
+  {
+   "at": 36377,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 25,
+    "node": "b"
+   }
+  },
+  {
+   "at": 37879,
+   "op": {
+    "op": "prompt",
+    "agent": 2,
+    "run": 26,
+    "node": "b"
+   }
+  },
+  {
+   "at": 39123,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 27,
+    "node": "a"
+   }
+  },
+  {
+   "at": 40493,
+   "op": {
+    "op": "prompt",
+    "agent": 2,
+    "run": 28,
+    "node": "a"
+   }
+  },
+  {
+   "at": 41753,
+   "op": {
+    "op": "prompt",
+    "agent": 2,
+    "run": 29,
+    "node": "b"
+   }
+  }
+ ]
+}

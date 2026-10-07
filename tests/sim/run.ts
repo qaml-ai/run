@@ -14,6 +14,8 @@ export type RunResult = {
   notes: string[];
   history: Event[];
   reached: string[];
+  /** Every assertion the run passed through: how often, and how often it held. */
+  checked: Record<string, { kind: string; hits: number; held: number }>;
   fired: Record<string, number>;
   served: number;
   /** Events watchers received, over all their connections. */
@@ -227,9 +229,12 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
 
     // I3: every accepted run ends, with exactly one outcome, within the recovery bound.
     const live = () => [...sim.nodes.values()].filter(node => !node.crashed).map(node => node.name);
-    const bound = 2 * plan.leaseTtlMs + 2_000 + high + 30_000;
+    // An agent's runs go one at a time: the last of a long queue waits for every model call before it.
+    const queued = (agent: number) => [...runs.values()].filter(run => run.agent === agent).length;
     const records = new Map<number, any>();
     for (const [run, { agent, id }] of runs) {
+      // At most ten calls' worth: a queue that long still ending is the point, not how long it takes.
+      const bound = 2 * plan.leaseTtlMs + 2_000 + high * Math.min(10, queued(agent)) + 30_000;
       const record = await sim.until(async () => {
         for (const node of live()) {
           const answer = await sim.call(node, `/v1/agents/${agents.get(agent)}/requests/${id}`);
@@ -376,7 +381,7 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
 
     const trace = [...sim.env.timerTrace, ...sim.db.statements, ...sim.net.connections, ...served.map(call => JSON.stringify([call.from, call.at, call.run])), ...history.map(event => JSON.stringify([event.op, event.invoked, event.ended, event.result, event.status]))];
     return {
-      plan, failures, notes, history, reached: sim.hooks.reached, fired: Object.fromEntries(sim.hooks.fired), served: served.length, logs: sim.env.logs,
+      plan, failures, notes, history, reached: sim.hooks.reached, checked: Object.fromEntries(sim.hooks.checked), fired: Object.fromEntries(sim.hooks.fired), served: served.length, logs: sim.env.logs,
       watchedEvents: [...watched.values()].flat().reduce((sum, connection) => sum + connection.events.length, 0),
       elapsedMs: sim.env.elapsed, hash: createHash("sha256").update(trace.join("\n")).digest("hex"), trace,
     };

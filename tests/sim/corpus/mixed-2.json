@@ -1,0 +1,382 @@
+{
+ "seed": "2",
+ "nodes": [
+  "a",
+  "b",
+  "c"
+ ],
+ "leaseTtlMs": 6000,
+ "durationMs": 60000,
+ "skews": {
+  "a": 3412,
+  "b": 3958,
+  "c": 80
+ },
+ "modelDelayMs": [
+  50,
+  2000
+ ],
+ "buggify": "swarm",
+ "steps": [
+  {
+   "at": 0,
+   "op": {
+    "op": "create",
+    "agent": 0,
+    "node": "a"
+   }
+  },
+  {
+   "at": 10,
+   "op": {
+    "op": "create",
+    "agent": 1,
+    "node": "b"
+   }
+  },
+  {
+   "at": 20,
+   "op": {
+    "op": "create",
+    "agent": 2,
+    "node": "b"
+   }
+  },
+  {
+   "at": 30,
+   "op": {
+    "op": "create",
+    "agent": 3,
+    "node": "a"
+   }
+  },
+  {
+   "at": 50,
+   "op": {
+    "op": "volume",
+    "volume": 0,
+    "node": "c"
+   }
+  },
+  {
+   "at": 1324,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 0,
+    "node": "a"
+   }
+  },
+  {
+   "at": 2558,
+   "op": {
+    "op": "write",
+    "volume": 0,
+    "write": 0,
+    "node": "c"
+   }
+  },
+  {
+   "at": 3821,
+   "op": {
+    "op": "fork",
+    "agent": 1,
+    "fork": 0,
+    "node": "b"
+   }
+  },
+  {
+   "at": 5674,
+   "op": {
+    "op": "prompt",
+    "agent": 2,
+    "run": 1,
+    "node": "b"
+   }
+  },
+  {
+   "at": 6936,
+   "op": {
+    "op": "databaseDown",
+    "node": "a"
+   }
+  },
+  {
+   "at": 8437,
+   "op": {
+    "op": "fork",
+    "agent": 3,
+    "fork": 1,
+    "node": "b"
+   }
+  },
+  {
+   "at": 9798,
+   "op": {
+    "op": "fork",
+    "agent": 0,
+    "fork": 2,
+    "node": "b"
+   }
+  },
+  {
+   "at": 10942,
+   "op": {
+    "op": "write",
+    "volume": 0,
+    "write": 1,
+    "node": "c"
+   }
+  },
+  {
+   "at": 12684,
+   "op": {
+    "op": "databaseDown",
+    "node": "b"
+   }
+  },
+  {
+   "at": 13630,
+   "op": {
+    "op": "schedule",
+    "agent": 0,
+    "schedule": 0,
+    "inSeconds": 17,
+    "node": "c"
+   }
+  },
+  {
+   "at": 15003,
+   "op": {
+    "op": "write",
+    "volume": 0,
+    "write": 2,
+    "node": "c"
+   }
+  },
+  {
+   "at": 15736,
+   "op": {
+    "op": "databaseUp",
+    "node": "a"
+   }
+  },
+  {
+   "at": 16598,
+   "op": {
+    "op": "write",
+    "volume": 0,
+    "write": 3,
+    "node": "c"
+   }
+  },
+  {
+   "at": 18094,
+   "op": {
+    "op": "databaseDown",
+    "node": "c"
+   }
+  },
+  {
+   "at": 19258,
+   "op": {
+    "op": "write",
+    "volume": 0,
+    "write": 4,
+    "node": "a"
+   }
+  },
+  {
+   "at": 20737,
+   "op": {
+    "op": "abort",
+    "agent": 2,
+    "node": "a"
+   }
+  },
+  {
+   "at": 21138,
+   "op": {
+    "op": "databaseUp",
+    "node": "b"
+   }
+  },
+  {
+   "at": 22495,
+   "op": {
+    "op": "schedule",
+    "agent": 3,
+    "schedule": 1,
+    "inSeconds": 9,
+    "node": "a"
+   }
+  },
+  {
+   "at": 23514,
+   "op": {
+    "op": "deploy",
+    "node": "a"
+   }
+  },
+  {
+   "at": 23786,
+   "op": {
+    "op": "databaseUp",
+    "node": "c"
+   }
+  },
+  {
+   "at": 24926,
+   "op": {
+    "op": "prompt",
+    "agent": 3,
+    "run": 2,
+    "node": "b"
+   }
+  },
+  {
+   "at": 26217,
+   "op": {
+    "op": "deploy",
+    "node": "c"
+   }
+  },
+  {
+   "at": 27734,
+   "op": {
+    "op": "write",
+    "volume": 0,
+    "write": 5,
+    "node": "a"
+   }
+  },
+  {
+   "at": 29385,
+   "op": {
+    "op": "databaseDown",
+    "node": "b"
+   }
+  },
+  {
+   "at": 30843,
+   "op": {
+    "op": "write",
+    "volume": 0,
+    "write": 6,
+    "node": "a"
+   }
+  },
+  {
+   "at": 31897,
+   "op": {
+    "op": "abort",
+    "agent": 0,
+    "node": "a"
+   }
+  },
+  {
+   "at": 33637,
+   "op": {
+    "op": "deploy",
+    "node": "c"
+   }
+  },
+  {
+   "at": 33647,
+   "op": {
+    "op": "restart",
+    "node": "c"
+   }
+  },
+  {
+   "at": 34683,
+   "op": {
+    "op": "crash",
+    "node": "c"
+   }
+  },
+  {
+   "at": 36131,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 3,
+    "node": "a"
+   }
+  },
+  {
+   "at": 37833,
+   "op": {
+    "op": "write",
+    "volume": 0,
+    "write": 7,
+    "node": "b"
+   }
+  },
+  {
+   "at": 38941,
+   "op": {
+    "op": "databaseDown",
+    "node": "c"
+   }
+  },
+  {
+   "at": 40474,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 4,
+    "node": "a"
+   }
+  },
+  {
+   "at": 41915,
+   "op": {
+    "op": "deploy",
+    "node": "c"
+   }
+  },
+  {
+   "at": 42046,
+   "op": {
+    "op": "databaseUp",
+    "node": "b"
+   }
+  },
+  {
+   "at": 42235,
+   "op": {
+    "op": "restart",
+    "node": "a"
+   }
+  },
+  {
+   "at": 45945,
+   "op": {
+    "op": "databaseUp",
+    "node": "c"
+   }
+  },
+  {
+   "at": 47886,
+   "op": {
+    "op": "restart",
+    "node": "c"
+   }
+  },
+  {
+   "at": 50392,
+   "op": {
+    "op": "restart",
+    "node": "c"
+   }
+  },
+  {
+   "at": 51067,
+   "op": {
+    "op": "restart",
+    "node": "c"
+   }
+  }
+ ]
+}
