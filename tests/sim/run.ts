@@ -514,6 +514,15 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
       }
     }
 
+    // I19: a request the database refused for now (a serialization failure, a deadlock, a statement timeout) is
+    // answered as retryable (503), never as the client's mistake (400).
+    for (const event of history) {
+      const said = (event.detail as { error?: unknown } | undefined)?.error;
+      if (event.status !== undefined && event.status < 500 && typeof said === "string" && /could not serialize|deadlock detected|canceling statement due to statement timeout/.test(said)) {
+        failures.push(`I19: ${event.op.op} at ${event.invoked} ms was answered ${event.status} for a database refusal (${said.slice(0, 80)})`);
+      }
+    }
+
     for (const violation of sim.hooks.violations) failures.push(`assertion: ${violation}`);
     // For debugging a plan: look at the cluster as the run left it.
     await options.inspect?.(sim, agents);

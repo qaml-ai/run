@@ -1,4 +1,4 @@
-import { databaseUnavailable } from "./db.ts";
+import { databaseRetryable, databaseUnavailable } from "./db.ts";
 
 export class HttpError extends Error {
   status: number;
@@ -36,17 +36,20 @@ const STATUS_CODES: Record<number, string> = {
 export function errorCode(error: unknown, status: number): string {
   const own = (error as { code?: unknown } | undefined)?.code;
   if (typeof own === "string" && /^[A-Z][A-Z0-9_]+$/.test(own)) return own;
+  if (databaseRetryable(error)) return "DATABASE_RETRY";
   const opening = /^([A-Z][A-Z0-9_]{2,}):/.exec((error as Error | undefined)?.message ?? "")?.[1];
   return opening ?? STATUS_CODES[status] ?? (status >= 500 ? "INTERNAL" : "INVALID_REQUEST");
 }
 
 /**
- * The headers an error answer carries: Retry-After, when the error says when to retry (a rate limit's 429), and a
- * per-tenant limit's X-RateLimit-* (see RateLimitState in rate-limits.ts).
+ * The headers an error answer carries: Retry-After, when the error says when to retry (a rate limit's 429; a second for a
+ * statement the database refused for now, see databaseRetryable), and a per-tenant limit's X-RateLimit-* (see
+ * RateLimitState in rate-limits.ts).
  */
 export function errorHeaders(error: unknown): Record<string, string> {
   const { retryAfter: after, state } = (error ?? {}) as { retryAfter?: unknown; state?: { limit?: unknown; remaining?: unknown; reset?: unknown } };
-  const headers: Record<string, string> = typeof after === "number" && Number.isFinite(after) ? { "Retry-After": String(Math.max(1, Math.ceil(after))) } : {};
+  const headers: Record<string, string> = typeof after === "number" && Number.isFinite(after) ? { "Retry-After": String(Math.max(1, Math.ceil(after))) }
+    : databaseRetryable(error) ? { "Retry-After": "1" } : {};
   if (typeof state?.limit === "number" && typeof state.remaining === "number" && typeof state.reset === "number") {
     Object.assign(headers, { "X-RateLimit-Limit": String(state.limit), "X-RateLimit-Remaining": String(state.remaining), "X-RateLimit-Reset": String(state.reset) });
   }
@@ -57,7 +60,7 @@ export function errorHeaders(error: unknown): Record<string, string> {
 export function errorStatus(error: unknown, fallback: number): number {
   const status = (error as { status?: unknown } | undefined)?.status;
   if (typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 599) return status;
-  return databaseUnavailable(error) ? 503 : fallback;
+  return databaseUnavailable(error) || databaseRetryable(error) ? 503 : fallback;
 }
 
 /** Read a request body as text, failing with 413 past `limit` bytes rather than buffering it all. */

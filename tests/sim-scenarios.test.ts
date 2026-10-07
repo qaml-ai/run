@@ -178,3 +178,19 @@ test("an acquire tries again when the owner's heartbeat expired between its inse
   assert.ok(result.ownership["insert actor_owners: none"] >= 1, JSON.stringify(result.ownership));
   assert.equal(result.history.find(event => event.op.op === "prompt")?.status, 202);
 });
+
+test("a request the database refuses for now (a statement timeout) is answered 503 DATABASE_RETRY with Retry-After, not 400", async t => {
+  const sim = await Sim.create({ seed: 34, respond: () => ({ content: "ok" }) });
+  t.after(() => sim.close());
+  await sim.start("a");
+  const agent = (await sim.call("a", "/v1/agents", { body: {} })).json.id;
+  // Every statement times out from here on.
+  sim.db.errors = { rate: 1, codes: ["57014"], random: { float: () => 0, int: () => 0 } };
+  const response = await sim.asWorld(() => sim.net.networkFor("client.sim").fetch(`http://a.sim/v1/agents/${agent}/prompt`, {
+    method: "POST", headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" }, body: JSON.stringify({ text: "hello" }),
+  }));
+  sim.db.errors = undefined;
+  assert.equal(response.status, 503);
+  assert.equal(response.headers.get("retry-after"), "1");
+  assert.equal((await response.json()).code, "DATABASE_RETRY");
+});
