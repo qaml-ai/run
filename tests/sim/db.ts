@@ -4,6 +4,22 @@ import { PGlite } from "@electric-sql/pglite";
 import type { Db, DbClient, Rows } from "../../src/db.ts";
 
 const INT8 = 20;
+
+/**
+ * The cluster's database as a simulation drives it: a `Db` per node that can be cut off or killed, a LISTEN per node,
+ * queries of its own for checkers, and the statements it ran. SimDb (PGlite, deterministic) and PostgresDb (a real
+ * server, for the nightly mode) are the two.
+ */
+export interface WorldDb {
+  readonly statements: string[];
+  connection(node: string, gate?: () => Promise<void>): Db & { kill(): void };
+  listen(node: string, dead?: () => boolean, deliver?: (work: () => void) => void): (handlers: Record<string, (payload: string) => void>) => Promise<{ close(): Promise<void> }>;
+  setDown(node: string, down: boolean): void;
+  migrate(): Promise<void>;
+  /** A query of the simulation's own (a checker's), as no node. */
+  query(text: string, values?: unknown[]): Promise<Rows>;
+  close(): Promise<void>;
+}
 const MIGRATIONS = new URL("../../migrations/", import.meta.url);
 
 /**
@@ -16,7 +32,7 @@ const MIGRATIONS = new URL("../../migrations/", import.meta.url);
  * A node's connection can be cut (`down`): its queries fail as in a failover, its open transaction rolls back, and its
  * LISTEN hears nothing; `up` restores it. A crashed node's connection is ended.
  */
-export class SimDb {
+export class SimDb implements WorldDb {
   readonly pglite: PGlite;
   private holder: Promise<void> = Promise.resolve();
   /** The database runs as itself, never as the node that asked: its `now()` is the base clock, not a node's skewed one. */
@@ -114,6 +130,13 @@ export class SimDb {
       await this.pglite.exec(readFileSync(new URL(name, MIGRATIONS), "utf8"));
       await this.pglite.query("insert into schema_migrations (name) values ($1)", [name]);
     }
+  }
+
+  query(text: string, values?: unknown[]): Promise<Rows> {
+    return this.exclusive(() => this.scope.runInAsyncScope(async () => {
+      const result = await this.pglite.query<Record<string, unknown>>(text, values as unknown[]);
+      return { rows: result.rows, rowCount: result.affectedRows || result.rows.length };
+    }));
   }
 
   close() { return this.pglite.close(); }
