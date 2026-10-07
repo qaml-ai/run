@@ -97,3 +97,16 @@ test("a session whose commit fails while its node still owns the agent gives the
   assert.deepEqual(result.failures, []);
   assert.ok(result.logs.some(log => log.line.includes('"session_fault_released"')), "the faulted session was released");
 });
+
+test("an abort that reaches a resumed turn before the agent has it settles the turn, so a fork holds it (seed 11188)", async () => {
+  // Minimized from seed 11188: run-6 began on a, then a was cut off from its peers and the database; once healed, its
+  // session reloaded and resumed the turn, which the transcript holds open (active) for the continue. The abort reached
+  // the run before the agent had it, so the session ended it without the agent, and the transcript kept the turn open
+  // until the next prompt: a fork made in between left the aborted run's prompt out.
+  const plan: Plan = {"seed": "11188", "nodes": ["a", "b"], "leaseTtlMs": 3000, "durationMs": 60000, "skews": {"a": 0, "b": 0}, "modelDelayMs": [50, 8000], "buggify": "swarm", "steps": [{"at": 20, "op": {"op": "create", "agent": 2, "node": "a"}}, {"at": 13939, "op": {"op": "prompt", "agent": 2, "run": 6, "node": "a"}}, {"at": 19442, "op": {"op": "isolate", "node": "b"}}, {"at": 20806, "op": {"op": "isolate", "node": "a"}}, {"at": 24624, "op": {"op": "heal"}}, {"at": 25136, "op": {"op": "abort", "agent": 2, "node": "a"}}, {"at": 26467, "op": {"op": "fork", "agent": 2, "fork": 2, "node": "a"}}]};
+  let run: any;
+  const result = await runPlan(plan, { quiet: true, inspect: async (sim, agents) => { run = (await sim.call("a", `/v1/agents/${agents.get(2)}/requests/run-6`)).json; } });
+  assert.deepEqual(result.failures, []);
+  // Ended by its agent, which closed the turn: an aborted run.
+  assert.equal(run?.outcome?.result?.code, "aborted", JSON.stringify(run?.outcome));
+});

@@ -3439,8 +3439,13 @@ export class ClientSessions {
       (session.runLimits ??= new Map()).set(record.id, spendLimit.usd);
       params = rest;
     }
-    // Aborted since it began, before the agent had it: an abort sent to the agent now would find nothing to stop.
-    if (session.aborted?.delete(record.id)) throw new Error("The run was aborted");
+    // Aborted since it began, before the agent had it: an abort sent to the agent now would find nothing to stop. A turn
+    // resumed from its transcript (continue) is open there already, so the agent is still sent it, aborted: it closes the
+    // turn durably before the run is seen to end, so a fork or history page in between finds it settled.
+    if (session.aborted?.delete(record.id)) {
+      if (method !== "continue") throw new Error("The run was aborted");
+      params = { ...params, aborted: true };
+    }
     try {
       return await this.supervisor.request(id, method, params, RUN_METHODS.includes(record.method)
       ? event => {
