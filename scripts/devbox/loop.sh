@@ -7,7 +7,8 @@
 #   3. every IMAGE_EVERY cycles, the image check (image-check.sh: the amd64 image's isolation and v8-exec tests).
 # Results: soak/rounds.tsv and soak/failures.tsv, sim/nights.tsv and sim-failures/<stamp>/, soak/images.tsv, and one
 # line per cycle in loop/cycles.tsv. cron starts it (every 10 minutes, a no-op while it runs: it holds loop/lock);
-# stop it with: touch ~/camelrun-ci/loop/stop (it ends after the step in progress), or kill $(cat ~/camelrun-ci/loop/pid).
+# stop it with: touch ~/camelrun-ci/loop/stop (it ends after the step in progress). Not with kill: a child still waiting on
+# the simulator's lock keeps loop/lock, and cron cannot start it again until that child ends.
 set -uo pipefail
 home=$HOME/camelrun-ci; dir=$home/loop; mkdir -p $dir
 exec 8>$dir/lock
