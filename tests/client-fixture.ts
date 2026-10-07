@@ -7,6 +7,8 @@ import { tmpdir } from "node:os";
 import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
 import { getRequestListener } from "@hono/node-server";
 import { ClientSessions } from "../src/client-sessions.ts";
+import { BusyAgents } from "../src/busy-agents.ts";
+import { Ownership } from "../src/ownership.ts";
 import { applicationTools } from "../src/mcp-results.ts";
 import { readJson } from "../src/http.ts";
 import { FRAME_BYTES } from "../shared/client-protocol.ts";
@@ -18,11 +20,20 @@ import { until } from "./runtime-server.ts";
 
 export const token = "fixture-operator-secret-32-characters";
 export const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-export async function fixture(t: { after: (fn: () => Promise<void>) => void }, options: { timeout?: number; eventBytes?: number; idleMs?: number; maxAgents?: number; perTenant?: number; ttlMs?: number; maxWatchers?: number; maxNodeWatchers?: number; maxTenantWatchers?: number } = {}) {
+export async function fixture(t: { after: (fn: () => Promise<void>) => void }, options: { timeout?: number; eventBytes?: number; idleMs?: number; maxAgents?: number; perTenant?: number; ttlMs?: number; maxWatchers?: number; maxNodeWatchers?: number; maxTenantWatchers?: number; busyLimit?: number; releaseDelayMs?: number } = {}) {
   const root = await mkdtemp(join(tmpdir(), "camelai-sse-test-"));
   const { db } = await testDatabase();
   const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, maxAgents: options.maxAgents });
-  let sessions = new ClientSessions(supervisor, { db, root: join(root, "sessions"), secret: token, apiKeyFor: () => "fixture-only", toolTimeoutMs: options.timeout ?? 3000, eventBytes: options.eventBytes, idleMs: options.idleMs, maxAgentsPerTenant: options.perTenant, ttlMs: options.ttlMs, maxWatchers: options.maxWatchers, maxNodeWatchers: options.maxNodeWatchers, maxTenantWatchers: options.maxTenantWatchers });
+  // Busy agents counted against `busyLimit`, under this node's heartbeat; `releaseDelayMs` slows each release, as a loaded database does.
+  let busyAgents: BusyAgents | undefined, ownership: Ownership | undefined;
+  if (options.busyLimit !== undefined) {
+    ownership = new Ownership(db, { node: "http://fixture", ttlMs: 30_000 });
+    await ownership.start();
+    busyAgents = new BusyAgents({ db, ownership, limitFor: async () => ({ limit: options.busyLimit!, source: "tenant" }) });
+    const release = busyAgents.release.bind(busyAgents);
+    if (options.releaseDelayMs) busyAgents.release = async agent => { await sleep(options.releaseDelayMs!); await release(agent); };
+  }
+  let sessions = new ClientSessions(supervisor, { db, root: join(root, "sessions"), secret: token, apiKeyFor: () => "fixture-only", toolTimeoutMs: options.timeout ?? 3000, eventBytes: options.eventBytes, idleMs: options.idleMs, maxAgentsPerTenant: options.perTenant, ttlMs: options.ttlMs, maxWatchers: options.maxWatchers, maxNodeWatchers: options.maxNodeWatchers, maxTenantWatchers: options.maxTenantWatchers, busyAgents });
   let model = configuredModel();
   const server = createServer(getRequestListener(async (req, env) => {
     if (new URL(req.url).pathname.startsWith("/clients/")) return sessions.app.fetch(req, env);
@@ -43,6 +54,7 @@ export async function fixture(t: { after: (fn: () => Promise<void>) => void }, o
     await Promise.all(clients.map(client => client.close({ drainMs: 0 })));
     await sessions.close();
     await supervisor.close();
+    await ownership?.close();
     server.closeAllConnections();
     await new Promise<void>(resolve => server.close(() => resolve()));
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
