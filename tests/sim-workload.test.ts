@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { FAULTS, generatePlan } from "./sim/workload.ts";
+import { FAULTS, generatePlan, type Plan } from "./sim/workload.ts";
 import { runPlan } from "./sim/run.ts";
 
 // Generated workloads in the simulator (npm run sim runs many more): clients making agents, prompting and watching them
@@ -37,4 +37,33 @@ test("agent forks, schedules and volumes under faults: writes read back everywhe
     const result = await runPlan(generatePlan(seed, { faults: ["forks", "schedules", "volumes", "crash", "pause", "database"] }));
     assert.deepEqual(result.failures, []);
   }
+});
+
+test("retries with the prompt's key, clock jumps and drift, database errors and a failover: the checkers find nothing", async () => {
+  const plan: Plan = {
+    seed: "faults-2", nodes: ["a", "b"], leaseTtlMs: 3_000, durationMs: 30_000, skews: { a: 0, b: 2_000 }, modelDelayMs: [50, 2_000], buggify: false,
+    drifts: { a: { wall: 0.01, monotonic: 0.001 }, b: { wall: -0.01, monotonic: -0.001 } },
+    dbErrors: { rate: 0.02, codes: ["40001", "40P01", "57014", "ECONNRESET"] },
+    steps: [
+      { at: 0, op: { op: "create", agent: 0, node: "a" } },
+      { at: 1_000, op: { op: "prompt", agent: 0, run: 0, node: "a" } },
+      // Sent again at once to the other node (the first not yet answered), and again much later.
+      { at: 1_010, op: { op: "retry", agent: 0, run: 0, node: "b" } },
+      { at: 2_000, op: { op: "prompt", agent: 0, run: 1, node: "b", key: "requestId" } },
+      { at: 2_005, op: { op: "retry", agent: 0, run: 1, node: "a" } },
+      { at: 4_000, op: { op: "clockJump", node: "b", ms: 9_000 } },
+      // Both nodes, with clocks 11 s apart: one forwards to the agent's owner.
+      { at: 5_000, op: { op: "prompt", agent: 0, run: 2, node: "b" } },
+      { at: 5_100, op: { op: "prompt", agent: 0, run: 5, node: "a" } },
+      { at: 8_000, op: { op: "failover", ms: 2_000 } },
+      { at: 9_000, op: { op: "prompt", agent: 0, run: 3, node: "a" } },
+      { at: 12_000, op: { op: "clockJump", node: "a", ms: -8_000 } },
+      { at: 14_000, op: { op: "retry", agent: 0, run: 0, node: "a" } },
+      { at: 15_000, op: { op: "prompt", agent: 0, run: 4, node: "b" } },
+    ],
+  };
+  const result = await runPlan(plan);
+  assert.deepEqual(result.failures, []);
+  assert.ok(result.reached.includes("a request sent again with its id got the first one's record"), result.reached.join(", "));
+  assert.ok(result.history.filter(event => event.op.op === "retry").every(event => event.status === undefined || event.status < 300 || event.status >= 500), JSON.stringify(result.history.filter(event => event.op.op === "retry")));
 });

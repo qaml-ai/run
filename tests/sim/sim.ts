@@ -213,6 +213,13 @@ export class Sim {
    */
   pauseAtDbAnswer(name: string, ms: number, statement?: string) { this.dbPauses.set(name, { ms, ...(statement ? { statement } : {}) }); }
 
+  /** Node `name`'s wall clock jumps by `ms` (forward or back), from now on and across its restarts: its machine's clock. */
+  jumpClock(name: string, ms: number) {
+    const node = this.nodes.get(name);
+    if (!node) throw new Error(`No node ${name}`);
+    node.started.skew.skewMs = (node.started.skew.skewMs ?? 0) + ms;
+  }
+
   /** Start a crashed node again, as it was started: a new process (a new session) at the same address. */
   restart(name: string, options: { drive?: boolean } = {}) {
     const node = this.nodes.get(name);

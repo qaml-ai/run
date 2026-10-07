@@ -507,6 +507,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     const [timestamp, signature] = (c.req.header("x-agent-runtime-internal") ?? "").split(".");
     const expected = Buffer.from(internalSignature(timestamp ?? "", c.req.path, body));
     const given = Buffer.from(signature ?? "");
+    sometimes(!!timestamp && Math.abs(Date.now() - Number(timestamp)) > 5_000, "a node-to-node request came from a node whose clock is seconds off");
     if (!timestamp || Math.abs(Date.now() - Number(timestamp)) > 60_000 || expected.length !== given.length || !timingSafeEqual(expected, given)) return undefined;
     return body;
   }
