@@ -22,6 +22,10 @@ test("two simulated nodes serve agents over the simulated network and database, 
   assert.deepEqual(sim.model.served.map(served => served.from), ["a.sim"]);
   assert.ok(sim.env.elapsed >= 2_000, "the model's two seconds passed on the virtual clock");
   assert.deepEqual(sim.env.leaks, [], "no real I/O");
+  // A node's timers run as that node, on its skewed clock.
+  const b = sim.nodes.get("b")!.runtime;
+  const seen = await sim.env.settle(b.run(() => new Promise<number>(resolve => setTimeout(() => resolve(Date.now() - sim.env.clock.now), 10))));
+  assert.equal(seen, 5_000);
 });
 
 /** Three agents on two nodes, prompted across nodes; the run's trace, hashed. */

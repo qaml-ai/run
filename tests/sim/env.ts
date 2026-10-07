@@ -1,4 +1,4 @@
-import { createHook, executionAsyncResource } from "node:async_hooks";
+import { AsyncResource, createHook } from "node:async_hooks";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import FakeTimers from "@sinonjs/fake-timers";
 import { nodeContext, type Clock, type Random } from "../../src/node-context.ts";
@@ -70,6 +70,12 @@ export class SimEnv {
     patch(Date, "now", () => nowOf().now());
     patch(performance, "now", () => nowOf().monotonic());
     void clock;
+    // Fake timers run their callbacks from the simulation's loop, not in the async context that set them as real timers
+    // do: each callback is bound to its setter's context, so a node's timer runs as that node.
+    const bound = <S extends (callback: (...args: any[]) => void, ms?: number, ...args: any[]) => unknown>(set: S) =>
+      ((callback: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => set(AsyncResource.bind(callback), ms, ...args)) as unknown as S;
+    patch(globalThis, "setTimeout", bound(globalThis.setTimeout));
+    patch(globalThis, "setInterval", bound(globalThis.setInterval));
 
     // Randomness: the node's stream, else the world's.
     const source = () => nodeContext()?.random ?? this.random;
@@ -110,7 +116,6 @@ export class SimEnv {
     });
     hook.enable();
     this.restore.push(() => hook.disable());
-    void executionAsyncResource;
   }
 
   /** The clock of a node off by `skew`: its own wall and monotonic time, on the simulation's timers. */
