@@ -127,6 +127,8 @@ type Session = {
   header: SessionHeader;
   /** Revision of the stored header this node last read or wrote; writes are conditional on it. */
   revision?: number;
+  /** The header write in flight (`writeHeader`): the next waits for it, so two never race on one revision. */
+  headerWrite?: Promise<void>;
   claim?: Claim;
   requests: Map<string, RequestRecord>;
   /** The requests still running, so nothing scans every retained record. */
@@ -657,8 +659,19 @@ export class ClientSessions {
   /**
    * Write the header with the columns listings use: a create, or an update
    * conditional on the revision this node holds and on its ownership claim.
+   * Writes of one session go one at a time: two at once (a rotation and an upsert's
+   * configure, say) would both be conditional on the same revision, and the one that
+   * lost would read as another node having moved the agent, faulting it. Each writes
+   * the header as it is when its turn comes, so the later one carries both changes.
    */
-  private async writeHeader(session: Session) {
+  private writeHeader(session: Session): Promise<void> {
+    const write = (session.headerWrite ?? Promise.resolve()).catch(() => {}).then(() => this.writeHeaderNow(session));
+    session.headerWrite = write;
+    void write.finally(() => { if (session.headerWrite === write) session.headerWrite = undefined; }).catch(() => {});
+    return write;
+  }
+
+  private async writeHeaderNow(session: Session) {
     if (session.fault) throw session.fault;
     const header = session.header;
     const columns = [header.id, header.tenant, JSON.stringify(header), header.metadata?.name ?? header.id, header.metadata?.type ?? "general",
@@ -2836,7 +2849,7 @@ export class ClientSessions {
     const id = session.header.id;
     // An agent still starting answers nothing yet: wait for it (or, should it fail, read the log).
     if (!("unloaded" in session)) await session.starting?.catch(() => {});
-    let tail = !("unloaded" in session) && this.supervisor.agents.has(id) ? await this.supervisor.request(id, "historyTail") as HistoryTail | null : undefined;
+    let tail = !("unloaded" in session) && this.supervisor.agents.has(id) ? await this.liveRead(id, "historyTail") as HistoryTail | null | undefined : undefined;
     if (!tail) {
       // The index should have every message the agent's runs reported, or the running agent the rest. An index
       // behind (a stop that could not write its last chunks), none yet (an agent from before the index, until its next
@@ -2864,8 +2877,20 @@ export class ClientSessions {
   private async history(session: Session) {
     // An agent still starting answers nothing yet: wait for it (or, should it fail, read the log).
     await session.starting?.catch(() => {});
-    if (this.supervisor.agents.has(session.header.id)) return this.supervisor.request(session.header.id, "history");
-    return { messages: await this.supervisor.history(session.header.id) };
+    const live = this.supervisor.agents.has(session.header.id) ? await this.liveRead(session.header.id, "history") : undefined;
+    return live ?? { messages: await this.supervisor.history(session.header.id) };
+  }
+
+  /**
+   * A read of the agent's running host; undefined when it stopped while answering (a run that just ended stops its
+   * agent, an idle one is unloaded): its log, read beside it, has what it held, so the read is not failed for that.
+   */
+  private async liveRead(id: string, method: "history" | "historyTail") {
+    try { return await this.supervisor.request(id, method); }
+    catch (error) {
+      if (this.supervisor.agents.has(id)) throw error;
+      return undefined;
+    }
   }
 
   /**
