@@ -1,0 +1,108 @@
+import { AsyncResource } from "node:async_hooks";
+import { readdirSync, readFileSync } from "node:fs";
+import { PGlite } from "@electric-sql/pglite";
+import type { Db, DbClient, Rows } from "../../src/db.ts";
+
+const INT8 = 20;
+const MIGRATIONS = new URL("../../migrations/", import.meta.url);
+
+/**
+ * The simulated database: one PGlite (Postgres in WASM, in this process), shared by every node, each through its own
+ * `Db` (`connection`). PGlite has one session, so a transaction holds it to itself and every other query waits: each
+ * transaction is one atomic step of the simulation, which explores all serial orders of transactions but none of the
+ * interleavings inside them (the nightly real-Postgres mode is for those). Its `now()` follows the process's `Date.now`,
+ * which the simulation's clock fakes, so the database clock is virtual too.
+ *
+ * A node's connection can be cut (`down`): its queries fail as in a failover, its open transaction rolls back, and its
+ * LISTEN hears nothing; `up` restores it. A crashed node's connection is ended.
+ */
+export class SimDb {
+  readonly pglite: PGlite;
+  private holder: Promise<void> = Promise.resolve();
+  /** The database runs as itself, never as the node that asked: its `now()` is the base clock, not a node's skewed one. */
+  private readonly scope = new AsyncResource("SimDb");
+  private readonly down = new Set<string>();
+  /** Every statement, for the trace: `node: first word`. */
+  readonly statements: string[] = [];
+
+  private constructor(pglite: PGlite) { this.pglite = pglite; }
+
+  /** A database with every migration applied, as the runtime's own `migrate` would (it finds them applied). */
+  static async create() {
+    const pglite = await PGlite.create({ parsers: { [INT8]: (value: string) => Number(value) } });
+    return new SimDb(pglite);
+  }
+
+  /** Run `work` with the session to itself. */
+  private exclusive<T>(work: () => Promise<T>): Promise<T> {
+    const result = this.holder.then(work);
+    this.holder = result.then(() => {}, () => {});
+    return result;
+  }
+
+  private async run(node: string, text: string, values?: unknown[]): Promise<Rows> {
+    if (this.down.has(node)) throw unavailable();
+    this.statements.push(`${node}: ${text.trim().split(/\s+/, 1)[0]}`);
+    const result = await this.scope.runInAsyncScope(() => this.pglite.query<Record<string, unknown>>(text, values as unknown[]));
+    // PGlite counts only changed rows; pg counts a select's rows too.
+    return { rows: result.rows, rowCount: result.affectedRows || result.rows.length };
+  }
+
+  /** Cut `node` off from the database, or (up) let it back. */
+  setDown(node: string, down: boolean) {
+    if (down) this.down.add(node); else this.down.delete(node);
+  }
+
+  /** `node`'s view of the database: its own pool. Ending it ends nothing shared. */
+  connection(node: string): Db {
+    let ended = false;
+    const query = (text: string, values?: unknown[]) => ended ? Promise.reject(new Error("Cannot use a pool after calling end on the pool")) : this.exclusive(() => this.run(node, text, values));
+    return {
+      query: query as Db["query"],
+      connect: () => new Promise<DbClient>((resolve, reject) => {
+        if (ended) return reject(new Error("Cannot use a pool after calling end on the pool"));
+        if (this.down.has(node)) return reject(unavailable());
+        void this.exclusive(() => new Promise<void>(release => {
+          const listeners = new Set<(error: Error) => void>();
+          // A transaction its node could not finish (cut off mid-way) is rolled back here, as the server would on the
+          // connection's loss, before the session serves anyone else.
+          let broken = false;
+          resolve({
+            query: (async (text: string, values?: unknown[]) => {
+              try { return await this.run(node, text, values); }
+              catch (error) { if (this.down.has(node)) broken = true; throw error; }
+            }) as DbClient["query"],
+            release: () => { if (broken) void this.pglite.exec("rollback").catch(() => {}).finally(release); else release(); },
+            on: (_event, listener) => listeners.add(listener),
+            off: (_event, listener) => listeners.delete(listener),
+          });
+        }));
+      }),
+      end: async () => { ended = true; },
+      totalCount: 0, idleCount: 0, waitingCount: 0,
+    };
+  }
+
+  /** `node`'s LISTEN connection: each channel's notifications, unless the node is cut off. */
+  listen(node: string) {
+    return async (handlers: Record<string, (payload: string) => void>) => {
+      const stops = await Promise.all(Object.entries(handlers).map(([channel, handler]) =>
+        this.pglite.listen(channel, payload => { if (!this.down.has(node)) handler(payload); })));
+      return { close: async () => { for (const stop of stops) await stop(); } };
+    };
+  }
+
+  /** Apply the runtime's migrations (once, before any node starts, so nodes do not race to). */
+  async migrate() {
+    const files = readdirSync(MIGRATIONS).filter(name => /^\d{3}_[a-z0-9_]+\.sql$/.test(name)).sort();
+    await this.pglite.exec("create table if not exists schema_migrations (name text primary key, applied_at timestamptz not null default now())");
+    for (const name of files) {
+      await this.pglite.exec(readFileSync(new URL(name, MIGRATIONS), "utf8"));
+      await this.pglite.query("insert into schema_migrations (name) values ($1)", [name]);
+    }
+  }
+
+  close() { return this.pglite.close(); }
+}
+
+const unavailable = () => Object.assign(new Error("connect ECONNREFUSED (simulated database outage)"), { code: "ECONNREFUSED" });
