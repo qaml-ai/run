@@ -341,11 +341,15 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
     };
     for (const [fork, { agent, id, invoked, ended }] of forks) {
       const has = await runsIn(id);
+      // A run that failed may never have entered its agent's history (its prompt not stored when the agent was given up
+      // after a fault, say): the fork must hold it exactly when its source does.
+      const source = await runsIn(agents.get(agent)!);
       for (const [run, record] of records) {
         if (runs.get(run)!.agent !== agent) continue;
         // endedAt is the owner node's clock: allow for the most any node's is off.
         const endedAt = Number(record.endedAt) - sim.env.start + Math.max(0, ...Object.values(plan.skews).map(Math.abs));
-        if (endedAt < invoked && record.outcome?.result?.code !== "cancelled" && !has.has(run)) failures.push(`I11: fork ${fork} of agent-${agent} lacks run-${run}, which ended before the fork was asked for`);
+        const inHistory = record.outcome?.error === undefined || source.has(run);
+        if (endedAt < invoked && record.outcome?.result?.code !== "cancelled" && inHistory && !has.has(run)) failures.push(`I11: fork ${fork} of agent-${agent} lacks run-${run}, which ended before the fork was asked for`);
       }
       for (const [run, { agent: of, acceptedAt }] of runs) if (of === agent && acceptedAt > ended && has.has(run)) failures.push(`I11: fork ${fork} of agent-${agent} has run-${run}, accepted after the fork was made`);
     }
