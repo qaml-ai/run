@@ -12,6 +12,7 @@ import { memoryStorage } from "../../shared/storage.ts";
 import { fakeExecutor } from "../fake-executor.ts";
 import { SimDb, type WorldDb } from "./db.ts";
 import { PostgresDb } from "./postgres.ts";
+import { simStorage, type StorageFaults } from "./storage.ts";
 import { prng, SimEnv, type ClockSkew } from "./env.ts";
 import { fakeModel, type Answer, type Served } from "./fakes/model.ts";
 import { SimNet } from "./net.ts";
@@ -59,6 +60,13 @@ export class Sim {
   readonly net = new SimNet();
   /** The object store every node shares (S3's stand-in). */
   readonly objects = { logs: new Map<string, Map<string, string>>(), blobs: new Map<string, Uint8Array>() };
+  /**
+   * How the object store misbehaves (see simStorage): set for a run that has storage faults (its nodes then use the
+   * faulty store), and cleared to stop them; `storageInjected` counts what was injected, by kind.
+   */
+  storageFaults?: StorageFaults;
+  private faultyStorage = false;
+  readonly storageInjected = new Map<string, number>();
   readonly nodes = new Map<string, SimNode>();
   readonly model: { served: Served[] };
   private readonly root = mkdtempSync(join(tmpdir(), "agent-sim-"));
@@ -88,7 +96,7 @@ export class Sim {
    * A world for `seed`, its database migrated; `respond` is the model's script; `env` applies to every node; `buggify`
    * says which BUGGIFY sites fire. Installs the simulation's environment and hooks for the process until `close`.
    */
-  static async create(options: { seed: string | number; respond: (body: any, served: Served[]) => Answer; env?: Record<string, string>; buggify?: BuggifyPlan; quiet?: boolean; database?: "pglite" | "postgres"; dbLatencyMs?: [number, number]; dbSpikes?: { rate: number; ms: [number, number] } }) {
+  static async create(options: { seed: string | number; respond: (body: any, served: Served[]) => Answer; env?: Record<string, string>; buggify?: BuggifyPlan; quiet?: boolean; database?: "pglite" | "postgres"; dbLatencyMs?: [number, number]; dbSpikes?: { rate: number; ms: [number, number] }; storageFaults?: boolean }) {
     const seed = String(options.seed);
     // The nightly mode runs on a real Postgres server, on the machine's clock: not deterministic, but it has real
     // sessions whose transactions interleave (SIM_DATABASE=postgres, or `database`).
@@ -98,6 +106,7 @@ export class Sim {
     const sim = new Sim(seed, new SimEnv(seed, undefined, options.quiet, postgres), new SimHooks(seed, options.buggify ?? false), db, options.respond, options.env ?? {});
     sim.dbLatencyMs = options.dbLatencyMs;
     sim.dbSpikes = options.dbSpikes;
+    sim.faultyStorage = !!options.storageFaults;
     return sim;
   }
 
@@ -153,7 +162,9 @@ export class Sim {
       clock,
       random: prng(`${this.seed}:${name}:${incarnation}`),
       codeExecutor: fakeExecutor(),
-      storage: (tail, meter) => memoryStorage(tail, meter, { logs: guarded(this.objects.logs, () => dead), blobs: guarded(this.objects.blobs, () => dead) }),
+      storage: (tail, meter) => this.faultyStorage
+        ? simStorage(tail, meter, this.objects, () => dead, () => this.storageFaults, prng(`${this.seed}:storage:${name}#${incarnation}`), this.storageInjected)
+        : memoryStorage(tail, meter, { logs: guarded(this.objects.logs, () => dead), blobs: guarded(this.objects.blobs, () => dead) }),
     };
     let runtime: RuntimeNode;
     // A node that fails to start exits, as the process would: nothing it began goes on.

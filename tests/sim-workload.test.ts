@@ -67,3 +67,13 @@ test("retries with the prompt's key, clock jumps and drift, database errors and 
   assert.ok(result.reached.includes("a request sent again with its id got the first one's record"), result.reached.join(", "));
   assert.ok(result.history.filter(event => event.op.op === "retry").every(event => event.status === undefined || event.status < 300 || event.status >= 500), JSON.stringify(result.history.filter(event => event.op.op === "retry")));
 });
+
+test("an object store that is slow, refuses requests, throttles and loses answers: what runs said is kept (I15), writes read back (I2)", async () => {
+  const plan: Plan = {
+    ...generatePlan("storage-faults", { faults: ["volumes", "forks", "crash"] }),
+    storageFaults: { rate: 0.2, kinds: ["slow", "error", "throttle", "lost"], slowMs: [50, 500] },
+  };
+  const result = await runPlan(plan);
+  assert.deepEqual(result.failures, []);
+  assert.ok(result.served > 0);
+});

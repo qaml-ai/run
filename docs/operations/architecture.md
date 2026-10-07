@@ -316,7 +316,9 @@ the races that need it can happen; the generator gives some seeds such a tail. T
 (`dbErrors`: serialization failures, deadlocks, statement timeouts, and connections reset before a statement or after it
 took effect; a failed commit rolls its transaction back, as a server does) and fail over (`failover`: every connection
 drops for a while). Nodes' wall clocks can jump and drift, and their monotonic clocks drift a little (`clockJump`,
-`drifts`); clients can send a prompt again with its key (`retry`), at once or later, to any node. A plan is explicit data: nodes, settings, model latency and
+`drifts`); clients can send a prompt again with its key (`retry`), at once or later, to any node. The object store can misbehave
+as S3 does (`storageFaults`: slow, refusing with a 500 or a 503 SlowDown, or a create or delete taking effect with its
+answer lost; tests/sim/storage.ts). A plan is explicit data: nodes, settings, model latency and
 timed steps (`tests/sim/workload.ts`). `runPlan` (`tests/sim/run.ts`) runs one, then checks it:
 - every accepted run ends with one outcome that stays (I3);
 - no agent has model calls on two nodes at once, faults included (I1; a paused node's open call does not count while
@@ -325,7 +327,8 @@ timed steps (`tests/sim/workload.ts`). `runPlan` (`tests/sim/run.ts`) runs one, 
 - watchers' streams only move forward, and an event id is never two events (I8);
 - every acknowledged volume write reads back on every node (I2); a fork (of an agent or a volume) holds what was
   there when it was asked for and nothing made after (I11); a schedule fires once it is due, exactly once (I13); a
-  prompt sent again with its key is the same request, and its prompt is in the history once (I14);
+  prompt sent again with its key is the same request, and its prompt is in the history once (I14); what a run that
+  succeeded said, its prompt and its answer, is in its agent's history (I15);
 - no assertion is violated and there is no real I/O.
 
 A seed replays exactly, which its trace hash checks. To run plans, use `npm run sim -- --seeds 1-200`

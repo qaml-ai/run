@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { fileAppendLog, type AppendLog, type CommitEffect } from "./append-log.ts";
 import type { Claim } from "../src/ownership.ts";
 import { buggify } from "../src/buggify.ts";
-import { sometimes } from "../src/assert.ts";
+import { reachable, sometimes } from "../src/assert.ts";
 
 /**
  * The data plane: bulk state that is appended or written once. Coordination and
@@ -350,7 +350,8 @@ export function segmentLog<T>(store: SegmentStore, key: string, tail: LogTail, c
       if (Buffer.byteLength(text) <= BLOB_BYTES) return { seq: first + index, snapshot, body: text, blob: null };
       const hash = createHash("sha256").update(text).digest("hex");
       // Content-addressed, so a blob another (even stale) writer created is the same bytes.
-      try { await store.create(`blob-${hash}`, text); } catch (error) { if (!(error instanceof PreconditionFailed)) throw error; }
+      try { await store.create(`blob-${hash}`, text); }
+      catch (error) { if (!(error instanceof PreconditionFailed)) throw error; reachable("a log's blob was stored already (by another writer, or before its answer was lost)"); }
       return { seq: first + index, snapshot, body: null, blob: hash };
     }));
     if (!await tail.append(key, claim, rows, effects)) throw fence();
@@ -369,6 +370,7 @@ export function segmentLog<T>(store: SegmentStore, key: string, tail: LogTail, c
       const listing = await store.list();
       sizes = listing.bytes;
       const through = covered(listing);
+      sometimes(rows.some(row => row.seq <= through), "a compaction found rows its store already held (an earlier one stopped after writing)");
       const fresh = rows.filter(row => row.seq > through);
       for (const row of rows) if (row.blob) blobs.push(`blob-${row.blob}`);
       if (!fresh.length) return through;
