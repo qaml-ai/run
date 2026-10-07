@@ -18,7 +18,8 @@ import { AgentRuntime, schema, tool } from "../clients/typescript.ts";
 const image = process.env.IMAGE ?? "agent-runtime:ci";
 const database = process.env.DATABASE_URL ?? "postgres://postgres:test@127.0.0.1:5432/postgres";
 const hostNetwork = process.platform === "linux";
-const port = hostNetwork ? 8790 : 18790;
+// ISOLATION_PORT when 8790 is taken on the host (a shared machine): with the host network the runtime listens on it.
+const port = Number(process.env.ISOLATION_PORT ?? (hostNetwork ? 8790 : 18790));
 const url = `http://127.0.0.1:${port}`;
 const token = "isolation-test-token-with-enough-characters";
 const canary = `canary-${randomBytes(8).toString("hex")}`;
@@ -34,7 +35,7 @@ writeFileSync(join(tenants, "tenants.json"), JSON.stringify({ tenants: { isolati
 const docker = (...args: string[]) => execFileSync("docker", args, { encoding: "utf8" });
 const logs = () => { const out = spawnSync("docker", ["logs", name], { encoding: "utf8" }); return out.stdout + out.stderr; };
 
-docker("run", "-d", "--init", "--name", name, ...(hostNetwork ? ["--network", "host"] : ["-p", `127.0.0.1:${port}:8790`]),
+docker("run", "-d", "--init", "--name", name, ...(hostNetwork ? ["--network", "host", "-e", `PORT=${port}`] : ["-p", `127.0.0.1:${port}:8790`]),
   "-v", `${tenants}:/etc/agent-runtime:ro`, "-e", "AGENT_TENANTS_FILE=/etc/agent-runtime/tenants.json", "-e", `AGENT_SESSION_SECRET=${token}`, "-e", `AGENT_DATABASE_URL=${database}`, "-e", `AGENT_HOSTING=${process.env.AGENT_HOSTING ?? "inline"}`,
   "-e", "AGENT_SANDBOX_TEST_HOOKS=1", "-e", `AGENT_ISOLATION_CANARY=${canary}`, image);
 let failed = true;
