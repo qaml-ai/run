@@ -192,13 +192,12 @@ export function generatePlan(seed: string, options: { steps?: number; durationMs
     }
   }
   steps.sort((a, b) => a.at - b.at);
-  // An object store that misbehaves, for some seeds, from a stream of its own. Slow by two seconds at most: a log's
-  // compaction writes to it inside a database transaction, and PGlite's one session would hold every node up meanwhile,
-  // which a real server's concurrent sessions do not.
+  // An object store that misbehaves, for some seeds, from a stream of its own: slow by up to ten seconds (a log's
+  // compaction writes to it with no transaction open, so a slow store holds no one else up).
   const store = prng(`${seed}:faults-3`);
   if (store.float() < 0.25) {
     const kinds = (["slow", "error", "throttle", "lost"] as const).filter(() => store.float() < 0.6);
-    if (kinds.length) extra.storageFaults = { rate: [0.01, 0.05, 0.2][store.int(3)], kinds: [...kinds], slowMs: [50, [200, 500, 2_000][store.int(3)]] };
+    if (kinds.length) extra.storageFaults = { rate: [0.01, 0.05, 0.2][store.int(3)], kinds: [...kinds], slowMs: [50, [500, 2_000, 10_000][store.int(3)]] };
   }
   // A database with a tail for some seeds, from a stream of its own, so every other draw of the plan stays as it was.
   const latency = prng(`${seed}:db-latency`);

@@ -4,7 +4,7 @@ import type { CommitEffect } from "../shared/append-log.ts";
 import { LostClaim, underClaim, type Claim } from "./ownership.ts";
 import { clock } from "./node-context.ts";
 import { buggify } from "./buggify.ts";
-import { reachable } from "./assert.ts";
+import { reachable, sometimes } from "./assert.ts";
 
 /**
  * Logs' hot tails in `log_records`. An append is one multi-row insert, fenced in
@@ -13,8 +13,10 @@ import { reachable } from "./assert.ts";
  * updates the row, so it waits for an append in flight, and an append that waited
  * for a takeover sees the new owner and inserts nothing.
  *
- * A compaction holds that lock, and a per-log advisory lock, for the whole move to
- * Storage: no one takes the actor over, or compacts the same log, meanwhile.
+ * A compaction holds a per-log advisory lock (a session lock, on a connection of its own) for its whole move to
+ * Storage, so no one else compacts the log meanwhile; but no transaction is open while it writes to Storage, however
+ * slow that is. Only the rows' deletion, after, is a transaction, which holds the ownership lock: a takeover meanwhile
+ * leaves the rows (their objects are in Storage already, and the next compaction finds them covered).
  *
  * An append is idempotent: rows already there with the same content count as
  * written, so an append whose connection dropped may be repeated. Its effects
@@ -59,18 +61,38 @@ export function postgresTail(db: Db, options: { retryMs?: number; unfenced?: boo
         }
       }
     },
-    compact(key, claim, fold) {
+    async compact(key, claim, fold) {
       required(claim, key);
-      return transaction(db, async sql => {
-        // idle_in_transaction_session_timeout (set on the role, migration 004) bounds a node that hangs here.
-        await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`log:${key}`]);
-        if (claim && !(await sql.query("select from actor_owners where actor = $1 and session = $2 and epoch = $3 for share", [claim.actor, claim.session, claim.epoch])).rowCount) return false;
-        const { rows } = await sql.query("select seq, snapshot, body, blob from log_records where log_key = $1 order by seq", [key]);
+      const holds = async (sql: Sql, share: boolean) => !claim || !!(await sql.query(`select from actor_owners where actor = $1 and session = $2 and epoch = $3${share ? " for share" : ""}`, [claim.actor, claim.session, claim.epoch])).rowCount;
+      // The lock is the connection's, not a transaction's: the connection stays checked out, idle, while `fold` writes
+      // to Storage. Another compaction of the log under way (another node's, or this one's before a takeover) moves the
+      // rows: this one leaves them to it.
+      const lock = await db.connect();
+      let broken: Error | undefined;
+      const lost = (error: Error) => { broken = error; };
+      lock.on("error", lost);
+      let locked = false;
+      try {
+        locked = !!(await lock.query("select pg_try_advisory_lock(hashtext($1)) as locked", [`log:${key}`])).rows[0]?.locked;
+        sometimes(!locked, "a compaction found another of its log under way, and left the rows to it");
+        if (!locked) return true;
+        if (!await holds(db, false)) return false;
+        const { rows } = await db.query("select seq, snapshot, body, blob from log_records where log_key = $1 order by seq", [key]);
         if (!rows.length) return true;
+        // Storage's writes, with no transaction open.
         const through = await fold(rows);
-        await sql.query("delete from log_records where log_key = $1 and seq <= $2", [key, through]);
-        return true;
-      });
+        // The rows go only while the claim holds, in one short transaction; else they stay, covered by what is stored.
+        return await transaction(db, async sql => {
+          if (!await holds(sql, true)) return false;
+          await sql.query("delete from log_records where log_key = $1 and seq <= $2", [key, through]);
+          return true;
+        });
+      } finally {
+        if (locked) await lock.query("select pg_advisory_unlock(hashtext($1))", [`log:${key}`]).catch(error => { broken ??= error as Error; });
+        lock.off("error", lost);
+        // A connection that broke is dropped, and the server releases its lock with it.
+        lock.release(broken);
+      }
     },
     async whileHeld(key, claim, work) {
       required(claim, key);

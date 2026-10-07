@@ -195,4 +195,50 @@ test("a request the database refuses for now (a statement timeout) is answered 5
   assert.equal(response.status, 503);
   assert.equal(response.headers.get("retry-after"), "1");
   assert.equal((await response.json()).code, "DATABASE_RETRY");
+
+test("a compaction waiting ten seconds on a slow object store holds no transaction: its peers' leases go on meanwhile", async t => {
+  // Every write compacts its log at once (BUGGIFY storage.compact.now), and the store, once slowed, takes ten seconds an operation.
+  const sim = await Sim.create({ seed: 35, respond: () => ({ content: "ok", delayMs: 100 }), storageFaults: true, buggify: { "storage.compact.now": 1 }, env: { AGENT_LEASE_TTL_MS: "3000" } });
+  t.after(() => sim.close());
+  await sim.start("a");
+  await sim.start("b");
+  const agent = (await sim.call("a", "/v1/agents", { body: {} })).json.id;
+  await outcome(sim, "a", agent, await prompt(sim, "a", agent, "first"));
+  sim.storageFaults = { rate: 1, kinds: ["slow"], slowMs: [10_000, 10_000] };
+  const from = sim.env.elapsed;
+  // a's next turn writes, and its compactions wait on the store.
+  await prompt(sim, "a", agent, "second");
+  await sim.advance(30_000);
+  sim.storageFaults = undefined;
+  assert.ok((sim.storageInjected.get("slow") ?? 0) > 0);
+  // b renewed its heartbeat all along (every half second, a sixth of the lease), and no lease went stale: the database
+  // was never held by a transaction waiting on the store.
+  const renewals = sim.db.statements.filter(line => / b\.sim: update runtime_nodes set expires_at/.test(line)).map(line => Number(line.split(" ", 1)[0]) - sim.env.start).filter(at => at >= from);
+  assert.ok(renewals.length >= 50, `${renewals.length} renewals by b in 30 s`);
+  assert.deepEqual(sim.env.logs.filter(log => /"(lease_stale|self_fence)"/.test(log.line)).map(log => `${log.by} ${log.line}`), []);
+  assert.deepEqual(sim.hooks.violations, []);
+});
+
+test("a compaction whose objects landed but whose rows were never deleted (its node cut off, then dead) leaves the log whole: the next owner finds them covered", async t => {
+  const sim = await Sim.create({ seed: 36, respond: () => ({ content: "ok", delayMs: 100 }), storageFaults: true, buggify: { "storage.compact.now": 1 }, env: { AGENT_LEASE_TTL_MS: "3000" } });
+  t.after(() => sim.close());
+  await sim.start("a");
+  await sim.start("b");
+  const agent = (await sim.call("a", "/v1/agents", { body: {} })).json.id;
+  await outcome(sim, "a", agent, await prompt(sim, "a", agent, "first"));
+  // a's next compaction writes its objects slowly; a loses the database before the rows' deletion, and then dies.
+  sim.storageFaults = { rate: 1, kinds: ["slow"], slowMs: [2_000, 2_000] };
+  await outcome(sim, "a", agent, await prompt(sim, "a", agent, "second"));
+  sim.databaseDown("a");
+  await sim.advance(5_000);
+  sim.crash("a");
+  sim.storageFaults = undefined;
+  sim.databaseDown("a", false);
+  const third = await prompt(sim, "b", agent, "third");
+  await outcome(sim, "b", agent, third);
+  const said = (await sim.call("b", `/v1/agents/${agent}/history`)).json.messages
+    .filter((message: any) => message.role === "user").map((message: any) => message.content[0].text);
+  assert.deepEqual(said, ["first", "second", "third"]);
+  assert.ok(sim.hooks.reached.includes("a compaction found rows its store already held (an earlier one stopped after writing)"), sim.hooks.reached.join(", "));
+  assert.deepEqual(sim.hooks.violations, []);
 });

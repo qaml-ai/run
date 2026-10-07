@@ -103,6 +103,27 @@ export class SimDb implements WorldDb {
     return { rows: result.rows, rowCount };
   }
 
+  /**
+   * Session advisory locks, by key, and the connection holding each: PGlite has one session for every node, so the
+   * server's own would never exclude anyone. `try` takes one if it is free (or already this connection's).
+   */
+  private readonly advisoryLocks = new Map<string, object>();
+  private async advisory(node: string, session: object, op: "try" | "unlock", key: string): Promise<Rows> {
+    if (this.down.has(node)) throw unavailable();
+    this.statements.push(`${this.scope.runInAsyncScope(() => Date.now())} ${node}: advisory ${op} ${key}`);
+    const holder = this.advisoryLocks.get(key);
+    if (op === "try") {
+      const locked = holder === undefined || holder === session;
+      if (locked) this.advisoryLocks.set(key, session);
+      return { rows: [{ locked }], rowCount: 1 };
+    }
+    if (holder === session) this.advisoryLocks.delete(key);
+    return { rows: [{ pg_advisory_unlock: holder === session }], rowCount: 1 };
+  }
+  private unlockAll(session: object) {
+    for (const [key, holder] of [...this.advisoryLocks]) if (holder === session) this.advisoryLocks.delete(key);
+  }
+
   /** Cut `node` off from the database, or (up) let it back. */
   setDown(node: string, down: boolean) {
     if (down) this.down.add(node); else this.down.delete(node);
@@ -116,6 +137,8 @@ export class SimDb implements WorldDb {
     let ended = false, killed = false;
     /** Sessions this pool holds (open transactions): a process that dies loses its connections, and the server rolls back. */
     const held = new Set<() => void>();
+    /** Its connections' sessions, for their advisory locks: a dying process's go with its connections. */
+    const sessions = new Set<object>();
     // A paused node hears the answer once it runs again (`gate`).
     const answered = <T>(result: Promise<T>, text: string) => result.then(async value => { await gate(text); return value; }, async error => { await gate(text); throw error; });
     // A pool query's round trip (`latency`, virtual ms): it reaches the server that much later, on the node's timers.
@@ -124,37 +147,56 @@ export class SimDb implements WorldDb {
       : killed ? Promise.reject(unavailable()) : answered(travel().then(() => this.exclusive(() => killed ? Promise.reject(unavailable()) : this.run(node, text, values))), text);
     return {
       query: query as Db["query"],
-      connect: () => new Promise<DbClient>((resolve, reject) => {
-        if (ended) return reject(new Error("Cannot use a pool after calling end on the pool"));
-        if (this.down.has(node) || killed) return reject(unavailable());
-        void this.exclusive(() => new Promise<void>(release => {
-          const listeners = new Set<(error: Error) => void>();
-          // A transaction its node could not finish (cut off mid-way) is rolled back here, as the server would on the
-          // connection's loss, before the session serves anyone else.
-          let broken = false, done = false;
-          const finish = (rollback: boolean) => {
-            if (done) return;
-            done = true;
-            held.delete(lost);
-            if (rollback) void this.pglite.exec("rollback").catch(() => {}).finally(release); else release();
-          };
-          const lost = () => finish(true);
-          held.add(lost);
-          resolve({
-            query: (async (text: string, values?: unknown[]) => {
-              if (killed) { broken = true; throw unavailable(); }
-              try { return await answered(this.run(node, text, values), text); }
-              catch (error) { if (this.down.has(node) || (error as { code?: string }).code === "ECONNRESET") broken = true; throw error; }
-            }) as DbClient["query"],
-            // Released with an error, pg destroys the connection, and the server rolls back what it held.
-            release: error => finish(!!(broken || error)),
-            on: (_event, listener) => listeners.add(listener),
-            off: (_event, listener) => listeners.delete(listener),
-          });
-        }));
-      }),
+      connect: async () => {
+        if (ended) throw new Error("Cannot use a pool after calling end on the pool");
+        if (this.down.has(node) || killed) throw unavailable();
+        const listeners = new Set<(error: Error) => void>();
+        // A connection holds PGlite's one session to itself only inside a transaction: between `begin` and its end. A
+        // transaction its node could not finish (cut off mid-way, or the process died) is rolled back, as the server
+        // would on the connection's loss, before the session serves anyone else.
+        let broken = false, ending: (() => void) | undefined;
+        const end = (rollback: boolean) => {
+          const release = ending;
+          if (!release) return;
+          ending = undefined;
+          held.delete(lost);
+          if (rollback) void this.pglite.exec("rollback").catch(() => {}).finally(release); else release();
+        };
+        const lost = () => end(true);
+        const me = {};
+        sessions.add(me);
+        const client: DbClient = {
+          query: (async (text: string, values?: unknown[]) => {
+            if (killed) { broken = true; throw unavailable(); }
+            const verb = text.trim().split(/\s+/, 1)[0].toLowerCase();
+            const advisory = /\bpg_(try_advisory_lock|advisory_unlock)\(hashtext\(\$1\)\)/.exec(text)?.[1];
+            if (advisory) return answered(this.advisory(node, me, advisory === "advisory_unlock" ? "unlock" : "try", String(values?.[0])), text);
+            if (verb === "begin" && !ending) await new Promise<void>(taken => void this.exclusive(() => new Promise<void>(release => { ending = release; held.add(lost); taken(); })));
+            try {
+              const result = await answered(ending ? this.run(node, text, values) : this.exclusive(() => this.run(node, text, values)), text);
+              if (verb === "commit" || verb === "rollback") end(false);
+              return result;
+            } catch (error) {
+              if (this.down.has(node) || (error as { code?: string }).code === "ECONNRESET") broken = true;
+              // A failed commit has rolled back (see run); a failed rollback leaves nothing open either.
+              if (verb === "commit" || verb === "rollback") end(false);
+              throw error;
+            }
+          }) as DbClient["query"],
+          // Released with an error, pg destroys the connection: the server rolls back what it held and frees its
+          // session's advisory locks. Released whole, the connection goes back to the pool, its locks with it.
+          release: error => {
+            end(!!(broken || error) || !!ending);
+            if (broken || error) this.unlockAll(me);
+            sessions.delete(me);
+          },
+          on: (_event, listener) => listeners.add(listener),
+          off: (_event, listener) => listeners.delete(listener),
+        };
+        return client;
+      },
       end: async () => { ended = true; },
-      kill: () => { killed = true; for (const lost of [...held]) lost(); },
+      kill: () => { killed = true; for (const lost of [...held]) lost(); for (const session of sessions) this.unlockAll(session); },
       totalCount: 0, idleCount: 0, waitingCount: 0,
     };
   }
