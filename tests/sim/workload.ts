@@ -45,6 +45,11 @@ export type Plan = {
   leaseTtlMs: number;
   /** The model's latency per call, drawn from [min, max] ms. */
   modelDelayMs: [number, number];
+  /**
+   * Each pool query's round trip to the database, drawn from [min, max] ms (missing: none). With none, a request's
+   * statements all run at one virtual instant and see one now(); with some, time passes between them, as on a real server.
+   */
+  dbLatencyMs?: [number, number];
   buggify: BuggifyPlan;
   steps: { at: number; op: Op }[];
   /** Virtual ms the steps span; then every fault heals, and the run settles. */

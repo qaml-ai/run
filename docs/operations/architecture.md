@@ -326,3 +326,16 @@ A seed replays exactly, which its trace hash checks. To run plans, use `npm run 
 mode, `npm run sim -- --postgres`, runs the same plans and checkers on a real Postgres server (`PostgresDb`) on the
 machine's clock: not deterministic, but its sessions' transactions really interleave, which PGlite's one session
 cannot show.
+
+**Fuzzing.** `npm run sim -- --fuzz <minutes> --jobs <n>` searches for plans rather than drawing them at random
+(`tests/sim/fuzz.ts`):
+- It measures each run by what it covered: V8's block coverage of `src/` and `shared/`, read in-process through the
+  inspector (`tests/sim/coverage.ts`); the coverage goals reached; and how often each assertion was passed.
+- A plan that covers something no kept plan did goes to the corpus, `sim-corpus/` (begun from `tests/sim/corpus/`).
+- New plans are mostly mutations of kept ones (`tests/sim/mutate.ts`): steps inserted, deleted, swapped, duplicated,
+  shifted in time or aimed elsewhere; settings changed (lease, model latency, skew, BUGGIFY sites, seed); another
+  plan spliced in. Some are prefix branches: a kept plan's first steps, then a fresh random rest.
+- Workers share the corpus directory. Each new kind of failure (its checker and text without numbers, or an
+  exception's first frame) is saved once to `sim-failures/fuzz/` and minimized.
+- `--random` runs random plans for the same time and keeps what they cover the same way, as the baseline. Both report
+  the features and goals reached, when each goal was first reached, and the failures found.

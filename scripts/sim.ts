@@ -6,6 +6,10 @@
 //   npm run sim -- --minimize sim-failures/42.json  cut a failing plan down to the steps it needs (sim-failures/42.min.json)
 //   npm run sim -- --postgres --seeds 1-20  the nightly mode: a real Postgres server (AGENT_TEST_DATABASE_URL) on the
 //                                            machine's clock, for what PGlite's one session cannot show; not deterministic
+//   npm run sim -- --fuzz 60 --jobs 8       coverage-guided: 60 minutes of plans mutated from a corpus (sim-corpus/,
+//                                            begun from tests/sim/corpus/), kept when they cover something new; each new
+//                                            kind of failure saved once to <out>/fuzz/ and minimized. --random: random
+//                                            plans for the same time (the baseline). --corpus <dir>: another corpus.
 // A failing run writes <out>/<seed>.json (--out, default sim-failures): its plan as data (replay it as is), its failures,
 // history and logs; with --minimize-failures it is also cut down to <seed>.min.json.
 import { spawn } from "node:child_process";
@@ -16,11 +20,13 @@ import { generatePlan, type Plan } from "../tests/sim/workload.ts";
 import { runPlan } from "../tests/sim/run.ts";
 import { COVERAGE_GOALS } from "../tests/sim/hooks.ts";
 import { minimize } from "../tests/sim/minimize.ts";
+import { corpusReport, fuzz } from "../tests/sim/fuzz.ts";
 
 const { values } = parseArgs({
   options: {
     seed: { type: "string" }, seeds: { type: "string" }, replay: { type: "string" }, minimize: { type: "string" }, twice: { type: "boolean" },
     steps: { type: "string" }, jobs: { type: "string" }, out: { type: "string" }, "minimize-failures": { type: "boolean" }, postgres: { type: "boolean" },
+    fuzz: { type: "string" }, random: { type: "boolean" }, corpus: { type: "string" }, worker: { type: "string" }, started: { type: "string" },
   },
 });
 const out = values.out ?? "sim-failures";
@@ -36,6 +42,29 @@ async function minimizeFile(file: string) {
   const target = file.replace(/\.json$/, ".min.json");
   writeFileSync(target, JSON.stringify(result, null, 2));
   say(JSON.stringify({ minimized: file, steps: smaller.steps.length, failures: result.failures, file: target }));
+}
+
+if (values.fuzz) {
+  const startedAt = Number(values.started ?? Date.now());
+  const until = startedAt + Number(values.fuzz) * 60_000;
+  const corpus = values.corpus ?? (values.random ? "sim-corpus-random" : "sim-corpus");
+  const failures = `${out}/fuzz${values.random ? "-random" : ""}`;
+  const jobs = Number(values.jobs ?? 1);
+  if (values.worker !== undefined || jobs <= 1) {
+    await fuzz({
+      startedAt, until, corpus, failures, worker: Number(values.worker ?? 0), random: values.random, minimizeFailures: !values.random,
+      seeds: fileURLToPath(new URL("../tests/sim/corpus/", import.meta.url)),
+    });
+  } else {
+    // Workers share the corpus directory, each with its own coverage; this one adds up what they found.
+    const passed = process.argv.slice(2).filter((arg, index, args) => arg.split("=")[0] !== "--jobs" && args[index - 1] !== "--jobs");
+    await Promise.all(Array.from({ length: jobs }, (_, worker) => new Promise(resolve => {
+      const child = spawn(process.execPath, [...process.execArgv, fileURLToPath(import.meta.url), ...passed, "--worker", String(worker), "--started", String(startedAt)], { stdio: ["ignore", "ignore", "inherit"] });
+      child.on("close", resolve);
+    })));
+  }
+  if (values.worker === undefined) say(JSON.stringify({ fuzzed: Number(values.fuzz), random: !!values.random, jobs, ...corpusReport(corpus, failures) }));
+  process.exit(0);
 }
 
 if (values.minimize) {

@@ -17,3 +17,6 @@ examples/team-demo/
 # Benchmark raw results hold third-party page text; only summaries are committed
 bench/search/results/raw.json
 sim-failures/
+sim-corpus/
+sim-corpus-*/
+sim-mcp/

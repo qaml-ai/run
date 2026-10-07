@@ -1,0 +1,364 @@
+{
+ "seed": "corpus-pp",
+ "nodes": [
+  "a",
+  "b",
+  "c"
+ ],
+ "leaseTtlMs": 6000,
+ "durationMs": 60000,
+ "skews": {
+  "a": 0,
+  "b": 0,
+  "c": 0
+ },
+ "modelDelayMs": [
+  50,
+  8000
+ ],
+ "buggify": false,
+ "steps": [
+  {
+   "at": 0,
+   "op": {
+    "op": "create",
+    "agent": 0,
+    "node": "b"
+   }
+  },
+  {
+   "at": 10,
+   "op": {
+    "op": "create",
+    "agent": 1,
+    "node": "c"
+   }
+  },
+  {
+   "at": 1229,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 0,
+    "node": "b"
+   }
+  },
+  {
+   "at": 2415,
+   "op": {
+    "op": "crash",
+    "node": "c"
+   }
+  },
+  {
+   "at": 3940,
+   "op": {
+    "op": "partition",
+    "a": "c",
+    "b": "db",
+    "how": "blackhole"
+   }
+  },
+  {
+   "at": 5431,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 1,
+    "node": "a"
+   }
+  },
+  {
+   "at": 6584,
+   "op": {
+    "op": "restart",
+    "node": "c"
+   }
+  },
+  {
+   "at": 6807,
+   "op": {
+    "op": "crash",
+    "node": "a"
+   }
+  },
+  {
+   "at": 8465,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 2,
+    "node": "c"
+   }
+  },
+  {
+   "at": 9473,
+   "op": {
+    "op": "restart",
+    "node": "a"
+   }
+  },
+  {
+   "at": 9485,
+   "op": {
+    "op": "crash",
+    "node": "c"
+   }
+  },
+  {
+   "at": 10945,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 3,
+    "node": "a"
+   }
+  },
+  {
+   "at": 12478,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 4,
+    "node": "c"
+   }
+  },
+  {
+   "at": 13772,
+   "op": {
+    "op": "heal"
+   }
+  },
+  {
+   "at": 13812,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 5,
+    "node": "b"
+   }
+  },
+  {
+   "at": 15035,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 6,
+    "node": "c"
+   }
+  },
+  {
+   "at": 15942,
+   "op": {
+    "op": "restart",
+    "node": "c"
+   }
+  },
+  {
+   "at": 16730,
+   "op": {
+    "op": "crash",
+    "node": "c"
+   }
+  },
+  {
+   "at": 18204,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 7,
+    "node": "b"
+   }
+  },
+  {
+   "at": 19316,
+   "op": {
+    "op": "crash",
+    "node": "b"
+   }
+  },
+  {
+   "at": 20641,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 8,
+    "node": "a"
+   }
+  },
+  {
+   "at": 22165,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 9,
+    "node": "c"
+   }
+  },
+  {
+   "at": 23534,
+   "op": {
+    "op": "crash",
+    "node": "c"
+   }
+  },
+  {
+   "at": 24855,
+   "op": {
+    "op": "crash",
+    "node": "c"
+   }
+  },
+  {
+   "at": 26434,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 10,
+    "node": "c"
+   }
+  },
+  {
+   "at": 27786,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 11,
+    "node": "c"
+   }
+  },
+  {
+   "at": 28679,
+   "op": {
+    "op": "restart",
+    "node": "c"
+   }
+  },
+  {
+   "at": 29053,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 12,
+    "node": "a"
+   }
+  },
+  {
+   "at": 30237,
+   "op": {
+    "op": "restart",
+    "node": "b"
+   }
+  },
+  {
+   "at": 30458,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 13,
+    "node": "a"
+   }
+  },
+  {
+   "at": 31809,
+   "op": {
+    "op": "restart",
+    "node": "c"
+   }
+  },
+  {
+   "at": 31941,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 14,
+    "node": "b"
+   }
+  },
+  {
+   "at": 33391,
+   "op": {
+    "op": "crash",
+    "node": "b"
+   }
+  },
+  {
+   "at": 34974,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 15,
+    "node": "a"
+   }
+  },
+  {
+   "at": 36139,
+   "op": {
+    "op": "restart",
+    "node": "c"
+   }
+  },
+  {
+   "at": 36379,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 16,
+    "node": "b"
+   }
+  },
+  {
+   "at": 37680,
+   "op": {
+    "op": "crash",
+    "node": "a"
+   }
+  },
+  {
+   "at": 39246,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 17,
+    "node": "a"
+   }
+  },
+  {
+   "at": 40509,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 18,
+    "node": "c"
+   }
+  },
+  {
+   "at": 41995,
+   "op": {
+    "op": "crash",
+    "node": "c"
+   }
+  },
+  {
+   "at": 42704,
+   "op": {
+    "op": "restart",
+    "node": "a"
+   }
+  },
+  {
+   "at": 47288,
+   "op": {
+    "op": "restart",
+    "node": "b"
+   }
+  },
+  {
+   "at": 56827,
+   "op": {
+    "op": "restart",
+    "node": "c"
+   }
+  }
+ ]
+}
