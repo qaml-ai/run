@@ -47,6 +47,7 @@ import { recordHandoff, recordStart, recordWatchRefused, safeError, Steps } from
 import { BackgroundSpans, inputSpans, RunSpans, type ToolSource, type Tracing } from "./telemetry.ts";
 import { newSpanId, newTraceId, parseTraceparent, sampledAt } from "./otlp.ts";
 import { definitionId, delegateSettings, delegateTool, MULTI_AGENT_LIMITS, PARENT_KEYS, SUBAGENT_EVENTS, type AgentTarget, type DelegateSettings } from "./multi-agent.ts";
+import { random } from "./node-context.ts";
 
 /** Another live node owns this agent; the server forwards the request there. */
 export class NotOwner extends HttpError {
@@ -3139,7 +3140,7 @@ export class ClientSessions {
     const at = Date.now();
     if (event?.background === true) {
       if (event.type === "compaction_start") session.background = this.options.tracing?.settings(session.header.tenant).then(settings => {
-        if (!settings || Math.random() >= settings.sampleRate) return undefined;
+        if (!settings || random().float() >= settings.sampleRate) return undefined;
         const tracing = this.options.tracing!, tenant = session.header.tenant;
         return new BackgroundSpans({ tenant, agentId: session.header.id, content: settings.content, model: () => session.header.config.model, record: span => tracing.record(tenant, span) });
       }, () => undefined);

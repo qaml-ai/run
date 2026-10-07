@@ -4,6 +4,7 @@ import { HttpError } from "./http.ts";
 import { errorClass, metricLine, safeError, writeMetricLine } from "./metrics.ts";
 import { OutboundBlocked, type Outbound } from "./outbound.ts";
 import { formatTraceparent, newSpanId, newTraceId, otlpJson, otlpProtobuf, SpanKind, type Attributes, type Span } from "./otlp.ts";
+import { random } from "./node-context.ts";
 
 /**
  * Trace export: a tenant names an OTLP/HTTP endpoint (`PUT /v1/telemetry`), and every node exports the spans of the
@@ -312,7 +313,7 @@ export class Telemetry implements Tracing {
       } else {
         queue.attempts++;
         const backoff = Math.min(60_000, this.retryBaseMs * 2 ** (queue.attempts - 1));
-        queue.retryAt = Date.now() + Math.max(backoff * (0.5 + Math.random() / 2), sent.retryAfterMs ?? 0);
+        queue.retryAt = Date.now() + Math.max(backoff * (0.5 + random().float() / 2), sent.retryAfterMs ?? 0);
       }
       if (!sent.ok) this.logFailure(tenant, queue, sent, batch.length);
       await this.writeStatus(tenant, sent.ok ? undefined : sent.error);

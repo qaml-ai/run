@@ -1,9 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { performance } from "node:perf_hooks";
 import { transaction, type Db, type Sql } from "./db.ts";
 import { HttpError } from "./http.ts";
 import { safeError } from "./metrics.ts";
-import { network } from "./node-context.ts";
+import { clock, network, random } from "./node-context.ts";
 
 /** This node's ownership of one actor. Writes that only the owner may make are conditional on it. */
 export interface Claim { actor: string; session: string; epoch: number }
@@ -116,7 +115,7 @@ export class Ownership {
 
   async start() {
     await this.register();
-    this.timer ??= setInterval(() => void this.renew(), this.heartbeatMs);
+    this.timer ??= clock().setInterval(() => void this.renew(), this.heartbeatMs);
     this.timer.unref();
   }
 
@@ -136,7 +135,7 @@ export class Ownership {
    * Whether this node may make side effects (model and tool calls, channel sends) now: its last successful renewal
    * began less than `freshMs` ago, so no peer can have taken it for dead (they suspect it at `SUSPECT_RENEWALS`).
    */
-  fresh() { return this.registered && performance.now() - this.renewedAt < this.freshMs; }
+  fresh() { return this.registered && clock().monotonic() - this.renewedAt < this.freshMs; }
 
   /**
    * Wait for a fresh lease: at once while it is, else until a renewal succeeds (a database failover ends). A node
@@ -168,7 +167,7 @@ export class Ownership {
     if (this.registered) return Promise.resolve();
     return this.registering ??= (async () => {
       const session = this.session;
-      const started = performance.now();
+      const started = clock().monotonic();
       await this.db.query(`
         insert into runtime_nodes (node, session, expires_at) values ($1, $2, now() + $3 * interval '1 millisecond')
         on conflict (node) do update set session = excluded.session, expires_at = excluded.expires_at, draining = false`, [this.node, session, this.ttlMs]);
@@ -184,7 +183,7 @@ export class Ownership {
     this.renewing = true;
     const session = this.session;
     // Measured before the write, so the local deadline never passes the published expiry.
-    const started = performance.now();
+    const started = clock().monotonic();
     try {
       // Only a live heartbeat is renewed: one that expired, or that a peer ended (`reap`), may have lost its actors.
       const { rowCount } = await this.db.query("update runtime_nodes set expires_at = now() + $3 * interval '1 millisecond' where node = $1 and session = $2 and expires_at > now()", [this.node, session, this.ttlMs]);
@@ -197,7 +196,7 @@ export class Ownership {
     } catch (error) {
       console.error(JSON.stringify({ type: "heartbeat_renew_failed", error: (error as Error).message }));
       // Retry soon rather than a whole interval later: every second lost here is a second less of outage the node survives.
-      this.retry ??= setTimeout(() => { this.retry = undefined; void this.renew(); }, Math.max(10, Math.floor(this.ttlMs / 30)));
+      this.retry ??= clock().setTimeout(() => { this.retry = undefined; void this.renew(); }, Math.max(10, Math.floor(this.ttlMs / 30)));
       this.retry.unref();
     } finally { this.renewing = false; }
   }
@@ -244,16 +243,16 @@ export class Ownership {
    * slow timer or clock drift cannot outlast the published expiry, and act until `freshMs` after it.
    */
   private arm(started: number) {
-    clearTimeout(this.watchdog);
+    clock().clearTimeout(this.watchdog);
     this.deadline = started + this.ttlMs - this.ttlMs / 10;
-    this.watchdog = setTimeout(() => this.fence("heartbeat_expired"), Math.max(0, this.deadline - performance.now()));
+    this.watchdog = clock().setTimeout(() => this.fence("heartbeat_expired"), Math.max(0, this.deadline - clock().monotonic()));
     this.watchdog.unref();
     this.renewedAt = Math.max(this.renewedAt, started);
-    clearTimeout(this.staleTimer);
-    this.staleTimer = setTimeout(() => this.stale(), Math.max(0, this.renewedAt + this.freshMs - performance.now()));
+    clock().clearTimeout(this.staleTimer);
+    this.staleTimer = clock().setTimeout(() => this.stale(), Math.max(0, this.renewedAt + this.freshMs - clock().monotonic()));
     this.staleTimer.unref();
     if (this.fresh()) {
-      if (this.staleSince !== undefined) console.log(JSON.stringify({ type: "lease_fresh", node: this.node, staleMs: Math.round(performance.now() - this.staleSince) }));
+      if (this.staleSince !== undefined) console.log(JSON.stringify({ type: "lease_fresh", node: this.node, staleMs: Math.round(clock().monotonic() - this.staleSince) }));
       this.staleSince = undefined;
       this.wake();
     }
@@ -268,16 +267,16 @@ export class Ownership {
     if (!this.registered) return;
     // Timers run on a coarser clock than performance.now(), and may run a fraction of a millisecond early.
     if (this.fresh()) {
-      this.staleTimer = setTimeout(() => this.stale(), Math.max(1, Math.ceil(this.renewedAt + this.freshMs - performance.now())));
+      this.staleTimer = clock().setTimeout(() => this.stale(), Math.max(1, Math.ceil(this.renewedAt + this.freshMs - clock().monotonic())));
       this.staleTimer.unref();
       return;
     }
-    this.staleSince ??= performance.now();
-    console.error(JSON.stringify({ type: "lease_stale", node: this.node, sinceRenewalMs: Math.round(performance.now() - this.renewedAt) }));
+    this.staleSince ??= clock().monotonic();
+    console.error(JSON.stringify({ type: "lease_stale", node: this.node, sinceRenewalMs: Math.round(clock().monotonic() - this.renewedAt) }));
     void this.renew();
-    this.staleTimer = setTimeout(() => {
+    this.staleTimer = clock().setTimeout(() => {
       if (!this.registered || this.fresh()) return;
-      console.error(JSON.stringify({ type: "lease_interrupt", node: this.node, sinceRenewalMs: Math.round(performance.now() - this.renewedAt) }));
+      console.error(JSON.stringify({ type: "lease_interrupt", node: this.node, sinceRenewalMs: Math.round(clock().monotonic() - this.renewedAt) }));
       for (const listener of this.staled) {
         try { listener(); } catch (error) { console.error(JSON.stringify({ type: "stale_listener_failed", error: safeError(error) })); }
       }
@@ -289,8 +288,8 @@ export class Ownership {
   fence(reason: string) {
     if (!this.registered) return;
     console.error(JSON.stringify({ type: "self_fence", node: this.node, reason }));
-    clearTimeout(this.watchdog);
-    clearTimeout(this.staleTimer);
+    clock().clearTimeout(this.watchdog);
+    clock().clearTimeout(this.staleTimer);
     this.registered = false;
     this.session = randomUUID();
     this.renewedAt = -Infinity;
@@ -333,7 +332,7 @@ export class Ownership {
   }
 
   /** Whether a claim is still this node's: it has not fenced since taking it, and its fence is not overdue. */
-  holds(claim: Claim) { return this.registered && claim.session === this.session && performance.now() < this.deadline; }
+  holds(claim: Claim) { return this.registered && claim.session === this.session && clock().monotonic() < this.deadline; }
 
   /** Give an actor up so any node can take it at once. */
   async release(claim: Claim) {
@@ -355,7 +354,7 @@ export class Ownership {
    * callers `forget` an entry when its node answers 503 or cannot be reached.
    */
   async route(actor: string): Promise<string | undefined> {
-    const now = performance.now();
+    const now = clock().monotonic();
     const hit = this.owners.get(actor);
     if (hit && hit.until > now) return hit.node;
     this.owners.delete(actor);
@@ -384,12 +383,12 @@ export class Ownership {
 
   /** A live peer that is not draining, if any. */
   async peer(): Promise<string | undefined> {
-    const now = performance.now();
+    const now = clock().monotonic();
     if (!this.peers || this.peers.until <= now) {
       const { rows } = await this.db.query("select node from runtime_nodes where node <> $1 and expires_at > now() and not draining", [this.node]);
       this.peers = { nodes: rows.map(row => row.node), until: now + this.cacheMs };
     }
-    return this.peers.nodes[Math.floor(Math.random() * this.peers.nodes.length)];
+    return this.peers.nodes[Math.floor(random().float() * this.peers.nodes.length)];
   }
 
   /** Stop taking actors, and tell peers to stop sending this node work. What it owns it keeps serving. */
@@ -408,10 +407,10 @@ export class Ownership {
   /** Leave the cluster: dropping the heartbeat frees every actor this node still names. */
   async close() {
     this.closed = true;
-    clearInterval(this.timer);
-    clearTimeout(this.watchdog);
-    clearTimeout(this.retry);
-    clearTimeout(this.staleTimer);
+    clock().clearInterval(this.timer);
+    clock().clearTimeout(this.watchdog);
+    clock().clearTimeout(this.retry);
+    clock().clearTimeout(this.staleTimer);
     const session = this.session;
     this.registered = false;
     this.wake();
@@ -436,8 +435,8 @@ export function probeNode(node: string, timeoutMs = 2_000): Promise<boolean> {
   const port = Number(url.port || (url.protocol === "https:" ? 443 : 80));
   return new Promise(resolve => {
     const socket = network().connect({ host: url.hostname.replace(/^\[|\]$/g, ""), port });
-    const done = (alive: boolean) => { clearTimeout(timer); socket.destroy(); resolve(alive); };
-    const timer = setTimeout(() => done(false), timeoutMs);
+    const done = (alive: boolean) => { clock().clearTimeout(timer); socket.destroy(); resolve(alive); };
+    const timer = clock().setTimeout(() => done(false), timeoutMs);
     socket.once("connect", () => done(true));
     socket.once("error", error => done(!GONE.has((error as NodeJS.ErrnoException).code ?? "")));
   });

@@ -1,5 +1,4 @@
 import { mkdir } from "node:fs/promises";
-import { setTimeout as sleep } from "node:timers/promises";
 import { Agent, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
 import { convertToLlm } from "./pi-harness/messages.ts";
 import {
@@ -24,6 +23,7 @@ import { CHUNK_BYTES, chunksOf, type HistoryChunk } from "./history-pages.ts";
 import { observeTurns, recordCodeExecution } from "./metrics.ts";
 import { fitImage, fits, type Fitted } from "./inspect.ts";
 import { imageHeader } from "./image-header.ts";
+import { clock } from "./node-context.ts";
 
 /** How often an agent reads back from its log what its history backlog could not hold (see `index`). */
 const LAG_READ_MS = 60_000;
@@ -751,7 +751,7 @@ export function createAgentHost(hostIO: HostIO) {
       await transcript.retract();
       io.emit({ type: "message_retracted", index: transcript.total });
       agent!.state.messages = agent!.state.messages.slice(0, -1);
-      try { await sleep(delayMs, undefined, { signal }); }
+      try { await clock().sleep(delayMs, { signal }); }
       catch { return; }
       await agent!.continue();
       if ((agent!.state.messages.at(-1) as AssistantMessage | undefined)?.stopReason !== "error") {
@@ -1169,7 +1169,7 @@ export function createAgentHost(hostIO: HostIO) {
     active?.abort();
     agent?.abort();
     compacting?.controller.abort();
-    if (flushMs > 0) await Promise.race([index(true), sleep(flushMs)]);
+    if (flushMs > 0) await Promise.race([index(true), clock().sleep(flushMs)]);
     await transcript?.log.close();
   }
 

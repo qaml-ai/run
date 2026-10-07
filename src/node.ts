@@ -18,7 +18,7 @@ import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts
 import { StorageUsage } from "./storage-usage.ts";
 import { postgresTail, sweepTails } from "./log-tail.ts";
 import { databaseFromEnvironment, listenFromEnvironment, migrate, type Db } from "./db.ts";
-import { network, runFor, type Network } from "./node-context.ts";
+import { network, REAL_CLOCK, REAL_NETWORK, REAL_RANDOM, runFor, type Clock, type Network, type Random } from "./node-context.ts";
 import { Ownership, probeNode } from "./ownership.ts";
 import { BusyAgents } from "./busy-agents.ts";
 import { tenantsFromEnvironment, type Tenants } from "./tenants.ts";
@@ -105,10 +105,13 @@ export type NodeDeps = {
   /** Managed Discord's credentials, read where the node sets up its channels (undefined: managed Discord is off). */
   managedDiscord?: () => Promise<ManagedDiscordSecrets | undefined>;
   /**
-   * How the node reaches other nodes and the outside world (src/node-context.ts): the real network unless given. A node
-   * given one runs in a context of its own, so its code finds it wherever it runs; several can share a process.
+   * How the node reaches other nodes and the outside world, its time and its randomness (src/node-context.ts): the real
+   * ones unless given. A node given any runs in a context of its own, so its code finds them wherever it runs, and
+   * several can share a process.
    */
   network?: Network;
+  clock?: Clock;
+  random?: Random;
 };
 type RuntimeSecrets = Awaited<ReturnType<typeof runtimeSecrets>>;
 type ManagedDiscordSecrets = NonNullable<Awaited<ReturnType<typeof managedDiscordSecrets>>>;
@@ -164,8 +167,8 @@ type Env = { Bindings: HttpBindings; Variables: { tenant: string } };
  * starts is its own and stops when it drains, so several nodes can share a process.
  */
 export async function createNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNode> {
-  if (!deps.network) return buildNode(config, deps);
-  const context = { network: deps.network };
+  if (!deps.network && !deps.clock && !deps.random) return buildNode(config, deps);
+  const context = { network: deps.network ?? REAL_NETWORK, clock: deps.clock ?? REAL_CLOCK, random: deps.random ?? REAL_RANDOM };
   const node = await runFor(context, () => buildNode(config, deps));
   return {
     ...node, start: () => runFor(context, node.start), drain: signal => runFor(context, () => node.drain(signal)),
