@@ -45,3 +45,18 @@ Run it at low priority beside the soak, for example:
 ```sh
 SIM_SHARDS=6 nice -n 19 ~/camelrun-ci/sim-nightly.sh 1 5000
 ```
+
+## Around the clock (loop.sh)
+
+`loop.sh` keeps the devbox testing main, one job at a time: a soak round (`soak-seq.sh`, property tests at
+PROP_SCALE=50 and the full suite), then a simulator batch of 5000 fresh seeds plus 100 against real Postgres
+(`sim-nightly.sh`, continuing from `loop/next-seed`), and every third cycle the image check (`image-check.sh` in a
+`ci-run` checkout). cron starts it every 10 minutes and at boot; it holds `loop/lock`, so a second start is a no-op.
+
+    */10 * * * * $HOME/camelrun-ci/loop.sh >/dev/null 2>&1
+    @reboot $HOME/camelrun-ci/loop.sh >/dev/null 2>&1
+
+Stop it: `touch ~/camelrun-ci/loop/stop` (it ends after the step in progress; remove the file to let cron start it
+again). One line per cycle in `loop/cycles.tsv`; results in `soak/rounds.tsv`, `soak/failures.tsv`, `sim/nights.tsv`,
+`sim-failures/<stamp>/` and `soak/images.tsv`. `ci-run`, `soak-seq.sh` and `image-check.sh` are the copies installed
+in `~/camelrun-ci`. Never wait on a job with `pgrep -f` and a pattern: it matches the waiting process itself.
