@@ -1,8 +1,8 @@
-import { setTimeout as sleep } from "node:timers/promises";
 import { databaseUnavailable, transaction, type Db, type Sql } from "./db.ts";
 import type { LogTail, TailRow } from "../shared/storage.ts";
 import type { CommitEffect } from "../shared/append-log.ts";
 import { LostClaim, underClaim, type Claim } from "./ownership.ts";
+import { clock } from "./node-context.ts";
 
 /**
  * Logs' hot tails in `log_records`. An append is one multi-row insert, fenced in
@@ -48,7 +48,7 @@ export function postgresTail(db: Db, options: { retryMs?: number; unfenced?: boo
         try { return await append(); }
         catch (error) {
           if (!databaseUnavailable(error) || Date.now() + delay > deadline) throw error;
-          await sleep(delay);
+          await clock().sleep(delay);
         }
       }
     },

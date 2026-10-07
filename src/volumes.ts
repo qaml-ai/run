@@ -1,5 +1,4 @@
 import { createHash, randomBytes } from "node:crypto";
-import { setTimeout as sleep } from "node:timers/promises";
 import type { AppendLog } from "../shared/append-log.ts";
 import type { Storage } from "../shared/storage.ts";
 import { NotOwner } from "./client-sessions.ts";
@@ -11,6 +10,7 @@ import { errorText, type ToolDefinition } from "./protocol.ts";
 import { safeError } from "./metrics.ts";
 import { runVolumeTool, volumeToolDefinitions, type ToolContext } from "./volume-tools.ts";
 import { declaredType, guessContentType, sniffContentType, validContentType } from "./files.ts";
+import { clock } from "./node-context.ts";
 
 /**
  * Volumes: shared file trees agents mount, without POSIX. A volume is an actor
@@ -256,7 +256,7 @@ export class VolumeService {
         // The owner moved, is draining, or is unreachable: look it up afresh.
         if (owner && (status === undefined || status === 503)) this.options.ownership?.forget(id);
         if (status !== 503 || attempt >= 4) throw error;
-        await sleep(100 * 2 ** attempt);
+        await clock().sleep(100 * 2 ** attempt);
       }
     }
   }
