@@ -6,6 +6,7 @@ import {
   type AssistantMessage, type Message, type SystemMessage, type Tool, type ToolCall,
 } from "@earendil-works/pi-ai";
 import { executeCode, presentResult, type CodeExecutor, type CodeResult } from "./codemode.ts";
+import type { Outbound } from "./outbound.ts";
 import { scriptValue } from "./mcp-results.ts";
 import { errorText, IDENTITY_KEY, SCOPE_KEY, type AgentConfig, type CallContext, type Credentials, type RunStop, type ToolBridge } from "./protocol.ts";
 import { applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS, leadingSystemMessage, OUTPUT, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER, OUTPUT_TOOL } from "./system-prompt.ts";
@@ -63,6 +64,10 @@ export interface HostIO {
   codeSlot?(signal: AbortSignal): Promise<() => void>;
   /** Where js_exec runs: this process's v8-exec runner unless given (an inline host's node may give its own). */
   codeExecutor?: CodeExecutor;
+  /** The outbound policy model calls to endpoints tenants give go through: its node's (this process's unless given). */
+  modelOutbound?: Outbound;
+  /** The history backlog's bound (AGENT_HISTORY_BACKLOG_BYTES; `BACKLOG_BYTES` unless given). */
+  historyBacklogBytes?: number;
   /** Wait until the node may act for the agent (its lease is fresh), before each model request and js_exec; rejects once it lost the agent. */
   lease?(): Promise<void>;
   /** The agent's history index, which the supervisor writes: how many messages it has (null: it has none yet, or none is kept), and a chunk to add. */
@@ -351,7 +356,7 @@ export function createAgentHost(hostIO: HostIO) {
       const keepRecentTokens = reason === "overflow" ? Math.max(1_000, Math.floor(contextTokens([...summaryView(), ...context]) * 0.2)) : undefined;
       const outcome = await runCompaction({
         // The summarizer reads messages as the model does, senders included; rendering keeps their count, so the cut still indexes the context.
-        context: renderMessages(context), offset, previous, model: config.model, apiKey: perCall() ? () => io.modelAuth() : apiKey, signal, keepRecentTokens, modelHeaders: config.modelHeaders, gate,
+        context: renderMessages(context), offset, previous, model: config.model, apiKey: perCall() ? () => io.modelAuth() : apiKey, signal, keepRecentTokens, modelHeaders: config.modelHeaders, gate, outbound: io.modelOutbound,
         onResponse: message => io.emit({ type: "compaction_usage", provider: message.provider, model: message.model, usage: message.usage, timestamp: message.timestamp, ...flag }),
       });
       if ("skipped" in outcome) {
@@ -770,7 +775,7 @@ export function createAgentHost(hostIO: HostIO) {
       // Messages the history index lacks are kept from here, as the log is read: all of them for an agent never indexed.
       // One whose index cannot be read now (null) is left for the next start.
       const indexed = io.history ? await io.history.indexed().catch(() => null) : null;
-      transcript = new Transcript(io.transcript, indexed ?? undefined);
+      transcript = new Transcript(io.transcript, indexed ?? undefined, io.historyBacklogBytes);
       await transcript.load();
       let recovered = false;
       let resume: { continue: true } | { finished: { messages: number; error: string | null; reply?: string; stopped?: string; output?: unknown } } | undefined;
@@ -840,7 +845,7 @@ export function createAgentHost(hostIO: HostIO) {
       // A request whose stream goes quiet ends as a retryable error (model-stream.ts), said on the run's stream as it happens.
       const stream = explicitKeyStream(() => perCall() ? io.modelAuth() : undefined, () => config.modelHeaders, gate,
         (model, reasoning) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts),
-        stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: config.model.provider, model: config.model.id }));
+        stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: config.model.provider, model: config.model.id }), io.modelOutbound);
       agent = new Agent({
         initialState: {
           model: config.model,

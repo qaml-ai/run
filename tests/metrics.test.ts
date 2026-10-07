@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
-import { deliveryLine, errorClass, metricLine, observeTurns, recordEventMetrics, recordWatchRefused, setMetricSink, webhookBacklogLine } from "../src/metrics.ts";
+import { deliveryLine, errorClass, metricLine, observeTurns, recordEventMetrics, recordWatchRefused, setMetricService, setMetricSink, webhookBacklogLine } from "../src/metrics.ts";
 import { webhookEvent } from "../src/webhooks.ts";
 
 /** Capture the metric lines written while `fn` runs. */
@@ -194,13 +194,12 @@ test("an event stream subscriber refused at a limit: counted by the limit's scop
 
 test("the spend and provider-credit alarms read metrics as the runtime emits them", async () => {
   const terraform = readFileSync(new URL("../infra/terraform/observability.tf", import.meta.url), "utf8");
-  const previous = process.env.AGENT_SERVICE_NAME;
-  process.env.AGENT_SERVICE_NAME = "camelai-agent-runtime";
+  setMetricService("camelai-agent-runtime");
   const lines = await captured(() => {
     recordEventMetrics([webhookEvent("usage.recorded", "acme", { agentId: "a", provider: "openrouter", model: "m", cost: { usd: 2, source: "provider" } })]);
     const turns = observeTurns(() => ({ provider: "openrouter", id: "m" }));
     turns.event({ type: "message_end", message: { role: "assistant", stopReason: "error", errorMessage: "402 This request requires more credits, or fewer max_tokens" } });
-  }).finally(() => { if (previous === undefined) delete process.env.AGENT_SERVICE_NAME; else process.env.AGENT_SERVICE_NAME = previous; });
+  }).finally(() => setMetricService(undefined));
   // The top-tenant query groups ModelCostUsd by the {ServiceName, Tenant} set the runtime writes.
   const cost = directive(lines.find(line => line.type === "model_cost"));
   assert.ok(cost.Dimensions.some((set: string[]) => set.join() === "ServiceName,Tenant"));

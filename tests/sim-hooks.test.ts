@@ -58,5 +58,7 @@ test("disabled, the hooks allocate nothing: millions of calls run no garbage col
   await new Promise(resolve => setTimeout(resolve, 50));
   observer.disconnect();
   assert.equal(fired, 0);
-  assert.equal(collections, 0);
+  // Nothing in the loop allocates, so it starts no collection; one the file's earlier tests left under way (a busy CI
+  // machine's GC runs late) may still end during it. Allocating one small object per iteration runs about 80 here.
+  assert.ok(collections <= 2, `${collections} garbage collections`);
 });

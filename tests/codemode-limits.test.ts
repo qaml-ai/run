@@ -94,17 +94,8 @@ test("one tenant saturating its executions on a node does not stop another's", {
 });
 
 test("tenants with a limit share 16 executions at once on a node, or AGENT_CODE_WORKERS_MAX", () => {
-  const configured = process.env.AGENT_CODE_WORKERS_MAX;
-  try {
-    delete process.env.AGENT_CODE_WORKERS_MAX;
-    assert.equal(codeCapacity(), 16);
-    for (const [value, capacity] of [["4", 4], ["40", 40], ["", 16]] as const) {
-      process.env.AGENT_CODE_WORKERS_MAX = value;
-      assert.equal(codeCapacity(), capacity);
-    }
-  } finally {
-    if (configured === undefined) delete process.env.AGENT_CODE_WORKERS_MAX; else process.env.AGENT_CODE_WORKERS_MAX = configured;
-  }
+  assert.equal(codeCapacity({}), 16);
+  for (const [value, capacity] of [["4", 4], ["40", 40], ["", 16]] as const) assert.equal(codeCapacity({ AGENT_CODE_WORKERS_MAX: value }), capacity);
 });
 
 test("host-side checks of guest input stay linear: tenant regexes are not run, and large inputs get no quadratic work", () => {
