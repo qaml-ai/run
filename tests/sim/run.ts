@@ -473,8 +473,8 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
       const day = new Date(midnight).toISOString().slice(0, 10);
       if (!charged.has(day)) failures.push(`I16: day ${day} was never charged for storage, though the run spent ${Math.round((ranUntil - midnight) / 60_000)} minutes in it`);
     }
-    // I17: storage reconciled on schedule (daily, as long plans set it): its day is the last day charged. And with no
-    // node lost and a sound store, what metering tracked is what the store holds.
+    // I17: storage reconciled on schedule (daily, as long plans set it): its day is the last day charged. And with every
+    // node up and on the database throughout, and a sound store, what metering tracked is what the store holds.
     if (plan.env?.AGENT_STORAGE_RECONCILE_DAYS === "1" && charged.size) {
       const last = [...charged.keys()].sort().at(-1);
       const reconciled = (await sim.db.query("select to_char(done_day, 'YYYY-MM-DD') as day from billing_jobs where name = 'storage-reconcile'")).rows[0]?.day;
@@ -487,7 +487,9 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
       for (const [key, data] of sim.objects.blobs) count(key, data.byteLength);
       const metered = new Map((await sim.db.query("select kind, owner, bytes from storage_usage")).rows.map(row => [`${row.kind}:${row.owner}`, Number(row.bytes)]));
       const drift = [...new Set([...listed.keys(), ...metered.keys()])].filter(owner => (listed.get(owner) ?? 0) !== (metered.get(owner) ?? 0));
-      const lost = plan.storageFaults || plan.steps.some(step => ["crash", "deploy", "isolate"].includes(step.op.op));
+      // Drift is by design when a node lost its unwritten deltas (a crash), when a store fault left an object uncounted,
+      // or when a node cut off the database held deltas across a reconcile, which then counts them twice: a note then.
+      const lost = plan.storageFaults || plan.dbErrors || plan.steps.some(step => ["crash", "deploy", "isolate", "databaseDown", "partition", "failover", "pause", "pauseOnDb"].includes(step.op.op));
       if (drift.length) (lost ? notes : failures).push(`I17: metered storage differs from the store for ${drift.length} owners (${drift.slice(0, 3).map(owner => `${owner}: ${metered.get(owner) ?? 0} metered, ${listed.get(owner) ?? 0} stored`).join("; ")})`);
     }
     // I18: what is deleted or expired is purged: no object, tail row or live record of it is left once the purge has had
