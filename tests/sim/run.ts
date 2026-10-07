@@ -51,7 +51,7 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
   const history: Event[] = [];
   const agents = new Map<number, string>();
   /** Accepted runs: their agent and request id. */
-  const runs = new Map<number, { agent: number; id: string; acceptedAt: number }>();
+  const runs = new Map<number, { agent: number; id: string; askedAt: number; acceptedAt: number }>();
   const pending: Promise<unknown>[] = [];
   const databaseCut = new Set<string>();
   /** What watchers received: per agent, each connection's event ids and payloads, in order. */
@@ -125,8 +125,9 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
         case "prompt": {
           const agent = agents.get(op.agent);
           if (!agent) return;
+          const askedAt = sim.env.elapsed;
           void client(op, op.node, `/v1/agents/${agent}/prompt`, { text: `run-${op.run} agent-${op.agent}` }, { "Idempotency-Key": `run-${op.run}` })
-            .then(answer => { if (answer?.status === 202) runs.set(op.run, { agent: op.agent, id: answer.json.id, acceptedAt: sim.env.elapsed }); });
+            .then(answer => { if (answer?.status === 202) runs.set(op.run, { agent: op.agent, id: answer.json.id, askedAt, acceptedAt: sim.env.elapsed }); });
           return;
         }
         case "abort": {
@@ -333,7 +334,7 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
     }
     // I11 (agents): a fork's history is its source's up to the fork point: every run of the source that ended before
     // the fork was asked for (but one a stop cancelled before it began, which never entered the history), and no run
-    // accepted after it was made.
+    // asked for after it was made.
     const runsIn = async (agent: string) => {
       const answer = await sim.call(live()[0], `/v1/agents/${agent}/history`);
       const messages: any[] = answer.json?.messages ?? [];
@@ -347,7 +348,8 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
         const endedAt = Number(record.endedAt) - sim.env.start + Math.max(0, ...Object.values(plan.skews).map(Math.abs));
         if (endedAt < invoked && record.outcome?.result?.code !== "cancelled" && !has.has(run)) failures.push(`I11: fork ${fork} of agent-${agent} lacks run-${run}, which ended before the fork was asked for`);
       }
-      for (const [run, { agent: of, acceptedAt }] of runs) if (of === agent && acceptedAt > ended && has.has(run)) failures.push(`I11: fork ${fork} of agent-${agent} has run-${run}, accepted after the fork was made`);
+      // Asked for after: its acceptance's answer may come long after the run was accepted (a paused node), so not by that.
+      for (const [run, { agent: of, askedAt }] of runs) if (of === agent && askedAt > ended && has.has(run)) failures.push(`I11: fork ${fork} of agent-${agent} has run-${run}, asked for after the fork was made`);
     }
     // I13: a schedule made fires once it is due. A delivery that failed (its agent's node was down) is
     // tried again once its claim times out (a minute, src/scheduler.ts), so the bound is that past the later of its due
