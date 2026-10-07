@@ -17,7 +17,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { generatePlan, type Plan } from "../tests/sim/workload.ts";
-import { runPlan } from "../tests/sim/run.ts";
+import { runPlan, type RunResult } from "../tests/sim/run.ts";
 import { COVERAGE_GOALS } from "../tests/sim/hooks.ts";
 import { minimize } from "../tests/sim/minimize.ts";
 import { corpusReport, fuzz } from "../tests/sim/fuzz.ts";
@@ -34,11 +34,16 @@ const out = values.out ?? "sim-failures";
 if (values.postgres) process.env.SIM_DATABASE = "postgres";
 const say = (line: string) => process.stderr.write(`${line}\n`);
 
+/** Run a plan; one that could not finish (a call still open long after recovery, say) fails as itself, not the batch. */
+const runSafely = (plan: Plan): Promise<RunResult> => runPlan(plan).catch((error: Error & Partial<Pick<RunResult, "logs" | "history">>) => ({
+  plan, failures: [`run: ${error.message}`], notes: [], history: error.history ?? [], reached: [], checked: {}, ownership: {}, fired: {}, served: 0, watchedEvents: 0, logs: error.logs ?? [], elapsedMs: 0, hash: "", trace: [],
+}));
+
 /** Cut a failing plan down and save it beside the original as <seed>.min.json. */
 async function minimizeFile(file: string) {
   const plan: Plan = JSON.parse(readFileSync(file, "utf8")).plan;
-  const smaller = await minimize(plan, async candidate => (await runPlan(candidate)).failures, line => say(`  ${line}`));
-  const result = await runPlan(smaller);
+  const smaller = await minimize(plan, async candidate => (await runSafely(candidate)).failures, line => say(`  ${line}`));
+  const result = await runSafely(smaller);
   const target = file.replace(/\.json$/, ".min.json");
   writeFileSync(target, JSON.stringify(result, null, 2));
   say(JSON.stringify({ minimized: file, steps: smaller.steps.length, failures: result.failures, file: target }));
@@ -109,7 +114,7 @@ let failed = 0;
 const reached = new Set<string>();
 const started = performance.now();
 for (const plan of plans) {
-  const result = await runPlan(plan);
+  const result = await runSafely(plan);
   const failures = [...result.failures];
   if (values.twice && !values.postgres) {
     const again = await runPlan(plan);

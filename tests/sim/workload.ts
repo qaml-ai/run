@@ -78,6 +78,11 @@ export type Plan = {
   dbErrors?: { rate: number; codes: string[] };
   /** Each node's clock rates off true: `wall` on its wall clock, `monotonic` on its monotonic clock (fractions, ±). */
   drifts?: Record<string, { wall?: number; monotonic?: number }>;
+  /**
+   * The object store misbehaving, until recovery: at `rate`, an operation is slow (`slowMs` more), refused (a 500, a
+   * 503 SlowDown), or (a create or delete) takes effect with its answer lost.
+   */
+  storageFaults?: { rate: number; kinds: ("slow" | "error" | "throttle" | "lost")[]; slowMs: [number, number] };
   buggify: BuggifyPlan;
   steps: { at: number; op: Op }[];
   /** Virtual ms the steps span; then every fault heals, and the run settles. */
@@ -179,6 +184,14 @@ export function generatePlan(seed: string, options: { steps?: number; durationMs
     }
   }
   steps.sort((a, b) => a.at - b.at);
+  // An object store that misbehaves, for some seeds, from a stream of its own. Slow by two seconds at most: a log's
+  // compaction writes to it inside a database transaction, and PGlite's one session would hold every node up meanwhile,
+  // which a real server's concurrent sessions do not.
+  const store = prng(`${seed}:faults-3`);
+  if (store.float() < 0.25) {
+    const kinds = (["slow", "error", "throttle", "lost"] as const).filter(() => store.float() < 0.6);
+    if (kinds.length) extra.storageFaults = { rate: [0.01, 0.05, 0.2][store.int(3)], kinds: [...kinds], slowMs: [50, [200, 500, 2_000][store.int(3)]] };
+  }
   // A database with a tail for some seeds, from a stream of its own, so every other draw of the plan stays as it was.
   const latency = prng(`${seed}:db-latency`);
   const tail = latency.float() < 0.3 ? { dbLatencyMs: [1, 5] as [number, number], dbSpikes: { rate: 0.01 + latency.int(2) * 0.01, ms: [200, 800] as [number, number] } } : {};

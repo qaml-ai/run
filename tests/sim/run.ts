@@ -48,7 +48,7 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
   const modelRandom = prng(`${plan.seed}:model`);
   const [low, high] = plan.modelDelayMs;
   const sim = await Sim.create({
-    seed: plan.seed, buggify: plan.buggify, quiet: options.quiet ?? true, ...(plan.dbLatencyMs ? { dbLatencyMs: plan.dbLatencyMs } : {}), ...(plan.dbSpikes ? { dbSpikes: plan.dbSpikes } : {}),
+    seed: plan.seed, buggify: plan.buggify, quiet: options.quiet ?? true, ...(plan.dbLatencyMs ? { dbLatencyMs: plan.dbLatencyMs } : {}), ...(plan.dbSpikes ? { dbSpikes: plan.dbSpikes } : {}), storageFaults: !!plan.storageFaults,
     env: { AGENT_LEASE_TTL_MS: String(plan.leaseTtlMs), AGENT_ORPHAN_SWEEP_MS: "2000" },
     respond: body => ({ content: `done ${runOf(body) ?? "?"}`, delayMs: low + modelRandom.int(high - low + 1) }),
   });
@@ -78,6 +78,7 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
     for (const node of plan.nodes) await sim.start(node, {}, { skewMs: plan.skews[node] ?? 0, wallDrift: plan.drifts?.[node]?.wall, drift: plan.drifts?.[node]?.monotonic });
     // The database refuses some statements from here on (a node that cannot start for it is restarted, as ECS would).
     if (plan.dbErrors && "errors" in sim.db) sim.db.errors = { ...plan.dbErrors, random: prng(`${plan.seed}:db-errors`) };
+    sim.storageFaults = plan.storageFaults;
 
     /** A client call, recorded; a node that cannot be reached (crashed, partitioned) fails it as unknown. */
     const client = (op: Op, node: string, path: string, body?: unknown, headers?: Record<string, string>) => {
@@ -238,6 +239,7 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
     for (const node of plan.nodes) sim.databaseDown(node, false);
     // The database stops refusing statements, too: what follows is recovery, then the checkers' reads.
     if ("errors" in sim.db) sim.db.errors = undefined;
+    sim.storageFaults = undefined;
     await sim.env.settle(Promise.allSettled(pending), 10 * 60_000).catch(() => {
       const open = history.filter(event => event.ended === undefined).map(event => `${event.op.op} at ${event.invoked}`);
       throw new Error(`Calls still open 10 virtual minutes after recovery: ${open.join(", ") || "(a restart, drain or watch)"}`);
@@ -267,6 +269,20 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
       }, `run-${run} to end`, Math.max(1, healedAt + bound - sim.env.elapsed)).catch(() => undefined);
       if (!record) failures.push(`I3: run-${run} (agent-${agent}, ${id}) never ended within ${bound} ms of recovery`);
       else records.set(run, record);
+    }
+    // I15: what a run that succeeded said is kept: its prompt, and its answer after it, are in its agent's history.
+    const histories = new Map<number, string[]>();
+    for (const [run, record] of records) {
+      if (record.outcome?.error !== undefined || record.outcome?.result?.error !== undefined || record.outcome?.result?.stopped) continue;
+      const agent = runs.get(run)!.agent;
+      if (!histories.has(agent)) {
+        const messages: any[] = (await sim.call(live()[0], `/v1/agents/${agents.get(agent)}/history`)).json?.messages ?? [];
+        histories.set(agent, messages.map(message => `${message.role}:${JSON.stringify(message.content)}`));
+      }
+      const said = histories.get(agent)!;
+      const asked = said.findIndex(line => line.startsWith("user:") && RUN.exec(line)?.[1] === String(run));
+      if (asked < 0) failures.push(`I15: run-${run} succeeded, but its prompt is not in agent-${agent}'s history`);
+      else if (!said.slice(asked + 1).some(line => line.startsWith("assistant:") && line.includes(`done ${run}`))) failures.push(`I15: run-${run} succeeded, but its answer is not in agent-${agent}'s history`);
     }
     // The outcome stays what it was.
     await sim.advance(5_000);
@@ -426,6 +442,9 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
       watchedEvents: [...watched.values()].flat().reduce((sum, connection) => sum + connection.events.length, 0),
       elapsedMs: sim.env.elapsed, hash: createHash("sha256").update(trace.join("\n")).digest("hex"), trace,
     };
+  } catch (error) {
+    // A run that could not finish keeps what it saw, for whoever looks into it.
+    throw Object.assign(error as Error, { logs: sim.env.logs, history });
   } finally {
     await sim.close();
   }

@@ -126,8 +126,9 @@ const shift = (random: Random) => (random.float() < 0.5 ? 1 + random.int(50) : 1
  */
 function retune(plan: Plan, random: Random): Plan {
   const pick = <T>(items: readonly T[]) => items[random.int(items.length)];
-  switch (random.int(9)) {
+  switch (random.int(10)) {
     case 6: return { ...plan, drifts: random.float() < 0.2 ? undefined : Object.fromEntries(plan.nodes.map(node => [node, { wall: (random.int(201) - 100) / 10_000, monotonic: (random.int(201) - 100) / 100_000 }])) };
+    case 8: return { ...plan, storageFaults: random.float() < 0.2 ? undefined : { rate: pick([0.01, 0.05, 0.2]), kinds: (["slow", "error", "throttle", "lost"] as const).filter(() => random.float() < 0.6).concat(["lost"]), slowMs: [50, pick([200, 500, 2_000])] } };
     case 7: return { ...plan, dbErrors: random.float() < 0.2 ? undefined : { rate: pick([0.001, 0.005, 0.02, 0.05]), codes: ["40001", "40P01", "57014", "ECONNRESET"].filter(() => random.float() < 0.6).concat(["ECONNRESET"]) } };
     case 0: return { ...plan, leaseTtlMs: pick([3_000, 6_000, 12_000]) };
     case 4: return { ...plan, dbLatencyMs: random.float() < 0.2 ? undefined : [0, pick([1, 5, 20, 200, 1_000])] };

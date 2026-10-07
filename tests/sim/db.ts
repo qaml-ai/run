@@ -114,6 +114,8 @@ export class SimDb implements WorldDb {
    */
   connection(node: string, gate: (text: string) => Promise<void> = async () => {}, latency: () => number = () => 0): Db & { kill(): void } {
     let ended = false, killed = false;
+    /** Sessions this pool holds (open transactions): a process that dies loses its connections, and the server rolls back. */
+    const held = new Set<() => void>();
     // A paused node hears the answer once it runs again (`gate`).
     const answered = <T>(result: Promise<T>, text: string) => result.then(async value => { await gate(text); return value; }, async error => { await gate(text); throw error; });
     // A pool query's round trip (`latency`, virtual ms): it reaches the server that much later, on the node's timers.
@@ -129,7 +131,15 @@ export class SimDb implements WorldDb {
           const listeners = new Set<(error: Error) => void>();
           // A transaction its node could not finish (cut off mid-way) is rolled back here, as the server would on the
           // connection's loss, before the session serves anyone else.
-          let broken = false;
+          let broken = false, done = false;
+          const finish = (rollback: boolean) => {
+            if (done) return;
+            done = true;
+            held.delete(lost);
+            if (rollback) void this.pglite.exec("rollback").catch(() => {}).finally(release); else release();
+          };
+          const lost = () => finish(true);
+          held.add(lost);
           resolve({
             query: (async (text: string, values?: unknown[]) => {
               if (killed) { broken = true; throw unavailable(); }
@@ -137,14 +147,14 @@ export class SimDb implements WorldDb {
               catch (error) { if (this.down.has(node) || (error as { code?: string }).code === "ECONNRESET") broken = true; throw error; }
             }) as DbClient["query"],
             // Released with an error, pg destroys the connection, and the server rolls back what it held.
-            release: error => { if (broken || error) void this.pglite.exec("rollback").catch(() => {}).finally(release); else release(); },
+            release: error => finish(!!(broken || error)),
             on: (_event, listener) => listeners.add(listener),
             off: (_event, listener) => listeners.delete(listener),
           });
         }));
       }),
       end: async () => { ended = true; },
-      kill: () => { killed = true; },
+      kill: () => { killed = true; for (const lost of [...held]) lost(); },
       totalCount: 0, idleCount: 0, waitingCount: 0,
     };
   }
