@@ -18,7 +18,7 @@ import { enqueueEvents, usageCost, usageEvent, type WebhookEvent } from "./webho
 export interface Principal { tenant: string; via: "operator" | "token" | "console" | "oauth"; tokenId?: string }
 /** Whose key an agent calls a provider with: the tenant's own, one an admin set for the tenant, or the platform's (billed to prepaid credit). */
 export type KeySource = "tenant" | "admin" | "platform";
-export interface KeyStatus { provider: string; source: KeySource; last4?: string; setAt?: number }
+export interface KeyStatus { provider: string; source: KeySource; last4?: string; setAt?: number; region?: string }
 export interface ApiToken { id: string; name: string; sha256: string; prefix: string; createdAt: number }
 export type Sealed = { iv: string; tag: string; ciphertext: string };
 /** A GitHub account at sign-in: its login, numeric id and creation time (ms). */
@@ -245,7 +245,7 @@ export class Accounts {
 
   private async storedKeys(tenant: string) {
     if (!validTenant(tenant)) throw new Error(`Invalid tenant id: ${tenant}`);
-    return (await this.db.query("select provider, sealed, last4, set_at from provider_keys where tenant = $1", [tenant])).rows as { provider: string; sealed: Sealed; last4: string; set_at: number }[];
+    return (await this.db.query("select provider, sealed, last4, set_at, region from provider_keys where tenant = $1", [tenant])).rows as { provider: string; sealed: Sealed; last4: string; set_at: number; region: string | null }[];
   }
 
   /** Whether the tenant's agents may fall back to the platform's keys: an admin tenant's entry says (Tenants.usesPlatformKeys), a self-serve tenant if prepaid. */
@@ -255,11 +255,11 @@ export class Accounts {
 
   /**
    * The key an agent uses: the tenant's own key, else one an admin configured, else, for a prepaid or an
-   * admin tenant (`usesPlatformKeys`), the platform's.
+   * admin tenant (`usesPlatformKeys`), the platform's. The tenant's own amazon-bedrock key comes with its `region`.
    */
-  async providerKey(tenant: string, provider: string): Promise<{ key: string; source: KeySource } | undefined> {
-    const stored = this.secretsKey && validTenant(tenant) ? (await this.db.query("select sealed from provider_keys where tenant = $1 and provider = $2", [tenant, provider])).rows[0] : undefined;
-    if (stored) return { key: this.unseal(`${tenant}:${provider}`, stored.sealed), source: "tenant" };
+  async providerKey(tenant: string, provider: string): Promise<{ key: string; source: KeySource; region?: string } | undefined> {
+    const stored = this.secretsKey && validTenant(tenant) ? (await this.db.query("select sealed, region from provider_keys where tenant = $1 and provider = $2", [tenant, provider])).rows[0] : undefined;
+    if (stored) return { key: this.unseal(`${tenant}:${provider}`, stored.sealed), source: "tenant", ...(stored.region ? { region: stored.region } : {}) };
     const admin = this.tenants.apiKey(tenant, provider);
     if (admin) return { key: admin, source: "admin" };
     const platform = this.tenants.platformKey(provider);
@@ -273,7 +273,7 @@ export class Accounts {
     const statuses = new Map<string, KeyStatus>();
     if (await this.usesPlatformKeys(tenant)) for (const provider of this.tenants.platformProviders()) statuses.set(provider, { provider, source: "platform" });
     for (const provider of this.tenants.providers(tenant)) statuses.set(provider, { provider, source: "admin" });
-    for (const key of await this.storedKeys(tenant)) statuses.set(key.provider, { provider: key.provider, source: "tenant", last4: key.last4, setAt: key.set_at });
+    for (const key of await this.storedKeys(tenant)) statuses.set(key.provider, { provider: key.provider, source: "tenant", last4: key.last4, setAt: key.set_at, ...(key.region ? { region: key.region } : {}) });
     return [...statuses.values()].sort((a, b) => a.provider.localeCompare(b.provider));
   }
 
@@ -289,14 +289,15 @@ export class Accounts {
 
   get canStoreKeys() { return !!this.secretsKey; }
 
-  async setKey(tenant: string, provider: string, key: string) {
+  /** Store the tenant's key for `provider`, and for amazon-bedrock the region it calls. */
+  async setKey(tenant: string, provider: string, key: string, region?: string) {
     if (!this.secretsKey) throw new Error("This runtime has no AGENT_SECRETS_KEY, so it cannot store provider keys");
     if (!validTenant(tenant)) throw new Error(`Invalid tenant id: ${tenant}`);
     // Binding tenant and provider stops a stored ciphertext being replayed under another name.
     await this.db.query(`
-      insert into provider_keys (tenant, provider, sealed, last4, set_at) values ($1, $2, $3, $4, $5)
-      on conflict (tenant, provider) do update set sealed = excluded.sealed, last4 = excluded.last4, set_at = excluded.set_at`,
-    [tenant, provider, this.seal(`${tenant}:${provider}`, key), key.slice(-4), Date.now()]);
+      insert into provider_keys (tenant, provider, sealed, last4, set_at, region) values ($1, $2, $3, $4, $5, $6)
+      on conflict (tenant, provider) do update set sealed = excluded.sealed, last4 = excluded.last4, set_at = excluded.set_at, region = excluded.region`,
+    [tenant, provider, this.seal(`${tenant}:${provider}`, key), key.slice(-4), Date.now(), region ?? null]);
   }
   /** Encrypt a secret with AGENT_SECRETS_KEY; `aad` names what it belongs to, so it cannot be moved. */
   seal(aad: string, plaintext: string): Sealed {

@@ -17,13 +17,16 @@ const PURPOSE: Record<string, string> = { search: "web search", fetch: "page ren
 
 function KeyDialog({ provider, onClose, onSaved }: { provider: Provider; onClose: () => void; onSaved: () => void }) {
   const [key, setKey] = useState("");
+  // A Bedrock API key works in every region: the account's key names the one its calls go to.
+  const bedrock = provider.id === "amazon-bedrock";
+  const [region, setRegion] = useState(provider.key?.region ?? "us-east-1");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   async function save(event: FormEvent) {
     event.preventDefault();
     setBusy(true); setError(undefined);
     try {
-      await api(`/v1/providers/${provider.id}/key`, { method: "PUT", body: { apiKey: key.trim() } });
+      await api(`/v1/providers/${provider.id}/key`, { method: "PUT", body: { apiKey: key.trim(), ...(bedrock ? { region: region.trim() } : {}) } });
       onSaved(); onClose();
     } catch (caught) { setError((caught as Error).message); }
     finally { setBusy(false); }
@@ -39,6 +42,8 @@ function KeyDialog({ provider, onClose, onSaved }: { provider: Provider; onClose
                 ? <>The key is stored encrypted and never shown again. Agents whose definition enables web_search search with it (web_search tries exa, brave, then parallel, using the first with a key that answers), and {provider.id} bills the searches to it.</>
                 : provider.kind === "fetch"
                 ? <>The key is stored encrypted and never shown again. When web_fetch reads a page that is only a JavaScript shell, {provider.id} renders it with this key and bills the render to it.</>
+                : bedrock
+                ? <>A Bedrock API key (not AWS access keys), sent as a bearer token to Bedrock in the region you name. It is stored encrypted and never shown again; your agents use it for amazon-bedrock models and usage bills to your AWS account.</>
                 : <>The key is checked with {provider.id}, then stored encrypted. It is never shown again; your agents use it for {provider.id} models and usage bills to it.</>}
             </DialogDescription>
           </DialogHeader>
@@ -47,9 +52,13 @@ function KeyDialog({ provider, onClose, onSaved }: { provider: Provider; onClose
             <Label htmlFor="api-key">API key</Label>
             <Input id="api-key" type="password" autoComplete="off" autoFocus value={key} onChange={event => setKey(event.target.value)} />
           </div>
+          {bedrock && <div className="flex flex-col gap-2">
+            <Label htmlFor="region">AWS region</Label>
+            <Input id="region" autoComplete="off" spellCheck={false} placeholder="us-east-1" value={region} onChange={event => setRegion(event.target.value)} />
+          </div>}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
-            <Button type="submit" disabled={!key.trim() || busy}>{busy && <Loader2 className="animate-spin" />}Verify and save</Button>
+            <Button type="submit" disabled={!key.trim() || (bedrock && !region.trim()) || busy}>{busy && <Loader2 className="animate-spin" />}Verify and save</Button>
           </DialogFooter>
         </form>
       </DialogContent>
@@ -61,7 +70,7 @@ function KeyBadge({ provider }: { provider: Provider }) {
   if (!provider.key) return <Badge variant="outline">No key</Badge>;
   if (provider.key.source === "admin") return <Badge variant="secondary">Set by admin</Badge>;
   if (provider.key.source === "platform") return <Badge variant="secondary">Platform key · billed to credit</Badge>;
-  return <Badge><CheckCircle2 /><span className="font-mono tracking-normal normal-case">…{provider.key.last4}</span></Badge>;
+  return <Badge><CheckCircle2 /><span className="font-mono tracking-normal normal-case">…{provider.key.last4}{provider.key.region ? ` · ${provider.key.region}` : ""}</span></Badge>;
 }
 
 export function ModelsPage({ me }: { me: Me }) {

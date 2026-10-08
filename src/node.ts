@@ -647,6 +647,8 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       // An agent with a key scope, or on the tenant's own provider, resolves its key at each call, so a changed key applies at once.
       if (keyScope || await modelProviders.has(tenant, provider)) return { key: SCOPE_KEY, platform: false };
       const resolved = await accounts.providerKey(tenant, provider);
+      // The tenant's own Bedrock key names a region, which each call takes with the key (`scopedKey`).
+      if (resolved?.region) return { key: SCOPE_KEY, platform: false };
       return resolved && { key: resolved.key, platform: resolved.source !== "tenant" };
     },
     catalogPriced: async tenant => await accounts.billing.mode(tenant) === "prepaid",
@@ -659,7 +661,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       if (entry && !providerInfo(provider)) return undefined;
       if (entry) return { ...entry, apiKey: entry.apiKey ?? "", platform: false };
       const resolved = await accounts.providerKey(tenant, provider);
-      return resolved && { apiKey: resolved.key, platform: resolved.source !== "tenant" };
+      return resolved && { apiKey: resolved.key, platform: resolved.source !== "tenant", ...(resolved.region ? { region: resolved.region } : {}) };
     },
     modelEndpoints: tenant => tenants.modelEndpoints(tenant),
     customProviders: (tenant, keyScope) => modelProviders.resolvable(tenant, keyScope),

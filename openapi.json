@@ -814,6 +814,10 @@
           },
           "setAt": {
             "type": "number"
+          },
+          "region": {
+            "type": "string",
+            "description": "For the tenant's own amazon-bedrock key: the AWS region its calls go to"
           }
         },
         "required": [
@@ -983,6 +987,9 @@
           "last4": {
             "type": "string"
           },
+          "region": {
+            "type": "string"
+          },
           "verification": {
             "type": "object",
             "properties": {
@@ -1021,6 +1028,11 @@
           "verify": {
             "type": "boolean",
             "description": "false stores the key without checking it with the provider"
+          },
+          "region": {
+            "type": "string",
+            "description": "amazon-bedrock only, and required for it: the AWS region its calls go to (the key is a Bedrock API key, sent as a bearer token)",
+            "example": "us-west-2"
           }
         },
         "required": [

@@ -9,7 +9,6 @@ export const FETCH_PROVIDERS = ["firecrawl"] as const;
 
 /** Providers that authenticate with something other than a single API key. */
 const NOT_API_KEY: Record<string, string> = {
-  "amazon-bedrock": "AWS credentials",
   "google-vertex": "a Google Cloud service account",
   azure: "an Azure endpoint and deployment",
   "github-copilot": "GitHub OAuth",
