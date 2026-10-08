@@ -28,7 +28,9 @@ import type { HumanInputSettings } from "./inputs.ts";
  * Server-side tool sources: tools the runtime calls itself, configured in a
  * definition. An agent keeps the sources of the definition revision it has (with
  * their secrets sealed under the definition's id), so tools reach every agent the
- * same way whether or not an application is connected.
+ * same way whether or not an application is connected. An agent without a
+ * definition, or a stateless run, may have MCP servers of its own, without
+ * credentials (`inlineMcpServersInput`).
  */
 export type Exposure = "direct" | "codemode" | "both";
 /** How a source is authenticated beyond its headers: a stored bearer token, or a token the runtime signs for each request. */
@@ -79,8 +81,8 @@ export interface OpenApiSpec {
 /** `humanInput`: how long inputs wait, what happens when they expire, and who else may answer them (inputs.ts). */
 export interface Sources { builtins?: string[]; webSearch?: { providers: string[] }; mcpServers?: McpServerSpec[]; openApi?: OpenApiSpec[]; humanInput?: HumanInputSettings; delegate?: DelegateSettings }
 /**
- * The agent a tool call is for, its owner's claim on it, the definition whose secrets it may unseal (MCP servers and
- * OpenAPI specs come only from one; an agent's own builtins have none), its mounts (for files in and out), and who
+ * The agent a tool call is for, its owner's claim on it, the definition whose secrets it may unseal (OpenAPI specs and
+ * MCP servers with credentials come only from one; an agent's own builtins and MCP servers have none), its mounts (for files in and out), and who
  * hears of files saved.
  */
 export type SourceContext = { tenant: string; agent: string; definition?: string; claim?: Claim; identity?: AgentIdentity; mounts?: Mount[]; onWrite?: ToolContext["onWrite"] };
@@ -159,6 +161,26 @@ export function mcpServersInput(input: unknown, previous: McpServerSpec[] | unde
     const credentials = sealCredentials(headers, auth, previous?.find(other => other.name === name), checked, sealedAad(definition, name), context);
     return { ...spec, ...credentials, ...audienceInput(audience, credentials.auth, `MCP server ${name}`, checked, context.tenant) };
   });
+}
+
+/** Why an agent's or a run's own MCP servers take no credentials. */
+export const INLINE_CREDENTIALS = "An agent's or run's own MCP servers carry no credentials: give auth { type: \"runtime\" } (the runtime's identity tokens) or none, and no headers. A server that needs a token or headers goes in a definition, where its credentials are sealed once";
+
+/**
+ * An agent's own `mcpServers` (one without a definition), or a stateless run's: validated as a definition's are, but
+ * with no credentials to seal, only the runtime's identity tokens (auth "runtime") or none. Nothing is stored per agent
+ * or run that a definition would seal; their tokens name no definition. null or [] is none.
+ */
+export function inlineMcpServersInput(input: unknown, context: Context): McpServerSpec[] {
+  if (input === null) return [];
+  if (Array.isArray(input)) for (const server of input) {
+    if (!server || typeof server !== "object" || Array.isArray(server)) continue;
+    const { headers, auth } = server as { headers?: unknown; auth?: unknown };
+    if (headers !== undefined) throw bad(INLINE_CREDENTIALS);
+    if (auth !== undefined && (!auth || typeof auth !== "object" || (auth as { type?: unknown }).type !== "runtime" || Object.keys(auth).length !== 1)) throw bad(INLINE_CREDENTIALS);
+  }
+  // Nothing is sealed (auth "runtime" stores no secret), so no definition's name is needed for one.
+  return mcpServersInput(input, undefined, "", context);
 }
 
 /**
@@ -311,8 +333,15 @@ export class ToolSources {
     if (!this.signer) throw new Error("This runtime cannot sign identity tokens");
     return this.signer.token(audience, { tenant: context.tenant, agent: context.agent, definition: context.definition, ...(context.identity ? { identity: context.identity } : {}), ...call });
   }
+  /** An agent's or run's own MCP servers from what a tenant sent (`inlineMcpServersInput`), checked by this runtime's guard. */
+  inline(input: unknown, tenant: string): McpServerSpec[] {
+    return inlineMcpServersInput(input, { accounts: this.accounts, outbound: this.outbound, tenant });
+  }
+
   private endpoint(context: SourceContext, spec: McpServerSpec): McpServer {
-    const headers = this.headers(sealedAad(context.definition!, spec.name), spec.sealed);
+    // Credentials are sealed under a definition: an agent's own servers (no definition) carry none.
+    if (spec.sealed && !context.definition) throw new Error(`MCP server ${spec.name} has sealed credentials but no definition to unseal them with`);
+    const headers = spec.sealed ? this.headers(sealedAad(context.definition!, spec.name), spec.sealed) : {};
     if (spec.auth?.type !== "runtime") return { url: spec.url, headers };
     // Each request is signed for the turn it is made in (callScope), and each agent has its own session.
     return { url: spec.url, headers, token: () => this.identityToken(context, audienceOf(spec.audience, spec.url, context.tenant)), scope: context.agent };
@@ -428,7 +457,8 @@ export class ToolSources {
         if (api && operation) {
           if (apiAsks(api, operation) && !approval) return APPROVAL_REQUIRED;
           const { url, init } = await operationRequest(api.baseUrl, operation, args, callFiles);
-          const secrets = this.headers(sealedAad(context.definition!, api.name, "openapi"), api.sealed);
+          if (api.sealed && !context.definition) throw new Error(`OpenAPI source ${api.name} has sealed credentials but no definition to unseal them with`);
+          const secrets = api.sealed ? this.headers(sealedAad(context.definition!, api.name, "openapi"), api.sealed) : {};
           if (api.auth?.type === "runtime") secrets.Authorization = `Bearer ${await this.identityToken(context, audienceOf(api.audience, api.baseUrl, context.tenant), turn)}`;
           // The call's key, as APIs that dedupe writes take one (Stripe's convention).
           if (idempotencyKey) init.headers = { ...init.headers as Record<string, string>, "Idempotency-Key": idempotencyKey };
