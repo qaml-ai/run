@@ -16,8 +16,8 @@ Coding agents: this version's docs are in the package, next to its code
 (`SKILL.md` and `sdk.md` in `camelai_run`'s directory: `python -c "import camelai_run, os; print(os.path.dirname(camelai_run.__file__))"`).
 To set camelRun up in a project, read <https://run.camelai.com/SKILL.md>.
 
-The SDK is async-only: call it inside `async def`, and from synchronous code (a
-script, a Django view, a Celery task) with `asyncio.run(...)`.
+The SDK is async: call it inside `async def`. Synchronous code (a script, a
+Django or Flask view, a Celery task) uses `camelai_run.sync` (below).
 
 ```python
 import asyncio
@@ -55,6 +55,9 @@ asyncio.run(main())
   a run waiting on approval.
 - **Events.** `on_event` may be a plain or an async function; it runs in order,
   apart from the connection. `close()` stops it: events still queued are dropped.
+
+- **History from elsewhere.** `upsert(key, initial_messages=[...])` makes the
+  agent with a conversation that began elsewhere (Pi messages).
 
 Documentation: [Quickstart](https://run.camelai.com/docs/quickstart.md),
 [Concepts](https://run.camelai.com/docs/concepts.md),
@@ -102,8 +105,39 @@ and `TestRuntime()` signs tokens for tests: `await TestRuntime().call_tool(app, 
 
 Keep the API key on your backend: it can create and control every
 agent in your tenant. Sign in at https://run.camelai.com/console to add provider
-keys, create API tokens and watch agents. The TypeScript SDK is
+keys, create API tokens and watch agents; `agents.runtime` also manages key
+scopes (`set_scope_key`), API tokens (`create_token`, `revoke_token`), usage
+(`usage()`) and webhook endpoints (`create_webhook`). The TypeScript SDK is
 [`@camelai/run`](https://www.npmjs.com/package/@camelai/run).
+
+From WSGI (Django, Flask), `camelai_run.sync.serve_tools` takes the same arguments
+and is a WSGI app; plain functions run in the request's thread. See
+[Tools](https://run.camelai.com/docs/guides/tools.md#served-tools-over-http-for-serverless-and-many-users).
+
+## Synchronous code
+
+`camelai_run.sync` has the same names without `await`:
+
+```python
+from camelai_run.sync import Agents
+
+with Agents() as agents:
+    agent = agents.upsert("support-triage", instructions="Be brief.")
+    run = agent.run("Summarize ticket 123", user="alice")
+    for part in agent.stream("And the next one?"):
+        print(part.type, part.text or "")
+    print(agents.run("Ship on Friday?", instructions="Vote yes or no.").text)
+```
+
+It runs agents and stateless runs, streams them, answers their inputs, and has
+the lower-level `AgentRuntime`'s calls. It does not serve tools from its
+process: serve them with `serve_tools` and a definition.
+
+## Webhooks
+
+`verify_webhook(body, headers, secret)` checks a webhook request's signature
+and age and returns its event (`WebhookVerificationError` otherwise). Pass the
+raw body, before parsing it.
 
 ## Asking the user
 

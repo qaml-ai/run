@@ -32,10 +32,11 @@ const agents = new Agents({ apiKey, url });   // or `await using agents = new Ag
 async with Agents(api_key, url=url) as agents: ...
 ```
 
-The Python SDK is async-only: every call is awaited inside `async def`. From
-synchronous code (a script, a Django view, a Celery task), run it with
-`asyncio.run(...)`. Its names are the TypeScript ones in snake_case
-(`throw_on_error`, `run.tool_errors`, `part.is_error`), as the tables below show.
+The Python SDK is async: every call is awaited inside `async def`. Synchronous
+code (a script, a Django or Flask view, a Celery task) uses `camelai_run.sync`,
+the same names without `await`: see [The synchronous client](#the-synchronous-client-python).
+Its names are the TypeScript ones in snake_case (`throw_on_error`,
+`run.tool_errors`, `part.is_error`), as the tables below show.
 
 - `apiKey` defaults to the `CAMELAI_API_KEY` environment variable, `url` to
   `CAMELAI_BASE_URL`, else `https://run.camelai.com`.
@@ -85,6 +86,7 @@ brought to `config` if it differs. Returns a connected `Agent`. See
 | `onEvent(event, runId)` | `on_event=` | every event, for display; runs in order, apart from the connection; plain or async |
 | `onInput(input)` | `on_input=` | each input as it is asked: return an answer, or nothing |
 | `onError(error)` | `on_error=` | errors from the connection and from `onEvent` |
+| | `initial_messages=` | the history it begins with, used only when it is made (`runtime.createAgent({ initialMessages })` in TypeScript); see [Bringing in existing conversations](../guides/multi-user.md#bringing-in-existing-conversations) |
 
 ### `agents.get(keyOrId, { tools, … })`
 
@@ -279,6 +281,48 @@ the definitions' sources, and `serveTools` / `serve_tools`. With several
 processes (web workers, task queues, serverless), serve tools over HTTP: see
 [Several processes, workers and deploys](../guides/tools.md#several-processes-workers-and-deploys).
 
+## The synchronous client (Python)
+
+`camelai_run.sync` has the SDK's names for code that is not async: a script, a
+Django or Flask view, a Celery task. Calls return their answer; nothing is
+awaited.
+
+```python
+from camelai_run.sync import Agents
+
+with Agents() as agents:  # CAMELAI_API_KEY
+    agent = agents.upsert("support-triage", instructions="Be brief.")
+    run = agent.run("Summarize ticket 123", user="alice")
+    for part in agent.stream("And the next one?"):
+        if part.type == "text":
+            print(part.text, end="")
+    vote = agents.run("Ship on Friday?", instructions="Vote yes or no.", output=Vote)
+```
+
+- `Agents`: `upsert`, `get`, `fork`, `agent(session)`, `run` and `runs`
+  (stateless), `close`. `Agent`: `run`, `stream`, `steer`, `history`,
+  `history_page`, `pending_inputs`, `configure`, `abort`, `fork`, `schedule`,
+  `files`, `delete`. A run's inputs are answered with `run.inputs[0].answer(…)`.
+- `AgentRuntime` has every call of the async one that is one request
+  (definitions, providers, key scopes, tokens, usage, webhooks, `me`,
+  `browser_token`, runs, `telemetry`), and `wait_for_run` and `run_events`.
+- Handles hold no connection. `agent.run()` sends the message and asks for its
+  outcome (a long poll of up to 25 s at a time); `agent.stream()` reads the
+  agent's events while it reads the run. `timeout=` (seconds) stops the wait,
+  not the run.
+- It never serves tools: that needs the agent's connection held, as the async
+  SDK does. Serve them over HTTP with `camelai_run.sync.serve_tools` (a WSGI
+  app; see [Tools](../guides/tools.md#served-tools-over-http-for-serverless-and-many-users))
+  and a definition. `upsert(tools=[…])` declares tools for a process with the
+  async SDK to serve; an upsert sets the agent's tools to those it is given, so
+  `get` an agent whose tools another process serves.
+- Not here: `on_event` and `on_input`, volumes (`runtime.volume`), and
+  `create_agent`. One `Agents` is for one thread at a time; give each thread
+  (or Celery worker) its own.
+
+`camelai_run.sync` also has `verify_runtime_token` (synchronous) and a
+`TestRuntime` whose `call_tool` calls a WSGI app.
+
 ## Errors
 
 - `AgentError`: `status` (HTTP, or 0), `code` (a stable name where the runtime
@@ -308,6 +352,12 @@ available and stable for code that needs the wire's shape: `agents.runtime`,
 | `runtime.upsertDefinition(key, input)`, `createDefinition`, `updateDefinition`, `definition(s)`, `deleteDefinition` | `upsert_definition(key, …)`, `create_definition`, … | definitions; the same key is the same definition |
 | `runtime.createVolume`, `volume(id)`, `mounts`, `setMounts` | `create_volume`, `volume(id)`, … | volumes and mounts |
 | `runtime.inbox(state)`, `toolSources(agentId)` | `inbox(state=)`, `tool_sources(agent_id)` | inputs across agents; an agent's tools |
+| | `set_scope_key(scope, provider, api_key=, base_url=, headers=, region=)`, `key_scope(scope)`, `delete_scope_key(scope, provider)`, `delete_key_scope(scope)` | a key scope's provider keys (`/v1/key-scopes`): agents made with `key_scope=` use them first; see [Models and keys](../guides/models-and-keys.md) |
+| | `set_scope_provider(scope, name, base_url=, models=, …)`, `scope_providers(scope)`, `delete_scope_provider(scope, name)` | a key scope's own providers, as `set_provider`'s |
+| | `usage(days=)` | tokens and cost per day and model (`GET /v1/usage`) |
+| | `tokens()`, `create_token(name)`, `revoke_token(token_id)` | API tokens; a new one's secret is in `create_token`'s answer only |
+| | `create_webhook(url, events, description=)`, `webhooks()`, `webhook(id)`, `update_webhook(id, …)`, `delete_webhook(id)`, `rotate_webhook_secret(id)` | webhook endpoints; see [Webhooks](../guides/webhooks.md) |
+| | `rotate_agent_credentials(agent_id)` | a new token for an agent; the old one stops at once |
 | `runtime.telemetry.set({ endpoint, headers, protocol, sampleRate, include: { content } })`, `get()`, `test()`, `clear()` | `await runtime.telemetry.set(endpoint, headers=, protocol=, sample_rate=, include_content=)`, `get()`, `test()`, `clear()` | export each run as an OpenTelemetry trace to your OTLP/HTTP endpoint (see [Telemetry](#telemetry)) |
 | `client.prompt(text, { from, actor, files, metadata, whileRunning, output, idempotencyKey, signal })` | `client.prompt(text, from_=, …)` | a run's raw result: `{ reply, output, error, stopped, inputs, files, toolErrors, … }`; rejects on a runtime error. `output` here is `{ schema }`, a JSON Schema |
 | `client.request(method, params, options)` | `client.request(method, params, …)` | any request (`prompt`, `continue`, `execute`, `configure`, `status`, `abort`); `traceparent` (`traceparent=`) continues your trace |
@@ -444,6 +494,15 @@ idempotent requests (with a W3C `traceparent` header, the run continues that tra
 messages; all with the agent's token as `Authorization: Bearer`. `/clients/*`
 refuses requests with a browser `Origin`. Application code should use the SDK
 rather than speak this protocol.
+
+### Webhooks
+
+`verify_webhook(body, headers, secret)` (Python; TypeScript uses any Standard
+Webhooks library) checks a webhook request the runtime sent and returns its
+event: the signature against the endpoint's secret (or a list of secrets),
+compared in constant time, and that it was sent within `tolerance=` seconds
+(300) of now. It raises `WebhookVerificationError`. See
+[Webhooks](../guides/webhooks.md#verifying-and-handling).
 
 ## Agent identity and Studio
 

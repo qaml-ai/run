@@ -90,9 +90,9 @@ await agents.close();
 npx tsx quickstart.mts
 ```
 
-Python, `quickstart.py`. The Python SDK is async-only: call it from `async`
-code, and from synchronous code (a script, a Django view, a Celery task) with
-`asyncio.run(...)`:
+Python, `quickstart.py`. The Python SDK is async; synchronous code (a script, a
+Django view, a Celery task) uses `camelai_run.sync`, which has the same names
+without `await` (see [the synchronous client](reference/sdk.md#the-synchronous-client-python)):
 
 ```python
 import asyncio

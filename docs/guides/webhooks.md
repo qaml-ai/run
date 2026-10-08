@@ -74,7 +74,26 @@ import { Webhook } from "standardwebhooks";
 const event = new Webhook(process.env.WEBHOOK_SECRET!.replace(/^whsec_/, "")).verify(body, headers) as WebhookEvent;
 ```
 
-(`WebhookEvent` is typed in `@camelai/run`.)
+(`WebhookEvent` is typed in `@camelai/run`.) In Python, `verify_webhook` checks
+the signature in constant time and that the request was sent within 5 minutes,
+and returns the event; pass the raw body, before parsing it:
+
+```python
+from camelai_run import WebhookVerificationError, verify_webhook
+
+@app.post("/hooks/agents")  # Flask; in Django, request.body and request.headers
+def hook():
+    try:
+        event = verify_webhook(request.get_data(), request.headers, os.environ["WEBHOOK_SECRET"])
+    except WebhookVerificationError:
+        return "", 400
+    queue.put(event)
+    return "", 200
+```
+
+During a rotation, pass both secrets as a list. The SDKs also manage endpoints:
+`create_webhook(url, events)`, `webhooks()`, `update_webhook`, `delete_webhook`
+and `rotate_webhook_secret` on `AgentRuntime` (Python).
 
 - Delivery is at least once. Answer 2xx within 10 seconds; anything else is
   retried with exponential backoff, from 5 seconds to an hour apart, for 3 days.

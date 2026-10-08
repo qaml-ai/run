@@ -151,9 +151,11 @@ asyncio.run(main())
 - **ES modules.** The TypeScript uses top-level `await`, which needs an ES module: a `.mts` or `.mjs` file, or
   `"type": "module"` in `package.json`. In a CommonJS project (no `"type"`, or `"commonjs"`), use `.mts`/`.mjs`
   rather than changing the project's module type.
-- **Python is async-only.** Every call is `await`ed inside `async def`. From synchronous code (a script, a Django
-  view, a Celery task), run it with `asyncio.run(...)`. Python names are snake_case: `run.tool_errors`,
-  `throw_on_error=False`, `context.idempotency_key`, a stream part's `is_error`.
+- **Python is async, with a synchronous client.** `camelai_run` is awaited inside `async def`. Synchronous code (a
+  script, a Django or Flask view, a Celery task) uses `from camelai_run.sync import Agents`: the same names, no
+  `await`, but it cannot serve tools from its process; serve them with `camelai_run.sync.serve_tools` (WSGI) and a
+  definition. Python names are snake_case: `run.tool_errors`, `throw_on_error=False`, `context.idempotency_key`, a
+  stream part's `is_error`.
 
 - **Runs or agents.** An agent keeps its history: right for chats, assistants and anything that remembers. When each
   answer stands alone (classify, extract, vote, judge, summarize one input), use a stateless run instead:
