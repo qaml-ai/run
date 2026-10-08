@@ -7,8 +7,18 @@ between yours and the new one first.
 
 ## Unreleased
 
-Changes on main since the last tag. The TypeScript SDK train 0.16.0 uses them (its changes are in the
-[SDK reference](../reference/sdk.md)).
+Changes on main since the last tag.
+
+## 0.5.0 (runtime-v0.5.0, 2026-10-08)
+
+Stateless runs, steer receipts and stops that cancel the queue, faster resume, js_exec on V8, and email and
+password sign-in. The TypeScript SDK 0.16.0 and Python SDK 0.12.0 use it ([SDK reference](../reference/sdk.md)).
+
+**Before upgrading a self-hosted runtime:** deploying it signs everyone out of the console once; signing in to
+the console with an API or operator token is gone (set a password with the operator token first, see
+[Self-hosting](self-host.md#sign-in-to-the-console)); a runtime with `AGENT_BILLING_EMAIL_PROVIDER=cloudflare` or a
+tenant `codeEngine` other than `v8` does not start; `AGENT_SANDBOX_PROCESSES` and `AGENT_CODE_WORKERS_MIN` are
+removed and `AGENT_SANDBOX_SOCKETS` is now `AGENT_SANDBOX_DIR`. Migrations 050 to 058 run on start.
 
 ### Stateless runs
 
@@ -132,7 +142,7 @@ Changes on main since the last tag. The TypeScript SDK train 0.16.0 uses them (i
   operator's own analytics store, for browsers that agreed to be measured: an arrival at the console from
   elsewhere, the console's pages (as routes), an account being made, signed in to or out of, minting an API
   token or being deleted, an agent being made through the API, an account's active days and first completed run,
-  and its payments. The account export gains `analytics/` for accounts it knew (migration 055; [privacy](privacy.md#journey-events)). Unset, the default, nothing
+  and its payments. The account export gains `analytics/` for accounts it knew (migration 056; [privacy](privacy.md#journey-events)). Unset, the default, nothing
   changes: no cookie is read or set, no row is written and nothing is sent.
 - `/` and `/console` keep the query string when they redirect to `/console/`.
 
