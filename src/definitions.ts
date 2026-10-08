@@ -3,7 +3,7 @@ import type { Db } from "./db.ts";
 import type { RunLimits, ToolDefinition } from "./protocol.ts";
 import type { RequestRecord } from "../shared/client-protocol.ts";
 import { errorText } from "./protocol.ts";
-import { configurationUpdate, resolveModel, runLimitsInput, type CustomProviders } from "./session-config.ts";
+import { configurationUpdate, modelSettingsRefusal, resolveModel, runLimitsInput, type CustomProviders } from "./session-config.ts";
 import { HttpError } from "./http.ts";
 import { jsonWithinLimit } from "./limits.ts";
 import type { Accounts } from "./accounts.ts";
@@ -28,6 +28,10 @@ export interface DefinitionSpec {
   model?: string;
   systemPrompt?: string;
   thinkingLevel?: string;
+  /** The most its agents' model writes in one response; the model's maximum when absent. */
+  maxOutputTokens?: number;
+  /** Its agents' sampling temperature, for a model and thinking level that take one (session-config.ts `modelSettingsRefusal`). */
+  temperature?: number;
   limits?: { ttlSeconds?: number | null };
   /** The most one run of its agents may take (model responses, seconds), within the runtime's maximums. */
   runLimits?: RunLimits;
@@ -63,9 +67,9 @@ export interface ApplyResult { agent: string; requestId: string; status: "update
 /** Agent parameters from a definition, as `createAgent` takes them. */
 export type AgentParams = Record<string, unknown> & { tools?: ToolDefinition[] };
 
-const FIELDS = ["description", "model", "systemPrompt", "thinkingLevel", "fileTools", "codeMode", "limits", "runLimits", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate"] as const;
+const FIELDS = ["description", "model", "systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "fileTools", "codeMode", "limits", "runLimits", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate"] as const;
 /** Configuration an agent made from a definition may set as its own, which applying the definition leaves. */
-export const OVERRIDES = ["model", "thinkingLevel", "fileTools", "codeMode", "runLimits"] as const;
+export const OVERRIDES = ["model", "thinkingLevel", "maxOutputTokens", "temperature", "fileTools", "codeMode", "runLimits"] as const;
 const PROVISION_FIELDS = ["name", "type", "ttlSeconds", "mounts", "tools", "initialMessages", "systemPromptAppend"];
 const MAX_DEFINITIONS = 200;
 const validId = (id: string) => /^def_[a-f0-9]{20}$/.test(id);
@@ -235,8 +239,8 @@ export class Definitions {
   /**
    * The parameters to create an agent from `params.definition`: the definition's, with
    * the per-agent fields given alongside it (name, type, ttlSeconds, mounts, its attached
-   * server's tools, initialMessages). `model` and `thinkingLevel` given here are the agent's
-   * own (`overrides`): applying the definition later leaves them. `systemPromptAppend` follows
+   * server's tools, initialMessages). `model`, `thinkingLevel`, `maxOutputTokens`, `temperature`, `fileTools`, `codeMode`
+   * and `runLimits` given here are the agent's own (`overrides`): applying the definition later leaves them. `systemPromptAppend` follows
    * the definition's prompt, whatever revision it takes. `provision` identifies the request for
    * idempotency, whatever the definition's revision.
    */
@@ -249,10 +253,10 @@ export class Definitions {
     const ttlSeconds = params.ttlSeconds !== undefined ? params.ttlSeconds : spec.limits?.ttlSeconds;
     const mounts = params.mounts !== undefined ? params.mounts : spec.mounts;
     const overrides = OVERRIDES.filter(key => params[key] !== undefined);
-    const own = (key: "model" | "systemPrompt" | "thinkingLevel" | "fileTools" | "codeMode" | "runLimits") => params[key] ?? spec[key];
+    const own = (key: typeof OVERRIDES[number] | "systemPrompt") => params[key] ?? spec[key];
     return {
       params: {
-        ...Object.fromEntries((["model", "systemPrompt", "thinkingLevel", "fileTools", "codeMode", "runLimits"] as const).filter(key => own(key) !== undefined).map(key => [key, own(key)])),
+        ...Object.fromEntries(([...OVERRIDES, "systemPrompt"] as const).filter(key => own(key) !== undefined).map(key => [key, own(key)])),
         tools: params.tools ?? [], name: params.name ?? definition.name, ...(params.type !== undefined ? { type: params.type } : {}),
         ...(ttlSeconds !== undefined ? { ttlSeconds } : {}), ...(mounts !== undefined ? { mounts } : {}),
         ...Object.fromEntries(["initialMessages", "systemPromptAppend"].filter(key => params[key] !== undefined).map(key => [key, params[key]])),
@@ -282,8 +286,11 @@ export class Definitions {
       else if (input[key] !== undefined) (spec as Record<string, unknown>)[key] = input[key];
     }
     try {
-      if (spec.model !== undefined) resolveModel(spec.model, this.accounts?.tenants.modelEndpoints(tenant), await this.customProviders?.(tenant));
-      configurationUpdate({ ...(spec.systemPrompt !== undefined ? { systemPrompt: spec.systemPrompt } : {}), ...(spec.thinkingLevel !== undefined ? { thinkingLevel: spec.thinkingLevel } : {}) });
+      const model = spec.model !== undefined ? resolveModel(spec.model, this.accounts?.tenants.modelEndpoints(tenant), await this.customProviders?.(tenant)) : undefined;
+      const settings = configurationUpdate(Object.fromEntries((["systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature"] as const).filter(key => spec[key] !== undefined).map(key => [key, spec[key]])));
+      // Without a model of its own, its agents' model (the runtime's default, or their own) is checked as each is made.
+      const refusal = model && modelSettingsRefusal(model, settings);
+      if (refusal) throw new Error(refusal);
     } catch (error) { throw new HttpError(400, errorText(error)); }
     if (spec.limits !== undefined) {
       if (!spec.limits || typeof spec.limits !== "object" || Object.keys(spec.limits).some(key => key !== "ttlSeconds")) throw new HttpError(400, "limits is { ttlSeconds }");

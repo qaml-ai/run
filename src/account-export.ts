@@ -176,6 +176,7 @@ function agentView(header: any) {
     id: header.id, key: header.key ?? null, name: header.metadata?.name ?? null, type: header.metadata?.type ?? "general", metadata: header.metadata ?? {},
     model: config.model ? `${config.model.provider}/${config.model.id}` : null, systemPrompt: config.systemPrompt ?? "",
     ...(config.systemPromptAppend ? { systemPromptAppend: config.systemPromptAppend } : {}), ...(config.thinkingLevel ? { thinkingLevel: config.thinkingLevel } : {}),
+    ...(config.maxOutputTokens != null ? { maxOutputTokens: config.maxOutputTokens } : {}), ...(config.temperature != null ? { temperature: config.temperature } : {}),
     tools: header.definitions ?? [], mounts: header.mounts ?? [], definition: header.definition ?? null, keyScope: header.keyScope ?? null,
     identity: header.identity ?? null, builtins: header.sources?.builtins ?? [], expiresAt: header.expiresAt,
     ...(config.modelHeaders ? { modelHeaders: Object.keys(config.modelHeaders) } : {}),

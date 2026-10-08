@@ -9,7 +9,7 @@ import { errorText, PERSISTENCE_FAILED } from "./protocol.ts";
 import { enqueueEvents, usageCost, webhookEvent, type WebhookEvent } from "./webhooks.ts";
 import { AgentSupervisor } from "./supervisor.ts";
 import { platformUsage } from "./platform-pricing.ts";
-import { configurationUpdate, type CustomProviders, type ModelEndpoints } from "./session-config.ts";
+import { configurationRefusal, configurationUpdate, type CustomProviders, type ModelEndpoints } from "./session-config.ts";
 import { outputInput, validateDefinitions } from "./tool-policy.ts";
 import { importedHistory, validateUserMessages } from "./history.ts";
 import { forkCut, recordedMessages, type Backlog, type TranscriptRecord } from "./transcript.ts";
@@ -567,7 +567,7 @@ export interface ClientSessionOptions {
   requestAnywhere?: (agent: string, tenant: string, requestId: string, waitMs: number, signal?: AbortSignal) => Promise<RequestRecord | undefined>;
 }
 /** A definition resolved for an agent: its revision, agent configuration, client tools and tool sources. */
-export type DefinitionConfig = { id: string; revision: number; config: Pick<AgentConfig, "model" | "systemPrompt" | "thinkingLevel" | "fileTools" | "codeMode" | "runLimits">; sources?: Sources; description?: string };
+export type DefinitionConfig = { id: string; revision: number; config: Pick<AgentConfig, "model" | "systemPrompt" | "thinkingLevel" | "fileTools" | "codeMode" | "runLimits" | "maxOutputTokens" | "temperature">; sources?: Sources; description?: string };
 /** One model response's usage; `kind` separates compaction summaries from the agent's turns. */
 /**
  * A model response's usage, a web tool's call (`searches`: web searches, `renders`: pages web_fetch had
@@ -2205,7 +2205,8 @@ export class ClientSessions {
     if (fixed.length) throw new HttpError(409, `An existing agent's ${fixed.join(", ")} cannot change; delete it (DELETE /v1/agents/${header.id}) or use another idempotency key`);
     return {
       provisionHash, model: `${config.model.provider}/${config.model.id}`, thinkingLevel: config.thinkingLevel ?? "off",
-      systemPromptAppend: config.systemPromptAppend ?? "", fileTools: config.fileTools !== false, codeMode: config.codeMode !== false, runLimits: config.runLimits ?? null, name: metadata.name ?? null, type: metadata.type ?? null,
+      systemPromptAppend: config.systemPromptAppend ?? "", fileTools: config.fileTools !== false, codeMode: config.codeMode !== false, runLimits: config.runLimits ?? null,
+      maxOutputTokens: config.maxOutputTokens ?? null, temperature: config.temperature ?? null, name: metadata.name ?? null, type: metadata.type ?? null,
       // Only a definition's own fields are the agent's: the rest follow its definition.
       ...origin ? {} : { systemPrompt: config.systemPrompt ?? null, modelHeaders: config.modelHeaders ?? null, tools: definitions, builtins: own.builtins ?? [], delegate: own.delegate ?? null },
     };
@@ -2224,6 +2225,7 @@ export class ClientSessions {
     if ("systemPrompt" in target && differs(current.systemPrompt, target.systemPrompt)) changes.systemPrompt = target.systemPrompt;
     if ("modelHeaders" in target && differs(current.modelHeaders, target.modelHeaders)) changes.modelHeaders = target.modelHeaders;
     if ("runLimits" in target && differs(current.runLimits, target.runLimits)) changes.runLimits = target.runLimits;
+    for (const key of ["maxOutputTokens", "temperature"] as const) if (key in target && differs(current[key], target[key])) changes[key] = target[key];
     if (target.tools !== undefined && differs(header.definitions, target.tools)) changes.tools = target.tools;
     if (target.builtins !== undefined && differs(header.sources?.builtins ?? [], target.builtins)) changes.builtins = target.builtins;
     if (target.delegate !== undefined && differs(header.sources?.delegate, target.delegate)) changes.delegate = target.delegate;
@@ -2553,6 +2555,7 @@ export class ClientSessions {
       builtins: session.header.sources?.builtins ?? [], delegate: session.header.sources?.delegate ?? null,
       ...(session.header.parent ? { parentAgentId: session.header.parent.agentId, parentRunId: session.header.parent.runId } : {}),
       spendLimit: await this.spendOf(session).then(spend => spend && { usd: spend.usd, spent: spend.spent }), runLimits: session.header.config.runLimits ?? null,
+      maxOutputTokens: session.header.config.maxOutputTokens ?? null, temperature: session.header.config.temperature ?? null,
       ...(session.header.forkedFrom ? { forkedFrom: session.header.forkedFrom } : {}),
       ...activityOf(session.running.values()), cursor: session.cursor, events: session.events.map(({ id, data }) => ({ id, data })), requests: [...session.requests.values()].map(visible) };
   }
@@ -3059,7 +3062,10 @@ export class ClientSessions {
     try {
       if (body.method === "configure" && !applying) {
         const { spendLimit: _limit, provisionHash: _hash, name: _name, type: _type, toolsHash: _tools, builtins, delegate, ...update } = body.params;
-        configurationUpdate(update, this.options.modelEndpoints?.(session.header.tenant), await this.options.customProviders?.(session.header.tenant, scopeAfter(session.header, update)));
+        const checked = configurationUpdate(update, this.options.modelEndpoints?.(session.header.tenant), await this.options.customProviders?.(session.header.tenant, scopeAfter(session.header, update)));
+        // A model, thinking level, maxOutputTokens or temperature that leaves the agent asking its model for what it refuses is refused now.
+        const refusal = configurationRefusal(session.header.config, checked);
+        if (refusal) throw new Error(refusal);
         const own = builtins !== undefined || delegate !== undefined;
         if (own && session.header.definition) throw new HttpError(400, "This agent's builtins come from its definition; change them there");
         // An upsert gives the whole of them, which `execute` checks as it applies them; a change of some is checked now.
@@ -3457,6 +3463,9 @@ export class ClientSessions {
       const sources = reSourced ? ownSources(session.header.sources, { builtins, delegate }) : session.header.sources;
       const changed = provisionHash === undefined || reSourced || Object.keys(given).length > 0 || (name !== undefined && name !== (session.header.metadata?.name ?? null)) || (type !== undefined && type !== (session.header.metadata?.type ?? null));
       const { keyScope, ...update } = (applied?.update ?? configurationUpdate(given, this.options.modelEndpoints?.(session.header.tenant), await this.options.customProviders?.(session.header.tenant, scopeAfter(session.header, given)))) as ReturnType<typeof configurationUpdate> & { fileTools?: boolean; codeMode?: boolean };
+      // Checked again as it applies, after the configuration queued before it (a definition's own change is not: its calls leave out what does not apply).
+      const refusal = applied ? undefined : configurationRefusal(session.header.config, update);
+      if (refusal) throw new HttpError(400, refusal);
       // A new model may belong to another provider, and a new key scope has keys of its own: the agent needs that provider's key.
       const resolved = update.model || keyScope !== undefined ? await this.apiKey(session, (update.model ?? session.header.config.model).provider, keyScope === undefined ? session.header.keyScope : keyScope ?? undefined) : undefined;
       const apiKey = resolved?.key;

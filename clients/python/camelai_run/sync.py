@@ -258,9 +258,11 @@ class AgentClient(_AgentCalls):
         params = self._prompt_params(request_id, text, actor=actor, from_=from_, files=files, metadata=metadata, while_running="steer", allow_disconnected=allow_disconnected)
         return _steer_receipt(self._submit("prompt", params, request_id, traceparent))
 
-    def configure(self, *, model=None, system_prompt=None, thinking_level=None, tools=None):
-        """Change the model, system prompt, thinking level or declared tools between runs (this client never serves tools)."""
+    def configure(self, *, model=None, system_prompt=None, thinking_level=None, tools=None, max_output_tokens=_DEFAULT, temperature=_DEFAULT):
+        """Change the model, system prompt, thinking level, declared tools, max_output_tokens or temperature between runs (None
+        removes either of the last two; this client never serves tools)."""
         params = {key: value for key, value in {"model": model, "systemPrompt": system_prompt, "thinkingLevel": thinking_level}.items() if value is not None}
+        params.update({key: value for key, value in {"maxOutputTokens": max_output_tokens, "temperature": temperature}.items() if value is not _DEFAULT})
         if tools is not None:
             params["mcp"] = {"tools": [item.mcp_tool() for item in tools]}
             self.tools = {item.name: item for item in tools}
@@ -511,9 +513,9 @@ class Agent:
             raise TypeError(f"steer() takes {', '.join(sorted(unknown))} only with wait=True")
         return self.client.steer_message(text, from_=_sender(user) if user else None, **options)
 
-    def configure(self, *, model=None, instructions=None, thinking_level=None, tools=None):
+    def configure(self, *, model=None, instructions=None, thinking_level=None, tools=None, max_output_tokens=_DEFAULT, temperature=_DEFAULT):
         """Change its model, instructions, thinking level or declared tools between runs."""
-        return self.client.configure(model=model, system_prompt=instructions, thinking_level=thinking_level, tools=tools)
+        return self.client.configure(model=model, system_prompt=instructions, thinking_level=thinking_level, tools=tools, max_output_tokens=max_output_tokens, temperature=temperature)
 
     def abort(self, *, queued=None):
         """Stop the agent: its running turn, and the runs queued behind it unless queued="keep"."""
@@ -644,7 +646,7 @@ class Agents:
 
     def upsert(self, key, *, model=None, instructions=None, tools=None, definition=None, thinking_level=None, subject=None, context=None,
                key_scope=None, spend_limit=None, run_limits=None, model_headers=None, mounts=None, name=None, instructions_append=None, file_tools=None,
-               builtins=None, delegate=None, code_mode=None, initial_messages=None):
+               builtins=None, delegate=None, code_mode=None, initial_messages=None, max_output_tokens=None, temperature=None):
         """The agent for `key`, made now if there is none, and set to this configuration if it differs (see
         camelai_run.Agents.upsert). `tools` are declared, never served here: a process with the async SDK serves them
         (Agents().get(key, tools=...)). Tools for serverless or many workers: serve_tools and a definition. An upsert
@@ -654,7 +656,8 @@ class Agents:
         session = self.runtime.upsert_agent(key, tools=tools, definition=definition, system_prompt=instructions, model=model, thinking_level=thinking_level,
                                             subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits,
                                             model_headers=model_headers, mounts=mounts, name=name, system_prompt_append=instructions_append, file_tools=file_tools,
-                                            builtins=builtins, delegate=delegate, code_mode=code_mode, initial_messages=initial_messages)
+                                            builtins=builtins, delegate=delegate, code_mode=code_mode, initial_messages=initial_messages,
+                                            max_output_tokens=max_output_tokens, temperature=temperature)
         agent = self.agent(session, tools=tools)
         agent.config_hash = session.get("configHash")
         return agent

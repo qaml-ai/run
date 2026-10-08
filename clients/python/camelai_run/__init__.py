@@ -761,7 +761,7 @@ class AgentRuntime(_RuntimeCalls):
             raise
         return then(value) if then else value
 
-    async def create_agent(self, *, tools, system_prompt=None, name=None, type=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, on_input=None, builtins=None, delegate=None, subagents=False, prompt=None, traceparent=None, initial_messages=None):
+    async def create_agent(self, *, tools, system_prompt=None, name=None, type=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, on_input=None, builtins=None, delegate=None, subagents=False, prompt=None, traceparent=None, initial_messages=None, max_output_tokens=None, temperature=None):
         """Provision an agent. `model` is "provider/model-id", e.g. "anthropic/claude-sonnet-5-5".
         `definition` makes it from a definition (GET /v1/definitions), which supplies the model, system prompt,
         thinking level and tool sources; `tools` are added as the agent's attached MCP server.
@@ -780,7 +780,7 @@ class AgentRuntime(_RuntimeCalls):
         # subject: who the agent acts for; context: claims for its tool servers' identity tokens. Set only here.
         body = _provisioning(tools, definition=definition, name=name, type=type, system_prompt=system_prompt, model=model, thinking_level=thinking_level,
                              mounts=mounts, subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits, model_headers=model_headers, builtins=builtins,
-                             delegate=delegate, prompt=prompt, initial_messages=initial_messages)
+                             delegate=delegate, prompt=prompt, initial_messages=initial_messages, max_output_tokens=max_output_tokens, temperature=temperature)
         # A key of the caller's makes the agent durable (it lives until deleted); one the SDK makes up, only so a retried
         # create finds the same agent, keeps a scratch agent's day, said explicitly since any key would make it durable.
         if ttl_seconds is not _DEFAULT:
@@ -937,12 +937,12 @@ class Telemetry:
 
 def _provisioning(tools, *, definition=None, name=None, type=None, system_prompt=None, model=None, thinking_level=None, mounts=None,
                   subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, system_prompt_append=None, file_tools=None, builtins=None,
-                  delegate=None, prompt=None, code_mode=None, initial_messages=None):
+                  delegate=None, prompt=None, code_mode=None, initial_messages=None, max_output_tokens=None, temperature=None):
     """A create request's body: the tools as the attached MCP server's tools/list, and the fields given."""
     optional = {"definition": definition, "name": name, "type": type, "systemPrompt": system_prompt, "model": model, "thinkingLevel": thinking_level,
                 "mounts": mounts, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit, "runLimits": run_limits, "modelHeaders": model_headers,
                 "systemPromptAppend": system_prompt_append, "fileTools": file_tools, "codeMode": code_mode, "builtins": builtins, "delegate": delegate, "prompt": prompt,
-                "initialMessages": initial_messages}
+                "initialMessages": initial_messages, "maxOutputTokens": max_output_tokens, "temperature": temperature}
     return _with_multi_agent({"mcp": {"tools": [item.mcp_tool() for item in tools]}, **{key: value for key, value in optional.items() if value is not None}})
 
 
@@ -1701,9 +1701,11 @@ class AgentClient(_AgentCalls):
             attached.append({"path": response.json()["path"]})
         return attached
 
-    async def configure(self, *, model=None, system_prompt=None, thinking_level=None, tools=None):
-        """Change the model ("provider/model-id"), system prompt, thinking level or tools between runs."""
+    async def configure(self, *, model=None, system_prompt=None, thinking_level=None, tools=None, max_output_tokens=_DEFAULT, temperature=_DEFAULT):
+        """Change the model ("provider/model-id"), system prompt, thinking level, tools, max_output_tokens or temperature
+        between runs (None removes either of the last two)."""
         params = {key: value for key, value in {"model": model, "systemPrompt": system_prompt, "thinkingLevel": thinking_level}.items() if value is not None}
+        params.update({key: value for key, value in {"maxOutputTokens": max_output_tokens, "temperature": temperature}.items() if value is not _DEFAULT})
         if tools is not None:
             params["mcp"] = {"tools": [item.mcp_tool() for item in tools]}
         result = await self.request("configure", params)
@@ -2151,9 +2153,9 @@ class Agent:
             raise TypeError(f"steer() takes {', '.join(sorted(unknown))} only with wait=True")
         return await self.client.steer_message(text, from_=_sender(user) if user else None, **options)
 
-    async def configure(self, *, model=None, instructions=None, thinking_level=None, tools=None):
+    async def configure(self, *, model=None, instructions=None, thinking_level=None, tools=None, max_output_tokens=_DEFAULT, temperature=_DEFAULT):
         """Change its model, instructions, thinking level or tools between runs."""
-        return await self.client.configure(model=model, system_prompt=instructions, thinking_level=thinking_level, tools=tools)
+        return await self.client.configure(model=model, system_prompt=instructions, thinking_level=thinking_level, tools=tools, max_output_tokens=max_output_tokens, temperature=temperature)
 
     async def abort(self, *, queued=None):
         """Stop the agent: its running turn, and the runs queued behind it (each fails with code "cancelled"), so nothing
@@ -2255,7 +2257,7 @@ class Runs:
     @staticmethod
     def _request(input, *, instructions=None, instructions_append=None, model=None, definition=None, thinking_level=None, output=None, builtins=None, delegate=None,
                  file_tools=None, mounts=None, files=None, user=None, metadata=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None,
-                 model_headers=None, name=None, retention_seconds=None, code_mode=None):
+                 model_headers=None, name=None, retention_seconds=None, code_mode=None, max_output_tokens=None, temperature=None):
         parts = [{"type": "text", "text": input}]
         for file in files or []:
             entry = file if isinstance(file, dict) else {"data": file}
@@ -2264,7 +2266,8 @@ class Runs:
         fields = {"input": input if len(parts) == 1 else parts, "systemPrompt": instructions, "systemPromptAppend": instructions_append, "model": model, "definition": definition,
                   "thinkingLevel": thinking_level, "output": _output_request(output), "builtins": builtins, "delegate": delegate, "fileTools": file_tools, "mounts": mounts,
                   "from": _sender(user) if user else None, "metadata": metadata, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit,
-                  "runLimits": run_limits, "modelHeaders": model_headers, "name": name, "retentionSeconds": retention_seconds, "codeMode": code_mode}
+                  "runLimits": run_limits, "modelHeaders": model_headers, "name": name, "retentionSeconds": retention_seconds, "codeMode": code_mode,
+                  "maxOutputTokens": max_output_tokens, "temperature": temperature}
         return {key: value for key, value in fields.items() if value is not None}
 
     async def create(self, input, *, idempotency_key=None, wait=None, traceparent=None, **config):
@@ -2338,7 +2341,7 @@ class Agents:
     async def upsert(self, key, *, model=None, instructions=None, tools=None, definition=None, thinking_level=None, subject=None, context=None,
                      key_scope=None, spend_limit=None, run_limits=None, model_headers=None, mounts=None, name=None, instructions_append=None, file_tools=None,
                      builtins=None, delegate=None, subagents=False, on_event=None, on_input=None, on_error=None, attach=None, takeover=False, connection=None,
-                     code_mode=None, initial_messages=None):
+                     code_mode=None, initial_messages=None, max_output_tokens=None, temperature=None):
         """The agent for `key` (your name for it: "support-triage", or "user-123"), made now if there is none, and set
         to this configuration if it differs. The same key is the same agent, with its history and files, until
         agent.delete(); any number of processes may upsert it. `tools` (@tool functions) run in this process, which
@@ -2352,12 +2355,15 @@ class Agents:
         prompt is little more than your instructions (for a tool-less agent). An upsert of the configuration the agent has
         already is not counted as an agent create; agent.config_hash says which configuration it asked for.
         `initial_messages` (Pi messages: user, assistant, toolResult, compactionSummary) is the history the agent begins
-        with, a conversation from elsewhere: used only when the agent is made (see the multi-user guide)."""
+        with, a conversation from elsewhere: used only when the agent is made (see the multi-user guide).
+        `max_output_tokens` caps each model response (within the model's maximum); `temperature` (0 to 2) sets sampling, for a
+        model and thinking level that take one (a 400 otherwise)."""
         tools = list(tools or [])
         session = await self.runtime.upsert_agent(key, tools=tools, definition=definition, system_prompt=instructions, model=model, thinking_level=thinking_level,
                                                   subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits,
                                                   model_headers=model_headers, mounts=mounts, name=name, system_prompt_append=instructions_append, file_tools=file_tools, builtins=builtins,
-                                                  delegate=delegate, code_mode=code_mode, initial_messages=initial_messages)
+                                                  delegate=delegate, code_mode=code_mode, initial_messages=initial_messages,
+                                                  max_output_tokens=max_output_tokens, temperature=temperature)
         # The upsert declared these tools already (between the agent's turns, if it runs).
         agent = await self.agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error, attach=attach, takeover=takeover, subagents=subagents,
                                  connection=connection, _sync=False)

@@ -366,6 +366,10 @@ export interface CreateAgentOptions extends AgentOptions {
    */
   model?: string | Record<string, unknown>;
   thinkingLevel?: ThinkingLevel;
+  /** The most the model writes in one response, within its own maximum (maxTokens in GET /v1/models). Not compaction summaries. */
+  maxOutputTokens?: number;
+  /** Sampling temperature, 0 to 2. Refused (400) for a model that takes none (Claude Opus 4.7 and later, Sonnet 5.5, Fable; o-series, GPT-5) or a reasoning model at a thinkingLevel other than off. */
+  temperature?: number;
   initialMessages?: Message[];
   /** Volumes for the agent's file tools (read, write, edit, ls, glob, grep). Default: its own workspace volume at /workspace. */
   mounts?: Mount[];
@@ -408,6 +412,10 @@ export interface DefinitionInput {
   /** What its agents are for: shown to models as the description of each agent's MCP tool (/v1/agents/:id/mcp). */
   description?: string;
   model?: string; systemPrompt?: string; thinkingLevel?: ThinkingLevel;
+  /** The most its agents' model writes in one response. An agent given its own keeps it when the definition is applied. */
+  maxOutputTokens?: number;
+  /** Its agents' sampling temperature (0 to 2), for a model and thinking level that take one. */
+  temperature?: number;
   /** false: its agents get no file tools but present_file. */
   fileTools?: boolean;
   /** false: its agents get no js_exec, and call every tool directly. */
@@ -751,7 +759,7 @@ const AGENT_KEY = /^[A-Za-z0-9_-]{1,80}$/;
 const REQUEST_ID = AGENT_KEY;
 /** A create request's fields, from the options given. */
 function provisioning(options: CreateAgentOptions) {
-  const fields = ["subject", "context", "keyScope", "spendLimit", "runLimits", "modelHeaders", "definition", "mounts", "model", "thinkingLevel", "initialMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "delegate", "prompt"] as const;
+  const fields = ["subject", "context", "keyScope", "spendLimit", "runLimits", "modelHeaders", "definition", "mounts", "model", "thinkingLevel", "maxOutputTokens", "temperature", "initialMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "delegate", "prompt"] as const;
   return withMultiAgent(Object.fromEntries(fields.filter(field => options[field] !== undefined).map(field => [field, options[field]])));
 }
 /** `delegate` settings bring their builtin: given the settings, the builtin is added. */
@@ -1010,6 +1018,10 @@ export interface RunRequest {
   /** A definition's key or id to take the configuration from (model, system prompt, tool sources). */
   definition?: string;
   model?: string; systemPrompt?: string; systemPromptAppend?: string; thinkingLevel?: ThinkingLevel;
+  /** The most the model writes in one response, within its own maximum (maxTokens in GET /v1/models). Not compaction summaries. */
+  maxOutputTokens?: number;
+  /** Sampling temperature, 0 to 2. Refused (400) for a model that takes none (Claude Opus 4.7 and later, Sonnet 5.5, Fable; o-series, GPT-5) or a reasoning model at a thinkingLevel other than off. */
+  temperature?: number;
   builtins?: ("web_fetch" | "web_search" | "delegate")[]; delegate?: DelegateSettings;
   /** true: a workspace volume and file tools. Default: none, unless the input has files. */
   fileTools?: boolean; mounts?: Mount[];
@@ -1614,8 +1626,8 @@ export class AgentClient {
   continue(options?: RunRequestOptions & { actor?: string }) { return this.request("continue", { ...(options?.actor ? { actor: options.actor } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}) }, options); }
   /** The legacy steer request: a message held for the running turn. New code: `prompt(text, { whileRunning: "steer" })`. */
   steer(text: string, options?: { from?: Sender; files?: Attachment[]; metadata?: Record<string, string> }) { return this.message("steer", text, options); }
-  /** Change the prompt, thinking level, tools, or model ("provider/model-id") between runs. */
-  async configure(options: { systemPrompt?: string; thinkingLevel?: ThinkingLevel; tools?: Tools; mcp?: ToolServer; model?: string }) {
+  /** Change the prompt, thinking level, tools, model ("provider/model-id"), maxOutputTokens or temperature (null removes either) between runs. */
+  async configure(options: { systemPrompt?: string; thinkingLevel?: ThinkingLevel; tools?: Tools; mcp?: ToolServer; model?: string; maxOutputTokens?: number | null; temperature?: number | null }) {
     const { tools, mcp, ...rest } = options;
     const server = mcp ?? (tools ? toolServer(tools) : undefined);
     const result = await this.request("configure", { ...rest, ...(server ? { mcp: { tools: await server.listTools() } } : {}) });

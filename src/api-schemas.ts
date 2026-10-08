@@ -226,6 +226,13 @@ export const RunLimits = z.strictObject({
   description: "The most one run may take, and how long its model requests may go quiet. At maxResponses or maxSeconds, the turn ends before its next model request, after the tool calls of the response that reached it, with stopped \"turn_limit\" and code turn_limit; send another message to continue. Values above the runtime's maximums count as those. A model request that stalls (firstTokenSeconds, idleSeconds) is retried like other transient provider errors; when retries run out the run fails with code model_stream_stalled",
 });
 
+export const MaxOutputTokens = z.number().int().min(1).openapi("MaxOutputTokens", {
+  description: "The most the model writes in one response, at most its own maximum (maxTokens in GET /v1/models); default that maximum. A response that reaches it ends with stopReason \"length\". A Claude model on a thinking budget gets the budget on top; elsewhere reasoning counts toward it. Compaction summaries keep the runtime's own",
+});
+export const Temperature = z.number().min(0).max(2).openapi("Temperature", {
+  description: "Sampling temperature, 0 to 2; default the provider's. Lower is more deterministic. 400 for a model that takes none: Claude Opus 4.7 and later, Sonnet 5.5 and Fable models, models that always reason (o-series, GPT-5), and any reasoning model at a thinkingLevel other than off. Compaction summaries keep the runtime's own",
+});
+
 export const ModelHeaders = z.record(z.string(), z.string()).openapi("ModelHeaders", {
   description: "Non-secret headers sent on each of the agent's model calls, after a key scope entry's, e.g. cf-aig-metadata. At most 20 and 8 KB; never authorization, x-api-key, x-goog-api-key, cf-aig-authorization, chatgpt-account-id, x-agent-runtime-identity, x-amz-* or transport headers",
 });
@@ -279,13 +286,15 @@ export const PromptInput = z.object({
 
 export const AgentInput = z.object({
   mcp: z.object({ tools: z.array(z.unknown()) }).optional().openapi({ description: "The application's attached MCP server: its tools/list, whose tools the agent calls back through the application's connection. The SDKs send it" }),
-  definition: z.string().optional().openapi({ description: "Make the agent from this definition (GET /v1/definitions). It supplies the model, system prompt, thinking level, fileTools and tool sources; name, type, ttlSeconds, mounts and initialMessages given here override its defaults. model, thinkingLevel and fileTools given here are the agent's own: applying the definition later keeps them. systemPrompt cannot be given with a definition; use systemPromptAppend" }),
+  definition: z.string().optional().openapi({ description: "Make the agent from this definition (GET /v1/definitions). It supplies the model, system prompt, thinking level, fileTools and tool sources; name, type, ttlSeconds, mounts and initialMessages given here override its defaults. model, thinkingLevel, maxOutputTokens, temperature, fileTools, codeMode and runLimits given here are the agent's own: applying the definition later keeps them. systemPrompt cannot be given with a definition; use systemPromptAppend" }),
   name: z.string().optional(),
   type: z.string().optional(),
   model: z.string().optional().openapi({ description: "A model id from GET /v1/models; the runtime default when omitted" }),
   systemPrompt: z.string().optional(),
   systemPromptAppend: z.string().max(32_000).optional().openapi({ description: "Text after the system prompt, e.g. per-conversation context. The agent's own: applying its definition replaces the prompt and keeps this" }),
   thinkingLevel: z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]).optional(),
+  maxOutputTokens: MaxOutputTokens.optional(),
+  temperature: Temperature.optional(),
   initialMessages: z.array(z.unknown()).optional().openapi({ description: "History to begin with (a conversation from elsewhere): Pi user, assistant and toolResult messages, and compactionSummary messages, the last of which stands in for everything before it. Only when the agent is made; at most 16 MB of JSON. See the multi-user guide" }),
   fileTools: z.boolean().openapi({ description: "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; the mounts stay open to fs in js_exec, attachments and tool outputs. For applications with file tools of their own" }).optional(),
   codeMode: z.boolean().openapi({ description: "false: no js_exec (code mode). The model calls every tool directly, and the system prompt carries only the runtime text those tools need: for an agent with no tools (with fileTools: false too, and no builtins or tool sources), only the application's instructions and a short note on who sent each message. For a tool-less agent, such as a classifier. Best set when the agent is made: changed later, its tools change, while a conversation under way keeps the runtime text it began with" }).optional(),
@@ -382,6 +391,8 @@ export const RunInput = z.strictObject({
   systemPrompt: z.string().optional(),
   systemPromptAppend: z.string().max(32_000).optional(),
   thinkingLevel: z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]).optional(),
+  maxOutputTokens: MaxOutputTokens.optional(),
+  temperature: Temperature.optional(),
   builtins: z.array(z.enum(["web_fetch", "web_search", "delegate"])).max(8).optional().openapi({ description: "Tools the runtime answers itself. Not schedule or ask_user: a run has no later and no one to ask" }),
   delegate: DelegateSettings.optional(),
   fileTools: z.boolean().optional().openapi({ description: "true: the run gets a workspace volume and file tools. Default: none, unless input has files" }),
@@ -504,6 +515,8 @@ export const AgentDetail = AgentSummary.extend({
   parentRunId: z.string().optional().openapi({ description: "For a child a delegate call made: the run of parentAgentId that made it" }),
   spendLimit: z.object({ usd: z.number(), spent: z.number().openapi({ description: "Model spend since the limit was set" }) }).nullable(),
   runLimits: RunLimits.nullable().openapi({ description: "Its own run limits, as set; null: the runtime's" }),
+  maxOutputTokens: MaxOutputTokens.nullable().openapi({ description: "The most its model writes in one response, as set; null: the model's maximum" }),
+  temperature: Temperature.nullable().openapi({ description: "Its model's sampling temperature, as set; null: the provider's default" }),
   forkedFrom: ForkedFrom.optional().openapi({ description: "For a fork (POST /v1/agents/{id}/fork): the agent and message it was forked from" }),
   ...Activity.shape,
   cursor: z.number(),
@@ -656,6 +669,8 @@ const definitionFields = {
   model: z.string().openapi({ description: "A model id from GET /v1/models; the runtime default when omitted" }),
   systemPrompt: z.string().trim().min(1).max(32_000),
   thinkingLevel: ThinkingLevel,
+  maxOutputTokens: MaxOutputTokens,
+  temperature: Temperature,
   fileTools: z.boolean().openapi({ description: "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; the mounts stay open to fs in js_exec, attachments and tool outputs. For applications with file tools of their own" }),
   codeMode: z.boolean().openapi({ description: "false: its agents get no js_exec and call every tool directly (AgentInput.codeMode)" }),
   limits: DefinitionLimits,
@@ -711,13 +726,15 @@ export const ConfigureInput = z.object({
   systemPrompt: z.string().min(1).max(32_000).optional(),
   systemPromptAppend: z.string().max(32_000).optional().openapi({ description: "Text after the system prompt; empty removes it" }),
   thinkingLevel: ThinkingLevel.optional(),
+  maxOutputTokens: MaxOutputTokens.nullable().optional().openapi({ description: "Replaces the most its model writes in one response; null removes it (the model's maximum)" }),
+  temperature: Temperature.nullable().optional().openapi({ description: "Replaces its model's sampling temperature; null removes it (the provider's default). Refused (400) when the agent's model or thinking level, after this change, takes none" }),
   keyScope: z.string().nullable().optional().openapi({ description: "The key scope its model calls take keys from first; null for the tenant's keys. Applying a definition keeps it" }),
   spendLimit: SpendLimitInput.nullable().optional().openapi({ description: "A new budget from now, applied at once, ahead of queued runs; null removes it" }),
   runLimits: RunLimits.nullable().optional().openapi({ description: "Replaces the agent's run limits from its next run; null removes them (the runtime's apply). Set here on an agent from a definition, they stay when the definition is applied" }),
   modelHeaders: ModelHeaders.nullable().optional().openapi({ description: "Replaces the agent's model headers; null or {} removes them" }),
   builtins: z.array(Builtin).max(8).optional().openapi({ description: "Replaces the agent's builtins; [] removes them. Not for an agent made from a definition, whose builtins are its definition's" }),
   delegate: DelegateSettings.nullable().optional().openapi({ description: "Replaces who the agent may delegate to (with the delegate builtin); null removes it" }),
-}).strict().refine(input => Object.keys(input).some(key => key !== "requestId"), "Give at least one configuration field").openapi("ConfigureInput", { description: "On an agent made from a definition, a model or thinkingLevel set here stays when the definition is applied; a systemPrompt set here is replaced by it" });
+}).strict().refine(input => Object.keys(input).some(key => key !== "requestId"), "Give at least one configuration field").openapi("ConfigureInput", { description: "On an agent made from a definition, a model, thinkingLevel, maxOutputTokens, temperature or runLimits set here stays when the definition is applied; a systemPrompt set here is replaced by it" });
 
 const ChannelAccess = z.object({
   public: z.boolean().optional().openapi({ description: "Let anyone message the channel; off by default" }),

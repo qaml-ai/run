@@ -1317,7 +1317,8 @@ The fields an agent takes, plus the input:
   Files (at most 4 MiB in all) give the run a workspace volume to hold them.
 - `definition`: a definition's key or id, so the configuration is not sent each
   time. Fields given alongside override it, as for an agent.
-- `model`, `systemPrompt`, `systemPromptAppend`, `thinkingLevel`, `builtins`
+- `model`, `systemPrompt`, `systemPromptAppend`, `thinkingLevel`, `maxOutputTokens`,
+  `temperature` (see [Output length and temperature](https://run.camelai.com/docs/guides/models-and-keys.md#output-length-and-temperature)), `builtins`
   (`web_fetch`, `web_search`, `delegate`), `delegate`, `keyScope`, `modelHeaders`,
   `runLimits`, `subject`, `context`.
 - `output`: a schema for a structured answer (see [Structured output](https://run.camelai.com/docs/guides/structured-output.md)).
@@ -2526,6 +2527,41 @@ A self-hosted runtime's operator can also give an account keys, and route its
 model calls through a gateway of the operator's own: see
 [Billing](https://run.camelai.com/docs/operations/billing.md) and [Model endpoints](https://run.camelai.com/docs/operations/model-endpoints.md).
 
+### Output length and temperature
+
+Two settings shape each model response. `maxOutputTokens` is the most the model
+writes in one response. It must be at most the model's own maximum (`maxTokens`
+in `GET /v1/models`), which is also the default. A response that reaches it ends
+with `stopReason: "length"`. On a Claude model with a thinking budget (models
+before adaptive thinking, such as Claude Sonnet 4.5), the budget comes on top.
+Elsewhere, reasoning counts toward it.
+
+`temperature` (0 to 2) sets how varied the model's sampling is: lower is more
+deterministic. The default is the provider's. Not every model takes one, and a
+temperature a model would refuse would fail every run, so the runtime refuses it
+with a 400 where you set it:
+
+- Claude Opus 4.7 and later, Sonnet 5.5 and Fable 5.1 take none, wherever they are
+  served (Anthropic, Bedrock, OpenRouter).
+- A model that always reasons takes none: OpenAI's o-series and GPT-5, Claude Fable 5.
+- A reasoning model takes none while it reasons: its `thinkingLevel` must be `off`.
+  Give `"thinkingLevel": "off"` with the temperature, or `"temperature": null` with
+  a new thinking level.
+
+Set them when you make an agent, for a [stateless run](https://run.camelai.com/docs/guides/stateless-runs.md), or for
+every agent of a [definition](https://run.camelai.com/docs/guides/definitions.md). Change them with
+`PATCH /v1/agents/:id/configuration`; `null` removes either. The same check runs
+there, against the model and thinking level the agent will have. `GET /v1/agents/:id`
+shows both (`null` when unset).
+
+```json
+{"model": "anthropic/claude-sonnet-5", "maxOutputTokens": 2000, "temperature": 0.2}
+```
+
+Compaction summaries keep the runtime's own settings. If a later change makes a
+temperature inapplicable (a definition applied with a new model or thinking level),
+the agent's calls leave it out rather than fail.
+
 ### Prompt caching
 
 The runtime marks the system prompt and tools (and the latest message) as a
@@ -2904,7 +2940,8 @@ for when another definition can delegate to it.
 definitions not saved yet, so two can name each other. See
 [Multi-agent](https://run.camelai.com/docs/guides/multi-agent.md).
 
-The definition supplies the model, prompt, thinking level and tool sources;
+The definition supplies the model, prompt, thinking level, `maxOutputTokens`,
+`temperature` and tool sources;
 `name`, `ttlSeconds`, `mounts` and `initialMessages` given alongside it override
 its defaults, and tools of your process (`tools`) are added as its attached
 server.
@@ -2917,9 +2954,13 @@ leaves alone:
  "systemPromptAppend": "Thread thr_123 in workspace ws_9."}
 ```
 
-- `model`, `thinkingLevel` and `runLimits` given at creation, or later through
-  `PATCH /v1/agents/:id/configuration`, and `fileTools` given at creation, are
-  the agent's own: an apply changes every other field and keeps them.
+- `model`, `thinkingLevel`, `maxOutputTokens`, `temperature` and `runLimits` given
+  at creation, or later through `PATCH /v1/agents/:id/configuration`, and
+  `fileTools` given at creation, are the agent's own: an apply changes every other
+  field and keeps them. `null` set through configuration is the agent's own too.
+  An agent's own temperature that the definition's new model or thinking level
+  cannot take is left out of its calls (see
+  [Output length and temperature](https://run.camelai.com/docs/guides/models-and-keys.md#output-length-and-temperature)).
 - `systemPromptAppend` is text the model reads after the definition's prompt
   (after the runtime's default prompt without one), e.g. per-conversation
   context. An apply replaces the prompt and keeps the addition; configuring
@@ -2948,7 +2989,7 @@ an `error`. On the console's Channels page, **Model & prompt** opens a channel's
 definition with apply selected.
 
 `PATCH /v1/agents/:id/configuration` changes one agent's `model`,
-`systemPrompt`, `systemPromptAppend`, `thinkingLevel`, `keyScope`, `spendLimit` or `modelHeaders` without touching its definition or history:
+`systemPrompt`, `systemPromptAppend`, `thinkingLevel`, `maxOutputTokens`, `temperature`, `keyScope`, `spendLimit` or `modelHeaders` without touching its definition or history:
 
 ```http
 PATCH /v1/agents/client_…/configuration
@@ -2961,7 +3002,8 @@ Content-Type: application/json
 It answers `202` with the request, which is queued like an applied definition
 and survives a restart; poll it for the outcome, and reuse `requestId` to retry.
 A model must be in `GET /v1/models`, and the tenant must have a key for its
-provider, or the change is refused with `400`. An agent that is not running
+provider, or the change is refused with `400`. So is a `temperature` the agent's
+model or thinking level, after the change, cannot take. An agent that is not running
 takes the change when it next starts.
 
 ---
@@ -3934,6 +3976,7 @@ brought to `config` if it differs. Returns a connected `Agent`. See
 | `mcp` | | an MCP server of yours to attach instead (`fromMcpServer`) |
 | `definition` | `definition=` | make it from a definition (its model, prompt and tool sources) |
 | `thinkingLevel` | `thinking_level=` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
+| `maxOutputTokens`, `temperature` | `max_output_tokens=`, `temperature=` | the most the model writes in a response, and its sampling temperature (0 to 2; refused for a model or thinking level that takes none). See [Output length and temperature](https://run.camelai.com/docs/guides/models-and-keys.md#output-length-and-temperature) |
 | `subject`, `context` | `subject=`, `context=` | whom it acts for, and claims for its tools; fixed at creation |
 | `keyScope`, `spendLimit`, `runLimits`, `modelHeaders` | `key_scope=`, `spend_limit=`, `run_limits=`, `model_headers=` | see [Models and keys](https://run.camelai.com/docs/guides/models-and-keys.md) |
 | `mounts`, `fileTools` | `mounts=`, `file_tools=` | its volumes (fixed at creation), and whether it has file tools |
@@ -3983,7 +4026,7 @@ what changed without keeping a manifest. It is opaque: compare it, never parse i
 | `agent.pendingInputs()` | `pending_inputs()` | inputs waiting on people, each with `answer()` |
 | `agent.history()`, `historyPage({ before, limit })` | `history()`, `history_page(before=, limit=)` | the whole history (a list of messages, oldest first), or a page of whole turns |
 | `agent.steer(text, options)` | `steer(text, …)` | hand the running turn a message (else start one), answered as soon as the runtime has it: `{id, status: "accepted" \| "taken" \| "queued", steeredInto?}`. `wait: true` (`wait=True`) resolves with the run that took it instead, as `run(text, { whileRunning: "steer" })` |
-| `agent.configure({ model, instructions, thinkingLevel, tools })` | `configure(…)` | change it between runs |
+| `agent.configure({ model, instructions, thinkingLevel, tools, maxOutputTokens, temperature })` | `configure(…)` | change it between runs; `null` (`None`) removes `maxOutputTokens` or `temperature` |
 | `agent.schedule({ text, inSeconds, at, everySeconds })` | `schedule(…)` | wake it later; `schedules()`, `unschedule(id)` |
 | `agent.files` | `agent.files` | `list`, `download`, `upload`, `link` by the paths the agent sees |
 | `agent.abort({ queued })` | `abort(queued=)` | stop the agent: its running turn, and the runs queued behind it (each fails with code `cancelled`); `queued: "keep"` stops the running turn only. Resolves with `{aborted, cancelled}` |
@@ -4046,7 +4089,7 @@ run = await agents.run("Ship on Friday?", instructions="Vote yes or no.", output
 
 `config` takes an agent's configuration (`model`, `instructions`,
 `instructionsAppend`, `definition`, `builtins`: `web_fetch`, `web_search`,
-`delegate`; `delegate`, `thinkingLevel`, `subject`, `context`, `keyScope`,
+`delegate`; `delegate`, `thinkingLevel`, `maxOutputTokens`, `temperature`, `subject`, `context`, `keyScope`,
 `runLimits`, `modelHeaders`, `mounts`, `fileTools`, `codeMode`, `name`; a run with
 no tools defaults to `codeMode: false` and `fileTools: false`) and the run's own:
 `input`, `files` (inline bytes), `output`, `user`, `metadata`, `idempotencyKey`,

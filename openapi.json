@@ -1916,7 +1916,7 @@
           },
           "definition": {
             "type": "string",
-            "description": "Make the agent from this definition (GET /v1/definitions). It supplies the model, system prompt, thinking level, fileTools and tool sources; name, type, ttlSeconds, mounts and initialMessages given here override its defaults. model, thinkingLevel and fileTools given here are the agent's own: applying the definition later keeps them. systemPrompt cannot be given with a definition; use systemPromptAppend"
+            "description": "Make the agent from this definition (GET /v1/definitions). It supplies the model, system prompt, thinking level, fileTools and tool sources; name, type, ttlSeconds, mounts and initialMessages given here override its defaults. model, thinkingLevel, maxOutputTokens, temperature, fileTools, codeMode and runLimits given here are the agent's own: applying the definition later keeps them. systemPrompt cannot be given with a definition; use systemPromptAppend"
           },
           "name": {
             "type": "string"
@@ -1947,6 +1947,12 @@
               "xhigh",
               "max"
             ]
+          },
+          "maxOutputTokens": {
+            "$ref": "#/components/schemas/MaxOutputTokens"
+          },
+          "temperature": {
+            "$ref": "#/components/schemas/Temperature"
           },
           "initialMessages": {
             "type": "array",
@@ -2014,6 +2020,17 @@
           }
         },
         "additionalProperties": false
+      },
+      "MaxOutputTokens": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "The most the model writes in one response, at most its own maximum (maxTokens in GET /v1/models); default that maximum. A response that reaches it ends with stopReason \"length\". A Claude model on a thinking budget gets the budget on top; elsewhere reasoning counts toward it. Compaction summaries keep the runtime's own"
+      },
+      "Temperature": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 2,
+        "description": "Sampling temperature, 0 to 2; default the provider's. Lower is more deterministic. 400 for a model that takes none: Claude Opus 4.7 and later, Sonnet 5.5 and Fable models, models that always reason (o-series, GPT-5), and any reasoning model at a thinkingLevel other than off. Compaction summaries keep the runtime's own"
       },
       "Mount": {
         "type": "object",
@@ -2469,6 +2486,34 @@
                   }
                 ]
               },
+              "maxOutputTokens": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/MaxOutputTokens"
+                  },
+                  {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "description": "The most its model writes in one response, as set; null: the model's maximum"
+                  }
+                ]
+              },
+              "temperature": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/Temperature"
+                  },
+                  {
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "description": "Its model's sampling temperature, as set; null: the provider's default"
+                  }
+                ]
+              },
               "forkedFrom": {
                 "$ref": "#/components/schemas/ForkedFrom"
               },
@@ -2523,6 +2568,8 @@
               "delegate",
               "spendLimit",
               "runLimits",
+              "maxOutputTokens",
+              "temperature",
               "busy",
               "activeRun",
               "queuedRuns",
@@ -3110,6 +3157,23 @@
               "max"
             ]
           },
+          "maxOutputTokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "description": "Replaces the most its model writes in one response; null removes it (the model's maximum)"
+          },
+          "temperature": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 2,
+            "description": "Replaces its model's sampling temperature; null removes it (the provider's default). Refused (400) when the agent's model or thinking level, after this change, takes none"
+          },
           "keyScope": {
             "type": [
               "string",
@@ -3223,7 +3287,7 @@
           }
         },
         "additionalProperties": false,
-        "description": "On an agent made from a definition, a model or thinkingLevel set here stays when the definition is applied; a systemPrompt set here is replaced by it"
+        "description": "On an agent made from a definition, a model, thinkingLevel, maxOutputTokens, temperature or runLimits set here stays when the definition is applied; a systemPrompt set here is replaced by it"
       },
       "Input": {
         "type": "object",
@@ -4861,6 +4925,12 @@
               "max"
             ]
           },
+          "maxOutputTokens": {
+            "$ref": "#/components/schemas/MaxOutputTokens"
+          },
+          "temperature": {
+            "$ref": "#/components/schemas/Temperature"
+          },
           "fileTools": {
             "type": "boolean",
             "description": "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; the mounts stay open to fs in js_exec, attachments and tool outputs. For applications with file tools of their own"
@@ -5263,6 +5333,12 @@
               "xhigh",
               "max"
             ]
+          },
+          "maxOutputTokens": {
+            "$ref": "#/components/schemas/MaxOutputTokens"
+          },
+          "temperature": {
+            "$ref": "#/components/schemas/Temperature"
           },
           "fileTools": {
             "type": "boolean",
@@ -5727,6 +5803,32 @@
               null
             ]
           },
+          "maxOutputTokens": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MaxOutputTokens"
+              },
+              {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            ]
+          },
+          "temperature": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Temperature"
+              },
+              {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            ]
+          },
           "fileTools": {
             "type": [
               "boolean",
@@ -6111,6 +6213,12 @@
               "xhigh",
               "max"
             ]
+          },
+          "maxOutputTokens": {
+            "$ref": "#/components/schemas/MaxOutputTokens"
+          },
+          "temperature": {
+            "$ref": "#/components/schemas/Temperature"
           },
           "builtins": {
             "type": "array",

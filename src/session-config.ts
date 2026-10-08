@@ -1,4 +1,4 @@
-import { getModel } from './pi-catalog.ts';
+import { getModel, temperatureRefusal } from './pi-catalog.ts';
 import type { AgentConfig, RunLimits } from './protocol.ts';
 import { validateDefinitions } from './tool-policy.ts';
 import { validateInitialMessages } from './history.ts';
@@ -166,6 +166,38 @@ export function runLimitsInput(value: unknown): RunLimits | null {
   return Object.keys(value).length ? value as RunLimits : null;
 }
 
+/** An agent's `maxOutputTokens`: a positive integer, or null for the model's maximum. */
+export function maxOutputTokensInput(value: unknown): number | null {
+  if (value === null) return null;
+  if (!Number.isSafeInteger(value) || (value as number) < 1) throw new HttpError(400, 'maxOutputTokens must be a positive integer, or null');
+  return value as number;
+}
+
+/** An agent's `temperature`: a number from 0 to 2, or null for the provider's default. */
+export function temperatureInput(value: unknown): number | null {
+  if (value === null) return null;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 2) throw new HttpError(400, 'temperature must be a number from 0 to 2, or null');
+  return value;
+}
+
+/**
+ * Why `model` cannot take an agent's `maxOutputTokens` or `temperature` at its thinking level (a 400's message), or
+ * undefined when it can: more output than the model writes in a response, or a temperature it would refuse (`temperatureRefusal`).
+ */
+export function modelSettingsRefusal(model: AgentConfig['model'], settings: Pick<AgentConfig, 'maxOutputTokens' | 'temperature' | 'thinkingLevel'>): string | undefined {
+  const name = `${model.provider}/${model.id}`;
+  if (settings.maxOutputTokens != null && settings.maxOutputTokens > model.maxTokens) return `maxOutputTokens must be at most ${model.maxTokens} for ${name}, the most it writes in a response`;
+  const why = settings.temperature != null ? temperatureRefusal(model, settings.thinkingLevel ?? 'off') : undefined;
+  return why && `${name} takes no temperature ${why}. Remove it with temperature: null`;
+}
+
+/** Why an agent's configuration with `update` applied would ask its model for settings it cannot take (`modelSettingsRefusal`). */
+export function configurationRefusal(config: Pick<AgentConfig, 'model' | 'thinkingLevel' | 'maxOutputTokens' | 'temperature'>, update: Partial<Pick<AgentConfig, 'model' | 'thinkingLevel' | 'maxOutputTokens' | 'temperature'>>): string | undefined {
+  const keys = ['model', 'thinkingLevel', 'maxOutputTokens', 'temperature'];
+  const after = { ...config, ...Object.fromEntries(Object.entries(update).filter(([key, value]) => keys.includes(key) && value !== undefined)) } as typeof config;
+  return modelSettingsRefusal(after.model, after);
+}
+
 /**
  * An agent's configuration as provisioning gives it. Its model is named ("provider/model-id") and resolved here, from
  * the catalog or the tenant's own endpoints and providers: a model object's prices, endpoint and compat switches are
@@ -190,7 +222,11 @@ export function sessionConfig(input: any, defaultModel: AgentConfig['model'], de
     ...(input.thinkingLevel !== undefined ? { thinkingLevel: input.thinkingLevel } : {}),
     ...(input.systemPromptAppend !== undefined ? { systemPromptAppend: input.systemPromptAppend } : {}),
     ...(input.runLimits !== undefined ? { runLimits: input.runLimits } : {}),
+    ...(input.maxOutputTokens !== undefined ? { maxOutputTokens: input.maxOutputTokens } : {}),
+    ...(input.temperature !== undefined ? { temperature: input.temperature } : {}),
   });
+  const refusal = modelSettingsRefusal(model, updates);
+  if (refusal) throw new HttpError(400, refusal);
   if (input.initialMessages !== undefined) validateInitialMessages(input.initialMessages);
   if (input.fileTools !== undefined && typeof input.fileTools !== 'boolean') throw new Error('fileTools must be true or false');
   if (input.codeMode !== undefined && typeof input.codeMode !== 'boolean') throw new Error('codeMode must be true or false');
@@ -201,15 +237,17 @@ export function sessionConfig(input: any, defaultModel: AgentConfig['model'], de
  * Scoped credentials can change behavior, tools and the model, but never a model
  * endpoint or credentials: a model can only be named from Pi's catalog.
  */
-export function configurationUpdate(input: any, endpoints?: ModelEndpoints, custom?: CustomProviders): Pick<AgentConfig, 'systemPrompt' | 'systemPromptAppend' | 'thinkingLevel' | 'modelHeaders' | 'runLimits'> & { tools?: AgentConfig['tools']; model?: AgentConfig['model']; keyScope?: string | null } {
+export function configurationUpdate(input: any, endpoints?: ModelEndpoints, custom?: CustomProviders): Pick<AgentConfig, 'systemPrompt' | 'systemPromptAppend' | 'thinkingLevel' | 'modelHeaders' | 'runLimits' | 'maxOutputTokens' | 'temperature'> & { tools?: AgentConfig['tools']; model?: AgentConfig['model']; keyScope?: string | null } {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid configuration');
-  for (const key of Object.keys(input)) if (!['systemPrompt', 'systemPromptAppend', 'thinkingLevel', 'mcp', 'model', 'keyScope', 'modelHeaders', 'tools', 'fileTools', 'codeMode', 'runLimits'].includes(key)) throw new Error(`Unsupported scoped configuration field: ${key}`);
+  for (const key of Object.keys(input)) if (!['systemPrompt', 'systemPromptAppend', 'thinkingLevel', 'mcp', 'model', 'keyScope', 'modelHeaders', 'tools', 'fileTools', 'codeMode', 'runLimits', 'maxOutputTokens', 'temperature'].includes(key)) throw new Error(`Unsupported scoped configuration field: ${key}`);
   if (input.fileTools !== undefined && typeof input.fileTools !== 'boolean') throw new Error('fileTools must be true or false');
   if (input.codeMode !== undefined && typeof input.codeMode !== 'boolean') throw new Error('codeMode must be true or false');
   if (input.keyScope !== undefined && input.keyScope !== null) checkScope(input.keyScope);
   // Replaced whole; null or {} removes them.
   if (input.modelHeaders !== undefined) input = { ...input, modelHeaders: modelHeadersInput(input.modelHeaders) };
   if (input.runLimits !== undefined) input = { ...input, runLimits: runLimitsInput(input.runLimits) };
+  if (input.maxOutputTokens !== undefined) input = { ...input, maxOutputTokens: maxOutputTokensInput(input.maxOutputTokens) };
+  if (input.temperature !== undefined) input = { ...input, temperature: temperatureInput(input.temperature) };
   // The application's attached MCP server's tools/list replaces its tools.
   if (input.mcp !== undefined) {
     const { mcp, ...rest } = input;

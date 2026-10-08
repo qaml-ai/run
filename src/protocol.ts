@@ -78,6 +78,10 @@ export interface AgentConfig {
   mounts?: { path: string; mode: "ro" | "rw" }[];
   initialMessages?: AgentMessage[];
   thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+  /** The most the model writes in one response, within its own maximum; null or absent: the model's maximum. */
+  maxOutputTokens?: number | null;
+  /** The model's sampling temperature (0 to 2), sent only on calls without reasoning (session-config.ts `callSettings`); null or absent: the provider's default. */
+  temperature?: number | null;
   /** The most one run may take, set by the tenant: model responses and seconds. The runtime's maximums apply over them (client-sessions.ts). */
   runLimits?: RunLimits | null;
   /** Headers the tenant set for every model call of this agent (non-secret, never auth headers). */

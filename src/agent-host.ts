@@ -19,6 +19,7 @@ import { backgroundTokens, compactionNeed, compactionSettings, contextTokens, ex
 import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
 import { isStalled, streamTimeouts } from "./model-stream.ts";
 import { forcedToolChoice } from "./tool-choice.ts";
+import { callSettings } from "./pi-catalog.ts";
 import { describeFile, documentPayload, FILE_LIMITS, nativeBlock, unseen, validFileRef, type FileRef } from "./files.ts";
 import { CHUNK_BYTES, chunksOf, type HistoryChunk } from "./history-pages.ts";
 import { observeTurns, recordCodeExecution } from "./metrics.ts";
@@ -854,9 +855,11 @@ export function createAgentHost(hostIO: HostIO) {
         // Only the tenant's explicit key, never provider keys from the process environment. A model on the
         // tenant's own endpoint gets a fresh identity token for each call, and a key scope's agent its scope's current key.
         // A structured run's request may force final_output (`outputChoice`).
+        // The agent's maxOutputTokens and temperature go on each of its own calls (not compaction's summaries), as far as the call takes them.
         streamFn: (model, context, options) => {
           const toolChoice = outputChoice(model);
-          return stream(model, context, toolChoice === undefined ? options : { ...options, toolChoice } as typeof options);
+          const settings = callSettings(model, config, options?.reasoning);
+          return stream(model, context, { ...options, ...settings, ...(toolChoice === undefined ? {} : { toolChoice }) } as typeof options);
         },
         // Renders compaction summaries for the model (the default drops non-chat roles), and each message's sender.
         convertToLlm: messages => hydrate(convertToLlm(renderMessages(messages))),
@@ -935,6 +938,8 @@ export function createAgentHost(hostIO: HostIO) {
       if (params.modelHeaders !== undefined) config.modelHeaders = params.modelHeaders;
       // Its stream timeouts apply from the next model request.
       if (params.runLimits !== undefined) config.runLimits = params.runLimits;
+      if (params.maxOutputTokens !== undefined) config.maxOutputTokens = params.maxOutputTokens;
+      if (params.temperature !== undefined) config.temperature = params.temperature;
       if (params.tools !== undefined) config.tools = params.tools;
       if (params.tools !== undefined || params.codeMode !== undefined) agent.state.tools = [...config.codeMode === false ? [] : [jsExec!], ...directAgentTools(config.tools)];
       if (params.systemPrompt !== undefined || params.systemPromptAppend !== undefined || params.tools !== undefined || params.codeMode !== undefined || params.model !== undefined) await declareConfiguration();

@@ -527,6 +527,18 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["tool_choice"], {"type": "function", "function": {"name": "final_output"}})
         self.assertNotIn("js_exec", json.dumps(body))
 
+    async def test_max_output_tokens_and_temperature_go_on_model_calls_and_configure_removes_them(self):
+        agent = await self.agents.upsert("py-settings", instructions="Be brief.", max_output_tokens=300, temperature=0.3)
+        await agent.run("hi")
+        body = self.bodies[-1]
+        self.assertEqual((body.get("max_completion_tokens", body.get("max_tokens")), body.get("temperature")), (300, 0.3))
+        await agent.configure(temperature=None)
+        await agent.run("again")
+        self.assertNotIn("temperature", self.bodies[-1])
+        run = await self.agents.run("once", instructions="Be brief.", temperature=0.6, max_output_tokens=200)
+        self.assertEqual(run.text, "seen")
+        self.assertEqual(self.bodies[-1].get("temperature"), 0.6)
+
     async def test_run_with_output_returns_a_pydantic_model_or_the_json_schema_value(self):
         from typing import Literal
         from pydantic import BaseModel, field_validator
