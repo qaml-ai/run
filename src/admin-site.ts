@@ -3,7 +3,7 @@ import { extname, join, normalize, sep } from "node:path";
 import type { Context, MiddlewareHandler } from "hono";
 import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from "jose";
 import { ADMIN_REPORT_PATH, ADMIN_REPORT_REQUEST_BYTES, adminReport, adminReportRequest, boundedText, type AdminReportSource } from "./admin-report.ts";
-import { ADMIN_TIME_ZONE, AdminRangeError, adminSignals, adminToday } from "./admin-signals.ts";
+import { ADMIN_TIME_ZONE, ADMIN_TREND_DAYS, AdminRangeError, adminSignals, adminToday, adminTrend } from "./admin-signals.ts";
 import { adminStats } from "./admin-stats.ts";
 import type { Sql } from "./db.ts";
 
@@ -14,8 +14,9 @@ import type { Sql } from "./db.ts";
  * hostname are answered here and never reach the rest of the runtime; other hostnames never reach the site.
  *
  * Besides the stats (GET /api/stats, src/admin-stats.ts) it answers sign-ups, first runs and purchases by calendar day
- * (GET /api/product-signals, src/admin-signals.ts) and, where the operator's journey store answers reports, what
- * accounts did on the way to them (POST /api/report, src/admin-report.ts).
+ * (GET /api/product-signals, src/admin-signals.ts), sign-ups and returning active accounts by UTC day for its chart
+ * (GET /api/activity-trend) and, where the operator's journey store answers reports, what accounts did on the way
+ * to them and how the website's pages about the runtime did (POST /api/report, src/admin-report.ts).
  */
 export interface AdminSiteOptions {
   /** The site's hostname, e.g. admin.camelai.dev. */
@@ -106,6 +107,16 @@ export function adminSite(options: AdminSiteOptions): MiddlewareHandler {
         const signals = await adminSignals(options.db, { range: { start_date: start ?? today, end_date: end ?? today, time_zone: zone }, tracking: !!options.tracking });
         console.log(JSON.stringify({ type: "admin_signals_viewed", viewer: email, ...signals.range }));
         return c.json(signals, 200, { "Cache-Control": "no-store" });
+      } catch (error) {
+        if (!(error instanceof AdminRangeError)) throw error;
+        return c.json({ error: error.message }, error.status, { "Cache-Control": "no-store" });
+      }
+    }
+    if (c.req.path === "/api/activity-trend") {
+      try {
+        const trend = await adminTrend(options.db, { days: Number(c.req.query("days") ?? ADMIN_TREND_DAYS), end_date: c.req.query("end_date") });
+        console.log(JSON.stringify({ type: "admin_trend_viewed", viewer: email, ...trend.range }));
+        return c.json(trend, 200, { "Cache-Control": "no-store" });
       } catch (error) {
         if (!(error instanceof AdminRangeError)) throw error;
         return c.json({ error: error.message }, error.status, { "Cache-Control": "no-store" });

@@ -5,11 +5,13 @@ import { AdminAnalytics } from "../web/pages/admin-analytics";
 const range={start_date:"2026-10-06",end_date:"2026-10-06",time_zone:"America/Chicago"};
 const base={schema_version:1,range,generated_at:"2026-10-06T17:00:00Z",coverage:{first_event_at:"2026-10-01T15:00:00Z",last_event_at:"2026-10-06T16:00:00Z"}};
 const signals={...base,summary:{signups:2,activations:null,payments:1,paying_accounts:1,amount_minor:2500,currency:"USD"},daily:[{date:range.start_date,signups:2,activations:null,payments:1,amount_minor:2500}],activation_coverage:{status:"unavailable",since:null}};
+const trend={schema_version:1,range:{start_date:"2026-09-23",end_date:"2026-10-06",time_zone:"UTC"},generated_at:"2026-10-06T17:00:00Z",daily:[{date:"2026-10-06",signups:2,returning_active:1}],incomplete_date:"2026-10-06"};
+const mockReports=(fetcher: (...args:any[])=>any)=>vi.stubGlobal("fetch",(url:string,...args:any[])=>url.startsWith("/api/activity-trend")?Promise.resolve(Response.json(trend)):fetcher(url,...args));
 const account=(n:number)=>({account_ref:`00000000-0000-4000-8000-${String(n).padStart(12,"0")}`,display_name:null,email:null,signup_at:"2026-10-06T15:00:00Z",last_active_at:"2026-10-06T16:00:00Z",events_in_range:2,activated_at:null,payments:1,amount_minor:2500,acquisition:{source:null,medium:null,campaign:null,landing_path:null,handoff_status:"none",capture_quality:"pending"},summary:"How this account first arrived was not captured. No completed run has been recorded."});
 beforeEach(()=>{vi.useFakeTimers({toFake:["Date"]});vi.setSystemTime(new Date("2026-10-06T17:00:00Z"));});
 afterEach(()=>{cleanup();vi.unstubAllGlobals();vi.useRealTimers();});
 test("signals use today's calendar range and real payment amounts while unavailable activation stays unknown",async()=>{
- const fetcher=vi.fn().mockResolvedValue(Response.json(signals));vi.stubGlobal("fetch",fetcher);
+ const fetcher=vi.fn().mockResolvedValue(Response.json(signals));mockReports(fetcher);
  render(<AdminAnalytics/>);
  await screen.findByText("1 paying account · $25.00 purchased");
  expect((screen.getByLabelText("From date") as HTMLInputElement).value).toBe("2026-10-06");
@@ -29,7 +31,7 @@ test("signals use today's calendar range and real payment amounts while unavaila
 test("an old delayed report cannot overwrite a newly selected date range",async()=>{
  let resolveOld!:(value:Response)=>void;
  const old=new Promise<Response>(resolve=>{resolveOld=resolve;});
- const fetcher=vi.fn().mockReturnValueOnce(old).mockResolvedValue(Response.json(signals));vi.stubGlobal("fetch",fetcher);
+ const fetcher=vi.fn().mockReturnValueOnce(old).mockResolvedValue(Response.json(signals));mockReports(fetcher);
  render(<AdminAnalytics/>);
  fireEvent.change(screen.getByLabelText("Calendar preset"),{target:{value:"yesterday"}});
  await screen.findByText("1 paying account · $25.00 purchased");
@@ -40,7 +42,7 @@ test("an old delayed report cannot overwrite a newly selected date range",async(
 });
 test("journey pages and event pages request the correct cursor, retain the range, and display dollars",async()=>{
  const requests:any[]=[];
- vi.stubGlobal("fetch",vi.fn(async(url:string,init:RequestInit)=>{
+ mockReports(vi.fn(async(url:string,init:RequestInit)=>{
   if(url.startsWith("/api/product-signals"))return Response.json(signals);
   const request=JSON.parse(String(init.body));requests.push(request);
   if(request.kind==="journeys")return Response.json({...base,kind:"journeys",items:[account(request.cursor?2:1)],next_cursor:request.cursor?null:"accountpage2"});
@@ -67,7 +69,7 @@ test("journey pages and event pages request the correct cursor, retain the range
 });
 test("unconnected journeys do not hide database signals; a forbidden response clears loaded figures",async()=>{
  let forbidden=false;
- vi.stubGlobal("fetch",vi.fn(async(url:string)=>forbidden?new Response("This account may not use the admin site",{status:403}):url.startsWith("/api/product-signals")?Response.json(signals):Response.json({error:"report_not_configured"},{status:503})));
+ mockReports(vi.fn(async(url:string)=>forbidden?new Response("This account may not use the admin site",{status:403}):url.startsWith("/api/product-signals")?Response.json(signals):Response.json({error:"report_not_configured"},{status:503})));
  const user=userEvent.setup();render(<AdminAnalytics/>);
  await screen.findByText("1 paying account · $25.00 purchased");
  await user.click(screen.getByRole("tab",{name:"User journeys"}));

@@ -146,3 +146,55 @@ export async function adminSignals(db: Sql, options: { range: AdminRange; tracki
     activation_coverage: coverage,
   };
 }
+
+/** A UTC day of the trend: accounts made that day, and accounts made before it that were active on it. */
+export interface AdminTrendDay { date: string; signups: number; returning_active: number }
+export interface AdminTrend {
+  schema_version: 1;
+  /** UTC days, both included. Usage is kept by the UTC day (`usage`), so it cannot be counted by any other zone's days. */
+  range: { start_date: string; end_date: string; time_zone: "UTC" };
+  generated_at: string;
+  daily: AdminTrendDay[];
+  /** The day still going, where the range has it: its counts are only so far. */
+  incomplete_date: string | null;
+}
+
+export const ADMIN_TREND_DAYS = 14;
+export const ADMIN_TREND_MAX_DAYS = 90;
+
+/**
+ * Sign-ups and returning active accounts by UTC day, over the `days` days that end on `end_date` (today, by default),
+ * for the admin site's chart (GET /api/activity-trend). Read-only, from this runtime's own tables, so every day it has
+ * ever run is known, whether journey events are on or not:
+ *
+ * - a sign-up is as in `adminSignals`: a tenant someone made for themselves, counted on the day it was made;
+ * - a returning active account is one made before that day whose agents got at least one model response on it
+ *   (`usage.responses`): the account did work that day, whether a person started the run or a schedule or a channel
+ *   did. Opening the console is not activity. An account active on the day it was made is new, not returning.
+ *
+ * Both lines count the same accounts (`COUNTED`) and cut days at the same instants, UTC midnight.
+ */
+export async function adminTrend(db: Sql, options: { days?: number; end_date?: string; now?: number } = {}): Promise<AdminTrend> {
+  const now = options.now ?? Date.now(), today = new Date(now).toISOString().slice(0, 10);
+  const days = options.days ?? ADMIN_TREND_DAYS, end = calendarDate(options.end_date ?? today);
+  if (!Number.isInteger(days) || days < 1 || days > ADMIN_TREND_MAX_DAYS) throw new AdminRangeError(400, "invalid_days");
+  const start = end - (days - 1) * DAY_MS, label = (utc: number) => new Date(utc).toISOString().slice(0, 10);
+  const selfServe = "(t.github_id is not null or t.github is not null or t.google_sub is not null or t.email_signup)";
+  const [signups, returning] = await Promise.all([
+    db.query(`
+      select (t.created_at - $1) / $3 as day, count(*) as count from tenants t
+      where t.created_at >= $1 and t.created_at < $2 and ${selfServe} and ${COUNTED}
+      group by 1`, [start, end + DAY_MS, DAY_MS]),
+    db.query(`
+      select to_char(u.day, 'YYYY-MM-DD') as date, count(distinct u.tenant) as count from usage u join tenants t on t.id = u.tenant
+      where u.day >= $1::date and u.day <= $2::date and u.responses > 0 and t.created_at < extract(epoch from u.day) * 1000 and ${selfServe} and ${COUNTED}
+      group by u.day`, [label(start), label(end)]),
+  ]);
+  const daily: AdminTrendDay[] = Array.from({ length: days }, (_, day) => ({ date: label(start + day * DAY_MS), signups: 0, returning_active: 0 }));
+  for (const row of signups.rows) daily[Number(row.day)].signups = Number(row.count);
+  for (const row of returning.rows) daily.find(day => day.date === row.date)!.returning_active = Number(row.count);
+  return {
+    schema_version: 1, range: { start_date: daily[0].date, end_date: daily.at(-1)!.date, time_zone: "UTC" }, generated_at: new Date(now).toISOString(),
+    daily, incomplete_date: daily.some(day => day.date === today) ? today : null,
+  };
+}
