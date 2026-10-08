@@ -23,6 +23,9 @@ const run = await agent.run("Summarize this and list the action items", { files:
 run = await agent.run("Summarize this and list the action items", files=[Path("standup.m4a")])
 ```
 
+A voice note alone needs no text: `agent.run("", { files: [voiceNote] })`. In the SDKs a file is also
+`{ url }` (Python `{"url"}`), and takes `transcribe: true | false`.
+
 ```bash
 curl -X POST "$RUNTIME/v1/agents/$AGENT/prompt" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"files": [{"url": "https://example.com/voice-message.ogg"}]}'
@@ -68,6 +71,14 @@ a channel, reaches the agent with its transcript. [Stateless runs](stateless-run
 take audio as input parts: `{"type": "file", "url": "…"}` or `{"type": "file", "data": "…"}`.
 
 ## Transcribing on its own
+
+```ts
+const { text } = await agents.transcriptions.create({ file: await readFile("voice-message.ogg"), language: "en" });
+```
+
+```python
+result = await agents.transcriptions.create(Path("voice-message.ogg"), language="en")
+```
 
 ```bash
 curl -X POST "$RUNTIME/v1/transcriptions" -H "Authorization: Bearer $TOKEN" -F file=@voice-message.ogg -F language=en
