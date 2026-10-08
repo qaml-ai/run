@@ -264,6 +264,8 @@ export class Agents {
   readonly runtime: AgentRuntime;
   /** Stateless runs: `create`, `get`, `stream`, `abort`, `delete`, `messages`; `agents.run` is the one-call form. */
   readonly runs: Runs;
+  /** Speech to text on its own: `create({ file | url })`. Audio attached to a message is transcribed without it. */
+  get transcriptions() { return this.runtime.transcriptions; }
   private readonly open = new Set<Agent>();
   private readonly connection: "eager" | "lazy";
   constructor(options: AgentsOptions = {}) {
@@ -349,10 +351,13 @@ export class Agents {
 export interface StatelessRunConfig<S extends OutputSchema = never> extends Pick<AgentConfig, "model" | "instructions" | "instructionsAppend" | "definition" | "delegate" | "thinkingLevel" | "maxOutputTokens" | "temperature" | "subject" | "context" | "keyScope" | "runLimits" | "modelHeaders" | "mounts" | "name" | "fileTools"> {
   /** js_exec. Default: on for a run with tools (builtins, a definition, files), off for a tool-less run. */
   codeMode?: boolean;
-  /** What the run is asked. */
+  /** What the run is asked. It may be empty when `files` has audio, whose transcript is then the input. */
   input: string;
-  /** Files sent with it, inline (bytes or Blobs; at most 4 MiB in all): the run gets a workspace for them. */
-  files?: (Uint8Array | Blob | { name?: string; data: Uint8Array | Blob; contentType?: string })[];
+  /**
+   * Files sent with it, inline (bytes or Blobs; at most 4 MiB in all) or by URL for the runtime to fetch: the run gets a
+   * workspace for them. Audio is transcribed for the model (`transcribe: false` keeps it a plain file).
+   */
+  files?: (Uint8Array | Blob | { name?: string; data: Uint8Array | Blob; contentType?: string; transcribe?: boolean } | { url: string; name?: string; contentType?: string; transcribe?: boolean })[];
   /** Tools the runtime answers itself: web_fetch, web_search, delegate. */
   builtins?: ("web_fetch" | "web_search" | "delegate")[];
   output?: S;
@@ -453,15 +458,17 @@ export class Runs {
   private async request(config: StatelessRunConfig<OutputSchema>): Promise<{ request: RunRequest; key: string }> {
     if (!this.runtime.options.apiKey) throw new AgentError("No API key: set CAMELAI_API_KEY (or pass apiKey). Create one at https://run.camelai.com/console/tokens");
     const { input, files, instructions, instructionsAppend, output, user, idempotencyKey, signal: _signal, throwOnError: _throw, traceparent: _trace, ...rest } = config;
-    const parts: RunInputPart[] = [{ type: "text", text: input }];
+    const parts: RunInputPart[] = input ? [{ type: "text", text: input }] : [];
     for (const file of files ?? []) {
+      if (!(file instanceof Uint8Array || file instanceof Blob) && "url" in file) { parts.push({ type: "file", ...file }); continue; }
       const entry = file instanceof Uint8Array || file instanceof Blob ? { data: file } : file;
       const name = entry.name ?? (entry.data as { name?: string }).name;
       const contentType = (entry as { contentType?: string }).contentType ?? (entry.data instanceof Blob && entry.data.type ? entry.data.type : undefined);
-      parts.push({ type: "file", ...(name ? { name } : {}), data: await base64(entry.data), ...(contentType ? { contentType } : {}) });
+      const transcribe = (entry as { transcribe?: boolean }).transcribe;
+      parts.push({ type: "file", ...(name ? { name } : {}), data: await base64(entry.data), ...(contentType ? { contentType } : {}), ...(transcribe !== undefined ? { transcribe } : {}) });
     }
     const request: RunRequest = {
-      ...rest, input: parts.length === 1 ? input : parts,
+      ...rest, input: parts.length === 1 && parts[0].type === "text" ? input : parts,
       ...(instructions !== undefined ? { systemPrompt: instructions } : {}), ...(instructionsAppend !== undefined ? { systemPromptAppend: instructionsAppend } : {}),
       ...(output ? { output: outputRequest(output) } : {}), ...(user ? { from: senderOf(user) } : {}),
     };

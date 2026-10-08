@@ -137,7 +137,7 @@ Run options (`run`, `stream`):
 | TypeScript | Python | |
 | --- | --- | --- |
 | `user` | `user=` | who sent it: your user id, or `{ id, name, username }`; the model sees who, tools get `identity.actor` |
-| `files` | `files=` | attachments; see [Files](../guides/files.md) |
+| `files` | `files=` | attachments, by bytes, path, `{ url }` or `{ path }` in the agent's mounts; audio among them is transcribed for the model (`transcribe: false` keeps a file plain). See [Files](../guides/files.md) and [Voice and audio](../guides/voice.md). With audio, the text may be `""` |
 | `metadata` | `metadata=` | your own key-value data about the message (16 strings); the model never sees it |
 | `idempotencyKey` | `idempotency_key=` | the run's id: the same key returns the same run, joining it if it is still going |
 | `signal` | `timeout=` | stop waiting; the run goes on |
@@ -189,7 +189,7 @@ run = await agents.run("Ship on Friday?", instructions="Vote yes or no.", output
 `delegate`; `delegate`, `thinkingLevel`, `maxOutputTokens`, `temperature`, `subject`, `context`, `keyScope`,
 `runLimits`, `modelHeaders`, `mounts`, `fileTools`, `codeMode`, `name`; a run with
 no tools defaults to `codeMode: false` and `fileTools: false`) and the run's own:
-`input`, `files` (inline bytes), `output`, `user`, `metadata`, `idempotencyKey`,
+`input`, `files` (inline bytes, or `{ url }`; audio is transcribed, and `input` may then be `""`), `output`, `user`, `metadata`, `idempotencyKey`,
 `spendLimit`, `retentionSeconds`, `signal`, `throwOnError`, `traceparent`
 (Python: snake_case keywords, `input` first). It resolves with a `Run` (no
 `inputs`), and throws a `RunError` when the run failed unless
@@ -414,6 +414,28 @@ run = await agent.run("Summarize ticket 123", traceparent=traceparent)
   `RequestRecord`) carries `trace: { traceId, spanId, parentSpanId?, sampled }`
   while the tenant exports telemetry.
 
+### Transcriptions
+
+`agents.transcriptions` (`runtime.transcriptions`) is speech to text on its own, `POST /v1/transcriptions`: audio in,
+its transcript out, nothing kept. Audio attached to a message needs none of it: it is transcribed as it is attached.
+See [Voice and audio](../guides/voice.md).
+
+```ts
+const { text, language, durationSeconds, costUsd } = await agents.transcriptions.create({ file: await readFile("voice.ogg"), language: "en" });
+const timed = await agents.transcriptions.create({ url: "https://example.com/call.m4a", timestamps: true }); // timed.segments
+```
+
+```python
+result = await agents.transcriptions.create(Path("voice.ogg"), language="en")
+timed = await agents.transcriptions.create(url="https://example.com/call.m4a", timestamps=True)
+text = camelai_run.sync.Agents().transcriptions.create(b"...")["text"]  # synchronous
+```
+
+`create` takes the audio as `file` (bytes or a Blob/File; Python: bytes or a local path) or `url`, and `language`,
+`prompt`, `timestamps`, `keyScope` (`key_scope=`), and `subject`, `context`, `actor` for its `usage.recorded` event.
+It resolves with `{ text, language, durationSeconds, model, costUsd, segments? }` (Python: that dict). It is not
+retried, as each attempt is billed.
+
 ### Events, reconnects and replay
 
 An eager client (and a lazy one, while something listens) holds one SSE stream
@@ -513,6 +535,15 @@ changing its history with `agent.client.setMetadata({ name, type })`
 (`set_metadata(name=, type=)`). SDK-created agents appear in a local Studio
 (`npm run studio`) at `/studio/agents`; Studio observes the runtime, and your
 application keeps serving its tools.
+
+## Unreleased
+
+- Speech to text: `agents.transcriptions.create({ file | url, language, prompt, timestamps })` (Python:
+  `transcriptions.create(file or url=…)`, async and in `camelai_run.sync`). See [Voice and audio](../guides/voice.md).
+- Attachments take `{ url }` (fetched by the runtime) and `transcribe: true | false`; audio is transcribed for the
+  model by default, and a message (or a stateless run's `input`) may be `""` when it has audio.
+- `usage.recorded`'s type takes `kind: "transcription"`, `audioSeconds`, and `agentId` / `subject` null for a
+  transcription made alone.
 
 ## 0.12.0 (Python), 2026-10-08
 

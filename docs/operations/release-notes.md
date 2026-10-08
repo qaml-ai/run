@@ -41,6 +41,8 @@ Changes on main since the last tag.
 
 ### TypeScript SDK
 
+- `agents.transcriptions.create({ file | url, language, prompt, timestamps })`; attachments take `{ url }` and
+  `transcribe`, and a message with audio may have no text. See [Voice and audio](../guides/voice.md).
 - `maxOutputTokens` and `temperature` on `agents.upsert`, `agents.run`, definitions and `agent.configure` (`null`
   removes either there).
 
@@ -63,6 +65,8 @@ Changes on main since the last tag.
 
 ### Python SDK
 
+- `transcriptions.create(file or url=…)` on `Agents` and `AgentRuntime`, async and in `camelai_run.sync`; attachments
+  take `{"url"}` and `"transcribe"`, and a message with audio may have no text.
 - `camelai_run.sync`: a synchronous client with the same names (`Agents`, `Agent`, `AgentRuntime`, `Runs`) for
   scripts, Django and Flask views and Celery tasks: upsert, get, fork, run, stream, steer, answer inputs, stateless
   runs. It holds no connection and does not serve tools. See [the synchronous client](../reference/sdk.md#the-synchronous-client-python).

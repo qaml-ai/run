@@ -527,16 +527,23 @@ export type WebhookEvent = { id: string; created: number } & (
   | { type: "input.requested"; data: { agentId: string; requestId: string; inputId: string; toolCallId: string; kind: AgentInput["kind"]; expiresAt: number } }
   | { type: "input.resolved"; data: { agentId: string; requestId: string; inputId: string; state: Exclude<AgentInput["state"], "pending"> } }
   | { type: "usage.recorded"; data: {
-      agentId: string; requestId: string | null; subject: string; actor: string | null; context: Record<string, unknown>; keyScope: string | null;
-      provider: string; model: string; kind: "response" | "compaction"; input: number; output: number; cacheRead: number; cacheWrite: number; reasoning?: number;
-      cost: { usd: number; source: "provider" | "catalog" }; at: number;
+      /** null for a transcription made with `transcriptions.create`, which no agent made. */
+      agentId: string | null; requestId: string | null; subject: string | null; actor: string | null; context: Record<string, unknown>; keyScope: string | null;
+      /** `transcription`: audio transcribed (`audioSeconds` of it, no tokens). More kinds may come: treat one you do not know as other usage. */
+      provider: string; model: string; kind: "response" | "compaction" | "transcription"; input: number; output: number; cacheRead: number; cacheWrite: number; reasoning?: number;
+      audioSeconds?: number; cost: { usd: number; source: "provider" | "catalog" }; at: number;
     } });
 /**
  * A file to attach to a message: bytes or a Blob (a File keeps its name and type), `{ name, data,
- * contentType? }`, a local path (Node entry), or `{ path }` for a file already in the agent's mounts.
- * The SDK uploads each to the agent's workspace (uploads/<request>/<name>) before sending the message.
+ * contentType? }`, a local path (Node entry), `{ path }` for a file already in the agent's mounts, or `{ url }` for the
+ * runtime to fetch (public addresses only). The SDK uploads each local one to the agent's workspace
+ * (uploads/<request>/<name>) before sending the message. Audio (`audio/*`) is transcribed for the model by default:
+ * `transcribe: false` keeps it a plain file, `true` transcribes a file of any type.
  */
-export type Attachment = Uint8Array | Blob | string | { name?: string; data: Uint8Array | Blob; contentType?: string } | { path: string };
+export type Attachment = Uint8Array | Blob | string
+  | { name?: string; data: Uint8Array | Blob; contentType?: string; transcribe?: boolean }
+  | { path: string; transcribe?: boolean }
+  | { url: string; name?: string; contentType?: string; transcribe?: boolean };
 /** A file in the agent's mounts, at the path the agent sees it. */
 export interface AgentFile { path: string; version: number; size: number; updatedAt: number; by?: string; contentType: string }
 export interface Schedule { id: string; agent: string; text?: string; code?: string; dueAt: number; everySeconds?: number; createdAt: number }
@@ -743,7 +750,7 @@ class Transport {
       await rejectRedirect(response);
       if (!response.ok) {
         const value = await response.json().catch(() => ({})) as any;
-        throw Object.assign(new AgentError(value.error ?? `HTTP ${response.status}`, response.status), { retryAfterMs: retryAfter(response) });
+        throw Object.assign(new AgentError(value.error ?? `HTTP ${response.status}`, response.status), { retryAfterMs: retryAfter(response), ...codeOf(value) });
       }
       if (!response.body) { clearTimeout(timer); return response; }
       wait(30_000);
@@ -800,6 +807,64 @@ export interface TelemetrySettings {
 /** One test span, sent now: what the endpoint answered (`status`, or `error` when it could not be reached), and the span's ids. */
 export interface TelemetryTestResult { ok: boolean; status?: number; error?: string; traceId: string; spanId: string }
 
+/** What to transcribe: the audio (bytes, a Blob or File, or a URL the runtime fetches) and how. */
+export interface TranscriptionInput {
+  /** The audio: Ogg (Opus, Vorbis), WebM, MP3, M4A/MP4, WAV or FLAC; at most 25 MB and 30 minutes. */
+  file?: Uint8Array | Blob;
+  /** Or a URL for the runtime to fetch it from (public addresses only). */
+  url?: string;
+  /** ISO 639-1 (`en`) or a locale (`pt-BR`); detected when left out. */
+  language?: string;
+  /** Names, jargon or the conversation so far, as a hint (at most 2,000 characters). */
+  prompt?: string;
+  /** Also return `segments` with their times (uses whisper-1, priced apart). */
+  timestamps?: boolean;
+  /** A key scope whose OpenAI key goes first. */
+  keyScope?: string;
+  /** Who it is for, your claims, and who asked: carried to its `usage.recorded` event. */
+  subject?: string; context?: Record<string, unknown>; actor?: string;
+  signal?: AbortSignal;
+}
+export interface Transcription {
+  text: string;
+  /** The language heard (or given), when the provider says. */
+  language: string | null;
+  /** Seconds of audio billed. */
+  durationSeconds: number;
+  /** e.g. `openai/gpt-transcribe`. */
+  model: string;
+  /** What it cost at the runtime's price (charged to prepaid credit on the platform's key). */
+  costUsd: number;
+  /** With `timestamps`: the transcript in segments, times in seconds. */
+  segments?: { start: number; end: number; text: string }[];
+}
+
+/**
+ * Speech to text on its own (`runtime.transcriptions`, `agents.transcriptions`): audio in, its transcript out, nothing
+ * kept. Audio attached to a message needs none of this: it is transcribed for the model as it is attached.
+ */
+export class Transcriptions {
+  private readonly transport: Transport;
+  private readonly key: () => string;
+  constructor(transport: Transport, key: () => string) { this.transport = transport; this.key = key; }
+  /**
+   * Transcribe audio. Not retried (each attempt is billed); it can take a while for long audio.
+   *
+   *   const { text } = await agents.transcriptions.create({ file: await readFile("voice.ogg") });
+   */
+  async create(input: TranscriptionInput): Promise<Transcription> {
+    const { file, url, signal, ...fields } = input;
+    if ((file === undefined) === (url === undefined)) throw new AgentError("Give the audio as file (bytes or a Blob) or url, one of them");
+    if (url !== undefined) return this.transport.json("/v1/transcriptions", this.key(), "POST", { url, ...fields }, false, {}, 6 * 60_000, signal);
+    const form = new FormData();
+    form.set("file", file instanceof Blob ? file : new Blob([file as Uint8Array<ArrayBuffer>]), (file as { name?: string }).name || "audio");
+    for (const [name, value] of Object.entries(fields)) if (value !== undefined) form.set(name, typeof value === "object" ? JSON.stringify(value) : String(value));
+    const encoded = new Response(form);
+    const response = await this.transport.raw("/v1/transcriptions", this.key(), { method: "POST", body: await encoded.blob(), headers: { "Content-Type": encoded.headers.get("content-type")! } });
+    return response.json();
+  }
+}
+
 /** The tenant's OpenTelemetry trace export (`runtime.telemetry`): set it, read it, test it, clear it. */
 export class Telemetry {
   private readonly transport: Transport;
@@ -827,7 +892,13 @@ export class AgentRuntime {
   private readonly transport: Transport;
   /** The tenant's OpenTelemetry trace export: `get`, `set`, `clear`, `test`. */
   readonly telemetry: Telemetry;
-  constructor(options: RuntimeOptions = {}) { this.options = options; this.transport = new Transport(options); this.telemetry = new Telemetry(this.transport, () => this.operator()); }
+  /** Speech to text on its own: `create`. */
+  readonly transcriptions: Transcriptions;
+  constructor(options: RuntimeOptions = {}) {
+    this.options = options; this.transport = new Transport(options);
+    this.telemetry = new Telemetry(this.transport, () => this.operator());
+    this.transcriptions = new Transcriptions(this.transport, () => this.operator());
+  }
   /**
    * The agent for `key`: made if there is none, set to `options` if it differs. Returns its credentials;
    * connect with `connectAgent`. Keyed agents live until they are deleted.
@@ -1016,7 +1087,9 @@ export class AgentRuntime {
 }
 
 /** A part of a stateless run's input: text, or a file sent inline (base64, at most 4 MiB across a run's files). */
-export type RunInputPart = { type: "text"; text: string } | { type: "file"; name?: string; data: string; contentType?: string };
+export type RunInputPart = { type: "text"; text: string }
+  | { type: "file"; name?: string; data: string; contentType?: string; transcribe?: boolean }
+  | { type: "file"; url: string; name?: string; contentType?: string; transcribe?: boolean };
 /** What a stateless run is (POST /v1/runs): an agent's configuration and an input. Nothing carries over between runs. */
 export interface RunRequest {
   input: string | RunInputPart[];
@@ -1589,11 +1662,14 @@ export class AgentClient {
     return this.request(method, { text, ...(files ? { files } : {}), ...extra, ...(options?.from ? { from: options.from } : {}), ...(options?.metadata ? { metadata: options.metadata } : {}) }, { ...options, idempotencyKey: id });
   }
 
-  private async attach(requestId: string, files: Attachment[]): Promise<{ path: string }[]> {
+  private async attach(requestId: string, files: Attachment[]): Promise<({ path: string } | { url: string })[]> {
     const names = new Set<string>();
-    const attached: { path: string }[] = [];
+    const attached: ({ path: string } | { url: string })[] = [];
     for (const [index, file] of files.entries()) {
-      if (isRecord(file) && "path" in file && typeof file.path === "string" && !("data" in file)) { attached.push({ path: file.path }); continue; }
+      const transcribe = isRecord(file) && typeof file.transcribe === "boolean" ? { transcribe: file.transcribe as boolean } : {};
+      if (isRecord(file) && "path" in file && typeof file.path === "string" && !("data" in file)) { attached.push({ path: file.path, ...transcribe }); continue; }
+      // The runtime fetches it.
+      if (isRecord(file) && "url" in file && typeof file.url === "string") { attached.push(file as { url: string }); continue; }
       let data: Uint8Array | Blob, name: string | undefined, contentType: string | undefined;
       if (typeof file === "string") {
         if (!this.openFile) throw new AgentError("Attaching a local path needs the Node entry (@camelai/run/node); pass bytes or a Blob instead");
@@ -1614,7 +1690,7 @@ export class AgentClient {
       for (let n = 2; names.has(unique); n++) unique = base.replace(/(\.[^.]*)?$/, extension => `-${n}${extension}`);
       names.add(unique);
       const response = await this.transport.raw(this.path(`/uploads/${encodeURIComponent(requestId)}/${encodeURIComponent(unique)}`), this.session.token, { method: "PUT", body: data, headers: contentType ? { "Content-Type": contentType } : {} });
-      attached.push({ path: (await response.json()).path });
+      attached.push({ path: (await response.json()).path, ...transcribe });
     }
     return attached;
   }

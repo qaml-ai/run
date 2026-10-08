@@ -31,7 +31,7 @@ __all__ = [
     "Agents", "Agent", "Run", "RunInput", "InputDetail", "RunStream", "StreamPart", "Runs", "StatelessRunStream",
     "tool", "Tool", "ToolContext", "InputRequired", "RuntimeIdentity", "identity_from_claims",
     "AgentError", "RunError",
-    "AgentRuntime", "AgentClient", "AgentFiles", "Download", "Volume", "Telemetry", "DEFAULT_URL",
+    "AgentRuntime", "AgentClient", "AgentFiles", "Download", "Volume", "Telemetry", "Transcriptions", "DEFAULT_URL",
     "serve_tools", "verify_runtime_token", "RuntimeTokenError", "TestRuntime", "verify_webhook", "WebhookVerificationError",
 ]
 # Distinguishes "not given" from None (which means "never expires") in create_agent.
@@ -399,6 +399,8 @@ def _retry_after(response):
 _RATE_LIMIT_ATTEMPTS = 8
 # httpx times each read and write, so a stalled transfer fails; an upload may wait longer while the runtime stores it.
 _UPLOAD_TIMEOUT = 60
+# A transcription of long audio takes a while: the runtime gives its provider 5 minutes.
+_TRANSCRIPTION_TIMEOUT = 360
 
 
 def _encoded(body):
@@ -751,6 +753,15 @@ class AgentRuntime(_RuntimeCalls):
         self.agents = []
         # The tenant's OpenTelemetry trace export: get, set, clear, test.
         self.telemetry = Telemetry(self)
+        # Speech to text on its own: create.
+        self.transcriptions = Transcriptions(self)
+
+    async def _form(self, path, fields, file):
+        """A multipart POST with the API key (a transcription's audio), not retried: its answer."""
+        response = await self.http.post(self.base + path, data=fields, files=[file], headers={"Authorization": f"Bearer {self._operator()}"}, timeout=_TRANSCRIPTION_TIMEOUT)
+        if not response.is_success:
+            raise AgentError(_error(response), response.status_code)
+        return response.json()
 
     async def _rest(self, method, path, body=None, *, retry=True, headers=None, timeout=None, then=None, missing=_DEFAULT):
         """One request with the API key: its answer (`then` of it), or `missing` for a 404 when given."""
@@ -899,6 +910,43 @@ def _steer_receipt(record):
 def _trace_header(traceparent):
     """The W3C `traceparent` header, when there is one to send."""
     return {"traceparent": traceparent} if traceparent else {}
+
+
+def _transcription_form(language=None, prompt=None, timestamps=None, key_scope=None, subject=None, context=None, actor=None):
+    """A transcription's fields, as the request names them, the ones given."""
+    fields = {"language": language, "prompt": prompt, "timestamps": timestamps, "keyScope": key_scope, "subject": subject, "context": context, "actor": actor}
+    return {key: value for key, value in fields.items() if value is not None}
+
+
+class Transcriptions:
+    """Speech to text on its own (runtime.transcriptions, agents.transcriptions): audio in, its transcript out, nothing
+    kept. Audio attached to a message needs none of this: it is transcribed for the model as it is attached. Its calls
+    are awaited from AgentRuntime, and plain from the synchronous one."""
+
+    def __init__(self, runtime):
+        self._runtime = runtime
+
+    def create(self, file=None, *, url=None, name=None, content_type=None, language=None, prompt=None, timestamps=None, key_scope=None,
+               subject=None, context=None, actor=None):
+        """Transcribe audio: `file` (bytes, or a local path as str or Path) or `url` for the runtime to fetch (public
+        addresses only). Ogg (Opus, Vorbis), WebM, MP3, M4A/MP4, WAV or FLAC; at most 25 MB and 30 minutes. `language`:
+        ISO 639-1 ("en") or a locale ("pt-BR"), detected when left out; `prompt`: names or jargon to expect;
+        `timestamps=True` adds "segments" (uses whisper-1, priced apart); `key_scope`: whose OpenAI key goes first;
+        `subject`, `context` and `actor` are carried to its usage.recorded event. Returns {"text", "language",
+        "durationSeconds", "model", "costUsd", "segments"?}. Not retried: each attempt is billed."""
+        fields = _transcription_form(language, prompt, timestamps, key_scope, subject, context, actor)
+        if (file is None) == (url is None):
+            raise AgentError("Give the audio as file (bytes or a path) or url, one of them")
+        if url is not None:
+            return self._runtime._rest("POST", "/v1/transcriptions", {"url": url, **fields}, retry=False, timeout=_TRANSCRIPTION_TIMEOUT)
+        if isinstance(file, (str, os.PathLike)):
+            name, data = name or Path(file).name, Path(file).read_bytes()
+        elif isinstance(file, (bytes, bytearray, memoryview)):
+            data = bytes(file)
+        else:
+            raise AgentError("file is bytes or a local path")
+        form = {key: json.dumps(value) if isinstance(value, dict) else str(value).lower() if isinstance(value, bool) else str(value) for key, value in fields.items()}
+        return self._runtime._form("/v1/transcriptions", form, ("file", (name or "audio", data, content_type or "application/octet-stream")))
 
 
 class Telemetry:
@@ -1113,16 +1161,20 @@ def _check_request_id(request_id):
 
 
 def _attachment(index, file):
-    """A file to attach as (name, data, content_type), or {"path"} for one in the agent's mounts."""
-    if isinstance(file, dict) and set(file) == {"path"}:
-        return {"path": file["path"]}
+    """A file to attach as (name, data, content_type, extra), or as the message sends it: {"path"} for one in the agent's
+    mounts, {"url"} for the runtime to fetch. `extra` is its "transcribe" choice, if it makes one."""
+    extra = {"transcribe": file["transcribe"]} if isinstance(file, dict) and isinstance(file.get("transcribe"), bool) else {}
+    if isinstance(file, dict) and set(file) - {"transcribe"} == {"path"}:
+        return {"path": file["path"], **extra}
+    if isinstance(file, dict) and isinstance(file.get("url"), str) and set(file) <= {"url", "name", "content_type", "transcribe"}:
+        return {"url": file["url"], **({"name": file["name"]} if file.get("name") else {}), **({"contentType": file["content_type"]} if file.get("content_type") else {}), **extra}
     if isinstance(file, (str, os.PathLike)):
-        return Path(file).name, Path(file), None
+        return Path(file).name, Path(file), None, extra
     if isinstance(file, (bytes, bytearray, memoryview)):
-        return None, bytes(file), None
+        return None, bytes(file), None, extra
     if isinstance(file, dict) and isinstance(file.get("data"), (bytes, bytearray)):
-        return file.get("name"), bytes(file["data"]), file.get("content_type")
-    raise AgentError("A file is bytes, a local path, {\"name\", \"data\", \"content_type\"?} or {\"path\"} in the agent's mounts")
+        return file.get("name"), bytes(file["data"]), file.get("content_type"), extra
+    raise AgentError("A file is bytes, a local path, {\"name\", \"data\", \"content_type\"?}, {\"path\"} in the agent's mounts or {\"url\"}, each with \"transcribe\"?")
 
 
 def _unique_name(names, name, index):
@@ -1693,13 +1745,13 @@ class AgentClient(_AgentCalls):
             if isinstance(entry, dict):
                 attached.append(entry)
                 continue
-            name, data, content_type = entry
+            name, data, content_type, extra = entry
             unique = _unique_name(names, name, index)
             response = await self.http.put(f"{self.base}{self.path}/uploads/{quote(request_id, safe='')}/{quote(unique, safe='')}", content=_chunks(data) if isinstance(data, Path) else data, headers={
                 "Authorization": f"Bearer {self.session['token']}", **({"Content-Type": content_type} if content_type else {})}, timeout=_UPLOAD_TIMEOUT)
             if not response.is_success:
                 raise AgentError(_error(response), response.status_code)
-            attached.append({"path": response.json()["path"]})
+            attached.append({"path": response.json()["path"], **extra})
         return attached
 
     async def configure(self, *, model=None, system_prompt=None, thinking_level=None, tools=None, max_output_tokens=_DEFAULT, temperature=_DEFAULT):
@@ -2259,12 +2311,19 @@ class Runs:
     def _request(input, *, instructions=None, instructions_append=None, model=None, definition=None, thinking_level=None, output=None, builtins=None, delegate=None,
                  file_tools=None, mounts=None, files=None, user=None, metadata=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None,
                  model_headers=None, name=None, retention_seconds=None, code_mode=None, max_output_tokens=None, temperature=None):
-        parts = [{"type": "text", "text": input}]
+        parts = [{"type": "text", "text": input}] if input else []
         for file in files or []:
             entry = file if isinstance(file, dict) else {"data": file}
+            extra = {"transcribe": entry["transcribe"]} if isinstance(entry.get("transcribe"), bool) else {}
+            named = {key: entry[key] for key in ("name", "contentType") if entry.get(key)}
+            if entry.get("content_type"):
+                named["contentType"] = entry["content_type"]
+            if isinstance(entry.get("url"), str):
+                parts.append({"type": "file", "url": entry["url"], **named, **extra})
+                continue
             data = entry["data"]
-            parts.append({"type": "file", "data": base64.b64encode(bytes(data)).decode(), **{key: entry[key] for key in ("name", "contentType") if entry.get(key)}})
-        fields = {"input": input if len(parts) == 1 else parts, "systemPrompt": instructions, "systemPromptAppend": instructions_append, "model": model, "definition": definition,
+            parts.append({"type": "file", "data": base64.b64encode(bytes(data)).decode(), **named, **extra})
+        fields = {"input": input if len(parts) == 1 and parts[0]["type"] == "text" else parts, "systemPrompt": instructions, "systemPromptAppend": instructions_append, "model": model, "definition": definition,
                   "thinkingLevel": thinking_level, "output": _output_request(output), "builtins": builtins, "delegate": delegate, "fileTools": file_tools, "mounts": mounts,
                   "from": _sender(user) if user else None, "metadata": metadata, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit,
                   "runLimits": run_limits, "modelHeaders": model_headers, "name": name, "retentionSeconds": retention_seconds, "codeMode": code_mode,
@@ -2324,6 +2383,8 @@ class Agents:
         self.runtime = AgentRuntime(url=url, api_key=api_key)
         # Stateless runs: create, get, stream, abort, delete, messages; Agents.run is the one-call form.
         self.runs = Runs(self.runtime)
+        # Speech to text on its own: create(file or url=...). Audio attached to a message is transcribed without it.
+        self.transcriptions = self.runtime.transcriptions
         self._open = set()
         self.connection = connection
 
