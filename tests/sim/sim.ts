@@ -72,6 +72,10 @@ export class Sim {
   private readonly root = mkdtempSync(join(tmpdir(), "agent-sim-"));
   private readonly nodeEnv: Record<string, string>;
   private readonly incarnations = new Map<string, number>();
+  /** Nodes starting now, each with how to kill it there. */
+  private readonly starting = new Map<string, () => void>();
+  /** Whether node `name` is starting (a restart under way). */
+  isStarting(name: string) { return this.starting.has(name); }
   /** Every pause a node took, when (virtual ms) and for how long: the checkers excuse what a stopped node could not do. */
   readonly pauses: { node: string; at: number; ms: number }[] = [];
   /** Pauses armed to start as a node next hears a database answer (to a statement that matches, if one is given). */
@@ -116,8 +120,19 @@ export class Sim {
    * two loops moving one clock would interleave by how fast the real machine runs.
    */
   async start(name: string, env: Record<string, string> = {}, skew: ClockSkew = {}, options: { drive?: boolean } = {}): Promise<SimNode> {
-    const host = `${name}.sim`, url = `http://${host}`;
     if (this.nodes.get(name) && !this.nodes.get(name)!.crashed) throw new Error(`Node ${name} is running`);
+    // One process per node: a second start while one is under way would be two processes at one address. A crash
+    // while it starts (`crash`) kills it there.
+    if (this.starting.has(name)) throw new Error(`Node ${name} is starting`);
+    const killed = Promise.withResolvers<never>();
+    killed.promise.catch(() => {});
+    this.starting.set(name, () => killed.reject(new Error(`Node ${name} crashed while it started`)));
+    try { return await this.launch(name, env, skew, options, killed.promise); }
+    finally { this.starting.delete(name); }
+  }
+
+  private async launch(name: string, env: Record<string, string>, skew: ClockSkew, options: { drive?: boolean }, killed: Promise<never>): Promise<SimNode> {
+    const host = `${name}.sim`, url = `http://${host}`;
     this.net.add(host);
     const config = nodeConfig({
       PATH: process.env.PATH, PORT: "80", AGENT_NODE_URL: url, AGENT_PUBLIC_URL: url, AGENT_DATA_DIR: join(this.root, name),
@@ -167,8 +182,9 @@ export class Sim {
         : memoryStorage(tail, meter, { logs: guarded(this.objects.logs, () => dead), blobs: guarded(this.objects.blobs, () => dead) }),
     };
     let runtime: RuntimeNode;
-    // A node that fails to start exits, as the process would: nothing it began goes on.
-    try { runtime = await (options.drive === false ? createNode(config, deps) : this.env.settle(createNode(config, deps))); }
+    // A node that fails to start exits, as the process would: nothing it began goes on. One that crashes while it starts
+    // dies there.
+    try { runtime = await Promise.race([options.drive === false ? createNode(config, deps) : this.env.settle(createNode(config, deps)), killed]); }
     catch (error) { dead = true; db.kill(); this.env.crash(clock); throw error; }
     this.net.add(host, runtime.server, work => runtime.run(work));
     const ended = Promise.withResolvers<void>();
@@ -183,6 +199,8 @@ export class Sim {
    * goes stale, and probes are refused.
    */
   crash(name: string) {
+    const starting = this.starting.get(name);
+    if (starting) return starting();
     const node = this.nodes.get(name);
     if (!node || node.crashed) throw new Error(`Node ${name} is not running`);
     node.crashed = true;

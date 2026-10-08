@@ -128,7 +128,7 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
     };
 
     /** Start a crashed node again; one that cannot start yet (no database) is tried again a second later, as ECS would. */
-    const restart = (node: string): Promise<unknown> => sim.restart(node, { drive: false }).catch(() => new Promise(resolve => setTimeout(resolve, 1_000)).then(() => sim.nodes.get(node)?.crashed ? restart(node) : undefined));
+    const restart = (node: string): Promise<unknown> => sim.restart(node, { drive: false }).catch(() => new Promise(resolve => setTimeout(resolve, 1_000)).then(() => sim.nodes.get(node)?.crashed && !sim.isStarting(node) ? restart(node) : undefined));
     const apply = (op: Op) => sim.asWorld(() => {
       switch (op.op) {
         case "create": {
@@ -226,8 +226,9 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
             .then(answer => { if (answer?.status === 201) volumeForks.set(op.fork, { volume: op.volume, id: answer.json.id, invoked, ended: sim.env.elapsed }); });
           return;
         }
-        case "crash": if (!sim.nodes.get(op.node)?.crashed) sim.crash(op.node); break;
-        case "restart": if (sim.nodes.get(op.node)?.crashed) pending.push(restart(op.node)); break;
+        case "crash": if (!sim.nodes.get(op.node)?.crashed || sim.isStarting(op.node)) sim.crash(op.node); break;
+        // A node restarting already is not started twice: one process per address.
+        case "restart": if (sim.nodes.get(op.node)?.crashed && !sim.isStarting(op.node)) pending.push(restart(op.node)); break;
         case "partition":
           if (op.b === "db") { databaseCut.add(op.a); sim.databaseDown(op.a); } else sim.partition(op.a, op.b, op.how);
           break;
