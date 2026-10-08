@@ -629,7 +629,7 @@ const mcpServerFields = {
   denyTools: z.array(z.string()).max(512).optional().openapi({ description: "None of these of its tools" }),
   exposure: z.enum(["direct", "codemode", "both"]).optional().openapi({ description: "How the model calls its tools: directly, from js_exec (the default), or both" }),
   timeoutMs: z.number().int().min(1_000).max(1_200_000).optional().openapi({ description: "How long a call may go without an answer; default 60000. Each progress notification the server sends restarts it, up to 1200000 in all" }),
-  audience: z.string().optional().openapi({ description: "With auth \"runtime\": the tokens' aud, when not the server's url (behind a proxy, say)" }),
+  audience: z.string().optional().openapi({ description: "With auth \"runtime\": the tokens' aud, when not the server's url (behind a proxy, say): a URL on its origin, or a name that stays when the server moves, urn:camelrun:<tenant>:<name>" }),
   approval: z.strictObject(approvalFields).optional().openapi({ description: "Which tools the user approves before each call. Those tools are declared to the model directly; an approved call carries _meta[\"agent-runtime/approval\"] and an approval claim in its identity token" }),
 };
 const McpServerInput = z.object({
@@ -644,7 +644,7 @@ const openApiFields = {
   denyTools: z.array(z.string()).max(4096).optional().openapi({ description: "None of these operations" }),
   exposure: z.enum(["direct", "codemode", "both"]).optional().openapi({ description: "How the model calls its operations: directly, from js_exec (the default), or both" }),
   timeoutMs: z.number().int().min(1_000).max(1_200_000).optional().openapi({ description: "Per call; default 30000" }),
-  audience: z.string().optional().openapi({ description: "With auth \"runtime\": the tokens' aud, when not baseUrl (behind a proxy, say)" }),
+  audience: z.string().optional().openapi({ description: "With auth \"runtime\": the tokens' aud, when not baseUrl (behind a proxy, say): a URL on its origin, or a name that stays when the server moves, urn:camelrun:<tenant>:<name>" }),
   approval: z.strictObject({ ...approvalFields, methods: z.array(z.enum(["GET", "PUT", "POST", "DELETE", "PATCH", "HEAD", "OPTIONS"])).optional().openapi({ description: "Operations of these methods, unless named in tools" }) }).optional()
     .openapi({ description: "Which operations the user approves before each call. They are declared to the model directly; with auth \"runtime\", an approved call's identity token carries an approval claim" }),
 };
