@@ -153,6 +153,8 @@ type Session = {
   pending?: boolean;
   /** It holds a busy slot (BusyAgents) on this node; `admitting` runs are being accepted, and `busyStep` orders taking and giving it up. */
   busy?: boolean; admitting?: number; busyStep?: Promise<unknown>;
+  /** Requests taken whose record is not durable yet, by id: a retry of one waits for it (see `submit`). */
+  accepting?: Map<string, Promise<void>>;
   /** Given back for a node with room to take: nothing more runs here. */
   handedBack?: true;
   /** Being given up because this node is leaving (`park`, `handOffAll`): nothing more runs here, and a run cut off here stays open. */
@@ -3068,10 +3070,18 @@ export class ClientSessions {
       if (record && record.fingerprint !== fingerprint) throw new HttpError(409, "Request ID reused with different arguments", "IDEMPOTENCY_CONFLICT");
       return record;
     };
-    // A retried ID returns the committed record, including its outcome after a lost ack.
+    // A retried ID returns the committed record, including its outcome after a lost ack. One still being taken is
+    // answered once its record is durable: answered sooner, a write that then failed would lose a request the retry
+    // was told was taken (its failure answers the retry too).
+    const taken = async (record: RequestRecord) => {
+      const pending = session.accepting?.get(record.id);
+      sometimes(!!pending, "a retry waited for its request's record to be durable");
+      if (pending) await pending;
+      return { status: 200 as const, record: visible(session.requests.get(record.id) ?? record) };
+    };
     const retried = existing();
     sometimes(!!retried, "a request sent again with its id got the first one's record");
-    if (retried) return { status: 200, record: visible(retried) };
+    if (retried) return taken(retried);
     if (session.running.size >= MAX_OPEN_REQUESTS) throw new HttpError(429, "Too many requests queued for this agent");
     // A spend limit applies at once, ahead of queued runs, so an application can set an allowance and then prompt.
     if (spendLimit !== undefined) await this.setSpendLimit(session, spendLimit);
@@ -3123,7 +3133,7 @@ export class ClientSessions {
       // A run of an agent whose tools its application answers needs that application connected: refused now, rather
       // than a turn whose calls cannot run. An application reconnecting (a process restarting) has a moment to arrive.
       if (["prompt", "continue", "execute"].includes(body.method) && !allowDisconnected && session.header.definitions.length && !await this.applicationConnected(session)) {
-        if (existing()) return { status: 200, record: visible(existing()!) };
+        if (existing()) return taken(existing()!);
         throw new HttpError(409, "APPLICATION_NOT_CONNECTED: this agent's tools are answered by its application, and none is connected. Connect it: upsert the agent with its tools in a process that stays up (TypeScript agents.upsert(key, { tools }), Python agents.upsert(key, tools=[…]); lower down, connectAgent or connect_agent), or send allowDisconnected: true (allow_disconnected=True) to run anyway");
       }
       const queued = QUEUED_METHODS.includes(body.method);
@@ -3131,12 +3141,12 @@ export class ClientSessions {
       if (!queued && !["status", "abort"].includes(body.method)) await this.ensureStarted(session);
       // Concurrent retries may have waited on the same process startup.
       const raced = existing();
-      if (raced) return { status: 200, record: visible(raced) };
+      if (raced) return taken(raced);
       // Attached files are saved and referenced before the request is: its params keep references, never bytes.
       if (["prompt", "steer"].includes(body.method) && params.files !== undefined) {
         params = { ...params, files: await this.attach(session, body.id, params.files) };
         const again = existing();
-        if (again) return { status: 200, record: visible(again) };
+        if (again) return taken(again);
       }
       // Work is open: marked before the request is taken (a failed write takes nothing, so a retry starts afresh) and before
       // it is durable, so a node dying with it leaves it for another's sweep (see `resumeOrphans`).
@@ -3146,7 +3156,7 @@ export class ClientSessions {
         session.pending = true;
         // A retry of the same id may have been taken while this waited.
         const again = existing();
-        if (again) return { status: 200, record: visible(again) };
+        if (again) return taken(again);
       }
       const record = this.upsertRequest(session, {
         startedAt: Date.now(), ...(body.method === "prompt" && typeof body.params.text === "string" ? { prompt: body.params.text } : {}),
@@ -3154,7 +3164,10 @@ export class ClientSessions {
         id: body.id, method: body.method, fingerprint, state: "running", ...(queued ? { params } : {}), ...(actor ? { actor } : {}), ...(params.metadata ? { metadata: params.metadata } : {}),
         ...(body.method === "resume" ? { suspension: params.suspension } : {}), ...(trace ? { trace } : {}),
       });
-      await this.commit(session, true);
+      const durable = this.commit(session, true);
+      (session.accepting ??= new Map()).set(record.id, durable);
+      try { await durable; }
+      finally { session.accepting.delete(record.id); }
       if (queued) this.enqueue(session, record, params);
       else void this.run(session, record, params);
       // A steer is answered at once: the running turn has it (accepted), or it runs as a turn of its own (queued).

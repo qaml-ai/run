@@ -321,6 +321,8 @@ export function segmentLog<T>(store: SegmentStore, key: string, tail: LogTail, c
   /** A write failed, and its batch, back at the front of the buffer, may have landed at `next`: tried again, it goes there again. */
   let retrying = false;
   let closing: Promise<void> | undefined;
+  /** Set by a close that dropped buffered records: a flush still waiting for them fails, rather than seeming to land. */
+  let discarded: Error | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let chain: Promise<void> = Promise.resolve();
   const serialize = <R>(work: () => Promise<R>): Promise<R> => {
@@ -403,6 +405,7 @@ export function segmentLog<T>(store: SegmentStore, key: string, tail: LogTail, c
 
   const write = async () => {
     if (fenced) throw fenced;
+    if (discarded) throw discarded;
     if (!buffer.length) return;
     const batch = buffer, done = effects;
     buffer = [];
@@ -480,7 +483,7 @@ export function segmentLog<T>(store: SegmentStore, key: string, tail: LogTail, c
     get appendedSinceRewrite() { return appended; },
     close(discard = false) {
       if (timer) { clearTimeout(timer); timer = undefined; }
-      if (discard && !closing) { buffer = []; effects = []; }
+      if (discard && !closing) { buffer = []; effects = []; discarded = new Error("Append log closed: records not yet written were dropped"); }
       return closing ??= serialize(async () => { if (discard) return; await write(); await compact(); }).catch(() => {});
     },
   };
