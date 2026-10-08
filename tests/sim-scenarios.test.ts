@@ -195,6 +195,7 @@ test("a request the database refuses for now (a statement timeout) is answered 5
   assert.equal(response.status, 503);
   assert.equal(response.headers.get("retry-after"), "1");
   assert.equal((await response.json()).code, "DATABASE_RETRY");
+});
 
 test("a compaction waiting ten seconds on a slow object store holds no transaction: its peers' leases go on meanwhile", async t => {
   // Every write compacts its log at once (BUGGIFY storage.compact.now), and the store, once slowed, takes ten seconds an operation.
