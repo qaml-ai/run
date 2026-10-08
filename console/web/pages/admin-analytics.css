@@ -24,10 +24,11 @@
 
 .admin-analytics .pages-table{table-layout:fixed;width:100%}
 .admin-analytics .pages-table th,.admin-analytics .pages-table td{white-space:normal;overflow-wrap:anywhere;padding:12px 8px;font-size:13px}
-.admin-analytics .pages-table th:first-child{width:30%}
+.admin-analytics .pages-table th{font-size:.625rem;overflow-wrap:normal}
+.admin-analytics .pages-table th:first-child{width:26%}
 .admin-analytics .pages-table .page-name{min-width:0;max-width:none}
 .admin-analytics .pages-table .cell-meta{font-size:11px}
-@media(max-width:700px){
+@media(max-width:900px){
  .admin-analytics .pages-table,.admin-analytics .pages-table tbody{display:block;width:100%}
  .admin-analytics .pages-table thead{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%)}
  .admin-analytics .pages-table tbody tr{display:grid;grid-template-columns:1fr 1fr;padding:12px;gap:12px}

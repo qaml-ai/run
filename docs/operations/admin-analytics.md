@@ -39,7 +39,7 @@ The frontend always requests the latest 14 UTC days independently of the shared 
 
 `signup_attribution` accounts for every tracked-store sign-up in the dates; this can differ from the database-backed Product signals total. It records whether the account first landed on a Run page, on another page, or not captured. Nothing is inferred for a sign-up with no recorded first visit. The report needs the journey connection; without it the tab shows the same "not connected" state as User journeys.
 
-The page table can sort by visitors, attributed sign-ups, new-visitor conversion, or publication order. On phones each page becomes a card with labeled metrics so attributed sign-ups remain visible. Scheduled posts retain zero rows with a scheduled date. Links use the report’s configured sales-site host. Staff browsers are excluded from both sides of the new-browser conversion fraction; identical first-touch timestamps are resolved by touch ID.
+The page table can sort by visitors, attributed sign-ups, new-visitor conversion, or publication order. On phones and windows narrower than 900px each page becomes a card with labeled metrics so attributed sign-ups remain visible. Scheduled posts retain zero rows with a scheduled date. Links use the report’s configured sales-site host. Staff browsers are excluded from both sides of the new-browser conversion fraction; identical first-touch timestamps are resolved by touch ID.
 
 ## Journey details
 
