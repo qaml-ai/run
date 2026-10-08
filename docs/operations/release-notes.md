@@ -41,7 +41,7 @@ Changes on main since the last tag.
 
 ### TypeScript SDK
 
-- `agents.transcriptions.create({ file | url, language, prompt, timestamps })`; attachments take `{ url }` and
+- `agents.transcriptions.create({ file | url, language, prompt })`; attachments take `{ url }` and
   `transcribe`, and a message with audio may have no text. See [Voice and audio](../guides/voice.md).
 - `maxOutputTokens` and `temperature` on `agents.upsert`, `agents.run`, definitions and `agent.configure` (`null`
   removes either there).

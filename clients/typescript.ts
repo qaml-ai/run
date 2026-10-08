@@ -817,8 +817,6 @@ export interface TranscriptionInput {
   language?: string;
   /** Names, jargon or the conversation so far, as a hint (at most 2,000 characters). */
   prompt?: string;
-  /** Also return `segments` with their times (uses whisper-1, priced apart). */
-  timestamps?: boolean;
   /** A key scope whose OpenAI key goes first. */
   keyScope?: string;
   /** Who it is for, your claims, and who asked: carried to its `usage.recorded` event. */
@@ -835,8 +833,6 @@ export interface Transcription {
   model: string;
   /** What it cost at the runtime's price (charged to prepaid credit on the platform's key). */
   costUsd: number;
-  /** With `timestamps`: the transcript in segments, times in seconds. */
-  segments?: { start: number; end: number; text: string }[];
 }
 
 /**

@@ -11,8 +11,8 @@ test("the TypeScript SDK: transcriptions.create from bytes, a Blob or a URL; aud
   const alone = await agents.transcriptions.create({ file: new Uint8Array(HELLO), language: "en", context: { org: "o1" } });
   assert.deepEqual(alone, { text: "Hello from camelRun.", language: "en", durationSeconds: 5, model: "openai/gpt-transcribe", costUsd: 0.05 });
   assert.equal(openai.requests.at(-1)!.language, "en");
-  const blob = await agents.transcriptions.create({ file: new File([HELLO], "voice.ogg", { type: "audio/ogg" }), timestamps: true });
-  assert.equal(blob.segments?.length, 1);
+  const blob = await agents.transcriptions.create({ file: new File([HELLO], "voice.ogg", { type: "audio/ogg" }), prompt: "camelRun" });
+  assert.equal(blob.model, "openai/gpt-transcribe");
   assert.equal((await agents.transcriptions.create({ url: `${openai.base}/hello.ogg` })).text, "Hello from camelRun.");
   await assert.rejects(agents.transcriptions.create({ file: new TextEncoder().encode("not audio") }), (error: any) => error.status === 415 && error.code === "UNSUPPORTED_AUDIO");
   await assert.rejects(agents.transcriptions.create({}), /file .* or url/);
