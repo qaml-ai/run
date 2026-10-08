@@ -349,7 +349,7 @@ either way:
 | `subject` | whom the agent acts for: `subject` given when it was made (its id if none) |
 | `actor` | who is acting in this turn: the run's `user` (`from.id`), or an `actor` given with the message |
 | `context` | claims given when the agent was made (`context: { org, workspace }`) |
-| `tenant`, `agent`, `definition` | whose agent it is, and which |
+| `tenant`, `agent`, `definition` | whose agent it is, and which (`definition` only for an agent made from one) |
 | `origin` | where the turn came from: a channel, its conversation and sender |
 | `approval` | the person's approval, for a call that needed one |
 
@@ -395,7 +395,9 @@ if (payload.tenant !== "acme") throw new Error("Not our tenant's agent");
 
 ## Definitions' sources
 
-A [definition](definitions.md) lists tool sources the runtime calls itself.
+A [definition](definitions.md) lists tool sources the runtime calls itself. An
+agent without a definition can also have [MCP servers of its
+own](#an-agents-own-mcp-servers), without credentials.
 
 ### MCP servers
 
@@ -465,6 +467,42 @@ Every operation of an OpenAPI 3 spec (JSON or YAML) is a tool:
   an `Idempotency-Key` header. A 2xx answer is the result (JSON, text, or a file
   saved to the workspace); any other status is a tool error quoting the method,
   path, status and the start of the body.
+
+## An agent's own MCP servers
+
+An agent made without a definition, and a [stateless run](stateless-runs.md),
+can list MCP servers itself, with no definition:
+
+```ts
+const agent = await agents.upsert("support", {
+  instructions: "…",
+  mcpServers: [{ name: "kb", url: "https://mcp.example.com/mcp", auth: { type: "runtime" } }],
+});
+```
+
+```bash
+curl -X POST "$BASE/v1/agents" -H "Authorization: Bearer $KEY" -H "Idempotency-Key: support" \
+  -d '{"mcpServers": [{"name": "kb", "url": "https://mcp.example.com/mcp", "auth": {"type": "runtime"}}]}'
+```
+
+- They take no credentials: `auth` is `{"type": "runtime"}` or left out, and
+  there are no `headers`. A server with a token or headers is a 400 saying to
+  use a definition.
+- Why: a definition seals its credentials once, for every agent made from it.
+  Credentials on each agent or run would be secrets stored, copied and rotated
+  per agent. Identity tokens need none: the runtime signs one for each request,
+  naming the agent, its `subject` and `context` (and no `definition`).
+- Everything else is as in a definition: `allowTools`, `denyTools`, `exposure`,
+  `timeoutMs`, `audience`, `approval`, and the same outbound checks.
+- They are not listed when saved. A server that cannot be listed when the agent
+  starts shows in the run's `sourceErrors`.
+- `PATCH /v1/agents/:id/configuration` with `mcpServers` replaces the list;
+  `null` or `[]` removes it. An upsert sets the whole list, so an upsert without
+  `mcpServers` leaves none. They count toward the upsert's `configHash`.
+- Only your API key changes them, never the agent's own token. An agent made
+  from a definition has its definition's servers and refuses its own (400).
+- Only MCP servers: OpenAPI specs are fetched and stored when saved, so they stay
+  in definitions.
 
 ## Built-ins
 

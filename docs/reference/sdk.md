@@ -81,6 +81,7 @@ brought to `config` if it differs. Returns a connected `Agent`. See
 | `name` | `name=` | a label, shown in the console |
 | `builtins` | `builtins=` | tools the runtime answers itself, without a definition: `web_fetch`, `web_search`, `schedule`, `ask_user`, `delegate` |
 | `delegate` | `delegate=` | sub-agents it may hand tasks to (`{ agents, instructions?, maxDepth?, maxParallel? }`); brings its builtin. See [Multi-agent](../guides/multi-agent.md) |
+| `mcpServers` | `mcp_servers=` | remote MCP servers of its own, without a definition: `[{ name, url, auth?: { type: "runtime" }, allowTools?, … }]`, no credentials. See [An agent's own MCP servers](../guides/tools.md#an-agents-own-mcp-servers) |
 | `subagents` | `subagents=` | also deliver its sub-agents' progress: `subagent_start`, `subagent_event`, `subagent_end` events, and stream parts |
 | `attach` | `attach=` | `false`: declare `tools` without serving them (another process does) |
 | `takeover` | `takeover=` | replace the process serving the tools now |
@@ -186,7 +187,7 @@ run = await agents.run("Ship on Friday?", instructions="Vote yes or no.", output
 
 `config` takes an agent's configuration (`model`, `instructions`,
 `instructionsAppend`, `definition`, `builtins`: `web_fetch`, `web_search`,
-`delegate`; `delegate`, `thinkingLevel`, `maxOutputTokens`, `temperature`, `subject`, `context`, `keyScope`,
+`delegate`; `delegate`, `mcpServers` (no credentials), `thinkingLevel`, `maxOutputTokens`, `temperature`, `subject`, `context`, `keyScope`,
 `runLimits`, `modelHeaders`, `mounts`, `fileTools`, `codeMode`, `name`; a run with
 no tools defaults to `codeMode: false` and `fileTools: false`) and the run's own:
 `input`, `files` (inline bytes), `output`, `user`, `metadata`, `idempotencyKey`,
