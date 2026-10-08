@@ -31,7 +31,7 @@ const EXTENSIONS: Record<string, string> = {
   html: "text/html", htm: "text/html", css: "text/css", js: "text/javascript", mjs: "text/javascript", ts: "text/plain", py: "text/plain",
   xml: "application/xml", svg: "image/svg+xml", yaml: "application/yaml", yml: "application/yaml",
   png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", pdf: "application/pdf",
-  mp3: "audio/mpeg", wav: "audio/wav", ogg: "audio/ogg", mp4: "video/mp4", webm: "video/webm",
+  mp3: "audio/mpeg", wav: "audio/wav", ogg: "audio/ogg", oga: "audio/ogg", opus: "audio/ogg", m4a: "audio/mp4", flac: "audio/flac", weba: "audio/webm", mp4: "video/mp4", webm: "video/webm",
   zip: "application/zip", gz: "application/gzip", tar: "application/x-tar",
   docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -57,6 +57,10 @@ export function sniffContentType(head: Uint8Array, name: string): string {
   if (starts(head, ascii("RIFF")) && starts(head, ascii("WEBP"), 8)) return "image/webp";
   if (starts(head, ascii("%PDF-"))) return "application/pdf";
   if (starts(head, [0x1f, 0x8b])) return "application/gzip";
+  if (starts(head, ascii("OggS"))) return "audio/ogg";
+  if (starts(head, ascii("fLaC"))) return "audio/flac";
+  if (starts(head, ascii("RIFF")) && starts(head, ascii("WAVE"), 8)) return "audio/wav";
+  if (starts(head, ascii("ID3"))) return "audio/mpeg";
   if (starts(head, [0x50, 0x4b, 0x03, 0x04])) return ["docx", "xlsx", "pptx"].includes(extension) ? EXTENSIONS[extension] : "application/zip";
   if (EXTENSIONS[extension]) return EXTENSIONS[extension];
   if (head.includes(0)) return "application/octet-stream";
@@ -65,7 +69,7 @@ export function sniffContentType(head: Uint8Array, name: string): string {
 }
 
 /** Types a browser may show inline: they cannot run script. Everything else downloads as an attachment. */
-const INLINE = new Set(["text/plain", "text/csv", "text/markdown", "application/json", "application/pdf", "image/png", "image/jpeg", "image/gif", "image/webp", "audio/mpeg", "audio/wav", "audio/ogg", "video/mp4", "video/webm"]);
+const INLINE = new Set(["text/plain", "text/csv", "text/markdown", "application/json", "application/pdf", "image/png", "image/jpeg", "image/gif", "image/webp", "audio/mpeg", "audio/wav", "audio/ogg", "audio/mp4", "audio/flac", "audio/webm", "video/mp4", "video/webm"]);
 
 /**
  * Headers for serving a file from the runtime's origin, where console sessions live. Nothing is
@@ -110,6 +114,9 @@ export async function fileResponse(volumes: VolumeService, tenant: string, entry
   } });
 }
 
+/** An attached audio file's transcript, as its reference keeps it: the text, and the audio's language, length and the model that heard it. */
+export type FileTranscript = { text: string; language?: string; seconds: number; model: string };
+
 /** What inspecting a file's bytes found: an image or PDF the model may be shown natively, or why it cannot be. */
 export type Media = { kind: "image"; mimeType: string; width: number; height: number } | { kind: "pdf"; pages: number } | { kind: "none"; reason: string };
 
@@ -121,6 +128,10 @@ export type Media = { kind: "image"; mimeType: string; width: number; height: nu
 export type FileRef = {
   type: "file"; path: string; volume: string; version: number; size: number; contentType: string; chunks: string[];
   media?: Media;
+  /** Audio transcribed when it was attached (transcription.ts): the model reads this in place of the sound. */
+  transcript?: FileTranscript;
+  /** Audio that was to be transcribed by default and could not be, and why: the model is told. */
+  untranscribed?: string;
   /** A text file's first lines, so the model knows its shape without reading it. */
   head?: string;
 };
@@ -128,7 +139,8 @@ export type FileRef = {
 export function validFileRef(value: any): value is FileRef {
   return !!value && value.type === "file" && typeof value.path === "string" && typeof value.volume === "string" &&
     Number.isSafeInteger(value.version) && Number.isSafeInteger(value.size) && value.size >= 0 && typeof value.contentType === "string" &&
-    Array.isArray(value.chunks) && value.chunks.every((hash: unknown) => typeof hash === "string" && /^[a-f0-9]{64}$/.test(hash));
+    Array.isArray(value.chunks) && value.chunks.every((hash: unknown) => typeof hash === "string" && /^[a-f0-9]{64}$/.test(hash)) &&
+    (value.transcript === undefined || (typeof value.transcript?.text === "string" && Number.isFinite(value.transcript.seconds) && typeof value.transcript.model === "string"));
 }
 
 /** Which native block a file becomes for `model`, if any: images for vision models, PDFs where the provider takes documents. */
@@ -154,6 +166,7 @@ export function supportsDocuments(model: Model<Api>): boolean {
  * pages (text plus a page image, about 3,000 tokens each), anything else by the line describing it.
  */
 export function fileChars(ref: FileRef): number {
+  if (ref.transcript) return 200 + ref.transcript.text.length;
   if (ref.media?.kind === "image") return 4800;
   if (ref.media?.kind === "pdf") return ref.media.pages * 12_000;
   return 200;
@@ -178,9 +191,17 @@ export function safeName(name: unknown, fallback = "file"): string {
   return stem + extension;
 }
 
-/** The text a file block becomes when it is not shown natively. */
+/**
+ * The text a file block becomes when it is not shown natively; an audio file's transcript with it. (A model that hears
+ * audio could be given the sound instead, where `nativeBlock` would say so; none is yet.)
+ */
 export function describeFile(ref: FileRef, why?: string) {
   const size = ref.size >= 1024 * 1024 ? `${(ref.size / 1024 / 1024).toFixed(1)} MB` : `${Math.ceil(ref.size / 1024)} KB`;
+  if (ref.transcript) {
+    const seconds = Math.round(ref.transcript.seconds);
+    return `[Audio ${ref.path} (${ref.contentType}, ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}${ref.transcript.language ? `, ${ref.transcript.language}` : ""}), transcript:\n${ref.transcript.text || "(no speech)"}\n]`;
+  }
+  why ??= ref.untranscribed && `not transcribed (${ref.untranscribed})`;
   return `[File ${ref.path} (${ref.contentType}, ${size})${why ? `: ${why}` : ""}${ref.head ? `, beginning:\n${ref.head}` : ""}]`;
 }
 

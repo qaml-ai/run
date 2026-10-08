@@ -682,10 +682,12 @@ export function createAgentHost(hostIO: HostIO) {
       validateUserMessages(messages);
       return marked(stamp(messages, marks));
     }
-    if (typeof params.text !== "string" || !params.text.trim()) throw new Error("Prompt text is required");
     const files = params.files ?? [];
     if (!Array.isArray(files) || files.length > FILE_LIMITS.attachments || !files.every(validFileRef)) throw new Error("Invalid attached files");
-    return marked(stamp([{ role: "user", content: [{ type: "text", text: params.text }, ...files], timestamp: Date.now() } as AgentMessage], marks));
+    // A voice message may be only its audio: its transcript is the message.
+    const text = typeof params.text === "string" && params.text.trim() ? params.text : undefined;
+    if (!text && !files.some((file: FileRef) => file.transcript)) throw new Error("Prompt text is required");
+    return marked(stamp([{ role: "user", content: [...text ? [{ type: "text", text }] : [], ...files], timestamp: Date.now() } as AgentMessage], marks));
   }
 
   /**

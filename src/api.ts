@@ -15,7 +15,7 @@ import { modelHeadersInput, resolveModel } from "./session-config.ts";
 import { checkProviderKey } from "./key-check.ts";
 import { errorText } from "./protocol.ts";
 import { scheduleInput, type Scheduler } from "./scheduler.ts";
-import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, readJson, readText, signInHint } from "./http.ts";
+import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, readBytes, readJson, readText, signInHint } from "./http.ts";
 import type { Channels } from "./channels.ts";
 import { channelRoutes } from "./channels-api.ts";
 import { validTtl, type Definitions } from "./definitions.ts";
@@ -28,7 +28,9 @@ import { runRoutes, type RunsContext } from "./runs.ts";
 import type { RequestRecord } from "../shared/client-protocol.ts";
 import * as schema from "./api-schemas.ts";
 import { normalizePath, VOLUME_LIMITS, type VolumeService } from "./volumes.ts";
-import { identityInput } from "./identity.ts";
+import { actorInput, identityInput } from "./identity.ts";
+import { languageInput, transcribeRequest, type TranscriptionService } from "./transcription.ts";
+import { AUDIO_LIMITS } from "./limits.ts";
 import { declaredType, fileResponse, type FileLinks } from "./files.ts";
 import { idempotency } from "./idempotency.ts";
 import { BrowserTokens, readableFrame, readableMessage, readableRequest, type BrowserClaims } from "./browser-tokens.ts";
@@ -97,6 +99,8 @@ export interface ApiContext {
   accountDeletions?: AccountDeletions;
   /** Counts agent creates (POST /v1/agents) against the tenant's rate limit; throws 429 past it. */
   rateLimits?: Pick<RateLimits, "agentCreate" | "tenantLimit">;
+  /** `POST /v1/transcriptions`; without it, transcription is not enabled. */
+  transcriptions?: TranscriptionService;
   /** The caller's address (Get Help's per-source limit); by default the load balancer's, as `clientAddress` reads it without Cloudflare. */
   clientAddress?: (c: Context) => string | undefined;
 }
@@ -115,6 +119,7 @@ const OAUTH_ROUTES = [
   /^(?:GET|DELETE) \/v1\/agents\/[^/]+$/,
   /^(?:GET|POST|PUT|PATCH|DELETE) \/v1\/agents\/[^/]+\/(?:abort|configuration|events|fork|history|inputs|inputs\/[^/]+|mounts|prompt|requests\/[^/]+|schedules|schedules\/[^/]+|state|uploads\/[^/]+\/[^/]+)$/,
   /^(?:GET|POST|PATCH|DELETE) \/v1\/definitions(?:\/[^/]+(?:\/agents)?)?$/,
+  /^POST \/v1\/transcriptions$/,
   /^(?:POST \/v1\/runs|(?:GET|DELETE) \/v1\/runs\/[^/]+|GET \/v1\/runs\/[^/]+\/(?:events|messages)|POST \/v1\/runs\/[^/]+\/abort)$/,
 ];
 /** An agent's token is for the application that serves it, which an OAuth grant is not: its answers leave it out. */
@@ -280,7 +285,7 @@ export function api(context: ApiContext) {
   // Idempotency-Key on every POST: an agent's is its own key (create or upsert), and a prompt's its request's id.
   app.use("/v1/*", idempotency({
     db: () => clients.db, tenant: c => c.var.principal.tenant, lockMs: context.idempotencyLockMs,
-    skip: path => path === "/v1/agents" || path === "/v1/definitions" || path === "/v1/runs" || /^\/v1\/agents\/[^/]+\/(?:prompt|fork)$/.test(path),
+    skip: path => path === "/v1/agents" || path === "/v1/definitions" || path === "/v1/runs" || path === "/v1/transcriptions" || /^\/v1\/agents\/[^/]+\/(?:prompt|fork)$/.test(path),
     // Answers with a secret shown once: API tokens (a new tenant's too), signing secrets, browser tokens, signed links.
     secret: path => /^\/v1\/(?:tokens|tenants|webhooks|webhooks\/[^/]+\/secret|usage-webhook\/secret|agents\/[^/]+\/(?:browser-tokens|links|credentials\/rotate)|volumes\/[^/]+\/links)$/.test(path),
   }));
@@ -772,6 +777,48 @@ export function api(context: ApiContext) {
     return json(c, 200, await accounts.usage(c.var.principal.tenant, Date.now() - days * 86_400_000));
   });
 
+  route(createRoute({
+    method: "post", path: "/v1/transcriptions",
+    request: { body: { content: { "application/json": { schema: schema.TranscriptionInput }, "multipart/form-data": { schema: schema.TranscriptionForm } } } },
+    responses: { 200: reply("The audio's transcript", schema.Transcription) },
+  }), async c => {
+    const service = context.transcriptions;
+    if (!service) throw new HttpError(404, "Transcription is not enabled on this runtime");
+    const type = c.req.header("content-type") ?? "";
+    let input: z.infer<typeof schema.TranscriptionInput>, bytes: Uint8Array | undefined;
+    if (/^multipart\/form-data(;|$)/i.test(type)) {
+      // The audio and its form, read whole: at most the audio's limit and a little for the fields.
+      const body = await readBytes(c.req.raw.body, AUDIO_LIMITS.fileBytes + 64 * 1024);
+      let form: FormData;
+      try { form = await new Request("https://localhost", { method: "POST", headers: { "Content-Type": type }, body }).formData(); }
+      catch { throw new HttpError(400, "Invalid multipart body"); }
+      const file = form.get("file");
+      if (!(file instanceof Blob)) throw new HttpError(400, "Send the audio in a part named file");
+      bytes = new Uint8Array(await file.arrayBuffer());
+      const field = (name: string) => { const value = form.get(name); return typeof value === "string" && value !== "" ? value : undefined; };
+      let claims: unknown;
+      try { claims = field("context") === undefined ? undefined : JSON.parse(field("context")!); } catch { throw new HttpError(400, "context must be JSON"); }
+      input = parse(schema.TranscriptionInput, {
+        data: "", ...Object.fromEntries(["language", "prompt", "keyScope", "subject", "actor"].flatMap(name => field(name) === undefined ? [] : [[name, field(name)]])),
+        ...(field("timestamps") !== undefined ? { timestamps: field("timestamps") === "true" } : {}), ...(claims !== undefined ? { context: claims } : {}),
+      });
+    } else {
+      // Base64 of the largest audio, and the fields.
+      input = parse(schema.TranscriptionInput, await readJson(c.req.raw.body, Math.ceil(AUDIO_LIMITS.fileBytes * 4 / 3) + 64 * 1024));
+      if (input.data !== undefined) {
+        if (!/^[A-Za-z0-9+/]*={0,2}$/.test(input.data)) throw new HttpError(400, "data must be base64");
+        bytes = Buffer.from(input.data, "base64");
+      }
+    }
+    const identity = identityInput({ subject: input.subject, context: input.context });
+    const actor = actorInput(input.actor);
+    const language = languageInput(input.language);
+    return json(c, 200, await transcribeRequest(service, c.var.principal.tenant, {
+      audio: bytes ? { bytes } : { url: input.url! }, ...(language ? { language } : {}), ...(input.prompt ? { prompt: input.prompt } : {}), ...(input.timestamps ? { timestamps: true } : {}),
+      ...(input.keyScope ? { keyScope: input.keyScope } : {}), ...(identity ? { identity } : {}), ...(actor ? { actor } : {}),
+    }, c.req.raw.signal));
+  });
+
   route(createRoute({ method: "get", path: "/v1/billing", responses: { 200: reply("Prepaid credit: balance, this month, recent entries and rates", schema.Billing) } }),
     async c => {
       const tenant = c.var.principal.tenant;
@@ -1179,7 +1226,7 @@ function promptRequest(body: z.infer<typeof schema.PromptInput>, fallbackId?: st
   const { requestId, text, whileRunning, ...rest } = body;
   const given = Object.fromEntries(Object.entries(rest).filter(([, value]) => value !== undefined));
   // The trace the run continues is not part of what it asks: a retry under another span is the same request.
-  return { id: requestId ?? fallbackId ?? randomUUID(), method: "prompt", params: { text, ...given, ...(whileRunning === "steer" ? { whileRunning } : {}), ...(traceparent ? { traceparent } : {}) } };
+  return { id: requestId ?? fallbackId ?? randomUUID(), method: "prompt", params: { ...(text !== undefined ? { text } : {}), ...given, ...(whileRunning === "steer" ? { whileRunning } : {}), ...(traceparent ? { traceparent } : {}) } };
 }
 /** A W3C trace context: the run continues the caller's trace (exported when the tenant set PUT /v1/telemetry). */
 const traceHeaders = z.object({ traceparent: z.string().optional().openapi({ description: "W3C trace context (00-<trace-id>-<span-id>-<flags>): the run's spans continue this trace", example: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01" }) });
