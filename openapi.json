@@ -5046,6 +5046,10 @@
             "additionalProperties": false,
             "description": "Questions, approvals and setup steps the agent's turns wait on"
           },
+          "applyOnUpdate": {
+            "type": "boolean",
+            "description": "true: every save that makes a new revision (an upsert that changes it, or a PATCH) also applies it to every live agent made from the definition, as apply: \"all\" does, and answers with applied. Default false: only new agents get a new revision"
+          },
           "createdAt": {
             "type": "number"
           },
@@ -5299,6 +5303,54 @@
           "tools"
         ]
       },
+      "DefinitionUpdated": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Definition"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "applied": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ApplyResult"
+                },
+                "description": "With apply: \"all\", or applyOnUpdate on a save that made a new revision: one entry per live agent made from the definition"
+              }
+            }
+          }
+        ]
+      },
+      "ApplyResult": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "requestId": {
+            "type": "string",
+            "description": "The agent's configure request: poll GET /v1/agents/{agent}/requests/{requestId} for a queued one's outcome"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "updated",
+              "queued",
+              "failed"
+            ],
+            "description": "updated: the agent has the revision; queued: it takes it between its turns; failed: see error"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent",
+          "requestId",
+          "status"
+        ]
+      },
       "DefinitionInput": {
         "type": "object",
         "properties": {
@@ -5458,6 +5510,10 @@
             },
             "additionalProperties": false,
             "description": "Questions, approvals and setup steps the agent's turns wait on"
+          },
+          "applyOnUpdate": {
+            "type": "boolean",
+            "description": "true: every save that makes a new revision (an upsert that changes it, or a PATCH) also applies it to every live agent made from the definition, as apply: \"all\" does, and answers with applied. Default false: only new agents get a new revision"
           }
         },
         "required": [
@@ -5707,54 +5763,6 @@
           "name"
         ]
       },
-      "DefinitionUpdated": {
-        "allOf": [
-          {
-            "$ref": "#/components/schemas/Definition"
-          },
-          {
-            "type": "object",
-            "properties": {
-              "applied": {
-                "type": "array",
-                "items": {
-                  "$ref": "#/components/schemas/ApplyResult"
-                },
-                "description": "With apply: \"all\", one entry per live agent made from the definition"
-              }
-            }
-          }
-        ]
-      },
-      "ApplyResult": {
-        "type": "object",
-        "properties": {
-          "agent": {
-            "type": "string"
-          },
-          "requestId": {
-            "type": "string",
-            "description": "The agent's configure request: poll GET /v1/agents/{agent}/requests/{requestId} for a queued one's outcome"
-          },
-          "status": {
-            "type": "string",
-            "enum": [
-              "updated",
-              "queued",
-              "failed"
-            ],
-            "description": "updated: the agent has the revision; queued: it takes it between its turns; failed: see error"
-          },
-          "error": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "agent",
-          "requestId",
-          "status"
-        ]
-      },
       "DefinitionUpdate": {
         "type": "object",
         "properties": {
@@ -5989,6 +5997,13 @@
             },
             "additionalProperties": false,
             "description": "Questions, approvals and setup steps the agent's turns wait on"
+          },
+          "applyOnUpdate": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "true: every save that makes a new revision (an upsert that changes it, or a PATCH) also applies it to every live agent made from the definition, as apply: \"all\" does, and answers with applied. Default false: only new agents get a new revision"
           },
           "revision": {
             "type": "integer",
@@ -12780,11 +12795,11 @@
         },
         "responses": {
           "201": {
-            "description": "The definition: at revision 1, or with a key, the key's at its latest revision",
+            "description": "The definition: at revision 1, or with a key, the key's at its latest revision; with applyOnUpdate, the agents asked to take a new one",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Definition"
+                  "$ref": "#/components/schemas/DefinitionUpdated"
                 }
               }
             }

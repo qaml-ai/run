@@ -581,7 +581,8 @@ class _RuntimeCalls:
 
     def upsert_definition(self, key, **fields):
         """The definition for `key`, set to `fields` whole: made if there is none, else a new revision if they change it.
-        The same key is the same definition."""
+        The same key is the same definition. With applyOnUpdate=True, a new revision also reaches every live agent made
+        from it (`applied`)."""
         _check_key(key, "A definition's")
         return self._rest("POST", "/v1/definitions", _with_multi_agent(fields), headers={"Idempotency-Key": key})
 
