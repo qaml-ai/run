@@ -2411,10 +2411,12 @@ const agent = await agents.upsert("support", { mounts: [{ volumeId: docs.id, pat
   are fixed when it is made: an upsert with other mounts is a 409, unless it
   sends `remount: true`, which sets them between its turns (`PUT
   /v1/agents/:id/mounts` replaces them at once).
-- Mounts you give replace the agent's own workspace: it then has no
-  `/workspace`. Add `{workspace: true}` among them to keep it at `/workspace`
-  beside the others, e.g. `[{volumeId, path: "/bot", mode: "rw"}, {workspace:
-  true}]`. The first mount is where relative paths resolve.
+- The agent's own workspace stays at `/workspace` beside the mounts you give
+  (after them). `{workspace: true}` among them puts it at that position,
+  `{workspace: false}` leaves it out, and a mount you give at `/workspace` takes
+  its place. The first mount is where relative paths resolve, e.g.
+  `[{volumeId, path: "/bot", mode: "rw"}]` has `/bot` first and `/workspace`
+  second; `[{workspace: false}]` is no mounts at all.
 - Attachments are saved under `/workspace/uploads/<request>/`, files tools
   return under `/workspace/tool-outputs/`, and the model keeps scratch files in
   `/workspace/tmp/`. Without a `/workspace`, they go to the first read-write
