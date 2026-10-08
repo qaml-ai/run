@@ -254,3 +254,21 @@ test("a node cut off the database holding metering deltas across a reconcile has
   assert.deepEqual(result.notes, []);
   assert.ok(result.logs.some(log => log.line.includes('"storage_reconciled"')));
 });
+
+test("a retry of a request still being taken is answered once its record is durable, not before (night 4, seed 27266)", async () => {
+  // b took run-7 and was writing its record when the retry came; the retry was answered 202 from memory, the write then
+  // failed (b cut off the database), and the request the client was told was taken never existed.
+  const plan: Plan = JSON.parse(readFileSync(new URL("./sim/cases/retry-before-durable.json", import.meta.url), "utf8"));
+  const result = await runPlan(plan, { quiet: true });
+  assert.deepEqual(result.failures, []);
+  assert.ok(result.reached.includes("a retry waited for its request's record to be durable"), result.reached.join(", "));
+});
+
+test("a log closed with its records dropped fails the flushes still waiting for them, rather than seeming to write them (night 4, fuzz a025ff9b)", async () => {
+  // b's session faulted (its transcript failed a write) while run-9's acceptance waited behind a journal write the
+  // outage held up; giving the agent up dropped the journal's buffer, and run-9's flush then found nothing to write and
+  // succeeded: answered 202, never stored, never run.
+  const plan: Plan = JSON.parse(readFileSync(new URL("./sim/cases/discarded-flush.json", import.meta.url), "utf8"));
+  const result = await runPlan(plan, { quiet: true });
+  assert.deepEqual(result.failures, []);
+});

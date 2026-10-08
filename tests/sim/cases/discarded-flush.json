@@ -1,0 +1,188 @@
+{
+ "seed": "acquire-owner-expiry",
+ "nodes": [
+  "a",
+  "b"
+ ],
+ "leaseTtlMs": 3000,
+ "durationMs": 12000,
+ "skews": {
+  "a": 0,
+  "b": 0
+ },
+ "modelDelayMs": [
+  50,
+  100
+ ],
+ "buggify": {
+  "model.stream.stall": 0.5
+ },
+ "steps": [
+  {
+   "at": 0,
+   "op": {
+    "op": "create",
+    "agent": 0,
+    "node": "a"
+   }
+  },
+  {
+   "at": 1324,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 0,
+    "node": "a"
+   }
+  },
+  {
+   "at": 1575,
+   "op": {
+    "op": "schedule",
+    "agent": 0,
+    "schedule": 1,
+    "inSeconds": 3,
+    "node": "a"
+   }
+  },
+  {
+   "at": 2300,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 2,
+    "node": "b"
+   }
+  },
+  {
+   "at": 2446,
+   "op": {
+    "op": "schedule",
+    "agent": 0,
+    "schedule": 3,
+    "inSeconds": 1,
+    "node": "a"
+   }
+  },
+  {
+   "at": 2690,
+   "op": {
+    "op": "databaseDown",
+    "node": "b"
+   }
+  },
+  {
+   "at": 3002,
+   "op": {
+    "op": "schedule",
+    "agent": 0,
+    "schedule": 4,
+    "inSeconds": 5,
+    "node": "a"
+   }
+  },
+  {
+   "at": 3534,
+   "op": {
+    "op": "isolate",
+    "node": "a"
+   }
+  },
+  {
+   "at": 3608,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 3,
+    "node": "a"
+   }
+  },
+  {
+   "at": 4071,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 4,
+    "node": "a"
+   }
+  },
+  {
+   "at": 4222,
+   "op": {
+    "op": "isolate",
+    "node": "b"
+   }
+  },
+  {
+   "at": 5294,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 6,
+    "node": "a"
+   }
+  },
+  {
+   "at": 5646,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 7,
+    "node": "a"
+   }
+  },
+  {
+   "at": 6395,
+   "op": {
+    "op": "schedule",
+    "agent": 0,
+    "schedule": 5,
+    "inSeconds": 19,
+    "node": "b"
+   }
+  },
+  {
+   "at": 6488,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 8,
+    "node": "a"
+   }
+  },
+  {
+   "at": 6626,
+   "op": {
+    "op": "heal"
+   }
+  },
+  {
+   "at": 7049,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 9,
+    "node": "a"
+   }
+  },
+  {
+   "at": 7317,
+   "op": {
+    "op": "partition",
+    "a": "b",
+    "b": "db",
+    "how": "refused"
+   }
+  },
+  {
+   "at": 10449,
+   "op": {
+    "op": "heal"
+   }
+  }
+ ],
+ "dbLatencyMs": [
+  0,
+  100
+ ]
+}
