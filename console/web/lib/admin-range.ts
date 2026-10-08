@@ -19,6 +19,9 @@ export function rangeError(range: ReportRange): string | null {
 export function presetRange(preset: string, date = today()): ReportRange {
   const end = new Date(date + "T00:00:00Z"), start = new Date(end);
   if (preset === "yesterday") { start.setUTCDate(start.getUTCDate()-1); end.setUTCDate(end.getUTCDate()-1); }
+  if (preset === "last-7") start.setUTCDate(start.getUTCDate()-6);
+  if (preset === "last-14") start.setUTCDate(start.getUTCDate()-13);
+  if (preset === "last-30") start.setUTCDate(start.getUTCDate()-29);
   if (preset === "week") start.setUTCDate(start.getUTCDate() - ((start.getUTCDay()+6)%7));
   if (preset === "month") start.setUTCDate(1);
   if (preset === "last-month") { start.setUTCDate(1); start.setUTCMonth(start.getUTCMonth()-1); end.setUTCDate(0); }
@@ -28,8 +31,8 @@ export function parseReportRequest(input: unknown): ReportRequest | null {
   if (!input || typeof input !== "object" || Array.isArray(input)) return null;
   const r = input as ReportRequest;
   if (Object.keys(r).some(k => !["schema_version","kind","start_date","end_date","time_zone","account_ref","cursor"].includes(k))) return null;
-  if (r.schema_version !== 1 || !["signals","journeys","journey"].includes(r.kind) || rangeError(r)) return null;
+  if (r.schema_version !== 1 || !["signals","journeys","journey","pages"].includes(r.kind) || rangeError(r)) return null;
   if (r.kind === "journey" ? typeof r.account_ref !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(r.account_ref) : r.account_ref !== undefined) return null;
-  if (r.cursor !== undefined && (r.kind === "signals" || typeof r.cursor !== "string" || !/^[A-Za-z0-9_-]{1,300}$/.test(r.cursor))) return null;
+  if (r.cursor !== undefined && ((r.kind === "signals" || r.kind === "pages") || typeof r.cursor !== "string" || !/^[A-Za-z0-9_-]{1,300}$/.test(r.cursor))) return null;
   return r;
 }

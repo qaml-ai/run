@@ -26,10 +26,36 @@ Changes on main since the last tag.
   an agent from a definition, both stay its own when the definition is applied. Compaction summaries keep the
   runtime's settings. See [Output length and temperature](../guides/models-and-keys.md#output-length-and-temperature).
 
+### Admin site
+
+- `GET /api/activity-trend` on the admin site, for its chart: sign-ups and returning active accounts by UTC day over
+  the `days` days (14 by default, 90 at most) that end on `end_date` (today by default). A returning active account
+  is one made before that day whose agents got at least one model response on it (`usage`); the days are UTC because
+  that is how usage is kept. `incomplete_date` names the day still going.
+- `POST /api/report` also takes `kind: "pages"` (dates only), for the journey store's report on the operator's
+  website pages about the runtime.
+
 ### TypeScript SDK
 
 - `maxOutputTokens` and `temperature` on `agents.upsert`, `agents.run`, definitions and `agent.configure` (`null`
   removes either there).
+
+### Definitions that reach live agents
+
+- `applyOnUpdate: true` on a definition: every save that makes a new revision (an upsert that changes it, or a
+  `PATCH`) also applies it to every live agent made from it, as `apply: "all"` does, and the answer carries
+  `applied` (`POST /v1/definitions` answers with it too). An upsert that changes nothing applies nothing. See
+  [Definitions](../guides/definitions.md).
+
+### Bedrock API keys for the whole account, and their region
+
+- `PUT /v1/providers/amazon-bedrock/key` takes `{apiKey, region}`: an account's own Bedrock API key (a bearer token)
+  and the AWS region its calls go to (it was refused as needing AWS credentials). The console's Models page asks for
+  the region, and `GET /v1/providers` shows it. Migration 059 runs on start.
+- Fix: a key scope entry's Bedrock `region` now reaches the call. Before, Pi's client took the region from the
+  runtime host's `AWS_REGION` (or the catalog's `us-east-1`), unless the entry's `baseUrl` was a regional endpoint.
+- Bedrock takes Bedrock API keys only: no AWS access keys or SigV4, never the host's AWS credentials. See
+  [Amazon Bedrock](../guides/models-and-keys.md#amazon-bedrock).
 
 ### Python SDK
 
@@ -46,6 +72,24 @@ Changes on main since the last tag.
 - `AgentRuntime` manages key scopes (`set_scope_key`, `key_scope`, `set_scope_provider`, ...), API tokens
   (`tokens`, `create_token`, `revoke_token`), usage (`usage`), webhook endpoints (`create_webhook`, `webhooks`,
   `update_webhook`, `delete_webhook`, `rotate_webhook_secret`) and agent tokens (`rotate_agent_credentials`).
+
+### Pi 1.1: Claude Haiku 5.5, Bedrock inference profiles
+
+- The runtime runs on Pi 1.1 (`@earendil-works/pi-ai` and `pi-agent-core` 1.1.0). New in the catalog: Claude Haiku 5.5
+  (`anthropic/claude-haiku-5-5`, and on Bedrock `amazon-bedrock/global.anthropic.claude-haiku-5-5` and its `us.`,
+  `eu.`, `au.` and `jp.` profiles), and Claude Sonnet 5.5's `us.` and `eu.` profiles on Bedrock. Haiku 5.5's prompts
+  over 100,000 tokens are priced higher, as Anthropic prices them.
+- Bedrock serves Anthropic's models only through inference profiles: a base id (`amazon-bedrock/anthropic.claude-sonnet-5`)
+  is no longer listed in `GET /v1/models`, and an agent that names one is called through its global profile (its US
+  one where it has no global one).
+- A Claude model that always reasons on Anthropic's API does on Bedrock too (Haiku, Sonnet and Opus 5.5, Opus 5,
+  Fable): a call asking for no reasoning gets the least it takes, as on Anthropic.
+- History's assistant messages carry `durationMs` (how long the response took) and tool results theirs (how long
+  the tool ran) ([events](../reference/events.md)).
+- Context estimates count 3.5 characters a token (4 before), so compaction starts a little earlier on text-heavy history.
+- Anthropic tool changes mid-conversation use the `inline-tools-2026-09-15` beta; Bedrock's Claude 5 calls bind thinking to
+  their prompt, dropping stale thinking blocks after the tools or system prompt change instead of failing.
+- The provider `azure-openai-responses` is now `azure`, as Pi names it.
 
 ## 0.5.0 (runtime-v0.5.0, 2026-10-08)
 

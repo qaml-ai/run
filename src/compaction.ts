@@ -222,10 +222,12 @@ function authorize(model: Model<Api>, asked: any, credentials: Credentials, sink
   const { apiKey, baseUrl, headers, region, bearer } = credentials;
   const fetchable = FETCH_APIS.includes(model.api);
   if (!apiKey && !fetchable) throw new Error(`A key scope entry without an apiKey cannot call ${model.provider}'s ${model.api} API`);
+  const bedrock = model.api === "bedrock-converse-stream";
   const callOptions = {
-    ...options, apiKey: apiKey || "keyless", headers: { ...options?.headers, ...headers, ...modelHeaders }, ...(region ? { region } : {}),
-    // Bedrock through a gateway speaks HTTP/1.1, as its pass-through does.
-    env: model.api === "bedrock-converse-stream" && baseUrl ? { AWS_BEDROCK_FORCE_HTTP1: "1" } : {},
+    ...options, apiKey: apiKey || "keyless", headers: { ...options?.headers, ...headers, ...modelHeaders },
+    // Bedrock's region reaches Pi's client only through `env` (its simple options drop a `region`), ahead of the
+    // process's AWS_REGION. Bedrock through a gateway speaks HTTP/1.1, as its pass-through does.
+    env: bedrock ? { ...(region ? { AWS_REGION: region } : {}), ...(baseUrl ? { AWS_BEDROCK_FORCE_HTTP1: "1" } : {}) } : {},
   };
   if (!fetchable && baseUrl) tenantGateways.set(new URL(baseUrl).hostname, outbound);
   if (!fetchable) return [baseUrl ? { ...model, baseUrl } : model, callOptions];

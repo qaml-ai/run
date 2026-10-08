@@ -81,7 +81,7 @@ export interface AdminStats {
   }[];
 }
 export const accountLabel = (tenant: string) => /^u-[0-9a-f]{16,32}$/.test(tenant) ? undefined : tenant;
-export interface KeyStatus { provider: string; source: "tenant" | "admin" | "platform"; last4?: string; setAt?: number }
+export interface KeyStatus { provider: string; source: "tenant" | "admin" | "platform"; last4?: string; setAt?: number; region?: string }
 export interface Provider { id: string; kind: "model" | "search" | "fetch"; models: number; apiKey: boolean; requires?: string; key: KeyStatus | null }
 export interface Model {
   id: string; provider: string; modelId: string; name: string; api: string; reasoning: boolean; input: string[];

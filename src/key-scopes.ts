@@ -24,6 +24,8 @@ const aad = (tenant: string, scope: string, provider: string) => `key-scope:${te
 const invalid = (message: string): never => { throw new HttpError(400, message); };
 /** Headers only the runtime sets on a call to a tenant's own provider, besides the key (`apiKey`, sent as Authorization). */
 export const RESERVED_HEADERS = new Set(["authorization", "host", "content-length", "content-type", "transfer-encoding", "connection", "x-agent-runtime-identity"]);
+/** An AWS region's name, like us-west-2. */
+export const AWS_REGION = /^[a-z]{2}(-[a-z]+)+-\d+$/;
 /** Bedrock's own regional endpoint, which names the region. */
 const BEDROCK = /^https:\/\/bedrock-runtime(?:-fips)?\.([a-z0-9-]+)\.amazonaws\.com\/?$/;
 
@@ -73,7 +75,7 @@ export function scopeEntry(provider: string, input: any, custom = false): ScopeE
   const hosted = typeof baseUrl === "string" ? BEDROCK.exec(baseUrl)?.[1] : undefined;
   if (bedrock && hosted && region !== undefined && region !== hosted) invalid(`region ${region} does not match the baseUrl's ${hosted}`);
   if (bedrock) region ??= hosted;
-  if (region !== undefined && (!bedrock || typeof region !== "string" || !/^[a-z]{2}(-[a-z]+)+-\d+$/.test(region))) invalid("region is only for amazon-bedrock, and must be an AWS region like us-west-2");
+  if (region !== undefined && (!bedrock || typeof region !== "string" || !AWS_REGION.test(region))) invalid("region is only for amazon-bedrock, and must be an AWS region like us-west-2");
   if (bedrock && region === undefined) invalid("amazon-bedrock needs its region: region, or baseUrl https://bedrock-runtime.<region>.amazonaws.com");
   return { ...(apiKey !== undefined ? { apiKey } : {}), ...(baseUrl !== undefined ? { baseUrl: endpoint(baseUrl) } : {}), ...(headers && Object.keys(headers).length ? { headers } : {}), ...(region ? { region } : {}) };
 }

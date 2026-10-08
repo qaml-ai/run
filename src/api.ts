@@ -19,7 +19,7 @@ import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, readJson,
 import type { Channels } from "./channels.ts";
 import { channelRoutes } from "./channels-api.ts";
 import { validTtl, type Definitions } from "./definitions.ts";
-import { checkScope, scopeEntry, type KeyScopes } from "./key-scopes.ts";
+import { AWS_REGION, checkScope, scopeEntry, type KeyScopes } from "./key-scopes.ts";
 import { providerInput, type ModelProviders } from "./model-providers.ts";
 import type { Webhooks } from "./webhooks.ts";
 import type { Telemetry } from "./telemetry.ts";
@@ -344,14 +344,18 @@ export function api(context: ApiContext) {
     const tenant = c.var.principal.tenant;
     if (!info.apiKey) throw new HttpError(400, `${id} needs ${info.requires}, not just an API key; it is not supported yet`);
     if (!accounts.canStoreKeys) throw new HttpError(503, "This runtime is not configured to store provider keys");
-    const { apiKey, verify } = parse(schema.KeyInput, await readJson(c.req.raw.body, 16 * 1024, {}));
+    const { apiKey, verify, region } = parse(schema.KeyInput, await readJson(c.req.raw.body, 16 * 1024, {}));
+    // A Bedrock API key works in every region: the account's key names the one its calls go to.
+    const bedrock = id === "amazon-bedrock";
+    if (bedrock && (region === undefined || !AWS_REGION.test(region))) throw new HttpError(400, "amazon-bedrock needs its region, an AWS region like us-west-2: { apiKey, region }");
+    if (!bedrock && region !== undefined) throw new HttpError(400, "region is only for amazon-bedrock");
     const check = verify === false || context.verifyKeys === false ? { status: "unverified" as const, detail: "Verification skipped" }
       // Checking a search or render key would cost a call: the first one checks it.
       : info.kind !== "model" ? { status: "unverified" as const, detail: `${id} has no free way to check a key; the first ${info.kind === "search" ? "web_search" : "rendered web_fetch"} will` } : await checkProviderKey(id, apiKey);
     if (check.status === "invalid") throw new HttpError(422, check.detail);
-    await accounts.setKey(tenant, id, apiKey);
+    await accounts.setKey(tenant, id, apiKey, region);
     await clients.providerKeyChanged(tenant, id);
-    return json(c, 200, { provider: id, last4: apiKey.slice(-4), verification: check });
+    return json(c, 200, { provider: id, last4: apiKey.slice(-4), ...(region ? { region } : {}), verification: check });
   });
   route(createRoute({ ...providerKey, method: "delete", responses: { 200: reply("The key is deleted", schema.Deleted) } }), async c => {
     const { id } = provider(c);

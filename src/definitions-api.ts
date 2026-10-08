@@ -1,7 +1,7 @@
 import { createRoute, z, type RouteConfig } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
-import type { Definitions } from "./definitions.ts";
+import type { Definition, Definitions } from "./definitions.ts";
 import type { RequestRecord } from "../shared/client-protocol.ts";
 import { HttpError, readJson } from "./http.ts";
 import * as schema from "./api-schemas.ts";
@@ -21,6 +21,12 @@ async function parse<T extends z.ZodType>(type: T, c: Context): Promise<z.infer<
 
 /** /v1/definitions: a tenant's reusable agent definitions. */
 export function definitionRoutes(route: Route, context: () => { definitions?: Definitions; submit?: Submit }) {
+  /** A save's `applied`: with apply: "all", or when it made a new revision of a definition with applyOnUpdate. */
+  const applied = async (definitions: Definitions, saved: Definition, asked: boolean) => {
+    const submit = context().submit;
+    if (!submit || !(asked || (saved.revised && saved.spec.applyOnUpdate))) return {};
+    return { applied: await definitions.apply(saved, (agent, request) => submit(agent, saved.tenant, request)) };
+  };
   const service = () => {
     const value = context().definitions;
     if (!value) throw new HttpError(404, "Definitions are not enabled on this runtime");
@@ -31,11 +37,14 @@ export function definitionRoutes(route: Route, context: () => { definitions?: De
   route(createRoute({
     method: "post", path: "/v1/definitions",
     request: { headers: z.object({ "idempotency-key": z.string().optional().openapi({ description: "The definition's key: the same key is the same definition, set to this body (a new revision if it changes anything)" }) }), body: body(schema.DefinitionInput) },
-    responses: { 201: reply("The definition: at revision 1, or with a key, the key's at its latest revision", schema.Definition) },
+    responses: { 201: reply("The definition: at revision 1, or with a key, the key's at its latest revision; with applyOnUpdate, the agents asked to take a new one", schema.DefinitionUpdated) },
   }), async c => {
     const definitions = service();
+    const tenant = c.var.principal.tenant;
     const key = c.req.header("idempotency-key"), input = await parse(schema.DefinitionInput, c);
-    return json(c, 201, await definitions.saved(key !== undefined ? await definitions.upsert(c.var.principal.tenant, key, input) : await definitions.create(c.var.principal.tenant, input)));
+    if (input.applyOnUpdate && !context().submit) throw new HttpError(404, "Applying definitions is not enabled on this runtime");
+    const saved = key !== undefined ? await definitions.upsert(tenant, key, input) : await definitions.create(tenant, input);
+    return json(c, 201, { ...await definitions.saved(saved), ...await applied(definitions, saved, false) });
   });
   route(createRoute({ method: "get", path: "/v1/definitions/{id}", request: { params: definitionId }, responses: { 200: reply("The definition", schema.Definition) } }),
     async c => json(c, 200, await service().get(c.var.principal.tenant, c.req.param("id")!)));
@@ -48,9 +57,9 @@ export function definitionRoutes(route: Route, context: () => { definitions?: De
     const input = await parse(schema.DefinitionUpdate, c);
     const submit = context().submit;
     if (input.apply === "all" && !submit) throw new HttpError(404, "Applying definitions is not enabled on this runtime");
+    if (input.applyOnUpdate && !submit) throw new HttpError(404, "Applying definitions is not enabled on this runtime");
     const updated = await definitions.update(tenant, c.req.param("id")!, input);
-    if (input.apply !== "all") return json(c, 200, await definitions.saved(updated));
-    return json(c, 200, { ...await definitions.saved(updated), applied: await definitions.apply(updated, (agent, request) => submit!(agent, tenant, request)) });
+    return json(c, 200, { ...await definitions.saved(updated), ...await applied(definitions, updated, input.apply === "all") });
   });
   route(createRoute({ method: "delete", path: "/v1/definitions/{id}", request: { params: definitionId }, responses: { 200: reply("The definition is deleted; agents made from it keep their configuration", schema.Deleted) } }), async c => {
     await service().remove(c.var.principal.tenant, c.req.param("id")!);

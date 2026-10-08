@@ -2553,6 +2553,30 @@ A self-hosted runtime's operator can also give an account keys, and route its
 model calls through a gateway of the operator's own: see
 [Billing](https://run.camelai.com/docs/operations/billing.md) and [Model endpoints](https://run.camelai.com/docs/operations/model-endpoints.md).
 
+### Amazon Bedrock
+
+Bedrock takes a [Bedrock API key](https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys.html),
+sent as a bearer token, and the AWS region to call. It is the only credential
+the runtime takes for Bedrock: no AWS access keys, no SigV4 signing, and never
+AWS credentials the runtime's own host has.
+
+- For the whole account: `PUT /v1/providers/amazon-bedrock/key` with
+  `{"apiKey": "…", "region": "us-west-2"}`, or the console's Models page. The
+  region is required. The key is not checked when saved (Bedrock has no free
+  call for it): the first model call is.
+- For one key scope: `PUT /v1/key-scopes/:scope/providers/amazon-bedrock` with
+  `{"apiKey": "…", "region": "us-west-2"}`, or a regional `baseUrl`
+  (`https://bedrock-runtime.<region>.amazonaws.com`) the region is read from
+  (see [Key scopes](https://run.camelai.com/docs/guides/models-and-keys.md#key-scopes)).
+
+Name Bedrock's Claude models by an inference profile:
+`amazon-bedrock/global.anthropic.claude-sonnet-5-5` (routed anywhere, the
+catalog's price), or a geography's, such as `us.` or `eu.` (kept in that
+geography, a tenth dearer). Bedrock refuses a Claude model's base id
+(`anthropic.claude-sonnet-5-5`) on demand, so `GET /v1/models` lists the
+profiles only, and an agent that names a base id is called through its global
+profile. An inference profile's geography must include the key's region.
+
 ### Output length and temperature
 
 Two settings shape each model response. `maxOutputTokens` is the most the model
@@ -2643,8 +2667,8 @@ In Python, `await agents.runtime.set_scope_key("org_abc123", "openrouter", api_k
 - For `amazon-bedrock` the key is a Bedrock API key, sent as a bearer token (no
   SigV4), and the entry needs its region: `region`, or a regional `baseUrl`
   `https://bedrock-runtime.<region>.amazonaws.com`, which it is read from. Model
-  ids are the catalog's, inference profiles included
-  (`amazon-bedrock/us.anthropic.claude-sonnet-5`).
+  ids are the catalog's inference profiles
+  (`amazon-bedrock/us.anthropic.claude-sonnet-5`); see [Amazon Bedrock](https://run.camelai.com/docs/guides/models-and-keys.md#amazon-bedrock).
 - `GET /v1/key-scopes/:scope` lists the providers set, with each key's last four
   characters, `baseUrl`, `region` and the extra headers' names, never a secret.
   `DELETE /v1/key-scopes/:scope/providers/:provider` removes an entry, and
@@ -3007,6 +3031,21 @@ the tenant can apply a definition, never an agent's own token. `GET
 /v1/definitions/:id/agents` lists the agents and the revision each has. Deleting
 a definition leaves its agents as they are; a definition a channel uses cannot
 be deleted.
+
+To have every change reach live agents without asking each time, save the
+definition with `applyOnUpdate: true`: every save that makes a new revision (an
+upsert that changes it, or a `PATCH`) then applies it as `apply: "all"` does,
+and answers with `applied`. An upsert that changes nothing, as at most deploys,
+applies nothing. It suits definitions whose agents must all run the same tools
+and prompt, such as one whose MCP server moved:
+
+```ts
+const definition = await agents.runtime.upsertDefinition("builder", {
+  name: "Builder", systemPrompt: "You build bots.", applyOnUpdate: true,
+  mcpServers: [{ name: "builder", url: "https://bots.example.com/builder/mcp", auth: { type: "runtime" } }],
+});
+// definition.applied: every live agent asked to take the new revision, when this deploy changed it
+```
 
 The response's `applied` lists each agent with its `requestId` and `status`:
 `updated` (it has the revision), `queued` (it takes it after its current turn;
@@ -4707,7 +4746,7 @@ agents:                          # keyed agents made from it on deploy
 - Every field but `key`, `agents`, `systemPromptFile` and an OpenAPI source's
   `specFile` is sent as the [definition](https://run.camelai.com/docs/guides/definitions.md) (`name`,
   `model`, `systemPrompt`, `thinkingLevel`, `fileTools`, `builtins`, `webSearch`,
-  `mcpServers`, `openApi`, `limits`, `mounts`, `delegate`), and the runtime
+  `mcpServers`, `openApi`, `limits`, `mounts`, `delegate`, `applyOnUpdate`), and the runtime
   validates it. `delegate` ([Multi-agent](https://run.camelai.com/docs/guides/multi-agent.md)) adds its
   builtin.
   `name` defaults to the key.
@@ -5194,8 +5233,8 @@ Messages (`message` fields, and history) are one of:
 | `role` | Fields |
 | --- | --- |
 | `user` | `content`: a string, or `[{type: "text", text} \| {type: "image", data, mimeType}]`; `timestamp`. History also records `from`, `requestId`, `metadata` |
-| `assistant` | `content`: `[{type: "text", text} \| {type: "thinking", thinking} \| {type: "toolCall", id, name, arguments}]`; `provider`, `model`, `usage`, `stopReason` (`stop`, `length`, `toolUse`, `error`, `aborted`), `errorMessage?`, `timestamp` |
-| `toolResult` | `toolCallId`, `toolName`, `content` (text and image blocks), `details?`, `isError`, `timestamp` |
+| `assistant` | `content`: `[{type: "text", text} \| {type: "thinking", thinking} \| {type: "toolCall", id, name, arguments}]`; `provider`, `model`, `usage`, `stopReason` (`stop`, `length`, `toolUse`, `error`, `aborted`), `errorMessage?`, `timestamp` (when the request started), `durationMs?` (how long the response took; absent on older messages) |
+| `toolResult` | `toolCallId`, `toolName`, `content` (text and image blocks), `details?`, `isError`, `timestamp`, `durationMs?` (how long the tool ran) |
 | `system` | `content`: instructions the runtime added (a changed configuration, a compaction summary) |
 
 ### Tools

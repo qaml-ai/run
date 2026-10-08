@@ -427,6 +427,8 @@ export interface DefinitionInput {
   webSearch?: { providers: ("exa" | "brave" | "parallel")[] };
   mcpServers?: (SourceOptions & { url: string })[];
   openApi?: (SourceOptions & { spec?: string | Record<string, unknown>; baseUrl?: string })[];
+  /** true: each save that makes a new revision also applies it to every live agent made from it (as `apply: "all"`), and answers with `applied`. */
+  applyOnUpdate?: boolean;
 }
 /** What applying a definition's revision did to one agent; poll a queued one's request for its outcome. */
 export interface ApplyResult { agent: string; requestId: string; status: "updated" | "queued" | "failed"; error?: string }
@@ -881,7 +883,10 @@ export class AgentRuntime {
    * specs, built-ins). Make agents from one with `createAgent({ definition: id })`.
    */
   createDefinition(input: DefinitionInput): Promise<Definition> { return this.transport.json("/v1/definitions", this.operator(), "POST", withMultiAgent(input), false); }
-  /** The definition for `key`, set to `input` whole: made if there is none, else a new revision if `input` changes it. The same key is the same definition. */
+  /**
+   * The definition for `key`, set to `input` whole: made if there is none, else a new revision if `input` changes it. The same key is the same definition.
+   * With `applyOnUpdate: true`, a new revision also reaches every live agent made from it (`applied`).
+   */
   upsertDefinition(key: string, input: DefinitionInput): Promise<Definition> {
     if (!AGENT_KEY.test(key)) throw new AgentError(`A definition's key is 1 to 80 letters, digits, _ and -: ${JSON.stringify(key.slice(0, 100))} is not`);
     return this.transport.json("/v1/definitions", this.operator(), "POST", withMultiAgent(input), true, { "Idempotency-Key": key });

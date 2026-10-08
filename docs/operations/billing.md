@@ -6,7 +6,11 @@ admin tenants from the tenants file are unbilled unless their entry sets
 billing existed stay unbilled. A tenant without a provider key of its own runs on
 the platform's keys, the tenants file's top-level `platformKeys`
 (`{"anthropic": "...", "openrouter": "..."}`, like a tenant's `apiKeys`: one key
-per provider, never a `*` wildcard), if it is prepaid or an admin tenant:
+per provider, never a `*` wildcard), if it is prepaid or an admin tenant. An
+`amazon-bedrock` key there or in `apiKeys` is a Bedrock API key (sent as a bearer
+token, never AWS access keys); it calls the runtime host's `AWS_REGION`, else
+`us-east-1`. A tenant's own Bedrock key names its region
+([Amazon Bedrock](../guides/models-and-keys.md#amazon-bedrock)).
 
 - An **admin tenant** (`"billing": "none"`, the operator's own, e.g. a product
   built on the runtime) uses them for every provider it has no key for, its own

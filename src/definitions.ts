@@ -54,10 +54,14 @@ export interface DefinitionSpec {
   delegate?: DelegateSettings;
   /** Made for this channel, and deleted with it. */
   channel?: string;
+  /** true: a save that makes a new revision also applies it to every live agent made from it, as `apply: "all"` does. */
+  applyOnUpdate?: boolean;
 }
 export interface Definition { id: string; tenant: string; name: string; revision: number; spec: DefinitionSpec; createdAt: number; updatedAt: number;
   /** When it was saved with MCP servers: what each listed, or why it could not be. */
-  toolSources?: ToolSourceView[] }
+  toolSources?: ToolSourceView[];
+  /** On a save that wrote a new revision over an earlier one: true. */
+  revised?: boolean }
 /** Top-level fields replace the stored ones; null removes one. Secrets go in as plain values and are sealed. */
 export type DefinitionInput = { name?: string; revision?: number } & { [K in keyof DefinitionSpec]?: unknown };
 /** What an agent records about the definition it was made from. */
@@ -67,7 +71,7 @@ export interface ApplyResult { agent: string; requestId: string; status: "update
 /** Agent parameters from a definition, as `createAgent` takes them. */
 export type AgentParams = Record<string, unknown> & { tools?: ToolDefinition[] };
 
-const FIELDS = ["description", "model", "systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "fileTools", "codeMode", "limits", "runLimits", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate"] as const;
+const FIELDS = ["description", "model", "systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "fileTools", "codeMode", "limits", "runLimits", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "applyOnUpdate"] as const;
 /** Configuration an agent made from a definition may set as its own, which applying the definition leaves. */
 export const OVERRIDES = ["model", "thinkingLevel", "maxOutputTokens", "temperature", "fileTools", "codeMode", "runLimits"] as const;
 const PROVISION_FIELDS = ["name", "type", "ttlSeconds", "mounts", "tools", "initialMessages", "systemPromptAppend"];
@@ -114,7 +118,7 @@ export class Definitions {
   }
 
   /** What callers see: the spec's fields, with secrets left out. */
-  view({ tenant: _tenant, spec, ...definition }: Definition) {
+  view({ tenant: _tenant, spec, revised: _revised, ...definition }: Definition) {
     const { channel: _channel, mcpServers, openApi, ...visible } = spec;
     return { ...definition, ...visible, ...(mcpServers ? { mcpServers: mcpServers.map(mcpServerView) } : {}), ...(openApi ? { openApi: openApi.map(openApiView) } : {}) };
   }
@@ -187,7 +191,7 @@ export class Definitions {
     // Only a save that adds a self-starting builtin pays for the lookup.
     const refusal = managedBuiltinsRefusal(spec.builtins);
     if (refusal && (await this.db.query("select 1 from channels where tenant = $1 and channel->>'definition' = $2 and channel->>'type' = 'discord-managed' limit 1", [current.tenant, current.id])).rowCount) throw new HttpError(400, refusal);
-    const next: Definition = { ...current, name, spec, revision: current.revision + 1, updatedAt: Date.now() };
+    const next: Definition = { ...current, name, spec, revision: current.revision + 1, updatedAt: Date.now(), revised: true };
     const { rowCount } = await this.db.query("update definitions set name = $3, spec = $4, revision = $5, updated_at = $6 where id = $1 and tenant = $2 and revision = $7",
       [current.id, current.tenant, name, JSON.stringify(spec), next.revision, next.updatedAt, current.revision]);
     if (!rowCount) throw new HttpError(409, "The definition changed meanwhile; retry");
@@ -299,6 +303,8 @@ export class Definitions {
     if (spec.description !== undefined && (typeof spec.description !== "string" || !spec.description.trim() || spec.description.length > 1000)) throw new HttpError(400, "description must contain 1–1000 characters");
     if (spec.fileTools !== undefined && typeof spec.fileTools !== "boolean") throw new HttpError(400, "fileTools must be true or false");
     if (spec.codeMode !== undefined && typeof spec.codeMode !== "boolean") throw new HttpError(400, "codeMode must be true or false");
+    if (spec.applyOnUpdate !== undefined && typeof spec.applyOnUpdate !== "boolean") throw new HttpError(400, "applyOnUpdate must be true or false");
+    if (spec.applyOnUpdate === false) delete spec.applyOnUpdate;
     if (spec.runLimits !== undefined && !runLimitsInput(spec.runLimits)) delete spec.runLimits;
     if (spec.mounts !== undefined && (!Array.isArray(spec.mounts) || spec.mounts.length > 16)) throw new HttpError(400, "mounts must be an array of at most 16");
     if (spec.builtins !== undefined) builtinsInput(spec.builtins);

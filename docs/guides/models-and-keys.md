@@ -57,6 +57,30 @@ A self-hosted runtime's operator can also give an account keys, and route its
 model calls through a gateway of the operator's own: see
 [Billing](../operations/billing.md) and [Model endpoints](../operations/model-endpoints.md).
 
+### Amazon Bedrock
+
+Bedrock takes a [Bedrock API key](https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys.html),
+sent as a bearer token, and the AWS region to call. It is the only credential
+the runtime takes for Bedrock: no AWS access keys, no SigV4 signing, and never
+AWS credentials the runtime's own host has.
+
+- For the whole account: `PUT /v1/providers/amazon-bedrock/key` with
+  `{"apiKey": "…", "region": "us-west-2"}`, or the console's Models page. The
+  region is required. The key is not checked when saved (Bedrock has no free
+  call for it): the first model call is.
+- For one key scope: `PUT /v1/key-scopes/:scope/providers/amazon-bedrock` with
+  `{"apiKey": "…", "region": "us-west-2"}`, or a regional `baseUrl`
+  (`https://bedrock-runtime.<region>.amazonaws.com`) the region is read from
+  (see [Key scopes](#key-scopes)).
+
+Name Bedrock's Claude models by an inference profile:
+`amazon-bedrock/global.anthropic.claude-sonnet-5-5` (routed anywhere, the
+catalog's price), or a geography's, such as `us.` or `eu.` (kept in that
+geography, a tenth dearer). Bedrock refuses a Claude model's base id
+(`anthropic.claude-sonnet-5-5`) on demand, so `GET /v1/models` lists the
+profiles only, and an agent that names a base id is called through its global
+profile. An inference profile's geography must include the key's region.
+
 ### Output length and temperature
 
 Two settings shape each model response. `maxOutputTokens` is the most the model
@@ -147,8 +171,8 @@ In Python, `await agents.runtime.set_scope_key("org_abc123", "openrouter", api_k
 - For `amazon-bedrock` the key is a Bedrock API key, sent as a bearer token (no
   SigV4), and the entry needs its region: `region`, or a regional `baseUrl`
   `https://bedrock-runtime.<region>.amazonaws.com`, which it is read from. Model
-  ids are the catalog's, inference profiles included
-  (`amazon-bedrock/us.anthropic.claude-sonnet-5`).
+  ids are the catalog's inference profiles
+  (`amazon-bedrock/us.anthropic.claude-sonnet-5`); see [Amazon Bedrock](#amazon-bedrock).
 - `GET /v1/key-scopes/:scope` lists the providers set, with each key's last four
   characters, `baseUrl`, `region` and the extra headers' names, never a secret.
   `DELETE /v1/key-scopes/:scope/providers/:provider` removes an entry, and

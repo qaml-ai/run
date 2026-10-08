@@ -184,3 +184,27 @@ test("a Bedrock call through a scope's gateway connects only where the outbound 
     assert.match(failure, /private, local or reserved|Only https/, baseUrl);
   }
 });
+
+test("a Bedrock call goes to its key's region with the key as a bearer token, whatever AWS region and credentials the process has", async t => {
+  const { explicitKeyStream } = await import("../src/compaction.ts");
+  const { resolveModel } = await import("../src/session-config.ts");
+  const { BedrockRuntimeClient } = await import("@aws-sdk/client-bedrock-runtime");
+  const send = BedrockRuntimeClient.prototype.send;
+  const ambient = { AWS_ACCESS_KEY_ID: "AKIAAMBIENTKEY", AWS_SECRET_ACCESS_KEY: "ambient-secret", AWS_REGION: "ap-south-1" };
+  const saved = Object.fromEntries(Object.keys(ambient).map(name => [name, process.env[name]]));
+  Object.assign(process.env, ambient);
+  const seen: { region: string; token?: string; scheme: unknown }[] = [];
+  BedrockRuntimeClient.prototype.send = async function (this: InstanceType<typeof BedrockRuntimeClient>) {
+    const config = this.config as any;
+    seen.push({ region: await config.region(), token: (await config.token?.())?.token, scheme: config.authSchemePreference && await config.authSchemePreference() });
+    throw new Error("not sent");
+  } as never;
+  t.after(() => {
+    BedrockRuntimeClient.prototype.send = send;
+    for (const [name, value] of Object.entries(saved)) if (value === undefined) delete process.env[name]; else process.env[name] = value;
+  });
+  const model = resolveModel("amazon-bedrock/anthropic.claude-sonnet-5");
+  const stream = await explicitKeyStream(() => Promise.resolve({ apiKey: "bedrock-api-key", region: "eu-west-3" }))(model, { messages: [{ role: "user", content: "hi", timestamp: 1 }] } as never, { apiKey: "per-call" });
+  for await (const _event of stream);
+  assert.deepEqual(seen[0], { region: "eu-west-3", token: "bedrock-api-key", scheme: ["httpBearerAuth"] });
+});

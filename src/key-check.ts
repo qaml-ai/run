@@ -24,7 +24,7 @@ export async function checkProviderKey(provider: string, key: string, fetcher: t
   } else if (model.api === "openai-completions" || model.api === "openai-responses" || model.api === "mistral-conversations") {
     request = { url: `${model.api === "mistral-conversations" ? `${base}/v1` : base}/models`, headers: { Authorization: `Bearer ${key}` } };
   } else {
-    return { status: "unverified", detail: `No key check for the ${model.api} API` };
+    return { status: "unverified", detail: model.api === "bedrock-converse-stream" ? "Bedrock has no free way to check a key: the first call will" : `No key check for the ${model.api} API` };
   }
   try {
     const response = await fetcher(request.url, { headers: request.headers, redirect: "manual", signal: AbortSignal.timeout(10_000) });

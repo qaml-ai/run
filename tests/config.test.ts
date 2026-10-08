@@ -126,14 +126,15 @@ test("a catalog model with a routing variant resolves like its base model and ke
   assert.throws(() => resolveModel("openrouter/nobody/no-such-model:nitro"), /Unknown model/);
 });
 
-test("Claude Sonnet 5.5 resolves on Anthropic, OpenRouter and Bedrock (its global profile only), always reasoning, and is listed", () => {
-  const price = { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 };
+test("Claude Sonnet 5.5 resolves on Anthropic, OpenRouter and Bedrock (through its inference profiles), always reasoning, and is listed", () => {
   for (const [reference, id, api] of [
     ["anthropic/claude-sonnet-5-5", "claude-sonnet-5-5", "anthropic-messages"],
     ["openrouter/anthropic/claude-sonnet-5.5", "anthropic/claude-sonnet-5.5", "anthropic-messages"],
     ["openrouter/anthropic/claude-sonnet-5.5:nitro", "anthropic/claude-sonnet-5.5:nitro", "anthropic-messages"],
-    // Bedrock serves it through the global profile only.
     ["amazon-bedrock/global.anthropic.claude-sonnet-5-5", "global.anthropic.claude-sonnet-5-5", "bedrock-converse-stream"],
+    ["amazon-bedrock/us.anthropic.claude-sonnet-5-5", "us.anthropic.claude-sonnet-5-5", "bedrock-converse-stream"],
+    // Bedrock refuses the base id: it names the global profile.
+    ["amazon-bedrock/anthropic.claude-sonnet-5-5", "global.anthropic.claude-sonnet-5-5", "bedrock-converse-stream"],
   ]) {
     const model = resolveModel(reference);
     assert.equal(model.id, id, reference);
@@ -143,13 +144,12 @@ test("Claude Sonnet 5.5 resolves on Anthropic, OpenRouter and Bedrock (its globa
     assert.equal(model.maxTokens, 128_000, reference);
     assert.equal(model.reasoning, true, reference);
     assert.equal(model.thinkingLevelMap?.off, null, `${reference} always reasons`);
-    assert.deepEqual(model.cost, price, reference);
+    // Pi's prices; US profiles cost a tenth more than global ones.
+    assert.deepEqual([model.cost.input, model.cost.output], id.startsWith("us.") ? [2.2, 11] : [2, 10], reference);
   }
   assert.deepEqual(resolveModel("anthropic/claude-sonnet-5").id, "claude-sonnet-5", "Sonnet 5 stays");
   assert.ok(listModels("anthropic").some(model => model.id === "anthropic/claude-sonnet-5-5"));
   assert.ok(listModels("openrouter").some(model => model.id === "openrouter/anthropic/claude-sonnet-5.5"));
   assert.ok(listModels("amazon-bedrock").some(model => model.id === "amazon-bedrock/global.anthropic.claude-sonnet-5-5"));
-  for (const gone of ["anthropic.claude-sonnet-5-5", "us.anthropic.claude-sonnet-5-5", "eu.anthropic.claude-sonnet-5-5"]) {
-    assert.throws(() => resolveModel(`amazon-bedrock/${gone}`), /Unknown model/, gone);
-  }
+  assert.ok(!listModels("amazon-bedrock").some(model => model.id === "amazon-bedrock/anthropic.claude-sonnet-5-5"), "no base id is listed");
 });
