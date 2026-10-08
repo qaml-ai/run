@@ -73,7 +73,9 @@ test("on a platform key a response is billed at the catalog's price, whatever th
   // A response that reports no usage on the platform's key is charged as if it filled the window and wrote the most.
   respond = () => ({ role: "assistant", content: "done" });
   assert.equal((await r.prompt(agent.id, "again", PAYG)).outcome.result.reply, "done");
-  const estimate = funded((catalog.contextWindow * catalog.cost.input + catalog.maxTokens * catalog.cost.output) / 1e6);
+  // At the prices of the catalog's tier for that many input tokens, where it has tiers.
+  const rates = (catalog.cost.tiers ?? []).filter(tier => catalog.contextWindow > tier.inputTokensAbove).at(-1) ?? catalog.cost;
+  const estimate = funded((catalog.contextWindow * rates.input + catalog.maxTokens * rates.output) / 1e6);
   const after = await until(async () => {
     const { balance } = (await r.call("/v1/billing", { token: PAYG })).json;
     return balance !== priced && balance;
