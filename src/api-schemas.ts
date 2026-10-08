@@ -43,6 +43,7 @@ const KeyStatus = z.object({
   source: z.enum(["tenant", "admin", "platform"]).openapi({ description: "tenant: set by the tenant; admin: set by the runtime operator; platform: the platform's key, which a prepaid tenant pays for from credit (an admin tenant uses it unbilled, unless its entry sets platformKeys: false)" }),
   last4: z.string().optional(),
   setAt: z.number().optional(),
+  region: z.string().optional().openapi({ description: "For the tenant's own amazon-bedrock key: the AWS region its calls go to" }),
 }).openapi("KeyStatus");
 
 const CustomModel = z.object({
@@ -84,11 +85,13 @@ export const Provider = z.object({
 export const KeyInput = z.object({
   apiKey: z.string({ error: SEND_KEY }).trim().min(1, SEND_KEY).max(4096, SEND_KEY).regex(/^\S+$/, SEND_KEY),
   verify: z.boolean().optional().openapi({ description: "false stores the key without checking it with the provider" }),
+  region: z.string().optional().openapi({ description: "amazon-bedrock only, and required for it: the AWS region its calls go to (the key is a Bedrock API key, sent as a bearer token)", example: "us-west-2" }),
 }, { error: SEND_KEY }).openapi("KeyInput");
 
 export const KeySet = z.object({
   provider: z.string(),
   last4: z.string(),
+  region: z.string().optional(),
   verification: z.object({ status: z.enum(["valid", "unverified", "invalid"]), detail: z.string().optional() }),
 }).openapi("KeySet");
 

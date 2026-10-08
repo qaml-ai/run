@@ -136,9 +136,20 @@ test("tenants set provider keys over REST; keys are encrypted at rest and never 
   const anthropic = providers.find(provider => provider.id === "anthropic");
   assert.equal(anthropic.apiKey, true);
   assert.equal(anthropic.key, null);
-  assert.equal(providers.find(provider => provider.id === "amazon-bedrock").apiKey, false);
-  assert.equal((await call("/v1/providers/amazon-bedrock/key", { method: "PUT", token: alice, body: { apiKey: "x" } })).status, 400);
   assert.equal((await call("/v1/providers/nope/key", { method: "PUT", token: alice, body: { apiKey: "x" } })).status, 404);
+
+  // A Bedrock API key (a bearer token, never AWS access keys) is set with the region its calls go to.
+  assert.equal(providers.find(provider => provider.id === "amazon-bedrock").apiKey, true);
+  for (const body of [{ apiKey: "bedrock-key" }, { apiKey: "bedrock-key", region: "Oregon" }]) {
+    assert.match((await call("/v1/providers/amazon-bedrock/key", { method: "PUT", token: alice, body })).json.error, /needs its region/, JSON.stringify(body));
+  }
+  assert.match((await call("/v1/providers/anthropic/key", { method: "PUT", token: alice, body: { apiKey: "x", region: "us-west-2" } })).json.error, /only for amazon-bedrock/);
+  const bedrock = await call("/v1/providers/amazon-bedrock/key", { method: "PUT", token: alice, body: { apiKey: "bedrock-api-key-wxyz", region: "eu-west-3" } });
+  assert.equal(bedrock.status, 200, JSON.stringify(bedrock.json));
+  assert.deepEqual([bedrock.json.last4, bedrock.json.region, bedrock.json.verification.status], ["wxyz", "eu-west-3", "unverified"]);
+  assert.deepEqual((await call("/v1/providers", { token: alice })).json.find((provider: any) => provider.id === "amazon-bedrock").key, { provider: "amazon-bedrock", source: "tenant", last4: "wxyz", setAt: (await db.query("select set_at from provider_keys where tenant = 'alice' and provider = 'amazon-bedrock'")).rows[0].set_at, region: "eu-west-3" });
+  assert.ok((await call("/v1/models?provider=amazon-bedrock&available=true", { token: alice })).json.some((model: any) => model.id === "amazon-bedrock/global.anthropic.claude-sonnet-5" && model.available));
+  assert.equal((await call("/v1/providers/amazon-bedrock/key", { method: "DELETE", token: alice })).status, 200);
 
   const set = await call("/v1/providers/anthropic/key", { method: "PUT", token: alice, body: { apiKey: "sk-ant-alice-secret-1234" } });
   assert.equal(set.status, 200);
