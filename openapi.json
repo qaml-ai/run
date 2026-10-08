@@ -5297,7 +5297,7 @@
           },
           "audience": {
             "type": "string",
-            "description": "With auth \"runtime\": the tokens' aud, when not the server's url (behind a proxy, say)"
+            "description": "With auth \"runtime\": the tokens' aud, when not the server's url (behind a proxy, say): a URL on its origin, or a name that stays when the server moves, urn:camelrun:<tenant>:<name>"
           },
           "approval": {
             "type": "object",
@@ -5400,7 +5400,7 @@
           },
           "audience": {
             "type": "string",
-            "description": "With auth \"runtime\": the tokens' aud, when not baseUrl (behind a proxy, say)"
+            "description": "With auth \"runtime\": the tokens' aud, when not baseUrl (behind a proxy, say): a URL on its origin, or a name that stays when the server moves, urn:camelrun:<tenant>:<name>"
           },
           "approval": {
             "type": "object",
@@ -5733,7 +5733,7 @@
           },
           "audience": {
             "type": "string",
-            "description": "With auth \"runtime\": the tokens' aud, when not the server's url (behind a proxy, say)"
+            "description": "With auth \"runtime\": the tokens' aud, when not the server's url (behind a proxy, say): a URL on its origin, or a name that stays when the server moves, urn:camelrun:<tenant>:<name>"
           },
           "approval": {
             "type": "object",
@@ -5860,7 +5860,7 @@
           },
           "audience": {
             "type": "string",
-            "description": "With auth \"runtime\": the tokens' aud, when not baseUrl (behind a proxy, say)"
+            "description": "With auth \"runtime\": the tokens' aud, when not baseUrl (behind a proxy, say): a URL on its origin, or a name that stays when the server moves, urn:camelrun:<tenant>:<name>"
           },
           "approval": {
             "type": "object",
