@@ -313,4 +313,4 @@ dedupe by `id`. See [Webhooks](../guides/webhooks.md).
 | `run.failed` | the above, `usage`, `error`, `code?` (the outcome's code: `cancelled`, `aborted`, `model_stream_stalled`, `turn_limit`…), `uncertain?`, `steeredInto?` |
 | `input.requested` | `agentId`, `requestId`, `inputId`, `toolCallId`, `kind`, `expiresAt` |
 | `input.resolved` | `agentId`, `requestId`, `inputId`, `state` |
-| `usage.recorded` | `agentId`, `requestId`, `subject`, `actor`, `context`, `keyScope`, `provider`, `model`, `kind` (`response`, `compaction`), `input`, `output`, `cacheRead`, `cacheWrite`, `reasoning?`, `cost: {usd, source}`, `at` |
+| `usage.recorded` | `agentId` (null for a [transcription](../guides/voice.md) made alone), `requestId`, `subject`, `actor`, `context`, `keyScope`, `provider`, `model`, `kind` (`response`, `compaction`, `transcription`), `input`, `output`, `cacheRead`, `cacheWrite`, `reasoning?`, `audioSeconds?` (a transcription's), `cost: {usd, source}`, `at` |

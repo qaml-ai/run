@@ -69,6 +69,7 @@ import { runtimeSecrets, managedDiscordSecrets } from "./secrets.ts";
 import { checkSandbox, type CodeExecutor } from "./codemode.ts";
 import { V8Exec } from "./v8-exec.ts";
 import { pricingFromEnvironment } from "./pricing.ts";
+import { openaiTranscription, Transcriber } from "./transcription.ts";
 import { searchProvidersFromEnvironment, WebSearch } from "./web-search.ts";
 import { WebRender } from "./web-render.ts";
 import { Stripe } from "./stripe.ts";
@@ -331,6 +332,22 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   const render = new WebRender({
     outbound: outbound.withoutOrigins(), key: webKey, price: accounts.billing.pricing.webRender, endpoint: config.firecrawlUrl,
     onRender: (tenant, agent, usage) => accounts.recordUsage(tenant, agent, usage),
+  });
+  // Speech to text, for audio attached to messages and POST /v1/transcriptions: on the tenant's OpenAI key as a model call
+  // resolves it (its key scope's, its own, else the platform's, which a prepaid tenant pays for per second of audio).
+  const transcriber = new Transcriber({
+    provider: openaiTranscription({ outbound, ...(env.AGENT_TRANSCRIPTION_URL ? { baseUrl: env.AGENT_TRANSCRIPTION_URL } : {}) }),
+    key: async (tenant, keyScope, provider) => {
+      const entry = keyScope ? await keyScopes.entry(tenant, keyScope, provider) : undefined;
+      // A scope's entry, as its model calls take it: its key, or an address (a gateway) that needs none.
+      if (entry?.apiKey || entry?.baseUrl) return { apiKey: entry.apiKey ?? "", ...(entry.baseUrl ? { baseUrl: entry.baseUrl } : {}), ...(entry.headers ? { headers: entry.headers } : {}), platform: false };
+      const resolved = await accounts.providerKey(tenant, provider);
+      if (!resolved) return undefined;
+      const platform = resolved.source !== "tenant";
+      if (resolved.source === "platform") { const limited = await accounts.billing.creditLimit(tenant); if (limited) throw limited; }
+      return { apiKey: resolved.key, platform };
+    },
+    price: () => accounts.billing.pricing.transcription,
   });
   const toolSources = new ToolSources({ accounts, mcp, outbound, signer, search, render, get scheduler() { return scheduler; }, get volumes() { return volumes; }, get links() { return links; } });
   // Tenants' own OpenAI-compatible model providers.
@@ -667,6 +684,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     customProviders: (tenant, keyScope) => modelProviders.resolvable(tenant, keyScope),
     modelToken: (audience, claims) => signer.token(audience, claims),
     onUsage: (tenant, agent, message) => accounts.recordUsage(tenant, agent, message),
+    transcriber, outbound: outbound.withoutOrigins(),
     onActive: (tenant, agent, ms) => accounts.recordActive(tenant, agent, ms),
     spendLimit: tenant => accounts.runLimit(tenant),
     runLimitsFor: async tenant => {
@@ -973,6 +991,15 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   if (billingMailer) app.route("/", billingMailer.feedback());
   app.route("/", api({ accounts, journey, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return `${chosen.provider}/${chosen.id}`; }, keyScopes, webhooks, telemetry, scheduler, accountDeletions, ...(config.idempotencyLockMs !== undefined ? { idempotencyLockMs: config.idempotencyLockMs } : {}), channels, volumes, definitions, links, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, historyPage: historyPageAnywhere, verifyKeys: config.verifyKeys,
     rateLimits, clientAddress: c => requestClient(c).address, runRetentionSeconds, requestAnywhere,
+    transcriptions: {
+      transcriber, outbound: outbound.withoutOrigins(),
+      admit: async tenant => {
+        const refused = await accounts.runLimit(tenant);
+        if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
+        await rateLimits.run(tenant);
+      },
+      record: (tenant, usage) => accounts.recordUsage(tenant, "", usage),
+    },
     runPrecheck: async tenant => { await rateLimits.runsLeft(tenant); const refused = await busyAgents.check(tenant); if (refused) throw refused; },
     createRun: (tenant, params, key, run) => createAgent(tenant, params, key, undefined, undefined, run) as Promise<{ id: string; existing?: boolean }>,
     billingAdmins: config.billingAdmins }));

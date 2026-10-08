@@ -120,7 +120,7 @@ export interface OAuthGrant { id: string; clientName: string; login: string | nu
 export interface Usage {
   since: number;
   totals: { responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
-  days: { day: string; model: string; kind: "turn" | "compaction"; responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; platformCost: number }[];
+  days: { day: string; model: string; kind: "turn" | "compaction" | "transcription"; responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; platformCost: number }[];
 }
 /** Credit amounts are integer micro-USD. */
 export type LedgerKind = "grant" | "purchase" | "usage" | "storage" | "adjustment" | "refund";
@@ -186,6 +186,9 @@ export interface Mount { volumeId: string; path: string; mode: "ro" | "rw"; subp
 export interface FileRef {
   type: "file"; path: string; volume: string; version: number; size: number; contentType: string;
   media?: { kind: "image"; mimeType: string; width: number; height: number } | { kind: "pdf"; pages: number } | { kind: "none"; reason: string };
+  /** Audio transcribed when it was attached, or why it was not. */
+  transcript?: { text: string; language?: string; seconds: number; model: string };
+  untranscribed?: string;
 }
 /** What a run's outcome adds to its result: files written (paths as the agent saw them), and those handed over with present_file. */
 export interface RunFiles { files?: { path: string; version: number; size: number; contentType: string }[]; presented?: (FileRef & { caption?: string })[] }

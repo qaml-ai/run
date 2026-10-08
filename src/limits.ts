@@ -58,6 +58,8 @@ export const FILE_LIMITS = Object.freeze({
   headBytes: 1024, headLines: 5, headWidth: 200,
   /** Signed links: default and longest lifetime, in seconds. */
   linkSeconds: 15 * 60, maxLinkSeconds: 24 * 60 * 60,
+  /** A file attached by URL: at most this large, fetched within this long, following at most this many redirects. */
+  urlBytes: 64 * 1024 * 1024, urlMs: 60_000, urlRedirects: 3,
   /** An upload's whole request may take this long (other requests get 30 s). */
   uploadMs: 15 * 60_000,
   /** One js_exec fs.readFile or fs.writeFile: base64 of this, with its path, fits a 1 MiB tool result. */
@@ -74,6 +76,16 @@ export const TOOL_FILE_LIMITS = Object.freeze({
   textBytes: 64 * 1024,
   /** What one tool call, and all the calls of one run, may save. */
   callBytes: 64 * 1024 * 1024, runBytes: 256 * 1024 * 1024,
+});
+
+/** Audio transcribed (transcription.ts): what a provider takes, and what one message may carry. */
+export const AUDIO_LIMITS = Object.freeze({
+  /** One audio file: OpenAI's 25 MB, and 30 minutes, read from its header before it is sent. */
+  fileBytes: 25 * 1000 * 1000, seconds: 30 * 60,
+  /** Audio files transcribed for one message, and their minutes together. */
+  files: 5, messageSeconds: 30 * 60,
+  /** A provider's answer, from when the audio is sent. */
+  timeoutMs: 5 * 60_000,
 });
 
 /** Transient provider failures (overload, rate limit, 5xx, network) are retried with backoff. */

@@ -479,7 +479,11 @@
             "type": "object",
             "properties": {
               "agentId": {
-                "type": "string"
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "null for a transcription made with POST /v1/transcriptions, which no agent made"
               },
               "requestId": {
                 "type": [
@@ -488,7 +492,10 @@
                 ]
               },
               "subject": {
-                "type": "string"
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "actor": {
                 "type": [
@@ -516,8 +523,10 @@
                 "type": "string",
                 "enum": [
                   "response",
-                  "compaction"
-                ]
+                  "compaction",
+                  "transcription"
+                ],
+                "description": "response: a model response of a run; compaction: a summary of older context; transcription: audio transcribed (audioSeconds of it; no tokens)"
               },
               "input": {
                 "type": "number"
@@ -533,6 +542,10 @@
               },
               "reasoning": {
                 "type": "number"
+              },
+              "audioSeconds": {
+                "type": "number",
+                "description": "For a transcription: the seconds of audio billed"
               },
               "cost": {
                 "type": "object",
@@ -582,7 +595,7 @@
           "created",
           "data"
         ],
-        "description": "A model response's usage and cost"
+        "description": "A model response's usage and cost, or a transcription's"
       },
       "Error": {
         "type": "object",
@@ -2206,7 +2219,8 @@
         "type": "object",
         "properties": {
           "text": {
-            "type": "string"
+            "type": "string",
+            "description": "The message. It may be left out when the message attaches audio, whose transcript is then the message"
           },
           "actor": {
             "type": "string",
@@ -2320,6 +2334,10 @@
                     "path": {
                       "type": "string",
                       "description": "A file in the agent's mounts, e.g. one uploaded with PUT /v1/agents/{id}/uploads/{requestId}/{name}"
+                    },
+                    "transcribe": {
+                      "type": "boolean",
+                      "description": "Whether this file is transcribed for the model (audio only): default true for audio (an audio/* content type), false for anything else. See the voice and audio guide"
                     }
                   },
                   "required": [
@@ -2339,21 +2357,45 @@
                     },
                     "contentType": {
                       "type": "string"
+                    },
+                    "transcribe": {
+                      "type": "boolean",
+                      "description": "Whether this file is transcribed for the model (audio only): default true for audio (an audio/* content type), false for anything else. See the voice and audio guide"
                     }
                   },
                   "required": [
                     "data"
                   ],
                   "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "url": {
+                      "type": "string",
+                      "description": "An https URL the runtime fetches the file from (public addresses only; at most 64 MiB)"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "contentType": {
+                      "type": "string"
+                    },
+                    "transcribe": {
+                      "type": "boolean",
+                      "description": "Whether this file is transcribed for the model (audio only): default true for audio (an audio/* content type), false for anything else. See the voice and audio guide"
+                    }
+                  },
+                  "required": [
+                    "url"
+                  ],
+                  "additionalProperties": false
                 }
               ]
             },
-            "description": "Attached files (at most 20): saved in the agent's workspace under uploads/<requestId>/, named in the message, and shown natively (images, PDFs) to models that take them"
+            "description": "Attached files (at most 20): saved in the agent's workspace under uploads/<requestId>/, named in the message, and shown natively (images, PDFs) to models that take them. Audio is transcribed before the request is accepted, and the model reads the transcript"
           }
         },
-        "required": [
-          "text"
-        ],
         "description": "A first prompt, as POST /v1/agents/{id}/prompt takes it, sent once the agent is made: it runs as soon as the agent has started, so a new conversation needs one call. Give it a requestId: a retry of the create (same Idempotency-Key) with the same requestId makes no second agent and sends no second prompt"
       },
       "AgentDetail": {
@@ -3835,9 +3877,10 @@
                   "type": "string",
                   "enum": [
                     "turn",
-                    "compaction"
+                    "compaction",
+                    "transcription"
                   ],
-                  "description": "turn: the agent's own responses; compaction: summaries of older context"
+                  "description": "turn: the agent's own responses; compaction: summaries of older context; transcription: audio transcribed (responses counts transcriptions)"
                 }
               },
               "required": [
@@ -3861,6 +3904,115 @@
           "totals",
           "days"
         ]
+      },
+      "Transcription": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "language": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The language the provider heard (or was told), when it says"
+          },
+          "durationSeconds": {
+            "type": "number",
+            "description": "Seconds of audio billed"
+          },
+          "model": {
+            "type": "string",
+            "example": "openai/gpt-transcribe"
+          },
+          "costUsd": {
+            "type": "number",
+            "description": "What it cost at the runtime's price: charged to prepaid credit when it ran on the platform's key"
+          }
+        },
+        "required": [
+          "text",
+          "language",
+          "durationSeconds",
+          "model",
+          "costUsd"
+        ]
+      },
+      "TranscriptionInput": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "string",
+            "description": "The audio's bytes, base64 (at most 25 MB decoded). Or send it as multipart/form-data, the audio in a part named file"
+          },
+          "url": {
+            "type": "string",
+            "description": "An https URL to fetch the audio from (public addresses only)"
+          },
+          "language": {
+            "type": "string",
+            "description": "The audio's language, ISO 639-1 (en) or a locale (pt-BR); detected when left out"
+          },
+          "prompt": {
+            "type": "string",
+            "maxLength": 2000,
+            "description": "Words and spellings to expect (names, jargon), or the conversation so far: a hint to the model, at most 2,000 characters"
+          },
+          "keyScope": {
+            "type": "string",
+            "description": "A key scope whose OpenAI key is used first, before the tenant's own"
+          },
+          "subject": {
+            "type": "string",
+            "description": "Who it is for (a user id in your app): usage.recorded's subject"
+          },
+          "context": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Your claims (org, workspace…), carried as usage.recorded's context; at most 4 KB"
+          },
+          "actor": {
+            "type": "string",
+            "description": "Who asked (a user id in your app): usage.recorded's actor"
+          }
+        },
+        "additionalProperties": false
+      },
+      "TranscriptionForm": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "description": "The audio: Ogg (Opus, Vorbis), WebM, MP3, M4A/MP4, WAV or FLAC; at most 25 MB and 30 minutes"
+          },
+          "language": {
+            "type": "string",
+            "description": "The audio's language, ISO 639-1 (en) or a locale (pt-BR); detected when left out"
+          },
+          "prompt": {
+            "type": "string",
+            "maxLength": 2000,
+            "description": "Words and spellings to expect (names, jargon), or the conversation so far: a hint to the model, at most 2,000 characters"
+          },
+          "keyScope": {
+            "type": "string",
+            "description": "A key scope whose OpenAI key is used first, before the tenant's own"
+          },
+          "subject": {
+            "type": "string",
+            "description": "Who it is for (a user id in your app): usage.recorded's subject"
+          },
+          "context": {
+            "type": "string",
+            "description": "JSON of your claims, as context above"
+          },
+          "actor": {
+            "type": "string",
+            "description": "Who asked (a user id in your app): usage.recorded's actor"
+          }
+        }
       },
       "Billing": {
         "type": "object",
@@ -4051,6 +4203,10 @@
               "webRender": {
                 "type": "integer",
                 "description": "Per page web_fetch has Firecrawl render on the platform's key, in micro-USD (1 USD = 1000000)"
+              },
+              "transcription": {
+                "type": "integer",
+                "description": "Per minute of audio transcribed on the platform's OpenAI key (gpt-transcribe), billed per second, in micro-USD (1 USD = 1000000)"
               }
             },
             "required": [
@@ -4061,7 +4217,8 @@
               "minPurchase",
               "maxPurchase",
               "webSearch",
-              "webRender"
+              "webRender",
+              "transcription"
             ],
             "description": "Model usage on platform keys passes through provider-reported cost (catalog estimate if unavailable) plus provider credit funding costs; tools.search's ranking by meaning is charged at cost"
           }
@@ -6212,7 +6369,7 @@
                 "minItems": 1
               }
             ],
-            "description": "What the run is asked: text, or parts (text and inline files). Files are saved in a workspace volume the run gets for them"
+            "description": "What the run is asked: text, or parts (text and files, inline or by URL). Files are saved in a workspace volume the run gets for them; audio is transcribed for the model"
           },
           "definition": {
             "type": "string",
@@ -6455,11 +6612,45 @@
               },
               "contentType": {
                 "type": "string"
+              },
+              "transcribe": {
+                "type": "boolean",
+                "description": "Whether this file is transcribed for the model (audio only): default true for audio (an audio/* content type), false for anything else. See the voice and audio guide"
               }
             },
             "required": [
               "type",
               "data"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "file"
+                ]
+              },
+              "url": {
+                "type": "string",
+                "description": "An https URL the runtime fetches the file from (public addresses only; at most 64 MiB)"
+              },
+              "name": {
+                "type": "string"
+              },
+              "contentType": {
+                "type": "string"
+              },
+              "transcribe": {
+                "type": "boolean",
+                "description": "Whether this file is transcribed for the model (audio only): default true for audio (an audio/* content type), false for anything else. See the voice and audio guide"
+              }
+            },
+            "required": [
+              "type",
+              "url"
             ],
             "additionalProperties": false
           }
@@ -10025,6 +10216,59 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Usage"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/transcriptions": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TranscriptionInput"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/TranscriptionForm"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The audio's transcript",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Transcription"
                 }
               }
             }

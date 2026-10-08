@@ -31,7 +31,7 @@ type Totals = { responses: number; input: number; output: number; cacheRead: num
  * (USD, with their counts), tool search's ranking by meaning (at cost, with the searches' count), and
  * active agent time.
  */
-type Charge = { platformCost: number; fundingCost: number; activeMs: number; toolCost: number; searches: number; renders: number; toolSearchCost: number; toolSearches: number };
+type Charge = { platformCost: number; fundingCost: number; activeMs: number; toolCost: number; searches: number; renders: number; toolSearchCost: number; toolSearches: number; transcriptionCost: number; transcriptions: number; audioSeconds: number };
 /**
  * Usage recorded and not yet written, applied as one transaction under `id` (a row in
  * `usage_flushes`), so a batch retried after a lost commit acknowledgement is skipped.
@@ -50,6 +50,7 @@ const add = (target: Totals, source: Totals) => {
   target.platformResponses += source.platformResponses; target.platformCost += source.platformCost;
 };
 const COMPACTION = "compaction:";
+const TRANSCRIPTION = "transcription:";
 /** Revocations reach other nodes within this long. */
 const TOKEN_CACHE_MS = 10_000;
 /** Spend on other nodes counts toward a tenant's cap within this long. */
@@ -359,13 +360,13 @@ export class Accounts {
     const usage = message.usage ?? {};
     const day = new Date(message.timestamp ?? Date.now()).toISOString().slice(0, 10);
     const model = `${message.provider ?? "unknown"}/${message.model ?? "unknown"}`;
-    const key = JSON.stringify([tenant, day, message.kind === "compaction" ? `${COMPACTION}${model}` : model]);
+    const key = JSON.stringify([tenant, day, message.kind === "compaction" ? `${COMPACTION}${model}` : message.kind === "transcription" ? `${TRANSCRIPTION}${model}` : model]);
     const totals = this.pending.usage.get(key) ?? zero();
     const cost = usageCost(usage).usd;
     // OpenRouter's response cost is in provider credits. Funding those credits is
     // a separate cost, applied only to model calls on our own OpenRouter key.
     // Tool-search costs already include funding at the reranker's endpoint.
-    const multiplier = message.platform && message.provider === "openrouter" && !message.toolSearch && !message.searches && !message.renders
+    const multiplier = message.platform && message.provider === "openrouter" && !message.toolSearch && !message.searches && !message.renders && message.kind !== "transcription"
       ? this.billing.pricing.openrouterCreditMultiplier : 1;
     // On OpenRouter BYOK, providerCost also includes the separately paid upstream
     // invoice. Only providerCreditCost was paid from OpenRouter credits.
@@ -379,8 +380,12 @@ export class Accounts {
     this.pending.usage.set(key, totals);
     if (message.platform) {
       const charge = this.charge(tenant);
-      // Web searches, renders and tool searches are counted apart from model tokens, so the hour's ledger entry shows each.
-      if (message.toolSearch) {
+      // Web searches, renders, tool searches and transcriptions are counted apart from model tokens, so the hour's ledger entry shows each.
+      if (message.kind === "transcription") {
+        charge.transcriptionCost += cost;
+        charge.transcriptions += message.transcriptions ?? 0;
+        charge.audioSeconds += message.audioSeconds ?? 0;
+      } else if (message.toolSearch) {
         charge.toolSearchCost += cost;
         charge.toolSearches += message.toolSearches ?? 0;
       } else if (message.searches || message.renders) {
@@ -408,7 +413,7 @@ export class Accounts {
 
   private charge(tenant: string) {
     let charge = this.pending.charges.get(tenant);
-    if (!charge) this.pending.charges.set(tenant, charge = { platformCost: 0, fundingCost: 0, activeMs: 0, toolCost: 0, searches: 0, renders: 0, toolSearchCost: 0, toolSearches: 0 });
+    if (!charge) this.pending.charges.set(tenant, charge = { platformCost: 0, fundingCost: 0, activeMs: 0, toolCost: 0, searches: 0, renders: 0, toolSearchCost: 0, toolSearches: 0, transcriptionCost: 0, transcriptions: 0, audioSeconds: 0 });
     return charge;
   }
 
@@ -419,7 +424,7 @@ export class Accounts {
 
   /** What `charges` come to in micro-USD. */
   private amount(charge: Charge) {
-    return Math.round((charge.platformCost + charge.fundingCost) * MICROS) + Math.round(charge.toolCost * MICROS) + Math.round(charge.toolSearchCost * MICROS) + activeCharge(this.billing.pricing, charge.activeMs);
+    return Math.round((charge.platformCost + charge.fundingCost) * MICROS) + Math.round(charge.toolCost * MICROS) + Math.round(charge.toolSearchCost * MICROS) + Math.round(charge.transcriptionCost * MICROS) + activeCharge(this.billing.pricing, charge.activeMs);
   }
 
   /** What this node has recorded for `tenant` and not yet written, in micro-USD, as if the tenant were prepaid. */
@@ -476,6 +481,7 @@ export class Accounts {
           ...(charge.fundingCost ? { funding: Math.round((charge.platformCost + charge.fundingCost) * MICROS) - Math.round(charge.platformCost * MICROS) } : {}),
           ...(charge.searches || charge.renders ? { web: Math.round(charge.toolCost * MICROS), searches: charge.searches, renders: charge.renders } : {}),
           ...(charge.toolSearchCost ? { toolSearch: Math.round(charge.toolSearchCost * MICROS), toolSearches: charge.toolSearches } : {}),
+          ...(charge.transcriptions ? { transcription: Math.round(charge.transcriptionCost * MICROS), transcriptions: charge.transcriptions, audioSeconds: charge.audioSeconds } : {}),
         } });
       }
     }
@@ -541,8 +547,8 @@ export class Accounts {
     const days = rows.map(row => {
       const value = { responses: row.responses, input: row.input, output: row.output, cacheRead: row.cache_read, cacheWrite: row.cache_write, cost: row.cost, platformResponses: row.platform_responses, platformCost: row.platform_cost };
       add(totals, value);
-      const compaction = row.model.startsWith(COMPACTION);
-      return { day: row.day, model: compaction ? row.model.slice(COMPACTION.length) : row.model, kind: compaction ? "compaction" : "turn", ...value };
+      const kind = row.model.startsWith(COMPACTION) ? "compaction" : row.model.startsWith(TRANSCRIPTION) ? "transcription" : "turn";
+      return { day: row.day, model: kind === "turn" ? row.model : row.model.slice(row.model.indexOf(":") + 1), kind, ...value };
     });
     return { since, totals, days };
   }

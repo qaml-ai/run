@@ -115,7 +115,7 @@ reading them and sending them input do not count; only runs do.
 | Open requests per agent (running and queued) | 32; more is 429 `Too many requests queued for this agent` |
 | Prompt body (`POST /v1/agents/:id/prompt`) | 6 MiB, with inline files |
 | Request body over an agent's own token (`/clients/:id/requests`, `/mcp`) | 1.1 MB (1,100,000 bytes) |
-| `text` | must not be blank |
+| `text` | must not be blank, unless the message attaches audio ([Voice and audio](../guides/voice.md)) |
 | `from` | `id` 1–200 characters; `name`, `username` at most 200 each |
 | `metadata` | at most 16 keys of 1–64 characters, string values of at most 512 characters |
 | `configure` body | 1 MiB |
@@ -136,6 +136,7 @@ reading them and sending them input do not count; only runs do.
 | --- | --- |
 | Files attached to one message | 20 |
 | Inline (base64) file bytes in one message | 4 MiB in all, decoded; upload larger ones first (`PUT …/uploads/:requestId/:name`) and attach them by path |
+| A file attached by URL (`{url}`) | 64 MiB, fetched within 60 s, at most 3 redirects, public addresses only |
 | One file (upload, volume write) | 256 MiB |
 | An upload's whole request | 15 minutes (other requests: 30 s without progress in the SDKs) |
 | Image the model sees natively | 5 MiB and 8,000 pixels a side (larger ones are described in text); sent at most 1,568 pixels a side, scaled down in the request |
@@ -148,6 +149,19 @@ reading them and sending them input do not count; only runs do.
 | Channel attachments | 10 files a message, 25 MiB each, 100 MiB in all |
 | Storage per tenant | 1 GB (10^9 bytes) on free credit, 100 GB once it has bought credit; an operator can set another per tenant. Counted as the storage charge counts it: file contents (each distinct content once), agents' history logs and volumes' file trees. A write that would pass it is refused with 507 `STORAGE_LIMIT`, its body carrying `limit` and `used` in bytes: delete files or volumes to make room. Uploads, file writes and tool outputs all count |
 | Storing on spent credit | a prepaid tenant at a zero balance cannot store more: uploads, file writes and tool outputs get 402 `INSUFFICIENT_CREDIT`. Reading and deleting still work |
+
+
+## Audio
+
+See [Voice and audio](../guides/voice.md).
+
+| Limit | Value |
+| --- | --- |
+| One audio file transcribed | 25 MB and 30 minutes, its length read from its container before it is sent (413 `AUDIO_TOO_LARGE`, `AUDIO_TOO_LONG`) |
+| Audio transcribed for one message | 5 files, 30 minutes in all |
+| Formats | Ogg (Opus, Vorbis), WebM, MP3, M4A/MP4, WAV, FLAC; others, and audio whose container gives no length, are 415 `UNSUPPORTED_AUDIO` |
+| `POST /v1/transcriptions` body | 25 MB of audio (multipart), or its base64 in JSON; each counts as a run against runs per minute |
+| A provider's answer | 5 minutes |
 
 ## Tools
 

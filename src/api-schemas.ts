@@ -2,7 +2,8 @@ import { z } from "@hono/zod-openapi";
 import { EVENT_TYPES } from "./webhooks.ts";
 
 const SEND_KEY = "Send {\"apiKey\": \"...\"} with the provider's API key";
-const SEND_TEXT = "Send {\"text\": \"...\"}";
+const SEND_TEXT = "Send {\"text\": \"...\"}, or attach audio to transcribe";
+const TRANSCRIBE = z.boolean().optional().openapi({ description: "Whether this file is transcribed for the model (audio only): default true for audio (an audio/* content type), false for anything else. See the voice and audio guide" });
 
 export const ERROR_CODES = {
   INVALID_REQUEST: "400: the request is malformed or invalid", UNAUTHORIZED: "401: no valid token", PAYMENT_REQUIRED: "402", FORBIDDEN: "403: the token may not do this",
@@ -179,10 +180,10 @@ export const WebhookEvents = {
     agentId: z.string(), requestId: z.string(), inputId: z.string(), state: z.enum(["answered", "declined", "cancelled", "expired", "superseded"]),
   }), "An input settled"),
   "usage.recorded": envelope("usage.recorded", z.object({
-    agentId: z.string(), requestId: z.string().nullable(), subject: z.string(), actor: z.string().nullable(), context: z.record(z.string(), z.unknown()), keyScope: z.string().nullable(),
-    provider: z.string(), model: z.string(), kind: z.enum(["response", "compaction"]), input: z.number(), output: z.number(), cacheRead: z.number(), cacheWrite: z.number(),
-    reasoning: z.number().optional(), cost: z.object({ usd: z.number(), source: z.enum(["provider", "catalog"]) }), at: z.number(),
-  }), "A model response's usage and cost"),
+    agentId: z.string().nullable().openapi({ description: "null for a transcription made with POST /v1/transcriptions, which no agent made" }), requestId: z.string().nullable(), subject: z.string().nullable(), actor: z.string().nullable(), context: z.record(z.string(), z.unknown()), keyScope: z.string().nullable(),
+    provider: z.string(), model: z.string(), kind: z.enum(["response", "compaction", "transcription"]).openapi({ description: "response: a model response of a run; compaction: a summary of older context; transcription: audio transcribed (audioSeconds of it; no tokens)" }), input: z.number(), output: z.number(), cacheRead: z.number(), cacheWrite: z.number(),
+    reasoning: z.number().optional(), audioSeconds: z.number().optional().openapi({ description: "For a transcription: the seconds of audio billed" }), cost: z.object({ usd: z.number(), source: z.enum(["provider", "catalog"]) }), at: z.number(),
+  }), "A model response's usage and cost, or a transcription's"),
 };
 
 export const Model = z.object({
@@ -265,7 +266,7 @@ export const Aborted = z.object({
   cancelled: z.array(z.string()).openapi({ description: "The ids of the queued runs the stop cancelled" }),
 }).openapi("Aborted");
 export const PromptInput = z.object({
-  text: z.string({ error: SEND_TEXT }).refine(text => !!text.trim(), SEND_TEXT),
+  text: z.string({ error: SEND_TEXT }).optional().openapi({ description: "The message. It may be left out when the message attaches audio, whose transcript is then the message" }),
   actor: z.string().optional().openapi({ description: "Who is acting in this turn (a user id in your app): `act` in its tools' identity tokens" }),
   from: z.strictObject({
     id: z.string().openapi({ description: "The sender's id in your app; the model may rely on it" }),
@@ -282,10 +283,11 @@ export const PromptInput = z.object({
   history: z.enum(["full", "none"]).optional().openapi({ description: "What the model sees of the agent's history in this run. full (default): all of it. none: only the system prompt (instructions, tools) and this message, as a new conversation would, without making an agent. The run is still recorded in the history (its user message carries history: \"none\"), and later runs that do not say none see it. Not with whileRunning: steer" }),
   metadata: z.record(z.string(), z.string({ error: "metadata values must be strings" }), { error: "metadata must be an object of string values" }).optional().openapi({ description: "Your own key-value data about this message (its source, a client-side id): at most 16 keys of 1–64 characters, values of at most 512. Kept on the user message (history, events, snapshots) and the request, and sent with its run's webhook events; never shown to the model", example: { source: "web", clientMessageId: "m_123" } }),
   files: z.array(z.union([
-    z.strictObject({ path: z.string().openapi({ description: "A file in the agent's mounts, e.g. one uploaded with PUT /v1/agents/{id}/uploads/{requestId}/{name}" }) }),
-    z.strictObject({ name: z.string().optional(), data: z.string().openapi({ description: "The file's bytes, base64: at most 4 MiB across a message's inline files" }), contentType: z.string().optional() }),
-  ])).optional().openapi({ description: "Attached files (at most 20): saved in the agent's workspace under uploads/<requestId>/, named in the message, and shown natively (images, PDFs) to models that take them" }),
-}, { error: SEND_TEXT }).openapi("PromptInput");
+    z.strictObject({ path: z.string().openapi({ description: "A file in the agent's mounts, e.g. one uploaded with PUT /v1/agents/{id}/uploads/{requestId}/{name}" }), transcribe: TRANSCRIBE }),
+    z.strictObject({ name: z.string().optional(), data: z.string().openapi({ description: "The file's bytes, base64: at most 4 MiB across a message's inline files" }), contentType: z.string().optional(), transcribe: TRANSCRIBE }),
+    z.strictObject({ url: z.string().openapi({ description: "An https URL the runtime fetches the file from (public addresses only; at most 64 MiB)" }), name: z.string().optional(), contentType: z.string().optional(), transcribe: TRANSCRIBE }),
+  ])).optional().openapi({ description: "Attached files (at most 20): saved in the agent's workspace under uploads/<requestId>/, named in the message, and shown natively (images, PDFs) to models that take them. Audio is transcribed before the request is accepted, and the model reads the transcript" }),
+}, { error: SEND_TEXT }).refine(prompt => !!prompt.text?.trim() || !!prompt.files?.length, SEND_TEXT).openapi("PromptInput");
 
 export const AgentInput = z.object({
   mcp: z.object({ tools: z.array(z.unknown()) }).optional().openapi({ description: "The application's attached MCP server: its tools/list, whose tools the agent calls back through the application's connection. The SDKs send it" }),
@@ -385,10 +387,11 @@ const Sender = z.strictObject({ id: z.string(), name: z.string().optional(), use
 
 const RunInputPart = z.union([
   z.strictObject({ type: z.literal("text"), text: z.string() }),
-  z.strictObject({ type: z.literal("file"), name: z.string().optional(), data: z.string().openapi({ description: "The file's bytes, base64: at most 4 MiB across a run's inline files" }), contentType: z.string().optional() }),
+  z.strictObject({ type: z.literal("file"), name: z.string().optional(), data: z.string().openapi({ description: "The file's bytes, base64: at most 4 MiB across a run's inline files" }), contentType: z.string().optional(), transcribe: TRANSCRIBE }),
+  z.strictObject({ type: z.literal("file"), url: z.string().openapi({ description: "An https URL the runtime fetches the file from (public addresses only; at most 64 MiB)" }), name: z.string().optional(), contentType: z.string().optional(), transcribe: TRANSCRIBE }),
 ]).openapi("RunInputPart");
 export const RunInput = z.strictObject({
-  input: z.union([z.string(), z.array(RunInputPart).min(1)]).openapi({ description: "What the run is asked: text, or parts (text and inline files). Files are saved in a workspace volume the run gets for them" }),
+  input: z.union([z.string(), z.array(RunInputPart).min(1)]).openapi({ description: "What the run is asked: text, or parts (text and files, inline or by URL). Files are saved in a workspace volume the run gets for them; audio is transcribed for the model" }),
   definition: z.string().optional().openapi({ description: "Take the configuration from this definition (its key or id; GET /v1/definitions): model, system prompt, thinking level, tool sources. Fields given here override it, as for an agent" }),
   model: z.string().optional().openapi({ description: "A model id from GET /v1/models; the runtime default when omitted" }),
   systemPrompt: z.string().optional(),
@@ -601,10 +604,36 @@ const Totals = z.object({
   platformResponses: z.number().openapi({ description: "Responses that ran on a key that is not the tenant's own" }),
   platformCost: z.number().openapi({ description: "Cost in USD on platform keys, including configured provider credit funding costs; prepaid tenants pay it from credit" }),
 });
+const TranscriptionFields = {
+  language: z.string().optional().openapi({ description: "The audio's language, ISO 639-1 (en) or a locale (pt-BR); detected when left out" }),
+  prompt: z.string().max(2_000).optional().openapi({ description: "Words and spellings to expect (names, jargon), or the conversation so far: a hint to the model, at most 2,000 characters" }),
+  keyScope: z.string().optional().openapi({ description: "A key scope whose OpenAI key is used first, before the tenant's own" }),
+  subject: z.string().optional().openapi({ description: "Who it is for (a user id in your app): usage.recorded's subject" }),
+  context: z.record(z.string(), z.unknown()).optional().openapi({ description: "Your claims (org, workspace…), carried as usage.recorded's context; at most 4 KB" }),
+  actor: z.string().optional().openapi({ description: "Who asked (a user id in your app): usage.recorded's actor" }),
+};
+export const TranscriptionInput = z.strictObject({
+  data: z.string().optional().openapi({ description: "The audio's bytes, base64 (at most 25 MB decoded). Or send it as multipart/form-data, the audio in a part named file" }),
+  url: z.string().optional().openapi({ description: "An https URL to fetch the audio from (public addresses only)" }),
+  ...TranscriptionFields,
+}).refine(input => (input.data === undefined) !== (input.url === undefined), "Send the audio as data (base64) or url, one of them").openapi("TranscriptionInput");
+export const TranscriptionForm = z.object({
+  file: z.any().openapi({ type: "string", format: "binary", description: "The audio: Ogg (Opus, Vorbis), WebM, MP3, M4A/MP4, WAV or FLAC; at most 25 MB and 30 minutes" }),
+  language: TranscriptionFields.language, prompt: TranscriptionFields.prompt, keyScope: TranscriptionFields.keyScope,
+  subject: TranscriptionFields.subject, context: z.string().optional().openapi({ description: "JSON of your claims, as context above" }), actor: TranscriptionFields.actor,
+}).openapi("TranscriptionForm");
+export const Transcription = z.object({
+  text: z.string(),
+  language: z.string().nullable().openapi({ description: "The language the provider heard (or was told), when it says" }),
+  durationSeconds: z.number().openapi({ description: "Seconds of audio billed" }),
+  model: z.string().openapi({ example: "openai/gpt-transcribe" }),
+  costUsd: z.number().openapi({ description: "What it cost at the runtime's price: charged to prepaid credit when it ran on the platform's key" }),
+}).openapi("Transcription");
+
 export const Usage = z.object({
   since: z.number(),
   totals: Totals,
-  days: z.array(Totals.extend({ day: z.string(), model: z.string(), kind: z.enum(["turn", "compaction"]).openapi({ description: "turn: the agent's own responses; compaction: summaries of older context" }) })),
+  days: z.array(Totals.extend({ day: z.string(), model: z.string(), kind: z.enum(["turn", "compaction", "transcription"]).openapi({ description: "turn: the agent's own responses; compaction: summaries of older context; transcription: audio transcribed (responses counts transcriptions)" }) })),
 }).openapi("Usage");
 
 const ThinkingLevel = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
@@ -865,6 +894,7 @@ export const Billing = z.object({
     minPurchase: micros("Smallest purchase"), maxPurchase: micros("Largest purchase"),
     webSearch: z.object({ exa: micros("Per search Exa answers"), brave: micros("Per search Brave answers"), parallel: micros("Per search Parallel answers") }).openapi({ description: "Per web_search on the platform's key for the provider that answered" }),
     webRender: micros("Per page web_fetch has Firecrawl render on the platform's key"),
+    transcription: micros("Per minute of audio transcribed on the platform's OpenAI key (gpt-transcribe), billed per second"),
   }).openapi({ description: "Model usage on platform keys passes through provider-reported cost (catalog estimate if unavailable) plus provider credit funding costs; tools.search's ranking by meaning is charged at cost" }),
 }).openapi("Billing");
 export const BillingAlertChoices = z.object({ low: z.boolean(), depleted: z.boolean(), problems: z.boolean(), receipts: z.boolean() });

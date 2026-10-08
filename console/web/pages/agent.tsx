@@ -49,7 +49,8 @@ function Conversation({ messages, mounts, onFork }: { messages: Message[]; mount
         if (message.role === "user") return (
           <div key={index} className="ml-auto flex max-w-[85%] flex-col items-end gap-2">
             {text(message.content) && <div className="bg-muted rounded-lg px-3 py-2 text-sm whitespace-pre-wrap">{text(message.content)}</div>}
-            {files(message.content).map((file, fileIndex) => <RefCard key={fileIndex} mounts={mounts} file={file} />)}
+            {/* Audio shows what was heard (or why it was not). */}
+            {files(message.content).map((file, fileIndex) => <RefCard key={fileIndex} mounts={mounts} file={file} caption={file.transcript ? `“${file.transcript.text}”` : file.untranscribed && `Not transcribed: ${file.untranscribed}`} />)}
           </div>
         );
         if (message.role === "toolResult") return message.toolName === "present_file" && !message.isError ? null : (

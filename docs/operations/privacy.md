@@ -115,6 +115,23 @@ email address may sign up again as a new, empty tenant.
 | Trace export settings (`telemetry_exporters`: endpoint, sealed headers) | until the tenant clears them, or its account is deleted |
 | Journey events waiting to be sent (`journey_outbox`), where configured | until the operator's store takes them, 30 days at most; an account's go when it is deleted |
 | Spans waiting to be exported | in each node's memory only, seconds; dropped when they cannot be sent |
+| Audio attached to a message, and its transcript | as the agent's other attachments and history: until the agent is deleted or expires (the audio in its workspace volume, the transcript on the user message) |
+| Audio and transcripts of `POST /v1/transcriptions` | not kept: in the node's memory while the request runs |
+
+## Transcription
+
+Audio attached to a message is transcribed by default, and `POST /v1/transcriptions` transcribes audio alone
+(`src/transcription.ts`, [Voice and audio](../guides/voice.md)). The audio goes to OpenAI's transcription API
+(`/v1/audio/transcriptions`), on the tenant's own OpenAI key or its key scope's (whose address it is sent to, if the
+scope names one), else the platform's: OpenAI processes it under its API data policy (not used for training; kept by
+OpenAI for abuse monitoring as its policy says) and is the processor for it. An attached audio file is saved in the
+agent's workspace like any attachment, and its transcript on the message's file reference, in the agent's history:
+both go with the agent, are in the account export (`volumes/…`, `agents/<id>/history/…`), and are deleted with it.
+A standalone transcription keeps nothing: the audio is held in memory while it is sent, and the transcript only in
+the answer (`/v1/transcriptions` takes no `Idempotency-Key`, whose stored answers would hold it). Audio fetched by URL
+goes through the outbound guard (public addresses only). Logs carry the tenant, the model, the format, bytes, seconds
+and the time taken (`transcribed`), and error classes; never audio, a transcript or a URL's query
+(`tests/transcription-api.test.ts` checks the logs).
 
 ## Trace export
 

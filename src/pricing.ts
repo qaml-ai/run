@@ -16,6 +16,8 @@ export interface Pricing {
   webSearch: { exa: number; brave: number; parallel: number };
   /** Per page web_fetch has Firecrawl render on the platform's key (one Firecrawl credit at its Standard plan's price by default). */
   webRender: number;
+  /** Per minute of audio transcribed on the platform's key (OpenAI's gpt-transcribe), billed per second as the provider bills it. */
+  transcription: number;
   /** Fee on a credit purchase, in basis points (550 = 5.5%). */
   purchaseFeeBps: number;
   minPurchase: number;
@@ -47,6 +49,8 @@ export const DEFAULT_PRICING: Pricing = Object.freeze({
   openrouterCreditMultiplier: 1.055,
   webSearch: Object.freeze({ exa: micros(0.007), brave: micros(0.005), parallel: micros(0.001) }),
   webRender: micros(0.00083),
+  // OpenAI's list price for gpt-transcribe.
+  transcription: micros(0.0045),
   purchaseFeeBps: 550,
   minPurchase: micros(5),
   maxPurchase: micros(1000),
@@ -64,7 +68,7 @@ export const DEFAULT_PRICING: Pricing = Object.freeze({
 
 /**
  * Rates from the environment, in USD (AGENT_PRICE_AGENT_HOUR_USD, AGENT_PRICE_STORAGE_GB_MONTH_USD,
- * AGENT_PRICE_WEB_SEARCH_<EXA|BRAVE|PARALLEL>_USD (or AGENT_PRICE_WEB_SEARCH_USD for all three), AGENT_PRICE_WEB_RENDER_USD, AGENT_CREDIT_FEE_PERCENT, AGENT_CREDIT_MIN_PURCHASE_USD, AGENT_CREDIT_MAX_PURCHASE_USD,
+ * AGENT_PRICE_WEB_SEARCH_<EXA|BRAVE|PARALLEL>_USD (or AGENT_PRICE_WEB_SEARCH_USD for all three), AGENT_PRICE_WEB_RENDER_USD, AGENT_PRICE_TRANSCRIPTION_USD (per minute of audio), AGENT_CREDIT_FEE_PERCENT, AGENT_CREDIT_MIN_PURCHASE_USD, AGENT_CREDIT_MAX_PURCHASE_USD,
  * AGENT_CREDIT_GRANT_USD, AGENT_FREE_HOURLY_SPEND_USD, AGENT_USAGE_TIERS) and storage limits in GB (AGENT_MAX_STORAGE_GB,
  * AGENT_FREE_MAX_STORAGE_GB); unset ones keep the defaults.
  * AGENT_OPENROUTER_CREDIT_MULTIPLIER is the actual dollars paid per dollar of provider credit.
@@ -98,6 +102,7 @@ export function pricingFromEnvironment(env = process.env): Pricing {
       parallel: usd("AGENT_PRICE_WEB_SEARCH_PARALLEL_USD", usd("AGENT_PRICE_WEB_SEARCH_USD", DEFAULT_PRICING.webSearch.parallel)),
     },
     webRender: usd("AGENT_PRICE_WEB_RENDER_USD", DEFAULT_PRICING.webRender),
+    transcription: usd("AGENT_PRICE_TRANSCRIPTION_USD", DEFAULT_PRICING.transcription),
     purchaseFeeBps: fee,
     minPurchase: usd("AGENT_CREDIT_MIN_PURCHASE_USD", DEFAULT_PRICING.minPurchase),
     maxPurchase: usd("AGENT_CREDIT_MAX_PURCHASE_USD", DEFAULT_PRICING.maxPurchase),

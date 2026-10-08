@@ -49,7 +49,7 @@ export function UsagePage() {
                   {[...usage.data.days].reverse().map(row => (
                     <TableRow key={`${row.day} ${row.model} ${row.kind}`}>
                       <TableCell className="tabular-nums">{row.day}</TableCell>
-                      <TableCell className="font-mono text-xs">{row.model}{row.kind === "compaction" && <span className="ml-2 font-sans text-muted-foreground">compaction</span>}</TableCell>
+                      <TableCell className="font-mono text-xs">{row.model}{row.kind !== "turn" && <span className="ml-2 font-sans text-muted-foreground">{row.kind}</span>}</TableCell>
                       <TableCell className="text-right font-mono tabular-nums">{formatNumber(row.responses)}</TableCell>
                       <TableCell className="text-right font-mono tabular-nums">{formatNumber(row.input)}</TableCell>
                       <TableCell className="text-right font-mono tabular-nums">{formatNumber(row.cacheRead)}</TableCell>

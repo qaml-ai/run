@@ -49,7 +49,8 @@ provider's limits. One that cannot be scaled down is named with why instead.
 Inline images (a message's or a tool result's base64) are scaled down as they
 enter the transcript.
 
-Anything else is only named, and the model reads it with its file tools. The
+Audio is transcribed when it is attached, and the model reads the transcript
+(see [Voice and audio](voice.md)). Anything else is only named, and the model reads it with its file tools. The
 transcript keeps a reference to each file's content, never its bytes, so a file
 changed or deleted later still reads as it was when attached.
 

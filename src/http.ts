@@ -63,8 +63,8 @@ export function errorStatus(error: unknown, fallback: number): number {
   return databaseUnavailable(error) || databaseRetryable(error) ? 503 : fallback;
 }
 
-/** Read a request body as text, failing with 413 past `limit` bytes rather than buffering it all. */
-export async function readText(body: AsyncIterable<Uint8Array> | null, limit: number) {
+/** Read a request body, failing with 413 past `limit` bytes rather than buffering it all. */
+export async function readBytes(body: AsyncIterable<Uint8Array> | null, limit: number) {
   const chunks: Uint8Array[] = [];
   let bytes = 0;
   for await (const chunk of body ?? []) {
@@ -72,7 +72,12 @@ export async function readText(body: AsyncIterable<Uint8Array> | null, limit: nu
     if (bytes > limit) throw new HttpError(413, "Request too large");
     chunks.push(chunk);
   }
-  return Buffer.concat(chunks).toString("utf8");
+  return Buffer.concat(chunks);
+}
+
+/** Read a request body as text, failing with 413 past `limit` bytes rather than buffering it all. */
+export async function readText(body: AsyncIterable<Uint8Array> | null, limit: number) {
+  return (await readBytes(body, limit)).toString("utf8");
 }
 
 /** Parse a JSON body; an empty body is `empty` when given, and invalid otherwise. */

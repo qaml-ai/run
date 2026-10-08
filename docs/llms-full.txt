@@ -534,6 +534,7 @@ rates below as your account is charged them.
 | Storage | $0.10 per GB-month of what your agents and volumes keep (history, files, snapshots), charged daily |
 | `web_search` on the platform's keys | Per search, by the provider that answered: Exa $0.007, Brave $0.005, Parallel $0.001 |
 | `web_fetch` page rendering on the platform's key | $0.00083 per page Firecrawl renders |
+| [Transcription](https://run.camelai.com/docs/guides/voice.md) on the platform's OpenAI key | $0.0045 per minute of audio (`gpt-transcribe`), billed per second |
 
 ## Credit
 
@@ -2102,6 +2103,149 @@ API key. See the [event reference](https://run.camelai.com/docs/reference/events
 
 ---
 
+<!-- https://run.camelai.com/docs/guides/voice.md -->
+
+# Voice and audio
+
+Agents hear audio: attach a voice note or a recording to a message, and the
+runtime transcribes it before the model sees it, so every model, Claude
+included, reads what was said. `POST /v1/transcriptions` transcribes audio on
+its own, with no agent.
+
+Transcription runs on OpenAI's `gpt-transcribe` (its recommended model for recorded speech) with the
+OpenAI key a model call of yours would use: a [key scope](https://run.camelai.com/docs/guides/models-and-keys.md#key-scopes)'s, your own
+(`PUT /v1/providers/openai/key`), else the platform's, which a prepaid account pays for per second of
+audio (see [Pricing](https://run.camelai.com/docs/pricing.md)).
+
+## Audio in a message
+
+Attach audio as any file. A file whose type is `audio/*` is transcribed by
+default:
+
+```ts
+const run = await agent.run("Summarize this and list the action items", { files: ["./standup.m4a"] });
+```
+
+```python
+run = await agent.run("Summarize this and list the action items", files=[Path("standup.m4a")])
+```
+
+```bash
+curl -X POST "$RUNTIME/v1/agents/$AGENT/prompt" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"files": [{"url": "https://example.com/voice-message.ogg"}]}'
+```
+
+A file is attached as [Files](https://run.camelai.com/docs/guides/files.md#attaching-files-to-a-message) describes (uploaded, inline base64 up
+to 4 MiB, or `{path}` of a file in the agent's mounts), or by URL: `{url, name?, contentType?}`, which the
+runtime fetches from the public internet (at most 64 MiB, three redirects). `text` may be left out when the
+message has audio.
+
+The runtime transcribes the audio **before it accepts the message**: the prompt's answer comes once the
+transcript is ready (a second or two for a voice note, longer for a long recording), and a transcription that
+fails fails the request, with nothing run. The message, its events and the agent's history keep the audio
+file's reference with its transcript:
+
+```json
+{ "type": "file", "path": "/workspace/uploads/r1/voice-message.ogg", "contentType": "audio/ogg", "size": 12538,
+  "transcript": { "text": "Hello from camelRun.", "language": "en", "seconds": 5, "model": "gpt-transcribe" }, ... }
+```
+
+and the model reads it as text:
+
+```
+[Audio /workspace/uploads/r1/voice-message.ogg (audio/ogg, 0:05, en), transcript:
+Hello from camelRun.
+]
+```
+
+The audio stays in the agent's workspace like any attachment, for its tools to use.
+
+- `transcribe: false` on a file keeps audio a plain file (named to the model, not transcribed).
+- `transcribe: true` transcribes a file whose type does not say audio (`application/octet-stream`, or a
+  video such as `video/mp4` or `video/webm`, whose sound is transcribed).
+- Audio transcribed by default that cannot be (no OpenAI key, a format or length it does not take, the
+  provider failing) is attached without a transcript, and the model is told why
+  (`[File …: not transcribed (…)]`), so a voice note from a [channel](https://run.camelai.com/docs/guides/channels.md) still reaches the agent.
+  A file you asked to transcribe (`transcribe: true`) fails the request instead.
+- A spend limit refuses the request either way: the agent's, or the run's own `spendLimit`, which pays for
+  the message's audio first (what is left is the run's to spend on its model).
+
+[Channels](https://run.camelai.com/docs/guides/channels.md) get this with no setup: a Discord or Telegram voice message, or any audio file sent in
+a channel, reaches the agent with its transcript. [Stateless runs](https://run.camelai.com/docs/guides/stateless-runs.md)
+take audio as input parts: `{"type": "file", "url": "…"}` or `{"type": "file", "data": "…"}`.
+
+## Transcribing on its own
+
+```bash
+curl -X POST "$RUNTIME/v1/transcriptions" -H "Authorization: Bearer $TOKEN" -F file=@voice-message.ogg -F language=en
+```
+
+```json
+{ "text": "Hello from camelRun.", "language": "en", "durationSeconds": 5, "model": "openai/gpt-transcribe", "costUsd": 0.000375 }
+```
+
+It takes the audio as multipart (`file`) or JSON: `{"data": "<base64>"}` or `{"url": "https://…"}`. With
+either:
+
+| Field | |
+| --- | --- |
+| `language` | ISO 639-1 (`en`) or a locale (`pt-BR`); detected when left out |
+| `prompt` | names, jargon or the conversation so far, as a hint (at most 2,000 characters) |
+| `keyScope` | a key scope whose OpenAI key goes first |
+| `subject`, `context`, `actor` | who it is for and who asked, carried to its `usage.recorded` event, as an agent's identity is |
+
+Nothing is kept: the audio goes to the provider and the transcript comes back to you. A retry transcribes (and
+bills) again; it takes no `Idempotency-Key`. API tokens and OAuth tokens may transcribe; browser tokens may not.
+Runs-per-minute limits count each transcription as a run.
+
+## Formats and limits
+
+| | |
+| --- | --- |
+| Formats | Ogg (Opus or Vorbis: Discord, Telegram and WhatsApp voice notes), WebM (browsers' `MediaRecorder`), MP3, M4A/MP4 (AAC), WAV, FLAC |
+| One audio file | 25 MB and 30 minutes |
+| One message | 5 audio files, 30 minutes in all |
+
+The runtime reads a file's length from its container before sending it, so its cost is known first: audio
+whose container gives no length (an Ogg stream cut short) is refused (415, `UNSUPPORTED_AUDIO`), as are
+other formats (AIFF, CAF, AMR: convert them, e.g. `ffmpeg -i in.aiff out.flac`). Too large or too long is 413
+(`AUDIO_TOO_LARGE`, `AUDIO_TOO_LONG`). A provider failure is 502 (`TRANSCRIPTION_FAILED`); audio the provider
+refuses, 400.
+
+## Billing
+
+On the platform's key, a transcription costs $0.0045 a minute of audio (`gpt-transcribe`'s price), per second as
+the provider bills it. On your own key or a
+key scope's, OpenAI bills you and camelRun charges nothing. Either way it is recorded:
+
+- in `GET /v1/usage`, a row per day with `kind: "transcription"` and model `openai/gpt-transcribe` (`responses` counts transcriptions);
+- in the hour's ledger entry, as `transcription` (micro-USD), `transcriptions` and `audioSeconds`;
+- as a [`usage.recorded`](https://run.camelai.com/docs/guides/webhooks.md) event with `kind: "transcription"`, `audioSeconds` and no tokens. In a
+  message it carries the run's `requestId`, `actor`, the agent's identity and key scope; on its own,
+  `agentId: null` and the `subject`, `context` and `actor` you sent. The older usage webhook
+  (`/v1/usage-webhook`) carries model responses only.
+
+It counts toward an agent's spend limit, a run's own spend limit, a tenant's monthly cap and prepaid credit,
+as a model response does.
+
+## Privacy
+
+Audio and transcripts are never written to the runtime's logs, which carry sizes, lengths, the model and error
+classes. An attached file and its transcript are kept with the agent's history and workspace, and deleted with
+them; a standalone transcription keeps nothing. OpenAI processes the audio under its API data policy (not used
+for training). See [Account data](https://run.camelai.com/docs/operations/privacy.md#transcription).
+
+## Not yet
+
+- **Audio to the model itself.** Every model reads the transcript today; models that hear audio natively may be
+  given the sound later, beside it.
+- **Timestamps or speaker labels.** Transcripts are text only, from the one model.
+- **Live voice.** Transcription of streaming audio as it is spoken (OpenAI's realtime transcription sessions),
+  and speech out (text to speech), are not offered yet.
+- **Audio in `initialMessages`.** Transcribe it first with `POST /v1/transcriptions` and import the text.
+
+---
+
 <!-- https://run.camelai.com/docs/guides/files.md -->
 
 # Files
@@ -2155,7 +2299,8 @@ provider's limits. One that cannot be scaled down is named with why instead.
 Inline images (a message's or a tool result's base64) are scaled down as they
 enter the transcript.
 
-Anything else is only named, and the model reads it with its file tools. The
+Audio is transcribed when it is attached, and the model reads the transcript
+(see [Voice and audio](https://run.camelai.com/docs/guides/voice.md)). Anything else is only named, and the model reads it with its file tools. The
 transcript keeps a reference to each file's content, never its bytes, so a file
 changed or deleted later still reads as it was when attached.
 
@@ -2408,7 +2553,7 @@ Every event is an envelope:
 | `run.failed` | It ended with an error, the runtime's or the model's | as above, and `usage`, `error`, `code` where the error has a name (`cancelled`: a stop cancelled it before it began; `aborted`; `model_stream_stalled`; `turn_limit`…), and `uncertain` when a restart cut it short |
 | `input.requested` | The agent asks a person for input (the run waits) | `agentId`, `requestId`, `inputId`, `toolCallId`, `kind`, `expiresAt` |
 | `input.resolved` | An input settled | `agentId`, `requestId`, `inputId`, `state` |
-| `usage.recorded` | A model response's usage was counted | `agentId`, `requestId`, `subject`, `actor`, `context`, `keyScope`, `provider`, `model`, `kind` (`response` or `compaction`), tokens, `cost: {usd, source}`, `at` |
+| `usage.recorded` | A model response's usage was counted, or a transcription's | `agentId`, `requestId`, `subject`, `actor`, `context`, `keyScope`, `provider`, `model`, `kind` (`response`, `compaction` or `transcription`), tokens, `audioSeconds` (a transcription's, with no tokens), `cost: {usd, source}`, `at`. A [transcription](https://run.camelai.com/docs/guides/voice.md) made with `POST /v1/transcriptions` has `agentId: null`, and the `subject`, `context` and `actor` it was sent with. Treat a `kind` you do not know as other usage: kinds may be added |
 | `billing.balance.low` | Funded balance crosses below the alert threshold (default $2) | `balance`, `previousBalance`, `threshold` (integer micro-USD), `source` |
 | `billing.balance.depleted` | Positive balance reaches zero or below | Same balance fields |
 
@@ -2691,6 +2836,9 @@ In Python, `await agents.runtime.set_scope_key("org_abc123", "openrouter", api_k
 - Scope keys are the tenant's own: no platform token charge, like a tenant's key
   (agent time is charged as usual), and their calls are counted in `/v1/usage`
   under the model as usual.
+- A scope's (else the tenant's, else the platform's) `openai` key also transcribes
+  its agents' audio, and `POST /v1/transcriptions` with that `keyScope`: see
+  [Voice and audio](https://run.camelai.com/docs/guides/voice.md).
 
 ## Model headers
 
@@ -3427,7 +3575,9 @@ What they all share:
   (Slack's with the bot token, Discord's CDN, Telegram's file API), never follow
   redirects, and have 60 seconds each. A file too large or that fails to
   download is left out, and the prompt says so: `(file big.zip too large, not
-  attached)`. A message with only files reads `(sent a file)`.
+  attached)`. A message with only files reads `(sent a file)`. Audio (voice
+  notes, audio files) is transcribed for the model as it arrives: see
+  [Voice and audio](https://run.camelai.com/docs/guides/voice.md).
 - The turn's final answer is sent back when the turn ends, split to the
   service's limit (4,096 characters on Telegram, 4,000 on Slack, 2,000 on
   Discord), with a typing indicator meanwhile where the service has one. Channel
@@ -5326,7 +5476,7 @@ dedupe by `id`. See [Webhooks](https://run.camelai.com/docs/guides/webhooks.md).
 | `run.failed` | the above, `usage`, `error`, `code?` (the outcome's code: `cancelled`, `aborted`, `model_stream_stalled`, `turn_limit`…), `uncertain?`, `steeredInto?` |
 | `input.requested` | `agentId`, `requestId`, `inputId`, `toolCallId`, `kind`, `expiresAt` |
 | `input.resolved` | `agentId`, `requestId`, `inputId`, `state` |
-| `usage.recorded` | `agentId`, `requestId`, `subject`, `actor`, `context`, `keyScope`, `provider`, `model`, `kind` (`response`, `compaction`), `input`, `output`, `cacheRead`, `cacheWrite`, `reasoning?`, `cost: {usd, source}`, `at` |
+| `usage.recorded` | `agentId` (null for a [transcription](https://run.camelai.com/docs/guides/voice.md) made alone), `requestId`, `subject`, `actor`, `context`, `keyScope`, `provider`, `model`, `kind` (`response`, `compaction`, `transcription`), `input`, `output`, `cacheRead`, `cacheWrite`, `reasoning?`, `audioSeconds?` (a transcription's), `cost: {usd, source}`, `at` |
 
 ---
 
@@ -5449,7 +5599,7 @@ reading them and sending them input do not count; only runs do.
 | Open requests per agent (running and queued) | 32; more is 429 `Too many requests queued for this agent` |
 | Prompt body (`POST /v1/agents/:id/prompt`) | 6 MiB, with inline files |
 | Request body over an agent's own token (`/clients/:id/requests`, `/mcp`) | 1.1 MB (1,100,000 bytes) |
-| `text` | must not be blank |
+| `text` | must not be blank, unless the message attaches audio ([Voice and audio](https://run.camelai.com/docs/guides/voice.md)) |
 | `from` | `id` 1–200 characters; `name`, `username` at most 200 each |
 | `metadata` | at most 16 keys of 1–64 characters, string values of at most 512 characters |
 | `configure` body | 1 MiB |
@@ -5470,6 +5620,7 @@ reading them and sending them input do not count; only runs do.
 | --- | --- |
 | Files attached to one message | 20 |
 | Inline (base64) file bytes in one message | 4 MiB in all, decoded; upload larger ones first (`PUT …/uploads/:requestId/:name`) and attach them by path |
+| A file attached by URL (`{url}`) | 64 MiB, fetched within 60 s, at most 3 redirects, public addresses only |
 | One file (upload, volume write) | 256 MiB |
 | An upload's whole request | 15 minutes (other requests: 30 s without progress in the SDKs) |
 | Image the model sees natively | 5 MiB and 8,000 pixels a side (larger ones are described in text); sent at most 1,568 pixels a side, scaled down in the request |
@@ -5482,6 +5633,19 @@ reading them and sending them input do not count; only runs do.
 | Channel attachments | 10 files a message, 25 MiB each, 100 MiB in all |
 | Storage per tenant | 1 GB (10^9 bytes) on free credit, 100 GB once it has bought credit; an operator can set another per tenant. Counted as the storage charge counts it: file contents (each distinct content once), agents' history logs and volumes' file trees. A write that would pass it is refused with 507 `STORAGE_LIMIT`, its body carrying `limit` and `used` in bytes: delete files or volumes to make room. Uploads, file writes and tool outputs all count |
 | Storing on spent credit | a prepaid tenant at a zero balance cannot store more: uploads, file writes and tool outputs get 402 `INSUFFICIENT_CREDIT`. Reading and deleting still work |
+
+
+## Audio
+
+See [Voice and audio](https://run.camelai.com/docs/guides/voice.md).
+
+| Limit | Value |
+| --- | --- |
+| One audio file transcribed | 25 MB and 30 minutes, its length read from its container before it is sent (413 `AUDIO_TOO_LARGE`, `AUDIO_TOO_LONG`) |
+| Audio transcribed for one message | 5 files, 30 minutes in all |
+| Formats | Ogg (Opus, Vorbis), WebM, MP3, M4A/MP4, WAV, FLAC; others, and audio whose container gives no length, are 415 `UNSUPPORTED_AUDIO` |
+| `POST /v1/transcriptions` body | 25 MB of audio (multipart), or its base64 in JSON; each counts as a run against runs per minute |
+| A provider's answer | 5 minutes |
 
 ## Tools
 
@@ -5619,9 +5783,10 @@ retry.
 | --- | --- | --- |
 | 400 | `INVALID_REQUEST` | The request is malformed or invalid; the message says how |
 | 400 | `INVALID_HISTORY` | An imported history (`initialMessages`) has a message it cannot take; the message names which, and what it lacks |
+| 400 | `TRANSCRIPTION_UNAVAILABLE` | Audio was to be transcribed and the account has no OpenAI key to do it with (nor the platform's); the message says how to add one |
 | 400 | `FORK_POINT_INVALID` | A fork's `atMessage` is not an index in the agent's history, nor a request id one of its messages carries |
 | 401 | `UNAUTHORIZED` | No valid token; the message says where to create one (https://run.camelai.com/console/tokens) |
-| 402 | `SPEND_LIMIT` | A spend limit is reached: the agent's, or the account's monthly cap |
+| 402 | `SPEND_LIMIT` | A spend limit is reached: the agent's, or the account's monthly cap; or a message's audio would cost more than the run's or agent's spend limit has left |
 | 402 | `INSUFFICIENT_CREDIT` | The account's prepaid credit is spent: no runs start and no files are stored |
 | 403 | `FORBIDDEN` | The token may not do this |
 | 404 | `NOT_FOUND` | No such agent, request, input or other resource for this account, or no such path at all (the message points at `/llms.txt`) |
@@ -5635,8 +5800,11 @@ retry.
 | 410 | `GONE` | The agent was deleted or has expired |
 | 413 | `TOO_LARGE` | The request body is too large |
 | 413 | `HISTORY_TOO_LARGE` | An imported history is over 16 MB of JSON |
+| 413 | `AUDIO_TOO_LARGE`, `AUDIO_TOO_LONG` | Audio to transcribe is over 25 MB or 30 minutes (a message's, 5 files or 30 minutes in all) |
+| 415 | `UNSUPPORTED_AUDIO` | Audio to transcribe is in a format transcription does not take, or its container gives no length |
 | 429 | `BUSY_AGENT_LIMIT` | The account has as many agents busy as its [usage tier](https://run.camelai.com/docs/reference/limits.md#usage-tiers) allows; `busyAgents` in the body has the limit and the next tier. Retry after `Retry-After`, or when one of its runs ends |
 | 429 | `RATE_LIMITED` | Too many: a rate limit (the body's `limit` names it: `{name, scope, max, windowSeconds}`; see [Rate limits](https://run.camelai.com/docs/reference/limits.md#rate-limits)), or too many agents, requests or subscribers at once; retry after `Retry-After` |
+| 502 | `TRANSCRIPTION_FAILED` | The transcription provider failed or refused the key; nothing was charged |
 | 503 | `UNAVAILABLE` | Retry after `Retry-After`: capacity, an agent moving, a node draining |
 | 503 | `DATABASE_RETRY` | The database refused the request for now (a conflict with another request, or a statement timeout); retry after `Retry-After` |
 | 507 | `STORAGE_LIMIT` | The account's storage limit would be passed; the body has `limit` and `used`, in bytes |

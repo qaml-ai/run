@@ -37,8 +37,10 @@ import { metadataInput, senderInput } from "./sender.ts";
 import { callMeta, compose, jsonResult, TOOL_DEADLINES, timedOut, toolCallKey, ToolFailure, type RunToolCall, type ToolCallCode, type ToolError, defaultExposure, describeSources, fileServer, type Progress, type ToolCall, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
 import { searchTools, type Reranker, type SearchQuery } from "./tool-search.ts";
 import { CodeGate, DEFAULT_CODE_CAPACITY, type CodeLimits } from "./codemode.ts";
-import { CODE_LIMITS } from "./limits.ts";
-import { declaredType, FILE_LIMITS, fileResponse, safeName, validFileRef, type FileLinks, type FileRef } from "./files.ts";
+import { AUDIO_LIMITS, CODE_LIMITS } from "./limits.ts";
+import { declaredType, essence, FILE_LIMITS, fileResponse, safeName, validFileRef, type FileLinks, type FileRef } from "./files.ts";
+import { checkedAudio, type Transcriber } from "./transcription.ts";
+import type { Outbound } from "./outbound.ts";
 import { fileRef } from "./inspect.ts";
 import { resolve as resolveMount, type ToolContext, type WrittenFile } from "./volume-tools.ts";
 import { HistoryIndex, type HistoryPage } from "./history-pages.ts";
@@ -155,6 +157,8 @@ type Session = {
   busy?: boolean; admitting?: number; busyStep?: Promise<unknown>;
   /** Requests taken whose record is not durable yet, by id: a retry of one waits for it (see `submit`). */
   accepting?: Map<string, Promise<void>>;
+  /** Requests whose files are being saved and transcribed, by id: a retry with the same arguments waits for the same work, so audio is transcribed (and billed) once. */
+  attaching?: Map<string, { fingerprint: string; files: Promise<(FileRef & { cost?: number })[]> }>;
   /** Given back for a node with room to take: nothing more runs here. */
   handedBack?: true;
   /** Being given up because this node is leaving (`park`, `handOffAll`): nothing more runs here, and a run cut off here stays open. */
@@ -544,6 +548,10 @@ export interface ClientSessionOptions {
   hooks?: SessionHooks;
   /** Volumes: new agents get mounts (a workspace by default) and file tools over them. */
   volumes?: VolumeService;
+  /** Transcribes audio attached to messages (transcription.ts); without it, audio is attached as any file is. */
+  transcriber?: Transcriber;
+  /** Fetches files attached by URL ({url}): the public internet only. Without it, files cannot be attached by URL. */
+  outbound?: Outbound;
   /** Signs links to the agent's files (`POST /clients/:id/links`, `present_file`). */
   links?: FileLinks;
   /** A definition's current configuration, to apply to an agent made from it (`configure` with `definition`). */
@@ -571,11 +579,13 @@ export type DefinitionConfig = { id: string; revision: number; config: Pick<Agen
 /** One model response's usage; `kind` separates compaction summaries from the agent's turns. */
 /**
  * A model response's usage, a web tool's call (`searches`: web searches, `renders`: pages web_fetch had
- * rendered), or tool search's ranking by meaning (`toolSearch`: `toolSearches` searches, none for
- * embedding a catalog ahead of them), with its cost in `usage.cost.total`.
+ * rendered), tool search's ranking by meaning (`toolSearch`: `toolSearches` searches, none for
+ * embedding a catalog ahead of them), or audio transcribed (kind `transcription`: `audioSeconds` of it),
+ * with its cost in `usage.cost.total`.
  */
 export type UsageRecord = {
-  provider?: string; model?: string; usage: any; timestamp?: number; kind?: "turn" | "compaction"; platform?: boolean; searches?: number; renders?: number; toolSearch?: boolean; toolSearches?: number;
+  provider?: string; model?: string; usage: any; timestamp?: number; kind?: "turn" | "compaction" | "transcription"; platform?: boolean; searches?: number; renders?: number; toolSearch?: boolean; toolSearches?: number;
+  transcriptions?: number; audioSeconds?: number;
   /** For a model response: the run it was in, who acted in it, whom the agent acts for, and its key scope (for usage webhooks). */
   requestId?: string; actor?: string; identity?: AgentIdentity; keyScope?: string;
 };
@@ -3157,11 +3167,28 @@ export class ClientSessions {
       // Concurrent retries may have waited on the same process startup.
       const raced = existing();
       if (raced) return taken(raced);
-      // Attached files are saved and referenced before the request is: its params keep references, never bytes.
+      // Attached files are saved and referenced before the request is: its params keep references, never bytes. Audio
+      // among them is transcribed now, so the request, its message and any retry carry the transcript.
       if (["prompt", "steer"].includes(body.method) && params.files !== undefined) {
-        params = { ...params, files: await this.attach(session, body.id, params.files) };
+        const attaching = session.attaching ??= new Map() as NonNullable<Session["attaching"]>;
+        let work = attaching.get(body.id);
+        if (work && work.fingerprint !== fingerprint) throw new HttpError(409, "Request ID reused with different arguments", "IDEMPOTENCY_CONFLICT");
+        if (!work) {
+          const budget = params.spendLimit?.usd as number | undefined;
+          work = { fingerprint, files: this.attach(session, body.id, params.files).then(files => this.transcribeAttached(session, body.id, files, { actor, budget })) };
+          attaching.set(body.id, work);
+          const done = () => { if (attaching.get(body.id) === work) attaching.delete(body.id); };
+          work.files.then(done, done);
+        }
+        const files = await work.files;
+        // A run's own budget pays for its audio: what is left is the run's to spend on its model.
+        const spent = files.reduce((total, file) => total + (file.cost ?? 0), 0);
+        params = { ...params, files: files.map(({ cost: _cost, ...file }) => file), ...(params.spendLimit && spent ? { spendLimit: { usd: Math.max(0, params.spendLimit.usd - spent) } } : {}) };
         const again = existing();
         if (again) return taken(again);
+      }
+      if (["prompt", "steer"].includes(body.method) && params.message === undefined && !(typeof params.text === "string" && params.text.trim()) && !params.files?.some((file: FileRef) => file.transcript)) {
+        throw new HttpError(400, "Send {\"text\": \"...\"}, or attach audio to transcribe");
       }
       // Work is open: marked before the request is taken (a failed write takes nothing, so a retry starts afresh) and before
       // it is durable, so a node dying with it leaves it for another's sweep (see `resumeOrphans`).
@@ -3348,33 +3375,121 @@ export class ClientSessions {
     let inline = 0;
     const names = new Set<string>();
     const checked = inputs.map((input, index) => {
-      if (input && typeof input === "object" && Object.keys(input).length === 1 && typeof input.path === "string") return { path: input.path as string };
-      const { name, data, contentType, ...rest } = input ?? {};
-      if (typeof data !== "string" || !/^[A-Za-z0-9+/]*={0,2}$/.test(data) || Object.keys(rest).length || (name !== undefined && typeof name !== "string") || (contentType !== undefined && typeof contentType !== "string")) {
-        throw new HttpError(400, "An attached file is {path} (a file in the agent's mounts) or {name, data (base64), contentType?}");
+      const { transcribe, ...file } = input && typeof input === "object" ? input : {} as Record<string, unknown>;
+      if (transcribe !== undefined && typeof transcribe !== "boolean") throw new HttpError(400, "transcribe is true or false");
+      const asked = transcribe === undefined ? {} : { transcribe: transcribe as boolean };
+      if (Object.keys(file).length === 1 && typeof file.path === "string") return { path: file.path as string, ...asked };
+      const { name, data, url, contentType, ...rest } = file;
+      if ((typeof data === "string") === (typeof url === "string") || (typeof data === "string" && !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) || Object.keys(rest).length || (name !== undefined && typeof name !== "string") || (contentType !== undefined && typeof contentType !== "string")) {
+        throw new HttpError(400, "An attached file is {path} (a file in the agent's mounts), {name, data (base64), contentType?} or {url, name?, contentType?}, each with transcribe?");
       }
-      inline += Math.floor(data.length * 3 / 4);
-      if (inline > FILE_LIMITS.inlineBytes) throw new HttpError(413, `Inline files are limited to ${FILE_LIMITS.inlineBytes} bytes in all; upload larger ones first and attach them by path`);
+      let address: URL | undefined;
+      if (typeof url === "string") {
+        try { address = new URL(url); } catch { throw new HttpError(400, "An attached file's url must be an absolute https URL"); }
+        if (!this.options.outbound) throw new HttpError(400, "Attaching files by URL is not enabled on this runtime");
+      } else {
+        inline += Math.floor((data as string).length * 3 / 4);
+        if (inline > FILE_LIMITS.inlineBytes) throw new HttpError(413, `Inline files are limited to ${FILE_LIMITS.inlineBytes} bytes in all; upload larger ones first and attach them by path`);
+      }
       // Two files of one name in a request become name, name-2, ...
-      const base = safeName(name, `attachment-${index + 1}`);
+      const base = safeName(name ?? (address ? decodeURIComponent(address.pathname.split("/").pop() ?? "") : undefined), `attachment-${index + 1}`);
       let unique = base;
       for (let n = 2; names.has(unique); n++) unique = base.replace(/(\.[^.]*)?$/, extension => `-${n}${extension}`);
       names.add(unique);
-      return { name: unique, data, contentType: contentType as string | undefined };
+      return { name: unique, ...(address ? { url: address } : { data: data as string }), contentType: contentType as string | undefined, ...asked };
     });
     const volumes = this.options.volumes;
     if (checked.length && !volumes) throw new HttpError(400, "Volumes are not enabled on this runtime");
     const tenant = session.header.tenant;
-    const refs: FileRef[] = [];
+    const refs: (FileRef & { transcribe?: boolean })[] = [];
     for (const input of checked) {
-      if ("path" in input) refs.push(await this.pathRef(session, input.path as string));
-      else {
-        const target = this.uploadTarget(session, requestId, input.name);
-        const saved = await volumes!.put(tenant, target.mount.volumeId, target.path, Buffer.from(input.data, "base64"), { contentType: input.contentType, by: session.header.id });
-        refs.push(await fileRef(volumes!, tenant, session.header.id, target.mount.volumeId, target.show(saved.path), { ...saved, contentType: saved.contentType! }));
-      }
+      const asked = input.transcribe === undefined ? {} : { transcribe: input.transcribe };
+      if ("path" in input) { refs.push({ ...await this.pathRef(session, input.path as string), ...asked }); continue; }
+      const target = this.uploadTarget(session, requestId, input.name);
+      const { body, contentType } = "url" in input ? await this.fetchAttachment(input.url) : { body: Buffer.from(input.data, "base64"), contentType: undefined };
+      const saved = await volumes!.put(tenant, target.mount.volumeId, target.path, body, { contentType: input.contentType ?? contentType, by: session.header.id });
+      refs.push({ ...await fileRef(volumes!, tenant, session.header.id, target.mount.volumeId, target.show(saved.path), { ...saved, contentType: saved.contentType! }), ...asked });
     }
     return refs;
+  }
+
+  /** A file attached by URL: fetched from the public internet (the outbound guard), at most FILE_LIMITS.urlBytes, streamed to the volume. */
+  private async fetchAttachment(url: URL): Promise<{ body: AsyncIterable<Uint8Array>; contentType?: string }> {
+    let response: Response;
+    try { response = await this.options.outbound!.fetch(url, { timeoutMs: FILE_LIMITS.urlMs, maxBytes: FILE_LIMITS.urlBytes, maxRedirects: FILE_LIMITS.urlRedirects }); }
+    catch (error) { throw new HttpError(400, `Could not fetch ${url.origin}${url.pathname} (${errorText(error).slice(0, 200)})`); }
+    if (!response.ok || !response.body) {
+      await response.body?.cancel();
+      throw new HttpError(400, `Could not fetch ${url.origin}${url.pathname} (HTTP ${response.status})`);
+    }
+    const contentType = declaredType(response.headers.get("content-type"));
+    const length = Number(response.headers.get("content-length"));
+    if (length > FILE_LIMITS.urlBytes) { await response.body.cancel(); throw new HttpError(413, `A file attached by URL may be at most ${FILE_LIMITS.urlBytes} bytes`); }
+    const stream = response.body;
+    const body = async function* () {
+      try { for await (const chunk of stream) yield chunk as Uint8Array; }
+      catch (error) { throw new HttpError(/larger than/.test(errorText(error)) ? 413 : 400, `Could not fetch ${url.origin}${url.pathname} (${errorText(error).slice(0, 200)})`); }
+    };
+    return { body: body(), ...(contentType ? { contentType } : {}) };
+  }
+
+  /**
+   * A message's attached audio, transcribed (`transcriber`): each file it asks to (`transcribe: true`), and by default each
+   * whose content type is audio/*. Files are checked (format, length, the message's limits) and their cost weighed against
+   * the run's own budget and the agent's spend limit before any is sent; each transcription is billed like a model
+   * response, with the run's facts, and counts against the agent's spend limit. A file asked for that cannot be
+   * transcribed refuses the message; one transcribed by default is attached without a transcript instead, with why
+   * (`untranscribed`), so a voice note from a channel still reaches the agent. A spend limit refuses either way. Files
+   * come back with their transcript and (`cost`) what it cost, for the run's budget; the rest as they were.
+   */
+  private async transcribeAttached(session: Session, requestId: string, files: (FileRef & { transcribe?: boolean })[], run: { actor?: string; budget?: number }): Promise<(FileRef & { cost?: number })[]> {
+    const plain = files.map(({ transcribe: _transcribe, ...file }) => file as FileRef & { cost?: number });
+    let chosen = files.flatMap((file, index) => file.transcribe ?? essence(file.contentType).startsWith("audio/") ? [index] : []);
+    if (!chosen.length) return plain;
+    /** A file that cannot be transcribed: the message is refused if it asked, else the file goes without. */
+    const failed = (index: number, error: unknown) => {
+      if (files[index].transcribe || errorStatus(error, 500) === 402) throw error;
+      plain[index] = { ...plain[index], untranscribed: errorText(error).slice(0, 300) };
+    };
+    const transcriber = this.options.transcriber;
+    if (!transcriber) {
+      for (const index of chosen) failed(index, new HttpError(400, "Transcription is not enabled on this runtime"));
+      return plain;
+    }
+    const tenant = session.header.tenant;
+    const audio: { index: number; bytes: Uint8Array; header: ReturnType<typeof checkedAudio> }[] = [];
+    let seconds = 0;
+    for (const [position, index] of chosen.entries()) {
+      const file = plain[index];
+      try {
+        if (position >= AUDIO_LIMITS.files) throw new HttpError(413, `At most ${AUDIO_LIMITS.files} audio files are transcribed for a message`, "AUDIO_TOO_LONG");
+        if (file.size > AUDIO_LIMITS.fileBytes) checkedAudio(new Uint8Array(file.size), file.path);
+        const bytes = await this.options.volumes!.readRange(tenant, file, 0, file.size);
+        const header = checkedAudio(bytes, file.path);
+        if (seconds + header.seconds > AUDIO_LIMITS.messageSeconds) throw new HttpError(413, `At most ${AUDIO_LIMITS.messageSeconds} seconds of audio are transcribed for a message`, "AUDIO_TOO_LONG");
+        seconds += header.seconds;
+        audio.push({ index, bytes, header });
+      } catch (error) { failed(index, error); }
+    }
+    const spend = await this.spendOf(session);
+    const left = spend ? spend.usd - spend.spent : Infinity;
+    const budget = Math.min(run.budget ?? Infinity, left);
+    const estimate = audio.reduce((total, { header }) => total + transcriber.cost(header.seconds), 0);
+    if (estimate > budget) throw new HttpError(402, `Transcribing this message's audio costs about $${estimate.toFixed(4)}, more than the $${Math.max(0, budget).toFixed(4)} left of ${budget === left ? "this agent's" : "this run's"} spend limit`, "SPEND_LIMIT");
+    const { identity, keyScope } = session.header;
+    const facts = { requestId, ...(run.actor ? { actor: run.actor } : {}), ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) };
+    const done = await Promise.allSettled(audio.map(async ({ index, bytes, header }) => {
+      try {
+        const { transcript, usage } = await transcriber.transcribe({ tenant, ...(keyScope ? { keyScope } : {}) }, { bytes, header }, {}, AbortSignal.timeout(AUDIO_LIMITS.timeoutMs + 10_000));
+        const cost = usage.usage.cost.total as number;
+        this.options.onUsage?.(tenant, session.header.id, { ...usage, ...facts });
+        this.spent(session, cost);
+        plain[index] = { ...plain[index], transcript, cost };
+      } catch (error) { failed(index, error); }
+    }));
+    const refused = done.find(result => result.status === "rejected");
+    if (refused) throw (refused as PromiseRejectedResult).reason;
+    return plain;
   }
 
   /** js_exec's `fs`: the file tools over the agent's mounts, durable before any effect like any other tool call. */

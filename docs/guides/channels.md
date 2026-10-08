@@ -160,7 +160,9 @@ What they all share:
   (Slack's with the bot token, Discord's CDN, Telegram's file API), never follow
   redirects, and have 60 seconds each. A file too large or that fails to
   download is left out, and the prompt says so: `(file big.zip too large, not
-  attached)`. A message with only files reads `(sent a file)`.
+  attached)`. A message with only files reads `(sent a file)`. Audio (voice
+  notes, audio files) is transcribed for the model as it arrives: see
+  [Voice and audio](voice.md).
 - The turn's final answer is sent back when the turn ends, split to the
   service's limit (4,096 characters on Telegram, 4,000 on Slack, 2,000 on
   Discord), with a typing indicator meanwhile where the service has one. Channel

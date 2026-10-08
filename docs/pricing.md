@@ -13,6 +13,7 @@ rates below as your account is charged them.
 | Storage | $0.10 per GB-month of what your agents and volumes keep (history, files, snapshots), charged daily |
 | `web_search` on the platform's keys | Per search, by the provider that answered: Exa $0.007, Brave $0.005, Parallel $0.001 |
 | `web_fetch` page rendering on the platform's key | $0.00083 per page Firecrawl renders |
+| [Transcription](guides/voice.md) on the platform's OpenAI key | $0.0045 per minute of audio (`gpt-transcribe`), billed per second |
 
 ## Credit
 

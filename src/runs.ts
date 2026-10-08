@@ -113,8 +113,8 @@ export function runRoutes(route: Route, context: () => RunsContext) {
     const { input, wait, retentionSeconds, output, spendLimit, actor, from, metadata, name, mounts, ...config } = parsed.data;
     const parts = typeof input === "string" ? [{ type: "text" as const, text: input }] : input;
     const text = parts.flatMap(part => part.type === "text" ? [part.text] : []).join("\n\n");
-    const files = parts.flatMap(part => part.type === "file" ? [{ ...(part.name !== undefined ? { name: part.name } : {}), data: part.data, ...(part.contentType !== undefined ? { contentType: part.contentType } : {}) }] : []);
-    if (!text.trim()) throw new HttpError(400, "input: give the run some text");
+    const files = parts.flatMap(part => part.type === "file" ? [Object.fromEntries(Object.entries(part).filter(([key, value]) => key !== "type" && value !== undefined))] : []);
+    if (!text.trim() && !files.length) throw new HttpError(400, "input: give the run some text, or audio to transcribe");
     const ms = waitMs(c.req.query("wait") ?? wait, MAX_RUN_WAIT_MS);
     const retentionMs = (retentionSeconds ?? context().runRetentionSeconds ?? DEFAULT_RETENTION_SECONDS) * 1000;
     // What the run is: the same key with another request is refused, never a second run (`wait` is how to answer, not what).
