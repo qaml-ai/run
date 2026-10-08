@@ -36,3 +36,33 @@ export function reasoningFloor(model: Model<Api>): ThinkingLevel | undefined {
 export function getModels(provider: string): Model<Api>[] {
   return (piGetModels(provider as never) as Model<Api>[]).flatMap(model => corrected(model) ?? []);
 }
+
+type ModelCompat = { supportsTemperature?: boolean; supportsMidConvoEffort?: boolean };
+
+/**
+ * Why a call to `model` reasoning at `reasoning` can take no temperature, or undefined when it can. Pi's catalog says
+ * which Claude models refuse sampling settings (Opus 4.7 and later, and those with mid-conversation effort: Opus 5,
+ * Sonnet 5.5, Fable 5.1), wherever they are served. A model that always reasons (o-series, GPT-5, Claude Fable 5) takes none, and no model takes
+ * one while it reasons: Anthropic's thinking requires the default, OpenAI's reasoning models refuse it.
+ */
+export function temperatureRefusal(model: Model<Api>, reasoning: string | undefined): string | undefined {
+  // A Claude model elsewhere (Bedrock, OpenRouter, an endpoint) refuses what it refuses at Anthropic, whose entry says so.
+  const claude = /claude-[a-z]+-\d(?:[\d.-]*\d)?/.exec(model.id)?.[0]?.replaceAll(".", "-");
+  const compat = { ...(claude ? getModel("anthropic", claude)?.compat : undefined), ...model.compat } as ModelCompat;
+  if (compat.supportsTemperature === false || compat.supportsMidConvoEffort === true) return "its provider refuses one for this model";
+  if (reasoningFloor(model)) return "it always reasons, and a model takes no temperature while it reasons";
+  if (model.reasoning && reasoning !== undefined && reasoning !== "off") return `while it reasons (thinkingLevel ${reasoning}); set thinkingLevel off to use one`;
+  return undefined;
+}
+
+/**
+ * The stream options one model call takes from its agent's settings: `maxTokens` within the model's maximum (Pi also
+ * keeps it within the context, and adds a thinking budget to it), and `temperature` unless the call cannot take one.
+ * A setting that a later change made inapplicable (a definition's new model or thinking level) is left out, not sent.
+ */
+export function callSettings(model: Model<Api>, settings: { maxOutputTokens?: number | null; temperature?: number | null }, reasoning: string | undefined): { maxTokens?: number; temperature?: number } {
+  return {
+    ...(settings.maxOutputTokens != null ? { maxTokens: Math.min(settings.maxOutputTokens, model.maxTokens) } : {}),
+    ...(settings.temperature != null && !temperatureRefusal(model, reasoning) ? { temperature: settings.temperature } : {}),
+  };
+}
