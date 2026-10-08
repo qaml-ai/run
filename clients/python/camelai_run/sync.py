@@ -24,8 +24,8 @@ import httpx
 
 from . import (
     DEFAULT_URL, AgentError, Download, InputDetail, InputRequired, Mount, WorkspaceMount, Run, RunError, RuntimeIdentity, RuntimeTokenError, StreamPart,
-    Telemetry, Tool, ToolContext, WebhookVerificationError, identity_from_claims, tool, verify_webhook,
-    _AgentCalls, _DEFAULT, _PartReader, _RuntimeCalls, _Session, _UPLOAD_TIMEOUT, _answer_for, _attachment, _bearer,
+    Telemetry, Tool, ToolContext, Transcriptions, WebhookVerificationError, identity_from_claims, tool, verify_webhook,
+    _AgentCalls, _DEFAULT, _PartReader, _RuntimeCalls, _Session, _TRANSCRIPTION_TIMEOUT, _UPLOAD_TIMEOUT, _answer_for, _attachment, _bearer,
     _check_request_id, _env, _error, _file_claims, _file_token, _http_sync, _issuer_of, _message_params, _origin, _outcome_run, _output_request,
     _prompt_extra, _public_key_sync, _require_tenant, _retry_after, _run_frame, _sender, _sse_frames,
     _stateless_run, _steer_receipt, _token_header, _tool_server_answer, _tool_table, _tool_server_response, _trace_header, _unauthorized,
@@ -36,7 +36,7 @@ from . import AgentFiles as _AsyncFiles, RunInput as _AsyncInput, Runs as _Async
 __all__ = [
     "Agents", "Agent", "Run", "RunInput", "InputDetail", "Mount", "WorkspaceMount", "RunStream", "StreamPart", "Runs", "StatelessRunStream",
     "tool", "Tool", "ToolContext", "InputRequired", "RuntimeIdentity", "identity_from_claims",
-    "AgentError", "RunError", "AgentRuntime", "AgentClient", "AgentFiles", "Download", "Telemetry", "DEFAULT_URL",
+    "AgentError", "RunError", "AgentRuntime", "AgentClient", "AgentFiles", "Download", "Telemetry", "Transcriptions", "DEFAULT_URL",
     "serve_tools", "verify_runtime_token", "verify_file_url", "RuntimeTokenError", "TestRuntime", "verify_webhook", "WebhookVerificationError",
 ]
 
@@ -71,6 +71,15 @@ class AgentRuntime(_RuntimeCalls):
         self.http = httpx.Client(timeout=10, follow_redirects=False)
         # The tenant's OpenTelemetry trace export: get, set, clear, test.
         self.telemetry = Telemetry(self)
+        # Speech to text on its own: create.
+        self.transcriptions = Transcriptions(self)
+
+    def _form(self, path, fields, file):
+        """A multipart POST with the API key (a transcription's audio), not retried: its answer."""
+        response = self.http.post(self.base + path, data=fields, files=[file], headers={"Authorization": f"Bearer {self._operator()}"}, timeout=_TRANSCRIPTION_TIMEOUT)
+        if not response.is_success:
+            raise AgentError(_error(response), response.status_code)
+        return response.json()
 
     def _rest(self, method, path, body=None, *, retry=True, headers=None, timeout=None, then=None, missing=_DEFAULT):
         """One request with the API key: its answer (`then` of it), or `missing` for a 404 when given."""
@@ -223,14 +232,14 @@ class AgentClient(_AgentCalls):
             if isinstance(entry, dict):
                 attached.append(entry)
                 continue
-            name, data, content_type = entry
+            name, data, content_type, extra = entry
             unique = _unique_name(names, name, index)
             response = self.http.put(f"{self.base}{self.path}/uploads/{quote(request_id, safe='')}/{quote(unique, safe='')}",
                                      content=data if isinstance(data, bytes) else _file_chunks(data),
                                      headers={"Authorization": f"Bearer {self.session['token']}", **({"Content-Type": content_type} if content_type else {})}, timeout=_UPLOAD_TIMEOUT)
             if not response.is_success:
                 raise AgentError(_error(response), response.status_code)
-            attached.append({"path": response.json()["path"]})
+            attached.append({"path": response.json()["path"], **extra})
         return attached
 
     def _prompt_params(self, request_id, text, *, actor=None, from_=None, files=None, metadata=None, while_running=None, allow_disconnected=False,
@@ -650,6 +659,8 @@ class Agents:
         self.runtime = AgentRuntime(url=url, api_key=api_key)
         # Stateless runs: create, get, stream, abort, delete, messages; Agents.run is the one-call form.
         self.runs = Runs(self.runtime)
+        # Speech to text on its own: create(file or url=...). Audio attached to a message is transcribed without it.
+        self.transcriptions = self.runtime.transcriptions
         self._open = set()
 
     def run(self, input, **options):
