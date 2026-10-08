@@ -26,8 +26,8 @@ async function toolServer(t: T, runtimeBase: () => string) {
     let text = "";
     for await (const chunk of req) text += chunk;
     const path = new URL(req.url!, "http://x").pathname;
-    // The OpenAPI source names its own audience; the MCP server's is its URL.
-    const audience = path === "/mcp" ? `${base}/mcp` : `${base}/api-audience`;
+    // The MCP server knows itself by a stable name of its tenant's (as it would across a move); the OpenAPI source by a URL on its origin.
+    const audience = path === "/mcp" ? "urn:camelrun:alice:app" : `${base}/api-audience`;
     let claims: JWTPayload;
     try { claims = await verify(req.headers.authorization, audience); }
     catch (error) { seen.push({ path, error: String(error) }); res.writeHead(401).end(); return; }
@@ -60,14 +60,15 @@ test("tool servers with auth \"runtime\" get a short-lived token the runtime sig
 
   // Through the SDK's definition helpers.
   const sdk = new AgentRuntime({ url: r.base, apiKey: OPERATOR });
-  const definition = await sdk.createDefinition({ name: "App", mcpServers: [{ name: "app", url: `${app.url}/mcp`, auth: { type: "runtime" } }], openApi: [{ name: "api", spec, baseUrl: `${app.url}/api`, auth: { type: "runtime" }, audience: `${app.url}/api-audience` }] });
+  const definition = await sdk.createDefinition({ name: "App", mcpServers: [{ name: "app", url: `${app.url}/mcp`, auth: { type: "runtime" }, audience: "urn:camelrun:alice:app" }], openApi: [{ name: "api", spec, baseUrl: `${app.url}/api`, auth: { type: "runtime" }, audience: `${app.url}/api-audience` }] });
   assert.deepEqual(definition.mcpServers![0].auth, { type: "runtime" });
   assert.equal((await sdk.definitions()).length, 1);
   const created = { json: definition };
   const bearerAudience = await r.call("/v1/definitions", { body: { name: "Bad", openApi: [{ name: "api", spec, baseUrl: `${app.url}/api`, audience: `${app.url}/api-audience` }] } });
   assert.equal(bearerAudience.status, 400, "an audience is only for the runtime's own tokens");
   // A token names the server it goes to: no tenant can mint one for another server, which might trust this runtime's tokens.
-  for (const audience of ["https://someone-else.example", "urn:app-api", `${app.url.replace("127.0.0.1", "localhost")}/api`]) {
+  // A stable name must be in the tenant's own namespace (urn:camelrun:<tenant>:<name>), never another tenant's.
+  for (const audience of ["https://someone-else.example", "urn:app-api", `${app.url.replace("127.0.0.1", "localhost")}/api`, "urn:camelrun:bob:app", "urn:camelrun:alice:", "urn:camelrun:alice:a b"]) {
     for (const source of [{ mcpServers: [{ name: "app", url: `${app.url}/mcp`, auth: { type: "runtime" }, audience }] }, { openApi: [{ name: "api", spec, baseUrl: `${app.url}/api`, auth: { type: "runtime" }, audience }] }]) {
       const foreign = await r.call("/v1/definitions", { body: { name: "Foreign", ...source } });
       assert.equal(foreign.status, 400, `${audience}: ${foreign.text}`);
@@ -89,7 +90,7 @@ test("tool servers with auth \"runtime\" get a short-lived token the runtime sig
   assert.deepEqual(app.seen.filter(entry => entry.error), [], "every request carried a valid token");
   const call = app.seen.find(entry => entry.path === "/mcp" && entry.claims?.act)!.claims!;
   assert.equal(call.iss, r.base);
-  assert.equal(call.aud, `${app.url}/mcp`);
+  assert.equal(call.aud, "urn:camelrun:alice:app");
   assert.equal(call.sub, "u_123");
   assert.equal(call.act, "u_456");
   assert.deepEqual(call.ctx, { org: "acme", thread: "t_1" });

@@ -101,7 +101,7 @@ const MAX_OPERATIONS = 1024;
 /** MCP servers, and OpenAPI specs, per definition. */
 const MAX_SOURCES = 64;
 const API_TIMEOUT_MS = 30_000;
-type Context = { accounts?: Accounts; outbound: Outbound };
+type Context = { tenant: string; accounts?: Accounts; outbound: Outbound };
 const bad = (message: string) => new HttpError(400, message);
 const strings = (value: unknown, label: string, max: number) => {
   if (value === undefined) return undefined;
@@ -157,7 +157,7 @@ export function mcpServersInput(input: unknown, previous: McpServerSpec[] | unde
       ...(approval !== undefined ? { approval: approvalInput(approval, `MCP server ${name}`) } : {}),
     };
     const credentials = sealCredentials(headers, auth, previous?.find(other => other.name === name), checked, sealedAad(definition, name), context);
-    return { ...spec, ...credentials, ...audienceInput(audience, credentials.auth, `MCP server ${name}`, checked) };
+    return { ...spec, ...credentials, ...audienceInput(audience, credentials.auth, `MCP server ${name}`, checked, context.tenant) };
   });
 }
 
@@ -207,7 +207,7 @@ export async function openApiInput(input: unknown, previous: OpenApiSpec[] | und
       ...(approval !== undefined ? { approval: approvalInput(approval, `OpenAPI source ${name}`, true) } : {}),
     };
     const credentials = sealCredentials(headers, auth, kept && { ...kept, url: kept.baseUrl }, checked, sealedAad(definition, name, "openapi"), context);
-    return { ...stored, ...credentials, ...audienceInput(audience, credentials.auth, `OpenAPI source ${name}`, checked) };
+    return { ...stored, ...credentials, ...audienceInput(audience, credentials.auth, `OpenAPI source ${name}`, checked, context.tenant) };
   }));
 }
 
@@ -260,16 +260,25 @@ function sealCredentials(headers: unknown, auth: unknown, previous: { url: strin
  * tokens against its public path). Never another origin: the runtime would mint tokens, with a subject and context the
  * tenant chose, for a server the source is not, which might trust them.
  */
-function audienceInput(audience: unknown, auth: SourceAuth | undefined, label: string, url: URL) {
+/**
+ * A source's `audience`, the `aud` of the tokens it gets: a URL on its own origin, or a name of the tenant's own,
+ * `urn:camelrun:<tenant>:<name>`, that stays the same when the server moves. Never another origin's URL or another
+ * tenant's name: the runtime signs subjects and context the tenant chose, so it mints tokens only for an audience
+ * the tenant's own servers answer to, which another server cannot be made to accept.
+ */
+function audienceInput(audience: unknown, auth: SourceAuth | undefined, label: string, url: URL, tenant: string) {
   if (audience === undefined) return {};
   if (typeof audience !== "string" || !audience.trim() || audience.length > 2048) throw bad(`${label}: audience is a string of 1–2048 characters`);
   if (auth?.type !== "runtime") throw bad(`${label}: audience is for auth { type: "runtime" }, whose tokens it names`);
-  if (!sameOrigin(audience, url)) throw bad(`${label}: audience must be a URL on the source's own origin (${url.origin}): its tokens go to that server only`);
+  if (!ownAudience(audience, url, tenant)) throw bad(`${label}: audience must be a URL on the source's own origin (${url.origin}), or a name of your tenant's own, urn:camelrun:${tenant}:<name>: its tokens go to your servers only`);
   return { audience };
 }
 const sameOrigin = (audience: string, url: URL | string) => { try { return new URL(audience).origin === new URL(url).origin; } catch { return false; } };
-/** The audience to mint a source's tokens for: its own, if on its origin (checked again: definitions saved before the rule), else its URL. */
-const audienceOf = (audience: string | undefined, url: string) => audience && sameOrigin(audience, url) ? audience : url;
+/** A stable audience in the tenant's namespace: `urn:camelrun:<tenant>:` and a name of letters, digits and `._~:-`. */
+const tenantAudience = (audience: string, tenant: string) => audience.startsWith(`urn:camelrun:${tenant}:`) && /^[A-Za-z0-9._~:-]{1,200}$/.test(audience.slice(`urn:camelrun:${tenant}:`.length));
+const ownAudience = (audience: string, url: URL | string, tenant: string) => sameOrigin(audience, url) || tenantAudience(audience, tenant);
+/** The audience to mint a source's tokens for: its own, if still one it may have (checked again: definitions saved before the rule), else its URL. */
+const audienceOf = (audience: string | undefined, url: string, tenant: string) => audience && ownAudience(audience, url, tenant) ? audience : url;
 
 /** What callers see of a server: never its credentials. */
 export const mcpServerView = ({ sealed: _sealed, ...server }: McpServerSpec) => server;
@@ -306,7 +315,7 @@ export class ToolSources {
     const headers = this.headers(sealedAad(context.definition!, spec.name), spec.sealed);
     if (spec.auth?.type !== "runtime") return { url: spec.url, headers };
     // Each request is signed for the turn it is made in (callScope), and each agent has its own session.
-    return { url: spec.url, headers, token: () => this.identityToken(context, audienceOf(spec.audience, spec.url)), scope: context.agent };
+    return { url: spec.url, headers, token: () => this.identityToken(context, audienceOf(spec.audience, spec.url, context.tenant)), scope: context.agent };
   }
 
   private offered(spec: McpServerSpec, tool: Tool) {
@@ -420,7 +429,7 @@ export class ToolSources {
           if (apiAsks(api, operation) && !approval) return APPROVAL_REQUIRED;
           const { url, init } = await operationRequest(api.baseUrl, operation, args, callFiles);
           const secrets = this.headers(sealedAad(context.definition!, api.name, "openapi"), api.sealed);
-          if (api.auth?.type === "runtime") secrets.Authorization = `Bearer ${await this.identityToken(context, audienceOf(api.audience, api.baseUrl), turn)}`;
+          if (api.auth?.type === "runtime") secrets.Authorization = `Bearer ${await this.identityToken(context, audienceOf(api.audience, api.baseUrl, context.tenant), turn)}`;
           // The call's key, as APIs that dedupe writes take one (Stripe's convention).
           if (idempotencyKey) init.headers = { ...init.headers as Record<string, string>, "Idempotency-Key": idempotencyKey };
           // Text answers are capped lower as they are read (openapi.ts).

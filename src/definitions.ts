@@ -280,9 +280,9 @@ export class Definitions {
     const spec: DefinitionSpec = { ...current };
     for (const key of FIELDS) {
       if (input[key] === null) delete spec[key];
-      else if (key === "mcpServers" && input[key] !== undefined) spec.mcpServers = mcpServersInput(input[key], current.mcpServers, id, { accounts: this.accounts, outbound: this.outbound! });
+      else if (key === "mcpServers" && input[key] !== undefined) spec.mcpServers = mcpServersInput(input[key], current.mcpServers, id, { tenant, accounts: this.accounts, outbound: this.outbound! });
       // Saving fetches the specs again: that is how a definition takes a spec's changes.
-      else if (key === "openApi" && input[key] !== undefined) spec.openApi = await openApiInput(input[key], current.openApi, id, { accounts: this.accounts, outbound: this.outbound! });
+      else if (key === "openApi" && input[key] !== undefined) spec.openApi = await openApiInput(input[key], current.openApi, id, { tenant, accounts: this.accounts, outbound: this.outbound! });
       else if (input[key] !== undefined) (spec as Record<string, unknown>)[key] = input[key];
     }
     try {
