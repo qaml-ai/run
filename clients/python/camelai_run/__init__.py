@@ -620,8 +620,10 @@ class _RuntimeCalls:
         """The tenant's agents, each with the key it was made with (None for one made without) and its name."""
         return self._rest("GET", "/v1/agents")
 
-    def create_volume(self, *, name=None):
-        return self._rest("POST", "/v1/volumes", {} if name is None else {"name": name}, retry=False)
+    def create_volume(self, *, name=None, idempotency_key=None):
+        """A new volume. With `idempotency_key`, the same key (within a day) makes it once: a retry gets the same volume."""
+        return self._rest("POST", "/v1/volumes", {} if name is None else {"name": name}, retry=idempotency_key is not None,
+                          headers={"Idempotency-Key": idempotency_key} if idempotency_key is not None else None)
 
     def list_volumes(self):
         return self._rest("GET", "/v1/volumes")

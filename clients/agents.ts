@@ -12,7 +12,7 @@
 import {
   AgentClient, AgentError, AgentRuntime, RunError, toolServer,
   type AgentFiles, type Builtin, type DelegateSettings, type InlineMcpServer, type RecordedMessage, type AgentInput, type AgentOptions, type Attachment, type CreateAgentOptions, type HistoryPage, type InputAnswer,
-  type ForkedFrom, type ForkOptions, type Mount, type RunResult, type RunUsage, type RuntimeOptions, type Sender, type SessionCredentials, type ToolError, type RunToolCall, type ToolServer, type Tools, type AgentFile, type SteerReceipt,
+  type ForkedFrom, type ForkOptions, type MountInput, type RunResult, type RunUsage, type RuntimeOptions, type Sender, type SessionCredentials, type ToolError, type RunToolCall, type ToolServer, type Tools, type AgentFile, type SteerReceipt,
   type RunFrame, type RunInputPart, type RunRequest, type StatelessRun,
 } from "./typescript.ts";
 import type { AgentEvent, ThinkingLevel } from "./types.ts";
@@ -92,7 +92,7 @@ export interface AgentConfig {
   /** The most one run may take: model responses, and seconds (within the runtime's 1,000 and 2 hours by default); and how long a model request may go quiet before it fails as stalled and is retried: before its first token (default 120 s, 300 for a reasoning model thinking high or more) and between events (default 45 s). */
   runLimits?: { maxResponses?: number; maxSeconds?: number; firstTokenSeconds?: number; idleSeconds?: number };
   modelHeaders?: Record<string, string>;
-  mounts?: Mount[];
+  mounts?: MountInput[];
   name?: string;
   /** Every event, for display; see `AgentOptions.onEvent`. Runs apart from the connection, in order. */
   onEvent?: (event: AgentEvent, runId?: string) => unknown | Promise<unknown>;

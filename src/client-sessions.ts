@@ -2214,7 +2214,7 @@ export class ClientSessions {
     const fixed = [
       ...differs(header.identity?.subject, identity?.subject) ? ["subject"] : [], ...differs(header.identity?.context, identity?.context) ? ["context"] : [],
       ...(header.definition?.id ?? null) !== (origin?.definition.id ?? null) ? ["definition"] : [],
-      ...mounts !== undefined && differs((header.mounts ?? []).map(({ volumeId, path, mode }) => ({ volumeId, path, mode })), (mounts as { volumeId: string; path: string; mode?: string }[]).map(({ volumeId, path, mode }) => ({ volumeId, path, mode: mode ?? "rw" }))) ? ["mounts"] : [],
+      ...mounts !== undefined && differs((header.mounts ?? []).map(({ volumeId, path, mode }) => ({ volumeId, path, mode })), (VolumeService.resolved(header.id, mounts as unknown[]) as { volumeId: string; path: string; mode?: string }[]).map(({ volumeId, path, mode }) => ({ volumeId, path, mode: mode ?? "rw" }))) ? ["mounts"] : [],
     ];
     if (fixed.length) throw new HttpError(409, `An existing agent's ${fixed.join(", ")} cannot change; delete it (DELETE /v1/agents/${header.id}) or use another idempotency key`);
     return {
@@ -4217,16 +4217,19 @@ export class ClientSessions {
     await this.releaseVolumes(session.header, session.claim);
   }
 
-  /** A deleted agent stops watching its mounts, and its own workspace goes with it; shared volumes stay. */
+  /**
+   * A deleted agent stops watching its mounts, and its own workspace goes with it, mounted or not (mounts set later may
+   * have left it out); shared volumes stay.
+   */
   private async releaseVolumes(header: SessionHeader, claim: Claim | undefined) {
     const volumes = this.options.volumes;
+    if (!volumes) return;
     const mounts = header.mounts ?? [];
-    if (!volumes || !mounts.length) return;
     const id = header.id, tenant = header.tenant;
     try {
-      await volumes.watch(id, tenant, mounts, [], claim);
-      const workspace = VolumeService.workspaceOf(id);
-      if (mounts.some(mount => mount.volumeId === workspace)) await volumes.call(workspace, tenant, "delete");
+      if (mounts.length) await volumes.watch(id, tenant, mounts, [], claim);
+      // A stateless run's mounts never change: without any, it never had a workspace.
+      if (mounts.length || !header.run) await volumes.call(VolumeService.workspaceOf(id), tenant, "delete");
     } catch (error) {
       if ((error as { status?: number }).status !== 404) console.error(JSON.stringify({ type: "agent_volumes_release_failed", agent: id, error: errorText(error) }));
     }

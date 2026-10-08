@@ -111,6 +111,19 @@ const agent = await agents.upsert("support", { mounts: [{ volumeId: docs.id, pat
   prompts the agent (about a second after, coalesced) when others change files
   under the mount. Only your own volumes can be mounted, and an agent's mounts
   are fixed when it is made (`PUT /v1/agents/:id/mounts` replaces them).
+- Mounts you give replace the agent's own workspace: it then has no
+  `/workspace`. Add `{workspace: true}` among them to keep it at `/workspace`
+  beside the others, e.g. `[{volumeId, path: "/bot", mode: "rw"}, {workspace:
+  true}]`. The first mount is where relative paths resolve.
+- Attachments are saved under `/workspace/uploads/<request>/`, files tools
+  return under `/workspace/tool-outputs/`, and the model keeps scratch files in
+  `/workspace/tmp/`. Without a `/workspace`, they go to the first read-write
+  mount (and an agent with none cannot take attachments or tool files).
+- An agent's own workspace is deleted with the agent, whether or not it is
+  still mounted; volumes it only mounted stay.
+- `createVolume({ name }, { idempotencyKey })` (Python
+  `create_volume(name=…, idempotency_key=…)`) makes a volume once per key, for a
+  day: a retry, or another process, gets the same volume.
 - `volume.write(path, data, { version })` writes only if nobody changed the file
   since that version (`0`: it must not exist), `read`, `list`, `remove`,
   `changes(since)`.

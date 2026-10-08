@@ -216,6 +216,10 @@ export const Mount = z.object({
   subpath: z.string().optional().openapi({ description: "Mount only this directory of the volume" }),
   notify: z.boolean().optional().openapi({ description: "Prompt the agent when others change files under this mount" }),
 }).openapi("Mount");
+/** A mount as given: a volume, or the agent's own workspace. */
+export const MountInput = z.union([Mount, z.strictObject({ workspace: z.literal(true) }).openapi("WorkspaceMount", {
+  description: "The agent's own workspace volume, at /workspace, beside the other mounts: where uploads, tool outputs and scratch files go. Mounts given without it replace the workspace",
+})]).openapi("MountInput");
 
 export const SpendLimitInput = z.object({ usd: z.number().min(0).max(1_000_000) }).strict().openapi("SpendLimitInput", {
   description: "The most the agent may spend on model calls (their token cost, compaction included) from when this is set: a new value starts counting from zero. At it, new prompts get 402 and a running turn ends with stopped \"spend_limit\"",
@@ -346,7 +350,7 @@ export const AgentInput = z.object({
   fileTools: z.boolean().openapi({ description: "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; the mounts stay open to fs in js_exec, attachments and tool outputs. For applications with file tools of their own" }).optional(),
   codeMode: z.boolean().openapi({ description: "false: no js_exec (code mode). The model calls every tool directly, and the system prompt carries only the runtime text those tools need: for an agent with no tools (with fileTools: false too, and no builtins or tool sources), only the application's instructions and a short note on who sent each message. For a tool-less agent, such as a classifier. Best set when the agent is made: changed later, its tools change, while a conversation under way keeps the runtime text it began with" }).optional(),
   ttlSeconds: z.number().int().nullable().optional().openapi({ description: "Agent lifetime: 60 to 31622400 seconds, or null to live until deleted. Default: until deleted for an agent made with an Idempotency-Key, 86400 for one made without" }),
-  mounts: z.array(Mount).optional().openapi({ description: "Volumes for the agent's file tools; default: a new workspace volume at /workspace" }),
+  mounts: z.array(MountInput).optional().openapi({ description: "Volumes for the agent's file tools; default: its own workspace volume at /workspace. Given mounts replace it unless they include {workspace: true}. The first is where relative paths resolve" }),
   subject: z.string().optional().openapi({ description: "Who the agent acts for (a user id in your app): the `sub` of the identity tokens its tool servers with auth \"runtime\" get. Set only here" }),
   context: z.record(z.string(), z.unknown()).optional().openapi({ description: "Claims your tool servers need (org, workspace, thread…), carried as `ctx` in its identity tokens; at most 4 KB. Set only here" }),
   builtins: z.array(Builtin).max(8).optional().openapi({ description: "Tools the runtime answers itself (web_fetch, web_search, schedule, ask_user, delegate), for an agent without a definition; one made from a definition has its definition's. An upsert without builtins leaves the agent none" }),
@@ -722,7 +726,7 @@ const definitionFields = {
   codeMode: z.boolean().openapi({ description: "false: its agents get no js_exec and call every tool directly (AgentInput.codeMode)" }),
   limits: DefinitionLimits,
   runLimits: RunLimits,
-  mounts: z.array(Mount).max(16).openapi({ description: "Volumes for each agent's file tools; default: a new workspace volume per agent" }),
+  mounts: z.array(MountInput).max(16).openapi({ description: "Volumes for each agent's file tools; default: a new workspace volume per agent ({workspace: true} keeps it beside the others)" }),
   builtins: z.array(Builtin).max(8).openapi({ description: "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer" }),
   webSearch: z.object({
     providers: z.array(z.enum(["exa", "brave", "parallel"])).min(1).max(3).openapi({ description: "The providers web_search tries, in order; each is skipped without a key, and the next is tried when one fails, times out or is rate limited", example: ["brave"] }),
@@ -821,7 +825,7 @@ export const Channel = z.object({
   updatedAt: z.number(),
 }).openapi("Channel");
 
-export const MountsInput = z.object({ mounts: z.array(Mount) }).openapi("MountsInput");
+export const MountsInput = z.object({ mounts: z.array(MountInput) }).openapi("MountsInput");
 
 export const VolumeInput = z.object({ name: z.string().optional() }).openapi("VolumeInput");
 export const VolumeSummary = z.object({ id: z.string(), name: z.string(), createdAt: z.number() }).openapi("VolumeSummary");

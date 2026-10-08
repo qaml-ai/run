@@ -174,6 +174,9 @@ class Tree {
   }
 }
 
+/** `{workspace: true}`: the agent's own workspace volume, mounted at /workspace beside its other mounts. */
+const isWorkspace = (mount: unknown) => !!mount && typeof mount === "object" && (mount as { workspace?: unknown }).workspace === true && Object.keys(mount).length === 1;
+
 export class VolumeService {
   readonly db: Db;
   readonly storage: Storage;
@@ -667,24 +670,35 @@ export class VolumeService {
     }
   }
 
+  /** A mount as given, with `{workspace: true}` resolved to the agent's own workspace at /workspace. */
+  static resolved(agent: string, mounts: unknown[]) {
+    return mounts.map(mount => isWorkspace(mount) ? { volumeId: VolumeService.workspaceOf(agent), path: "/workspace", mode: "rw" } : mount);
+  }
   /** The id of an agent's default workspace volume, stable so re-provisioning finds it. */
   static workspaceOf(agent: string) { return `vol_${sha256(`workspace:${agent}`).slice(0, 24)}`; }
 
   /**
    * Validate an agent's mounts: the tenant's own volumes at distinct, non-nested
-   * absolute paths. Without `requested`, the agent gets its own workspace volume at /workspace.
+   * absolute paths. Without `requested`, the agent gets its own workspace volume at /workspace;
+   * `{workspace: true}` among them mounts that workspace there beside the others.
    */
   async mountsFor(tenant: string, agent: string, requested: unknown): Promise<Mount[]> {
-    if (requested === undefined) {
+    const workspace = async (): Promise<Mount> => {
       const id = VolumeService.workspaceOf(agent);
       await this.writeNew({ version: 1, id, tenant, name: "workspace", createdAt: Date.now() });
       if ((await this.readHeader(id))?.tenant !== tenant) throw new HttpError(409, "Workspace volume belongs to another tenant");
-      return [{ volumeId: id, path: "/workspace", mode: "rw" }];
-    }
+      return { volumeId: id, path: "/workspace", mode: "rw" };
+    };
+    if (requested === undefined) return [await workspace()];
     if (!Array.isArray(requested) || requested.length > VOLUME_LIMITS.mounts) throw new HttpError(400, `mounts must be an array of at most ${VOLUME_LIMITS.mounts}`);
     const mounts: Mount[] = [];
     for (const input of requested) {
-      if (!input || typeof input !== "object" || Object.keys(input).some(key => !["volumeId", "path", "mode", "subpath", "notify"].includes(key))) throw new HttpError(400, "A mount is {volumeId, path, mode: \"ro\" | \"rw\", subpath?, notify?}");
+      if (isWorkspace(input)) {
+        if (mounts.some(other => within("/workspace", other.path) || within(other.path, "/workspace"))) throw new HttpError(400, "Mount path /workspace (the agent's own workspace) overlaps another mount");
+        mounts.push(await workspace());
+        continue;
+      }
+      if (!input || typeof input !== "object" || Object.keys(input).some(key => !["volumeId", "path", "mode", "subpath", "notify"].includes(key))) throw new HttpError(400, "A mount is {volumeId, path, mode: \"ro\" | \"rw\", subpath?, notify?}, or {workspace: true} for the agent's own workspace at /workspace");
       const { volumeId, mode, notify } = input as Record<string, unknown>;
       const path = normalizePath((input as Record<string, unknown>).path, "mount path");
       if (path === "/") throw new HttpError(400, "A mount path needs a name, like /workspace");

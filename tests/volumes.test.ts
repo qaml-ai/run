@@ -24,6 +24,7 @@ import { testDatabase } from "./database.ts";
 import { postgresTail } from "../src/log-tail.ts";
 import { applicationTools } from "../src/mcp-results.ts";
 import { pdfBytes, PNG } from "./file-fixtures.ts";
+import { until } from "./runtime-server.ts";
 
 type Context = { after(fn: () => Promise<void> | void): void };
 const bytes = (text: string) => Buffer.from(text, "utf8");
@@ -456,6 +457,26 @@ test("the REST API and SDK manage volumes within a tenant, and nothing crosses t
   await assert.rejects(b.setMounts(bobs.session.id, [{ volumeId: created.id, path: "/stolen", mode: "ro" }]), (error: AgentError) => error.status === 404);
   await assert.rejects(b.setMounts(agent.session.id, []), (error: AgentError) => error.status === 404, "nor change Alice's agents' mounts");
   await assert.rejects(b.mounts(agent.session.id), (error: AgentError) => error.status === 404);
+
+  // A volume made with an idempotency key is made once.
+  const keyed = await a.createVolume({ name: "draft" }, { idempotencyKey: "draft-bot-1" });
+  assert.equal((await a.createVolume({ name: "draft" }, { idempotencyKey: "draft-bot-1" })).id, keyed.id);
+
+  // {workspace: true} keeps the agent's own workspace beside other mounts; the first mount is where relative paths go.
+  const both = await a.upsertAgent("builder-1", { tools: [], mounts: [{ volumeId: keyed.id, path: "/bot", mode: "rw" }, { workspace: true }] });
+  const mounted = await a.mounts(both.session.id);
+  assert.deepEqual(mounted.map(mount => [mount.path, mount.mode]), [["/bot", "rw"], ["/workspace", "rw"]]);
+  assert.match(mounted[1].volumeId, /^vol_[a-f0-9]{24}$/);
+  assert.equal((await a.upsertAgent("builder-1", { tools: [], mounts: [{ volumeId: keyed.id, path: "/bot", mode: "rw" }, { workspace: true }] })).session.id, both.session.id, "the same mounts again are no change");
+  await assert.rejects(a.createAgent({ tools: {}, mounts: [{ workspace: true }, { volumeId: keyed.id, path: "/workspace/bot", mode: "rw" }] }), /overlaps/);
+
+  // An agent's own workspace goes with it even when later mounts left it out.
+  const dropped = mounted[1].volumeId;
+  await a.setMounts(both.session.id, [{ volumeId: keyed.id, path: "/bot", mode: "rw" }]);
+  assert.ok((await a.volume(dropped).info()).id === dropped, "still there while the agent is");
+  assert.equal((await fetch(`${url}/v1/agents/${both.session.id}`, { method: "DELETE", headers: { Authorization: `Bearer ${alice}` } })).status, 200);
+  await until(async () => (await a.volume(dropped).info().then(() => false, (error: AgentError) => error.status === 404)), "the dropped workspace to be deleted");
+  assert.ok((await a.volume(keyed.id).info()).id === keyed.id, "the mounted volume stays");
 
   // Deleting an agent deletes its own workspace, not the volumes it merely mounted.
   await plain.destroy();

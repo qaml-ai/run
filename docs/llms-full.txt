@@ -234,7 +234,10 @@ const agent = await agents.upsert("user-123", { model, instructions, tools });
 ```
 
 - The same key is the same agent, from any process, for as long as you keep it.
-  A keyed agent lives until you delete it (`agent.delete()`).
+  A keyed agent lives until you delete it (`agent.delete()`, `DELETE
+  /v1/agents/{id}`). Only your API key can delete an agent: its own token gets
+  a 401, since that token lives in your application's process (and in browsers
+  through it), and deleting purges the agent's history and workspace.
 - `upsert` makes the agent when there is none, and otherwise brings it to the
   configuration you pass: a changed model, instructions or tool list is applied
   between its turns, and its history carries over. Who the agent acts for
@@ -252,7 +255,8 @@ const agent = await agents.upsert("user-123", { model, instructions, tools });
 - Over REST, the key is the `Idempotency-Key` of `POST /v1/agents`.
 
 Every agent also has an **id** (`client_…`), which is safe to log and store, and
-a **token**, which lets its holder run it and nothing else. The SDKs keep the
+a **token**, which lets its holder run it and nothing else (not delete it, nor
+change who it acts for, its tools' sources or its limits). The SDKs keep the
 token out of logs; you rarely need it, because upserting by key gives you the
 agent again. If a token leaks, `POST /v1/agents/{id}/credentials/rotate` gives
 the agent a new one: the old one stops working at once and connections made
@@ -2404,6 +2408,19 @@ const agent = await agents.upsert("support", { mounts: [{ volumeId: docs.id, pat
   prompts the agent (about a second after, coalesced) when others change files
   under the mount. Only your own volumes can be mounted, and an agent's mounts
   are fixed when it is made (`PUT /v1/agents/:id/mounts` replaces them).
+- Mounts you give replace the agent's own workspace: it then has no
+  `/workspace`. Add `{workspace: true}` among them to keep it at `/workspace`
+  beside the others, e.g. `[{volumeId, path: "/bot", mode: "rw"}, {workspace:
+  true}]`. The first mount is where relative paths resolve.
+- Attachments are saved under `/workspace/uploads/<request>/`, files tools
+  return under `/workspace/tool-outputs/`, and the model keeps scratch files in
+  `/workspace/tmp/`. Without a `/workspace`, they go to the first read-write
+  mount (and an agent with none cannot take attachments or tool files).
+- An agent's own workspace is deleted with the agent, whether or not it is
+  still mounted; volumes it only mounted stay.
+- `createVolume({ name }, { idempotencyKey })` (Python
+  `create_volume(name=…, idempotency_key=…)`) makes a volume once per key, for a
+  day: a retry, or another process, gets the same volume.
 - `volume.write(path, data, { version })` writes only if nobody changed the file
   since that version (`0`: it must not exist), `read`, `list`, `remove`,
   `changes(since)`.
