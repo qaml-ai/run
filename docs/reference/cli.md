@@ -45,7 +45,7 @@ agents:                          # keyed agents made from it on deploy
 - Every field but `key`, `agents`, `systemPromptFile` and an OpenAPI source's
   `specFile` is sent as the [definition](../guides/definitions.md) (`name`,
   `model`, `systemPrompt`, `thinkingLevel`, `fileTools`, `builtins`, `webSearch`,
-  `mcpServers`, `openApi`, `limits`, `mounts`, `delegate`), and the runtime
+  `mcpServers`, `openApi`, `limits`, `mounts`, `delegate`, `applyOnUpdate`), and the runtime
   validates it. `delegate` ([Multi-agent](../guides/multi-agent.md)) adds its
   builtin.
   `name` defaults to the key.

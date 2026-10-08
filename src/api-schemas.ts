@@ -688,6 +688,7 @@ const definitionFields = {
     onExpire: z.enum(["close", "resume"]).optional().openapi({ description: "close (default): an expired input closes its call and the turn without the model; resume: the model is told and continues" }),
     approvers: z.array(z.string()).max(100).optional().openapi({ description: "Who may answer any input besides the person whose message started the turn: actors, or channel senders like slack:U0123" }),
   }).openapi({ description: "Questions, approvals and setup steps the agent's turns wait on" }),
+  applyOnUpdate: z.boolean().openapi({ description: "true: every save that makes a new revision (an upsert that changes it, or a PATCH) also applies it to every live agent made from the definition, as apply: \"all\" does, and answers with applied. Default false: only new agents get a new revision" }),
 };
 const optional = <T extends Record<string, z.ZodType>>(fields: T) => Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, value.optional()])) as { [K in keyof T]: z.ZodOptional<T[K]> };
 const removable = <T extends Record<string, z.ZodType>>(fields: T) => Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, value.nullable().optional()])) as { [K in keyof T]: z.ZodOptional<z.ZodNullable<T[K]>> };
@@ -716,7 +717,7 @@ export const ApplyResult = z.object({
   error: z.string().optional(),
 }).openapi("ApplyResult");
 export const DefinitionUpdated = Definition.extend({
-  applied: z.array(ApplyResult).optional().openapi({ description: "With apply: \"all\", one entry per live agent made from the definition" }),
+  applied: z.array(ApplyResult).optional().openapi({ description: "With apply: \"all\", or applyOnUpdate on a save that made a new revision: one entry per live agent made from the definition" }),
 }).openapi("DefinitionUpdated");
 export const DefinitionAgent = z.object({ id: z.string(), revision: z.number() }).openapi("DefinitionAgent");
 

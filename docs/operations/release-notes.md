@@ -23,6 +23,13 @@ Changes on main since the last tag.
 - `maxOutputTokens` and `temperature` on `agents.upsert`, `agents.run`, definitions and `agent.configure` (`null`
   removes either there).
 
+### Definitions that reach live agents
+
+- `applyOnUpdate: true` on a definition: every save that makes a new revision (an upsert that changes it, or a
+  `PATCH`) also applies it to every live agent made from it, as `apply: "all"` does, and the answer carries
+  `applied` (`POST /v1/definitions` answers with it too). An upsert that changes nothing applies nothing. See
+  [Definitions](../guides/definitions.md).
+
 ### Python SDK
 
 - `camelai_run.sync`: a synchronous client with the same names (`Agents`, `Agent`, `AgentRuntime`, `Runs`) for

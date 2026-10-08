@@ -81,6 +81,21 @@ the tenant can apply a definition, never an agent's own token. `GET
 a definition leaves its agents as they are; a definition a channel uses cannot
 be deleted.
 
+To have every change reach live agents without asking each time, save the
+definition with `applyOnUpdate: true`: every save that makes a new revision (an
+upsert that changes it, or a `PATCH`) then applies it as `apply: "all"` does,
+and answers with `applied`. An upsert that changes nothing, as at most deploys,
+applies nothing. It suits definitions whose agents must all run the same tools
+and prompt, such as one whose MCP server moved:
+
+```ts
+const definition = await agents.runtime.upsertDefinition("builder", {
+  name: "Builder", systemPrompt: "You build bots.", applyOnUpdate: true,
+  mcpServers: [{ name: "builder", url: "https://bots.example.com/builder/mcp", auth: { type: "runtime" } }],
+});
+// definition.applied: every live agent asked to take the new revision, when this deploy changed it
+```
+
 The response's `applied` lists each agent with its `requestId` and `status`:
 `updated` (it has the revision), `queued` (it takes it after its current turn;
 poll `GET /v1/agents/:id/requests/:requestId` for the outcome) or `failed`, with

@@ -120,6 +120,44 @@ test("agents are made from a definition, record its revision, and take a new one
   assert.equal((await r.prompt(first, "still here")).outcome.result.reply, "ok");
 });
 
+test("a definition with applyOnUpdate reaches its live agents on every save that revises it, upserts included", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
+  const key = { "Idempotency-Key": "builder" };
+  const save = (systemPrompt: string, extra: object = {}) => r.call("/v1/definitions", { body: { name: "Builder", systemPrompt, applyOnUpdate: true, ...extra }, headers: key });
+  const created = await save("You are builder v1.");
+  assert.equal(created.status, 201, created.text);
+  assert.equal(created.json.applyOnUpdate, true);
+  assert.equal(created.json.applied, undefined, "a new definition has no agents to apply to");
+  const agents = await Promise.all(["a", "b"].map(async name => (await r.call("/v1/agents", { body: { definition: created.json.id, name } })).json.id));
+  await r.prompt(agents[0], "hello");
+
+  // The same upsert again (a deploy that changed nothing) makes no revision and applies nothing.
+  const same = await save("You are builder v1.");
+  assert.equal(same.json.revision, 1);
+  assert.equal(same.json.applied, undefined);
+
+  // A changed upsert makes revision 2 and applies it, as PATCH with apply: "all" would.
+  const changed = await save("You are builder v2.");
+  assert.equal(changed.status, 201, changed.text);
+  assert.equal(changed.json.revision, 2);
+  assert.deepEqual(changed.json.applied.map((entry: any) => entry.agent), [...agents].sort());
+  assert.equal(changed.json.applied.some((entry: any) => entry.status === "failed"), false);
+  await until(async () => (await r.call(`/v1/definitions/${created.json.id}/agents`)).json.every((agent: any) => agent.revision === 2), "both agents to take revision 2");
+  await r.prompt(agents[0], "again");
+  assert.match(systemText(r.model.bodies.at(-1)), /You are builder v2\./, "the running agent was reconfigured");
+
+  // A PATCH revises it too; turning applyOnUpdate off is saved without applying, and later saves reach new agents only.
+  const patched = await r.call(`/v1/definitions/${created.json.id}`, { method: "PATCH", body: { systemPrompt: "You are builder v3." } });
+  assert.equal(patched.json.applied.length, 2);
+  const off = await r.call(`/v1/definitions/${created.json.id}`, { method: "PATCH", body: { applyOnUpdate: null } });
+  assert.equal(off.json.applyOnUpdate, undefined);
+  assert.equal(off.json.applied, undefined);
+  const later = await r.call(`/v1/definitions/${created.json.id}`, { method: "PATCH", body: { systemPrompt: "You are builder v5." } });
+  assert.equal(later.json.applied, undefined);
+  assert.equal((await r.call(`/v1/agents/${agents[1]}`)).json.systemPrompt, "You are builder v3.");
+  assert.equal((await r.call("/v1/definitions", { body: { name: "x", applyOnUpdate: "yes" } })).status, 400);
+});
+
 test("an agent's own model, thinking level and prompt addition survive applying its definition", async t => {
   const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
   const definition = (await r.call("/v1/definitions", { body: { name: "Threads", systemPrompt: "You are camel v1.", thinkingLevel: "high" } })).json;
