@@ -9,6 +9,20 @@ between yours and the new one first.
 
 Changes on main since the last tag.
 
+### Runtime
+
+- `maxOutputTokens` and `temperature` on agents, definitions, `PATCH /v1/agents/:id/configuration` and stateless
+  runs: the most the model writes in one response (at most its own maximum), and its sampling temperature (0 to 2).
+  A temperature the model would refuse is a 400 where it is set: Claude Opus 4.7 and later, Sonnet 5.5 and Fable,
+  models that always reason (o-series, GPT-5), and any reasoning model at a `thinkingLevel` other than `off`. Set on
+  an agent from a definition, both stay its own when the definition is applied. Compaction summaries keep the
+  runtime's settings. See [Output length and temperature](../guides/models-and-keys.md#output-length-and-temperature).
+
+### TypeScript SDK
+
+- `maxOutputTokens` and `temperature` on `agents.upsert`, `agents.run`, definitions and `agent.configure` (`null`
+  removes either there).
+
 ### Python SDK
 
 - `camelai_run.sync`: a synchronous client with the same names (`Agents`, `Agent`, `AgentRuntime`, `Runs`) for
@@ -19,6 +33,8 @@ Changes on main since the last tag.
 - `verify_webhook(body, headers, secret)` verifies a webhook request (Standard Webhooks signature, constant-time,
   within 5 minutes) and returns its event.
 - `initial_messages=` on `agents.upsert` and `create_agent`: the history an agent begins with.
+- `max_output_tokens=` and `temperature=` on `agents.upsert`, `create_agent`, `agents.run` and `configure` (`None`
+  removes either there); definitions take `maxOutputTokens` and `temperature` as fields.
 - `AgentRuntime` manages key scopes (`set_scope_key`, `key_scope`, `set_scope_provider`, ...), API tokens
   (`tokens`, `create_token`, `revoke_token`), usage (`usage`), webhook endpoints (`create_webhook`, `webhooks`,
   `update_webhook`, `delete_webhook`, `rotate_webhook_secret`) and agent tokens (`rotate_agent_credentials`).

@@ -39,7 +39,8 @@ for when another definition can delegate to it.
 definitions not saved yet, so two can name each other. See
 [Multi-agent](multi-agent.md).
 
-The definition supplies the model, prompt, thinking level and tool sources;
+The definition supplies the model, prompt, thinking level, `maxOutputTokens`,
+`temperature` and tool sources;
 `name`, `ttlSeconds`, `mounts` and `initialMessages` given alongside it override
 its defaults, and tools of your process (`tools`) are added as its attached
 server.
@@ -52,9 +53,13 @@ leaves alone:
  "systemPromptAppend": "Thread thr_123 in workspace ws_9."}
 ```
 
-- `model`, `thinkingLevel` and `runLimits` given at creation, or later through
-  `PATCH /v1/agents/:id/configuration`, and `fileTools` given at creation, are
-  the agent's own: an apply changes every other field and keeps them.
+- `model`, `thinkingLevel`, `maxOutputTokens`, `temperature` and `runLimits` given
+  at creation, or later through `PATCH /v1/agents/:id/configuration`, and
+  `fileTools` given at creation, are the agent's own: an apply changes every other
+  field and keeps them. `null` set through configuration is the agent's own too.
+  An agent's own temperature that the definition's new model or thinking level
+  cannot take is left out of its calls (see
+  [Output length and temperature](models-and-keys.md#output-length-and-temperature)).
 - `systemPromptAppend` is text the model reads after the definition's prompt
   (after the runtime's default prompt without one), e.g. per-conversation
   context. An apply replaces the prompt and keeps the addition; configuring
@@ -83,7 +88,7 @@ an `error`. On the console's Channels page, **Model & prompt** opens a channel's
 definition with apply selected.
 
 `PATCH /v1/agents/:id/configuration` changes one agent's `model`,
-`systemPrompt`, `systemPromptAppend`, `thinkingLevel`, `keyScope`, `spendLimit` or `modelHeaders` without touching its definition or history:
+`systemPrompt`, `systemPromptAppend`, `thinkingLevel`, `maxOutputTokens`, `temperature`, `keyScope`, `spendLimit` or `modelHeaders` without touching its definition or history:
 
 ```http
 PATCH /v1/agents/client_…/configuration
@@ -96,5 +101,6 @@ Content-Type: application/json
 It answers `202` with the request, which is queued like an applied definition
 and survives a restart; poll it for the outcome, and reuse `requestId` to retry.
 A model must be in `GET /v1/models`, and the tenant must have a key for its
-provider, or the change is refused with `400`. An agent that is not running
+provider, or the change is refused with `400`. So is a `temperature` the agent's
+model or thinking level, after the change, cannot take. An agent that is not running
 takes the change when it next starts.

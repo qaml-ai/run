@@ -63,7 +63,8 @@ The fields an agent takes, plus the input:
   Files (at most 4 MiB in all) give the run a workspace volume to hold them.
 - `definition`: a definition's key or id, so the configuration is not sent each
   time. Fields given alongside override it, as for an agent.
-- `model`, `systemPrompt`, `systemPromptAppend`, `thinkingLevel`, `builtins`
+- `model`, `systemPrompt`, `systemPromptAppend`, `thinkingLevel`, `maxOutputTokens`,
+  `temperature` (see [Output length and temperature](models-and-keys.md#output-length-and-temperature)), `builtins`
   (`web_fetch`, `web_search`, `delegate`), `delegate`, `keyScope`, `modelHeaders`,
   `runLimits`, `subject`, `context`.
 - `output`: a schema for a structured answer (see [Structured output](structured-output.md)).

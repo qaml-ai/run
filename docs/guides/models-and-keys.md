@@ -57,6 +57,41 @@ A self-hosted runtime's operator can also give an account keys, and route its
 model calls through a gateway of the operator's own: see
 [Billing](../operations/billing.md) and [Model endpoints](../operations/model-endpoints.md).
 
+### Output length and temperature
+
+Two settings shape each model response. `maxOutputTokens` is the most the model
+writes in one response. It must be at most the model's own maximum (`maxTokens`
+in `GET /v1/models`), which is also the default. A response that reaches it ends
+with `stopReason: "length"`. On a Claude model with a thinking budget (models
+before adaptive thinking, such as Claude Sonnet 4.5), the budget comes on top.
+Elsewhere, reasoning counts toward it.
+
+`temperature` (0 to 2) sets how varied the model's sampling is: lower is more
+deterministic. The default is the provider's. Not every model takes one, and a
+temperature a model would refuse would fail every run, so the runtime refuses it
+with a 400 where you set it:
+
+- Claude Opus 4.7 and later, Sonnet 5.5 and Fable 5.1 take none, wherever they are
+  served (Anthropic, Bedrock, OpenRouter).
+- A model that always reasons takes none: OpenAI's o-series and GPT-5, Claude Fable 5.
+- A reasoning model takes none while it reasons: its `thinkingLevel` must be `off`.
+  Give `"thinkingLevel": "off"` with the temperature, or `"temperature": null` with
+  a new thinking level.
+
+Set them when you make an agent, for a [stateless run](stateless-runs.md), or for
+every agent of a [definition](definitions.md). Change them with
+`PATCH /v1/agents/:id/configuration`; `null` removes either. The same check runs
+there, against the model and thinking level the agent will have. `GET /v1/agents/:id`
+shows both (`null` when unset).
+
+```json
+{"model": "anthropic/claude-sonnet-5", "maxOutputTokens": 2000, "temperature": 0.2}
+```
+
+Compaction summaries keep the runtime's own settings. If a later change makes a
+temperature inapplicable (a definition applied with a new model or thinking level),
+the agent's calls leave it out rather than fail.
+
 ### Prompt caching
 
 The runtime marks the system prompt and tools (and the latest message) as a
