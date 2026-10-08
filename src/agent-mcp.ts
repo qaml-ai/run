@@ -11,6 +11,7 @@ import { resumeId, type ClientSessions } from "./client-sessions.ts";
 import type { Definitions } from "./definitions.ts";
 import { MCP_CORS, mcpBody, mcpPreflight, mcpSignIn, serveMcp } from "./hosted-mcp.ts";
 import type { PublicOrigins } from "./origins.ts";
+import { network } from "./node-context.ts";
 
 /**
  * Every agent as an MCP server, at /v1/agents/:id/mcp: one tool, `message`, that sends the agent a message and gives
@@ -83,7 +84,7 @@ export function agentMcp(options: AgentMcpOptions) {
     try { const parsed = JSON.parse(body); messages = Array.isArray(parsed) ? parsed : [parsed]; } catch { /* the transport answers it */ }
     // The agent's own token calls its /clients routes; the tenant's, its /v1 routes.
     const base = `${options.loopback()}${agent.own ? `/clients/${id}` : `/v1/agents/${id}`}`;
-    const api = new Api({ url: base, apiKey: authorization.slice(7) });
+    const api = new Api({ url: base, apiKey: authorization.slice(7) }, network().fetch);
 
     const replies = messages.filter(message => typeof message?.id === "string" && message.id.startsWith(ELICIT) && message.method === undefined);
     if (replies.length) {
@@ -293,7 +294,7 @@ function follow(call: Call, inbox: Inbox, signal: AbortSignal): Promise<void> {
     let cursor: string | undefined, first = true;
     while (!signal.aborted) {
       try {
-        const response = await fetch(call.events, { headers: { Authorization: call.authorization, Accept: "text/event-stream", ...(cursor ? { "Last-Event-ID": cursor } : {}) }, signal });
+        const response = await network().fetch(call.events, { headers: { Authorization: call.authorization, Accept: "text/event-stream", ...(cursor ? { "Last-Event-ID": cursor } : {}) }, signal });
         if (response.status === 409) { cursor = undefined; await response.body?.cancel(); continue; }
         if (!response.ok) {
           const error = new ApiError(response.status, (await response.json().catch(() => ({}))).error ?? response.statusText);

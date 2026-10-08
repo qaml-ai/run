@@ -7,7 +7,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall, getCurrentSystemMessage, getCurrentTools, getSystemMessageText, type AssistantMessage, type FauxResponseStep } from "@earendil-works/pi-ai";
 import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { createAgentHost, type HostIO } from "../src/agent-host.ts";
-import { Transcript, type TranscriptRecord } from "../src/transcript.ts";
+import { forkCut, recordedMessages, Transcript, type TranscriptRecord } from "../src/transcript.ts";
 import { fileAppendLog, type AppendLog } from "../shared/append-log.ts";
 import type { ToolDefinition } from "../src/protocol.ts";
 
@@ -209,6 +209,44 @@ test("resume: a lost delegate call is made again (it finds the child its call st
   assert.deepEqual(results.map(message => message.toolCallId), ["look", "dig"]);
   assert.match(results[1].content[0].text, /the child's answer/);
 });
+
+for (const when of ["before the host has the run", "as the host begins it"]) {
+  test(`an abort of a resumed turn ${when} settles it in the transcript, its lost delegate call closed as unknown, so a fork holds it`, async t => {
+    const fake = await setup(t);
+    await fake.crashedTurn([user("research it"), answer(fauxToolCall("delegate", { task: "dig" }, { id: "dig" }), "toolUse")], [user("hello"), answer("Hi.")]);
+    const calls: string[] = [];
+    let asked = 0;
+    fake.respond(() => { asked++; return answer("Too late."); });
+    const { host, init } = await fake.start({ resume: true, call: name => { calls.push(name); return { agentId: "client_child", status: "completed", text: "the child's answer" }; } });
+    assert.deepEqual(init.resume, { continue: true });
+    assert.equal((await fake.history()).active, true, "the turn is open for the continue");
+    let result;
+    // Aborted while its session waited to give it to the host (`aborted`), or while the host sets the continue up.
+    if (when === "before the host has the run") result = await host.handle("continue", { aborted: true });
+    else {
+      const run = host.handle("continue", {});
+      await host.handle("abort", {});
+      result = await run;
+    }
+    assert.equal(result.error, "The run was aborted");
+    assert.equal(result.code, "aborted");
+    assert.deepEqual(calls, [], "the delegate call was not made again");
+    assert.equal(asked, 0, "the model was never asked");
+    const after = await fake.history();
+    assert.equal(after.active, false, "the turn is settled before the run is seen to end");
+    assert.deepEqual(roles(after.context), ["user", "assistant", "user", "assistant", "toolResult"]);
+    assert.match(JSON.stringify(after.context.at(-1)), /outcome is unknown/);
+    // A fork without a point ends with the last settled record: the aborted turn's prompt is in it.
+    const records = await fileAppendLog<TranscriptRecord>(fake.path).read();
+    const cut = forkCut(records);
+    assert.equal(cut.through, 4);
+    assert.ok(recordedMessages(cut.records).some(message => JSON.stringify(message).includes("research it")));
+    // The next prompt starts a turn of its own.
+    fake.respond(answer("Next."));
+    assert.equal((await host.handle("prompt", { text: "again" })).reply, "Next.");
+    assert.equal((await fake.history()).active, false);
+  });
+}
 
 test("an abort that reaches a run before its model loop starts ends it, rather than finding nothing to stop", async t => {
   const fake = await setup(t);

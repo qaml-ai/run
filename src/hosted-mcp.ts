@@ -6,6 +6,7 @@ import { createServer } from "../packages/cli/src/mcp.ts";
 import type { Principal } from "./accounts.ts";
 import { readText } from "./http.ts";
 import type { PublicOrigins } from "./origins.ts";
+import { network } from "./node-context.ts";
 
 /** A message's largest body: room for a manifest with an OpenAPI spec inline. */
 const MAX_BODY = 8 * 1024 * 1024;
@@ -95,7 +96,7 @@ export function hostedMcp(options: HostedMcpOptions) {
     const body = await mcpBody(c);
     if (body instanceof Response) return body;
     const publicUrl = options.origins.canonical, loopback = options.loopback();
-    const local: typeof fetch = (input, init) => { const url = String(input); return fetch(url.startsWith(publicUrl) ? loopback + url.slice(publicUrl.length) : url, init); };
+    const local: typeof fetch = (input, init) => { const url = String(input); return network().fetch(url.startsWith(publicUrl) ? loopback + url.slice(publicUrl.length) : url, init); };
     return serveMcp(c, createServer(() => new Api({ url: publicUrl, apiKey: authorization!.slice(7) }, local)), body);
   });
   return app;

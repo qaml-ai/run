@@ -57,6 +57,21 @@ A self-hosted runtime's operator can also give an account keys, and route its
 model calls through a gateway of the operator's own: see
 [Billing](../operations/billing.md) and [Model endpoints](../operations/model-endpoints.md).
 
+### Prompt caching
+
+The runtime marks the system prompt and tools (and the latest message) as a
+cached prefix on Anthropic's API and on Bedrock's Claude models; OpenAI and
+others cache on their own. The prefix is the same bytes from run to run (no
+dates or ids in it; files and the sender of a message go in the messages), so
+from an agent's second run on, `usage.cacheRead` counts what came from the cache.
+A provider caches only a prefix past its minimum: on Anthropic 1,024 tokens for
+Sonnet 5 and Opus 4.8, 2,048 for Opus 4.7, 4,096 for Haiku 4.5 and Opus 4.6.
+An agent's runtime prompt and tools come to about 2,000 tokens, so on Haiku 4.5
+a short-instruction agent caches nothing (`cacheRead: 0`) until its prefix
+passes 4,096 tokens; on Sonnet 5 its second run reads about 2,400 tokens from
+the cache. An agent that needs no tools can drop most of that prefix instead
+(`codeMode: false`; see [Tools](tools.md#without-code-codemode-false)).
+
 ## Key scopes
 
 An application that serves many customers can give each its own provider

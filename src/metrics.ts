@@ -14,6 +14,15 @@ type Value = number | [number, Unit];
 
 let sink = (line: string) => console.log(line);
 
+let metricService: string | undefined;
+/**
+ * The ServiceName dimension of every line (AGENT_SERVICE_NAME): the deployment's, so the process's, set by its entry
+ * point (server.ts, agent-child.ts). Nodes sharing a process (a simulation) share it.
+ */
+export function setMetricService(service: string | undefined) {
+  metricService = service;
+}
+
 /** Where lines go (stdout by default); tests capture them. */
 export function setMetricSink(next?: (line: string) => void) {
   sink = next ?? (line => console.log(line));
@@ -27,7 +36,7 @@ export function setMetricSink(next?: (line: string) => void) {
 export function metricLine(
   type: string,
   line: { dimensions: Record<string, string>; rollups: string[][]; metrics: Record<string, Value | undefined>; properties?: Record<string, unknown> },
-  service = process.env.AGENT_SERVICE_NAME,
+  service = metricService,
   now = Date.now(),
 ) {
   const metrics = Object.entries(line.metrics).filter((entry): entry is [string, Value] => entry[1] !== undefined);
@@ -272,7 +281,7 @@ export function recordEventMetrics(events: WebhookEvent[]) {
  * A webhook delivery's line: delivered (its lag from the event's creation, and the
  * attempts it took), or failed (`webhook_failed`, the type alarms match on, with why).
  */
-export function deliveryLine(delivery: { kind: "endpoint" | "usage"; tenant: string; event: string; attempts: number; lagMs: number; error?: string }, service = process.env.AGENT_SERVICE_NAME) {
+export function deliveryLine(delivery: { kind: "endpoint" | "usage"; tenant: string; event: string; attempts: number; lagMs: number; error?: string }, service = metricService) {
   const { kind, tenant, event, attempts, lagMs, error } = delivery;
   const properties = { tenant, event, attempts, ...(error !== undefined ? { error } : {}) };
   return error !== undefined
@@ -284,7 +293,7 @@ export function deliveryLine(delivery: { kind: "endpoint" | "usage"; tenant: str
 }
 
 /** Deliveries waiting in both outboxes, and how long the oldest has waited. */
-export function webhookBacklogLine(backlog: { pending: number; oldestAgeMs: number }, service = process.env.AGENT_SERVICE_NAME) {
+export function webhookBacklogLine(backlog: { pending: number; oldestAgeMs: number }, service = metricService) {
   return metricLine("webhook_backlog", {
     dimensions: {}, rollups: [[]],
     metrics: { WebhookBacklog: backlog.pending, WebhookOldestPendingMs: [backlog.oldestAgeMs, "Milliseconds"] },

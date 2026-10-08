@@ -289,6 +289,14 @@ export interface AgentOptions {
    * (a child's event, its streamed text left out) and `subagent_end`. Default false: none of them.
    */
   subagents?: boolean;
+  /**
+   * When the client holds the agent's event stream. "eager" (the default here): from `connect` until `close`.
+   * "lazy": only while something needs it (a `listen`er, such as `Agent.stream()`'s, for as long as it listens),
+   * so an idle handle holds no connection; requests then settle by asking for their outcome (a long poll of up
+   * to 25 s at a time). Clients that serve tools (`attach`), or have `onEvent`, `onInput` or `onConnection`, need
+   * the stream throughout, so they are eager whatever this says. A lazy client's `connect` checks nothing.
+   */
+  connection?: "eager" | "lazy";
 }
 /**
  * Human input a suspended turn waits on (its run ends with `stopped: "input_required"` and these in
@@ -347,6 +355,8 @@ export interface CreateAgentOptions extends AgentOptions {
   systemPromptAppend?: string;
   /** false: no file tools (read, write, edit, ls, glob, grep) for an application with file tools of its own. */
   fileTools?: boolean;
+  /** false: no js_exec; the model calls every tool directly, and a tool-less agent's prompt is little more than its instructions. */
+  codeMode?: boolean;
   name?: string;
   type?: string;
   /**
@@ -398,6 +408,10 @@ export interface DefinitionInput {
   /** What its agents are for: shown to models as the description of each agent's MCP tool (/v1/agents/:id/mcp). */
   description?: string;
   model?: string; systemPrompt?: string; thinkingLevel?: ThinkingLevel;
+  /** false: its agents get no file tools but present_file. */
+  fileTools?: boolean;
+  /** false: its agents get no js_exec, and call every tool directly. */
+  codeMode?: boolean;
   limits?: { ttlSeconds?: number | null }; mounts?: unknown[]; builtins?: Builtin[];
   /** Who its agents may hand tasks to (sub-agents); it adds the delegate builtin. */
   delegate?: DelegateSettings;
@@ -446,6 +460,8 @@ export interface ProviderSummary {
 /** An agent as GET /v1/agents lists it. */
 export interface AgentSummary {
   id: string; key: string | null; name: string; type: string; model: string; connected: boolean; running: boolean; expiresAt: number | null; resume: { failures: number; after: number } | null;
+  /** A hash of its configuration: equal hashes, equal configurations (an upsert of it changes nothing, and is not counted as a create). */
+  configHash: string;
   /** A sub-agent's parent: the agent whose delegate call made it. */
   parentAgentId?: string;
 }
@@ -667,21 +683,23 @@ class Transport {
     const fetcher = options.fetch;
     this.fetcher = fetcher ? (input, init) => fetcher(input, init) : globalThis.fetch.bind(globalThis);
   }
-  async json(path: string, token: string, method = "GET", body?: unknown, retry = true, headers: Record<string, string> = {}, timeoutMs = 10_000): Promise<any> {
+  async json(path: string, token: string, method = "GET", body?: unknown, retry = true, headers: Record<string, string> = {}, timeoutMs = 10_000, signal?: AbortSignal): Promise<any> {
     const data = body === undefined ? undefined : JSON.stringify(body);
     if (data && byteLength(data) > FRAME_BYTES) throw new AgentError("Request exceeds transport limit");
     for (let attempt = 0; ; attempt++) {
       try {
         const response = await this.fetcher(this.base + path, {
           method, headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", ...headers }, body: data,
-          redirect: "manual", signal: AbortSignal.timeout(timeoutMs),
+          redirect: "manual", signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
         });
         await rejectRedirect(response);
         const value = await (response.ok ? response.json() : response.json().catch(() => ({}))) as any;
         if (!response.ok) throw Object.assign(new AgentError(value.error ?? `HTTP ${response.status}`, response.status), { retryAfterMs: retryAfter(response), ...codeOf(value) });
         return value;
       } catch (error) {
+        if (signal?.aborted) throw signal.reason;
         const limited = error instanceof AgentError && error.status === 429;
+        if (signal?.aborted) throw error;
         if (limited ? attempt >= RATE_LIMIT_ATTEMPTS - 1 : !retry || attempt >= 3 || (error instanceof AgentError && error.status < 500)) throw error;
         // Honour the runtime's Retry-After, with jitter so refused callers do not return together; else back off exponentially.
         const backoff = Math.min(10_000, (limited ? 500 : 100) * 2 ** attempt);
@@ -733,7 +751,7 @@ const AGENT_KEY = /^[A-Za-z0-9_-]{1,80}$/;
 const REQUEST_ID = AGENT_KEY;
 /** A create request's fields, from the options given. */
 function provisioning(options: CreateAgentOptions) {
-  const fields = ["subject", "context", "keyScope", "spendLimit", "runLimits", "modelHeaders", "definition", "mounts", "model", "thinkingLevel", "initialMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "builtins", "delegate", "prompt"] as const;
+  const fields = ["subject", "context", "keyScope", "spendLimit", "runLimits", "modelHeaders", "definition", "mounts", "model", "thinkingLevel", "initialMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "delegate", "prompt"] as const;
   return withMultiAgent(Object.fromEntries(fields.filter(field => options[field] !== undefined).map(field => [field, options[field]])));
 }
 /** `delegate` settings bring their builtin: given the settings, the builtin is added. */
@@ -804,14 +822,14 @@ export class AgentRuntime {
    * The agent for `key`: made if there is none, set to `options` if it differs. Returns its credentials;
    * connect with `connectAgent`. Keyed agents live until they are deleted.
    */
-  async upsertAgent(key: string, options: CreateAgentOptions): Promise<{ session: SessionCredentials; reconfigured?: { id: string }; prompt?: { id: string; state: "running" | "completed"; [field: string]: unknown } | { error: { status: number; code: string; message: string } } }> {
+  async upsertAgent(key: string, options: CreateAgentOptions): Promise<{ session: SessionCredentials; configHash?: string; reconfigured?: { id: string }; prompt?: { id: string; state: "running" | "completed"; [field: string]: unknown } | { error: { status: number; code: string; message: string } } }> {
     const apiKey = this.options.apiKey;
     if (!apiKey) throw new AgentError("Set apiKey to provision an agent");
     if (!AGENT_KEY.test(key)) throw new AgentError(`An agent's key is 1 to 80 letters, digits, _ and -: ${JSON.stringify(key.slice(0, 100))} is not`);
     const server = options.mcp ?? toolServer(options.tools ?? {});
     // The key is the agent's idempotency key: the same key is the same agent, reconfigured when its configuration differs.
     const answer = await this.transport.json("/v1/agents", apiKey, "POST", { mcp: { tools: await server.listTools() }, ...provisioning(options) }, true, { "Idempotency-Key": key, ...traceHeader(options.traceparent) });
-    return { session: { id: answer.id, token: answer.token, expiresAt: answer.expiresAt ?? null }, ...(answer.reconfigured ? { reconfigured: answer.reconfigured } : {}), ...(answer.prompt ? { prompt: answer.prompt } : {}) };
+    return { session: { id: answer.id, token: answer.token, expiresAt: answer.expiresAt ?? null }, ...(answer.configHash ? { configHash: answer.configHash } : {}), ...(answer.reconfigured ? { reconfigured: answer.reconfigured } : {}), ...(answer.prompt ? { prompt: answer.prompt } : {}) };
   }
   async createAgent(options: CreateAgentOptions): Promise<AgentClient> {
     const key = this.options.apiKey;
@@ -880,7 +898,8 @@ export class AgentRuntime {
     return { session: { id: answer.id, token: answer.token, expiresAt: answer.expiresAt ?? null }, forkedFrom: answer.forkedFrom };
   }
   /** An existing agent's credentials, by its id or the key it was made with, its configuration untouched (404 when there is none). */
-  agentCredentials(keyOrId: string): Promise<SessionCredentials> { return this.transport.json(`/v1/agents/${encodeURIComponent(keyOrId)}/credentials`, this.operator()); }
+  /** An existing agent's credentials, by key or id, with its `configHash`. */
+  agentCredentials(keyOrId: string): Promise<SessionCredentials & { configHash?: string }> { return this.transport.json(`/v1/agents/${encodeURIComponent(keyOrId)}/credentials`, this.operator()); }
   definitions(): Promise<Definition[]> { return this.transport.json("/v1/definitions", this.operator()); }
   deleteDefinition(id: string): Promise<{ deleted: boolean }> { return this.transport.json(`/v1/definitions/${encodeURIComponent(id)}`, this.operator(), "DELETE", undefined, false); }
   mounts(agentId: string): Promise<Mount[]> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/mounts`, this.operator()); }
@@ -907,7 +926,122 @@ export class AgentRuntime {
     const query = [options.schemas && "schemas=true", options.refresh && "refresh=true"].filter(Boolean).join("&");
     return (await this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}${query ? `?${query}` : ""}`, this.operator())).toolSources;
   }
+
+  /**
+   * Start a stateless run (POST /v1/runs): a configuration and an input, nothing carried over. With `wait` (true: up to
+   * 60 s, or seconds) it answers once the run ends, else still running. Retries are safe: each create has an
+   * Idempotency-Key (one of its own unless given), so a retry is the same run.
+   */
+  createRun(request: RunRequest, options: { idempotencyKey?: string; wait?: boolean | number; traceparent?: string; signal?: AbortSignal } = {}): Promise<StatelessRun> {
+    const waitMs = options.wait === true ? 60_000 : typeof options.wait === "number" ? Math.min(options.wait, 60) * 1000 : 0;
+    return this.transport.json("/v1/runs", this.operator(), "POST", { ...withMultiAgent(request as RunRequest & { builtins?: Builtin[] }), ...(options.wait !== undefined ? { wait: options.wait } : {}) }, true,
+      { "Idempotency-Key": options.idempotencyKey ?? globalThis.crypto.randomUUID(), ...traceHeader(options.traceparent) }, waitMs + 15_000, options.signal);
+  }
+  /** A stateless run: running, or how it ended. `wait` (seconds, at most 25) waits for it to end first. */
+  getRun(id: string, options: { wait?: number; signal?: AbortSignal } = {}): Promise<StatelessRun> {
+    const wait = Math.min(options.wait ?? 0, 25);
+    return this.transport.json(`/v1/runs/${encodeURIComponent(id)}${wait ? `?wait=${wait}` : ""}`, this.operator(), "GET", undefined, true, {}, wait * 1000 + 15_000, options.signal);
+  }
+  /** A stateless run once it ends, however long it takes; `signal` stops waiting (not the run: `abortRun` does). */
+  async waitForRun(id: string, options: { signal?: AbortSignal } = {}): Promise<StatelessRun> {
+    for (;;) {
+      options.signal?.throwIfAborted();
+      const run = await this.getRun(id, { wait: 25, ...(options.signal ? { signal: options.signal } : {}) });
+      if (run.status !== "running") return run;
+    }
+  }
+  abortRun(id: string): Promise<{ aborted: true }> { return this.transport.json(`/v1/runs/${encodeURIComponent(id)}/abort`, this.operator(), "POST", {}, true); }
+  /** Delete a run now, before its retention ends (a running one stops). */
+  deleteRun(id: string): Promise<{ deleted: true }> { return this.transport.json(`/v1/runs/${encodeURIComponent(id)}`, this.operator(), "DELETE", undefined, true); }
+  /** A run's messages: its input, the model's turns and tool results. */
+  runMessages(id: string): Promise<AgentHistory> { return this.transport.json(`/v1/runs/${encodeURIComponent(id)}/messages`, this.operator()); }
+  /**
+   * A run's event stream, to its end (its `response` frame): reconnecting with Last-Event-ID where the connection drops,
+   * so no event is missed or repeated where the stream still has them (a stream that no longer has them starts with a snapshot).
+   */
+  async *runEvents(id: string, options: { lastEventId?: number; signal?: AbortSignal } = {}): AsyncGenerator<RunFrame> {
+    let cursor = options.lastEventId ?? 0;
+    for (let failures = 0; ;) {
+      options.signal?.throwIfAborted();
+      let response: Response;
+      try {
+        response = await this.transport.fetcher(`${this.transport.base}/v1/runs/${encodeURIComponent(id)}/events`, {
+          headers: { Authorization: `Bearer ${this.operator()}`, Accept: "text/event-stream", ...(cursor ? { "Last-Event-ID": String(cursor) } : {}) }, redirect: "manual", ...(options.signal ? { signal: options.signal } : {}),
+        });
+      } catch (error) {
+        if (options.signal?.aborted || ++failures > 5) throw error;
+        await pause(250 * 2 ** failures);
+        continue;
+      }
+      if (!response.ok || !response.body) {
+        const value = await response.json().catch(() => ({})) as { error?: string; code?: string };
+        const error = Object.assign(new AgentError(value.error ?? `HTTP ${response.status}`, response.status), { retryAfterMs: retryAfter(response), ...codeOf(value) });
+        if ((response.status !== 503 && response.status !== 502) || ++failures > 5) throw error;
+        await pause(error.retryAfterMs ?? 250 * 2 ** failures);
+        continue;
+      }
+      failures = 0;
+      let buffer = "";
+      try {
+        for await (const chunk of response.body.pipeThrough(new TextDecoderStream())) {
+          buffer += chunk;
+          for (let end; (end = buffer.indexOf("\n\n")) !== -1; buffer = buffer.slice(end + 2)) {
+            const lines = buffer.slice(0, end).split("\n");
+            const text = lines.filter(line => line.startsWith("data:")).map(line => line.slice(5).trimStart()).join("\n");
+            const frameId = Number(lines.find(line => line.startsWith("id:"))?.slice(3));
+            if (!text || lines.includes("event: ready") || !Number.isSafeInteger(frameId)) continue;
+            const frame = { id: frameId, data: JSON.parse(text) } as RunFrame;
+            cursor = frameId;
+            yield frame;
+            if (frame.data.type === "response") return;
+          }
+        }
+      } catch (error) { if (options.signal?.aborted) throw error; }
+      // Cut off before the run's response: pick up where it left off.
+    }
+  }
 }
+
+/** A part of a stateless run's input: text, or a file sent inline (base64, at most 4 MiB across a run's files). */
+export type RunInputPart = { type: "text"; text: string } | { type: "file"; name?: string; data: string; contentType?: string };
+/** What a stateless run is (POST /v1/runs): an agent's configuration and an input. Nothing carries over between runs. */
+export interface RunRequest {
+  input: string | RunInputPart[];
+  /** A definition's key or id to take the configuration from (model, system prompt, tool sources). */
+  definition?: string;
+  model?: string; systemPrompt?: string; systemPromptAppend?: string; thinkingLevel?: ThinkingLevel;
+  builtins?: ("web_fetch" | "web_search" | "delegate")[]; delegate?: DelegateSettings;
+  /** true: a workspace volume and file tools. Default: none, unless the input has files. */
+  fileTools?: boolean; mounts?: Mount[];
+  /** js_exec. Default: on for a run with tools, off for a tool-less one. */
+  codeMode?: boolean;
+  output?: { schema: Record<string, unknown> };
+  keyScope?: string; modelHeaders?: Record<string, string>;
+  /** The run's budget (USD). */
+  spendLimit?: { usd: number };
+  runLimits?: { maxResponses?: number; maxSeconds?: number };
+  subject?: string; context?: Record<string, unknown>; actor?: string; from?: Sender; metadata?: Record<string, string>; name?: string;
+  /** How long its result, events and messages are kept once it ends (60 to 604800 seconds; default a day). */
+  retentionSeconds?: number;
+}
+/** A stateless run, as the runtime has it: `running`, then how it ended. */
+export interface StatelessRun {
+  id: string;
+  status: "running" | "completed" | "input_required" | "failed";
+  text: string;
+  output?: unknown;
+  error: { code: string; message: string; uncertain?: boolean } | null;
+  usage: RunUsage | null;
+  toolCalls: RunToolCall[]; toolErrors: ToolError[]; sourceErrors: { kind: string; source: string; message: string }[]; files: AgentFile[];
+  metadata?: Record<string, string>;
+  createdAt?: number; startedAt?: number; endedAt?: number;
+  /** Once it ended: when its result, events and messages are deleted. */
+  expiresAt: number | null;
+  resumes?: number;
+  handoffs?: { reason: "retire" | "drain"; at: number }[];
+}
+/** A frame of a run's event stream: its id (Last-Event-ID), and an event of its turn, a snapshot, or (last) its response. */
+export type RunFrame = { id: number; data: { type: "event"; requestId: string; event: AgentEvent } | { type: "response"; id: string; outcome: { result?: unknown; error?: string; uncertain?: boolean } } | { type: "snapshot"; [field: string]: unknown } };
 
 /** Files are versioned: pass `version` to write or remove only if nobody changed the file since (0: must not exist). */
 export class VolumeHandle {
@@ -1028,12 +1162,21 @@ export class AgentClient {
   private attaching: boolean;
   /** The stream was cut on purpose, to reconnect in another mode: not an error to report. */
   private switching = false;
+  /** Holds the event stream only while something needs it (`connection: "lazy"`); see `wanted`. */
+  private lazy: boolean;
+  /** Whether the event stream's loop runs (set and cleared in the same tick as it starts and ends). */
+  private streaming = false;
+  /** Cuts a lazy client's outcome polls when it closes. */
+  private readonly polls = new AbortController();
+  /** Wakes a lazy client's outcome polls when the stream stops, or the client closes. */
+  private readonly stopped = new Set<() => void>();
 
   constructor(runtime: RuntimeOptions, session: SessionCredentials, options: AgentOptions) {
     if (!/^client_[a-f0-9]{40}$/.test(session.id)) throw new AgentError("Invalid session id");
     this.id = session.id;
     this.session = redacted(session);
     this.attaching = options.attach !== false;
+    this.lazy = options.connection === "lazy" && !this.attaching && !options.onEvent && !options.onInput && !options.onConnection;
     this.tools = { ...options.tools };
     this.server = options.mcp ?? toolServer(this.tools);
     this.options = options;
@@ -1049,17 +1192,41 @@ export class AgentClient {
 
   async connect() {
     if (this.closed) throw new AgentError("Client closed");
-    this.loop ??= this.events();
+    if (this.fatal) throw this.fatal;
+    if (!this.wanted()) return;
+    this.start();
     await Promise.race([this.ready.promise, new Promise<never>((_, reject) => {
       const timer = setTimeout(() => reject(new AgentError("Timed out connecting to agent")), 10_000);
       this.ready.promise.finally(() => clearTimeout(timer)).catch(() => {});
     })]);
   }
 
+  /** Start the event stream's loop, unless it runs. */
+  private start() {
+    if (this.streaming) return;
+    this.streaming = true;
+    this.loop = this.events();
+  }
+
+  /** Whether the event stream is needed now: always, unless lazy; then while something listens. */
+  private wanted() { return !this.lazy || this.listeners.size > 0; }
+
   private async events() {
+    try { await this.stream_(); }
+    finally {
+      // Stopped while idle (lazy): the next connect starts afresh, from a snapshot, as a new client would.
+      this.streaming = false; this.switching = false;
+      for (const wake of this.stopped) wake();
+      if (!this.closed && !this.fatal) { this.ready = Promise.withResolvers<void>(); this.ready.promise.catch(() => {}); this.connection = undefined; this.cursor = 0; }
+    }
+  }
+
+  private async stream_() {
     let backoff = 250;
-    while (!this.closed) {
+    while (!this.closed && this.wanted()) {
       this.stream = new AbortController();
+      // The runtime closed the stream on purpose (its node is leaving, or the agent moved): reconnect at once.
+      let hinted = false;
       let watchdog: ReturnType<typeof setTimeout> | undefined;
       const touch = () => { clearTimeout(watchdog); watchdog = setTimeout(() => this.stream?.abort(), 20_000); };
       touch();
@@ -1115,6 +1282,7 @@ export class AgentClient {
                 backoff = 250; this.ready.resolve(); this.options.onConnection?.(true);
                 continue;
               }
+              if (lines.includes("event: reconnect")) { hinted = true; continue; }
               const idLine = lines.find(line => line.startsWith("id:"));
               // The runtime's MCP messages are live only: no id, never replayed, no cursor.
               if (!idLine) {
@@ -1151,7 +1319,7 @@ export class AgentClient {
           this.pending.clear(); this.report(error); break;
         } else if (this.switching) this.switching = false; else this.report(error);
       } finally { clearTimeout(watchdog); this.options.onConnection?.(false); }
-      if (!this.closed) { await pause(backoff); backoff = Math.min(5000, backoff * 2); }
+      if (!this.closed && this.wanted() && !hinted) { await pause(backoff); backoff = Math.min(5000, backoff * 2); }
     }
   }
 
@@ -1182,7 +1350,16 @@ export class AgentClient {
   /** @internal Hear every event as it arrives (synchronously, before onEvent); returns the unsubscribe. */
   listen(listener: (event: AgentEvent, requestId?: string) => void): () => void {
     this.listeners.add(listener);
-    return () => { this.listeners.delete(listener); };
+    // A lazy client connects for its first listener, and lets the stream go with its last.
+    if (this.lazy && !this.closed && !this.fatal) this.start();
+    return () => {
+      if (!this.listeners.delete(listener) || !this.lazy || this.listeners.size || !this.streaming) return;
+      // A listener that comes before the loop ends keeps it going: it waits for the next connection, not this one.
+      this.ready = Promise.withResolvers<void>();
+      this.ready.promise.catch(() => {});
+      this.switching = true;
+      this.stream?.abort();
+    };
   }
   /** Resolves once onEvent has handled every event received so far. */
   drained(): Promise<void> { return this.dispatching; }
@@ -1215,8 +1392,43 @@ export class AgentClient {
    * ask for its status now and then, so an event lost on the way can never strand the caller.
    */
   private async outcome(id: string, result: Promise<any>) {
+    if (this.lazy) { void this.poll(id, result); return await result; }
     const poll = setInterval(() => void this.requestStatus(id).then(record => { if (record.outcome) this.settle(id, record.outcome); }, () => {}), this.pollMs);
     try { return await result; } finally { clearInterval(poll); }
+  }
+
+  /**
+   * A lazy client's way to a request's outcome: ask for it, waiting up to 25 s each time, until it settles or the
+   * client closes. While a listener holds the stream, the outcome comes as an event after the run's others (asking
+   * could settle it before its last events arrive), so then it only asks every `pollMs`, as an eager client does.
+   * A refusal for good (the token revoked, the agent gone) fails the request.
+   */
+  private async poll(id: string, result: Promise<unknown>) {
+    let backoff = 250;
+    const settled = result.then(() => {}, () => {});
+    while (this.pending.has(id) && !this.closed) {
+      if (this.streaming) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const stopped = Promise.withResolvers<void>();
+        this.stopped.add(stopped.resolve);
+        await Promise.race([settled, stopped.promise, new Promise<void>(resolve => { timer = setTimeout(resolve, this.pollMs); })]);
+        clearTimeout(timer); this.stopped.delete(stopped.resolve);
+        if (!this.pending.has(id) || this.closed || !this.streaming) continue;
+      }
+      try {
+        const record = await this.transport.json(this.path(`/requests/${encodeURIComponent(id)}${this.streaming ? "" : "?wait=25"}`), this.session.token, "GET", undefined, true, {}, 35_000, this.polls.signal);
+        backoff = 250;
+        if (record.outcome) this.settle(id, record.outcome);
+      } catch (error) {
+        if (this.closed) return;
+        if (error instanceof AgentError && [401, 403, 404, 410].includes(error.status)) {
+          this.pending.get(id)?.reject(Object.assign(error, { requestId: error.requestId ?? id }));
+          this.pending.delete(id);
+          return;
+        }
+        await pause(backoff); backoff = Math.min(5000, backoff * 2);
+      }
+    }
   }
 
   private async sync(): Promise<SessionState> {
@@ -1256,6 +1468,8 @@ export class AgentClient {
     const id = options.idempotencyKey ?? globalThis.crypto.randomUUID();
     if (!REQUEST_ID.test(id)) throw new AgentError(`An idempotency key is 1 to 80 letters, digits, _ and -: ${JSON.stringify(id.slice(0, 100))} is not`, 400);
     options.signal?.throwIfAborted();
+    // A lazy client that is wanted to listen (stream()) connects first, so the listener sees the run from its start.
+    if (this.lazy && this.listeners.size) await this.connect();
     const deferred = this.waiter(id, options, "Request timed out; it may still be running: requestStatus() or waitForRequest() observe it");
     try {
       const record = await this.transport.json(this.path("/requests"), this.session.token, "POST", { id, method, params }, true, traceHeader(options.traceparent));
@@ -1320,8 +1534,8 @@ export class AgentClient {
    * budget: it ends before its next model request once it has spent that; the agent's spendLimit is unchanged.
    * `output: { schema }` (a JSON Schema for an object) asks for structured output: the run ends with an answer that fits it, as `output`.
    */
-  async prompt(text: string, options?: RunRequestOptions & { files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; whileRunning?: "queue" | "steer"; spendLimit?: { usd: number }; output?: { schema: Record<string, unknown> } }) {
-    const result = await this.message("prompt", text, options, { ...(options?.actor ? { actor: options.actor } : {}), ...(options?.whileRunning === "steer" ? { whileRunning: "steer" } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}), ...(options?.spendLimit ? { spendLimit: options.spendLimit } : {}), ...(options?.output ? { output: options.output } : {}) });
+  async prompt(text: string, options?: RunRequestOptions & { files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; whileRunning?: "queue" | "steer"; spendLimit?: { usd: number }; output?: { schema: Record<string, unknown> }; history?: "full" | "none" }) {
+    const result = await this.message("prompt", text, options, { ...(options?.actor ? { actor: options.actor } : {}), ...(options?.whileRunning === "steer" ? { whileRunning: "steer" } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}), ...(options?.spendLimit ? { spendLimit: options.spendLimit } : {}), ...(options?.output ? { output: options.output } : {}), ...(options?.history === "none" ? { history: "none" } : {}) });
     // A steered message's request completes as the running turn takes it, naming the turn: its outcome is the turn's.
     const into = options?.whileRunning === "steer" && isRecord(result) && typeof result.steeredInto === "string" && !("reply" in result) ? result.steeredInto : undefined;
     return into ? this.waitForRequest(into, { ...(options?.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}), ...(options?.signal ? { signal: options.signal } : {}) }) : result;
@@ -1424,8 +1638,10 @@ export class AgentClient {
   /** Connect again, attached (answering tool calls) or not. */
   private async reconnect(attach: boolean) {
     this.attaching = attach;
+    // Serving tools needs the stream throughout.
+    if (attach) this.lazy = false;
     this.ready = Promise.withResolvers<void>();
-    this.switching = true;
+    this.switching = this.streaming;
     this.stream?.abort();
     await this.connect();
   }
@@ -1490,7 +1706,7 @@ export class AgentClient {
 
   private async shutdown(drainMs: number) {
     await this.drain(drainMs);
-    this.closed = true; this.stream?.abort();
+    this.closed = true; this.stream?.abort(); this.polls.abort();
     for (const controller of this.active.values()) controller.abort();
     for (const [id, waiter] of this.pending) waiter.reject(new AgentError("Client closed; request may still be running", 0, id));
     this.pending.clear();
@@ -1504,5 +1720,5 @@ export class AgentClient {
   async [Symbol.asyncDispose]() { await this.close(); }
 }
 
-export { Agents, Agent } from "./agents.ts";
-export type { AgentsOptions, AgentConfig, Run, RunFailure, RunInput, RunOptions, RunStream, StreamPart, InputValue, AnswerOptions, OutputSchema, OutputOf, StandardOutputSchema } from "./agents.ts";
+export { Agents, Agent, Runs } from "./agents.ts";
+export type { AgentsOptions, AgentConfig, Run, RunFailure, RunInput, RunOptions, RunStream, StreamPart, StatelessRunConfig, InputValue, AnswerOptions, OutputSchema, OutputOf, StandardOutputSchema } from "./agents.ts";

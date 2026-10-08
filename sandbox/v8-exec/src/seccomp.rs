@@ -44,6 +44,9 @@ pub fn install(jitless: bool, debug: Debug) -> Result<(), String> {
     SYS_getcpu,
     #[cfg(target_arch = "x86_64")]
     SYS_time,
+    // glibc's pthread_getschedparam asks the kernel for a thread's scheduling the first time; on x86_64
+    // a thread did so now and then as the watchdog ended a busy execution (about 1 in 200 under load).
+    SYS_sched_getparam, SYS_sched_getscheduler,
   ];
   let mut program: Vec<sock_filter> = Vec::new();
   let mut push = |code: u16, jt: u8, jf: u8, k: u32| program.push(sock_filter { code, jt, jf, k });

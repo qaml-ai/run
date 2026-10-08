@@ -21,14 +21,33 @@ export interface RateLimit {
   windowSeconds: number;
 }
 
+/**
+ * Where a tenant stands in a per-tenant window (agent creates, runs), as the X-RateLimit-* headers say it: the limit,
+ * what is left of it, and the seconds until the window resets. Windows are fixed and align to the clock minute (UTC).
+ */
+export interface RateLimitState {
+  limit: number;
+  remaining: number;
+  /** Seconds until the window resets, at least 1. */
+  reset: number;
+}
+
+/** The X-RateLimit-* headers for a tenant's window. */
+export function rateLimitHeaders(state: RateLimitState | undefined): Record<string, string> {
+  return state ? { "X-RateLimit-Limit": String(state.limit), "X-RateLimit-Remaining": String(state.remaining), "X-RateLimit-Reset": String(state.reset) } : {};
+}
+
 /** A request a rate limit refused: 429 RATE_LIMITED, with Retry-After and the limit in the body. */
 export class RateLimited extends HttpError {
   readonly retryAfter: number;
   readonly limit: RateLimit;
+  /** A per-tenant limit's window, for its X-RateLimit-* headers. */
+  readonly state?: RateLimitState;
   constructor(limit: RateLimit, retryAfterSeconds: number, message: string) {
     super(429, message, "RATE_LIMITED");
     this.limit = limit;
     this.retryAfter = Math.max(1, Math.ceil(retryAfterSeconds));
+    if (limit.scope === "tenant") this.state = { limit: limit.max, remaining: 0, reset: this.retryAfter };
   }
 }
 
@@ -51,7 +70,7 @@ export interface RateLimitConfig {
   /** Requests that mail a link (sign-up, a password reset, adding an address) per client address an hour, and mails per email address a day. */
   emailRequestsPerIp: number;
   emailsPerAddress: number;
-  /** Agents a tenant may create a minute (POST /v1/agents), and on free credit. */
+  /** Agents a tenant may create a minute (POST /v1/agents), and on free credit: an anti-abuse guard, not a product limit. */
   agentCreates: number;
   freeAgentCreates: number;
   /** Runs (prompt, continue, execute) a tenant may start a minute, and on free credit. */
@@ -85,10 +104,12 @@ export function rateLimitConfig(env: NodeJS.ProcessEnv = process.env): RateLimit
     passwordFailuresPerEmail: count("AGENT_RATE_LIMIT_PASSWORD_FAILURES_PER_EMAIL", 10),
     emailRequestsPerIp: count("AGENT_RATE_LIMIT_EMAIL_REQUESTS_PER_IP", perAddress ? 10 : 0),
     emailsPerAddress: count("AGENT_RATE_LIMIT_EMAILS_PER_ADDRESS", 5),
-    agentCreates: count("AGENT_RATE_LIMIT_AGENT_CREATES", 60),
-    freeAgentCreates: count("AGENT_RATE_LIMIT_FREE_AGENT_CREATES", 10),
+    // Making an agent costs almost nothing: creates are limited only against abuse, the same for every account. Busy
+    // agents (usage tiers), spend and storage are what an account designs around.
+    agentCreates: count("AGENT_RATE_LIMIT_AGENT_CREATES", 600),
+    freeAgentCreates: count("AGENT_RATE_LIMIT_FREE_AGENT_CREATES", 600),
     runs: count("AGENT_RATE_LIMIT_RUNS", 600),
-    freeRuns: count("AGENT_RATE_LIMIT_FREE_RUNS", 60),
+    freeRuns: count("AGENT_RATE_LIMIT_FREE_RUNS", 240),
     exempt: new Set((env.AGENT_RATE_LIMIT_EXEMPT ?? "").split(",").map(value => value.trim().toLowerCase()).filter(Boolean)),
   };
 }
@@ -247,34 +268,68 @@ export class RateLimits {
     }
   }
 
-  /** Count an agent create by `tenant` (POST /v1/agents). */
-  agentCreate(tenant: string) {
-    return this.perTenant(tenant, "agentCreates", "agent_creates", "agents created");
+  /**
+   * Count an agent create by `tenant` (POST /v1/agents, a fork): where it stands in its window after this one, for
+   * the X-RateLimit-* headers; undefined when no limit applies. `counted: false` only reads where it stands (an upsert
+   * that changes nothing).
+   */
+  agentCreate(tenant: string, counted = true) {
+    return this.perTenant(tenant, "agentCreates", "agent_creates", "agents created", counted);
   }
 
-  /** Count a run (prompt, continue, execute) started for `tenant`. */
+  /** Count a run (prompt, continue, execute) started for `tenant`: where it stands in its window after this one. */
   run(tenant: string) {
-    return this.perTenant(tenant, "runs", "runs", "runs started");
+    return this.perTenant(tenant, "runs", "runs", "runs started", true);
   }
 
-  private async perTenant(tenant: string, limit: "agentCreates" | "runs", name: string, what: string) {
+  /**
+   * Refuse, as `run` would, when `tenant` has no runs left this minute, without counting one: a stateless run checks this
+   * before it makes anything, and `run` still counts it when it is accepted.
+   */
+  async runsLeft(tenant: string) {
+    const state = await this.perTenant(tenant, "runs", "runs", "runs started", false);
+    if (state && state.remaining <= 0) this.refuse({ name: "runs", scope: "tenant", max: state.limit, windowSeconds: 60 }, state.reset, `Too many runs started: at most ${state.limit} a minute for this account; retry after Retry-After`);
+  }
+
+  /**
+   * A tenant's per-minute limit of `limit` (none: undefined), whether it is free credit's, and what buying credit would
+   * raise it to (`paid`, when that is more).
+   */
+  async tenantLimit(tenant: string, limit: "agentCreates" | "runs"): Promise<{ max: number; free: boolean; paid?: number } | undefined> {
     const own = await this.options.override?.(tenant, limit);
-    if (own === undefined && this.options.exempt?.(tenant)) return;
+    if (own === undefined && this.options.exempt?.(tenant)) return undefined;
     const free = own === undefined && await this.options.free(tenant);
     const max = own ?? (free ? this.config[limit === "runs" ? "freeRuns" : "freeAgentCreates"] : this.config[limit]);
     if (!max) return;
-    await this.counted(this.options.db, `${name}:${tenant}`, { name, scope: "tenant", max, windowSeconds: 60 },
-      `Too many ${what}: at most ${max} a minute for this account${free ? " on free credit" : ""}`);
+    const paid = this.config[limit];
+    return { max, free, ...(free && (!paid || paid > max) ? { paid } : {}) };
+  }
+
+  private async perTenant(tenant: string, limit: "agentCreates" | "runs", name: string, what: string, counted: boolean): Promise<RateLimitState | undefined> {
+    const applies = await this.tenantLimit(tenant, limit);
+    if (!applies) return;
+    const { max, free, paid } = applies;
+    // On free credit, what buying credit unlocks; a create limit is only against abuse.
+    const upgrade = paid !== undefined ? `; buying credit raises it to ${paid ? `${paid} a minute` : "no limit"}` : "";
+    const message = limit === "runs" ? `Too many ${what}: at most ${max} a minute for this account${free ? ` on free credit${upgrade}` : ""}`
+      : `Too many ${what}: at most ${max} a minute for this account (a limit against abuse${free ? `, on free credit${upgrade}` : ""}). Upsert an agent you have instead of making new ones`;
+    const key = `${name}:${tenant}`, windowMs = 60_000, now = this.now();
+    // Only this tenant's own counter is read: its key is the tenant's, never another's.
+    const row = counted ? await this.counted(this.options.db, key, { name, scope: "tenant", max, windowSeconds: 60 }, message)
+      : (await this.options.db.query("select count, window_start from rate_limits where key = $1 and window_start = $2", [key, Math.floor(now / windowMs) * windowMs])).rows[0] as { count: number; window_start: string | number } | undefined;
+    const start = row ? Number(row.window_start) : Math.floor(now / windowMs) * windowMs;
+    return { limit: max, remaining: Math.max(0, max - (row?.count ?? 0)), reset: Math.max(1, Math.ceil((start + windowMs - now) / 1000)) };
   }
 
   private hashed(key: string) {
     return createHmac("sha256", this.options.hashKey).update(`rate-limit:${key}`).digest("hex").slice(0, 32);
   }
 
-  /** One more for `key` in its current window; refused past the limit. */
+  /** One more for `key` in its current window; refused past the limit. The window's count and start. */
   private async counted(sql: Sql, key: string, limit: RateLimit, message: string) {
     const row = await this.increment(sql, key, limit.windowSeconds);
     if (row.count > limit.max) this.refuse(limit, (Number(row.window_start) + limit.windowSeconds * 1000 - this.now()) / 1000, message);
+    return row;
   }
 
   /** One more for `key` in its current window of `windowSeconds`: the window's count and start. */

@@ -14,6 +14,7 @@ import { transaction, type Db } from "./db.ts";
 import { underClaim, type Claim, type Ownership } from "./ownership.ts";
 import { validFileRef, type FileRef } from "./files.ts";
 import type { Input } from "./inputs.ts";
+import { network } from "./node-context.ts";
 
 /**
  * Channels let people talk to agents through messaging services. Each external
@@ -207,7 +208,7 @@ const GATEWAY_RETRY_MS = 5 * 60_000;
 
 /** Fetch an attachment from a service's file host: never redirected (a token may go with it), within a time limit. */
 export async function fetchFile(url: string, headers: Record<string, string> = {}) {
-  const response = await fetch(url, { headers, redirect: "error", signal: AbortSignal.timeout(CHANNEL_FILE_LIMITS.downloadMs) });
+  const response = await network().fetch(url, { headers, redirect: "error", signal: AbortSignal.timeout(CHANNEL_FILE_LIMITS.downloadMs) });
   if (!response.ok || !response.body) throw new Error(`Download failed: HTTP ${response.status}`);
   return { body: response.body as AsyncIterable<Uint8Array>, contentType: response.headers.get("content-type")?.split(";")[0] };
 }

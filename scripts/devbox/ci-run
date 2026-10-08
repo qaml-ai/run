@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# ci-run <git ref> [command...]: run camelRun tests at <ref> in an isolated checkout with its own Postgres.
+#   ci-run origin/main                      # full suite (npm test)
+#   ci-run origin/fix/x npm run test:props   # any command, run in the checkout
+#   PROP_SCALE=100 ci-run origin/main npm run test:props
+# Each run: a fresh git worktree under ~/camelrun-ci/runs/<id>, a postgres:16 container on a free port, the v8-exec
+# binary built in the checkout (crate downloads shared), then the command; everything is removed at the end
+# unless KEEP=1. Output goes to the terminal and ~/camelrun-ci/runs/<id>.log.
+set -euo pipefail
+ref=${1:?usage: ci-run <git ref> [command...]}; shift || true
+# The full suite at concurrency 4, like a CI runner: more files at once on one Postgres only contend on migration locks.
+[[ $# -gt 0 ]] || set -- node --experimental-strip-types --disable-warning=ExperimentalWarning --test --test-concurrency=4 --test-timeout=300000 tests/*.test.ts
+root=$HOME/camelrun-ci; repo=$root/run
+id=$(date +%Y%m%d-%H%M%S)-$$; dir=$root/runs/$id; log=$root/runs/$id.log; pg=camelrun-ci-pg-$id
+mkdir -p $root/runs
+export NVM_DIR=$HOME/.nvm; . $NVM_DIR/nvm.sh >/dev/null; nvm use -s 22 >/dev/null
+export PATH=$HOME/.cargo/bin:$PATH  # each run builds v8-exec in its own target dir (runs at different commits must not share the binary); the crate cache is shared
+cleanup() {
+  docker rm -f $pg >/dev/null 2>&1 || true
+  if [[ ${KEEP:-0} != 1 ]]; then git -C $repo worktree remove --force $dir >/dev/null 2>&1 || true; fi
+}
+trap cleanup EXIT
+exec > >(tee -a $log) 2>&1
+echo "== ci-run $ref ($id)"
+git -C $repo fetch -q --prune origin '+refs/heads/*:refs/remotes/origin/*'
+git -C $repo worktree add -q --detach $dir "$ref"
+echo "   at $(git -C $dir log --oneline -1)"
+port=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])')
+docker run -d --name $pg -e POSTGRES_PASSWORD=test -p 127.0.0.1:$port:5432 --shm-size=1g postgres:16-alpine \
+  -c max_connections=400 >/dev/null
+for i in $(seq 60); do docker exec $pg pg_isready -q 2>/dev/null && break; sleep 1; done
+export AGENT_TEST_DATABASE_URL=postgres://postgres:test@127.0.0.1:$port/postgres
+cd $dir
+npm ci --silent --no-audit --no-fund
+npm run -s build:v8-exec >/dev/null
+echo "== $* (postgres :$port)"
+start=$(date +%s)
+set +e; "$@"; status=$?; set -e
+echo "== exit $status in $(( $(date +%s) - start ))s; log $log"
+exit $status

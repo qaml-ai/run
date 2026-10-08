@@ -1,33 +1,38 @@
 import { mkdir } from "node:fs/promises";
-import { setTimeout as sleep } from "node:timers/promises";
 import { Agent, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
 import { convertToLlm } from "./pi-harness/messages.ts";
 import {
   getCurrentSystemMessage, getCurrentTools, getSystemMessageText, getToolStateChanges, isContextOverflow, isRetryableAssistantError, toToolDeclaration, validateToolArguments,
   type AssistantMessage, type Message, type SystemMessage, type Tool, type ToolCall,
 } from "@earendil-works/pi-ai";
-import { executeCode, presentResult, type CodeResult } from "./codemode.ts";
+import { executeCode, presentResult, type CodeExecutor, type CodeResult } from "./codemode.ts";
+import type { Outbound } from "./outbound.ts";
 import { scriptValue } from "./mcp-results.ts";
-import { errorText, IDENTITY_KEY, SCOPE_KEY, type AgentConfig, type CallContext, type Credentials, type RunStop, type ToolBridge } from "./protocol.ts";
+import { errorText, IDENTITY_KEY, PERSISTENCE_FAILED, SCOPE_KEY, type AgentConfig, type CallContext, type Credentials, type RunStop, type ToolBridge } from "./protocol.ts";
 import { applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS, leadingSystemMessage, OUTPUT, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER, OUTPUT_TOOL } from "./system-prompt.ts";
 import { renderMessages, senderInput, stamp } from "./sender.ts";
 import type { SearchHit, SearchQuery } from "./tool-search.ts";
 import type { AppendLog } from "../shared/append-log.ts";
 import { Transcript, readTranscriptLog, summaryMessage, type Backlog, type CompactionState, type TranscriptRecord } from "./transcript.ts";
-import { boundedContext, importedHistory, interruptedTurnRepairs, validateInitialMessages, validateUserMessages } from "./history.ts";
+import { boundedContext, closeInterruptedTurn, importedHistory, interruptedTurnRepairs, validateInitialMessages, validateUserMessages } from "./history.ts";
 import { backgroundTokens, compactionNeed, compactionSettings, contextTokens, explicitKeyStream, MODEL_INTERRUPTED, modelKeyFailure, runCompaction, type ModelGate } from "./compaction.ts";
 import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
 import { isStalled, streamTimeouts } from "./model-stream.ts";
+import { forcedToolChoice } from "./tool-choice.ts";
 import { describeFile, documentPayload, FILE_LIMITS, nativeBlock, unseen, validFileRef, type FileRef } from "./files.ts";
 import { CHUNK_BYTES, chunksOf, type HistoryChunk } from "./history-pages.ts";
 import { observeTurns, recordCodeExecution } from "./metrics.ts";
 import { fitImage, fits, type Fitted } from "./inspect.ts";
 import { imageHeader } from "./image-header.ts";
+import { clock } from "./node-context.ts";
 
 /** How often an agent reads back from its log what its history backlog could not hold (see `index`). */
 const LAG_READ_MS = 60_000;
 /** How long a stopping agent waits to index its settled turns (see `index`). */
 export const HISTORY_FLUSH_MS = 5_000;
+
+/** Model requests of one structured run that may force final_output (see `outputChoice`). */
+const FORCED_OUTPUT_REQUESTS = 3;
 
 /** Images one agent scales down at once for its requests (`fitImage`). */
 const FIT_CONCURRENCY = 2;
@@ -57,6 +62,12 @@ export interface HostIO {
   fs(op: string, args: Record<string, unknown>): Promise<unknown>;
   /** Wait for the tenant's turn to run js_exec on the node, until `signal` aborts; resolves with the function that gives it back. */
   codeSlot?(signal: AbortSignal): Promise<() => void>;
+  /** Where js_exec runs: this process's v8-exec runner unless given (an inline host's node may give its own). */
+  codeExecutor?: CodeExecutor;
+  /** The outbound policy model calls to endpoints tenants give go through: its node's (this process's unless given). */
+  modelOutbound?: Outbound;
+  /** The history backlog's bound (AGENT_HISTORY_BACKLOG_BYTES; `BACKLOG_BYTES` unless given). */
+  historyBacklogBytes?: number;
   /** Wait until the node may act for the agent (its lease is fresh), before each model request and js_exec; rejects once it lost the agent. */
   lease?(): Promise<void>;
   /** The agent's history index, which the supervisor writes: how many messages it has (null: it has none yet, or none is kept), and a chunk to add. */
@@ -113,8 +124,17 @@ export function createAgentHost(hostIO: HostIO) {
   let steers: { message: AgentMessage; whileRunning: boolean }[] = [];
   /** What the current run's final_output call gave, once the model made one that fit its schema. */
   let output: { value: unknown } | undefined;
+  /**
+   * Requests of the current run that may still force final_output (`outputChoice`), whether its reminder does, and
+   * whether the latest request did.
+   */
+  let forcing = { left: 0, reminding: false, last: false };
+  /** In a run with history: "none", the system message as it stands: its requests lead with it, and carry only the run's own messages (`freshTurn`). */
+  let fresh: SystemMessage | undefined;
   /** Calls a lost node left open that are safe to make again (`RERUN`): made again before the resumed turn continues. */
   let rerun: ToolCall[] = [];
+  /** js_exec, which an agent has unless its codeMode is false; made at init. */
+  let jsExec: AgentTool | undefined;
   /** Model requests wait for the node's lease, and are cut (`interrupt`) when it goes stale. */
   const gate: ModelGate = { wait: signal => leased(signal), open: new Set() };
 
@@ -190,9 +210,24 @@ export function createAgentHost(hostIO: HostIO) {
   /** Pi's messages from the transcript: what a run starts from. */
   function stateMessages(): AgentMessage[] { return [leading(), ...transcript.view()]; }
 
-  /** The model's context: the leading system message, the current summary, and live messages not yet folded into it. */
+  /** The model's context: the leading system message, the current summary, and live messages not yet folded into it. A fresh run's: its own system message and messages. */
   function liveView(messages: AgentMessage[]): AgentMessage[] {
-    return [leading(), ...summaryView(), ...messages.filter((message, index) => !(index === 0 && message.role === "system") && message.role !== "compactionSummary" && !dropped.has(message))];
+    return [fresh ?? leading(), ...fresh ? [] : summaryView(), ...messages.filter((message, index) => !(index === 0 && message.role === "system") && message.role !== "compactionSummary" && !dropped.has(message))];
+  }
+
+  /**
+   * Begin a run that sees no history (a prompt's history: "none", which its user message records): Pi's state is the
+   * system message as it stands (the leading one with every change since), then the run's own messages, from `first` on.
+   * Its messages are still history, which later runs see. Continued or resumed, a turn whose last user message says so
+   * stays fresh; undefined (the whole history) otherwise.
+   */
+  function freshTurn(first?: AgentMessage): AgentMessage[] | undefined {
+    first ??= transcript.context.findLast(message => message.role === "user");
+    if ((first as { history?: string } | undefined)?.history !== "none") return undefined;
+    const all = stateMessages();
+    const at = all.indexOf(first!);
+    fresh = getCurrentSystemMessage(at < 0 ? all : all.slice(0, at))!;
+    return [fresh, ...at < 0 ? [] : all.slice(at)];
   }
 
   /** Record a system message after the leading one, pinning `current` as that first, in one commit (`Transcript.declareSystem`). */
@@ -321,7 +356,7 @@ export function createAgentHost(hostIO: HostIO) {
       const keepRecentTokens = reason === "overflow" ? Math.max(1_000, Math.floor(contextTokens([...summaryView(), ...context]) * 0.2)) : undefined;
       const outcome = await runCompaction({
         // The summarizer reads messages as the model does, senders included; rendering keeps their count, so the cut still indexes the context.
-        context: renderMessages(context), offset, previous, model: config.model, apiKey: perCall() ? () => io.modelAuth() : apiKey, signal, keepRecentTokens, modelHeaders: config.modelHeaders, gate,
+        context: renderMessages(context), offset, previous, model: config.model, apiKey: perCall() ? () => io.modelAuth() : apiKey, signal, keepRecentTokens, modelHeaders: config.modelHeaders, gate, outbound: io.modelOutbound,
         onResponse: message => io.emit({ type: "compaction_usage", provider: message.provider, model: message.model, usage: message.usage, timestamp: message.timestamp, ...flag }),
       });
       if ("skipped" in outcome) {
@@ -414,6 +449,37 @@ export function createAgentHost(hostIO: HostIO) {
   }
 
   /**
+   * The tool_choice of a structured run's next model request: final_output, forced from the first request when it is
+   * the only tool the model has, and once the model has answered in text (`remindOfOutput`) when it has others, where the
+   * provider can force it (`forcedToolChoice`; elsewhere the reminder alone asks for it). At most FORCED_OUTPUT_REQUESTS
+   * a run, so a model whose calls never fit the schema still ends its turn.
+   */
+  function outputChoice(model: AgentConfig["model"]): unknown {
+    forcing.last = false;
+    const tools = agent!.state.tools;
+    if (output || forcing.left <= 0 || !tools.some(tool => tool.name === OUTPUT_TOOL)) return undefined;
+    const sole = tools.every(tool => tool.name === OUTPUT_TOOL);
+    if (!sole && !forcing.reminding) return undefined;
+    const choice = forcedToolChoice(model, OUTPUT_TOOL, { sole, thinking: (config.thinkingLevel ?? "off") !== "off" });
+    if (choice !== undefined) { forcing.left--; forcing.last = true; }
+    return choice;
+  }
+
+  /**
+   * A request with final_output forced that the provider refused (one that takes no such tool_choice): taken back, as
+   * a failed response is, and asked again without forcing for the rest of the run.
+   */
+  async function unforced(signal: AbortSignal) {
+    const last = agent!.state.messages.at(-1) as AssistantMessage | undefined;
+    if (!forcing.last || signal.aborted || last?.role !== "assistant" || last.stopReason !== "error" || isRetryableAssistantError(last) || isContextOverflow(last, config.model.contextWindow)) return;
+    forcing = { left: 0, reminding: false, last: false };
+    await transcript.retract();
+    io.emit({ type: "message_retracted", index: transcript.total });
+    agent!.state.messages = agent!.state.messages.slice(0, -1);
+    await agent!.continue();
+  }
+
+  /**
    * Declare final_output with a prompt's schema, or take it away from a prompt without one. It stays declared
    * between runs (the tool set changes only when a schema does), and a turn continued or resumed keeps it.
    */
@@ -435,7 +501,7 @@ export function createAgentHost(hostIO: HostIO) {
     let result: CodeResult | undefined, failure: unknown;
     // Code makes tool calls and writes files: it starts only while the node's lease is fresh.
     await leased(options.signal);
-    try { return result = await executeCode({ ...options, limits: config.codeLimits, admit: io.codeSlot && (signal => io.codeSlot!(signal)) }); }
+    try { return result = await executeCode({ ...options, limits: config.codeLimits, admit: io.codeSlot && (signal => io.codeSlot!(signal)), ...(io.codeExecutor ? { pool: io.codeExecutor } : {}) }); }
     catch (error) { failure = error; throw error; }
     finally {
       const maxTimeoutMs = Math.min(config.codeLimits?.maxTimeoutMs ?? SANDBOX_LIMITS.maxTimeoutMs, SANDBOX_LIMITS.maxTimeoutMs);
@@ -466,7 +532,9 @@ export function createAgentHost(hostIO: HostIO) {
     const text = content.filter(part => part.type === "text").map(part => part.text as string).join("\n");
     const limit = SANDBOX_LIMITS.outputCharacters;
     if (text.length <= limit) return content;
-    const mount = config.mounts?.find(entry => entry.path === "/workspace" && entry.mode === "rw") ?? config.mounts?.find(entry => entry.mode === "rw");
+    // Saved where the agent can read it: with its file tools, or fs in js_exec.
+    const readable = config.fileTools !== false || config.codeMode !== false;
+    const mount = readable ? config.mounts?.find(entry => entry.path === "/workspace" && entry.mode === "rw") ?? config.mounts?.find(entry => entry.mode === "rw") : undefined;
     // Named by the message that made the call too: providers may give calls in different turns the same id.
     const at = made(toolCallId).messageIndex;
     const path = mount && `${mount.path}/tool-results/${at !== undefined ? `${at}-` : ""}${toolCallId.replace(/[^A-Za-z0-9_.-]/g, "_")}.txt`;
@@ -478,8 +546,9 @@ export function createAgentHost(hostIO: HostIO) {
     return [...content.filter(part => part.type !== "text"), { type: "text", text: `${text.slice(0, limit)}\n\n[Result cut at ${limit.toLocaleString("en-US")} of ${text.length.toLocaleString("en-US")} characters.${where}]` }];
   }
 
+  /** The tools the model calls directly: those declared direct, or every one without js_exec (codeMode: false). */
   function directAgentTools(tools: AgentConfig["tools"]): AgentTool[] {
-    return tools.filter(tool => ["direct", "both"].includes(tool.exposure ?? "codemode")).map(tool => ({
+    return tools.filter(tool => config.codeMode === false || ["direct", "both"].includes(tool.exposure ?? "codemode")).map(tool => ({
         name: tool.name, label: tool.name, description: tool.description,
         parameters: tool.parameters as AgentTool["parameters"], executionMode: tool.executionMode,
         execute: async (toolCallId, args, signal) => {
@@ -597,18 +666,25 @@ export function createAgentHost(hostIO: HostIO) {
     }));
   }
 
-  /** The user messages a request adds: given whole, or as text and attached files; marked with its sender (if any), request and metadata. */
+  /**
+   * The user messages a request adds: given whole, or as text and attached files; marked with its sender (if any), request
+   * and metadata, and a prompt's `history: "none"` (only the runtime marks it: see `freshTurn`).
+   */
   function userMessages(params: Record<string, any>): AgentMessage[] {
     const marks = { from: senderInput(params.from), requestId: params.requestId, metadata: params.metadata };
+    const marked = (messages: AgentMessage[]) => messages.map(message => {
+      const { history: _history, ...rest } = message as AgentMessage & { history?: string };
+      return (params.history === "none" ? { ...rest, history: "none" } : rest) as AgentMessage;
+    });
     if (params.message !== undefined) {
       const messages = (Array.isArray(params.message) ? params.message : [params.message]) as AgentMessage[];
       validateUserMessages(messages);
-      return stamp(messages, marks);
+      return marked(stamp(messages, marks));
     }
     if (typeof params.text !== "string" || !params.text.trim()) throw new Error("Prompt text is required");
     const files = params.files ?? [];
     if (!Array.isArray(files) || files.length > FILE_LIMITS.attachments || !files.every(validFileRef)) throw new Error("Invalid attached files");
-    return stamp([{ role: "user", content: [{ type: "text", text: params.text }, ...files], timestamp: Date.now() } as AgentMessage], marks);
+    return marked(stamp([{ role: "user", content: [{ type: "text", text: params.text }, ...files], timestamp: Date.now() } as AgentMessage], marks));
   }
 
   /**
@@ -625,7 +701,9 @@ export function createAgentHost(hostIO: HostIO) {
     const reminder: SystemMessage = { role: "system", content: "", sections: { [OUTPUT]: `${OUTPUT_INSTRUCTIONS}\n${OUTPUT_REMINDER}` }, timestamp: Date.now() };
     await declare(reminder, agent!.state.messages[0] as SystemMessage);
     agent!.state.messages = [...agent!.state.messages.slice(0, -1), reminder];
+    forcing.reminding = true;
     await agent!.continue();
+    await unforced(signal);
     await recoverFailedResponses(signal);
   }
 
@@ -680,7 +758,7 @@ export function createAgentHost(hostIO: HostIO) {
       await transcript.retract();
       io.emit({ type: "message_retracted", index: transcript.total });
       agent!.state.messages = agent!.state.messages.slice(0, -1);
-      try { await sleep(delayMs, undefined, { signal }); }
+      try { await clock().sleep(delayMs, { signal }); }
       catch { return; }
       await agent!.continue();
       if ((agent!.state.messages.at(-1) as AssistantMessage | undefined)?.stopReason !== "error") {
@@ -697,14 +775,13 @@ export function createAgentHost(hostIO: HostIO) {
       // Messages the history index lacks are kept from here, as the log is read: all of them for an agent never indexed.
       // One whose index cannot be read now (null) is left for the next start.
       const indexed = io.history ? await io.history.indexed().catch(() => null) : null;
-      transcript = new Transcript(io.transcript, indexed ?? undefined);
+      transcript = new Transcript(io.transcript, indexed ?? undefined, io.historyBacklogBytes);
       await transcript.load();
       let recovered = false;
       let resume: { continue: true } | { finished: { messages: number; error: string | null; reply?: string; stopped?: string; output?: unknown } } | undefined;
       if (transcript.active && transcript.awaiting.length) {
         // The turn had suspended for input when its node stopped: its other calls are closed as unknown, and it stays suspended.
-        await transcript.append(interruptedTurnRepairs(transcript.context, false, transcript.awaiting));
-        await transcript.setActive(false);
+        await closeInterruptedTurn(transcript);
         if (config.resume) resume = { finished: { messages: transcript.total, error: null, stopped: "input_required" } };
         recovered = true;
       } else if (transcript.active && config.resume) {
@@ -730,8 +807,7 @@ export function createAgentHost(hostIO: HostIO) {
         recovered = true;
       } else if (transcript.active) {
         // Close the interrupted turn instead of refusing work until an operator intervenes.
-        await transcript.append(interruptedTurnRepairs(transcript.context));
-        await transcript.setActive(false);
+        await closeInterruptedTurn(transcript);
         recovered = true;
       } else if (transcript.total === 0 && config.initialMessages?.length) {
         validateInitialMessages(config.initialMessages);
@@ -740,7 +816,7 @@ export function createAgentHost(hostIO: HostIO) {
       }
       const directTools = directAgentTools(config.tools);
       const maxTimeoutMs = config.codeLimits?.maxTimeoutMs ?? SANDBOX_LIMITS.maxTimeoutMs;
-      const jsExec: AgentTool = {
+      jsExec = {
         name: "js_exec", label: "JavaScript",
         description: "Run JavaScript or TypeScript in a fresh sandbox. Return what you want to see: it comes back as JSON (a string as its own text), after any console.log lines. In scope: tools (await tools.<name>(args) gives the tool's result as data; tools.search, tools.namespaces and tools.describe find them) and fs for your files (readFile(path, { encoding: \"utf8\" }) gives a string, a Uint8Array without it; writeFile(path, string | Uint8Array); stat, list, remove); no network, imports, Node APIs or timers. Variables are gone after each execution; files persist. An execution gets timeoutMs of wall time (default " + Math.min(SANDBOX_LIMITS.timeoutMs, maxTimeoutMs) + ", at most " + maxTimeoutMs + "), tool calls included: raise it for slow tools." + " For example:\nconst tickets = [];\nfor (let page = 1; page; ) { const result = await tools.helpdesk__list_tickets({ status: \"open\", page }); tickets.push(...result.tickets); page = result.nextPage; }\nawait fs.writeFile(\"/workspace/tmp/tickets.json\", JSON.stringify(tickets)); // a later execution can read it back\nreturn { open: tickets.length, oldest: tickets[0]?.createdAt };",
         parameters: {
@@ -763,7 +839,11 @@ export function createAgentHost(hostIO: HostIO) {
           } finally { await io.cancelTools(); }
         },
       };
-      const tools = [jsExec, ...directTools];
+      const tools = [...config.codeMode === false ? [] : [jsExec], ...directTools];
+      // A request whose stream goes quiet ends as a retryable error (model-stream.ts), said on the run's stream as it happens.
+      const stream = explicitKeyStream(() => perCall() ? io.modelAuth() : undefined, () => config.modelHeaders, gate,
+        (model, reasoning) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts),
+        stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: config.model.provider, model: config.model.id }), io.modelOutbound);
       agent = new Agent({
         initialState: {
           model: config.model,
@@ -773,10 +853,11 @@ export function createAgentHost(hostIO: HostIO) {
         getApiKey: () => config.apiKey,
         // Only the tenant's explicit key, never provider keys from the process environment. A model on the
         // tenant's own endpoint gets a fresh identity token for each call, and a key scope's agent its scope's current key.
-        // A request whose stream goes quiet ends as a retryable error (model-stream.ts), said on the run's stream as it happens.
-        streamFn: explicitKeyStream(() => perCall() ? io.modelAuth() : undefined, () => config.modelHeaders, gate,
-          (model, reasoning) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts),
-          stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: config.model.provider, model: config.model.id })),
+        // A structured run's request may force final_output (`outputChoice`).
+        streamFn: (model, context, options) => {
+          const toolChoice = outputChoice(model);
+          return stream(model, context, toolChoice === undefined ? options : { ...options, toolChoice } as typeof options);
+        },
         // Renders compaction summaries for the model (the default drops non-chat roles), and each message's sender.
         convertToLlm: messages => hydrate(convertToLlm(renderMessages(messages))),
         onPayload: payload => documents ? documentPayload(payload) : undefined,
@@ -847,14 +928,16 @@ export function createAgentHost(hostIO: HostIO) {
       if (params.systemPrompt !== undefined) config.systemPrompt = params.systemPrompt ?? undefined;
       if (params.systemPromptAppend !== undefined) config.systemPromptAppend = params.systemPromptAppend;
       if (params.fileTools !== undefined) config.fileTools = params.fileTools;
+      if (params.codeMode !== undefined) config.codeMode = params.codeMode;
       if (params.model !== undefined) { config.model = params.model; agent.state.model = params.model; }
       if (params.thinkingLevel !== undefined) { config.thinkingLevel = params.thinkingLevel; agent.state.thinkingLevel = params.thinkingLevel; }
       if (params.apiKey !== undefined) config.apiKey = params.apiKey;
       if (params.modelHeaders !== undefined) config.modelHeaders = params.modelHeaders;
       // Its stream timeouts apply from the next model request.
       if (params.runLimits !== undefined) config.runLimits = params.runLimits;
-      if (params.tools !== undefined) { config.tools = params.tools; agent.state.tools = [agent.state.tools.find(tool => tool.name === "js_exec")!, ...directAgentTools(config.tools)]; }
-      if (params.systemPrompt !== undefined || params.systemPromptAppend !== undefined || params.tools !== undefined || params.model !== undefined) await declareConfiguration();
+      if (params.tools !== undefined) config.tools = params.tools;
+      if (params.tools !== undefined || params.codeMode !== undefined) agent.state.tools = [...config.codeMode === false ? [] : [jsExec!], ...directAgentTools(config.tools)];
+      if (params.systemPrompt !== undefined || params.systemPromptAppend !== undefined || params.tools !== undefined || params.codeMode !== undefined || params.model !== undefined) await declareConfiguration();
       return { configured: true };
     }
     // Full history comes from the log; memory holds only the working set.
@@ -899,7 +982,7 @@ export function createAgentHost(hostIO: HostIO) {
     }
     if (method !== "prompt" && method !== "execute" && method !== "continue" && method !== "resume") throw new Error(`Unknown method: ${method}`);
     if (busy) throw new Error("Agent is busy");
-    if (transcript.failed !== undefined) throw new Error(`Session persistence failed: ${String(transcript.failed)}`);
+    if (transcript.failed !== undefined) throw new Error(`${PERSISTENCE_FAILED}: ${String(transcript.failed)}`);
     // A prompt a turn took as a steer before the node running it stopped: it is in the history already, compacted or not.
     if (method === "prompt" && params.requestId && transcript.requests.has(params.requestId)) {
       return { messages: transcript.total, error: null, taken: true };
@@ -908,8 +991,11 @@ export function createAgentHost(hostIO: HostIO) {
     busy = true;
     stopped = undefined;
     output = undefined;
+    forcing = { left: FORCED_OUTPUT_REQUESTS, reminding: false, last: false };
     active = new AbortController();
     try {
+      // Aborted before this host had it (its session's `aborted`): a turn resumed from the transcript is open here, and is closed.
+      if (method === "continue" && params?.aborted) return await abortedBeforeLoop();
       if (method === "prompt") await useOutput(params.output?.schema);
       if (method === "execute") {
         const { returned: _returned, cpuMs: _cpuMs, ...result } = await runCode({ ...codeRequest(params), bridge: bridge(active.signal), signal: active.signal, onEvent: event => io.emit(event) });
@@ -927,18 +1013,21 @@ export function createAgentHost(hostIO: HostIO) {
           await transcript.setActive(false);
           return { messages: transcript.total, error: null, ...(transcript.awaiting.length ? { stopped: "input_required" } : {}) };
         }
-        agent.state.messages = stateMessages();
+        agent.state.messages = freshTurn() ?? stateMessages();
         if (active.signal.aborted) return await abortedBeforeLoop();
         // The answered calls were this run's step: a node leaving hands the turn off before the model is asked.
         if (await handingOff()) return handedOff();
         await agent.continue();
       } else if (method === "continue") {
+        if (active.signal.aborted) return await abortedBeforeLoop();
         if (rerun.length) {
           await rerunOpenCalls(active.signal);
           agent.state.messages = stateMessages();
           if (await handingOff()) return handedOff();
         }
         if (active.signal.aborted) return await abortedBeforeLoop();
+        const own = freshTurn();
+        if (own) agent.state.messages = own;
         await agent.continue();
       }
       else {
@@ -949,8 +1038,11 @@ export function createAgentHost(hostIO: HostIO) {
         }
         if (active.signal.aborted) return await abortedBeforeLoop();
         // Images enter the transcript as requests carry them: scaled down once here, not on every request after.
-        await agent.prompt(await fittedImages(promptMessages!));
+        const messages = await fittedImages(promptMessages!);
+        if (params.history === "none") agent.state.messages = freshTurn(messages[0])!;
+        await agent.prompt(messages);
       }
+      await unforced(active.signal);
       await recoverFailedResponses(active.signal);
       await remindOfOutput(active.signal);
       // Stopped at a step boundary for another node to continue (in any of the model calls above): the turn stays open
@@ -986,6 +1078,8 @@ export function createAgentHost(hostIO: HostIO) {
         for (const steer of steers) agent.steer(steer.message);
       }
       // Release what compaction folded away: the next run starts from summary + kept messages.
+      const wasFresh = !!fresh;
+      fresh = undefined;
       if (method !== "execute" && transcript.failed === undefined) {
         agent.state.messages = stateMessages();
         dropped = new WeakSet();
@@ -995,8 +1089,9 @@ export function createAgentHost(hostIO: HostIO) {
       busy = false;
       if (method !== "execute") {
         void index();
-        // After the turn: the summary is made while the agent waits for its next message; not by one handing its turn off.
-        if (!handedOffHere()) compactInBackground();
+        // After the turn: the summary is made while the agent waits for its next message; not by one handing its turn off,
+        // nor after a run that saw no history (a run that does see it compacts first, if it must).
+        if (!handedOffHere() && !wasFresh) compactInBackground();
       }
     }
   }
@@ -1021,10 +1116,15 @@ export function createAgentHost(hostIO: HostIO) {
 
   /**
    * An abort that came after the run began but before Pi's loop did: Pi's own abort found no loop to stop, so the run ends
-   * here, checked in the same tick as each loop starts.
+   * here, checked in the same tick as each loop starts. The turn is settled in the transcript before the run is seen to
+   * end: a turn resumed from it (a lost node's) may still have calls open, those to make again (`RERUN`) among them, which
+   * are closed as unknown, never made; calls waiting on a person stay open.
    */
   async function abortedBeforeLoop() {
-    await transcript.setActive(false);
+    rerun = [];
+    const repairs = interruptedTurnRepairs(transcript.context, false, transcript.awaiting);
+    if (repairs.length) await transcript.append(repairs);
+    if (transcript.active) await transcript.setActive(false);
     return { messages: transcript.total, error: "The run was aborted", code: "aborted", ...(stopped ?? {}) };
   }
 
@@ -1082,9 +1182,18 @@ export function createAgentHost(hostIO: HostIO) {
     active?.abort();
     agent?.abort();
     compacting?.controller.abort();
-    if (flushMs > 0) await Promise.race([index(true), sleep(flushMs)]);
+    if (flushMs > 0) await Promise.race([index(true), clock().sleep(flushMs)]);
     await transcript?.log.close();
   }
 
-  return { handle: turns.wrap(handle), dispose };
+  /** Once the transcript failed, any request it ends says so, for the session to give the agent up (and reload it). */
+  async function handled(method: string, params: any): Promise<any> {
+    try { return await handle(method, params); }
+    catch (error) {
+      if (transcript?.failed !== undefined && !errorText(error).startsWith(PERSISTENCE_FAILED)) throw new Error(`${PERSISTENCE_FAILED}: ${errorText(error)}`);
+      throw error;
+    }
+  }
+
+  return { handle: turns.wrap(handled), dispose };
 }

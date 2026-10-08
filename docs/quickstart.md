@@ -200,6 +200,10 @@ never loses the run: `run()` (or `stream.result()`) still resolves with it.
   process serving its tools went away mid-call: check them.
 - `agents.close()` let the process exit. The agent stays in the runtime.
 
+One answer per input, with nothing to remember (classify, extract, vote)?
+Skip the agent: `await agents.run({ instructions, input, output })` is one call,
+and keeps nothing between runs. See [Stateless runs](guides/stateless-runs.md).
+
 Next: [Concepts](concepts.md), then the guide for what you are building:
 [a chat in your app](frontend.md) (`npm create @camelai/run-app`),
 [tools](guides/tools.md), [asking people](guides/human-input.md),

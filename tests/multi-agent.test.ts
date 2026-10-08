@@ -52,13 +52,17 @@ test("delegate starts a child from a definition, returns its answer, and links i
 });
 
 test("delegate calls in one response run at once, at most maxParallel together, and one with output answers in its schema", async t => {
-  let inFlight = 0, most = 0;
+  // The first three children's answers wait until all three are in flight (or 10 s, should fewer ever be), so the
+  // count shows how many ran at once however slowly their processes start; the fourth comes once one has answered.
+  let inFlight = 0, most = 0, three!: () => void;
+  const allThree = new Promise<void>(resolve => { three = resolve; });
   const r = await runtime(t, body => {
     if (systemText(body).includes("WORKER")) {
       inFlight++; most = Math.max(most, inFlight);
-      setTimeout(() => inFlight--, 400);
+      if (inFlight >= 3) three();
+      const wait = Promise.race([allThree, sleep(10_000)]).then(() => sleep(400)).then(() => { inFlight--; });
       const task = userText(body);
-      return task.includes("structured") ? { ...toolCall("final_output", { value: 7 }, "call_out"), delayMs: 400 } : { role: "assistant", content: `done ${task.slice(-1)}`, delayMs: 400 };
+      return task.includes("structured") ? { ...toolCall("final_output", { value: 7 }, "call_out"), wait } : { role: "assistant", content: `done ${task.slice(-1)}`, wait };
     }
     if (!toolResults(body).length) return toolCalls(
       ["delegate", { instructions: "You are a WORKER.", task: "task 1" }, "c1"], ["delegate", { instructions: "You are a WORKER.", task: "task 2" }, "c2"],

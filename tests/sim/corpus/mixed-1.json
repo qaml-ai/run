@@ -1,0 +1,301 @@
+{
+ "seed": "1",
+ "nodes": [
+  "a",
+  "b"
+ ],
+ "leaseTtlMs": 3000,
+ "durationMs": 60000,
+ "skews": {
+  "a": -4035,
+  "b": -4805
+ },
+ "modelDelayMs": [
+  50,
+  2000
+ ],
+ "buggify": "swarm",
+ "steps": [
+  {
+   "at": 0,
+   "op": {
+    "op": "create",
+    "agent": 0,
+    "node": "b"
+   }
+  },
+  {
+   "at": 10,
+   "op": {
+    "op": "create",
+    "agent": 1,
+    "node": "b"
+   }
+  },
+  {
+   "at": 1366,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 0,
+    "node": "b"
+   }
+  },
+  {
+   "at": 2624,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 1,
+    "node": "a"
+   }
+  },
+  {
+   "at": 3850,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 2,
+    "node": "b"
+   }
+  },
+  {
+   "at": 5496,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 3,
+    "node": "b"
+   }
+  },
+  {
+   "at": 6643,
+   "op": {
+    "op": "abort",
+    "agent": 0,
+    "node": "b"
+   }
+  },
+  {
+   "at": 8314,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 4,
+    "node": "a"
+   }
+  },
+  {
+   "at": 9414,
+   "op": {
+    "op": "abort",
+    "agent": 1,
+    "node": "a"
+   }
+  },
+  {
+   "at": 11143,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 5,
+    "node": "b"
+   }
+  },
+  {
+   "at": 12376,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 6,
+    "node": "b"
+   }
+  },
+  {
+   "at": 14047,
+   "op": {
+    "op": "abort",
+    "agent": 0,
+    "node": "b"
+   }
+  },
+  {
+   "at": 15335,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 7,
+    "node": "a"
+   }
+  },
+  {
+   "at": 16777,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 8,
+    "node": "a"
+   }
+  },
+  {
+   "at": 18298,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 9,
+    "node": "a"
+   }
+  },
+  {
+   "at": 19406,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 10,
+    "node": "a"
+   }
+  },
+  {
+   "at": 20681,
+   "op": {
+    "op": "abort",
+    "agent": 1,
+    "node": "b"
+   }
+  },
+  {
+   "at": 22448,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 11,
+    "node": "a"
+   }
+  },
+  {
+   "at": 23844,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 12,
+    "node": "a"
+   }
+  },
+  {
+   "at": 25148,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 13,
+    "node": "a"
+   }
+  },
+  {
+   "at": 26433,
+   "op": {
+    "op": "fork",
+    "agent": 1,
+    "fork": 0,
+    "node": "a"
+   }
+  },
+  {
+   "at": 27781,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 14,
+    "node": "b"
+   }
+  },
+  {
+   "at": 29004,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 15,
+    "node": "b"
+   }
+  },
+  {
+   "at": 30559,
+   "op": {
+    "op": "abort",
+    "agent": 0,
+    "node": "a"
+   }
+  },
+  {
+   "at": 31844,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 16,
+    "node": "a"
+   }
+  },
+  {
+   "at": 33316,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 17,
+    "node": "a"
+   }
+  },
+  {
+   "at": 34729,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 18,
+    "node": "b"
+   }
+  },
+  {
+   "at": 36228,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 19,
+    "node": "b"
+   }
+  },
+  {
+   "at": 37841,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 20,
+    "node": "b"
+   }
+  },
+  {
+   "at": 39226,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 21,
+    "node": "b"
+   }
+  },
+  {
+   "at": 40336,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 22,
+    "node": "b"
+   }
+  },
+  {
+   "at": 41630,
+   "op": {
+    "op": "prompt",
+    "agent": 0,
+    "run": 23,
+    "node": "a"
+   }
+  }
+ ]
+}

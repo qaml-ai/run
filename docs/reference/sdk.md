@@ -44,6 +44,16 @@ synchronous code (a script, a Django view, a Celery task), run it with
   calls it is running, up to `drainMs` (Python `drain=`, seconds; default 25 s),
   while new calls go to another process: call it on SIGTERM. See [deploying a
   tool process](../guides/tools.md#deploying-a-tool-process).
+- `connection` (Python `connection=`) says when agent handles hold their event
+  stream. `"lazy"`, the default: only while `agent.stream()` reads a run, so a
+  server holding many agents (50 keyed agents behind one page, say) holds no idle
+  connections, and `agent.run()` waits for its outcome by asking for it (`GET
+  /clients/:id/requests/:id?wait=25`, again until it settles). A handle that serves
+  tools, or has `onEvent`, `onInput` or `onConnection` (`on_event`, `on_input`),
+  needs the stream throughout, so it holds it from `upsert`/`get` until `close()`
+  whatever this says. `"eager"` holds it from the start for every handle. Each
+  `upsert`, `get`, `fork` and `agent` call may say otherwise (`connection`).
+  The lower-level `connectAgent` (`connect_agent`) stays eager unless asked.
 - `agents.runtime` is the lower-level `AgentRuntime`: definitions, volumes,
   mounts, `listAgents()`, `browserToken(agentId)`, `inbox()`, `toolSources(agentId)`.
 
@@ -65,6 +75,7 @@ brought to `config` if it differs. Returns a connected `Agent`. See
 | `subject`, `context` | `subject=`, `context=` | whom it acts for, and claims for its tools; fixed at creation |
 | `keyScope`, `spendLimit`, `runLimits`, `modelHeaders` | `key_scope=`, `spend_limit=`, `run_limits=`, `model_headers=` | see [Models and keys](../guides/models-and-keys.md) |
 | `mounts`, `fileTools` | `mounts=`, `file_tools=` | its volumes (fixed at creation), and whether it has file tools |
+| `codeMode` | `code_mode=` | `false`: no `js_exec`; every tool is called directly, and an agent with no tools at all gets little more than its instructions as its system prompt. See [Tools](../guides/tools.md#without-code-codemode-false) |
 | `name` | `name=` | a label, shown in the console |
 | `builtins` | `builtins=` | tools the runtime answers itself, without a definition: `web_fetch`, `web_search`, `schedule`, `ask_user`, `delegate` |
 | `delegate` | `delegate=` | sub-agents it may hand tasks to (`{ agents, instructions?, maxDepth?, maxParallel? }`); brings its builtin. See [Multi-agent](../guides/multi-agent.md) |
@@ -91,6 +102,13 @@ only (an API token, an OAuth grant, a console session): a browser token gets
 
 `agents.agent(session, { tools, … })` connects to an agent you hold the
 credentials of (`{id, token}`) without changing it.
+
+`agent.configHash` (Python `agent.config_hash`), from `upsert` and `get`, is a
+hash of the agent's configuration (from `upsert`, the one it asked for). Equal
+hashes are equal configurations: an upsert that changes nothing returns the
+hash the agent has, and is not counted as an agent create. Every agent's is in
+`agents.runtime.listAgents()` (`list_agents()`), so a deploy script can tell
+what changed without keeping a manifest. It is opaque: compare it, never parse it.
 
 ### `Agent`
 
@@ -121,6 +139,7 @@ Run options (`run`, `stream`):
 | `idempotencyKey` | `idempotency_key=` | the run's id: the same key returns the same run, joining it if it is still going |
 | `signal` | `timeout=` | stop waiting; the run goes on |
 | `throwOnError` | `throw_on_error=` | `false`: return a failed run instead of throwing `RunError` |
+| `history` | `history=` | `"none"`: the model sees the instructions and this message only, not the agent's history; the run is still recorded. See [Runs without the history](../concepts.md#runs-without-the-history) |
 | `whileRunning` | `while_running=` | `"queue"` (default) or `"steer"` |
 | `spendLimit` | `spend_limit=` | `{usd}`: this run's own budget; see [Spend limits](../guides/models-and-keys.md#spend-limits) |
 | `allowDisconnected` | `allow_disconnected=` | run even with nobody serving the agent's tools (else refused: `APPLICATION_NOT_CONNECTED`) |
@@ -148,6 +167,45 @@ options)` forks an agent by id. Lower level: `runtime.forkAgent(id, options)`
 const fork = await agent.fork({ key: "support-b", atMessage: 5 });
 await fork.run("Try the other approach");
 ```
+
+### `agents.run(config)` and `agents.runs`
+
+A stateless run ([guide](../guides/stateless-runs.md)): a configuration and an
+input in, a `Run` out, nothing carried over and no agent made.
+
+```ts
+const run = await agents.run({ instructions: "Vote yes or no.", input: "Ship on Friday?", output: Vote });
+```
+
+```python
+run = await agents.run("Ship on Friday?", instructions="Vote yes or no.", output=Vote)
+```
+
+`config` takes an agent's configuration (`model`, `instructions`,
+`instructionsAppend`, `definition`, `builtins`: `web_fetch`, `web_search`,
+`delegate`; `delegate`, `thinkingLevel`, `subject`, `context`, `keyScope`,
+`runLimits`, `modelHeaders`, `mounts`, `fileTools`, `codeMode`, `name`; a run with
+no tools defaults to `codeMode: false` and `fileTools: false`) and the run's own:
+`input`, `files` (inline bytes), `output`, `user`, `metadata`, `idempotencyKey`,
+`spendLimit`, `retentionSeconds`, `signal`, `throwOnError`, `traceparent`
+(Python: snake_case keywords, `input` first). It resolves with a `Run` (no
+`inputs`), and throws a `RunError` when the run failed unless
+`throwOnError: false`.
+
+| `agents.runs.` | |
+| --- | --- |
+| `create(config, { wait })` | start one; resolves at once with the runtime's view (`StatelessRun`: `status` `running`…), or with `wait` once it ends within it |
+| `get(id, { wait })` | the run, as it is or as it ended (`wait`: seconds, at most 25) |
+| `stream(config)` / `stream(id)` | resolves with a stream of its parts (as an agent's, without `input_required`), `done` last; `result()` is the run |
+| `abort(id)` | stop it: it ends `failed`, code `aborted` |
+| `delete(id)` | delete it before its retention ends |
+| `messages(id)` | its messages |
+| `events(id, { lastEventId })` | its raw event frames, to its `response`, reconnecting with `Last-Event-ID` |
+
+Python's `agents.runs.stream(input, …)` or `stream(run_id=…)` resolves with a
+`StatelessRunStream`. The lower level is `runtime.createRun`, `getRun`,
+`waitForRun`, `abortRun`, `deleteRun`, `runMessages` and `runEvents` (Python:
+`create_run`, `get_run`, …).
 
 ### `Run`
 
@@ -242,7 +300,7 @@ available and stable for code that needs the wire's shape: `agents.runtime`,
 | --- | --- | --- |
 | `runtime.upsertAgent(key, options)` | `runtime.upsert_agent(key, …)` | upsert, returning credentials (not connected) |
 | `runtime.createAgent({ tools, ttlSeconds, idempotencyKey, … })` | `runtime.create_agent(tools=[...], …)` | provision and connect; with `idempotencyKey`, the same as an upsert |
-| `runtime.connectAgent(session, { tools, attach, takeover })` | `runtime.connect_agent(session, tools=, attach=, takeover=)` | connect with stored credentials |
+| `runtime.connectAgent(session, { tools, attach, takeover, connection })` | `runtime.connect_agent(session, tools=, attach=, takeover=, connection=)` | connect with stored credentials (`connection: "lazy"`: see [Agents](#agents)) |
 | `runtime.browserToken(agentId, options)` | `runtime.browser_token(agent_id, …)` | a browser token |
 | `runtime.me()` | `runtime.me()` | who the API key is: `tenant`, your tenant's id, which `serveTools` takes |
 | `runtime.setProvider(name, config)`, `providers()`, `deleteProvider(name)` | `set_provider(name, base_url=, models=, api_key=, headers=)`, `providers()`, `delete_provider(name)` | a provider of your own: any OpenAI-compatible server and its models; see [Custom models](../guides/custom-models.md) |
@@ -307,8 +365,14 @@ run = await agent.run("Summarize ticket 123", traceparent=traceparent)
 
 ### Events, reconnects and replay
 
-The SDK holds one SSE stream per agent (`GET /clients/:id/events`) and
-reconnects with backoff. The runtime numbers events and replays them from memory
+An eager client (and a lazy one, while something listens) holds one SSE stream
+per agent (`GET /clients/:id/events`) and reconnects with backoff. A lazy client
+without a listener holds none: each request it is waiting on asks for its own
+outcome, a long poll of up to 25 s at a time, and a refusal for good (401, 403,
+404, 410) fails it. When a listener comes (`agent.stream()`), the client
+connects before sending the run, so the listener sees it from its start, and
+lets the stream go once the last listener is gone; the next stream starts from a
+snapshot, as a new client does. The runtime numbers events and replays them from memory
 from `Last-Event-ID`: up to 512 events or about 2 MiB. Where it cannot (a
 restarted node, a cursor too old), the SDK asks for a snapshot of the running
 turn instead (`?snapshot=1`), and recovers every settled request's outcome from
@@ -390,15 +454,60 @@ changing its history with `agent.client.setMetadata({ name, type })`
 (`npm run studio`) at `/studio/agents`; Studio observes the runtime, and your
 application keeps serving its tools.
 
-## Unreleased
+## 0.12.0 (Python), 2026-10-08
 
-- Telemetry: `runtime.telemetry.get()`, `set(…)`, `test()` and `clear()` manage the
-  tenant's OpenTelemetry trace export, and a `traceparent` option (Python
-  `traceparent=`) on `run`, `stream`, `prompt`, `request` and a create's first prompt
-  continues your trace. See [Telemetry](#telemetry). TypeScript exports
-  `RequestRecord`, `TelemetrySettings`, `TelemetryInput` and `TelemetryTestResult`;
-  Python's `create_agent` takes `prompt=`.
-- CLI: `camelrun telemetry get|set|test|clear`, and `run --traceparent`.
+Python's side of TypeScript 0.16.0. Needs runtime 0.5.0 or later (run.camelai.com has it).
+
+- Stateless runs: `agents.run(input, instructions=…, output=…)` runs once with nothing carried over and no agent
+  made; `agents.runs` creates, gets, streams, aborts and deletes them, and reads their `messages` and `events` (the
+  lower level: `runtime.create_run`, `get_run`, `wait_for_run`, `abort_run`, `delete_run`, `run_messages`,
+  `run_events`). See [Stateless runs](../guides/stateless-runs.md).
+- Agent handles connect lazily: `Agents()` handles hold their event stream only while a run streams, so a server
+  with many agents holds no idle connections; handles that serve tools or have `on_event` or `on_input` are
+  unchanged. `Agents(connection="eager")` keeps the old behaviour; `connect_agent` takes `connection="lazy"` to opt in.
+- `run`, `stream` and `client.prompt` take `history="none"`; `upsert` and definitions take `code_mode=False`.
+  `agent.config_hash` from `upsert` and `get`.
+- Breaking: `agent.steer()` returns a receipt as soon as the runtime has the message (`{id, status, steeredInto?}`);
+  `steer(text, wait=True)` returns the run that took it, as before. `client.steer_message` is the receipt at the
+  lower level. `abort(queued="keep" | "cancel")` returns `{aborted, cancelled?}`.
+- A stream the runtime closes on purpose (`event: reconnect`) is reconnected at once, resuming with `Last-Event-ID`.
+- `tool(exposure=)`: `"direct"`, `"codemode"` or `"both"`, how the model may call the tool.
+
+## 0.16.0 (TypeScript), 2026-10-07
+
+Needs runtime 0.5.0 or later (run.camelai.com has it).
+
+- Stateless runs: `agents.run({ instructions, input, output })` runs once with nothing carried over and no agent made;
+  `agents.runs` creates, gets, streams, aborts and deletes them, and reads their `messages` and `events` (the lower
+  level: `runtime.createRun`, `getRun`, `waitForRun`, `abortRun`, `deleteRun`, `runMessages`, `runEvents`). See
+  [Stateless runs](../guides/stateless-runs.md). CLI: `camelrun run --stateless`, `camelrun runs get <runId>`.
+- Agent handles connect lazily: `new Agents()` handles hold their event stream only while `agent.stream()` reads a
+  run, instead of from `upsert`/`get` until `close()`, so a server with many agents holds no idle connections.
+  Handles that serve tools or have `onEvent`, `onInput` or `onConnection` are unchanged. `connection: "eager"` on
+  `Agents` or a single call keeps the old behaviour; the lower-level `connectAgent` takes `connection: "lazy"` to opt
+  in. A lazy handle's `upsert`/`get` no longer waits for a connection, so an unreachable stream shows up at the
+  first run rather than there.
+- `run`, `stream` and `client.prompt` take `history: "none"`: the run sees the agent's instructions and its own
+  message only, for many independent questions to one agent without an agent create each. `upsert` and definitions
+  take `codeMode: false` (definitions also `fileTools: false`): no `js_exec`, and a tool-less agent's system prompt
+  shrinks to its instructions and a sender note.
+- `agent.configHash` from `upsert` and `get`, and `configHash` on `listAgents()`: an upsert of the configuration an
+  agent has is not counted as an agent create.
+- Breaking: `agent.steer()` resolves as soon as the runtime has the message, with a receipt
+  (`{ id, status: "accepted" | "taken" | "queued", steeredInto? }`); `steer(text, { wait: true })` resolves with the
+  run that took it, as before. `client.steerMessage` is the receipt at the lower level; `client.prompt` with
+  `whileRunning: "steer"`, `createAgentHandler`'s waiting send and `camelrun run --steer` still answer with the
+  turn's outcome.
+- `agent.abort({ queued: "keep" | "cancel" })` and `client.abort(…)` resolve with `{ aborted, cancelled? }`. A runtime
+  with queue cancellation stops the runs queued behind the running turn too (code `cancelled`) unless
+  `queued: "keep"`.
+- A stream the runtime closes on purpose (`event: reconnect`: a drain, or the agent moved) is reconnected at once,
+  resuming with `Last-Event-ID`; other closes keep their backoff. The agent client and `watchAgent` do this.
+- `runLimits` takes `firstTokenSeconds` and `idleSeconds` (how long a model request may go quiet before it fails
+  as stalled and is retried); `turn_resumed` / `turn_recovered` events carry `handoff` (`retire`, `drain`).
+- `createAgentChat` (and so the React, Vue, Svelte and Solid chats) stays `streaming` from the run's first reply
+  until it ends, through tool calls, instead of dropping back to `submitted` between messages.
+- CLI: `camelrun models` (and `list_models`) show `toolCallStreaming`.
 
 ## 0.15.0 (TypeScript) / 0.11.0 (Python), 2026-10-03
 

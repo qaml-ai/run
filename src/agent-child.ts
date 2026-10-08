@@ -1,13 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { parentRpc, type Rpc } from "./rpc.ts";
 import { createAgentHost } from "./agent-host.ts";
-import { setMetricSink } from "./metrics.ts";
+import { setMetricService, setMetricSink } from "./metrics.ts";
 import type { AppendLog } from "../shared/append-log.ts";
 import type { TranscriptRecord } from "./transcript.ts";
 
 // One agent in its own process: the host's I/O goes over IPC to the supervisor.
 // Its stdout is not kept: metric lines (metrics.ts) go to stderr, which the node's log keeps.
 setMetricSink(line => process.stderr.write(`${line}\n`));
+// This process's environment is its node's settings for it (agentProcessEnv).
+setMetricService(process.env.AGENT_SERVICE_NAME);
 const rpc = parentRpc();
 const host = createAgentHost({
   emit: event => rpc.send({ type: "event", event }),
@@ -22,6 +24,8 @@ const host = createAgentHost({
   lease: () => rpc.request("lease"),
   history: { indexed: () => rpc.request("history", { op: "indexed" }), write: chunk => rpc.request("history", { op: "write", chunk }), read: from => rpc.request("history", { op: "read", from }) },
   transcript: remoteTranscript(rpc),
+  // This process's environment is the node's settings for it (agentProcessEnv).
+  ...(Number(process.env.AGENT_HISTORY_BACKLOG_BYTES) ? { historyBacklogBytes: Number(process.env.AGENT_HISTORY_BACKLOG_BYTES) } : {}),
 });
 
 /** A turn to run js_exec, held by the supervisor (which counts the tenant's across the node) until given back. */

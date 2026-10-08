@@ -10,7 +10,8 @@ past a count or rate limit, 409 or 429 (with `Retry-After`). See
 Past one, the API answers 429 with `code: "RATE_LIMITED"`, `Retry-After` (in
 seconds), and the limit it hit in `limit`:
 `{"name": "runs", "scope": "tenant", "max": 600, "windowSeconds": 60}`. The SDKs
-wait out `Retry-After` and retry.
+wait out `Retry-After` and retry. `GET /v1/billing` has the account's run limit
+(`runsPerMinute: {limit, afterPurchase?}`), and the console's Billing page shows it.
 
 | Limit (`limit.name`) | Scope | Value |
 | --- | --- | --- |
@@ -20,8 +21,8 @@ wait out `Retry-After` and retry.
 | `password_failures`: failed email and password sign-ins (an unknown address counts as a wrong password) | email address, and client address | 10 per 15 minutes per address; 20 per 15 minutes per client address. Past either, sign-in answers 429, even with the right password, until the window turns over |
 | `email_requests`: requests that mail a link (email sign-up, password reset, adding a password), where the runtime has account mail | client address | 10 an hour |
 | `emails`: those mails to one address, whether or not it has an account | email address | 5 a UTC day |
-| `agent_creates`: `POST /v1/agents` (upserts too) and forks (`POST /v1/agents/:id/fork`) | account | 60 a minute; 10 on free credit |
-| `runs`: runs started (prompt, continue, execute), however sent: REST, SDKs, MCP, schedules, channels | account | 600 a minute; 60 on free credit |
+| `agent_creates`: `POST /v1/agents` (an upsert that changes its agent too) and forks (`POST /v1/agents/:id/fork`) | account | 600 a minute, against abuse only: making agents costs almost nothing. Design around [busy agents](#usage-tiers) instead |
+| `runs`: runs started (prompt, continue, execute), however sent: REST, SDKs, MCP, schedules, channels | account | 600 a minute; 240 on free credit (the 429 says buying credit raises it) |
 
 - A client address is the caller's IP address; an IPv6 address counts with the
   rest of its `/64`. The runtime's own calls (hosted MCP tools calling the API)
@@ -31,6 +32,21 @@ wait out `Retry-After` and retry.
   minutes, the hour, or the UTC day), so `Retry-After` is the time to the next window.
 - A retried request (the same request id or `Idempotency-Key`) that the runtime
   answers from its record is not a new run.
+- An upsert whose configuration equals the agent's (the same `configHash`) is
+  not an agent create: deploying 50 unchanged agents counts nothing. A fork
+  counts, `atMessage: 0` included: it makes an agent (and a copy of its
+  workspace). For a run without the history, send `history: "none"` instead.
+- **Headers.** Answers that count against `agent_creates` (creates, upserts,
+  forks) or `runs` (`POST /v1/agents/{id}/prompt`, and the SDKs' requests)
+  carry `X-RateLimit-Limit` (the account's limit a minute),
+  `X-RateLimit-Remaining` (what is left of it this minute) and
+  `X-RateLimit-Reset` (seconds until the window resets), and so do their 429s,
+  with `Retry-After` equal to `X-RateLimit-Reset`. Windows are fixed and align
+  to the clock minute (UTC), not to your first request: 60 runs at 12:00:59
+  and 60 more at 12:01:00 are both allowed. The headers say only the calling
+  account's own counts. An account with no limit (an admin tenant) gets none,
+  and neither does a retried request. A create with a first `prompt` carries
+  the create's.
 - Admin tenants (the operator's own, from its tenants file) are not rate
   limited: neither their account limits, nor `api_requests` for requests made
   with their tokens, browser tokens or console sessions. An admin tenant's
@@ -65,8 +81,8 @@ Starting credit and other grants do not count. A payment moves the account up as
 
 | Tier | Paid in total | Agents busy at once |
 | --- | --- | --- |
-| Free | nothing yet | 8 |
-| Tier 1 | $5 | 25 |
+| Free | nothing yet | 20 |
+| Tier 1 | $5 | 50 |
 | Tier 2 | $50 | 100 |
 | Tier 3 | $250 | 250 |
 | Tier 4 | $1,000 | 1,000 |
@@ -81,9 +97,9 @@ At the limit, a run (a prompt, `continue` or `execute`) gets 429 with `Retry-Aft
 
 ```json
 {
-  "error": "This account has 8 agents busy, the most its usage tier (Free) allows; retry when one finishes. Tier 1 (25 busy agents) applies once the account has paid $5 in total for credit.",
+  "error": "This account has 20 agents busy, the most its usage tier (Free) allows; retry when one finishes. $5 more of credit unlocks Tier 1: 50 busy agents (it applies once the account has paid $5 in total).",
   "code": "BUSY_AGENT_LIMIT",
-  "busyAgents": { "busy": 8, "limit": 8, "source": "tier", "tier": "Free", "paid": 0, "next": { "tier": "Tier 1", "paid": 5000000, "limit": 25 } }
+  "busyAgents": { "busy": 20, "limit": 20, "source": "tier", "tier": "Free", "paid": 0, "next": { "tier": "Tier 1", "paid": 5000000, "limit": 25 } }
 }
 ```
 
@@ -109,6 +125,10 @@ reading them and sending them input do not count; only runs do.
 | A quiet model stream | a model request that sends nothing before its first token (text, thinking or a tool call) for 120 s (300 s for a reasoning model at `thinkingLevel` high and up), or nothing for 45 s once it streams, is ended as stalled and retried like other transient failures; keep-alives do not count. `runLimits.firstTokenSeconds` and `runLimits.idleSeconds` set an agent's or definition's own (1 to 3,600); the operator sets the runtime's (`AGENT_MODEL_FIRST_TOKEN_SECONDS`, `AGENT_MODEL_IDLE_SECONDS`). Past every retry the run fails with code `model_stream_stalled` |
 | Wait | none beyond a run's time limit; a turn waiting on people (`input_required`) is not running, and may wait for days. The SDKs have no default timeout |
 | `Idempotency-Key` header (any other POST) | 1–255 characters; its answer is kept for 24 hours |
+| Stateless run (`POST /v1/runs`) body | 7 MiB, with inline files (4 MiB of files in all) |
+| A stateless run's `wait` | at most 60 seconds on create, 25 on `GET /v1/runs/{id}`; it then answers with the run still running |
+| A stateless run's retention | its result, events and messages are kept for a day after it ends (`retentionSeconds`: 60 to 604800; the operator's default is `AGENT_RUN_RETENTION_SECONDS`), then deleted. Its `Idempotency-Key` names it for as long. A run whose end was never recorded (its node died at that moment) is deleted 7 days after its retention would have begun |
+| Stateless runs and limits | each counts against runs per minute and busy agents, as an agent's run does; not against agent creates or the agents a tenant has |
 
 ## Files
 

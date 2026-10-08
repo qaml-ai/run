@@ -24,6 +24,7 @@ import { providerInput, type ModelProviders } from "./model-providers.ts";
 import type { Webhooks } from "./webhooks.ts";
 import type { Telemetry } from "./telemetry.ts";
 import { definitionRoutes } from "./definitions-api.ts";
+import { runRoutes, type RunsContext } from "./runs.ts";
 import type { RequestRecord } from "../shared/client-protocol.ts";
 import * as schema from "./api-schemas.ts";
 import { normalizePath, VOLUME_LIMITS, type VolumeService } from "./volumes.ts";
@@ -35,7 +36,7 @@ import type { Help } from "./help.ts";
 import type { AccountDeletions } from "./account-deletion.ts";
 import { exportAccount, type ExportOptions } from "./account-export.ts";
 import { Readable } from "node:stream";
-import { clientAddress, type RateLimits } from "./rate-limits.ts";
+import { clientAddress, rateLimitHeaders, type RateLimits, type RateLimitState } from "./rate-limits.ts";
 
 /**
  * Tenant self-service REST API. Every console action goes through these routes,
@@ -61,7 +62,16 @@ export interface ApiContext {
   /** The model an agent of the tenant that names none gets. */
   defaultModel: (tenant: string) => Promise<string>;
   /** Provision an agent for a tenant. */
-  createAgent(tenant: string, params: any, idempotencyKey?: string): Promise<unknown>;
+  /** `admit` counts the create once the key's agent is known, told whether it changes nothing (an upsert of the same configuration). */
+  createAgent(tenant: string, params: any, idempotencyKey?: string, parent?: undefined, admit?: (unchanged: boolean) => Promise<unknown>): Promise<unknown>;
+  /** Make a stateless run's session (`/v1/runs`); without it there are no runs. */
+  createRun?: RunsContext["createRun"];
+  /** One of an agent's requests once it settles or a wait passes, wherever the agent is served (a run's wait). */
+  requestAnywhere?: RunsContext["requestAnywhere"];
+  /** How long an ended run is kept, by default. */
+  runRetentionSeconds?: number;
+  /** A new run's cheap check of its tenant's runs per minute and busy agents, before anything is made. */
+  runPrecheck?: RunsContext["runPrecheck"];
   verifyKeys?: boolean;
   scheduler?: Scheduler;
   channels?: Channels;
@@ -86,7 +96,7 @@ export interface ApiContext {
   /** Deleting accounts (`DELETE /v1/account`, and the operator's `DELETE /v1/tenants/{id}`). */
   accountDeletions?: AccountDeletions;
   /** Counts agent creates (POST /v1/agents) against the tenant's rate limit; throws 429 past it. */
-  rateLimits?: Pick<RateLimits, "agentCreate">;
+  rateLimits?: Pick<RateLimits, "agentCreate" | "tenantLimit">;
   /** The caller's address (Get Help's per-source limit); by default the load balancer's, as `clientAddress` reads it without Cloudflare. */
   clientAddress?: (c: Context) => string | undefined;
 }
@@ -105,6 +115,7 @@ const OAUTH_ROUTES = [
   /^(?:GET|DELETE) \/v1\/agents\/[^/]+$/,
   /^(?:GET|POST|PUT|PATCH|DELETE) \/v1\/agents\/[^/]+\/(?:abort|configuration|events|fork|history|inputs|inputs\/[^/]+|mounts|prompt|requests\/[^/]+|schedules|schedules\/[^/]+|state|uploads\/[^/]+\/[^/]+)$/,
   /^(?:GET|POST|PATCH|DELETE) \/v1\/definitions(?:\/[^/]+(?:\/agents)?)?$/,
+  /^(?:POST \/v1\/runs|(?:GET|DELETE) \/v1\/runs\/[^/]+|GET \/v1\/runs\/[^/]+\/(?:events|messages)|POST \/v1\/runs\/[^/]+\/abort)$/,
 ];
 /** An agent's token is for the application that serves it, which an OAuth grant is not: its answers leave it out. */
 const withoutToken = <T extends object>(c: Context<Env>, made: T): T => {
@@ -129,6 +140,15 @@ const json = (c: Context, status: number, value: unknown) => c.json(value, statu
 const content = (value: z.ZodType) => ({ content: { "application/json": { schema: value } } });
 const reply = (description: string, value: z.ZodType) => ({ description, ...content(value) });
 const failure = { default: reply("Error", schema.ApiError) };
+/**
+ * The X-RateLimit-* headers of a response that counts against a per-tenant limit (agent creates, runs), when one applies
+ * to the tenant. Windows are fixed and align to the clock minute; a 429 carries them too, with Retry-After.
+ */
+const rateLimited = (what: string) => ({
+  "X-RateLimit-Limit": { description: `${what} the tenant may make a minute`, schema: { type: "integer" as const } },
+  "X-RateLimit-Remaining": { description: "What is left of it this minute", schema: { type: "integer" as const } },
+  "X-RateLimit-Reset": { description: "Seconds until the window resets: windows align to the clock minute (UTC)", schema: { type: "integer" as const } },
+});
 const agentId = z.object({ id: z.string() });
 const binary = (description: string) => ({ description, content: { "application/octet-stream": { schema: z.string().openapi({ format: "binary" }) } } });
 
@@ -254,13 +274,13 @@ export function api(context: ApiContext) {
   });
   app.use("/v1/agents/:id/*", async (c, next) => {
     // credentials takes a key as well as an id, and looks it up within the tenant itself.
-    if (!c.req.path.endsWith("/credentials") && !await clients.owns(c.req.param("id")!, c.var.principal.tenant)) throw new HttpError(404, "Unknown agent");
+    if (!c.req.path.endsWith("/credentials") && !await clients.owns(c.req.param("id")!, c.var.principal.tenant, true)) throw new HttpError(404, "Unknown agent");
     await next();
   });
   // Idempotency-Key on every POST: an agent's is its own key (create or upsert), and a prompt's its request's id.
   app.use("/v1/*", idempotency({
     db: () => clients.db, tenant: c => c.var.principal.tenant, lockMs: context.idempotencyLockMs,
-    skip: path => path === "/v1/agents" || path === "/v1/definitions" || /^\/v1\/agents\/[^/]+\/(?:prompt|fork)$/.test(path),
+    skip: path => path === "/v1/agents" || path === "/v1/definitions" || path === "/v1/runs" || /^\/v1\/agents\/[^/]+\/(?:prompt|fork)$/.test(path),
     // Answers with a secret shown once: API tokens (a new tenant's too), signing secrets, browser tokens, signed links.
     secret: path => /^\/v1\/(?:tokens|tenants|webhooks|webhooks\/[^/]+\/secret|usage-webhook\/secret|agents\/[^/]+\/(?:browser-tokens|links|credentials\/rotate)|volumes\/[^/]+\/links)$/.test(path),
   }));
@@ -468,7 +488,7 @@ export function api(context: ApiContext) {
   route(createRoute({
     method: "post", path: "/v1/agents",
     request: { headers: z.object({ "idempotency-key": z.string().optional().openapi({ description: "Provisioning with the same key returns the same agent" }) }).extend(traceHeaders.shape), body: content(schema.AgentInput) },
-    responses: { 201: reply("The agent and its scoped token", schema.AgentCreated) },
+    responses: { 201: { ...reply("The agent and its scoped token", schema.AgentCreated), headers: rateLimited("Agents") } },
   }), async c => {
     const tenant = c.var.principal.tenant;
     const body = await readJson(c.req.raw.body, 18 * 1024 * 1024, {}) ?? {};
@@ -480,8 +500,11 @@ export function api(context: ApiContext) {
     const { prompt, ...params } = body;
     // A first prompt is checked before anything is made, and sent once the agent is: it runs when the agent has started.
     const first = prompt === undefined ? undefined : promptRequest(parse(schema.PromptInput, prompt), undefined, c.req.header("traceparent"));
-    await context.rateLimits?.agentCreate(tenant);
-    const created = await context.createAgent(tenant, params, c.req.header("idempotency-key")) as { id: string };
+    // Counted as the key's agent is found: an upsert that changes nothing is not a create, though its headers say where the tenant stands.
+    let counting: Promise<RateLimitState | undefined> | undefined;
+    const admit = (unchanged: boolean) => counting ??= context.rateLimits?.agentCreate(tenant, !unchanged) ?? Promise.resolve(undefined);
+    const created = await context.createAgent(tenant, params, c.req.header("idempotency-key"), undefined, admit) as { id: string };
+    for (const [name, value] of Object.entries(rateLimitHeaders(await counting))) c.header(name, value);
     // An agent its key already had comes back reconfigured: only a new one is told of (src/journey.ts).
     if (context.journey && !("reconfigured" in created)) {
       const { via } = c.var.principal;
@@ -516,20 +539,20 @@ export function api(context: ApiContext) {
     responses: { 200: reply("A new token for the agent: the old one stops working at once, and connections made with it close. The application serving the agent reconnects with this one; credentials gives it from now on", schema.AgentCredentials) },
   }), async c => json(c, 200, await clients.rotateToken(c.req.param("id")!, c.var.principal.tenant)));
   route(createRoute({ method: "delete", path: "/v1/agents/{id}", request: { params: agentId }, responses: { 200: reply("The agent is deleted: it stops at once, and its stored data is purged shortly after", schema.Deleted) } }), async c => {
-    await clients.destroyAgent(c.req.param("id")!, c.var.principal.tenant);
+    await clients.destroyAgent(c.req.param("id")!, c.var.principal.tenant, true);
     return json(c, 200, { deleted: true });
   });
   route(createRoute({
     method: "post", path: "/v1/agents/{id}/fork",
     request: { params: agentId, headers: z.object({ "idempotency-key": z.string().optional().openapi({ description: "The fork's key, when the body gives none" }) }), body: content(schema.AgentForkInput) },
-    responses: { 201: reply("A new agent with the source's configuration, a copy of its history to the fork point, and a fork of its workspace", schema.AgentForked), 409: reply("FORK_POINT_RUNNING: atMessage is in a turn that has not ended; or the key names another agent", schema.ApiError) },
+    responses: { 201: { ...reply("A new agent with the source's configuration, a copy of its history to the fork point, and a fork of its workspace", schema.AgentForked), headers: rateLimited("Agents") }, 409: reply("FORK_POINT_RUNNING: atMessage is in a turn that has not ended; or the key names another agent", schema.ApiError) },
   }), async c => {
     const { key: given, name, atMessage, ttlSeconds, subject, context: identityContext, systemPromptAppend, modelHeaders } = parse(schema.AgentForkInput, await readJson(c.req.raw.body, 64 * 1024, {}));
     const identity = identityInput({ subject, context: identityContext });
     const key = given ?? c.req.header("idempotency-key");
     validTtl(ttlSeconds);
     const tenant = c.var.principal.tenant;
-    await context.rateLimits?.agentCreate(tenant);
+    for (const [name, value] of Object.entries(rateLimitHeaders(await context.rateLimits?.agentCreate(tenant)))) c.header(name, value);
     // Lives as long as a create's agent would: with a key until deleted, without one a day, unless it says.
     const ttlMs = ttlSeconds === undefined ? (key !== undefined ? null : undefined) : ttlSeconds === null ? null : ttlSeconds * 1000;
     return json(c, 201, withoutToken(c, await clients.fork(c.req.param("id")!, tenant, { key, name, atMessage, ttlMs, identity, systemPromptAppend, ...(modelHeaders !== undefined ? { modelHeaders: modelHeadersInput(modelHeaders) } : {}) })));
@@ -595,10 +618,12 @@ export function api(context: ApiContext) {
     const stopped = await clients.abortAgent(c.req.param("id")!, c.var.principal.tenant, queued);
     return json(c, 200, { aborted: true, cancelled: stopped ? stopped.cancelled : [] });
   });
-  route(createRoute({ method: "post", path: "/v1/agents/{id}/prompt", request: { params: agentId, headers: traceHeaders, body: content(schema.PromptInput) }, responses: { 202: reply("The accepted request", schema.RequestRecord) } }), async c => {
+  route(createRoute({ method: "post", path: "/v1/agents/{id}/prompt", request: { params: agentId, headers: traceHeaders, body: content(schema.PromptInput) }, responses: { 202: { ...reply("The accepted request", schema.RequestRecord), headers: rateLimited("Runs") } } }), async c => {
     // Room for inline files (FILE_LIMITS.inlineBytes, as base64); larger ones are uploaded first.
     const body = parse(schema.PromptInput, await readJson(c.req.raw.body, 6 * 1024 * 1024, {}));
-    return json(c, 202, await clients.submit(c.req.param("id")!, c.var.principal.tenant, promptRequest(body, c.req.header("idempotency-key"), c.req.header("traceparent"))));
+    const record = await clients.submit(c.req.param("id")!, c.var.principal.tenant, promptRequest(body, c.req.header("idempotency-key"), c.req.header("traceparent")),
+      rate => { for (const [name, value] of Object.entries(rateLimitHeaders(rate))) c.header(name, value); });
+    return json(c, 202, record);
   });
   route(createRoute({
     method: "put", path: "/v1/agents/{id}/uploads/{requestId}/{name}", request: { params: agentId.extend({ requestId: z.string(), name: z.string() }), body: binary("The file's bytes, streamed") },
@@ -744,7 +769,11 @@ export function api(context: ApiContext) {
   });
 
   route(createRoute({ method: "get", path: "/v1/billing", responses: { 200: reply("Prepaid credit: balance, this month, recent entries and rates", schema.Billing) } }),
-    async c => json(c, 200, await accounts.billing.summary(c.var.principal.tenant)));
+    async c => {
+      const tenant = c.var.principal.tenant;
+      const [summary, runs] = await Promise.all([accounts.billing.summary(tenant), context.rateLimits?.tenantLimit(tenant, "runs")]);
+      return json(c, 200, { ...summary, runsPerMinute: runs ? { limit: runs.max, ...(runs.paid !== undefined ? { afterPurchase: runs.paid || null } : {}) } : null });
+    });
   const alertService = async (tenant: string, sending = false) => {
     if (await accounts.billing.mode(tenant) !== "prepaid") throw new HttpError(400, "Billing alerts are only available for prepaid accounts");
     if (!context.billingAlerts || (sending && !context.billingAlerts.emailEnabled)) throw new HttpError(503, "Billing email is not configured on this runtime");
@@ -1020,6 +1049,7 @@ export function api(context: ApiContext) {
 
   channelRoutes(route, () => context.channels);
   definitionRoutes(route, () => context);
+  runRoutes(route, () => context);
 
   route(createRoute({ method: "get", path: "/v1/agents/{id}/mounts", request: { params: agentId }, responses: { 200: reply("The agent's mounts", z.array(schema.Mount)) } }),
     async c => json(c, 200, (await clients.inspect(c.req.param("id")!, c.var.principal.tenant)).mounts));

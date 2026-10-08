@@ -1,6 +1,7 @@
 import { HttpError } from "./http.ts";
 import { safeError } from "./metrics.ts";
 import { fetchFile, SendError, type ChannelProvider, type Gateway, type GatewayHandlers, type Inbound } from "./channels.ts";
+import { network, random } from "./node-context.ts";
 
 /** Discord's attachment limit in servers without boosts (and DMs without Nitro): larger files are sent as a link. */
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
@@ -63,7 +64,7 @@ export function discord(options: {
   };
   async function call(credentials: Record<string, string>, method: "GET" | "POST", path: string, body?: Record<string, unknown> | FormData) {
     const form = body instanceof FormData;
-    const response = await fetch(`${base}${path}`, {
+    const response = await network().fetch(`${base}${path}`, {
       method, headers: { Authorization: `Bot ${token(credentials)}`, ...(body && !form ? { "Content-Type": "application/json" } : {}) },
       ...(body ? { body: form ? body : JSON.stringify(body) } : {}), signal: AbortSignal.timeout(form ? 120_000 : 15_000),
     }).catch(error => { throw new SendError(`Discord ${method} ${path.split("/")[1]} failed: ${error instanceof Error ? error.name : "network error"}`, false); });
@@ -145,7 +146,7 @@ export function discord(options: {
             heartbeat = setTimeout(beat, interval);
           };
           clearTimeout(heartbeat);
-          heartbeat = setTimeout(beat, interval * Math.random());
+          heartbeat = setTimeout(beat, interval * random().float());
           if (session) send(6, { token: token(credentials), session_id: session.id, seq: sequence });
           else send(2, { token: token(credentials), intents: options.gateway?.intents ?? INTENTS, ...(options.gateway?.shard ? { shard: options.gateway.shard } : {}), properties: { os: "linux", browser: "agent-runtime", device: "agent-runtime" } });
         } else if (payload.op === 11) {
@@ -205,7 +206,7 @@ export function discord(options: {
     }
     function reconnect() {
       if (closed) return;
-      const delay = Math.min(MAX_BACKOFF_MS, 1_000 * 2 ** failures++) * (0.5 + Math.random() / 2);
+      const delay = Math.min(MAX_BACKOFF_MS, 1_000 * 2 ** failures++) * (0.5 + random().float() / 2);
       log("reconnect", { delayMs: Math.round(delay), resume: !!session });
       clearTimeout(retry);
       retry = setTimeout(() => void open(), delay);

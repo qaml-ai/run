@@ -9,6 +9,69 @@ between yours and the new one first.
 
 Changes on main since the last tag.
 
+## 0.5.0 (runtime-v0.5.0, 2026-10-08)
+
+Stateless runs, steer receipts and stops that cancel the queue, faster resume, js_exec on V8, and email and
+password sign-in. The TypeScript SDK 0.16.0 and Python SDK 0.12.0 use it ([SDK reference](../reference/sdk.md)).
+
+**Before upgrading a self-hosted runtime:** deploying it signs everyone out of the console once; signing in to
+the console with an API or operator token is gone (set a password with the operator token first, see
+[Self-hosting](self-host.md#sign-in-to-the-console)); a runtime with `AGENT_BILLING_EMAIL_PROVIDER=cloudflare` or a
+tenant `codeEngine` other than `v8` does not start; `AGENT_SANDBOX_PROCESSES` and `AGENT_CODE_WORKERS_MIN` are
+removed and `AGENT_SANDBOX_SOCKETS` is now `AGENT_SANDBOX_DIR`. Migrations 050 to 058 run on start.
+
+### Stateless runs
+
+- `POST /v1/runs`: a configuration (an agent's fields, or a `definition`) and an input in, the result out, with
+  nothing carried over and no agent kept. `wait` answers once it ends; `GET /v1/runs/{id}` (`?wait=25`),
+  `/events` (resumable with `Last-Event-ID`), `/messages`, `POST /v1/runs/{id}/abort` and `DELETE` follow it.
+  Its result is kept for `retentionSeconds` (a day by default). A run with no tools gets neither `js_exec` nor
+  file tools unless it asks. Runs count against runs per minute and busy agents, not agent creates, and are as
+  durable as an agent's. See [Stateless runs](../guides/stateless-runs.md).
+
+### Steer receipts, stops that cancel the queue, stalled model streams
+
+- A prompt with `whileRunning: "steer"` is answered at once (`steer: "accepted" | "queued"`), and its request
+  completes when the running turn takes the message (`steeredInto`, and a `steer_taken` event), not when the turn ends.
+- A stop (`POST /v1/agents/:id/abort`) also cancels the runs queued behind the running turn (code `cancelled`,
+  `run_cancelled` events) unless `queued: "keep"`, and answers with their ids (`cancelled`).
+- A model request that sends nothing before its first token (120 s; 300 s for a reasoning model at `thinkingLevel`
+  high and up) or goes quiet for 45 s is ended as stalled and retried; past every retry the run fails with code
+  `model_stream_stalled`. `runLimits.firstTokenSeconds` and `idleSeconds` set an agent's own
+  ([Limits](../reference/limits.md)).
+
+### Reconnect hint on purposeful closes
+
+- A stream the runtime closes on purpose (a drain, a retiring node, an idle agent released, an agent now
+  served elsewhere) ends with `event: reconnect` (`{type: "reconnect", reason: "drain" | "moved", retryMs: 0}`,
+  `retry: 0`), and the SDKs reconnect at once with `Last-Event-ID` instead of backing off
+  ([events](../reference/events.md#event-reconnect)).
+
+### Free-tier limits
+
+- Free credit's busy agents 8 → 20 and runs 60 → 240 a minute; paid limits are unchanged.
+- Agent creates are limited only against abuse: 600 a minute for every account, free credit included (it
+  was 10 free, 60 paid); `AGENT_RATE_LIMIT_AGENT_CREATES` and `AGENT_RATE_LIMIT_FREE_AGENT_CREATES` still set it.
+- `BUSY_AGENT_LIMIT` and a free account's runs 429 say what buying credit unlocks ("$5 more of credit
+  unlocks Tier 1: 50 busy agents"); `GET /v1/billing` adds `runsPerMinute`, and the console shows both.
+
+### Builder DX: fresh runs, forced structured output, no-op upserts, rate-limit headers, lean prompts
+
+- A prompt's `history: "none"` shows the model the system prompt (as it stands) and that message only.
+  The run is recorded as usual (its user message carries `history: "none"`) and later runs see it; no
+  background compaction follows such a run. See [Runs without the history](../concepts.md#runs-without-the-history).
+- Structured output forces `final_output` with the provider's own `tool_choice`: from the first request
+  when it is the model's only tool, and on the output reminder otherwise; never with Anthropic thinking on;
+  a provider that refuses it is asked again unforced; at most three forced requests a run
+  ([Forcing the tool](../guides/structured-output.md#forcing-the-tool)).
+- `codeMode: false` on agents, upserts and definitions: no `js_exec`, every tool direct, and the runtime's
+  prompt text only for the tools the agent has; with `fileTools: false` and no tools, none but a sender note
+  (about 2,000 input tokens down to a few hundred). The default prompt is unchanged, byte for byte.
+- An upsert whose configuration equals the agent's is not counted against `agent_creates`. Creates,
+  upserts, list, `GET /v1/agents/{id}` and `credentials` return `configHash`.
+- Creates, forks and runs answer with `X-RateLimit-Limit`, `-Remaining` and `-Reset` (seconds; windows
+  align to the clock minute), and so do their 429s ([Rate limits](../reference/limits.md#rate-limits)).
+
 ### Faster resume after a crash, a drain or a deploy
 
 - A node that dies mid-turn is found by its peers within about 10 s, not after its 90 s lease: a
@@ -79,7 +142,7 @@ Changes on main since the last tag.
   operator's own analytics store, for browsers that agreed to be measured: an arrival at the console from
   elsewhere, the console's pages (as routes), an account being made, signed in to or out of, minting an API
   token or being deleted, an agent being made through the API, an account's active days and first completed run,
-  and its payments. The account export gains `analytics/` for accounts it knew (migration 055; [privacy](privacy.md#journey-events)). Unset, the default, nothing
+  and its payments. The account export gains `analytics/` for accounts it knew (migration 056; [privacy](privacy.md#journey-events)). Unset, the default, nothing
   changes: no cookie is read or set, no row is written and nothing is sent.
 - `/` and `/console` keep the query string when they redirect to `/console/`.
 

@@ -155,6 +155,12 @@ asyncio.run(main())
   view, a Celery task), run it with `asyncio.run(...)`. Python names are snake_case: `run.tool_errors`,
   `throw_on_error=False`, `context.idempotency_key`, a stream part's `is_error`.
 
+- **Runs or agents.** An agent keeps its history: right for chats, assistants and anything that remembers. When each
+  answer stands alone (classify, extract, vote, judge, summarize one input), use a stateless run instead:
+  `agents.run({ instructions, input, output })` (Python `agents.run(input, instructions=…, output=…)`, REST
+  `POST /v1/runs`) is one call, keeps nothing between runs, and makes no agent, so it never uses up agent creates.
+  Don't make an agent per input. A run has no tools from this process (`tools`); give it built-ins or a definition's
+  served tools. See https://run.camelai.com/docs/guides/stateless-runs.md.
 - **Keys.** `upsert(key, …)` with the same key is the same agent, with its history. Choose a stable key.
 - **Branching.** To branch a conversation (a user edits an earlier message, or you try another approach), fork the
   agent: `agent.fork({ key, atMessage })` copies its configuration, history and files into a new agent. Don't rebuild
@@ -173,10 +179,17 @@ asyncio.run(main())
   `exposure: "direct"` (Python `@tool(exposure="direct")`) when it must be called on its own: when the app renders
   its arguments as they stream in, or must see each call as it happens. See
   https://run.camelai.com/docs/guides/tools.md#keeping-tools-out-of-js_exec.
-- **Limits to design around.** On free credit an account may create 10 agents a minute (`upsert` and `fork` each
-  count; `agents.get(key)` does not) and start 60 runs a minute; paid, 60 and 600. Past either, calls get 429
-  `RATE_LIMITED` (the SDKs wait and retry). So make one agent per user or conversation and reuse it; don't make one per
-  request, per message or per test. See https://run.camelai.com/docs/reference/limits.md#rate-limits.
+- **Limits to design around.** The one that matters is **busy agents**: how many agents may run at once, 20 on
+  free credit, 25 once the account has paid $5 for credit, then 100, 250 and 1,000 (usage tiers); past it a run gets
+  429 `BUSY_AGENT_LIMIT`, which says what the next tier unlocks. Runs are limited to 240 a minute on free credit (600
+  paid). Creating agents is limited only against abuse (600 a minute; an `upsert` of an unchanged configuration does
+  not count). Past a limit, calls get 429 (the SDKs wait and retry); responses carry `X-RateLimit-Remaining` and
+  `-Reset`. Make one agent per user or conversation and reuse it; for independent one-off questions, run them on one
+  agent with `history: "none"` (the model sees only the instructions and that message). See
+  https://run.camelai.com/docs/reference/limits.md#rate-limits.
+- **Tool-less agents.** An agent that only answers (a classifier, a judge, a one-line reply) needs no runtime tools:
+  `upsert(key, { instructions, codeMode: false, fileTools: false })` drops `js_exec` and the runtime's tool rules, so
+  each request is your instructions and the message, a few hundred tokens instead of about 2,000.
 - **Data back, not prose.** When the code needs an object (classification, extraction, a triage decision), pass a
   schema: `agent.run(text, { output: zodSchema })` gives a typed `run.output`; Python `output=PydanticModel`. Don't
   parse JSON out of `run.text`. See https://run.camelai.com/docs/guides/structured-output.md.
@@ -186,8 +199,8 @@ asyncio.run(main())
 Write a short check script that:
 1. upserts **one check agent** for the script, under a fresh key (the app's own key with a timestamp, e.g.
    `` `my-project-assistant-check-${Date.now()}` ``), so it starts with no history: an agent remembers, and on the
-   app's stable key it could answer from what it already said and call no tool. Make it once, not once per check: an
-   account on free credit may create only 10 agents a minute (upserts and forks count);
+   app's stable key it could answer from what it already said and call no tool. Make it once, not once per check: a
+   check agent per run of the script is enough, and leaves no pile of agents behind;
 2. runs each check on that agent: `agent.run("<a message that needs the tool>")`, one run per check. The agent
    remembers earlier checks in the script, so give each one a question it cannot answer from them (a different
    order, a different record);
@@ -212,7 +225,8 @@ transcript and tool calls appear.
 | `INSUFFICIENT_CREDIT` / 402 | Tell the user: verify a card for starting credit (no charge), or add credit, at https://run.camelai.com/console/billing |
 | `APPLICATION_NOT_CONNECTED` | No process is serving the agent's tools. Run the script that calls `upsert`. |
 | 401 | The key is wrong or revoked. Go back to step 1. |
-| `RATE_LIMITED` / 429 | Too many agents made or runs started this minute (10 and 60 on free credit). Reuse one agent instead of making one per check or request. |
+| `RATE_LIMITED` / 429 | Too many runs started this minute (240 on free credit, 600 paid), or agents made (600, against abuse). Wait out `Retry-After`; reuse agents instead of making one per check or request. |
+| `BUSY_AGENT_LIMIT` / 429 | As many agents running at once as the account's usage tier allows (20 on free credit). The message says what the next tier unlocks; or wait for a run to finish. |
 
 The full list is at https://run.camelai.com/docs/reference/errors.md.
 

@@ -407,6 +407,8 @@ export class Journey {
     const host = this.host ?? new URL(request.url).hostname;
     try {
       await transaction(this.db, async sql => {
+        // Counted afresh by each run of the transaction: one that lost a race runs again.
+        accepted.length = rejected.length = 0;
         const account = tenant ? await this.account(sql, tenant, { consent: browser.consent, gaClientId: browser.gaClientId }) : undefined;
         for (const event of input.events as Record<string, unknown>[]) {
           const id = typeof event?.event_id === "string" && UUID.test(event.event_id) ? event.event_id.toLowerCase() : null;

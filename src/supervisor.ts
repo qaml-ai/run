@@ -9,11 +9,15 @@ import { validateDefinitions, validateToolCall } from "./tool-policy.ts";
 import { searchQuery, searchTools } from "./tool-search.ts";
 import { jsonWithinLimit, SANDBOX_LIMITS } from "./limits.ts";
 import type { Storage } from "../shared/storage.ts";
-import { fileAppendLog, type AppendLog } from "../shared/append-log.ts";
+import { fileAppendLog, type AppendLog, type CommitEffect } from "../shared/append-log.ts";
 import { readTranscript, readTranscriptLog, Transcript, transcriptPath, type TranscriptRecord } from "./transcript.ts";
 import type { HistoryChunk } from "./history-pages.ts";
 import type { Claim } from "./ownership.ts";
 import { createAgentHost, HISTORY_FLUSH_MS } from "./agent-host.ts";
+import type { CodeExecutor } from "./codemode.ts";
+import type { Outbound } from "./outbound.ts";
+import { buggify } from "./buggify.ts";
+import { closeInterruptedTurn } from "./history.ts";
 
 /**
  * How agents run. "process": each agent is its own Node process (strong memory
@@ -32,6 +36,14 @@ export type SupervisorOptions = {
   runtime?: string; maxAgents?: number; storage?: Storage; hosting?: Hosting; /** How long stopping agents wait, all together, to index their settled turns (default 5 s). */ historyFlushMs?: number;
   /** An agent process is pinged this often, and killed once a ping has gone this long unanswered (default 5 s and 30 s). */
   pingMs?: number; unresponsiveMs?: number;
+  /** Where inline agents run js_exec (src/codemode.ts): this process's v8-exec runner unless given. Agent processes always use their own. */
+  codeExecutor?: CodeExecutor;
+  /** What agent processes are told of the node's settings (`agentProcessEnv`); this process's own unless given. */
+  agentEnv?: Record<string, string>;
+  /** The outbound policy inline agents' model calls go through (agent processes get it in `agentEnv`). */
+  modelOutbound?: Outbound;
+  /** The history backlog's bound for inline agents (agent processes get it in `agentEnv`). */
+  historyBacklogBytes?: number;
 };
 
 export class AgentSupervisor {
@@ -41,6 +53,8 @@ export class AgentSupervisor {
   readonly reserved = new Map<string, string | undefined>();
   /** Agents being stopped. They are already out of `agents`, so no new work reaches a dying agent. */
   private readonly stopping = new Map<string, Promise<void>>();
+  /** Turns being closed without their agent (`closeTurn`): the latest close of each, which the next one and a start wait for. */
+  private readonly closing = new Map<string, Promise<void>>();
   readonly root: string;
   readonly options: SupervisorOptions;
   /**
@@ -78,6 +92,34 @@ export class AgentSupervisor {
     finally { await log.close(); }
   }
 
+  /**
+   * Settle the turn a stopped agent's transcript holds open (`closeInterruptedTurn`), under its owner's `claim`, without
+   * starting it: for a run ended with no host to end it (one past its resumes, or stopped before its node was lost). The
+   * same records the agent's next start would write, written before the run is seen to end. Whether there was a turn to settle.
+   */
+  async closeTurn(id: string, claim?: Claim): Promise<boolean> {
+    if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id)) throw new Error("Invalid agent id");
+    // One at a time per agent, each reading the transcript as the one before left it: two closes of one turn (a load's and
+    // a run's, or two loads') never both answer its open calls. Across nodes, the owner's claim fences the write instead.
+    const current = (this.closing.get(id) ?? Promise.resolve()).then(() => this.closeTurnNow(id, claim));
+    const settled = current.then(() => {}, () => {});
+    this.closing.set(id, settled);
+    try { return await current; }
+    finally { if (this.closing.get(id) === settled) this.closing.delete(id); }
+  }
+
+  private async closeTurnNow(id: string, claim?: Claim): Promise<boolean> {
+    await this.stopping.get(id);
+    // A running agent's host writes its own transcript.
+    if (this.agents.has(id) || this.starting.has(id)) throw new Error("Agent is running");
+    const log = this.options.storage ? this.options.storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id), claim) : fileAppendLog<TranscriptRecord>(transcriptPath(resolve(join(this.root, id))));
+    try {
+      const transcript = new Transcript(log);
+      await transcript.load();
+      return await closeInterruptedTurn(transcript);
+    } finally { await log.close(); }
+  }
+
   /** Delete a stopped agent's transcript and local directory. */
   async purge(id: string) {
     if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id)) throw new Error("Invalid agent id");
@@ -93,6 +135,8 @@ export class AgentSupervisor {
     const controller = new AbortController();
     handle.calls.add(controller);
     try {
+      // A tool call may fail before its tool hears of it.
+      if (buggify("tool.call.fails")) throw new Error("BUGGIFY: the tool call failed before it was sent");
       const result = await handle.bridge.call(checked.tool.name, checked.args, controller.signal, params.toolCallId ? { toolCallId: params.toolCallId, ...(params.innerCallId ? { innerCallId: params.innerCallId } : {}), ...(Number.isSafeInteger(params.messageIndex) ? { messageIndex: params.messageIndex } : {}) } : undefined);
       controller.signal.throwIfAborted();
       return JSON.parse(jsonWithinLimit(result, SANDBOX_LIMITS.resultBytes, "Tool result"));
@@ -111,6 +155,8 @@ export class AgentSupervisor {
   async start(id: string, config: Omit<AgentConfig, "id" | "directory" | "tools">, bridge: ToolBridge, claim?: Claim) {
     if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id)) throw new Error("Invalid agent id");
     await this.stopping.get(id);
+    // A close of its turn writes first: the agent then loads the transcript as it left it.
+    await this.closing.get(id);
     validateDefinitions(bridge.definitions);
     if (this.agents.has(id) || this.starting.has(id)) throw new Error("Agent already exists");
     if (!this.reserved.delete(id) && this.full) throw Object.assign(new Error("Agent capacity reached"), { status: 503 });
@@ -119,14 +165,15 @@ export class AgentSupervisor {
       const directory = resolve(join(this.root, id));
       await mkdir(directory, { recursive: true, mode: 0o700 });
       const storage = this.options.storage;
-      const transcript = storage ? storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id), claim) : fileAppendLog<TranscriptRecord>(transcriptPath(directory));
+      const log = storage ? storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id), claim) : fileAppendLog<TranscriptRecord>(transcriptPath(directory));
+      const transcript = bridge.committing ? committing(log, bridge.committing) : log;
       const init = { ...config, id, directory, tools: bridge.definitions };
       return this.hosting === "inline" ? await this.startInline(id, init, bridge, transcript) : await this.startProcess(id, directory, init, bridge, transcript);
     } finally { this.starting.delete(id); }
   }
 
   private async startProcess(id: string, directory: string, init: AgentConfig, bridge: ToolBridge, transcript: AppendLog<TranscriptRecord>) {
-    const { child, rpc } = childProcess("./agent-child.ts", directory, this.options.runtime, true, id);
+    const { child, rpc } = childProcess("./agent-child.ts", directory, this.options.runtime, true, id, this.options.agentEnv);
     const handle: ProcessHandle = { kind: "process", bridge, child, rpc, calls: new Set(), listeners: new Set(), transcript, slots: new Map() };
     this.agents.set(id, handle);
     this.starting.delete(id);
@@ -279,6 +326,9 @@ export class AgentSupervisor {
       modelAuth: () => this.modelAuth(handle),
       fs: (op, args) => this.dispatchFs(handle, structuredClone({ op, args })),
       codeSlot: signal => handle.bridge.codeSlot?.(signal) ?? Promise.resolve(() => {}),
+      ...(this.options.codeExecutor ? { codeExecutor: this.options.codeExecutor } : {}),
+      ...(this.options.historyBacklogBytes ? { historyBacklogBytes: this.options.historyBacklogBytes } : {}),
+      ...(this.options.modelOutbound ? { modelOutbound: this.options.modelOutbound } : {}),
       lease: async () => { await handle.bridge.lease?.(); },
       history: {
         indexed: () => this.historyRequest(id, handle, { op: "indexed" }), write: chunk => this.historyRequest(id, handle, { op: "write", chunk: structuredClone(chunk) }),
@@ -379,4 +429,16 @@ export class AgentSupervisor {
     await this.flush([...this.agents.keys()]);
     await Promise.all([...[...this.agents.keys()].map(id => this.stop(id, { flush: false })), ...this.stopping.values()]);
   }
+}
+
+/** `log` with each record appended with what commits with it (`ToolBridge.committing`). */
+function committing<T>(log: AppendLog<T>, effect: (record: T) => CommitEffect | undefined): AppendLog<T> {
+  return {
+    read: () => log.read(),
+    append: record => log.append(record, effect(record)),
+    flush: durable => log.flush(durable),
+    rewrite: snapshot => log.rewrite(snapshot),
+    get appendedSinceRewrite() { return log.appendedSinceRewrite; },
+    close: () => log.close(),
+  };
 }

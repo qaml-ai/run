@@ -23,7 +23,34 @@ permissions:
   contents: read
   id-token: write
 jobs:
+  v8-exec:
+    # js_exec's engine, which the test runtime below starts with (it exits without it). Built as CI's v8-exec job does;
+    # its cache key is CI's, so a commit CI already built restores the binary and skips cargo.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: binary
+        uses: actions/cache@v4
+        with:
+          path: sandbox/v8-exec/target/release/v8-exec
+          key: v8-exec-binary-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('sandbox/v8-exec/Cargo.lock', 'sandbox/v8-exec/Cargo.toml', 'sandbox/v8-exec/rust-toolchain.toml', 'sandbox/v8-exec/src/**') }}
+      - if: steps.binary.outputs.cache-hit != 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            sandbox/v8-exec/target
+          key: v8-exec-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('sandbox/v8-exec/Cargo.lock', 'sandbox/v8-exec/rust-toolchain.toml') }}
+      - if: steps.binary.outputs.cache-hit != 'true'
+        run: cd sandbox/v8-exec && cargo build --release --locked
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v8-exec
+          path: sandbox/v8-exec/target/release/v8-exec
+          retention-days: 1
+          if-no-files-found: error
   publish:
+    needs: v8-exec
     runs-on: ubuntu-latest
     environment: npm
     services:
@@ -44,6 +71,9 @@ jobs:
         run: |
           git fetch origin main
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - uses: actions/download-artifact@v4
+        with: { name: v8-exec, path: sandbox/v8-exec/target/release }
+      - run: chmod +x sandbox/v8-exec/target/release/v8-exec
       # No registry-url: that writes an .npmrc with a token (a placeholder), which npm then warns of as a token that
       # bypasses 2FA. Trusted publishing needs none; npm publishes to the public registry by default.
       - uses: actions/setup-node@v4

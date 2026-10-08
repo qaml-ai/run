@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { HttpError } from "./http.ts";
 import { fetchFile, SendError, type ChannelProvider, type Inbound, type InboundFile } from "./channels.ts";
+import { network } from "./node-context.ts";
 
 /** Bot API limits: bots download files up to 20 MB, and send photos up to 10 MB and other files up to 50 MB. */
 const MAX_DOWNLOAD_BYTES = 20 * 1000 * 1000;
@@ -21,7 +22,7 @@ export function telegram(options: { apiUrl?: string } = {}): ChannelProvider {
   // The token is part of the URL: errors name the method, never the URL.
   async function call(credentials: Record<string, string>, method: string, body: Record<string, unknown> | FormData = {}) {
     const form = body instanceof FormData;
-    const response = await fetch(`${base}/bot${token(credentials)}/${method}`, {
+    const response = await network().fetch(`${base}/bot${token(credentials)}/${method}`, {
       method: "POST", ...(form ? { body } : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }), signal: AbortSignal.timeout(form ? 120_000 : 15_000),
     }).catch(error => { throw new SendError(`Telegram ${method} failed: ${error instanceof Error ? error.name : "network error"}`, false); });
     const answer = await response.json().catch(() => ({})) as { ok?: boolean; result?: any; description?: string; parameters?: { retry_after?: number } };

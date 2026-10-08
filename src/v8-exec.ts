@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import type { Guest } from "./codemode.ts";
 import type { WireMessage } from "./protocol.ts";
 import { recordV8Exec } from "./metrics.ts";
-import { Confined, sandboxDir } from "./sandbox.ts";
+import { Confined } from "./sandbox.ts";
 
 /**
  * js_exec on V8, a process per execution: sandbox/v8-exec, a bare V8 isolate (no Node), started for
@@ -31,9 +31,10 @@ export class V8Exec {
   private readonly waiting: (() => void)[] = [];
 
   constructor(options: { binary?: string; jitless?: boolean; seccomp?: boolean; max?: number; prespawn?: number; maxDataMb?: number } = {}) {
-    this.binary = options.binary ?? v8ExecBinary();
-    const jitless = options.jitless ?? envFlag("AGENT_V8_JITLESS", true);
-    const seccomp = options.seccomp ?? envFlag("AGENT_V8_SECCOMP", true);
+    const defaults = options.binary === undefined || options.jitless === undefined || options.seccomp === undefined ? v8Settings(process.env) : undefined;
+    this.binary = options.binary ?? defaults!.binary;
+    const jitless = options.jitless ?? defaults!.jitless;
+    const seccomp = options.seccomp ?? defaults!.seccomp;
     this.args = [
       ...(jitless ? ["--jitless"] : []),
       ...(seccomp ? [] : ["--no-seccomp"]),
@@ -125,23 +126,31 @@ export class V8Exec {
   }
 }
 
-const envFlag = (name: string, fallback: boolean) => {
-  const value = process.env[name];
+const envFlag = (env: NodeJS.ProcessEnv, name: string, fallback: boolean) => {
+  const value = env[name];
   return value === undefined || value === "" ? fallback : !/^(0|false|no|off)$/i.test(value);
 };
 
 /** The v8-exec binary: AGENT_V8_EXEC, the image's, or this checkout's release build (npm run build:v8-exec). */
-export function v8ExecBinary() {
-  if (process.env.AGENT_V8_EXEC) return process.env.AGENT_V8_EXEC;
+export function v8ExecBinary(env: NodeJS.ProcessEnv = process.env) {
+  if (env.AGENT_V8_EXEC) return env.AGENT_V8_EXEC;
   if (existsSync("/usr/local/bin/v8-exec")) return "/usr/local/bin/v8-exec";
   return fileURLToPath(new URL("../sandbox/v8-exec/target/release/v8-exec", import.meta.url));
 }
 
-let shared: V8Exec | undefined;
 /**
- * This process's runner: AGENT_V8_PRESPAWN processes started ahead (2 under agent-launcher, else none),
- * AGENT_V8_MAX at once (64).
+ * A runner's settings from `env`: AGENT_V8_EXEC, AGENT_V8_JITLESS and AGENT_V8_SECCOMP (both on by default),
+ * AGENT_V8_PRESPAWN processes started ahead (2 under agent-launcher, else none), AGENT_V8_MAX at once (64).
  */
+export function v8Settings(env: NodeJS.ProcessEnv) {
+  return {
+    binary: v8ExecBinary(env), jitless: envFlag(env, "AGENT_V8_JITLESS", true), seccomp: envFlag(env, "AGENT_V8_SECCOMP", true),
+    prespawn: Number(env.AGENT_V8_PRESPAWN || (env.AGENT_SANDBOX_DIR ? 2 : 0)), max: Number(env.AGENT_V8_MAX || 64),
+  };
+}
+
+let shared: V8Exec | undefined;
+/** This process's own runner, from its environment: an agent process's, and executeCode's when given none. A node makes its own (nodeDeps). */
 export function v8Exec() {
-  return shared ??= new V8Exec({ prespawn: Number(process.env.AGENT_V8_PRESPAWN || (sandboxDir() ? 2 : 0)), max: Number(process.env.AGENT_V8_MAX || 64) });
+  return shared ??= new V8Exec(v8Settings(process.env));
 }

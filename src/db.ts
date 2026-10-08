@@ -3,13 +3,35 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { secretReader } from "./secrets.ts";
+import { sometimes } from "./assert.ts";
+import { clock, random } from "./node-context.ts";
 
 /**
  * The control plane: Postgres holds every piece of small mutable state and all
  * coordination (ownership, claims, counters, indexes). Storage keeps bulk data.
+ *
+ * `Db` is what the runtime asks of it, and all it may: queries, a connection held for a transaction (`transaction`),
+ * the pool's counts for the node's load line, and ending it. pg.Pool is the production one; a simulation passes another
+ * (an in-process Postgres, or a wrapper that injects faults). LISTEN has a connection of its own (NodeDeps.listen), and
+ * NOTIFY is a query. Answers are as pg gives them with the parser below: bigint columns as numbers.
  */
-export type Db = pg.Pool;
-export type Sql = Pick<pg.Pool | pg.PoolClient, "query">;
+export type Db = Sql & {
+  connect(): Promise<DbClient>;
+  end(): Promise<void>;
+  readonly totalCount: number;
+  readonly idleCount: number;
+  readonly waitingCount: number;
+};
+/** Anything a query runs on: the pool, or the connection a transaction holds. */
+export type Sql = { query<R = any>(text: string, values?: unknown[]): Promise<Rows<R>> };
+/** A query's answer: its rows, and how many rows it returned or changed. */
+export type Rows<R = any> = { rows: R[]; rowCount: number | null };
+/** A connection taken from the pool: released when done, with the error that broke it (so it is dropped, not reused). */
+export type DbClient = Sql & {
+  release(error?: Error): void;
+  on(event: "error", listener: (error: Error) => void): unknown;
+  off(event: "error", listener: (error: Error) => void): unknown;
+};
 
 // bigint columns hold millisecond times and counts, all well inside 2^53.
 pg.types.setTypeParser(pg.types.builtins.INT8, Number);
@@ -32,6 +54,24 @@ const UNAVAILABLE_MESSAGES = /^(Connection terminated|Query read timeout|timeout
  * a network blip) rather than that the query was wrong. Requests that fail this way
  * answer 503 so clients retry; the pool replaces broken connections by itself.
  */
+/**
+ * Whether an error means the database refused this statement for now, though it is up: a serialization failure
+ * (40001), a deadlock (40P01) or a statement timeout (57014). Not an outage, so leases and fencing pay it no mind, but
+ * the request was fine: it answers 503 (DATABASE_RETRY) with Retry-After, and a transaction meets the first two by
+ * running again from the top (`transaction`).
+ */
+export function databaseRetryable(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const code = (error as { code?: unknown }).code;
+  if (typeof code === "string" && RETRYABLE_CODES.has(code)) return true;
+  return error instanceof AggregateError && error.errors.some(databaseRetryable);
+}
+/** The errors a transaction runs again for: it lost a race with another, and nothing it did was kept. */
+const RERUN_CODES = new Set(["40001", "40P01"]);
+const RETRYABLE_CODES = new Set([...RERUN_CODES, "57014"]);
+/** How many times a transaction runs in all when it keeps losing races (`transaction`). */
+const TRANSACTION_ATTEMPTS = 3;
+
 export function databaseUnavailable(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   const code = (error as { code?: unknown }).code;
@@ -49,7 +89,7 @@ export function databaseUnavailable(error: unknown): boolean {
  * AGENT_DATABASE_QUERY_TIMEOUT_MS bounds a query (default 30000; 0 for none), so a
  * connection that went dark in a failover fails the query instead of hanging it.
  */
-export async function databaseFromEnvironment(env = process.env): Promise<Db> {
+export async function databaseFromEnvironment(env = process.env): Promise<pg.Pool> {
   const max = Number(env.AGENT_DATABASE_POOL_SIZE ?? 10);
   if (!Number.isInteger(max) || max < 1) throw new Error("AGENT_DATABASE_POOL_SIZE must be a positive integer");
   const queryTimeout = Number(env.AGENT_DATABASE_QUERY_TIMEOUT_MS ?? 30_000);
@@ -131,7 +171,7 @@ export async function listenFromEnvironment(handlers: Record<string, (payload: s
  * every ten minutes and whenever a new connection fails authentication, and that
  * connection is retried once, so a rotation never takes the runtime down.
  */
-export async function rotatingPool(options: Omit<pg.PoolConfig, "user" | "password"> & { credentials: () => Promise<Credentials> }): Promise<Db> {
+export async function rotatingPool(options: Omit<pg.PoolConfig, "user" | "password"> & { credentials: () => Promise<Credentials> }): Promise<pg.Pool> {
   const { credentials, ...config } = options;
   let current = await credentials();
   if (!current?.username || !current.password) throw new Error("The database secret needs username and password");
@@ -161,7 +201,7 @@ export async function rotatingPool(options: Omit<pg.PoolConfig, "user" | "passwo
 }
 
 // An idle connection dropped by the server must not crash the process; the next query reconnects.
-function logErrors(pool: Db) {
+function logErrors(pool: pg.Pool) {
   pool.on("error", error => console.error(JSON.stringify({ type: "database_connection_error", error: error.message })));
   return pool;
 }
@@ -201,7 +241,26 @@ async function migrateOnce(db: Db, directory: string, lockTimeoutMs: number) {
   });
 }
 
-export async function transaction<T>(db: Db, work: (sql: pg.PoolClient) => Promise<T>): Promise<T> {
+/**
+ * Run `work` in a transaction on one connection. One that loses a race (a serialization failure, a deadlock) runs again
+ * from the top, up to TRANSACTION_ATTEMPTS times in all, after a short random wait so the two do not collide again;
+ * past that, the error goes to the caller (a request answers 503 DATABASE_RETRY). So `work` does nothing but database
+ * writes, or only what may be done twice: one whose other effects may not (Storage's, metered) passes `rerun: false`.
+ */
+export async function transaction<T>(db: Db, work: (sql: Sql) => Promise<T>, options: { rerun?: boolean } = {}): Promise<T> {
+  if (options.rerun === false) return transactionOnce(db, work);
+  for (let attempt = 1; ; attempt++) {
+    try { return await transactionOnce(db, work); }
+    catch (error) {
+      const code = (error as { code?: unknown }).code;
+      if (attempt >= TRANSACTION_ATTEMPTS || typeof code !== "string" || !RERUN_CODES.has(code)) throw error;
+      sometimes(true, "a transaction that lost a race ran again");
+      await clock().sleep(Math.floor((10 + random().float() * 40) * attempt));
+    }
+  }
+}
+
+async function transactionOnce<T>(db: Db, work: (sql: Sql) => Promise<T>): Promise<T> {
   const client = await db.connect();
   // A checked-out client whose connection drops emits 'error'; unheard, that would crash the process.
   // The statement in flight fails too, and a broken client is dropped from the pool, not reused.

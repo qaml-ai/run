@@ -21,7 +21,7 @@ const FORBIDDEN = new Set(["text", "prompt", "content", "message", "messages", "
 
 /** Forbidden keys that are safe where they are, by file. */
 const ALLOWED_KEYS: Record<string, string[]> = {
-  "src/server.ts": ["address"], // The listening line: the server's own listen address.
+  "src/node.ts": ["address"], // The listening line: the server's own listen address.
   "src/auto-topup.ts": ["code"], // Stripe's error code, an identifier.
   "src/channels-discord.ts": ["code"], // The gateway WebSocket's close code, a number.
   // The `log` account mail provider writes each link and its address for the operator to pass on: only where no one

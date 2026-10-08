@@ -58,9 +58,29 @@ application's MCP answers (`POST /clients/:id/mcp`) must carry it as
 following the agent, reconnect as a watcher (`?watch=1`), as the SDKs do (they
 report `APPLICATION_REPLACED` to `onError`).
 
+### `event: reconnect`
+
+```text
+event: reconnect
+retry: 0
+data: {"type": "reconnect", "reason": "drain", "retryMs": 0}
+```
+
+The last frame of a stream the runtime closes on purpose: its node is leaving
+(`drain`: a deploy, a scale-in, a retiring task) or the agent is now served by
+another node (`moved`). Reconnect at once, with `Last-Event-ID` set to the last
+event id you took, and the stream goes on from there on the agent's next owner:
+no backoff, nothing missed. The frame has no `id` (it is not an event and moves
+no cursor), and `retry: 0` tells an `EventSource` to reconnect without waiting.
+A stream that ends without it, or is cut off, is a failure: reconnect with your
+usual backoff. The SDKs (TypeScript, Python, the browser watcher, chat and the
+AI SDK adapter) do this. A long poll (`?poll=1`) is answered at once instead,
+with what it has; poll again straight away.
+
 ### Cursors and gaps
 
-Event ids rise. The runtime buffers each agent's recent events in memory (the
+Event ids rise, and an id is never reused, even after the agent moves to another
+node. The runtime buffers each agent's recent events in memory (the
 last 512, at most 2 MiB) for replay. A `Last-Event-ID` behind that buffer (after
 a long disconnect, or after the agent moved to another node) cannot be replayed:
 without a snapshot (the application's connection without `?snapshot=1`, or a

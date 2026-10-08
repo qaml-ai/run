@@ -24,14 +24,24 @@ export interface Guest {
 }
 
 /**
+ * Where js_exec runs: each execution opens a guest and talks to it over its wire. In production, this process's v8-exec
+ * runner (`v8Exec`, src/v8-exec.ts); a simulation passes one that runs in-process, with the latency and failures it chooses.
+ */
+export interface CodeExecutor {
+  open(): Guest;
+  /** Let go of what it holds (processes started ahead), when its node leaves. */
+  close?(): void;
+}
+
+/**
  * How many js_exec executions tenants with a concurrency limit may run together on this node (`CodeGate`):
  * AGENT_CODE_WORKERS_MAX, or 16. An execution waiting on tools holds its v8-exec process, about 20 MB
  * resident; 16 at once is about 320 MB, or a sixth of a 2 GB task.
  */
-export function codeCapacity() {
-  return Number(process.env.AGENT_CODE_WORKERS_MAX) || DEFAULT_CODE_CAPACITY;
+export function codeCapacity(env: NodeJS.ProcessEnv) {
+  return Number(env.AGENT_CODE_WORKERS_MAX) || DEFAULT_CODE_CAPACITY;
 }
-const DEFAULT_CODE_CAPACITY = 16;
+export const DEFAULT_CODE_CAPACITY = 16;
 
 /** Tool calls, output events and the answer: more than this from one execution means the sandbox is misbehaving. */
 const GUEST_MESSAGE_LIMIT = SANDBOX_LIMITS.toolCalls + SANDBOX_LIMITS.outputEvents + 8;
@@ -187,7 +197,7 @@ export async function executeCode(options: {
   timeoutMs?: number; maxOutputCharacters?: number;
   onEvent?: (event: unknown) => void;
   /** Where to run: by default this process's v8-exec runner (`v8Exec`). */
-  pool?: { open(): Guest };
+  pool?: CodeExecutor;
   /**
    * The tenant's limits: CPU (`SANDBOX_LIMITS.cpuMs` by default) and the longest timeoutMs (`SANDBOX_LIMITS.maxTimeoutMs`;
    * a longer timeoutMs is cut to it).
@@ -318,13 +328,13 @@ export async function executeCode(options: {
  * confined ("isolated"); without it, this process's own children ("in-process"), which
  * AGENT_SANDBOX_REQUIRED=1 (the image sets it) refuses.
  */
-export async function checkSandbox(): Promise<Record<string, unknown>> {
+export async function checkSandbox(options: { executor?: CodeExecutor; required?: boolean } = {}): Promise<Record<string, unknown>> {
   const isolated = sandboxDir() !== undefined;
   const reason = "no agent-launcher: it confines js_exec and file parsing when the image runs as root on Linux";
-  if (!isolated && process.env.AGENT_SANDBOX_REQUIRED === "1") throw new Error(`AGENT_SANDBOX_REQUIRED=1, but ${reason}`);
+  if (!isolated && options.required) throw new Error(`AGENT_SANDBOX_REQUIRED=1, but ${reason}`);
   const started = performance.now();
   const bridge: ToolBridge = { definitions: [], call: async () => null };
-  try { await executeCode({ code: "return 1", bridge, timeoutMs: 60_000 }); }
+  try { await executeCode({ code: "return 1", bridge, timeoutMs: 60_000, ...(options.executor ? { pool: options.executor } : {}) }); }
   catch (error) { throw new Error(`js_exec does not run: ${errorText(error)}`); }
   // A 1×1 PNG.
   const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");

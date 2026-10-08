@@ -12,12 +12,12 @@ export type BusyLimit =
   | { limit: number; source: "tenant" | "default" }
   | { limit: number; source: "tier"; tier: string; paid: number; next?: { tier: string; paid: number; limit: number } };
 
-/** The 429 for a tenant at its busy-agent limit: it names the limit, its tier and what the next tier takes. */
+/** The 429 for a tenant at its busy-agent limit: it names the limit, its tier, and what buying credit unlocks next. */
 export function busyLimitError(limit: BusyLimit, busy: number) {
   const dollars = (amount: number) => `$${(amount / MICROS).toFixed(2).replace(/\.00$/, "")}`;
   const why = limit.source === "tier" ? `the most its usage tier (${limit.tier}) allows` : "the most this account allows";
   const next = limit.source === "tier" && limit.next
-    ? ` ${limit.next.tier} (${limit.next.limit} busy agents) applies once the account has paid ${dollars(limit.next.paid)} in total for credit.` : "";
+    ? ` ${dollars(Math.max(0, limit.next.paid - limit.paid))} more of credit unlocks ${limit.next.tier}: ${limit.next.limit} busy agents (it applies once the account has paid ${dollars(limit.next.paid)} in total).` : "";
   return new HttpError(429, `This account has ${busy} agents busy, ${why}; retry when one finishes.${next}`, "BUSY_AGENT_LIMIT", { busyAgents: { busy, ...limit } });
 }
 
@@ -53,7 +53,7 @@ export class BusyAgents {
   async hold(tenant: string, agent: string, force = false): Promise<HttpError | undefined> {
     const node = this.ownership.node;
     const session = this.ownership.sessionId;
-    return transaction(this.db, async sql => {
+    const refused = await transaction(this.db, async sql => {
       await sql.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [`busy-agents:${tenant}`]);
       // Rows of node sessions that are gone stop counting; dropping them here keeps the table to live ones.
       await sql.query(`delete from busy_agents b where tenant = $1 and not exists (
@@ -61,11 +61,7 @@ export class BusyAgents {
       if (!force) {
         const busy = Number((await sql.query("select count(*) as busy from busy_agents where tenant = $1 and agent <> $2", [tenant, agent])).rows[0].busy);
         const limit = await this.limitFor(tenant, sql);
-        if (busy >= limit.limit) {
-          // A usage tier's limit is the plan working as sold, not an operator's limit to raise: it is logged apart, outside the quota alarm.
-          console.log(JSON.stringify({ type: limit.source === "tier" ? "busy_limit_reached" : "quota_rejected", level: "info", tenant, agent, limit: "busyAgents", value: limit.limit, source: limit.source, ...(limit.source === "tier" ? { tier: limit.tier } : {}), status: 429 }));
-          return busyLimitError(limit, busy);
-        }
+        if (busy >= limit.limit) return { limit, busy };
       }
       const { rowCount } = await sql.query(`
         insert into busy_agents (agent, tenant, node, session)
@@ -74,6 +70,21 @@ export class BusyAgents {
       if (!rowCount) throw new HttpError(503, "This node's heartbeat lapsed; retry");
       return undefined;
     });
+    if (!refused) return undefined;
+    // Logged once the transaction is done: one that lost a race runs again, and would log it twice. A usage tier's limit
+    // is the plan working as sold, not an operator's limit to raise: it is logged apart, outside the quota alarm.
+    const { limit, busy } = refused;
+    console.log(JSON.stringify({ type: limit.source === "tier" ? "busy_limit_reached" : "quota_rejected", level: "info", tenant, agent, limit: "busyAgents", value: limit.limit, source: limit.source, ...(limit.source === "tier" ? { tier: limit.tier } : {}), status: 429 }));
+    return busyLimitError(limit, busy);
+  }
+
+  /**
+   * The 429 `hold` would answer for a new busy agent of `tenant` now, without taking a slot: a stateless run checks this
+   * before it makes anything, and `hold` still decides when the run is accepted.
+   */
+  async check(tenant: string): Promise<HttpError | undefined> {
+    const [busy, limit] = await Promise.all([busyCount(this.db, tenant), this.limitFor(tenant, this.db)]);
+    return busy >= limit.limit ? busyLimitError(limit, busy) : undefined;
   }
 
   /** `agent` is no longer busy here. */

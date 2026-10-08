@@ -119,6 +119,21 @@ test("the CLI deploys a manifest, runs its agent, and manages agents and definit
   assert.equal((await run("deploy", "--bogus")).code, 1);
 });
 
+test("run --stateless answers in one call and leaves no agent; runs get reads it back", async t => {
+  const r = await runtime(t, body => ({ role: "assistant", content: `echo: ${lastUser(body)}` }));
+  const run = cli(r.base, mkdtempSync(join(tmpdir(), "camelrun-cli-")));
+  const reply = await run("run", "--stateless", "vote", "yes?", "--prompt", "Vote.", "--request-id", "vote-1");
+  assert.equal(reply.code, 0, reply.text + reply.err);
+  assert.equal(reply.json.text, "echo: vote yes?");
+  assert.match(reply.json.requestId, /^run_/);
+  assert.equal(reply.json.agent, undefined);
+  const again = await run("run", "--stateless", "vote", "yes?", "--prompt", "Vote.", "--request-id", "vote-1");
+  assert.equal(again.json.requestId, reply.json.requestId, "the same request id is the same run");
+  assert.equal(r.model.bodies.length, 1);
+  assert.equal((await run("runs", "get", reply.json.requestId)).json.text, "echo: vote yes?");
+  assert.deepEqual((await run("agents", "list")).json, []);
+});
+
 test("a run waiting on a person exits 2 and resumes once answered", async t => {
   const ask = { questions: [{ question: "Which region?", header: "Region", options: [{ label: "EU" }, { label: "US" }] }] };
   const r = await runtime(t, (body, index) => index === 0 ? toolCall("ask_user", ask) : { role: "assistant", content: `Deploying to ${toolResults(body).at(-1)}` });

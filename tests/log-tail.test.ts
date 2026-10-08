@@ -168,6 +168,58 @@ test("a stale owner's appends and compactions are rejected, and it stays fenced"
   assert.deepEqual(await storage.log("volumes/vol_x/tree").read(), [{ n: 1 }, { n: 2 }]);
 });
 
+test("an append's effects commit in its transaction, under its fence, once: not on a repeat, not for a stale owner, not when the append fails", async t => {
+  const { db } = await testDatabase();
+  await db.query("create table effects (n int)");
+  const storage = memoryStorage(postgresTail(db));
+  const effect = (n: number) => async (sql?: { query(text: string, values?: unknown[]): Promise<unknown> }) => { await sql!.query("insert into effects values ($1)", [n]); };
+  const effects = async () => (await db.query("select n from effects order by n")).rows.map(row => row.n);
+  const a = await claimed(t, db, "http://a", "agent_e");
+  const stale = storage.log<{ n: number }>("sessions/agent_e/transcript", a.claim);
+  await stale.read();
+  stale.append({ n: 1 }, effect(1)); stale.append({ n: 2 }); await stale.flush(true);
+  assert.deepEqual(await effects(), [1]);
+  // An effect that fails takes its records with it: neither lands, and both are tried again on the next write.
+  stale.append({ n: 3 }, async sql => { await sql!.query("select missing_column from effects"); });
+  await assert.rejects(stale.flush(true));
+  assert.deepEqual(await rows(db, "sessions/agent_e/transcript"), [0, 1]);
+  await expire(db, "http://a");
+  const b = await claimed(t, db, "http://b", "agent_e");
+  const owner = storage.log<{ n: number }>("sessions/agent_e/transcript", b.claim);
+  assert.deepEqual(await owner.read(), [{ n: 1 }, { n: 2 }]);
+  stale.append({ n: 99 }, effect(99));
+  await assert.rejects(stale.flush(true), PreconditionFailed);
+  // A repeat of an append that landed (its answer lost) finds its rows there and runs no effect again.
+  const tail = postgresTail(db);
+  assert.equal(await tail.append("sessions/agent_e/transcript", b.claim, [{ seq: 2, snapshot: false, body: JSON.stringify({ n: 3 }), blob: null }], [effect(3)]), true);
+  assert.equal(await tail.append("sessions/agent_e/transcript", b.claim, [{ seq: 2, snapshot: false, body: JSON.stringify({ n: 3 }), blob: null }], [effect(3)]), true);
+  assert.deepEqual(await effects(), [1, 3]);
+});
+
+test("a rewrite after a failed write commits that write's effects once, whether or not it had landed", async t => {
+  const { db } = await testDatabase();
+  await db.query("create table effects (n int)");
+  const effect = (n: number) => async (sql?: { query(text: string, values?: unknown[]): Promise<unknown> }) => { await sql!.query("insert into effects values ($1)", [n]); };
+  for (const landed of [true, false]) {
+    const real = postgresTail(db, { unfenced: true });
+    let fail = true;
+    // The first append fails: after it committed (its answer lost), or before.
+    const tail: LogTail = { ...real, append: async (key, claim, rows, effects) => {
+      if (!fail) return real.append(key, claim, rows, effects);
+      fail = false;
+      if (landed) await real.append(key, claim, rows, effects);
+      throw new Error("connection reset");
+    } };
+    const key = `sessions/agent_${landed}/transcript`;
+    const log = memoryStorage(tail).log<{ n: number }>(key);
+    log.append({ n: 1 }, effect(landed ? 1 : 2));
+    await assert.rejects(log.flush(true), /connection reset/);
+    await log.rewrite(() => [{ n: 1 }]);
+    assert.deepEqual(await memoryStorage(real).log(key).read(), [{ n: 1 }]);
+  }
+  assert.deepEqual((await db.query("select n from effects order by n")).rows.map(row => row.n), [1, 2]);
+});
+
 test("a stale owner's compaction keeps the blobs its successor names again", async t => {
   const { db } = await testDatabase();
   const real = postgresTail(db);

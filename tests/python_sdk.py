@@ -19,7 +19,7 @@ import httpx
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "clients" / "python"))
-from camelai_run import _answer_for, _origin, AgentError, AgentRuntime, Agents, RunError, RuntimeTokenError, TestRuntime, ToolContext, _answer_mcp, _tool_context, serve_tools, tool, verify_runtime_token
+from camelai_run import AgentClient, _answer_for, _origin, AgentError, AgentRuntime, Agents, RunError, RuntimeTokenError, TestRuntime, ToolContext, _answer_mcp, _tool_context, serve_tools, tool, verify_runtime_token
 
 DATABASE_URL = os.environ.get("AGENT_TEST_DATABASE_URL", "postgres://postgres:test@127.0.0.1:55432/postgres")
 
@@ -157,6 +157,42 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(child.startswith("client_"))
         self.assertEqual([(part.type, part.agent_id) for part in parts if part.type.startswith("subagent_")], [("subagent_start", child), ("subagent_end", child)])
         self.assertIn("helped", json.dumps(self.bodies[-1]))
+
+    async def test_lazy_handles_hold_no_stream_while_idle_run_without_one_and_stream_for_a_run(self):
+        streaming = lambda agent: agent.client.runner is not None and not agent.client.runner.done()
+        # 50 handles on 4 agents (a tenant runs a few agents at once): none holds a stream after upsert or get.
+        keys = ["yes", "no", "maybe", "unsure"]
+        handles = [await self.agents.upsert(key, instructions="Answer yes or no.") for key in keys]
+        while len(handles) < 50:
+            handles.append(await self.agents.get(keys[len(handles) % len(keys)]))
+        self.assertFalse(any(streaming(agent) for agent in handles))
+        runs = await asyncio.gather(*(agent.run("Is water wet?") for agent in handles[:4]))
+        self.assertEqual([run.text for run in runs], ["seen"] * 4)
+        self.assertFalse(any(streaming(agent) for agent in handles), "a run settles without a stream")
+        # stream() connects for its run, sees it from the start, and lets the stream go once it ended.
+        for attempt in range(2):
+            self.script.append({"role": "assistant", "content": f"streamed {attempt}", "delayMs": 200})
+            parts = [part async for part in handles[0].stream("go")]
+            self.assertEqual([part.type for part in parts], ["text", "done"])
+            self.assertEqual(parts[0].text, f"streamed {attempt}")
+            await asyncio.sleep(0.05)
+            self.assertFalse(streaming(handles[0]))
+        # Handles that need the stream hold it from the start: on_event, or connection="eager".
+        watched = await self.agents.get("yes", on_event=lambda event: None)
+        eager = await self.agents.get("yes", connection="eager")
+        self.assertTrue(streaming(watched) and streaming(eager))
+        # A lazy run whose agent is deleted while it runs ends rather than waiting for good.
+        slow = await self.agents.upsert("deleted-mid-run")
+        self.script.append({"role": "assistant", "content": "late", "delayMs": 1500})
+        pending = asyncio.ensure_future(slow.run("slow", throw_on_error=False))
+        await asyncio.sleep(0.3)
+        deleted = await self.runtime.http.delete(f"{self.url}/v1/agents/{slow.id}", headers={"Authorization": f"Bearer {self.token}"})
+        self.assertEqual(deleted.status_code, 200)
+        try:
+            run = await asyncio.wait_for(pending, 10)
+            self.assertEqual(run.status, "failed")
+        except AgentError as error:
+            self.assertIn(error.status, (404, 410))
 
     async def test_a_tool_process_that_dies_mid_run_the_restarted_one_serves_its_calls_and_the_same_key_fetches_it(self):
         @tool
@@ -449,6 +485,27 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         resumed = await run.inputs[0].answer(True)
         self.assertEqual((resumed.status, resumed.text, done), ("completed", "seen", ["d1"]))
 
+    async def test_code_mode_false_history_none_and_config_hash(self):
+        # A tool-less agent: no js_exec, no file tools; the same upsert again is the same configuration.
+        agent = await self.agents.upsert("yes-no", instructions="Answer yes or no.", code_mode=False, file_tools=False)
+        again = await self.agents.upsert("yes-no", instructions="Answer yes or no.", code_mode=False, file_tools=False)
+        self.assertRegex(agent.config_hash, r"^[0-9a-f]{64}$")
+        self.assertEqual(again.config_hash, agent.config_hash)
+        self.assertEqual((await self.agents.get("yes-no")).config_hash, agent.config_hash)
+        self.assertIn("configHash", next(item for item in await self.runtime.list_agents() if item["id"] == agent.id))
+        await agent.run("First question")
+        self.call("final_output", {"yes": True})
+        run = await agent.run("Second question", history="none", output={"type": "object", "properties": {"yes": {"type": "boolean"}}, "required": ["yes"]})
+        self.assertEqual(run.output, {"yes": True})
+        body = self.bodies[-1]
+        # Only the run's own message; final_output is the only tool, so it is forced from the first request.
+        users = [message for message in body["messages"] if message["role"] == "user"]
+        self.assertEqual(len(users), 1)
+        self.assertIn("Second question", json.dumps(users[0]))
+        self.assertEqual([item["function"]["name"] for item in body["tools"]], ["final_output"])
+        self.assertEqual(body["tool_choice"], {"type": "function", "function": {"name": "final_output"}})
+        self.assertNotIn("js_exec", json.dumps(body))
+
     async def test_run_with_output_returns_a_pydantic_model_or_the_json_schema_value(self):
         from typing import Literal
         from pydantic import BaseModel, field_validator
@@ -495,6 +552,46 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
             await agent.run("Say it in words", output=Order)
         self.assertEqual(missing.exception.code, "output_missing")
         self.assertIsNone((await agent.run("hi")).output)
+
+    async def test_stateless_runs_one_call_stream_get_abort_and_no_agent_left(self):
+        from typing import Literal
+        from pydantic import BaseModel
+
+        class Vote(BaseModel):
+            vote: Literal["yes", "no"]
+
+        self.call("final_output", {"vote": "yes"})
+        run = await self.agents.run("Ship on Friday?", instructions="Vote yes or no.", output=Vote, metadata={"voter": "1"})
+        self.assertEqual(run.status, "completed")
+        self.assertIsInstance(run.output, Vote)
+        self.assertEqual(run.output.vote, "yes")
+        self.assertTrue(run.id.startswith("run_"))
+        self.assertEqual(len([message for message in self.bodies[-1]["messages"] if message["role"] == "user"]), 1)
+        again = await self.agents.runs.get(run.id)
+        self.assertEqual((again["status"], again["metadata"]), ("completed", {"voter": "1"}))
+        self.assertEqual([message["role"] for message in await self.agents.runs.messages(run.id)], ["user", "assistant", "toolResult"])
+        # The same key is the same run.
+        first = await self.agents.runs.create("Ship on Monday?", idempotency_key="k1", wait=True)
+        self.assertEqual((await self.agents.runs.create("Ship on Monday?", idempotency_key="k1", wait=True))["id"], first["id"])
+
+        self.call("js_exec", {"code": "return 1 + 1"})
+        self.script.append({"role": "assistant", "content": "two"})
+        stream = await self.agents.runs.stream("add", code_mode=True)
+        parts = [part async for part in stream]
+        self.assertEqual([part.type for part in parts], ["tool_call", "tool_result", "text", "done"])
+        self.assertEqual(parts[-1].run.text, "two")
+        self.assertEqual((await stream.result()).text, "two")
+
+        self.script.append({"role": "assistant", "content": "too late", "delayMs": 5000})
+        slow = await self.agents.runs.create("slow")
+        self.assertEqual(slow["status"], "running")
+        await asyncio.sleep(0.5)
+        await self.agents.runs.abort(slow["id"])
+        with self.assertRaises(RunError) as aborted:
+            await (await self.agents.runs.stream(run_id=slow["id"])).result()
+        self.assertEqual(aborted.exception.code, "aborted")
+        listed = await self.runtime.http.get(f"{self.url}/v1/agents", headers={"Authorization": f"Bearer {self.token}"})
+        self.assertEqual(listed.json(), [])
 
     async def test_parity_history_configure_tools_and_wait_for_request(self):
         agent = await self.make()
@@ -965,6 +1062,44 @@ class RateLimitRetryTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(refusals), 8)
         finally:
             await runtime.close()
+
+
+class ReconnectHintTest(unittest.IsolatedAsyncioTestCase):
+    """A stream the runtime closes on purpose (event: reconnect) is reconnected at once; one that just ends, after a backoff."""
+
+    async def reconnects(self, hinted):
+        import httpx
+        starts = []
+
+        def answer(request):
+            if request.url.path.endswith("/state"):
+                return httpx.Response(200, json={"cursor": 7, "requests": []})
+            starts.append((time.monotonic(), request.headers.get("last-event-id")))
+            body = 'event: ready\ndata: {"connection": "c1"}\n\nid: 7\ndata: {"type": "event", "event": {"type": "agent_start"}}\n\n'
+            # Only the first stream is closed on purpose; the next one just ends.
+            if hinted and len(starts) == 1:
+                body += 'event: reconnect\nretry: 0\ndata: {"type": "reconnect", "reason": "drain", "retryMs": 0}\n\n'
+            return httpx.Response(200, content=body.encode(), headers={"Content-Type": "text/event-stream"})
+
+        client = AgentClient("http://127.0.0.1:1", {"id": "client_" + "a" * 40, "token": "t"}, [], attach=False)
+        await client.http.aclose()
+        client.http = httpx.AsyncClient(transport=httpx.MockTransport(answer))
+        try:
+            await client.connect()
+            for _ in range(100):
+                if len(starts) >= 2:
+                    break
+                await asyncio.sleep(0.01)
+        finally:
+            await client.close(drain=0)
+        self.assertGreaterEqual(len(starts), 2)
+        # The reconnect resumes after the last event it had.
+        self.assertEqual(starts[1][1], "7")
+        return starts[1][0] - starts[0][0]
+
+    async def test_a_hinted_close_reconnects_at_once_and_an_unhinted_one_backs_off(self):
+        self.assertLess(await self.reconnects(True), 0.2)
+        self.assertGreaterEqual(await self.reconnects(False), 0.24)
 
 
 class VersionTest(unittest.TestCase):

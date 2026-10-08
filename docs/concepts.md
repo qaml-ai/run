@@ -23,10 +23,12 @@ const agent = await agents.upsert("user-123", { model, instructions, tools });
   made; changing them is a 409 that names the field. Delete it and upsert again
   to start over.
 - A deleted key makes a fresh agent the next time, with a new id and token.
-- Make an agent once per user, conversation or job, and reuse it. Creating one
-  is rate limited: 10 a minute on free credit (60 paid), and every `upsert` and
-  fork counts, while `agents.get(key)` does not; runs are 60 a minute on free
-  credit (600 paid). An agent per request or per test hits the limit. See
+- Make an agent once per user, conversation or job, and reuse it. Creating
+  agents is cheap and limited only against abuse (600 a minute; an upsert that
+  changes nothing does not count). The limit to design around is **busy
+  agents**: how many may run at once, 20 on free credit and more with each
+  [usage tier](reference/limits.md#usage-tiers). Runs are limited to 240 a
+  minute on free credit (600 once you buy credit). See
   [Rate limits](reference/limits.md#rate-limits).
 - Over REST, the key is the `Idempotency-Key` of `POST /v1/agents`.
 
@@ -70,12 +72,40 @@ A `Run` has:
 | `files` | files the run wrote |
 | `usage` | what its model calls used, where the runtime reports it; `subagentCostUsd`, what its sub-agents spent |
 
+### Runs without the history
+
+`history: "none"` (Python `history="none"`) runs a message as a new
+conversation would: the model sees the agent's instructions and tools as they
+are now, and this message, not the messages before it. One agent can then answer
+many independent questions without making an agent for each (creates are
+[rate limited](reference/limits.md#rate-limits); runs far less).
+
+```ts
+const run = await agent.run("Is a hot dog a sandwich?", { history: "none", output: Verdict });
+```
+
+The run is still recorded in the agent's history, its user message marked
+`history: "none"`, for audit and for the console. Runs that do not say `none`
+see it as they see any other message. Such a run is never compacted after, since
+it read nothing to compact; a later run with the whole history compacts first if
+it must. It is for a prompt that starts its own turn, not `whileRunning: "steer"`.
+Resumed after a person answers it, or continued on another node, the run stays
+without the history.
+
 `run()` has no timeout: runs can take minutes, and a run waiting on a person can
 wait for days. Pass an `AbortSignal` (Python: `timeout=`) to stop waiting; the
 run itself goes on, and `agent.abort()` stops it: the running turn ends, and the
 runs queued behind it are cancelled (code `cancelled`), so nothing runs after the
 stop (`abort({ queued: "keep" })` stops the running turn only). A failed run throws a
 `RunError` carrying the run, unless you pass `throwOnError: false`.
+
+### Stateless runs
+
+When each answer should stand alone (classify, extract, vote, judge), there is
+no agent to keep: `agents.run({ instructions, input, output })` (REST:
+`POST /v1/runs`) takes a configuration and an input and returns the result,
+with nothing carried over and no agent made. It is as durable as an agent's run
+and counts against the same limits. See [Stateless runs](guides/stateless-runs.md).
 
 ### Long conversations
 
@@ -139,7 +169,8 @@ const earlier = await agent.fork({ atMessage: 4 }); // history through message 4
   it began with.
 
 A fork is an agent like any other: it counts toward your agents and their
-storage. The copy costs only storage; its history and files share stored content
+storage, and against the `agent_creates` rate limit (`atMessage: 0` included).
+To run one message without the history, send it with `history: "none"` instead. The copy costs only storage; its history and files share stored content
 with the source. Over REST it is `POST /v1/agents/{id}/fork` with `{key?, name?,
 atMessage?, ttlSeconds?, subject?, context?, systemPromptAppend?, modelHeaders?}` (the key may be
 the `Idempotency-Key` header instead);
@@ -191,7 +222,10 @@ hears `APPLICATION_REPLACED` and goes on without serving the tools.
 Any number of processes can **run** an agent without serving its tools: an
 agent upserted without local tools, or with `attach: false`, follows the
 agent's stream read-only. That is how serverless functions, webhook handlers and
-second services run agents whose tools are served elsewhere.
+second services run agents whose tools are served elsewhere. Such a handle
+connects lazily: it holds the stream only while `agent.stream()` reads a run (or
+an `onEvent` handler listens), and `agent.run()` asks for its outcome instead,
+so a server holding many agents holds no idle connections.
 
 A run of an agent with attached tools while no process serves them is refused
 up front, with `APPLICATION_NOT_CONNECTED` (after a few seconds' grace for a

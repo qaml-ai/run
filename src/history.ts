@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { fileChars, validFileRef } from "./files.ts";
-import type { CompactionState } from "./transcript.ts";
+import type { CompactionState, Transcript } from "./transcript.ts";
 
 const HISTORY_BYTES = 16 * 1024 * 1024;
 const invalid = (message: string) => new Error(`INVALID_HISTORY: ${message}`);
@@ -98,6 +98,24 @@ export function interruptedTurnRepairs(messages: AgentMessage[], close = true, a
   // Without this, continue() would resubmit a user-only interrupted turn as if it were new.
   if (close) repairs.push({ role: "user", content: "[Runtime notice] The previous run was interrupted by a restart before it finished. Tool results above marked as unknown may or may not have taken effect. Wait for the next instruction.", timestamp: Date.now() });
   return repairs;
+}
+
+/**
+ * Settle a turn the transcript holds open that nothing will continue: its open calls are answered as unknown (never made
+ * again), and it is marked ended, durably. A turn suspended on a person's input keeps those calls open and stays
+ * suspended; any other gets a runtime notice, so a later continue does not resubmit it. Whether there was one to settle.
+ */
+export async function closeInterruptedTurn(transcript: Transcript): Promise<boolean> {
+  let closed = false;
+  // One commit, its records worked out as of every earlier one: a turn closed already is left alone, and a call that has
+  // a result (one an earlier close gave it, too) is never answered again.
+  await transcript.commit(() => {
+    if (!transcript.active) return [];
+    closed = true;
+    const awaiting = transcript.awaiting;
+    return [...interruptedTurnRepairs(transcript.context, !awaiting.length, awaiting).map(message => ({ t: "message" as const, message })), { t: "turn" as const, active: false }];
+  });
+  return closed;
 }
 
 export function recoverInterruptedTurn(messages: AgentMessage[]): AgentMessage[] {

@@ -48,26 +48,30 @@ export class Rpc {
   }
 }
 
-/** `label` names the process in its stderr lines (an agent's id). */
-export function childProcess(entry: string, cwd: string, runtime = process.execPath, detached = false, label = entry): { child: ChildProcess; rpc: Rpc } {
+/**
+ * What an agent process is told of its node's settings, from the node's environment: its PATH, where agent-launcher
+ * starts confined processes (when it started this one), the outbound policy (outbound.ts: the agent calls endpoints
+ * tenants give for their models), the history backlog's bound (transcript.ts, which tests lower) and the dimension of the
+ * metric lines it writes (metrics.ts). No provider keys, supervisor token, NODE_OPTIONS or preload hooks.
+ */
+export function agentProcessEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+  return {
+    PATH: env.PATH ?? "/usr/bin:/bin",
+    ...(env.AGENT_SANDBOX_DIR ? { AGENT_SANDBOX_DIR: env.AGENT_SANDBOX_DIR } : {}),
+    ...Object.fromEntries(OUTBOUND_ENV.filter(name => env[name] !== undefined).map(name => [name, env[name]!])),
+    ...(env.AGENT_HISTORY_BACKLOG_BYTES ? { AGENT_HISTORY_BACKLOG_BYTES: env.AGENT_HISTORY_BACKLOG_BYTES } : {}),
+    ...(env.AGENT_SERVICE_NAME ? { AGENT_SERVICE_NAME: env.AGENT_SERVICE_NAME } : {}),
+  };
+}
+
+/** `label` names the process in its stderr lines (an agent's id); `env` is `agentProcessEnv`'s. */
+export function childProcess(entry: string, cwd: string, runtime = process.execPath, detached = false, label = entry, env: Record<string, string> = agentProcessEnv(process.env)): { child: ChildProcess; rpc: Rpc } {
   const args = runtime.toLowerCase().includes("bun") ? [] : ["--experimental-strip-types", "--disable-warning=ExperimentalWarning"];
   const child = spawn(runtime, [...args, fileURLToPath(new URL(entry, import.meta.url))], {
     cwd,
     detached,
-    // No inherited provider keys, supervisor token, NODE_OPTIONS, or preload hooks. One agent
-    // runs one js_exec at a time, in a v8-exec process.
-    env: {
-      PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: cwd, TMPDIR: cwd,
-      // Where agent-launcher starts confined processes, when it started this one; none started ahead per agent.
-      ...(process.env.AGENT_SANDBOX_DIR ? { AGENT_SANDBOX_DIR: process.env.AGENT_SANDBOX_DIR } : {}),
-      AGENT_V8_PRESPAWN: "0",
-      // The outbound policy (outbound.ts): the agent calls endpoints tenants give for their models.
-      ...Object.fromEntries(OUTBOUND_ENV.filter(name => process.env[name] !== undefined).map(name => [name, process.env[name]!])),
-      // The history backlog's bound (transcript.ts), which tests lower.
-      ...(process.env.AGENT_HISTORY_BACKLOG_BYTES ? { AGENT_HISTORY_BACKLOG_BYTES: process.env.AGENT_HISTORY_BACKLOG_BYTES } : {}),
-      // The dimension of the metric lines an agent process writes (metrics.ts).
-      ...(process.env.AGENT_SERVICE_NAME ? { AGENT_SERVICE_NAME: process.env.AGENT_SERVICE_NAME } : {}),
-    },
+    // One agent runs one js_exec at a time, in a v8-exec process: none started ahead per agent.
+    env: { ...env, HOME: cwd, TMPDIR: cwd, AGENT_V8_PRESPAWN: "0" },
     // Its stderr reaches the node's log only through childStderr: a crash's text never does.
     stdio: ["ignore", "ignore", "pipe", "ipc"],
     serialization: "json",

@@ -38,6 +38,8 @@ export interface DefinitionSpec {
   openApi?: OpenApiSpec[];
   /** false: agents get no file tools but present_file; their mounts stay open to fs in js_exec. */
   fileTools?: boolean;
+  /** false: agents get no js_exec, and call every tool directly (AgentConfig.codeMode). */
+  codeMode?: boolean;
   /** Built-in tools to enable: web_fetch, web_search, schedule, ask_user, delegate. */
   builtins?: string[];
   /** The search providers web_search tries, in order, instead of the runtime's (AGENT_WEB_SEARCH_PROVIDERS). */
@@ -61,9 +63,9 @@ export interface ApplyResult { agent: string; requestId: string; status: "update
 /** Agent parameters from a definition, as `createAgent` takes them. */
 export type AgentParams = Record<string, unknown> & { tools?: ToolDefinition[] };
 
-const FIELDS = ["description", "model", "systemPrompt", "thinkingLevel", "fileTools", "limits", "runLimits", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate"] as const;
+const FIELDS = ["description", "model", "systemPrompt", "thinkingLevel", "fileTools", "codeMode", "limits", "runLimits", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate"] as const;
 /** Configuration an agent made from a definition may set as its own, which applying the definition leaves. */
-export const OVERRIDES = ["model", "thinkingLevel", "fileTools", "runLimits"] as const;
+export const OVERRIDES = ["model", "thinkingLevel", "fileTools", "codeMode", "runLimits"] as const;
 const PROVISION_FIELDS = ["name", "type", "ttlSeconds", "mounts", "tools", "initialMessages", "systemPromptAppend"];
 const MAX_DEFINITIONS = 200;
 const validId = (id: string) => /^def_[a-f0-9]{20}$/.test(id);
@@ -247,10 +249,10 @@ export class Definitions {
     const ttlSeconds = params.ttlSeconds !== undefined ? params.ttlSeconds : spec.limits?.ttlSeconds;
     const mounts = params.mounts !== undefined ? params.mounts : spec.mounts;
     const overrides = OVERRIDES.filter(key => params[key] !== undefined);
-    const own = (key: "model" | "systemPrompt" | "thinkingLevel" | "fileTools" | "runLimits") => params[key] ?? spec[key];
+    const own = (key: "model" | "systemPrompt" | "thinkingLevel" | "fileTools" | "codeMode" | "runLimits") => params[key] ?? spec[key];
     return {
       params: {
-        ...Object.fromEntries((["model", "systemPrompt", "thinkingLevel", "fileTools", "runLimits"] as const).filter(key => own(key) !== undefined).map(key => [key, own(key)])),
+        ...Object.fromEntries((["model", "systemPrompt", "thinkingLevel", "fileTools", "codeMode", "runLimits"] as const).filter(key => own(key) !== undefined).map(key => [key, own(key)])),
         tools: params.tools ?? [], name: params.name ?? definition.name, ...(params.type !== undefined ? { type: params.type } : {}),
         ...(ttlSeconds !== undefined ? { ttlSeconds } : {}), ...(mounts !== undefined ? { mounts } : {}),
         ...Object.fromEntries(["initialMessages", "systemPromptAppend"].filter(key => params[key] !== undefined).map(key => [key, params[key]])),
@@ -289,6 +291,7 @@ export class Definitions {
     }
     if (spec.description !== undefined && (typeof spec.description !== "string" || !spec.description.trim() || spec.description.length > 1000)) throw new HttpError(400, "description must contain 1–1000 characters");
     if (spec.fileTools !== undefined && typeof spec.fileTools !== "boolean") throw new HttpError(400, "fileTools must be true or false");
+    if (spec.codeMode !== undefined && typeof spec.codeMode !== "boolean") throw new HttpError(400, "codeMode must be true or false");
     if (spec.runLimits !== undefined && !runLimitsInput(spec.runLimits)) delete spec.runLimits;
     if (spec.mounts !== undefined && (!Array.isArray(spec.mounts) || spec.mounts.length > 16)) throw new HttpError(400, "mounts must be an array of at most 16");
     if (spec.builtins !== undefined) builtinsInput(spec.builtins);

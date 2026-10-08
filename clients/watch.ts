@@ -331,7 +331,10 @@ export function watchAgent(options: WatchOptions): Watcher {
     options.onEvent?.(event);
   }
 
-  /** One SSE stream until it ends; true when it delivered anything (so streams work here). */
+  /**
+   * One SSE stream until it ends; true when it delivered anything (so streams work here). A stream the runtime closes
+   * on purpose (`event: reconnect`: its node is leaving, or the agent moved) ends here, and the next one starts at once.
+   */
   async function sse(signal: AbortSignal): Promise<boolean> {
     const response = await get(`/events?snapshot=1${options.subagents ? "&subagents=1" : ""}`, { headers: { Accept: "text/event-stream", ...(cursor ? { "Last-Event-ID": String(cursor) } : {}) } }, signal);
     if (!response.ok || !response.body) throw Object.assign(new Error(`events: HTTP ${response.status}`), { status: response.status });
@@ -353,6 +356,7 @@ export function watchAgent(options: WatchOptions): Watcher {
           if (!text) continue;
           delivered = true;
           if (lines.includes("event: ready")) { state.connected = true; state.transport = "sse"; changed(); continue; }
+          if (lines.includes("event: reconnect")) { void reader.cancel().catch(() => {}); return true; }
           const id = Number(lines.find(line => line.startsWith("id:"))?.slice(3));
           await receive(JSON.parse(text));
           if (Number.isSafeInteger(id) && id > 0) cursor = id;

@@ -1,8 +1,8 @@
-import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP, type LookupFunction } from "node:net";
 import { Agent as HttpAgent } from "node:http";
 import { Agent as HttpsAgent } from "node:https";
-import { Agent, fetch as undiciFetch, type RequestInit as UndiciRequestInit, type Response as UndiciResponse } from "undici";
+import { Agent, type RequestInit as UndiciRequestInit, type Response as UndiciResponse } from "undici";
+import { network } from "./node-context.ts";
 
 /**
  * The one way the runtime calls URLs that tenants give it (MCP servers, HTTP tools,
@@ -129,7 +129,7 @@ export class Outbound {
     this.allow = (policy.allow ?? []).map(cidr);
     this.block = (policy.block ?? []).map(cidr);
     this.origins = new Set((policy.origins ?? []).map(exactOrigin));
-    this.resolve = policy.resolve ?? (hostname => dnsLookup(hostname, { all: true, verbatim: true }));
+    this.resolve = policy.resolve ?? (hostname => network().resolve(hostname));
     const lookupFor = (origin: boolean): LookupFunction => (hostname, options, callback) => {
       this.addresses(hostname, origin).then(addresses => {
         const usable = options.family ? addresses.filter(entry => entry.family === options.family) : addresses;
@@ -227,7 +227,7 @@ export class Outbound {
         if (url.origin === origin) for (const [name, value] of Object.entries(secrets ?? {})) headers.set(name, value);
         let response: UndiciResponse;
         try {
-          response = await undiciFetch(url, { ...request, method, headers, body, redirect: "manual", signal: aborted, dispatcher: this.permits(url) ? this.originDispatcher : this.dispatcher } as unknown as UndiciRequestInit);
+          response = await network().guardedFetch(url, { ...request, method, headers, body, redirect: "manual", signal: aborted, dispatcher: this.permits(url) ? this.originDispatcher : this.dispatcher } as unknown as UndiciRequestInit);
         } catch (error) {
           throw (error as { cause?: unknown }).cause instanceof OutboundBlocked ? (error as { cause: Error }).cause : aborted.aborted && aborted.reason instanceof Error ? aborted.reason : error;
         }
@@ -264,15 +264,18 @@ function capped(response: Response, url: URL, maxBytes: number, done: () => void
 /** The operator's outbound policy variables, which an agent's process is given too (it calls tenants' model endpoints). */
 export const OUTBOUND_ENV = ["AGENT_OUTBOUND_ALLOW_HTTP", "AGENT_OUTBOUND_ALLOW_CIDRS", "AGENT_OUTBOUND_BLOCK_CIDRS", "AGENT_OUTBOUND_ALLOW_ORIGINS"];
 
-let modelOutbound: Outbound | undefined;
-const outboundForModels = () => modelOutbound ??= outboundFromEnvironment();
+let processOutbound: Outbound | undefined;
+/**
+ * This process's own policy, from its environment: for model calls made without a node's. An agent process's environment
+ * carries its node's (`agentProcessEnv`); an inline agent is given its node's (HostIO.modelOutbound).
+ */
+export const outboundOfProcess = () => processOutbound ??= outboundFromEnvironment();
 
 /**
  * node:http agents for `url`, for SDKs that take no fetch (Bedrock's): its scheme and a literal address are checked
  * now, and each connection's lookup checks the addresses a host name resolves to, as the guard's own fetch does.
  */
-export function guardedNodeAgents(url: string) {
-  const outbound = outboundForModels();
+export function guardedNodeAgents(url: string, outbound: Outbound) {
   const lookup = outbound.lookupFor(outbound.check(url));
   return { httpAgent: new HttpAgent({ lookup, keepAlive: true }), httpsAgent: new HttpsAgent({ lookup, keepAlive: true }) };
 }
@@ -280,8 +283,7 @@ export function guardedNodeAgents(url: string) {
  * The fetch for a model call to an endpoint a tenant gave (a key scope's `baseUrl`, a custom provider's): through the
  * outbound guard, like any URL a tenant gives. A model's reply streams for as long as it takes; its start has ten minutes.
  */
-export function guardedModelFetch(): typeof fetch {
-  const outbound = outboundForModels();
+export function guardedModelFetch(outbound: Outbound): typeof fetch {
   return (input, init) => outbound.fetch(String(input), { ...init as RequestInit, stream: true, timeoutMs: 600_000, maxBytes: 1024 * 1024 * 1024 });
 }
 

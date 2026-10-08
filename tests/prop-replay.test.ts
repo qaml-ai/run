@@ -1,37 +1,47 @@
-import { after, test } from "node:test";
+import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
-import { ClientSessions, startingCursor } from "../src/client-sessions.ts";
+import { randomBytes } from "node:crypto";
+import type pg from "pg";
+import { ClientSessions, EVENT_BLOCK } from "../src/client-sessions.ts";
 import { HttpError } from "../src/http.ts";
 import { FRAME_BYTES, type ClientEvent, type TurnSnapshot } from "../shared/client-protocol.ts";
 import type { Db } from "../src/db.ts";
 import type { Storage } from "../shared/storage.ts";
 import type { AgentSupervisor } from "../src/supervisor.ts";
+import { testDatabase } from "./database.ts";
 import { check, fc } from "./prop-helpers.ts";
 
 /**
  * I8 (design §3): a watcher that resumes with Last-Event-ID gets exactly the events published after that id, in order,
  * without duplicates, or is told it cannot (409 REPLAY_GAP, or a snapshot when it asked for one); event ids are never
  * reused for an agent. The buffer, ids and replay are ClientSessions' own (`publish`, `replay`), driven on a bare
- * session; the cursor a load starts from is `startingCursor`.
+ * session; across owners, the cursor a load starts from and the ids it reserves are `startCursor`'s and
+ * `reserveEvents`', on Postgres.
  */
 const MAX_BUFFERED_EVENTS = 512;
 
 type Buffered = { id: number; bytes: number; data: ClientEvent };
 type Replayed = { cursor: number; snapshot?: TurnSnapshot; events: Buffered[] };
 /** The session fields `publish` and `replay` use. */
-type BareSession = { header: { id: string; tenant: string }; cursor: number; events: Buffered[]; eventBytes: number; watchers: Set<unknown>; polls: Set<() => void>; lastActive: number };
-type Internals = { publish(session: BareSession, data: ClientEvent): void; replay(session: BareSession, raw?: string, snapshot?: boolean): Replayed; close(): Promise<void> };
+type BareSession = {
+  header: { id: string; tenant: string }; cursor: number; reserved: number; reserving?: Promise<void>; held?: ClientEvent[];
+  events: Buffered[]; eventBytes: number; watchers: Set<unknown>; polls: Set<() => void>; lastActive: number;
+};
+type Internals = {
+  publish(session: BareSession, data: ClientEvent): void; replay(session: BareSession, raw?: string, snapshot?: boolean): Replayed; close(): Promise<void>;
+  startCursor(id: string, claim: undefined): Promise<{ cursor: number; reserved: number }>; idleCursor(id: string): Promise<number | undefined>;
+};
 
 const nodes: Internals[] = [];
 after(async () => { for (const node of nodes) await node.close(); });
-/** A node with nothing loaded: only its in-memory event plumbing is used. */
-function node(eventBytes?: number): Internals {
+/** A node with nothing loaded: only its event plumbing is used, and its database only for event ids. */
+function node(eventBytes?: number, options: { db?: Db; eventBlock?: number } = {}): Internals {
   const supervisor = { agents: new Map(), flush: async () => {}, stop: async () => {} } as unknown as AgentSupervisor;
-  const made = new ClientSessions(supervisor, { secret: "s".repeat(32), db: {} as Db, storage: {} as Storage, ...(eventBytes ? { eventBytes } : {}) }) as unknown as Internals;
+  const made = new ClientSessions(supervisor, { secret: "s".repeat(32), db: options.db ?? {} as Db, storage: {} as Storage, ...(eventBytes ? { eventBytes } : {}), ...(options.eventBlock ? { eventBlock: options.eventBlock } : {}) }) as unknown as Internals;
   nodes.push(made);
   return made;
 }
-const bare = (cursor: number): BareSession => ({ header: { id: "agent", tenant: "tenant" }, cursor, events: [], eventBytes: 0, watchers: new Set(), polls: new Set(), lastActive: 0 });
+const bare = (cursor: number, reserved = Number.MAX_SAFE_INTEGER, id = "agent"): BareSession => ({ header: { id, tenant: "tenant" }, cursor, reserved, events: [], eventBytes: 0, watchers: new Set(), polls: new Set(), lastActive: 0 });
 
 /** Events of every kind and size, a few past the transport's frame limit (published as `event_omitted`). */
 const event: fc.Arbitrary<ClientEvent> = fc.oneof(
@@ -101,12 +111,23 @@ test("replay: any Last-Event-ID text is served, refused with 400, or a 409 gap, 
 
 // --- Event ids across owners (H2) ------------------------------------------------------------------------------------
 
+let db: pg.Pool;
+before(async () => { ({ db } = await testDatabase()); });
+
+/** Run `work` with this process's clock reading `now` (ms), as a node whose clock is off would. */
+async function at<T>(now: number, work: () => Promise<T>): Promise<T> {
+  const real = Date.now;
+  Date.now = () => now;
+  try { return await work(); } finally { Date.now = real; }
+}
+
 /**
- * One owner of the agent after another, as the `agents` row (`last_cursor`, `cursor_clean`) carries the cursor between
- * them: each loads (`startCursor`: `startingCursor` on its own clock, then marks the row unclean), publishes, and stops
- * cleanly (writing its cursor, clean) or crashes (writing nothing). Between owners, a node may serve an idle watcher
- * (`idleCursor`: an unclean row gets `greatest(now * 1000, last_cursor + 1)` on that node's clock, marked clean).
- * Owners follow one another in real time (a takeover takes at least `gapMs`); each node's clock is off by its offset.
+ * One owner of the agent after another, on Postgres, as its `agents` row (`last_cursor`, `cursor_clean`,
+ * `reserved_cursor`) carries the cursor between them: each loads (`startCursor` on its own clock: where it starts, its
+ * first block of ids reserved, the row marked unclean), publishes (reserving further blocks, `block` ids at a time, as
+ * it goes), and stops cleanly (writing its cursor, clean, as `unload` does) or crashes (writing nothing). Between
+ * owners, a node may serve an idle watcher (`idleCursor`, on that node's clock). Owners follow one another in real time
+ * (a takeover takes at least `gapMs`); each node's clock is off by its offset.
  */
 type Owner = { offsetMs: number; gapMs: number; durationMs: number; events: number; clean: boolean; idle?: { offsetMs: number } };
 /** Owners whose clocks are off by up to `skewMs`, with idle watchers between them on clocks off by up to `idleSkewMs` (none if undefined). */
@@ -115,26 +136,25 @@ const owners = (skewMs: number, idleSkewMs: number | undefined) => fc.array(fc.r
   events: fc.integer({ min: 0, max: 50 }), clean: fc.boolean(),
   idle: idleSkewMs === undefined ? fc.constant(undefined) : fc.option(fc.record({ offsetMs: fc.integer({ min: -idleSkewMs, max: idleSkewMs }) }), { nil: undefined }),
 }), { minLength: 2, maxLength: 5 }) as fc.Arbitrary<Owner[]>;
+/** Block sizes small enough that owners run out of reserved ids, and the real one. */
+const block = fc.oneof(fc.integer({ min: 1, max: 64 }), fc.constant(EVENT_BLOCK));
 
 /**
  * Run the owners and check I8 across them: no event id is ever published twice, and a watcher holding any id it was
  * sent, reconnecting to a later owner, is told of the gap (409) unless nothing was published since that id.
  */
-function runOwners(list: Owner[]) {
-  const server = node();
-  const row: { last?: number; clean: boolean } = { clean: false };
+async function runOwners(list: Owner[], eventBlock = EVENT_BLOCK) {
+  const server = node(undefined, { db, eventBlock });
+  const agent = `agent_${randomBytes(6).toString("hex")}`;
+  await db.query("insert into agents (id, tenant, header, revision, name, type, model) values ($1, 'tenant', '{}', 1, $1, 'general', 'm')", [agent]);
   let now = 1_760_000_000_000;
   const used = new Map<number, number>();
-  const seen: { id: number; owner: number; last: boolean }[] = [];
-  list.forEach((owner, index) => {
+  const seen: { id: number; owner: number }[] = [];
+  for (const [index, owner] of list.entries()) {
     now += owner.gapMs;
-    if (owner.idle && !row.clean) {
-      row.last = Math.max((now + owner.idle.offsetMs) * 1000, (row.last ?? 0) + 1);
-      row.clean = true;
-    }
-    const session = bare(startingCursor(row.last, row.clean, now + owner.offsetMs));
-    const start = session.cursor;
-    row.clean = false;
+    if (owner.idle) await at(now + owner.idle.offsetMs, () => server.idleCursor(agent));
+    const { cursor: start, reserved } = await at(now + owner.offsetMs, () => server.startCursor(agent, undefined));
+    const session = bare(start, reserved, agent);
     // A watcher that held an earlier owner's id reconnects here: a gap, unless that id is where this owner starts.
     for (const held of seen) {
       const got = replay(server, session, String(held.id));
@@ -142,45 +162,41 @@ function runOwners(list: Owner[]) {
       if (held.id === start && held === seen.at(-1)) assert.ok(got.events, `owner ${index} starts at ${start}, which a watcher holds: it is caught up`);
       else assert.equal(got.status, 409, `owner ${index} (from ${start}) served a watcher holding owner ${held.owner}'s id ${held.id} without a gap`);
     }
-    for (let event = 0; event < owner.events; event++) {
-      server.publish(session, { type: "response", id: `${index}.${event}`, outcome: { result: event } });
-      const id = session.cursor;
+    for (let event = 0; event < owner.events; event++) server.publish(session, { type: "response", id: `${index}.${event}`, outcome: { result: event } });
+    // Events past the reserved ids wait for the next block: all are out once it is reserved.
+    while (session.held) await session.reserving;
+    await session.reserving;
+    const ids = session.events.map(entry => entry.id);
+    assert.deepEqual(ids, Array.from({ length: owner.events }, (_, offset) => start + 1 + offset), "consecutive ids, in the order published");
+    const stored = Number((await db.query("select reserved_cursor from agents where id = $1", [agent])).rows[0].reserved_cursor);
+    assert.ok(session.cursor <= stored, `published ${session.cursor}, past the ${stored} reserved`);
+    for (const id of ids) {
       assert.ok(!used.has(id), `event id ${id} of owner ${index} was already used by owner ${used.get(id)}`);
       used.set(id, index);
-      seen.push({ id, owner: index, last: event === owner.events - 1 });
+      seen.push({ id, owner: index });
     }
     now += owner.durationMs;
-    if (owner.clean) { row.last = session.cursor; row.clean = true; }
-  });
+    // A clean stop, as `unload` writes it.
+    if (owner.clean) await db.query("update agents set last_cursor = $2, cursor_clean = true where id = $1", [agent, session.cursor]);
+  }
 }
 
 test("event ids are never reused across owners whose clocks agree", async t => {
-  await check(t, fc.property(owners(0, 0), list => { runOwners(list); }), { runs: 300 });
+  await check(t, fc.asyncProperty(owners(0, 0), block, (list, size) => runOwners(list, size)), { runs: 60 });
 });
 
 /**
- * H2 CONFIRMED: event ids are reused after an unclean stop when node clocks disagree, and a watcher holding one of the
- * reused ids resumes mid-stream on the new owner, missing events, with no 409. Kept as `todo` tests until it is fixed.
+ * H2 (fixed): event ids were reused after an unclean stop when node clocks disagreed, and a watcher holding one of the
+ * reused ids resumed mid-stream on the new owner, missing events, with no 409. A load bounded an unclean owner's ids
+ * only by its clock, `max(now * 1000, stored + 1)`, where `stored` was the cursor of the last clean stop: the ids an
+ * owner published were recorded nowhere until it stopped cleanly. Now an owner reserves its ids (`reserved_cursor`,
+ * under its claim) before publishing them, and an unclean load starts above every id reserved.
  *
- * Root cause: `startingCursor` (src/client-sessions.ts, called by `startCursor` at every load) and `idleCursor`'s
- * `greatest($2, coalesce(last_cursor, 0) + 1)` bound an unclean owner's ids only by the local clock:
- * `max(now * 1000, stored + 1)`, where `stored` is the cursor of the last clean stop. The ids an owner publishes after
- * its load are recorded nowhere until it stops cleanly, so:
- *   1. a successor whose clock reads earlier than its crashed predecessor's last event (skew > the takeover delay plus
- *      the predecessor's lifetime) starts at or below ids the predecessor sent;
- *   2. a clock that ran ahead poisons the stored cursor: a clean stop, or an idle watcher's `idleCursor` on that node,
- *      stores `(now + skew) * 1000`; an owner loads clean from it, publishes, crashes, and the next (correct-clock)
- *      owner starts at `stored + 1` again, within `skew` of real time.
- * Possible fixes: reserve ids durably (store a high-water mark `start + N` at load and again before passing it, like a
- * hi/lo sequence), or make ids `(owner epoch, seq)` so a successor's ids always sort after a predecessor's.
- *
- * Minimized counterexamples (fast-check; replay with PROP_SEED/PROP_PATH and --test-name-pattern):
- *   skew:          seed 1970555252, path 86:1:1:1:1:2:2:2:2:3:2:2:4:3:4:3:3:14:4:3:4:3:3:3:5:3:4:3:6:4:4:4 —
- *                  owner 0 stops clean with no events; owner 1 publishes 2 and crashes; owner 2, 1 s later on a clock
- *                  2.002 s behind, starts at owner 1's start + 1 (MINIMAL_SKEW below).
- *   skew history:  seed -2057697516, path 2:0:0:0:1:0:0:3:1:1:1:1:1:1:2:1:1:2:1:4:0:0:0:0:0 — an idle watcher's node
- *                  runs ahead; owner 0 loads clean from its cursor, publishes, crashes; owner 1 (correct clock) reuses
- *                  owner 0's first id (MINIMAL_HISTORY below).
+ * The counterexamples fast-check found (seeds 1970555252 and -2057697516, minimized):
+ *   skew:          owner 0 stops clean with no events; owner 1 publishes 2 and crashes; owner 2, 1 s later on a clock
+ *                  2.002 s behind, started at owner 1's start + 1.
+ *   skew history:  an idle watcher's node runs ahead; owner 0 loads clean from its cursor, publishes, crashes; owner 1
+ *                  (correct clock) reused owner 0's first id.
  */
 const MINIMAL_SKEW: Owner[] = [
   { offsetMs: 0, gapMs: 1000, durationMs: 1, events: 0, clean: true },
@@ -191,14 +207,13 @@ const MINIMAL_HISTORY: Owner[] = [
   { offsetMs: 0, gapMs: 1000, durationMs: 1, events: 2, clean: false, idle: { offsetMs: 120_004 } },
   { offsetMs: 0, gapMs: 1000, durationMs: 1, events: 0, clean: false },
 ];
-// Each fails today ("served a watcher holding owner N's id ... without a gap"); once fixed, drop the todo.
-test("H2 minimized: a successor on a clock behind its crashed predecessor's", { todo: "H2 confirmed" }, () => runOwners(MINIMAL_SKEW));
-test("H2 minimized: a cursor stored from a clock that ran ahead", { todo: "H2 confirmed" }, () => runOwners(MINIMAL_HISTORY));
+test("H2 minimized: a successor on a clock behind its crashed predecessor's", () => runOwners(MINIMAL_SKEW));
+test("H2 minimized: a cursor stored from a clock that ran ahead", () => runOwners(MINIMAL_HISTORY));
 
-test("H2: event ids reused after an unclean stop under clock skew", { todo: "H2 confirmed: event-id reuse under clock skew (see comment)" }, async t => {
-  await check(t, fc.property(owners(300_000, undefined), list => { runOwners(list); }), { runs: 1_000 });
+test("H2: no event id is reused after an unclean stop under clock skew", async t => {
+  await check(t, fc.asyncProperty(owners(300_000, undefined), block, (list, size) => runOwners(list, size)), { runs: 150 });
 });
 
-test("H2 (skew history): one fast clock poisons the stored cursor for owners whose clocks agree", { todo: "H2 confirmed: an idle watcher's cursor on a fast clock" }, async t => {
-  await check(t, fc.property(owners(0, 300_000), list => { runOwners(list); }), { runs: 1_000 });
+test("H2 (skew history): one fast clock does not let owners whose clocks agree reuse ids", async t => {
+  await check(t, fc.asyncProperty(owners(0, 300_000), block, (list, size) => runOwners(list, size)), { runs: 150 });
 });

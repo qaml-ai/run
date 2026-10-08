@@ -60,7 +60,9 @@ export async function fakeModel(t: T, respond: (body: any, index: number) => obj
     bodies.push(body);
     keys.push(req.headers.authorization ?? "");
     headers.push(req.headers);
-    const { usage, delayMs, httpStatus, ...delta } = respond(body, bodies.length - 1) as any;
+    // `wait`: a promise the answer waits for (a barrier between concurrent calls), before any `delayMs`.
+    const { usage, delayMs, httpStatus, wait, ...delta } = respond(body, bodies.length - 1) as any;
+    if (wait) await wait;
     if (delayMs) await sleep(delayMs);
     // A provider refusing the request: `httpStatus` with an OpenAI-style error.
     if (httpStatus) { res.writeHead(httpStatus, { "Content-Type": "application/json" }).end(JSON.stringify({ error: { message: delta.message ?? "Refused", type: "invalid_request_error" } })); return; }
@@ -124,7 +126,7 @@ export async function runtime(t: T, respond: (body: any, index: number) => objec
     const text = await response.text();
     let json: any = text;
     try { json = JSON.parse(text); } catch { /* not JSON */ }
-    return { status: response.status, json, text };
+    return { status: response.status, json, text, headers: response.headers };
   };
   /** Prompt an agent over the REST API and wait for the outcome of its turn. */
   const prompt = async (agent: string, text: string, token?: string, extra: Record<string, unknown> = {}) => {

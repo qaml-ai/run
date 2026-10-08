@@ -54,8 +54,8 @@ export const DEFAULT_PRICING: Pricing = Object.freeze({
   maxStorageBytes: 100e9,
   free: Object.freeze({ hourlySpend: micros(1), maxStorageBytes: 1e9 }),
   tiers: Object.freeze([
-    { name: "Free", paid: 0, busyAgents: 8 },
-    { name: "Tier 1", paid: micros(5), busyAgents: 25 },
+    { name: "Free", paid: 0, busyAgents: 20 },
+    { name: "Tier 1", paid: micros(5), busyAgents: 50 },
     { name: "Tier 2", paid: micros(50), busyAgents: 100 },
     { name: "Tier 3", paid: micros(250), busyAgents: 250 },
     { name: "Tier 4", paid: micros(1000), busyAgents: 1000 },

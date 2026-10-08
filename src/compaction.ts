@@ -7,10 +7,11 @@ import type { CompactionState } from "./transcript.ts";
 import { messageChars } from "./history.ts";
 import { fileChars as charsOf, validFileRef } from "./files.ts";
 import type { Credentials } from "./protocol.ts";
-import { guardedModelFetch, guardedNodeAgents } from "./outbound.ts";
+import { guardedModelFetch, guardedNodeAgents, outboundOfProcess, type Outbound } from "./outbound.ts";
 import { reasoningFloor } from "./pi-catalog.ts";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { streamTimeouts, watchedStream, type Stall, type StreamTimeouts } from "./model-stream.ts";
+import { network } from "./node-context.ts";
 
 /**
  * Context compaction on top of Pi's compaction functions (vendored from pi-agent-core 0.87.1 in
@@ -109,7 +110,7 @@ const codexOptions = (token: string) => ({
   fetch: (url: string | URL | Request, init?: RequestInit) => {
     const headers = new Headers(init?.headers);
     headers.set("Authorization", `Bearer ${token}`);
-    return fetch(url, { ...init, headers });
+    return network().fetch(url, { ...init, headers });
   },
 });
 
@@ -122,17 +123,21 @@ const noRetries = { acquireInitialRetryToken: async () => ({ getRetryCount: () =
 const send = BedrockRuntimeClient.prototype.send;
 /** Bedrock's own regional endpoint: never a gateway. */
 const AWS_BEDROCK = /^bedrock-runtime(?:-fips)?\.[a-z0-9-]+\.amazonaws\.com$/;
-/** Hosts of gateways tenants gave for Bedrock (key scopes' baseUrl), as `authorize` meets them; an operator's endpoint is not one. */
-const tenantGateways = new Set<string>();
+/**
+ * Hosts of gateways tenants gave for Bedrock (key scopes' baseUrl), as `authorize` meets them, with the outbound policy of
+ * the node that met them; an operator's endpoint is not one.
+ */
+const tenantGateways = new Map<string, Outbound>();
 const guarded = new WeakSet<BedrockRuntimeClient>();
 BedrockRuntimeClient.prototype.send = async function (this: BedrockRuntimeClient, ...args: unknown[]) {
   (this.config as { retryStrategy: unknown }).retryStrategy = async () => noRetries;
   // A gateway's address is called through the outbound guard, as every URL a tenant gives is: the client takes no fetch,
   // so its connections go through agents whose lookup checks each address it connects to (HTTP/1.1, as for gateways).
   const endpoint = await (this.config as { endpoint?: () => Promise<{ protocol: string; hostname: string; port?: number }> }).endpoint?.();
-  if (endpoint && tenantGateways.has(endpoint.hostname) && !AWS_BEDROCK.test(endpoint.hostname) && !guarded.has(this)) {
+  const gateway = endpoint && tenantGateways.get(endpoint.hostname);
+  if (endpoint && gateway && !AWS_BEDROCK.test(endpoint.hostname) && !guarded.has(this)) {
     const url = `${endpoint.protocol}//${endpoint.hostname.includes(":") ? `[${endpoint.hostname}]` : endpoint.hostname}${endpoint.port ? `:${endpoint.port}` : ""}/`;
-    (this.config as { requestHandler: unknown }).requestHandler = new NodeHttpHandler(guardedNodeAgents(url));
+    (this.config as { requestHandler: unknown }).requestHandler = new NodeHttpHandler(guardedNodeAgents(url, gateway));
     guarded.add(this);
   }
   return (send as (...args: unknown[]) => unknown).apply(this, args);
@@ -182,7 +187,7 @@ function callFetch(sink: { cost?: number; credits?: number }, plan: { rebase?: {
       bearer.set("authorization", `Bearer ${plan.bearer}`);
       headers = bearer;
     }
-    const response = await (plan.base ?? fetch)(url, { ...init, headers });
+    const response = await (plan.base ?? network().fetch)(url, { ...init, headers });
     if (!response.body) return response;
     const decoder = new TextDecoder();
     let pending = "";
@@ -205,7 +210,7 @@ function callFetch(sink: { cost?: number; credits?: number }, plan: { rebase?: {
  * A key scope's `baseUrl` replaces the provider's root (`PROVIDER_ROOTS`) in each request's URL, or for
  * an API that takes no fetch (Bedrock, Google), the model's base URL. An entry without a key sends none.
  */
-function authorize(model: Model<Api>, asked: any, credentials: Credentials, sink: { cost?: number; credits?: number }, modelHeaders?: Record<string, string> | null): [Model<Api>, any] {
+function authorize(model: Model<Api>, asked: any, credentials: Credentials, sink: { cost?: number; credits?: number }, modelHeaders: Record<string, string> | null | undefined, outbound: Outbound): [Model<Api>, any] {
   // A model that always reasons refuses a call that turns reasoning off: a call asking for none asks for its least.
   const floor = asked?.reasoning ? undefined : reasoningFloor(model);
   const options = floor ? { ...asked, reasoning: floor } : asked;
@@ -222,14 +227,14 @@ function authorize(model: Model<Api>, asked: any, credentials: Credentials, sink
     // Bedrock through a gateway speaks HTTP/1.1, as its pass-through does.
     env: model.api === "bedrock-converse-stream" && baseUrl ? { AWS_BEDROCK_FORCE_HTTP1: "1" } : {},
   };
-  if (!fetchable && baseUrl) tenantGateways.add(new URL(baseUrl).hostname);
+  if (!fetchable && baseUrl) tenantGateways.set(new URL(baseUrl).hostname, outbound);
   if (!fetchable) return [baseUrl ? { ...model, baseUrl } : model, callOptions];
   const from = [Object.hasOwn(PROVIDER_ROOTS, model.provider) ? PROVIDER_ROOTS[model.provider] : undefined, model.baseUrl]
     .filter((prefix): prefix is string => !!prefix).map(prefix => prefix.replace(/\/+$/, "")).sort((a, b) => b.length - a.length);
   // An endpoint the tenant gave is called through the outbound guard, as every URL a tenant gives is: a key scope's
   // baseUrl, and whatever a model not of Pi's providers (a tenant's own provider's) was made with.
   const tenantGiven = !!baseUrl || !getProviders().includes(model.provider as never);
-  return [model, { ...callOptions, fetch: callFetch(sink, { ...(baseUrl ? { rebase: { from, to: baseUrl } } : {}), ...(tenantGiven ? { base: guardedModelFetch() } : {}), keyless: !apiKey, ...(bearer && apiKey ? { bearer: apiKey } : {}) }) }];
+  return [model, { ...callOptions, fetch: callFetch(sink, { ...(baseUrl ? { rebase: { from, to: baseUrl } } : {}), ...(tenantGiven ? { base: guardedModelFetch(outbound) } : {}), keyless: !apiKey, ...(bearer && apiKey ? { bearer: apiKey } : {}) }) }];
 }
 
 /**
@@ -266,8 +271,9 @@ function gatedSignal(gate: ModelGate | undefined, signal: AbortSignal | undefine
   return { signal: signal ? AbortSignal.any([signal, cut.signal]) : cut.signal, cut, done: () => { gate.open.delete(cut); } };
 }
 
+/** `outbound` is the policy calls to endpoints tenants give go through: this process's unless given (its node's). */
 export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefined, modelHeaders?: () => Record<string, string> | null | undefined, gate?: ModelGate,
-  timeouts?: (model: Model<Api>, reasoning: string | undefined) => StreamTimeouts, onStall?: (stall: Stall) => void): StreamFn {
+  timeouts?: (model: Model<Api>, reasoning: string | undefined) => StreamTimeouts, onStall?: (stall: Stall) => void, outbound: Outbound = outboundOfProcess()): StreamFn {
   return (model, context, options) => {
     if (!options?.apiKey?.trim()) throw new Error(`No ${model.provider} API key is configured for this agent's model, ${model.provider}/${model.id}; set one with PUT /v1/providers/${model.provider}/key, or move the agent to a model you can use (GET /v1/models?available=true)`);
     const apiKey = options.apiKey;
@@ -277,7 +283,7 @@ export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefin
       const { signal, cut, done } = gatedSignal(gate, options.signal);
       return watchedStream(model, (watched, activity) => {
         const sink: { cost?: number; credits?: number } = {};
-        const [target, callOptions] = authorize(model, options, credentials, sink, modelHeaders?.());
+        const [target, callOptions] = authorize(model, options, credentials, sink, modelHeaders?.(), outbound);
         const observe = callOptions.onProviderStreamEvent;
         const stream = streamSimple(target, context, { ...callOptions, signal: watched, onProviderStreamEvent: (event: unknown, at: Model<Api>) => { activity(event); return observe?.(event, at); } });
         // The finished message carries the provider's own cost, when it reported one, as `usage.providerCost`.
@@ -308,14 +314,14 @@ export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefin
  * Every completed request is reported, so chunks and a run that fails after some are billed too.
  */
 type ApiKey = string | (() => Promise<Credentials>);
-function summarizer(apiKey: ApiKey, onResponse?: (message: AssistantMessage) => void, modelHeaders?: Record<string, string> | null, gate?: ModelGate): Complete {
+function summarizer(apiKey: ApiKey, onResponse: ((message: AssistantMessage) => void) | undefined, modelHeaders: Record<string, string> | null | undefined, gate: ModelGate | undefined, outbound: Outbound): Complete {
   return async (model, context, options) => {
     const sink: { cost?: number; credits?: number } = {};
     await gate?.wait(options?.signal);
     const { signal, done } = gatedSignal(gate, options?.signal);
     let response: AssistantMessage;
     try {
-      const [target, callOptions] = authorize(model, options, typeof apiKey === "string" ? { apiKey } : await apiKey(), sink, modelHeaders);
+      const [target, callOptions] = authorize(model, options, typeof apiKey === "string" ? { apiKey } : await apiKey(), sink, modelHeaders, outbound);
       // Watched like a turn's requests: a summary whose stream goes quiet fails (the context is left as it is) rather than hold the turn.
       response = await watchedStream(model, (watched, activity) => streamSimple(target, context, { ...callOptions, signal: watched, onProviderStreamEvent: (event: unknown) => activity(event) }),
         streamTimeouts(model, callOptions?.reasoning), signal).result();
@@ -363,6 +369,8 @@ export async function runCompaction(options: {
   modelHeaders?: Record<string, string> | null;
   /** Its node's lease, which each summarization request waits for and is cut by (`ModelGate`). */
   gate?: ModelGate;
+  /** The policy calls to endpoints tenants give go through: this process's unless given (its node's). */
+  outbound?: Outbound;
 }): Promise<CompactionOutcome> {
   const { context, offset, previous, model, apiKey, signal } = options;
   const defaults = compactionSettings(model);
@@ -371,7 +379,7 @@ export async function runCompaction(options: {
   if (!prepared.ok) throw prepared.error;
   const preparation = prepared.value;
   if (!preparation) return { skipped: "Nothing before the recent context to summarize" };
-  const complete = summarizer(apiKey, options.onResponse, options.modelHeaders, options.gate);
+  const complete = summarizer(apiKey, options.onResponse, options.modelHeaders, options.gate, options.outbound ?? outboundOfProcess());
   // Leave room for the summarization prompt and the summary itself.
   const chunkBudget = Math.max(4_000, Math.floor((model.contextWindow - settings.reserveTokens) * 0.6));
   let tokens = 0;

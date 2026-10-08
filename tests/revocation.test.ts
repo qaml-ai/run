@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { listen, runtime } from "./runtime-server.ts";
+import { listen, runtime, sleep } from "./runtime-server.ts";
 
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
 
@@ -21,9 +21,12 @@ test("an agent's token can be rotated: the old one stops working at once, and cr
   assert.equal((await r.call(`/v1/agents/rotating/credentials`)).json.token, rotated.json.token);
   assert.equal((await r.call(`/v1/agents/${id}/credentials`)).json.token, rotated.json.token);
   assert.equal((await r.call("/v1/agents", { body: { systemPrompt: "Hi." }, headers: { "Idempotency-Key": "rotating" } })).json.token, rotated.json.token);
-  // Again, and for an agent made without a key, whose token could not be given again before.
+  // Again, and for an agent made without a key, whose token could not be given again before. The upsert just above
+  // queued a configure that writes the header meanwhile: the rotation waits for that write, rather than losing to it.
   const again = await r.call(`/v1/agents/${id}/credentials/rotate`, { body: {} });
+  assert.equal(again.status, 200, again.text);
   assert.notEqual(again.json.token, rotated.json.token);
+  assert.equal((await r.call(`/clients/${id}/state`, { token: again.json.token })).status, 200);
   assert.equal((await r.call(`/clients/${id}/state`, { token: rotated.json.token })).status, 401);
   const keyless = (await r.call("/v1/agents", { body: { systemPrompt: "Hi." } })).json;
   assert.equal((await r.call(`/v1/agents/${keyless.id}/credentials`)).status, 409);
@@ -31,6 +34,25 @@ test("an agent's token can be rotated: the old one stops working at once, and cr
   assert.equal((await r.call(`/clients/${keyless.id}/state`, { token: keyless.token })).status, 401);
   assert.equal((await r.call(`/v1/agents/${keyless.id}/credentials`)).json.token, fresh.token);
   assert.equal((await r.call(`/v1/agents/${id}/credentials/rotate`, { body: {}, token: "other-operator-token-at-least-24-chars" })).status, 404, "another tenant's agent");
+});
+
+test("a rotation right after an upsert waits for the upsert's header write: it is never refused, and the token it replaced is", async t => {
+  // An upsert of an existing agent queues a configure, which writes the header in the background. Two header writes
+  // at once were both conditional on one revision: the loser read as the agent having moved, faulted and released it,
+  // and a rotation that lost answered 503, its old token still the one stored.
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
+  const upsert = () => r.call("/v1/agents", { body: { systemPrompt: "Hi." }, headers: { "Idempotency-Key": "racing" } });
+  let { id, token: previous } = (await upsert()).json;
+  for (let i = 0; i < 30; i++) {
+    assert.equal((await upsert()).status, 201);
+    // Spread where the rotation lands against the configure's write.
+    await sleep(i % 2 ? 0 : (i * 7) % 40);
+    const rotated = await r.call(`/v1/agents/${id}/credentials/rotate`, { body: {} });
+    assert.equal(rotated.status, 200, `rotation ${i}: ${rotated.text}`);
+    assert.equal((await r.call(`/clients/${id}/state`, { token: previous })).status, 401, `rotation ${i}: the replaced token is refused`);
+    assert.equal((await r.call(`/clients/${id}/state`, { token: rotated.json.token })).status, 200, `rotation ${i}: the new token works`);
+    previous = rotated.json.token;
+  }
 });
 
 test("revoking an API token lists the webhooks and trace export it set, which keep sending", async t => {

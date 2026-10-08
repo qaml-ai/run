@@ -1,6 +1,6 @@
 {
   "name": "@camelai/create-run-app",
-  "version": "0.15.0",
+  "version": "0.16.0",
   "description": "Create a Next.js app with a streaming chat to an agent on camelRun: npm create @camelai/run-app",
   "type": "module",
   "license": "MIT",

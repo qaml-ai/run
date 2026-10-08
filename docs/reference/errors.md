@@ -19,7 +19,7 @@ Error bodies are `{"error": "<message, for people>", "code": "<for code>"}`
 (`type: "error"` too on some routes). The message may change; the code does not,
 so switch on `code` (the SDKs' `AgentError.code`). Codes may be added: treat an
 unknown one by its status. A conflict about an input also carries the input as it
-now is (`"input"`), and a rate limit's 429 the limit it hit (`"limit"`). Every 429 and 503 has `Retry-After`; the SDKs honour it and
+now is (`"input"`), and a rate limit's 429 the limit it hit (`"limit"`). Every 429 and 503 has `Retry-After` (and a per-account rate limit's 429 its `X-RateLimit-*` headers: see [Rate limits](limits.md#rate-limits)); the SDKs honour it and
 retry.
 
 | Status | `code` | Meaning |
@@ -45,6 +45,7 @@ retry.
 | 429 | `BUSY_AGENT_LIMIT` | The account has as many agents busy as its [usage tier](limits.md#usage-tiers) allows; `busyAgents` in the body has the limit and the next tier. Retry after `Retry-After`, or when one of its runs ends |
 | 429 | `RATE_LIMITED` | Too many: a rate limit (the body's `limit` names it: `{name, scope, max, windowSeconds}`; see [Rate limits](limits.md#rate-limits)), or too many agents, requests or subscribers at once; retry after `Retry-After` |
 | 503 | `UNAVAILABLE` | Retry after `Retry-After`: capacity, an agent moving, a node draining |
+| 503 | `DATABASE_RETRY` | The database refused the request for now (a conflict with another request, or a statement timeout); retry after `Retry-After` |
 | 507 | `STORAGE_LIMIT` | The account's storage limit would be passed; the body has `limit` and `used`, in bytes |
 | 500 | `INTERNAL` | A bug; retry, and report it with the request id |
 

@@ -19,6 +19,7 @@ export const PAGES: { section: string; path: string; about: string }[] = [
   { section: "Start", path: "pricing.md", about: "what runs, agent time, storage and web search cost; credit, starting credit and its limits" },
   { section: "Guides", path: "guides/tools.md", about: "writing tools; attached and served tools; identity tokens; MCP, OpenAPI and built-in sources" },
   { section: "Guides", path: "guides/human-input.md", about: "approvals, questions and forms; answering them and resuming the run" },
+  { section: "Guides", path: "guides/stateless-runs.md", about: "one call, configuration and input in and result out, nothing carried over and no agent kept (POST /v1/runs, agents.run): runs or agents, following, idempotency, durability, limits" },
   { section: "Guides", path: "guides/structured-output.md", about: "a run's answer as an object in your schema: zod, TypeBox, pydantic or JSON Schema" },
   { section: "Guides", path: "frontend.md", about: "a streaming chat with each user's agent in your app: `npm create @camelai/run-app`, or one server route and one React component in an app you have" },
   { section: "Guides", path: "guides/browser.md", about: "browser tokens and the watcher: showing an agent live in a web page" },

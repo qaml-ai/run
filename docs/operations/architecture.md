@@ -272,3 +272,88 @@ frame's file and line, and the text's size.
 
 Schedules and channel work items are claimed with `FOR UPDATE SKIP LOCKED` and a
 claim deadline, so one node delivers each; a crashed node's claims lapse.
+
+**Simulation seams.** A node is built by `createNode(config, deps)` (`src/node.ts`); `src/server.ts`
+only reads the environment (`nodeConfig`, `src/node-config.ts`), makes the real dependencies
+(`nodeDeps`), handles signals and listens. Several nodes can share a process, which is how a
+deterministic simulation runs a cluster: each gets its own configuration and dependencies, and stops
+everything it started when it drains. What a node is given rather than finds for itself:
+- `db`, a `Db` (`src/db.ts`): queries, a connection for a transaction, `end`. `pg.Pool` in production;
+  an in-process Postgres or a fault-injecting wrapper in a simulation. LISTEN is `listen`, a dependency
+  of its own.
+- `network`, `clock` and `random` (`src/node-context.ts`). A node given any of them runs in an
+  `AsyncLocalStorage` context of its own, and its code reads them through `network()`, `clock()` and
+  `random()` wherever it runs. Production never sets them, and the real ones apply. Code reaches the
+  network only through `network()`. It uses `clock()` for the lease and where process-wide fake timers
+  cannot reach (`timers/promises`, `performance` imported from `node:perf_hooks`), and `random()` for
+  what is not cryptographic. Everything else reads `Date.now`, timers and `node:crypto`, which a
+  simulator fakes for the whole process.
+- `codeExecutor` (`src/codemode.ts`): where inline agents run js_exec; v8-exec unless given.
+- `buggify(site)` (`src/buggify.ts`) marks points where a simulator may make something unusual but legal
+  happen. Examples: a failed heartbeat renewal, a tail append whose answer is lost, a reap probe that
+  times out, a compaction now, a stalled model stream, a tool call that fails, a drain that stops
+  waiting.
+- `always`, `sometimes`, `reachable` and `unreachable` (`src/assert.ts`) are recorded by a simulator.
+
+  In production `buggify` is always false. A failed `always` or a reached `unreachable` logs one
+  `{"type":"assert"}` line per message, and nothing else does anything. The hooks cost a few
+  nanoseconds per call and allocate nothing (`npm run bench:sim-hooks`).
+
+**The simulator.** `tests/sim/` runs several of these nodes in one process on simulated infrastructure, with no
+real I/O:
+- `SimNet` gives HTTP between hosts over in-memory sockets.
+- `SimDb` is one PGlite shared by all nodes.
+- `SimEnv` provides fake timers and seeded randomness, per node, through the node context.
+- A fake model provider logs which node it served.
+
+It can crash, drain (a deploy), pause (SIGSTOP: a node's timers and I/O wait while its peers go on; also as a node
+next hears a database answer, to a given statement, so time passes between two statements of one request) and restart nodes,
+partition links (refused or blackholed), isolate a node from its peers and the database while it still reaches the
+model (peers reap it on a timed-out probe), cut a node off the database, skew clocks, and turn BUGGIFY sites on
+(`SimHooks`, swarm style). The database can take time: each query's round trip is drawn per node
+(`dbLatencyMs`), with a rare far longer one (`dbSpikes`, a stall), so time passes between a request's statements and
+the races that need it can happen; the generator gives some seeds such a tail. The database can also refuse statements
+(`dbErrors`: serialization failures, deadlocks, statement timeouts, and connections reset before a statement or after it
+took effect; a failed commit rolls its transaction back, as a server does) and fail over (`failover`: every connection
+drops for a while). Nodes' wall clocks can jump and drift, and their monotonic clocks drift a little (`clockJump`,
+`drifts`); clients can send a prompt again with its key (`retry`), at once or later, to any node. The object store can misbehave
+as S3 does (`storageFaults`: slow, refusing with a 500 or a 503 SlowDown, or a create or delete taking effect with its
+answer lost; tests/sim/storage.ts). A plan is explicit data: nodes, settings, model latency and
+timed steps (`tests/sim/workload.ts`). `runPlan` (`tests/sim/run.ts`) runs one, then checks it:
+- every accepted run ends with one outcome that stays (I3);
+- no agent has model calls on two nodes at once, faults included (I1; a paused node's open call does not count while
+  it is stopped and for a heartbeat after);
+- no model calls come after an acknowledged abort (I9);
+- watchers' streams only move forward, and an event id is never two events (I8);
+- every acknowledged volume write reads back on every node (I2); a fork (of an agent or a volume) holds what was
+  there when it was asked for and nothing made after (I11); a schedule fires once it is due, exactly once (I13); a
+  prompt sent again with its key is the same request, and its prompt is in the history once (I14); what a run that
+  succeeded said, its prompt and its answer, is in its agent's history (I15); storage is charged once a day (I16) and
+  reconciled on schedule, and metered exactly when no node was lost (I17); what is deleted or expires is purged (I18);
+- no assertion is violated and there is no real I/O.
+
+Long plans (`npm run sim -- --long`, `generateLongPlan`) run hours of virtual time (2 to 26), starting near a day's or a
+month's end, with bursts of work, agents made to expire or deleted, a volume deleted, and production's timers or slower
+ones (an hour takes seconds): billing days, the storage reconcile, purges and the storage GC all come round.
+
+A seed replays exactly, which its trace hash checks. To run plans, use `npm run sim -- --seeds 1-200`
+(`--twice` checks determinism). A failing plan is written to `sim-failures/<seed>.json`; run it again with
+`npm run sim -- --replay <file>`, or cut it down to the steps it needs with `--minimize <file>` (ddmin). The nightly
+mode, `npm run sim -- --postgres`, runs the same plans and checkers on a real Postgres server (`PostgresDb`) on the
+machine's clock: not deterministic, but its sessions' transactions really interleave, which PGlite's one session
+cannot show.
+
+**Fuzzing.** `npm run sim -- --fuzz <minutes> --jobs <n>` searches for plans rather than drawing them at random
+(`tests/sim/fuzz.ts`):
+- It measures each run by what it covered: V8's block coverage of `src/` and `shared/`, read in-process through the
+  inspector (`tests/sim/coverage.ts`); the coverage goals reached; how often each assertion was passed; and how the
+  ownership statements came out (an acquire that took nothing, a renewal that found its heartbeat gone), which the code
+  they run does not tell apart.
+- A plan that covers something no kept plan did goes to the corpus, `sim-corpus/` (begun from `tests/sim/corpus/`).
+- New plans are mostly mutations of kept ones (`tests/sim/mutate.ts`): steps inserted, deleted, swapped, duplicated,
+  shifted in time or aimed elsewhere; settings changed (lease, model latency, skew, BUGGIFY sites, seed); another
+  plan spliced in. Some are prefix branches: a kept plan's first steps, then a fresh random rest.
+- Workers share the corpus directory. Each new kind of failure (its checker and text without numbers, or an
+  exception's first frame) is saved once to `sim-failures/fuzz/` and minimized.
+- `--random` runs random plans for the same time and keeps what they cover the same way, as the baseline. Both report
+  the features and goals reached, when each goal was first reached, and the failures found.

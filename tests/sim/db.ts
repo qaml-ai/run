@@ -1,0 +1,244 @@
+import { AsyncResource } from "node:async_hooks";
+import { readdirSync, readFileSync } from "node:fs";
+import { PGlite } from "@electric-sql/pglite";
+import type { Db, DbClient, Rows } from "../../src/db.ts";
+
+const INT8 = 20;
+
+/**
+ * The cluster's database as a simulation drives it: a `Db` per node that can be cut off or killed, a LISTEN per node,
+ * queries of its own for checkers, and the statements it ran. SimDb (PGlite, deterministic) and PostgresDb (a real
+ * server, for the nightly mode) are the two.
+ */
+export interface WorldDb {
+  readonly statements: string[];
+  /** How the ownership statements came out (`ownershipOutcome`), counted: what the fuzzer reads as behaviour. */
+  readonly outcomes: Map<string, number>;
+  /** `gate` is called with each answer's statement before the node hears it: it waits while the node is paused. */
+  connection(node: string, gate?: (text: string) => Promise<void>, latency?: () => number): Db & { kill(): void };
+  listen(node: string, dead?: () => boolean, deliver?: (work: () => void) => void): (handlers: Record<string, (payload: string) => void>) => Promise<{ close(): Promise<void> }>;
+  setDown(node: string, down: boolean): void;
+  migrate(): Promise<void>;
+  /** A query of the simulation's own (a checker's), as no node. */
+  query(text: string, values?: unknown[]): Promise<Rows>;
+  close(): Promise<void>;
+}
+const MIGRATIONS = new URL("../../migrations/", import.meta.url);
+
+/**
+ * What an ownership statement (on actor_owners or runtime_nodes) came to: which statement (its table and verb) and
+ * whether it found or changed a row. A renewal that found its heartbeat gone, an acquire that took nothing, an owner
+ * query that found none: the paths a race takes, which coverage of the code that runs them does not tell apart.
+ */
+export function ownershipOutcome(text: string, rowCount: number) {
+  const flat = text.trim().replace(/\s+/g, " ").toLowerCase();
+  const table = /\b(actor_owners|runtime_nodes)\b/.exec(flat)?.[1];
+  if (!table) return undefined;
+  return `${flat.split(" ", 1)[0]} ${table}${flat.includes(" join ") ? " join" : ""}: ${rowCount ? "rows" : "none"}`;
+}
+
+/**
+ * The simulated database: one PGlite (Postgres in WASM, in this process), shared by every node, each through its own
+ * `Db` (`connection`). PGlite has one session, so a transaction holds it to itself and every other query waits: each
+ * transaction is one atomic step of the simulation, which explores all serial orders of transactions but none of the
+ * interleavings inside them (the nightly real-Postgres mode is for those). Its `now()` follows the process's `Date.now`,
+ * which the simulation's clock fakes, so the database clock is virtual too.
+ *
+ * A node's connection can be cut (`down`): its queries fail as in a failover, its open transaction rolls back, and its
+ * LISTEN hears nothing; `up` restores it. A crashed node's connection is ended.
+ */
+export class SimDb implements WorldDb {
+  readonly pglite: PGlite;
+  private holder: Promise<void> = Promise.resolve();
+  /** The database runs as itself, never as the node that asked: its `now()` is the base clock, not a node's skewed one. */
+  private readonly scope = new AsyncResource("SimDb");
+  private readonly down = new Set<string>();
+  /** Every statement, for the trace: `node: first word`. */
+  readonly statements: string[] = [];
+  readonly outcomes = new Map<string, number>();
+  /**
+   * Errors the server answers some statements with, at `rate`, drawn from `random` (seeded): a serialization failure
+   * (40001), a deadlock (40P01) or a statement timeout (57014), each before the statement takes effect; or the connection
+   * reset (ECONNRESET), before it or after it took effect (its answer lost). A transaction a reset breaks rolls back.
+   */
+  errors?: { rate: number; codes: string[]; random: { float(): number; int(n: number): number }; only?: RegExp };
+  /** Errors injected, by code. */
+  readonly injected = new Map<string, number>();
+
+  private constructor(pglite: PGlite) { this.pglite = pglite; }
+
+  /**
+   * A database for a run. `seed` seeds SQL's random() (the orphan sweep orders by it), which would otherwise draw from
+   * the machine's entropy. (gen_random_uuid() still does; nothing on simulated paths orders by what it makes.)
+   */
+  static async create(seed = 0) {
+    const pglite = await PGlite.create({ parsers: { [INT8]: (value: string) => Number(value) } });
+    await pglite.query("select setseed($1)", [seed]);
+    return new SimDb(pglite);
+  }
+
+  /** Run `work` with the session to itself. */
+  private exclusive<T>(work: () => Promise<T>): Promise<T> {
+    const result = this.holder.then(work);
+    this.holder = result.then(() => {}, () => {});
+    return result;
+  }
+
+  private async run(node: string, text: string, values?: unknown[]): Promise<Rows> {
+    if (this.down.has(node)) throw unavailable();
+    // Not on begin or rollback; on a commit, as a server does: the transaction is rolled back, and the commit fails.
+    const verb = text.trim().split(/\s+/, 1)[0].toLowerCase();
+    const injected = this.errors && verb !== "begin" && verb !== "rollback" && (!this.errors.only || this.errors.only.test(text)) && this.errors.random.float() < this.errors.rate ? this.errors.codes[this.errors.random.int(this.errors.codes.length)] : undefined;
+    const after = injected === "ECONNRESET" && verb !== "commit" && this.errors!.random.float() < 0.5;
+    if (injected) this.injected.set(injected, (this.injected.get(injected) ?? 0) + 1);
+    if (injected && verb === "commit") await this.scope.runInAsyncScope(() => this.pglite.exec("rollback"));
+    if (injected && !after) throw serverError(injected);
+    this.statements.push(`${this.scope.runInAsyncScope(() => Date.now())} ${node}: ${text.trim().replace(/\s+/g, " ").slice(0, 70)} ${JSON.stringify(values ?? []).slice(0, 200)}`);
+    const result = await this.scope.runInAsyncScope(() => this.pglite.query<Record<string, unknown>>(text, values as unknown[]));
+    // PGlite counts only changed rows; pg counts a select's rows too.
+    if (after) throw serverError(injected!);
+    const rowCount = result.affectedRows || result.rows.length;
+    const outcome = ownershipOutcome(text, rowCount);
+    if (outcome) this.outcomes.set(outcome, (this.outcomes.get(outcome) ?? 0) + 1);
+    return { rows: result.rows, rowCount };
+  }
+
+  /**
+   * Session advisory locks, by key, and the connection holding each: PGlite has one session for every node, so the
+   * server's own would never exclude anyone. `try` takes one if it is free (or already this connection's).
+   */
+  private readonly advisoryLocks = new Map<string, object>();
+  private async advisory(node: string, session: object, op: "try" | "unlock", key: string): Promise<Rows> {
+    if (this.down.has(node)) throw unavailable();
+    this.statements.push(`${this.scope.runInAsyncScope(() => Date.now())} ${node}: advisory ${op} ${key}`);
+    const holder = this.advisoryLocks.get(key);
+    if (op === "try") {
+      const locked = holder === undefined || holder === session;
+      if (locked) this.advisoryLocks.set(key, session);
+      return { rows: [{ locked }], rowCount: 1 };
+    }
+    if (holder === session) this.advisoryLocks.delete(key);
+    return { rows: [{ pg_advisory_unlock: holder === session }], rowCount: 1 };
+  }
+  private unlockAll(session: object) {
+    for (const [key, holder] of [...this.advisoryLocks]) if (holder === session) this.advisoryLocks.delete(key);
+  }
+
+  /** Cut `node` off from the database, or (up) let it back. */
+  setDown(node: string, down: boolean) {
+    if (down) this.down.add(node); else this.down.delete(node);
+  }
+
+  /**
+   * `node`'s view of the database: its own pool. Ending it ends nothing shared. `kill` is its process dying: every
+   * query from then on fails, as the server dropped its connections (an open transaction rolls back on release).
+   */
+  connection(node: string, gate: (text: string) => Promise<void> = async () => {}, latency: () => number = () => 0): Db & { kill(): void } {
+    let ended = false, killed = false;
+    /** Sessions this pool holds (open transactions): a process that dies loses its connections, and the server rolls back. */
+    const held = new Set<() => void>();
+    /** Its connections' sessions, for their advisory locks: a dying process's go with its connections. */
+    const sessions = new Set<object>();
+    // A paused node hears the answer once it runs again (`gate`).
+    const answered = <T>(result: Promise<T>, text: string) => result.then(async value => { await gate(text); return value; }, async error => { await gate(text); throw error; });
+    // A pool query's round trip (`latency`, virtual ms): it reaches the server that much later, on the node's timers.
+    const travel = async () => { const ms = latency(); if (ms > 0) await new Promise(resolve => setTimeout(resolve, ms)); };
+    const query = (text: string, values?: unknown[]) => ended ? Promise.reject(new Error("Cannot use a pool after calling end on the pool"))
+      : killed ? Promise.reject(unavailable()) : answered(travel().then(() => this.exclusive(() => killed ? Promise.reject(unavailable()) : this.run(node, text, values))), text);
+    return {
+      query: query as Db["query"],
+      connect: async () => {
+        if (ended) throw new Error("Cannot use a pool after calling end on the pool");
+        if (this.down.has(node) || killed) throw unavailable();
+        const listeners = new Set<(error: Error) => void>();
+        // A connection holds PGlite's one session to itself only inside a transaction: between `begin` and its end. A
+        // transaction its node could not finish (cut off mid-way, or the process died) is rolled back, as the server
+        // would on the connection's loss, before the session serves anyone else.
+        let broken = false, ending: (() => void) | undefined;
+        const end = (rollback: boolean) => {
+          const release = ending;
+          if (!release) return;
+          ending = undefined;
+          held.delete(lost);
+          if (rollback) void this.pglite.exec("rollback").catch(() => {}).finally(release); else release();
+        };
+        const lost = () => end(true);
+        const me = {};
+        sessions.add(me);
+        const client: DbClient = {
+          query: (async (text: string, values?: unknown[]) => {
+            if (killed) { broken = true; throw unavailable(); }
+            const verb = text.trim().split(/\s+/, 1)[0].toLowerCase();
+            const advisory = /\bpg_(try_advisory_lock|advisory_unlock)\(hashtext\(\$1\)\)/.exec(text)?.[1];
+            if (advisory) return answered(this.advisory(node, me, advisory === "advisory_unlock" ? "unlock" : "try", String(values?.[0])), text);
+            if (verb === "begin" && !ending) await new Promise<void>(taken => void this.exclusive(() => new Promise<void>(release => { ending = release; held.add(lost); taken(); })));
+            try {
+              const result = await answered(ending ? this.run(node, text, values) : this.exclusive(() => this.run(node, text, values)), text);
+              if (verb === "commit" || verb === "rollback") end(false);
+              return result;
+            } catch (error) {
+              if (this.down.has(node) || (error as { code?: string }).code === "ECONNRESET") broken = true;
+              // A failed commit has rolled back (see run); a failed rollback leaves nothing open either.
+              if (verb === "commit" || verb === "rollback") end(false);
+              throw error;
+            }
+          }) as DbClient["query"],
+          // Released with an error, pg destroys the connection: the server rolls back what it held and frees its
+          // session's advisory locks. Released whole, the connection goes back to the pool, its locks with it.
+          release: error => {
+            end(!!(broken || error) || !!ending);
+            if (broken || error) this.unlockAll(me);
+            sessions.delete(me);
+          },
+          on: (_event, listener) => listeners.add(listener),
+          off: (_event, listener) => listeners.delete(listener),
+        };
+        return client;
+      },
+      end: async () => { ended = true; },
+      kill: () => { killed = true; for (const lost of [...held]) lost(); for (const session of sessions) this.unlockAll(session); },
+      totalCount: 0, idleCount: 0, waitingCount: 0,
+    };
+  }
+
+  /** `node`'s LISTEN connection: each channel's notifications, unless the node is cut off or `dead` says it died. */
+  listen(node: string, dead: () => boolean = () => false, deliver: (work: () => void) => void = work => work()) {
+    return async (handlers: Record<string, (payload: string) => void>) => {
+      // Notifications reach the node as itself (the context it listened in), whoever's NOTIFY sent them.
+      const asNode = new AsyncResource("SimListen");
+      const stops = await Promise.all(Object.entries(handlers).map(([channel, handler]) =>
+        this.scope.runInAsyncScope(() => this.pglite.listen(channel, payload => { if (!this.down.has(node) && !dead()) deliver(() => asNode.runInAsyncScope(() => handler(payload))); }))));
+      return { close: async () => { for (const stop of stops) await stop(); } };
+    };
+  }
+
+  /** Apply the runtime's migrations (once, before any node starts, so nodes do not race to). */
+  async migrate() {
+    const files = readdirSync(MIGRATIONS).filter(name => /^\d{3}_[a-z0-9_]+\.sql$/.test(name)).sort();
+    await this.pglite.exec("create table if not exists schema_migrations (name text primary key, applied_at timestamptz not null default now())");
+    for (const name of files) {
+      await this.pglite.exec(readFileSync(new URL(name, MIGRATIONS), "utf8"));
+      await this.pglite.query("insert into schema_migrations (name) values ($1)", [name]);
+    }
+  }
+
+  query(text: string, values?: unknown[]): Promise<Rows> {
+    return this.exclusive(() => this.scope.runInAsyncScope(async () => {
+      const result = await this.pglite.query<Record<string, unknown>>(text, values as unknown[]);
+      return { rows: result.rows, rowCount: result.affectedRows || result.rows.length };
+    }));
+  }
+
+  close() { return this.pglite.close(); }
+}
+
+const unavailable = () => Object.assign(new Error("connect ECONNREFUSED (simulated database outage)"), { code: "ECONNREFUSED" });
+
+/** What a server (or the connection to it) answers when it refuses a statement, as pg reports it. */
+export function serverError(code: string) {
+  const message = {
+    "40001": "could not serialize access due to concurrent update", "40P01": "deadlock detected",
+    "57014": "canceling statement due to statement timeout", ECONNRESET: "Connection terminated unexpectedly",
+  }[code] ?? `simulated database error ${code}`;
+  return Object.assign(new Error(message), { code, simulated: true });
+}

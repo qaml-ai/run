@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { network } from "./node-context.ts";
 
 /**
  * The few Stripe calls credit purchases need, over plain fetch against the REST API
@@ -72,7 +73,7 @@ export class Stripe {
     const url = new URL(path, this.options.apiUrl ?? "https://api.stripe.com");
     const form = formEncode(params);
     if (method === "GET") url.search = form.toString();
-    const response = await fetch(url, {
+    const response = await network().fetch(url, {
       method, ...(method === "POST" ? { body: form } : {}), signal: AbortSignal.timeout(15_000), redirect: "error",
       headers: {
         Authorization: `Bearer ${this.options.secretKey}`, "Content-Type": "application/x-www-form-urlencoded", "Stripe-Version": STRIPE_API_VERSION,

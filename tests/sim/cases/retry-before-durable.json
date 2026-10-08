@@ -1,0 +1,239 @@
+{
+ "seed": "27266",
+ "nodes": [
+  "a",
+  "b"
+ ],
+ "leaseTtlMs": 3000,
+ "durationMs": 60000,
+ "skews": {
+  "a": -2626,
+  "b": 3894
+ },
+ "modelDelayMs": [
+  50,
+  200
+ ],
+ "buggify": "swarm",
+ "steps": [
+  {
+   "at": 10,
+   "op": {
+    "op": "create",
+    "agent": 1,
+    "node": "a"
+   }
+  },
+  {
+   "at": 20,
+   "op": {
+    "op": "create",
+    "agent": 2,
+    "node": "b"
+   }
+  },
+  {
+   "at": 30,
+   "op": {
+    "op": "create",
+    "agent": 3,
+    "node": "a"
+   }
+  },
+  {
+   "at": 50,
+   "op": {
+    "op": "volume",
+    "volume": 0,
+    "node": "a"
+   }
+  },
+  {
+   "at": 1020,
+   "op": {
+    "op": "write",
+    "volume": 0,
+    "write": 0,
+    "node": "b"
+   }
+  },
+  {
+   "at": 2556,
+   "op": {
+    "op": "write",
+    "volume": 0,
+    "write": 1,
+    "node": "b"
+   }
+  },
+  {
+   "at": 3958,
+   "op": {
+    "op": "prompt",
+    "agent": 3,
+    "run": 0,
+    "node": "a",
+    "key": "requestId"
+   }
+  },
+  {
+   "at": 5353,
+   "op": {
+    "op": "write",
+    "volume": 0,
+    "write": 2,
+    "node": "a"
+   }
+  },
+  {
+   "at": 6923,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 1,
+    "node": "b"
+   }
+  },
+  {
+   "at": 8021,
+   "op": {
+    "op": "crash",
+    "node": "b"
+   }
+  },
+  {
+   "at": 11119,
+   "op": {
+    "op": "prompt",
+    "agent": 2,
+    "run": 2,
+    "node": "a",
+    "key": "requestId"
+   }
+  },
+  {
+   "at": 11448,
+   "op": {
+    "op": "restart",
+    "node": "b"
+   }
+  },
+  {
+   "at": 12252,
+   "op": {
+    "op": "pause",
+    "node": "a",
+    "ms": 3500
+   }
+  },
+  {
+   "at": 14071,
+   "op": {
+    "op": "write",
+    "volume": 0,
+    "write": 4,
+    "node": "a"
+   }
+  },
+  {
+   "at": 15067,
+   "op": {
+    "op": "prompt",
+    "agent": 2,
+    "run": 3,
+    "node": "b",
+    "key": "requestId"
+   }
+  },
+  {
+   "at": 16774,
+   "op": {
+    "op": "crash",
+    "node": "b"
+   }
+  },
+  {
+   "at": 18167,
+   "op": {
+    "op": "write",
+    "volume": 0,
+    "write": 5,
+    "node": "a"
+   }
+  },
+  {
+   "at": 19576,
+   "op": {
+    "op": "schedule",
+    "agent": 3,
+    "schedule": 0,
+    "inSeconds": 8,
+    "node": "a"
+   }
+  },
+  {
+   "at": 20813,
+   "op": {
+    "op": "crash",
+    "node": "a"
+   }
+  },
+  {
+   "at": 25562,
+   "op": {
+    "op": "restart",
+    "node": "b"
+   }
+  },
+  {
+   "at": 26334,
+   "op": {
+    "op": "pause",
+    "node": "b",
+    "ms": 2500
+   }
+  },
+  {
+   "at": 27143,
+   "op": {
+    "op": "restart",
+    "node": "a"
+   }
+  },
+  {
+   "at": 27891,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 6,
+    "node": "b",
+    "key": "requestId"
+   }
+  },
+  {
+   "at": 29481,
+   "op": {
+    "op": "prompt",
+    "agent": 1,
+    "run": 7,
+    "node": "b"
+   }
+  },
+  {
+   "at": 30538,
+   "op": {
+    "op": "retry",
+    "agent": 1,
+    "run": 7,
+    "node": "b"
+   }
+  },
+  {
+   "at": 30711,
+   "op": {
+    "op": "databaseDown",
+    "node": "b"
+   }
+  }
+ ]
+}
