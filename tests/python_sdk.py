@@ -19,7 +19,8 @@ import httpx
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "clients" / "python"))
-from camelai_run import AgentClient, _answer_for, _origin, AgentError, AgentRuntime, Agents, RunError, RuntimeTokenError, TestRuntime, ToolContext, _answer_mcp, _tool_context, serve_tools, tool, verify_runtime_token
+from camelai_run import AgentClient, _answer_for, _origin, AgentError, AgentRuntime, Agents, RunError, RuntimeTokenError, TestRuntime, ToolContext, WebhookVerificationError, _answer_mcp, _tool_context, serve_tools, tool, verify_runtime_token, verify_webhook
+from camelai_run import sync
 
 DATABASE_URL = os.environ.get("AGENT_TEST_DATABASE_URL", "postgres://postgres:test@127.0.0.1:55432/postgres")
 
@@ -87,6 +88,26 @@ def otlp_receiver(requests):
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
+
+
+def webhook_receiver(deliveries):
+    """A webhook endpoint on localhost: keeps each delivery's headers and raw body, and answers 200."""
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            deliveries.append({"headers": dict(self.headers.items()), "body": self.rfile.read(int(self.headers["Content-Length"]))})
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *_):
+            pass
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+ASK = {"questions": [{"question": "Which region?", "header": "Region", "options": [{"label": "EU"}, {"label": "US"}]}]}
 
 
 def trace_ids(requests):
@@ -814,6 +835,159 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         agent._receive = receive
         await agent.destroy()
 
+    async def test_the_sync_client_upserts_runs_streams_answers_and_runs_statelessly(self):
+        def scenario():
+            with sync.Agents(self.token, url=self.url) as agents:
+                agent = agents.upsert("py-sync", instructions="Be brief.", code_mode=True)
+                self.assertEqual(agents.upsert("py-sync", instructions="Be brief.", code_mode=True).config_hash, agent.config_hash)
+                run = agent.run("hello", user="u1", metadata={"thread": "t1"}, idempotency_key="py-sync-1")
+                self.assertEqual((run.id, run.status, run.text, run.error), ("py-sync-1", "completed", "seen", None))
+                # The same key is the same run, never a second one.
+                calls = len(self.bodies)
+                self.assertEqual(agent.run("hello", user="u1", metadata={"thread": "t1"}, idempotency_key="py-sync-1").text, "seen")
+                self.assertEqual(len(self.bodies), calls)
+                token = agent.session["token"]
+                self.assertNotIn(token, repr(agent) + repr(agent.session) + repr(agent.client))
+
+                # A stream: the tool call, its result, the text, then the run.
+                self.call("js_exec", {"code": "return 1 + 1"})
+                self.script.append({"role": "assistant", "content": "two"})
+                stream = agent.stream("add")
+                parts = list(stream)
+                self.assertEqual([part.type for part in parts], ["tool_call", "tool_result", "text", "done"])
+                self.assertEqual((parts[0].tool, parts[1].output, parts[-1].run.text, stream.result().text), ("js_exec", "2", "two", "two"))
+                self.assertEqual(agent.stream("again").result().text, "seen")
+
+                # Human input: the run waits on a question, and an answer resumes it.
+                asker = agents.upsert("py-sync-ask", builtins=["ask_user"])
+                self.call("ask_user", ASK)
+                waiting = asker.run("deploy")
+                self.assertEqual((waiting.status, waiting.inputs[0]["kind"]), ("input_required", "question"))
+                self.assertEqual([item["id"] for item in asker.pending_inputs()], [waiting.inputs[0]["id"]])
+                self.script.append({"role": "assistant", "content": "Deploying to EU"})
+                resumed = waiting.inputs[0].answer("EU")
+                self.assertEqual((resumed.status, resumed.text), ("completed", "Deploying to EU"))
+                self.assertEqual(json.loads(self.bodies[-1]["messages"][-1]["content"])["answers"], {"Which region?": "EU"})
+
+                # get takes the agent as it is; history, steer, a failed run.
+                got = agents.get("py-sync")
+                self.assertEqual((got.id, got.config_hash), (agent.id, agent.config_hash))
+                self.assertEqual([message["role"] for message in got.history()][:2], ["user", "assistant"])
+                self.assertEqual(got.history()[0]["metadata"], {"thread": "t1"})
+                self.assertEqual(got.steer("now", idempotency_key="py-sync-steer"), {"id": "py-sync-steer", "status": "queued"})
+                self.assertEqual(got.client.wait_for_request("py-sync-steer")["reply"], "seen")
+                self.script.extend([{"httpStatus": 400, "message": "model says no"}, {"httpStatus": 400, "message": "model says no"}])
+                with self.assertRaises(RunError) as failed:
+                    got.run("hi")
+                self.assertEqual(failed.exception.code, "model_error")
+                self.assertEqual(got.run("again", throw_on_error=False).error["code"], "model_error")
+
+                # Stateless runs: one call, and a stream.
+                self.call("final_output", {"vote": "yes"})
+                vote = agents.run("Ship on Friday?", instructions="Vote yes or no.", output={"type": "object", "properties": {"vote": {"type": "string"}}, "required": ["vote"]})
+                self.assertEqual((vote.status, vote.output), ("completed", {"vote": "yes"}))
+                self.assertEqual(agents.runs.get(vote.id)["status"], "completed")
+                self.script.append({"role": "assistant", "content": "streamed"})
+                parts = list(agents.runs.stream("hi"))
+                self.assertEqual((parts[-1].type, parts[-1].run.text), ("done", "streamed"))
+                self.assertEqual(agents.runs.messages(parts[-1].run.id)[0]["role"], "user")
+
+                agent.delete()
+                with self.assertRaises(AgentError) as gone:
+                    agents.get("py-sync")
+                self.assertEqual(gone.exception.status, 404)
+
+        await asyncio.to_thread(scenario)
+
+    async def test_initial_messages_begin_an_agents_history_when_it_is_made(self):
+        imported = [{"role": "user", "content": "My name is Ada.", "timestamp": 1},
+                    {"role": "assistant", "content": [{"type": "text", "text": "Hello, Ada."}], "api": "openai-completions", "provider": "openrouter", "model": "openai/gpt-4o-mini",
+                     "usage": {"input": 1, "output": 1, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 2, "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}},
+                     "stopReason": "stop", "timestamp": 2}]
+        agent = await self.agents.upsert("py-imported", initial_messages=imported)
+        self.assertEqual([message["content"] for message in await agent.history()], [imported[0]["content"], imported[1]["content"]])
+        await agent.run("What is my name?")
+        self.assertIn("My name is Ada.", json.dumps(self.bodies[-1]))
+        # Only when the agent is made: an upsert of the agent it names leaves its history.
+        await self.agents.upsert("py-imported", initial_messages=[{"role": "user", "content": "Forget it."}])
+        self.assertNotIn("Forget it.", json.dumps(await agent.history()))
+        with self.assertRaises(AgentError) as refused:
+            await self.agents.upsert("py-imported-bad", initial_messages=[{"role": "robot"}])
+        self.assertEqual((refused.exception.status, refused.exception.code), (400, "INVALID_HISTORY"))
+
+        def made_in_sync():
+            with sync.Agents(self.token, url=self.url) as agents:
+                return [message["content"] for message in agents.upsert("py-imported-sync", initial_messages=imported).history()]
+        self.assertEqual(await asyncio.to_thread(made_in_sync), [imported[0]["content"], imported[1]["content"]])
+
+    async def test_key_scopes_tokens_usage_webhooks_and_rotated_credentials(self):
+        deliveries = []
+        receiver = webhook_receiver(deliveries)
+        try:
+            scope = await self.runtime.set_scope_key("org-1", "openrouter", api_key="sk-or-fixture-1234")
+            self.assertEqual((scope["scope"], scope["providers"][0]["provider"], scope["providers"][0]["last4"]), ("org-1", "openrouter", "1234"))
+            self.assertNotIn("sk-or-fixture", json.dumps(await self.runtime.key_scope("org-1")))
+            await self.runtime.set_scope_provider("org-1", "local", base_url=self.model_url, models=[{"id": "m1", "contextWindow": 8000}])
+            self.assertEqual([item["id"] for item in await self.runtime.scope_providers("org-1")], ["local"])
+            await self.runtime.delete_scope_provider("org-1", "local")
+            await self.runtime.delete_scope_key("org-1", "openrouter")
+            self.assertEqual((await self.runtime.key_scope("org-1"))["providers"], [])
+            await self.runtime.delete_key_scope("org-1")
+
+            made = await self.runtime.create_token("ci")
+            self.assertTrue(made["token"])
+            self.assertIn(made["id"], [item["id"] for item in await self.runtime.tokens()])
+            self.assertNotIn(made["token"], json.dumps(await self.runtime.tokens()))
+            self.assertEqual((await AgentRuntime(url=self.url, api_key=made["token"]).me())["tenant"], "python")
+
+            endpoint = await self.runtime.create_webhook(f"http://127.0.0.1:{receiver.server_port}/hooks", ["run.completed"], description="test")
+            self.assertTrue(endpoint["secret"].startswith("whsec_"))
+            self.assertEqual([item["id"] for item in await self.runtime.webhooks()], [endpoint["id"]])
+            self.assertEqual((await self.runtime.update_webhook(endpoint["id"], description="tests"))["description"], "tests")
+            agent = await self.agents.upsert("py-hooked")
+            run = await agent.run("hello", metadata={"thread": "t1"})
+            for _ in range(200):
+                if deliveries:
+                    break
+                await asyncio.sleep(0.05)
+            delivery = deliveries[0]
+            event = verify_webhook(delivery["body"], delivery["headers"], endpoint["secret"])
+            self.assertEqual((event["type"], event["data"]["requestId"], event["data"]["metadata"]), ("run.completed", run.id, {"thread": "t1"}))
+            with self.assertRaises(WebhookVerificationError):
+                verify_webhook(delivery["body"], delivery["headers"], (await self.runtime.rotate_webhook_secret(endpoint["id"]))["secret"])
+            self.assertEqual((await self.runtime.webhook(endpoint["id"]))["id"], endpoint["id"])
+            await self.runtime.delete_webhook(endpoint["id"])
+            self.assertEqual(await self.runtime.webhooks(), [])
+
+            # A token revoked stops at once, and lists what it set that keeps sending.
+            revoked = await self.runtime.revoke_token(made["id"])
+            self.assertEqual(revoked["revoked"], True)
+            with self.assertRaises(AgentError) as refused:
+                await AgentRuntime(url=self.url, api_key=made["token"]).me()
+            self.assertEqual(refused.exception.status, 401)
+
+            usage = await self.runtime.usage(days=1)
+            self.assertGreaterEqual(usage["totals"]["responses"], 1)
+
+            rotated = await self.runtime.rotate_agent_credentials(agent.id)
+            self.assertEqual(rotated["id"], agent.id)
+            self.assertNotEqual(rotated["token"], agent.session["token"])
+            fresh = await self.agents.agent(rotated)
+            self.assertEqual((await fresh.run("again")).text, "seen")
+
+            # The synchronous client has the same calls.
+            def managed():
+                with sync.AgentRuntime(url=self.url, api_key=self.token) as runtime:
+                    runtime.set_scope_key("org-2", "openrouter", api_key="sk-or-fixture-5678")
+                    providers = runtime.key_scope("org-2")["providers"]
+                    runtime.delete_key_scope("org-2")
+                    made = runtime.create_token("sync")
+                    runtime.revoke_token(made["id"])
+                    return providers[0]["last4"], runtime.usage()["totals"]["responses"] >= 1, runtime.me()["tenant"], runtime.telemetry.get()
+            self.assertEqual(await asyncio.to_thread(managed), ("5678", True, "python", None))
+        finally:
+            receiver.shutdown()
+
     async def test_volumes_files_snapshots_and_mounts(self):
         created = await self.runtime.create_volume(name="shared docs")
         volume = self.runtime.volume(created["id"])
@@ -1023,6 +1197,144 @@ class ServeToolsTest(unittest.IsolatedAsyncioTestCase):
         answer = await _answer_mcp({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "list_todos", "arguments": {}, "_meta": meta}},
                                    {"list_todos": list_todos}, lambda given: _tool_context(given, "1"))
         self.assertEqual(answer["result"]["structuredContent"], {"todos": ["ship it"]})
+
+
+class WebhookTest(unittest.TestCase):
+    """verify_webhook against requests signed as the runtime signs them (src/webhooks.ts signedHeaders)."""
+    SECRET = "whsec_" + base64.b64encode(b"k" * 24).decode()
+
+    @staticmethod
+    def signed(body, secrets, *, at=None, webhook_id="evt_1"):
+        import hmac
+        timestamp = str(int(time.time() if at is None else at))
+        signatures = [f"v1,{base64.b64encode(hmac.new(base64.b64decode(secret[6:]), f'{webhook_id}.{timestamp}.{body}'.encode(), hashlib.sha256).digest()).decode()}" for secret in secrets]
+        return {"webhook-id": webhook_id, "webhook-timestamp": timestamp, "webhook-signature": " ".join(signatures)}
+
+    def test_a_signed_event_verifies_and_anything_else_is_refused(self):
+        body = json.dumps({"id": "evt_1", "type": "run.completed", "created": 1, "data": {"agentId": "client_1"}})
+        headers = self.signed(body, [self.SECRET])
+        self.assertEqual(verify_webhook(body, headers, self.SECRET)["type"], "run.completed")
+        # Bytes or text, headers in any case (Flask and Django give them capitalized).
+        self.assertEqual(verify_webhook(body.encode(), {name.title(): value for name, value in headers.items()}, self.SECRET)["data"], {"agentId": "client_1"})
+        other = "whsec_" + base64.b64encode(b"o" * 24).decode()
+        cases = [
+            (body.replace("client_1", "client_2"), headers, self.SECRET, "No signature verifies"),
+            (body, headers, other, "No signature verifies"),
+            (body, {**headers, "webhook-id": "evt_2"}, self.SECRET, "No signature verifies"),
+            (body, self.signed(body, [self.SECRET], at=time.time() - 600), self.SECRET, "too far from now"),
+            (body, self.signed(body, [self.SECRET], at=time.time() + 600), self.SECRET, "too far from now"),
+            (body, {key: value for key, value in headers.items() if key != "webhook-signature"}, self.SECRET, "Missing"),
+            (body, {**headers, "webhook-timestamp": "soon"}, self.SECRET, "Invalid webhook-timestamp"),
+            (body, {**headers, "webhook-signature": "v2," + headers["webhook-signature"][3:]}, self.SECRET, "No signature verifies"),
+        ]
+        for given, given_headers, secret, error in cases:
+            with self.assertRaisesRegex(WebhookVerificationError, error):
+                verify_webhook(given, given_headers, secret)
+        # An older request verifies within a wider tolerance.
+        self.assertEqual(verify_webhook(body, self.signed(body, [self.SECRET], at=time.time() - 600), self.SECRET, tolerance=900)["id"], "evt_1")
+
+    def test_during_a_rotation_either_secret_verifies(self):
+        body = json.dumps({"id": "evt_1", "type": "usage.recorded", "created": 1, "data": {}})
+        new = "whsec_" + base64.b64encode(b"n" * 24).decode()
+        # The runtime signs with the new secret and, for 24 hours, the old one too.
+        both = self.signed(body, [new, self.SECRET])
+        self.assertEqual(verify_webhook(body, both, self.SECRET)["id"], "evt_1")
+        self.assertEqual(verify_webhook(body, both, new)["id"], "evt_1")
+        # A receiver moving to the new secret accepts either.
+        self.assertEqual(verify_webhook(body, self.signed(body, [self.SECRET]), [new, self.SECRET])["id"], "evt_1")
+
+
+class WsgiServeToolsTest(unittest.TestCase):
+    """camelai_run.sync's serve_tools (a WSGI app) and verify_runtime_token, against its TestRuntime."""
+    APP = "https://app.test/mcp"
+
+    def setUp(self):
+        self.runtime = sync.TestRuntime()
+        self.threads = []
+
+        @tool
+        def plain_whoami(context: ToolContext) -> dict:
+            """Who is asking, from a plain function"""
+            self.threads.append(threading.get_ident())
+            return {"user": context.identity.user, "context": context.identity.context}
+
+        self.app = sync.serve_tools([plain_whoami, list_todos, delete_todo], **self.runtime.options)
+
+    def tearDown(self):
+        self.runtime.http.close()
+
+    def test_each_call_is_answered_as_the_user_the_token_names(self):
+        self.assertEqual(self.runtime.call_tool(self.app, self.APP, "plain_whoami", {}, subject="team-acme", actor="bob", context={"team": "acme"})["structuredContent"],
+                         {"user": "bob", "context": {"team": "acme"}})
+        # An async tool runs too, in an event loop of the request's own.
+        self.assertEqual(self.runtime.call_tool(self.app, self.APP, "list_todos", {}, subject="alice", context={"team": "acme"})["structuredContent"], {"todos": ["ship it"]})
+        listed = self.runtime.post(self.app, self.APP, [{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, {"jsonrpc": "2.0", "method": "notifications/initialized"}], subject="alice").json()
+        self.assertEqual([entry["name"] for entry in listed[0]["result"]["tools"]], ["plain_whoami", "list_todos", "delete_todo"])
+        self.assertEqual(self.runtime.post(self.app, self.APP, {"jsonrpc": "2.0", "method": "notifications/initialized"}, subject="alice").status_code, 202)
+        asked = self.runtime.call_tool(self.app, self.APP, "delete_todo", {"text": "ship it"}, subject="alice")
+        self.assertEqual(asked["resultType"], "input_required")
+
+    def test_anything_but_the_runtimes_token_for_this_server_is_refused(self):
+        call = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "plain_whoami", "arguments": {}}}
+        stranger = sync.TestRuntime()
+        cases = [
+            ("", "No bearer token"),
+            (self.runtime.token("https://other.test/mcp", subject="alice"), "Token is for another server"),
+            (self.runtime.token(self.APP, subject="alice", expires_in=-120), "Token has expired"),
+            (self.runtime.token(self.APP, subject="alice", tenant="mallory"), "Token is for another tenant's agent"),
+            (stranger.token(self.APP, subject="alice"), "Token signed with a key the runtime does not publish"),
+            ("not-a-token", "Malformed token"),
+        ]
+        for token, error in cases:
+            response = self.runtime.post(self.app, self.APP, call, token=token)
+            self.assertEqual((response.status_code, response.json()["error"]), (401, error))
+            self.assertEqual(response.headers["www-authenticate"], 'Bearer error="invalid_token", resource_metadata="https://app.test/.well-known/oauth-protected-resource/mcp"')
+        stranger.http.close()
+        self.assertEqual(self.threads, [])
+        with httpx.Client(transport=httpx.WSGITransport(app=self.app)) as client:
+            metadata = client.get("https://app.test/.well-known/oauth-protected-resource/mcp").json()
+            self.assertEqual((metadata["resource"], metadata["authorization_servers"]), (self.APP, [self.runtime.url]))
+            self.assertEqual(client.get(self.APP).status_code, 405)
+
+    def test_verify_runtime_token_is_synchronous_and_takes_a_list_of_audiences(self):
+        identity = sync.verify_runtime_token(self.runtime.token("https://app.test/mcp/", actor="bob"), audience=self.APP, **self.runtime.options)
+        self.assertEqual((identity.user, identity.claims["aud"]), ("bob", "https://app.test/mcp/"))
+        both = ["https://app.test/mcp", "https://app.example/mcp"]
+        self.assertEqual(sync.verify_runtime_token(self.runtime.token("https://app.example/mcp", subject="alice"), audience=both, **self.runtime.options).user, "alice")
+        with self.assertRaisesRegex(RuntimeTokenError, "another server"):
+            sync.verify_runtime_token(self.runtime.token("https://other.test/mcp"), audience=both, **self.runtime.options)
+        options = {key: value for key, value in self.runtime.options.items() if key != "tenant"}
+        with self.assertRaisesRegex(TypeError, "Pass tenant="):
+            sync.serve_tools([list_todos], **options)
+        with self.assertRaisesRegex(TypeError, "Pass tenant="):
+            sync.verify_runtime_token(self.runtime.token(self.APP), audience=self.APP, **options)
+
+    def test_a_real_wsgi_server_runs_plain_tools_in_the_request_thread(self):
+        from wsgiref.simple_server import WSGIRequestHandler, make_server
+
+        class Quiet(WSGIRequestHandler):
+            def log_message(self, *_):
+                pass
+        requests = []
+
+        def app(environ, start_response):
+            requests.append(threading.get_ident())
+            return self.app(environ, start_response)
+        server = make_server("127.0.0.1", 0, app, handler_class=Quiet)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = f"http://127.0.0.1:{server.server_port}/tools/mcp"
+            response = httpx.post(url, headers={"Authorization": f"Bearer {self.runtime.token(url, subject='alice')}"},
+                                  json={"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": "plain_whoami", "arguments": {}}})
+            self.assertEqual((response.status_code, response.json()["id"], response.json()["result"]["structuredContent"]["user"]), (200, 7, "alice"))
+            self.assertEqual(self.threads, requests)
+            refused = httpx.post(url, json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+            self.assertEqual((refused.status_code, refused.headers["www-authenticate"]),
+                             (401, f'Bearer error="invalid_token", resource_metadata="http://127.0.0.1:{server.server_port}/.well-known/oauth-protected-resource/tools/mcp"'))
+        finally:
+            server.shutdown()
+            server.server_close()
 
 
 class RateLimitRetryTest(unittest.IsolatedAsyncioTestCase):

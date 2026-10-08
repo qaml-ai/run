@@ -84,6 +84,9 @@ PUT /v1/key-scopes/org_abc123/providers/openrouter
  "headers": {"cf-aig-authorization": "Bearer <gateway token>"}}
 ```
 
+In Python, `await agents.runtime.set_scope_key("org_abc123", "openrouter", api_key=…, base_url=…, headers=…)`;
+`key_scope(scope)`, `delete_scope_key(scope, provider)` and `delete_key_scope(scope)` read and remove them.
+
 - An entry is `{apiKey?, baseUrl?, headers?, region?}`. `headers` are sent with
   every call, sealed like the key. The provider is any model provider of
   `GET /v1/providers` that takes a key, or `amazon-bedrock`.

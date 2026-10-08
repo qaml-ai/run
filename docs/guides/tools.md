@@ -246,6 +246,38 @@ app = serve_tools([refund], runtime="https://run.camelai.com", tenant="acme")  #
 Behind a proxy, run uvicorn with `--proxy-headers` (and `--forwarded-allow-ips`
 naming the proxy), or pass `audience="https://tools.example.com/mcp"`.
 
+For Django, Flask or any WSGI server, `camelai_run.sync.serve_tools` takes the
+same arguments and is a WSGI app. Plain functions run in the request's thread,
+with its database connection; async ones run in an event loop of the request's
+own. Mount it at the path the definition names:
+
+```python
+# Flask
+from werkzeug.middleware.dispatcher import DispatcherMiddleware
+from camelai_run.sync import serve_tools
+
+app.wsgi_app = DispatcherMiddleware(app.wsgi_app, {"/mcp": serve_tools([refund], runtime="https://run.camelai.com", tenant="acme")})
+```
+
+```python
+# Django: wsgi.py
+from django.core.wsgi import get_wsgi_application
+from camelai_run.sync import serve_tools
+
+django_app = get_wsgi_application()
+tools_app = serve_tools([refund], runtime="https://run.camelai.com", tenant="acme")
+
+def application(environ, start_response):
+    path = environ.get("PATH_INFO", "")
+    if path == "/mcp" or path.startswith("/.well-known/oauth-protected-resource"):
+        return tools_app(environ, start_response)
+    return django_app(environ, start_response)
+```
+
+Behind a proxy, pass `audience="https://tools.example.com/mcp"`: the URL a WSGI
+app sees is the server's own. `camelai_run.sync.verify_runtime_token` checks a token in a view
+of your own.
+
 (`pip install "camelai-run[server]"` for the token checks.)
 
 Then name the server in a definition, and make agents from it:
@@ -268,8 +300,8 @@ your own tenant. Any tenant can make agents, give them any `subject` and
 `context`, and point them at your server's URL; the runtime signs their tokens
 too. Only the tenant check tells your agents from theirs. Pass your tenant's id
 (or a list, if several of your tenants share the server). To test your authorization without a runtime,
-`testRuntime()` (`@camelai/run/testing`; `TestRuntime()` in Python)
-signs tokens with a key of its own:
+`testRuntime()` (`@camelai/run/testing`; `TestRuntime()` in Python, and
+`camelai_run.sync.TestRuntime()` for a WSGI app) signs tokens with a key of its own:
 
 ```ts
 const rt = await testRuntime();

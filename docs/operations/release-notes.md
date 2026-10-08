@@ -9,6 +9,20 @@ between yours and the new one first.
 
 Changes on main since the last tag.
 
+### Python SDK
+
+- `camelai_run.sync`: a synchronous client with the same names (`Agents`, `Agent`, `AgentRuntime`, `Runs`) for
+  scripts, Django and Flask views and Celery tasks: upsert, get, fork, run, stream, steer, answer inputs, stateless
+  runs. It holds no connection and does not serve tools. See [the synchronous client](../reference/sdk.md#the-synchronous-client-python).
+- `camelai_run.sync.serve_tools` serves tools as a WSGI app (Django, Flask), plain functions in the request's thread;
+  `camelai_run.sync.verify_runtime_token` and `TestRuntime` are its synchronous token check and test runtime.
+- `verify_webhook(body, headers, secret)` verifies a webhook request (Standard Webhooks signature, constant-time,
+  within 5 minutes) and returns its event.
+- `initial_messages=` on `agents.upsert` and `create_agent`: the history an agent begins with.
+- `AgentRuntime` manages key scopes (`set_scope_key`, `key_scope`, `set_scope_provider`, ...), API tokens
+  (`tokens`, `create_token`, `revoke_token`), usage (`usage`), webhook endpoints (`create_webhook`, `webhooks`,
+  `update_webhook`, `delete_webhook`, `rotate_webhook_secret`) and agent tokens (`rotate_agent_credentials`).
+
 ## 0.5.0 (runtime-v0.5.0, 2026-10-08)
 
 Stateless runs, steer receipts and stops that cancel the queue, faster resume, js_exec on V8, and email and

@@ -32,7 +32,7 @@ __all__ = [
     "tool", "Tool", "ToolContext", "InputRequired", "RuntimeIdentity", "identity_from_claims",
     "AgentError", "RunError",
     "AgentRuntime", "AgentClient", "AgentFiles", "Download", "Volume", "Telemetry", "DEFAULT_URL",
-    "serve_tools", "verify_runtime_token", "RuntimeTokenError", "TestRuntime",
+    "serve_tools", "verify_runtime_token", "RuntimeTokenError", "TestRuntime", "verify_webhook", "WebhookVerificationError",
 ]
 # Distinguishes "not given" from None (which means "never expires") in create_agent.
 _DEFAULT = object()
@@ -203,6 +203,12 @@ class Tool:
             return await self.function(**arguments)
         return await asyncio.to_thread(self.function, **arguments)
 
+    async def _run(self, arguments, inline=False):
+        """inline: a plain function runs in this thread (a WSGI server's request thread, with its database connection)."""
+        if inline and not inspect.iscoroutinefunction(self.function):
+            return self.function(**arguments)
+        return await self(**arguments)
+
 
 def _call_tool_result(result):
     """A tool's JSON value as an MCP tools/call result: a text block, plus structured content for objects."""
@@ -258,7 +264,7 @@ def _tool_context(meta, fallback_id, identity=None, notify=None):
                        _notify=notify, _progress_token=meta.get("progressToken"))
 
 
-async def _answer_mcp(message, tools, context_for, server_name="agent-runtime-sdk-python"):
+async def _answer_mcp(message, tools, context_for, server_name="agent-runtime-sdk-python", inline=False):
     """Answer one MCP JSON-RPC request as a tool server: initialize, ping, tools/list and tools/call.
     Both an attached agent and serve_tools use it."""
     method, params = message.get("method"), message.get("params") or {}
@@ -293,7 +299,7 @@ async def _answer_mcp(message, tools, context_for, server_name="agent-runtime-sd
         if definition.with_context:
             args["context"] = context
         try:
-            answer = _call_tool_result(await definition(**args))
+            answer = _call_tool_result(await definition._run(args, inline))
         except asyncio.CancelledError:
             raise
         except InputRequired as asked:
@@ -395,33 +401,69 @@ _RATE_LIMIT_ATTEMPTS = 8
 _UPLOAD_TIMEOUT = 60
 
 
-async def _http(client, base, path, token, method="GET", body=None, retry=True, headers=None, timeout=None):
+def _encoded(body):
     encoded = None if body is None else json.dumps(body, allow_nan=False).encode()
     if encoded and len(encoded) > 1_100_000:
         raise AgentError("Request exceeds transport limit")
+    return encoded
+
+
+def _request_options(token, headers, timeout):
+    return {"headers": {"Authorization": f"Bearer {token}", "Content-Type": "application/json", **(headers or {})}, **({"timeout": timeout} if timeout else {})}
+
+
+def _json_of(response):
+    """A JSON answer's value, or the AgentError it is."""
+    if not response.is_success:
+        try:
+            value = response.json()
+        except ValueError:
+            value = {}
+        raise AgentError(value.get("error", f"HTTP {response.status_code}"), response.status_code, retry_after=_retry_after(response), code=_code(value))
+    return response.json()
+
+
+def _retry_delay(error, attempt, retry):
+    """Seconds to wait before trying a failed request again, or None to give up (raise)."""
+    limited = isinstance(error, AgentError) and error.status == 429
+    if limited:
+        if attempt >= _RATE_LIMIT_ATTEMPTS - 1:
+            return None
+    elif not retry or attempt >= 3 or (isinstance(error, AgentError) and error.status < 500):
+        return None
+    # Honour the runtime's Retry-After, with jitter so refused callers do not return together; else back off exponentially.
+    backoff = min(10.0, (0.5 if limited else 0.1) * 2 ** attempt)
+    hinted = error.retry_after if isinstance(error, AgentError) else None
+    return hinted + random.random() * min(1.0, backoff) if hinted is not None else backoff
+
+
+async def _http(client, base, path, token, method="GET", body=None, retry=True, headers=None, timeout=None):
+    encoded = _encoded(body)
     attempt = 0
     while True:
         try:
-            response = await client.request(method, base + path, content=encoded, headers={
-                "Authorization": f"Bearer {token}", "Content-Type": "application/json", **(headers or {})}, **({"timeout": timeout} if timeout else {}))
-            if not response.is_success:
-                try:
-                    value = response.json()
-                except ValueError:
-                    value = {}
-                raise AgentError(value.get("error", f"HTTP {response.status_code}"), response.status_code, retry_after=_retry_after(response), code=_code(value))
-            return response.json()
+            return _json_of(await client.request(method, base + path, content=encoded, **_request_options(token, headers, timeout)))
         except Exception as error:
-            limited = isinstance(error, AgentError) and error.status == 429
-            if limited:
-                if attempt >= _RATE_LIMIT_ATTEMPTS - 1:
-                    raise
-            elif not retry or attempt >= 3 or (isinstance(error, AgentError) and error.status < 500):
+            delay = _retry_delay(error, attempt, retry)
+            if delay is None:
                 raise
-            # Honour the runtime's Retry-After, with jitter so refused callers do not return together; else back off exponentially.
-            backoff = min(10.0, (0.5 if limited else 0.1) * 2 ** attempt)
-            hinted = error.retry_after if isinstance(error, AgentError) else None
-            await asyncio.sleep(hinted + random.random() * min(1.0, backoff) if hinted is not None else backoff)
+            await asyncio.sleep(delay)
+            attempt += 1
+
+
+def _http_sync(client, base, path, token, method="GET", body=None, retry=True, headers=None, timeout=None):
+    """_http for an httpx.Client: the same retries, waiting in this thread."""
+    import time
+    encoded = _encoded(body)
+    attempt = 0
+    while True:
+        try:
+            return _json_of(client.request(method, base + path, content=encoded, **_request_options(token, headers, timeout)))
+        except Exception as error:
+            delay = _retry_delay(error, attempt, retry)
+            if delay is None:
+                raise
+            time.sleep(delay)
             attempt += 1
 
 
@@ -439,47 +481,24 @@ async def _transfer(client, method, url, **options):
         await asyncio.sleep(0.1 * 2 ** attempt)
 
 
-class AgentRuntime:
-    """The lower-level client: provision agents, definitions, volumes and mounts. `url` defaults to CAMELAI_BASE_URL,
-    else https://run.camelai.com; `api_key` to CAMELAI_API_KEY."""
+_KEY = r"[A-Za-z0-9_-]{1,80}"
 
-    def __init__(self, url=None, api_key=None):
-        self.base = _origin(url or _env("CAMELAI_BASE_URL", "AGENT_URL") or DEFAULT_URL)
-        self.api_key = api_key or _env("CAMELAI_API_KEY", "AGENT_RUNTIME_TOKEN")
-        self.http = httpx.AsyncClient(timeout=10, follow_redirects=False)
-        self.agents = []
-        # The tenant's OpenTelemetry trace export: get, set, clear, test.
-        self.telemetry = Telemetry(self)
 
-    async def create_agent(self, *, tools, system_prompt=None, name=None, type=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, on_input=None, builtins=None, delegate=None, subagents=False, prompt=None, traceparent=None):
-        """Provision an agent. `model` is "provider/model-id", e.g. "anthropic/claude-sonnet-5-5".
-        `definition` makes it from a definition (GET /v1/definitions), which supplies the model, system prompt,
-        thinking level and tool sources; `tools` are added as the agent's attached MCP server.
-        `ttl_seconds` is the agent's lifetime, or None to keep it until it is deleted (default: until deleted with an
-        idempotency_key of yours, else one day).
-        `mounts` ([{"volumeId", "path", "mode": "ro" | "rw", "subpath"?, "notify"?}]) are the volumes its
-        file tools see; by default it gets its own workspace volume at /workspace. `key_scope` names a key scope
-        (PUT /v1/key-scopes/:scope/providers/:provider) whose keys its model calls use first; `spend_limit` ({"usd": n}) the most it may spend on model calls from now on; `run_limits`
-        ({"maxResponses": n, "maxSeconds": n}) the most one run may take, within the runtime's maximums (1,000 responses and
-        2 hours by default), past which a run stops with stopped "turn_limit"; `model_headers` non-secret headers for each model call.
-        `prompt` (the prompt call's body) is sent once the agent is made; `traceparent` (a W3C trace context) makes its run continue that trace."""
-        if not self.api_key:
-            raise AgentError("No API key: set CAMELAI_API_KEY (or pass api_key). Create one at https://run.camelai.com/console/tokens")
-        # subject: who the agent acts for; context: claims for its tool servers' identity tokens. Set only here.
-        body = _provisioning(tools, definition=definition, name=name, type=type, system_prompt=system_prompt, model=model, thinking_level=thinking_level,
-                             mounts=mounts, subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits, model_headers=model_headers, builtins=builtins,
-                             delegate=delegate, prompt=prompt)
-        # A key of the caller's makes the agent durable (it lives until deleted); one the SDK makes up, only so a retried
-        # create finds the same agent, keeps a scratch agent's day, said explicitly since any key would make it durable.
-        if ttl_seconds is not _DEFAULT:
-            body["ttlSeconds"] = ttl_seconds
-        elif idempotency_key is None:
-            body["ttlSeconds"] = 86400
-        session = await _http(self.http, self.base, "/v1/agents", self.api_key, "POST", body,
-                              headers={"Idempotency-Key": idempotency_key or str(uuid.uuid4()), **_trace_header(traceparent)})
-        return await self.connect_agent(session, tools=tools, on_event=on_event, on_error=on_error, on_input=on_input, subagents=subagents)
+def _check_key(key, what):
+    import re
+    if not isinstance(key, str) or not re.fullmatch(_KEY, key):
+        raise AgentError(f"{what} key is 1 to 80 letters, digits, _ and -: {key!r} is not")
 
-    async def fork_agent(self, agent_id, *, key=None, name=None, at_message=None, ttl_seconds=_DEFAULT, subject=None, context=None, instructions_append=None, model_headers=_DEFAULT):
+
+def _path(*parts):
+    return "/".join(quote(part, safe="") for part in parts)
+
+
+class _RuntimeCalls:
+    """The operator API's calls that are one request each, shared by the async AgentRuntime and the synchronous one
+    (camelai_run.sync): each returns what self._rest returns, an awaitable here and the answer there."""
+
+    def fork_agent(self, agent_id, *, key=None, name=None, at_message=None, ttl_seconds=_DEFAULT, subject=None, context=None, instructions_append=None, model_headers=_DEFAULT):
         """A new agent with this one's configuration, a copy of its history and a fork of its workspace. Returns its
         credentials and where it came from ({"id", "token", "expiresAt", "forkedFrom": {"agentId", "atMessage"}}).
         `at_message` ends its history at a history index (that message, and the tool results answering it) or a request
@@ -487,9 +506,8 @@ class AgentRuntime:
         returns the same fork (default: one made up, and a day's lifetime, as create_agent's). `subject`, `context` and
         `instructions_append` are the fork's own instead of the source's: who it acts for, its tool servers' context, and
         its text after the instructions ("" removes it); `model_headers` too (None removes them)."""
-        import re
-        if key is not None and (not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", key)):
-            raise AgentError(f"A fork's key is 1 to 80 letters, digits, _ and -: {key!r} is not")
+        if key is not None:
+            _check_key(key, "A fork's")
         body = {"key": key or str(uuid.uuid4())}
         if name is not None:
             body["name"] = name
@@ -504,26 +522,274 @@ class AgentRuntime:
             body["ttlSeconds"] = ttl_seconds
         elif key is None:
             body["ttlSeconds"] = 86400
-        return await _http(self.http, self.base, f"/v1/agents/{quote(agent_id, safe='')}/fork", self._operator(), "POST", body)
+        return self._rest("POST", f"/v1/agents/{_path(agent_id)}/fork", body)
 
-    async def agent_credentials(self, key_or_id):
+    def agent_credentials(self, key_or_id):
         """An existing agent's credentials ({"id", "token", "expiresAt"}), by its id or the key it was made with, its
         configuration untouched. AgentError with status 404 when there is none."""
-        return await _http(self.http, self.base, f"/v1/agents/{quote(key_or_id, safe='')}/credentials", self._operator())
+        return self._rest("GET", f"/v1/agents/{_path(key_or_id)}/credentials")
 
-    async def upsert_agent(self, key, *, tools=(), traceparent=None, **fields):
+    def rotate_agent_credentials(self, agent_id):
+        """A new token for the agent ({"id", "token", "expiresAt"}): the old one stops working at once, and connections
+        made with it close. The process serving the agent connects again with the new one."""
+        return self._rest("POST", f"/v1/agents/{_path(agent_id)}/credentials/rotate", {}, retry=False)
+
+    def upsert_agent(self, key, *, tools=(), traceparent=None, **fields):
         """The agent for `key`: made if there is none, set to `fields` (create_agent's) if they differ. Returns its
         credentials ({"id", "token", "expiresAt", "reconfigured"?}); connect with connect_agent. Keyed agents live until deleted.
         `prompt` (the prompt call's body, {"text", "requestId", ...}) is sent once the agent is made: the answer's "prompt" is
         its request, or {"error": {"status", "code", "message"}} when it was refused. A retry with the same requestId sends it once.
+        `initial_messages` (Pi messages) is the history it begins with, used only when the agent is made.
         `traceparent` (a W3C trace context) makes that first prompt's run continue the caller's trace."""
         if not self.api_key:
             raise AgentError("No API key: set CAMELAI_API_KEY (or pass api_key). Create one at https://run.camelai.com/console/tokens. Coding agents: read https://run.camelai.com/SKILL.md")
-        import re
-        if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", key):
-            raise AgentError(f"An agent's key is 1 to 80 letters, digits, _ and -: {key!r} is not")
+        _check_key(key, "An agent's")
         # The key is the agent's idempotency key: the same key is the same agent, reconfigured when its configuration differs.
-        return await _http(self.http, self.base, "/v1/agents", self.api_key, "POST", _provisioning(tools, **fields), headers={"Idempotency-Key": key, **_trace_header(traceparent)})
+        return self._rest("POST", "/v1/agents", _provisioning(tools, **fields), headers={"Idempotency-Key": key, **_trace_header(traceparent)})
+
+    def create_run(self, request, *, idempotency_key=None, wait=None, traceparent=None):
+        """Start a stateless run (POST /v1/runs): `request` is its configuration and input ({"input", "systemPrompt"?,
+        "model"?, "output"?, ...}). With `wait` (True: up to 60 s, or seconds) it answers once the run ends, else still
+        running. Retries are safe: each create has an Idempotency-Key (one of its own unless given)."""
+        body = _with_multi_agent(dict(request))
+        if wait is not None:
+            body["wait"] = wait
+        wait_seconds = 60 if wait is True else min(float(wait), 60) if wait else 0
+        return self._rest("POST", "/v1/runs", body, timeout=wait_seconds + 15,
+                          headers={"Idempotency-Key": idempotency_key or str(uuid.uuid4()), **_trace_header(traceparent)})
+
+    def get_run(self, run_id, *, wait=0):
+        """A stateless run: running, or how it ended. `wait` (seconds, at most 25) waits for it to end first."""
+        wait = min(wait or 0, 25)
+        return self._rest("GET", f"/v1/runs/{_path(run_id)}" + (f"?wait={wait:g}" if wait else ""), timeout=wait + 15)
+
+    def abort_run(self, run_id):
+        return self._rest("POST", f"/v1/runs/{_path(run_id)}/abort", {})
+
+    def delete_run(self, run_id):
+        """Delete a run now, before its retention ends (a running one stops)."""
+        return self._rest("DELETE", f"/v1/runs/{_path(run_id)}")
+
+    def run_messages(self, run_id):
+        """A run's messages: its input, the model's turns and tool results."""
+        return self._rest("GET", f"/v1/runs/{_path(run_id)}/messages", then=lambda value: value["messages"])
+
+    # Definitions: reusable agent configurations with their tool sources (mcpServers, openApi, builtins).
+    # Make agents from one with create_agent(definition=id). Fields use the REST names (systemPrompt, mcpServers...).
+    def create_definition(self, **fields):
+        return self._rest("POST", "/v1/definitions", _with_multi_agent(fields), retry=False)
+
+    def upsert_definition(self, key, **fields):
+        """The definition for `key`, set to `fields` whole: made if there is none, else a new revision if they change it.
+        The same key is the same definition."""
+        _check_key(key, "A definition's")
+        return self._rest("POST", "/v1/definitions", _with_multi_agent(fields), headers={"Idempotency-Key": key})
+
+    def update_definition(self, definition_id, **fields):
+        """Replace the fields given (None removes one); apply="all" also reconfigures its live agents. Here builtins are
+        given whole: list "delegate" in them with its settings."""
+        return self._rest("PATCH", f"/v1/definitions/{_path(definition_id)}", fields, retry=False)
+
+    def definition(self, definition_id):
+        return self._rest("GET", f"/v1/definitions/{_path(definition_id)}")
+
+    def definitions(self):
+        return self._rest("GET", "/v1/definitions")
+
+    def delete_definition(self, definition_id):
+        return self._rest("DELETE", f"/v1/definitions/{_path(definition_id)}", retry=False)
+
+    def set_provider(self, name, *, base_url, models, type="openai-completions", api_key=_DEFAULT, headers=_DEFAULT, auth=None):
+        """Add or replace a provider of your own: a public https server that speaks type (openai-completions,
+        openai-responses or anthropic-messages), with its models ([{"id", "contextWindow", "maxOutputTokens"?, "input"?,
+        "reasoning"?, "pricing"?, "compat"?}]). Agents name them "<name>/<model id>". api_key and headers left out keep
+        what is stored; None removes them. auth="bearer" sends an anthropic-messages key as Authorization: Bearer."""
+        return self._rest("PUT", f"/v1/providers/{_path(name)}", _provider_body(base_url, models, type, api_key, headers, auth))
+
+    def delete_provider(self, name):
+        return self._rest("DELETE", f"/v1/providers/{_path(name)}", retry=False)
+
+    def providers(self):
+        """Every provider: the built-in ones with your keys' status, and your own ("custom")."""
+        return self._rest("GET", "/v1/providers")
+
+    def list_agents(self):
+        """The tenant's agents, each with the key it was made with (None for one made without) and its name."""
+        return self._rest("GET", "/v1/agents")
+
+    def create_volume(self, *, name=None):
+        return self._rest("POST", "/v1/volumes", {} if name is None else {"name": name}, retry=False)
+
+    def list_volumes(self):
+        return self._rest("GET", "/v1/volumes")
+
+    def mounts(self, agent_id):
+        return self._rest("GET", f"/v1/agents/{quote(agent_id)}/mounts")
+
+    def set_mounts(self, agent_id, mounts):
+        """Replace an agent's mounts; an idle agent restarts so its tools describe them."""
+        return self._rest("PUT", f"/v1/agents/{quote(agent_id)}/mounts", {"mounts": mounts}, retry=False)
+
+    def me(self):
+        """Who the API key is: {"tenant", "via", "defaultModel", ...}; tenant is your tenant's id, which serve_tools and verify_runtime_token take;
+        defaultModel is the model an agent gets when it names none."""
+        return self._rest("GET", "/v1/me")
+
+    def browser_token(self, agent_id, *, ttl_seconds=None, scopes=None, events=None, redact=None, subject=None):
+        """A token a browser reads one agent with (the TypeScript SDK's watchAgent): mint one per user, after your own
+        access checks. It reads only that agent's events, state, history and inputs (or `scopes`), for `ttl_seconds`
+        (default 900, 5 to 3600). Returns {"token", "expiresAt", "agentId", "url"}."""
+        body = {key: value for key, value in {"ttlSeconds": ttl_seconds, "scopes": scopes, "events": events, "redact": redact, "subject": subject}.items() if value is not None}
+        return self._rest("POST", f"/v1/agents/{_path(agent_id)}/browser-tokens", body, retry=False)
+
+    def inbox(self, *, state=None):
+        """Inputs waiting on someone across all the tenant's agents (state="pending", say), newest first."""
+        return self._rest("GET", "/v1/inputs" + (f"?state={state}" if state else ""))
+
+    def tool_sources(self, agent_id, *, schemas=False, refresh=False):
+        """Every source of an agent's tools (its application, file tools, built-ins, MCP servers, OpenAPI
+        specs) and what each offers the model. schemas includes input schemas; refresh lists MCP servers now."""
+        query = "&".join(name for name, on in (("schemas=true", schemas), ("refresh=true", refresh)) if on)
+        return self._rest("GET", f"/v1/agents/{quote(agent_id)}" + (f"?{query}" if query else ""), then=lambda detail: detail["toolSources"])
+
+    # Key scopes: provider keys of a group of your agents (an org of your users, say), which the model calls of the agents
+    # made with key_scope=<scope> use before the tenant's own. Keys and header values are stored sealed and never returned.
+    def set_scope_key(self, scope, provider, *, api_key=None, base_url=None, headers=None, region=None):
+        """Store `provider`'s key for the scope (an existing one is replaced): `api_key`, or a gateway at `base_url` that
+        holds it (then no auth header is sent, only `headers`). `region` is amazon-bedrock's. The scope's agents use it from
+        their next model call. Returns the scope ({"scope", "providers": [{"provider", "last4"?, "baseUrl"?, ...}]})."""
+        body = {key: value for key, value in {"apiKey": api_key, "baseUrl": base_url, "headers": headers, "region": region}.items() if value is not None}
+        return self._rest("PUT", f"/v1/key-scopes/{_path(scope, 'providers', provider)}", body)
+
+    def delete_scope_key(self, scope, provider):
+        return self._rest("DELETE", f"/v1/key-scopes/{_path(scope, 'providers', provider)}", retry=False)
+
+    def key_scope(self, scope):
+        """The providers the scope has keys for ({"scope", "providers"}), never the keys."""
+        return self._rest("GET", f"/v1/key-scopes/{_path(scope)}")
+
+    def delete_key_scope(self, scope):
+        """Delete every key and provider of the scope."""
+        return self._rest("DELETE", f"/v1/key-scopes/{_path(scope)}", retry=False)
+
+    def set_scope_provider(self, scope, name, *, base_url, models, type="openai-completions", api_key=_DEFAULT, headers=_DEFAULT, auth=None):
+        """A provider of the scope's own (as set_provider's): only the scope's agents name its models, "<name>/<model id>",
+        before the tenant's provider of that name."""
+        return self._rest("PUT", f"/v1/key-scopes/{_path(scope, 'model-providers', name)}", _provider_body(base_url, models, type, api_key, headers, auth))
+
+    def delete_scope_provider(self, scope, name):
+        return self._rest("DELETE", f"/v1/key-scopes/{_path(scope, 'model-providers', name)}", retry=False)
+
+    def scope_providers(self, scope):
+        """The scope's own providers, never their keys or header values."""
+        return self._rest("GET", f"/v1/key-scopes/{_path(scope)}/model-providers")
+
+    def usage(self, *, days=None):
+        """Token usage and cost per UTC day and model over the last `days` (1 to 365, default 30): {"since", "totals",
+        "days": [{"day", "model", "kind", "responses", "input", "output", "cacheRead", "cacheWrite", "cost", ...}]}.
+        Per user or per key scope: the usage.recorded webhook."""
+        return self._rest("GET", "/v1/usage" + (f"?days={int(days)}" if days is not None else ""))
+
+    # API tokens: the tenant's keys to this API. A token's secret is returned only when it is made.
+    def tokens(self):
+        """The tenant's API tokens ({"id", "name", "prefix", "createdAt"}), never their secrets."""
+        return self._rest("GET", "/v1/tokens")
+
+    def create_token(self, name):
+        """A new API token: {"id", "name", "prefix", "createdAt", "token"}, its secret `token` shown only now."""
+        return self._rest("POST", "/v1/tokens", {"name": name}, retry=False)
+
+    def revoke_token(self, token_id):
+        """Revoke a token at once (not the one making the call). Returns {"revoked", "left"}: the webhooks and trace export
+        it set, which keep sending; review them."""
+        return self._rest("DELETE", f"/v1/tokens/{_path(token_id)}", retry=False)
+
+    # Webhook endpoints: the runtime POSTs the events they select, signed (verify them with verify_webhook).
+    def create_webhook(self, url, events, *, description=None):
+        """Send `events` (["run.completed", "run.failed", "input.requested", ...]) to `url`, an https URL. Returns the
+        endpoint with its signing `secret` (whsec_...), shown only now."""
+        return self._rest("POST", "/v1/webhooks", {"url": url, "events": events, **({"description": description} if description is not None else {})}, retry=False)
+
+    def webhooks(self):
+        return self._rest("GET", "/v1/webhooks")
+
+    def webhook(self, webhook_id):
+        return self._rest("GET", f"/v1/webhooks/{_path(webhook_id)}")
+
+    def update_webhook(self, webhook_id, *, url=None, events=None, description=None):
+        """Change what is given; the rest stays."""
+        body = {key: value for key, value in {"url": url, "events": events, "description": description}.items() if value is not None}
+        return self._rest("PATCH", f"/v1/webhooks/{_path(webhook_id)}", body, retry=False)
+
+    def delete_webhook(self, webhook_id):
+        return self._rest("DELETE", f"/v1/webhooks/{_path(webhook_id)}", retry=False)
+
+    def rotate_webhook_secret(self, webhook_id):
+        """A new signing secret ({"secret"}), shown only now; the old one also signs for 24 hours."""
+        return self._rest("POST", f"/v1/webhooks/{_path(webhook_id)}/secret", retry=False)
+
+    def _operator(self):
+        if not self.api_key:
+            raise AgentError("No API key: set CAMELAI_API_KEY (or pass api_key). Create one at https://run.camelai.com/console/tokens")
+        return self.api_key
+
+
+def _provider_body(base_url, models, type, api_key, headers, auth):
+    return {"type": type, "baseUrl": base_url, "models": models, **({"auth": auth} if auth else {}),
+            **({} if api_key is _DEFAULT else {"apiKey": api_key}), **({} if headers is _DEFAULT else {"headers": headers})}
+
+
+class AgentRuntime(_RuntimeCalls):
+    """The lower-level client: provision agents, definitions, volumes and mounts. `url` defaults to CAMELAI_BASE_URL,
+    else https://run.camelai.com; `api_key` to CAMELAI_API_KEY."""
+
+    def __init__(self, url=None, api_key=None):
+        self.base = _origin(url or _env("CAMELAI_BASE_URL", "AGENT_URL") or DEFAULT_URL)
+        self.api_key = api_key or _env("CAMELAI_API_KEY", "AGENT_RUNTIME_TOKEN")
+        self.http = httpx.AsyncClient(timeout=10, follow_redirects=False)
+        self.agents = []
+        # The tenant's OpenTelemetry trace export: get, set, clear, test.
+        self.telemetry = Telemetry(self)
+
+    async def _rest(self, method, path, body=None, *, retry=True, headers=None, timeout=None, then=None, missing=_DEFAULT):
+        """One request with the API key: its answer (`then` of it), or `missing` for a 404 when given."""
+        try:
+            value = await _http(self.http, self.base, path, self._operator(), method, body, retry, headers, timeout)
+        except AgentError as error:
+            if missing is not _DEFAULT and error.status == 404:
+                return missing
+            raise
+        return then(value) if then else value
+
+    async def create_agent(self, *, tools, system_prompt=None, name=None, type=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, on_input=None, builtins=None, delegate=None, subagents=False, prompt=None, traceparent=None, initial_messages=None):
+        """Provision an agent. `model` is "provider/model-id", e.g. "anthropic/claude-sonnet-5-5".
+        `definition` makes it from a definition (GET /v1/definitions), which supplies the model, system prompt,
+        thinking level and tool sources; `tools` are added as the agent's attached MCP server.
+        `ttl_seconds` is the agent's lifetime, or None to keep it until it is deleted (default: until deleted with an
+        idempotency_key of yours, else one day).
+        `mounts` ([{"volumeId", "path", "mode": "ro" | "rw", "subpath"?, "notify"?}]) are the volumes its
+        file tools see; by default it gets its own workspace volume at /workspace. `key_scope` names a key scope
+        (PUT /v1/key-scopes/:scope/providers/:provider) whose keys its model calls use first; `spend_limit` ({"usd": n}) the most it may spend on model calls from now on; `run_limits`
+        ({"maxResponses": n, "maxSeconds": n}) the most one run may take, within the runtime's maximums (1,000 responses and
+        2 hours by default), past which a run stops with stopped "turn_limit"; `model_headers` non-secret headers for each model call.
+        `prompt` (the prompt call's body) is sent once the agent is made; `traceparent` (a W3C trace context) makes its run continue that trace.
+        `initial_messages` is the history it begins with: Pi user, assistant, toolResult and compactionSummary messages (dicts),
+        a conversation from elsewhere (see the multi-user guide)."""
+        if not self.api_key:
+            raise AgentError("No API key: set CAMELAI_API_KEY (or pass api_key). Create one at https://run.camelai.com/console/tokens")
+        # subject: who the agent acts for; context: claims for its tool servers' identity tokens. Set only here.
+        body = _provisioning(tools, definition=definition, name=name, type=type, system_prompt=system_prompt, model=model, thinking_level=thinking_level,
+                             mounts=mounts, subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits, model_headers=model_headers, builtins=builtins,
+                             delegate=delegate, prompt=prompt, initial_messages=initial_messages)
+        # A key of the caller's makes the agent durable (it lives until deleted); one the SDK makes up, only so a retried
+        # create finds the same agent, keeps a scratch agent's day, said explicitly since any key would make it durable.
+        if ttl_seconds is not _DEFAULT:
+            body["ttlSeconds"] = ttl_seconds
+        elif idempotency_key is None:
+            body["ttlSeconds"] = 86400
+        session = await _http(self.http, self.base, "/v1/agents", self.api_key, "POST", body,
+                              headers={"Idempotency-Key": idempotency_key or str(uuid.uuid4()), **_trace_header(traceparent)})
+        return await self.connect_agent(session, tools=tools, on_event=on_event, on_error=on_error, on_input=on_input, subagents=subagents)
 
     async def connect_agent(self, session, *, tools, on_event=None, on_error=None, on_input=None, attach=True, takeover=False, sync_tools=True, subagents=False, connection="eager"):
         """`on_event(event, request_id)` hears every event, for display (a run's result is the truth): a plain or async
@@ -547,39 +813,12 @@ class AgentRuntime:
             await agent.close()
             raise
 
-    async def create_run(self, request, *, idempotency_key=None, wait=None, traceparent=None):
-        """Start a stateless run (POST /v1/runs): `request` is its configuration and input ({"input", "systemPrompt"?,
-        "model"?, "output"?, ...}). With `wait` (True: up to 60 s, or seconds) it answers once the run ends, else still
-        running. Retries are safe: each create has an Idempotency-Key (one of its own unless given)."""
-        body = _with_multi_agent(dict(request))
-        if wait is not None:
-            body["wait"] = wait
-        wait_seconds = 60 if wait is True else min(float(wait), 60) if wait else 0
-        return await _http(self.http, self.base, "/v1/runs", self._operator(), "POST", body, timeout=wait_seconds + 15,
-                           headers={"Idempotency-Key": idempotency_key or str(uuid.uuid4()), **_trace_header(traceparent)})
-
-    async def get_run(self, run_id, *, wait=0):
-        """A stateless run: running, or how it ended. `wait` (seconds, at most 25) waits for it to end first."""
-        wait = min(wait or 0, 25)
-        return await _http(self.http, self.base, f"/v1/runs/{quote(run_id, safe='')}" + (f"?wait={wait:g}" if wait else ""), self._operator(), timeout=wait + 15)
-
     async def wait_for_run(self, run_id):
         """A stateless run once it ends, however long it takes (cancel the task to stop waiting; abort_run stops the run)."""
         while True:
             run = await self.get_run(run_id, wait=25)
             if run["status"] != "running":
                 return run
-
-    async def abort_run(self, run_id):
-        return await _http(self.http, self.base, f"/v1/runs/{quote(run_id, safe='')}/abort", self._operator(), "POST", {})
-
-    async def delete_run(self, run_id):
-        """Delete a run now, before its retention ends (a running one stops)."""
-        return await _http(self.http, self.base, f"/v1/runs/{quote(run_id, safe='')}", self._operator(), "DELETE")
-
-    async def run_messages(self, run_id):
-        """A run's messages: its input, the model's turns and tool results."""
-        return (await _http(self.http, self.base, f"/v1/runs/{quote(run_id, safe='')}/messages", self._operator()))["messages"]
 
     async def run_events(self, run_id, *, last_event_id=None):
         """A run's event stream, to its end (its "response" frame), as {"id", "data"}: reconnecting with Last-Event-ID
@@ -599,16 +838,12 @@ class AgentRuntime:
                         continue
                     failures, buffer = 0, ""
                     async for chunk in response.aiter_text():
-                        buffer += chunk
-                        while "\n\n" in buffer:
-                            raw, buffer = buffer.split("\n\n", 1)
-                            lines = raw.split("\n")
-                            text = "\n".join(line[5:].lstrip() for line in lines if line.startswith("data:"))
-                            ids = [line[3:].strip() for line in lines if line.startswith("id:")]
-                            if not text or "event: ready" in lines or not ids or not ids[0].isdigit():
+                        frames, buffer = _sse_frames(buffer + chunk)
+                        for lines, text in frames:
+                            frame = _run_frame(lines, text)
+                            if frame is None:
                                 continue
-                            cursor = int(ids[0])
-                            frame = {"id": cursor, "data": json.loads(text)}
+                            cursor = frame["id"]
                             yield frame
                             if frame["data"].get("type") == "response":
                                 return
@@ -618,97 +853,9 @@ class AgentRuntime:
                     raise
                 await asyncio.sleep(0.25 * 2 ** failures)
 
-    def _operator(self):
-        if not self.api_key:
-            raise AgentError("No API key: set CAMELAI_API_KEY (or pass api_key). Create one at https://run.camelai.com/console/tokens")
-        return self.api_key
-
-    # Definitions: reusable agent configurations with their tool sources (mcpServers, openApi, builtins).
-    # Make agents from one with create_agent(definition=id). Fields use the REST names (systemPrompt, mcpServers...).
-    async def create_definition(self, **fields):
-        return await _http(self.http, self.base, "/v1/definitions", self._operator(), "POST", _with_multi_agent(fields), retry=False)
-
-    async def upsert_definition(self, key, **fields):
-        """The definition for `key`, set to `fields` whole: made if there is none, else a new revision if they change it.
-        The same key is the same definition."""
-        import re
-        if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", key):
-            raise AgentError(f"A definition's key is 1 to 80 letters, digits, _ and -: {key!r} is not")
-        return await _http(self.http, self.base, "/v1/definitions", self._operator(), "POST", _with_multi_agent(fields), headers={"Idempotency-Key": key})
-
-    async def update_definition(self, definition_id, **fields):
-        """Replace the fields given (None removes one); apply="all" also reconfigures its live agents. Here builtins are
-        given whole: list "delegate" in them with its settings."""
-        return await _http(self.http, self.base, f"/v1/definitions/{quote(definition_id, safe='')}", self._operator(), "PATCH", fields, retry=False)
-
-    async def definition(self, definition_id):
-        return await _http(self.http, self.base, f"/v1/definitions/{quote(definition_id, safe='')}", self._operator())
-
-    async def definitions(self):
-        return await _http(self.http, self.base, "/v1/definitions", self._operator())
-
-    async def delete_definition(self, definition_id):
-        return await _http(self.http, self.base, f"/v1/definitions/{quote(definition_id, safe='')}", self._operator(), "DELETE", retry=False)
-
-    async def set_provider(self, name, *, base_url, models, type="openai-completions", api_key=_DEFAULT, headers=_DEFAULT, auth=None):
-        """Add or replace a provider of your own: a public https server that speaks type (openai-completions,
-        openai-responses or anthropic-messages), with its models ([{"id", "contextWindow", "maxOutputTokens"?, "input"?,
-        "reasoning"?, "pricing"?, "compat"?}]). Agents name them "<name>/<model id>". api_key and headers left out keep
-        what is stored; None removes them. auth="bearer" sends an anthropic-messages key as Authorization: Bearer."""
-        body = {"type": type, "baseUrl": base_url, "models": models, **({"auth": auth} if auth else {}),
-                **({} if api_key is _DEFAULT else {"apiKey": api_key}), **({} if headers is _DEFAULT else {"headers": headers})}
-        return await _http(self.http, self.base, f"/v1/providers/{quote(name, safe='')}", self._operator(), "PUT", body)
-
-    async def delete_provider(self, name):
-        return await _http(self.http, self.base, f"/v1/providers/{quote(name, safe='')}", self._operator(), "DELETE", retry=False)
-
-    async def providers(self):
-        """Every provider: the built-in ones with your keys' status, and your own ("custom")."""
-        return await _http(self.http, self.base, "/v1/providers", self._operator())
-
-    async def list_agents(self):
-        """The tenant's agents, each with the key it was made with (None for one made without) and its name."""
-        return await _http(self.http, self.base, "/v1/agents", self._operator())
-
-    async def create_volume(self, *, name=None):
-        return await _http(self.http, self.base, "/v1/volumes", self._operator(), "POST", {} if name is None else {"name": name}, retry=False)
-
-    async def list_volumes(self):
-        return await _http(self.http, self.base, "/v1/volumes", self._operator())
-
     def volume(self, volume_id):
         """A handle on one volume's files, snapshots and forks."""
         return Volume(self, volume_id)
-
-    async def mounts(self, agent_id):
-        return await _http(self.http, self.base, f"/v1/agents/{quote(agent_id)}/mounts", self._operator())
-
-    async def set_mounts(self, agent_id, mounts):
-        """Replace an agent's mounts; an idle agent restarts so its tools describe them."""
-        return await _http(self.http, self.base, f"/v1/agents/{quote(agent_id)}/mounts", self._operator(), "PUT", {"mounts": mounts}, retry=False)
-
-    async def me(self):
-        """Who the API key is: {"tenant", "via", "defaultModel", ...}; tenant is your tenant's id, which serve_tools and verify_runtime_token take;
-        defaultModel is the model an agent gets when it names none."""
-        return await _http(self.http, self.base, "/v1/me", self._operator())
-
-    async def browser_token(self, agent_id, *, ttl_seconds=None, scopes=None, events=None, redact=None, subject=None):
-        """A token a browser reads one agent with (the TypeScript SDK's watchAgent): mint one per user, after your own
-        access checks. It reads only that agent's events, state, history and inputs (or `scopes`), for `ttl_seconds`
-        (default 900, 5 to 3600). Returns {"token", "expiresAt", "agentId", "url"}."""
-        body = {key: value for key, value in {"ttlSeconds": ttl_seconds, "scopes": scopes, "events": events, "redact": redact, "subject": subject}.items() if value is not None}
-        return await _http(self.http, self.base, f"/v1/agents/{quote(agent_id, safe='')}/browser-tokens", self._operator(), "POST", body, retry=False)
-
-    async def inbox(self, *, state=None):
-        """Inputs waiting on someone across all the tenant's agents (state="pending", say), newest first."""
-        return await _http(self.http, self.base, "/v1/inputs" + (f"?state={state}" if state else ""), self._operator())
-
-    async def tool_sources(self, agent_id, *, schemas=False, refresh=False):
-        """Every source of an agent's tools (its application, file tools, built-ins, MCP servers, OpenAPI
-        specs) and what each offers the model. schemas includes input schemas; refresh lists MCP servers now."""
-        query = "&".join(name for name, on in (("schemas=true", schemas), ("refresh=true", refresh)) if on)
-        detail = await _http(self.http, self.base, f"/v1/agents/{quote(agent_id)}" + (f"?{query}" if query else ""), self._operator())
-        return detail["toolSources"]
 
     async def close(self, *, drain=None):
         """Close every agent's connection, each finishing its tool calls first (AgentClient.close)."""
@@ -720,6 +867,24 @@ class AgentRuntime:
 
     async def __aexit__(self, *_):
         await self.close()
+
+
+def _sse_frames(buffer):
+    """The whole SSE frames at the start of `buffer`, each as (its lines, its data), and the text after them."""
+    frames = []
+    while "\n\n" in buffer:
+        raw, buffer = buffer.split("\n\n", 1)
+        lines = raw.split("\n")
+        frames.append((lines, "\n".join(line[5:].lstrip() for line in lines if line.startswith("data:"))))
+    return frames, buffer
+
+
+def _run_frame(lines, text):
+    """A stateless run's event frame, {"id", "data"}; None for the stream's own frames (ready, reconnect hints)."""
+    ids = [line[3:].strip() for line in lines if line.startswith("id:")]
+    if not text or "event: ready" in lines or not ids or not ids[0].isdigit():
+        return None
+    return {"id": int(ids[0]), "data": json.loads(text)}
 
 
 def _steer_receipt(record):
@@ -737,26 +902,21 @@ def _trace_header(traceparent):
 
 class Telemetry:
     """The tenant's OpenTelemetry trace export (runtime.telemetry): each run is a trace, with spans for its model and tool
-    calls, POSTed to an OTLP/HTTP endpoint. Header values are stored encrypted and never returned: reads list their names."""
+    calls, POSTed to an OTLP/HTTP endpoint. Header values are stored encrypted and never returned: reads list their names.
+    Its calls are awaited from AgentRuntime, and plain from the synchronous one."""
 
     def __init__(self, runtime):
         self._runtime = runtime
 
-    async def _call(self, method, path="/v1/telemetry", body=None, retry=True):
-        runtime = self._runtime
-        return await _http(runtime.http, runtime.base, path, runtime._operator(), method, body, retry=retry)
+    def _call(self, method, path="/v1/telemetry", body=None, retry=True, missing=_DEFAULT):
+        return self._runtime._rest(method, path, body, retry=retry, missing=missing)
 
-    async def get(self):
+    def get(self):
         """The settings ({"endpoint", "protocol", "sampleRate", "include", "headers": [names], "createdAt", "updatedAt",
         "status": {"lastExportAt", "lastError", "lastErrorAt"}}), or None when none are set."""
-        try:
-            return await self._call("GET")
-        except AgentError as error:
-            if error.status == 404:
-                return None
-            raise
+        return self._call("GET", missing=None)
 
-    async def set(self, endpoint=None, *, headers=None, protocol=None, sample_rate=None, include_content=None):
+    def set(self, endpoint=None, *, headers=None, protocol=None, sample_rate=None, include_content=None):
         """Export the tenant's runs to `endpoint` (the OTLP/HTTP traces URL; a collector's base URL gets /v1/traces). What is
         left out keeps its current value (its default the first time, when `endpoint` is needed).
         `headers` are sent with each export (a backend's API key); left out, the stored ones stay while the endpoint keeps
@@ -764,29 +924,25 @@ class Telemetry:
         runs traced, 0 to 1 (default 1); `include_content=True` exports prompts, replies, tool arguments and results."""
         body = {**({"endpoint": endpoint} if endpoint is not None else {}), **({"headers": headers} if headers is not None else {}), **({"protocol": protocol} if protocol else {}),
                 **({"sampleRate": sample_rate} if sample_rate is not None else {}), **({"include": {"content": include_content}} if include_content is not None else {})}
-        return await self._call("PUT", body=body)
+        return self._call("PUT", body=body)
 
-    async def clear(self):
+    def clear(self):
         """Stop exporting: {"deleted": True}, or {"deleted": False} when nothing was set."""
-        try:
-            return await self._call("DELETE", retry=False)
-        except AgentError as error:
-            if error.status == 404:
-                return {"deleted": False}
-            raise
+        return self._call("DELETE", retry=False, missing={"deleted": False})
 
-    async def test(self):
+    def test(self):
         """Send one test span now: {"ok", "status"?, "error"?, "traceId", "spanId"}; look the traceId up in your backend."""
-        return await self._call("POST", "/v1/telemetry/test", retry=False)
+        return self._call("POST", "/v1/telemetry/test", retry=False)
 
 
 def _provisioning(tools, *, definition=None, name=None, type=None, system_prompt=None, model=None, thinking_level=None, mounts=None,
                   subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, system_prompt_append=None, file_tools=None, builtins=None,
-                  delegate=None, prompt=None, code_mode=None):
+                  delegate=None, prompt=None, code_mode=None, initial_messages=None):
     """A create request's body: the tools as the attached MCP server's tools/list, and the fields given."""
     optional = {"definition": definition, "name": name, "type": type, "systemPrompt": system_prompt, "model": model, "thinkingLevel": thinking_level,
                 "mounts": mounts, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit, "runLimits": run_limits, "modelHeaders": model_headers,
-                "systemPromptAppend": system_prompt_append, "fileTools": file_tools, "codeMode": code_mode, "builtins": builtins, "delegate": delegate, "prompt": prompt}
+                "systemPromptAppend": system_prompt_append, "fileTools": file_tools, "codeMode": code_mode, "builtins": builtins, "delegate": delegate, "prompt": prompt,
+                "initialMessages": initial_messages}
     return _with_multi_agent({"mcp": {"tools": [item.mcp_tool() for item in tools]}, **{key: value for key, value in optional.items() if value is not None}})
 
 
@@ -899,6 +1055,10 @@ class Download:
     version: int
 
 
+def _download(response):
+    return Download(response.content, response.headers.get("content-type", "application/octet-stream").split(";")[0].strip(), int(response.headers["x-file-version"]))
+
+
 class AgentFiles:
     """An agent's files with its own token: what it wrote in a run (an outcome lists `files`), and links to hand them on."""
 
@@ -914,28 +1074,137 @@ class AgentFiles:
             raise AgentError(_error(response), response.status_code)
         return response
 
-    async def list(self, *, path=None, glob=None, after=None, limit=None):
+    def list(self, *, path=None, glob=None, after=None, limit=None):
         """Files under path (default: the first mount), in path order, a page at a time: {"files", "next"?}."""
         query = urlencode({key: value for key, value in {"path": path, "glob": glob, "after": after, "limit": limit}.items() if value is not None})
-        return await self.agent._http(f"/files{'?' + query if query else ''}")
+        return self.agent._http(f"/files{'?' + query if query else ''}")
 
     async def download(self, path):
         """The file: .data (bytes), .content_type and .version."""
-        response = await self._raw("GET", path)
-        return Download(response.content, response.headers.get("content-type", "application/octet-stream").split(";")[0].strip(), int(response.headers["x-file-version"]))
+        return _download(await self._raw("GET", path))
 
     async def upload(self, path, data, *, content_type=None):
         """Write a file into a writable mount; without content_type the runtime sniffs it."""
         body = data.encode() if isinstance(data, str) else data
         return (await self._raw("PUT", path, content=body, headers={"Content-Type": content_type} if content_type else {}, timeout=_UPLOAD_TIMEOUT)).json()
 
-    async def link(self, path, *, method="GET", expires_in=None, max_bytes=None, content_type=None):
+    def link(self, path, *, method="GET", expires_in=None, max_bytes=None, content_type=None):
         """A signed URL to download (GET) or upload (PUT) one file without a token: {"url", "expiresAt", ...}."""
         body = {"path": path, "method": method, **{key: value for key, value in {"expiresIn": expires_in, "maxBytes": max_bytes, "contentType": content_type}.items() if value is not None}}
-        return await self.agent._http("/links", "POST", body, retry=False)
+        return self.agent._http("/links", "POST", body, retry=False)
 
 
-class AgentClient:
+def _message_params(text, attached, extra, from_, metadata):
+    """A message request's params: its text, attached files, `extra` (a prompt's options), sender and metadata."""
+    return {"text": text, **({"files": attached} if attached else {}), **(extra or {}), **({"from": from_} if from_ else {}), **({"metadata": metadata} if metadata else {})}
+
+
+def _prompt_extra(actor=None, while_running=None, allow_disconnected=False, spend_limit=None, output=None, history=None):
+    return {**({"actor": actor} if actor else {}), **({"whileRunning": "steer"} if while_running == "steer" else {}),
+            **({"allowDisconnected": True} if allow_disconnected else {}), **({"spendLimit": spend_limit} if spend_limit is not None else {}),
+            **({"output": output} if output is not None else {}), **({"history": "none"} if history == "none" else {})}
+
+
+def _check_request_id(request_id):
+    import re
+    if not re.fullmatch(_KEY, request_id):
+        raise AgentError(f"An idempotency key is 1 to 80 letters, digits, _ and -: {request_id!r} is not", 400)
+
+
+def _attachment(index, file):
+    """A file to attach as (name, data, content_type), or {"path"} for one in the agent's mounts."""
+    if isinstance(file, dict) and set(file) == {"path"}:
+        return {"path": file["path"]}
+    if isinstance(file, (str, os.PathLike)):
+        return Path(file).name, Path(file), None
+    if isinstance(file, (bytes, bytearray, memoryview)):
+        return None, bytes(file), None
+    if isinstance(file, dict) and isinstance(file.get("data"), (bytes, bytearray)):
+        return file.get("name"), bytes(file["data"]), file.get("content_type")
+    raise AgentError("A file is bytes, a local path, {\"name\", \"data\", \"content_type\"?} or {\"path\"} in the agent's mounts")
+
+
+def _unique_name(names, name, index):
+    """Each file in a request needs its own name: they share uploads/<request>/."""
+    base = name or f"attachment-{index + 1}"
+    unique, n = base, 2
+    while unique in names:
+        stem, dot, extension = base.rpartition(".")
+        unique = f"{stem}-{n}.{extension}" if dot and stem else f"{base}-{n}"
+        n += 1
+    names.add(unique)
+    return unique
+
+
+class _AgentCalls:
+    """An agent's calls that are one request each, with its own token, shared by the async AgentClient and the
+    synchronous one (camelai_run.sync): each returns what self._http (or self.request) returns."""
+
+    def history(self):
+        """The agent's whole history: {"messages"}. history_page reads a page at a time."""
+        return self._http("/history")
+
+    def history_page(self, *, before=None, limit=50):
+        """The page of whole turns ending before `before` (default: the newest message), with at least `limit`
+        messages where there are that many: {"entries": [{"index", "message"}], "next", "total"}."""
+        return self._http("/history?" + urlencode({"limit": limit, **({"before": before} if before is not None else {})}))
+
+    def execute(self, code, *, execution_timeout_ms=None, actor=None, allow_disconnected=False, **options):
+        params = {"code": code, **({"actor": actor} if actor else {}), **({"allowDisconnected": True} if allow_disconnected else {})}
+        if execution_timeout_ms is not None:
+            params["timeoutMs"] = execution_timeout_ms
+        return self.request("execute", params, **options)
+
+    def set_metadata(self, *, name, type):
+        return self._http("/metadata", "POST", {"name": name, "type": type})
+
+    def schedule(self, *, text=None, code=None, at=None, in_seconds=None, every_seconds=None):
+        """Wake this agent later with a prompt (text) or sandboxed code; every_seconds (>= 60) repeats it."""
+        body = {key: value for key, value in {"text": text, "code": code, "at": at, "inSeconds": in_seconds, "everySeconds": every_seconds}.items() if value is not None}
+        return self._http("/schedules", "POST", body, retry=False)
+
+    def schedules(self):
+        return self._http("/schedules")
+
+    def unschedule(self, schedule_id):
+        return self._http(f"/schedules/{quote(schedule_id, safe='')}", "DELETE", None, retry=False)
+
+    def status(self):
+        """The agent's process (when loaded) and whether it is busy: busy, activeRun, queuedRuns, as GET /v1/agents/{id} and its state say too."""
+        return self.request("status")
+
+    def abort(self, *, queued=None):
+        """Stop the agent: its running turn ends (code "aborted"), and the runs queued behind it are cancelled (code
+        "cancelled"), so nothing runs after the stop; queued="keep" stops the running turn only. Returns
+        {"aborted", "cancelled": [ids]}."""
+        return self.request("abort", {"queued": queued} if queued else {})
+
+    def outcomes(self):
+        return self._http("/state")
+
+    def answer(self, input_id, *, action, content=None, actor=None, **sender):
+        """Answer an input the agent waits on: action is accept, decline or cancel. `content`: for a question,
+        {"answers": {"<question>": "<label>" | ["<label>"] | "<own words>"}}; for a form, its fields. `from` (as
+        from_) or `actor` names who answers, checked against who may. Returns {input, request}: request is the
+        run resuming the turn once its last input is answered."""
+        who = sender.get("from_") or sender.get("from")
+        body = {"action": action, **({"content": content} if content is not None else {}), **({"actor": actor} if actor else {}), **({"from": who} if who else {})}
+        return self._http(f"/inputs/{quote(input_id, safe='')}", "POST", body)
+
+    def inputs(self, *, state=None):
+        """The agent's inputs, newest first: state="pending", say."""
+        return self._http("/inputs" + (f"?state={state}" if state else ""))
+
+    def request_status(self, request_id, *, wait=None):
+        """A request's record. wait (seconds, at most 25): while it runs, answer once it settles, or when the wait
+        ends with it still running: one call that waits, with no stream connected."""
+        path = f"/requests/{quote(request_id, safe='')}"
+        if not wait:
+            return self._http(path)
+        return self._http(f"{path}?wait={wait}", timeout=min(wait, 25) + 10)
+
+
+class AgentClient(_AgentCalls):
     # How often a request still waiting for its result asks for its status, in case the result's event was lost.
     poll_interval = 30
 
@@ -985,8 +1254,8 @@ class AgentClient:
     def __repr__(self):
         return f"AgentClient(id={self.id!r})"
 
-    async def _http(self, suffix, method="GET", body=None, retry=True):
-        return await _http(self.http, self.base, self.path + suffix, self.session["token"], method, body, retry)
+    async def _http(self, suffix, method="GET", body=None, retry=True, timeout=None):
+        return await _http(self.http, self.base, self.path + suffix, self.session["token"], method, body, retry, timeout=timeout)
 
     async def connect(self):
         if self.closed:
@@ -1314,9 +1583,7 @@ class AgentClient:
         if self.closed or self.closing or self.fatal:
             raise self.fatal or AgentError("Client closed")
         request_id = idempotency_key or str(uuid.uuid4())
-        import re
-        if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", request_id):
-            raise AgentError(f"An idempotency key is 1 to 80 letters, digits, _ and -: {request_id!r} is not", 400)
+        _check_request_id(request_id)
         # A lazy client that something listens to (Agent.stream) connects first, so the listener sees the run from its start.
         if self.lazy and self.listeners:
             await self.connect()
@@ -1369,15 +1636,6 @@ class AgentClient:
         finally:
             self._release(request_id, future)
 
-    async def history(self):
-        """The agent's whole history: {"messages"}. history_page reads a page at a time."""
-        return await self._http("/history")
-
-    async def history_page(self, *, before=None, limit=50):
-        """The page of whole turns ending before `before` (default: the newest message), with at least `limit`
-        messages where there are that many: {"entries": [{"index", "message"}], "next", "total"}."""
-        return await self._http("/history?" + urlencode({"limit": limit, **({"before": before} if before is not None else {})}))
-
     async def steer(self, text, *, from_=None, files=None, metadata=None):
         """The legacy steer request: a message held for the running turn. New code: prompt(text, while_running="steer")."""
         return await self._message("steer", text, from_=from_, files=files, metadata=metadata)
@@ -1385,8 +1643,7 @@ class AgentClient:
     async def _message(self, method, text, *, from_=None, files=None, metadata=None, idempotency_key=None, extra=None, **options):
         request_id = idempotency_key or str(uuid.uuid4())
         attached = await self._attach(request_id, files) if files else None
-        return await self.request(method, {"text": text, **({"files": attached} if attached else {}), **(extra or {}), **({"from": from_} if from_ else {}),
-                                           **({"metadata": metadata} if metadata else {})}, idempotency_key=request_id, **options)
+        return await self.request(method, _message_params(text, attached, extra, from_, metadata), idempotency_key=request_id, **options)
 
     async def prompt(self, text, *, actor=None, from_=None, files=None, metadata=None, while_running=None, idempotency_key=None, allow_disconnected=False,
                      spend_limit=None, output=None, history=None, **options):
@@ -1403,9 +1660,7 @@ class AgentClient:
         history="none" shows the model only the instructions (and tools) and this message, not the agent's history before it.
         `traceparent` (a W3C trace context) makes the run continue the caller's trace when the tenant exports telemetry."""
         result = await self._message("prompt", text, from_=from_, files=files, metadata=metadata, idempotency_key=idempotency_key,
-                                     extra={**({"actor": actor} if actor else {}), **({"whileRunning": "steer"} if while_running == "steer" else {}),
-                                            **({"allowDisconnected": True} if allow_disconnected else {}), **({"spendLimit": spend_limit} if spend_limit is not None else {}),
-                                            **({"output": output} if output is not None else {}), **({"history": "none"} if history == "none" else {})},
+                                     extra=_prompt_extra(actor, while_running, allow_disconnected, spend_limit, output, history),
                                      **options)
         # A steered message's request completes as the running turn takes it, naming the turn: its outcome is the turn's.
         if while_running == "steer" and isinstance(result, dict) and isinstance(result.get("steeredInto"), str) and "reply" not in result:
@@ -1421,12 +1676,9 @@ class AgentClient:
         if self.closed or self.closing or self.fatal:
             raise self.fatal or AgentError("Client closed")
         request_id = idempotency_key or str(uuid.uuid4())
-        import re
-        if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", request_id):
-            raise AgentError(f"An idempotency key is 1 to 80 letters, digits, _ and -: {request_id!r} is not", 400)
+        _check_request_id(request_id)
         attached = await self._attach(request_id, files) if files else None
-        params = {"text": text, **({"files": attached} if attached else {}), "whileRunning": "steer", **({"actor": actor} if actor else {}),
-                  **({"allowDisconnected": True} if allow_disconnected else {}), **({"from": from_} if from_ else {}), **({"metadata": metadata} if metadata else {})}
+        params = _message_params(text, attached, _prompt_extra(actor, "steer", allow_disconnected), from_, metadata)
         record = await _http(self.http, self.base, self.path + "/requests", self.session["token"], "POST",
                              {"id": request_id, "method": "prompt", "params": params}, headers=_trace_header(traceparent))
         if "outcome" in record:
@@ -1436,42 +1688,18 @@ class AgentClient:
     async def _attach(self, request_id, files):
         names, attached = set(), []
         for index, file in enumerate(files):
-            if isinstance(file, dict) and set(file) == {"path"}:
-                attached.append({"path": file["path"]})
+            entry = _attachment(index, file)
+            if isinstance(entry, dict):
+                attached.append(entry)
                 continue
-            content_type = None
-            if isinstance(file, (str, os.PathLike)):
-                path = Path(file)
-                name, data = path.name, _chunks(path)
-            elif isinstance(file, (bytes, bytearray, memoryview)):
-                name, data = None, bytes(file)
-            elif isinstance(file, dict) and isinstance(file.get("data"), (bytes, bytearray)):
-                name, data, content_type = file.get("name"), bytes(file["data"]), file.get("content_type")
-            else:
-                raise AgentError("A file is bytes, a local path, {\"name\", \"data\", \"content_type\"?} or {\"path\"} in the agent's mounts")
-            # Each file in a request needs its own name: they share uploads/<request>/.
-            base = name or f"attachment-{index + 1}"
-            unique, n = base, 2
-            while unique in names:
-                stem, dot, extension = base.rpartition(".")
-                unique = f"{stem}-{n}.{extension}" if dot and stem else f"{base}-{n}"
-                n += 1
-            names.add(unique)
-            response = await self.http.put(f"{self.base}{self.path}/uploads/{quote(request_id, safe='')}/{quote(unique, safe='')}", content=data, headers={
+            name, data, content_type = entry
+            unique = _unique_name(names, name, index)
+            response = await self.http.put(f"{self.base}{self.path}/uploads/{quote(request_id, safe='')}/{quote(unique, safe='')}", content=_chunks(data) if isinstance(data, Path) else data, headers={
                 "Authorization": f"Bearer {self.session['token']}", **({"Content-Type": content_type} if content_type else {})}, timeout=_UPLOAD_TIMEOUT)
             if not response.is_success:
                 raise AgentError(_error(response), response.status_code)
             attached.append({"path": response.json()["path"]})
         return attached
-
-    async def execute(self, code, *, execution_timeout_ms=None, actor=None, allow_disconnected=False, **options):
-        params = {"code": code, **({"actor": actor} if actor else {}), **({"allowDisconnected": True} if allow_disconnected else {})}
-        if execution_timeout_ms is not None:
-            params["timeoutMs"] = execution_timeout_ms
-        return await self.request("execute", params, **options)
-
-    async def set_metadata(self, *, name, type):
-        return await self._http("/metadata", "POST", {"name": name, "type": type})
 
     async def configure(self, *, model=None, system_prompt=None, thinking_level=None, tools=None):
         """Change the model ("provider/model-id"), system prompt, thinking level or tools between runs."""
@@ -1494,58 +1722,10 @@ class AgentClient:
                 await self.connect()
         return result
 
-    async def schedule(self, *, text=None, code=None, at=None, in_seconds=None, every_seconds=None):
-        """Wake this agent later with a prompt (text) or sandboxed code; every_seconds (>= 60) repeats it."""
-        body = {key: value for key, value in {"text": text, "code": code, "at": at, "inSeconds": in_seconds, "everySeconds": every_seconds}.items() if value is not None}
-        return await self._http("/schedules", "POST", body, retry=False)
-
-    async def schedules(self):
-        return await self._http("/schedules")
-
-    async def unschedule(self, schedule_id):
-        from urllib.parse import quote
-        return await self._http(f"/schedules/{quote(schedule_id, safe='')}", "DELETE", None, retry=False)
-
-    async def status(self):
-        """The agent's process (when loaded) and whether it is busy: busy, activeRun, queuedRuns, as GET /v1/agents/{id} and its state say too."""
-        return await self.request("status")
-
-    async def abort(self, *, queued=None):
-        """Stop the agent: its running turn ends (code "aborted"), and the runs queued behind it are cancelled (code
-        "cancelled"), so nothing runs after the stop; queued="keep" stops the running turn only. Returns
-        {"aborted", "cancelled": [ids]}."""
-        return await self.request("abort", {"queued": queued} if queued else {})
-
-    async def outcomes(self):
-        return await self._http("/state")
-
     @property
     def files(self):
         """The agent's files, at the paths it sees them (/workspace/...): list, download, upload and link."""
         return AgentFiles(self)
-
-    async def answer(self, input_id, *, action, content=None, actor=None, **sender):
-        """Answer an input the agent waits on: action is accept, decline or cancel. `content`: for a question,
-        {"answers": {"<question>": "<label>" | ["<label>"] | "<own words>"}}; for a form, its fields. `from` (as
-        from_) or `actor` names who answers, checked against who may. Returns {input, request}: request is the
-        run resuming the turn once its last input is answered."""
-        from urllib.parse import quote
-        who = sender.get("from_") or sender.get("from")
-        body = {"action": action, **({"content": content} if content is not None else {}), **({"actor": actor} if actor else {}), **({"from": who} if who else {})}
-        return await self._http(f"/inputs/{quote(input_id, safe='')}", "POST", body)
-
-    async def inputs(self, *, state=None):
-        """The agent's inputs, newest first: state="pending", say."""
-        return await self._http("/inputs" + (f"?state={state}" if state else ""))
-
-    async def request_status(self, request_id, *, wait=None):
-        """A request's record. wait (seconds, at most 25): while it runs, answer once it settles, or when the wait
-        ends with it still running: one call that waits, with no stream connected."""
-        from urllib.parse import quote
-        path = f"/requests/{quote(request_id, safe='')}"
-        if not wait:
-            return await self._http(path)
-        return await _http(self.http, self.base, self.path + f"{path}?wait={wait}", self.session["token"], timeout=min(wait, 25) + 10)
 
     async def close(self, *, drain=None):
         """Close the connection; runs go on in the runtime. A client serving the agent's tools first tells the runtime it
@@ -1662,6 +1842,29 @@ class InputDetail(TypedDict):
     origin: NotRequired[str]
 
 
+def _run_of(request_id, result, output, make_input):
+    """A run from an agent's prompt result: its status, text, output (parsed by a pydantic model) and inputs (make_input of each)."""
+    result = result or {}
+    error = ({"code": result.get("code") or "model_error", "message": result["error"]} if result.get("error")
+             else {"code": "spend_limit", "message": "The agent reached its spend limit; raise it (spend_limit) to go on"} if result.get("stopped") == "spend_limit"
+             else {"code": "turn_limit", "message": "The run reached its limit of model responses or time; send another message to continue"} if result.get("stopped") == "turn_limit" else None)
+    # The runtime checked the output against the JSON Schema; a pydantic model parses it too (validators, types).
+    value = result.get("output")
+    if value is not None and not error:
+        try:
+            value = _parsed_output(output, value)
+        except ValueError as invalid:
+            error = {"code": "output_invalid", "message": f"The output does not fit its schema: {invalid}"}
+    # A runtime from before structured output ignores the schema and answers in text.
+    if output is not None and value is None and not error and not result.get("stopped") and result:
+        error = {"code": "output_missing", "message": "The run ended without an output: this runtime may not support structured output (output); upgrade it"}
+    status = "failed" if error else "input_required" if result.get("stopped") == "input_required" else "completed"
+    return Run(request_id, status, text=result.get("reply") or "", output=value, inputs=[make_input(input) for input in result.get("inputs") or []], error=error,
+               usage=result.get("usage"), files=result.get("files") or [], tool_errors=result.get("toolErrors") or [],
+               tool_calls=result.get("toolCalls") or [],
+               source_errors=result.get("sourceErrors") or [], raw=result)
+
+
 class RunInput(dict):
     """Human input a run waits on (a dict: id, kind, message, detail (an InputDetail)...), with the means to answer it.
     answer() and decline() return the resumed run."""
@@ -1760,6 +1963,43 @@ def _sender(user):
     return {"id": user} if isinstance(user, str) else user
 
 
+class _PartReader:
+    """Reads a run's events into stream parts, in order: text as it is written (a blank line between the model's
+    messages), tool calls and results and, for an agent's run (make_input), inputs and sub-agents."""
+
+    def __init__(self, make_input=None):
+        self.make_input, self.spoke, self.fresh = make_input, False, False
+
+    def read(self, event):
+        kind = event.get("type")
+        if kind == "message_start" and (event.get("message") or {}).get("role") == "assistant":
+            self.fresh = True
+        elif kind == "message_update":
+            delta = event.get("assistantMessageEvent") or {}
+            if delta.get("type") == "text_delta" and delta.get("delta"):
+                part = StreamPart("text", text=("\n\n" if self.fresh and self.spoke else "") + delta["delta"], raw=event)
+                self.spoke, self.fresh = True, False
+                return [part]
+        elif kind == "tool_execution_start":
+            return [StreamPart("tool_call", id=event.get("toolCallId"), name=event.get("toolName"), arguments=event.get("args"), raw=event)]
+        elif kind == "tool_execution_end":
+            return [StreamPart("tool_result", id=event.get("toolCallId"), name=event.get("toolName"), output=_text_of(event.get("result")),
+                               is_error=bool(event.get("isError")), raw=event)]
+        elif self.make_input and kind == "input_required":
+            return [StreamPart("input_required", input=self.make_input(event["input"]), raw=event)]
+        elif self.make_input and kind in ("subagent_start", "subagent_end"):
+            return [StreamPart(kind, id=event.get("toolCallId"), agent_id=event.get("agentId"), name=event.get("name"), status=event.get("status"), raw=event)]
+        return []
+
+
+def _outcome_run(request_id, outcome, output, make_input):
+    """A run from a request's outcome: its result, or the runtime's error ({"error", "code"?, "uncertain"?})."""
+    if "error" in outcome:
+        code = outcome.get("code") if isinstance(outcome.get("code"), str) else None
+        return Run(request_id, "failed", error={"code": code or "runtime_error", "message": outcome["error"], **({"uncertain": True} if outcome.get("uncertain") else {})})
+    return _run_of(request_id, outcome.get("result"), output, make_input)
+
+
 class RunStream:
     """async for part in agent.stream(text); `id` is the run's; await result() for the run as `done` has it.
     Breaking off stops the reading, not the run."""
@@ -1769,29 +2009,13 @@ class RunStream:
         self._agent, self._throw = agent, options.pop("throw_on_error", True)
         output = options.get("output")
         self._parts = asyncio.Queue()
-        spoke, fresh = False, False
+        reader = _PartReader(lambda input: RunInput(agent, input, output))
 
         def listen(event, request_id):
-            nonlocal spoke, fresh
             if request_id != self.id:
                 return
-            kind = event.get("type")
-            if kind == "message_start" and (event.get("message") or {}).get("role") == "assistant":
-                fresh = True
-            elif kind == "message_update":
-                delta = event.get("assistantMessageEvent") or {}
-                if delta.get("type") == "text_delta" and delta.get("delta"):
-                    self._parts.put_nowait(StreamPart("text", text=("\n\n" if fresh and spoke else "") + delta["delta"], raw=event))
-                    spoke, fresh = True, False
-            elif kind == "tool_execution_start":
-                self._parts.put_nowait(StreamPart("tool_call", id=event.get("toolCallId"), name=event.get("toolName"), arguments=event.get("args"), raw=event))
-            elif kind == "tool_execution_end":
-                self._parts.put_nowait(StreamPart("tool_result", id=event.get("toolCallId"), name=event.get("toolName"), output=_text_of(event.get("result")),
-                                                  is_error=bool(event.get("isError")), raw=event))
-            elif kind == "input_required":
-                self._parts.put_nowait(StreamPart("input_required", input=RunInput(agent, event["input"], output), raw=event))
-            elif kind in ("subagent_start", "subagent_end"):
-                self._parts.put_nowait(StreamPart(kind, id=event.get("toolCallId"), agent_id=event.get("agentId"), name=event.get("name"), status=event.get("status"), raw=event))
+            for part in reader.read(event):
+                self._parts.put_nowait(part)
 
         self._unlisten = agent.client.listen(listen)
         self._task = asyncio.ensure_future(agent._run(text, self.id, throw_on_error=False, **options))
@@ -1889,25 +2113,7 @@ class Agent:
         return run
 
     def _to_run(self, request_id, result, output=None):
-        result = result or {}
-        error = ({"code": result.get("code") or "model_error", "message": result["error"]} if result.get("error")
-                 else {"code": "spend_limit", "message": "The agent reached its spend limit; raise it (spend_limit) to go on"} if result.get("stopped") == "spend_limit"
-                 else {"code": "turn_limit", "message": "The run reached its limit of model responses or time; send another message to continue"} if result.get("stopped") == "turn_limit" else None)
-        # The runtime checked the output against the JSON Schema; a pydantic model parses it too (validators, types).
-        value = result.get("output")
-        if value is not None and not error:
-            try:
-                value = _parsed_output(output, value)
-            except ValueError as invalid:
-                error = {"code": "output_invalid", "message": f"The output does not fit its schema: {invalid}"}
-        # A runtime from before structured output ignores the schema and answers in text.
-        if output is not None and value is None and not error and not result.get("stopped") and result:
-            error = {"code": "output_missing", "message": "The run ended without an output: this runtime may not support structured output (output); upgrade it"}
-        status = "failed" if error else "input_required" if result.get("stopped") == "input_required" else "completed"
-        return Run(request_id, status, text=result.get("reply") or "", output=value, inputs=[RunInput(self, input, output) for input in result.get("inputs") or []], error=error,
-                   usage=result.get("usage"), files=result.get("files") or [], tool_errors=result.get("toolErrors") or [],
-                   tool_calls=result.get("toolCalls") or [],
-                   source_errors=result.get("sourceErrors") or [], raw=result)
+        return _run_of(request_id, result, output, lambda input: RunInput(self, input, output))
 
     async def _respond(self, input, answer, from_, throw_on_error, timeout):
         audience = (input.get("responders") or {}).get("audience")
@@ -2027,24 +2233,13 @@ class StatelessRunStream:
         return _stateless_run(await self._runtime.wait_for_run(self.id), self._output, self._throw)
 
     async def __aiter__(self):
-        spoke, fresh = False, False
+        reader = _PartReader()
         async for frame in self._runtime.run_events(self.id):
             data = frame["data"]
             if data.get("type") == "response":
                 break
-            event = data.get("event") or {} if data.get("type") == "event" else {}
-            kind = event.get("type")
-            if kind == "message_start" and (event.get("message") or {}).get("role") == "assistant":
-                fresh = True
-            elif kind == "message_update":
-                delta = event.get("assistantMessageEvent") or {}
-                if delta.get("type") == "text_delta" and delta.get("delta"):
-                    yield StreamPart("text", text=("\n\n" if fresh and spoke else "") + delta["delta"], raw=event)
-                    spoke, fresh = True, False
-            elif kind == "tool_execution_start":
-                yield StreamPart("tool_call", id=event.get("toolCallId"), name=event.get("toolName"), arguments=event.get("args"), raw=event)
-            elif kind == "tool_execution_end":
-                yield StreamPart("tool_result", id=event.get("toolCallId"), name=event.get("toolName"), output=_text_of(event.get("result")), is_error=bool(event.get("isError")), raw=event)
+            for part in reader.read(data.get("event") or {} if data.get("type") == "event" else {}):
+                yield part
         run = _stateless_run(await self._runtime.wait_for_run(self.id), self._output, False)
         yield StreamPart("done", run=run)
         if run.error and self._throw:
@@ -2143,7 +2338,7 @@ class Agents:
     async def upsert(self, key, *, model=None, instructions=None, tools=None, definition=None, thinking_level=None, subject=None, context=None,
                      key_scope=None, spend_limit=None, run_limits=None, model_headers=None, mounts=None, name=None, instructions_append=None, file_tools=None,
                      builtins=None, delegate=None, subagents=False, on_event=None, on_input=None, on_error=None, attach=None, takeover=False, connection=None,
-                     code_mode=None):
+                     code_mode=None, initial_messages=None):
         """The agent for `key` (your name for it: "support-triage", or "user-123"), made now if there is none, and set
         to this configuration if it differs. The same key is the same agent, with its history and files, until
         agent.delete(); any number of processes may upsert it. `tools` (@tool functions) run in this process, which
@@ -2155,12 +2350,14 @@ class Agents:
         attach=False declares the tools without serving them (another process does); takeover=True replaces the process serving them now.
         code_mode=False gives the agent no js_exec: the model calls every tool directly, and with file_tools=False and no tools its
         prompt is little more than your instructions (for a tool-less agent). An upsert of the configuration the agent has
-        already is not counted as an agent create; agent.config_hash says which configuration it asked for."""
+        already is not counted as an agent create; agent.config_hash says which configuration it asked for.
+        `initial_messages` (Pi messages: user, assistant, toolResult, compactionSummary) is the history the agent begins
+        with, a conversation from elsewhere: used only when the agent is made (see the multi-user guide)."""
         tools = list(tools or [])
         session = await self.runtime.upsert_agent(key, tools=tools, definition=definition, system_prompt=instructions, model=model, thinking_level=thinking_level,
                                                   subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits,
                                                   model_headers=model_headers, mounts=mounts, name=name, system_prompt_append=instructions_append, file_tools=file_tools, builtins=builtins,
-                                                  delegate=delegate, code_mode=code_mode)
+                                                  delegate=delegate, code_mode=code_mode, initial_messages=initial_messages)
         # The upsert declared these tools already (between the agent's turns, if it runs).
         agent = await self.agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error, attach=attach, takeover=takeover, subagents=subagents,
                                  connection=connection, _sync=False)
@@ -2238,18 +2435,19 @@ def _part(text):
 _key_sets = {}
 
 
-async def _public_key(url, kid, http):
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+def _key_cache(url, kid, http):
+    """The cached keys for (http, url), and whether to fetch them again first."""
     import time
     cache = _key_sets.setdefault((id(http), url), {"keys": {}, "fetched": 0.0, "http": http})
     age = time.monotonic() - cache["fetched"]
-    if age > 300 or (kid not in cache["keys"] and age > 10):
-        client = http or httpx.AsyncClient(timeout=10)
-        try:
-            response = await client.get(url, headers={"Accept": "application/json"})
-        finally:
-            if http is None:
-                await client.aclose()
+    return cache, age > 300 or (kid not in cache["keys"] and age > 10)
+
+
+def _cached_key(cache, kid, url, response):
+    """The key `kid` from the cache, refreshed from `response` (the JWKS document) when one was fetched."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    import time
+    if response is not None:
         if response.status_code != 200:
             raise RuntimeTokenError(f"Could not read the runtime's keys ({url}: HTTP {response.status_code})")
         keys = {}
@@ -2261,6 +2459,32 @@ async def _public_key(url, kid, http):
     if key is None:
         raise RuntimeTokenError("Token signed with a key the runtime does not publish")
     return key
+
+
+async def _public_key(url, kid, http):
+    cache, stale = _key_cache(url, kid, http)
+    response = None
+    if stale:
+        client = http or httpx.AsyncClient(timeout=10)
+        try:
+            response = await client.get(url, headers={"Accept": "application/json"})
+        finally:
+            if http is None:
+                await client.aclose()
+    return _cached_key(cache, kid, url, response)
+
+
+def _public_key_sync(url, kid, http):
+    cache, stale = _key_cache(url, kid, http)
+    response = None
+    if stale:
+        client = http or httpx.Client(timeout=10)
+        try:
+            response = client.get(url, headers={"Accept": "application/json"})
+        finally:
+            if http is None:
+                client.close()
+    return _cached_key(cache, kid, url, response)
 
 
 def _require_tenant(tenant):
@@ -2284,22 +2508,21 @@ def _issuer_of(runtime, issuer):
     return _HOSTED_ISSUER if runtime in _HOSTED else runtime
 
 
-async def verify_runtime_token(token, *, runtime, audience, tenant=None, issuer=None, http=None, clock_tolerance=30):
-    """Verify an identity token and return who the call is for (a RuntimeIdentity, with the token's
-    claims): the signature against the runtime's published Ed25519 keys (EdDSA only), the issuer,
-    that it was made for an agent of `tenant` (your tenant's id, or a list: required, since another
-    tenant can point its agents at your server), that the audience is yours (a string or a list), and the times."""
-    tenants = _require_tenant(tenant)
-    import time
-    from cryptography.exceptions import InvalidSignature
+def _token_header(token):
+    """A token's pieces and header, before its key is known."""
     pieces = token.split(".")
     if len(pieces) != 3:
         raise RuntimeTokenError("Malformed token")
     header = _part(pieces[0])
     if header.get("alg") != "EdDSA" or not isinstance(header.get("kid"), str):
         raise RuntimeTokenError("Token is not an EdDSA token with a key id")
-    runtime = runtime.rstrip("/")
-    key = await _public_key(f"{runtime}/.well-known/jwks.json", header["kid"], http)
+    return pieces, header
+
+
+def _verified(pieces, key, *, runtime, audience, tenants, issuer, clock_tolerance):
+    """The identity a token carries, once its signature, issuer, tenant, audience and times check out."""
+    import time
+    from cryptography.exceptions import InvalidSignature
     try:
         key.verify(_b64decode(pieces[2]), f"{pieces[0]}.{pieces[1]}".encode())
     except (InvalidSignature, ValueError):
@@ -2310,9 +2533,7 @@ async def verify_runtime_token(token, *, runtime, audience, tenant=None, issuer=
         raise RuntimeTokenError("Token is from another issuer")
     if claims.get("tenant") not in tenants:
         raise RuntimeTokenError("Token is for another tenant's agent")
-    wanted = {value.rstrip("/") for value in ([audience] if isinstance(audience, str) else audience)}
-    given = claims.get("aud")
-    if not any(isinstance(value, str) and value.rstrip("/") in wanted for value in (given if isinstance(given, list) else [given])):
+    if not _audience_matches(claims.get("aud"), audience):
         raise RuntimeTokenError("Token is for another server")
     if not isinstance(claims.get("exp"), (int, float)) or claims["exp"] + clock_tolerance < now:
         raise RuntimeTokenError("Token has expired")
@@ -2325,15 +2546,83 @@ async def verify_runtime_token(token, *, runtime, audience, tenant=None, issuer=
     return identity
 
 
+def _audience_matches(given, audience):
+    """Whether a token's aud (a string or a list) names one of the audiences accepted (a string or a list)."""
+    wanted = {value.rstrip("/") for value in ([audience] if isinstance(audience, str) else audience)}
+    return any(isinstance(value, str) and value.rstrip("/") in wanted for value in (given if isinstance(given, list) else [given]))
+
+
+async def verify_runtime_token(token, *, runtime, audience, tenant=None, issuer=None, http=None, clock_tolerance=30):
+    """Verify an identity token and return who the call is for (a RuntimeIdentity, with the token's
+    claims): the signature against the runtime's published Ed25519 keys (EdDSA only), the issuer,
+    that it was made for an agent of `tenant` (your tenant's id, or a list: required, since another
+    tenant can point its agents at your server), that the audience is yours (a string or a list), and the times.
+    camelai_run.sync.verify_runtime_token is the same, synchronous (for Django or Flask)."""
+    tenants = _require_tenant(tenant)
+    pieces, header = _token_header(token)
+    runtime = runtime.rstrip("/")
+    key = await _public_key(f"{runtime}/.well-known/jwks.json", header["kid"], http)
+    return _verified(pieces, key, runtime=runtime, audience=audience, tenants=tenants, issuer=issuer, clock_tolerance=clock_tolerance)
+
+
+_WELL_KNOWN = "/.well-known/oauth-protected-resource"
+
+
+def _bearer(authorization):
+    match = (authorization or "").split(" ", 1)
+    if len(match) != 2 or match[0].lower() != "bearer" or not match[1].strip():
+        raise RuntimeTokenError("No bearer token")
+    return match[1].strip()
+
+
+def _tool_server_response(method, path, origin, metadata, issuer, server_name):
+    """What a tool server answers before reading the request's token: its protected resource metadata (GET), 405 for
+    anything but POST; None for a POST. Responses here are (status, body, extra headers)."""
+    if metadata and method == "GET" and path.startswith(_WELL_KNOWN):
+        resource = origin + (path[len(_WELL_KNOWN):] or "/")
+        return 200, {"resource": resource, "authorization_servers": [issuer], "bearer_methods_supported": ["header"], "resource_name": server_name}, ()
+    if method != "POST":
+        return 405, {"error": "Use POST: this MCP server is stateless and has no event stream"}, (("allow", "POST"),)
+    return None
+
+
+def _unauthorized(error, origin, path, metadata):
+    challenge = 'Bearer error="invalid_token"' + (f', resource_metadata="{origin}{_WELL_KNOWN}{"" if path == "/" else path}"' if metadata else "")
+    return 401, {"error": str(error)}, (("www-authenticate", challenge),)
+
+
+async def _tool_server_answer(body, table, identity, server_name, inline=False):
+    """A tool server's answer to a verified POST: each JSON-RPC message answered (a batch, in turn)."""
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        return 400, {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}}, ()
+    messages = payload if isinstance(payload, list) else [payload]
+    replies = []
+    for message in messages:
+        if not isinstance(message, dict) or not isinstance(message.get("method"), str):
+            if isinstance(message, dict) and "id" in message:
+                replies.append({"jsonrpc": "2.0", "id": message.get("id"), "error": {"code": -32600, "message": "Invalid request"}})
+            continue
+        if "id" not in message:
+            continue
+        key = str(message["id"])
+        answer = await _answer_mcp(message, table, lambda meta, key=key: _tool_context(meta, key, identity), server_name, inline)
+        replies.append({"jsonrpc": "2.0", "id": message["id"], **answer})
+    if not replies:
+        return 202, None, ()
+    return 200, replies if isinstance(payload, list) else replies[0], ()
+
+
 def serve_tools(tools, *, runtime, tenant=None, audience=None, issuer=None, metadata=True, http=None, server_name="agent-runtime-tools"):
     """Serve tools (@tool functions, a list or a dict) as a stateless MCP server over Streamable HTTP for
     the runtime to call with its identity tokens: an ASGI app (mount it in FastAPI or Starlette, or run it
     with uvicorn). Every call's ToolContext carries the verified identity; requests without a valid token
-    get a 401. `audience` is your server's URL as the runtime calls it; by default the request's URL."""
+    get a 401. `audience` is your server's URL as the runtime calls it (or a list of those); by default the
+    request's URL. For WSGI (Django, Flask), camelai_run.sync.serve_tools."""
     _require_tenant(tenant)
     table = tools if isinstance(tools, dict) else {item.name: item for item in tools}
     issuer = _issuer_of(runtime, issuer)
-    well_known = "/.well-known/oauth-protected-resource"
 
     async def app(scope, receive, send):
         if scope["type"] == "lifespan":
@@ -2347,9 +2636,8 @@ def serve_tools(tools, *, runtime, tenant=None, audience=None, issuer=None, meta
         if scope["type"] != "http":
             return
         headers = {name.decode().lower(): value.decode() for name, value in scope.get("headers", [])}
-        host = headers.get("host", "localhost")
         path = scope.get("root_path", "") + scope["path"]
-        origin = f"{scope.get('scheme', 'http')}://{host}"
+        origin = f"{scope.get('scheme', 'http')}://{headers.get('host', 'localhost')}"
 
         async def respond(status, body=None, extra=()):
             data = b"" if body is None else json.dumps(body).encode()
@@ -2357,11 +2645,9 @@ def serve_tools(tools, *, runtime, tenant=None, audience=None, issuer=None, meta
             await send({"type": "http.response.start", "status": status, "headers": response_headers + [(name.encode(), value.encode()) for name, value in extra]})
             await send({"type": "http.response.body", "body": data})
 
-        if metadata and scope["method"] == "GET" and scope["path"].startswith(well_known):
-            resource = origin + (scope["path"][len(well_known):] or "/")
-            return await respond(200, {"resource": resource, "authorization_servers": [issuer], "bearer_methods_supported": ["header"], "resource_name": server_name})
-        if scope["method"] != "POST":
-            return await respond(405, {"error": "Use POST: this MCP server is stateless and has no event stream"}, [("allow", "POST")])
+        early = _tool_server_response(scope["method"], scope["path"], origin, metadata, issuer, server_name)
+        if early:
+            return await respond(*early)
         body = b""
         while True:
             event = await receive()
@@ -2369,34 +2655,59 @@ def serve_tools(tools, *, runtime, tenant=None, audience=None, issuer=None, meta
             if not event.get("more_body"):
                 break
         try:
-            match = headers.get("authorization", "").split(" ", 1)
-            if len(match) != 2 or match[0].lower() != "bearer" or not match[1].strip():
-                raise RuntimeTokenError("No bearer token")
-            identity = await verify_runtime_token(match[1].strip(), runtime=runtime, tenant=tenant, audience=audience or f"{origin}{path}", issuer=issuer, http=http)
+            identity = await verify_runtime_token(_bearer(headers.get("authorization")), runtime=runtime, tenant=tenant, audience=audience or f"{origin}{path}", issuer=issuer, http=http)
         except RuntimeTokenError as error:
-            challenge = 'Bearer error="invalid_token"' + (f', resource_metadata="{origin}{well_known}{"" if path == "/" else path}"' if metadata else "")
-            return await respond(401, {"error": str(error)}, [("www-authenticate", challenge)])
-        try:
-            payload = json.loads(body)
-        except ValueError:
-            return await respond(400, {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}})
-        messages = payload if isinstance(payload, list) else [payload]
-        replies = []
-        for message in messages:
-            if not isinstance(message, dict) or not isinstance(message.get("method"), str):
-                if isinstance(message, dict) and "id" in message:
-                    replies.append({"jsonrpc": "2.0", "id": message.get("id"), "error": {"code": -32600, "message": "Invalid request"}})
-                continue
-            if "id" not in message:
-                continue
-            key = str(message["id"])
-            answer = await _answer_mcp(message, table, lambda meta, key=key: _tool_context(meta, key, identity), server_name)
-            replies.append({"jsonrpc": "2.0", "id": message["id"], **answer})
-        if not replies:
-            return await respond(202)
-        return await respond(200, replies if isinstance(payload, list) else replies[0])
+            return await respond(*_unauthorized(error, origin, path, metadata))
+        return await respond(*await _tool_server_answer(body, table, identity, server_name))
 
     return app
+
+
+# Webhooks ------------------------------------------------------------------------------------------
+# The runtime signs each webhook request per Standard Webhooks (see the webhooks guide): webhook-id,
+# webhook-timestamp and webhook-signature, "v1,<base64 HMAC-SHA256 of "<id>.<timestamp>.<body>">".
+
+
+class WebhookVerificationError(Exception):
+    """A webhook request that is not the runtime's: unsigned, signed with another secret, or sent too long ago."""
+
+
+def verify_webhook(body, headers, secret, *, tolerance=300, now=None):
+    """Verify a webhook request from the runtime and return its event ({"id", "type", "created", "data"}).
+    `body` is the request's raw body (bytes or str) as it arrived: verify it before parsing it. `headers` are its
+    headers (any mapping, in any case: Flask's or Django's request.headers, a dict). `secret` is the endpoint's signing
+    secret (whsec_...), or a list of secrets while you move to a new one. The signature is compared in constant time, and
+    webhook-timestamp must be within `tolerance` seconds (default 300) of now, so an old request cannot be replayed.
+    A retried event keeps its id: dedupe by it. Raises WebhookVerificationError."""
+    import hashlib
+    import hmac
+    import time
+    given = {str(name).lower(): value for name, value in headers.items()}
+    webhook_id, timestamp, signatures = given.get("webhook-id"), given.get("webhook-timestamp"), given.get("webhook-signature")
+    if not webhook_id or not timestamp or not signatures:
+        raise WebhookVerificationError("Missing webhook-id, webhook-timestamp or webhook-signature")
+    try:
+        sent = int(timestamp)
+    except ValueError:
+        raise WebhookVerificationError("Invalid webhook-timestamp") from None
+    if abs((time.time() if now is None else now) - sent) > tolerance:
+        raise WebhookVerificationError("webhook-timestamp is too far from now")
+    data = body.encode() if isinstance(body, str) else bytes(body)
+    signed = f"{webhook_id}.{timestamp}.".encode() + data
+    offered = [value for version, _, value in (part.partition(",") for part in signatures.split(" ")) if version == "v1" and value]
+    for each in [secret] if isinstance(secret, str) else secret:
+        encoded = each[len("whsec_"):] if each.startswith("whsec_") else each
+        try:
+            key = base64.b64decode(encoded + "=" * (-len(encoded) % 4), validate=True)
+        except ValueError:
+            raise WebhookVerificationError("The secret is not a whsec_ signing secret") from None
+        expected = base64.b64encode(hmac.new(key, signed, hashlib.sha256).digest()).decode()
+        if any(hmac.compare_digest(value.encode(), expected.encode()) for value in offered):
+            try:
+                return json.loads(data)
+            except ValueError:
+                raise WebhookVerificationError("The body is not JSON") from None
+    raise WebhookVerificationError("No signature verifies with the secret")
 
 
 class TestRuntime:
