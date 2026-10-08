@@ -4,7 +4,7 @@ The existing admin site (`AGENT_ADMIN_HOST`) now opens with Product signals and 
 
 ## Deployment requirements
 
-Set `AGENT_ADMIN_EMAILS` (or Terraform `admin_emails`) to the intended admin addresses **before deploying**. Cloudflare Access still verifies the company identity; the runtime now also requires an explicit email allowlist for every admin page, asset and API request. Missing or empty configuration returns 503 and exposes no admin data; the server logs `admin_site_not_configured` once at startup to make the cause visible. This prerequisite also applies to the preserved platform overview. A valid identity outside the list receives 403; missing/invalid Access tokens receive 401. Set the company’s approved addresses in deployment configuration, not public source. The runtime's other hostnames are unaffected.
+The admins are whoever the Access application's policy admits. Narrow that policy to the admin addresses before enabling reports. The runtime verifies every request's Access token (team and AUD); a missing or invalid one gets 401. The runtime's other hostnames are unaffected.
 
 Product signals read Run's own database. The journey tab additionally requires the sales site's read-only `/api/journey/admin-report` endpoint and reporting indexes, plus `AGENT_JOURNEY_REPORT_SECRET` or `AGENT_JOURNEY_REPORT_SECRET_ARN` on Run and the matching `JOURNEY_REPORT_SECRET` on the sales Worker. The secret must be separate from event/erasure credentials. Run uses the configured `AGENT_JOURNEY_URL` as the reporting origin. See [configuration](configuration.md) and [privacy](privacy.md#journey-events). These changes do not enable collection or configure a production database automatically.
 

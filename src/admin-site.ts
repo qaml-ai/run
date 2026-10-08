@@ -8,9 +8,9 @@ import { adminStats } from "./admin-stats.ts";
 import type { Sql } from "./db.ts";
 
 /**
- * The team's admin site (platform stats), on a hostname of its own behind Cloudflare Access. Access signs in the team and
- * adds its token (`Cf-Access-Jwt-Assertion`) to each request; the runtime checks that token itself (signature, issuer,
- * audience, expiry), so a request that reaches the load balancer some other way gets nothing. Requests for that
+ * The team's admin site (platform stats), on a hostname of its own behind Cloudflare Access. Cloudflare Access's policy for
+ * the application is who may use the site; the runtime verifies every request's Access token (team and AUD): its signature,
+ * issuer, audience and expiry, so a request that reaches the load balancer some other way gets nothing. Requests for that
  * hostname are answered here and never reach the rest of the runtime; other hostnames never reach the site.
  *
  * Besides the stats (GET /api/stats, src/admin-stats.ts) it answers sign-ups, first runs and purchases by calendar day
@@ -29,8 +29,6 @@ export interface AdminSiteOptions {
   consoleDir: string;
   /** The keys tokens are checked with; by default the team's, fetched and cached. */
   keys?: JWTVerifyGetKey;
-  /** Who of those Access signs in may use the site, as lower-case addresses. Unset or empty: admin access is not configured. */
-  emails?: string[];
   /** Whether journey events are on (src/journey.ts), which is what records an account's first run. */
   tracking?: boolean;
   /** The journey store's reports; unset, POST /api/report says they are not configured. */
@@ -47,29 +45,24 @@ export interface AdminSiteContext extends Pick<AdminSiteOptions, "db" | "console
 
 /**
  * The admin site from AGENT_ADMIN_HOST, AGENT_ADMIN_ACCESS_TEAM and AGENT_ADMIN_ACCESS_AUD: all three, or none for no site.
- * AGENT_ADMIN_EMAILS narrows it to the addresses it lists. The journey store's reports are asked of AGENT_JOURNEY_URL
+ * Whoever the Access application's policy admits may use it. The journey store's reports are asked of AGENT_JOURNEY_URL
  * with a secret of their own (AGENT_JOURNEY_REPORT_SECRET, `context.reportSecret`).
  */
 export function adminSiteFromEnvironment(env: NodeJS.ProcessEnv, context: AdminSiteContext): AdminSiteOptions | undefined {
   const host = env.AGENT_ADMIN_HOST?.trim().toLowerCase(), team = env.AGENT_ADMIN_ACCESS_TEAM?.trim(), audience = env.AGENT_ADMIN_ACCESS_AUD?.trim();
-  const emails = (env.AGENT_ADMIN_EMAILS ?? "").split(",").map(email => email.trim().toLowerCase()).filter(Boolean);
-  if (emails.some(email => !/^[^\s@,]+@[^\s@,]+$/.test(email))) throw new Error("AGENT_ADMIN_EMAILS must be email addresses separated by commas");
   const { journey, reportSecret, ...rest } = context;
   if (reportSecret && !journey) throw new Error("AGENT_JOURNEY_REPORT_SECRET is set without AGENT_JOURNEY_URL");
   if (reportSecret && (!/^whsec_[A-Za-z0-9+/]+={0,2}$/.test(reportSecret) || Buffer.from(reportSecret.slice(6), "base64").length < 16)) throw new Error("AGENT_JOURNEY_REPORT_SECRET (or AGENT_JOURNEY_REPORT_SECRET_ARN) must be a Standard Webhooks secret, whsec_<base64 of 16 bytes or more>");
   // The store refuses a report asked with the key events are signed with: whoever may read reports must not be able to write events.
   if (reportSecret && reportSecret === journey!.secret) throw new Error("AGENT_JOURNEY_REPORT_SECRET must not be AGENT_JOURNEY_SECRET");
-  if (!host && !team && !audience) {
-    if (emails.length) throw new Error("AGENT_ADMIN_EMAILS is set without AGENT_ADMIN_HOST");
-    return undefined;
-  }
+  if (!host && !team && !audience) return undefined;
   if (!host || !team || !audience) throw new Error("Set AGENT_ADMIN_HOST, AGENT_ADMIN_ACCESS_TEAM and AGENT_ADMIN_ACCESS_AUD together, or none of them");
   let origin: URL;
   try { origin = new URL(team); } catch { throw new Error("AGENT_ADMIN_ACCESS_TEAM must be the Access team's origin, e.g. https://<team>.cloudflareaccess.com"); }
   // Plain HTTP only on this host, for tests.
   if (origin.protocol !== "https:" && !["localhost", "127.0.0.1"].includes(origin.hostname)) throw new Error("AGENT_ADMIN_ACCESS_TEAM must be https");
   return {
-    host, team: origin.origin, audience, ...rest, tracking: !!journey, ...(emails.length ? { emails } : {}),
+    host, team: origin.origin, audience, ...rest, tracking: !!journey,
     ...(journey && reportSecret ? { report: { url: new URL(ADMIN_REPORT_PATH, journey.url).toString(), secret: reportSecret } } : {}),
   };
 }
@@ -96,9 +89,6 @@ export function adminSite(options: AdminSiteOptions): MiddlewareHandler {
     if (host !== options.host) return next();
     const email = await viewer(c);
     if (!email) return c.text("Sign in through Cloudflare Access", 401, { "Cache-Control": "no-store" });
-    // Signed in, but not one of those the site is for: nothing of it, the page included.
-    if (!options.emails?.length) return c.text("Admin access is not configured", 503, { "Cache-Control": "no-store" });
-    if (!options.emails.includes(email.toLowerCase())) return c.text("This account may not use the admin site", 403, { "Cache-Control": "no-store" });
     if (c.req.method === "POST" && c.req.path === "/api/report") return report(c, options, email);
     if (c.req.method !== "GET" && c.req.method !== "HEAD") return c.text("Not found", 404);
     if (c.req.path === "/api/stats") {

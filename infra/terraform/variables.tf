@@ -222,12 +222,6 @@ variable "admin_access_team" {
   default     = "https://qaml.cloudflareaccess.com"
 }
 
-variable "admin_emails" {
-  description = "The addresses that may use the admin site, of those its Access application admits (AGENT_ADMIN_EMAILS). Empty: admin access is disabled until an explicit list is configured."
-  type        = list(string)
-  default     = []
-}
-
 variable "admin_access_aud" {
   description = "The AUD tag of the admin site's Access application (\"camelRun admin\" in Zero Trust → Access → Applications)."
   type        = string

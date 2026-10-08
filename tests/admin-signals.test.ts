@@ -152,7 +152,7 @@ async function site(t: T, options: Partial<AdminSiteOptions> = {}) {
   const consoleDir = await mkdtemp(join(tmpdir(), "admin-site-"));
   await writeFile(join(consoleDir, "admin.html"), "<title>admin</title>");
   const app = new Hono();
-  app.use(adminSite({ host: HOST, team: TEAM, audience: AUD, db, consoleDir, keys, emails: [ADMIN], ...options }));
+  app.use(adminSite({ host: HOST, team: TEAM, audience: AUD, db, consoleDir, keys, ...options }));
   app.all("*", c => c.text("runtime"));
   const token = (claims: { email?: string | null; iss?: string; aud?: string; exp?: string } = {}, key = privateKey) =>
     new SignJWT(claims.email === null ? { common_name: "service-token" } : { email: claims.email ?? ADMIN }).setProtectedHeader({ alg: "RS256", kid: "fixture" })
@@ -172,8 +172,8 @@ async function site(t: T, options: Partial<AdminSiteOptions> = {}) {
   return { db, call, token, app };
 }
 
-test("the admin site is for the listed addresses only, of those Cloudflare Access signed in", async t => {
-  const { call, token } = await site(t, { emails: [ADMIN, "miguel@example.test"] });
+test("the admin site is for whoever Cloudflare Access signed in for this application", async t => {
+  const { call, token } = await site(t);
   const paths = ["/", "/api/stats", "/api/product-signals"];
 
   // No valid Access token for this application: nothing, whatever the address it claims.
@@ -185,18 +185,8 @@ test("the admin site is for the listed addresses only, of those Cloudflare Acces
   // A header that only says who someone is counts for nothing.
   assert.equal((await call("/api/stats", { token: null, headers: { "cf-access-authenticated-user-email": ADMIN, "x-forwarded-email": ADMIN } })).status, 401);
 
-  // Signed in by Access, but not listed: nothing either, the page included.
-  const teammate = await token({ email: "teammate@example.test" });
-  for (const path of paths) {
-    const refused = await call(path, { token: teammate });
-    assert.equal(refused.status, 403);
-    assert.equal(refused.cache, "no-store");
-    assert.doesNotMatch(refused.text, /signups|admin<\/title>/);
-  }
-  assert.equal((await call("/api/report", { token: teammate, body: {} })).status, 403);
-
-  // Listed, however the address is capitalised.
-  for (const email of [ADMIN, "Miguel@Example.test"]) {
+  // Signed in by Access, whatever the address: the Access application's policy is who the admins are.
+  for (const email of [ADMIN, "teammate@example.test"]) {
     const signedIn = await token({ email });
     assert.equal((await call("/", { token: signedIn })).text, "<title>admin</title>");
     const stats = await call("/api/stats", { token: signedIn });
@@ -270,12 +260,12 @@ test("the journey store's reports are asked for by the site itself, signed with 
     : request.cursor === "huge" ? { raw: JSON.stringify({ padding: "x".repeat(2_100_000) }) }
     : request.cursor === "other" ? { body: { schema_version: 1, kind: "journeys", range: range("2026-01-01") } }
     : request.cursor === "prose" ? { raw: "<html>gateway</html>" } : undefined);
-  const options = adminSiteFromEnvironment({ AGENT_ADMIN_HOST: HOST, AGENT_ADMIN_ACCESS_TEAM: TEAM, AGENT_ADMIN_ACCESS_AUD: AUD, AGENT_ADMIN_EMAILS: ` ${ADMIN.toUpperCase()}, miguel@example.test ` },
+  const options = adminSiteFromEnvironment({ AGENT_ADMIN_HOST: HOST, AGENT_ADMIN_ACCESS_TEAM: TEAM, AGENT_ADMIN_ACCESS_AUD: AUD},
     { db: undefined as never, consoleDir: "", journey: { url: store.base, secret: EVENT_SECRET }, reportSecret: REPORT_SECRET })!;
   assert.deepEqual({ ...options, db: 0, consoleDir: 0 }, {
-    host: HOST, team: TEAM, audience: AUD, db: 0, consoleDir: 0, tracking: true, emails: [ADMIN, "miguel@example.test"], report: { url: `${store.base}${ADMIN_REPORT_PATH}`, secret: REPORT_SECRET },
+    host: HOST, team: TEAM, audience: AUD, db: 0, consoleDir: 0, tracking: true, report: { url: `${store.base}${ADMIN_REPORT_PATH}`, secret: REPORT_SECRET },
   });
-  const { call, token } = await site(t, { emails: options.emails, tracking: options.tracking, report: options.report });
+  const { call, token } = await site(t, { tracking: options.tracking, report: options.report });
 
   // The list of accounts, and one account: asked of the store as the page asked, and answered as the store answered.
   const list = await call("/api/report", { body: JOURNEYS, headers: { origin: `https://${HOST}` } });
@@ -296,9 +286,8 @@ test("the journey store's reports are asked for by the site itself, signed with 
     { ...JOURNEYS, kind: "journey", account_ref: "gh-one" }, { ...JOURNEYS, kind: "signals", cursor: "page-2" }, { ...JOURNEYS, cursor: "not a cursor" }, { ...JOURNEYS, cursor: "x".repeat(5000) },
   ]) assert.deepEqual(await call("/api/report", { body }).then(({ status, json }) => ({ status, json })), { status: 400, json: { error: "invalid_request" } });
   assert.equal((await call("/api/report", { body: JOURNEYS, headers: { "content-type": "text/plain" } })).status, 400);
-  // Another site's page cannot ask with the viewer's session, and nobody not listed can ask at all.
+  // Another site's page cannot ask with the viewer's session, and nobody Access did not sign in can ask at all.
   assert.deepEqual((await call("/api/report", { body: JOURNEYS, headers: { origin: "https://elsewhere.example.test" } })).json, { error: "invalid_origin" });
-  assert.equal((await call("/api/report", { body: JOURNEYS, token: await token({ email: "teammate@example.test" }) })).status, 403);
   assert.equal((await call("/api/report", { body: JOURNEYS, token: null })).status, 401);
   assert.equal(store.asked.length, 3);
 
@@ -312,7 +301,7 @@ test("the journey store's reports are asked for by the site itself, signed with 
 
 test("a report is asked for over HTTP as the runtime serves the site, a body read no further than a request is long", async t => {
   const store = await fakeStore(t);
-  const { app, token } = await site(t, { emails: [ADMIN], report: { url: `${store.base}${ADMIN_REPORT_PATH}`, secret: REPORT_SECRET } });
+  const { app, token } = await site(t, { report: { url: `${store.base}${ADMIN_REPORT_PATH}`, secret: REPORT_SECRET } });
   const server = createAdaptorServer({ fetch: app.fetch }) as Server;
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
@@ -363,31 +352,15 @@ test("the admin site's settings are refused where they could not work", () => {
   const env = { AGENT_ADMIN_HOST: HOST, AGENT_ADMIN_ACCESS_TEAM: TEAM, AGENT_ADMIN_ACCESS_AUD: AUD };
   const context = { db: undefined as never, consoleDir: "" };
   const journey = { url: "https://store.example.test", secret: EVENT_SECRET };
-  // As before: no list and no store.
+  // No store.
   assert.deepEqual(adminSiteFromEnvironment(env, context), { host: HOST, team: TEAM, audience: AUD, ...context, tracking: false });
   assert.equal(adminSiteFromEnvironment({}, context), undefined);
-  assert.equal(adminSiteFromEnvironment({ AGENT_ADMIN_EMAILS: " , " }, context), undefined);
   // Journey events without a report secret: first runs are counted, reports are not configured.
   assert.deepEqual(adminSiteFromEnvironment(env, { ...context, journey }), { host: HOST, team: TEAM, audience: AUD, ...context, tracking: true });
   assert.equal(adminSiteFromEnvironment(env, { ...context, journey, reportSecret: REPORT_SECRET })!.report!.url, "https://store.example.test/api/journey/admin-report");
 
-  assert.throws(() => adminSiteFromEnvironment({ ...env, AGENT_ADMIN_EMAILS: "isabella@example.test, miguel" }, context), /AGENT_ADMIN_EMAILS must be email addresses/);
-  assert.throws(() => adminSiteFromEnvironment({ AGENT_ADMIN_EMAILS: ADMIN }, context), /without AGENT_ADMIN_HOST/);
   assert.throws(() => adminSiteFromEnvironment(env, { ...context, reportSecret: REPORT_SECRET }), /without AGENT_JOURNEY_URL/);
   assert.throws(() => adminSiteFromEnvironment(env, { ...context, journey, reportSecret: EVENT_SECRET }), /must not be AGENT_JOURNEY_SECRET/);
   assert.throws(() => adminSiteFromEnvironment(env, { ...context, journey, reportSecret: "whsec_c2hvcnQ=" }), /whsec_<base64 of 16 bytes or more>/);
   assert.throws(() => adminSiteFromEnvironment(env, { ...context, journey, reportSecret: "a-plain-password-of-some-length" }), /Standard Webhooks secret/);
-});
-
-
-test("an unset or empty admin list never grants access to everyone signed in", async t => {
-  for (const emails of [undefined, []]) {
-    const { call } = await site(t, { emails });
-    for (const path of ["/", "/api/stats", "/api/product-signals"]) {
-      const result = await call(path);
-      assert.equal(result.status, 503);
-      assert.equal(result.cache, "no-store");
-    }
-    assert.equal((await call("/api/report", { body: {} })).status, 503);
-  }
 });

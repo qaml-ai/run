@@ -150,8 +150,8 @@ removed and `AGENT_SANDBOX_SOCKETS` is now `AGENT_SANDBOX_DIR`. Migrations 050 t
 
 - The existing admin page adds Product signals and User journeys with shared calendar filters (today in Central Time by default), date-scoped payment/sign-up counts, explicit first-run coverage and per-account histories. The original overview remains available separately. See [Admin analytics](admin-analytics.md).
 
-- `AGENT_ADMIN_EMAILS` narrows the admin site to the addresses it lists: anyone else Cloudflare Access signs in
-  gets a 403. Unset or empty, the site returns 503 until an explicit allowlist is configured. Set the deployment allowlist before deploying this update; an Access token alone no longer grants admin-site access.
+- The admins are whoever the admin site's Access application's policy admits: narrow that policy to the admin
+  addresses before enabling reports.
 - `GET /api/product-signals` on the admin site: self-serve sign-ups and credit purchases (count, paying accounts
   and amount in cents) for a range of calendar days (`start_date`, `end_date`, `time_zone`; today in
   `America/Chicago` by default, 366 days at most), in total and by day, from the runtime's own tables. An
