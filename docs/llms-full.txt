@@ -4261,15 +4261,28 @@ changing its history with `agent.client.setMetadata({ name, type })`
 (`npm run studio`) at `/studio/agents`; Studio observes the runtime, and your
 application keeps serving its tools.
 
-## Unreleased
+## 0.12.0 (Python), 2026-10-08
 
-- Python (not yet released; TypeScript has these in 0.16.0): `agents.run(input, …)` and `agents.runs`, `history="none"`,
-  `code_mode=False`, `config_hash`, lazy handles (`connection="eager"` keeps the old behaviour; `connect_agent` takes
-  `connection="lazy"`), steer receipts (`wait=True` keeps the old result), `abort(queued=)`, and the reconnect hint.
+Python's side of TypeScript 0.16.0. Needs runtime 0.5.0 or later (run.camelai.com has it).
+
+- Stateless runs: `agents.run(input, instructions=…, output=…)` runs once with nothing carried over and no agent
+  made; `agents.runs` creates, gets, streams, aborts and deletes them, and reads their `messages` and `events` (the
+  lower level: `runtime.create_run`, `get_run`, `wait_for_run`, `abort_run`, `delete_run`, `run_messages`,
+  `run_events`). See [Stateless runs](https://run.camelai.com/docs/guides/stateless-runs.md).
+- Agent handles connect lazily: `Agents()` handles hold their event stream only while a run streams, so a server
+  with many agents holds no idle connections; handles that serve tools or have `on_event` or `on_input` are
+  unchanged. `Agents(connection="eager")` keeps the old behaviour; `connect_agent` takes `connection="lazy"` to opt in.
+- `run`, `stream` and `client.prompt` take `history="none"`; `upsert` and definitions take `code_mode=False`.
+  `agent.config_hash` from `upsert` and `get`.
+- Breaking: `agent.steer()` returns a receipt as soon as the runtime has the message (`{id, status, steeredInto?}`);
+  `steer(text, wait=True)` returns the run that took it, as before. `client.steer_message` is the receipt at the
+  lower level. `abort(queued="keep" | "cancel")` returns `{aborted, cancelled?}`.
+- A stream the runtime closes on purpose (`event: reconnect`) is reconnected at once, resuming with `Last-Event-ID`.
+- `tool(exposure=)`: `"direct"`, `"codemode"` or `"both"`, how the model may call the tool.
 
 ## 0.16.0 (TypeScript), 2026-10-07
 
-Needs a runtime newer than 0.4.0 (run.camelai.com has it; a self-hosted runtime needs the next runtime release).
+Needs runtime 0.5.0 or later (run.camelai.com has it).
 
 - Stateless runs: `agents.run({ instructions, input, output })` runs once with nothing carried over and no agent made;
   `agents.runs` creates, gets, streams, aborts and deletes them, and reads their `messages` and `events` (the lower
