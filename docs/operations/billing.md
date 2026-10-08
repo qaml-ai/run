@@ -51,6 +51,11 @@ A **prepaid tenant** pays for:
   render. The hour's usage entry counts them (`searches`, `renders`, and their
   cost as `web`) apart from model tokens: see `web_search` and `web_fetch` under
   [Built-ins](../guides/tools.md#built-ins-a-definition-enables).
+- **Transcription** on the platform's OpenAI key (`platformKeys.openai`), at its model's price per minute of
+  audio, per second as OpenAI bills it: $0.0045 a minute for `gpt-transcribe`, $0.006 for `whisper-1` (timestamps);
+  `AGENT_PRICE_TRANSCRIPTION_<MODEL>_USD` sets each (`GPT_TRANSCRIBE`, `WHISPER_1`). The hour's usage entry counts
+  them apart (`transcription`, `transcriptions`, `audioSeconds`), and `/v1/usage` has a row per model with
+  `kind: "transcription"`. See [Voice and audio](../guides/voice.md).
 - **Storage**, $0.10 per GB-month of what its agents and volumes keep in Storage
   (transcripts, journals, volume trees and snapshots, file chunks, each chunk once
   however many files share it), charged once a UTC day, on one node, for that day.
