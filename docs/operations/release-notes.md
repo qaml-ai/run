@@ -17,6 +17,14 @@ Changes on main since the last tag.
   `verifyRuntimeToken` (both SDKs) already take a list of audiences, for accepting an old and a new URL while agents
   move. See [A server that moves](../guides/tools.md#a-server-that-moves).
 
+### File tools without versions
+
+- The model's file tools (`read`, `write`, `edit`, `ls`, `present_file`, and `fs` in `js_exec`) no longer show file
+  versions, and `write` and `edit` no longer take one. The runtime remembers the version of each file the agent last
+  read or wrote, and refuses a write or edit of a file that changed since then: "<path> changed since you last read
+  it. Read it again". Writing a file only if it does not exist yet (`version: 0`) is gone from the model's tools.
+  The files API and the SDKs' volume and file calls keep versions and `If-Match`; `run.files` keeps its versions.
+
 ### Runtime
 
 - Speech to text. Audio attached to a message (a voice note, a recording) is transcribed before the message is

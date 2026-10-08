@@ -44,8 +44,9 @@ async function service(t: Context, storage?: ReturnType<typeof memoryStorage>, d
 }
 
 /** File tools as an agent with `mounts` calls them. */
-const tools = (volumes: VolumeService, mounts: Mount[], agent = "client_agent", tenant = "acme") =>
-  (name: string, args: Record<string, unknown>) => volumes.tool({ tenant, agent, mounts }, name, args, never) as Promise<any>;
+/** One agent's file tools; it remembers what it read, as an agent's host does. */
+const tools = (volumes: VolumeService, mounts: Mount[], agent = "client_agent", tenant = "acme", seen = new Map<string, number>()) =>
+  (name: string, args: Record<string, unknown>) => volumes.tool({ tenant, agent, mounts, seen }, name, args, never) as Promise<any>;
 
 test("contents are content-addressed chunks: identical data and unchanged chunks are stored once", async t => {
   const { volumes, storage, write, read } = await service(t);
@@ -164,21 +165,28 @@ test("file tools: mount paths, read-only mounts, subpaths and edit conflicts the
   // Relative paths resolve against the first mount.
   const read = await call("read", { path: "team/plan.md" });
   assert.equal(read.path, "/workspace/team/plan.md");
+  // The model never sees versions: the tools remember what it read.
+  for (const result of [viaSubpath, read, (await call("ls", { path: "/workspace/team" })).entries[0]]) assert.equal("version" in result, false);
   // Another writer changes the file after this agent read it.
   await write(id, "/team/plan.md", "alpha\nBETA\n");
-  await assert.rejects(call("edit", { path: "/workspace/team/plan.md", old: "beta", new: "gamma", version: read.version }),
-    /Edit rejected: \/workspace\/team\/plan.md changed since you read it \(you had version \d+; it is now version \d+\)\. Read it again/);
-  await assert.rejects(call("write", { path: "/workspace/team/plan.md", content: "x", version: read.version }), /Write rejected: .*changed since you read it/);
-  const fresh = await call("read", { path: "/workspace/team/plan.md" });
-  const edited = await call("edit", { path: "/workspace/team/plan.md", old: "BETA", new: "gamma", version: fresh.version });
-  assert.equal(edited.version, fresh.version + 1);
-  assert.equal((await call("read", { path: "/team/plan.md" })).content, "alpha\ngamma\n");
+  await assert.rejects(call("edit", { path: "/workspace/team/plan.md", old: "beta", new: "gamma" }),
+    /^Error: Edit rejected: \/workspace\/team\/plan.md changed since you last read it\. Read it again, then retry against its current content\.$/);
+  await assert.rejects(call("write", { path: "/workspace/team/plan.md", content: "x" }), /Write rejected: .*changed since you last read it/);
+  await call("read", { path: "/workspace/team/plan.md" });
+  const edited = await call("edit", { path: "/workspace/team/plan.md", old: "BETA", new: "gamma" });
+  assert.deepEqual(Object.keys(edited).sort(), ["contentType", "path", "size"]);
+  // Its own edits are not changes it has to read again.
+  await call("edit", { path: "/workspace/team/plan.md", old: "alpha", new: "ALPHA" });
+  assert.equal((await call("read", { path: "/team/plan.md" })).content, "ALPHA\ngamma\n");
+  // An agent that never read a file (another agent, or this one on another node) writes it as it is.
+  assert.equal((await tools(volumes, mounts)("write", { path: "/workspace/team/plan.md", content: "fresh" })).size, 5);
+  await assert.rejects(call("edit", { path: "/workspace/team/plan.md", old: "missing", new: "x" }), /changed since you last read it/, "and this agent sees that change");
+  await call("read", { path: "/workspace/team/plan.md" });
   await assert.rejects(call("edit", { path: "/workspace/team/plan.md", old: "missing", new: "x" }), /not found/);
   await call("write", { path: "/workspace/dup.txt", content: "a a a" });
   await assert.rejects(call("edit", { path: "/workspace/dup.txt", old: "a", new: "b" }), /appears 3 times/);
   assert.equal((await call("edit", { path: "/workspace/dup.txt", old: "a", new: "b", replaceAll: true })).size, 5);
-  await assert.rejects(call("write", { path: "/workspace/new.txt", content: "x", version: 1 }), /no longer exists|now deleted/);
-  assert.equal((await call("write", { path: "/workspace/new.txt", content: "x", version: 0 })).size, 1);
+  assert.equal((await call("write", { path: "/workspace/new.txt", content: "x" })).size, 1);
 });
 
 test("large files are read in bounded windows that fetch only the chunks they cover", async t => {
@@ -362,10 +370,10 @@ test("an edit based on a stale read is rejected and the model sees why", async t
   const { bodies, model } = await fixtureModel(t, async (body, index) => {
     if (index === 1) return call("read", { path: "/workspace/plan.md" });
     if (index > 2) return { role: "assistant", content: "The plan changed; I will re-read it." };
-    const version = JSON.parse(body.messages.at(-1).content).version;
+    assert.equal("version" in JSON.parse(body.messages.at(-1).content), false, "the model sees no version");
     // Someone else writes the file between the model's read and its edit.
     await f.volumes.call(volume, "default", "commit", { path: "/plan.md", ...await f.volumes.store("default", Buffer.from("step one\nstep TWO\n")) });
-    return call("edit", { path: "/workspace/plan.md", old: "step two", new: "step 2", version });
+    return call("edit", { path: "/workspace/plan.md", old: "step two", new: "step 2" });
   });
   f.setModel(model);
   const agent = await f.start();
@@ -374,7 +382,8 @@ test("an edit based on a stale read is rejected and the model sees why", async t
   assert.equal((await agent.prompt("Rename step two.")).error, null);
   assert.ok(bodies[0].tools.some((tool: any) => tool.function.name === "edit"), "file tools are direct tools");
   const result = bodies[2].messages.find((message: any) => message.role === "tool" && message.tool_call_id === "call_edit");
-  assert.match(result.content, /Edit rejected: \/workspace\/plan.md changed since you read it \(you had version 1; it is now version 2\)/);
+  assert.match(result.content, /Edit rejected: \/workspace\/plan.md changed since you last read it\. Read it again/);
+  assert.ok(!bodies[0].tools.some((tool: any) => /version/.test(JSON.stringify(tool))), "no tool mentions versions");
   const stored = await f.volumes.call(volume, "default", "stat", { path: "/plan.md" });
   assert.equal((await f.volumes.readRange("default", stored, 0, stored.size)).toString(), "step one\nstep TWO\n", "the other writer's change survived");
 });
