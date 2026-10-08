@@ -243,3 +243,14 @@ test("a compaction whose objects landed but whose rows were never deleted (its n
   assert.ok(sim.hooks.reached.includes("a compaction found rows its store already held (an earlier one stopped after writing)"), sim.hooks.reached.join(", "));
   assert.deepEqual(sim.hooks.violations, []);
 });
+
+test("a node cut off the database holding metering deltas across a reconcile has them dropped, not counted on top of the listing (I17, seed 38104496)", async () => {
+  // Minimized: b makes an agent; a forks it (b, its owner, writes the fork's objects and meters them); b is cut off the
+  // database before it writes the deltas; a's reconcile lists the store, counting them; b, back, writes them: they used
+  // to be added on top, metering the fork twice until the next reconcile (a week in production).
+  const plan: Plan = {"seed": "38104496", "nodes": ["a", "b"], "leaseTtlMs": 12000, "durationMs": 60000, "skews": {"a": 0, "b": 0}, "modelDelayMs": [50, 2000], "buggify": false, "steps": [{"at": 20, "op": {"op": "create", "agent": 2, "node": "b"}}, {"at": 20895, "op": {"op": "fork", "agent": 2, "fork": 1, "node": "a"}}, {"at": 22414, "op": {"op": "databaseDown", "node": "b"}}]};
+  const result = await runPlan(plan, { quiet: true });
+  assert.deepEqual(result.failures, []);
+  assert.deepEqual(result.notes, []);
+  assert.ok(result.logs.some(log => log.line.includes('"storage_reconciled"')));
+});
