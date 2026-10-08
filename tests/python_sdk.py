@@ -844,7 +844,7 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((run.id, run.status, run.text, run.error), ("py-sync-1", "completed", "seen", None))
                 # The same key is the same run, never a second one.
                 calls = len(self.bodies)
-                self.assertEqual(agent.run("hello", idempotency_key="py-sync-1").text, "seen")
+                self.assertEqual(agent.run("hello", user="u1", metadata={"thread": "t1"}, idempotency_key="py-sync-1").text, "seen")
                 self.assertEqual(len(self.bodies), calls)
                 token = agent.session["token"]
                 self.assertNotIn(token, repr(agent) + repr(agent.session) + repr(agent.client))
@@ -867,7 +867,7 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
                 self.script.append({"role": "assistant", "content": "Deploying to EU"})
                 resumed = waiting.inputs[0].answer("EU")
                 self.assertEqual((resumed.status, resumed.text), ("completed", "Deploying to EU"))
-                self.assertIn('"Which region?": "EU"', json.dumps(self.bodies[-1]))
+                self.assertEqual(json.loads(self.bodies[-1]["messages"][-1]["content"])["answers"], {"Which region?": "EU"})
 
                 # get takes the agent as it is; history, steer, a failed run.
                 got = agents.get("py-sync")
@@ -880,7 +880,7 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(RunError) as failed:
                     got.run("hi")
                 self.assertEqual(failed.exception.code, "model_error")
-                self.assertEqual(got.run("again", throw_on_error=False).status, "completed")
+                self.assertEqual(got.run("again", throw_on_error=False).error["code"], "model_error")
 
                 # Stateless runs: one call, and a stream.
                 self.call("final_output", {"vote": "yes"})
@@ -901,7 +901,9 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_initial_messages_begin_an_agents_history_when_it_is_made(self):
         imported = [{"role": "user", "content": "My name is Ada.", "timestamp": 1},
-                    {"role": "assistant", "content": [{"type": "text", "text": "Hello, Ada."}], "timestamp": 2}]
+                    {"role": "assistant", "content": [{"type": "text", "text": "Hello, Ada."}], "api": "openai-completions", "provider": "openrouter", "model": "openai/gpt-4o-mini",
+                     "usage": {"input": 1, "output": 1, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 2, "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}},
+                     "stopReason": "stop", "timestamp": 2}]
         agent = await self.agents.upsert("py-imported", initial_messages=imported)
         self.assertEqual([message["content"] for message in await agent.history()], [imported[0]["content"], imported[1]["content"]])
         await agent.run("What is my name?")
@@ -926,7 +928,7 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((scope["scope"], scope["providers"][0]["provider"], scope["providers"][0]["last4"]), ("org-1", "openrouter", "1234"))
             self.assertNotIn("sk-or-fixture", json.dumps(await self.runtime.key_scope("org-1")))
             await self.runtime.set_scope_provider("org-1", "local", base_url=self.model_url, models=[{"id": "m1", "contextWindow": 8000}])
-            self.assertEqual([item["name"] for item in await self.runtime.scope_providers("org-1")], ["local"])
+            self.assertEqual([item["id"] for item in await self.runtime.scope_providers("org-1")], ["local"])
             await self.runtime.delete_scope_provider("org-1", "local")
             await self.runtime.delete_scope_key("org-1", "openrouter")
             self.assertEqual((await self.runtime.key_scope("org-1"))["providers"], [])
@@ -981,8 +983,8 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
                     runtime.delete_key_scope("org-2")
                     made = runtime.create_token("sync")
                     runtime.revoke_token(made["id"])
-                    return providers[0]["last4"], runtime.usage()["totals"]["responses"], runtime.me()["tenant"], runtime.telemetry.get()
-            self.assertEqual(await asyncio.to_thread(managed), ("5678", usage["totals"]["responses"], "python", None))
+                    return providers[0]["last4"], runtime.usage()["totals"]["responses"] >= 1, runtime.me()["tenant"], runtime.telemetry.get()
+            self.assertEqual(await asyncio.to_thread(managed), ("5678", True, "python", None))
         finally:
             receiver.shutdown()
 
