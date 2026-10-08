@@ -815,6 +815,29 @@ app = serve_tools([refund], runtime="https://run.camelai.com", tenant="acme")  #
 Behind a proxy, run uvicorn with `--proxy-headers` (and `--forwarded-allow-ips`
 naming the proxy), or pass `audience="https://tools.example.com/mcp"`.
 
+### A server that moves
+
+By default a token's audience is the server's URL, so a server that moves (a new
+domain or path) refuses the tokens of agents still calling the old URL. Two ways
+to move without that:
+
+- Give the server a name that does not change: `audience:
+  "urn:camelrun:<tenant>:<name>"` in the definition's server entry (your tenant's
+  id, as `GET /v1/me` shows it, then a name of letters, digits and `._~:-`), and
+  the same `audience` to `serveTools`. Tokens name it wherever the server is. Only
+  your tenant's sources can name an audience in your tenant's namespace.
+- Accept both addresses while agents move: `audience` takes a list, e.g.
+  `["https://old.example.com/mcp", "https://new.example.com/mcp"]`.
+
+Agents keep the definition revision they were made from, so after changing the
+server's `url`, apply the new revision to them (`apply: "all"`, or
+`applyOnUpdate: true` on the definition; see [Definitions](https://run.camelai.com/docs/guides/definitions.md)).
+
+```ts
+// Definition: { name: "shop", url: "https://tools.example.com/mcp", auth: { type: "runtime" }, audience: "urn:camelrun:acme:shop" }
+export default { fetch: serveTools({ refund }, { runtime: "https://run.camelai.com", tenant: "acme", audience: "urn:camelrun:acme:shop" }) };
+```
+
 For Django, Flask or any WSGI server, `camelai_run.sync.serve_tools` takes the
 same arguments and is a WSGI app. Plain functions run in the request's thread,
 with its database connection; async ones run in an event loop of the request's
@@ -928,8 +951,11 @@ if (payload.tenant !== "acme") throw new Error("Not our tenant's agent");
 - `iss` is the hosted runtime's first address, `https://agents.camelai.dev`,
   at either of its URLs (a self-hosted runtime's is its `AGENT_ISSUER`, else its
   `AGENT_PUBLIC_URL`). The SDKs expect it for either hosted URL.
-- `aud` is the server's URL (or the source's `audience`, for a server that knows
-  itself by another URL), so a token cannot be replayed against another server.
+- `aud` is the server's URL, or the source's `audience`: another URL on the
+  server's origin, or a name in your tenant's namespace,
+  `urn:camelrun:<tenant>:<name>` (see [A server that moves](https://run.camelai.com/docs/guides/tools.md#a-server-that-moves)).
+  The runtime mints no token for another origin's URL or another tenant's name,
+  so a token cannot be replayed against a server that is not yours.
   Tokens live two minutes, and each request gets its own `jti`.
 - `act` and `origin` are absent outside a turn (listing a server's tools as an
   agent starts).
