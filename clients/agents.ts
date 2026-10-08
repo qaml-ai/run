@@ -73,6 +73,10 @@ export interface AgentConfig {
   /** Also receive its sub-agents' progress as events (subagent_start, subagent_event, subagent_end), in `onEvent` and `stream()`. */
   subagents?: boolean;
   thinkingLevel?: ThinkingLevel;
+  /** The most the model writes in one response, within its own maximum (maxTokens in GET /v1/models). Not compaction summaries. */
+  maxOutputTokens?: number;
+  /** Sampling temperature, 0 to 2. Refused (400) for a model that takes none (Claude Opus 4.7 and later, Sonnet 5.5, Fable; o-series, GPT-5) or a reasoning model at a thinkingLevel other than off. */
+  temperature?: number;
   /** Who the agent acts for (a user id in your app): `identity.subject` in its tool calls. Set when it is made. */
   subject?: string;
   /** Claims your tools need (org, workspace…): `identity.context` in its tool calls. Set when it is made. */
@@ -342,7 +346,7 @@ export class Agents {
 }
 
 /** A stateless run's configuration (an agent's, but for tools that need a connected process) and its input. */
-export interface StatelessRunConfig<S extends OutputSchema = never> extends Pick<AgentConfig, "model" | "instructions" | "instructionsAppend" | "definition" | "delegate" | "thinkingLevel" | "subject" | "context" | "keyScope" | "runLimits" | "modelHeaders" | "mounts" | "name" | "fileTools"> {
+export interface StatelessRunConfig<S extends OutputSchema = never> extends Pick<AgentConfig, "model" | "instructions" | "instructionsAppend" | "definition" | "delegate" | "thinkingLevel" | "maxOutputTokens" | "temperature" | "subject" | "context" | "keyScope" | "runLimits" | "modelHeaders" | "mounts" | "name" | "fileTools"> {
   /** js_exec. Default: on for a run with tools (builtins, a definition, files), off for a tool-less run. */
   codeMode?: boolean;
   /** What the run is asked. */
@@ -652,8 +656,8 @@ export class Agent {
     const { whileRunning: _whileRunning, spendLimit: _spendLimit, output: _output, ...message } = promptOptions(rest.idempotencyKey ?? globalThis.crypto.randomUUID(), rest);
     return this.client.steerMessage(text, message);
   }
-  /** Change its model, instructions, thinking level or tools between runs. */
-  configure(config: Pick<AgentConfig, "model" | "instructions" | "thinkingLevel" | "tools" | "mcp">) {
+  /** Change its model, instructions, thinking level, tools, maxOutputTokens or temperature (null removes either) between runs. */
+  configure(config: Pick<AgentConfig, "model" | "instructions" | "thinkingLevel" | "tools" | "mcp"> & { maxOutputTokens?: number | null; temperature?: number | null }) {
     const { instructions, ...rest } = config;
     return this.client.configure({ ...rest, ...(instructions !== undefined ? { systemPrompt: instructions } : {}) });
   }

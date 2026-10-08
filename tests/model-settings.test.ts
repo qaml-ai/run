@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { callSettings, getModel, temperatureRefusal } from "../src/pi-catalog.ts";
 import { modelSettingsRefusal } from "../src/session-config.ts";
 import { anthropic, gateway, responses } from "./provider-fixtures.ts";
-import { runtime, until } from "./runtime-server.ts";
+import { Agents } from "../clients/node.ts";
+import { OPERATOR, runtime, until } from "./runtime-server.ts";
 
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
 const model = (provider: string, id: string) => getModel(provider, id)!;
@@ -147,4 +148,20 @@ test("a definition's maxOutputTokens and temperature: its agents take them, an a
   const runRefused = await r.call("/v1/runs", { body: { input: "Write.", model: "openai/o3", keyScope: "hosted", temperature: 0.5 } });
   assert.equal(runRefused.status, 400);
   assert.match(runRefused.json.error, /always reasons/);
+});
+
+test("the TypeScript SDK sends maxOutputTokens and temperature when it makes, configures and runs agents", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
+  const agents = new Agents({ url: r.base, apiKey: OPERATOR });
+  t.after(() => agents.close());
+  const last = () => r.model.bodies.at(-1);
+  const agent = await agents.upsert("settings", { instructions: "Be brief.", maxOutputTokens: 300, temperature: 0.3 });
+  await agent.run("hi");
+  assert.deepEqual([last().max_completion_tokens ?? last().max_tokens, last().temperature], [300, 0.3]);
+  await agent.configure({ temperature: null });
+  await agent.run("again");
+  assert.equal(last().temperature, undefined);
+  const run = await agents.run({ instructions: "Be brief.", input: "once", temperature: 0.6, maxOutputTokens: 200 });
+  assert.equal(run.text, "ok");
+  assert.deepEqual([last().max_completion_tokens ?? last().max_tokens, last().temperature], [200, 0.6]);
 });
