@@ -22,7 +22,7 @@ import { scheduleInput, type Scheduler } from "./scheduler.ts";
 import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, readJson } from "./http.ts";
 import { rateLimitHeaders, type RateLimitState } from "./rate-limits.ts";
 import { VolumeService, type Mount } from "./volumes.ts";
-import { databaseUnavailable, type Db, type Sql } from "./db.ts";
+import { databaseRetryable, databaseUnavailable, type Db, type Sql } from "./db.ts";
 import { LostClaim, underClaim, type Claim, type Ownership } from "./ownership.ts";
 import type { BusyAgents } from "./busy-agents.ts";
 import { deleteTail } from "./log-tail.ts";
@@ -47,7 +47,7 @@ import { recordHandoff, recordStart, recordWatchRefused, safeError, Steps } from
 import { BackgroundSpans, inputSpans, RunSpans, type ToolSource, type Tracing } from "./telemetry.ts";
 import { newSpanId, newTraceId, parseTraceparent, sampledAt } from "./otlp.ts";
 import { definitionId, delegateSettings, delegateTool, MULTI_AGENT_LIMITS, PARENT_KEYS, SUBAGENT_EVENTS, type AgentTarget, type DelegateSettings } from "./multi-agent.ts";
-import { random } from "./node-context.ts";
+import { clock, random } from "./node-context.ts";
 import { sometimes } from "./assert.ts";
 
 /** Another live node owns this agent; the server forwards the request there. */
@@ -265,6 +265,15 @@ const MODEL_RUNS = ["prompt", "continue"];
 const ACTIVE_REPORT_MS = 60_000;
 /** Resumes of one run's turn before it fails as uncertain, so a turn that kills its node cannot loop. Hand-offs at a step boundary are not resumes. */
 export const MAX_RESUMES = 2;
+/**
+ * How many times a run's start (its busy slot, its agent's process, its run events' setting) is tried when the
+ * database refuses it for now or cannot be reached, or the node answers 503: the run stays queued meanwhile, its place
+ * kept, waiting RUN_START_BACKOFF_MS, doubling, with jitter, between tries (about a minute and a quarter in all). Past
+ * that it fails with the last cause; any other error fails it at once.
+ */
+export const RUN_START_ATTEMPTS = 5;
+const RUN_START_BACKOFF_MS = 5_000;
+const transientStart = (error: unknown) => databaseRetryable(error) || databaseUnavailable(error) || (error as { status?: number }).status === 503;
 /** A run's latest hand-offs its record keeps (`handoffs`): one per deploy or drain it outlived. */
 const MAX_HANDOFFS_KEPT = 20;
 /** What a run handed off at a step boundary had gathered for its outcome, which its next owner takes over (`takeOver`). */
@@ -3583,16 +3592,39 @@ export class ClientSessions {
     session.runs = session.runs.then(() => this.run(session, record, params)).catch(() => {});
   }
 
+  /**
+   * A step of a run's start, tried again when the database refuses it for now or cannot be reached, or a node answers
+   * 503: RUN_START_ATTEMPTS times in all, waiting RUN_START_BACKOFF_MS, doubling, with jitter, between tries; past that,
+   * or on any other error, the error goes to the run, which fails with it. `work` answers whether the run goes on; so
+   * does this, false too when the session was given up, moved or the run stopped while it waited.
+   */
+  private async startStep(session: Session, record: RequestRecord, work: () => Promise<boolean>): Promise<boolean> {
+    for (let attempt = 1; ; attempt++) {
+      try { return await work(); }
+      catch (error) {
+        if (attempt >= RUN_START_ATTEMPTS || !RUN_METHODS.includes(record.method) || !transientStart(error)) throw error;
+        sometimes(true, "a run's start met a transient refusal and was tried again");
+        console.error(JSON.stringify({ type: "run_start_retry", agent: session.header.id, request: record.id, attempt, error: safeError(error) }));
+        await clock().sleep(Math.round(RUN_START_BACKOFF_MS * 2 ** (attempt - 1) * (0.5 + random().float())));
+        // Given up, moved or stopped meanwhile: the run stays as it is, for whoever has it next.
+        if (this.closed || this.draining || session.fault || session.leaving || session.handedBack || session.requests.get(record.id)?.state !== "running") return false;
+      }
+    }
+  }
+
   private async run(session: Session, record: RequestRecord, params: unknown) {
     let value: Outcome;
     let continued: Pick<RequestRecord, "handedOff" | "carried"> | undefined;
     try {
       if (QUEUED_METHODS.includes(record.method) && (this.closed || this.draining || session.fault || session.handedBack || session.requests.get(record.id)?.state !== "running")) return;
-      // Decided once per run, so it has both its events or neither: an endpoint made meanwhile gets the next run's.
-      if (RUN_METHODS.includes(record.method)) session.announcing = await (this.options.runEvents?.(session.header.tenant) ?? false);
       // Configuration keeps its params when it begins: the next owner replays one that was interrupted.
       if (record.method === "configure") record = this.upsertRequest(session, { ...record, began: Date.now() });
-      if (RUN_METHODS.includes(record.method)) {
+      // The run's start, tried again on a transient refusal (`startStep`): nothing of the run has happened yet (no begin
+      // recorded, no event, nothing billed), and it keeps its place, so the runs queued behind it wait.
+      const started = await this.startStep(session, record, async () => {
+        // Decided once per run, so it has both its events or neither: an endpoint made meanwhile gets the next run's.
+        if (RUN_METHODS.includes(record.method)) session.announcing = await (this.options.runEvents?.(session.header.tenant) ?? false);
+        if (!RUN_METHODS.includes(record.method)) return true;
         // A run queued behind the one that reached the cap never begins; a resumed turn is stopped by the host.
         if (!session.resuming.has(record.id)) {
           const limited = await this.runLimit(session, record.method);
@@ -3604,9 +3636,13 @@ export class ClientSessions {
           await this.ensureStarted(session);
         } catch (error) {
           // No room here for a run this node took over: another node with room takes it (see `handBack`).
-          if (this.options.ownership && session.inherited?.has(record.id) && [429, 503].includes((error as { status?: number }).status ?? 0)) { await this.handBack(session); return; }
+          if (this.options.ownership && session.inherited?.has(record.id) && [429, 503].includes((error as { status?: number }).status ?? 0)) { await this.handBack(session); return false; }
           throw error;
         }
+        return true;
+      });
+      if (!started) return;
+      if (RUN_METHODS.includes(record.method)) {
         if (this.draining || session.handedBack) return;
         // Cancelled while it waited to start (a stop): it never begins.
         if (session.requests.get(record.id)?.state !== "running") return;
@@ -3641,7 +3677,7 @@ export class ClientSessions {
         if (continued) this.takeOver(session, record, continued);
       }
       // A new message supersedes inputs still waiting: the agent closes their calls before it reads it.
-      if (record.method === "prompt") await this.cancelInputs(session, "superseded");
+      if (record.method === "prompt" && !await this.startStep(session, record, () => this.cancelInputs(session, "superseded").then(() => true))) return;
       value = session.resuming.delete(record.id) ? await this.resume(session, record) : { result: await this.execute(session, record, params) };
       // The files the run wrote and presented, so an application can fetch them (agent.files).
       const outputs = session.outputs;

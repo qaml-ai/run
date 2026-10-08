@@ -272,3 +272,21 @@ test("a log closed with its records dropped fails the flushes still waiting for 
   const result = await runPlan(plan, { quiet: true });
   assert.deepEqual(result.failures, []);
 });
+
+test("a run whose start the database refuses for now is tried again, not failed: it keeps its place and runs (I20)", async t => {
+  const sim = await Sim.create({ seed: 37, respond: () => ({ content: "ok", delayMs: 100 }) });
+  t.after(() => sim.close());
+  await sim.start("a");
+  const agent = (await sim.call("a", "/v1/agents", { body: {} })).json.id;
+  await outcome(sim, "a", agent, await prompt(sim, "a", agent, "first"));
+  // Settling the inputs a new prompt supersedes times out for the next three seconds; the start is tried again after.
+  const db = sim.db as SimDb;
+  db.errors = { rate: 1, codes: ["57014"], random: { float: () => 0, int: () => 0 }, only: /agent_inputs/ };
+  const id = await prompt(sim, "a", agent, "second");
+  await sim.advance(3_000);
+  db.errors = undefined;
+  const record = await outcome(sim, "a", agent, id);
+  assert.equal(record.outcome.error, undefined, JSON.stringify(record.outcome));
+  assert.ok(sim.env.logs.some(log => log.line.includes('"run_start_retry"')), "its start was tried again");
+  assert.ok(sim.hooks.reached.includes("a run's start met a transient refusal and was tried again"));
+});
