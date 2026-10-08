@@ -115,7 +115,15 @@ const agent = await agents.upsert("support", { mounts: [{ volumeId: docs.id, pat
   since that version (`0`: it must not exist), `read`, `list`, `remove`,
   `changes(since)`.
 - `volume.snapshot()` and `volume.fork({ snapshot })` copy metadata only: a fork
-  shares its source's content and diverges independently.
+  shares its source's content and diverges independently. `read`, `list` and
+  `readAll` take `{ snapshot }` to read a snapshot as it was.
+- `volume.readAll({ prefix?, glob?, snapshot? })` (Python `read_all`) reads every
+  matching file with its contents in one request, as the volume was at one `seq`:
+  `{seq, files: [{path, size, version, contentType, sha256, text | data}]}`
+  (`data` is base64, for files that are not UTF-8 text). Use it to check or
+  publish what an agent wrote: nothing written meanwhile shows in it. At most
+  1,000 files and 16 MiB a read (a 413 says to narrow `prefix` or `glob`). REST:
+  `GET /v1/volumes/:id/files?content=true&prefix=…&snapshot=…`.
 - Every file has a content type: the upload's, else sniffed from its bytes and
   name. Downloads are served so a file can never run as the runtime's origin.
 - Uploads may take 15 minutes; a volume suits up to about 100,000 files.

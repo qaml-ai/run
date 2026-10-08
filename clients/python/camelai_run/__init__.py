@@ -970,8 +970,8 @@ class Volume:
     def _file(self, path):
         return f"{self.runtime.base}/v1/volumes/{self.id}/files/" + "/".join(quote(part, safe="") for part in path.split("/") if part)
 
-    async def _raw(self, method, path, content=None, headers=None):
-        response = await _transfer(self.runtime.http, method, self._file(path), content=content, headers={
+    async def _raw(self, method, path, content=None, headers=None, query=None):
+        response = await _transfer(self.runtime.http, method, self._file(path) + (f"?{urlencode(query)}" if query else ""), content=content, headers={
             "Authorization": f"Bearer {self.runtime._operator()}", **(headers or {})})
         if not response.is_success:
             try:
@@ -1003,9 +1003,17 @@ class Volume:
     async def changes(self, since=0):
         return await self._json(f"/changes?since={int(since)}")
 
-    async def list(self, *, prefix=None, glob=None, after=None, limit=None):
-        query = urlencode({key: value for key, value in {"prefix": prefix, "glob": glob, "after": after, "limit": limit}.items() if value is not None})
+    async def list(self, *, prefix=None, glob=None, after=None, limit=None, snapshot=None):
+        """Files under `prefix`, a page at a time; `snapshot` lists a snapshot instead."""
+        query = urlencode({key: value for key, value in {"prefix": prefix, "glob": glob, "after": after, "limit": limit, "snapshot": snapshot}.items() if value is not None})
         return await self._json(f"/files{'?' + query if query else ''}")
+
+    async def read_all(self, *, prefix=None, glob=None, snapshot=None):
+        """Every file under `prefix` (and `glob`) with its contents, in one request, as the volume was at one seq (or as
+        `snapshot` has them): {"seq", "snapshot"?, "files": [{"path", "size", "version", "contentType", "sha256", "text" | "data"}]},
+        text as "text", other bytes base64 as "data". At most 1,000 files and 16 MiB (else a 413)."""
+        query = urlencode({key: value for key, value in {"content": "true", "prefix": prefix, "glob": glob, "snapshot": snapshot}.items() if value is not None})
+        return await self._json(f"/files?{query}")
 
     async def write(self, path, data, *, version=None, content_type=None):
         """Without content_type, the runtime sniffs it from the file's first bytes and name."""
@@ -1017,10 +1025,10 @@ class Volume:
         response = await self._raw("PUT", path, data.encode() if isinstance(data, str) else data, headers)
         return response.json()
 
-    async def read(self, path, *, range=None):
-        """Returns (bytes, version); `range` is (start, end) in bytes, end exclusive."""
+    async def read(self, path, *, range=None, snapshot=None):
+        """Returns (bytes, version); `range` is (start, end) in bytes, end exclusive; `snapshot` reads it as a snapshot has it."""
         headers = {"Range": f"bytes={range[0]}-{'' if len(range) < 2 or range[1] is None else range[1] - 1}"} if range else None
-        response = await self._raw("GET", path, headers=headers)
+        response = await self._raw("GET", path, headers=headers, **({"query": {"snapshot": snapshot}} if snapshot else {}))
         return response.content, int(response.headers["x-file-version"])
 
     async def read_text(self, path):

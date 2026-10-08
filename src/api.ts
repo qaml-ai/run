@@ -1157,11 +1157,17 @@ export function api(context: ApiContext) {
     responses: { 200: reply("Recent changes, oldest first", schema.Changes) },
   }), async c => json(c, 200, await (await volume(c)).call("changes", { since: Number(c.req.query("since") ?? 0) || 0 })));
   route(createRoute({
-    method: "get", path: "/v1/volumes/{id}/files", request: { params: volumeId, query: z.object({ prefix: z.string().optional(), glob: z.string().optional(), after: z.string().optional(), limit: z.string().optional() }) },
-    responses: { 200: reply("Files under prefix, in path order, a page at a time", schema.FileList) },
+    method: "get", path: "/v1/volumes/{id}/files", request: { params: volumeId, query: z.object({
+      prefix: z.string().optional(), glob: z.string().optional(), after: z.string().optional(), limit: z.string().optional(),
+      snapshot: z.string().optional().openapi({ description: "List (or read) a snapshot of the volume instead of the volume as it is" }),
+      content: z.enum(["true"]).optional().openapi({ description: "Every matching file with its contents, in one answer at one seq (FileContents): at most 1,000 files and 16 MiB, else 413" }),
+    }) },
+    responses: { 200: reply("Files under prefix, in path order, a page at a time; with content=true, all of them with their contents (FileContents)", z.union([schema.FileList, schema.FileContents])) },
   }), async c => {
-    const { prefix, glob, after, limit } = c.req.query();
-    const listing = await (await volume(c)).call("list", { path: prefix ?? "/", ...(glob ? { glob } : {}), ...(after ? { after } : {}), ...(limit ? { limit: Number(limit) } : {}) });
+    const { prefix, glob, after, limit, snapshot, content } = c.req.query();
+    const at = snapshot ? { snapshot } : {};
+    if (content === "true") return json(c, 200, await (await volume(c)).call("readAll", { path: prefix ?? "/", ...(glob ? { glob } : {}), ...at }));
+    const listing = await (await volume(c)).call("list", { path: prefix ?? "/", ...(glob ? { glob } : {}), ...(after ? { after } : {}), ...(limit ? { limit: Number(limit) } : {}), ...at });
     return json(c, 200, { files: listing.files.map(({ chunks: _chunks, ...file }: { chunks: string[] }) => file), ...(listing.next ? { next: listing.next } : {}) });
   });
   const filePath = (c: Context) => {
@@ -1189,11 +1195,12 @@ export function api(context: ApiContext) {
     return json(c, 201, entry);
   }, files);
   route(createRoute({
-    method: "get", path: "/v1/volumes/{id}/files/{path}", request: { ...file, headers: z.object({ range: z.string().optional().openapi({ description: "bytes=start-end" }) }) },
+    method: "get", path: "/v1/volumes/{id}/files/{path}", request: { ...file, query: z.object({ snapshot: z.string().optional().openapi({ description: "Read the file as a snapshot of the volume has it" }) }), headers: z.object({ range: z.string().optional().openapi({ description: "bytes=start-end" }) }) },
     responses: { 200: binary("The file, streamed a chunk at a time; its version is X-File-Version (and the ETag, which a proxy may rewrite)"), 206: binary("The requested range") },
   }), async c => {
     const target = await volume(c);
-    const entry = await target.call("stat", { path: filePath(c) });
+    const snapshot = c.req.query("snapshot");
+    const entry = await target.call("stat", { path: filePath(c), ...(snapshot ? { snapshot } : {}) });
     if (entry.type !== "file") throw new HttpError(404, `${entry.path} is a directory`);
     return fileResponse(volumes(), target.tenant, entry, c.req.header("range"));
   }, files);
