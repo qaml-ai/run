@@ -103,6 +103,25 @@ It takes no arguments. On success the model gets `{published: true, version}`;
 otherwise the call fails with the problems, one a line (`/bot.ts:12: …`), so the
 model fixes them and publishes again. A retried call publishes once.
 
+## In Python
+
+`camelai_run.projects` has the same helper, async:
+
+```python
+from camelai_run.projects import Projects, publish_tool
+
+projects = Projects(agents.runtime)
+project = await projects.create(f"bot-{bot.id}", template={"bot.py": starter})
+builder = await agents.upsert(f"builder-{bot.id}", definition="bot-builder", subject=owner.id, context={"bot": bot.id}, **project.mount("/bot"))
+result = await project.publish(validate=check, store=lambda files, version, about: save_release(bot.id, files, version["id"]))
+
+app = serve_tools([publish_tool(project=lambda identity: projects.get(volume_of_bot(identity.context["bot"])), validate=check, store=save)], runtime=RUNTIME, tenant="acme")
+```
+
+`publish_tool` works in `serve_tools` (ASGI) and in `camelai_run.sync.serve_tools`
+(WSGI: Django, Flask). Files are dicts with `"text"` or base64 `"data"`
+(`file_bytes(file)` gives the bytes).
+
 ## Security
 
 - **Derive the project from identity.** `project(identity)` reads who the call

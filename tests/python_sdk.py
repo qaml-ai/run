@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "clients" / "python"))
 from camelai_run import AgentClient, _answer_for, _origin, AgentError, AgentRuntime, Agents, RunError, Runs, RuntimeTokenError, TestRuntime, ToolContext, WebhookVerificationError, _answer_mcp, _tool_context, serve_tools, tool, verify_file_url, verify_runtime_token, verify_webhook
 from camelai_run import sync
+from camelai_run.projects import Projects, file_bytes, publish_tool
 
 DATABASE_URL = os.environ.get("AGENT_TEST_DATABASE_URL", "postgres://postgres:test@127.0.0.1:55432/postgres")
 
@@ -955,6 +956,35 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
             with sync.Agents(self.token, url=self.url) as agents:
                 return [message["role"] for message in agents.upsert("py-import-sync", import_messages={"format": "openai-chat", "messages": [{"role": "user", "content": "hi"}]}).history()]
         self.assertEqual(await asyncio.to_thread(made_in_sync), ["user"])
+
+    async def test_projects_publish_checked_snapshots_and_the_tool_finds_the_project_from_identity(self):
+        projects = Projects(self.runtime)
+        project = await projects.create("py-bot-1", template={"bot.py": "def run(): pass\n"})
+        self.assertEqual((await projects.create("py-bot-1", template={"bot.py": "other"})).id, project.id)
+        self.assertEqual(await project.volume.read_text("bot.py"), "def run(): pass\n")
+        self.assertEqual(project.mount("/bot")["mounts"][1], {"workspace": True})
+        check = lambda files: [{"path": file["path"], "message": "no secrets"} for file in files if "secret" in file["path"]]
+        stored = []
+        result = await project.publish(validate=check, store=lambda files, version, about: stored.append([file["path"] for file in files]))
+        self.assertTrue(result["ok"])
+        self.assertEqual(stored, [["/bot.py"]])
+        self.assertEqual(file_bytes((await project.files(version=result["version"]["id"]))["files"][0]), b"def run(): pass\n")
+        await project.volume.write("secret.py", "x = 1\n")
+        self.assertEqual(await project.publish(validate=check, store=lambda *args: None), {"ok": False, "problems": [{"path": "/secret.py", "message": "no secrets"}]})
+        self.assertEqual(len(await project.versions()), 1)
+
+        # The tool takes no arguments; the project comes from the call's identity.
+        other = await projects.create("py-bot-2", template={"bot.py": "def two(): pass\n"})
+        ids = {"1": project.id, "2": other.id}
+        tests = TestRuntime()
+        app = serve_tools([publish_tool(project=lambda identity: projects.get(ids[identity.context["bot"]]), validate=check,
+                                        store=lambda files, version, about: stored.append([file["text"] for file in files]))], **tests.options)
+        done = await tests.call_tool(app, "https://app.test/mcp", "publish", {}, subject="owner", context={"bot": "2"})
+        self.assertFalse(done.get("isError"))
+        self.assertEqual(stored[-1], ["def two(): pass\n"])
+        refused = await tests.call_tool(app, "https://app.test/mcp", "publish", {}, subject="owner", context={"bot": "1"})
+        self.assertTrue(refused["isError"])
+        self.assertIn("/secret.py: no secrets", refused["content"][0]["text"])
 
     async def test_key_scopes_tokens_usage_webhooks_and_rotated_credentials(self):
         deliveries = []
