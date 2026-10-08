@@ -44,7 +44,12 @@ export function normalize(plan: Plan): Plan {
     if (renumbered.has(op.run)) op.run = renumbered.get(op.run)!;
     else steps.splice(index--, 1);
   }
-  return { ...plan, steps };
+  // A database whose every round trip takes a large part of a heartbeat (a sixth of the lease) keeps every lease stale,
+  // so nodes cut every model call they make and no turn ever ends: no production database is that slow next to a
+  // 90-second lease. Its steady latency stays under a thirtieth of the lease (spikes, being rare, may go past it).
+  const most = Math.floor(plan.leaseTtlMs / 30);
+  const dbLatencyMs = plan.dbLatencyMs && plan.dbLatencyMs[1] > most ? [Math.min(plan.dbLatencyMs[0], most), most] as [number, number] : plan.dbLatencyMs;
+  return { ...plan, ...(dbLatencyMs ? { dbLatencyMs } : {}), steps };
 }
 
 /** How many agents and volumes the plan makes (what its steps can name). */

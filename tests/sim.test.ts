@@ -64,3 +64,24 @@ test("the nightly mode runs the same simulator on a real Postgres server, on the
   assert.equal(record.outcome.result.reply, "from a real database");
   assert.ok(sim.db.statements.length > 0);
 });
+
+test("a node runs as one process at a time: a restart while one is under way starts none, and a crash while it starts kills it there", async t => {
+  // Found by the nightly fuzzer: two restarts close together started two processes at one address, and a crash took
+  // only one of them down, so the other went on as a node the simulation no longer knew (I1 failures, not the runtime's).
+  const sim = await Sim.create({ seed: "one-process", respond: () => ({ content: "ok" }) });
+  t.after(() => sim.close());
+  await sim.start("a");
+  sim.crash("a");
+  const first = sim.restart("a", { drive: false });
+  first.catch(() => {});
+  assert.equal(sim.isStarting("a"), true);
+  await assert.rejects(sim.restart("a", { drive: false }), /is starting/);
+  // A crash while it starts kills it there: it never comes up.
+  sim.crash("a");
+  await sim.env.settle(first.then(() => assert.fail("a node that crashed while it started came up"), error => assert.match(String(error), /crashed while it started/)));
+  assert.equal(sim.isStarting("a"), false);
+  assert.equal(sim.nodes.get("a")?.crashed, true);
+  // Started again, it serves.
+  await sim.restart("a");
+  assert.equal((await sim.call("a", "/v1/agents", { body: {} })).status, 201);
+});
