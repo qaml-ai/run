@@ -110,7 +110,9 @@ const agent = await agents.upsert("support", { mounts: [{ volumeId: docs.id, pat
 - Mounts are `{volumeId, path, mode: "ro" | "rw", subpath?, notify?}`. `notify`
   prompts the agent (about a second after, coalesced) when others change files
   under the mount. Only your own volumes can be mounted, and an agent's mounts
-  are fixed when it is made (`PUT /v1/agents/:id/mounts` replaces them).
+  are fixed when it is made: an upsert with other mounts is a 409, unless it
+  sends `remount: true`, which sets them between its turns (`PUT
+  /v1/agents/:id/mounts` replaces them at once).
 - Mounts you give replace the agent's own workspace: it then has no
   `/workspace`. Add `{workspace: true}` among them to keep it at `/workspace`
   beside the others, e.g. `[{volumeId, path: "/bot", mode: "rw"}, {workspace:

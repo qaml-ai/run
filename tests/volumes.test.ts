@@ -463,12 +463,21 @@ test("the REST API and SDK manage volumes within a tenant, and nothing crosses t
   assert.equal((await a.createVolume({ name: "draft" }, { idempotencyKey: "draft-bot-1" })).id, keyed.id);
 
   // {workspace: true} keeps the agent's own workspace beside other mounts; the first mount is where relative paths go.
-  const both = await a.upsertAgent("builder-1", { tools: [], mounts: [{ volumeId: keyed.id, path: "/bot", mode: "rw" }, { workspace: true }] });
+  const both = await a.upsertAgent("builder-1", { tools: {}, mounts: [{ volumeId: keyed.id, path: "/bot", mode: "rw" }, { workspace: true }] });
   const mounted = await a.mounts(both.session.id);
   assert.deepEqual(mounted.map(mount => [mount.path, mount.mode]), [["/bot", "rw"], ["/workspace", "rw"]]);
   assert.match(mounted[1].volumeId, /^vol_[a-f0-9]{24}$/);
-  assert.equal((await a.upsertAgent("builder-1", { tools: [], mounts: [{ volumeId: keyed.id, path: "/bot", mode: "rw" }, { workspace: true }] })).session.id, both.session.id, "the same mounts again are no change");
+  assert.equal((await a.upsertAgent("builder-1", { tools: {}, mounts: [{ volumeId: keyed.id, path: "/bot", mode: "rw" }, { workspace: true }] })).session.id, both.session.id, "the same mounts again are no change");
   await assert.rejects(a.createAgent({ tools: {}, mounts: [{ workspace: true }, { volumeId: keyed.id, path: "/workspace/bot", mode: "rw" }] }), /overlaps/);
+  // Other mounts on an upsert are a 409, unless it says remount: true; then they are set between its turns.
+  const elsewhere = [{ volumeId: keyed.id, path: "/draft", mode: "rw" as const }, { workspace: true as const }];
+  await assert.rejects(a.upsertAgent("builder-1", { tools: {}, mounts: elsewhere }), (error: AgentError) => error.status === 409 && /mounts cannot change.*remount: true/.test(error.message));
+  const moved = await a.upsertAgent("builder-1", { tools: {}, mounts: elsewhere, remount: true });
+  assert.ok(moved.reconfigured);
+  await until(async () => (await a.mounts(both.session.id))[0].path === "/draft", "the new mounts");
+  assert.deepEqual((await a.mounts(both.session.id)).map(mount => mount.volumeId), [keyed.id, mounted[1].volumeId], "the same workspace");
+  await a.upsertAgent("builder-1", { tools: {}, mounts: [{ volumeId: keyed.id, path: "/bot", mode: "rw" }, { workspace: true }], remount: true });
+  await until(async () => (await a.mounts(both.session.id))[0].path === "/bot", "the mounts back");
 
   // An agent's own workspace goes with it even when later mounts left it out.
   const dropped = mounted[1].volumeId;

@@ -23,7 +23,8 @@ const agent = await agents.upsert("user-123", { model, instructions, tools });
   configuration you pass: a changed model, instructions or tool list is applied
   between its turns, and its history carries over. Who the agent acts for
   (`subject`, `context`), its definition and its mounts are fixed when it is
-  made; changing them is a 409 that names the field. Delete it and upsert again
+  made; changing them is a 409 that names the field (an upsert may change the
+  mounts with `remount: true`). Delete it and upsert again
   to start over.
 - A deleted key makes a fresh agent the next time, with a new id and token.
 - Make an agent once per user, conversation or job, and reuse it. Creating

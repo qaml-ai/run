@@ -2034,6 +2034,10 @@
             },
             "description": "Volumes for the agent's file tools; default: its own workspace volume at /workspace. Given mounts replace it unless they include {workspace: true}. The first is where relative paths resolve"
           },
+          "remount": {
+            "type": "boolean",
+            "description": "An upsert of an existing agent: true sets the mounts given, between its turns, where other mounts are a 409"
+          },
           "subject": {
             "type": "string",
             "description": "Who the agent acts for (a user id in your app): the `sub` of the identity tokens its tool servers with auth \"runtime\" get. Set only here"

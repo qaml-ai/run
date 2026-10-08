@@ -93,6 +93,8 @@ export interface AgentConfig {
   runLimits?: { maxResponses?: number; maxSeconds?: number; firstTokenSeconds?: number; idleSeconds?: number };
   modelHeaders?: Record<string, string>;
   mounts?: MountInput[];
+  /** An upsert of an existing agent: true changes its mounts to `mounts` (between its turns), where different mounts are otherwise a 409. */
+  remount?: boolean;
   name?: string;
   /** Every event, for display; see `AgentOptions.onEvent`. Runs apart from the connection, in order. */
   onEvent?: (event: AgentEvent, runId?: string) => unknown | Promise<unknown>;
