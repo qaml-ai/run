@@ -10,7 +10,7 @@ import { createAdaptorServer } from "@hono/node-server";
 import { Hono } from "hono";
 import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from "jose";
 import { ADMIN_REPORT_PATH } from "../src/admin-report.ts";
-import { adminDays, adminSignals, adminToday } from "../src/admin-signals.ts";
+import { adminDays, adminSignals, adminToday, adminTrend } from "../src/admin-signals.ts";
 import { adminSite, adminSiteFromEnvironment, type AdminSiteOptions } from "../src/admin-site.ts";
 import type { Sql } from "../src/db.ts";
 import { testDatabase } from "./database.ts";
@@ -174,7 +174,7 @@ async function site(t: T, options: Partial<AdminSiteOptions> = {}) {
 
 test("the admin site is for whoever Cloudflare Access signed in for this application", async t => {
   const { call, token } = await site(t);
-  const paths = ["/", "/api/stats", "/api/product-signals"];
+  const paths = ["/", "/api/stats", "/api/product-signals", "/api/activity-trend"];
 
   // No valid Access token for this application: nothing, whatever the address it claims.
   const stranger = (await generateKeyPair("RS256")).privateKey;
@@ -227,6 +227,60 @@ test("product signals default to today in Chicago and refuse a range they cannot
   await refused("time_zone=Mars/Olympus", 400, "invalid_time_zone");
 });
 
+test("the trend counts sign-ups and returning active accounts by UTC day, the same accounts on the same days", async t => {
+  const { db, call } = await site(t);
+  let githubId = 0;
+  const tenant = (id: string, how: "github" | "google" | "email" | "operator", made: string) => db.query(
+    "insert into tenants (id, github, github_id, google_sub, email_signup, created_at) values ($1, $2, $3, $4, $5, $6)",
+    [id, how === "github" ? id : null, how === "github" ? ++githubId : null, how === "google" ? `sub-${id}` : null, how === "email", at(made)]);
+  const used = (owner: string, day: string, responses: number, model = "fixture/model") => db.query("insert into usage (tenant, day, model, responses) values ($1, $2, $3, $4)", [owner, day, model, responses]);
+  // Made on the 1st; back on the 8th (on two models: still one account), the 9th and the 14th.
+  await tenant("early", "github", "2026-03-01T12:00:00Z");
+  await used("early", "2026-03-01", 3);
+  await used("early", "2026-03-08", 2);
+  await used("early", "2026-03-08", 5, "fixture/other");
+  await used("early", "2026-03-09", 1);
+  await used("early", "2026-03-14", 1);
+  // Made in the last millisecond of the 8th, and active then: new that day, returning on the 9th.
+  await tenant("late", "google", "2026-03-08T23:59:59.999Z");
+  await used("late", "2026-03-08", 4);
+  await used("late", "2026-03-09", 4);
+  // Made at the very start of the 10th and active on it: made on the day, not before it.
+  await tenant("midnight", "email", "2026-03-10T00:00:00.000Z");
+  await used("midnight", "2026-03-10", 1);
+  // A day's row with no response is not activity.
+  await used("late", "2026-03-11", 0);
+  // Not counted on either line: an operator's making, staff, an account being erased, and an admin tenant's usage (no row of its own).
+  await tenant("ops-made", "operator", "2026-03-02T12:00:00Z");
+  await tenant("staff", "google", "2026-03-02T12:00:00Z");
+  await tenant("erasing", "github", "2026-03-02T12:00:00Z");
+  await db.query("insert into journey_accounts (tenant, account_ref, internal, since_signup, consent, created_at) values ('staff', '44444444-4444-4444-8444-444444444444', true, true, 'unknown', 0)");
+  await db.query("insert into account_deletions (tenant, requested_at, requested_by) values ('erasing', 1, 'self')");
+  for (const owner of ["ops-made", "staff", "erasing", "camelai-app"]) await used(owner, "2026-03-09", 9);
+
+  const trend = await adminTrend(db, { end_date: "2026-03-14", now: at("2026-03-14T15:00:00Z") });
+  assert.deepEqual({ ...trend, daily: 0 }, { schema_version: 1, range: { start_date: "2026-03-01", end_date: "2026-03-14", time_zone: "UTC" }, generated_at: "2026-03-14T15:00:00.000Z", daily: 0, incomplete_date: "2026-03-14" });
+  assert.deepEqual(trend.daily.map(day => day.date), Array.from({ length: 14 }, (_, day) => `2026-03-${String(day + 1).padStart(2, "0")}`));
+  const days = Object.fromEntries(trend.daily.filter(day => day.signups || day.returning_active).map(day => [day.date.slice(8), [day.signups, day.returning_active]]));
+  assert.deepEqual(days, { "01": [1, 0], "08": [1, 1], "09": [0, 2], "10": [1, 0], "14": [0, 1] });
+
+  // Another window: its days only, and none of them still going.
+  const week = await adminTrend(db, { days: 7, end_date: "2026-03-10", now: at("2026-03-14T15:00:00Z") });
+  assert.deepEqual(week.range, { start_date: "2026-03-04", end_date: "2026-03-10", time_zone: "UTC" });
+  assert.equal(week.incomplete_date, null);
+  assert.deepEqual(week.daily.slice(-3), [{ date: "2026-03-08", signups: 1, returning_active: 1 }, { date: "2026-03-09", signups: 0, returning_active: 2 }, { date: "2026-03-10", signups: 1, returning_active: 0 }]);
+
+  // The site's chart: the fourteen UTC days that end today.
+  const served = await call("/api/activity-trend");
+  assert.equal(served.status, 200);
+  assert.equal(served.cache, "no-store");
+  const today = new Date().toISOString().slice(0, 10);
+  assert.deepEqual([served.json.daily.length, served.json.range.end_date, served.json.range.time_zone, served.json.incomplete_date], [14, today, "UTC", today]);
+  assert.equal((await call("/api/activity-trend?days=30&end_date=2026-03-14")).json.daily.length, 30);
+  for (const query of ["days=0", "days=91", "days=1.5", "days=two"]) assert.deepEqual(await call(`/api/activity-trend?${query}`).then(({ status, json }) => ({ status, json })), { status: 400, json: { error: "invalid_days" } });
+  assert.deepEqual(await call("/api/activity-trend?end_date=2026-02-30").then(({ status, json }) => ({ status, json })), { status: 400, json: { error: "invalid_date" } });
+});
+
 /** A journey store's report endpoint: what it was asked, having checked each request's signature over the bytes it got. */
 async function fakeStore(t: T, answer: (request: any) => { status?: number; body?: unknown; raw?: string; headers?: Record<string, string> } | undefined = () => undefined) {
   const asked: any[] = [];
@@ -276,20 +330,21 @@ test("the journey store's reports are asked for by the site itself, signed with 
   const one = { ...JOURNEYS, kind: "journey", account_ref: ACCOUNT, cursor: "page-2" };
   assert.equal((await call("/api/report", { body: one })).status, 200);
   assert.equal((await call("/api/report", { body: { ...JOURNEYS, kind: "signals" } })).status, 200);
-  assert.deepEqual(store.asked, [JOURNEYS, one, { ...JOURNEYS, kind: "signals" }]);
+  assert.equal((await call("/api/report", { body: { ...JOURNEYS, kind: "pages" } })).status, 200);
+  assert.deepEqual(store.asked, [JOURNEYS, one, { ...JOURNEYS, kind: "signals" }, { ...JOURNEYS, kind: "pages" }]);
   assert.doesNotMatch(JSON.stringify(list), /whsec_/);
 
   // Not a request the store reads: refused here, and the store never asked.
   for (const body of [
     "not json", [], { ...JOURNEYS, schema_version: 2 }, { ...JOURNEYS, kind: "events" }, { ...JOURNEYS, tenant: "gh-one" }, { ...JOURNEYS, start_date: "2026-02-30" },
     { ...JOURNEYS, start_date: "2025-01-01" }, { ...JOURNEYS, time_zone: "Mars/Olympus" }, { ...JOURNEYS, account_ref: ACCOUNT }, { ...JOURNEYS, kind: "journey" },
-    { ...JOURNEYS, kind: "journey", account_ref: "gh-one" }, { ...JOURNEYS, kind: "signals", cursor: "page-2" }, { ...JOURNEYS, cursor: "not a cursor" }, { ...JOURNEYS, cursor: "x".repeat(5000) },
+    { ...JOURNEYS, kind: "journey", account_ref: "gh-one" }, { ...JOURNEYS, kind: "signals", cursor: "page-2" }, { ...JOURNEYS, kind: "pages", cursor: "page-2" }, { ...JOURNEYS, kind: "pages", account_ref: ACCOUNT }, { ...JOURNEYS, cursor: "not a cursor" }, { ...JOURNEYS, cursor: "x".repeat(5000) },
   ]) assert.deepEqual(await call("/api/report", { body }).then(({ status, json }) => ({ status, json })), { status: 400, json: { error: "invalid_request" } });
   assert.equal((await call("/api/report", { body: JOURNEYS, headers: { "content-type": "text/plain" } })).status, 400);
   // Another site's page cannot ask with the viewer's session, and nobody Access did not sign in can ask at all.
   assert.deepEqual((await call("/api/report", { body: JOURNEYS, headers: { origin: "https://elsewhere.example.test" } })).json, { error: "invalid_origin" });
   assert.equal((await call("/api/report", { body: JOURNEYS, token: null })).status, 401);
-  assert.equal(store.asked.length, 3);
+  assert.equal(store.asked.length, 4);
 
   // What the store refuses of a request is passed on; anything else it says is the reports being unavailable.
   const answered = async (cursor: string) => call("/api/report", { body: { ...JOURNEYS, cursor } }).then(({ status, json, cache }) => ({ status, json, cache }));

@@ -6,10 +6,11 @@ import { signedHeaders } from "./webhooks.ts";
 /**
  * A report of the journey store's (the operator's own analytics store, which src/journey.ts sends events to), asked
  * for by the team's admin site (src/admin-site.ts, POST /api/report): sign-ups, first runs and payments by day
- * (`signals`), the accounts active in a range (`journeys`), or one account's events (`journey`). The store names an
- * account by its `account_ref` only.
+ * (`signals`), the accounts active in a range (`journeys`), one account's events (`journey`), or how the operator's
+ * website's pages about this runtime did (`pages`: visitors, clicks through, sign-ups by first landing). The store
+ * names an account by its `account_ref` only.
  */
-export interface AdminReportRequest extends AdminRange { schema_version: 1; kind: "signals" | "journeys" | "journey"; account_ref?: string; cursor?: string }
+export interface AdminReportRequest extends AdminRange { schema_version: 1; kind: "signals" | "journeys" | "journey" | "pages"; account_ref?: string; cursor?: string }
 /** Where the store answers reports, and the Standard Webhooks secret requests are signed with: its own, never the one events are signed with. */
 export interface AdminReportSource { url: string; secret: string }
 
@@ -44,11 +45,11 @@ export function adminReportRequest(input: unknown): AdminReportRequest | undefin
   const request = input as Record<string, unknown>;
   if (Object.keys(request).some(key => !["schema_version", "kind", "start_date", "end_date", "time_zone", "account_ref", "cursor"].includes(key))) return undefined;
   const { kind, account_ref: account, cursor } = request;
-  if (request.schema_version !== 1 || (kind !== "signals" && kind !== "journeys" && kind !== "journey")) return undefined;
+  if (request.schema_version !== 1 || (kind !== "signals" && kind !== "journeys" && kind !== "journey" && kind !== "pages")) return undefined;
   const range = { start_date: request.start_date, end_date: request.end_date, time_zone: request.time_zone } as AdminRange;
   try { adminDays(range); } catch { return undefined; }
   if (kind === "journey" ? typeof account !== "string" || !UUID.test(account) : account !== undefined) return undefined;
-  if (cursor !== undefined && (kind === "signals" || typeof cursor !== "string" || !/^[A-Za-z0-9_-]{1,300}$/.test(cursor))) return undefined;
+  if (cursor !== undefined && (kind === "signals" || kind === "pages" || typeof cursor !== "string" || !/^[A-Za-z0-9_-]{1,300}$/.test(cursor))) return undefined;
   return { schema_version: 1, kind, ...range, ...(account === undefined ? {} : { account_ref: account as string }), ...(cursor === undefined ? {} : { cursor: cursor as string }) };
 }
 
