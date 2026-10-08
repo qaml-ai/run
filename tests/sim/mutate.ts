@@ -42,7 +42,10 @@ export function normalize(plan: Plan): Plan {
     const op = steps[index].op;
     if (op.op !== "retry") continue;
     if (renumbered.has(op.run)) op.run = renumbered.get(op.run)!;
-    else steps.splice(index--, 1);
+    else { steps.splice(index--, 1); continue; }
+    // To its prompt's agent: a retry is that request sent again.
+    const prompt = steps.find(step => step.op.op === "prompt" && step.op.run === op.run)?.op;
+    if (prompt?.op === "prompt") op.agent = prompt.agent;
   }
   // A database whose every round trip takes a large part of a heartbeat (a sixth of the lease) keeps every lease stale,
   // so nodes cut every model call they make and no turn ever ends: no production database is that slow next to a

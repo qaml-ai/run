@@ -155,17 +155,22 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
         }
         case "prompt":
         case "retry": {
-          const agent = agents.get(op.agent);
+          // A retry is its run's prompt sent again: to that prompt's agent, keyed as it was. One whose prompt is not in
+          // the plan (a minimized plan may have dropped it) sends nothing: it would be another agent's request under
+          // the same run number, which the checkers could not tell apart.
+          const first = plan.steps.find(step => step.op.op === "prompt" && step.op.run === op.run)?.op as Extract<Op, { op: "prompt" }> | undefined;
+          if (op.op === "retry" && !first) return;
+          const of = op.op === "retry" ? first!.agent : op.agent;
+          const agent = agents.get(of);
           if (!agent) return;
           const askedAt = sim.env.elapsed;
-          // A retry is keyed as its run's first prompt was.
-          const byBody = plan.steps.some(step => step.op.op === "prompt" && step.op.run === op.run && step.op.key === "requestId");
-          const text = `run-${op.run} agent-${op.agent}`;
+          const byBody = first?.key === "requestId";
+          const text = `run-${op.run} agent-${of}`;
           void client(op, op.node, `/v1/agents/${agent}/prompt`, byBody ? { text, requestId: `run-${op.run}` } : { text }, byBody ? {} : { "Idempotency-Key": `run-${op.run}` })
             .then(answer => {
               if (!answer) return;
               answers.set(op.run, [...answers.get(op.run) ?? [], { status: answer.status, id: answer.json?.id }]);
-              if ((answer.status === 202 || answer.status === 200) && !runs.has(op.run)) runs.set(op.run, { agent: op.agent, id: answer.json.id, askedAt, acceptedAt: sim.env.elapsed });
+              if ((answer.status === 202 || answer.status === 200) && !runs.has(op.run)) runs.set(op.run, { agent: of, id: answer.json.id, askedAt, acceptedAt: sim.env.elapsed });
             });
           return;
         }
@@ -290,8 +295,11 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
     const queued = (agent: number) => [...runs.values()].filter(run => run.agent === agent).length;
     const records = new Map<number, any>();
     for (const [run, { agent, id }] of runs) {
-      // At most ten calls' worth: a queue that long still ending is the point, not how long it takes.
-      const bound = 2 * plan.leaseTtlMs + 2_000 + high * Math.min(10, queued(agent)) + 30_000;
+      // At most ten calls' worth: a queue that long still ending is the point, not how long it takes. With model stalls
+      // injected (BUGGIFY model.stream.stall), a call may stall and be retried, with backoff, a few times over: twenty
+      // seconds more a run.
+      const stalls = sim.hooks.plan["model.stream.stall"] !== undefined ? 20_000 : 0;
+      const bound = 2 * plan.leaseTtlMs + 2_000 + (high + stalls) * Math.min(10, queued(agent)) + 30_000;
       const record = await sim.until(async () => {
         for (const node of live()) {
           const answer = await sim.call(node, `/v1/agents/${agents.get(agent)}/requests/${id}`);
@@ -444,9 +452,18 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
     }
     // Firing is delivering its prompt under an id derived from the schedule, so a repeat is the same request: the
     // request is there (it may since have been cancelled by an abort, which is not the schedule's to decide).
+    // Asked of every live node, a few times over: a node that cannot answer for now (503: its lease not yet fresh, the
+    // agent moving) says nothing of the schedule.
     for (const [schedule, { agent, request }] of schedules) {
-      const answer = await sim.call(live()[0], `/v1/agents/${agents.get(agent)}/requests/${request}`);
-      if (answer.status !== 200) failures.push(`I13: schedule ${schedule} of agent-${agent} never delivered its prompt (${request}: ${answer.status})`);
+      let status = 0;
+      await sim.until(async () => {
+        for (const node of live()) {
+          status = (await sim.call(node, `/v1/agents/${agents.get(agent)}/requests/${request}`)).status;
+          if (status !== 503) return true;
+        }
+        return false;
+      }, `schedule ${schedule}'s request`, 30_000, 1_000).catch(() => {});
+      if (status !== 200) failures.push(`I13: schedule ${schedule} of agent-${agent} never delivered its prompt (${request}: ${status})`);
     }
 
     // I14: a prompt sent again with its key is the same request: every answer that names one names the first's, no retry
@@ -516,10 +533,11 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
     }
 
     // I19: a request the database refused for now (a serialization failure, a deadlock, a statement timeout) is
-    // answered as retryable (503), never as the client's mistake (400).
+    // answered as retryable (503), never as the client's mistake (4xx). (A 2xx naming such an error is a record: a run
+    // whose outcome it was, which is a run's matter, not the answer's.)
     for (const event of history) {
       const said = (event.detail as { error?: unknown } | undefined)?.error;
-      if (event.status !== undefined && event.status < 500 && typeof said === "string" && /could not serialize|deadlock detected|canceling statement due to statement timeout/.test(said)) {
+      if (event.status !== undefined && event.status >= 400 && event.status < 500 && typeof said === "string" && /could not serialize|deadlock detected|canceling statement due to statement timeout/.test(said)) {
         failures.push(`I19: ${event.op.op} at ${event.invoked} ms was answered ${event.status} for a database refusal (${said.slice(0, 80)})`);
       }
     }
