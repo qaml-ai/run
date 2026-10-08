@@ -29,11 +29,18 @@ test("a model that always reasons is called with its least reasoning when an age
   assert.equal(effort(provider.requests.at(-1)!.body), "high");
 });
 
-test("which models always reason: Sonnet 5.5 everywhere, Sonnet 5 nowhere, and an agent's copy of a model before its entry said so", () => {
+test("which models always reason: Sonnet and Haiku 5.5 everywhere, Sonnet 5 nowhere, and an agent's copy of a model before its entry said so", () => {
   assert.equal(reasoningFloor(getModel("openrouter", "anthropic/claude-sonnet-5.5")!), "low");
   // Pi's Anthropic entry has no minimal level (Anthropic's efforts start at low).
   assert.equal(reasoningFloor(getModel("anthropic", "claude-sonnet-5-5")!), "low");
   assert.equal(reasoningFloor(getModel("amazon-bedrock", "global.anthropic.claude-sonnet-5-5")!), "minimal");
+  // On Bedrock, read from the Anthropic entry: Haiku 5.5's profiles too, and a base id names its global profile.
+  for (const id of ["global.anthropic.claude-haiku-5-5", "us.anthropic.claude-haiku-5-5", "anthropic.claude-haiku-5-5"]) {
+    assert.equal(reasoningFloor(getModel("amazon-bedrock", id)!), "minimal", id);
+  }
+  assert.equal(getModel("amazon-bedrock", "anthropic.claude-haiku-5-5")!.id, "global.anthropic.claude-haiku-5-5");
+  assert.equal(getModel("amazon-bedrock", "anthropic.claude-opus-4-1-20250805-v1:0")!.id, "us.anthropic.claude-opus-4-1-20250805-v1:0", "no global profile: the US one");
+  assert.equal(reasoningFloor(getModel("amazon-bedrock", "global.anthropic.claude-sonnet-5")!), undefined);
   assert.equal(reasoningFloor(getModel("anthropic", "claude-sonnet-5")!), undefined);
   const { thinkingLevelMap: _map, ...older } = getModel("anthropic", "claude-sonnet-5-5")!;
   assert.equal(reasoningFloor({ ...older, thinkingLevelMap: { xhigh: "xhigh" } } as never), "low");

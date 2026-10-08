@@ -220,8 +220,8 @@ Messages (`message` fields, and history) are one of:
 | `role` | Fields |
 | --- | --- |
 | `user` | `content`: a string, or `[{type: "text", text} \| {type: "image", data, mimeType}]`; `timestamp`. History also records `from`, `requestId`, `metadata` |
-| `assistant` | `content`: `[{type: "text", text} \| {type: "thinking", thinking} \| {type: "toolCall", id, name, arguments}]`; `provider`, `model`, `usage`, `stopReason` (`stop`, `length`, `toolUse`, `error`, `aborted`), `errorMessage?`, `timestamp` |
-| `toolResult` | `toolCallId`, `toolName`, `content` (text and image blocks), `details?`, `isError`, `timestamp` |
+| `assistant` | `content`: `[{type: "text", text} \| {type: "thinking", thinking} \| {type: "toolCall", id, name, arguments}]`; `provider`, `model`, `usage`, `stopReason` (`stop`, `length`, `toolUse`, `error`, `aborted`), `errorMessage?`, `timestamp` (when the request started), `durationMs?` (how long the response took; absent on older messages) |
+| `toolResult` | `toolCallId`, `toolName`, `content` (text and image blocks), `details?`, `isError`, `timestamp`, `durationMs?` (how long the tool ran) |
 | `system` | `content`: instructions the runtime added (a changed configuration, a compaction summary) |
 
 ### Tools

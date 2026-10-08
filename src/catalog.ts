@@ -11,7 +11,7 @@ export const FETCH_PROVIDERS = ["firecrawl"] as const;
 const NOT_API_KEY: Record<string, string> = {
   "amazon-bedrock": "AWS credentials",
   "google-vertex": "a Google Cloud service account",
-  "azure-openai-responses": "an Azure endpoint and deployment",
+  azure: "an Azure endpoint and deployment",
   "github-copilot": "GitHub OAuth",
   "openai-codex": "ChatGPT OAuth",
   "cloudflare-ai-gateway": "a Cloudflare account and gateway ID",
