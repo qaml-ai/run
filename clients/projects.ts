@@ -1,0 +1,155 @@
+/**
+ * Projects: an agent builds something in a volume of its own (a bot, a site, a report), and your application publishes
+ * checked versions of it. A project is a volume made once per key, mounted in the agent with file tools, and a publish
+ * step: snapshot the volume, read every file at that snapshot, check them with your code, and store them where your
+ * application keeps what it serves. The snapshot is the version: what was checked is exactly what was stored.
+ *
+ * ```ts
+ * const project = await agents.runtime.projects.create({ key: `bot-${bot.id}`, template: { "bot.ts": starter } });
+ * const builder = await agents.upsert(`builder-${bot.id}`, { definition, subject: owner, context: { bot: bot.id }, ...project.mount("/bot") });
+ * // In your MCP server: the model calls publish; the project comes from the call's signed identity, never its arguments.
+ * serveTools({ publish: publishTool({ project: identity => projects.get(volumeOf(identity.context.bot)), validate, store }) }, options);
+ * ```
+ */
+import type { AgentRuntime, MountInput, RuntimeIdentity, Tool, VolumeContents, VolumeHandle } from "./typescript.ts";
+
+/** A file as a project version has it: text as `text`, other bytes as base64 `data`. */
+export type ProjectFile = VolumeContents["files"][number];
+/** A published version: the snapshot its files were read from. */
+export interface ProjectVersion { id: string; seq: number; name: string; createdAt: number }
+/** What stops files from being published: shown to the model as `path:line: message`. */
+export interface Problem { path?: string; line?: number; message: string }
+export type PublishResult<T> = { ok: true; version: ProjectVersion; stored: T } | { ok: false; problems: Problem[] };
+export interface PublishOptions<T> {
+  /** Only the files at or under this path (default: all). */
+  prefix?: string;
+  /** What is wrong with the files: an empty list publishes them. */
+  validate?: (files: ProjectFile[]) => Problem[] | Promise<Problem[]>;
+  /**
+   * Keep the files (in your database, your object store): called once per published version, with the project and,
+   * from `publishTool`, the identity of the call that published it.
+   */
+  store: (files: ProjectFile[], version: ProjectVersion, about: { project: Project; identity?: RuntimeIdentity }) => T | Promise<T>;
+  /** How many published versions the project keeps (older snapshots are deleted; default 20, at most 90). */
+  keep?: number;
+  /** Publishing twice with the same key publishes once: a retried tool call passes its `idempotencyKey`. */
+  idempotencyKey?: string;
+}
+
+const PUBLISHED = "published:";
+/** A file's contents as bytes, whichever way it came. */
+export function fileBytes(file: ProjectFile): Uint8Array {
+  return file.text !== undefined ? new TextEncoder().encode(file.text) : Uint8Array.from(atob(file.data ?? ""), char => char.charCodeAt(0));
+}
+/** Problems as the model reads them, one a line. */
+export function formatProblems(problems: Problem[]): string {
+  return problems.map(problem => `${problem.path ? `${problem.path}${problem.line ? `:${problem.line}` : ""}: ` : ""}${problem.message}`).join("\n");
+}
+
+export class Project {
+  readonly id: string;
+  readonly volume: VolumeHandle;
+  constructor(volume: VolumeHandle) { this.id = volume.id; this.volume = volume; }
+
+  /**
+   * What to give an agent so it works in the project: the volume at `path` (read-write, the first mount, so relative
+   * paths are the project's), its own workspace beside it (for uploads, tool outputs and scratch), and file tools.
+   * Spread it into `agents.upsert` (with `remount: true` to move an existing agent onto it).
+   */
+  mount(path = "/project"): { mounts: MountInput[]; fileTools: true } {
+    return { mounts: [{ volumeId: this.id, path, mode: "rw" }, { workspace: true }], fileTools: true };
+  }
+
+  /** The files as they are now (one read at one seq), or as a version has them. */
+  files(options: { prefix?: string; version?: string } = {}): Promise<VolumeContents> {
+    return this.volume.readAll({ ...(options.prefix ? { prefix: options.prefix } : {}), ...(options.version ? { snapshot: options.version } : {}) });
+  }
+
+  /** Published versions, oldest first. */
+  async versions(): Promise<ProjectVersion[]> {
+    return (await this.volume.snapshots()).filter(snapshot => snapshot.name.startsWith(PUBLISHED))
+      .map(({ id, seq, name, createdAt }) => ({ id, seq, name, createdAt }));
+  }
+
+  /**
+   * Snapshot the project, read every file at the snapshot, `validate` them, and `store` them: `{ ok: true, version }`,
+   * or `{ ok: false, problems }` (the snapshot is then deleted). Files written while it runs are not in this version.
+   */
+  async publish<T>(options: PublishOptions<T>, about: { identity?: RuntimeIdentity } = {}): Promise<PublishResult<T>> {
+    const keep = Math.min(Math.max(1, options.keep ?? 20), 90);
+    const name = `${PUBLISHED}${options.idempotencyKey ?? crypto.randomUUID()}`.slice(0, 120);
+    if (options.idempotencyKey) {
+      const done = (await this.versions()).find(version => version.name === name);
+      if (done) return { ok: true, version: done, stored: await options.store((await this.files({ prefix: options.prefix, version: done.id })).files, done, { project: this, ...about }) };
+    }
+    const snapshot = await this.volume.snapshot({ name });
+    const version: ProjectVersion = { id: snapshot.id, seq: snapshot.seq, name: snapshot.name, createdAt: snapshot.createdAt };
+    try {
+      const { files } = await this.files({ prefix: options.prefix, version: version.id });
+      const problems = await options.validate?.(files) ?? [];
+      if (problems.length) {
+        await this.volume.deleteSnapshot(version.id);
+        return { ok: false, problems };
+      }
+      const stored = await options.store(files, version, { project: this, ...about });
+      // Older versions beyond `keep` go (a volume keeps 100 snapshots at most).
+      const versions = await this.versions();
+      await Promise.all(versions.slice(0, Math.max(0, versions.length - keep)).map(old => this.volume.deleteSnapshot(old.id)));
+      return { ok: true, version, stored };
+    } catch (error) {
+      await this.volume.deleteSnapshot(version.id).catch(() => {});
+      throw error;
+    }
+  }
+}
+
+export class Projects {
+  private readonly runtime: AgentRuntime;
+  constructor(runtime: AgentRuntime) { this.runtime = runtime; }
+
+  /**
+   * The project for `key`: its volume is made the first time (and seeded with `template`, path to contents), and is the
+   * same one every time after, for as long as it lives. A project with no files is seeded again, so a create cut off
+   * mid-way finishes on its retry; files already there are never overwritten.
+   */
+  async create(options: { key: string; name?: string; template?: Record<string, string | Uint8Array> }): Promise<Project> {
+    const made = await this.runtime.createVolume({ name: options.name ?? options.key.slice(0, 120), key: options.key });
+    const project = this.get(made.id);
+    if (options.template && (!made.existing || made.files === 0)) {
+      await Promise.all(Object.entries(options.template).map(([path, content]) =>
+        project.volume.write(path, content, { version: 0 }).catch((error: { status?: number }) => { if (error.status !== 412) throw error; })));
+    }
+    return project;
+  }
+
+  /** A project by its volume's id. */
+  get(id: string): Project { return new Project(this.runtime.volume(id)); }
+}
+
+/**
+ * A `publish` tool for your MCP server (`serveTools`): the model calls it when its work is ready. The project comes
+ * from the call's signed identity (`project(identity)`), never from the model's arguments, which carry nothing; the
+ * files are read server-side from a snapshot, so the model cannot hand you content it did not write to the project.
+ * Problems go back to the model (the call fails with them) so it fixes them and publishes again. A retried call
+ * publishes once.
+ */
+export function publishTool<T>(options: Omit<PublishOptions<T>, "idempotencyKey"> & {
+  project: (identity: RuntimeIdentity) => Project | Promise<Project>;
+  description?: string;
+  /** What the model is told on success (default: the version id). */
+  published?: (result: { version: ProjectVersion; stored: T }) => unknown;
+}): Tool {
+  return {
+    description: options.description ?? "Publish the project: its files are checked, and if nothing is wrong they become the new version. If anything is wrong, the call fails with what to fix; fix it and publish again.",
+    exposure: "direct",
+    executionMode: "sequential",
+    input: { type: "object", properties: {}, additionalProperties: false },
+    async execute(_args, context) {
+      if (!context.identity) throw new Error("publish needs the runtime's identity token: serve it with serveTools and auth { type: \"runtime\" }");
+      const project = await options.project(context.identity);
+      const result = await project.publish({ ...options, idempotencyKey: context.idempotencyKey }, { identity: context.identity });
+      if (!result.ok) throw new Error(`Not published. Fix these and publish again:\n${formatProblems(result.problems)}`);
+      return options.published ? options.published(result) : { published: true, version: result.version.id };
+    },
+  };
+}

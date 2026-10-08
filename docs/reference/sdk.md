@@ -363,6 +363,7 @@ available and stable for code that needs the wire's shape: `agents.runtime`,
 | `runtime.listAgents()` | `runtime.list_agents()` | the tenant's agents, each with the `key` it was made with (`null` without one) and its `name` |
 | `runtime.upsertDefinition(key, input)`, `createDefinition`, `updateDefinition`, `definition(s)`, `deleteDefinition` | `upsert_definition(key, …)`, `create_definition`, … | definitions; the same key is the same definition |
 | `runtime.createVolume`, `volume(id)`, `mounts`, `setMounts` | `create_volume`, `volume(id)`, … | volumes and mounts |
+| `runtime.projects.create({ key, template })`, `project.mount`, `project.publish`, `publishTool` | (TypeScript only, for now) | [projects](../guides/projects.md): an agent builds in a keyed volume; your code checks and publishes snapshots |
 | `runtime.inbox(state)`, `toolSources(agentId)` | `inbox(state=)`, `tool_sources(agent_id)` | inputs across agents; an agent's tools |
 | | `set_scope_key(scope, provider, api_key=, base_url=, headers=, region=)`, `key_scope(scope)`, `delete_scope_key(scope, provider)`, `delete_key_scope(scope)` | a key scope's provider keys (`/v1/key-scopes`): agents made with `key_scope=` use them first; see [Models and keys](../guides/models-and-keys.md) |
 | | `set_scope_provider(scope, name, base_url=, models=, …)`, `scope_providers(scope)`, `delete_scope_provider(scope, name)` | a key scope's own providers, as `set_provider`'s |
