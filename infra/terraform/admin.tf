@@ -1,8 +1,9 @@
 # The team's admin site (src/admin-site.ts): admin.camelai.dev, a third name for the same ALB on a certificate
-# of its own, proxied like the others. Cloudflare Access signs the team in. Its application ("camelRun admin":
-# Google Workspace only, the reusable "camelAI employees" policy) is managed in the Zero Trust dashboard or with
-# the cf CLI, like the account's other Access apps; its AUD tag is admin_access_aud. The runtime checks each
-# request's Access token itself, so the site answers nothing without it. An empty admin_hostname turns it all off.
+# of its own, proxied like the others. Cloudflare Access signs the team in, and its policy is who the admins are:
+# the application ("camelRun admin": Google Workspace only) should use a policy listing the admins, not the
+# all-employees one. It is managed in the Zero Trust dashboard or with the cf CLI, like the account's other Access
+# apps; its AUD tag is admin_access_aud. The runtime checks each request's Access token itself, so the site answers
+# nothing without it. An empty admin_hostname turns it all off.
 
 locals {
   admin_enabled = var.admin_hostname != ""

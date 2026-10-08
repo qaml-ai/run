@@ -146,6 +146,22 @@ removed and `AGENT_SANDBOX_SOCKETS` is now `AGENT_SANDBOX_DIR`. Migrations 050 t
   changes: no cookie is read or set, no row is written and nothing is sent.
 - `/` and `/console` keep the query string when they redirect to `/console/`.
 
+### Admin site
+
+- The existing admin page adds Product signals and User journeys with shared calendar filters (today in Central Time by default), date-scoped payment/sign-up counts, explicit first-run coverage and per-account histories. The original overview remains available separately. See [Admin analytics](admin-analytics.md).
+
+- The admins are whoever the admin site's Access application's policy admits: narrow that policy to the admin
+  addresses before enabling reports.
+- `GET /api/product-signals` on the admin site: self-serve sign-ups and credit purchases (count, paying accounts
+  and amount in cents) for a range of calendar days (`start_date`, `end_date`, `time_zone`; today in
+  `America/Chicago` by default, 366 days at most), in total and by day, from the runtime's own tables. An
+  account's first completed run is counted from journey events' record of it, and is `null` with
+  `activation_coverage` saying why where that is not known (journey events off, or not yet on for those days).
+  Accounts being or already erased, tenants an operator made and staff journey events know are not counted.
+- `POST /api/report` on the admin site asks the journey store for a report (`AGENT_JOURNEY_URL`, signed with
+  `AGENT_JOURNEY_REPORT_SECRET` or its ARN, a secret of its own). Without one it answers
+  `503 {"error":"report_not_configured"}`; `/api/stats` is unchanged.
+
 ### Console sessions
 
 - Console sessions are stored in Postgres (`console_sessions`, migration 053); the cookie carries only a random
