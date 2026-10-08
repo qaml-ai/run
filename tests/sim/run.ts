@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { storageOwner } from "../../src/storage-usage.ts";
+import { RUN_START_ATTEMPTS } from "../../src/client-sessions.ts";
 import { prng } from "./env.ts";
 import { Sim, TOKEN } from "./sim.ts";
 import type { Op, Plan } from "./workload.ts";
@@ -299,7 +300,11 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
       // injected (BUGGIFY model.stream.stall), a call may stall and be retried, with backoff, a few times over: twenty
       // seconds more a run.
       const stalls = sim.hooks.plan["model.stream.stall"] !== undefined ? 20_000 : 0;
-      const bound = 2 * plan.leaseTtlMs + 2_000 + (high + stalls) * Math.min(10, queued(agent)) + 30_000;
+      // A run whose start the database refused for now waits and tries again (RUN_START_ATTEMPTS), its queue with it:
+      // up to about two minutes more for an agent whose runs did.
+      const agentId = agents.get(agent);
+      const restarted = sim.env.logs.some(log => log.line.includes('"run_start_retry"') && agentId !== undefined && log.line.includes(agentId)) ? 120_000 : 0;
+      const bound = 2 * plan.leaseTtlMs + 2_000 + (high + stalls) * Math.min(10, queued(agent)) + restarted + 30_000;
       const record = await sim.until(async () => {
         for (const node of live()) {
           const answer = await sim.call(node, `/v1/agents/${agents.get(agent)}/requests/${id}`);
@@ -530,6 +535,15 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
         const purged = (await sim.db.query("select purged_at from volumes where id = $1", [id])).rows[0]?.purged_at;
         if (objects.length || purged == null) failures.push(`I18: volume-${index}, deleted ${Math.round((now - since) / 60_000)} minutes before, is not purged: ${objects.length} objects${purged == null ? ", no purged_at" : ""}`);
       }
+    }
+
+    // I20: a run is not failed by its start's first transient refusal (the database's, for now or unreachable, or a 503):
+    // its start is tried again, RUN_START_ATTEMPTS times in all, before the run fails with that cause.
+    for (const [run, record] of records) {
+      const said = record.outcome?.error ?? record.outcome?.result?.error;
+      if (record.began || typeof said !== "string" || !/could not serialize|deadlock detected|canceling statement due to statement timeout|ECONNREFUSED|Connection terminated|; retry/.test(said)) continue;
+      const tries = sim.env.logs.filter(log => log.line.includes('"run_start_retry"') && log.line.includes(`"request":"${runs.get(run)!.id}"`)).length + 1;
+      if (tries < RUN_START_ATTEMPTS) failures.push(`I20: run-${run} failed at its start on a transient refusal (${said.slice(0, 60)}) after ${tries} of ${RUN_START_ATTEMPTS} tries`);
     }
 
     // I19: a request the database refused for now (a serialization failure, a deadlock, a statement timeout) is

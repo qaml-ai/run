@@ -79,6 +79,7 @@ export const CHECKERS = {
   I16: "Storage is charged once a day: no day twice, and every day the run spent two billing intervals in",
   I17: "Storage is reconciled on schedule; with no node lost and a sound store, metered usage is what the store holds",
   I18: "A deleted or expired agent, and a deleted volume past the GC's grace, leaves no object, tail row or live record",
+  I20: "A run's start that meets a transient refusal is tried again (RUN_START_ATTEMPTS times) before the run fails with it",
   I19: "A request the database refused for now (serialization failure, deadlock, statement timeout) is answered 503, never 400",
   I14: "A prompt sent again with its key is one request: every answer names the first's, none is refused as another, and its prompt is in the history once",
   assertion: "No always() failed and no unreachable() was reached in the runtime's code",

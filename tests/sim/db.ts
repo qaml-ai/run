@@ -61,7 +61,7 @@ export class SimDb implements WorldDb {
    * (40001), a deadlock (40P01) or a statement timeout (57014), each before the statement takes effect; or the connection
    * reset (ECONNRESET), before it or after it took effect (its answer lost). A transaction a reset breaks rolls back.
    */
-  errors?: { rate: number; codes: string[]; random: { float(): number; int(n: number): number } };
+  errors?: { rate: number; codes: string[]; random: { float(): number; int(n: number): number }; only?: RegExp };
   /** Errors injected, by code. */
   readonly injected = new Map<string, number>();
 
@@ -88,7 +88,7 @@ export class SimDb implements WorldDb {
     if (this.down.has(node)) throw unavailable();
     // Not on begin or rollback; on a commit, as a server does: the transaction is rolled back, and the commit fails.
     const verb = text.trim().split(/\s+/, 1)[0].toLowerCase();
-    const injected = this.errors && verb !== "begin" && verb !== "rollback" && this.errors.random.float() < this.errors.rate ? this.errors.codes[this.errors.random.int(this.errors.codes.length)] : undefined;
+    const injected = this.errors && verb !== "begin" && verb !== "rollback" && (!this.errors.only || this.errors.only.test(text)) && this.errors.random.float() < this.errors.rate ? this.errors.codes[this.errors.random.int(this.errors.codes.length)] : undefined;
     const after = injected === "ECONNRESET" && verb !== "commit" && this.errors!.random.float() < 0.5;
     if (injected) this.injected.set(injected, (this.injected.get(injected) ?? 0) + 1);
     if (injected && verb === "commit") await this.scope.runInAsyncScope(() => this.pglite.exec("rollback"));
