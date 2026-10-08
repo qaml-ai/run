@@ -192,7 +192,7 @@ test("a serialization failure, a deadlock or a statement timeout is retryable, n
   assert.equal(errorStatus(Object.assign(new Error("syntax"), { code: "42601" }), 400), 400);
 });
 
-test("a transaction that loses a race runs again from the top, a few times at most; a statement timeout does not", async () => {
+test("a transaction that loses a race runs again from the top, a few times at most, unless its work may not run twice; a statement timeout does not", async () => {
   // A fake pool whose transactions fail with `codes`, one per attempt, then succeed.
   const pool = (codes: string[]) => {
     let attempts = 0;
@@ -217,6 +217,9 @@ test("a transaction that loses a race runs again from the top, a few times at mo
   const always = pool(["40001", "40001", "40001", "40001"]);
   await assert.rejects(transaction(always.db, sql => sql.query("select 1")), (error: any) => error.code === "40001");
   assert.equal(always.attempts(), 3);
+  const once = pool(["40001"]);
+  await assert.rejects(transaction(once.db, sql => sql.query("select 1"), { rerun: false }), (error: any) => error.code === "40001");
+  assert.equal(once.attempts(), 1, "work that may not run twice is not rerun");
   const timeout = pool(["57014"]);
   await assert.rejects(transaction(timeout.db, sql => sql.query("select 1")), (error: any) => error.code === "57014");
   assert.equal(timeout.attempts(), 1);

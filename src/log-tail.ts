@@ -74,7 +74,8 @@ export function postgresTail(db: Db, options: { retryMs?: number; unfenced?: boo
     },
     async whileHeld(key, claim, work) {
       required(claim, key);
-      try { await underClaim(db, claim, work); return true; }
+      // Not run again on a lost race: `work` deletes from Storage and meters what it deleted, by sizes listed before.
+      try { await underClaim(db, claim, work, { rerun: false }); return true; }
       catch (error) { if (error instanceof LostClaim) return false; throw error; }
     },
   };

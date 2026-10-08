@@ -244,9 +244,11 @@ async function migrateOnce(db: Db, directory: string, lockTimeoutMs: number) {
 /**
  * Run `work` in a transaction on one connection. One that loses a race (a serialization failure, a deadlock) runs again
  * from the top, up to TRANSACTION_ATTEMPTS times in all, after a short random wait so the two do not collide again;
- * past that, the error goes to the caller (a request answers 503 DATABASE_RETRY).
+ * past that, the error goes to the caller (a request answers 503 DATABASE_RETRY). So `work` does nothing but database
+ * writes, or only what may be done twice: one whose other effects may not (Storage's, metered) passes `rerun: false`.
  */
-export async function transaction<T>(db: Db, work: (sql: Sql) => Promise<T>): Promise<T> {
+export async function transaction<T>(db: Db, work: (sql: Sql) => Promise<T>, options: { rerun?: boolean } = {}): Promise<T> {
+  if (options.rerun === false) return transactionOnce(db, work);
   for (let attempt = 1; ; attempt++) {
     try { return await transactionOnce(db, work); }
     catch (error) {

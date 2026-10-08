@@ -19,15 +19,15 @@ export class LostClaim extends HttpError {
  * as a log append does: a takeover waits until it commits, and once the claim is no
  * longer current nothing runs (LostClaim). Every write to state an actor owns goes
  * through here or a log append. With no claim (no ownership configured: one node
- * only) it is a plain transaction.
+ * only) it is a plain transaction. A rerun (see `transaction`) runs `work` again: `rerun: false` for work that may not.
  */
-export function underClaim<T>(db: Db, claim: Claim | undefined, work: (sql: Sql) => Promise<T>): Promise<T> {
+export function underClaim<T>(db: Db, claim: Claim | undefined, work: (sql: Sql) => Promise<T>, options: { rerun?: boolean } = {}): Promise<T> {
   return transaction(db, async sql => {
     if (claim && !(await sql.query("select from actor_owners where actor = $1 and session = $2 and epoch = $3 for share", [claim.actor, claim.session, claim.epoch])).rowCount) {
       throw new LostClaim(claim.actor);
     }
     return work(sql);
-  });
+  }, options);
 }
 
 /** Peers suspect a node whose last renewal began this many heartbeats ago (`reap`). */
