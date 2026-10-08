@@ -324,8 +324,8 @@ test("file tools work from js_exec, and agents share a volume through mounts", a
   const workspace = VolumeService.workspaceOf(writer.session.id);
   const result = await writer.execute(`
     await tools.write({ path: "/workspace/notes/today.md", content: "ship volumes\\nTODO tests\\n" });
-    const read = await tools.read({ path: "/workspace/notes/today.md" });
-    await tools.edit({ path: "/workspace/notes/today.md", old: "TODO tests", new: "DONE tests", version: read.version });
+    await tools.read({ path: "/workspace/notes/today.md" });
+    await tools.edit({ path: "/workspace/notes/today.md", old: "TODO tests", new: "DONE tests" });
     return {
       found: await tools.search("grep"),
       ls: await tools.ls({ path: "/workspace/notes" }),
