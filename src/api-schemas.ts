@@ -607,7 +607,6 @@ const Totals = z.object({
 const TranscriptionFields = {
   language: z.string().optional().openapi({ description: "The audio's language, ISO 639-1 (en) or a locale (pt-BR); detected when left out" }),
   prompt: z.string().max(2_000).optional().openapi({ description: "Words and spellings to expect (names, jargon), or the conversation so far: a hint to the model, at most 2,000 characters" }),
-  timestamps: z.boolean().optional().openapi({ description: "true: also return segments with their start and end times. Uses openai/whisper-1, priced apart" }),
   keyScope: z.string().optional().openapi({ description: "A key scope whose OpenAI key is used first, before the tenant's own" }),
   subject: z.string().optional().openapi({ description: "Who it is for (a user id in your app): usage.recorded's subject" }),
   context: z.record(z.string(), z.unknown()).optional().openapi({ description: "Your claims (org, workspace…), carried as usage.recorded's context; at most 4 KB" }),
@@ -620,7 +619,7 @@ export const TranscriptionInput = z.strictObject({
 }).refine(input => (input.data === undefined) !== (input.url === undefined), "Send the audio as data (base64) or url, one of them").openapi("TranscriptionInput");
 export const TranscriptionForm = z.object({
   file: z.any().openapi({ type: "string", format: "binary", description: "The audio: Ogg (Opus, Vorbis), WebM, MP3, M4A/MP4, WAV or FLAC; at most 25 MB and 30 minutes" }),
-  language: TranscriptionFields.language, prompt: TranscriptionFields.prompt, timestamps: z.enum(["true", "false"]).optional(), keyScope: TranscriptionFields.keyScope,
+  language: TranscriptionFields.language, prompt: TranscriptionFields.prompt, keyScope: TranscriptionFields.keyScope,
   subject: TranscriptionFields.subject, context: z.string().optional().openapi({ description: "JSON of your claims, as context above" }), actor: TranscriptionFields.actor,
 }).openapi("TranscriptionForm");
 export const Transcription = z.object({
@@ -629,7 +628,6 @@ export const Transcription = z.object({
   durationSeconds: z.number().openapi({ description: "Seconds of audio billed" }),
   model: z.string().openapi({ example: "openai/gpt-transcribe" }),
   costUsd: z.number().openapi({ description: "What it cost at the runtime's price: charged to prepaid credit when it ran on the platform's key" }),
-  segments: z.array(z.object({ start: z.number(), end: z.number(), text: z.string() })).optional().openapi({ description: "With timestamps: the transcript in segments, times in seconds" }),
 }).openapi("Transcription");
 
 export const Usage = z.object({
@@ -896,7 +894,7 @@ export const Billing = z.object({
     minPurchase: micros("Smallest purchase"), maxPurchase: micros("Largest purchase"),
     webSearch: z.object({ exa: micros("Per search Exa answers"), brave: micros("Per search Brave answers"), parallel: micros("Per search Parallel answers") }).openapi({ description: "Per web_search on the platform's key for the provider that answered" }),
     webRender: micros("Per page web_fetch has Firecrawl render on the platform's key"),
-    transcription: z.record(z.string(), z.number().int()).openapi({ description: "Micro-USD per minute of audio transcribed on the platform's key, by provider/model, billed per second", example: { "openai/gpt-transcribe": 4500, "openai/whisper-1": 6000 } }),
+    transcription: micros("Per minute of audio transcribed on the platform's OpenAI key (gpt-transcribe), billed per second"),
   }).openapi({ description: "Model usage on platform keys passes through provider-reported cost (catalog estimate if unavailable) plus provider credit funding costs; tools.search's ranking by meaning is charged at cost" }),
 }).openapi("Billing");
 export const BillingAlertChoices = z.object({ low: z.boolean(), depleted: z.boolean(), problems: z.boolean(), receipts: z.boolean() });

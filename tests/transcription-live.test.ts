@@ -8,7 +8,7 @@ import { Outbound } from "../src/outbound.ts";
 // Runs only with OPENAI_API_KEY set.
 const key = process.env.OPENAI_API_KEY;
 
-test("OpenAI transcribes a voice note (Ogg Opus) with gpt-transcribe, and gives timestamps with whisper-1", { skip: !key && "OPENAI_API_KEY is not set" }, async () => {
+test("OpenAI transcribes a voice note (Ogg Opus) with gpt-transcribe", { skip: !key && "OPENAI_API_KEY is not set" }, async () => {
   const bytes = readFileSync(new URL("./fixtures/audio/hello.ogg", import.meta.url));
   const provider = openaiTranscription({ outbound: new Outbound() });
   const audio = { bytes, header: checkedAudio(bytes) };
@@ -18,7 +18,4 @@ test("OpenAI transcribes a voice note (Ogg Opus) with gpt-transcribe, and gives 
   assert.equal(plain.model, "gpt-transcribe");
   assert.equal(plain.language, "en");
   assert.ok(plain.seconds >= 4 && plain.seconds <= 6, `billed ${plain.seconds} s`);
-  const timed = await provider.transcribe(audio, { timestamps: true, language: "en" }, { apiKey: key! }, signal);
-  assert.equal(timed.model, "whisper-1");
-  assert.ok(timed.segments?.length && timed.segments[0].end > timed.segments[0].start);
 });

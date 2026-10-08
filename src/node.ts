@@ -68,7 +68,7 @@ import { recordCreate, safeError, Steps, webhookBacklogLine } from "./metrics.ts
 import { runtimeSecrets, managedDiscordSecrets } from "./secrets.ts";
 import { checkSandbox, type CodeExecutor } from "./codemode.ts";
 import { V8Exec } from "./v8-exec.ts";
-import { pricingFromEnvironment, transcriptionPrice } from "./pricing.ts";
+import { pricingFromEnvironment } from "./pricing.ts";
 import { openaiTranscription, Transcriber } from "./transcription.ts";
 import { searchProvidersFromEnvironment, WebSearch } from "./web-search.ts";
 import { WebRender } from "./web-render.ts";
@@ -347,7 +347,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       if (resolved.source === "platform") { const limited = await accounts.billing.creditLimit(tenant); if (limited) throw limited; }
       return { apiKey: resolved.key, platform };
     },
-    price: model => transcriptionPrice(accounts.billing.pricing, model),
+    price: () => accounts.billing.pricing.transcription,
   });
   const toolSources = new ToolSources({ accounts, mcp, outbound, signer, search, render, get scheduler() { return scheduler; }, get volumes() { return volumes; }, get links() { return links; } });
   // Tenants' own OpenAI-compatible model providers.

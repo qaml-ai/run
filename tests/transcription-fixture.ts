@@ -31,9 +31,7 @@ async function fakeOpenAI(t: T) {
     const form = await new Request("http://x", { method: "POST", headers: { "Content-Type": req.headers["content-type"]! }, body: Buffer.concat(chunks) }).formData();
     const file = form.get("file") as File;
     requests.push({ key: String(req.headers.authorization), model: String(form.get("model")), language: form.get("language") as string | null, name: file.name, bytes: file.size });
-    const body = form.get("model") === "whisper-1"
-      ? { language: "english", duration: 4.03, text: "Hello from camelRun.", segments: [{ start: 0, end: 4, text: "Hello from camelRun." }], usage: { type: "duration", seconds: 5 } }
-      : { text: "Hello from camelRun.", languages: [{ code: "en" }], usage: { type: "duration", seconds: 5 } };
+    const body = { text: "Hello from camelRun.", languages: [{ code: "en" }], usage: { type: "duration", seconds: 5 } };
     res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(body));
   });
   return { base, requests };
@@ -48,7 +46,7 @@ export async function start(t: T) {
     AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", AGENT_TRANSCRIPTION_URL: openai.base,
     AGENT_BILLING_ADMINS: "ops", AGENT_PRICE_AGENT_HOUR_USD: "0",
     // A cent a second, so charges are round.
-    AGENT_PRICE_TRANSCRIPTION_GPT_TRANSCRIBE_USD: "0.6", AGENT_PRICE_TRANSCRIPTION_WHISPER_1_USD: "0.6",
+    AGENT_PRICE_TRANSCRIPTION_USD: "0.6",
   }, tenantsFile);
   return { r, openai };
 }

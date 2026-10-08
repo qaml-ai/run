@@ -5,7 +5,7 @@ import { audioHeader } from "../src/audio-header.ts";
 import { checkedAudio, openaiTranscription, Transcriber, type TranscriptionProvider } from "../src/transcription.ts";
 import { describeFile, sniffContentType, type FileRef } from "../src/files.ts";
 import { Outbound } from "../src/outbound.ts";
-import { DEFAULT_PRICING, micros, pricingFromEnvironment, transcriptionPrice } from "../src/pricing.ts";
+import { DEFAULT_PRICING, micros, pricingFromEnvironment } from "../src/pricing.ts";
 import { usageEvent } from "../src/webhooks.ts";
 import { listen } from "./runtime-server.ts";
 
@@ -88,9 +88,7 @@ async function fakeOpenAI(t: Parameters<typeof listen>[0], answer: (form: FormDa
 }
 
 test("OpenAI's provider sends the audio named by its format, on the key given, and reads the transcript and billed seconds", async t => {
-  const openai = await fakeOpenAI(t, form => form.get("model") === "whisper-1"
-    ? { body: { task: "transcribe", language: "english", duration: 4.03, text: " Hello. ", segments: [{ id: 0, start: 0, end: 4, text: " Hello. " }], usage: { type: "duration", seconds: 5 } } }
-    : form.get("language") === "xx" ? { status: 400, body: { error: { message: "Invalid language 'xx'" } } }
+  const openai = await fakeOpenAI(t, form => form.get("language") === "xx" ? { status: 400, body: { error: { message: "Invalid language 'xx'" } } }
     : form.get("prompt") === "denied" ? { status: 401, body: { error: { message: "bad key" } } }
     : { body: { text: "Hello from camelRun.", languages: [{ code: "en" }], usage: { type: "duration", seconds: 5 } } });
   const provider = openaiTranscription({ outbound: new Outbound({ allowHttp: true, allow: ["127.0.0.1/32"] }), baseUrl: openai.base });
@@ -104,9 +102,7 @@ test("OpenAI's provider sends the audio named by its format, on the key given, a
   assert.equal((sent.form.get("file") as File).name, "audio.ogg", "OpenAI reads the format from the name");
   assert.equal((sent.form.get("file") as File).size, audio.bytes.length);
 
-  const timed = await provider.transcribe(audio, { timestamps: true }, { apiKey: "sk-test" }, signal);
-  assert.deepEqual(timed, { text: "Hello.", language: "english", seconds: 5, model: "whisper-1", segments: [{ start: 0, end: 4, text: "Hello." }] });
-  assert.equal(openai.requests[1].form.get("response_format"), "verbose_json");
+  assert.equal(sent.form.get("response_format"), null, "plain json, the one format gpt-transcribe answers in");
 
   await assert.rejects(provider.transcribe(audio, { language: "xx" }, { apiKey: "sk-test" }, signal), (error: any) => error.status === 400 && /Invalid language 'xx'/.test(error.message));
   await assert.rejects(provider.transcribe(audio, { prompt: "denied" }, { apiKey: "sk-bad" }, signal), (error: any) => error.status === 502 && error.code === "TRANSCRIPTION_FAILED" && /rejected the API key/.test(error.message) && !error.message.includes("sk-bad"));
@@ -115,14 +111,14 @@ test("OpenAI's provider sends the audio named by its format, on the key given, a
   assert.equal((await provider.transcribe(audio, {}, { apiKey: "sk-scope", baseUrl: other.base, headers: { "x-gateway": "1" } }, signal)).text, "via gateway");
 });
 
-test("a transcription is priced per second of audio at its model's rate, refused when its estimate passes the budget, and needs a key", async () => {
+test("a transcription is priced per second of audio, refused when its estimate passes the budget, and needs a key", async () => {
   const seen: { tenant: string; keyScope?: string }[] = [];
   const provider: TranscriptionProvider = {
-    id: "openai", model: options => options.timestamps ? "whisper-1" : "gpt-transcribe",
-    transcribe: async (_audio, options) => ({ text: "hi", seconds: 61, model: options.timestamps ? "whisper-1" : "gpt-transcribe" }),
+    id: "openai", model: "gpt-transcribe",
+    transcribe: async () => ({ text: "hi", seconds: 61, model: "gpt-transcribe" }),
   };
   const transcriber = new Transcriber({
-    provider, price: model => transcriptionPrice(DEFAULT_PRICING, model),
+    provider, price: () => DEFAULT_PRICING.transcription,
     key: async (tenant, keyScope) => { seen.push({ tenant, ...(keyScope ? { keyScope } : {}) }); return tenant === "nokey" ? undefined : { apiKey: "k", platform: tenant === "payg" }; },
   });
   const audio = { bytes: fixture("tone.ogg"), header: checkedAudio(fixture("tone.ogg")) };
@@ -130,19 +126,16 @@ test("a transcription is priced per second of audio at its model's rate, refused
   const done = await transcriber.transcribe({ tenant: "payg", keyScope: "org_1" }, audio, {}, signal);
   assert.deepEqual(done.usage, { provider: "openai", model: "gpt-transcribe", usage: { cost: { total: 61 * micros(0.0045) / 60 / 1e6 } }, platform: true, kind: "transcription", transcriptions: 1, audioSeconds: 61, timestamp: done.usage.timestamp });
   assert.deepEqual(seen.at(-1), { tenant: "payg", keyScope: "org_1" });
-  assert.equal((await transcriber.transcribe({ tenant: "own" }, audio, { timestamps: true }, signal)).usage.usage.cost.total, 61 * micros(0.006) / 60 / 1e6);
+  assert.equal((await transcriber.transcribe({ tenant: "own" }, audio, {}, signal)).usage.platform, false, "on the tenant's own key");
   assert.equal(transcriber.cost(1.2), 2 * micros(0.0045) / 60 / 1e6, "whole seconds, as OpenAI bills");
   await assert.rejects(transcriber.transcribe({ tenant: "payg", budget: 0.0001 }, audio, {}, signal), (error: any) => error.status === 402 && error.code === "SPEND_LIMIT");
   await assert.rejects(transcriber.transcribe({ tenant: "nokey" }, audio, {}, signal), (error: any) => error.status === 400 && /PUT \/v1\/providers\/openai\/key/.test(error.message));
 });
 
-test("transcription prices are the runtime's, per minute, set by the operator; a model not listed costs the dearest rate", () => {
-  assert.equal(DEFAULT_PRICING.transcription["openai/gpt-transcribe"], micros(0.0045));
-  const pricing = pricingFromEnvironment({ AGENT_PRICE_TRANSCRIPTION_GPT_TRANSCRIBE_USD: "0.01", AGENT_PRICE_TRANSCRIPTION_WHISPER_1_USD: "0.02" });
-  assert.equal(pricing.transcription["openai/gpt-transcribe"], micros(0.01));
-  assert.equal(pricing.transcription["openai/whisper-1"], micros(0.02));
-  assert.equal(transcriptionPrice(pricing, "openai/unlisted"), micros(0.02));
-  assert.throws(() => pricingFromEnvironment({ AGENT_PRICE_TRANSCRIPTION_GPT_TRANSCRIBE_USD: "-1" }));
+test("the transcription price is the runtime's, per minute, set by the operator", () => {
+  assert.equal(DEFAULT_PRICING.transcription, micros(0.0045));
+  assert.equal(pricingFromEnvironment({ AGENT_PRICE_TRANSCRIPTION_USD: "0.01" }).transcription, micros(0.01));
+  assert.throws(() => pricingFromEnvironment({ AGENT_PRICE_TRANSCRIPTION_USD: "-1" }));
 });
 
 test("a transcription's usage.recorded event says so: its seconds, no tokens, and no agent when none made it", () => {

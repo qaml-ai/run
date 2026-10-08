@@ -15,17 +15,16 @@ import { safeError } from "./metrics.ts";
  * model's price per minute of audio). Audio is never written to a log, nor is a transcript: logs carry
  * sizes, lengths, models and error classes.
  */
-export type Segment = { start: number; end: number; text: string };
-export type Transcript = { text: string; language?: string; seconds: number; model: string; segments?: Segment[] };
-export type TranscriptionOptions = { language?: string; prompt?: string; timestamps?: boolean };
+export type Transcript = { text: string; language?: string; seconds: number; model: string };
+export type TranscriptionOptions = { language?: string; prompt?: string };
 /** A provider's key (and where it sends, when a key scope gives an address), as a model call's would be. */
 export type TranscriptionCredentials = { apiKey: string; baseUrl?: string; headers?: Record<string, string> };
 
 export interface TranscriptionProvider {
   /** The provider key it uses: PUT /v1/providers/<id>/key, as for that provider's models. */
   id: string;
-  /** The model a request with these options uses, as its price is listed (`Pricing.transcription`, `<id>/<model>`). */
-  model(options: TranscriptionOptions): string;
+  /** The one model it transcribes with, priced at `Pricing.transcription`. */
+  model: string;
   transcribe(audio: { bytes: Uint8Array; header: AudioHeader }, options: TranscriptionOptions, credentials: TranscriptionCredentials, signal: AbortSignal): Promise<Transcript>;
 }
 
@@ -36,25 +35,24 @@ export class TranscriptionFailed extends HttpError {
 
 const EXTENSIONS: Record<AudioFormat, string> = { ogg: "ogg", webm: "webm", wav: "wav", flac: "flac", mp4: "m4a", mp3: "mp3" };
 
+/** The model transcription uses: OpenAI's recommended one for recorded speech, billed per second of audio. */
+export const TRANSCRIPTION_MODEL = "gpt-transcribe";
+
 /**
- * OpenAI's transcription API. `gpt-transcribe` by default (its recommended model, billed per second of audio);
- * with timestamps, `whisper-1`, the one of its models that returns segments. OpenAI names the format by the
- * file's extension, so the upload is named for what its header says it is.
+ * OpenAI's transcription API, with `gpt-transcribe`. OpenAI names the format by the file's extension, so the upload is
+ * named for what its header says it is.
  */
-export function openaiTranscription(options: { outbound: Outbound; baseUrl?: string; model?: string; timestampsModel?: string; timeoutMs?: number }): TranscriptionProvider {
-  const { outbound, baseUrl = "https://api.openai.com/v1", model = "gpt-transcribe", timestampsModel = "whisper-1", timeoutMs = AUDIO_LIMITS.timeoutMs } = options;
-  const pick = (asked: TranscriptionOptions) => asked.timestamps ? timestampsModel : model;
+export function openaiTranscription(options: { outbound: Outbound; baseUrl?: string; timeoutMs?: number }): TranscriptionProvider {
+  const { outbound, baseUrl = "https://api.openai.com/v1", timeoutMs = AUDIO_LIMITS.timeoutMs } = options;
   return {
     id: "openai",
-    model: pick,
+    model: TRANSCRIPTION_MODEL,
     async transcribe({ bytes, header }, asked, credentials, signal) {
-      const chosen = pick(asked);
       const form = new FormData();
-      form.set("model", chosen);
+      form.set("model", TRANSCRIPTION_MODEL);
       form.set("file", new Blob([bytes as Uint8Array<ArrayBuffer>], { type: header.contentType }), `audio.${EXTENSIONS[header.format]}`);
       if (asked.language) form.set("language", asked.language);
       if (asked.prompt) form.set("prompt", asked.prompt);
-      if (asked.timestamps) { form.set("response_format", "verbose_json"); form.append("timestamp_granularities[]", "segment"); }
       const url = `${(credentials.baseUrl ?? baseUrl).replace(/\/+$/, "")}/audio/transcriptions`;
       let response: Response;
       try {
@@ -76,15 +74,10 @@ export function openaiTranscription(options: { outbound: Outbound; baseUrl?: str
       }
       const body: any = await response.json().catch(() => undefined);
       if (typeof body?.text !== "string") throw new TranscriptionFailed(502, "OpenAI answered without a transcript");
-      // What OpenAI bills: whole seconds of audio (`usage.duration`), else the length it heard, else the header's.
-      const billed = body.usage?.type === "duration" && Number.isFinite(body.usage.seconds) ? Number(body.usage.seconds) : undefined;
-      const seconds = billed ?? (Number.isFinite(body.duration) ? Math.ceil(body.duration) : Math.ceil(header.seconds ?? 0));
-      const language = typeof body.language === "string" ? body.language : typeof body.languages?.[0]?.code === "string" ? body.languages[0].code : undefined;
-      const segments = Array.isArray(body.segments)
-        ? body.segments.filter((segment: any) => Number.isFinite(segment?.start) && Number.isFinite(segment?.end) && typeof segment?.text === "string")
-          .map((segment: any): Segment => ({ start: segment.start, end: segment.end, text: segment.text.trim() }))
-        : undefined;
-      return { text: body.text.trim(), ...(language ? { language } : {}), seconds, model: chosen, ...(asked.timestamps ? { segments: segments ?? [] } : {}) };
+      // What OpenAI bills: whole seconds of audio (`usage.duration`), else the header's length.
+      const seconds = body.usage?.type === "duration" && Number.isFinite(body.usage.seconds) ? Number(body.usage.seconds) : Math.ceil(header.seconds ?? 0);
+      const language = typeof body.languages?.[0]?.code === "string" ? body.languages[0].code : undefined;
+      return { text: body.text.trim(), ...(language ? { language } : {}), seconds, model: TRANSCRIPTION_MODEL };
     },
   };
 }
@@ -110,8 +103,8 @@ export interface TranscriberOptions {
   provider: TranscriptionProvider;
   /** The provider's key for a tenant (in a key scope), and whether it is the platform's; throws when the tenant may not use it (spent credit). */
   key(tenant: string, keyScope: string | undefined, provider: string): Promise<(TranscriptionCredentials & { platform: boolean }) | undefined>;
-  /** Micro-USD per minute of audio with `model` (`<provider>/<model>`); the dearest listed rate for one not listed. */
-  price(model: string): number;
+  /** Micro-USD per minute of audio. */
+  price(): number;
 }
 
 /** A finished transcription and what it cost, for usage records. */
@@ -123,9 +116,9 @@ export class Transcriber {
 
   get provider() { return this.options.provider.id; }
 
-  /** What `seconds` of audio cost (USD) with these options: billed per second, as the provider bills. */
-  cost(seconds: number, options: TranscriptionOptions = {}) {
-    return Math.ceil(seconds) * this.options.price(`${this.options.provider.id}/${this.options.provider.model(options)}`) / 60 / MICROS;
+  /** What `seconds` of audio cost (USD): billed per second, as the provider bills. */
+  cost(seconds: number) {
+    return Math.ceil(seconds) * this.options.price() / 60 / MICROS;
   }
 
   /**
@@ -137,12 +130,12 @@ export class Transcriber {
     const { provider } = this.options;
     const key = await this.options.key(context.tenant, context.keyScope, provider.id);
     if (!key) throw new HttpError(400, `Transcription needs an OpenAI key: add one under Models & keys (PUT /v1/providers/${provider.id}/key)${context.keyScope ? `, or to key scope ${context.keyScope}` : ""}`, "TRANSCRIPTION_UNAVAILABLE");
-    const estimate = this.cost(audio.header.seconds, options);
+    const estimate = this.cost(audio.header.seconds);
     if (context.budget !== undefined && estimate > context.budget) throw new HttpError(402, `Transcribing this audio costs about $${estimate.toFixed(4)}, more than the $${Math.max(0, context.budget).toFixed(4)} left of this run's spend limit`, "SPEND_LIMIT");
     const { platform, ...credentials } = key;
     const started = Date.now();
     const transcript = await provider.transcribe(audio, options, credentials, signal);
-    const usd = transcript.seconds * this.options.price(`${provider.id}/${transcript.model}`) / 60 / MICROS;
+    const usd = this.cost(transcript.seconds);
     console.log(JSON.stringify({ type: "transcribed", tenant: context.tenant, provider: provider.id, model: transcript.model, format: audio.header.format, bytes: audio.bytes.length, seconds: transcript.seconds, ms: Date.now() - started }));
     return { transcript, usage: { provider: provider.id, model: transcript.model, usage: { cost: { total: usd } }, platform, kind: "transcription", transcriptions: 1, audioSeconds: transcript.seconds, timestamp: Date.now() } };
   }
@@ -168,7 +161,7 @@ export interface TranscriptionService {
 
 /** A transcription asked for alone (`POST /v1/transcriptions`): nothing is kept of the audio or its transcript. */
 export async function transcribeRequest(service: TranscriptionService, tenant: string, request: TranscriptionRequest, signal: AbortSignal) {
-  const options: TranscriptionOptions = { ...(request.language ? { language: request.language } : {}), ...(request.prompt ? { prompt: request.prompt } : {}), ...(request.timestamps ? { timestamps: true } : {}) };
+  const options: TranscriptionOptions = { ...(request.language ? { language: request.language } : {}), ...(request.prompt ? { prompt: request.prompt } : {}) };
   await service.admit(tenant);
   const bytes = "bytes" in request.audio ? request.audio.bytes : await fetchAudio(service.outbound, request.audio.url, signal);
   const header = checkedAudio(bytes);
@@ -176,7 +169,7 @@ export async function transcribeRequest(service: TranscriptionService, tenant: s
   service.record(tenant, { ...usage, ...(request.actor ? { actor: request.actor } : {}), ...(request.identity ? { identity: request.identity } : {}), ...(request.keyScope ? { keyScope: request.keyScope } : {}) });
   return {
     text: transcript.text, language: transcript.language ?? null, durationSeconds: transcript.seconds, model: `${service.transcriber.provider}/${transcript.model}`,
-    costUsd: usage.usage.cost.total as number, ...(transcript.segments ? { segments: transcript.segments } : {}),
+    costUsd: usage.usage.cost.total as number,
   };
 }
 

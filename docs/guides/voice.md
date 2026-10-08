@@ -84,7 +84,6 @@ either:
 | --- | --- |
 | `language` | ISO 639-1 (`en`) or a locale (`pt-BR`); detected when left out |
 | `prompt` | names, jargon or the conversation so far, as a hint (at most 2,000 characters) |
-| `timestamps` | `true`: also `segments: [{start, end, text}]` (seconds). Uses `openai/whisper-1`, priced apart |
 | `keyScope` | a key scope whose OpenAI key goes first |
 | `subject`, `context`, `actor` | who it is for and who asked, carried to its `usage.recorded` event, as an agent's identity is |
 
@@ -108,11 +107,11 @@ refuses, 400.
 
 ## Billing
 
-On the platform's key, a transcription costs its model's price per minute, per second of audio as the provider
-bills it: $0.0045 a minute with `gpt-transcribe`, $0.006 with `whisper-1` (`timestamps`). On your own key or a
+On the platform's key, a transcription costs $0.0045 a minute of audio (`gpt-transcribe`'s price), per second as
+the provider bills it. On your own key or a
 key scope's, OpenAI bills you and camelRun charges nothing. Either way it is recorded:
 
-- in `GET /v1/usage`, a row per day and model with `kind: "transcription"` (`responses` counts transcriptions);
+- in `GET /v1/usage`, a row per day with `kind: "transcription"` and model `openai/gpt-transcribe` (`responses` counts transcriptions);
 - in the hour's ledger entry, as `transcription` (micro-USD), `transcriptions` and `audioSeconds`;
 - as a [`usage.recorded`](webhooks.md) event with `kind: "transcription"`, `audioSeconds` and no tokens. In a
   message it carries the run's `requestId`, `actor`, the agent's identity and key scope; on its own,
@@ -133,6 +132,7 @@ for training). See [Account data](../operations/privacy.md#transcription).
 
 - **Audio to the model itself.** Every model reads the transcript today; models that hear audio natively may be
   given the sound later, beside it.
+- **Timestamps or speaker labels.** Transcripts are text only, from the one model.
 - **Live voice.** Transcription of streaming audio as it is spoken (OpenAI's realtime transcription sessions),
   and speech out (text to speech), are not offered yet.
 - **Audio in `initialMessages`.** Transcribe it first with `POST /v1/transcriptions` and import the text.

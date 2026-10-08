@@ -800,7 +800,7 @@ export function api(context: ApiContext) {
       try { claims = field("context") === undefined ? undefined : JSON.parse(field("context")!); } catch { throw new HttpError(400, "context must be JSON"); }
       input = parse(schema.TranscriptionInput, {
         data: "", ...Object.fromEntries(["language", "prompt", "keyScope", "subject", "actor"].flatMap(name => field(name) === undefined ? [] : [[name, field(name)]])),
-        ...(field("timestamps") !== undefined ? { timestamps: field("timestamps") === "true" } : {}), ...(claims !== undefined ? { context: claims } : {}),
+        ...(claims !== undefined ? { context: claims } : {}),
       });
     } else {
       // Base64 of the largest audio, and the fields.
@@ -814,7 +814,7 @@ export function api(context: ApiContext) {
     const actor = actorInput(input.actor);
     const language = languageInput(input.language);
     return json(c, 200, await transcribeRequest(service, c.var.principal.tenant, {
-      audio: bytes ? { bytes } : { url: input.url! }, ...(language ? { language } : {}), ...(input.prompt ? { prompt: input.prompt } : {}), ...(input.timestamps ? { timestamps: true } : {}),
+      audio: bytes ? { bytes } : { url: input.url! }, ...(language ? { language } : {}), ...(input.prompt ? { prompt: input.prompt } : {}),
       ...(input.keyScope ? { keyScope: input.keyScope } : {}), ...(identity ? { identity } : {}), ...(actor ? { actor } : {}),
     }, c.req.raw.signal));
   });

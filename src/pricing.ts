@@ -16,8 +16,8 @@ export interface Pricing {
   webSearch: { exa: number; brave: number; parallel: number };
   /** Per page web_fetch has Firecrawl render on the platform's key (one Firecrawl credit at its Standard plan's price by default). */
   webRender: number;
-  /** Per minute of audio transcribed on the platform's key, by `<provider>/<model>`, billed per second as the provider bills it. */
-  transcription: Record<string, number>;
+  /** Per minute of audio transcribed on the platform's key (OpenAI's gpt-transcribe), billed per second as the provider bills it. */
+  transcription: number;
   /** Fee on a credit purchase, in basis points (550 = 5.5%). */
   purchaseFeeBps: number;
   minPurchase: number;
@@ -49,8 +49,8 @@ export const DEFAULT_PRICING: Pricing = Object.freeze({
   openrouterCreditMultiplier: 1.055,
   webSearch: Object.freeze({ exa: micros(0.007), brave: micros(0.005), parallel: micros(0.001) }),
   webRender: micros(0.00083),
-  // OpenAI's list prices per minute: gpt-transcribe for transcripts, whisper-1 for timestamps.
-  transcription: Object.freeze({ "openai/gpt-transcribe": micros(0.0045), "openai/whisper-1": micros(0.006), "openai/gpt-4o-transcribe": micros(0.006), "openai/gpt-4o-mini-transcribe": micros(0.003) }),
+  // OpenAI's list price for gpt-transcribe.
+  transcription: micros(0.0045),
   purchaseFeeBps: 550,
   minPurchase: micros(5),
   maxPurchase: micros(1000),
@@ -68,7 +68,7 @@ export const DEFAULT_PRICING: Pricing = Object.freeze({
 
 /**
  * Rates from the environment, in USD (AGENT_PRICE_AGENT_HOUR_USD, AGENT_PRICE_STORAGE_GB_MONTH_USD,
- * AGENT_PRICE_WEB_SEARCH_<EXA|BRAVE|PARALLEL>_USD (or AGENT_PRICE_WEB_SEARCH_USD for all three), AGENT_PRICE_WEB_RENDER_USD, AGENT_PRICE_TRANSCRIPTION_<MODEL>_USD (per minute: GPT_TRANSCRIBE, WHISPER_1, ...), AGENT_CREDIT_FEE_PERCENT, AGENT_CREDIT_MIN_PURCHASE_USD, AGENT_CREDIT_MAX_PURCHASE_USD,
+ * AGENT_PRICE_WEB_SEARCH_<EXA|BRAVE|PARALLEL>_USD (or AGENT_PRICE_WEB_SEARCH_USD for all three), AGENT_PRICE_WEB_RENDER_USD, AGENT_PRICE_TRANSCRIPTION_USD (per minute of audio), AGENT_CREDIT_FEE_PERCENT, AGENT_CREDIT_MIN_PURCHASE_USD, AGENT_CREDIT_MAX_PURCHASE_USD,
  * AGENT_CREDIT_GRANT_USD, AGENT_FREE_HOURLY_SPEND_USD, AGENT_USAGE_TIERS) and storage limits in GB (AGENT_MAX_STORAGE_GB,
  * AGENT_FREE_MAX_STORAGE_GB); unset ones keep the defaults.
  * AGENT_OPENROUTER_CREDIT_MULTIPLIER is the actual dollars paid per dollar of provider credit.
@@ -102,7 +102,7 @@ export function pricingFromEnvironment(env = process.env): Pricing {
       parallel: usd("AGENT_PRICE_WEB_SEARCH_PARALLEL_USD", usd("AGENT_PRICE_WEB_SEARCH_USD", DEFAULT_PRICING.webSearch.parallel)),
     },
     webRender: usd("AGENT_PRICE_WEB_RENDER_USD", DEFAULT_PRICING.webRender),
-    transcription: Object.fromEntries(Object.entries(DEFAULT_PRICING.transcription).map(([model, price]) => [model, usd(`AGENT_PRICE_TRANSCRIPTION_${model.split("/")[1].toUpperCase().replace(/[^A-Z0-9]/g, "_")}_USD`, price)])),
+    transcription: usd("AGENT_PRICE_TRANSCRIPTION_USD", DEFAULT_PRICING.transcription),
     purchaseFeeBps: fee,
     minPurchase: usd("AGENT_CREDIT_MIN_PURCHASE_USD", DEFAULT_PRICING.minPurchase),
     maxPurchase: usd("AGENT_CREDIT_MAX_PURCHASE_USD", DEFAULT_PRICING.maxPurchase),
@@ -146,9 +146,6 @@ export const activeCharge = (pricing: Pricing, ms: number) => Math.round(ms * pr
 
 /** One day's charge for `bytes` stored, in a month of `days` days. */
 export const storageCharge = (pricing: Pricing, bytes: number, days: number) => Math.round(bytes * pricing.storageGbMonth / 1e9 / days);
-
-/** Micro-USD per minute of audio with `model` (`<provider>/<model>`): a model not listed costs the dearest listed rate. */
-export const transcriptionPrice = (pricing: Pricing, model: string) => pricing.transcription[model] ?? Math.max(0, ...Object.values(pricing.transcription));
 
 /** The fee on buying `amount` of credit, rounded to the cent, as Stripe charges whole cents. */
 export const purchaseFee = (pricing: Pricing, amount: number) => Math.round(amount * pricing.purchaseFeeBps / 10_000 / 10_000) * 10_000;

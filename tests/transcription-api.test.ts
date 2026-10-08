@@ -16,11 +16,12 @@ test("POST /v1/transcriptions takes audio as base64, multipart or a URL, runs on
 
   const form = new FormData();
   form.set("file", new Blob([HELLO], { type: "audio/ogg" }), "voice-message.ogg");
-  form.set("timestamps", "true");
+  form.set("prompt", "camelRun");
   const multipart = await fetch(`${r.base}/v1/transcriptions`, { method: "POST", headers: { Authorization: `Bearer ${PAYG}` }, body: form });
   assert.equal(multipart.status, 200);
-  assert.deepEqual((await multipart.json()).segments, [{ start: 0, end: 4, text: "Hello from camelRun." }]);
-  assert.equal(openai.requests.at(-1)!.model, "whisper-1", "timestamps come from whisper-1");
+  assert.equal((await multipart.json()).text, "Hello from camelRun.");
+  assert.equal(openai.requests.at(-1)!.model, "gpt-transcribe");
+  assert.equal((await r.call("/v1/transcriptions", { body: { data: HELLO.toString("base64"), timestamps: true }, token: PAYG })).status, 400, "no timestamps option");
 
   const byUrl = await r.call("/v1/transcriptions", { body: { url: `${openai.base}/hello.ogg` }, token: PAYG });
   assert.equal(byUrl.status, 200, byUrl.text);
@@ -39,7 +40,7 @@ test("POST /v1/transcriptions takes audio as base64, multipart or a URL, runs on
   // Three transcriptions of 5 seconds at a cent a second: $0.15 of credit, a usage row of their own, and an event each.
   await until(async () => (await r.call("/v1/billing", { token: PAYG })).json.balance === 850_000, "the transcriptions' charge");
   const usage = (await r.call("/v1/usage", { token: PAYG })).json.days;
-  assert.deepEqual(usage.filter((day: any) => day.kind === "transcription").map((day: any) => [day.model, day.responses, day.platformCost]).sort(), [["openai/gpt-transcribe", 2, 0.1], ["openai/whisper-1", 1, 0.05]]);
+  assert.deepEqual(usage.filter((day: any) => day.kind === "transcription").map((day: any) => [day.model, day.responses, Math.round(day.platformCost * 1e6)]), [["openai/gpt-transcribe", 3, 150_000]]);
   const ledger = (await r.call("/v1/billing/ledger", { token: PAYG })).json.entries.find((entry: any) => entry.kind === "usage");
   assert.deepEqual([ledger.metadata.transcription, ledger.metadata.transcriptions, ledger.metadata.audioSeconds], [150_000, 3, 15]);
   const { rows } = await r.db.query("select body from webhook_deliveries where tenant = 'payg' order by created_at");

@@ -409,7 +409,7 @@ export class Billing {
       startingCredit: mode === "prepaid" ? await this.startingCredit(tenant) : { status: "not_applicable" as const, amount: 0 },
       month: { since, ...thisMonth },
       recent: (await this.ledger(tenant, { limit: 10 })).entries,
-      rates: { agentHour: pricing.agentHour, storageGbMonth: pricing.storageGbMonth, openrouterCreditMultiplier: pricing.openrouterCreditMultiplier, purchaseFeeBps: pricing.purchaseFeeBps, minPurchase: pricing.minPurchase, maxPurchase: pricing.maxPurchase, webSearch: { ...pricing.webSearch }, webRender: pricing.webRender, transcription: { ...pricing.transcription } },
+      rates: { agentHour: pricing.agentHour, storageGbMonth: pricing.storageGbMonth, openrouterCreditMultiplier: pricing.openrouterCreditMultiplier, purchaseFeeBps: pricing.purchaseFeeBps, minPurchase: pricing.minPurchase, maxPurchase: pricing.maxPurchase, webSearch: { ...pricing.webSearch }, webRender: pricing.webRender, transcription: pricing.transcription },
     };
   }
 

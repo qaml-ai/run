@@ -3929,29 +3929,6 @@
           "costUsd": {
             "type": "number",
             "description": "What it cost at the runtime's price: charged to prepaid credit when it ran on the platform's key"
-          },
-          "segments": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "start": {
-                  "type": "number"
-                },
-                "end": {
-                  "type": "number"
-                },
-                "text": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "start",
-                "end",
-                "text"
-              ]
-            },
-            "description": "With timestamps: the transcript in segments, times in seconds"
           }
         },
         "required": [
@@ -3981,10 +3958,6 @@
             "type": "string",
             "maxLength": 2000,
             "description": "Words and spellings to expect (names, jargon), or the conversation so far: a hint to the model, at most 2,000 characters"
-          },
-          "timestamps": {
-            "type": "boolean",
-            "description": "true: also return segments with their start and end times. Uses openai/whisper-1, priced apart"
           },
           "keyScope": {
             "type": "string",
@@ -4022,13 +3995,6 @@
             "type": "string",
             "maxLength": 2000,
             "description": "Words and spellings to expect (names, jargon), or the conversation so far: a hint to the model, at most 2,000 characters"
-          },
-          "timestamps": {
-            "type": "string",
-            "enum": [
-              "true",
-              "false"
-            ]
           },
           "keyScope": {
             "type": "string",
@@ -4239,15 +4205,8 @@
                 "description": "Per page web_fetch has Firecrawl render on the platform's key, in micro-USD (1 USD = 1000000)"
               },
               "transcription": {
-                "type": "object",
-                "additionalProperties": {
-                  "type": "integer"
-                },
-                "description": "Micro-USD per minute of audio transcribed on the platform's key, by provider/model, billed per second",
-                "example": {
-                  "openai/gpt-transcribe": 4500,
-                  "openai/whisper-1": 6000
-                }
+                "type": "integer",
+                "description": "Per minute of audio transcribed on the platform's OpenAI key (gpt-transcribe), billed per second, in micro-USD (1 USD = 1000000)"
               }
             },
             "required": [

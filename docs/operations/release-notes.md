@@ -16,7 +16,7 @@ Changes on main since the last tag.
   transcript. A file of type `audio/*` is transcribed by default (`transcribe: false` keeps it a plain file; `true`
   asks for any file); a message with audio needs no `text`. Files attach by URL too (`{url}`, fetched through the
   outbound guard). `POST /v1/transcriptions` transcribes audio alone (multipart, base64 or a URL; `language`,
-  `prompt`, `timestamps`). It runs on OpenAI's `gpt-transcribe` (`whisper-1` for timestamps) with the tenant's OpenAI
+  `prompt`). It runs on OpenAI's `gpt-transcribe` with the tenant's OpenAI
   key as model calls resolve it, else the platform's: $0.0045 a minute, per second, on prepaid credit. Ogg (Opus,
   Vorbis), WebM, MP3, M4A/MP4, WAV and FLAC, 25 MB and 30 minutes a file, 5 files and 30 minutes a message.
   Transcriptions count toward spend limits, monthly caps and credit, and are `usage.recorded` events with the new

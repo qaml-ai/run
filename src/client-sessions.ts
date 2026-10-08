@@ -3484,8 +3484,7 @@ export class ClientSessions {
         const cost = usage.usage.cost.total as number;
         this.options.onUsage?.(tenant, session.header.id, { ...usage, ...facts });
         this.spent(session, cost);
-        const { segments: _segments, ...kept } = transcript;
-        plain[index] = { ...plain[index], transcript: kept, cost };
+        plain[index] = { ...plain[index], transcript, cost };
       } catch (error) { failed(index, error); }
     }));
     const refused = done.find(result => result.status === "rejected");
