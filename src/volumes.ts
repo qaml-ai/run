@@ -365,7 +365,7 @@ export class VolumeService {
         return await this.readAll(volume.header.tenant, at, args);
       }
       if (op === "ls") return this.ls(volume, normalizePath(args.path));
-      if (op === "changes") return this.changes(volume, Number(args.since ?? 0));
+      if (op === "changes") return this.changes(volume, Number(args.since ?? 0), args.prefix === undefined ? undefined : normalizePath(args.prefix));
       if (op === "snapshots") return this.snapshots(id);
       // Mutations run one at a time, in order.
       const run = volume.queue.then(() => this.mutate(volume, op, args));
@@ -413,9 +413,9 @@ export class VolumeService {
     return { files };
   }
 
-  private changes(volume: Volume, since: number) {
+  private changes(volume: Volume, since: number, prefix?: string) {
     const oldest = volume.changes[0]?.seq ?? volume.seq + 1;
-    return { seq: volume.seq, changes: volume.changes.filter(change => change.seq > since), ...(since < oldest - 1 && since < volume.seq ? { gap: true } : {}) };
+    return { seq: volume.seq, changes: volume.changes.filter(change => change.seq > since && (!prefix || within(change.path, prefix))), ...(since < oldest - 1 && since < volume.seq ? { gap: true } : {}) };
   }
 
   /** A snapshot's files and the seq it was taken at; 404 for one this volume does not have. */

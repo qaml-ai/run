@@ -461,6 +461,9 @@ test("the REST API and SDK manage volumes within a tenant, and nothing crosses t
   assert.equal(await project.readText("src/a.ts"), "export const a = 3;\n");
   assert.deepEqual((await project.list({ snapshot: published.id })).files.map(entry => entry.path), ["/logo.png", "/src/a.ts", "/src/b.ts"]);
   await assert.rejects(project.readAll({ snapshot: "snap_0000000000000000" }), (error: AgentError) => error.status === 404);
+  // Changes under a path, and several volumes' seqs in one request.
+  assert.deepEqual((await project.changes(0, { prefix: "/src" })).changes.map(change => [change.kind, change.path]), [["write", "/src/a.ts"], ["write", "/src/b.ts"], ["write", "/src/a.ts"], ["delete", "/src/b.ts"]]);
+  assert.deepEqual((await a.volumes([project.id, created.id])).map(entry => [entry.id, entry.seq]), [[project.id, (await project.info()).seq], [created.id, (await volume.info()).seq]]);
   await assert.rejects(b.volume(project.id).readAll(), (error: AgentError) => error.status === 404, "another tenant reads nothing");
 
   // An agent mounts the volume read-only; its default workspace is its own.

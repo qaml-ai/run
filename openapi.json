@@ -13819,15 +13819,34 @@
     },
     "/v1/volumes": {
       "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Comma-separated volume ids (at most 50): those volumes, each with its seq, files and bytes (Volume), instead of every volume"
+            },
+            "required": false,
+            "description": "Comma-separated volume ids (at most 50): those volumes, each with its seq, files and bytes (Volume), instead of every volume",
+            "name": "ids",
+            "in": "query"
+          }
+        ],
         "responses": {
           "200": {
-            "description": "The tenant's volumes",
+            "description": "The tenant's volumes; with ids, those volumes as they are now",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/VolumeSummary"
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/VolumeSummary"
+                      },
+                      {
+                        "$ref": "#/components/schemas/Volume"
+                      }
+                    ]
                   }
                 }
               }
@@ -14321,6 +14340,16 @@
             "required": false,
             "description": "Changes after this seq",
             "name": "since",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Only changes at or under this path"
+            },
+            "required": false,
+            "description": "Only changes at or under this path",
+            "name": "prefix",
             "in": "query"
           }
         ],

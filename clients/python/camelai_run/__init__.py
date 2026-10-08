@@ -624,6 +624,10 @@ class _RuntimeCalls:
     def list_volumes(self):
         return self._rest("GET", "/v1/volumes")
 
+    def volumes(self, ids):
+        """Several volumes as they are now (each one's seq, files and bytes), in one request; at most 50."""
+        return self._rest("GET", f"/v1/volumes?ids={','.join(quote(id, safe='') for id in ids)}")
+
     def mounts(self, agent_id):
         return self._rest("GET", f"/v1/agents/{quote(agent_id)}/mounts")
 
@@ -1000,8 +1004,9 @@ class Volume:
         """A new volume with this one's files (or a snapshot's); only metadata is copied."""
         return await self._json("/fork", "POST", {key: value for key, value in {"name": name, "snapshot": snapshot}.items() if value is not None})
 
-    async def changes(self, since=0):
-        return await self._json(f"/changes?since={int(since)}")
+    async def changes(self, since=0, *, prefix=None):
+        """Changes after `since` (a seq), oldest first; `prefix` keeps those at or under a path."""
+        return await self._json(f"/changes?since={int(since)}" + (f"&{urlencode({'prefix': prefix})}" if prefix else ""))
 
     async def list(self, *, prefix=None, glob=None, after=None, limit=None, snapshot=None):
         """Files under `prefix`, a page at a time; `snapshot` lists a snapshot instead."""
