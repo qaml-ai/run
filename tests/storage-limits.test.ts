@@ -154,3 +154,25 @@ test("over the API: uploads need credit, stop at the free limit with STORAGE_LIM
   assert.deepEqual((await call("/v1/tenants/lab-store/limits", { method: "PUT", body: { maxBusyAgents: null }, token: OPS })).json, { tenant: "lab-store", limits: { maxStorageGb: 2 } });
   assert.equal((await busy()).limit, 20, "back to its tier's");
 });
+
+test("a metering delta held across a reconcile (its node cut off the database) is not counted on top of the listing; one recorded after it is", async () => {
+  const { db } = await testDatabase();
+  const objects = { logs: new Map<string, Map<string, string>>(), blobs: new Map<string, Uint8Array>() };
+  const owner = "vol_" + "a".repeat(24);
+  // b meters a volume's object, and cannot write the delta yet; a reconciles meanwhile, and its listing counts the object.
+  const b = new StorageUsage(db), a = new StorageUsage(db);
+  objects.logs.set(`volumes/${owner}/tree`, new Map([["000000000000", "x".repeat(100)]]));
+  b.meter(`volumes/${owner}/tree.log/000000000000`, 100);
+  await new Promise(resolve => setTimeout(resolve, 5));
+  await a.reconcile(memoryStorage(postgresTail(db, { unfenced: true }), undefined, objects));
+  const bytes = async () => Number((await db.query("select bytes from storage_usage where kind = 'volume' and owner = $1", [owner])).rows[0]?.bytes ?? 0);
+  assert.equal(await bytes(), 100);
+  // b's delta reaches the database: dropped, the listing has it.
+  await b.flush();
+  assert.equal(await bytes(), 100);
+  // A delta recorded after the listing began counts.
+  await new Promise(resolve => setTimeout(resolve, 5));
+  b.meter(`volumes/${owner}/tree.log/000000000001`, 50);
+  await b.flush();
+  assert.equal(await bytes(), 150);
+});

@@ -26,11 +26,13 @@ const PREFIXES = ["sessions/", "client-sessions/", "volumes/", "chunks/"];
  * `meter`; deltas are added up in memory and written every few seconds to
  * `storage_usage`, one row per owner. What this cannot see (a node that dies with
  * deltas unwritten, a delete that fails halfway, writes by nodes older than
- * metering) is drift that `reconcile`, a full listing, corrects.
+ * metering) is drift that `reconcile`, a full listing, corrects. A delta recorded before a reconcile began listing, and
+ * written after (its node cut off the database meanwhile), is dropped: the listing counted its object already.
  */
 export class StorageUsage {
   readonly db: Db;
-  private pending = new Map<string, number>();
+  /** Deltas not yet written, by owner and by when they were recorded (epoch ms): see `write`. */
+  private pending = new Map<string, Map<number, number>>();
   private timer?: ReturnType<typeof setTimeout>;
   private flushes: Promise<void> = Promise.resolve();
   private readonly flushMs: number;
@@ -45,7 +47,10 @@ export class StorageUsage {
     const owner = storageOwner(key);
     if (!owner || !bytes) return;
     const id = `${owner.kind}:${owner.id}`;
-    this.pending.set(id, (this.pending.get(id) ?? 0) + bytes);
+    const at = Date.now();
+    const deltas = this.pending.get(id) ?? new Map<number, number>();
+    deltas.set(at, (deltas.get(at) ?? 0) + bytes);
+    this.pending.set(id, deltas);
     this.timer ??= setTimeout(() => void this.flush().catch(error => console.error(JSON.stringify({ type: "storage_usage_flush_failed", error: String(error) }))), this.flushMs);
     this.timer.unref?.();
   };
@@ -62,18 +67,27 @@ export class StorageUsage {
     if (!this.pending.size) return;
     const deltas = this.pending;
     this.pending = new Map();
-    const rows = [...deltas].filter(([, bytes]) => bytes).map(([id, bytes]) => {
+    const rows = [...deltas].flatMap(([id, times]) => [...times].filter(([, bytes]) => bytes).map(([at, bytes]) => {
       const colon = id.indexOf(":");
-      return { kind: id.slice(0, colon), owner: id.slice(colon + 1), bytes };
-    });
+      return { kind: id.slice(0, colon), owner: id.slice(colon + 1), bytes, at };
+    }));
     try {
+      // A delta recorded before the last reconcile began listing is in the listing already (a node cut off the
+      // database held it across the reconcile): it is dropped, not counted twice. Its time is this node's clock, the
+      // listing's the database's: the statement reads it on the database's, by how far this node's is off ($2, its now).
       // In key order, so flushes on different nodes lock rows in the same order.
       await this.db.query(`
         insert into storage_usage (kind, owner, bytes)
-        select kind, owner, bytes from jsonb_to_recordset($1::jsonb) as t(kind text, owner text, bytes bigint) order by kind, owner
-        on conflict (kind, owner) do update set bytes = storage_usage.bytes + excluded.bytes`, [JSON.stringify(rows)]);
+        select kind, owner, sum(bytes) from jsonb_to_recordset($1::jsonb) as t(kind text, owner text, bytes bigint, at bigint)
+        where t.at + (extract(epoch from clock_timestamp()) * 1000 - $2) >= coalesce((select listed_at from billing_jobs where name = 'storage-reconcile'), 0)
+        group by kind, owner order by kind, owner
+        on conflict (kind, owner) do update set bytes = storage_usage.bytes + excluded.bytes`, [JSON.stringify(rows), Date.now()]);
     } catch (error) {
-      for (const [id, bytes] of deltas) this.pending.set(id, (this.pending.get(id) ?? 0) + bytes);
+      for (const [id, times] of deltas) {
+        const kept = this.pending.get(id) ?? new Map<number, number>();
+        for (const [at, bytes] of times) kept.set(at, (kept.get(at) ?? 0) + bytes);
+        this.pending.set(id, kept);
+      }
       this.timer ??= setTimeout(() => void this.flush().catch(() => {}), this.flushMs);
       this.timer.unref?.();
       throw error;
@@ -105,20 +119,26 @@ export class StorageUsage {
       select coalesce((select greatest(bytes, 0) from storage_usage where kind = 'tenant' and owner = $1), 0)
         + coalesce((select sum(greatest(u.bytes, 0)) from agents a join storage_usage u on u.kind = 'agent' and u.owner = a.id where a.tenant = $1 and a.purged_at is null), 0)
         + coalesce((select sum(greatest(u.bytes, 0)) from volumes v join storage_usage u on u.kind = 'volume' and u.owner = v.id where v.tenant = $1 and v.deleted_at is null), 0) as bytes`, [tenant]);
-    return Math.max(0, Number(row.bytes) + (this.pending.get(`tenant:${tenant}`) ?? 0));
+    const pending = [...this.pending.get(`tenant:${tenant}`)?.values() ?? []].reduce((sum, bytes) => sum + bytes, 0);
+    return Math.max(0, Number(row.bytes) + pending);
   }
 
   /**
    * Replace the tracked totals with a full listing of Storage: every owner's bytes as
    * listed, and owners with nothing listed removed. Deltas written while the listing
    * runs may be counted twice or not at all, for objects created or deleted meanwhile;
-   * the error is that churn, until the next reconciliation. Notes the day, which the
+   * the error is that churn, until the next reconciliation. Deltas recorded before the
+   * listing began, not yet written, are dropped when written (it counted them; see
+   * `write`), on every node: it notes when it began. Notes the day, which the
    * storage job reads to tell when the next is due. Returns what it found, and each
    * tenant's bytes before and after; `dryRun` changes nothing.
    */
   async reconcile(storage: Storage, options: { now?: number; dryRun?: boolean } = {}) {
     if (!storage.objects) throw new Error("This storage cannot list its objects");
     await this.flush();
+    // Every object made before this is in the listing: a delta recorded before it, flushed later, is dropped (`write`).
+    // On the database's clock, which every node's flush reads its deltas' times against.
+    const listedAt = Number((await this.db.query("select (extract(epoch from clock_timestamp()) * 1000)::bigint as now")).rows[0].now);
     const listed = new Map<string, { kind: OwnerKind; owner: string; bytes: number }>();
     for (const prefix of PREFIXES) {
       for await (const { key, bytes } of storage.objects(prefix)) {
@@ -144,8 +164,8 @@ export class StorageUsage {
           select kind, owner, bytes from jsonb_to_recordset($1::jsonb) as t(kind text, owner text, bytes bigint)`, [JSON.stringify(rows.slice(index, index + 5000))]);
       }
       await sql.query(`
-        insert into billing_jobs (name, done_day) values ('storage-reconcile', $1::date)
-        on conflict (name) do update set done_day = excluded.done_day`, [new Date(options.now ?? Date.now()).toISOString().slice(0, 10)]);
+        insert into billing_jobs (name, done_day, listed_at) values ('storage-reconcile', $1::date, $2)
+        on conflict (name) do update set done_day = excluded.done_day, listed_at = excluded.listed_at`, [new Date(options.now ?? Date.now()).toISOString().slice(0, 10), listedAt]);
       after = await this.tenantBytes(sql);
       if (options.dryRun) throw dryRun;
     }).catch(error => { if (error !== dryRun) throw error; });

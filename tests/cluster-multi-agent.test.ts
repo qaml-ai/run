@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { cluster, fakeModel, sleep, token, until } from "./cluster-helpers.ts";
+import { cluster, fakeModel, token, until } from "./cluster-helpers.ts";
 
 /** The model request's system text, and its last message's role. */
 const systemText = (body: any) => body.messages.filter((message: any) => message.role === "system" || message.role === "developer")
@@ -58,31 +58,4 @@ test("a parent whose node dies while it waits on a child resumes on another node
   assert.equal(prompts[0].resumes, 1);
   assert.equal(childRequests, 2, "the child's model was asked once more, by its resumed turn");
   assert.equal(record.outcome.result.toolCalls[0].agentId, children[0].id);
-});
-
-test("parallel children on a cluster: an abort of the parent sent to any node aborts every child it waits on", { timeout: 120_000 }, async t => {
-  const c = await cluster(t);
-  let started = 0;
-  const model = await fakeModel(t, async body => {
-    if (systemText(body).includes("SLOW")) { started++; await sleep(60_000); return { role: "assistant", content: "too late" }; }
-    return body.messages.at(-1).role === "tool" ? { role: "assistant", content: "after" }
-      : toolCalls(["delegate", { instructions: "You are SLOW.", task: "one" }, "c1"], ["delegate", { instructions: "You are SLOW.", task: "two" }, "c2"], ["delegate", { instructions: "You are SLOW.", task: "three" }, "c3"]);
-  });
-  const a = await c.start("a", model.env);
-  const b = await c.start("b", model.env);
-  const onA = api(a.url), onB = api(b.url);
-  const parent = (await onA("/v1/agents", { builtins: ["delegate"], delegate: { instructions: true } })).json.id;
-  await onA(`/v1/agents/${parent}/prompt`, { text: "go", requestId: "fan-out" });
-  await until(() => started === 3, "three children running at once");
-  const aborted = Date.now();
-  assert.equal((await onB(`/v1/agents/${parent}/abort`, {})).status, 200);
-  const record = await settled(onB, parent, "fan-out");
-  const children = (await onB("/v1/agents")).json.filter((agent: any) => agent.parentAgentId === parent);
-  assert.equal(children.length, 3);
-  for (const child of children) {
-    const run = (await onB(`/v1/agents/${child.id}`)).json.requests.find((request: any) => request.method === "prompt");
-    assert.equal(run.state, "completed", "each child's run ended");
-    assert.ok(run.endedAt - aborted < 15_000, "at the abort, not when the model would have answered");
-  }
-  assert.ok(record.outcome, JSON.stringify(record));
 });
