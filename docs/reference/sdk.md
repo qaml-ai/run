@@ -89,6 +89,7 @@ brought to `config` if it differs. Returns a connected `Agent`. See
 | `onInput(input)` | `on_input=` | each input as it is asked: return an answer, or nothing |
 | `onError(error)` | `on_error=` | errors from the connection and from `onEvent` |
 | | `initial_messages=` | the history it begins with, used only when it is made (`runtime.createAgent({ initialMessages })` in TypeScript); see [Bringing in existing conversations](../guides/multi-user.md#bringing-in-existing-conversations) |
+| | `import_messages=` | a conversation in Anthropic's or OpenAI's format (`{"format", "messages", "model"?}`), converted by the runtime (`importMessages` in TypeScript; `toPiMessages` converts one locally) |
 
 ### `agents.get(keyOrId, { tools, … })`
 
