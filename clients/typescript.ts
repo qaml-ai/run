@@ -496,8 +496,11 @@ export interface AgentSummary {
   parentAgentId?: string;
 }
 export interface Mount { volumeId: string; path: string; mode: "ro" | "rw"; subpath?: string; notify?: boolean }
-/** A mount as given: a volume, or `{ workspace: true }`, the agent's own workspace at /workspace beside the others (given mounts replace it otherwise). */
-export type MountInput = Mount | { workspace: true };
+/**
+ * A mount as given: a volume, or the agent's own workspace at /workspace, which is beside the others (after them) by
+ * default: `{ workspace: true }` places it, `{ workspace: false }` leaves it out.
+ */
+export type MountInput = Mount | { workspace: boolean };
 /** Where a fork came from: the agent, and the history index of its last message the fork began with (null: none). */
 export interface ForkedFrom { agentId: string; atMessage: number | null }
 /**
