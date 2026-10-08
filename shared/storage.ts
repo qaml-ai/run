@@ -261,9 +261,9 @@ export interface LogTail {
    */
   append(key: string, claim: Claim | undefined, rows: TailRow[], effects?: CommitEffect[]): Promise<boolean>;
   /**
-   * One compaction at a time per log, holding `claim`: `fold` moves the rows to
-   * Storage and returns the seq Storage now covers through; rows up to it are then
-   * deleted. False when `claim` is no longer current.
+   * One compaction at a time per log, under `claim`: `fold` moves the rows to Storage (with no transaction open,
+   * however long it takes) and returns the seq Storage now covers through; rows up to it are then deleted, if `claim`
+   * is still current. False when it is not. One that finds another compaction of the log under way leaves the rows to it.
    */
   compact(key: string, claim: Claim | undefined, fold: (rows: TailRow[]) => Promise<number>): Promise<boolean>;
   /** Run `work` while `claim` is current, and keep it current until `work` ends: no takeover meanwhile. False when it is not current. */
