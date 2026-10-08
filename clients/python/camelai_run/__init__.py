@@ -933,9 +933,9 @@ def _trace_header(traceparent):
     return {"traceparent": traceparent} if traceparent else {}
 
 
-def _transcription_form(language=None, prompt=None, timestamps=None, key_scope=None, subject=None, context=None, actor=None):
+def _transcription_form(language=None, prompt=None, key_scope=None, subject=None, context=None, actor=None):
     """A transcription's fields, as the request names them, the ones given."""
-    fields = {"language": language, "prompt": prompt, "timestamps": timestamps, "keyScope": key_scope, "subject": subject, "context": context, "actor": actor}
+    fields = {"language": language, "prompt": prompt, "keyScope": key_scope, "subject": subject, "context": context, "actor": actor}
     return {key: value for key, value in fields.items() if value is not None}
 
 
@@ -947,15 +947,15 @@ class Transcriptions:
     def __init__(self, runtime):
         self._runtime = runtime
 
-    def create(self, file=None, *, url=None, name=None, content_type=None, language=None, prompt=None, timestamps=None, key_scope=None,
+    def create(self, file=None, *, url=None, name=None, content_type=None, language=None, prompt=None, key_scope=None,
                subject=None, context=None, actor=None):
         """Transcribe audio: `file` (bytes, or a local path as str or Path) or `url` for the runtime to fetch (public
         addresses only). Ogg (Opus, Vorbis), WebM, MP3, M4A/MP4, WAV or FLAC; at most 25 MB and 30 minutes. `language`:
         ISO 639-1 ("en") or a locale ("pt-BR"), detected when left out; `prompt`: names or jargon to expect;
-        `timestamps=True` adds "segments" (uses whisper-1, priced apart); `key_scope`: whose OpenAI key goes first;
+        `key_scope`: whose OpenAI key goes first;
         `subject`, `context` and `actor` are carried to its usage.recorded event. Returns {"text", "language",
-        "durationSeconds", "model", "costUsd", "segments"?}. Not retried: each attempt is billed."""
-        fields = _transcription_form(language, prompt, timestamps, key_scope, subject, context, actor)
+        "durationSeconds", "model", "costUsd"}. Not retried: each attempt is billed."""
+        fields = _transcription_form(language, prompt, key_scope, subject, context, actor)
         if (file is None) == (url is None):
             raise AgentError("Give the audio as file (bytes or a path) or url, one of them")
         if url is not None:
