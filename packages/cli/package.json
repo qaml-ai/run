@@ -1,6 +1,6 @@
 {
   "name": "@camelai/camelrun",
-  "version": "0.15.0",
+  "version": "0.16.0",
   "description": "camelRun CLI: deploy and manage agents on camelRun from a terminal, or from a coding agent over MCP (camelrun mcp).",
   "type": "module",
   "license": "MIT",

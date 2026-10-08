@@ -456,36 +456,45 @@ application keeps serving its tools.
 
 ## Unreleased
 
-- A stream the runtime closes on purpose (`event: reconnect`: a drain, or the agent moved) is reconnected at
-  once, resuming with `Last-Event-ID`; other closes keep their backoff. All the SDKs' event readers do this.
-- `run`, `stream` and `client.prompt` take `history: "none"` (Python `history="none"`): the run sees the
-  agent's instructions and its own message only, for many independent questions to one agent without an
-  agent create each. `upsert` takes `codeMode: false` (`code_mode=False`, definitions too): no `js_exec`,
-  and a tool-less agent's system prompt shrinks to its instructions and a sender note.
-- `agent.configHash` (`config_hash`) from `upsert` and `get`, and `configHash` on `listAgents()`: an upsert
-  of the configuration an agent has is not counted as an agent create.
-- Agent handles connect lazily: `new Agents()` (`Agents()`) handles hold their
-  event stream only while `agent.stream()` reads a run, instead of from
-  `upsert`/`get` until `close()`, so a server with many agents holds no idle
-  connections. Handles that serve tools or have `onEvent`, `onInput` or
-  `onConnection` are unchanged. `connection: "eager"` (Python `connection="eager"`)
-  on `Agents` or a single call keeps the old behaviour; the lower-level
-  `connectAgent` / `connect_agent` take `connection: "lazy"` to opt in. A lazy
-  handle's `upsert`/`get` no longer waits for a connection, so an unreachable
-  stream shows up at the first run rather than there.
+- Python (not yet released; TypeScript has these in 0.16.0): `agents.run(input, …)` and `agents.runs`, `history="none"`,
+  `code_mode=False`, `config_hash`, lazy handles (`connection="eager"` keeps the old behaviour; `connect_agent` takes
+  `connection="lazy"`), steer receipts (`wait=True` keeps the old result), `abort(queued=)`, and the reconnect hint.
 
-- Telemetry: `runtime.telemetry.get()`, `set(…)`, `test()` and `clear()` manage the
-  tenant's OpenTelemetry trace export, and a `traceparent` option (Python
-  `traceparent=`) on `run`, `stream`, `prompt`, `request` and a create's first prompt
-  continues your trace. See [Telemetry](#telemetry). TypeScript exports
-  `RequestRecord`, `TelemetrySettings`, `TelemetryInput` and `TelemetryTestResult`;
-  Python's `create_agent` takes `prompt=`.
-- CLI: `camelrun telemetry get|set|test|clear`, and `run --traceparent`.
-- Stateless runs: `agents.run({ instructions, input, output })` (Python
-  `agents.run(input, …)`) runs once with nothing carried over and no agent made;
-  `agents.runs` creates, reads, streams, aborts and deletes them. See
-  [Stateless runs](../guides/stateless-runs.md). CLI: `camelrun run --stateless`,
-  `camelrun runs get <runId>`.
+## 0.16.0 (TypeScript), 2026-10-07
+
+Needs a runtime newer than 0.4.0 (run.camelai.com has it; a self-hosted runtime needs the next runtime release).
+
+- Stateless runs: `agents.run({ instructions, input, output })` runs once with nothing carried over and no agent made;
+  `agents.runs` creates, gets, streams, aborts and deletes them, and reads their `messages` and `events` (the lower
+  level: `runtime.createRun`, `getRun`, `waitForRun`, `abortRun`, `deleteRun`, `runMessages`, `runEvents`). See
+  [Stateless runs](../guides/stateless-runs.md). CLI: `camelrun run --stateless`, `camelrun runs get <runId>`.
+- Agent handles connect lazily: `new Agents()` handles hold their event stream only while `agent.stream()` reads a
+  run, instead of from `upsert`/`get` until `close()`, so a server with many agents holds no idle connections.
+  Handles that serve tools or have `onEvent`, `onInput` or `onConnection` are unchanged. `connection: "eager"` on
+  `Agents` or a single call keeps the old behaviour; the lower-level `connectAgent` takes `connection: "lazy"` to opt
+  in. A lazy handle's `upsert`/`get` no longer waits for a connection, so an unreachable stream shows up at the
+  first run rather than there.
+- `run`, `stream` and `client.prompt` take `history: "none"`: the run sees the agent's instructions and its own
+  message only, for many independent questions to one agent without an agent create each. `upsert` and definitions
+  take `codeMode: false` (definitions also `fileTools: false`): no `js_exec`, and a tool-less agent's system prompt
+  shrinks to its instructions and a sender note.
+- `agent.configHash` from `upsert` and `get`, and `configHash` on `listAgents()`: an upsert of the configuration an
+  agent has is not counted as an agent create.
+- Breaking: `agent.steer()` resolves as soon as the runtime has the message, with a receipt
+  (`{ id, status: "accepted" | "taken" | "queued", steeredInto? }`); `steer(text, { wait: true })` resolves with the
+  run that took it, as before. `client.steerMessage` is the receipt at the lower level; `client.prompt` with
+  `whileRunning: "steer"`, `createAgentHandler`'s waiting send and `camelrun run --steer` still answer with the
+  turn's outcome.
+- `agent.abort({ queued: "keep" | "cancel" })` and `client.abort(…)` resolve with `{ aborted, cancelled? }`. A runtime
+  with queue cancellation stops the runs queued behind the running turn too (code `cancelled`) unless
+  `queued: "keep"`.
+- A stream the runtime closes on purpose (`event: reconnect`: a drain, or the agent moved) is reconnected at once,
+  resuming with `Last-Event-ID`; other closes keep their backoff. The agent client and `watchAgent` do this.
+- `runLimits` takes `firstTokenSeconds` and `idleSeconds` (how long a model request may go quiet before it fails
+  as stalled and is retried); `turn_resumed` / `turn_recovered` events carry `handoff` (`retire`, `drain`).
+- `createAgentChat` (and so the React, Vue, Svelte and Solid chats) stays `streaming` from the run's first reply
+  until it ends, through tool calls, instead of dropping back to `submitted` between messages.
+- CLI: `camelrun models` (and `list_models`) show `toolCallStreaming`.
 
 ## 0.15.0 (TypeScript) / 0.11.0 (Python), 2026-10-03
 

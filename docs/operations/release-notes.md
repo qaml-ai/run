@@ -7,7 +7,28 @@ between yours and the new one first.
 
 ## Unreleased
 
-Changes on main since the last tag.
+Changes on main since the last tag. The TypeScript SDK train 0.16.0 uses them (its changes are in the
+[SDK reference](../reference/sdk.md)).
+
+### Stateless runs
+
+- `POST /v1/runs`: a configuration (an agent's fields, or a `definition`) and an input in, the result out, with
+  nothing carried over and no agent kept. `wait` answers once it ends; `GET /v1/runs/{id}` (`?wait=25`),
+  `/events` (resumable with `Last-Event-ID`), `/messages`, `POST /v1/runs/{id}/abort` and `DELETE` follow it.
+  Its result is kept for `retentionSeconds` (a day by default). A run with no tools gets neither `js_exec` nor
+  file tools unless it asks. Runs count against runs per minute and busy agents, not agent creates, and are as
+  durable as an agent's. See [Stateless runs](../guides/stateless-runs.md).
+
+### Steer receipts, stops that cancel the queue, stalled model streams
+
+- A prompt with `whileRunning: "steer"` is answered at once (`steer: "accepted" | "queued"`), and its request
+  completes when the running turn takes the message (`steeredInto`, and a `steer_taken` event), not when the turn ends.
+- A stop (`POST /v1/agents/:id/abort`) also cancels the runs queued behind the running turn (code `cancelled`,
+  `run_cancelled` events) unless `queued: "keep"`, and answers with their ids (`cancelled`).
+- A model request that sends nothing before its first token (120 s; 300 s for a reasoning model at `thinkingLevel`
+  high and up) or goes quiet for 45 s is ended as stalled and retried; past every retry the run fails with code
+  `model_stream_stalled`. `runLimits.firstTokenSeconds` and `idleSeconds` set an agent's own
+  ([Limits](../reference/limits.md)).
 
 ### Reconnect hint on purposeful closes
 
