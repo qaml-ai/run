@@ -15,12 +15,16 @@ const agent = await agents.upsert("user-123", { model, instructions, tools });
 ```
 
 - The same key is the same agent, from any process, for as long as you keep it.
-  A keyed agent lives until you delete it (`agent.delete()`).
+  A keyed agent lives until you delete it (`agent.delete()`, `DELETE
+  /v1/agents/{id}`). Only your API key can delete an agent: its own token gets
+  a 401, since that token lives in your application's process (and in browsers
+  through it), and deleting purges the agent's history and workspace.
 - `upsert` makes the agent when there is none, and otherwise brings it to the
   configuration you pass: a changed model, instructions or tool list is applied
   between its turns, and its history carries over. Who the agent acts for
   (`subject`, `context`), its definition and its mounts are fixed when it is
-  made; changing them is a 409 that names the field. Delete it and upsert again
+  made; changing them is a 409 that names the field (an upsert may change the
+  mounts with `remount: true`). Delete it and upsert again
   to start over.
 - A deleted key makes a fresh agent the next time, with a new id and token.
 - Make an agent once per user, conversation or job, and reuse it. Creating
@@ -33,7 +37,8 @@ const agent = await agents.upsert("user-123", { model, instructions, tools });
 - Over REST, the key is the `Idempotency-Key` of `POST /v1/agents`.
 
 Every agent also has an **id** (`client_…`), which is safe to log and store, and
-a **token**, which lets its holder run it and nothing else. The SDKs keep the
+a **token**, which lets its holder run it and nothing else (not delete it, nor
+change who it acts for, its tools' sources or its limits). The SDKs keep the
 token out of logs; you rarely need it, because upserting by key gives you the
 agent again. If a token leaks, `POST /v1/agents/{id}/credentials/rotate` gives
 the agent a new one: the old one stops working at once and connections made
@@ -149,7 +154,7 @@ const earlier = await agent.fork({ atMessage: 4 }); // history through message 4
 - **Compaction.** The copy keeps the source's summaries, so the fork's model sees
   what the source's would at that point: the summary, then the messages after it.
   History (`/history`) has every message.
-- **Files.** The fork's workspace (`/workspace`) is a
+- **Files.** The fork's workspace (at the source's path, `/workspace` by default) is a
   [fork of the source's volume](guides/files.md#volumes) as it is when you fork,
   not as it was at `atMessage`. Other volumes the source mounts are mounted as
   they are, shared. Files the history refers to (attachments) stay the fork's,

@@ -11,6 +11,7 @@ model-written code in a sandbox, and wakes agents when there is work.
    run, processes, people in the loop, idempotency. **[Pricing](pricing.md)**:
    what usage costs, and credit.
 3. **Guides**
+   - [Projects](guides/projects.md): an agent builds a bot, site or report; your app checks and publishes versions
    - [Tools](guides/tools.md): writing tools, attached and served tools, identity, MCP and OpenAPI sources, built-ins
    - [Human input](guides/human-input.md): approvals, questions and forms; answering
    - [Structured output](guides/structured-output.md): a run's answer as an object in your schema (zod, pydantic, JSON Schema)

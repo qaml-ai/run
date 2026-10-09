@@ -28,7 +28,7 @@ import httpx
 __version__ = "0.12.0"
 
 __all__ = [
-    "Agents", "Agent", "Run", "RunInput", "InputDetail", "RunStream", "StreamPart", "Runs", "StatelessRunStream",
+    "Agents", "Agent", "Run", "RunInput", "InputDetail", "Mount", "WorkspaceMount", "RunStream", "StreamPart", "Runs", "StatelessRunStream",
     "tool", "Tool", "ToolContext", "InputRequired", "RuntimeIdentity", "identity_from_claims",
     "AgentError", "RunError",
     "AgentRuntime", "AgentClient", "AgentFiles", "Download", "Volume", "Telemetry", "DEFAULT_URL",
@@ -620,8 +620,12 @@ class _RuntimeCalls:
         """The tenant's agents, each with the key it was made with (None for one made without) and its name."""
         return self._rest("GET", "/v1/agents")
 
-    def create_volume(self, *, name=None):
-        return self._rest("POST", "/v1/volumes", {} if name is None else {"name": name}, retry=False)
+    def create_volume(self, *, name=None, key=None, idempotency_key=None):
+        """A new volume. With `key`, the tenant's volume for that key: made the first time, the same one ("existing": True)
+        every time after, for as long as it lives. With `idempotency_key`, a retry within a day gets the same answer."""
+        body = {k: v for k, v in {"name": name, "key": key}.items() if v is not None}
+        return self._rest("POST", "/v1/volumes", body, retry=key is not None or idempotency_key is not None,
+                          headers={"Idempotency-Key": idempotency_key} if idempotency_key is not None else None)
 
     def list_volumes(self):
         return self._rest("GET", "/v1/volumes")
@@ -634,7 +638,7 @@ class _RuntimeCalls:
         return self._rest("GET", f"/v1/agents/{quote(agent_id)}/mounts")
 
     def set_mounts(self, agent_id, mounts):
-        """Replace an agent's mounts; an idle agent restarts so its tools describe them."""
+        """Replace an agent's mounts: a removed one at once, the rest from its next turn, which is told of them."""
         return self._rest("PUT", f"/v1/agents/{quote(agent_id)}/mounts", {"mounts": mounts}, retry=False)
 
     def me(self):
@@ -774,8 +778,8 @@ class AgentRuntime(_RuntimeCalls):
         thinking level and tool sources; `tools` are added as the agent's attached MCP server.
         `ttl_seconds` is the agent's lifetime, or None to keep it until it is deleted (default: until deleted with an
         idempotency_key of yours, else one day).
-        `mounts` ([{"volumeId", "path", "mode": "ro" | "rw", "subpath"?, "notify"?}]) are the volumes its
-        file tools see; by default it gets its own workspace volume at /workspace. `key_scope` names a key scope
+        `mounts` (Mount and WorkspaceMount dicts) are the volumes its file tools see, beside its own workspace volume
+        at /workspace unless they leave it out ({"workspace": False}) or place it ({"workspace": True, "path"?}). `key_scope` names a key scope
         (PUT /v1/key-scopes/:scope/providers/:provider) whose keys its model calls use first; `spend_limit` ({"usd": n}) the most it may spend on model calls from now on; `run_limits`
         ({"maxResponses": n, "maxSeconds": n}) the most one run may take, within the runtime's maximums (1,000 responses and
         2 hours by default), past which a run stops with stopped "turn_limit"; `model_headers` non-secret headers for each model call.
@@ -944,12 +948,12 @@ class Telemetry:
         return self._call("POST", "/v1/telemetry/test", retry=False)
 
 
-def _provisioning(tools, *, definition=None, name=None, type=None, system_prompt=None, model=None, thinking_level=None, mounts=None,
+def _provisioning(tools, *, definition=None, name=None, type=None, system_prompt=None, model=None, thinking_level=None, mounts=None, remount=None,
                   subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, system_prompt_append=None, file_tools=None, builtins=None,
                   delegate=None, prompt=None, code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, mcp_servers=None):
     """A create request's body: the tools as the attached MCP server's tools/list, and the fields given."""
     optional = {"definition": definition, "name": name, "type": type, "systemPrompt": system_prompt, "model": model, "thinkingLevel": thinking_level,
-                "mounts": mounts, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit, "runLimits": run_limits, "modelHeaders": model_headers,
+                "mounts": mounts, "remount": remount, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit, "runLimits": run_limits, "modelHeaders": model_headers,
                 "systemPromptAppend": system_prompt_append, "fileTools": file_tools, "codeMode": code_mode, "builtins": builtins, "delegate": delegate, "mcpServers": mcp_servers, "prompt": prompt,
                 "initialMessages": initial_messages, "importMessages": import_messages, "maxOutputTokens": max_output_tokens, "temperature": temperature}
     return _with_multi_agent({"mcp": {"tools": [item.mcp_tool() for item in tools]}, **{key: value for key, value in optional.items() if value is not None}})
@@ -1846,6 +1850,24 @@ class Run:
     raw: dict | None = field(default=None, repr=False)
 
 
+class Mount(TypedDict):
+    """A volume an agent's file tools see at `path`: read-only or read-write, only its `subpath` directory, and with
+    `notify` the agent is prompted when others change files under it."""
+    volumeId: str
+    path: str
+    mode: str
+    subpath: NotRequired[str]
+    notify: NotRequired[bool]
+
+
+class WorkspaceMount(TypedDict):
+    """The agent's own workspace among its mounts: {"workspace": True} places it (at /workspace, or at `path`, e.g.
+    "/scratch" beside a project volume at /workspace; attachments and tool outputs go there), {"workspace": False}
+    leaves it out."""
+    workspace: bool
+    path: NotRequired[str]
+
+
 class InputDetail(TypedDict):
     """What an input asks (its "detail"), by its kind. question: questions. approval: tool, source, reason, and the
     call's arguments as a dict (past 4,000 characters of JSON, argumentsPreview, their start, instead). form:
@@ -2358,7 +2380,7 @@ class Agents:
         return await self.runs.run(input, **options)
 
     async def upsert(self, key, *, model=None, instructions=None, tools=None, definition=None, thinking_level=None, subject=None, context=None,
-                     key_scope=None, spend_limit=None, run_limits=None, model_headers=None, mounts=None, name=None, instructions_append=None, file_tools=None,
+                     key_scope=None, spend_limit=None, run_limits=None, model_headers=None, mounts=None, remount=None, name=None, instructions_append=None, file_tools=None,
                      builtins=None, delegate=None, subagents=False, on_event=None, on_input=None, on_error=None, attach=None, takeover=False, connection=None,
                      code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, mcp_servers=None):
         """The agent for `key` (your name for it: "support-triage", or "user-123"), made now if there is none, and set
@@ -2383,7 +2405,7 @@ class Agents:
         tools = list(tools or [])
         session = await self.runtime.upsert_agent(key, tools=tools, definition=definition, system_prompt=instructions, model=model, thinking_level=thinking_level,
                                                   subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits,
-                                                  model_headers=model_headers, mounts=mounts, name=name, system_prompt_append=instructions_append, file_tools=file_tools, builtins=builtins,
+                                                  model_headers=model_headers, mounts=mounts, remount=remount, name=name, system_prompt_append=instructions_append, file_tools=file_tools, builtins=builtins,
                                                   delegate=delegate, code_mode=code_mode, initial_messages=initial_messages, import_messages=import_messages,
                                                   max_output_tokens=max_output_tokens, temperature=temperature, mcp_servers=mcp_servers)
         # The upsert declared these tools already (between the agent's turns, if it runs).

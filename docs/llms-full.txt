@@ -234,12 +234,16 @@ const agent = await agents.upsert("user-123", { model, instructions, tools });
 ```
 
 - The same key is the same agent, from any process, for as long as you keep it.
-  A keyed agent lives until you delete it (`agent.delete()`).
+  A keyed agent lives until you delete it (`agent.delete()`, `DELETE
+  /v1/agents/{id}`). Only your API key can delete an agent: its own token gets
+  a 401, since that token lives in your application's process (and in browsers
+  through it), and deleting purges the agent's history and workspace.
 - `upsert` makes the agent when there is none, and otherwise brings it to the
   configuration you pass: a changed model, instructions or tool list is applied
   between its turns, and its history carries over. Who the agent acts for
   (`subject`, `context`), its definition and its mounts are fixed when it is
-  made; changing them is a 409 that names the field. Delete it and upsert again
+  made; changing them is a 409 that names the field (an upsert may change the
+  mounts with `remount: true`). Delete it and upsert again
   to start over.
 - A deleted key makes a fresh agent the next time, with a new id and token.
 - Make an agent once per user, conversation or job, and reuse it. Creating
@@ -252,7 +256,8 @@ const agent = await agents.upsert("user-123", { model, instructions, tools });
 - Over REST, the key is the `Idempotency-Key` of `POST /v1/agents`.
 
 Every agent also has an **id** (`client_…`), which is safe to log and store, and
-a **token**, which lets its holder run it and nothing else. The SDKs keep the
+a **token**, which lets its holder run it and nothing else (not delete it, nor
+change who it acts for, its tools' sources or its limits). The SDKs keep the
 token out of logs; you rarely need it, because upserting by key gives you the
 agent again. If a token leaks, `POST /v1/agents/{id}/credentials/rotate` gives
 the agent a new one: the old one stops working at once and connections made
@@ -368,7 +373,7 @@ const earlier = await agent.fork({ atMessage: 4 }); // history through message 4
 - **Compaction.** The copy keeps the source's summaries, so the fork's model sees
   what the source's would at that point: the summary, then the messages after it.
   History (`/history`) has every message.
-- **Files.** The fork's workspace (`/workspace`) is a
+- **Files.** The fork's workspace (at the source's path, `/workspace` by default) is a
   [fork of the source's volume](https://run.camelai.com/docs/guides/files.md#volumes) as it is when you fork,
   not as it was at `atMessage`. Other volumes the source mounts are mounted as
   they are, shared. Files the history refers to (attachments) stay the fork's,
@@ -562,6 +567,160 @@ rates below as your account is charged them.
 
 A self-hosted runtime charges nothing unless its operator sets up billing; see
 [Self-hosting](https://run.camelai.com/docs/operations/self-host.md).
+
+---
+
+<!-- https://run.camelai.com/docs/guides/projects.md -->
+
+# Projects
+
+A project is something an agent builds for your users, a bot, a site, a report,
+that your application then runs or serves. The agent works on the files with its
+file tools; your application checks them and publishes versions. The pattern:
+
+1. **A volume per project**, made once per key (`projects.create`).
+2. **An agent that works in it**, with the volume mounted read-write and its own
+   workspace beside it (`project.mount`).
+3. **A publish step in your code**: snapshot the volume, read every file at that
+   snapshot, check them, and store them where your application keeps what it
+   serves (`project.publish`). The snapshot is the version: what you checked is
+   exactly what you stored, whatever the agent writes meanwhile.
+4. **A `publish` tool the model calls** when its work is ready (`publishTool`),
+   which finds the project from the call's signed identity and tells the model
+   what to fix when the check fails.
+
+## Making a project
+
+```ts
+import { Agents } from "@camelai/run";
+
+const agents = new Agents();
+const project = await agents.runtime.projects.create({
+  key: `bot-${bot.id}`,
+  template: { "bot.ts": starterCode, "README.md": "# My bot\n" },
+});
+```
+
+- `key` names the project within your account: the first create makes its
+  volume, and every later one returns the same volume, for as long as it lives
+  (`POST /v1/volumes {key}`; `existing: true` on the later ones). Store
+  `project.id` if you like, or create by key every time.
+- `template` (path to text or bytes) seeds a new project. It never overwrites a
+  file that is there; a project with no files is seeded again, so a create cut
+  off half-way finishes on its retry.
+- A deleted project's key makes no other (a 409): pick a new key.
+
+## The agent that builds it
+
+```ts
+const builder = await agents.upsert(`builder-${bot.id}`, {
+  definition: "bot-builder",            // its prompt and tools, including your publish tool
+  subject: owner.id, context: { bot: bot.id },
+  ...project.mount("/bot"),
+});
+```
+
+`project.mount(path)` mounts the project's volume read-write at `path`, first,
+so relative paths are the project's, keeps the agent's own workspace at
+`/workspace` beside it (uploads, tool outputs and scratch files go there, not
+into the project), and turns file tools on. To move an existing agent onto a
+project, add `remount: true` to its upsert.
+
+## Publishing
+
+```ts
+const result = await project.publish({
+  prefix: "/",                                  // only these files (default: all)
+  validate: files => check(files),              // [] when nothing is wrong
+  store: async (files, version) => saveRelease(bot.id, files, version.id),
+  keep: 20,                                     // published versions kept (default 20)
+});
+if (!result.ok) console.log(formatProblems(result.problems));
+```
+
+- `files` are `{path, size, contentType, sha256, text | data}`: `text` for UTF-8
+  files, base64 `data` for any other (`fileBytes(file)` gives the bytes).
+- `validate` returns problems, `{path?, line?, message}`. Any problem keeps the
+  version from being published, and its snapshot is deleted.
+- `store` runs once per version. It gets the version (`{id, seq, name,
+  createdAt}`) and `{project, identity}` (the identity when `publishTool`
+  published it); keep `version.id` to read that version again with
+  `project.files({ version })`.
+- `project.versions()` lists the published versions, oldest first. A volume
+  keeps at most 100 snapshots, so older versions beyond `keep` are deleted.
+- `idempotencyKey` publishes once per key: a retried call gets the version the
+  first one made.
+
+## The publish tool
+
+Give the model a tool that publishes, served by your application with
+[`serveTools`](https://run.camelai.com/docs/guides/tools.md#served-tools-over-http-for-serverless-and-many-users) and named in the agent's
+definition with `auth: { type: "runtime" }`:
+
+```ts
+import { publishTool } from "@camelai/run";
+import { serveTools } from "@camelai/run/server";
+
+export default {
+  fetch: serveTools({
+    publish: publishTool({
+      // Who the call is for comes from the runtime's signed token, never from the model.
+      project: identity => agents.runtime.projects.get(volumeOfBot(identity.context.bot)),
+      validate: files => check(files),
+      store: (files, version, { identity }) => saveRelease(String(identity!.context.bot), files, version.id),
+    }),
+  }, { runtime: "https://run.camelai.com", tenant: "acme" }),
+};
+```
+
+It takes no arguments. On success the model gets `{published: true, version}`;
+otherwise the call fails with the problems, one a line (`/bot.ts:12: …`), so the
+model fixes them and publishes again. A retried call publishes once.
+
+## In Python
+
+`camelai_run.projects` has the same helper, async:
+
+```python
+from camelai_run.projects import Projects, publish_tool
+
+projects = Projects(agents.runtime)
+project = await projects.create(f"bot-{bot.id}", template={"bot.py": starter})
+builder = await agents.upsert(f"builder-{bot.id}", definition="bot-builder", subject=owner.id, context={"bot": bot.id}, **project.mount("/bot"))
+result = await project.publish(validate=check, store=lambda files, version, about: save_release(bot.id, files, version["id"]))
+
+app = serve_tools([publish_tool(project=lambda identity: projects.get(volume_of_bot(identity.context["bot"])), validate=check, store=save)], runtime=RUNTIME, tenant="acme")
+```
+
+`publish_tool` works in `serve_tools` (ASGI) and in `camelai_run.sync.serve_tools`
+(WSGI: Django, Flask). Files are dicts with `"text"` or base64 `"data"`
+(`file_bytes(file)` gives the bytes).
+
+## Security
+
+- **Derive the project from identity.** `project(identity)` reads who the call
+  is for from the runtime's signed token (`subject`, `context`), which you set
+  when you made the agent and the model cannot change. Never take a project id,
+  a path or a version from the model's arguments.
+- **Check what you read, not what the model says.** `publish` reads the files
+  server-side from a snapshot; the model never hands you content. Treat every
+  file as untrusted input: validate it, and run it only where your application
+  runs untrusted code.
+- **Keep the agent to its project.** Give the builder the project's volume and
+  its own workspace, nothing else of yours. Its own token can read and write its
+  mounts; your API key, which reads every project, stays on your server.
+- **Store versions, serve versions.** Serve what `store` kept for a published
+  version, never the live volume, which the agent may be changing.
+
+## From the REST API
+
+| | |
+| --- | --- |
+| make or find a project's volume | `POST /v1/volumes {name, key}` |
+| mount it beside the workspace | `mounts: [{volumeId, path: "/bot", mode: "rw"}, {workspace: true}]` on `POST /v1/agents` (`remount: true` on an upsert to change them) |
+| take a version | `POST /v1/volumes/:id/snapshots {name}` |
+| read every file of it at once | `GET /v1/volumes/:id/files?content=true&snapshot=snap_…` |
+| list and delete versions | `GET /v1/volumes/:id/snapshots`, `DELETE /v1/volumes/:id/snapshots/:snapshot` |
 
 ---
 
@@ -2525,7 +2684,36 @@ const agent = await agents.upsert("support", { mounts: [{ volumeId: docs.id, pat
 - Mounts are `{volumeId, path, mode: "ro" | "rw", subpath?, notify?}`. `notify`
   prompts the agent (about a second after, coalesced) when others change files
   under the mount. Only your own volumes can be mounted, and an agent's mounts
-  are fixed when it is made (`PUT /v1/agents/:id/mounts` replaces them).
+  are fixed when it is made: an upsert with other mounts is a 409, unless it
+  sends `remount: true`, which sets them between its turns.
+- `PUT /v1/agents/:id/mounts` replaces them during a turn too. Mount changes
+  apply at the agent's next tool call (a call under way keeps the mounts it
+  began with): a removed volume is refused, a read-only one is read-only, and
+  one added or swapped in is there at its path, so a tool can swap `/bot` for
+  another volume and the model goes on working in it. Tool outputs go to the
+  workspace as it is then. The running turn's environment text updates at the
+  next run.
+- The agent's own workspace stays at `/workspace` beside the mounts you give
+  (after them). `{workspace: true}` among them puts it at that position,
+  `{workspace: false}` leaves it out, and a mount you give at `/workspace` takes
+  its place. The first mount is where relative paths resolve, e.g.
+  `[{volumeId, path: "/bot", mode: "rw"}]` has `/bot` first and `/workspace`
+  second; `[{workspace: false}]` is no mounts at all.
+- `{workspace: true, path: "/scratch"}` mounts the workspace elsewhere, e.g.
+  beside a project volume at `/workspace`:
+  `[{volumeId: project, path: "/workspace", mode: "rw"}, {workspace: true, path: "/scratch"}]`.
+  The path is absolute, written normalized, and clear of the other mounts.
+- Attachments are saved under `uploads/<request>/` in the agent's own
+  workspace, files tools return under `tool-outputs/`, and the model keeps
+  scratch files in `tmp/`, wherever the workspace is mounted (`/workspace/...`
+  by default, `/scratch/...` above). Without it, they go to a read-write
+  `/workspace`, else the first read-write mount (and an agent with none cannot
+  take attachments or tool files).
+- An agent's own workspace is deleted with the agent, whether or not it is
+  still mounted; volumes it only mounted stay.
+- `createVolume({ name }, { idempotencyKey })` (Python
+  `create_volume(name=…, idempotency_key=…)`) makes a volume once per key, for a
+  day: a retry, or another process, gets the same volume.
 - `volume.write(path, data, { version })` writes only if nobody changed the file
   since that version (`0`: it must not exist), `read`, `list`, `remove`,
   `changes(since, { prefix? })`. `runtime.volumes(ids)` reads up to 50 volumes'
@@ -4689,6 +4877,7 @@ available and stable for code that needs the wire's shape: `agents.runtime`,
 | `runtime.listAgents()` | `runtime.list_agents()` | the tenant's agents, each with the `key` it was made with (`null` without one) and its `name` |
 | `runtime.upsertDefinition(key, input)`, `createDefinition`, `updateDefinition`, `definition(s)`, `deleteDefinition` | `upsert_definition(key, …)`, `create_definition`, … | definitions; the same key is the same definition |
 | `runtime.createVolume`, `volume(id)`, `mounts`, `setMounts` | `create_volume`, `volume(id)`, … | volumes and mounts |
+| `runtime.projects.create({ key, template })`, `project.mount`, `project.publish`, `publishTool` | `camelai_run.projects`: `Projects(runtime).create(key, template=)`, `mount`, `publish`, `publish_tool` | [projects](https://run.camelai.com/docs/guides/projects.md): an agent builds in a keyed volume; your code checks and publishes snapshots |
 | `runtime.inbox(state)`, `toolSources(agentId)` | `inbox(state=)`, `tool_sources(agent_id)` | inputs across agents; an agent's tools |
 | | `set_scope_key(scope, provider, api_key=, base_url=, headers=, region=)`, `key_scope(scope)`, `delete_scope_key(scope, provider)`, `delete_key_scope(scope)` | a key scope's provider keys (`/v1/key-scopes`): agents made with `key_scope=` use them first; see [Models and keys](https://run.camelai.com/docs/guides/models-and-keys.md) |
 | | `set_scope_provider(scope, name, base_url=, models=, …)`, `scope_providers(scope)`, `delete_scope_provider(scope, name)` | a key scope's own providers, as `set_provider`'s |

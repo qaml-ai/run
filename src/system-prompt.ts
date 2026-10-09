@@ -3,7 +3,7 @@ import { SENDER_INSTRUCTIONS } from "./sender.ts";
 import { supportsDocuments } from "./files.ts";
 import { SANDBOX_LIMITS } from "./limits.ts";
 import { namespaceOf } from "./tool-search.ts";
-import type { AgentConfig } from "./protocol.ts";
+import { scratchMount, type AgentConfig } from "./protocol.ts";
 
 const FILE_RULES = `Files:
 - Attached files are named in the message by path, type and size, text files with their first lines.
@@ -83,7 +83,7 @@ export function environmentSummary(config: Pick<AgentConfig, "mounts" | "model" 
   if (bare(config)) return null;
   const code = config.codeMode !== false;
   const mounts = config.mounts ?? [];
-  const writable = mounts.find(mount => mount.path === "/workspace" && mount.mode === "rw") ?? mounts.find(mount => mount.mode === "rw");
+  const writable = scratchMount(mounts);
   const files = !mounts.length ? "Files: none are mounted, so fs and the file tools are unavailable."
     : `Files: ${mounts.map(mount => `${mount.path} (${mount.mode === "ro" ? "read-only" : "read-write"})`).join(", ")}; relative paths resolve against ${mounts[0].path}.` +
       (writable ? ` Attachments are saved under ${writable.path}/uploads/<request>/ and files that tools return under ${writable.path}/tool-outputs/; keep scratch data under ${writable.path}/tmp/.` : "") +

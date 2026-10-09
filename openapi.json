@@ -2137,9 +2137,13 @@
           "mounts": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/Mount"
+              "$ref": "#/components/schemas/MountInput"
             },
-            "description": "Volumes for the agent's file tools; default: a new workspace volume at /workspace"
+            "description": "Volumes for the agent's file tools. Its own workspace volume is at /workspace beside them unless they include {workspace: false} or a mount at /workspace; {workspace: true, path?} places it. The first is where relative paths resolve"
+          },
+          "remount": {
+            "type": "boolean",
+            "description": "An upsert of an existing agent: true sets the mounts given, between its turns, where other mounts are a 409"
           },
           "subject": {
             "type": "string",
@@ -2200,6 +2204,16 @@
         "maximum": 2,
         "description": "Sampling temperature, 0 to 2; default the provider's. Lower is more deterministic. 400 for a model that takes none: Claude Opus 4.7 and later, Sonnet 5.5 and Fable models, models that always reason (o-series, GPT-5), and any reasoning model at a thinkingLevel other than off. Compaction summaries keep the runtime's own"
       },
+      "MountInput": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/Mount"
+          },
+          {
+            "$ref": "#/components/schemas/WorkspaceMount"
+          }
+        ]
+      },
       "Mount": {
         "type": "object",
         "properties": {
@@ -2231,6 +2245,24 @@
           "path",
           "mode"
         ]
+      },
+      "WorkspaceMount": {
+        "type": "object",
+        "properties": {
+          "workspace": {
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string",
+            "description": "With true: where it is mounted, absolute and normalized (default /workspace), e.g. /scratch beside a project volume at /workspace",
+            "example": "/scratch"
+          }
+        },
+        "required": [
+          "workspace"
+        ],
+        "additionalProperties": false,
+        "description": "The agent's own workspace volume, where attachments, tool outputs and scratch files go. It is mounted at /workspace beside the mounts given (last) unless they leave it out: true places it at this position (at `path`), false leaves it out, and a mount given at /workspace takes its place"
       },
       "Builtin": {
         "type": "string",
@@ -5503,10 +5535,10 @@
           "mounts": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/Mount"
+              "$ref": "#/components/schemas/MountInput"
             },
             "maxItems": 16,
-            "description": "Volumes for each agent's file tools; default: a new workspace volume per agent"
+            "description": "Volumes for each agent's file tools, beside its own workspace at /workspace unless they include {workspace: false}"
           },
           "builtins": {
             "type": "array",
@@ -5868,10 +5900,10 @@
           "mounts": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/Mount"
+              "$ref": "#/components/schemas/MountInput"
             },
             "maxItems": 16,
-            "description": "Volumes for each agent's file tools; default: a new workspace volume per agent"
+            "description": "Volumes for each agent's file tools, beside its own workspace at /workspace unless they include {workspace: false}"
           },
           "builtins": {
             "type": "array",
@@ -6352,10 +6384,10 @@
               "null"
             ],
             "items": {
-              "$ref": "#/components/schemas/Mount"
+              "$ref": "#/components/schemas/MountInput"
             },
             "maxItems": 16,
-            "description": "Volumes for each agent's file tools; default: a new workspace volume per agent"
+            "description": "Volumes for each agent's file tools, beside its own workspace at /workspace unless they include {workspace: false}"
           },
           "builtins": {
             "type": [
@@ -6969,7 +7001,7 @@
           "mounts": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/Mount"
+              "$ref": "#/components/schemas/MountInput"
             }
           }
         },
@@ -7047,6 +7079,10 @@
         "properties": {
           "name": {
             "type": "string"
+          },
+          "key": {
+            "type": "string",
+            "description": "Your name for the volume (1–200 letters, digits and ._:-): the first create with a key makes it, every later one answers with it (existing: true), for as long as it lives. A deleted one's key makes no other"
           }
         }
       },

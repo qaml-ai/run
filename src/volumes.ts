@@ -185,6 +185,15 @@ class Tree {
   }
 }
 
+/**
+ * `{workspace: true, path?}` places the agent's own workspace among its mounts (at /workspace unless `path` says where);
+ * `{workspace: false}` leaves it out.
+ */
+const isWorkspace = (mount: unknown, value = true) => !!mount && typeof mount === "object" && (mount as { workspace?: unknown }).workspace === value &&
+  Object.keys(mount).every(key => key === "workspace" || (value && key === "path"));
+/** A mount given at /workspace itself, which takes the workspace's place. */
+const atWorkspace = (mount: unknown) => { try { return !!mount && typeof mount === "object" && normalizePath((mount as { path?: unknown }).path) === "/workspace"; } catch { return false; } };
+
 export class VolumeService {
   readonly db: Db;
   readonly storage: Storage;
@@ -211,13 +220,25 @@ export class VolumeService {
 
   private get idleMs() { return this.options.idleMs ?? 5 * 60_000; }
 
-  async create(tenant: string, input: { name?: unknown } = {}, id = newId("vol", 12)) {
+  /**
+   * A new volume, or with `key` the tenant's volume for that key: made the first time, the same one every time after
+   * (`existing: true`), for as long as it lives. A deleted keyed volume's key makes no other.
+   */
+  async create(tenant: string, input: { name?: unknown; key?: unknown } = {}, id = newId("vol", 12)) {
     const name = input.name === undefined ? "volume" : input.name;
     if (typeof name !== "string" || !name.trim() || name.length > 120) throw new HttpError(400, "name must be 1–120 characters");
+    if (input.key !== undefined && (typeof input.key !== "string" || !/^[A-Za-z0-9._:-]{1,200}$/.test(input.key))) throw new HttpError(400, "key is 1–200 letters, digits and ._:-");
+    if (typeof input.key === "string") id = VolumeService.keyed(tenant, input.key);
     const header: VolumeHeader = { version: 1, id, tenant, name: name.trim(), createdAt: Date.now() };
-    if (!await this.writeNew(header)) throw new HttpError(409, `Volume ${id} already exists`);
-    return this.summary(header);
+    if (await this.writeNew(header)) return this.summary(header);
+    if (input.key === undefined) throw new HttpError(409, `Volume ${id} already exists`);
+    const made = await this.readHeader(id);
+    if (!made || made.tenant !== tenant) throw new HttpError(409, `Volume ${id} already exists`);
+    if (made.deleted) throw new HttpError(409, `The volume for key ${input.key} was deleted; use another key`);
+    return { ...await this.call(id, tenant, "info"), existing: true };
   }
+  /** The id of a tenant's volume for `key` (POST /v1/volumes with a key). */
+  static keyed(tenant: string, key: string) { return `vol_${sha256(`volume-key:${tenant}:${key}`).slice(0, 24)}`; }
 
   /** Insert a new volume; false if one with its id already exists. */
   private async writeNew(header: VolumeHeader) {
@@ -731,24 +752,58 @@ export class VolumeService {
     }
   }
 
+  /**
+   * Mounts as given, with the agent's own workspace: where `{workspace: true}` places it (at its `path`, default
+   * /workspace), else last at /workspace; none with `{workspace: false}`, or when a mount given is at /workspace itself.
+   */
+  static resolved(agent: string, mounts: unknown[]): unknown[] {
+    const own = (path: unknown = "/workspace") => ({ volumeId: VolumeService.workspaceOf(agent), path, mode: "rw" });
+    const listed = mounts.filter(mount => !isWorkspace(mount, false)).map(mount => isWorkspace(mount) ? own((mount as { path?: unknown }).path) : mount);
+    return mounts.some(mount => isWorkspace(mount) || isWorkspace(mount, false) || atWorkspace(mount)) ? listed : [...listed, own()];
+  }
   /** The id of an agent's default workspace volume, stable so re-provisioning finds it. */
   static workspaceOf(agent: string) { return `vol_${sha256(`workspace:${agent}`).slice(0, 24)}`; }
+  /** An agent's mounts with its own workspace marked, for `scratchMount`. */
+  static markWorkspace<M extends Mount>(agent: string, mounts: M[]): (M & { workspace?: true })[] {
+    const own = VolumeService.workspaceOf(agent);
+    return mounts.map(mount => mount.volumeId === own ? { ...mount, workspace: true } : mount);
+  }
+  /** As given to `mountsFor`: the agent's own workspace by where it is (`{workspace: true, path?}`), the rest as they are. */
+  static given(agent: string, mounts: Mount[]): unknown[] {
+    const own = VolumeService.workspaceOf(agent);
+    return [...mounts.map(mount => mount.volumeId === own && mount.mode === "rw" && !mount.subpath && !mount.notify ? { workspace: true, ...mount.path !== "/workspace" ? { path: mount.path } : {} } : mount),
+      ...mounts.some(mount => mount.volumeId === own) ? [] : [{ workspace: false }]];
+  }
 
   /**
-   * Validate an agent's mounts: the tenant's own volumes at distinct, non-nested
-   * absolute paths. Without `requested`, the agent gets its own workspace volume at /workspace.
+   * Validate an agent's mounts: the tenant's own volumes at distinct, non-nested absolute paths. The agent's own
+   * workspace volume is at /workspace beside them (see `resolved`) unless they place it elsewhere (`{workspace: true,
+   * path}`), leave it out with `{workspace: false}` or put another volume there.
    */
   async mountsFor(tenant: string, agent: string, requested: unknown): Promise<Mount[]> {
-    if (requested === undefined) {
+    const workspace = async (path = "/workspace"): Promise<Mount> => {
       const id = VolumeService.workspaceOf(agent);
       await this.writeNew({ version: 1, id, tenant, name: "workspace", createdAt: Date.now() });
       if ((await this.readHeader(id))?.tenant !== tenant) throw new HttpError(409, "Workspace volume belongs to another tenant");
-      return [{ volumeId: id, path: "/workspace", mode: "rw" }];
-    }
+      return { volumeId: id, path, mode: "rw" };
+    };
+    if (requested === undefined) return [await workspace()];
     if (!Array.isArray(requested) || requested.length > VOLUME_LIMITS.mounts) throw new HttpError(400, `mounts must be an array of at most ${VOLUME_LIMITS.mounts}`);
+    if (requested.filter(input => isWorkspace(input) || isWorkspace(input, false)).length > 1) throw new HttpError(400, "Give {workspace: true} or {workspace: false} once");
+    const own = VolumeService.workspaceOf(agent);
     const mounts: Mount[] = [];
-    for (const input of requested) {
-      if (!input || typeof input !== "object" || Object.keys(input).some(key => !["volumeId", "path", "mode", "subpath", "notify"].includes(key))) throw new HttpError(400, "A mount is {volumeId, path, mode: \"ro\" | \"rw\", subpath?, notify?}");
+    for (const input of VolumeService.resolved(agent, requested)) {
+      if ((input as Mount).volumeId === own && (input as Mount).mode === "rw" && Object.keys(input as object).length === 3) {
+        // Exactly as written: a path that normalizes elsewhere is likely a mistake.
+        const path = (input as Mount).path;
+        let normalized: string | undefined;
+        try { normalized = normalizePath(path); } catch {}
+        if (path === "/" || normalized !== path) throw new HttpError(400, `The workspace path must be absolute and normalized, like /scratch: ${String(path)}`);
+        if (mounts.some(other => within(path, other.path) || within(other.path, path))) throw new HttpError(400, `Mount path ${path} (the agent's own workspace) overlaps another mount; place it elsewhere with {workspace: true, path} or leave it out with {workspace: false}`);
+        mounts.push(await workspace(path));
+        continue;
+      }
+      if (!input || typeof input !== "object" || Object.keys(input).some(key => !["volumeId", "path", "mode", "subpath", "notify"].includes(key))) throw new HttpError(400, "A mount is {volumeId, path, mode: \"ro\" | \"rw\", subpath?, notify?}, or {workspace: true, path?} or {workspace: false} to place or leave out the agent's own workspace (at /workspace by default)");
       const { volumeId, mode, notify } = input as Record<string, unknown>;
       const path = normalizePath((input as Record<string, unknown>).path, "mount path");
       if (path === "/") throw new HttpError(400, "A mount path needs a name, like /workspace");
