@@ -24,7 +24,12 @@ for (const split of [false, true]) test(`the plugin's path works end to end${spl
       PORT: String(port), AGENT_PUBLIC_URL: `http://127.0.0.1:${port}`, ...(split ? { AGENT_PUBLIC_ALIASES: alias, AGENT_ISSUER: alias } : {}),
     });
   };
-  const r = await start().catch(error => /Server exited/.test(String(error)) ? start() : Promise.reject(error));
+  // Its stderr is the test's, so a taken port shows only as an early exit: try a few ports before failing.
+  const r = await (async () => {
+    for (let attempt = 1; ; attempt++) {
+      try { return await start(); } catch (error) { if (attempt >= 5 || !/Server exited/.test(String(error))) throw error; }
+    }
+  })();
   // The reviewer's account: an email and password the operator set, as `infra/tenant.sh set-password` does.
   const password = join(r.root, "reviewer-password");
   writeFileSync(password, `${TEST_PASSWORD}\n`, { mode: 0o600 });
