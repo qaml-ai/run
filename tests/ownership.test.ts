@@ -299,6 +299,33 @@ test("a late heartbeat whose node still accepts connections is left to expire, a
   assert.deepEqual(await b.ownership.acquire("client_s"), { owner: "http://a" });
 });
 
+test("a node that fenced rejoins on its next heartbeat though it takes nothing, so peers see it again; a draining one does not", async t => {
+  const { db, url } = await testDatabase();
+  const a = await node(url, "http://a", 1_500), b = await node(url, "http://b", 1_500);
+  t.after(async () => { await a.stop(); await b.stop(); });
+  const heartbeat = async () => (await db.query("select session, expires_at > now() as live from runtime_nodes where node = 'http://a'")).rows[0];
+  const before = a.ownership.sessionId;
+  a.link.partitioned = true;
+  for (let waited = 0; !a.fences.length; waited += 5) { assert.ok(waited < 3_000, "the node fenced"); await sleep(5); }
+  a.link.partitioned = false;
+  // An idle node (a replacement task that just joined, say) used to rejoin only when it next took an actor: until then a
+  // retiring peer saw no one to retire to.
+  for (let waited = 0; ; waited += 25) {
+    const row = await heartbeat();
+    if (row.live && row.session === a.ownership.sessionId && row.session !== before) break;
+    assert.ok(waited < 3_000, "a rejoined under a new session");
+    await sleep(25);
+  }
+  assert.deepEqual(await b.ownership.livePeers(), ["http://a"]);
+
+  await a.ownership.drain();
+  a.link.partitioned = true;
+  for (let waited = 0; a.fences.length < 2; waited += 5) { assert.ok(waited < 3_000, "the draining node fenced"); await sleep(5); }
+  a.link.partitioned = false;
+  await sleep(2_000);
+  assert.equal((await heartbeat()).live, false, "a draining node stays out");
+});
+
 test("an expired heartbeat is never renewed: its node fences instead", async t => {
   const { db, url } = await testDatabase();
   const a = await node(url, "http://a");

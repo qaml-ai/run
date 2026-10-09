@@ -91,7 +91,11 @@ export async function cluster(t: { after(fn: () => Promise<void>): void }) {
   });
   /** Which node owns an actor, read straight from the database. */
   const owner = async (id: string) => (await db.query("select node from actor_owners where actor = $1", [id])).rows[0]?.node as string | undefined;
-  return { start, owner, db, databaseUrl };
+  /** The node that holds an actor now: its row names the node's live heartbeat. A node that fenced leaves its rows, held by no one. */
+  const liveOwner = async (id: string) => (await db.query(`
+    select o.node from actor_owners o join runtime_nodes n on n.node = o.node and n.session = o.session and n.expires_at > now()
+    where o.actor = $1`, [id])).rows[0]?.node as string | undefined;
+  return { start, owner, liveOwner, db, databaseUrl };
 }
 
 /**
