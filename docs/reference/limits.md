@@ -163,6 +163,19 @@ See [Voice and audio](../guides/voice.md).
 | `POST /v1/transcriptions` body | 25 MB of audio (multipart), or its base64 in JSON; each counts as a run against runs per minute |
 | A provider's answer | 5 minutes |
 
+## Images
+
+See [Images](../guides/images.md).
+
+| Limit | Value |
+| --- | --- |
+| Prompt | 32,000 characters |
+| Images to edit | 4 per request, PNG, JPEG or WebP, 25 MB each and 50 MB in all, at most 8,000 pixels a side (413 `IMAGE_TOO_LARGE`; other types 415 `UNSUPPORTED_IMAGE`) |
+| Images made | 4 per request (`n`) |
+| Sizes and qualities | `1024x1024`, `1536x1024`, `1024x1536`; `low`, `medium`, `high` |
+| `POST /v1/images` | each request counts as a run against runs per minute |
+| A provider's answer | 3 minutes |
+
 ## Tools
 
 | Limit | Value |

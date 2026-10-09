@@ -55,6 +55,10 @@ A **prepaid tenant** pays for:
   (`gpt-transcribe`'s list price; `AGENT_PRICE_TRANSCRIPTION_USD`), per second as OpenAI bills it. The hour's usage
   entry counts them apart (`transcription`, `transcriptions`, `audioSeconds`), and `/v1/usage` has a row with
   `kind: "transcription"`. See [Voice and audio](../guides/voice.md).
+- **Images** on the platform's OpenAI key, per token at `gpt-image-2.5-flare`'s list prices: $5 per million text
+  tokens in, $8 per million image tokens in and $30 per million image tokens out (`AGENT_PRICE_IMAGE_TEXT_INPUT_USD`,
+  `AGENT_PRICE_IMAGE_INPUT_USD`, `AGENT_PRICE_IMAGE_OUTPUT_USD`), as OpenAI reports them. The hour's usage entry counts
+  them apart (`image`, `images`), and `/v1/usage` has a row with `kind: "image"`. See [Images](../guides/images.md).
 - **Storage**, $0.10 per GB-month of what its agents and volumes keep in Storage
   (transcripts, journals, volume trees and snapshots, file chunks, each chunk once
   however many files share it), charged once a UTC day, on one node, for that day.

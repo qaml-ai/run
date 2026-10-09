@@ -117,6 +117,7 @@ email address may sign up again as a new, empty tenant.
 | Spans waiting to be exported | in each node's memory only, seconds; dropped when they cannot be sent |
 | Audio attached to a message, and its transcript | as the agent's other attachments and history: until the agent is deleted or expires (the audio in its workspace volume, the transcript on the user message) |
 | Audio and transcripts of `POST /v1/transcriptions` | not kept: in the node's memory while the request runs |
+| Prompts and images of `POST /v1/images` | not kept: in the node's memory while the request runs; with `volumeId`, the images made are files of that volume, kept until deleted |
 
 ## Transcription
 
@@ -132,6 +133,19 @@ the answer (`/v1/transcriptions` takes no `Idempotency-Key`, whose stored answer
 goes through the outbound guard (public addresses only). Logs carry the tenant, the model, the format, bytes, seconds
 and the time taken (`transcribed`), and error classes; never audio, a transcript or a URL's query
 (`tests/transcription-api.test.ts` checks the logs).
+
+## Images
+
+`POST /v1/images` makes images from a prompt, or edits images given (`src/images.ts`, [Images](../guides/images.md)).
+The prompt and images go to OpenAI's images API (`/v1/images/generations`, `/v1/images/edits`), on the tenant's own
+OpenAI key or its key scope's (whose address it is sent to, if the scope names one), else the platform's: OpenAI
+processes them under its API data policy (not used for training; kept by OpenAI for abuse monitoring as its policy
+says) and is the processor for them. Nothing is kept unless the request names a volume (`volumeId`), whose files the
+images made then are: in the account export, and deleted with the volume. The endpoint takes no `Idempotency-Key`,
+whose stored answers would hold the images. Images fetched by URL go through the outbound guard (public addresses
+only). Logs carry the tenant, the model, size, quality, format, counts, tokens, bytes and the time taken
+(`images_generated`), and error classes; never a prompt, an image or a URL's query
+(`tests/image-generation-api.test.ts` checks the logs).
 
 ## Trace export
 

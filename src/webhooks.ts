@@ -85,26 +85,28 @@ export function usageCost(usage: any): { usd: number; source: "provider" | "cata
 }
 
 /**
- * The `usage.recorded` event for a model response or a transcription, or undefined for other usage (web searches,
- * renders, tool search). `agent` is empty for a transcription no agent made (POST /v1/transcriptions).
+ * The `usage.recorded` event for a model response, a transcription or images made, or undefined for other usage (web
+ * searches, renders, tool search). `agent` is empty for a transcription or images no agent made (POST /v1/transcriptions,
+ * POST /v1/images).
  */
 export function usageEvent(tenant: string, agent: string, message: UsageRecord): WebhookEvent | undefined {
   if (message.searches || message.renders || message.toolSearch) return undefined;
   const transcription = message.kind === "transcription";
+  const image = message.kind === "image";
   const usage = message.usage ?? {};
   // A tenant endpoint's calls are named as its agents name the model: `chiridion` / `openai-codex/gpt-5.5`.
   const [provider, ...upstream] = (message.provider ?? "unknown").split("/");
   const facts = {
     requestId: message.requestId ?? null, subject: message.identity?.subject ?? (agent || null), actor: message.actor ?? null,
     context: message.identity?.context ?? {}, keyScope: message.keyScope ?? null, provider, model: [...upstream, message.model ?? "unknown"].join("/"),
-    kind: message.kind === "compaction" ? "compaction" as const : transcription ? "transcription" as const : "response" as const,
+    kind: message.kind === "compaction" ? "compaction" as const : transcription ? "transcription" as const : image ? "image" as const : "response" as const,
     input: usage.input ?? 0, output: usage.output ?? 0, cacheRead: usage.cacheRead ?? 0, cacheWrite: usage.cacheWrite ?? 0,
-    ...(typeof usage.reasoning === "number" ? { reasoning: usage.reasoning } : {}), ...(transcription ? { audioSeconds: message.audioSeconds ?? 0 } : {}), cost: usageCost(usage),
+    ...(typeof usage.reasoning === "number" ? { reasoning: usage.reasoning } : {}), ...(transcription ? { audioSeconds: message.audioSeconds ?? 0 } : {}), ...(image ? { images: message.images ?? 0 } : {}), cost: usageCost(usage),
   };
   const at = message.timestamp ?? Date.now();
   const event = webhookEvent("usage.recorded", tenant, { agentId: agent || null, ...facts, at });
   // The older usage webhook carries model responses only, as it always has.
-  return transcription ? event : { ...event, legacy: { id: randomUUID(), agent, tenant, ...facts, subject: facts.subject ?? agent, kind: facts.kind as UsageEvent["kind"], at } };
+  return transcription || image ? event : { ...event, legacy: { id: randomUUID(), agent, tenant, ...facts, subject: facts.subject ?? agent, kind: facts.kind as UsageEvent["kind"], at } };
 }
 
 /** Standard Webhooks headers for `body`, signed with each secret (`whsec_<base64 key>`). */

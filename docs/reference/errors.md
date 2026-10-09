@@ -27,9 +27,11 @@ retry.
 | 400 | `INVALID_REQUEST` | The request is malformed or invalid; the message says how |
 | 400 | `INVALID_HISTORY` | An imported history (`initialMessages`) has a message it cannot take; the message names which, and what it lacks |
 | 400 | `TRANSCRIPTION_UNAVAILABLE` | Audio was to be transcribed and the account has no OpenAI key to do it with (nor the platform's); the message says how to add one |
+| 400 | `IMAGE_UNAVAILABLE` | An image was to be made and the account has no OpenAI key to do it with (nor the platform's); the message says how to add one |
+| 400 | `IMAGE_REFUSED` | OpenAI's safety system refused the request (`stage: "input"`) or the image it made (`stage: "output"`); `categories` names why. Nothing was charged |
 | 400 | `FORK_POINT_INVALID` | A fork's `atMessage` is not an index in the agent's history, nor a request id one of its messages carries |
 | 401 | `UNAUTHORIZED` | No valid token; the message says where to create one (https://run.camelai.com/console/tokens) |
-| 402 | `SPEND_LIMIT` | A spend limit is reached: the agent's, or the account's monthly cap; or a message's audio would cost more than the run's or agent's spend limit has left |
+| 402 | `SPEND_LIMIT` | A spend limit is reached: the agent's, or the account's monthly cap; or a message's audio, or an image, would cost more than the run's or agent's spend limit has left |
 | 402 | `INSUFFICIENT_CREDIT` | The account's prepaid credit is spent: no runs start and no files are stored |
 | 403 | `FORBIDDEN` | The token may not do this |
 | 404 | `NOT_FOUND` | No such agent, request, input or other resource for this account, or no such path at all (the message points at `/llms.txt`) |
@@ -44,10 +46,13 @@ retry.
 | 413 | `TOO_LARGE` | The request body is too large |
 | 413 | `HISTORY_TOO_LARGE` | An imported history is over 16 MB of JSON |
 | 413 | `AUDIO_TOO_LARGE`, `AUDIO_TOO_LONG` | Audio to transcribe is over 25 MB or 30 minutes (a message's, 5 files or 30 minutes in all) |
+| 413 | `IMAGE_TOO_LARGE` | An image to edit is over 25 MB or 8,000 pixels a side, or a request's images are over 50 MB in all |
 | 415 | `UNSUPPORTED_AUDIO` | Audio to transcribe is in a format transcription does not take, or its container gives no length |
+| 415 | `UNSUPPORTED_IMAGE` | An image to edit is not PNG, JPEG or WebP |
 | 429 | `BUSY_AGENT_LIMIT` | The account has as many agents busy as its [usage tier](limits.md#usage-tiers) allows; `busyAgents` in the body has the limit and the next tier. Retry after `Retry-After`, or when one of its runs ends |
 | 429 | `RATE_LIMITED` | Too many: a rate limit (the body's `limit` names it: `{name, scope, max, windowSeconds}`; see [Rate limits](limits.md#rate-limits)), or too many agents, requests or subscribers at once; retry after `Retry-After` |
 | 502 | `TRANSCRIPTION_FAILED` | The transcription provider failed or refused the key; nothing was charged |
+| 502 | `IMAGE_FAILED` | The image provider failed or refused the key; nothing was charged |
 | 503 | `UNAVAILABLE` | Retry after `Retry-After`: capacity, an agent moving, a node draining |
 | 503 | `DATABASE_RETRY` | The database refused the request for now (a conflict with another request, or a statement timeout); retry after `Retry-After` |
 | 507 | `STORAGE_LIMIT` | The account's storage limit would be passed; the body has `limit` and `used`, in bytes |
