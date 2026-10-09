@@ -71,7 +71,7 @@ export function parseManifest(document: unknown, file: string, where = file, sou
     });
   }
   // delegate settings bring their builtin, as in the SDKs.
-  if (definition.delegate && !(Array.isArray(definition.builtins) && definition.builtins.includes("delegate"))) definition.builtins = [...Array.isArray(definition.builtins) ? definition.builtins : [], "delegate"];
+  if (definition.delegate && !(Array.isArray(definition.builtins) && (definition.builtins.includes("delegate") || definition.builtins.includes("agents")))) definition.builtins = [...Array.isArray(definition.builtins) ? definition.builtins : [], "delegate"];
   if (!Array.isArray(agents)) throw new Error(`${where}: agents is a list of { key, … }`);
   for (const agent of agents) {
     if (!agent || typeof agent !== "object" || typeof agent.key !== "string" || !KEY.test(agent.key)) throw new Error(`${where}: each agent needs a key, 1 to 80 letters, digits, _ and -`);

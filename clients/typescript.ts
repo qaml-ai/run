@@ -35,6 +35,10 @@ export interface RuntimeIdentity {
   requestId?: string;
   /** The model's tool call this request is for, when made for one. */
   toolCallId?: string;
+  /** In a sub-agent's run (delegate, spawn_agent): the agent that started it. */
+  parentAgentId?: string;
+  /** In a sub-agent's run: the first agent of its chain (the parent's parent's..., or the parent). */
+  rootAgentId?: string;
 }
 /** A runtime identity from its claims (a verified token's payload, or an attached call's `_meta`). */
 export function identityFromClaims(claims: Record<string, any>): RuntimeIdentity {
@@ -48,6 +52,7 @@ export function identityFromClaims(claims: Record<string, any>): RuntimeIdentity
     context: isRecord(claims.ctx) ? claims.ctx : {}, ...(isRecord(claims.origin) ? { origin: claims.origin } : {}),
     ...(isRecord(claims.approval) ? { approval: claims.approval as RuntimeIdentity["approval"] & object } : {}),
     ...(text(claims.req) ? { requestId: claims.req } : {}), ...(text(claims.tcid) ? { toolCallId: claims.tcid } : {}),
+    ...(text(claims.par) ? { parentAgentId: claims.par } : {}), ...(text(claims.root) ? { rootAgentId: claims.root } : {}),
   };
 }
 export interface ToolContext {
@@ -414,9 +419,10 @@ export interface CreateAgentOptions extends AgentOptions {
 }
 /**
  * A tool the runtime answers itself: web_fetch, web_search, schedule (wake-ups), ask_user (questions, waiting for the answer),
- * or delegate (sub-agents: needs `delegate` settings).
+ * delegate (sub-agents: needs `delegate` settings), or agents (sub-agents in the background: spawn_agent, wait_agent and
+ * list_agents, with the same settings).
  */
-export type Builtin = "web_fetch" | "web_search" | "schedule" | "ask_user" | "delegate" | "generate_image";
+export type Builtin = "web_fetch" | "web_search" | "schedule" | "ask_user" | "delegate" | "generate_image" | "agents";
 /**
  * A delegate target: a definition's key or id, as a string or `{ definition }`, or an existing agent's key
  * (`{ agent }`, which keeps its own history across calls). `name` is what the model calls it (default: the key); `description`
@@ -829,9 +835,9 @@ function provisioning(options: CreateAgentOptions) {
   const fields = ["subject", "context", "keyScope", "spendLimit", "runLimits", "modelHeaders", "definition", "mounts", "remount", "model", "thinkingLevel", "maxOutputTokens", "temperature", "initialMessages", "importMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "delegate", "mcpServers", "prompt"] as const;
   return withMultiAgent(Object.fromEntries(fields.filter(field => options[field] !== undefined).map(field => [field, options[field]])));
 }
-/** `delegate` settings bring their builtin: given the settings, the builtin is added. */
+/** `delegate` settings bring their builtin: given the settings without delegate or agents, delegate is added. */
 function withMultiAgent<T extends { builtins?: Builtin[]; delegate?: unknown }>(input: T): T {
-  return input.delegate && !input.builtins?.includes("delegate") ? { ...input, builtins: [...input.builtins ?? [], "delegate"] } : input;
+  return input.delegate && !input.builtins?.some(name => name === "delegate" || name === "agents") ? { ...input, builtins: [...input.builtins ?? [], "delegate"] } : input;
 }
 
 /** The `traceparent` header, when there is one to send. */

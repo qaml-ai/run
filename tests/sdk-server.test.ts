@@ -77,6 +77,8 @@ test("runtimeAuth gives MCP SDK servers the same identity; verifyRuntimeToken ch
   assert.equal(auth.clientId, "client_test");
   const identity = await verifyRuntimeToken(await rt.token({ actor: "bob" }, "https://app.test/mcp/"), { ...rt.options, audience: APP });
   assert.equal(identity.user, "bob", "a trailing slash on either side still matches");
+  const child = await verifyRuntimeToken(await rt.token({ parentAgentId: "client_parent", rootAgentId: "client_root" }, APP), { ...rt.options, audience: APP });
+  assert.deepEqual([child.parentAgentId, child.rootAgentId], ["client_parent", "client_root"], "a sub-agent's run names its parent and root");
   await assert.rejects(runtimeAuth(new Request(APP), rt.options), RuntimeTokenError);
 });
 

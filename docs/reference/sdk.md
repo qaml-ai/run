@@ -79,7 +79,7 @@ brought to `config` if it differs. Returns a connected `Agent`. See
 | `mounts`, `fileTools` | `mounts=`, `file_tools=` | its volumes (fixed at creation), and whether it has file tools |
 | `codeMode` | `code_mode=` | `false`: no `js_exec`; every tool is called directly, and an agent with no tools at all gets little more than its instructions as its system prompt. See [Tools](../guides/tools.md#without-code-codemode-false) |
 | `name` | `name=` | a label, shown in the console |
-| `builtins` | `builtins=` | tools the runtime answers itself, without a definition: `web_fetch`, `web_search`, `schedule`, `ask_user`, `delegate` |
+| `builtins` | `builtins=` | tools the runtime answers itself, without a definition: `web_fetch`, `web_search`, `schedule`, `ask_user`, `delegate`, `agents` |
 | `delegate` | `delegate=` | sub-agents it may hand tasks to (`{ agents, instructions?, maxDepth?, maxParallel? }`); brings its builtin. See [Multi-agent](../guides/multi-agent.md) |
 | `mcpServers` | `mcp_servers=` | remote MCP servers of its own, without a definition: `[{ name, url, auth?: { type: "runtime" }, allowTools?, … }]`, no credentials. See [An agent's own MCP servers](../guides/tools.md#an-agents-own-mcp-servers) |
 | `subagents` | `subagents=` | also deliver its sub-agents' progress: `subagent_start`, `subagent_event`, `subagent_end` events, and stream parts |

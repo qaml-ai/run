@@ -394,3 +394,86 @@ test("an approval whose node is lost after its turn ended, before the resume rec
   assert.deepEqual(sim.model.served.map(served => served.from), ["a.sim", "a.sim"]);
   assert.ok(sim.hooks.reached.includes("a resumed run took the outcome of its turn that had ended"), "the node was lost where this is about");
 });
+
+/**
+ * A parent on a that starts the worker (an agent of its own, served by b) in the background: its first turn spawns it and
+ * ends; the worker answers after three seconds; the notification's turn says "heard". Returns the parent, the worker and
+ * the notification's request id.
+ */
+async function spawned(sim: Sim, nodes: string[]) {
+  for (const node of nodes) await sim.start(node);
+  // The worker is b's: made and run there first.
+  const worker = (await sim.call("b", "/v1/agents", { body: { systemPrompt: "You are a WORKER." }, headers: { "Idempotency-Key": "worker" } })).json.id;
+  await outcome(sim, "b", worker, await prompt(sim, "b", worker, "warm up"));
+  const parent = (await sim.call("a", "/v1/agents", { body: { builtins: ["agents"], delegate: { agents: [{ agent: "worker" }] } } })).json.id;
+  const first = await outcome(sim, "a", parent, await prompt(sim, "a", parent, "start the worker"));
+  const call = first.outcome.result.toolCalls.find((entry: any) => entry.tool === "spawn_agent");
+  assert.equal(call?.agentId, worker, JSON.stringify(first.outcome));
+  const row = (await sim.db.query("select request_id from agent_children where parent = $1", [parent])).rows[0];
+  return { parent, worker, notice: `child_${row.request_id}` };
+}
+const agentsWorld = (seed: number) => Sim.create({
+  seed, env: { AGENT_LEASE_TTL_MS: "3000", AGENT_ORPHAN_SWEEP_MS: "2000", AGENT_CHILD_SWEEP_MS: "2000", AGENT_IDLE_MS: "600000" },
+  respond: body => {
+    const system = JSON.stringify(body.messages.filter((message: any) => message.role === "system"));
+    const last = body.messages.at(-1);
+    if (system.includes("WORKER")) return { content: "worked", delayMs: 3_000 };
+    if (last.role === "tool") return { content: "spawned" };
+    if (JSON.stringify(last.content).includes("<agent_notification")) return { content: "heard" };
+    return { tool_calls: [{ index: 0, id: "call_spawn", type: "function", function: { name: "spawn_agent", arguments: JSON.stringify({ agent: "worker", task: "work" }) } }] };
+  },
+});
+/** The notification reached the parent once: one request, one message in history, one turn that heard it. */
+async function notifiedOnce(sim: Sim, node: string, parent: string, notice: string) {
+  const record = await outcome(sim, node, parent, notice);
+  assert.equal(record.outcome.result.reply, "heard", JSON.stringify(record.outcome));
+  const requests = (await sim.call(node, `/v1/agents/${parent}`)).json.requests.filter((request: any) => request.id.startsWith("child_"));
+  assert.deepEqual(requests.map((request: any) => request.id), [notice]);
+  const messages = (await sim.call(node, `/v1/agents/${parent}/history`)).json.messages.filter((message: any) => message.source?.kind === "agent");
+  assert.equal(messages.length, 1, "one notification in history");
+  assert.equal(sim.model.served.filter(served => JSON.stringify(served.body.messages.at(-1).content).includes("<agent_notification")).length, 1, "the model heard it once");
+  const row = (await sim.db.query("select state, landed_by from agent_children where parent = $1", [parent])).rows[0];
+  assert.deepEqual(row, { state: "notified", landed_by: "notice" });
+  assert.deepEqual(sim.hooks.violations, []);
+}
+
+test("a child whose node is lost right after its run ends, before it delivers the ending, is delivered once by a sweep", async t => {
+  const sim = await agentsWorld(47);
+  t.after(() => sim.close());
+  const { parent, notice } = await spawned(sim, ["a", "b"]);
+  // b records the worker's run's end, then looks up its row to deliver it: it is lost there.
+  sim.pauseAtDbAnswer("b", 10_000, "from agent_children where child");
+  await sim.until(() => sim.pauses.some(pause => pause.node === "b"), "b to stop at the delivery");
+  sim.crash("b");
+  await notifiedOnce(sim, "a", parent, notice);
+  assert.ok(sim.hooks.reached.includes("a sweep found a child's ended run that no one had recorded"), sim.hooks.reached.join(", "));
+});
+
+test("a parent whose node is lost as it takes a child's notification gets it once, from the next owner", async t => {
+  const sim = await agentsWorld(48);
+  t.after(() => sim.close());
+  const { parent, notice } = await spawned(sim, ["a", "b", "c"]);
+  // a writes the notification's record (its journal append lands) and is lost before it answers b.
+  sim.pauseAtDbAnswer("a", 10_000, "insert into log_records");
+  await sim.until(() => sim.pauses.some(pause => pause.node === "a"), "a to stop as it takes the notification");
+  sim.crash("a");
+  await notifiedOnce(sim, "b", parent, notice);
+  // b's delivery got no answer: the notification was a's already (in its journal), and the next owner ran it.
+  assert.ok(sim.hooks.reached.includes("a child's notification failed to reach its parent and was left for a sweep"), sim.hooks.reached.join(", "));
+});
+
+test("a child's node and then its parent's are both lost on the way: the notification still lands once, on the node left", async t => {
+  const sim = await agentsWorld(49);
+  t.after(() => sim.close());
+  const { parent, notice } = await spawned(sim, ["a", "b", "c"]);
+  sim.pauseAtDbAnswer("b", 10_000, "from agent_children where child");
+  await sim.until(() => sim.pauses.some(pause => pause.node === "b"), "b to stop at the delivery");
+  sim.crash("b");
+  // A sweep records the ending and delivers it to a, which is lost as its notification's turn lands it.
+  sim.pauseAtDbAnswer("a", 10_000, "set landed_at");
+  await sim.until(() => sim.pauses.some(pause => pause.node === "a"), "a to stop as the notification lands", 120_000);
+  sim.crash("a");
+  await notifiedOnce(sim, "c", parent, notice);
+  assert.ok(sim.hooks.reached.includes("a sweep found a child's ended run that no one had recorded"), sim.hooks.reached.join(", "));
+  assert.ok(sim.hooks.reached.includes("a child's notification whose node was lost before its message landed landed on the next owner"), sim.hooks.reached.join(", "));
+});

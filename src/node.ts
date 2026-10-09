@@ -675,7 +675,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     tracing: telemetry,
     // A self-hosted runtime configured by its environment takes keys there too.
     ...(config.selfHostedTenant ? { modelKeyHint: "On this self-hosted runtime, AGENT_TENANT_API_KEYS in its environment sets keys too ({\"anthropic\": \"sk-ant-...\"}; restart it after)." } : {}),
-    secret: sessionSecret, toolTimeoutMs, idleMs, streamTimeouts, ...(config.runOverrunMs !== undefined ? { runOverrunMs: config.runOverrunMs } : {}), maxAgentsPerTenant, codeCapacity: config.codeCapacity, ...(config.snapshotBytes !== undefined ? { snapshotBytes: config.snapshotBytes } : {}), orphanSweepMs: orphanMs, watcherLimitFor: tenant => tenants.maxWatchers(tenant), busyAgents, agentLimitFor: async tenant => {
+    secret: sessionSecret, toolTimeoutMs, idleMs, streamTimeouts, ...(config.runOverrunMs !== undefined ? { runOverrunMs: config.runOverrunMs } : {}), maxAgentsPerTenant, codeCapacity: config.codeCapacity, ...(config.snapshotBytes !== undefined ? { snapshotBytes: config.snapshotBytes } : {}), orphanSweepMs: orphanMs, childSweepMs: config.childSweepMs, wakesPerHour: config.wakesPerHour, watcherLimitFor: tenant => tenants.maxWatchers(tenant), busyAgents, agentLimitFor: async tenant => {
       // Agents hosted on this node stay within the tenant's busy limit too: its own, or its tier's (else the default).
       const { limit, source } = await accounts.billing.busyLimit(tenant);
       return source === "default" ? undefined : limit;
@@ -1128,6 +1128,9 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   const orphanTimer = orphanMs ? setInterval(() => void clients.resumeSoon(), orphanMs) : undefined;
   orphanTimer?.unref();
   if (orphanMs) void clients.resumeSoon();
+  // Sub-agents' endings whose delivery to their parent a lost node left undone, delivered by whichever node gets to them first.
+  const childTimer = config.childSweepMs ? setInterval(() => void clients.sweepChildren(), config.childSweepMs) : undefined;
+  childTimer?.unref();
   // Storage is charged to prepaid tenants once a UTC day, by whichever node claims the day's job first.
   const { billingMs, reconcileDays } = config;
   // The charge reads tracked totals; a full listing of Storage corrects them every AGENT_STORAGE_RECONCILE_DAYS (0: never, but for the first).
@@ -1229,6 +1232,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     clearInterval(sweepTimer);
     clearInterval(purgeTimer);
     clearInterval(orphanTimer);
+    clearInterval(childTimer);
     clearInterval(billingTimer);
     clearInterval(workTimer);
     if (retireTimer) clearInterval(retireTimer);

@@ -50,7 +50,7 @@ import { answerInput, argumentsHash, expiresAt, INPUT_LIMITS, inputRequests, inp
 import { recordHandoff, recordStart, recordWatchRefused, safeError, Steps } from "./metrics.ts";
 import { BackgroundSpans, inputSpans, RunSpans, type ToolSource, type Tracing } from "./telemetry.ts";
 import { newSpanId, newTraceId, parseTraceparent, sampledAt } from "./otlp.ts";
-import { definitionId, delegateSettings, delegateTool, MULTI_AGENT_LIMITS, PARENT_KEYS, SUBAGENT_EVENTS, type AgentTarget, type DelegateSettings } from "./multi-agent.ts";
+import { agentsTools, childNotice, childStatus, definitionId, delegateSettings, delegateTool, MULTI_AGENT_LIMITS, PARENT_KEYS, startsChildren, SUBAGENT_EVENTS, type AgentTarget, type ChildNotice, type DelegateSettings } from "./multi-agent.ts";
 import { clock, random } from "./node-context.ts";
 import { always, reachable, sometimes } from "./assert.ts";
 
@@ -110,7 +110,7 @@ export type ForkedFrom = { agentId: string; atMessage: number | null };
  */
 function ownSources(current: Sources | undefined, given: { builtins?: unknown; delegate?: unknown; mcpServers?: unknown }, inline: (input: unknown) => McpServerSpec[]): Sources | undefined {
   const builtins = given.builtins !== undefined ? builtinsInput(given.builtins) as string[] : current?.builtins ?? [];
-  const delegate = delegateSettings(builtins, given.delegate !== undefined ? given.delegate : builtins.includes("delegate") ? current?.delegate : undefined);
+  const delegate = delegateSettings(builtins, given.delegate !== undefined ? given.delegate : startsChildren(builtins) ? current?.delegate : undefined);
   const mcpServers = given.mcpServers !== undefined ? inline(given.mcpServers) : current?.mcpServers ?? [];
   const { builtins: _builtins, delegate: _delegate, mcpServers: _servers, ...rest } = current ?? {};
   const next: Sources = { ...rest, ...(builtins.length ? { builtins } : {}), ...(delegate ? { delegate } : {}), ...(mcpServers.length ? { mcpServers } : {}) };
@@ -259,6 +259,8 @@ type Session = {
   taps?: Set<(data: ClientEvent) => void>;
   /** Runs an abort reached after they began but before the agent had them: they end without running (see `markAborted`). */
   aborted?: Set<string>;
+  /** The spawn_agent call writing its child's row: the next waits, so the running children's count holds (`childRow`). */
+  spawning?: Promise<void>;
 };
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const validId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(value);
@@ -387,6 +389,10 @@ const CONNECTION_LOST = "The server running this tool disconnected during the ca
   "taken effect. Check whether it did before trying it again; if you cannot check, tell the user it is unknown whether it went through.";
 /** How long a replaced connection stays open for the tool calls it has to answer. */
 const DRAIN_MS = 30_000;
+/** How long a node holds a child's row while it delivers the child's ending, before another may. */
+const CHILD_CLAIM_MS = 60_000;
+/** How long a spawned child may go without its request (its agent being made, its prompt sent) before a sweep calls it never started. */
+const CHILD_START_GRACE_MS = 120_000;
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 /** The most a snapshot's finished messages take; beyond it, a subscriber reads the turn from history. */
 const TURN_SNAPSHOT_BYTES = 1_000_000;
@@ -461,6 +467,9 @@ const json = (c: Context, status: number, value: unknown) => c.json(value, statu
 /** Never-expiring agents have `expiresAt: null`; a bare `<=` would treat null as 0, long expired. */
 const expired = (expiresAt: number | null, now = Date.now()) => expiresAt !== null && expiresAt <= now;
 const settled = (state: string) => state !== "running";
+/** A child's notification as the runtime sends it (multi-agent.ts `childNotice`). */
+const validNotice = (value: any) => !!value && typeof value === "object" && value.source?.kind === "agent" && validSessionId(String(value.source.agentId)) && typeof value.source.name === "string"
+  && typeof value.root === "string" && typeof value.costUsd === "number" && !!value.metadata && typeof value.metadata === "object";
 /** The key scope an agent has once `update` applies: the one it names (null for none), else its own. */
 const scopeAfter = (header: SessionHeader, update: { keyScope?: unknown }) => Object.hasOwn(update, "keyScope") ? update.keyScope as string | null : header.keyScope;
 
@@ -471,7 +480,7 @@ const scopeAfter = (header: SessionHeader, update: { keyScope?: unknown }) => Ob
 const visible = ({ params: _params, announce: _announce, handedOff: _handedOff, carried: _carried, ...record }: RequestRecord): RequestRecord => {
   if (record.state !== "completed") return record;
   const ending = outcomeEnding(record.outcome);
-  const status = ending.error !== undefined || ending.stopped === "spend_limit" || ending.stopped === "turn_limit" ? "failed" : ending.stopped === "input_required" ? "input_required" : "completed";
+  const status = ending.error !== undefined || ending.stopped === "spend_limit" || ending.stopped === "turn_limit" || ending.stopped === "agent_loop_limit" ? "failed" : ending.stopped === "input_required" ? "input_required" : "completed";
   return { ...record, ...ending, status };
 };
 
@@ -589,6 +598,10 @@ export interface ClientSessionOptions {
   createAgent?: (tenant: string, params: Record<string, unknown>, key: string, parent: NonNullable<SessionHeader["parent"]>) => Promise<{ id: string }>;
   /** One of an agent's requests on whichever node serves it, once it settles or `waitMs` passes (see `awaitRequest`). */
   requestAnywhere?: (agent: string, tenant: string, requestId: string, waitMs: number, signal?: AbortSignal) => Promise<RequestRecord | undefined>;
+  /** How often to sweep for children's endings not delivered (`sweepChildren`); MULTI_AGENT_LIMITS.sweepMs by default. */
+  childSweepMs?: number;
+  /** Turns sub-agent notifications may start per chain root and hour; MULTI_AGENT_LIMITS.wakesPerHour by default. */
+  wakesPerHour?: number;
 }
 /** A definition resolved for an agent: its revision, agent configuration, client tools and tool sources. */
 export type DefinitionConfig = { id: string; revision: number; config: Pick<AgentConfig, "model" | "systemPrompt" | "thinkingLevel" | "fileTools" | "codeMode" | "runLimits" | "maxOutputTokens" | "temperature">; sources?: Sources; description?: string };
@@ -670,6 +683,9 @@ export class ClientSessions {
   private readonly leavingWork = new Set<Promise<void>>();
   /** Stateless runs' sessions being made here, whose slots are reserved before their header is: not the tenant's agents. */
   private readonly creatingRuns = new Set<string>();
+  /** A sweep for undelivered children's endings is under way here (`sweepChildren`), and the hour whose old wake counts were last deleted. */
+  private sweepingChildren = false;
+  private wakesSwept?: number;
 
   constructor(supervisor: AgentSupervisor, options: ClientSessionOptions) {
     if (!options.storage && !options.root) throw new Error("ClientSessions needs storage or root");
@@ -1662,8 +1678,8 @@ export class ClientSessions {
       if (innerSpan) spans!.innerCall(call, innerSpan, started, Date.now(), code, answer);
       // Listed in the run's outcome (`toolCalls`), ids only: its arguments and result are in history.
       const calls = session.toolCalls ??= [];
-      // A delegate call names the child agent it ran.
-      const child = call.name === "delegate" && call.toolCallId && !call.innerCallId ? session.children?.get(call.toolCallId)?.agent : undefined;
+      // A delegate or spawn_agent call names the child agent it ran.
+      const child = (call.name === "delegate" || call.name === "spawn_agent") && call.toolCallId && !call.innerCallId ? session.children?.get(call.toolCallId)?.agent : undefined;
       if (calls.length < OUTPUT_TOOL_CALLS) calls.push({ tool: call.name, ...(call.toolCallId ? { toolCallId: call.toolCallId } : {}), ...(call.innerCallId ? { innerCallId: call.innerCallId } : {}), ok: !code, ...(code ? { code } : {}), ...(child ? { agentId: child } : {}) });
     }
   }
@@ -1675,6 +1691,7 @@ export class ClientSessions {
     const plan = call.toolCallId && !call.innerCallId ? session.retries?.get(call.toolCallId) : undefined;
     if (plan && plan.argumentsHash !== argumentsHash(call.name, call.args)) throw new Error("These are not the arguments the user answered for; the call did not run");
     const origin = await this.options.hooks?.origin?.({ id: session.header.id, tenant: session.header.tenant, claim: session.claim }, request?.id);
+    const lineage = this.lineage(session, request);
     await this.beforeEffect(session);
     await this.leased(session, call.signal);
     // A server's progress reaches the event stream as an update of the model's tool call (js_exec's, for a call from code),
@@ -1691,7 +1708,7 @@ export class ClientSessions {
         ...(call.toolCallId ? { idempotencyKey: toolCallKey(session.header.id, call.messageIndex, call.toolCallId, call.innerCallId) } : {}),
         ...(plan?.approval ? { approval: { input: plan.approval.input, by: this.approver(plan.approval.by), at: plan.approval.at } } : {}),
         ...(plan?.inputResponses ? { inputResponses: plan.inputResponses } : {}), ...(plan?.requestState !== undefined ? { requestState: plan.requestState } : {}),
-        ...(this.humanSurface(session) ? { elicit: true } : {}),
+        ...(this.humanSurface(session) ? { elicit: true } : {}), ...(lineage ? { lineage } : {}),
       }));
     } catch (error) {
       progressed?.();
@@ -1732,14 +1749,21 @@ export class ClientSessions {
    * delegate call's child is an agent of its own.
    */
   private multiAgentServer(session: Session, sources: Sources | undefined): ToolServer | undefined {
-    const delegate = sources?.builtins?.includes("delegate") ? sources.delegate : undefined;
-    if (!delegate) return undefined;
-    const tools = async () => [delegateTool(delegate, await this.targetDescriptions(session.header.tenant, delegate.agents ?? []))];
+    const settings = startsChildren(sources?.builtins) ? sources!.delegate : undefined;
+    if (!settings) return undefined;
+    const delegating = sources!.builtins!.includes("delegate"), spawning = sources!.builtins!.includes("agents");
+    const tools = async () => {
+      const describe = await this.targetDescriptions(session.header.tenant, settings.agents ?? []);
+      return [...delegating ? [delegateTool(settings, describe)] : [], ...spawning ? agentsTools(settings, describe) : []];
+    };
     return {
       tools,
       sources: async () => (await tools()).map((tool): ToolSourceView => ({ kind: "builtin", name: tool.name, status: "listed", tools: [tool] })),
       call: async call => {
-        if (call.name === "delegate") return this.delegate(session, delegate, call);
+        if (call.name === "delegate" && delegating) return this.delegate(session, settings, call);
+        if (call.name === "spawn_agent" && spawning) return this.spawnAgent(session, settings, call);
+        if (call.name === "wait_agent" && spawning) return this.waitAgents(session, call);
+        if (call.name === "list_agents" && spawning) return jsonResult({ agents: await this.childrenOf(session.header.id) });
         throw new Error(`Unknown tool ${call.name}`);
       },
     };
@@ -1813,19 +1837,8 @@ export class ClientSessions {
     if (!createAgent || !submit) throw new Error("Delegation is not enabled on this runtime");
     if (!run || !call.toolCallId || call.innerCallId || !call.idempotencyKey) throw new Error("delegate is called directly, not from js_exec");
     const toolCallId = call.toolCallId;
-    const { agent: name, instructions, task, output: schema } = call.args as { agent?: string; instructions?: string; task?: unknown; output?: unknown };
-    const target = name === undefined ? undefined : settings.agents?.find(entry => entry.name === name);
-    if (name !== undefined && !target) throw new Error(`There is no agent ${name} to delegate to`);
-    if (instructions !== undefined && !settings.instructions) throw new Error("Name an agent to delegate to: instructions of your own are not allowed here");
-    if ((target === undefined) === (instructions === undefined)) throw new Error(settings.instructions && settings.agents?.length ? "Name an agent to delegate to, or give instructions: one of them" : settings.instructions ? "Give the sub-agent's instructions" : "Name an agent to delegate to");
-    if (typeof task !== "string" || !task.trim()) throw new Error("Give the task to delegate");
-    const output = schema === undefined ? undefined : outputInput({ schema });
-    // Where this run is in its chain: the prompt that started it says so, if a delegate call sent it (signed by the runtime).
-    const place = this.delegation(header.id, run.id, run.metadata);
-    const depth = place.depth + 1;
-    const maxDepth = Math.min(place.maxDepth, settings.maxDepth ?? MULTI_AGENT_LIMITS.maxDepth);
-    if (depth > maxDepth) throw new Error(`Delegation has reached its depth limit of ${maxDepth}: do this task yourself`);
-    const chain = [...place.chain, header.id];
+    const { target, instructions, task, output } = this.childTarget(settings, call.args, "delegate to");
+    const { depth, maxDepth, chain } = this.childPlace(session, run, settings, "Delegation");
     await this.delegationSlot(session, settings.maxParallel ?? MULTI_AGENT_LIMITS.maxParallel, call.signal);
     let untap: (() => void) | undefined;
     let child: Child | undefined;
@@ -1839,23 +1852,7 @@ export class ClientSessions {
       if (chain.includes(agent)) throw new Error(`${target!.name} is already working on this task's chain: delegating to it would wait on itself`);
       // Made again (a resumed turn): the same child and request, with the answer it has or will have.
       let record = await this.requestOf(agent, tenant, requestId, 0, call.signal).catch(error => { if ((error as HttpError).status === 404) return undefined; throw error; });
-      if (!record) {
-        if (made) {
-          const web = (header.sources?.builtins ?? []).filter(builtin => builtin === "web_search" || builtin === "web_fetch");
-          // An inline child has its parent's model: as it is (its endpoint too), or by name on the tenant's own providers, which take only names.
-          const { provider, id: modelId } = header.config.model;
-          const named = Object.hasOwn(this.options.modelEndpoints?.(tenant) ?? {}, provider) || Object.hasOwn(await this.options.customProviders?.(tenant, header.keyScope) ?? {}, provider);
-          agent = (await createAgent(tenant, {
-            ...target?.definition !== undefined ? { definition: definitionId(tenant, target.definition) } : {
-              model: named ? `${provider}/${modelId}` : header.config.model, systemPrompt: instructions, ...web.length ? { builtins: web } : {},
-            },
-            name: target?.name ?? "subagent", type: "subagent", ttlSeconds: MULTI_AGENT_LIMITS.childTtlSeconds,
-            // It acts for whom its parent acts, with the same keys.
-            ...header.identity?.subject !== undefined ? { subject: header.identity.subject } : {}, ...header.identity?.context ? { context: header.identity.context } : {},
-            ...header.keyScope ? { keyScope: header.keyScope } : {},
-          }, key, { agentId: header.id, runId: run.id, toolCallId, depth })).id;
-        }
-      }
+      if (!record && made) agent = await this.makeChild(session, run, target, instructions, key, toolCallId, depth);
       child = { agent, requestId, made };
       (session.children ??= new Map()).set(toolCallId, child);
       const at = { toolCallId, agentId: agent, requestId };
@@ -1868,13 +1865,7 @@ export class ClientSessions {
           const budget = await this.holdBudget(session, run.id);
           held = budget;
           if (budget !== undefined && budget <= 0) throw new Error("This run has no budget left for a sub-agent: its spend limit is reached");
-          record = await submit(agent, tenant, { id: requestId, method: "prompt", params: {
-            text: task, ...output ? { output } : {}, ...budget !== undefined ? { spendLimit: { usd: budget } } : {}, ...run.actor ? { actor: run.actor } : {},
-            // The child's run joins the parent's trace, under this call's span (not part of the request's fingerprint).
-            ...call.traceparent ? { traceparent: call.traceparent } : {},
-            metadata: { [PARENT_KEYS.agent]: header.id, [PARENT_KEYS.run]: run.id, [PARENT_KEYS.toolCall]: toolCallId, [PARENT_KEYS.depth]: String(depth), [PARENT_KEYS.maxDepth]: String(maxDepth), [PARENT_KEYS.chain]: chain.join(","),
-              [PARENT_KEYS.signature]: this.delegationSignature(agent, requestId, String(depth), String(maxDepth), chain.join(",")) },
-          } });
+          record = await submit(agent, tenant, { id: requestId, method: "prompt", params: this.childPrompt(session, run, call, { agent, requestId, depth, maxDepth, chain, task, output, budget }) });
         } catch (error) {
           // Refused (the tenant's busy agents, its spend, the child's own limits): the call fails with why.
           child.done = true;
@@ -1908,6 +1899,361 @@ export class ClientSessions {
       if (held !== undefined) this.releaseBudget(session, run.id, held);
       this.releaseDelegation(session);
     }
+  }
+
+  /** What a delegate or spawn_agent call asks for: an allowlisted agent by name, or (when allowed) the model's instructions, and the task. */
+  private childTarget(settings: DelegateSettings, args: Record<string, unknown>, verb: string) {
+    const { agent: name, instructions, task, output: schema } = args as { agent?: string; instructions?: string; task?: unknown; output?: unknown };
+    const target = name === undefined ? undefined : settings.agents?.find(entry => entry.name === name);
+    if (name !== undefined && !target) throw new Error(`There is no agent ${name} to ${verb}`);
+    if (instructions !== undefined && !settings.instructions) throw new Error(`Name an agent to ${verb}: instructions of your own are not allowed here`);
+    if ((target === undefined) === (instructions === undefined)) throw new Error(settings.instructions && settings.agents?.length ? `Name an agent to ${verb}, or give instructions: one of them` : settings.instructions ? "Give the sub-agent's instructions" : `Name an agent to ${verb}`);
+    if (typeof task !== "string" || !task.trim()) throw new Error("Give the sub-agent its task");
+    return { target, instructions, task, output: schema === undefined ? undefined : outputInput({ schema }) };
+  }
+
+  /** Where a child of this run goes in its chain: one deeper, within the chain's limit and the settings' (`what` names the refusal). */
+  private childPlace(session: Session, run: RequestRecord, settings: DelegateSettings, what: string) {
+    // Where this run is in its chain: the prompt that started it says so, if a delegate or spawn_agent call sent it (signed by the runtime).
+    const place = this.delegation(session.header.id, run.id, run.metadata);
+    const depth = place.depth + 1;
+    const maxDepth = Math.min(place.maxDepth, settings.maxDepth ?? MULTI_AGENT_LIMITS.maxDepth);
+    if (depth > maxDepth) throw new Error(`${what} has reached its depth limit of ${maxDepth}: do this task yourself`);
+    return { depth, maxDepth, chain: [...place.chain, session.header.id] };
+  }
+
+  /**
+   * Make the child agent a call starts, keyed by `key` (made again, the same agent): from its definition target, or with
+   * the model's instructions on the parent's model. It acts for whom its parent acts, with the same keys.
+   */
+  private async makeChild(session: Session, run: RequestRecord, target: AgentTarget | undefined, instructions: string | undefined, key: string, toolCallId: string, depth: number) {
+    const { header } = session, tenant = header.tenant;
+    const web = (header.sources?.builtins ?? []).filter(builtin => builtin === "web_search" || builtin === "web_fetch");
+    // An inline child has its parent's model: as it is (its endpoint too), or by name on the tenant's own providers, which take only names.
+    const { provider, id: modelId } = header.config.model;
+    const named = Object.hasOwn(this.options.modelEndpoints?.(tenant) ?? {}, provider) || Object.hasOwn(await this.options.customProviders?.(tenant, header.keyScope) ?? {}, provider);
+    return (await this.options.createAgent!(tenant, {
+      ...target?.definition !== undefined ? { definition: definitionId(tenant, target.definition) } : {
+        model: named ? `${provider}/${modelId}` : header.config.model, systemPrompt: instructions, ...web.length ? { builtins: web } : {},
+      },
+      name: target?.name ?? "subagent", type: "subagent", ttlSeconds: MULTI_AGENT_LIMITS.childTtlSeconds,
+      ...header.identity?.subject !== undefined ? { subject: header.identity.subject } : {}, ...header.identity?.context ? { context: header.identity.context } : {},
+      ...header.keyScope ? { keyScope: header.keyScope } : {},
+    }, key, { agentId: header.id, runId: run.id, toolCallId, depth })).id;
+  }
+
+  /** A child's prompt: its task, and its place in the chain, signed for its agent and request so only the runtime places a run in one. */
+  private childPrompt(session: Session, run: RequestRecord, call: ToolCall, child: { agent: string; requestId: string; depth: number; maxDepth: number; chain: string[]; task: string; output?: unknown; budget?: number }) {
+    const { agent, requestId, depth, maxDepth, chain, task, output, budget } = child;
+    return {
+      text: task, ...output ? { output } : {}, ...budget !== undefined ? { spendLimit: { usd: budget } } : {}, ...run.actor ? { actor: run.actor } : {},
+      // The child's run joins the parent's trace, under this call's span (not part of the request's fingerprint).
+      ...call.traceparent ? { traceparent: call.traceparent } : {},
+      metadata: { [PARENT_KEYS.agent]: session.header.id, [PARENT_KEYS.run]: run.id, [PARENT_KEYS.toolCall]: call.toolCallId!, [PARENT_KEYS.depth]: String(depth), [PARENT_KEYS.maxDepth]: String(maxDepth), [PARENT_KEYS.chain]: chain.join(","),
+        [PARENT_KEYS.signature]: this.delegationSignature(agent, requestId, String(depth), String(maxDepth), chain.join(",")) },
+    };
+  }
+
+  /** In a child's run (its chain signed by the runtime): its parent agent and its chain's first, for identity tokens. */
+  private lineage(session: Session, run: RequestRecord | undefined) {
+    const chain = run ? this.delegation(session.header.id, run.id, run.metadata).chain : [];
+    return chain.length ? { parent: chain.at(-1)!, root: chain[0] } : undefined;
+  }
+
+  /**
+   * A spawn_agent call: a child on the task in the background, answered at once with its id and name. Its row in
+   * `agent_children`, keyed by this call, is written before its prompt is sent: made again (a turn resumed on another
+   * node), the call finds the same row, child and request, and never starts it twice. When the child's run ends, its
+   * ending reaches this agent as a notification (`deliverChild`). At most `maxParallel` of the agent's children run at once.
+   */
+  private async spawnAgent(session: Session, settings: DelegateSettings, call: ToolCall): Promise<McpResult> {
+    const { header } = session;
+    const tenant = header.tenant;
+    const run = this.runningRun(session);
+    const { createAgent, submit } = this.options;
+    if (!createAgent || !submit) throw new Error("Sub-agents are not enabled on this runtime");
+    if (!run || !call.toolCallId || call.innerCallId || !call.idempotencyKey) throw new Error("spawn_agent is called directly, not from js_exec");
+    // A stateless run ends with its turn: nothing would hear its children.
+    if (header.run) throw new Error("A stateless run cannot start sub-agents in the background: use delegate");
+    const toolCallId = call.toolCallId;
+    const { target, instructions, task, output } = this.childTarget(settings, call.args, "start");
+    const asked = call.args.name;
+    if (asked !== undefined && (typeof asked !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(asked))) throw new Error("A name is 1 to 64 letters, digits, _ and -");
+    const { depth, maxDepth, chain } = this.childPlace(session, run, settings, "Sub-agents have");
+    const requestId = `spawn_${call.idempotencyKey}`;
+    const key = `spawn-${call.idempotencyKey}`;
+    const made = target?.agent === undefined;
+    let agent = made ? this.agentId(tenant, key) : await this.agentByKey(tenant, target!.agent!);
+    if (!agent) throw new Error(`The agent ${target!.name} does not exist`);
+    if (chain.includes(agent)) throw new Error(`${target!.name} is already working on this task's chain`);
+    const row = await this.childRow(session, { id: requestId, child: agent, name: asked as string | undefined, base: target?.name ?? "subagent", depth, root: chain[0], run: run.id, toolCallId }, settings.maxParallel ?? MULTI_AGENT_LIMITS.maxParallel);
+    if (row.state !== "running" && row.status === "failed" && !row.ended_at) throw new Error("This sub-agent could not be started");
+    (session.children ??= new Map()).set(toolCallId, { agent, requestId, made, done: true });
+    const at = { toolCallId, agentId: agent, requestId };
+    this.publish(session, { type: "event", requestId: run.id, event: { type: "subagent_start", ...at, name: row.name, depth, background: true } });
+    let record = await this.requestOf(agent, tenant, requestId, 0, call.signal).catch(error => { if ((error as HttpError).status === 404) return undefined; throw error; });
+    if (!record) {
+      try {
+        if (made) agent = await this.makeChild(session, run, target, instructions, key, toolCallId, depth);
+        // No per-run share: the parent's run may end first. The child gets what the agent may still spend.
+        const spend = await this.spendOf(session);
+        const budget = spend ? Math.max(0, spend.usd - spend.spent) : undefined;
+        if (budget !== undefined && budget <= 0) throw new Error("This agent has no budget left for a sub-agent: its spend limit is reached");
+        this.relayChild(session, run.id, at);
+        record = await submit(agent, tenant, { id: requestId, method: "prompt", params: this.childPrompt(session, run, call, { agent, requestId, depth, maxDepth, chain, task, output, budget }) });
+      } catch (error) {
+        // Refused (the tenant's busy agents, its spend, the child's own limits): the call fails with why, and the row is done.
+        await this.db.query("update agent_children set state = 'notified', status = 'failed', updated_at = $2 where id = $1 and ended_at is null", [requestId, Date.now()]);
+        this.publish(session, { type: "event", requestId: run.id, event: { type: "subagent_end", ...at, status: "failed", error: errorText(error), background: true } });
+        throw error;
+      }
+    }
+    return jsonResult({ agentId: agent, name: row.name });
+  }
+
+  /**
+   * The row of a spawn_agent call's child, written first: the existing one when the call is made again. One call at a
+   * time per parent (only its owner runs its turns), so `max` running children holds. A name is unique among the running
+   * ones: the default is the target's name and the next number.
+   */
+  private async childRow(session: Session, child: { id: string; child: string; name?: string; base: string; depth: number; root: string; run: string; toolCallId: string }, max: number) {
+    const previous = session.spawning ?? Promise.resolve();
+    let release!: () => void;
+    session.spawning = new Promise<void>(resolve => { release = resolve; });
+    await previous;
+    try {
+      const parent = session.header.id;
+      const found = async () => (await this.db.query("select * from agent_children where id = $1", [child.id])).rows[0];
+      const existing = await found();
+      if (existing) return existing;
+      const running = Number((await this.db.query("select count(*) as n from agent_children where parent = $1 and state = 'running' and ended_at is null", [parent])).rows[0].n);
+      if (running >= max) throw new Error(`${running} sub-agents are running, this agent's most at once: wait for one to finish (wait_agent) before starting another`);
+      let next = Number((await this.db.query("select count(*) as n from agent_children where parent = $1 and name like $2", [parent, `${child.base}-%`])).rows[0].n) + 1;
+      for (let attempt = 0; attempt < 10; attempt++) {
+        const name = child.name ?? `${child.base}-${next++}`;
+        const now = Date.now();
+        const { rows } = await underClaim(this.db, session.claim, sql => sql.query(`insert into agent_children (id, tenant, parent, child, request_id, name, depth, root, parent_run, tool_call_id, checked_at, created_at, updated_at)
+          values ($1, $2, $3, $4, $1, $5, $6, $7, $8, $9, $10, $10, $10) on conflict do nothing returning *`, [child.id, session.header.tenant, parent, child.child, name, child.depth, child.root, child.run, child.toolCallId, now]));
+        if (rows[0]) return rows[0];
+        if (child.name) throw new Error(`A sub-agent named ${child.name} is running: pick another name`);
+      }
+      throw new Error("Could not name the sub-agent: give it a name");
+    } finally { release(); }
+  }
+
+  /** Relay a background child's events of its request to this agent's stream, while it runs on this node, until its run ends. */
+  private relayChild(session: Session, runId: string, at: { toolCallId: string; agentId: string; requestId: string }) {
+    const child = this.sessions.get(at.agentId);
+    if (!child) return;
+    const tap = (data: ClientEvent) => {
+      if (data.type === "response" && data.id === at.requestId) { child.taps?.delete(tap); return; }
+      if (data.type !== "event" || data.requestId !== at.requestId || data.event?.type === "message_update") return;
+      this.publish(session, { type: "event", requestId: runId, event: { type: "subagent_event", agentId: at.agentId, toolCallId: at.toolCallId, event: data.event } });
+    };
+    (child.taps ??= new Set()).add(tap);
+  }
+
+  /** An agent's background children, oldest first: what list_agents answers. */
+  private async childrenOf(parent: string) {
+    const { rows } = await this.db.query("select child, name, status, ended_at, created_at from agent_children where parent = $1 order by created_at, id limit 200", [parent]);
+    return rows.map(row => ({ agentId: row.child as string, name: row.name as string, status: row.ended_at === null ? (row.status ?? "running") as string : row.status as string, startedAt: Number(row.created_at), ...row.ended_at !== null ? { endedAt: Number(row.ended_at) } : {} }));
+  }
+
+  /**
+   * A wait_agent call: wait until one of the agent's running children (or those named) ends, or the timeout passes,
+   * and answer each one's status. An ending the wait answers is taken here (`takeEnding`): it is charged to this run,
+   * and its notification is never sent.
+   */
+  private async waitAgents(session: Session, call: ToolCall): Promise<McpResult> {
+    const run = this.runningRun(session);
+    if (!run || call.innerCallId) throw new Error("wait_agent is called directly, not from js_exec");
+    const { agents: names, timeoutMs } = call.args as { agents?: unknown; timeoutMs?: unknown };
+    if (names !== undefined && (!Array.isArray(names) || names.some(name => typeof name !== "string"))) throw new Error("agents is a list of names or agentIds");
+    if (timeoutMs !== undefined && (!Number.isInteger(timeoutMs) || (timeoutMs as number) < 1_000 || (timeoutMs as number) > MULTI_AGENT_LIMITS.maxWaitMs)) throw new Error(`timeoutMs is an integer from 1000 to ${MULTI_AGENT_LIMITS.maxWaitMs}`);
+    const parent = session.header.id, tenant = session.header.tenant;
+    const rows = async () => (await this.db.query("select * from agent_children where parent = $1 order by created_at, id", [parent])).rows;
+    const pick = (all: any[]) => {
+      if (names === undefined) return all.filter(row => row.landed_at === null);
+      return (names as string[]).map(name => {
+        const named = all.filter(row => row.name === name || row.child === name);
+        if (!named.length) throw new Error(`You have no sub-agent ${name}`);
+        return named.find(row => row.landed_at === null) ?? named.at(-1);
+      });
+    };
+    let chosen = pick(await rows());
+    if (!chosen.length) return jsonResult({ agents: [], message: "No sub-agents are running" });
+    const waiting = chosen.filter(row => row.ended_at === null);
+    if (waiting.length && !chosen.some(row => row.landed_at === null && row.ended_at !== null)) {
+      // The first of them to end, or the timeout.
+      const stop = new AbortController();
+      const abort = () => stop.abort();
+      call.signal.addEventListener("abort", abort, { once: true });
+      const timer = setTimeout(abort, (timeoutMs as number | undefined) ?? MULTI_AGENT_LIMITS.waitMs);
+      const timedOut = new Promise<void>(resolve => stop.signal.addEventListener("abort", () => resolve(), { once: true }));
+      try {
+        await Promise.race([timedOut, ...waiting.map(async row => {
+          let record: RequestRecord | undefined;
+          try { record = await this.childOutcome(row.child, tenant, row.request_id, stop.signal); }
+          catch (error) {
+            if (stop.signal.aborted) return new Promise<never>(() => {});
+            record = { status: "failed", error: errorText(error) } as RequestRecord;
+          }
+          await this.recordEnding(row, record);
+        })]);
+      } catch (error) { if (!stop.signal.aborted) throw error; }
+      finally { clearTimeout(timer); call.signal.removeEventListener("abort", abort); stop.abort(); }
+      call.signal.throwIfAborted();
+      chosen = pick(await rows()).filter(row => chosen.some(was => was.id === row.id));
+    }
+    const answers = [];
+    for (const row of chosen) {
+      const taken = row.landed_at === null && row.ended_at !== null ? await this.takeEnding(session, run, row) : undefined;
+      const notice = (taken ?? row).notice as ChildNotice | null;
+      answers.push({
+        agentId: row.child, name: row.name, status: row.ended_at === null && !taken ? "running" : row.status ?? taken?.status,
+        ...(taken ? { text: notice!.text, ...(notice!.notice.metadata.output !== undefined ? { output: notice!.notice.metadata.output } : {}), ...(notice!.notice.metadata.error ? { error: notice!.notice.metadata.error } : {}) }
+          : row.ended_at !== null ? { note: "Its answer comes (or came) as a notification" } : {}),
+      });
+    }
+    return jsonResult({ agents: answers, ...(answers.every(answer => answer.status === "running") ? { timedOut: true } : {}) });
+  }
+
+  /**
+   * Take an ended child's notice for a wait in run `run`, once: unless its notification landed first. It is charged to the
+   * run as the notification's landing would be, and its row is notified: a notification already on its way to the parent
+   * finds it taken as it lands, and ends without its message (`landNotice`).
+   */
+  private async takeEnding(session: Session, run: RequestRecord, row: any) {
+    const now = Date.now();
+    const { rows } = await this.db.query(`update agent_children set state = 'notified', landed_at = $2, landed_by = 'wait', updated_at = $2
+      where id = $1 and landed_at is null and ended_at is not null returning *`, [row.id, now]);
+    const taken = rows[0];
+    if (!taken) return undefined;
+    const notice = taken.notice as ChildNotice;
+    this.chargeNotice(session, run.id, notice.notice.costUsd);
+    this.publish(session, { type: "event", requestId: run.id, event: { type: "subagent_end", toolCallId: taken.tool_call_id, agentId: taken.child, requestId: taken.request_id, status: taken.status, ...(notice.notice.metadata.error ? { error: notice.notice.metadata.error } : {}), background: true } });
+    return taken;
+  }
+
+  /** What a background child spent, charged to its parent (its spend limit) and to the parent's run `runId` (its usage). */
+  private chargeNotice(session: Session, runId: string, usd: number) {
+    if (!(usd > 0)) return;
+    this.spent(session, usd);
+    (session.childSpend ??= new Map()).set(runId, (session.childSpend.get(runId) ?? 0) + usd);
+  }
+
+  /** Record a child's ending on its row once (the first recorded wins), as its notice; returns the row as it now is. */
+  private async recordEnding(row: { id: string; child: string; name: string; root: string }, record: Pick<RequestRecord, "status" | "error" | "outcome">) {
+    const notice = childNotice({ agentId: row.child, name: row.name, root: row.root }, record);
+    const now = Date.now();
+    const { rows } = await this.db.query("update agent_children set ended_at = $2, status = $3, notice = $4, updated_at = $2 where id = $1 and ended_at is null returning *", [row.id, now, notice.notice.metadata.status, JSON.stringify(notice)]);
+    return rows[0] ?? (await this.db.query("select * from agent_children where id = $1", [row.id])).rows[0];
+  }
+
+  /** A child's run ended on this node (the fast path): its ending is recorded and delivered to its parent now. */
+  private async childEnded(child: string, record: RequestRecord) {
+    const row = (await this.db.query("select * from agent_children where child = $1 and request_id = $2", [child, record.id])).rows[0];
+    if (!row || row.state !== "running") return;
+    const ended = await this.recordEnding(row, record);
+    const now = Date.now();
+    const claimed = (await this.db.query("update agent_children set claimed_until = $2 where id = $1 and state = 'running' and ended_at is not null and (claimed_until is null or claimed_until < $3) returning *", [ended.id, now + CHILD_CLAIM_MS, now])).rows[0];
+    if (claimed) await this.deliverChild(claimed);
+  }
+
+  /**
+   * Deliver a claimed child's ending to its parent: a prompt with request id `child_<request>`, which the parent takes
+   * once however often it is sent, built from the row's stored notice so every attempt sends the same request. Then the
+   * row is notified. A parent waiting on a person is left be (a new message would supersede what it asked): the next
+   * sweep tries again. One that is gone takes nothing.
+   */
+  private async deliverChild(row: any) {
+    const release = () => this.db.query("update agent_children set claimed_until = null where id = $1", [row.id]).catch(() => {});
+    try {
+      if ((await this.options.inputs?.pending(row.parent))?.length) return void await release();
+      const submit = this.options.submit ?? ((agent, tenant, request) => this.submit(agent, tenant, request));
+      await submit(row.parent, row.tenant, { id: `child_${row.request_id}`, method: "prompt", params: { ...row.notice, allowDisconnected: true } });
+    } catch (error) {
+      const status = (error as HttpError).status;
+      if (status !== 404 && status !== 410 && (error as HttpError).code !== "IDEMPOTENCY_CONFLICT") {
+        reachable("a child's notification failed to reach its parent and was left for a sweep");
+        console.error(JSON.stringify({ type: "child_notice_failed", agent: row.parent, child: row.child, error: safeError(error) }));
+        return void await release();
+      }
+    }
+    await this.db.query("update agent_children set state = 'notified', claimed_until = null, updated_at = $2 where id = $1", [row.id, Date.now()]);
+  }
+
+  /**
+   * Sweep for children whose ending was not delivered, on any node: rows whose ending is recorded, and running rows not
+   * checked for a while, whose child's request is asked after (its node may have been lost as the run ended). Claimed a
+   * batch at a time (`skip locked`), so nodes sweeping together share the work.
+   */
+  async sweepChildren(now = Date.now()) {
+    if (this.closed || this.draining || this.sweepingChildren) return;
+    this.sweepingChildren = true;
+    try {
+      const every = this.options.childSweepMs ?? MULTI_AGENT_LIMITS.sweepMs;
+      const hour = Math.floor(now / 3_600_000);
+      if (this.wakesSwept !== hour) {
+        this.wakesSwept = hour;
+        await this.db.query("delete from agent_wakes where hour < $1", [hour - 1]);
+      }
+      const { rows } = await this.db.query(`update agent_children set claimed_until = $2
+        where id in (select id from agent_children where state = 'running' and (claimed_until is null or claimed_until < $1) and (ended_at is not null or checked_at < $3)
+          order by checked_at limit 50 for update skip locked)
+        returning *`, [now, now + CHILD_CLAIM_MS, now - every]);
+      for (const claimed of rows) {
+        let row = claimed;
+        if (row.ended_at === null) {
+          let record: RequestRecord | undefined, gone = false;
+          try { record = await this.requestOf(row.child, row.tenant, row.request_id, 0); }
+          catch (error) {
+            gone = [404, 410].includes((error as HttpError).status);
+            if (!gone) { await this.db.query("update agent_children set claimed_until = null where id = $1", [row.id]); continue; }
+          }
+          // A child whose request is missing past the time its spawn takes was never started (its parent's turn was lost first).
+          const failure = gone ? "The sub-agent was deleted before it answered" : !record && Number(row.created_at) < now - CHILD_START_GRACE_MS ? "The sub-agent was never started" : undefined;
+          if (record?.state !== "completed" && !failure) {
+            await this.db.query("update agent_children set claimed_until = null, checked_at = $2 where id = $1", [row.id, now]);
+            continue;
+          }
+          row = await this.recordEnding(row, failure ? { status: "failed", error: failure } : record!);
+          reachable("a sweep found a child's ended run that no one had recorded");
+        }
+        else reachable("a sweep delivered a child's ending recorded before");
+        await this.deliverChild(row);
+      }
+    } catch (error) {
+      console.error(JSON.stringify({ type: "child_sweep_failed", error: safeError(error) }));
+    } finally { this.sweepingChildren = false; }
+  }
+
+  /**
+   * A child's notification starting its run on the parent: it lands once (`landed_at`, which a wait_agent may have taken
+   * first: then the run ends without it), what the child spent is charged here, and the turn runs unless the agent is at
+   * its spend limit or the chain's root at its wake cap: then the notification lands in history and no model is asked.
+   */
+  private async landNotice(session: Session, record: RequestRecord, params: any): Promise<{ params: any } | { outcome: Outcome }> {
+    const notice = params.notice as ChildNotice["notice"];
+    const childRequest = record.id.slice("child_".length);
+    const now = Date.now();
+    const landed = await this.db.query("update agent_children set landed_at = $3, landed_by = 'notice', state = 'notified', updated_at = $3 where child = $1 and request_id = $2 and landed_at is null returning tool_call_id", [notice.source.agentId, childRequest, now]);
+    if (!landed.rows.length) {
+      const row = (await this.db.query("select landed_by from agent_children where child = $1 and request_id = $2", [notice.source.agentId, childRequest])).rows[0];
+      always(row?.landed_by !== "notice", "a child's ending lands in its parent at most once");
+      if (row) return { outcome: { result: { error: null, skipped: "wait_agent answered this sub-agent's ending already" } } };
+    }
+    this.chargeNotice(session, record.id, notice.costUsd);
+    const { metadata } = notice;
+    const toolCallId = landed.rows[0]?.tool_call_id as string | undefined;
+    this.publish(session, { type: "event", requestId: record.id, event: { type: "subagent_end", ...toolCallId ? { toolCallId } : {}, agentId: notice.source.agentId, requestId: childRequest, name: notice.source.name, status: metadata.status, ...(metadata.error ? { error: metadata.error } : {}), background: true } });
+    const refused = await this.runLimit(session, "prompt");
+    if (refused) return { params: { ...params, landOnly: { stopped: "spend_limit", message: refused.message } } };
+    const cap = this.options.wakesPerHour ?? MULTI_AGENT_LIMITS.wakesPerHour;
+    const { rows } = await this.db.query("insert into agent_wakes (root, hour, turns) values ($1, $2, 1) on conflict (root, hour) do update set turns = agent_wakes.turns + 1 returning turns", [notice.root, Math.floor(now / 3_600_000)]);
+    if (Number(rows[0].turns) <= cap) return { params };
+    sometimes(true, "a notification reached its chain's wake cap");
+    return { params: { ...params, landOnly: { stopped: "agent_loop_limit", message: `This agent's chain has had ${cap} turns started by sub-agent notifications this hour, its limit (AGENT_WAKES_PER_HOUR): the notification is in its history, but no turn ran. Send a message to go on` } } };
   }
 
   /**
@@ -2556,6 +2902,8 @@ export class ClientSessions {
 
   /** Delete everything an agent stored: its journal, its transcript (and local directory), and their tail rows. */
   private async purgeData(id: string, sql: Sql) {
+    // Its children's rows go with it; a child's own row stays for its parent, whose next sweep hears it is gone.
+    await sql.query("delete from agent_children where parent = $1", [id]);
     await this.storage.removeLog(this.journalKey(id));
     await this.supervisor.purge(id);
     await this.historyIndex.remove(id, sql);
@@ -3225,8 +3573,12 @@ export class ClientSessions {
       // A resumed turn acts for whoever the suspended one did.
       if (body.method === "resume") actor = session.requests.get(params.suspension)?.actor;
     } catch (error) { throw new HttpError(400, errorText(error)); }
-    const rate = isRun && body.method !== "resume" ? await this.options.runRate?.(session.header.tenant) ?? undefined : undefined;
-    const limited = body.method === "resume" ? undefined : await this.runLimit(session, body.method);
+    // A child's notification (`notice`) is the runtime's alone. Its child's run was counted and checked already, and it is
+    // never refused at a limit: it lands without a turn instead (`landNotice`).
+    const notice = params.notice !== undefined;
+    if (notice && (!trusted || body.method !== "prompt" || params.whileRunning !== undefined || !validNotice(params.notice))) throw new HttpError(400, "Invalid request");
+    const rate = isRun && body.method !== "resume" && !notice ? await this.options.runRate?.(session.header.tenant) ?? undefined : undefined;
+    const limited = body.method === "resume" || notice ? undefined : await this.runLimit(session, body.method);
     if (limited) throw limited;
     const trace = isRun ? await this.traceFor(session, traceparent, body.method === "resume" ? session.requests.get(params.suspension)?.trace : undefined) : undefined;
     // A run makes its agent busy: it takes one of the tenant's busy slots across the fleet (429 at the limit), held
@@ -3592,9 +3944,9 @@ export class ClientSessions {
     const { header } = session;
     const endpoint = this.endpoint(session);
     if (endpoint && this.options.modelToken) {
-      const actor = [...session.running.values()].find(record => RUN_METHODS.includes(record.method) && record.began)?.actor;
+      const run = this.runningRun(session), actor = run?.actor, lineage = this.lineage(session, run);
       return { identity: true, apiKey: await this.options.modelToken(endpoint.baseUrl, {
-        tenant: header.tenant, agent: header.id, ...(header.definition ? { definition: header.definition.id } : {}), ...(header.identity ? { identity: header.identity } : {}), ...(actor ? { actor } : {}),
+        tenant: header.tenant, agent: header.id, ...(header.definition ? { definition: header.definition.id } : {}), ...(header.identity ? { identity: header.identity } : {}), ...(actor ? { actor } : {}), ...lineage,
       }) };
     }
     const provider = header.config.model.provider;
@@ -3814,6 +4166,15 @@ export class ClientSessions {
       return { result: ended.finished };
     }
     if (record.method === "resume") return { result: await this.execute(session, record, {}) };
+    // A child's notification whose node was lost after its run began, before its message landed: it lands now, from its
+    // row (the message is the runtime's, so nothing of it is unknown). What the child spent was counted with the message.
+    const notice = record.method === "prompt" && record.id.startsWith("child_")
+      ? (await this.db.query("select notice from agent_children where parent = $1 and request_id = $2", [session.header.id, record.id.slice("child_".length)])).rows[0]?.notice as ChildNotice | undefined : undefined;
+    if (notice) {
+      reachable("a child's notification whose node was lost before its message landed landed on the next owner");
+      this.chargeNotice(session, record.id, notice.notice.costUsd);
+      return { result: await this.execute(session, record, { ...notice, requestId: record.id }) };
+    }
     return { error: "The runtime restarted during this request", uncertain: true };
   }
 
@@ -3864,7 +4225,8 @@ export class ClientSessions {
         if (RUN_METHODS.includes(record.method)) session.announcing = await (this.options.runEvents?.(session.header.tenant) ?? false);
         if (!RUN_METHODS.includes(record.method)) return true;
         // A run queued behind the one that reached the cap never begins; a resumed turn is stopped by the host.
-        if (!session.resuming.has(record.id)) {
+        // A child's notification is never refused: at a limit it lands without a turn (`landNotice`).
+        if (!session.resuming.has(record.id) && (params as { notice?: unknown } | undefined)?.notice === undefined) {
           const limited = await this.runLimit(session, record.method);
           if (limited) throw limited;
         }
@@ -3918,7 +4280,10 @@ export class ClientSessions {
       }
       // A new message supersedes inputs still waiting: the agent closes their calls before it reads it.
       if (record.method === "prompt" && !await this.startStep(session, record, () => this.cancelInputs(session, "superseded").then(() => true))) return;
-      value = session.resuming.delete(record.id) ? await this.resume(session, record) : { result: await this.execute(session, record, params) };
+      // A child's notification lands once, charged to this run; at a cap it lands without a turn.
+      const landing = record.method === "prompt" && (params as { notice?: unknown } | undefined)?.notice !== undefined && !session.resuming.has(record.id) ? await this.landNotice(session, record, params) : undefined;
+      if (landing && "params" in landing) params = landing.params;
+      value = landing && "outcome" in landing ? landing.outcome : session.resuming.delete(record.id) ? await this.resume(session, record) : { result: await this.execute(session, record, params) };
       // The files the run wrote and presented, so an application can fetch them (agent.files).
       const outputs = session.outputs;
       if (RUN_METHODS.includes(record.method) && outputs && (outputs.files.size || outputs.presented.length) && value.result && typeof value.result === "object") {
@@ -3987,6 +4352,10 @@ export class ClientSessions {
       catch { return; /* The fault is reported to every later request. */ }
       if (run) {
         this.hook("runEnded", session, completed);
+        // A background child's run: its ending goes to its parent now (a sweep delivers it should this node be lost first).
+        if (completed.id.startsWith("spawn_") && completed.metadata?.[PARENT_KEYS.agent]) {
+          void this.childEnded(session.header.id, visible(completed)).catch(error => console.error(JSON.stringify({ type: "child_notice_failed", child: session.header.id, error: safeError(error) })));
+        }
         const usage = session.usage;
         session.usage = undefined;
         // With this run's event, any an earlier failure left.
@@ -4263,7 +4632,7 @@ export class ClientSessions {
     });
   }
 
-  private async callAttached(session: Session, { name, args, signal, toolCallId, innerCallId, idempotencyKey, origin, actor, onProgress, approval, inputResponses, requestState, elicit }: ToolCall): Promise<McpResult> {
+  private async callAttached(session: Session, { name, args, signal, toolCallId, innerCallId, idempotencyKey, origin, actor, onProgress, approval, inputResponses, requestState, elicit, lineage }: ToolCall): Promise<McpResult> {
     const attached = await this.attachedServer(session, signal);
     if (!attached) throw new ToolFailure("not_connected", "No application is connected to answer this tool call; it did not run");
     // The tool's own deadline, else the runtime's; each progress notification restarts it, up to TOOL_DEADLINES.maxTotalMs.
@@ -4275,6 +4644,7 @@ export class ClientSessions {
       tenant: header.tenant, agent: header.id, sub: header.identity?.subject ?? header.id,
       ...(header.definition ? { definition: header.definition.id } : {}), ...(header.identity?.context ? { ctx: header.identity.context } : {}),
       ...(actor ? { act: actor } : {}), ...(origin ? { origin } : {}), ...(approval ? { approval } : {}),
+      ...(lineage ? { par: lineage.parent, root: lineage.root } : {}),
     };
     const _meta = {
       "agent-runtime/callId": randomUUID(), "agent-runtime/identity": identity, ...callMeta({ toolCallId, innerCallId, idempotencyKey, origin, actor }),
