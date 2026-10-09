@@ -3232,7 +3232,7 @@ export class ClientSessions {
     // A run makes its agent busy: it takes one of the tenant's busy slots across the fleet (429 at the limit), held
     // until the agent has no run open. A resume continues a turn already accepted. Until the request is taken, the
     // slot is kept for it (`admitting`) even if the agent's other runs end meanwhile.
-    const admitting = RUN_METHODS.includes(body.method);
+    let admitting = RUN_METHODS.includes(body.method);
     if (admitting) {
       session.admitting = (session.admitting ?? 0) + 1;
       try { await this.holdBusy(session, body.method === "resume"); }
@@ -3290,6 +3290,9 @@ export class ClientSessions {
         id: body.id, method: body.method, fingerprint, state: "running", ...(queued ? { params } : {}), ...(actor ? { actor } : {}), ...(params.metadata ? { metadata: params.metadata } : {}),
         ...(body.method === "resume" ? { suspension: params.suspension } : {}), ...(trace ? { trace } : {}),
       });
+      // Taken: its running record now keeps the agent busy, so it is no longer being admitted. An abort that cancels it
+      // before the write below is done then gives the slot back before the run is seen to end, as for any cancelled run.
+      if (admitting) { admitting = false; session.admitting!--; }
       const durable = this.commit(session, true);
       (session.accepting ??= new Map()).set(record.id, durable);
       try { await durable; }
