@@ -10,6 +10,16 @@ Product signals read Run's own database. The journey and page tabs additionally 
 
 The Run pages report also requires sales-site D1 migration `0007_page_report_indexes.sql`. Apply the reporting migrations and deploy the sales report endpoint before releasing the new Run UI.
 
+## Connecting the journey store
+
+The Run pages and User journeys tabs, and first-run counts in Product signals, need journey events on. On the Terraform deployment:
+
+1. `tofu apply` creates two empty secrets, `<secret_prefix>/journey` and `<secret_prefix>/journey-report`, lets the tasks read them, and sets the journey settings (`journey.tf`; `journey_url` is the store's origin). Nothing changes yet: with no value in the journey secret the runtime leaves journey events off.
+2. Deploy an image that has this change (`infra/ecs-deploy.sh <tag>`), so tasks carry the new settings.
+3. `infra/journey.sh <event secret file> <report secret file>` stores the two values and rolls the service. They must be the same two values the store holds as its event secret and its report secret, and they must differ from each other.
+
+After the roll, the log no longer says `journey_not_configured`, the Run pages tab answers, and sign-ups, first runs and purchases made from then on reach the store. First-run counts cover accounts created from that moment; earlier accounts are not backfilled.
+
 ## Metric definitions
 
 - Sign-ups are self-serve tenant creations (GitHub, Google or email). Operator-created accounts are excluded from sign-up counts.
