@@ -192,7 +192,7 @@ export type AgentSource = { kind: "agent"; agentId: string; name: string };
  */
 export function childNotice(child: { agentId: string; name: string; root: string }, record: Ended) {
   const status = childStatus(record);
-  const result = (record.outcome?.result ?? {}) as { reply?: string; output?: unknown; inputs?: { id: string }[]; usage?: { costUsd?: number; subagentCostUsd?: number } | null };
+  const result = (record.outcome?.result ?? {}) as { reply?: string; output?: unknown; inputs?: { id: string }[]; usage?: { costUsd?: number; subagentCostUsd?: number; imageCostUsd?: number } | null };
   const error = record.error ?? record.outcome?.error;
   const parts = [
     result.output !== undefined ? JSON.stringify(result.output) : result.reply ?? "",
@@ -201,7 +201,7 @@ export function childNotice(child: { agentId: string; name: string; root: string
   ].filter(Boolean);
   const whole = parts.join("\n\n") || "(no answer)";
   const text = whole.length > MULTI_AGENT_LIMITS.noticeChars ? `${whole.slice(0, MULTI_AGENT_LIMITS.noticeChars)}… (cut at ${MULTI_AGENT_LIMITS.noticeChars} characters; read the rest in the agent's history)` : whole;
-  const costUsd = (result.usage?.costUsd ?? 0) + (result.usage?.subagentCostUsd ?? 0);
+  const costUsd = (result.usage?.costUsd ?? 0) + (result.usage?.subagentCostUsd ?? 0) + (result.usage?.imageCostUsd ?? 0);
   const source: AgentSource = { kind: "agent", agentId: child.agentId, name: child.name };
   return {
     text,
