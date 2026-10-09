@@ -1041,6 +1041,16 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
                                         store=lambda files, version, about: about["checked"])
         self.assertEqual((bundled["stored"], bundled["checked"]), ({"entries": 1}, {"entries": 1}))
         await project.volume.write("secret.py", "x = 1\n")
+        # A pinned, labelled version; a snapshot made from contents leaves the volume alone.
+        imported = await project.volume.snapshot(name="published:py-import", pinned=True, labels={"release": "v0"}, files={"/bot.py": "def old(): pass\n"})
+        self.assertEqual((imported["pinned"], imported["labels"]), (True, {"release": "v0"}))
+        self.assertEqual([version["id"] for version in await project.versions(labels={"release": "v0"})], [imported["id"]])
+        self.assertEqual((await project.unpin(imported["id"]))["pinned"], False)
+        self.assertEqual((await project.pin(imported["id"], labels={"release": "v0", "kept": "yes"}))["labels"], {"release": "v0", "kept": "yes"})
+        with self.assertRaises(AgentError) as refused:
+            await project.volume.delete_snapshot(imported["id"])
+        self.assertEqual(refused.exception.status, 409)
+        await project.volume.delete_snapshot(imported["id"], force=True)
 
         # The tool takes no arguments; the project comes from the call's identity.
         other = await projects.create("py-bot-2", template={"bot.py": "def two(): pass\n"})

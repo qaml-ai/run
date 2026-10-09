@@ -866,7 +866,24 @@ export const Restored = z.object({
   snapshot: z.string(), seq: z.number().openapi({ description: "The volume's seq after the restore" }),
   written: z.number().openapi({ description: "Files written back as the snapshot had them" }), removed: z.number().openapi({ description: "Files the snapshot did not have, removed" }),
 }).openapi("Restored");
-export const Snapshot = z.object({ id: z.string(), volume: z.string(), name: z.string(), seq: z.number(), createdAt: z.number(), files: z.number(), bytes: z.number() }).openapi("Snapshot");
+const Labels = z.record(z.string(), z.string()).openapi({ description: "Your own labels, e.g. {\"release\": \"v12\"}: at most 16, keys of 1–64 characters, values of at most 256" });
+export const Snapshot = z.object({
+  id: z.string(), volume: z.string(), name: z.string(), seq: z.number(), createdAt: z.number(), files: z.number(), bytes: z.number(),
+  pinned: z.boolean().openapi({ description: "Kept until unpinned: publish's pruning passes it by, it counts against 10,000 pinned snapshots rather than the 100 others, and deleting it takes unpinning or force" }),
+  labels: Labels,
+}).openapi("Snapshot");
+export const SnapshotInput = z.object({
+  name: z.string().optional().openapi({ description: "1–120 characters; default seq <n>" }),
+  pinned: z.boolean().optional(),
+  labels: Labels.optional(),
+  files: z.record(z.string(), z.union([z.string(), z.object({ data: z.string().openapi({ description: "Base64" }), contentType: z.string().optional() })])).optional()
+    .openapi({ description: "A snapshot of these files (path to text, or {data} in base64) instead of the volume: the volume and its seq are untouched. At most 1,000 files and 16 MiB. For bringing in versions kept elsewhere" }),
+}).openapi("SnapshotInput");
+export const SnapshotMade = Snapshot.extend({
+  contents: z.array(z.object({ path: z.string(), size: z.number(), sha256: z.string().openapi({ description: "Hex" }) })).optional()
+    .openapi({ description: "A snapshot made from contents: each file as stored, to check against what was sent" }),
+}).openapi("SnapshotMade");
+export const SnapshotUpdate = z.object({ pinned: z.boolean().optional(), labels: Labels.optional().openapi({ description: "Replaces its labels" }) }).openapi("SnapshotUpdate");
 export const VolumeFile = z.object({
   path: z.string(), version: z.number(), size: z.number(), updatedAt: z.number(), by: z.string().optional(),
   contentType: z.string().openapi({ description: "As uploaded (Content-Type), else sniffed from the file's first bytes and name" }),

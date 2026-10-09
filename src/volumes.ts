@@ -33,7 +33,9 @@ export const READ_ALL_LIMITS = Object.freeze({ files: 1000, bytes: 16 * 1024 * 1
 export const ARCHIVE_LIMITS = Object.freeze({ files: 10_000, bytes: 1024 * 1024 * 1024 });
 /** `data` as text when it is valid UTF-8, else undefined. */
 const utf8 = (data: Buffer) => { try { return new TextDecoder("utf-8", { fatal: true }).decode(data); } catch { return undefined; } };
-export const VOLUME_LIMITS = Object.freeze({ fileBytes: 256 * 1024 * 1024, files: 100_000, mounts: 16, snapshots: 100, changes: 1000, listing: 1000 });
+export const VOLUME_LIMITS = Object.freeze({ fileBytes: 256 * 1024 * 1024, files: 100_000, mounts: 16, snapshots: 100, pinnedSnapshots: 10_000, changes: 1000, listing: 1000 });
+/** A snapshot's labels: at most 16, keys of 1–64 characters, values of at most 256. */
+export const LABEL_LIMITS = Object.freeze({ count: 16, key: 64, value: 256 });
 /**
  * Snapshots the runtime makes of a directory for one tool call (file-arguments.ts) are named with this prefix. They are
  * not listed, do not count toward VOLUME_LIMITS.snapshots, and are deleted after their call; any left after a crash
@@ -49,7 +51,7 @@ export interface Mount { volumeId: string; path: string; mode: "ro" | "rw"; subp
 export interface FileEntry { version: number; size: number; chunks: string[]; updatedAt: number; by?: string; contentType?: string }
 export interface Change { seq: number; path: string; kind: "write" | "delete"; version?: number; size?: number; by?: string; at: number }
 interface VolumeHeader { version: 1; id: string; tenant: string; name: string; createdAt: number; deleted?: number; origin?: { volume: string; snapshot?: string; seq: number } }
-interface SnapshotSummary { id: string; volume: string; name: string; seq: number; createdAt: number; files: number; bytes: number }
+interface SnapshotSummary { id: string; volume: string; name: string; seq: number; createdAt: number; files: number; bytes: number; pinned: boolean; labels: Record<string, string> }
 interface Watcher { agent: string; tenant: string; mounts: { path: string; subpath: string }[] }
 type TreeRecord =
   | { t: "base"; seq: number }
@@ -94,7 +96,48 @@ const header = (row: any): VolumeHeader => ({
   version: 1, id: row.id, tenant: row.tenant, name: row.name, createdAt: row.created_at,
   ...(row.deleted_at !== null ? { deleted: row.deleted_at } : {}), ...(row.origin ? { origin: row.origin } : {}),
 });
-const SNAPSHOT_COLUMNS = "id, volume, name, seq, created_at as \"createdAt\", files, bytes";
+const SNAPSHOT_COLUMNS = "id, volume, name, seq, created_at as \"createdAt\", files, bytes, pinned, labels";
+
+/**
+ * The files of a snapshot made from contents (POST /v1/volumes/:id/snapshots `files`): each path's text, or `{data}` in
+ * base64, stored as chunks, within the limits of one readAll. Its entries are what the snapshot op takes as `given`.
+ */
+export async function snapshotContents(volumes: VolumeService, tenant: string, files: unknown) {
+  if (!files || typeof files !== "object" || Array.isArray(files)) throw new HttpError(400, "files is an object of path to text, or to {data} in base64");
+  const entries = Object.entries(files);
+  if (entries.length > READ_ALL_LIMITS.files) throw new HttpError(413, `At most ${READ_ALL_LIMITS.files} files in one snapshot made from contents`);
+  const decoded = entries.map(([path, content]) => {
+    const normal = normalizePath(path);
+    if (normal === "/") throw new HttpError(400, "A file needs a name");
+    if (typeof content === "string") return { path: normal, data: Buffer.from(content), contentType: undefined };
+    if (!content || typeof content !== "object" || typeof (content as { data?: unknown }).data !== "string") throw new HttpError(400, `${path}: text, or {data} in base64`);
+    const { data, contentType } = content as { data: string; contentType?: unknown };
+    if (contentType !== undefined && !validContentType(contentType)) throw new HttpError(400, `${path}: invalid content type`);
+    return { path: normal, data: Buffer.from(data, "base64"), contentType: contentType as string | undefined };
+  });
+  if (new Set(decoded.map(file => file.path)).size !== decoded.length) throw new HttpError(400, "A path is given twice");
+  const bytes = decoded.reduce((total, file) => total + file.data.length, 0);
+  if (bytes > READ_ALL_LIMITS.bytes) throw new HttpError(413, `The files are ${bytes} bytes, past the ${READ_ALL_LIMITS.bytes} one snapshot made from contents takes`);
+  const given = await Promise.all(decoded.map(async file => {
+    const stored = await volumes.store(tenant, new Uint8Array(file.data));
+    return [file.path, { ...stored, contentType: declaredType(file.contentType) ?? sniffContentType(file.data.subarray(0, 512), file.path) }] as [string, Omit<FileEntry, "version" | "updatedAt">];
+  }));
+  // What was stored, by path, for the caller to check against what it sent.
+  const contents = decoded.map(file => ({ path: file.path, size: file.data.length, sha256: createHash("sha256").update(file.data).digest("hex") }));
+  return { given, contents };
+}
+
+/** Labels as given (a string map within LABEL_LIMITS), or a 400. */
+export function labelsInput(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new HttpError(400, "labels is an object of strings");
+  const entries = Object.entries(value);
+  if (entries.length > LABEL_LIMITS.count) throw new HttpError(400, `At most ${LABEL_LIMITS.count} labels`);
+  for (const [key, label] of entries) {
+    if (!key || key.length > LABEL_LIMITS.key) throw new HttpError(400, `A label's key is 1–${LABEL_LIMITS.key} characters`);
+    if (typeof label !== "string" || label.length > LABEL_LIMITS.value) throw new HttpError(400, `Label ${key} must be a string of at most ${LABEL_LIMITS.value} characters`);
+  }
+  return Object.fromEntries(entries) as Record<string, string>;
+}
 const chunkKey = (tenant: string, hash: string) => `chunks/${tenant}/${hash.slice(0, 2)}/${hash}`;
 
 /** A path inside a volume: absolute, `/`-separated, no `.`/`..` or empty segments. */
@@ -405,7 +448,7 @@ export class VolumeService {
       }
       if (op === "ls") return this.ls(volume, normalizePath(args.path));
       if (op === "changes") return this.changes(volume, Number(args.since ?? 0), args.prefix === undefined ? undefined : normalizePath(args.prefix));
-      if (op === "snapshots") return this.snapshots(id);
+      if (op === "snapshots") return this.snapshots(id, args.labels === undefined ? undefined : labelsInput(args.labels));
       // Mutations run one at a time, in order.
       const run = volume.queue.then(() => this.mutate(volume, op, args));
       volume.queue = run.catch(() => {});
@@ -506,8 +549,10 @@ export class VolumeService {
     return { seq: at.seq, ...(at.snapshot ? { snapshot: at.snapshot } : {}), root: path, files };
   }
 
-  private async snapshots(id: string): Promise<SnapshotSummary[]> {
-    return (await this.db.query(`select ${SNAPSHOT_COLUMNS} from volume_snapshots where volume = $1 and name not like '${TEMPORARY_SNAPSHOT}%' order by created_at, id`, [id])).rows;
+  /** The volume's snapshots, oldest first; with `labels`, only those that have every one of them. */
+  private async snapshots(id: string, labels?: Record<string, string>): Promise<SnapshotSummary[]> {
+    return (await this.db.query(`select ${SNAPSHOT_COLUMNS} from volume_snapshots where volume = $1 and name not like '${TEMPORARY_SNAPSHOT}%'${labels ? " and labels @> $2::jsonb" : ""} order by created_at, id`,
+      labels ? [id, JSON.stringify(labels)] : [id])).rows;
   }
 
   private check(volume: Volume, path: string, ifMatch: unknown) {
@@ -570,7 +615,13 @@ export class VolumeService {
       const name = args.name === undefined ? `seq ${volume.seq}` : args.name;
       if (typeof name !== "string" || !name.trim() || name.length > 120) throw new HttpError(400, "name must be 1–120 characters");
       if (temporary !== name.startsWith(TEMPORARY_SNAPSHOT)) throw new HttpError(400, `Snapshot names starting with ${TEMPORARY_SNAPSHOT} are the runtime's own`);
+      const pinned = args.pinned === undefined ? false : args.pinned;
+      if (typeof pinned !== "boolean") throw new HttpError(400, "pinned is true or false");
+      if (temporary && pinned) throw new HttpError(400, "A tool call's snapshot is never pinned");
+      const labels = args.labels === undefined ? {} : labelsInput(args.labels);
       let files: [string, FileEntry][] = [...volume.tree.files];
+      // `given`: the files of a snapshot made from contents (`snapshotOf`), not the volume's: the volume is untouched.
+      if (args.given !== undefined) files = (args.given as [string, Omit<FileEntry, "version" | "updatedAt">][]).map(([path, entry]) => [normalizePath(path), { ...entry, version: 0, updatedAt: Date.now() }]);
       if (temporary) {
         const directory = normalizePath(args.directory);
         const { files: most, bytes: budget } = args.limit as { files: number; bytes: number };
@@ -583,7 +634,7 @@ export class VolumeService {
         }
       }
       // Metadata only: the snapshot shares every chunk with the volume.
-      const snapshot: SnapshotSummary = { id: newId("snap", 8), volume: id, name: name.trim(), seq: volume.seq, createdAt: Date.now(), files: files.length, bytes: files.reduce((sum, [, entry]) => sum + entry.size, 0) };
+      const snapshot: SnapshotSummary = { id: newId("snap", 8), volume: id, name: name.trim(), seq: volume.seq, createdAt: Date.now(), files: files.length, bytes: files.reduce((sum, [, entry]) => sum + entry.size, 0), pinned, labels };
       // It refers to every chunk its files do: a collection under way stands down.
       await this.touch(volume.header.tenant, files.flatMap(([, entry]) => entry.chunks));
       // The file map can hold 100,000 entries, so it is a blob; the summary is a row.
@@ -592,19 +643,45 @@ export class VolumeService {
         const pattern = `${TEMPORARY_SNAPSHOT}%`;
         // Temporary ones a crash left behind go now; they and the rest count separately, so tool calls never fill a volume's snapshots.
         const left = temporary ? (await sql.query("delete from volume_snapshots where volume = $1 and name like $2 and created_at < $3 returning id", [id, pattern, Date.now() - TEMPORARY_SNAPSHOT_MS])).rows.map(row => row.id as string) : [];
-        const count = (await sql.query(`select count(*) as count from volume_snapshots where volume = $1 and name ${temporary ? "" : "not "}like $2`, [id, pattern])).rows[0].count;
-        if (count >= VOLUME_LIMITS.snapshots) throw new HttpError(409, temporary ? `${VOLUME_LIMITS.snapshots} tool calls are reading this volume's directories now; retry in a few minutes` : `A volume keeps at most ${VOLUME_LIMITS.snapshots} snapshots; delete one first`);
-        await sql.query("insert into volume_snapshots (id, volume, name, seq, created_at, files, bytes) values ($1, $2, $3, $4, $5, $6, $7)",
-          [snapshot.id, id, snapshot.name, snapshot.seq, snapshot.createdAt, snapshot.files, snapshot.bytes]);
+        // Pinned ones count apart, against a cap of their own: a project's releases outlast its 100 kept snapshots.
+        const count = (await sql.query(`select count(*) as count from volume_snapshots where volume = $1 and name ${temporary ? "" : "not "}like $2 and pinned = $3`, [id, pattern, pinned])).rows[0].count;
+        const cap = pinned ? VOLUME_LIMITS.pinnedSnapshots : VOLUME_LIMITS.snapshots;
+        if (count >= cap) throw new HttpError(409, temporary ? `${cap} tool calls are reading this volume's directories now; retry in a few minutes` : pinned ? `A volume keeps at most ${cap} pinned snapshots; unpin or delete one first` : `A volume keeps at most ${cap} snapshots (pinned ones apart); delete one first`);
+        await sql.query("insert into volume_snapshots (id, volume, name, seq, created_at, files, bytes, pinned, labels) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+          [snapshot.id, id, snapshot.name, snapshot.seq, snapshot.createdAt, snapshot.files, snapshot.bytes, snapshot.pinned, JSON.stringify(snapshot.labels)]);
         return left;
       });
       for (const old of stale) await this.storage.removeBlob(snapshotFilesKey(id, old)).catch(() => {});
       return snapshot;
     }
-    if (op === "deleteSnapshot") {
-      // Its file map goes with it; the chunks it held are collected once nothing else holds them.
+    if (op === "updateSnapshot") {
+      // Pin or unpin it, or replace its labels. Pinning counts against the pinned cap, as a pinned create does.
       const snapshot = args.snapshot;
-      if (typeof snapshot !== "string" || !(await this.fenced(volume, sql => sql.query("delete from volume_snapshots where id = $1 and volume = $2", [snapshot, id]))).rowCount) throw new HttpError(404, "Unknown snapshot");
+      if (args.pinned !== undefined && typeof args.pinned !== "boolean") throw new HttpError(400, "pinned is true or false");
+      const labels = args.labels === undefined ? undefined : labelsInput(args.labels);
+      if (args.pinned === undefined && labels === undefined) throw new HttpError(400, "Give pinned or labels");
+      const updated = await this.fenced(volume, async sql => {
+        const current = typeof snapshot === "string" ? (await sql.query(`select pinned from volume_snapshots where id = $1 and volume = $2 and name not like '${TEMPORARY_SNAPSHOT}%' for update`, [snapshot, id])).rows[0] : undefined;
+        if (!current) throw new HttpError(404, "Unknown snapshot");
+        if (args.pinned === true && !current.pinned) {
+          const count = (await sql.query("select count(*) as count from volume_snapshots where volume = $1 and pinned", [id])).rows[0].count;
+          if (count >= VOLUME_LIMITS.pinnedSnapshots) throw new HttpError(409, `A volume keeps at most ${VOLUME_LIMITS.pinnedSnapshots} pinned snapshots; unpin or delete one first`);
+        }
+        return (await sql.query(`update volume_snapshots set pinned = coalesce($3, pinned), labels = coalesce($4::jsonb, labels) where id = $1 and volume = $2 returning ${SNAPSHOT_COLUMNS}`,
+          [snapshot, id, args.pinned ?? null, labels === undefined ? null : JSON.stringify(labels)])).rows[0];
+      });
+      return updated;
+    }
+    if (op === "deleteSnapshot") {
+      // Its file map goes with it; the chunks it held are collected once nothing else holds them. A pinned one is kept
+      // unless the caller unpins it first or forces the delete.
+      const snapshot = args.snapshot;
+      const deleted = typeof snapshot === "string" && await this.fenced(volume, async sql => {
+        const found = (await sql.query("delete from volume_snapshots where id = $1 and volume = $2 and (not pinned or $3) returning id", [snapshot, id, args.force === true])).rowCount;
+        if (!found && (await sql.query("select 1 from volume_snapshots where id = $1 and volume = $2", [snapshot, id])).rowCount) throw new HttpError(409, "The snapshot is pinned: unpin it first, or delete it with force");
+        return found;
+      });
+      if (!deleted) throw new HttpError(404, "Unknown snapshot");
       await this.storage.removeBlob(snapshotFilesKey(id, snapshot));
       return { deleted: true };
     }

@@ -7152,6 +7152,17 @@
           },
           "bytes": {
             "type": "number"
+          },
+          "pinned": {
+            "type": "boolean",
+            "description": "Kept until unpinned: publish's pruning passes it by, it counts against 10,000 pinned snapshots rather than the 100 others, and deleting it takes unpinning or force"
+          },
+          "labels": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Your own labels, e.g. {\"release\": \"v12\"}: at most 16, keys of 1–64 characters, values of at most 256"
           }
         },
         "required": [
@@ -7161,8 +7172,106 @@
           "seq",
           "createdAt",
           "files",
-          "bytes"
+          "bytes",
+          "pinned",
+          "labels"
         ]
+      },
+      "SnapshotMade": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Snapshot"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "contents": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "size": {
+                      "type": "number"
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "description": "Hex"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "size",
+                    "sha256"
+                  ]
+                },
+                "description": "A snapshot made from contents: each file as stored, to check against what was sent"
+              }
+            }
+          }
+        ]
+      },
+      "SnapshotInput": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "1–120 characters; default seq <n>"
+          },
+          "pinned": {
+            "type": "boolean"
+          },
+          "labels": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Your own labels, e.g. {\"release\": \"v12\"}: at most 16, keys of 1–64 characters, values of at most 256"
+          },
+          "files": {
+            "type": "object",
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "string",
+                      "description": "Base64"
+                    },
+                    "contentType": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ]
+                }
+              ]
+            },
+            "description": "A snapshot of these files (path to text, or {data} in base64) instead of the volume: the volume and its seq are untouched. At most 1,000 files and 16 MiB. For bringing in versions kept elsewhere"
+          }
+        }
+      },
+      "SnapshotUpdate": {
+        "type": "object",
+        "properties": {
+          "pinned": {
+            "type": "boolean"
+          },
+          "labels": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Replaces its labels"
+          }
+        }
       },
       "Restored": {
         "type": "object",
@@ -14389,11 +14498,21 @@
             "required": true,
             "name": "id",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "key:value; repeat it for several. Only snapshots with every label given"
+            },
+            "required": false,
+            "description": "key:value; repeat it for several. Only snapshots with every label given",
+            "name": "label",
+            "in": "query"
           }
         ],
         "responses": {
           "200": {
-            "description": "The volume's snapshots",
+            "description": "The volume's snapshots, oldest first",
             "content": {
               "application/json": {
                 "schema": {
@@ -14443,7 +14562,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/VolumeInput"
+                "$ref": "#/components/schemas/SnapshotInput"
               }
             }
           }
@@ -14451,6 +14570,59 @@
         "responses": {
           "201": {
             "description": "The snapshot: a copy of the file metadata, sharing contents",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SnapshotMade"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/volumes/{id}/snapshots/{snapshotId}": {
+      "patch": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "snapshotId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SnapshotUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The snapshot as it is now",
             "content": {
               "application/json": {
                 "schema": {
@@ -14470,9 +14642,7 @@
             }
           }
         }
-      }
-    },
-    "/v1/volumes/{id}/snapshots/{snapshotId}": {
+      },
       "delete": {
         "parameters": [
           {
@@ -14490,6 +14660,19 @@
             "required": true,
             "name": "snapshotId",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true"
+              ],
+              "description": "Delete a pinned snapshot too"
+            },
+            "required": false,
+            "description": "Delete a pinned snapshot too",
+            "name": "force",
+            "in": "query"
           }
         ],
         "responses": {
@@ -14510,6 +14693,16 @@
                   "required": [
                     "deleted"
                   ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The snapshot is pinned: unpin it, or pass force=true",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             }

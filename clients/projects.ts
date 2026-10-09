@@ -11,12 +11,12 @@
  * serveTools({ publish: publishTool({ project: identity => projects.get(volumeOf(identity.context.bot)), validate, store }) }, options);
  * ```
  */
-import type { AgentRuntime, MountInput, RuntimeIdentity, Tool, VolumeContents, VolumeHandle } from "./typescript.ts";
+import type { AgentRuntime, MountInput, RuntimeIdentity, Tool, VolumeContents, VolumeHandle, VolumeSnapshot } from "./typescript.ts";
 
 /** A file as a project version has it: text as `text`, other bytes as base64 `data`. */
 export type ProjectFile = VolumeContents["files"][number];
 /** A published version: the snapshot its files were read from. */
-export interface ProjectVersion { id: string; seq: number; name: string; createdAt: number }
+export interface ProjectVersion { id: string; seq: number; name: string; createdAt: number; pinned: boolean; labels: Record<string, string> }
 /** What stops files from being published: shown to the model as `path:line: message`. */
 export interface Problem { path?: string; line?: number; message: string }
 /** What a check found: its problems, and what it worked out on the way (a manifest, a bundle) for `store`. */
@@ -36,13 +36,18 @@ export interface PublishOptions<T, D = undefined> {
    * from `publishTool`, the identity of the call that published it.
    */
   store: (files: ProjectFile[], version: ProjectVersion, about: { project: Project; identity?: RuntimeIdentity; checked?: D }) => T | Promise<T>;
-  /** How many published versions the project keeps (older snapshots are deleted; default 20, at most 90). */
+  /** How many published versions the project keeps (older snapshots are deleted; default 20, at most 90). Pinned versions are kept besides. */
   keep?: number;
+  /** Pin this version: kept until unpinned, whatever `keep` says (a release your application runs, say). */
+  pin?: boolean;
+  /** Labels for this version, e.g. `{ release: "v12" }`. */
+  labels?: Record<string, string>;
   /** Publishing twice with the same key publishes once: a retried tool call passes its `idempotencyKey`. */
   idempotencyKey?: string;
 }
 
 const PUBLISHED = "published:";
+const versionOf = ({ id, seq, name, createdAt, pinned, labels }: VolumeSnapshot): ProjectVersion => ({ id, seq, name, createdAt, pinned, labels });
 /** A file's contents as bytes, whichever way it came. */
 export function fileBytes(file: ProjectFile): Uint8Array {
   return file.text !== undefined ? new TextEncoder().encode(file.text) : Uint8Array.from(atob(file.data ?? ""), char => char.charCodeAt(0));
@@ -89,10 +94,19 @@ export class Project {
     return this.volume.archive({ ...(options.version ? { snapshot: options.version } : {}), ...(options.path ? { path: options.path } : {}) });
   }
 
-  /** Published versions, oldest first. */
-  async versions(): Promise<ProjectVersion[]> {
-    return (await this.volume.snapshots()).filter(snapshot => snapshot.name.startsWith(PUBLISHED))
-      .map(({ id, seq, name, createdAt }) => ({ id, seq, name, createdAt }));
+  /** Published versions, oldest first; with `labels`, only those that have every one. */
+  async versions(options: { labels?: Record<string, string> } = {}): Promise<ProjectVersion[]> {
+    return (await this.volume.snapshots(options)).filter(snapshot => snapshot.name.startsWith(PUBLISHED)).map(versionOf);
+  }
+
+  /** Keep a version until it is unpinned, past `keep`; `labels` replace its labels. */
+  async pin(version: string, labels?: Record<string, string>): Promise<ProjectVersion> {
+    return versionOf(await this.volume.updateSnapshot(version, { pinned: true, ...(labels ? { labels } : {}) }));
+  }
+
+  /** Let a version go with the others once it is older than `keep`. */
+  async unpin(version: string): Promise<ProjectVersion> {
+    return versionOf(await this.volume.updateSnapshot(version, { pinned: false }));
   }
 
   /**
@@ -112,8 +126,8 @@ export class Project {
         return { ok: true, version: done, stored, ...(checked !== undefined ? { checked } : {}) };
       }
     }
-    const snapshot = await this.volume.snapshot({ name });
-    const version: ProjectVersion = { id: snapshot.id, seq: snapshot.seq, name: snapshot.name, createdAt: snapshot.createdAt };
+    const snapshot = await this.volume.snapshot({ name, ...(options.pin ? { pinned: true } : {}), ...(options.labels ? { labels: options.labels } : {}) });
+    const version = versionOf(snapshot);
     try {
       const { files } = await this.files({ prefix: options.prefix, version: version.id });
       const { problems, checked } = await check(options.validate, files);
@@ -123,7 +137,8 @@ export class Project {
       }
       const stored = await options.store(files, version, { project: this, ...about, ...(checked !== undefined ? { checked } : {}) });
       // Older versions beyond `keep` go (a volume keeps 100 snapshots at most).
-      const versions = await this.versions();
+      // Pinned versions stay, and do not count against `keep`.
+      const versions = (await this.versions()).filter(old => !old.pinned);
       await Promise.all(versions.slice(0, Math.max(0, versions.length - keep)).map(old => this.volume.deleteSnapshot(old.id)));
       return { ok: true, version, stored, ...(checked !== undefined ? { checked } : {}) };
     } catch (error) {

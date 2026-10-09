@@ -28,7 +28,7 @@ import { definitionRoutes } from "./definitions-api.ts";
 import { runRoutes, type RunsContext } from "./runs.ts";
 import type { ClientEvent, RequestRecord, TurnSnapshot } from "../shared/client-protocol.ts";
 import * as schema from "./api-schemas.ts";
-import { normalizePath, VOLUME_LIMITS, type FileEntry, type VolumeService } from "./volumes.ts";
+import { normalizePath, snapshotContents, VOLUME_LIMITS, type FileEntry, type VolumeService } from "./volumes.ts";
 import { actorInput, identityInput } from "./identity.ts";
 import { languageInput, transcribeRequest, type TranscriptionService } from "./transcription.ts";
 import { AUDIO_LIMITS } from "./limits.ts";
@@ -1165,15 +1165,38 @@ export function api(context: ApiContext) {
     async c => json(c, 200, await (await volume(c)).call("info")));
   route(createRoute({ method: "delete", path: "/v1/volumes/{id}", request: { params: volumeId }, responses: { 200: reply("The volume is deleted; agents mounting it can no longer reach it", schema.Deleted) } }),
     async c => json(c, 200, await (await volume(c)).call("delete")));
-  route(createRoute({ method: "get", path: "/v1/volumes/{id}/snapshots", request: { params: volumeId }, responses: { 200: reply("The volume's snapshots", z.array(schema.Snapshot)) } }),
-    async c => json(c, 200, await (await volume(c)).call("snapshots")));
-  route(createRoute({ method: "post", path: "/v1/volumes/{id}/snapshots", request: { params: volumeId, body: content(schema.VolumeInput) }, responses: { 201: reply("The snapshot: a copy of the file metadata, sharing contents", schema.Snapshot) } }), async c => {
-    const target = await volume(c);
-    const { name } = await readJson(c.req.raw.body, 4096, {}) ?? {};
-    return json(c, 201, await target.call("snapshot", { name }));
+  route(createRoute({
+    method: "get", path: "/v1/volumes/{id}/snapshots",
+    request: { params: volumeId, query: z.object({ label: z.string().optional().openapi({ description: "key:value; repeat it for several. Only snapshots with every label given" }) }) },
+    responses: { 200: reply("The volume's snapshots, oldest first", z.array(schema.Snapshot)) },
+  }), async c => {
+    const asked = c.req.queries("label") ?? [];
+    const labels = Object.fromEntries(asked.map(label => {
+      const colon = label.indexOf(":");
+      if (colon < 1) throw new HttpError(400, "label is key:value");
+      return [label.slice(0, colon), label.slice(colon + 1)];
+    }));
+    return json(c, 200, await (await volume(c)).call("snapshots", asked.length ? { labels } : {}));
   });
-  route(createRoute({ method: "delete", path: "/v1/volumes/{id}/snapshots/{snapshotId}", request: { params: volumeId.extend({ snapshotId: z.string() }) }, responses: { 200: reply("The snapshot is deleted", schema.Deleted) } }),
-    async c => json(c, 200, await (await volume(c)).call("deleteSnapshot", { snapshot: c.req.param("snapshotId") })));
+  route(createRoute({ method: "post", path: "/v1/volumes/{id}/snapshots", request: { params: volumeId, body: content(schema.SnapshotInput) }, responses: { 201: reply("The snapshot: a copy of the file metadata, sharing contents", schema.SnapshotMade) } }), async c => {
+    const target = await volume(c);
+    // Room for a snapshot made from contents: 16 MiB of files, as base64 or text.
+    const { name, pinned, labels, files } = await readJson(c.req.raw.body, 24 * 1024 * 1024, {}) ?? {};
+    // From contents: the files are stored first and the snapshot recorded once they all are, so it is all or nothing.
+    const made = files === undefined ? undefined : await snapshotContents(volumes(), target.tenant, files);
+    const snapshot = await target.call("snapshot", { name, pinned, labels, ...(made ? { given: made.given } : {}) });
+    return json(c, 201, made ? { ...snapshot, contents: made.contents } : snapshot);
+  });
+  route(createRoute({ method: "patch", path: "/v1/volumes/{id}/snapshots/{snapshotId}", request: { params: volumeId.extend({ snapshotId: z.string() }), body: content(schema.SnapshotUpdate) }, responses: { 200: reply("The snapshot as it is now", schema.Snapshot) } }), async c => {
+    const target = await volume(c);
+    const { pinned, labels } = await readJson(c.req.raw.body, 16 * 1024, {}) ?? {};
+    return json(c, 200, await target.call("updateSnapshot", { snapshot: c.req.param("snapshotId"), pinned, labels }));
+  });
+  route(createRoute({
+    method: "delete", path: "/v1/volumes/{id}/snapshots/{snapshotId}",
+    request: { params: volumeId.extend({ snapshotId: z.string() }), query: z.object({ force: z.enum(["true"]).optional().openapi({ description: "Delete a pinned snapshot too" }) }) },
+    responses: { 200: reply("The snapshot is deleted", schema.Deleted), 409: reply("The snapshot is pinned: unpin it, or pass force=true", schema.ApiError) },
+  }), async c => json(c, 200, await (await volume(c)).call("deleteSnapshot", { snapshot: c.req.param("snapshotId"), force: c.req.query("force") === "true" })));
   route(createRoute({
     method: "get", path: "/v1/volumes/{id}/archive",
     request: { params: volumeId, query: z.object({
