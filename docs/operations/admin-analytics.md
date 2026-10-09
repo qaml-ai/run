@@ -14,11 +14,11 @@ The Run pages report also requires sales-site D1 migration `0007_page_report_ind
 
 The Run pages and User journeys tabs, and first-run counts in Product signals, need journey events on. On the Terraform deployment:
 
-1. `tofu apply` creates two empty secrets, `<secret_prefix>/journey` and `<secret_prefix>/journey-report`, lets the tasks read them, and sets the journey settings (`journey.tf`; `journey_url` is the store's origin). Nothing changes yet: with no value in the journey secret the runtime leaves journey events off.
+1. Follow [the infrastructure plan/apply instructions](../../infra/terraform/README.md#plan-and-apply): fetch the current production `prod.auto.tfvars` from the state bucket, initialize, save and inspect the plan, and apply that exact plan. Never plan from repository defaults alone: that can disable unrelated production features. This creates two empty secrets, `<secret_prefix>/journey` and `<secret_prefix>/journey-report`, lets the tasks read them, and sets the journey settings (`journey.tf`; `journey_url` is the store's origin). Nothing changes yet: with no value in the journey secret the runtime leaves journey events off.
 2. Deploy an image that has this change (`infra/ecs-deploy.sh <tag>`), so tasks carry the new settings.
 3. `infra/journey.sh <event secret file> <report secret file>` stores the two values and rolls the service. They must be the same two values the store holds as its event secret and its report secret, and they must differ from each other.
 
-After the roll, the log no longer says `journey_not_configured`, the Run pages tab answers, and sign-ups, first runs and purchases made from then on reach the store. First-run counts cover accounts created from that moment; earlier accounts are not backfilled.
+After the roll, verify healthy new tasks and check that the log no longer says `journey_not_configured`. Confirm the Run pages tab answers. Reconcile a known new signup and first execution against the store to verify delivery; configuration alone is not proof of live collection. First-run counts cover accounts created from that moment; earlier accounts are not backfilled.
 
 ## Metric definitions
 
