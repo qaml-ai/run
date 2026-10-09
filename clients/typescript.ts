@@ -5,6 +5,7 @@ import { Check } from "typebox/value";
 import { DRAINING_NOTIFICATION, FRAME_BYTES, type ClientEvent, type Outcome, type RequestMethod, type RequestRecord, type SessionCredentials, type SessionState } from "../shared/client-protocol.ts";
 export { Type as schema };
 export type { RequestRecord, SessionCredentials, SessionState };
+import type { ImportMessages } from "./history-formats.ts";
 export type * from "./types.ts";
 
 /**
@@ -371,6 +372,8 @@ export interface CreateAgentOptions extends AgentOptions {
   /** Sampling temperature, 0 to 2. Refused (400) for a model that takes none (Claude Opus 4.7 and later, Sonnet 5.5, Fable; o-series, GPT-5) or a reasoning model at a thinkingLevel other than off. */
   temperature?: number;
   initialMessages?: Message[];
+  /** History in another API's format (Anthropic Messages, OpenAI Responses or Chat Completions), converted to Pi messages by the runtime (`toPiMessages`); not with initialMessages. */
+  importMessages?: ImportMessages;
   /** Volumes for the agent's file tools (read, write, edit, ls, glob, grep). Default: its own workspace volume at /workspace. */
   mounts?: Mount[];
   /** Tools the runtime answers itself, for an agent without a definition (one made from a definition has its definition's). */
@@ -417,11 +420,16 @@ export type SourceAuth = { type: "bearer"; token: string } | { type: "runtime" }
  * Not listed when saved: one that cannot be listed shows in a run's `sourceErrors`.
  */
 export interface InlineMcpServer {
-  name: string; url: string; auth?: { type: "runtime" }; audience?: string; allowTools?: string[]; denyTools?: string[]; exposure?: "direct" | "codemode" | "both"; timeoutMs?: number;
+  name: string; url: string; auth?: { type: "runtime" }; audience?: string; allowTools?: string[]; denyTools?: string[]; exposure?: "direct" | "codemode" | "both"; timeoutMs?: number; fileArguments?: "on" | "off";
   /** Which tools the user approves before each call. */
   approval?: { default?: "never" | "always" | "destructive"; tools?: Record<string, "never" | "always"> };
 }
-interface SourceOptions { name: string; headers?: Record<string, string>; auth?: SourceAuth; audience?: string; allowTools?: string[]; denyTools?: string[]; exposure?: "direct" | "codemode" | "both"; timeoutMs?: number }
+/**
+ * `fileArguments`: whether the model may send the agent's files to the source's tools (`{"$file": path}`, as a URL bound
+ * to the call; see docs/guides/tools.md), and the runtime saves files they link to. Default "on" with auth runtime,
+ * "off" for any other source, which could be sent any file the agent can read.
+ */
+interface SourceOptions { name: string; headers?: Record<string, string>; auth?: SourceAuth; audience?: string; allowTools?: string[]; denyTools?: string[]; exposure?: "direct" | "codemode" | "both"; timeoutMs?: number; fileArguments?: "on" | "off" }
 export interface DefinitionInput {
   name: string;
   /** What its agents are for: shown to models as the description of each agent's MCP tool (/v1/agents/:id/mcp). */
@@ -776,7 +784,7 @@ const AGENT_KEY = /^[A-Za-z0-9_-]{1,80}$/;
 const REQUEST_ID = AGENT_KEY;
 /** A create request's fields, from the options given. */
 function provisioning(options: CreateAgentOptions) {
-  const fields = ["subject", "context", "keyScope", "spendLimit", "runLimits", "modelHeaders", "definition", "mounts", "model", "thinkingLevel", "maxOutputTokens", "temperature", "initialMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "delegate", "mcpServers", "prompt"] as const;
+  const fields = ["subject", "context", "keyScope", "spendLimit", "runLimits", "modelHeaders", "definition", "mounts", "model", "thinkingLevel", "maxOutputTokens", "temperature", "initialMessages", "importMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "delegate", "mcpServers", "prompt"] as const;
   return withMultiAgent(Object.fromEntries(fields.filter(field => options[field] !== undefined).map(field => [field, options[field]])));
 }
 /** `delegate` settings bring their builtin: given the settings, the builtin is added. */
@@ -888,6 +896,8 @@ export class AgentRuntime {
   listAgents(): Promise<AgentSummary[]> { return this.transport.json("/v1/agents", this.operator()); }
   createVolume(options: { name?: string } = {}): Promise<Volume> { return this.transport.json("/v1/volumes", this.operator(), "POST", options, false); }
   listVolumes(): Promise<Volume[]> { return this.transport.json("/v1/volumes", this.operator()); }
+  /** Several volumes as they are now (each one's seq, files and bytes), in one request; at most 50. */
+  volumes(ids: string[]): Promise<Volume[]> { return this.transport.json(`/v1/volumes?ids=${ids.map(encodeURIComponent).join(",")}`, this.operator()); }
   /** A handle on one volume's files, snapshots and forks. */
   volume(id: string): VolumeHandle {
     if (!/^vol_[a-f0-9]{24}$/.test(id)) throw new AgentError("Invalid volume id");
@@ -1077,6 +1087,12 @@ export interface StatelessRun {
 /** A frame of a run's event stream: its id (Last-Event-ID), and an event of its turn, a snapshot, or (last) its response. */
 export type RunFrame = { id: number; data: { type: "event"; requestId: string; event: AgentEvent } | { type: "response"; id: string; outcome: { result?: unknown; error?: string; uncertain?: boolean } } | { type: "snapshot"; [field: string]: unknown } };
 
+/** Files read together at one seq (`VolumeHandle.readAll`). */
+export interface VolumeContents {
+  seq: number;
+  snapshot?: string;
+  files: (VolumeFile & { sha256: string; text?: string; data?: string })[];
+}
 /** Files are versioned: pass `version` to write or remove only if nobody changed the file since (0: must not exist). */
 export class VolumeHandle {
   readonly id: string;
@@ -1092,8 +1108,12 @@ export class VolumeHandle {
   deleteSnapshot(id: string) { return this.transport.json(this.path(`/snapshots/${encodeURIComponent(id)}`), this.token, "DELETE", undefined, false); }
   /** A new volume with this one's files (or a snapshot's); only metadata is copied. */
   fork(options: { name?: string; snapshot?: string } = {}): Promise<Volume> { return this.transport.json(this.path("/fork"), this.token, "POST", options, false); }
-  changes(since = 0): Promise<VolumeChanges> { return this.transport.json(this.path(`/changes?since=${since}`), this.token); }
-  list(options: { prefix?: string; glob?: string; after?: string; limit?: number } = {}): Promise<{ files: VolumeFile[]; next?: string }> {
+  /** Changes after `since` (a seq), oldest first; `prefix` keeps those at or under a path. */
+  changes(since = 0, options: { prefix?: string } = {}): Promise<VolumeChanges> {
+    return this.transport.json(this.path(`/changes?since=${since}${options.prefix ? `&prefix=${encodeURIComponent(options.prefix)}` : ""}`), this.token);
+  }
+  /** Files under `prefix`, a page at a time; `snapshot` lists a snapshot instead. */
+  list(options: { prefix?: string; glob?: string; after?: string; limit?: number; snapshot?: string } = {}): Promise<{ files: VolumeFile[]; next?: string }> {
     const query = new URLSearchParams(Object.entries(options).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)]));
     return this.transport.json(this.path(`/files${query.size ? `?${query}` : ""}`), this.token);
   }
@@ -1104,12 +1124,21 @@ export class VolumeHandle {
     return (await this.transport.raw(this.file(path), this.token, { method: "PUT", body, headers })).json();
   }
   /** A file's bytes, or `range` of them ([start, end) in bytes). */
-  async read(path: string, options: { range?: [number, number?] } = {}): Promise<{ data: Uint8Array; version: number; contentType: string }> {
+  async read(path: string, options: { range?: [number, number?]; snapshot?: string } = {}): Promise<{ data: Uint8Array; version: number; contentType: string }> {
     const [start, end] = options.range ?? [];
-    const response = await this.transport.raw(this.file(path), this.token, start !== undefined ? { headers: { Range: `bytes=${start}-${end !== undefined ? end - 1 : ""}` } } : {});
+    const response = await this.transport.raw(this.file(path) + (options.snapshot ? `?snapshot=${encodeURIComponent(options.snapshot)}` : ""), this.token, start !== undefined ? { headers: { Range: `bytes=${start}-${end !== undefined ? end - 1 : ""}` } } : {});
     return { data: new Uint8Array(await response.arrayBuffer()), version: fileVersion(response), contentType: contentTypeOf(response) };
   }
   async readText(path: string) { return new TextDecoder().decode((await this.read(path)).data); }
+  /**
+   * Every file under `prefix` (and `glob`) with its contents, in one request, as the volume was at one seq (or as
+   * `snapshot` has them): text as `text`, other bytes as base64 `data`, each with its sha256. At most 1,000 files and
+   * 16 MiB (else a 413). For a consistent read of a project before you validate and store it.
+   */
+  readAll(options: { prefix?: string; glob?: string; snapshot?: string } = {}): Promise<VolumeContents> {
+    const query = new URLSearchParams([["content", "true"], ...Object.entries(options).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)])]);
+    return this.transport.json(this.path(`/files?${query}`), this.token);
+  }
   /** A signed URL to download (GET) or upload (PUT) one file without a token. */
   link(path: string, options: LinkOptions = {}): Promise<FileLink> { return this.transport.json(this.path("/links"), this.token, "POST", { path, ...options }, false); }
   async remove(path: string, options: { version?: number } = {}) {
@@ -1755,4 +1784,5 @@ export class AgentClient {
 }
 
 export { Agents, Agent, Runs } from "./agents.ts";
+export { HistoryFormatError, toPiMessages, type HistoryFormat, type ImportMessages } from "./history-formats.ts";
 export type { AgentsOptions, AgentConfig, Run, RunFailure, RunInput, RunOptions, RunStream, StreamPart, StatelessRunConfig, InputValue, AnswerOptions, OutputSchema, OutputOf, StandardOutputSchema } from "./agents.ts";

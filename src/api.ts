@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { HistoryFormatError, toPiMessages } from "../clients/history-formats.ts";
 import { safeError } from "./metrics.ts";
 import { OpenAPIHono, createRoute, z, type RouteConfig } from "@hono/zod-openapi";
 import type { Context } from "hono";
@@ -32,6 +33,7 @@ import { actorInput, identityInput } from "./identity.ts";
 import { languageInput, transcribeRequest, type TranscriptionService } from "./transcription.ts";
 import { AUDIO_LIMITS } from "./limits.ts";
 import { declaredType, fileResponse, type FileLinks } from "./files.ts";
+import type { FileUrls } from "./file-arguments.ts";
 import { idempotency } from "./idempotency.ts";
 import { BrowserTokens, readableFrame, readableMessage, readableRequest, type BrowserClaims } from "./browser-tokens.ts";
 import type { Help } from "./help.ts";
@@ -83,6 +85,8 @@ export interface ApiContext {
   billingAdmins?: string[];
   /** Signs and verifies file links (`/v1/links`). */
   links?: FileLinks;
+  /** Serves the URLs of files sent to tools (`/v1/files`, file-arguments.ts). */
+  fileUrls?: FileUrls;
   /** Mints and checks browser tokens (`/v1/agents/:id/browser-tokens`); without it there are none. */
   browserTokens?: BrowserTokens;
   /** How long a request holds its Idempotency-Key before a retry may take it over (default 2 minutes). */
@@ -218,6 +222,20 @@ export function api(context: ApiContext) {
     if (grant.contentType && declared && declared !== grant.contentType) throw new HttpError(415, `This link takes ${grant.contentType}`);
     const { chunks: _chunks, ...entry } = await volumes().put(grant.tenant, grant.volume, grant.path, (c.req.raw.body ?? []) as AsyncIterable<Uint8Array>, { contentType: grant.contentType ?? declared, by: "link", limit });
     return json(c, 201, entry);
+  });
+
+  // A file sent to a tool: its URL's token is its credential, bound to the call (file-arguments.ts). Read-only.
+  route(createRoute({
+    method: "get", path: "/v1/files/{token}/{name}", security: [],
+    request: { params: z.object({ token: z.string(), name: z.string().openapi({ description: "The file's name, for tools and browsers; not checked" }) }), headers: z.object({ range: z.string().optional().openapi({ description: "bytes=start-end (a file's URL)" }) }) },
+    responses: {
+      200: { description: "The file; a directory's manifest (JSON: snapshot, root, files with their own URLs, and archive); or its archive (tar.gz)", content: { "application/octet-stream": { schema: z.string().openapi({ format: "binary" }) }, "application/json": { schema: schema.FileManifest } } },
+      206: binary("The requested range"),
+      410: reply("The file changed since the call, or the call's files are no longer kept", schema.ApiError),
+    },
+  }), async c => {
+    if (!context.fileUrls) throw new HttpError(404, "File URLs are not enabled on this runtime");
+    return context.fileUrls.serve(c.req.param("token")!, c.req.header("range"));
   });
 
   // Stripe's webhook authenticates by its signature, not a token, so it comes before the check below.
@@ -506,7 +524,13 @@ export function api(context: ApiContext) {
     if (!body || typeof body !== "object" || Array.isArray(body)) throw new HttpError(400, "Send an agent object");
     for (const key of Object.keys(body)) if (!Object.hasOwn(schema.AgentInput.shape, key)) throw new HttpError(400, `Unknown agent field: ${key}`);
     if (body.model !== undefined && typeof body.model !== "string") throw new HttpError(400, 'model must be a "provider/model-id" string; see GET /v1/models');
-    const { prompt, ...params } = body;
+    const { prompt, importMessages, ...params } = body;
+    // A conversation from another API (Anthropic's, OpenAI's) is history to begin with, as Pi messages.
+    if (importMessages !== undefined) {
+      if (params.initialMessages !== undefined) throw new HttpError(400, "Give initialMessages or importMessages, not both");
+      try { params.initialMessages = toPiMessages(importMessages); }
+      catch (error) { throw error instanceof HistoryFormatError ? new HttpError(400, error.message) : error; }
+    }
     // A first prompt is checked before anything is made, and sent once the agent is: it runs when the agent has started.
     const first = prompt === undefined ? undefined : promptRequest(parse(schema.PromptInput, prompt), undefined, c.req.header("traceparent"));
     // Counted as the key's agent is found: an upsert that changes nothing is not a create, though its headers say where the tenant stands.
@@ -1116,8 +1140,16 @@ export function api(context: ApiContext) {
     if (!await volumes().owns(id, c.var.principal.tenant)) throw new HttpError(404, "Unknown volume");
     return { id, tenant: c.var.principal.tenant, call: (op: string, args: Record<string, unknown> = {}) => volumes().call(id, c.var.principal.tenant, op, args) };
   };
-  route(createRoute({ method: "get", path: "/v1/volumes", responses: { 200: reply("The tenant's volumes", z.array(schema.VolumeSummary)) } }),
-    async c => json(c, 200, await volumes().list(c.var.principal.tenant)));
+  route(createRoute({
+    method: "get", path: "/v1/volumes", request: { query: z.object({ ids: z.string().optional().openapi({ description: "Comma-separated volume ids (at most 50): those volumes, each with its seq, files and bytes (Volume), instead of every volume" }) }) },
+    responses: { 200: reply("The tenant's volumes; with ids, those volumes as they are now", z.array(z.union([schema.VolumeSummary, schema.Volume]))) },
+  }), async c => {
+    const ids = c.req.query("ids");
+    if (ids === undefined) return json(c, 200, await volumes().list(c.var.principal.tenant));
+    const wanted = [...new Set(ids.split(",").map(id => id.trim()).filter(Boolean))];
+    if (wanted.length > 50) throw new HttpError(400, "ids names at most 50 volumes");
+    return json(c, 200, await Promise.all(wanted.map(id => volumes().call(id, c.var.principal.tenant, "info"))));
+  });
   route(createRoute({ method: "post", path: "/v1/volumes", request: { body: content(schema.VolumeInput) }, responses: { 201: reply("The volume", schema.Volume) } }), async c => {
     const body = await readJson(c.req.raw.body, 4096, {});
     return json(c, 201, await volumes().create(c.var.principal.tenant, body));
@@ -1130,7 +1162,8 @@ export function api(context: ApiContext) {
     async c => json(c, 200, await (await volume(c)).call("snapshots")));
   route(createRoute({ method: "post", path: "/v1/volumes/{id}/snapshots", request: { params: volumeId, body: content(schema.VolumeInput) }, responses: { 201: reply("The snapshot: a copy of the file metadata, sharing contents", schema.Snapshot) } }), async c => {
     const target = await volume(c);
-    return json(c, 201, await target.call("snapshot", await readJson(c.req.raw.body, 4096, {})));
+    const { name } = await readJson(c.req.raw.body, 4096, {}) ?? {};
+    return json(c, 201, await target.call("snapshot", { name }));
   });
   route(createRoute({ method: "delete", path: "/v1/volumes/{id}/snapshots/{snapshotId}", request: { params: volumeId.extend({ snapshotId: z.string() }) }, responses: { 200: reply("The snapshot is deleted", schema.Deleted) } }),
     async c => json(c, 200, await (await volume(c)).call("deleteSnapshot", { snapshot: c.req.param("snapshotId") })));
@@ -1153,15 +1186,21 @@ export function api(context: ApiContext) {
       ...(input.maxBytes !== undefined ? { maxBytes: input.maxBytes } : {}), ...(input.contentType !== undefined ? { contentType: declaredType(input.contentType) ?? invalid("contentType must be a specific content type") } : {}) }));
   });
   route(createRoute({
-    method: "get", path: "/v1/volumes/{id}/changes", request: { params: volumeId, query: z.object({ since: z.string().optional().openapi({ description: "Changes after this seq" }) }) },
+    method: "get", path: "/v1/volumes/{id}/changes", request: { params: volumeId, query: z.object({ since: z.string().optional().openapi({ description: "Changes after this seq" }), prefix: z.string().optional().openapi({ description: "Only changes at or under this path" }) }) },
     responses: { 200: reply("Recent changes, oldest first", schema.Changes) },
-  }), async c => json(c, 200, await (await volume(c)).call("changes", { since: Number(c.req.query("since") ?? 0) || 0 })));
+  }), async c => json(c, 200, await (await volume(c)).call("changes", { since: Number(c.req.query("since") ?? 0) || 0, ...(c.req.query("prefix") ? { prefix: c.req.query("prefix") } : {}) })));
   route(createRoute({
-    method: "get", path: "/v1/volumes/{id}/files", request: { params: volumeId, query: z.object({ prefix: z.string().optional(), glob: z.string().optional(), after: z.string().optional(), limit: z.string().optional() }) },
-    responses: { 200: reply("Files under prefix, in path order, a page at a time", schema.FileList) },
+    method: "get", path: "/v1/volumes/{id}/files", request: { params: volumeId, query: z.object({
+      prefix: z.string().optional(), glob: z.string().optional(), after: z.string().optional(), limit: z.string().optional(),
+      snapshot: z.string().optional().openapi({ description: "List (or read) a snapshot of the volume instead of the volume as it is" }),
+      content: z.enum(["true"]).optional().openapi({ description: "Every matching file with its contents, in one answer at one seq (FileContents): at most 1,000 files and 16 MiB, else 413" }),
+    }) },
+    responses: { 200: reply("Files under prefix, in path order, a page at a time; with content=true, all of them with their contents (FileContents)", z.union([schema.FileList, schema.FileContents])) },
   }), async c => {
-    const { prefix, glob, after, limit } = c.req.query();
-    const listing = await (await volume(c)).call("list", { path: prefix ?? "/", ...(glob ? { glob } : {}), ...(after ? { after } : {}), ...(limit ? { limit: Number(limit) } : {}) });
+    const { prefix, glob, after, limit, snapshot, content } = c.req.query();
+    const at = snapshot ? { snapshot } : {};
+    if (content === "true") return json(c, 200, await (await volume(c)).call("readAll", { path: prefix ?? "/", ...(glob ? { glob } : {}), ...at }));
+    const listing = await (await volume(c)).call("list", { path: prefix ?? "/", ...(glob ? { glob } : {}), ...(after ? { after } : {}), ...(limit ? { limit: Number(limit) } : {}), ...at });
     return json(c, 200, { files: listing.files.map(({ chunks: _chunks, ...file }: { chunks: string[] }) => file), ...(listing.next ? { next: listing.next } : {}) });
   });
   const filePath = (c: Context) => {
@@ -1189,11 +1228,12 @@ export function api(context: ApiContext) {
     return json(c, 201, entry);
   }, files);
   route(createRoute({
-    method: "get", path: "/v1/volumes/{id}/files/{path}", request: { ...file, headers: z.object({ range: z.string().optional().openapi({ description: "bytes=start-end" }) }) },
+    method: "get", path: "/v1/volumes/{id}/files/{path}", request: { ...file, query: z.object({ snapshot: z.string().optional().openapi({ description: "Read the file as a snapshot of the volume has it" }) }), headers: z.object({ range: z.string().optional().openapi({ description: "bytes=start-end" }) }) },
     responses: { 200: binary("The file, streamed a chunk at a time; its version is X-File-Version (and the ETag, which a proxy may rewrite)"), 206: binary("The requested range") },
   }), async c => {
     const target = await volume(c);
-    const entry = await target.call("stat", { path: filePath(c) });
+    const snapshot = c.req.query("snapshot");
+    const entry = await target.call("stat", { path: filePath(c), ...(snapshot ? { snapshot } : {}) });
     if (entry.type !== "file") throw new HttpError(404, `${entry.path} is a directory`);
     return fileResponse(volumes(), target.tenant, entry, c.req.header("range"));
   }, files);

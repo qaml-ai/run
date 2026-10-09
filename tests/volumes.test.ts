@@ -16,7 +16,7 @@ import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
 import { ClientSessions } from "../src/client-sessions.ts";
 import { readJson } from "../src/http.ts";
 import { FRAME_BYTES } from "../shared/client-protocol.ts";
-import { CHUNK_BYTES, VolumeService, type Mount } from "../src/volumes.ts";
+import { CHUNK_BYTES, READ_ALL_LIMITS, VolumeService, type Mount } from "../src/volumes.ts";
 import { searchLines } from "../src/volume-tools.ts";
 import { AgentError, AgentRuntime, type AgentClient } from "../clients/node.ts";
 import type { Db } from "../src/db.ts";
@@ -187,6 +187,22 @@ test("file tools: mount paths, read-only mounts, subpaths and edit conflicts the
   await assert.rejects(call("edit", { path: "/workspace/dup.txt", old: "a", new: "b" }), /appears 3 times/);
   assert.equal((await call("edit", { path: "/workspace/dup.txt", old: "a", new: "b", replaceAll: true })).size, 5);
   assert.equal((await call("write", { path: "/workspace/new.txt", content: "x" })).size, 1);
+});
+
+test("a read of many files at once is refused past its limits, saying to narrow it", async t => {
+  const { volumes, write } = await service(t);
+  const { id } = await volumes.create("acme");
+  for (let index = 0; index <= READ_ALL_LIMITS.files; index++) await write(id, `/many/${String(index).padStart(4, "0")}.txt`, "x");
+  await assert.rejects(volumes.call(id, "acme", "readAll", { path: "/many" }), (error: Error & { status?: number }) => error.status === 413 && /More than 1000 files match; narrow prefix or glob/.test(error.message));
+  assert.equal((await volumes.call(id, "acme", "readAll", { path: "/many", glob: "000*.txt" })).files.length, 10);
+});
+
+test("a read of many files at once is refused past its limits, saying to narrow it", async t => {
+  const { volumes, write } = await service(t);
+  const { id } = await volumes.create("acme");
+  for (let index = 0; index <= READ_ALL_LIMITS.files; index++) await write(id, `/many/${String(index).padStart(4, "0")}.txt`, "x");
+  await assert.rejects(volumes.call(id, "acme", "readAll", { path: "/many" }), (error: Error & { status?: number }) => error.status === 413 && /More than 1000 files match; narrow prefix or glob/.test(error.message));
+  assert.equal((await volumes.call(id, "acme", "readAll", { path: "/many", glob: "000*.txt" })).files.length, 10);
 });
 
 test("large files are read in bounded windows that fetch only the chunks they cover", async t => {
@@ -430,6 +446,33 @@ test("the REST API and SDK manage volumes within a tenant, and nothing crosses t
   assert.equal(await fork.readText("data/notes/a b.md"), "spaces are fine");
   assert.deepEqual((await volume.snapshots()).map(entry => entry.id), [snapshot.id]);
   assert.deepEqual((await volume.changes()).changes.map(change => change.kind), ["write", "write", "delete"]);
+
+  // Many files read at once, at one seq, or as a snapshot had them.
+  const project = a.volume((await a.createVolume({ name: "project" })).id);
+  await project.write("src/a.ts", "export const a = 1;\n");
+  await project.write("src/b.ts", "export const b = 2;\n");
+  await project.write("logo.png", new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 1, 2]));
+  const all = await project.readAll();
+  assert.equal(all.seq, (await project.info()).seq);
+  assert.deepEqual(all.files.map(entry => [entry.path, entry.text ?? null, entry.data ?? null]), [
+    ["/logo.png", null, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1, 2]).toString("base64")],
+    ["/src/a.ts", "export const a = 1;\n", null], ["/src/b.ts", "export const b = 2;\n", null],
+  ]);
+  assert.equal(all.files[1].sha256, createHash("sha256").update("export const a = 1;\n").digest("hex"));
+  assert.deepEqual((await project.readAll({ prefix: "/src", glob: "a.*" })).files.map(entry => entry.path), ["/src/a.ts"]);
+  const published = await project.snapshot({ name: "v1" });
+  await project.write("src/a.ts", "export const a = 3;\n");
+  await project.remove("src/b.ts");
+  const then = await project.readAll({ snapshot: published.id });
+  assert.deepEqual([then.seq, then.snapshot, then.files.map(entry => entry.text ?? "")], [published.seq, published.id, ["", "export const a = 1;\n", "export const b = 2;\n"]]);
+  assert.equal(new TextDecoder().decode((await project.read("src/a.ts", { snapshot: published.id })).data), "export const a = 1;\n");
+  assert.equal(await project.readText("src/a.ts"), "export const a = 3;\n");
+  assert.deepEqual((await project.list({ snapshot: published.id })).files.map(entry => entry.path), ["/logo.png", "/src/a.ts", "/src/b.ts"]);
+  await assert.rejects(project.readAll({ snapshot: "snap_0000000000000000" }), (error: AgentError) => error.status === 404);
+  // Changes under a path, and several volumes' seqs in one request.
+  assert.deepEqual((await project.changes(0, { prefix: "/src" })).changes.map(change => [change.kind, change.path]), [["write", "/src/a.ts"], ["write", "/src/b.ts"], ["write", "/src/a.ts"], ["delete", "/src/b.ts"]]);
+  assert.deepEqual((await a.volumes([project.id, created.id])).map(entry => [entry.id, entry.seq]), [[project.id, (await project.info()).seq], [created.id, (await volume.info()).seq]]);
+  await assert.rejects(b.volume(project.id).readAll(), (error: AgentError) => error.status === 404, "another tenant reads nothing");
 
   // An agent mounts the volume read-only; its default workspace is its own.
   const agent = await a.createAgent({ tools: {}, mounts: [{ volumeId: created.id, path: "/reports", mode: "ro", subpath: "/data" }] });

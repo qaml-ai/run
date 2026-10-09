@@ -299,6 +299,7 @@ const approvalFields = {
   default: z.enum(["never", "always", "destructive"]).optional().openapi({ description: "never (the default), always, or destructive: tools annotated destructiveHint (MCP), operations other than GET, HEAD and OPTIONS (OpenAPI)" }),
   tools: z.record(z.string(), approvalMode).optional().openapi({ description: "Per tool, by its own name: overrides the default" }),
 };
+const fileArguments = z.enum(["on", "off"]).openapi({ description: "Whether the model may send the agent's files to its tools ({\"$file\": path}), and the runtime saves files they link to. Default on with auth \"runtime\", off otherwise: another party's server could be sent any file the agent can read" });
 const mcpServerFields = {
   name: z.string().openapi({ description: "Its tools reach the model as <name>__<tool>: 1–32 letters and digits, single underscores between them" }),
   url: z.string().openapi({ description: "The server's Streamable HTTP (or older SSE) endpoint; https, on a public address" }),
@@ -308,6 +309,7 @@ const mcpServerFields = {
   timeoutMs: z.number().int().min(1_000).max(1_200_000).optional().openapi({ description: "How long a call may go without an answer; default 60000. Each progress notification the server sends restarts it, up to 1200000 in all" }),
   audience: z.string().optional().openapi({ description: "With auth \"runtime\": the tokens' aud, when not the server's url (behind a proxy, say): a URL on its origin, or a name that stays when the server moves, urn:camelrun:<tenant>:<name>" }),
   approval: z.strictObject(approvalFields).optional().openapi({ description: "Which tools the user approves before each call. Those tools are declared to the model directly; an approved call carries _meta[\"agent-runtime/approval\"] and an approval claim in its identity token" }),
+  fileArguments: fileArguments.optional(),
 };
 const McpServerInput = z.object({
   ...mcpServerFields,
@@ -338,6 +340,11 @@ export const AgentInput = z.object({
   maxOutputTokens: MaxOutputTokens.optional(),
   temperature: Temperature.optional(),
   initialMessages: z.array(z.unknown()).optional().openapi({ description: "History to begin with (a conversation from elsewhere): Pi user, assistant and toolResult messages, and compactionSummary messages, the last of which stands in for everything before it. Only when the agent is made; at most 16 MB of JSON. See the multi-user guide" }),
+  importMessages: z.object({
+    format: z.enum(["anthropic", "openai-responses", "openai-chat"]).openapi({ description: "anthropic: Messages API messages; openai-responses: Responses API input items; openai-chat: Chat Completions messages" }),
+    messages: z.array(z.unknown()),
+    model: z.string().optional().openapi({ description: "The model that wrote the assistant turns, as provider/model-id: its signed thinking or encrypted reasoning is sent back to that same model; any other model gets reasoning as text, or none", example: "anthropic/claude-sonnet-5" }),
+  }).optional().openapi({ description: "History to begin with in another API's format, with its tool calls and results, converted to Pi messages (initialMessages; not both). Images must be base64 or data: URLs; system and developer messages are left out (the agent's prompt replaces them). Only when the agent is made" }),
   fileTools: z.boolean().openapi({ description: "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; the mounts stay open to fs in js_exec, attachments and tool outputs. For applications with file tools of their own" }).optional(),
   codeMode: z.boolean().openapi({ description: "false: no js_exec (code mode). The model calls every tool directly, and the system prompt carries only the runtime text those tools need: for an agent with no tools (with fileTools: false too, and no builtins or tool sources), only the application's instructions and a short note on who sent each message. For a tool-less agent, such as a classifier. Best set when the agent is made: changed later, its tools change, while a conversation under way keeps the runtime text it began with" }).optional(),
   ttlSeconds: z.number().int().nullable().optional().openapi({ description: "Agent lifetime: 60 to 31622400 seconds, or null to live until deleted. Default: until deleted for an agent made with an Idempotency-Key, 86400 for one made without" }),
@@ -691,6 +698,7 @@ const openApiFields = {
   audience: z.string().optional().openapi({ description: "With auth \"runtime\": the tokens' aud, when not baseUrl (behind a proxy, say): a URL on its origin, or a name that stays when the server moves, urn:camelrun:<tenant>:<name>" }),
   approval: z.strictObject({ ...approvalFields, methods: z.array(z.enum(["GET", "PUT", "POST", "DELETE", "PATCH", "HEAD", "OPTIONS"])).optional().openapi({ description: "Operations of these methods, unless named in tools" }) }).optional()
     .openapi({ description: "Which operations the user approves before each call. They are declared to the model directly; with auth \"runtime\", an approved call's identity token carries an approval claim" }),
+  fileArguments: fileArguments.optional(),
 };
 const OpenApiInput = z.object({
   ...openApiFields,
@@ -827,6 +835,17 @@ export const Volume = VolumeSummary.extend({
   origin: z.object({ volume: z.string(), snapshot: z.string().optional(), seq: z.number() }).optional().openapi({ description: "What a fork was copied from" }),
 }).openapi("Volume");
 export const ForkInput = z.object({ name: z.string().optional(), snapshot: z.string().optional().openapi({ description: "Fork this snapshot instead of the current state" }) }).openapi("ForkInput");
+const FileValue = z.object({
+  uri: z.string().openapi({ description: "A URL to the file, bound to the call (GET /v1/files/{token}/{name}), or a data: URI" }),
+  name: z.string(), mimeType: z.string(), size: z.number(),
+  digest: z.object({ algorithm: z.literal("sha-256"), value: z.string().openapi({ description: "Hex" }) }).optional().openapi({ description: "Absent for files over 64 MiB" }),
+}).openapi("FileValue", { description: "A file sent to a tool, as MCP SEP-2631 (draft) describes one" });
+export const FileManifest = z.object({
+  snapshot: z.string().openapi({ description: "The snapshot made for the call, which every URL here reads" }),
+  root: z.string().openapi({ description: "The directory, as the agent names it" }),
+  files: z.array(FileValue.extend({ path: z.string().openapi({ description: "Relative to root" }) })),
+  archive: z.object({ uri: z.string(), mimeType: z.literal("application/gzip") }).openapi({ description: "Every file, as a tar.gz with paths relative to root" }),
+}).openapi("FileManifest", { description: "A directory sent to a tool: its files as they were when the call was made" });
 export const Snapshot = z.object({ id: z.string(), volume: z.string(), name: z.string(), seq: z.number(), createdAt: z.number(), files: z.number(), bytes: z.number() }).openapi("Snapshot");
 export const VolumeFile = z.object({
   path: z.string(), version: z.number(), size: z.number(), updatedAt: z.number(), by: z.string().optional(),
@@ -846,6 +865,16 @@ export const Link = z.object({
   maxBytes: z.number().optional(), contentType: z.string().optional(),
 }).openapi("Link");
 export const FileList = z.object({ files: z.array(VolumeFile), next: z.string().optional().openapi({ description: "Pass as `after` for the next page" }) }).openapi("FileList");
+export const FileContents = z.object({
+  seq: z.number().openapi({ description: "The volume's change number the files were read at (the snapshot's, for a snapshot)" }),
+  snapshot: z.string().optional(),
+  files: z.array(z.object({
+    path: z.string(), size: z.number(), version: z.number(), contentType: z.string(),
+    sha256: z.string().openapi({ description: "Of the file's bytes, hex" }),
+    text: z.string().optional().openapi({ description: "The contents, for a file that is UTF-8 text" }),
+    data: z.string().optional().openapi({ description: "The contents base64, for any other file" }),
+  })),
+}).openapi("FileContents");
 export const Changes = z.object({
   seq: z.number(),
   changes: z.array(z.object({ seq: z.number(), path: z.string(), kind: z.enum(["write", "delete"]), version: z.number().optional(), size: z.number().optional(), by: z.string().optional(), at: z.number() })),

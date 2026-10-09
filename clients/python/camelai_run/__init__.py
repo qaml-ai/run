@@ -32,7 +32,7 @@ __all__ = [
     "tool", "Tool", "ToolContext", "InputRequired", "RuntimeIdentity", "identity_from_claims",
     "AgentError", "RunError",
     "AgentRuntime", "AgentClient", "AgentFiles", "Download", "Volume", "Telemetry", "DEFAULT_URL",
-    "serve_tools", "verify_runtime_token", "RuntimeTokenError", "TestRuntime", "verify_webhook", "WebhookVerificationError",
+    "serve_tools", "verify_runtime_token", "verify_file_url", "RuntimeTokenError", "TestRuntime", "verify_webhook", "WebhookVerificationError",
 ]
 # Distinguishes "not given" from None (which means "never expires") in create_agent.
 _DEFAULT = object()
@@ -539,7 +539,9 @@ class _RuntimeCalls:
         credentials ({"id", "token", "expiresAt", "reconfigured"?}); connect with connect_agent. Keyed agents live until deleted.
         `prompt` (the prompt call's body, {"text", "requestId", ...}) is sent once the agent is made: the answer's "prompt" is
         its request, or {"error": {"status", "code", "message"}} when it was refused. A retry with the same requestId sends it once.
-        `initial_messages` (Pi messages) is the history it begins with, used only when the agent is made.
+        `initial_messages` (Pi messages) is the history it begins with, used only when the agent is made; `import_messages`
+        ({"format": "anthropic" | "openai-responses" | "openai-chat", "messages": [...], "model"?}) is one in another API's
+        format, which the runtime converts (not both).
         `traceparent` (a W3C trace context) makes that first prompt's run continue the caller's trace."""
         if not self.api_key:
             raise AgentError("No API key: set CAMELAI_API_KEY (or pass api_key). Create one at https://run.camelai.com/console/tokens. Coding agents: read https://run.camelai.com/SKILL.md")
@@ -623,6 +625,10 @@ class _RuntimeCalls:
 
     def list_volumes(self):
         return self._rest("GET", "/v1/volumes")
+
+    def volumes(self, ids):
+        """Several volumes as they are now (each one's seq, files and bytes), in one request; at most 50."""
+        return self._rest("GET", f"/v1/volumes?ids={','.join(quote(id, safe='') for id in ids)}")
 
     def mounts(self, agent_id):
         return self._rest("GET", f"/v1/agents/{quote(agent_id)}/mounts")
@@ -762,7 +768,7 @@ class AgentRuntime(_RuntimeCalls):
             raise
         return then(value) if then else value
 
-    async def create_agent(self, *, tools, system_prompt=None, name=None, type=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, on_input=None, builtins=None, delegate=None, subagents=False, prompt=None, traceparent=None, initial_messages=None, max_output_tokens=None, temperature=None, mcp_servers=None):
+    async def create_agent(self, *, tools, system_prompt=None, name=None, type=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, on_input=None, builtins=None, delegate=None, subagents=False, prompt=None, traceparent=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, mcp_servers=None):
         """Provision an agent. `model` is "provider/model-id", e.g. "anthropic/claude-sonnet-5-5".
         `definition` makes it from a definition (GET /v1/definitions), which supplies the model, system prompt,
         thinking level and tool sources; `tools` are added as the agent's attached MCP server.
@@ -783,7 +789,7 @@ class AgentRuntime(_RuntimeCalls):
         # subject: who the agent acts for; context: claims for its tool servers' identity tokens. Set only here.
         body = _provisioning(tools, definition=definition, name=name, type=type, system_prompt=system_prompt, model=model, thinking_level=thinking_level,
                              mounts=mounts, subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits, model_headers=model_headers, builtins=builtins,
-                             delegate=delegate, prompt=prompt, initial_messages=initial_messages, max_output_tokens=max_output_tokens, temperature=temperature, mcp_servers=mcp_servers)
+                             delegate=delegate, prompt=prompt, initial_messages=initial_messages, import_messages=import_messages, max_output_tokens=max_output_tokens, temperature=temperature, mcp_servers=mcp_servers)
         # A key of the caller's makes the agent durable (it lives until deleted); one the SDK makes up, only so a retried
         # create finds the same agent, keeps a scratch agent's day, said explicitly since any key would make it durable.
         if ttl_seconds is not _DEFAULT:
@@ -940,12 +946,12 @@ class Telemetry:
 
 def _provisioning(tools, *, definition=None, name=None, type=None, system_prompt=None, model=None, thinking_level=None, mounts=None,
                   subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, system_prompt_append=None, file_tools=None, builtins=None,
-                  delegate=None, prompt=None, code_mode=None, initial_messages=None, max_output_tokens=None, temperature=None, mcp_servers=None):
+                  delegate=None, prompt=None, code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, mcp_servers=None):
     """A create request's body: the tools as the attached MCP server's tools/list, and the fields given."""
     optional = {"definition": definition, "name": name, "type": type, "systemPrompt": system_prompt, "model": model, "thinkingLevel": thinking_level,
                 "mounts": mounts, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit, "runLimits": run_limits, "modelHeaders": model_headers,
                 "systemPromptAppend": system_prompt_append, "fileTools": file_tools, "codeMode": code_mode, "builtins": builtins, "delegate": delegate, "mcpServers": mcp_servers, "prompt": prompt,
-                "initialMessages": initial_messages, "maxOutputTokens": max_output_tokens, "temperature": temperature}
+                "initialMessages": initial_messages, "importMessages": import_messages, "maxOutputTokens": max_output_tokens, "temperature": temperature}
     return _with_multi_agent({"mcp": {"tools": [item.mcp_tool() for item in tools]}, **{key: value for key, value in optional.items() if value is not None}})
 
 
@@ -970,8 +976,8 @@ class Volume:
     def _file(self, path):
         return f"{self.runtime.base}/v1/volumes/{self.id}/files/" + "/".join(quote(part, safe="") for part in path.split("/") if part)
 
-    async def _raw(self, method, path, content=None, headers=None):
-        response = await _transfer(self.runtime.http, method, self._file(path), content=content, headers={
+    async def _raw(self, method, path, content=None, headers=None, query=None):
+        response = await _transfer(self.runtime.http, method, self._file(path) + (f"?{urlencode(query)}" if query else ""), content=content, headers={
             "Authorization": f"Bearer {self.runtime._operator()}", **(headers or {})})
         if not response.is_success:
             try:
@@ -1000,12 +1006,21 @@ class Volume:
         """A new volume with this one's files (or a snapshot's); only metadata is copied."""
         return await self._json("/fork", "POST", {key: value for key, value in {"name": name, "snapshot": snapshot}.items() if value is not None})
 
-    async def changes(self, since=0):
-        return await self._json(f"/changes?since={int(since)}")
+    async def changes(self, since=0, *, prefix=None):
+        """Changes after `since` (a seq), oldest first; `prefix` keeps those at or under a path."""
+        return await self._json(f"/changes?since={int(since)}" + (f"&{urlencode({'prefix': prefix})}" if prefix else ""))
 
-    async def list(self, *, prefix=None, glob=None, after=None, limit=None):
-        query = urlencode({key: value for key, value in {"prefix": prefix, "glob": glob, "after": after, "limit": limit}.items() if value is not None})
+    async def list(self, *, prefix=None, glob=None, after=None, limit=None, snapshot=None):
+        """Files under `prefix`, a page at a time; `snapshot` lists a snapshot instead."""
+        query = urlencode({key: value for key, value in {"prefix": prefix, "glob": glob, "after": after, "limit": limit, "snapshot": snapshot}.items() if value is not None})
         return await self._json(f"/files{'?' + query if query else ''}")
+
+    async def read_all(self, *, prefix=None, glob=None, snapshot=None):
+        """Every file under `prefix` (and `glob`) with its contents, in one request, as the volume was at one seq (or as
+        `snapshot` has them): {"seq", "snapshot"?, "files": [{"path", "size", "version", "contentType", "sha256", "text" | "data"}]},
+        text as "text", other bytes base64 as "data". At most 1,000 files and 16 MiB (else a 413)."""
+        query = urlencode({key: value for key, value in {"content": "true", "prefix": prefix, "glob": glob, "snapshot": snapshot}.items() if value is not None})
+        return await self._json(f"/files?{query}")
 
     async def write(self, path, data, *, version=None, content_type=None):
         """Without content_type, the runtime sniffs it from the file's first bytes and name."""
@@ -1017,10 +1032,10 @@ class Volume:
         response = await self._raw("PUT", path, data.encode() if isinstance(data, str) else data, headers)
         return response.json()
 
-    async def read(self, path, *, range=None):
-        """Returns (bytes, version); `range` is (start, end) in bytes, end exclusive."""
+    async def read(self, path, *, range=None, snapshot=None):
+        """Returns (bytes, version); `range` is (start, end) in bytes, end exclusive; `snapshot` reads it as a snapshot has it."""
         headers = {"Range": f"bytes={range[0]}-{'' if len(range) < 2 or range[1] is None else range[1] - 1}"} if range else None
-        response = await self._raw("GET", path, headers=headers)
+        response = await self._raw("GET", path, headers=headers, **({"query": {"snapshot": snapshot}} if snapshot else {}))
         return response.content, int(response.headers["x-file-version"])
 
     async def read_text(self, path):
@@ -2345,7 +2360,7 @@ class Agents:
     async def upsert(self, key, *, model=None, instructions=None, tools=None, definition=None, thinking_level=None, subject=None, context=None,
                      key_scope=None, spend_limit=None, run_limits=None, model_headers=None, mounts=None, name=None, instructions_append=None, file_tools=None,
                      builtins=None, delegate=None, subagents=False, on_event=None, on_input=None, on_error=None, attach=None, takeover=False, connection=None,
-                     code_mode=None, initial_messages=None, max_output_tokens=None, temperature=None, mcp_servers=None):
+                     code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, mcp_servers=None):
         """The agent for `key` (your name for it: "support-triage", or "user-123"), made now if there is none, and set
         to this configuration if it differs. The same key is the same agent, with its history and files, until
         agent.delete(); any number of processes may upsert it. `tools` (@tool functions) run in this process, which
@@ -2360,14 +2375,16 @@ class Agents:
         prompt is little more than your instructions (for a tool-less agent). An upsert of the configuration the agent has
         already is not counted as an agent create; agent.config_hash says which configuration it asked for.
         `initial_messages` (Pi messages: user, assistant, toolResult, compactionSummary) is the history the agent begins
-        with, a conversation from elsewhere: used only when the agent is made (see the multi-user guide).
+        with, a conversation from elsewhere: used only when the agent is made (see the multi-user guide). `import_messages`
+        ({"format": "anthropic" | "openai-responses" | "openai-chat", "messages": [...], "model"?}) is one in another API's
+        format (Anthropic Messages, OpenAI Responses or Chat Completions), which the runtime converts (not both).
         `max_output_tokens` caps each model response (within the model's maximum); `temperature` (0 to 2) sets sampling, for a
         model and thinking level that take one (a 400 otherwise)."""
         tools = list(tools or [])
         session = await self.runtime.upsert_agent(key, tools=tools, definition=definition, system_prompt=instructions, model=model, thinking_level=thinking_level,
                                                   subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits,
                                                   model_headers=model_headers, mounts=mounts, name=name, system_prompt_append=instructions_append, file_tools=file_tools, builtins=builtins,
-                                                  delegate=delegate, code_mode=code_mode, initial_messages=initial_messages,
+                                                  delegate=delegate, code_mode=code_mode, initial_messages=initial_messages, import_messages=import_messages,
                                                   max_output_tokens=max_output_tokens, temperature=temperature, mcp_servers=mcp_servers)
         # The upsert declared these tools already (between the agent's turns, if it runs).
         agent = await self.agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error, attach=attach, takeover=takeover, subagents=subagents,
@@ -2530,8 +2547,8 @@ def _token_header(token):
     return pieces, header
 
 
-def _verified(pieces, key, *, runtime, audience, tenants, issuer, clock_tolerance):
-    """The identity a token carries, once its signature, issuer, tenant, audience and times check out."""
+def _signed_claims(pieces, key, *, runtime, issuer, clock_tolerance):
+    """A token's claims, once its signature, issuer and times check out."""
     import time
     from cryptography.exceptions import InvalidSignature
     try:
@@ -2542,19 +2559,63 @@ def _verified(pieces, key, *, runtime, audience, tenants, issuer, clock_toleranc
     now = time.time()
     if claims.get("iss") != _issuer_of(runtime, issuer):
         raise RuntimeTokenError("Token is from another issuer")
-    if claims.get("tenant") not in tenants:
-        raise RuntimeTokenError("Token is for another tenant's agent")
-    if not _audience_matches(claims.get("aud"), audience):
-        raise RuntimeTokenError("Token is for another server")
     if not isinstance(claims.get("exp"), (int, float)) or claims["exp"] + clock_tolerance < now:
         raise RuntimeTokenError("Token has expired")
     if isinstance(claims.get("nbf"), (int, float)) and claims["nbf"] - clock_tolerance > now:
         raise RuntimeTokenError("Token is not valid yet")
     if isinstance(claims.get("iat"), (int, float)) and claims["iat"] - clock_tolerance > now:
         raise RuntimeTokenError("Token is issued in the future")
+    return claims
+
+
+def _verified(pieces, key, *, runtime, audience, tenants, issuer, clock_tolerance):
+    """The identity a token carries, once its signature, issuer, tenant, audience and times check out."""
+    claims = _signed_claims(pieces, key, runtime=runtime, issuer=issuer, clock_tolerance=clock_tolerance)
+    if claims.get("tenant") not in tenants:
+        raise RuntimeTokenError("Token is for another tenant's agent")
+    if not _audience_matches(claims.get("aud"), audience):
+        raise RuntimeTokenError("Token is for another server")
     identity = identity_from_claims(claims)
     identity.claims = claims
     return identity
+
+
+def _file_token(url, runtime):
+    """A file URL's token, once the URL is at the runtime (either hosted name for camelRun's)."""
+    from urllib.parse import unquote
+    parsed = urlparse(url)
+    runtime = runtime.rstrip("/")
+    allowed = _HOSTED if runtime in _HOSTED else (runtime,)
+    if not any(urlparse(origin)[:2] == parsed[:2] for origin in allowed):
+        raise RuntimeTokenError("The URL is not at the runtime")
+    parts = parsed.path.split("/")
+    if len(parts) != 5 or parts[:3] != ["", "v1", "files"] or not parts[3]:
+        raise RuntimeTokenError("Not a file URL")
+    return unquote(parts[3])
+
+
+def _file_claims(pieces, key, *, runtime, tenant, agent, issuer, clock_tolerance):
+    """What a file URL's token grants, once it checks out and is for `tenant` and `agent` (each a string or a list) when given."""
+    claims = _signed_claims(pieces, key, runtime=runtime, issuer=issuer, clock_tolerance=clock_tolerance)
+    if claims.get("aud") != "camelrun:file":
+        raise RuntimeTokenError("Token is not for a file")
+    if tenant is not None and claims.get("tenant") not in ({tenant} if isinstance(tenant, str) else set(tenant)):
+        raise RuntimeTokenError("Token is for another tenant's agent")
+    if agent is not None and claims.get("agent") not in ({agent} if isinstance(agent, str) else set(agent)):
+        raise RuntimeTokenError("Token is for another agent")
+    return claims
+
+
+async def verify_file_url(url, *, runtime, tenant=None, agent=None, issuer=None, http=None, clock_tolerance=30):
+    """Check that a file URL a tool was sent ({"$file": path} in a call's arguments) came from the runtime, for the
+    tenant and agent you expect (each a string or a list; optional), and has not expired: the URL is at `runtime`, and
+    its token is signed by the runtime's keys for files. Returns what it grants: tenant, agent, call, tool, volume, path
+    (in the volume), agentPath (as the agent names it), kind (file, manifest or archive), version or snapshot, and exp.
+    The runtime checks it again when the URL is fetched. camelai_run.sync.verify_file_url is the same, synchronous."""
+    runtime = runtime.rstrip("/")
+    pieces, header = _token_header(_file_token(url, runtime))
+    key = await _public_key(f"{runtime}/.well-known/jwks.json", header["kid"], http)
+    return _file_claims(pieces, key, runtime=runtime, tenant=tenant, agent=agent, issuer=issuer, clock_tolerance=clock_tolerance)
 
 
 def _audience_matches(given, audience):
@@ -2755,6 +2816,15 @@ class TestRuntime:
         payload.update(claims or {})
         signed = f"{_b64encode(json.dumps({'alg': 'EdDSA', 'kid': self.kid, 'typ': 'JWT', **(header or {})}).encode())}.{_b64encode(json.dumps(payload).encode())}"
         return f"{signed}.{_b64encode(self.key.sign(signed.encode()))}"
+
+    def file_url(self, *, expires_in=300, header=None, **claims):
+        """A file URL as the runtime would send a tool, for verify_file_url to check; `claims` set what it grants.
+        Only checking works: nothing serves it."""
+        grant = {"tenant": "test", "agent": "client_test", "call": "call_test", "tool": "app__tool", "volume": "vol_test",
+                 "path": "/report.pdf", "agentPath": "/workspace/report.pdf", "kind": "file", "version": 1, **claims}
+        token = self.token("camelrun:file", tenant=grant["tenant"], agent=grant["agent"], expires_in=expires_in, claims=grant,
+                           header={"typ": "file+jwt", **(header or {})})
+        return f"{self.url}/v1/files/{token}/{quote(grant['path'].rsplit('/', 1)[-1] or 'file')}"
 
     async def post(self, app, url, message, token=None, **identity):
         """POST a JSON-RPC message to an ASGI app at `url`, with a token for `identity` (or `token`; "" for none)."""

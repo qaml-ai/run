@@ -5,13 +5,12 @@ import { once } from "node:events";
 import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
-import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AgentRuntime, schema, tool } from "../clients/typescript.ts";
 import { testDatabase } from "./database.ts";
-import { databaseLink } from "./cluster-helpers.ts";
+import { databaseLink, onFreePort } from "./cluster-helpers.ts";
 
 const token = "failover-operator-token-at-least-24-chars";
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -24,39 +23,47 @@ async function node(t: { after(fn: () => Promise<void>): void }) {
   const { db, url: direct } = await testDatabase();
   const link = await databaseLink(new URL(direct));
   writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(token), apiKeys: { anthropic: "fixture-key" } } } }));
-  const port = await new Promise<number>(resolve => { const probe = createServer().listen(0, "127.0.0.1", () => { const { port } = probe.address() as { port: number }; probe.close(() => resolve(port)); }); });
-  const url = `http://127.0.0.1:${port}`;
-  const child: ChildProcess = spawn(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", fileURLToPath(new URL("../src/server.ts", import.meta.url))], {
-    env: {
-      PATH: process.env.PATH, HOME: root, PORT: String(port), HOST: "127.0.0.1", AGENT_NODE_URL: url, AGENT_DATABASE_URL: link.url,
-      AGENT_DATA_DIR: join(root, "data"), AGENT_STORAGE: "shared-file", AGENT_LEASE_TTL_MS: String(TTL_MS), AGENT_SCHEDULER_INTERVAL_MS: "200",
-      AGENT_DATABASE_QUERY_TIMEOUT_MS: "1000", AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_SESSION_SECRET: "failover-session-secret-with-32-characters!",
-      ...(process.env.AGENT_HOSTING ? { AGENT_HOSTING: process.env.AGENT_HOSTING } : {}),
-    } as NodeJS.ProcessEnv,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  const logs: any[] = [];
-  let stderr = "";
-  const ready = Promise.withResolvers<void>();
-  let pending = "";
-  child.stdout!.on("data", chunk => {
-    pending += chunk;
-    const lines = pending.split("\n");
-    pending = lines.pop()!;
-    for (const line of lines) { try { logs.push(JSON.parse(line)); } catch { /* not a log record */ } }
-    if (logs.some(entry => entry.type === "listening")) ready.resolve();
-  });
-  child.stderr!.on("data", chunk => {
-    stderr += chunk;
-    for (const line of String(chunk).split("\n")) { try { logs.push(JSON.parse(line)); } catch { /* not a log record */ } }
-  });
-  child.on("exit", code => ready.reject(new Error(`the node exited: ${code}\n${stderr}`)));
+  // The node's URL is its configuration, so its port is chosen first, and again if another process took it.
+  const children: ChildProcess[] = [];
   t.after(async () => {
-    if (child.exitCode === null && child.signalCode === null) { const closed = once(child, "close"); child.kill("SIGKILL"); await closed; }
+    for (const child of children) if (child.exitCode === null && child.signalCode === null) { const closed = once(child, "close"); child.kill("SIGKILL"); await closed; }
     await link.close();
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
-  await ready.promise;
+  const logs: any[] = [];
+  let stderr = "";
+  const { url, child } = await onFreePort(async port => {
+    const url = `http://127.0.0.1:${port}`;
+    const child: ChildProcess = spawn(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", fileURLToPath(new URL("../src/server.ts", import.meta.url))], {
+      env: {
+        PATH: process.env.PATH, HOME: root, PORT: String(port), HOST: "127.0.0.1", AGENT_NODE_URL: url, AGENT_DATABASE_URL: link.url,
+        AGENT_DATA_DIR: join(root, "data"), AGENT_STORAGE: "shared-file", AGENT_LEASE_TTL_MS: String(TTL_MS), AGENT_SCHEDULER_INTERVAL_MS: "200",
+        AGENT_DATABASE_QUERY_TIMEOUT_MS: "1000", AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_SESSION_SECRET: "failover-session-secret-with-32-characters!",
+        ...(process.env.AGENT_HOSTING ? { AGENT_HOSTING: process.env.AGENT_HOSTING } : {}),
+      } as NodeJS.ProcessEnv,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    children.push(child);
+    logs.length = 0;
+    stderr = "";
+    const ready = Promise.withResolvers<void>();
+    let pending = "";
+    child.stdout!.on("data", chunk => {
+      pending += chunk;
+      const lines = pending.split("\n");
+      pending = lines.pop()!;
+      for (const line of lines) { try { logs.push(JSON.parse(line)); } catch { /* not a log record */ } }
+      if (logs.some(entry => entry.type === "listening")) ready.resolve();
+    });
+    child.stderr!.on("data", chunk => {
+      stderr += chunk;
+      for (const line of String(chunk).split("\n")) { try { logs.push(JSON.parse(line)); } catch { /* not a log record */ } }
+    });
+    // On close, not exit: by then stderr is read to its end, so a listen error in it is seen.
+    child.on("close", code => ready.reject(new Error(`the node exited: ${code}\n${stderr}`)));
+    await ready.promise;
+    return { url, child };
+  });
   const alive = () => assert.ok(child.exitCode === null && child.signalCode === null, `the node is still running\n${stderr}`);
   const owner = async (actor: string) => (await db.query("select node, session, epoch from actor_owners where actor = $1", [actor])).rows[0];
   return { url, link, logs, alive, owner, stderr: () => stderr };

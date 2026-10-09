@@ -45,6 +45,22 @@ export function validateInitialMessages(messages: AgentMessage[]) {
   }
 }
 
+const NO_USAGE = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+/**
+ * An imported message with what the runtime reads from every message filled in where it was left out: a timestamp, an
+ * assistant message's usage (none: its tokens are not known) and stopReason (toolUse when it calls tools), a tool
+ * result's isError (false).
+ */
+function complete(message: any, now: number) {
+  const filled = { ...message, timestamp: typeof message.timestamp === "number" ? message.timestamp : now };
+  if (message.role === "assistant") {
+    filled.usage = isObject(message.usage) ? { ...NO_USAGE, ...message.usage, cost: { ...NO_USAGE.cost, ...message.usage.cost } } : NO_USAGE;
+    filled.stopReason ??= message.content.some((part: any) => part.type === "toolCall") ? "toolUse" : "stop";
+  }
+  if (message.role === "toolResult") filled.isError ??= false;
+  return filled;
+}
+
 /**
  * Imported history as the transcript keeps it: its messages without compaction summaries, and the last
  * summary as the compaction it stands for, cut where it sat. The model then sees that summary and what
@@ -53,8 +69,9 @@ export function validateInitialMessages(messages: AgentMessage[]) {
 export function importedHistory(initial: AgentMessage[]): { messages: AgentMessage[]; compaction?: CompactionState } {
   const messages: AgentMessage[] = [];
   let compaction: CompactionState | undefined;
+  const now = Date.now();
   for (const message of initial as any[]) {
-    if (message.role !== "compactionSummary") { messages.push(message); continue; }
+    if (message.role !== "compactionSummary") { messages.push(complete(message, now)); continue; }
     const at = typeof message.timestamp === "number" ? message.timestamp : Date.parse(message.timestamp ?? "");
     compaction = { summary: message.summary, cut: messages.length, tokensBefore: Number(message.tokensBefore) || 0, at: Number.isFinite(at) ? at : Date.now() };
   }

@@ -40,6 +40,8 @@ RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
 
 COPY src ./src
 COPY shared ./shared
+# The SDKs' history converter (MIT), which the API uses for importMessages; its type imports are erased.
+COPY clients/history-formats.ts ./clients/history-formats.ts
 # The hosted MCP endpoint (/mcp) serves the camelrun CLI's MCP tools.
 COPY packages/cli/package.json ./packages/cli/package.json
 COPY packages/cli/src ./packages/cli/src

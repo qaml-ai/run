@@ -4,7 +4,8 @@ node_modules
 studio
 examples
 tests
-clients
+clients/*
+!clients/history-formats.ts
 sdk
 deploy
 **/__pycache__

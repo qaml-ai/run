@@ -14,10 +14,10 @@ pip install camelai-run       # Python 3.11+; "camelai-run[server]" for serve_to
 | --- | --- |
 | `@camelai/run` | everything portable: `Agents`, `tool`, `schema`, the lower-level `AgentRuntime` and `AgentClient`, the types |
 | `@camelai/run/node` | the same for Node and Bun, plus local file paths as attachments, `nodeListener` |
-| `@camelai/run/server` | `serveTools`, `verifyRuntimeToken`, `runtimeAuth`, `runtimeIdentity`: serving tools over HTTP |
+| `@camelai/run/server` | `serveTools`, `verifyRuntimeToken`, `runtimeAuth`, `runtimeIdentity`: serving tools over HTTP; `verifyFileUrl`: checking a file URL a tool was sent |
 | `@camelai/run/watch` | `watchAgent`: reading an agent from a browser |
 | `@camelai/run/mcp` | `fromMcpServer`: attaching an MCP SDK server (needs `@modelcontextprotocol/sdk`) |
-| `@camelai/run/testing` | `testRuntime`: signing identity tokens in tests |
+| `@camelai/run/testing` | `testRuntime`: signing identity tokens (and file URLs, `fileUrl`) in tests |
 
 The public types need nothing else installed: messages and events are declared
 in the SDK (`Message`, `AgentEvent`, `AssistantMessage`, …).
@@ -89,6 +89,7 @@ brought to `config` if it differs. Returns a connected `Agent`. See
 | `onInput(input)` | `on_input=` | each input as it is asked: return an answer, or nothing |
 | `onError(error)` | `on_error=` | errors from the connection and from `onEvent` |
 | | `initial_messages=` | the history it begins with, used only when it is made (`runtime.createAgent({ initialMessages })` in TypeScript); see [Bringing in existing conversations](../guides/multi-user.md#bringing-in-existing-conversations) |
+| | `import_messages=` | a conversation in Anthropic's or OpenAI's format (`{"format", "messages", "model"?}`), converted by the runtime (`importMessages` in TypeScript; `toPiMessages` converts one locally) |
 
 ### `agents.get(keyOrId, { tools, … })`
 
@@ -279,7 +280,16 @@ can call your tools from `js_exec` unless they say `"direct"`; see
 | `confirm`, `ask`, `requireUrl` | `confirm`, `ask`, `require_url` | ask the user; see [Human input](../guides/human-input.md) |
 
 See [Tools](../guides/tools.md) for attached and served tools, identity and
-the definitions' sources, and `serveTools` / `serve_tools`. With several
+the definitions' sources, and `serveTools` / `serve_tools`.
+
+A tool of a definition's source may be sent the agent's files as URLs
+([Files in tool calls](../guides/tools.md#files-in-tool-calls)).
+`verifyFileUrl(url, { runtime, tenant?, agent?, issuer? })` (Python
+`await verify_file_url(url, runtime=, tenant=None, agent=None, issuer=None)`)
+checks one came from the runtime for the tenant and agent you expect, and has
+not expired, and returns what it grants: `tenant`, `agent`, `call`, `tool`,
+`volume`, `path`, `agentPath`, `kind` (`file`, `manifest` or `archive`),
+`version` or `snapshot`, and `exp`. It throws `RuntimeTokenError` otherwise. With several
 processes (web workers, task queues, serverless), serve tools over HTTP: see
 [Several processes, workers and deploys](../guides/tools.md#several-processes-workers-and-deploys).
 
@@ -322,7 +332,7 @@ with Agents() as agents:  # CAMELAI_API_KEY
   `create_agent`. One `Agents` is for one thread at a time; give each thread
   (or Celery worker) its own.
 
-`camelai_run.sync` also has `verify_runtime_token` (synchronous) and a
+`camelai_run.sync` also has `verify_runtime_token` and `verify_file_url` (synchronous) and a
 `TestRuntime` whose `call_tool` calls a WSGI app.
 
 ## Errors
