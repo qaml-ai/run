@@ -77,7 +77,7 @@ A `Run` has:
 | `toolErrors` | tool calls that did not complete (timed out, connection lost, no process serving the tools); the model was told and carried on |
 | `toolCalls` | every tool call the run made (the first 100), calls from `js_exec`'s code included: `{tool, toolCallId, innerCallId?, ok, code?, agentId?}`. A `delegate` call names its sub-agent (`agentId`). Arguments and results are in history |
 | `files` | files the run wrote |
-| `usage` | what its model calls used, where the runtime reports it; `subagentCostUsd`, what its sub-agents spent |
+| `usage` | what its model calls used, where the runtime reports it; `subagentCostUsd`, what its sub-agents spent; `imageCostUsd`, what its `generate_image` calls cost |
 
 ### Runs without the history
 

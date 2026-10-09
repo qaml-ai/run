@@ -7,6 +7,9 @@ import { imageHeader } from "./image-header.ts";
 import { FILE_LIMITS, IMAGE_LIMITS } from "./limits.ts";
 import { MICROS } from "./pricing.ts";
 import { safeError } from "./metrics.ts";
+import type { ToolDefinition } from "./protocol.ts";
+import type { McpResult } from "./mcp-results.ts";
+import type { ToolFiles } from "./tool-files.ts";
 
 /**
  * Images made from text, or edited from images given: for `POST /v1/images` (and the generate_image builtin).
@@ -301,4 +304,49 @@ async function fetchImage(outbound: Outbound, url: string, signal: AbortSignal):
     if (/larger than/.test(message)) throw new HttpError(413, `${where} is larger than ${IMAGE_LIMITS.inputBytes} bytes, the most an image to edit may be`, "IMAGE_TOO_LARGE");
     throw new HttpError(400, `Could not fetch ${where} (${message.slice(0, 200)})`);
   }
+}
+
+/** The generate_image builtin: an image made (or edited from images in the agent's mounts), saved to its workspace. */
+export const GENERATE_IMAGE: ToolDefinition = {
+  name: "generate_image", exposure: "both",
+  description: `Make an image from a prompt, or edit images from your files (images: their paths, at most ${IMAGE_LIMITS.inputs}; PNG, JPEG or WebP). The image is saved to your workspace and its path returned, and you are shown it. To show it to the user, present it with present_file. Each image costs money (about $0.013 at medium quality, $0.05 at high): make the images asked for, not variations nobody asked for.`,
+  parameters: { type: "object", additionalProperties: false, required: ["prompt"], properties: {
+    prompt: { type: "string", minLength: 1, maxLength: IMAGE_LIMITS.promptChars, description: "What to make, or how to change or combine the images given: subject, style, composition, any text it shows" },
+    images: { type: "array", maxItems: IMAGE_LIMITS.inputs, items: { type: "string" }, description: "Paths of images to edit or combine" },
+    size: { type: "string", enum: [...IMAGE_SIZES], description: "Square (default), landscape (1536x1024) or portrait (1024x1536)" },
+    quality: { type: "string", enum: [...IMAGE_QUALITIES], description: "Default medium; high for detailed or final images" },
+    format: { type: "string", enum: [...IMAGE_FORMATS], description: "Default png" },
+    background: { type: "string", enum: ["transparent", "opaque"], description: "transparent for a cut-out (png or webp)" },
+  } },
+};
+
+/**
+ * A generate_image call: its arguments checked, its input images read from the agent's mounts (`files`), one image made
+ * within `budget` (USD, when the run or agent has a limit) and saved to the workspace. The model gets the image's file
+ * reference (so it sees it). `record` takes its usage as soon as it is made, so it is billed even if it cannot be saved.
+ */
+export async function generateImage(imager: Imager, context: { tenant: string; keyScope?: string; budget?: number; files: ToolFiles; record(usage: UsageRecord): void }, args: Record<string, unknown>, signal: AbortSignal): Promise<McpResult> {
+  const prompt = args.prompt;
+  if (typeof prompt !== "string" || !prompt.trim()) throw new HttpError(400, "Give the prompt: what to make");
+  if (prompt.length > IMAGE_LIMITS.promptChars) throw new HttpError(400, `The prompt is at most ${IMAGE_LIMITS.promptChars} characters`);
+  const paths = args.images === undefined ? [] : args.images;
+  if (!Array.isArray(paths) || paths.some(path => typeof path !== "string")) throw new HttpError(400, "images is a list of paths of images in your files");
+  if (paths.length > IMAGE_LIMITS.inputs) throw new HttpError(400, `Give at most ${IMAGE_LIMITS.inputs} images to edit`);
+  const options = imageOptions({ size: args.size, quality: args.quality, format: args.format, background: args.background }, 1);
+  const images: InputImage[] = [];
+  let total = 0;
+  for (const path of paths as string[]) {
+    const bytes = await context.files.read(path, IMAGE_LIMITS.inputBytes);
+    total += bytes.length;
+    if (total > IMAGE_LIMITS.inputTotalBytes) throw new HttpError(413, `The images to edit are larger than ${IMAGE_LIMITS.inputTotalBytes} bytes in all`, "IMAGE_TOO_LARGE");
+    images.push(checkedImage(bytes, path));
+  }
+  const { generated, usage } = await imager.generate({ tenant: context.tenant, ...(context.keyScope ? { keyScope: context.keyScope } : {}), ...(context.budget !== undefined ? { budget: context.budget } : {}) }, { prompt, images, options }, signal);
+  context.record(usage);
+  const image = generated.images[0]!;
+  const size = imageHeader(Buffer.from(image.bytes.buffer, image.bytes.byteOffset, image.bytes.byteLength));
+  const saved = await context.files.save(`image.${EXTENSIONS[image.contentType] ?? "png"}`, image.bytes, image.contentType)
+    .catch(error => { throw new Error(`The image was made but could not be saved: ${(error as Error).message}`); });
+  const value = { path: saved.path, contentType: saved.contentType, ...(size ? { width: size.width, height: size.height } : {}), size: saved.size, costUsd: usage.usage.cost.total as number };
+  return { content: [{ type: "text", text: JSON.stringify(value) }, saved], structuredContent: value };
 }

@@ -1,6 +1,7 @@
 # Images
 
-`POST /v1/images` makes images from a prompt, or edits images you give it, with no agent.
+`POST /v1/images` makes images from a prompt, or edits images you give it, with no agent. An agent makes them with
+the `generate_image` builtin.
 
 Images are made with OpenAI's `gpt-image-2.5-flare` and the OpenAI key a model call of yours would use: a
 [key scope](models-and-keys.md#key-scopes)'s, your own (`PUT /v1/providers/openai/key`), else the platform's, which a
@@ -63,6 +64,33 @@ With `volumeId` (one of your [volumes](files.md)), the images are saved there, u
 Read them with `GET /v1/volumes/{id}/files/{path}`, or hand a browser a signed link to one
 (`POST /v1/volumes/{id}/links`). They count toward your storage like any file.
 
+## In an agent
+
+Give an agent (or its definition, or a stateless run) the `generate_image` builtin:
+
+```ts
+const agent = await agents.upsert("illustrator", { builtins: ["generate_image"] });
+const run = await agent.run("Draw a camel crossing dunes at dawn, as a watercolor, and show it to me");
+```
+
+```python
+agent = await agents.upsert("illustrator", builtins=["generate_image"])
+run = await agent.run("Draw a camel crossing dunes at dawn, as a watercolor, and show it to me")
+```
+
+The model calls `generate_image` with a `prompt`, and optionally `images` (paths of images in its files: an
+attachment, or one it made before, to edit or combine), `size`, `quality` (`medium` by default), `format` and
+`background`. Each call makes one image, saved to the agent's workspace under `tool-outputs/generate_image/<call>/`,
+and answers with its path, size and cost; the model is shown the image, so it can check it or describe it, and
+presents it to the user with `present_file` (a `file_presented` event with a signed link). A stateless run with
+`generate_image` gets a workspace for its images.
+
+Each image is billed as a request to `POST /v1/images` is, with the run's facts on its `usage.recorded` event
+(`agentId`, `requestId`, `actor`, the agent's identity and key scope). It counts against the agent's spend limit and the
+run's own `spendLimit`: a call whose estimate is more than is left fails before anything is sent, and the model is told
+why. The run's `usage.imageCostUsd` says what its images cost. Saving a definition or an agent with `generate_image`
+when the account has no OpenAI key to use answers with a warning, and a call then fails with how to add one.
+
 ## Safety
 
 OpenAI's safety system checks the prompt, the images given and the image made. A request it refuses is a 400
@@ -73,7 +101,7 @@ categories it gives, never the prompt:
 { "type": "error", "error": "OpenAI's safety system refused this request (violence)", "code": "IMAGE_REFUSED", "stage": "input", "categories": ["violence"] }
 ```
 
-A refused request is not charged. Other errors: a request OpenAI cannot take is a 400 with its reason, a provider
+A refused request is not charged; in an agent, the model is told it was refused and why. Other errors: a request OpenAI cannot take is a 400 with its reason, a provider
 failure is a 502 (`IMAGE_FAILED`), and no OpenAI key to use is a 400 (`IMAGE_UNAVAILABLE`).
 
 ## Limits

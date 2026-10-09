@@ -296,7 +296,7 @@ A `Run` has:
 | `toolErrors` | tool calls that did not complete (timed out, connection lost, no process serving the tools); the model was told and carried on |
 | `toolCalls` | every tool call the run made (the first 100), calls from `js_exec`'s code included: `{tool, toolCallId, innerCallId?, ok, code?, agentId?}`. A `delegate` call names its sub-agent (`agentId`). Arguments and results are in history |
 | `files` | files the run wrote |
-| `usage` | what its model calls used, where the runtime reports it; `subagentCostUsd`, what its sub-agents spent |
+| `usage` | what its model calls used, where the runtime reports it; `subagentCostUsd`, what its sub-agents spent; `imageCostUsd`, what its `generate_image` calls cost |
 
 ### Runs without the history
 
@@ -1297,7 +1297,7 @@ Tools the runtime answers itself, given to an agent as `builtins` when it is
 made or upserted (`agents.upsert("researcher", { builtins: ["web_search",
 "web_fetch"] })`, or `PATCH /v1/agents/:id/configuration`), or by the definition
 it is made from (whose builtins it then has):
-`"builtins": ["web_fetch", "web_search", "schedule", "ask_user", "delegate"]`.
+`"builtins": ["web_fetch", "web_search", "schedule", "ask_user", "delegate", "generate_image"]`.
 
 - `web_fetch` (`{url, maxCharacters?}`) reads a public page as text (HTML
   reduced to readable text, 20,000 characters by default, at most 100,000), or
@@ -1319,6 +1319,14 @@ it is made from (whose builtins it then has):
   run waits for the answer. See [Human input](https://run.camelai.com/docs/guides/human-input.md).
 - `delegate` (with `delegate: { agents }`) hands a task to a sub-agent and
   returns its answer. See [Multi-agent](https://run.camelai.com/docs/guides/multi-agent.md).
+- `generate_image` (`{prompt, images?, size?, quality?, format?, background?}`)
+  makes an image, or edits images from the agent's files (`images`: their
+  paths), saves it to the workspace under `tool-outputs/generate_image/` and
+  shows it to the model; the model presents it to the user with `present_file`.
+  It uses OpenAI's `gpt-image-2.5-flare` on your OpenAI key (or a key scope's),
+  else the platform's, charged per token on prepaid credit, and counts against
+  the agent's and the run's spend limits. Saving a definition or an agent with
+  it and no OpenAI key answers with a warning. See [Images](https://run.camelai.com/docs/guides/images.md#in-an-agent).
 
 ## Seeing an agent's tools
 
@@ -1716,7 +1724,8 @@ The fields an agent takes, plus the input:
   time. Fields given alongside override it, as for an agent.
 - `model`, `systemPrompt`, `systemPromptAppend`, `thinkingLevel`, `maxOutputTokens`,
   `temperature` (see [Output length and temperature](https://run.camelai.com/docs/guides/models-and-keys.md#output-length-and-temperature)), `builtins`
-  (`web_fetch`, `web_search`, `delegate`), `delegate`, `keyScope`, `modelHeaders`,
+  (`web_fetch`, `web_search`, `delegate`, `generate_image`: [generate_image](https://run.camelai.com/docs/guides/images.md#in-an-agent) gives the run a
+  workspace for its images), `delegate`, `keyScope`, `modelHeaders`,
   `runLimits`, `subject`, `context`.
 - `mcpServers`: MCP servers of its own, as an agent's: no credentials, only
   `"auth": {"type": "runtime"}` (identity tokens) or none. See
@@ -2636,7 +2645,8 @@ for training). See [Account data](https://run.camelai.com/docs/operations/privac
 
 # Images
 
-`POST /v1/images` makes images from a prompt, or edits images you give it, with no agent.
+`POST /v1/images` makes images from a prompt, or edits images you give it, with no agent. An agent makes them with
+the `generate_image` builtin.
 
 Images are made with OpenAI's `gpt-image-2.5-flare` and the OpenAI key a model call of yours would use: a
 [key scope](https://run.camelai.com/docs/guides/models-and-keys.md#key-scopes)'s, your own (`PUT /v1/providers/openai/key`), else the platform's, which a
@@ -2699,6 +2709,33 @@ With `volumeId` (one of your [volumes](https://run.camelai.com/docs/guides/files
 Read them with `GET /v1/volumes/{id}/files/{path}`, or hand a browser a signed link to one
 (`POST /v1/volumes/{id}/links`). They count toward your storage like any file.
 
+## In an agent
+
+Give an agent (or its definition, or a stateless run) the `generate_image` builtin:
+
+```ts
+const agent = await agents.upsert("illustrator", { builtins: ["generate_image"] });
+const run = await agent.run("Draw a camel crossing dunes at dawn, as a watercolor, and show it to me");
+```
+
+```python
+agent = await agents.upsert("illustrator", builtins=["generate_image"])
+run = await agent.run("Draw a camel crossing dunes at dawn, as a watercolor, and show it to me")
+```
+
+The model calls `generate_image` with a `prompt`, and optionally `images` (paths of images in its files: an
+attachment, or one it made before, to edit or combine), `size`, `quality` (`medium` by default), `format` and
+`background`. Each call makes one image, saved to the agent's workspace under `tool-outputs/generate_image/<call>/`,
+and answers with its path, size and cost; the model is shown the image, so it can check it or describe it, and
+presents it to the user with `present_file` (a `file_presented` event with a signed link). A stateless run with
+`generate_image` gets a workspace for its images.
+
+Each image is billed as a request to `POST /v1/images` is, with the run's facts on its `usage.recorded` event
+(`agentId`, `requestId`, `actor`, the agent's identity and key scope). It counts against the agent's spend limit and the
+run's own `spendLimit`: a call whose estimate is more than is left fails before anything is sent, and the model is told
+why. The run's `usage.imageCostUsd` says what its images cost. Saving a definition or an agent with `generate_image`
+when the account has no OpenAI key to use answers with a warning, and a call then fails with how to add one.
+
 ## Safety
 
 OpenAI's safety system checks the prompt, the images given and the image made. A request it refuses is a 400
@@ -2709,7 +2746,7 @@ categories it gives, never the prompt:
 { "type": "error", "error": "OpenAI's safety system refused this request (violence)", "code": "IMAGE_REFUSED", "stage": "input", "categories": ["violence"] }
 ```
 
-A refused request is not charged. Other errors: a request OpenAI cannot take is a 400 with its reason, a provider
+A refused request is not charged; in an agent, the model is told it was refused and why. Other errors: a request OpenAI cannot take is a 400 with its reason, a provider
 failure is a 502 (`IMAGE_FAILED`), and no OpenAI key to use is a 400 (`IMAGE_UNAVAILABLE`).
 
 ## Limits
@@ -6151,7 +6188,7 @@ A prompt's `response.outcome.result` (and `GET …/requests/:id`'s `outcome`):
 | `toolErrors` | tool calls that did not complete (the model was told): `{tool, toolCallId?, innerCallId?, code, outcomeUnknown?, message}`; `code` is `timeout`, `connection_lost`, `not_connected`, `source_unavailable` or `failed`. See [Errors](https://run.camelai.com/docs/reference/errors.md#tool-errors) |
 | `toolCalls` | every tool call the run made, in order, the first 100: `{tool, toolCallId?, innerCallId?, ok, code?, agentId?}`; `agentId` is the sub-agent a `delegate` call ran. A call from `js_exec`'s code has js_exec's `toolCallId` and its own `innerCallId`; `js_exec` itself is not listed. `code`, when `ok` is false: a `toolErrors` code, `tool_error` (the tool answered with an error), `input_required` (it waits on a person; the run that resumes it lists it again) or `aborted`. Arguments and results are left out: read them from history (`GET /v1/agents/:id/history`) by `toolCallId` |
 | `sourceErrors` | tool sources (MCP servers, OpenAPI specs) that could not be listed, so the model went without their tools: `{kind, source, message}` |
-| `usage` | what its model responses used: `{responses, input, output, cacheRead, cacheWrite, costUsd}`, and `subagentCostUsd` when its sub-agents spent something (theirs, apart from `costUsd`) |
+| `usage` | what its model responses used: `{responses, input, output, cacheRead, cacheWrite, costUsd}`, and `subagentCostUsd` when its sub-agents spent something (theirs, apart from `costUsd`), `imageCostUsd` when its `generate_image` calls did |
 
 An `execute` request's result is `{output: string[], truncated}` (plus `files`,
 `presented`, `toolErrors`, `toolCalls`, `sourceErrors` as above). A steered prompt's request

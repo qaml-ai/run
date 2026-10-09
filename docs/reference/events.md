@@ -288,7 +288,7 @@ A prompt's `response.outcome.result` (and `GET …/requests/:id`'s `outcome`):
 | `toolErrors` | tool calls that did not complete (the model was told): `{tool, toolCallId?, innerCallId?, code, outcomeUnknown?, message}`; `code` is `timeout`, `connection_lost`, `not_connected`, `source_unavailable` or `failed`. See [Errors](errors.md#tool-errors) |
 | `toolCalls` | every tool call the run made, in order, the first 100: `{tool, toolCallId?, innerCallId?, ok, code?, agentId?}`; `agentId` is the sub-agent a `delegate` call ran. A call from `js_exec`'s code has js_exec's `toolCallId` and its own `innerCallId`; `js_exec` itself is not listed. `code`, when `ok` is false: a `toolErrors` code, `tool_error` (the tool answered with an error), `input_required` (it waits on a person; the run that resumes it lists it again) or `aborted`. Arguments and results are left out: read them from history (`GET /v1/agents/:id/history`) by `toolCallId` |
 | `sourceErrors` | tool sources (MCP servers, OpenAPI specs) that could not be listed, so the model went without their tools: `{kind, source, message}` |
-| `usage` | what its model responses used: `{responses, input, output, cacheRead, cacheWrite, costUsd}`, and `subagentCostUsd` when its sub-agents spent something (theirs, apart from `costUsd`) |
+| `usage` | what its model responses used: `{responses, input, output, cacheRead, cacheWrite, costUsd}`, and `subagentCostUsd` when its sub-agents spent something (theirs, apart from `costUsd`), `imageCostUsd` when its `generate_image` calls did |
 
 An `execute` request's result is `{output: string[], truncated}` (plus `files`,
 `presented`, `toolErrors`, `toolCalls`, `sourceErrors` as above). A steered prompt's request

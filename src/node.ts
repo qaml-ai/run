@@ -706,7 +706,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     customProviders: (tenant, keyScope) => modelProviders.resolvable(tenant, keyScope),
     modelToken: (audience, claims) => signer.token(audience, claims),
     onUsage: (tenant, agent, message) => accounts.recordUsage(tenant, agent, message),
-    transcriber, outbound: outbound.withoutOrigins(),
+    transcriber, imager, outbound: outbound.withoutOrigins(),
     onActive: (tenant, agent, ms) => accounts.recordActive(tenant, agent, ms),
     spendLimit: tenant => accounts.runLimit(tenant),
     runLimitsFor: async tenant => {

@@ -65,7 +65,8 @@ The fields an agent takes, plus the input:
   time. Fields given alongside override it, as for an agent.
 - `model`, `systemPrompt`, `systemPromptAppend`, `thinkingLevel`, `maxOutputTokens`,
   `temperature` (see [Output length and temperature](models-and-keys.md#output-length-and-temperature)), `builtins`
-  (`web_fetch`, `web_search`, `delegate`), `delegate`, `keyScope`, `modelHeaders`,
+  (`web_fetch`, `web_search`, `delegate`, `generate_image`: [generate_image](images.md#in-an-agent) gives the run a
+  workspace for its images), `delegate`, `keyScope`, `modelHeaders`,
   `runLimits`, `subject`, `context`.
 - `mcpServers`: MCP servers of its own, as an agent's: no credentials, only
   `"auth": {"type": "runtime"}` (identity tokens) or none. See

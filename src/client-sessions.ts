@@ -37,9 +37,11 @@ import { metadataInput, senderInput } from "./sender.ts";
 import { callMeta, compose, jsonResult, TOOL_DEADLINES, timedOut, toolCallKey, ToolFailure, type RunToolCall, type ToolCallCode, type ToolError, defaultExposure, describeSources, fileServer, type Progress, type ToolCall, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
 import { searchTools, type Reranker, type SearchQuery } from "./tool-search.ts";
 import { CodeGate, DEFAULT_CODE_CAPACITY, type CodeLimits } from "./codemode.ts";
-import { AUDIO_LIMITS, CODE_LIMITS } from "./limits.ts";
+import { AUDIO_LIMITS, CODE_LIMITS, TOOL_FILE_LIMITS } from "./limits.ts";
+import { ToolFiles } from "./tool-files.ts";
 import { declaredType, essence, FILE_LIMITS, fileResponse, safeName, validFileRef, type FileLinks, type FileRef } from "./files.ts";
 import { checkedAudio, type Transcriber } from "./transcription.ts";
+import { GENERATE_IMAGE, generateImage, type Imager } from "./images.ts";
 import type { Outbound } from "./outbound.ts";
 import { fileRef } from "./inspect.ts";
 import { resolve as resolveMount, type ToolContext, type WrittenFile } from "./volume-tools.ts";
@@ -249,6 +251,8 @@ type Session = {
   delegating?: { active: number; waiting: (() => void)[] };
   /** What each running run's children spent, which its own spend limit counts. */
   childSpend?: Map<string, number>;
+  /** What each running run's generate_image calls spent, which its own spend limit counts. */
+  imageSpend?: Map<string, number>;
   /** What each running run's children in flight may still spend, held for them (`delegate`), and how many hold it. */
   childHeld?: Map<string, { usd: number; holders: number }>;
   /** Listeners on this agent's stream on this node: a parent relaying its child's events to its own (`subagent_event`). */
@@ -291,7 +295,7 @@ const transientStart = (error: unknown) => databaseRetryable(error) || databaseU
 /** A run's latest hand-offs its record keeps (`handoffs`): one per deploy or drain it outlived. */
 const MAX_HANDOFFS_KEPT = 20;
 /** What a run handed off at a step boundary had gathered for its outcome, which its next owner takes over (`takeOver`). */
-type Carried = { usage?: RunUsage; childSpend?: number; spendLimit?: number; runLimits?: RunLimits; toolCalls?: RunToolCall[]; toolErrors?: ToolError[]; files?: WrittenFile[]; presented?: (FileRef & { caption?: string })[] };
+type Carried = { usage?: RunUsage; childSpend?: number; imageSpend?: number; spendLimit?: number; runLimits?: RunLimits; toolCalls?: RunToolCall[]; toolErrors?: ToolError[]; files?: WrittenFile[]; presented?: (FileRef & { caption?: string })[] };
 /** Notified, as `<node> <agent>`, when a node gives up an agent with runs open, or ends a dead peer's heartbeat: nodes sweep at once. */
 export const ORPHANS_CHANNEL = "agent_runtime_orphans";
 /**
@@ -560,6 +564,8 @@ export interface ClientSessionOptions {
   volumes?: VolumeService;
   /** Transcribes audio attached to messages (transcription.ts); without it, audio is attached as any file is. */
   transcriber?: Transcriber;
+  /** Makes images for the generate_image builtin (images.ts); without it, the builtin has no tool. */
+  imager?: Imager;
   /** Fetches files attached by URL ({url}): the public internet only. Without it, files cannot be attached by URL. */
   outbound?: Outbound;
   /** Signs links to the agent's files (`POST /clients/:id/links`, `present_file`). */
@@ -1558,14 +1564,16 @@ export class ClientSessions {
     const view = (kind: ToolSourceView["kind"], server: ToolServer, extra: Partial<ToolSourceView> = {}): ToolServer =>
       ({ ...server, sources: async () => [{ kind, name: kind, status: "listed", ...extra, tools: await server.tools() }] });
     const multiAgent = this.multiAgentServer(session, sources);
+    const images = this.imageServer(session, sources);
     const definition = header.definition;
     // An agent with no tools at all (no js_exec, file tools or tools of any source) has nothing to present a file from: no present_file either.
-    const bare = codeMode === false && fileTools === false && !tools.length && !feature && !multiAgent && !sources;
+    const bare = codeMode === false && fileTools === false && !tools.length && !feature && !multiAgent && !images && !sources;
     return [
       ...feature ? [view("channel", feature)] : [],
       { tools: () => defaultExposure(tools), call: call => this.callAttached(session, call), sources: async () => [{ kind: "application", name: "application", status: "listed", connected: !!session.attached?.open, tools: defaultExposure(tools) }] },
       ...volumes && header.mounts?.length && !bare ? [view("files", fileServer(volumes.definitions().filter(tool => fileTools !== false || tool.name === "present_file"), ({ name, args, signal }) => volumes.tool(this.toolContext(session), name, args, signal)))] : [],
       ...multiAgent ? [multiAgent] : [],
+      ...images ? [images] : [],
       ...sources && this.options.sources ? [this.options.sources.server({ tenant, agent: header.id, ...(definition ? { definition: definition.id } : {}), claim: session.claim, ...(header.identity ? { identity: header.identity } : {}), mounts: () => session.header.mounts ?? [], onWrite: this.toolContext(session).onWrite }, sources)] : [],
     ];
   }
@@ -1737,6 +1745,42 @@ export class ClientSessions {
     };
   }
 
+  /**
+   * The generate_image tool of an agent whose sources enable it, answered here rather than by a tool source: its image is
+   * billed like a model response, with the run's facts, and counts against the agent's spend limit and the run's.
+   */
+  private imageServer(session: Session, sources: Sources | undefined): ToolServer | undefined {
+    const { imager, volumes } = this.options;
+    if (!imager || !sources?.builtins?.includes("generate_image")) return undefined;
+    // What the run's calls may still save to the workspace, as for any tool's outputs.
+    let saving = { id: undefined as string | undefined, left: TOOL_FILE_LIMITS.runBytes };
+    return {
+      returnsFiles: true,
+      tools: () => [GENERATE_IMAGE],
+      sources: async () => [{ kind: "builtin", name: "generate_image", status: "listed", tools: [GENERATE_IMAGE] }],
+      call: async call => {
+        if (call.name !== "generate_image") throw new Error(`Unknown tool ${call.name}`);
+        const { header } = session;
+        const mounts = header.mounts ?? [];
+        if (!volumes || !mounts.length) throw new Error("generate_image needs a workspace to save the image in, and this agent has none");
+        const run = this.runningRun(session);
+        if (call.run !== saving.id) saving = { id: call.run, left: TOOL_FILE_LIMITS.runBytes };
+        const files = new ToolFiles({ volumes, tenant: header.tenant, agent: header.id, mounts, tool: "generate_image", run: saving, onWrite: this.toolContext(session).onWrite });
+        const budget = run ? await this.budgetLeft(session, run.id) : undefined;
+        const { identity, keyScope } = header;
+        return generateImage(imager, {
+          tenant: header.tenant, ...(keyScope ? { keyScope } : {}), ...(budget !== undefined ? { budget } : {}), files,
+          record: usage => {
+            const cost = usage.usage.cost.total as number;
+            this.options.onUsage?.(header.tenant, header.id, { ...usage, ...(run ? { requestId: run.id } : {}), ...(run?.actor ? { actor: run.actor } : {}), ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) });
+            this.spent(session, cost);
+            if (run && cost > 0) (session.imageSpend ??= new Map()).set(run.id, (session.imageSpend.get(run.id) ?? 0) + cost);
+          },
+        }, call.args, call.signal);
+      },
+    };
+  }
+
   /** What each definition target is for, as its definition describes it, for the tools' descriptions. */
   private async targetDescriptions(tenant: string, targets: AgentTarget[]) {
     const found = new Map<string, string>();
@@ -1844,9 +1888,9 @@ export class ClientSessions {
         throw error;
       });
       child.done = true;
-      const result = (finished.outcome?.result ?? {}) as { reply?: string; output?: unknown; usage?: { costUsd?: number; subagentCostUsd?: number } | null };
+      const result = (finished.outcome?.result ?? {}) as { reply?: string; output?: unknown; usage?: { costUsd?: number; subagentCostUsd?: number; imageCostUsd?: number } | null };
       // What the child spent counts against this agent's spend limit and this run's.
-      const cost = (result.usage?.costUsd ?? 0) + (result.usage?.subagentCostUsd ?? 0);
+      const cost = (result.usage?.costUsd ?? 0) + (result.usage?.subagentCostUsd ?? 0) + (result.usage?.imageCostUsd ?? 0);
       if (cost > 0) {
         this.spent(session, cost);
         (session.childSpend ??= new Map()).set(run.id, (session.childSpend.get(run.id) ?? 0) + cost);
@@ -1934,7 +1978,7 @@ export class ClientSessions {
   private async budgetLeft(session: Session, runId: string) {
     const spend = await this.spendOf(session);
     const own = session.runLimits?.get(runId);
-    const left = Math.min(spend ? spend.usd - spend.spent : Infinity, own !== undefined ? own - (session.usage?.get(runId)?.costUsd ?? 0) - (session.childSpend?.get(runId) ?? 0) : Infinity);
+    const left = Math.min(spend ? spend.usd - spend.spent : Infinity, own !== undefined ? own - (session.usage?.get(runId)?.costUsd ?? 0) - (session.childSpend?.get(runId) ?? 0) - (session.imageSpend?.get(runId) ?? 0) : Infinity);
     return Number.isFinite(left) ? Math.max(0, left) : undefined;
   }
 
@@ -3885,10 +3929,10 @@ export class ClientSessions {
       // Every tool call the run made, so a caller sees what it did without reading history.
       if (RUN_METHODS.includes(record.method) && session.toolCalls?.length && value.result && typeof value.result === "object") value = { result: { ...value.result, toolCalls: session.toolCalls } };
       if (RUN_METHODS.includes(record.method) && session.sourceErrors?.length && value.result && typeof value.result === "object") value = { result: { ...value.result, sourceErrors: session.sourceErrors } };
-      // What its model responses used on this node (a turn resumed after its node was lost counts from the resume), and what its children spent.
+      // What its model responses used on this node (a turn resumed after its node was lost counts from the resume), what its children spent, and its images.
       if (RUN_METHODS.includes(record.method) && value.result && typeof value.result === "object") {
-        const usage = session.usage?.get(record.id), children = session.childSpend?.get(record.id);
-        value = { result: { ...value.result, usage: usage || children ? { ...usage ?? { responses: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 }, ...children ? { subagentCostUsd: children } : {} } : null } };
+        const usage = session.usage?.get(record.id), children = session.childSpend?.get(record.id), images = session.imageSpend?.get(record.id);
+        value = { result: { ...value.result, usage: usage || children || images ? { ...usage ?? { responses: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 }, ...children ? { subagentCostUsd: children } : {}, ...images ? { imageCostUsd: images } : {} } : null } };
       }
       const failed = value.result as { code?: string; error?: string } | undefined;
       if (failed?.code === "model_key_missing" && this.options.modelKeyHint) value = { result: { ...failed, error: `${failed.error} ${this.options.modelKeyHint}` } };
@@ -3937,6 +3981,7 @@ export class ClientSessions {
       session.runLimits?.delete(record.id);
       session.runCaps?.delete(record.id);
       session.childSpend?.delete(record.id);
+      session.imageSpend?.delete(record.id);
       session.aborted?.delete(record.id);
       try { await this.commit(session, true); }
       catch { return; /* The fault is reported to every later request. */ }
@@ -4118,7 +4163,7 @@ export class ClientSessions {
   /** Why the running run may not spend more: it has spent its own limit (`runLimits`). */
   private runSpendLimit(session: Session): string | undefined {
     for (const [id, usd] of session.runLimits ?? []) {
-      const spent = (session.usage?.get(id)?.costUsd ?? 0) + (session.childSpend?.get(id) ?? 0);
+      const spent = (session.usage?.get(id)?.costUsd ?? 0) + (session.childSpend?.get(id) ?? 0) + (session.imageSpend?.get(id) ?? 0);
       if (session.running.has(id) && spent >= usd) return `This run has reached its spend limit of ${dollars(usd)} (${dollars(spent)} spent)`;
     }
     return undefined;
@@ -4459,6 +4504,7 @@ export class ClientSessions {
       ...listed("files"), ...listed("presented"), ...listed("toolCalls"), ...listed("toolErrors"),
       ...(session.usage?.has(id) ? { usage: session.usage.get(id) } : {}),
       ...(session.childSpend?.has(id) ? { childSpend: session.childSpend.get(id) } : {}),
+      ...(session.imageSpend?.has(id) ? { imageSpend: session.imageSpend.get(id) } : {}),
       ...(session.runLimits?.has(id) ? { spendLimit: session.runLimits.get(id) } : {}),
       ...(session.runCaps?.has(id) ? { runLimits: session.runCaps.get(id) } : {}),
     };
@@ -4471,6 +4517,7 @@ export class ClientSessions {
     catch { return; /* Faulted: the next owner recovers the turn from storage, as after a crash. */ }
     session.usage?.delete(id);
     session.childSpend?.delete(id);
+    session.imageSpend?.delete(id);
     session.runLimits?.delete(id);
     session.runCaps?.delete(id);
     session.turn = undefined;
@@ -4486,6 +4533,7 @@ export class ClientSessions {
     const taken = (carried ?? {}) as Carried;
     if (taken.usage) (session.usage ??= new Map()).set(record.id, taken.usage);
     if (taken.childSpend) (session.childSpend ??= new Map()).set(record.id, taken.childSpend);
+    if (taken.imageSpend) (session.imageSpend ??= new Map()).set(record.id, taken.imageSpend);
     if (taken.spendLimit !== undefined) (session.runLimits ??= new Map()).set(record.id, taken.spendLimit);
     if (taken.runLimits) (session.runCaps ??= new Map()).set(record.id, taken.runLimits);
     if (taken.toolCalls?.length) session.toolCalls = taken.toolCalls;

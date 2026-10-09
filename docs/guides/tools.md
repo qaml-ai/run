@@ -528,7 +528,7 @@ Tools the runtime answers itself, given to an agent as `builtins` when it is
 made or upserted (`agents.upsert("researcher", { builtins: ["web_search",
 "web_fetch"] })`, or `PATCH /v1/agents/:id/configuration`), or by the definition
 it is made from (whose builtins it then has):
-`"builtins": ["web_fetch", "web_search", "schedule", "ask_user", "delegate"]`.
+`"builtins": ["web_fetch", "web_search", "schedule", "ask_user", "delegate", "generate_image"]`.
 
 - `web_fetch` (`{url, maxCharacters?}`) reads a public page as text (HTML
   reduced to readable text, 20,000 characters by default, at most 100,000), or
@@ -550,6 +550,14 @@ it is made from (whose builtins it then has):
   run waits for the answer. See [Human input](human-input.md).
 - `delegate` (with `delegate: { agents }`) hands a task to a sub-agent and
   returns its answer. See [Multi-agent](multi-agent.md).
+- `generate_image` (`{prompt, images?, size?, quality?, format?, background?}`)
+  makes an image, or edits images from the agent's files (`images`: their
+  paths), saves it to the workspace under `tool-outputs/generate_image/` and
+  shows it to the model; the model presents it to the user with `present_file`.
+  It uses OpenAI's `gpt-image-2.5-flare` on your OpenAI key (or a key scope's),
+  else the platform's, charged per token on prepaid credit, and counts against
+  the agent's and the run's spend limits. Saving a definition or an agent with
+  it and no OpenAI key answers with a warning. See [Images](images.md#in-an-agent).
 
 ## Seeing an agent's tools
 

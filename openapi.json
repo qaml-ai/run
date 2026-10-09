@@ -2043,7 +2043,7 @@
             "type": "boolean"
           }
         },
-        "description": "result.code names a run's failure where it has a name: cancelled (a stop cancelled it before it began), aborted (stopped while it ran), model_stream_stalled (its model stopped answering, past every retry), turn_limit, spend_limit, output_missing, model_key_missing, model_key_invalid. result.stopped is input_required when the turn waits on human input, listed in result.inputs. A run's result also has reply, replyIndex, files, toolErrors and toolCalls: every tool call it made (the first 100), as {tool, toolCallId?, innerCallId?, ok, code?, agentId?} (agentId: the child a delegate call ran), without arguments or results. result.output is a structured answer, for a prompt sent with output. result.usage.subagentCostUsd is what its children spent"
+        "description": "result.code names a run's failure where it has a name: cancelled (a stop cancelled it before it began), aborted (stopped while it ran), model_stream_stalled (its model stopped answering, past every retry), turn_limit, spend_limit, output_missing, model_key_missing, model_key_invalid. result.stopped is input_required when the turn waits on human input, listed in result.inputs. A run's result also has reply, replyIndex, files, toolErrors and toolCalls: every tool call it made (the first 100), as {tool, toolCallId?, innerCallId?, ok, code?, agentId?} (agentId: the child a delegate call ran), without arguments or results. result.output is a structured answer, for a prompt sent with output. result.usage.subagentCostUsd is what its children spent, and result.usage.imageCostUsd what its generate_image calls spent"
       },
       "AgentInput": {
         "type": "object",
@@ -2184,7 +2184,7 @@
               "$ref": "#/components/schemas/Builtin"
             },
             "maxItems": 8,
-            "description": "Tools the runtime answers itself (web_fetch, web_search, schedule, ask_user, delegate), for an agent without a definition; one made from a definition has its definition's. An upsert without builtins leaves the agent none"
+            "description": "Tools the runtime answers itself (web_fetch, web_search, schedule, ask_user, delegate, generate_image), for an agent without a definition; one made from a definition has its definition's. An upsert without builtins leaves the agent none"
           },
           "delegate": {
             "$ref": "#/components/schemas/DelegateSettings"
@@ -2295,7 +2295,8 @@
           "web_search",
           "schedule",
           "ask_user",
-          "delegate"
+          "delegate",
+          "generate_image"
         ]
       },
       "DelegateSettings": {
@@ -5919,7 +5920,7 @@
               "$ref": "#/components/schemas/Builtin"
             },
             "maxItems": 8,
-            "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer"
+            "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer; generate_image makes or edits an image (OpenAI's gpt-image-2.5-flare on the tenant's OpenAI key, else the platform's, billed per token) and saves it to the workspace"
           },
           "webSearch": {
             "type": "object",
@@ -6014,7 +6015,7 @@
             "items": {
               "type": "string"
             },
-            "description": "On a save: builtins its agents could not use yet, and how to fix it: web_search without a key for any of its search providers (add one with PUT /v1/providers/{provider}/key)"
+            "description": "On a save: builtins its agents could not use yet, and how to fix it: web_search without a key for any of its search providers (add one with PUT /v1/providers/{provider}/key), generate_image without an OpenAI key"
           }
         },
         "required": [
@@ -6293,7 +6294,7 @@
               "$ref": "#/components/schemas/Builtin"
             },
             "maxItems": 8,
-            "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer"
+            "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer; generate_image makes or edits an image (OpenAI's gpt-image-2.5-flare on the tenant's OpenAI key, else the platform's, billed per token) and saves it to the workspace"
           },
           "webSearch": {
             "type": "object",
@@ -6780,7 +6781,7 @@
               "$ref": "#/components/schemas/Builtin"
             },
             "maxItems": 8,
-            "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer"
+            "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer; generate_image makes or edits an image (OpenAI's gpt-image-2.5-flare on the tenant's OpenAI key, else the platform's, billed per token) and saves it to the workspace"
           },
           "webSearch": {
             "type": [
@@ -6949,7 +6950,7 @@
               "null"
             ],
             "additionalProperties": {},
-            "description": "What its model calls used: responses, input, output, cacheRead, cacheWrite, costUsd (and subagentCostUsd)"
+            "description": "What its model calls used: responses, input, output, cacheRead, cacheWrite, costUsd (and subagentCostUsd, what its sub-agents spent; imageCostUsd, what its generate_image calls spent)"
           },
           "toolCalls": {
             "type": "array",
@@ -7124,11 +7125,12 @@
               "enum": [
                 "web_fetch",
                 "web_search",
-                "delegate"
+                "delegate",
+                "generate_image"
               ]
             },
             "maxItems": 8,
-            "description": "Tools the runtime answers itself. Not schedule or ask_user: a run has no later and no one to ask"
+            "description": "Tools the runtime answers itself (generate_image gives the run a workspace for its images). Not schedule or ask_user: a run has no later and no one to ask"
           },
           "delegate": {
             "allOf": [
