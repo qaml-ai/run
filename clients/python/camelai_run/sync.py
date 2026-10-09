@@ -24,7 +24,7 @@ import httpx
 
 from . import (
     DEFAULT_URL, AgentError, Download, InputDetail, InputRequired, Mount, WorkspaceMount, Run, RunError, RuntimeIdentity, RuntimeTokenError, StreamPart,
-    Telemetry, Tool, ToolContext, Transcriptions, WebhookVerificationError, identity_from_claims, tool, verify_webhook,
+    Telemetry, Tool, ToolContext, Transcriptions, Images, WebhookVerificationError, identity_from_claims, tool, verify_webhook,
     _AgentCalls, _DEFAULT, _PartReader, _RuntimeCalls, _Session, _TRANSCRIPTION_TIMEOUT, _UPLOAD_TIMEOUT, _answer_for, _attachment, _bearer,
     _check_request_id, _env, _error, _file_claims, _file_token, _http_sync, _issuer_of, _message_params, _origin, _outcome_run, _output_request,
     _prompt_extra, _public_key_sync, _require_tenant, _retry_after, _run_frame, _sender, _sse_frames,
@@ -36,7 +36,7 @@ from . import AgentFiles as _AsyncFiles, RunInput as _AsyncInput, Runs as _Async
 __all__ = [
     "Agents", "Agent", "Run", "RunInput", "InputDetail", "Mount", "WorkspaceMount", "RunStream", "StreamPart", "Runs", "StatelessRunStream",
     "tool", "Tool", "ToolContext", "InputRequired", "RuntimeIdentity", "identity_from_claims",
-    "AgentError", "RunError", "AgentRuntime", "AgentClient", "AgentFiles", "Download", "Telemetry", "Transcriptions", "DEFAULT_URL",
+    "AgentError", "RunError", "AgentRuntime", "AgentClient", "AgentFiles", "Download", "Telemetry", "Transcriptions", "Images", "DEFAULT_URL",
     "serve_tools", "verify_runtime_token", "verify_file_url", "RuntimeTokenError", "TestRuntime", "verify_webhook", "WebhookVerificationError",
 ]
 
@@ -73,6 +73,7 @@ class AgentRuntime(_RuntimeCalls):
         self.telemetry = Telemetry(self)
         # Speech to text on its own: create.
         self.transcriptions = Transcriptions(self)
+        self.images = Images(self)
 
     def _form(self, path, fields, file):
         """A multipart POST with the API key (a transcription's audio), not retried: its answer."""
@@ -661,6 +662,7 @@ class Agents:
         self.runs = Runs(self.runtime)
         # Speech to text on its own: create(file or url=...). Audio attached to a message is transcribed without it.
         self.transcriptions = self.runtime.transcriptions
+        self.images = self.runtime.images
         self._open = set()
 
     def run(self, input, **options):

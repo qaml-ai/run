@@ -120,11 +120,14 @@ def trace_ids(requests):
 
 
 HELLO = (ROOT / "tests" / "fixtures" / "audio" / "hello.ogg").read_bytes()
+# A 1024x1024 PNG's header (signature and IHDR): all the runtime reads of an image made or given to edit.
+IMAGE = bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13]) + b"IHDR" + (1024).to_bytes(4, "big") * 2 + bytes([8, 6, 0, 0, 0, 0, 0, 0, 0])
 
 
 def fake_transcriber(requests):
     """OpenAI's transcription endpoint on localhost (and the voice note at /hello.ogg): answers every audio with one
-    transcript, keeping each request's model, file name and size."""
+    transcript, keeping each request's model, file name and size. Its images endpoints answer with a 1024x1024 PNG
+    header per image asked for (1,000 tokens each)."""
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -137,8 +140,13 @@ def fake_transcriber(requests):
         def do_POST(self):
             body = self.rfile.read(int(self.headers["Content-Length"]))
             form = httpx.Request("POST", "http://x", content=body, headers={"Content-Type": self.headers["Content-Type"]})
-            requests.append({"key": self.headers["Authorization"], "type": self.headers["Content-Type"].split(";")[0], "bytes": len(body), "has_audio": HELLO[:64] in body})
-            answer = json.dumps({"text": "Hello from camelRun.", "languages": [{"code": "en"}], "usage": {"type": "duration", "seconds": 5}}).encode()
+            requests.append({"key": self.headers["Authorization"], "type": self.headers["Content-Type"].split(";")[0], "bytes": len(body), "has_audio": HELLO[:64] in body, "path": self.path})
+            if self.path.startswith("/images/"):
+                n = int(json.loads(body)["n"]) if self.path == "/images/generations" else 1
+                image = base64.b64encode(IMAGE).decode()
+                answer = json.dumps({"data": [{"b64_json": image}] * n, "usage": {"input_tokens": 10, "input_tokens_details": {"text_tokens": 10, "image_tokens": 0}, "output_tokens": 1000 * n}}).encode()
+            else:
+                answer = json.dumps({"text": "Hello from camelRun.", "languages": [{"code": "en"}], "usage": {"type": "duration", "seconds": 5}}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(answer)))
@@ -180,6 +188,7 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
                  "AGENT_TELEMETRY_INTERVAL_MS": "100",
                  # Transcription, on a local stand-in for OpenAI's.
                  "AGENT_TRANSCRIPTION_URL": f"http://127.0.0.1:{self.transcriber.server_port}",
+                 "AGENT_IMAGES_URL": f"http://127.0.0.1:{self.transcriber.server_port}",
                  **({"AGENT_RUNTIME": os.environ["AGENT_RUNTIME"]} if "AGENT_RUNTIME" in os.environ else {})},
         )
         ready = json.loads(await asyncio.wait_for(self.host.stdout.readline(), 15))
@@ -1242,6 +1251,28 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         run = await self.agents.run("", files=[{"url": f"http://127.0.0.1:{self.transcriber.server_port}/hello.ogg"}])
         self.assertEqual(run.text, "seen")
         self.assertEqual(len(self.transcribed), 6)
+
+
+    async def test_images_on_their_own(self):
+        put = await self.runtime.http.put(f"{self.url}/v1/providers/openai/key", headers={"Authorization": f"Bearer {self.token}"}, json={"apiKey": "py-openai-key", "verify": False})
+        self.assertEqual(put.status_code, 200, put.text)
+        made = await self.agents.images.generate("a camel at dawn", quality="low", n=2, subject="user_1", context={"org": "o1"})
+        self.assertEqual([(image["contentType"], image["width"], base64.b64decode(image["data"])) for image in made["images"]], [("image/png", 1024, IMAGE)] * 2)
+        self.assertEqual((made["model"], made["usage"]), ("openai/gpt-image-2.5-flare", {"inputTokens": 10, "outputTokens": 2000}))
+        self.assertEqual((self.transcribed[-1]["path"], self.transcribed[-1]["key"]), ("/images/generations", "Bearer py-openai-key"))
+        local = Path(self.directory.name) / "camel.png"
+        local.write_bytes(IMAGE)
+        edited = await self.runtime.images.edit("make it blue", [IMAGE, local], size="1536x1024")
+        self.assertEqual(len(edited["images"]), 1)
+        self.assertEqual((self.transcribed[-1]["path"], self.transcribed[-1]["type"]), ("/images/edits", "multipart/form-data"))
+        with self.assertRaises(AgentError) as refused:
+            await self.runtime.images.edit("x", [b"plain text, not an image"])
+        self.assertEqual(refused.exception.status, 415)
+        with self.assertRaises(AgentError):
+            await self.runtime.images.edit("x", [])
+        with sync.Agents(self.token, url=self.url) as agents:
+            self.assertEqual(len((await asyncio.to_thread(agents.images.generate, "a camel"))["images"]), 1)
+        self.assertEqual(len(self.transcribed), 3)
 
 
 TODOS = [{"owner": "alice", "team": "acme", "text": "ship it"}, {"owner": "bob", "team": "acme", "text": "review it"}, {"owner": "alice", "team": "other", "text": "not this team"}]

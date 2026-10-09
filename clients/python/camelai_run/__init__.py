@@ -32,7 +32,7 @@ __all__ = [
     "Agents", "Agent", "Run", "RunInput", "InputDetail", "Mount", "WorkspaceMount", "RunStream", "StreamPart", "Runs", "StatelessRunStream",
     "tool", "Tool", "ToolContext", "InputRequired", "RuntimeIdentity", "identity_from_claims",
     "AgentError", "RunError",
-    "AgentRuntime", "AgentClient", "AgentFiles", "Download", "Volume", "Telemetry", "Transcriptions", "DEFAULT_URL",
+    "AgentRuntime", "AgentClient", "AgentFiles", "Download", "Volume", "Telemetry", "Transcriptions", "Images", "DEFAULT_URL",
     "serve_tools", "verify_runtime_token", "verify_file_url", "RuntimeTokenError", "TestRuntime", "verify_webhook", "WebhookVerificationError",
 ]
 # Distinguishes "not given" from None (which means "never expires") in create_agent.
@@ -406,6 +406,8 @@ _RATE_LIMIT_ATTEMPTS = 8
 _UPLOAD_TIMEOUT = 60
 # A transcription of long audio takes a while: the runtime gives its provider 5 minutes.
 _TRANSCRIPTION_TIMEOUT = 360
+# An image takes seconds, a complex one up to the 3 minutes the runtime gives its provider.
+_IMAGES_TIMEOUT = 240
 
 
 def _encoded(body):
@@ -771,6 +773,8 @@ class AgentRuntime(_RuntimeCalls):
         self.telemetry = Telemetry(self)
         # Speech to text on its own: create.
         self.transcriptions = Transcriptions(self)
+        # Images on their own: generate, edit.
+        self.images = Images(self)
 
     async def _form(self, path, fields, file):
         """A multipart POST with the API key (a transcription's audio), not retried: its answer."""
@@ -968,6 +972,52 @@ class Transcriptions:
             raise AgentError("file is bytes or a local path")
         form = {key: json.dumps(value) if isinstance(value, dict) else str(value).lower() if isinstance(value, bool) else str(value) for key, value in fields.items()}
         return self._runtime._form("/v1/transcriptions", form, ("file", (name or "audio", data, content_type or "application/octet-stream")))
+
+
+def _image_source(source):
+    """An image to edit as the request takes it: bytes or a local path as base64, or {"url"} for the runtime to fetch."""
+    if isinstance(source, dict) and isinstance(source.get("url"), str):
+        return {"url": source["url"]}
+    if isinstance(source, (str, os.PathLike)):
+        source = Path(source).read_bytes()
+    if isinstance(source, (bytes, bytearray, memoryview)):
+        return {"data": base64.b64encode(bytes(source)).decode()}
+    raise AgentError('An image is bytes, a local path, or {"url": ...}')
+
+
+class Images:
+    """Images on their own (runtime.images, agents.images): made from a prompt, or edited from images given, with no agent.
+    Answered as base64 (base64.b64decode(image["data"])), or saved to a volume with volume_id. Agents make images with the
+    generate_image builtin instead. Its calls are awaited from AgentRuntime, and plain from the synchronous one."""
+
+    def __init__(self, runtime):
+        self._runtime = runtime
+
+    def generate(self, prompt, *, size=None, quality=None, format=None, background=None, n=None, key_scope=None, volume_id=None, path=None,
+                 subject=None, context=None, actor=None):
+        """Make images from `prompt`. `size`: "1024x1024" (default), "1536x1024" or "1024x1536"; `quality`: "low",
+        "medium" (default) or "high"; `format`: "png" (default), "jpeg" or "webp"; `background`: "transparent" (png or
+        webp) or "opaque"; `n`: 1 to 4. `key_scope`: whose OpenAI key goes first. `volume_id` (and `path`, a directory,
+        default /images) saves them in that volume and answers their paths instead of their bytes. `subject`, `context`
+        and `actor` are carried to its usage.recorded event. Returns {"images": [{"contentType", "width", "height",
+        "data" | "volumeId", "path", "size", "version"}], "model", "usage": {"inputTokens", "outputTokens"}, "costUsd"}.
+        Not retried: each attempt is billed."""
+        return self._send(prompt, [], None, size, quality, format, background, n, key_scope, volume_id, path, subject, context, actor)
+
+    def edit(self, prompt, images, *, mask=None, size=None, quality=None, format=None, background=None, n=None, key_scope=None, volume_id=None,
+             path=None, subject=None, context=None, actor=None):
+        """Edit or combine `images` (at most 4; each bytes, a local path, or {"url"}; PNG, JPEG or WebP) as `prompt` says.
+        `mask` says where the first may change (transparent there, in its format and size). Otherwise as generate."""
+        if not images:
+            raise AgentError("Give the images to edit")
+        return self._send(prompt, images, mask, size, quality, format, background, n, key_scope, volume_id, path, subject, context, actor)
+
+    def _send(self, prompt, images, mask, size, quality, format, background, n, key_scope, volume_id, path, subject, context, actor):
+        fields = {"size": size, "quality": quality, "format": format, "background": background, "n": n, "keyScope": key_scope,
+                  "volumeId": volume_id, "path": path, "subject": subject, "context": context, "actor": actor}
+        body = {"prompt": prompt, **{key: value for key, value in fields.items() if value is not None},
+                **({"images": [_image_source(image) for image in images]} if images else {}), **({"mask": _image_source(mask)} if mask is not None else {})}
+        return self._runtime._rest("POST", "/v1/images", body, retry=False, timeout=_IMAGES_TIMEOUT)
 
 
 class Telemetry:
@@ -2497,6 +2547,8 @@ class Agents:
         self.runs = Runs(self.runtime)
         # Speech to text on its own: create(file or url=...). Audio attached to a message is transcribed without it.
         self.transcriptions = self.runtime.transcriptions
+        # Images on their own: generate(prompt), edit(prompt, images). Agents make them with the generate_image builtin.
+        self.images = self.runtime.images
         self._open = set()
         self.connection = connection
 
@@ -2522,7 +2574,7 @@ class Agents:
         agent.delete(); any number of processes may upsert it. `tools` (@tool functions) run in this process, which
         then answers the agent's tool calls, one process at a time: serverless or several processes, serve tools over
         HTTP (serve_tools) and name them in a definition instead. `builtins` are tools the runtime answers itself
-        ("web_fetch", "web_search", "schedule", "ask_user"), without a definition. `delegate` ({"agents": [...]}) lets it hand
+        ("web_fetch", "web_search", "schedule", "ask_user", "generate_image"), without a definition. `delegate` ({"agents": [...]}) lets it hand
         tasks to sub-agents (its builtin comes with it; see the multi-agent guide); subagents=True delivers its sub-agents'
         progress as events. `mcp_servers` ([{"name", "url", "auth"?: {"type": "runtime"}, ...}]) are remote MCP servers of its
         own, without a definition and without credentials: the runtime's identity tokens or none (a token or headers go in a definition).

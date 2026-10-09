@@ -125,7 +125,7 @@ export function tools(api: () => Api, options: { local?: LocalFiles } = {}): Too
       systemPrompt: z.string().optional().describe("Not with a definition, which owns the prompt"),
       systemPromptAppend: z.string().optional().describe("Text after the prompt, e.g. this agent's own context"),
       name: z.string().optional(),
-      builtins: z.array(z.enum(["web_fetch", "web_search", "schedule", "ask_user"])).optional().describe("Without a definition: tools the runtime answers itself"),
+      builtins: z.array(z.enum(["web_fetch", "web_search", "schedule", "ask_user", "generate_image"])).optional().describe("Without a definition: tools the runtime answers itself"),
     },
     ({ key, ...config }) => ops.upsertAgent(api(), key, config), { ...destructive, idempotentHint: true });
   tool("configure_agent", "Configure agent", "Change one agent's model, system prompt, prompt addition or thinking level between its runs, replacing the current values; its history is kept.", {

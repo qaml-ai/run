@@ -416,7 +416,7 @@ export interface CreateAgentOptions extends AgentOptions {
  * A tool the runtime answers itself: web_fetch, web_search, schedule (wake-ups), ask_user (questions, waiting for the answer),
  * or delegate (sub-agents: needs `delegate` settings).
  */
-export type Builtin = "web_fetch" | "web_search" | "schedule" | "ask_user" | "delegate";
+export type Builtin = "web_fetch" | "web_search" | "schedule" | "ask_user" | "delegate" | "generate_image";
 /**
  * A delegate target: a definition's key or id, as a string or `{ definition }`, or an existing agent's key
  * (`{ agent }`, which keeps its own history across calls). `name` is what the model calls it (default: the key); `description`
@@ -564,6 +564,8 @@ export interface RunUsage {
   responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; costUsd: number;
   /** What its sub-agents (its delegate calls' children, and theirs) spent, apart from `costUsd`. */
   subagentCostUsd?: number;
+  /** What its generate_image calls spent, apart from `costUsd`. */
+  imageCostUsd?: number;
 }
 type RunFacts = { agentId: string; requestId: string; method: "prompt" | "continue" | "resume" | "execute"; actor?: string; metadata?: Record<string, string> };
 /**
@@ -581,11 +583,11 @@ export type WebhookEvent = { id: string; created: number } & (
   | { type: "input.requested"; data: { agentId: string; requestId: string; inputId: string; toolCallId: string; kind: AgentInput["kind"]; expiresAt: number } }
   | { type: "input.resolved"; data: { agentId: string; requestId: string; inputId: string; state: Exclude<AgentInput["state"], "pending"> } }
   | { type: "usage.recorded"; data: {
-      /** null for a transcription made with `transcriptions.create`, which no agent made. */
+      /** null for a transcription made with `transcriptions.create`, or images with `images.generate`/`edit`, which no agent made. */
       agentId: string | null; requestId: string | null; subject: string | null; actor: string | null; context: Record<string, unknown>; keyScope: string | null;
-      /** `transcription`: audio transcribed (`audioSeconds` of it, no tokens). More kinds may come: treat one you do not know as other usage. */
-      provider: string; model: string; kind: "response" | "compaction" | "transcription"; input: number; output: number; cacheRead: number; cacheWrite: number; reasoning?: number;
-      audioSeconds?: number; cost: { usd: number; source: "provider" | "catalog" }; at: number;
+      /** `transcription`: audio transcribed (`audioSeconds` of it, no tokens); `image`: images made (`images` of them). More kinds may come: treat one you do not know as other usage. */
+      provider: string; model: string; kind: "response" | "compaction" | "transcription" | "image"; input: number; output: number; cacheRead: number; cacheWrite: number; reasoning?: number;
+      audioSeconds?: number; images?: number; cost: { usd: number; source: "provider" | "catalog" }; at: number;
     } });
 /**
  * A file to attach to a message: bytes or a Blob (a File keeps its name and type), `{ name, data,
@@ -917,6 +919,85 @@ export class Transcriptions {
   }
 }
 
+/** An image given to edit: bytes, a Blob or File, or a URL the runtime fetches (public addresses only). */
+export type ImageSource = Uint8Array | Blob | { url: string };
+/** How to make images (`images.generate`, `images.edit`), and where they go. */
+export interface ImageOptions {
+  /** Square (default), landscape or portrait. */
+  size?: "1024x1024" | "1536x1024" | "1024x1536";
+  /** Default medium; high costs about four times as much. */
+  quality?: "low" | "medium" | "high";
+  /** Default png. */
+  format?: "png" | "jpeg" | "webp";
+  /** transparent needs png or webp; the model chooses when left out. */
+  background?: "transparent" | "opaque";
+  /** How many images, 1 to 4 (default 1). */
+  n?: number;
+  /** A key scope whose OpenAI key goes first. */
+  keyScope?: string;
+  /** Save the images into this volume (under `path`, default /images) and answer their paths instead of their bytes. */
+  volumeId?: string; path?: string;
+  /** Who it is for, your claims, and who asked: carried to its `usage.recorded` event. */
+  subject?: string; context?: Record<string, unknown>; actor?: string;
+  signal?: AbortSignal;
+}
+/** One image made: its bytes as base64 (`data`), or where it was saved (`volumeId`, `path`, with `volumeId` given). */
+export interface GeneratedImage {
+  contentType: string; width?: number; height?: number;
+  data?: string;
+  volumeId?: string; path?: string; size?: number; version?: number;
+}
+export interface ImagesResult {
+  images: GeneratedImage[];
+  /** e.g. `openai/gpt-image-2.5-flare`. */
+  model: string;
+  /** The tokens the provider billed: text and images in, images out. */
+  usage: { inputTokens: number; outputTokens: number };
+  /** What it cost at the runtime's price (charged to prepaid credit on the platform's key). */
+  costUsd: number;
+}
+
+const base64Of = async (data: Uint8Array | Blob) => {
+  const bytes = data instanceof Blob ? new Uint8Array(await data.arrayBuffer()) : data;
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(binary);
+};
+const imageSource = async (source: ImageSource) => source instanceof Uint8Array || source instanceof Blob ? { data: await base64Of(source) } : { url: source.url };
+
+/**
+ * Images on their own (`runtime.images`, `agents.images`): made from a prompt, or edited from images given, with no agent.
+ * Answered as base64 (`Buffer.from(image.data, "base64")`), or saved to a volume with `volumeId`. Agents make images
+ * with the `generate_image` builtin instead.
+ */
+export class Images {
+  private readonly transport: Transport;
+  private readonly key: () => string;
+  constructor(transport: Transport, key: () => string) { this.transport = transport; this.key = key; }
+  /**
+   * Make images from a prompt. Not retried (each attempt is billed); one takes about 10 seconds.
+   *
+   *   const { images: [image] } = await agents.images.generate("A watercolor camel at dawn", { size: "1536x1024" });
+   *   await writeFile("camel.png", Buffer.from(image.data!, "base64"));
+   */
+  generate(prompt: string, options: ImageOptions = {}): Promise<ImagesResult> { return this.send(prompt, [], undefined, options); }
+  /**
+   * Edit or combine images (at most 4; PNG, JPEG or WebP): the prompt says how. `mask` says where the first may change
+   * (transparent there, in its format and size).
+   */
+  edit(prompt: string, images: ImageSource[], options: ImageOptions & { mask?: ImageSource } = {}): Promise<ImagesResult> {
+    const { mask, ...rest } = options;
+    if (!images.length) throw new AgentError("Give the images to edit");
+    return this.send(prompt, images, mask, rest);
+  }
+  private async send(prompt: string, images: ImageSource[], mask: ImageSource | undefined, options: ImageOptions): Promise<ImagesResult> {
+    const { signal, ...fields } = options;
+    const body = { prompt, ...fields, ...(images.length ? { images: await Promise.all(images.map(imageSource)) } : {}), ...(mask ? { mask: await imageSource(mask) } : {}) };
+    // The provider takes up to three minutes.
+    return this.transport.json("/v1/images", this.key(), "POST", body, false, {}, 4 * 60_000, signal);
+  }
+}
+
 /** The tenant's OpenTelemetry trace export (`runtime.telemetry`): set it, read it, test it, clear it. */
 export class Telemetry {
   private readonly transport: Transport;
@@ -946,10 +1027,13 @@ export class AgentRuntime {
   readonly telemetry: Telemetry;
   /** Speech to text on its own: `create`. */
   readonly transcriptions: Transcriptions;
+  /** Images on their own: `generate`, `edit`. */
+  readonly images: Images;
   constructor(options: RuntimeOptions = {}) {
     this.options = options; this.transport = new Transport(options);
     this.telemetry = new Telemetry(this.transport, () => this.operator());
     this.transcriptions = new Transcriptions(this.transport, () => this.operator());
+    this.images = new Images(this.transport, () => this.operator());
   }
   /**
    * The agent for `key`: made if there is none, set to `options` if it differs. Returns its credentials;
