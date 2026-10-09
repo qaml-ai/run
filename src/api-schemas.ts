@@ -831,7 +831,10 @@ export const Channel = z.object({
 
 export const MountsInput = z.object({ mounts: z.array(MountInput) }).openapi("MountsInput");
 
-export const VolumeInput = z.object({ name: z.string().optional() }).openapi("VolumeInput");
+export const VolumeInput = z.object({
+  name: z.string().optional(),
+  key: z.string().optional().openapi({ description: "Your name for the volume (1–200 letters, digits and ._:-): the first create with a key makes it, every later one answers with it (existing: true), for as long as it lives. A deleted one's key makes no other" }),
+}).openapi("VolumeInput");
 export const VolumeSummary = z.object({ id: z.string(), name: z.string(), createdAt: z.number() }).openapi("VolumeSummary");
 export const Volume = VolumeSummary.extend({
   seq: z.number().openapi({ description: "Increases with every change to the volume" }),

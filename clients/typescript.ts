@@ -6,6 +6,7 @@ import { DRAINING_NOTIFICATION, FRAME_BYTES, type ClientEvent, type Outcome, typ
 export { Type as schema };
 export type { RequestRecord, SessionCredentials, SessionState };
 import type { ImportMessages } from "./history-formats.ts";
+import { Projects } from "./projects.ts";
 export type * from "./types.ts";
 
 /**
@@ -522,7 +523,9 @@ export interface ForkOptions {
   /** The fork's own headers on each model call, instead of the source's; null removes them. */
   modelHeaders?: Record<string, string> | null;
 }
-export interface Volume { id: string; name: string; createdAt: number; seq?: number; files?: number; bytes?: number; origin?: { volume: string; snapshot?: string; seq: number } }
+export interface Volume { id: string; name: string; createdAt: number; seq?: number; files?: number; bytes?: number; origin?: { volume: string; snapshot?: string; seq: number };
+  /** A create with a `key` whose volume was made before: this is that volume. */
+  existing?: boolean }
 export interface VolumeFile { path: string; version: number; size: number; updatedAt: number; by?: string; contentType: string }
 export interface VolumeSnapshot { id: string; volume: string; name: string; seq: number; createdAt: number; files: number; bytes: number }
 export interface VolumeChanges { seq: number; changes: { seq: number; path: string; kind: "write" | "delete"; version?: number; size?: number; by?: string; at: number }[]; gap?: boolean }
@@ -901,14 +904,19 @@ export class AgentRuntime {
   providers(): Promise<ProviderSummary[]> { return this.transport.json("/v1/providers", this.operator()); }
   /** The tenant's agents, each with the key it was made with (null for one made without) and its name. */
   listAgents(): Promise<AgentSummary[]> { return this.transport.json("/v1/agents", this.operator()); }
-  /** A new volume. With `idempotencyKey`, the same key makes it once: a retry, or another process, gets the same volume. */
-  createVolume(options: { name?: string } = {}, request: { idempotencyKey?: string } = {}): Promise<Volume> {
+  /**
+   * A new volume. With `key`, the tenant's volume for that key: made the first time, the same one (`existing: true`)
+   * every time after, for as long as it lives. With `idempotencyKey`, a retry within a day gets the same answer.
+   */
+  createVolume(options: { name?: string; key?: string } = {}, request: { idempotencyKey?: string } = {}): Promise<Volume> {
     const key = request.idempotencyKey;
     return this.transport.json("/v1/volumes", this.operator(), "POST", options, !!key, key ? { "Idempotency-Key": key } : {});
   }
   listVolumes(): Promise<Volume[]> { return this.transport.json("/v1/volumes", this.operator()); }
   /** Several volumes as they are now (each one's seq, files and bytes), in one request; at most 50. */
   volumes(ids: string[]): Promise<Volume[]> { return this.transport.json(`/v1/volumes?ids=${ids.map(encodeURIComponent).join(",")}`, this.operator()); }
+  /** Projects: volumes an agent builds in, and published, checked versions of them (`Projects`). */
+  get projects(): Projects { return new Projects(this); }
   /** A handle on one volume's files, snapshots and forks. */
   volume(id: string): VolumeHandle {
     if (!/^vol_[a-f0-9]{24}$/.test(id)) throw new AgentError("Invalid volume id");
@@ -1796,4 +1804,5 @@ export class AgentClient {
 
 export { Agents, Agent, Runs } from "./agents.ts";
 export { HistoryFormatError, toPiMessages, type HistoryFormat, type ImportMessages } from "./history-formats.ts";
+export { fileBytes, formatProblems, Project, Projects, publishTool, type Problem, type ProjectFile, type ProjectVersion, type PublishOptions, type PublishResult } from "./projects.ts";
 export type { AgentsOptions, AgentConfig, Run, RunFailure, RunInput, RunOptions, RunStream, StreamPart, StatelessRunConfig, InputValue, AnswerOptions, OutputSchema, OutputOf, StandardOutputSchema } from "./agents.ts";

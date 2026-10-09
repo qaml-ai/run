@@ -217,13 +217,25 @@ export class VolumeService {
 
   private get idleMs() { return this.options.idleMs ?? 5 * 60_000; }
 
-  async create(tenant: string, input: { name?: unknown } = {}, id = newId("vol", 12)) {
+  /**
+   * A new volume, or with `key` the tenant's volume for that key: made the first time, the same one every time after
+   * (`existing: true`), for as long as it lives. A deleted keyed volume's key makes no other.
+   */
+  async create(tenant: string, input: { name?: unknown; key?: unknown } = {}, id = newId("vol", 12)) {
     const name = input.name === undefined ? "volume" : input.name;
     if (typeof name !== "string" || !name.trim() || name.length > 120) throw new HttpError(400, "name must be 1–120 characters");
+    if (input.key !== undefined && (typeof input.key !== "string" || !/^[A-Za-z0-9._:-]{1,200}$/.test(input.key))) throw new HttpError(400, "key is 1–200 letters, digits and ._:-");
+    if (typeof input.key === "string") id = VolumeService.keyed(tenant, input.key);
     const header: VolumeHeader = { version: 1, id, tenant, name: name.trim(), createdAt: Date.now() };
-    if (!await this.writeNew(header)) throw new HttpError(409, `Volume ${id} already exists`);
-    return this.summary(header);
+    if (await this.writeNew(header)) return this.summary(header);
+    if (input.key === undefined) throw new HttpError(409, `Volume ${id} already exists`);
+    const made = await this.readHeader(id);
+    if (!made || made.tenant !== tenant) throw new HttpError(409, `Volume ${id} already exists`);
+    if (made.deleted) throw new HttpError(409, `The volume for key ${input.key} was deleted; use another key`);
+    return { ...await this.call(id, tenant, "info"), existing: true };
   }
+  /** The id of a tenant's volume for `key` (POST /v1/volumes with a key). */
+  static keyed(tenant: string, key: string) { return `vol_${sha256(`volume-key:${tenant}:${key}`).slice(0, 24)}`; }
 
   /** Insert a new volume; false if one with its id already exists. */
   private async writeNew(header: VolumeHeader) {
