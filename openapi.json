@@ -7177,6 +7177,42 @@
           "labels"
         ]
       },
+      "SnapshotMade": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Snapshot"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "contents": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "size": {
+                      "type": "number"
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "description": "Hex"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "size",
+                    "sha256"
+                  ]
+                },
+                "description": "A snapshot made from contents: each file as stored, to check against what was sent"
+              }
+            }
+          }
+        ]
+      },
       "SnapshotInput": {
         "type": "object",
         "properties": {
@@ -14537,7 +14573,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Snapshot"
+                  "$ref": "#/components/schemas/SnapshotMade"
                 }
               }
             }

@@ -2795,7 +2795,8 @@ const agent = await agents.upsert("support", { mounts: [{ volumeId: docs.id, pat
   Deleting a volume deletes all its snapshots, pinned ones too.
 - `volume.snapshot({ files })` makes a snapshot of the files given (path to
   text or bytes; 1,000 files and 16 MiB at most) instead of the volume, which it
-  leaves untouched: for bringing in versions kept elsewhere.
+  leaves untouched: for bringing in versions kept elsewhere. It is made whole or
+  not at all, and its answer has each file's `sha256` (`contents`).
 - `volume.restore(snapshot)` (`POST /v1/volumes/:id/restore {snapshot}`) makes
   the volume as a snapshot was, in place: files the snapshot lacks are removed
   and files that differ are written back, in one write, each a change that

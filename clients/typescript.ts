@@ -1217,9 +1217,10 @@ export class VolumeHandle {
   delete() { return this.transport.json(this.path(), this.token, "DELETE", undefined, false); }
   /**
    * A snapshot of the volume, or with `files` (path to text or bytes) a snapshot of those files instead, the volume
-   * untouched: for bringing in versions kept elsewhere (at most 1,000 files and 16 MiB). `pinned` keeps it until unpinned.
+   * untouched: for bringing in versions kept elsewhere (at most 1,000 files and 16 MiB). It is made whole or not at all,
+   * and answers each file's `sha256` (`contents`) to check against what was sent. `pinned` keeps it until unpinned.
    */
-  snapshot(options: { name?: string; pinned?: boolean; labels?: Record<string, string>; files?: Record<string, string | Uint8Array> } = {}): Promise<VolumeSnapshot> {
+  snapshot(options: { name?: string; pinned?: boolean; labels?: Record<string, string>; files?: Record<string, string | Uint8Array> } = {}): Promise<VolumeSnapshot & { contents?: { path: string; size: number; sha256: string }[] }> {
     const files = options.files && Object.fromEntries(Object.entries(options.files).map(([path, content]) =>
       [path, typeof content === "string" ? content : { data: btoa(Array.from(content, byte => String.fromCharCode(byte)).join("")) }]));
     return this.transport.json(this.path("/snapshots"), this.token, "POST", { ...options, ...(files ? { files } : {}) }, false);

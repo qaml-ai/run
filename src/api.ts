@@ -1178,12 +1178,14 @@ export function api(context: ApiContext) {
     }));
     return json(c, 200, await (await volume(c)).call("snapshots", asked.length ? { labels } : {}));
   });
-  route(createRoute({ method: "post", path: "/v1/volumes/{id}/snapshots", request: { params: volumeId, body: content(schema.SnapshotInput) }, responses: { 201: reply("The snapshot: a copy of the file metadata, sharing contents", schema.Snapshot) } }), async c => {
+  route(createRoute({ method: "post", path: "/v1/volumes/{id}/snapshots", request: { params: volumeId, body: content(schema.SnapshotInput) }, responses: { 201: reply("The snapshot: a copy of the file metadata, sharing contents", schema.SnapshotMade) } }), async c => {
     const target = await volume(c);
     // Room for a snapshot made from contents: 16 MiB of files, as base64 or text.
     const { name, pinned, labels, files } = await readJson(c.req.raw.body, 24 * 1024 * 1024, {}) ?? {};
-    const given = files === undefined ? undefined : await snapshotContents(volumes(), target.tenant, files);
-    return json(c, 201, await target.call("snapshot", { name, pinned, labels, ...(given ? { given } : {}) }));
+    // From contents: the files are stored first and the snapshot recorded once they all are, so it is all or nothing.
+    const made = files === undefined ? undefined : await snapshotContents(volumes(), target.tenant, files);
+    const snapshot = await target.call("snapshot", { name, pinned, labels, ...(made ? { given: made.given } : {}) });
+    return json(c, 201, made ? { ...snapshot, contents: made.contents } : snapshot);
   });
   route(createRoute({ method: "patch", path: "/v1/volumes/{id}/snapshots/{snapshotId}", request: { params: volumeId.extend({ snapshotId: z.string() }), body: content(schema.SnapshotUpdate) }, responses: { 200: reply("The snapshot as it is now", schema.Snapshot) } }), async c => {
     const target = await volume(c);

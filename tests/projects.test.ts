@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -194,6 +195,10 @@ test("pinned versions outlast keep and the snapshot cap, carry labels, and a sna
   const before = await project.volume.info();
   const imported = await project.volume.snapshot({ name: "published:import-v0", pinned: true, labels: { release: "v0" }, files: { "/bot.ts": "export const v = 0;\n", "/data.bin": new Uint8Array([0, 1, 2]) } });
   assert.deepEqual([imported.pinned, imported.files, imported.bytes], [true, 2, 23]);
+  assert.deepEqual(imported.contents, [
+    { path: "/bot.ts", size: 20, sha256: createHash("sha256").update("export const v = 0;\n").digest("hex") },
+    { path: "/data.bin", size: 3, sha256: createHash("sha256").update(new Uint8Array([0, 1, 2])).digest("hex") },
+  ]);
   const after = await project.volume.info();
   assert.deepEqual([after.seq, after.files], [before.seq, before.files], "the volume is untouched");
   const read = await project.files({ version: imported.id });

@@ -118,10 +118,13 @@ export async function snapshotContents(volumes: VolumeService, tenant: string, f
   if (new Set(decoded.map(file => file.path)).size !== decoded.length) throw new HttpError(400, "A path is given twice");
   const bytes = decoded.reduce((total, file) => total + file.data.length, 0);
   if (bytes > READ_ALL_LIMITS.bytes) throw new HttpError(413, `The files are ${bytes} bytes, past the ${READ_ALL_LIMITS.bytes} one snapshot made from contents takes`);
-  return Promise.all(decoded.map(async file => {
+  const given = await Promise.all(decoded.map(async file => {
     const stored = await volumes.store(tenant, new Uint8Array(file.data));
     return [file.path, { ...stored, contentType: declaredType(file.contentType) ?? sniffContentType(file.data.subarray(0, 512), file.path) }] as [string, Omit<FileEntry, "version" | "updatedAt">];
   }));
+  // What was stored, by path, for the caller to check against what it sent.
+  const contents = decoded.map(file => ({ path: file.path, size: file.data.length, sha256: createHash("sha256").update(file.data).digest("hex") }));
+  return { given, contents };
 }
 
 /** Labels as given (a string map within LABEL_LIMITS), or a 400. */

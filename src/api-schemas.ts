@@ -879,6 +879,10 @@ export const SnapshotInput = z.object({
   files: z.record(z.string(), z.union([z.string(), z.object({ data: z.string().openapi({ description: "Base64" }), contentType: z.string().optional() })])).optional()
     .openapi({ description: "A snapshot of these files (path to text, or {data} in base64) instead of the volume: the volume and its seq are untouched. At most 1,000 files and 16 MiB. For bringing in versions kept elsewhere" }),
 }).openapi("SnapshotInput");
+export const SnapshotMade = Snapshot.extend({
+  contents: z.array(z.object({ path: z.string(), size: z.number(), sha256: z.string().openapi({ description: "Hex" }) })).optional()
+    .openapi({ description: "A snapshot made from contents: each file as stored, to check against what was sent" }),
+}).openapi("SnapshotMade");
 export const SnapshotUpdate = z.object({ pinned: z.boolean().optional(), labels: Labels.optional().openapi({ description: "Replaces its labels" }) }).openapi("SnapshotUpdate");
 export const VolumeFile = z.object({
   path: z.string(), version: z.number(), size: z.number(), updatedAt: z.number(), by: z.string().optional(),
