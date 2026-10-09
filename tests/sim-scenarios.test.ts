@@ -362,3 +362,35 @@ test("an approval whose node is lost after its agent released the call ends it a
   assert.equal(calls.length, 0, "never sent again");
   assert.deepEqual(sim.hooks.violations, []);
 });
+
+test("a prompt whose node is lost after its turn ended, before its run recorded the end, ends with the turn's reply on the next owner", async t => {
+  const sim = await Sim.create({ seed: 46, env: { AGENT_LEASE_TTL_MS: "3000", AGENT_ORPHAN_SWEEP_MS: "2000" }, respond: () => ({ content: "the answer" }) });
+  t.after(() => sim.close());
+  await sim.start("a");
+  await sim.start("b");
+  const agent = (await sim.call("a", "/v1/agents", { body: {} })).json.id;
+  // a's sixth log append from here ends the turn (the reply is written before it): a stops there, past its lease.
+  sim.pauseAtDbAnswer("a", 10_000, "insert into log_records", 6);
+  await sim.env.settle(sim.request("b", `/v1/agents/${agent}/prompt`, { body: { text: "hi" }, headers: { "Idempotency-Key": "turn-1" } }).catch(() => undefined));
+  const record = await outcome(sim, "b", agent, "turn-1");
+  assert.equal(record.resumes, 1);
+  assert.equal(record.outcome.error, undefined, JSON.stringify(record.outcome));
+  assert.equal(record.outcome.result.reply, "the answer");
+  assert.deepEqual(sim.model.served.map(served => served.from), ["a.sim"], "the model was not asked again");
+  assert.ok(sim.hooks.reached.includes("a resumed run took the outcome of its turn that had ended"), "the node was lost where this is about");
+});
+
+test("an approval whose node is lost after its turn ended, before the resume recorded the end, ends with the turn's reply on the next owner", async t => {
+  const sim = await approvalWorld(45);
+  t.after(() => sim.close());
+  const { agent, suspension, input, calls } = await approvalAsked(sim);
+  // a's seventh log append from here ends the resumed turn, its reply written: a stops there, past its lease.
+  sim.pauseAtDbAnswer("a", 10_000, "insert into log_records", 7);
+  await sim.env.settle(sim.request("b", `/v1/agents/${agent}/inputs/${input}`, { body: { action: "accept" } }).catch(() => undefined));
+  const record = await outcome(sim, "b", agent, resumeId(suspension));
+  assert.equal(record.resumes, 1);
+  assert.match(record.outcome.result.reply, /^heard: deleted a/, JSON.stringify(record.outcome));
+  assert.equal(calls.length, 1);
+  assert.deepEqual(sim.model.served.map(served => served.from), ["a.sim", "a.sim"]);
+  assert.ok(sim.hooks.reached.includes("a resumed run took the outcome of its turn that had ended"), "the node was lost where this is about");
+});
