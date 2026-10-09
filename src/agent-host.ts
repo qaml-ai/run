@@ -3,7 +3,7 @@ import { Agent, type AgentMessage, type AgentTool } from "@earendil-works/pi-age
 import { convertToLlm } from "./pi-harness/messages.ts";
 import {
   getCurrentSystemMessage, getCurrentTools, getSystemMessageText, getToolStateChanges, isContextOverflow, isRetryableAssistantError, toToolDeclaration, validateToolArguments,
-  type AssistantMessage, type Message, type SystemMessage, type Tool, type ToolCall,
+  type AssistantMessage, type Message, type SystemMessage, type Tool, type ToolCall, type ToolResultMessage,
 } from "@earendil-works/pi-ai";
 import { executeCode, presentResult, type CodeExecutor, type CodeResult } from "./codemode.ts";
 import type { Outbound } from "./outbound.ts";
@@ -938,7 +938,7 @@ export function createAgentHost(hostIO: HostIO) {
       // A configuration changed elsewhere (another node, or while this agent was stopped) applies from here.
       await declareConfiguration();
       void index();
-      return { pid: process.pid, recovered, messages: transcript.total, ...(resume ? { resume } : {}) };
+      return { pid: process.pid, recovered, messages: transcript.total, ...(resume ? { resume } : {}), ...(!recovered && config.resume ? endedTurn() : {}) };
     }
     if (!agent) throw new Error("Agent is not initialized");
     if (method === "status") return { pid: process.pid, busy, messages: transcript.total, contextMessages: transcript.context.length, compacted: !!transcript.compaction };
@@ -1186,6 +1186,26 @@ export function createAgentHost(hostIO: HostIO) {
       io.emit({ type: "message_end", message });
     }
     return wanted.length;
+  }
+
+  /**
+   * The last turn, when it ended before its node was lost: whose it was (the prompts its user messages carry, the calls whose
+   * results it holds) and what it ended with, so a run resumed here that never recorded its end takes that outcome, not an
+   * unknown one.
+   */
+  function endedTurn() {
+    if (transcript.active || transcript.total <= transcript.turnStart) return {};
+    const turn = transcript.context.slice(Math.max(0, transcript.turnStart - transcript.offset));
+    const said = turn.findLast(message => message.role === "assistant") as AssistantMessage | undefined;
+    const given = turn.findLast(message => message.role === "toolResult" && message.toolName === OUTPUT_TOOL && !message.isError) as ToolResultMessage | undefined;
+    return { ended: {
+      requests: turn.flatMap(message => message.role === "user" && (message as { requestId?: string }).requestId ? [(message as { requestId?: string }).requestId!] : []),
+      calls: turn.flatMap(message => message.role === "toolResult" ? [message.toolCallId] : []),
+      finished: {
+        messages: transcript.total, ...answer(said), ...(transcript.awaiting.length ? { stopped: "input_required" } : {}),
+        ...(given ? { output: (given.details as { output?: unknown } | undefined)?.output } : {}),
+      },
+    } };
   }
 
   /** The final answer's text, for callers that relay it (channels), and that message's index in the history. */
