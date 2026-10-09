@@ -40,7 +40,7 @@ test("a trusted tool prepares a persistent worker and starts it as a background 
   }, { runtime: base, tenant: "alice" })));
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
-  t.after(() => server.close());
+  t.after(() => { server.closeAllConnections(); server.close(); });
   const url = `http://127.0.0.1:${(server.address() as any).port}/mcp`;
   const parent = await sdk.createAgent({ systemPrompt: "You are LEAD.", mcpServers: [{ name: "app", url, auth: { type: "runtime" } }] });
   const record = await r.prompt(parent.session.id, "work on bot a");
@@ -68,6 +68,7 @@ test("a trusted tool prepares a persistent worker and starts it as a background 
   // Another tenant's agent is refused.
   const refused = await r.prompt(parent.session.id, "stranger");
   assert.match(refused.outcome.result.reply, /an agent this account does not have/);
+  await parent.destroy();
 });
 
 test("a spawn directive from a tool without runtime auth (an attached application's) is refused", async t => {
@@ -78,4 +79,5 @@ test("a spawn directive from a tool without runtime auth (an attached applicatio
   const record = await agent.prompt("go");
   assert.match(JSON.stringify(record), /only a tool server with auth \\"runtime\\" may/);
   assert.equal((await r.call(`/v1/agents/${target}`)).json.requests.length, 0, "nothing was started");
+  await agent.destroy();
 });
