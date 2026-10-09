@@ -66,6 +66,19 @@ test("a definition's key upserts it: the same key is the same definition, revise
   assert.equal((await r.call("/v1/definitions", { body: { name: "Researcher" }, headers: key, token: OTHER_OPERATOR })).json.id === first.json.id, false, "keys are per tenant");
   const sdk = new AgentRuntime({ url: r.base, apiKey: OPERATOR });
   assert.equal((await sdk.upsertDefinition("researcher", { name: "Researcher", builtins: ["web_search", "ask_user"] })).id, first.json.id);
+  // Run limits are part of a definition the SDK makes, typed (no cast).
+  const limited = await sdk.upsertDefinition("researcher", { name: "Researcher", runLimits: { maxResponses: 20, maxSeconds: 600 } });
+  assert.deepEqual(limited.runLimits, { maxResponses: 20, maxSeconds: 600 });
+});
+
+test("a definition's idle lifetime applies, and a lifetime given with the agent replaces it", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
+  const definition = (await r.call("/v1/definitions", { body: { name: "Support", systemPrompt: "You are support.", limits: { ttlSeconds: 3600 } } })).json;
+  const idle = (await r.call("/v1/agents", { body: { definition: definition.id, idleTtlSeconds: 600 } })).json;
+  assert.ok(Math.abs(idle.expiresAt - (Date.now() + 600_000)) < 60_000, "the agent's idle lifetime applies");
+  const idling = (await r.call("/v1/definitions", { body: { name: "Idle", limits: { idleTtlSeconds: 900 } } })).json;
+  assert.ok(Math.abs((await r.call("/v1/agents", { body: { definition: idling.id } })).json.expiresAt - (Date.now() + 900_000)) < 60_000, "the definition's idle lifetime applies");
+  assert.equal((await r.call("/v1/definitions", { body: { name: "x", limits: { ttlSeconds: 3600, idleTtlSeconds: 900 } } })).status, 400);
 });
 
 test("agents are made from a definition, record its revision, and take a new one when it is applied", async t => {

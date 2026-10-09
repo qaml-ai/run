@@ -20,6 +20,20 @@ test("an agent made with an idempotency key lives until deleted by default; one 
   assert.ok(limited.json.expiresAt - Date.now() <= 3_600_000, "ttlSeconds still sets one");
 });
 
+test("an agent with an idle lifetime lives on from each run it is sent", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
+  assert.match((await r.call("/v1/agents", { body: { ttlSeconds: 600, idleTtlSeconds: 600 } })).text, /not both/);
+  assert.equal((await r.call("/v1/agents", { body: { idleTtlSeconds: 10 } })).status, 400);
+  const made = await r.call("/v1/agents", { body: { idleTtlSeconds: 600 } });
+  assert.equal(made.status, 201, made.text);
+  const expiry = async () => (await r.call(`/v1/agents/${made.json.id}`)).json.expiresAt as number;
+  const first = await expiry();
+  assert.ok(Math.abs(first - Date.now() - 600_000) < 60_000, `expires in ten minutes: ${first}`);
+  // A run with most of the window left leaves the expiry be (client-lifecycle.test.ts moves it on).
+  await r.prompt(made.json.id, "hi");
+  assert.equal(await expiry(), first);
+});
+
 test("agents are listed with the key they were made with, and their name", async t => {
   const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
   const keyed = (await r.call("/v1/agents", { body: { name: "Support" }, headers: { "Idempotency-Key": "support-7" } })).json;

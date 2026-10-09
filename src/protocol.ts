@@ -20,7 +20,11 @@ export type RunLimits = { maxResponses?: number; maxSeconds?: number; firstToken
  * `handoff`: its node is leaving the cluster (a deploy retiring it, or a drain), so the turn stops at this step boundary
  * and the next owner continues it from the transcript.
  */
-export type RunStop = { stopped: "spend_limit" | "turn_limit" | "handoff"; message: string };
+/**
+ * Why a turn must end: `limit` says which spend limit stopped it (the run's own, its agent's, the tenant's monthly cap,
+ * or the account's prepaid credit).
+ */
+export type RunStop = { stopped: "spend_limit" | "turn_limit" | "handoff"; message: string; limit?: "run" | "agent" | "tenant" | "credit" };
 export interface ToolBridge {
   definitions: ToolDefinition[];
   call(name: string, args: Record<string, unknown>, signal: AbortSignal, context?: CallContext): Promise<unknown>;

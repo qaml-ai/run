@@ -428,6 +428,7 @@ test("a prepaid tenant pays the catalog fallback plus funding when actual cost i
 
   const first = await prompt(agent.id, "go", PAYG);
   assert.equal(first.outcome.result.stopped, "spend_limit");
+  assert.equal(first.outcome.result.limit, "credit");
   assert.match(first.outcome.result.error, /This account is out of credit/);
   assert.equal(model.bodies.length, 2, "the turn ended after the response that spent the last credit");
   assert.deepEqual(new Set(model.keys), new Set(["Bearer fixture-platform-key"]));

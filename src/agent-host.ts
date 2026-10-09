@@ -111,7 +111,7 @@ export function createAgentHost(hostIO: HostIO) {
   let busy = false;
   let active: AbortController | undefined;
   /** Why the current run ended early: a spend limit, tool calls waiting on a person's input, or a hand-off (its node is leaving). */
-  let stopped: { stopped: RunStop["stopped"] | "input_required"; error?: string; code?: string } | undefined;
+  let stopped: { stopped: RunStop["stopped"] | "input_required"; error?: string; code?: string; limit?: RunStop["limit"] } | undefined;
   /** Messages a compaction folded into the summary during the current run, still in Pi's live state. */
   let dropped = new WeakSet<AgentMessage>();
   let summary: { state: CompactionState; message: AgentMessage } | undefined;
@@ -904,7 +904,7 @@ export function createAgentHost(hostIO: HostIO) {
             stopped = { stopped: "handoff" };
             return { action: "end" };
           }
-          stopped = { stopped: limit.stopped, error: limit.message, code: limit.stopped };
+          stopped = { stopped: limit.stopped, error: limit.message, code: limit.stopped, ...(limit.limit ? { limit: limit.limit } : {}) };
           io.emit({ type: `${limit.stopped}_reached`, message: limit.message });
           return { action: "end" };
         },

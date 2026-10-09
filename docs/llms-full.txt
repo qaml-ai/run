@@ -265,7 +265,9 @@ with it close, and `GET /v1/agents/{id}/credentials` (the SDKs' `agents.get`)
 gives the new one from then on.
 
 Agents made without a key are scratch agents: they expire after a day unless you
-set `ttlSeconds`.
+set `ttlSeconds`. `idleTtlSeconds` instead makes an agent live that long from its
+latest run, so one in use is kept and one left alone expires (an agent for a chat
+that should go once nobody has written in a week, say).
 
 ## Runs
 
@@ -1004,6 +1006,19 @@ app = serve_tools([refund], runtime="https://run.camelai.com", tenant="acme")  #
 Behind a proxy, run uvicorn with `--proxy-headers` (and `--forwarded-allow-ips`
 naming the proxy), or pass `audience="https://tools.example.com/mcp"`.
 
+To offer each agent its own tools (an admin's, a plan's), pass a function of the
+caller's identity instead of the tools; a tool it is not given is refused if
+called. A `ToolServer` of your own gets the same as `listTools(context)`:
+`{identity, origin, signal}`.
+
+```ts
+serveTools(identity => identity.context.role === "admin" ? { refund, ban } : { refund }, options);
+```
+
+```python
+serve_tools(lambda identity: [refund, ban] if identity.context.get("role") == "admin" else [refund], runtime=..., tenant=...)
+```
+
 ### A server that moves
 
 By default a token's audience is the server's URL, so a server that moves (a new
@@ -1123,7 +1138,7 @@ The token itself (for servers that verify it by hand, e.g. with `jose`):
 ```json
 { "iss": "https://agents.camelai.dev", "aud": "https://tools.example.com/mcp",
   "sub": "u_123", "tenant": "acme", "agent": "client_…", "definition": "def_…",
-  "ctx": { "org": "acme" }, "act": "u_456", "origin": { … },
+  "ctx": { "org": "acme" }, "act": "u_456", "origin": { … }, "req": "run_…", "tcid": "toolu_…",
   "iat": 1790000000, "exp": 1790000120, "jti": "…" }
 ```
 
@@ -1147,7 +1162,8 @@ if (payload.tenant !== "acme") throw new Error("Not our tenant's agent");
   so a token cannot be replayed against a server that is not yours.
   Tokens live two minutes, and each request gets its own `jti`.
 - `act` and `origin` are absent outside a turn (listing a server's tools as an
-  agent starts).
+  agent starts), and so are `req`, the run's request id, and `tcid`, the model's
+  tool call (`identity.requestId` and `toolCallId` in the SDKs).
 - The keys are at `/.well-known/jwks.json` (cache them for minutes);
   `/.well-known/oauth-authorization-server` names the issuer for MCP clients.
 
@@ -3292,8 +3308,10 @@ ran on. Setting a value starts counting from zero; `null` removes it. A PATCH ap
 shows `spendLimit: {usd, spent}`. An agent at or over its limit gets 402 for new
 `prompt` and `continue` runs, and a running turn ends after the response that
 crossed it (its tool calls run and are recorded), with `stopped: "spend_limit"`:
-the SDKs' `run()` fails with code `spend_limit`. Only you can set it, not the
-agent's own token.
+the SDKs' `run()` fails with code `spend_limit`. The result's `limit` says which
+limit it was: `"run"` (the run's own budget, below), `"agent"` (the agent's),
+`"tenant"` (your account's monthly cap) or `"credit"` (your prepaid credit ran out).
+Only you can set it, not the agent's own token.
 
 A run can have a budget of its own: `spendLimit: {"usd": n}` on
 `POST /v1/agents/:id/prompt` (the SDKs' `run`, `stream` and `prompt` take
@@ -3317,7 +3335,10 @@ Lower them for an agent with `runLimits: {"maxResponses": n, "maxSeconds": n}` (
 SDKs' `runLimits`, `run_limits=` in Python) when you make it, or with
 `PATCH /v1/agents/:id/configuration` (`null` removes them), or for every agent of a
 [definition](https://run.camelai.com/docs/guides/definitions.md) with its `runLimits`. An agent's own stay when its
-definition is applied. Values above the runtime's maximums count as the maximums,
+definition is applied. One run can lower them further: `runLimits: {"maxResponses": n,
+"maxSeconds": n}` on `POST /v1/agents/:id/prompt` (the SDKs' `run`, `stream`, `prompt`
+and `send` take `runLimits`, `run_limits=` in Python) applies to that run alone, and
+only where it is lower than the agent's. Values above the runtime's maximums count as the maximums,
 which its operator sets (see [Configuration](https://run.camelai.com/docs/operations/configuration.md),
 `AGENT_MAX_RUN_RESPONSES`). Only you can set them, not the agent's own token. They are counted on the node running the
 turn: a turn resumed on another node after its node was lost counts again from there.
@@ -3530,7 +3551,7 @@ If the tunnel's address changes, save the provider again with the new
 
 A definition is a reusable agent configuration: name, model, system prompt,
 thinking level, tool sources (built-ins, remote MCP servers and OpenAPI specs),
-limits (`ttlSeconds`), run limits (`runLimits`, see [Run limits](https://run.camelai.com/docs/guides/models-and-keys.md#run-limits)) and mounts. Manage them with the SDKs
+limits (`ttlSeconds`, or `idleTtlSeconds`: a lifetime from each agent's latest run), run limits (`runLimits`, see [Run limits](https://run.camelai.com/docs/guides/models-and-keys.md#run-limits)) and mounts. Manage them with the SDKs
 (`agents.runtime.upsertDefinition`, `createDefinition`, `updateDefinition`,
 `definition(s)`, `deleteDefinition`; `upsert_definition` and so on in Python),
 `/v1/definitions`, or the console's Definitions page, and make agents from one.
@@ -3575,7 +3596,7 @@ definitions not saved yet, so two can name each other. See
 
 The definition supplies the model, prompt, thinking level, `maxOutputTokens`,
 `temperature` and tool sources;
-`name`, `ttlSeconds`, `mounts` and `initialMessages` given alongside it override
+`name`, `ttlSeconds` (or `idleTtlSeconds`), `mounts` and `initialMessages` given alongside it override
 its defaults, and tools of your process (`tools`) are added as its attached
 server.
 
@@ -3609,7 +3630,9 @@ and revision it was made from (`definition` in `GET /v1/agents/:id`), and keeps
 that configuration when the definition changes: only new agents get the new
 revision. `PATCH … {"apply": "all"}` also reconfigures every live agent made
 from the definition, through each agent's `configure` request, queued behind its
-runs so it lands between turns; the application's attached tools are kept. Only
+runs so it lands between turns; the application's attached tools are kept, and
+the tool lists the runtime holds for the definition's MCP servers are read again,
+so a server that changed its tools with the deploy is seen at once. Only
 the tenant can apply a definition, never an agent's own token. `GET
 /v1/definitions/:id/agents` lists the agents and the revision each has. Deleting
 a definition leaves its agents as they are; a definition a channel uses cannot
@@ -4677,6 +4700,7 @@ what changed without keeping a manifest. It is opaque: compare it, never parse i
 | `agent.stream(text, options)` | `agent.stream(text, …)` | the run as it happens: `for await` / `async for` over parts |
 | `agent.pendingInputs()` | `pending_inputs()` | inputs waiting on people, each with `answer()` |
 | `agent.history()`, `historyPage({ before, limit })` | `history()`, `history_page(before=, limit=)` | the whole history (a list of messages, oldest first), or a page of whole turns |
+| `agent.send(text, options)`, `agent.wait(id)` | `await send(text, …)`, `await wait(id)` | send a message without waiting: resolves once the runtime has taken it, with `{id, state}` (`POST …/prompt`'s 202); `wait(id)` is its `Run` later, from this process or another. For work queues and webhooks that should not hold a connection for the whole run |
 | `agent.steer(text, options)` | `steer(text, …)` | hand the running turn a message (else start one), answered as soon as the runtime has it: `{id, status: "accepted" \| "taken" \| "queued", steeredInto?}`. `wait: true` (`wait=True`) resolves with the run that took it instead, as `run(text, { whileRunning: "steer" })` |
 | `agent.configure({ model, instructions, thinkingLevel, tools, maxOutputTokens, temperature })` | `configure(…)` | change it between runs; `null` (`None`) removes `maxOutputTokens` or `temperature` |
 | `agent.schedule({ text, inSeconds, at, everySeconds })` | `schedule(…)` | wake it later; `schedules()`, `unschedule(id)` |
@@ -4700,6 +4724,7 @@ Run options (`run`, `stream`):
 | `history` | `history=` | `"none"`: the model sees the instructions and this message only, not the agent's history; the run is still recorded. See [Runs without the history](https://run.camelai.com/docs/concepts.md#runs-without-the-history) |
 | `whileRunning` | `while_running=` | `"queue"` (default) or `"steer"` |
 | `spendLimit` | `spend_limit=` | `{usd}`: this run's own budget; see [Spend limits](https://run.camelai.com/docs/guides/models-and-keys.md#spend-limits) |
+| `runLimits` | `run_limits=` | `{maxResponses, maxSeconds}`: this run's own, lowering the agent's; see [Run limits](https://run.camelai.com/docs/guides/models-and-keys.md#run-limits) |
 | `allowDisconnected` | `allow_disconnected=` | run even with nobody serving the agent's tools (else refused: `APPLICATION_NOT_CONNECTED`) |
 | `output` | `output=` | structured output: a zod (or other Standard Schema), TypeBox or JSON Schema (Python: a pydantic model class, or a JSON Schema dict) for an object; the answer is `run.output`. See [Structured output](https://run.camelai.com/docs/guides/structured-output.md) |
 | `traceparent` | `traceparent=` | a W3C trace context (`00-<trace-id>-<span-id>-<flags>`), sent as the `traceparent` header: when the tenant exports telemetry (`runtime.telemetry`), the run's spans continue your trace, under that span. Not part of the run's idempotency |
@@ -5637,6 +5662,7 @@ Query parameters and headers:
 | `Last-Event-ID: <cursor>` | resume after this event id. Absent or `0` takes everything still buffered. |
 | `?snapshot=1` | where the stream cannot replay what you missed (a first connect, or a cursor behind the buffer), send a [`snapshot`](https://run.camelai.com/docs/reference/events.md#snapshot) of the running turn first instead of a 409. Watchers and polls (`?watch=1`, `?poll=1`, `/v1/agents/:id/events`) get one by default (`?snapshot=0` opts out); the application's connection only when it asks, as the SDKs do. |
 | `?poll=1&wait=N` | answer once, as JSON, instead of streaming: `{cursor, events: [{id, data}]}`, where `data` is a frame. With `wait` (seconds, at most 25) and nothing buffered, it answers when the next event arrives or the wait ends. Poll again with `Last-Event-ID: <cursor>`. For clients that cannot hold a stream open. |
+| `?request=<id>` | only that request's events, and its `response` frame: one run's progress, for a caller that sent it with `POST …/prompt` and wants nothing else. `ready`, `snapshot` and other frames that are not a request's still come. |
 | `?subagents=1` | also send the agent's sub-agents' progress, from its `delegate` calls: [`subagent_start`, `subagent_event` and `subagent_end`](https://run.camelai.com/docs/reference/events.md#sub-agents). Without it, none of them. The SDKs: `subagents: true` |
 | `?takeover=true` | (application connection only) replace the process serving the agent's tools now. See [One application at a time](https://run.camelai.com/docs/reference/events.md#one-application-at-a-time). |
 | `X-Agent-Connection: <connection>` | (application connection only) reconnecting: the `connection` the last `ready` named, so the runtime knows it is the same application coming back. |
@@ -6311,7 +6337,7 @@ A run ends in one of three ways: it answered, it waits on people
 | `model_error` | `result.error` is set | The model provider refused or failed (after 3 retries for transient failures): a bad request, content refused, context overflow that compaction could not fix |
 | `output_missing` | `result.code` (with `result.error`) | A run sent with `output` ended without the model calling `final_output`: it answered in prose twice, the second time after a reminder. `text` has what it said. Send the prompt again, make the instructions say what the answer is for, or use a stronger model |
 | `output_invalid` | (the SDKs only) | The output fit the JSON Schema the runtime checked, but not the zod or pydantic schema the SDK parsed it with (a refinement or validator the JSON Schema cannot say) |
-| `spend_limit` | `result.stopped: "spend_limit"` | The agent's spend limit (or the tenant's monthly cap) stopped the turn after the response that crossed it; its tool calls ran. Raise the limit and send the next message |
+| `spend_limit` | `result.stopped: "spend_limit"` | A spend limit stopped the turn after the response that crossed it; its tool calls ran. `result.limit` says which: `run` (the run's own `spendLimit`), `agent`, `tenant` (the monthly cap) or `credit` (prepaid credit spent). Raise that limit and send the next message |
 | `turn_limit` | `result.stopped: "turn_limit"` | The run made as many model responses (1,000 by default) or ran as long (2 hours) as its [run limits](https://run.camelai.com/docs/guides/models-and-keys.md#run-limits) allow; the turn stopped after that response's tool calls. Send another message to continue, or raise the agent's `runLimits` |
 | `runtime_error` | `outcome.error` (no `result`) | The runtime could not carry the run out: e.g. the agent was deleted, code execution failed, a queued run refused for credit |
 | (any, with `uncertain`) | `outcome.uncertain: true` | A restart cut the run short where it could not resume (a code execution, or a turn resumed twice already): its tool calls may or may not have taken effect. Check before retrying |

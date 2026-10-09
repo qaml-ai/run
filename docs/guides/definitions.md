@@ -2,7 +2,7 @@
 
 A definition is a reusable agent configuration: name, model, system prompt,
 thinking level, tool sources (built-ins, remote MCP servers and OpenAPI specs),
-limits (`ttlSeconds`), run limits (`runLimits`, see [Run limits](models-and-keys.md#run-limits)) and mounts. Manage them with the SDKs
+limits (`ttlSeconds`, or `idleTtlSeconds`: a lifetime from each agent's latest run), run limits (`runLimits`, see [Run limits](models-and-keys.md#run-limits)) and mounts. Manage them with the SDKs
 (`agents.runtime.upsertDefinition`, `createDefinition`, `updateDefinition`,
 `definition(s)`, `deleteDefinition`; `upsert_definition` and so on in Python),
 `/v1/definitions`, or the console's Definitions page, and make agents from one.
@@ -47,7 +47,7 @@ definitions not saved yet, so two can name each other. See
 
 The definition supplies the model, prompt, thinking level, `maxOutputTokens`,
 `temperature` and tool sources;
-`name`, `ttlSeconds`, `mounts` and `initialMessages` given alongside it override
+`name`, `ttlSeconds` (or `idleTtlSeconds`), `mounts` and `initialMessages` given alongside it override
 its defaults, and tools of your process (`tools`) are added as its attached
 server.
 
@@ -81,7 +81,9 @@ and revision it was made from (`definition` in `GET /v1/agents/:id`), and keeps
 that configuration when the definition changes: only new agents get the new
 revision. `PATCH … {"apply": "all"}` also reconfigures every live agent made
 from the definition, through each agent's `configure` request, queued behind its
-runs so it lands between turns; the application's attached tools are kept. Only
+runs so it lands between turns; the application's attached tools are kept, and
+the tool lists the runtime holds for the definition's MCP servers are read again,
+so a server that changed its tools with the deploy is seen at once. Only
 the tenant can apply a definition, never an agent's own token. `GET
 /v1/definitions/:id/agents` lists the agents and the revision each has. Deleting
 a definition leaves its agents as they are; a definition a channel uses cannot
