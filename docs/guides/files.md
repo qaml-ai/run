@@ -95,6 +95,10 @@ await agent.files.upload("/workspace/in/config.json", JSON.stringify(config));
 Python has the same: `agent.files.download(path)` (`.data`, `.content_type`, `.version`), `list(path=...)`,
 `link(path, expires_in=...)`, `upload(path, data)`.
 
+Tools of a definition's sources take the agent's files as `{"$file": path}`,
+and their file outputs are saved to the workspace: see
+[Files in tool calls](tools.md#files-in-tool-calls).
+
 ## Volumes
 
 A volume is a shared file tree. Without `mounts`, each agent gets its own
@@ -130,9 +134,18 @@ const agent = await agents.upsert("support", { mounts: [{ volumeId: docs.id, pat
   day: a retry, or another process, gets the same volume.
 - `volume.write(path, data, { version })` writes only if nobody changed the file
   since that version (`0`: it must not exist), `read`, `list`, `remove`,
-  `changes(since)`.
+  `changes(since, { prefix? })`. `runtime.volumes(ids)` reads up to 50 volumes'
+  `seq` (and files and bytes) in one request, to see which changed.
 - `volume.snapshot()` and `volume.fork({ snapshot })` copy metadata only: a fork
-  shares its source's content and diverges independently.
+  shares its source's content and diverges independently. `read`, `list` and
+  `readAll` take `{ snapshot }` to read a snapshot as it was.
+- `volume.readAll({ prefix?, glob?, snapshot? })` (Python `read_all`) reads every
+  matching file with its contents in one request, as the volume was at one `seq`:
+  `{seq, files: [{path, size, version, contentType, sha256, text | data}]}`
+  (`data` is base64, for files that are not UTF-8 text). Use it to check or
+  publish what an agent wrote: nothing written meanwhile shows in it. At most
+  1,000 files and 16 MiB a read (a 413 says to narrow `prefix` or `glob`). REST:
+  `GET /v1/volumes/:id/files?content=true&prefix=…&snapshot=…`.
 - Every file has a content type: the upload's, else sniffed from its bytes and
   name. Downloads are served so a file can never run as the runtime's origin.
 - Uploads may take 15 minutes; a volume suits up to about 100,000 files.

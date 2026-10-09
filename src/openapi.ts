@@ -133,11 +133,11 @@ function serverUrl(doc: Record<string, unknown>, specUrl?: string): string | und
   try { return new URL(url, specUrl).toString(); } catch { return undefined; }
 }
 
-/** An operation as the agent sees it: `<source>__<operation>`, reads in parallel, file fields taking `{"$file": path}`. */
-export function definition(source: string, operation: Operation): ToolDefinition {
-  const parameters = acceptFiles(operation.inputSchema);
+/** An operation as the agent sees it: `<source>__<operation>`, reads in parallel, file fields taking `{"$file": path}` when its source `takesFiles`. */
+export function definition(source: string, operation: Operation, takesFiles = true): ToolDefinition {
+  const parameters = takesFiles ? acceptFiles(operation.inputSchema) : operation.inputSchema;
   const properties = operation.inputSchema.properties as Record<string, unknown> | undefined;
-  if (raw(operation) && properties?.body) parameters.properties.body = acceptFiles(properties.body, "body", true);
+  if (takesFiles && raw(operation) && properties?.body) parameters.properties.body = acceptFiles(properties.body, "body", true);
   return {
     name: `${source}__${operation.name}`.slice(0, 80), description: operation.description, parameters,
     ...(operation.readOnly ? { executionMode: "parallel" as const } : {}),

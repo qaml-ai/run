@@ -1,6 +1,7 @@
 /**
  * Test your tool server's authorization without a runtime: `testRuntime()` signs identity tokens
- * with a key of its own and serves its keys to `serveTools` / `verifyRuntimeToken` through `fetch`.
+ * (and file URLs) with a key of its own and serves its keys to `serveTools`, `verifyRuntimeToken` and `verifyFileUrl`
+ * through `fetch`.
  *
  *   const runtime = await testRuntime();
  *   const handler = serveTools(tools, runtime.options); // tenant "test", as the tokens it signs say by default
@@ -46,6 +47,16 @@ export async function testRuntime(options: { url?: string } = {}) {
     return `${signed}.${base64url(signature)}`;
   }
 
+  /**
+   * A file URL as the runtime would send a tool (`{"$file": path}` in a call), for `verifyFileUrl` to check; `claims`
+   * set or override what it grants. Only checking works: nothing serves the URL.
+   */
+  async function fileUrl(claims: Record<string, unknown> = {}, overrides: { header?: Record<string, unknown>; expiresIn?: number } = {}) {
+    const grant = { tenant: "test", agent: "client_test", call: "call_test", tool: "app__tool", volume: "vol_test", path: "/report.pdf", agentPath: "/workspace/report.pdf", kind: "file", version: 1, ...claims };
+    const signed = await token({ agent: grant.agent as string, tenant: grant.tenant as string }, "camelrun:file", { claims: grant, header: { typ: "file+jwt", ...overrides.header }, expiresIn: overrides.expiresIn ?? 300 });
+    return `${url}/v1/files/${signed}/${encodeURIComponent(String(grant.path).split("/").pop() || "file")}`;
+  }
+
   /** A JSON-RPC POST to `serverUrl`, carrying a token for `identity` (none if `identity` is null). */
   async function request(serverUrl: string, message: unknown, identity: TestIdentity | null = {}) {
     const headers: Record<string, string> = { "Content-Type": "application/json", Accept: "application/json, text/event-stream" };
@@ -62,5 +73,5 @@ export async function testRuntime(options: { url?: string } = {}) {
     return body.result as { content: Array<Record<string, unknown>>; structuredContent?: Record<string, unknown>; isError?: boolean };
   }
 
-  return { url, jwk, token, request, callTool, fetch: fetcher, options: { runtime: url, fetch: fetcher, tenant: "test" } };
+  return { url, jwk, token, fileUrl, request, callTool, fetch: fetcher, options: { runtime: url, fetch: fetcher, tenant: "test" } };
 }

@@ -27,7 +27,18 @@ import { clock } from "./node-context.ts";
  * for the path's chunk list and fetch the chunks themselves.
  */
 export const CHUNK_BYTES = 1024 * 1024;
+/** What one read of many files (GET /v1/volumes/:id/files?content=true) returns at most. */
+export const READ_ALL_LIMITS = Object.freeze({ files: 1000, bytes: 16 * 1024 * 1024 });
+/** `data` as text when it is valid UTF-8, else undefined. */
+const utf8 = (data: Buffer) => { try { return new TextDecoder("utf-8", { fatal: true }).decode(data); } catch { return undefined; } };
 export const VOLUME_LIMITS = Object.freeze({ fileBytes: 256 * 1024 * 1024, files: 100_000, mounts: 16, snapshots: 100, changes: 1000, listing: 1000 });
+/**
+ * Snapshots the runtime makes of a directory for one tool call (file-arguments.ts) are named with this prefix. They are
+ * not listed, do not count toward VOLUME_LIMITS.snapshots, and are deleted after their call; any left after a crash
+ * go once they are TEMPORARY_SNAPSHOT_MS old, when the next is made.
+ */
+export const TEMPORARY_SNAPSHOT = "file-arg:";
+const TEMPORARY_SNAPSHOT_MS = 15 * 60_000;
 const FOLD_AFTER_RECORDS = 1024;
 const NOTIFY_DELAY_MS = 1000;
 
@@ -359,10 +370,15 @@ export class VolumeService {
     volume.lastActive = Date.now();
     try {
       if (op === "info") return this.summary(volume.header, volume.tree, volume.seq);
-      if (op === "stat") return this.stat(volume, normalizePath(args.path));
+      if (op === "stat" || op === "list" || op === "readAll") {
+        // As the volume is now, or as a snapshot of it was: one tree, so a listing and its reads agree.
+        const at = args.snapshot === undefined ? { tree: volume.tree, seq: volume.seq } : await this.snapshotTree(id, args.snapshot);
+        if (op === "stat") return this.stat(at.tree, normalizePath(args.path));
+        if (op === "list") return this.listFiles(at.tree, args);
+        return await this.readAll(volume.header.tenant, at, args);
+      }
       if (op === "ls") return this.ls(volume, normalizePath(args.path));
-      if (op === "list") return this.listFiles(volume, args);
-      if (op === "changes") return this.changes(volume, Number(args.since ?? 0));
+      if (op === "changes") return this.changes(volume, Number(args.since ?? 0), args.prefix === undefined ? undefined : normalizePath(args.prefix));
       if (op === "snapshots") return this.snapshots(id);
       // Mutations run one at a time, in order.
       const run = volume.queue.then(() => this.mutate(volume, op, args));
@@ -374,10 +390,10 @@ export class VolumeService {
     }
   }
 
-  private stat(volume: Volume, path: string) {
-    const entry = volume.tree.files.get(path);
+  private stat(tree: Tree, path: string) {
+    const entry = tree.files.get(path);
     if (entry) return { type: "file", path, ...entry };
-    if (volume.tree.children.has(path)) return { type: "directory", path };
+    if (tree.children.has(path)) return { type: "directory", path };
     throw new HttpError(404, `${path} does not exist`);
   }
 
@@ -393,13 +409,13 @@ export class VolumeService {
   }
 
   /** Files under `path` (optionally matching a glob relative to it), paged by `after`. */
-  private listFiles(volume: Volume, args: Record<string, any>) {
+  private listFiles(tree: Tree, args: Record<string, any>) {
     const path = normalizePath(args.path ?? "/");
     const limit = Math.min(VOLUME_LIMITS.listing, Math.max(1, Number(args.limit ?? VOLUME_LIMITS.listing) || VOLUME_LIMITS.listing));
     const pattern = args.glob === undefined ? undefined : globRegex(args.glob);
     const files: ({ path: string } & FileEntry)[] = [];
-    const single = volume.tree.files.get(path);
-    const source: Iterable<[string, FileEntry]> = single ? [[path, single]] : volume.tree.walk(path);
+    const single = tree.files.get(path);
+    const source: Iterable<[string, FileEntry]> = single ? [[path, single]] : tree.walk(path);
     let passed = args.after === undefined;
     for (const [file, entry] of source) {
       if (!passed) { passed = file === args.after; continue; }
@@ -410,13 +426,47 @@ export class VolumeService {
     return { files };
   }
 
-  private changes(volume: Volume, since: number) {
+  private changes(volume: Volume, since: number, prefix?: string) {
     const oldest = volume.changes[0]?.seq ?? volume.seq + 1;
-    return { seq: volume.seq, changes: volume.changes.filter(change => change.seq > since), ...(since < oldest - 1 && since < volume.seq ? { gap: true } : {}) };
+    return { seq: volume.seq, changes: volume.changes.filter(change => change.seq > since && (!prefix || within(change.path, prefix))), ...(since < oldest - 1 && since < volume.seq ? { gap: true } : {}) };
+  }
+
+  /** A snapshot's files and the seq it was taken at; 404 for one this volume does not have. */
+  private async snapshotFiles(id: string, snapshot: unknown): Promise<{ files: [string, FileEntry][]; seq: number }> {
+    const summary: SnapshotSummary | undefined = typeof snapshot === "string" && /^snap_[a-f0-9]{16}$/.test(snapshot)
+      ? (await this.db.query(`select ${SNAPSHOT_COLUMNS} from volume_snapshots where id = $1 and volume = $2`, [snapshot, id])).rows[0] : undefined;
+    const stored = summary && await this.storage.readBlob(snapshotFilesKey(id, summary.id));
+    if (!summary || !stored) throw new HttpError(404, "Unknown snapshot");
+    return { files: Object.entries(JSON.parse(Buffer.from(stored).toString("utf8")) as Record<string, FileEntry>), seq: summary.seq };
+  }
+  /** A snapshot as a tree, to list and read it as the volume is listed and read. */
+  private async snapshotTree(id: string, snapshot: unknown) {
+    const { files, seq } = await this.snapshotFiles(id, snapshot);
+    const tree = new Tree();
+    for (const [path, entry] of files) tree.put(path, entry);
+    return { tree, seq, snapshot: snapshot as string };
+  }
+
+  /**
+   * Every file under `path` (and `glob`) with its contents, at one seq (or a snapshot's): text as `text`, other bytes
+   * as base64 `data`, each with its sha256. Within READ_ALL_LIMITS, else a 413 that says to narrow it. Chunks never
+   * change, so files listed at one seq read as they were then, whatever is written meanwhile.
+   */
+  private async readAll(tenant: string, at: { tree: Tree; seq: number; snapshot?: string }, args: Record<string, any>) {
+    const listing = this.listFiles(at.tree, { path: args.path, glob: args.glob, limit: READ_ALL_LIMITS.files });
+    if (listing.next) throw new HttpError(413, `More than ${READ_ALL_LIMITS.files} files match; narrow prefix or glob`);
+    const bytes = listing.files.reduce((total, file) => total + file.size, 0);
+    if (bytes > READ_ALL_LIMITS.bytes) throw new HttpError(413, `The files that match are ${bytes} bytes, past the ${READ_ALL_LIMITS.bytes} one read returns; narrow prefix or glob, or read large files one at a time`);
+    const files = await Promise.all(listing.files.map(async ({ chunks: _chunks, ...file }) => {
+      const data = await this.readRange(tenant, { size: file.size, chunks: _chunks }, 0, file.size);
+      const text = data.subarray(0, 8000).includes(0) ? undefined : utf8(data);
+      return { ...file, sha256: createHash("sha256").update(data).digest("hex"), ...(text !== undefined ? { text } : { data: data.toString("base64") }) };
+    }));
+    return { seq: at.seq, ...(at.snapshot ? { snapshot: at.snapshot } : {}), files };
   }
 
   private async snapshots(id: string): Promise<SnapshotSummary[]> {
-    return (await this.db.query(`select ${SNAPSHOT_COLUMNS} from volume_snapshots where volume = $1 order by created_at, id`, [id])).rows;
+    return (await this.db.query(`select ${SNAPSHOT_COLUMNS} from volume_snapshots where volume = $1 and name not like '${TEMPORARY_SNAPSHOT}%' order by created_at, id`, [id])).rows;
   }
 
   private check(volume: Volume, path: string, ifMatch: unknown) {
@@ -453,19 +503,40 @@ export class VolumeService {
       return { path, deleted: true, seq: change.seq };
     }
     if (op === "snapshot") {
+      // `directory`: a temporary snapshot of one directory for a tool call, within `limit` (runtime code only).
+      const temporary = args.directory !== undefined;
       const name = args.name === undefined ? `seq ${volume.seq}` : args.name;
       if (typeof name !== "string" || !name.trim() || name.length > 120) throw new HttpError(400, "name must be 1–120 characters");
+      if (temporary !== name.startsWith(TEMPORARY_SNAPSHOT)) throw new HttpError(400, `Snapshot names starting with ${TEMPORARY_SNAPSHOT} are the runtime's own`);
+      let files: [string, FileEntry][] = [...volume.tree.files];
+      if (temporary) {
+        const directory = normalizePath(args.directory);
+        const { files: most, bytes: budget } = args.limit as { files: number; bytes: number };
+        files = [];
+        let bytes = 0;
+        for (const file of volume.tree.walk(directory)) {
+          bytes += file[1].size;
+          if (files.push(file) > most) throw new HttpError(413, `${directory} has more than ${most} files`);
+          if (bytes > budget) throw new HttpError(413, `${directory} holds more than ${budget} bytes`);
+        }
+      }
       // Metadata only: the snapshot shares every chunk with the volume.
-      const snapshot: SnapshotSummary = { id: newId("snap", 8), volume: id, name: name.trim(), seq: volume.seq, createdAt: Date.now(), files: volume.tree.files.size, bytes: volume.tree.bytes };
-      // It refers to every chunk the volume's files do: a collection under way stands down.
-      await this.touch(volume.header.tenant, [...volume.tree.files.values()].flatMap(entry => entry.chunks));
+      const snapshot: SnapshotSummary = { id: newId("snap", 8), volume: id, name: name.trim(), seq: volume.seq, createdAt: Date.now(), files: files.length, bytes: files.reduce((sum, [, entry]) => sum + entry.size, 0) };
+      // It refers to every chunk its files do: a collection under way stands down.
+      await this.touch(volume.header.tenant, files.flatMap(([, entry]) => entry.chunks));
       // The file map can hold 100,000 entries, so it is a blob; the summary is a row.
-      await this.storage.writeBlob(snapshotFilesKey(id, snapshot.id), Buffer.from(JSON.stringify(Object.fromEntries(volume.tree.files))));
-      await this.fenced(volume, async sql => {
-        if ((await sql.query("select count(*) as count from volume_snapshots where volume = $1", [id])).rows[0].count >= VOLUME_LIMITS.snapshots) throw new HttpError(409, `A volume keeps at most ${VOLUME_LIMITS.snapshots} snapshots; delete one first`);
+      await this.storage.writeBlob(snapshotFilesKey(id, snapshot.id), Buffer.from(JSON.stringify(Object.fromEntries(files))));
+      const stale = await this.fenced(volume, async sql => {
+        const pattern = `${TEMPORARY_SNAPSHOT}%`;
+        // Temporary ones a crash left behind go now; they and the rest count separately, so tool calls never fill a volume's snapshots.
+        const left = temporary ? (await sql.query("delete from volume_snapshots where volume = $1 and name like $2 and created_at < $3 returning id", [id, pattern, Date.now() - TEMPORARY_SNAPSHOT_MS])).rows.map(row => row.id as string) : [];
+        const count = (await sql.query(`select count(*) as count from volume_snapshots where volume = $1 and name ${temporary ? "" : "not "}like $2`, [id, pattern])).rows[0].count;
+        if (count >= VOLUME_LIMITS.snapshots) throw new HttpError(409, temporary ? `${VOLUME_LIMITS.snapshots} tool calls are reading this volume's directories now; retry in a few minutes` : `A volume keeps at most ${VOLUME_LIMITS.snapshots} snapshots; delete one first`);
         await sql.query("insert into volume_snapshots (id, volume, name, seq, created_at, files, bytes) values ($1, $2, $3, $4, $5, $6, $7)",
           [snapshot.id, id, snapshot.name, snapshot.seq, snapshot.createdAt, snapshot.files, snapshot.bytes]);
+        return left;
       });
+      for (const old of stale) await this.storage.removeBlob(snapshotFilesKey(id, old)).catch(() => {});
       return snapshot;
     }
     if (op === "deleteSnapshot") {
@@ -478,14 +549,7 @@ export class VolumeService {
     if (op === "fork") {
       let files: [string, FileEntry][] = [...volume.tree.files];
       let seq = volume.seq;
-      if (args.snapshot !== undefined) {
-        const summary: SnapshotSummary | undefined = typeof args.snapshot === "string" && /^snap_[a-f0-9]{16}$/.test(args.snapshot)
-          ? (await this.db.query(`select ${SNAPSHOT_COLUMNS} from volume_snapshots where id = $1 and volume = $2`, [args.snapshot, id])).rows[0] : undefined;
-        const stored = summary && await this.storage.readBlob(snapshotFilesKey(id, summary.id));
-        if (!summary || !stored) throw new HttpError(404, "Unknown snapshot");
-        files = Object.entries(JSON.parse(Buffer.from(stored).toString("utf8")) as Record<string, FileEntry>);
-        seq = summary.seq;
-      }
+      if (args.snapshot !== undefined) ({ files, seq } = await this.snapshotFiles(id, args.snapshot));
       const name = args.name === undefined ? `${volume.header.name} (fork)` : args.name;
       if (typeof name !== "string" || !name.trim() || name.length > 120) throw new HttpError(400, "name must be 1–120 characters");
       // `into`: the id the fork takes (an agent fork's workspace, never a caller's), which a retry finds made already.

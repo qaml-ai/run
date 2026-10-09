@@ -211,6 +211,8 @@ type Session = {
   beginning?: { durable?: Promise<void> };
   /** How the agent process found the interrupted turn when it started. */
   handoff?: { continue: true } | { finished: unknown };
+  /** The transcript's last turn, ended before this load (agent-host `endedTurn`): for a resumed run that never recorded its end. */
+  ended?: { requests: string[]; calls: string[]; finished: unknown };
   fault?: Error;
   /** A header write failed with the database unreachable, so the stored revision is unknown. */
   unsettled?: boolean;
@@ -1518,6 +1520,7 @@ export class ClientSessions {
         await this.writeHeader(session);
       }
       session.handoff = result.resume;
+      session.ended = result.ended;
       // A turn handed off at a step boundary lost nothing: it simply goes on here.
       const handed = [...session.resuming].map(id => session.requests.get(id)).find(record => record?.handedOff);
       if (result.resume && "continue" in result.resume && handed) this.publish(session, { type: "event", requestId: "", event: { type: "turn_resumed", handoff: handed.handoffs?.at(-1)?.reason ?? "retire", reason: "The node running this turn left the cluster; it continues here from the step it finished" } });
@@ -3726,8 +3729,8 @@ export class ClientSessions {
 
   /** Finish a run whose node was lost: continue its turn, or take the answer it had already reached. */
   private async resume(session: Session, record: RequestRecord): Promise<Outcome> {
-    const handoff = session.handoff;
-    session.handoff = undefined;
+    const handoff = session.handoff, ended = session.ended;
+    session.handoff = session.ended = undefined;
     if (handoff && "continue" in handoff) return { result: await this.execute(session, record, {}, "continue") };
     // A resume whose turn is still suspended on the calls it answers: its node was lost before the agent took the answers
     // (the agent releases each call durably before running it, so one still waiting never ran). It runs again from its
@@ -3736,8 +3739,21 @@ export class ClientSessions {
     const suspended = (handoff?.finished as { stopped?: string } | undefined)?.stopped === "input_required";
     if (suspended && record.method === "resume") reachable("a resume found its turn still suspended on the calls it answers");
     else if (handoff) return { result: handoff.finished };
+    // Its turn ended before its node was lost, which then never recorded the run's end: the outcome is the turn's.
+    else if (ended && await this.endedTurnOf(session, record, ended)) {
+      reachable("a resumed run took the outcome of its turn that had ended");
+      return { result: ended.finished };
+    }
     if (record.method === "resume") return { result: await this.execute(session, record, {}) };
     return { error: "The runtime restarted during this request", uncertain: true };
+  }
+
+  /** Whether the ended turn was this run's: a prompt's user message opens it, a resume's answered calls' results do. */
+  private async endedTurnOf(session: Session, record: RequestRecord, ended: NonNullable<Session["ended"]>) {
+    if (record.method === "prompt") return ended.requests.includes(record.id);
+    if (record.method !== "resume" || !this.options.inputs) return false;
+    const rows = await this.options.inputs.forRequest(session.header.id, record.suspension!);
+    return rows.length > 0 && rows.every(row => ended.calls.includes(row.toolCallId));
   }
 
   /** Queue a run behind the agent's earlier runs; a busy agent never rejects work. */

@@ -674,6 +674,113 @@
           "contentType"
         ]
       },
+      "FileManifest": {
+        "type": "object",
+        "properties": {
+          "snapshot": {
+            "type": "string",
+            "description": "The snapshot made for the call, which every URL here reads"
+          },
+          "root": {
+            "type": "string",
+            "description": "The directory, as the agent names it"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/FileValue"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string",
+                      "description": "Relative to root"
+                    }
+                  },
+                  "required": [
+                    "path"
+                  ]
+                }
+              ],
+              "description": "A file sent to a tool, as MCP SEP-2631 (draft) describes one"
+            }
+          },
+          "archive": {
+            "type": "object",
+            "properties": {
+              "uri": {
+                "type": "string"
+              },
+              "mimeType": {
+                "type": "string",
+                "enum": [
+                  "application/gzip"
+                ]
+              }
+            },
+            "required": [
+              "uri",
+              "mimeType"
+            ],
+            "description": "Every file, as a tar.gz with paths relative to root"
+          }
+        },
+        "required": [
+          "snapshot",
+          "root",
+          "files",
+          "archive"
+        ],
+        "description": "A directory sent to a tool: its files as they were when the call was made"
+      },
+      "FileValue": {
+        "type": "object",
+        "properties": {
+          "uri": {
+            "type": "string",
+            "description": "A URL to the file, bound to the call (GET /v1/files/{token}/{name}), or a data: URI"
+          },
+          "name": {
+            "type": "string"
+          },
+          "mimeType": {
+            "type": "string"
+          },
+          "size": {
+            "type": "number"
+          },
+          "digest": {
+            "type": "object",
+            "properties": {
+              "algorithm": {
+                "type": "string",
+                "enum": [
+                  "sha-256"
+                ]
+              },
+              "value": {
+                "type": "string",
+                "description": "Hex"
+              }
+            },
+            "required": [
+              "algorithm",
+              "value"
+            ],
+            "description": "Absent for files over 64 MiB"
+          }
+        },
+        "required": [
+          "uri",
+          "name",
+          "mimeType",
+          "size"
+        ],
+        "description": "A file sent to a tool, as MCP SEP-2631 (draft) describes one"
+      },
       "Me": {
         "type": "object",
         "properties": {
@@ -2298,6 +2405,14 @@
             "additionalProperties": false,
             "description": "Which tools the user approves before each call. Those tools are declared to the model directly; an approved call carries _meta[\"agent-runtime/approval\"] and an approval claim in its identity token"
           },
+          "fileArguments": {
+            "type": "string",
+            "enum": [
+              "on",
+              "off"
+            ],
+            "description": "Whether the model may send the agent's files to its tools ({\"$file\": path}), and the runtime saves files they link to. Default on with auth \"runtime\", off otherwise: another party's server could be sent any file the agent can read"
+          },
           "auth": {
             "type": "object",
             "properties": {
@@ -3011,6 +3126,14 @@
             },
             "additionalProperties": false,
             "description": "Which tools the user approves before each call. Those tools are declared to the model directly; an approved call carries _meta[\"agent-runtime/approval\"] and an approval claim in its identity token"
+          },
+          "fileArguments": {
+            "type": "string",
+            "enum": [
+              "on",
+              "off"
+            ],
+            "description": "Whether the model may send the agent's files to its tools ({\"$file\": path}), and the runtime saves files they link to. Default on with auth \"runtime\", off otherwise: another party's server could be sent any file the agent can read"
           },
           "headerNames": {
             "type": "array",
@@ -5624,6 +5747,14 @@
             "additionalProperties": false,
             "description": "Which operations the user approves before each call. They are declared to the model directly; with auth \"runtime\", an approved call's identity token carries an approval claim"
           },
+          "fileArguments": {
+            "type": "string",
+            "enum": [
+              "on",
+              "off"
+            ],
+            "description": "Whether the model may send the agent's files to its tools ({\"$file\": path}), and the runtime saves files they link to. Default on with auth \"runtime\", off otherwise: another party's server could be sent any file the agent can read"
+          },
           "spec": {
             "type": "string",
             "description": "The spec's URL; absent for a spec given inline"
@@ -5941,6 +6072,14 @@
             "additionalProperties": false,
             "description": "Which tools the user approves before each call. Those tools are declared to the model directly; an approved call carries _meta[\"agent-runtime/approval\"] and an approval claim in its identity token"
           },
+          "fileArguments": {
+            "type": "string",
+            "enum": [
+              "on",
+              "off"
+            ],
+            "description": "Whether the model may send the agent's files to its tools ({\"$file\": path}), and the runtime saves files they link to. Default on with auth \"runtime\", off otherwise: another party's server could be sent any file the agent can read"
+          },
           "headers": {
             "type": "object",
             "additionalProperties": {
@@ -6083,6 +6222,14 @@
             },
             "additionalProperties": false,
             "description": "Which operations the user approves before each call. They are declared to the model directly; with auth \"runtime\", an approved call's identity token carries an approval claim"
+          },
+          "fileArguments": {
+            "type": "string",
+            "enum": [
+              "on",
+              "off"
+            ],
+            "description": "Whether the model may send the agent's files to its tools ({\"$file\": path}), and the runtime saves files they link to. Default on with auth \"runtime\", off otherwise: another party's server could be sent any file the agent can read"
           },
           "spec": {
             "anyOf": [
@@ -7128,6 +7275,61 @@
         "required": [
           "files"
         ]
+      },
+      "FileContents": {
+        "type": "object",
+        "properties": {
+          "seq": {
+            "type": "number",
+            "description": "The volume's change number the files were read at (the snapshot's, for a snapshot)"
+          },
+          "snapshot": {
+            "type": "string"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "size": {
+                  "type": "number"
+                },
+                "version": {
+                  "type": "number"
+                },
+                "contentType": {
+                  "type": "string"
+                },
+                "sha256": {
+                  "type": "string",
+                  "description": "Of the file's bytes, hex"
+                },
+                "text": {
+                  "type": "string",
+                  "description": "The contents, for a file that is UTF-8 text"
+                },
+                "data": {
+                  "type": "string",
+                  "description": "The contents base64, for any other file"
+                }
+              },
+              "required": [
+                "path",
+                "size",
+                "version",
+                "contentType",
+                "sha256"
+              ]
+            }
+          }
+        },
+        "required": [
+          "seq",
+          "files"
+        ]
       }
     },
     "parameters": {}
@@ -7231,6 +7433,90 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/VolumeFile"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/files/{token}/{name}": {
+      "get": {
+        "security": [],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "token",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The file's name, for tools and browsers; not checked"
+            },
+            "required": true,
+            "description": "The file's name, for tools and browsers; not checked",
+            "name": "name",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "bytes=start-end (a file's URL)"
+            },
+            "required": false,
+            "description": "bytes=start-end (a file's URL)",
+            "name": "range",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file; a directory's manifest (JSON: snapshot, root, files with their own URLs, and archive); or its archive (tar.gz)",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileManifest"
+                }
+              }
+            }
+          },
+          "206": {
+            "description": "The requested range",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "The file changed since the call, or the call's files are no longer kept",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             }
@@ -13819,15 +14105,34 @@
     },
     "/v1/volumes": {
       "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Comma-separated volume ids (at most 50): those volumes, each with its seq, files and bytes (Volume), instead of every volume"
+            },
+            "required": false,
+            "description": "Comma-separated volume ids (at most 50): those volumes, each with its seq, files and bytes (Volume), instead of every volume",
+            "name": "ids",
+            "in": "query"
+          }
+        ],
         "responses": {
           "200": {
-            "description": "The tenant's volumes",
+            "description": "The tenant's volumes; with ids, those volumes as they are now",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/VolumeSummary"
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/VolumeSummary"
+                      },
+                      {
+                        "$ref": "#/components/schemas/Volume"
+                      }
+                    ]
                   }
                 }
               }
@@ -14322,6 +14627,16 @@
             "description": "Changes after this seq",
             "name": "since",
             "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Only changes at or under this path"
+            },
+            "required": false,
+            "description": "Only changes at or under this path",
+            "name": "prefix",
+            "in": "query"
           }
         ],
         "responses": {
@@ -14390,15 +14705,45 @@
             "required": false,
             "name": "limit",
             "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "List (or read) a snapshot of the volume instead of the volume as it is"
+            },
+            "required": false,
+            "description": "List (or read) a snapshot of the volume instead of the volume as it is",
+            "name": "snapshot",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true"
+              ],
+              "description": "Every matching file with its contents, in one answer at one seq (FileContents): at most 1,000 files and 16 MiB, else 413"
+            },
+            "required": false,
+            "description": "Every matching file with its contents, in one answer at one seq (FileContents): at most 1,000 files and 16 MiB, else 413",
+            "name": "content",
+            "in": "query"
           }
         ],
         "responses": {
           "200": {
-            "description": "Files under prefix, in path order, a page at a time",
+            "description": "Files under prefix, in path order, a page at a time; with content=true, all of them with their contents (FileContents)",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FileList"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FileList"
+                    },
+                    {
+                      "$ref": "#/components/schemas/FileContents"
+                    }
+                  ]
                 }
               }
             }
@@ -14511,6 +14856,16 @@
             "description": "Path inside the volume; may contain /",
             "name": "path",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Read the file as a snapshot of the volume has it"
+            },
+            "required": false,
+            "description": "Read the file as a snapshot of the volume has it",
+            "name": "snapshot",
+            "in": "query"
           },
           {
             "schema": {

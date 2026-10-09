@@ -99,6 +99,15 @@ function requireTenant(options: { tenant?: unknown }) {
 
 export async function verifyRuntimeToken(token: string, options: VerifyOptions): Promise<RuntimeIdentity & { claims: Record<string, unknown> }> {
   requireTenant(options);
+  const claims = await signedClaims(token, options);
+  if (![options.tenant].flat().includes(claims.tenant)) throw new RuntimeTokenError("Token is for another tenant's agent");
+  const audiences = new Set((Array.isArray(options.audience) ? options.audience : [options.audience]).map(trim));
+  if (![claims.aud].flat().some(audience => typeof audience === "string" && audiences.has(trim(audience)))) throw new RuntimeTokenError("Token is for another server");
+  return { ...identityFromClaims(claims), claims };
+}
+
+/** A token's claims once its signature (one of the runtime's published Ed25519 keys, EdDSA only), issuer and times check out. */
+async function signedClaims(token: string, options: { runtime: string; issuer?: string; fetch?: typeof globalThis.fetch; clockTolerance?: number }): Promise<Record<string, any>> {
   const pieces = token.split(".");
   if (pieces.length !== 3) throw new RuntimeTokenError("Malformed token");
   const header = part(pieces[0]);
@@ -110,13 +119,55 @@ export async function verifyRuntimeToken(token: string, options: VerifyOptions):
   const claims = part(pieces[1]);
   const now = Math.floor(Date.now() / 1000), skew = options.clockTolerance ?? 30;
   if (claims.iss !== issuerOf(options)) throw new RuntimeTokenError("Token is from another issuer");
-  if (![options.tenant].flat().includes(claims.tenant)) throw new RuntimeTokenError("Token is for another tenant's agent");
-  const audiences = new Set((Array.isArray(options.audience) ? options.audience : [options.audience]).map(trim));
-  if (![claims.aud].flat().some(audience => typeof audience === "string" && audiences.has(trim(audience)))) throw new RuntimeTokenError("Token is for another server");
   if (typeof claims.exp !== "number" || claims.exp + skew < now) throw new RuntimeTokenError("Token has expired");
   if (typeof claims.nbf === "number" && claims.nbf - skew > now) throw new RuntimeTokenError("Token is not valid yet");
   if (typeof claims.iat === "number" && claims.iat - skew > now) throw new RuntimeTokenError("Token is issued in the future");
-  return { ...identityFromClaims(claims), claims };
+  return claims;
+}
+
+/**
+ * What a file URL the runtime sent a tool grants (`{"$file": path}` in a call's arguments): the agent and call it is
+ * for, and the file (`path` in `volume`, `agentPath` as the agent names it) at a `version`, or a directory's `manifest`
+ * or `archive` in a `snapshot`. `exp` is when the URL stops working (seconds).
+ */
+export interface FileUrlClaims {
+  tenant: string; agent: string; call: string; tool: string; volume: string; path: string; agentPath: string;
+  kind: "file" | "manifest" | "archive"; version?: number; snapshot?: string; iss: string; exp: number; iat: number;
+}
+
+export interface FileUrlOptions {
+  /** The runtime's URL (e.g. https://run.camelai.com): the URL must be at it, and its keys are at /.well-known/jwks.json. */
+  runtime: string;
+  /** The tenants (or tenant) whose agents' files you accept. */
+  tenant?: string | string[];
+  /** The agents (or agent) whose files you accept. */
+  agent?: string | string[];
+  /** The issuer tokens must name; the runtime's URL by default, as for identity tokens. */
+  issuer?: string;
+  /** Fetches the runtime's keys; `testRuntime()` supplies one. */
+  fetch?: typeof globalThis.fetch;
+  /** Seconds of clock skew allowed (default 30). */
+  clockTolerance?: number;
+}
+
+/**
+ * Check that a file URL a tool was sent came from the runtime, for the tenant and agent you expect, and has not expired:
+ * its origin is the runtime's, and its token is signed by the runtime's keys for files. Returns what it grants. The
+ * runtime checks it again when the URL is fetched (and answers 410 if the file changed since the call).
+ */
+export async function verifyFileUrl(url: string, options: FileUrlOptions): Promise<FileUrlClaims> {
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { throw new RuntimeTokenError("Not a URL"); }
+  const runtime = trim(options.runtime);
+  const origins = HOSTED.includes(runtime) ? HOSTED : [runtime];
+  if (!origins.some(origin => new URL(origin).origin === parsed.origin)) throw new RuntimeTokenError("The URL is not at the runtime");
+  const match = /^\/v1\/files\/([^/]+)\/[^/]*$/.exec(parsed.pathname);
+  if (!match) throw new RuntimeTokenError("Not a file URL");
+  const claims = await signedClaims(decodeURIComponent(match[1]), options);
+  if (claims.aud !== "camelrun:file") throw new RuntimeTokenError("Token is not for a file");
+  if (options.tenant !== undefined && ![options.tenant].flat().includes(claims.tenant)) throw new RuntimeTokenError("Token is for another tenant's agent");
+  if (options.agent !== undefined && ![options.agent].flat().includes(claims.agent)) throw new RuntimeTokenError("Token is for another agent");
+  return claims as FileUrlClaims;
 }
 
 /** A request's bearer token, if it has one. */

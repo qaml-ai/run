@@ -176,7 +176,9 @@ See [Voice and audio](../guides/voice.md).
 | A remote MCP server's response | 8 MiB |
 | An OpenAPI spec | 8 MiB; at most 1,024 operations allowed (`allowTools`) |
 | Tool sources per definition | 64 MCP servers, 64 OpenAPI specs; `allowTools`/`denyTools` at most 512 names (MCP) |
-| A file in a tool's arguments (base64) | 4 MiB |
+| A file in a tool's arguments (base64, or inline as `data:`) | 4 MiB |
+| A file's URL in a tool's arguments | 5 minutes, bound to the call and the file's version |
+| A directory in a tool's arguments | 1,000 files, 256 MiB |
 | A binary tool response saved to the workspace | 64 MiB; 64 MiB per call and 256 MiB per run saved in all |
 | An MCP text resource shown inline | 64 KiB (longer ones are saved as files) |
 
