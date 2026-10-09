@@ -103,6 +103,30 @@ zero, and `stopReason`; a tool result's `isError`, false):
   before the first message it keeps; only the last counts. History still shows
   every message, so a long conversation need not be summarized again.
 
+A conversation in another API's format comes in as it is: `importMessages` (not
+with `initialMessages`) takes `{format, messages, model?}`, and the runtime
+converts it to Pi messages, tool calls and results included:
+
+| `format` | `messages` |
+| --- | --- |
+| `anthropic` | Messages API messages: text, images, `tool_use`, `tool_result`, `thinking` and `redacted_thinking` |
+| `openai-responses` | Responses API input items: messages, `function_call`, `function_call_output` and `reasoning` |
+| `openai-chat` | Chat Completions messages, `tool_calls` and `tool` results included |
+
+```ts
+await agents.upsert(`thread-${thread.id}`, { importMessages: { format: "openai-chat", messages: thread.messages, model: "openai/gpt-6-sol" } });
+```
+
+`model` names the model that wrote the assistant turns. Its reasoning (signed
+thinking, encrypted reasoning items) goes back as it came to that same model; any
+other model gets it as text, or not at all when it has none, as when a
+conversation changes model. System and developer messages are left out: the
+agent's own prompt replaces them. Images must be base64 (or `data:` URLs); the
+runtime fetches nothing. A message it cannot convert is a 400 naming it
+(`INVALID_HISTORY: importMessages.messages[3]: …`). Python takes
+`import_messages={…}`; `toPiMessages(input)` (TypeScript) converts one yourself, to
+see what an agent will begin with.
+
 History is imported only when the agent is made: an agent that has one keeps it,
 and an upsert with the same key makes the agent once. `GET …/history` shows it at
 once. Thinking from another model reaches the model as text; a tool call with no
