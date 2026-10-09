@@ -65,7 +65,8 @@ test("a request forwarded to a retiring task that does not hold its agent goes o
   const held = await viaA.createAgent({ tools: {}, idempotencyKey: "held-by-a" });
   const released = await viaA.createAgent({ tools: {}, idempotencyKey: "released-by-a" });
   await released.close();
-  await until(async () => !await c.owner(released.session.id), "A released the idle agent");
+  // Released, or let go by a fence (a stall on a loaded runner): either way no node holds it.
+  await until(async () => !await c.liveOwner(released.session.id), "A released the idle agent");
   // Keep the other one loaded on A.
   const keep = setInterval(() => void fetch(`${a.url}/clients/${held.session.id}/state`, { headers: { Authorization: `Bearer ${held.session.token}` } }).catch(() => {}), 200);
   t.after(() => { clearInterval(keep); return held.close(); });
