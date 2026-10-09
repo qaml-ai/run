@@ -74,8 +74,8 @@ export interface AgentConfig {
    * (none for an agent without tools): for a tool-less agent, or one with a few tools of its own.
    */
   codeMode?: boolean;
-  /** Where the agent's volumes are mounted, for its prompt's summary of its environment. */
-  mounts?: { path: string; mode: "ro" | "rw" }[];
+  /** Where the agent's volumes are mounted, for its prompt's summary of its environment; `workspace` marks its own. */
+  mounts?: { path: string; mode: "ro" | "rw"; workspace?: boolean }[];
   initialMessages?: AgentMessage[];
   thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   /** The most the model writes in one response, within its own maximum; null or absent: the model's maximum. */
@@ -101,6 +101,14 @@ export type WireMessage =
   | { type: "request"; id: string; method: string; params: any }
   | { type: "response"; id: string; result?: any; error?: string }
   | { type: "event"; event: any };
+
+/**
+ * Where an agent keeps files of its own (attachments, tool outputs, scratch): its own workspace volume wherever it is
+ * mounted (`workspace`), else a writable /workspace, else its first writable mount.
+ */
+export function scratchMount<M extends { path: string; mode: "ro" | "rw"; workspace?: boolean }>(mounts: M[] | undefined): M | undefined {
+  return mounts?.find(mount => mount.workspace && mount.mode === "rw") ?? mounts?.find(mount => mount.path === "/workspace" && mount.mode === "rw") ?? mounts?.find(mount => mount.mode === "rw");
+}
 
 export function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);

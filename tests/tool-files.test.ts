@@ -250,3 +250,13 @@ test("a call and a run save only so much, never outside the workspace", async t 
   const readOnly = new ToolFiles({ volumes, tenant: "acme", agent: "agent", mounts: mounts.slice(0, 1), tool: "t", run: { left: 100 } });
   await assert.rejects(readOnly.save("x", Buffer.from("1")), /no writable mount/);
 });
+
+test("tool outputs go to the agent's own workspace wherever it is mounted, not a project at /workspace", async t => {
+  const { db } = await testDatabase();
+  const volumes = new VolumeService({ db, storage: memoryStorage(postgresTail(db, { unfenced: true })) });
+  t.after(() => volumes.close());
+  const project = await volumes.create("acme", { name: "project" });
+  const mounts = await volumes.mountsFor("acme", "agent", [{ volumeId: project.id, path: "/workspace", mode: "rw" }, { workspace: true, path: "/scratch" }]);
+  const saved = await new ToolFiles({ volumes, tenant: "acme", agent: "agent", mounts, tool: "t", run: { left: 100 } }).save("out.txt", Buffer.from("x"));
+  assert.match(saved.path, /^\/scratch\/tool-outputs\/t\/[a-f0-9]{8}\/out\.txt$/);
+});

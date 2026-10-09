@@ -8,7 +8,7 @@ import {
 import { executeCode, presentResult, type CodeExecutor, type CodeResult } from "./codemode.ts";
 import type { Outbound } from "./outbound.ts";
 import { scriptValue } from "./mcp-results.ts";
-import { errorText, IDENTITY_KEY, PERSISTENCE_FAILED, SCOPE_KEY, type AgentConfig, type CallContext, type Credentials, type RunStop, type ToolBridge } from "./protocol.ts";
+import { errorText, IDENTITY_KEY, PERSISTENCE_FAILED, SCOPE_KEY, scratchMount, type AgentConfig, type CallContext, type Credentials, type RunStop, type ToolBridge } from "./protocol.ts";
 import { applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS, leadingSystemMessage, OUTPUT, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER, OUTPUT_TOOL } from "./system-prompt.ts";
 import { renderMessages, senderInput, stamp } from "./sender.ts";
 import type { SearchHit, SearchQuery } from "./tool-search.ts";
@@ -543,7 +543,7 @@ export function createAgentHost(hostIO: HostIO) {
     if (text.length <= limit) return content;
     // Saved where the agent can read it: with its file tools, or fs in js_exec.
     const readable = config.fileTools !== false || config.codeMode !== false;
-    const mount = readable ? config.mounts?.find(entry => entry.path === "/workspace" && entry.mode === "rw") ?? config.mounts?.find(entry => entry.mode === "rw") : undefined;
+    const mount = readable ? scratchMount(config.mounts) : undefined;
     // Named by the message that made the call too: providers may give calls in different turns the same id.
     const at = made(toolCallId).messageIndex;
     const path = mount && `${mount.path}/tool-results/${at !== undefined ? `${at}-` : ""}${toolCallId.replace(/[^A-Za-z0-9_.-]/g, "_")}.txt`;
@@ -835,7 +835,7 @@ export function createAgentHost(hostIO: HostIO) {
       const maxTimeoutMs = config.codeLimits?.maxTimeoutMs ?? SANDBOX_LIMITS.maxTimeoutMs;
       jsExec = {
         name: "js_exec", label: "JavaScript",
-        description: "Run JavaScript or TypeScript in a fresh sandbox. Return what you want to see: it comes back as JSON (a string as its own text), after any console.log lines. In scope: tools (await tools.<name>(args) gives the tool's result as data; tools.search, tools.namespaces and tools.describe find them) and fs for your files (readFile(path, { encoding: \"utf8\" }) gives a string, a Uint8Array without it; writeFile(path, string | Uint8Array); stat, list, remove); no network, imports, Node APIs or timers. Variables are gone after each execution; files persist. An execution gets timeoutMs of wall time (default " + Math.min(SANDBOX_LIMITS.timeoutMs, maxTimeoutMs) + ", at most " + maxTimeoutMs + "), tool calls included: raise it for slow tools." + " For example:\nconst tickets = [];\nfor (let page = 1; page; ) { const result = await tools.helpdesk__list_tickets({ status: \"open\", page }); tickets.push(...result.tickets); page = result.nextPage; }\nawait fs.writeFile(\"/workspace/tmp/tickets.json\", JSON.stringify(tickets)); // a later execution can read it back\nreturn { open: tickets.length, oldest: tickets[0]?.createdAt };",
+        description: "Run JavaScript or TypeScript in a fresh sandbox. Return what you want to see: it comes back as JSON (a string as its own text), after any console.log lines. In scope: tools (await tools.<name>(args) gives the tool's result as data; tools.search, tools.namespaces and tools.describe find them) and fs for your files (readFile(path, { encoding: \"utf8\" }) gives a string, a Uint8Array without it; writeFile(path, string | Uint8Array); stat, list, remove); no network, imports, Node APIs or timers. Variables are gone after each execution; files persist. An execution gets timeoutMs of wall time (default " + Math.min(SANDBOX_LIMITS.timeoutMs, maxTimeoutMs) + ", at most " + maxTimeoutMs + "), tool calls included: raise it for slow tools." + " For example:\nconst tickets = [];\nfor (let page = 1; page; ) { const result = await tools.helpdesk__list_tickets({ status: \"open\", page }); tickets.push(...result.tickets); page = result.nextPage; }\nawait fs.writeFile(\"" + (scratchMount(config.mounts)?.path ?? "/workspace") + "/tmp/tickets.json\", JSON.stringify(tickets)); // a later execution can read it back\nreturn { open: tickets.length, oldest: tickets[0]?.createdAt };",
         parameters: {
           type: "object", required: ["code"],
           properties: { code: { type: "string" }, description: { type: "string" }, timeoutMs: { type: "number" }, maxOutputCharacters: { type: "number" } },
