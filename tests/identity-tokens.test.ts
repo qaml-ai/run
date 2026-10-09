@@ -111,3 +111,32 @@ test("tool servers with auth \"runtime\" get a short-lived token the runtime sig
   assert.equal(await scoped({ id: "sneaky", method: "configure", params: { subject: "u_999" } }), 400);
   assert.equal(await scoped({ id: "odd", method: "status", params: { actor: "u_999" } }), 400);
 });
+
+test("a child's run's identity tokens name its parent (par) and its chain's first agent (root), from the signed chain", async t => {
+  let base = "";
+  const app = await toolServer(t, () => base);
+  const lastUser = (body: any) => JSON.stringify(body.messages.findLast((message: any) => message.role === "user")?.content ?? "");
+  // The root delegates (level 1), its child spawns in the background (level 2), and that grandchild calls the app.
+  const r = await runtime(t, body => {
+    if (body.messages.at(-1).role === "tool") return { role: "assistant", content: "done" };
+    if (lastUser(body).includes("level 2")) return toolCall("app__whoami", {});
+    if (lastUser(body).includes("level 1")) return toolCall("spawn_agent", { agent: "app", task: "level 2" });
+    return toolCall("delegate", { agent: "app", task: "level 1" });
+  }, { ...LOCAL, AGENT_PUBLIC_URL: "" });
+  base = r.base;
+  const saved = await r.call("/v1/definitions", { headers: { "Idempotency-Key": "app" }, body: { name: "App", builtins: ["delegate", "agents"], delegate: { agents: ["app"] },
+    mcpServers: [{ name: "app", url: `${app.url}/mcp`, auth: { type: "runtime" }, audience: "urn:camelrun:alice:app" }] } });
+  assert.equal(saved.status, 201, saved.text);
+  const root = (await r.call("/v1/agents", { body: { definition: saved.json.id } })).json.id;
+  const record = await r.prompt(root, "start");
+  const child = record.outcome.result.toolCalls.find((call: any) => call.tool === "delegate").agentId;
+  const call = await until(() => app.seen.find(entry => entry.claims?.tcid), "the grandchild's call");
+  assert.deepEqual(app.seen.filter(entry => entry.error), []);
+  assert.notEqual(call.claims!.agent, child, "made by the grandchild");
+  assert.equal(call.claims!.par, child);
+  assert.equal(call.claims!.root, root);
+  // Outside a delegated run (the root's own listing), neither.
+  assert.ok(app.seen.filter(entry => entry.claims?.agent === root).every(entry => entry.claims!.par === undefined && entry.claims!.root === undefined));
+  // The grandchild's ending reaches the child.
+  await until(async () => (await r.call(`/v1/agents/${child}`)).json.requests.some((request: any) => request.id.startsWith("child_") && request.state === "completed"), "the child's notification");
+});

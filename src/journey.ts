@@ -134,7 +134,9 @@ const ASSISTANT = /(^|\.)(chatgpt\.com|openai\.com|claude\.ai|perplexity\.ai|gem
 const NOT_A_BROWSER = /bot\b|crawl|spider|slurp|preview|monitor|curl|wget|python|node|go-http|headless|scrapy|httpclient|axios|okhttp/i;
 
 /** The journey configuration in the environment, or undefined when AGENT_JOURNEY_URL is not set. `secret` is AGENT_JOURNEY_SECRET or what its ARN holds (secrets.ts). */
-export function journeyConfig(env: NodeJS.ProcessEnv, secret: string | undefined): Pick<JourneyOptions, "url" | "secret" | "visitorCookie" | "visitorCookieDomain" | "siteHosts" | "consentCookie" | "collectUnknown" | "retryBaseMs"> & { internalEmailDomains: string[] } | undefined {
+export function journeyConfig(env: NodeJS.ProcessEnv, secret: string | null | undefined): Pick<JourneyOptions, "url" | "secret" | "visitorCookie" | "visitorCookieDomain" | "siteHosts" | "consentCookie" | "collectUnknown" | "retryBaseMs"> & { internalEmailDomains: string[] } | undefined {
+  // Null: the secret is named (AGENT_JOURNEY_SECRET_ARN) and has no value yet (src/secrets.ts). Off until it has.
+  if (secret === null) return undefined;
   const raw = env.AGENT_JOURNEY_URL;
   if (!raw) {
     if (secret) throw new Error("AGENT_JOURNEY_SECRET is set without AGENT_JOURNEY_URL");

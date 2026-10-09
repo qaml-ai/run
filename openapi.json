@@ -1785,7 +1785,7 @@
           },
           "parentAgentId": {
             "type": "string",
-            "description": "For a child a delegate call made: the agent whose run made it"
+            "description": "For a child a delegate or spawn_agent call made: the agent whose run made it"
           }
         },
         "required": [
@@ -1985,7 +1985,8 @@
             "enum": [
               "input_required",
               "spend_limit",
-              "turn_limit"
+              "turn_limit",
+              "agent_loop_limit"
             ],
             "description": "Why an ended run stopped early (outcome.result.stopped)"
           },
@@ -2043,7 +2044,7 @@
             "type": "boolean"
           }
         },
-        "description": "result.code names a run's failure where it has a name: cancelled (a stop cancelled it before it began), aborted (stopped while it ran), model_stream_stalled (its model stopped answering, past every retry), turn_limit, spend_limit, output_missing, model_key_missing, model_key_invalid. result.stopped is input_required when the turn waits on human input, listed in result.inputs. A run's result also has reply, replyIndex, files, toolErrors and toolCalls: every tool call it made (the first 100), as {tool, toolCallId?, innerCallId?, ok, code?, agentId?} (agentId: the child a delegate call ran), without arguments or results. result.output is a structured answer, for a prompt sent with output. result.usage.subagentCostUsd is what its children spent, and result.usage.imageCostUsd what its generate_image calls spent"
+        "description": "result.code names a run's failure where it has a name: cancelled (a stop cancelled it before it began), aborted (stopped while it ran), model_stream_stalled (its model stopped answering, past every retry), turn_limit, spend_limit, agent_loop_limit (a sub-agent's notification landed without a turn: its chain reached its wake cap), output_missing, model_key_missing, model_key_invalid. result.stopped is input_required when the turn waits on human input, listed in result.inputs. A run's result also has reply, replyIndex, files, toolErrors and toolCalls: every tool call it made (the first 100), as {tool, toolCallId?, innerCallId?, ok, code?, agentId?} (agentId: the child a delegate or spawn_agent call ran), without arguments or results. result.output is a structured answer, for a prompt sent with output. result.usage.subagentCostUsd is what its children spent, and result.usage.imageCostUsd what its generate_image calls spent"
       },
       "AgentInput": {
         "type": "object",
@@ -2184,7 +2185,7 @@
               "$ref": "#/components/schemas/Builtin"
             },
             "maxItems": 8,
-            "description": "Tools the runtime answers itself (web_fetch, web_search, schedule, ask_user, delegate, generate_image), for an agent without a definition; one made from a definition has its definition's. An upsert without builtins leaves the agent none"
+            "description": "Tools the runtime answers itself (web_fetch, web_search, schedule, ask_user, delegate, generate_image, agents), for an agent without a definition; one made from a definition has its definition's. An upsert without builtins leaves the agent none"
           },
           "delegate": {
             "$ref": "#/components/schemas/DelegateSettings"
@@ -2296,8 +2297,10 @@
           "schedule",
           "ask_user",
           "delegate",
-          "generate_image"
-        ]
+          "generate_image",
+          "agents"
+        ],
+        "description": "agents: sub-agents in the background (spawn_agent, wait_agent, list_agents), with the delegate settings"
       },
       "DelegateSettings": {
         "type": "object",
@@ -2324,11 +2327,11 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 16,
-            "description": "delegate calls of one run in flight at once; more wait their turn. Default 4"
+            "description": "delegate calls of one run in flight at once (more wait their turn), and the agent's background sub-agents running at once (spawn_agent past it is refused). Default 4"
           }
         },
         "additionalProperties": false,
-        "description": "With the delegate builtin: who the agent may hand tasks to. Not with a definition, whose own it takes"
+        "description": "With the delegate or agents builtin: who the agent may hand tasks to. Not with a definition, whose own it takes"
       },
       "AgentTarget": {
         "anyOf": [
@@ -2819,7 +2822,7 @@
                       "object",
                       "null"
                     ],
-                    "description": "Who it may delegate to, with the delegate builtin"
+                    "description": "Who it may delegate to, with the delegate or agents builtin"
                   }
                 ]
               },
@@ -2832,7 +2835,7 @@
               },
               "parentRunId": {
                 "type": "string",
-                "description": "For a child a delegate call made: the run of parentAgentId that made it"
+                "description": "For a child a delegate or spawn_agent call made: the run of parentAgentId that made it"
               },
               "spendLimit": {
                 "type": [
@@ -3521,10 +3524,11 @@
                 "events",
                 "state",
                 "history",
-                "inputs"
+                "inputs",
+                "children"
               ]
             },
-            "description": "What it reads of the agent: GET /v1/agents/{id}/<scope>. Default all four"
+            "description": "What it reads of the agent: GET /v1/agents/{id}/<scope>. Default events, state, history and inputs. children: it reads the same of the agent's background sub-agents (spawn_agent's), by their ids"
           },
           "events": {
             "type": "array",
@@ -3583,6 +3587,14 @@
               "keep"
             ],
             "description": "cancel (default): the runs queued behind the running one (prompts, steered messages not yet read, continues, executions) are cancelled too, each ending with code cancelled, so nothing runs after the stop. keep: only the running turn is stopped, and the next queued run starts"
+          },
+          "children": {
+            "type": "string",
+            "enum": [
+              "abort",
+              "keep"
+            ],
+            "description": "abort (default): the agent's running background sub-agents (spawn_agent) are aborted too, and their notifications follow with status aborted. keep: they go on"
           }
         },
         "additionalProperties": false
@@ -3773,7 +3785,7 @@
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 16,
-                "description": "delegate calls of one run in flight at once; more wait their turn. Default 4"
+                "description": "delegate calls of one run in flight at once (more wait their turn), and the agent's background sub-agents running at once (spawn_agent past it is refused). Default 4"
               }
             },
             "additionalProperties": false,
@@ -5967,7 +5979,7 @@
                 "$ref": "#/components/schemas/DelegateSettings"
               },
               {
-                "description": "With the delegate builtin: who the model may hand tasks to, and how deep and wide. See the multi-agent guide"
+                "description": "With the delegate or agents builtin: who the model may hand tasks to, and how deep and wide. See the multi-agent guide"
               }
             ]
           },
@@ -6345,7 +6357,7 @@
                 "$ref": "#/components/schemas/DelegateSettings"
               },
               {
-                "description": "With the delegate builtin: who the model may hand tasks to, and how deep and wide. See the multi-agent guide"
+                "description": "With the delegate or agents builtin: who the model may hand tasks to, and how deep and wide. See the multi-agent guide"
               }
             ]
           },
@@ -6845,7 +6857,7 @@
                   "object",
                   "null"
                 ],
-                "description": "With the delegate builtin: who the model may hand tasks to, and how deep and wide. See the multi-agent guide"
+                "description": "With the delegate or agents builtin: who the model may hand tasks to, and how deep and wide. See the multi-agent guide"
               }
             ]
           },
@@ -7138,7 +7150,7 @@
                 "$ref": "#/components/schemas/DelegateSettings"
               },
               {
-                "description": "With the delegate builtin: who the model may hand tasks to, and how deep and wide. See the multi-agent guide"
+                "description": "With the delegate or agents builtin: who the model may hand tasks to, and how deep and wide. See the multi-agent guide"
               }
             ]
           },
@@ -10049,10 +10061,10 @@
               "enum": [
                 "1"
               ],
-              "description": "Also send the agent's children's progress, from its delegate calls: subagent_start, subagent_event (a child's event, streamed text left out) and subagent_end. Without it, none of them"
+              "description": "Also send the agent's children's progress, from its delegate and spawn_agent calls: subagent_start, subagent_event (a child's event, streamed text left out) and subagent_end (a background child's, as its notification lands; both with background: true). Without it, none of them"
             },
             "required": false,
-            "description": "Also send the agent's children's progress, from its delegate calls: subagent_start, subagent_event (a child's event, streamed text left out) and subagent_end. Without it, none of them",
+            "description": "Also send the agent's children's progress, from its delegate and spawn_agent calls: subagent_start, subagent_event (a child's event, streamed text left out) and subagent_end (a background child's, as its notification lands; both with background: true). Without it, none of them",
             "name": "subagents",
             "in": "query"
           },
@@ -10338,7 +10350,7 @@
         },
         "responses": {
           "200": {
-            "description": "The agent is stopped: its running turn is aborted, and the runs queued behind it are cancelled (unless queued: \"keep\")",
+            "description": "The agent is stopped: its running turn is aborted, the runs queued behind it are cancelled (unless queued: \"keep\"), and its running background sub-agents are aborted (unless children: \"keep\"). On a sub-agent, it stops that one alone, and its parent's notification follows with status aborted",
             "content": {
               "application/json": {
                 "schema": {

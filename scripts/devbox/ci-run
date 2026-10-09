@@ -26,7 +26,7 @@ git -C $repo fetch -q --prune origin '+refs/heads/*:refs/remotes/origin/*'
 git -C $repo worktree add -q --detach $dir "$ref"
 echo "   at $(git -C $dir log --oneline -1)"
 port=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])')
-docker run -d --name $pg -e POSTGRES_PASSWORD=test -p 127.0.0.1:$port:5432 --shm-size=1g postgres:16-alpine \
+docker run -d --name $pg -e POSTGRES_PASSWORD=test -p 127.0.0.1:$port:5432 --shm-size=1g public.ecr.aws/docker/library/postgres:16-alpine \
   -c max_connections=400 >/dev/null
 for i in $(seq 60); do docker exec $pg pg_isready -q 2>/dev/null && break; sleep 1; done
 export AGENT_TEST_DATABASE_URL=postgres://postgres:test@127.0.0.1:$port/postgres

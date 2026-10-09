@@ -192,6 +192,30 @@ variable "email_domain" {
   default     = ""
 }
 
+variable "journey_url" {
+  description = "The origin of the operator's own analytics store, which journey events are sent to and the admin site asks for reports (journey.tf, src/journey.ts). Nothing is sent until infra/journey.sh has stored the signing secrets. Empty for none."
+  type        = string
+  default     = "https://camelai.com"
+}
+
+variable "journey_cookie_domain" {
+  description = "The domain the operator's website sets its visitor cookie on, which the console's hostname must be under."
+  type        = string
+  default     = "camelai.com"
+}
+
+variable "journey_collect_unknown" {
+  description = "Record browsers that have given no answer about being measured (there is no consent banner). False records only those that agreed. A refusal, or Global Privacy Control, is never recorded."
+  type        = bool
+  default     = true
+}
+
+variable "journey_internal_email_domains" {
+  description = "Email domains whose Google and password sign-ins are the operator's own staff: their accounts are marked internal and left out of reports."
+  type        = list(string)
+  default     = ["camelai.com", "camelqa.com"]
+}
+
 variable "discord_managed_enabled" {
   description = "Serve the managed Camel Discord bot (src/discord-managed.ts) with the application in the discord-managed secret. Fill the secret first; an empty secret leaves it off. See docs/operations/managed-discord.md."
   type        = bool

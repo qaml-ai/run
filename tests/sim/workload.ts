@@ -4,12 +4,13 @@ import type { BuggifyPlan } from "./hooks.ts";
 /** One thing the workload does: a client call, or a fault. Agents and runs are numbered; their ids come at run time. */
 export type Op =
   /** `ttlSeconds`: the agent expires that long after it is made, and is purged (I18). */
-  | { op: "create"; agent: number; node: string; ttlSeconds?: number }
+  | { op: "create"; agent: number; node: string; ttlSeconds?: number; spawner?: boolean }
   /** A client deletes agent N, or volume N: its data is purged shortly after (I18). */
   | { op: "deleteAgent"; agent: number; node: string }
   | { op: "deleteVolume"; volume: number; node: string }
   /** `requestId`: the run's key goes in the body's requestId rather than the Idempotency-Key header. */
-  | { op: "prompt"; agent: number; run: number; node: string; key?: "requestId" }
+  /** `spawn`: the run starts a background sub-agent (its agent was made a `spawner`), which messages it and then notifies it (I21). */
+  | { op: "prompt"; agent: number; run: number; node: string; key?: "requestId"; spawn?: boolean }
   /**
    * A client sends run `run`'s prompt again, with the same key (as a retry after a lost answer does), to `node`: before
    * the first answered, or after; checked by I14.
@@ -198,6 +199,16 @@ export function generatePlan(seed: string, options: { steps?: number; durationMs
   if (store.float() < 0.25) {
     const kinds = (["slow", "error", "throttle", "lost"] as const).filter(() => store.float() < 0.6);
     if (kinds.length) extra.storageFaults = { rate: [0.01, 0.05, 0.2][store.int(3)], kinds: [...kinds], slowMs: [50, [500, 2_000, 10_000][store.int(3)]] };
+  }
+  // Background sub-agents for some seeds, from a stream of their own: the first agent spawns a child in some of its runs.
+  const multi = prng(`${seed}:agents`);
+  if (multi.float() < 0.4) {
+    const create = steps.find(step => step.op.op === "create" && step.op.agent === 0)?.op as Extract<Op, { op: "create" }> | undefined;
+    if (create) {
+      create.spawner = true;
+      for (const step of steps) if (step.op.op === "prompt" && step.op.agent === 0 && multi.float() < 0.6) step.op.spawn = true;
+      extra.env = { AGENT_CHILD_SWEEP_MS: "2000" };
+    }
   }
   // A database with a tail for some seeds, from a stream of its own, so every other draw of the plan stays as it was.
   const latency = prng(`${seed}:db-latency`);

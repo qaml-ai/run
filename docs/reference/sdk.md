@@ -79,7 +79,7 @@ brought to `config` if it differs. Returns a connected `Agent`. See
 | `mounts`, `fileTools` | `mounts=`, `file_tools=` | its volumes (fixed at creation), and whether it has file tools |
 | `codeMode` | `code_mode=` | `false`: no `js_exec`; every tool is called directly, and an agent with no tools at all gets little more than its instructions as its system prompt. See [Tools](../guides/tools.md#without-code-codemode-false) |
 | `name` | `name=` | a label, shown in the console |
-| `builtins` | `builtins=` | tools the runtime answers itself, without a definition: `web_fetch`, `web_search`, `schedule`, `ask_user`, `delegate` |
+| `builtins` | `builtins=` | tools the runtime answers itself, without a definition: `web_fetch`, `web_search`, `schedule`, `ask_user`, `delegate`, `agents` |
 | `delegate` | `delegate=` | sub-agents it may hand tasks to (`{ agents, instructions?, maxDepth?, maxParallel? }`); brings its builtin. See [Multi-agent](../guides/multi-agent.md) |
 | `mcpServers` | `mcp_servers=` | remote MCP servers of its own, without a definition: `[{ name, url, auth?: { type: "runtime" }, allowTools?, … }]`, no credentials. See [An agent's own MCP servers](../guides/tools.md#an-agents-own-mcp-servers) |
 | `subagents` | `subagents=` | also deliver its sub-agents' progress: `subagent_start`, `subagent_event`, `subagent_end` events, and stream parts |
@@ -575,6 +575,21 @@ changing its history with `agent.client.setMetadata({ name, type })`
 (`set_metadata(name=, type=)`). SDK-created agents appear in a local Studio
 (`npm run studio`) at `/studio/agents`; Studio observes the runtime, and your
 application keeps serving its tools.
+
+## 0.19.0 (TypeScript) / 0.15.0 (Python), 2026-10-09
+
+Needs runtime 0.8.0 or later (run.camelai.com has it).
+
+- Images: `agents.images.generate(prompt, options?)` and `agents.images.edit(prompt, images, options?)` (also
+  `runtime.images`), with the `ImageOptions`, `ImagesResult` and `GeneratedImage` types. See [Images](#images).
+- `Builtin` includes `generate_image` and `agents`; `RunUsage` has `imageCostUsd`; `usage.recorded` events type
+  `kind: "image"` and `images`.
+- Tool servers: `identity.parentAgentId` and `identity.rootAgentId` on a sub-agent's calls (from `delegate` or
+  `spawn_agent`). A sub-agent's notification in history carries `source: { kind: "agent", agentId, name }`.
+- Python: `agents.images.generate(prompt, ...)` and `agents.images.edit(prompt, images, ...)` (also `runtime.images`,
+  and the synchronous clients'), images given as bytes, local paths or `{"url"}`; `identity.parent_agent_id` and
+  `root_agent_id`.
+- The CLI's MCP tools take `generate_image` among an agent's builtins.
 
 ## 0.18.0 (TypeScript) / 0.14.0 (Python), 2026-10-09
 
