@@ -281,6 +281,8 @@ const QUEUED_METHODS = [...RUN_METHODS, "configure"];
 /** Queued runs a stop cancels (`stop`): what callers asked for. A `resume` closes a suspended turn, and is the runtime's. */
 const CANCELLABLE = ["prompt", "continue", "execute"];
 const CANCELLED = "Cancelled: the agent was stopped before this run began";
+/** A sub-agent's notification an abort reached before its turn: it lands without one (`stop`). */
+const STOPPED_NOTICE = { stopped: "aborted", message: "The agent was stopped: this notification is in its history, but no turn ran" };
 /** Runs that call the model; code executions do not, so spend limits leave them alone. */
 const MODEL_RUNS = ["prompt", "continue"];
 /** A running run's active time is reported at least this often. */
@@ -2426,6 +2428,9 @@ export class ClientSessions {
       this.chargeNotice(session, record.id, notice.costUsd);
       this.publish(session, { type: "event", requestId: record.id, event: { type: "subagent_end", ...toolCallId ? { toolCallId } : {}, agentId: notice.source.agentId, requestId: childRequest, name: notice.source.name, status: metadata.status, ...(metadata.error ? { error: metadata.error } : {}), background: true } });
     }
+    // Stopped before it ran (`stop`): it lands without a turn, which counts no wake.
+    const stopped = session.requests.get(record.id)?.landOnly;
+    if (stopped) return { params: { ...params, landOnly: stopped } };
     const refused = await this.runLimit(session, "prompt");
     const cap = this.options.wakesPerHour ?? MULTI_AGENT_LIMITS.wakesPerHour;
     const hour = Math.floor(now / 3_600_000);
@@ -2590,16 +2595,25 @@ export class ClientSessions {
     const run = this.runningRun(session);
     if (run && run.abortedAt === undefined) this.upsertRequest(session, { ...run, abortedAt: now });
     const cancelled: RequestRecord[] = [];
+    let kept = false;
     if (queued === "cancel") {
       for (const record of [...session.running.values()]) {
         if (record.began || !CANCELLABLE.includes(record.method)) continue;
+        // A sub-agent's notification (or message to its parent) is the runtime's, sent once: it is not cancelled, but
+        // lands without a turn, so what the sub-agent said stays in history.
+        const notice = (record.params as { notice?: { metadata?: { to?: string } } } | undefined)?.notice;
+        if (notice && notice.metadata?.to !== "child") {
+          this.upsertRequest(session, { ...record, landOnly: STOPPED_NOTICE });
+          kept = true;
+          continue;
+        }
         const { params: _params, ...rest } = record;
         cancelled.push(this.upsertRequest(session, { ...rest, state: "completed", endedAt: now, outcome: { result: { error: CANCELLED, code: "cancelled" } }, ...(announcing ? { announce: true as const } : {}) }));
       }
     }
     // The cancelled runs' slot (when nothing else holds the agent busy) is free before they are seen to end.
     if (cancelled.length) await this.releaseBusy(session);
-    if (run || cancelled.length) await this.commit(session, true);
+    if (run || cancelled.length || kept) await this.commit(session, true);
     for (const record of cancelled) {
       this.publish(session, { type: "event", requestId: record.id, event: { type: "run_cancelled", reason: "stopped" } });
       this.publish(session, { type: "response", id: record.id, outcome: record.outcome! });
@@ -4285,7 +4299,12 @@ export class ClientSessions {
     // resumed from its transcript (continue) is open there already, so the agent is still sent it, aborted: it closes the
     // turn durably before the run is seen to end, so a fork or history page in between finds it settled.
     if (session.aborted?.delete(record.id)) {
-      if (method !== "continue") throw new Error("The run was aborted");
+      // A notification lands all the same, without its turn (see `stop`).
+      if (method === "prompt" && params?.notice !== undefined && params.notice.metadata?.to !== "child") {
+        reachable("an abort reached a notification's run before its message landed, which landed without a turn");
+        params = { ...params, landOnly: STOPPED_NOTICE };
+      }
+      else if (method !== "continue") throw new Error("The run was aborted");
       params = { ...params, aborted: true };
     }
     try {

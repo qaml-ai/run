@@ -527,3 +527,13 @@ test("a notification whose landing the database refuses for now is landed when t
   const result = await runPlan(plan, { quiet: true });
   assert.deepEqual(result.failures, []);
 });
+
+test("a notification an abort reaches before its turn lands without one, not lost (seed 23594457)", async () => {
+  // Minimized from seed 23594457: the parent was aborted while a child's notification run waited to land; the run ended
+  // aborted after its row was marked landed, and the message never reached history. An abort now lands a notification
+  // (and a child's message to its parent) without a turn, whether it was queued or about to begin.
+  const plan: Plan = JSON.parse(readFileSync(new URL("./sim/cases/notification-aborted.json", import.meta.url), "utf8"));
+  const result = await runPlan(plan, { quiet: true });
+  assert.deepEqual(result.failures, []);
+  assert.ok(result.reached.includes("an abort reached a notification's run before its message landed, which landed without a turn"), result.reached.join(", "));
+});
