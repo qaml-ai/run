@@ -41,6 +41,19 @@ test("a tenant reads its agent's events, state, history and inputs with its own 
   assert.equal((await r.call(`/v1/agents/${agent}/events?poll=1`)).status, 404);
 });
 
+test("?request= keeps a stream or poll to one request's events and response", async t => {
+  const r = await runtime(t, () => ({ content: "hello" }));
+  const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
+  await r.prompt(agent, "first", undefined, { requestId: "req-first" });
+  await r.prompt(agent, "second", undefined, { requestId: "req-second" });
+  const all = (await r.call(`/v1/agents/${agent}/events?poll=1&snapshot=0`)).json.events;
+  const ids = (events: any[]) => new Set(events.map(({ data }) => data.type === "event" ? data.requestId : data.type === "response" ? data.id : data.type));
+  assert.deepEqual([...ids(all)].sort(), ["req-first", "req-second"]);
+  const one = (await r.call(`/v1/agents/${agent}/events?poll=1&snapshot=0&request=req-second`)).json.events;
+  assert.deepEqual([...ids(one)], ["req-second"]);
+  assert.ok(one.some(({ data }: any) => data.type === "response"), "its response too");
+});
+
 test("a subscriber that goes away before its stream opens gives its place back", async t => {
   const r = await runtime(t, () => ({ content: "hello" }));
   const created = (await r.call("/v1/agents", { body: {} })).json;

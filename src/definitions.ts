@@ -32,7 +32,7 @@ export interface DefinitionSpec {
   maxOutputTokens?: number;
   /** Its agents' sampling temperature, for a model and thinking level that take one (session-config.ts `modelSettingsRefusal`). */
   temperature?: number;
-  limits?: { ttlSeconds?: number | null };
+  limits?: { ttlSeconds?: number | null; idleTtlSeconds?: number | null };
   /** The most one run of its agents may take (model responses, seconds), within the runtime's maximums. */
   runLimits?: RunLimits;
   mounts?: unknown[];
@@ -74,7 +74,7 @@ export type AgentParams = Record<string, unknown> & { tools?: ToolDefinition[] }
 const FIELDS = ["description", "model", "systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "fileTools", "codeMode", "limits", "runLimits", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "applyOnUpdate"] as const;
 /** Configuration an agent made from a definition may set as its own, which applying the definition leaves. */
 export const OVERRIDES = ["model", "thinkingLevel", "maxOutputTokens", "temperature", "fileTools", "codeMode", "runLimits"] as const;
-const PROVISION_FIELDS = ["name", "type", "ttlSeconds", "mounts", "tools", "initialMessages", "systemPromptAppend"];
+const PROVISION_FIELDS = ["name", "type", "ttlSeconds", "idleTtlSeconds", "mounts", "tools", "initialMessages", "systemPromptAppend"];
 const MAX_DEFINITIONS = 200;
 const validId = (id: string) => /^def_[a-f0-9]{20}$/.test(id);
 /** The server-side tool sources an agent takes from a definition, if it has any. */
@@ -254,7 +254,10 @@ export class Definitions {
     const definition = await this.read(tenant, params.definition);
     const { spec } = definition;
     validTtl(params.ttlSeconds);
-    const ttlSeconds = params.ttlSeconds !== undefined ? params.ttlSeconds : spec.limits?.ttlSeconds;
+    // A lifetime given with the agent replaces the definition's, whichever kind each is.
+    const lifetime = params.ttlSeconds !== undefined || params.idleTtlSeconds !== undefined;
+    const ttlSeconds = lifetime ? params.ttlSeconds : spec.limits?.ttlSeconds;
+    const idleTtlSeconds = lifetime ? params.idleTtlSeconds : spec.limits?.idleTtlSeconds;
     const mounts = params.mounts !== undefined ? params.mounts : spec.mounts;
     const overrides = OVERRIDES.filter(key => params[key] !== undefined);
     const own = (key: typeof OVERRIDES[number] | "systemPrompt") => params[key] ?? spec[key];
@@ -262,7 +265,7 @@ export class Definitions {
       params: {
         ...Object.fromEntries(([...OVERRIDES, "systemPrompt"] as const).filter(key => own(key) !== undefined).map(key => [key, own(key)])),
         tools: params.tools ?? [], name: params.name ?? definition.name, ...(params.type !== undefined ? { type: params.type } : {}),
-        ...(ttlSeconds !== undefined ? { ttlSeconds } : {}), ...(mounts !== undefined ? { mounts } : {}),
+        ...(ttlSeconds !== undefined ? { ttlSeconds } : {}), ...(idleTtlSeconds !== undefined ? { idleTtlSeconds } : {}), ...(mounts !== undefined ? { mounts } : {}),
         ...Object.fromEntries(["initialMessages", "systemPromptAppend"].filter(key => params[key] !== undefined).map(key => [key, params[key]])),
       },
       ref: { id: definition.id, revision: definition.revision }, overrides,
@@ -297,8 +300,11 @@ export class Definitions {
       if (refusal) throw new Error(refusal);
     } catch (error) { throw new HttpError(400, errorText(error)); }
     if (spec.limits !== undefined) {
-      if (!spec.limits || typeof spec.limits !== "object" || Object.keys(spec.limits).some(key => key !== "ttlSeconds")) throw new HttpError(400, "limits is { ttlSeconds }");
+      if (!spec.limits || typeof spec.limits !== "object" || Object.keys(spec.limits).some(key => key !== "ttlSeconds" && key !== "idleTtlSeconds")) throw new HttpError(400, "limits is { ttlSeconds?, idleTtlSeconds? }");
       validTtl(spec.limits.ttlSeconds);
+      const idle = spec.limits.idleTtlSeconds;
+      if (idle !== undefined && idle !== null && (!Number.isInteger(idle) || idle < 60 || idle > 366 * 86_400)) throw new HttpError(400, "limits.idleTtlSeconds must be an integer from 60 to 31622400, or null");
+      if (idle != null && spec.limits.ttlSeconds != null) throw new HttpError(400, "limits takes ttlSeconds or idleTtlSeconds, not both");
     }
     if (spec.description !== undefined && (typeof spec.description !== "string" || !spec.description.trim() || spec.description.length > 1000)) throw new HttpError(400, "description must contain 1–1000 characters");
     if (spec.fileTools !== undefined && typeof spec.fileTools !== "boolean") throw new HttpError(400, "fileTools must be true or false");

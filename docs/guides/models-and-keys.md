@@ -222,8 +222,10 @@ ran on. Setting a value starts counting from zero; `null` removes it. A PATCH ap
 shows `spendLimit: {usd, spent}`. An agent at or over its limit gets 402 for new
 `prompt` and `continue` runs, and a running turn ends after the response that
 crossed it (its tool calls run and are recorded), with `stopped: "spend_limit"`:
-the SDKs' `run()` fails with code `spend_limit`. Only you can set it, not the
-agent's own token.
+the SDKs' `run()` fails with code `spend_limit`. The result's `limit` says which
+limit it was: `"run"` (the run's own budget, below), `"agent"` (the agent's),
+`"tenant"` (your account's monthly cap) or `"credit"` (your prepaid credit ran out).
+Only you can set it, not the agent's own token.
 
 A run can have a budget of its own: `spendLimit: {"usd": n}` on
 `POST /v1/agents/:id/prompt` (the SDKs' `run`, `stream` and `prompt` take
@@ -247,7 +249,10 @@ Lower them for an agent with `runLimits: {"maxResponses": n, "maxSeconds": n}` (
 SDKs' `runLimits`, `run_limits=` in Python) when you make it, or with
 `PATCH /v1/agents/:id/configuration` (`null` removes them), or for every agent of a
 [definition](definitions.md) with its `runLimits`. An agent's own stay when its
-definition is applied. Values above the runtime's maximums count as the maximums,
+definition is applied. One run can lower them further: `runLimits: {"maxResponses": n,
+"maxSeconds": n}` on `POST /v1/agents/:id/prompt` (the SDKs' `run`, `stream`, `prompt`
+and `send` take `runLimits`, `run_limits=` in Python) applies to that run alone, and
+only where it is lower than the agent's. Values above the runtime's maximums count as the maximums,
 which its operator sets (see [Configuration](../operations/configuration.md),
 `AGENT_MAX_RUN_RESPONSES`). Only you can set them, not the agent's own token. They are counted on the node running the
 turn: a turn resumed on another node after its node was lost counts again from there.

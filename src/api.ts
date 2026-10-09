@@ -6,7 +6,7 @@ import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { BillingAlerts } from "./billing-alerts.ts";
 import type { Accounts, Principal } from "./accounts.ts";
-import { answerList, type ClientSessions } from "./client-sessions.ts";
+import { answerList, type ClientSessions, type StreamReader } from "./client-sessions.ts";
 import { personal, type ConsoleAuth } from "./console-auth.ts";
 import type { Journey } from "./journey.ts";
 import { checkNewPassword, checkPassword, normalizeEmail } from "./passwords.ts";
@@ -26,7 +26,7 @@ import type { Webhooks } from "./webhooks.ts";
 import type { Telemetry } from "./telemetry.ts";
 import { definitionRoutes } from "./definitions-api.ts";
 import { runRoutes, type RunsContext } from "./runs.ts";
-import type { RequestRecord } from "../shared/client-protocol.ts";
+import type { ClientEvent, RequestRecord, TurnSnapshot } from "../shared/client-protocol.ts";
 import * as schema from "./api-schemas.ts";
 import { normalizePath, VOLUME_LIMITS, type FileEntry, type VolumeService } from "./volumes.ts";
 import { actorInput, identityInput } from "./identity.ts";
@@ -601,6 +601,7 @@ export function api(context: ApiContext) {
         wait: z.string().optional().openapi({ description: "With poll: seconds (at most 25) to wait for the next event when none is buffered" }),
         snapshot: z.enum(["1", "0"]).optional().openapi({ description: "By default, where the stream cannot replay (no Last-Event-ID, or one behind the buffer), it starts with a snapshot of the running turn instead of what is buffered or a 409. Each message_update is its delta alone, so a subscriber folds from the snapshot. 0: no snapshot; behind the buffer is a 409" }),
         subagents: z.enum(["1"]).optional().openapi({ description: "Also send the agent's children's progress, from its delegate calls: subagent_start, subagent_event (a child's event, streamed text left out) and subagent_end. Without it, none of them" }),
+        request: z.string().optional().openapi({ description: "Only this request's events and response (a run's id, a prompt's requestId), besides snapshots" }),
       }),
     },
     responses: {
@@ -611,7 +612,12 @@ export function api(context: ApiContext) {
     security: readers,
   }), c => {
     const browser = c.var.principal.browser;
-    return clients.watchFor(c, c.req.param("id")!, c.var.principal.tenant, browser && { show: data => readableFrame(browser, data), until: browser.exp });
+    const reader: StreamReader | undefined = browser && { show: data => readableFrame(browser, data), until: browser.exp };
+    // `request`: only that request's frames (its events and its response); snapshots of the running turn still come.
+    const request = c.req.query("request");
+    const own = (data: ClientEvent | TurnSnapshot) => data.type === "event" ? data.requestId === request : data.type === "response" ? data.id === request : true;
+    return clients.watchFor(c, c.req.param("id")!, c.var.principal.tenant, request === undefined ? reader
+      : { show: data => own(data) ? (reader ? reader.show(data) : data) : undefined, until: reader?.until ?? Infinity });
   });
   route(createRoute({ method: "get", path: "/v1/agents/{id}/state", request: { params: agentId }, security: readers, responses: { 200: reply("Request state and the stream's cursor; for a browser token, each request only as how it ended", schema.SessionState) } }), async c => {
     const state = await clients.stateFor(c.req.param("id")!, c.var.principal.tenant);

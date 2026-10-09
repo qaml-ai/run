@@ -9,7 +9,7 @@ import { errorText, PERSISTENCE_FAILED, scratchMount } from "./protocol.ts";
 import { enqueueEvents, usageCost, webhookEvent, type WebhookEvent } from "./webhooks.ts";
 import { AgentSupervisor } from "./supervisor.ts";
 import { platformUsage } from "./platform-pricing.ts";
-import { configurationRefusal, configurationUpdate, type CustomProviders, type ModelEndpoints } from "./session-config.ts";
+import { configurationRefusal, configurationUpdate, runLimitsInput, type CustomProviders, type ModelEndpoints } from "./session-config.ts";
 import { outputInput, validateDefinitions } from "./tool-policy.ts";
 import { importedHistory, validateUserMessages } from "./history.ts";
 import { forkCut, recordedMessages, type Backlog, type TranscriptRecord } from "./transcript.ts";
@@ -60,8 +60,8 @@ export class NotOwner extends HttpError {
 type SessionConfig = Omit<AgentConfig, "id" | "directory" | "tools" | "apiKey">;
 /** Rarely-changing session identity and configuration (a row in `agents`); rewritten only when it changes. */
 interface SessionHeader {
-  /** `expiresAt` null: the agent lives until it is deleted. */
-  version: 3; id: string; digest: string; expiresAt: number | null; revoked: boolean;
+  /** `expiresAt` null: the agent lives until it is deleted. `idleTtlMs`: it moves on with each run (`stillUsed`). */
+  version: 3; id: string; digest: string; expiresAt: number | null; revoked: boolean; idleTtlMs?: number;
   /** Owning tenant. */
   tenant: string;
   /** How many times its token was rotated (`rotateToken`): from the first, the token is derived from this, not its key. */
@@ -177,6 +177,8 @@ type Session = {
   usage?: Map<string, RunUsage>;
   /** Model runs' own spend limits (a prompt's `spendLimit`), in USD, by request id, while they run. */
   runLimits?: Map<string, number>;
+  /** Model runs' own run limits (a prompt's `runLimits`: model responses and seconds), by request id, while they run. */
+  runCaps?: Map<string, RunLimits>;
   /** Writing the latest run's `run.started` event, which the event of its end waits for. */
   started?: Promise<void>;
   /** Whether the run in progress has its webhook events written: its tenant had an endpoint for them as it began. */
@@ -289,7 +291,7 @@ const transientStart = (error: unknown) => databaseRetryable(error) || databaseU
 /** A run's latest hand-offs its record keeps (`handoffs`): one per deploy or drain it outlived. */
 const MAX_HANDOFFS_KEPT = 20;
 /** What a run handed off at a step boundary had gathered for its outcome, which its next owner takes over (`takeOver`). */
-type Carried = { usage?: RunUsage; childSpend?: number; spendLimit?: number; toolCalls?: RunToolCall[]; toolErrors?: ToolError[]; files?: WrittenFile[]; presented?: (FileRef & { caption?: string })[] };
+type Carried = { usage?: RunUsage; childSpend?: number; spendLimit?: number; runLimits?: RunLimits; toolCalls?: RunToolCall[]; toolErrors?: ToolError[]; files?: WrittenFile[]; presented?: (FileRef & { caption?: string })[] };
 /** Notified, as `<node> <agent>`, when a node gives up an agent with runs open, or ends a dead peer's heartbeat: nodes sweep at once. */
 export const ORPHANS_CHANNEL = "agent_runtime_orphans";
 /**
@@ -1231,7 +1233,7 @@ export class ClientSessions {
       return json(c, 200, { cursor, events: snapshot ? [{ id: cursor, data: shown(snapshot) }] : [] });
     }
     const res = c.env.outgoing;
-    const expiry = reader ? setTimeout(() => res.end(), Math.max(0, reader.until - Date.now())) : undefined;
+    const expiry = reader && Number.isFinite(reader.until) ? setTimeout(() => res.end(), Math.max(0, reader.until - Date.now())) : undefined;
     expiry?.unref();
     if (reader) readers.set(res, reader);
     idle.watchers.add(res);
@@ -1328,7 +1330,7 @@ export class ClientSessions {
     if (c.req.query("subagents") === "1") subagentReaders.add(res);
     let ready: Record<string, unknown> = { version: 5, agentId: session.header.id };
     // A reader's stream ends as its token expires: it reconnects with a fresh one, so access changes apply within a token's life.
-    const expiry = reader ? setTimeout(() => res.end(), Math.max(0, reader.until - Date.now())) : undefined;
+    const expiry = reader && Number.isFinite(reader.until) ? setTimeout(() => res.end(), Math.max(0, reader.until - Date.now())) : undefined;
     expiry?.unref();
     if (reader) readers.set(res, reader);
     if (mode === "watch") {
@@ -1496,8 +1498,12 @@ export class ClientSessions {
         definitions,
         codeSlot: async signal => this.codeGate.acquire(session.header.tenant, (await this.codeLimits(session.header.tenant)).concurrent, signal),
         runLimit: async () => {
-          const limited = await this.agentSpendLimit(session) ?? this.runSpendLimit(session) ?? await this.options.spendLimit?.(session.header.tenant);
-          if (limited) return { stopped: "spend_limit" as const, message: typeof limited === "string" ? limited : limited.message };
+          // Which limit stopped it: the run's, the agent's, or the tenant's (its monthly cap, a message; its credit, a 402).
+          const agentLimit = await this.agentSpendLimit(session);
+          const runLimit = agentLimit === undefined ? this.runSpendLimit(session) : undefined;
+          const tenantLimit = agentLimit === undefined && runLimit === undefined ? await this.options.spendLimit?.(session.header.tenant) : undefined;
+          const limited = agentLimit ?? runLimit ?? tenantLimit;
+          if (limited) return { stopped: "spend_limit" as const, message: typeof limited === "string" ? limited : limited.message, limit: agentLimit ? "agent" as const : runLimit ? "run" as const : typeof tenantLimit === "string" ? "tenant" as const : "credit" as const };
           const turn = await this.turnLimit(session);
           if (turn) return { stopped: "turn_limit" as const, message: turn };
           // This node is leaving: the turn stops at this step boundary, and its next owner continues it (`park`).
@@ -2273,7 +2279,7 @@ export class ClientSessions {
    * (`origin.definition`), and `origin.provision` stands for its configuration in the
    * idempotency check, so a retry after the definition changed returns the same agent.
    */
-  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, given: string | undefined, metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string; spendLimit?: number; toolsHash?: string; remount?: boolean; builtins?: string[]; delegate?: DelegateSettings; mcpServers?: McpServerSpec[]; parent?: SessionHeader["parent"]; fork?: { id: string; from: ForkedFrom; records: TranscriptRecord[] }; admit?: (unchanged: boolean) => Promise<unknown>; run?: RunSettings } = {}, steps = new Steps()): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
+  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, given: string | undefined, metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string; spendLimit?: number; toolsHash?: string; remount?: boolean; idleTtlMs?: number; builtins?: string[]; delegate?: DelegateSettings; mcpServers?: McpServerSpec[]; parent?: SessionHeader["parent"]; fork?: { id: string; from: ForkedFrom; records: TranscriptRecord[] }; admit?: (unchanged: boolean) => Promise<unknown>; run?: RunSettings } = {}, steps = new Steps()): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
     metadata = agentMetadata(metadata);
     validateDefinitions(definitions);
     // The caller's key, shown in listings; an agent made without one gets a key nothing else knows.
@@ -2341,7 +2347,7 @@ export class ClientSessions {
         // A new agent's first ids are reserved with its row (`writeHeader`).
         const cursor = Date.now() * 1000;
         session = {
-          header: { version: 3, id, tenant, digest: hash(token), expiresAt: ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(sources ? { sources } : {}), ...(origin?.overrides?.length ? { overrides: origin.overrides } : {}), ...(identity ? { identity } : {}), ...(access.keyScope ? { keyScope: access.keyScope } : {}), ...(access.toolsHash ? { toolsHash: access.toolsHash } : {}), ...(given !== undefined ? { key: given } : {}), ...(access.fork ? { forkedFrom: access.fork.from } : {}), ...(access.parent ? { parent: access.parent } : {}), ...(access.run ? { run: access.run } : {}) },
+          header: { version: 3, id, tenant, digest: hash(token), expiresAt: access.idleTtlMs ? Date.now() + access.idleTtlMs : ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, ...(access.idleTtlMs ? { idleTtlMs: access.idleTtlMs } : {}), metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(sources ? { sources } : {}), ...(origin?.overrides?.length ? { overrides: origin.overrides } : {}), ...(identity ? { identity } : {}), ...(access.keyScope ? { keyScope: access.keyScope } : {}), ...(access.toolsHash ? { toolsHash: access.toolsHash } : {}), ...(given !== undefined ? { key: given } : {}), ...(access.fork ? { forkedFrom: access.fork.from } : {}), ...(access.parent ? { parent: access.parent } : {}), ...(access.run ? { run: access.run } : {}) },
           claim, requests: new Map(), running: new Map(), log: this.storage.log<JournalRecord>(this.journalKey(id), claim),
           cursor, reserved: cursor + this.eventBlock, events: [], eventBytes: 0, watchers: new Set(), polls: new Set(), inflight: 0, runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
         };
@@ -3141,6 +3147,8 @@ export class ClientSessions {
     // A spend limit applies at once, ahead of queued runs, so an application can set an allowance and then prompt.
     if (spendLimit !== undefined) await this.setSpendLimit(session, spendLimit);
     const isRun = RUN_METHODS.includes(body.method);
+    // An agent that lives while it is used lives on from each run it is sent.
+    if (isRun) await this.stillUsed(session);
     // Who is acting in a run is recorded apart from what the agent is asked to do.
     let actor: string | undefined;
     let { actor: rawActor, ...params } = body.params;
@@ -3153,6 +3161,8 @@ export class ClientSessions {
     if (params.whileRunning !== undefined && (body.method !== "prompt" || !["queue", "steer"].includes(params.whileRunning))) throw new HttpError(400, "whileRunning is queue or steer, for a prompt");
     // A run's own budget: it only ever lowers what the run may spend, so whoever may run the agent may set it.
     if (params.spendLimit !== undefined && (!MODEL_RUNS.includes(body.method) || spendInput(params.spendLimit) === null)) throw new HttpError(400, "spendLimit is {usd}, for a model run (prompt, continue)");
+    // Its own run limits likewise only lower what the agent's allow.
+    if (params.runLimits !== undefined && MODEL_RUNS.includes(body.method) && (!params.runLimits || typeof params.runLimits !== "object" || Object.keys(params.runLimits).some(key => key !== "maxResponses" && key !== "maxSeconds") || runLimitsInput(params.runLimits) === null)) throw new HttpError(400, "runLimits is {maxResponses?, maxSeconds?}, for a model run (prompt, continue)");
     // An output schema shapes the turn a prompt starts: a steer joins one already running.
     if (params.output !== undefined && (body.method !== "prompt" || params.whileRunning === "steer")) throw new HttpError(400, "output is for a prompt that starts its own turn (not whileRunning: steer)");
     // So is what the model sees of the history before it: all of it (full), or none (the system prompt and this message alone).
@@ -3654,6 +3664,13 @@ export class ClientSessions {
       (session.runLimits ??= new Map()).set(record.id, spendLimit.usd);
       params = rest;
     }
+    // So are its own run limits (turnLimit, overrun).
+    if (params?.runLimits !== undefined && MODEL_RUNS.includes(record.method)) {
+      const { runLimits, ...rest } = params;
+      const caps = runLimitsInput(runLimits);
+      if (caps) (session.runCaps ??= new Map()).set(record.id, caps);
+      params = rest;
+    }
     // Aborted since it began, before the agent had it: an abort sent to the agent now would find nothing to stop. A turn
     // resumed from its transcript (continue) is open there already, so the agent is still sent it, aborted: it closes the
     // turn durably before the run is seen to end, so a fork or history page in between finds it settled.
@@ -3728,6 +3745,8 @@ export class ClientSessions {
     if (!current) throw new Error("This agent was not made from a definition");
     const id = target?.id ?? current.id;
     const resolved = await this.options.definitionFor!(session.header.tenant, id);
+    // Its servers are listed afresh for the tools the agent takes now: what they offer may have changed with it.
+    if (resolved.sources?.mcpServers?.length) this.options.sources?.forget(session.header.tenant, resolved.sources.mcpServers);
     // The attached server's tools stay, as does the agent's own configuration; the tools list is rebuilt with the definition's sources.
     const config = Object.fromEntries(Object.entries(resolved.config).filter(([key]) => !session.header.overrides?.includes(key))) as Partial<DefinitionConfig["config"]>;
     return { update: { ...config, tools: session.header.definitions }, definition: { id, revision: resolved.revision }, sources: resolved.sources };
@@ -3916,6 +3935,7 @@ export class ClientSessions {
       const announcing = run && !!session.announcing;
       const completed = this.upsertRequest(session, { ...finished, state: "completed", outcome: value, endedAt: Date.now(), ...(announcing ? { announce: true as const } : {}) });
       session.runLimits?.delete(record.id);
+      session.runCaps?.delete(record.id);
       session.childSpend?.delete(record.id);
       session.aborted?.delete(record.id);
       try { await this.commit(session, true); }
@@ -4112,13 +4132,25 @@ export class ClientSessions {
   private async turnLimit(session: Session): Promise<string | undefined> {
     const run = [...session.running.values()].find(record => RUN_METHODS.includes(record.method) && record.began);
     if (!run) return undefined;
-    const most = await this.options.runLimitsFor?.(session.header.tenant) ?? RUN_LIMITS, own = session.header.config.runLimits ?? {};
-    const maxResponses = Math.min(own.maxResponses ?? most.maxResponses, most.maxResponses);
-    const maxSeconds = Math.min(own.maxSeconds ?? most.maxSeconds, most.maxSeconds);
+    const most = await this.options.runLimitsFor?.(session.header.tenant) ?? RUN_LIMITS, own = session.header.config.runLimits ?? {}, its = session.runCaps?.get(run.id) ?? {};
+    const maxResponses = Math.min(own.maxResponses ?? most.maxResponses, its.maxResponses ?? most.maxResponses, most.maxResponses);
+    const maxSeconds = await this.maxSeconds(session, run.id);
     const responses = session.usage?.get(run.id)?.responses ?? 0;
     if (responses >= maxResponses) return `This run stopped at its limit of ${maxResponses} model responses. Send another message to continue`;
     if (Date.now() - run.began! >= maxSeconds * 1000) return `This run stopped at its time limit of ${duration(maxSeconds)}. Send another message to continue`;
     return undefined;
+  }
+
+  /**
+   * An agent with an idle lifetime (`idleTtlSeconds`) lives that long from its latest run: its expiry moves on as a run
+   * is sent. It is written only once half the lifetime has passed since it last moved, so busy agents do not write it
+   * with every run.
+   */
+  private async stillUsed(session: Session) {
+    const { idleTtlMs, expiresAt } = session.header;
+    if (!idleTtlMs || expiresAt === null || expiresAt - Date.now() > idleTtlMs / 2) return;
+    session.header.expiresAt = Date.now() + idleTtlMs;
+    await this.writeHeader(session);
   }
 
   /** Why a run may not start: a model run's spend limit (a monthly cap or spent credit), or for any run, spent credit. */
@@ -4428,6 +4460,7 @@ export class ClientSessions {
       ...(session.usage?.has(id) ? { usage: session.usage.get(id) } : {}),
       ...(session.childSpend?.has(id) ? { childSpend: session.childSpend.get(id) } : {}),
       ...(session.runLimits?.has(id) ? { spendLimit: session.runLimits.get(id) } : {}),
+      ...(session.runCaps?.has(id) ? { runLimits: session.runCaps.get(id) } : {}),
     };
     const { params: _params, ...rest } = session.requests.get(id)!;
     this.upsertRequest(session, {
@@ -4439,6 +4472,7 @@ export class ClientSessions {
     session.usage?.delete(id);
     session.childSpend?.delete(id);
     session.runLimits?.delete(id);
+    session.runCaps?.delete(id);
     session.turn = undefined;
     session.partial = undefined;
     // The run's span is its next owner's to end.
@@ -4453,6 +4487,7 @@ export class ClientSessions {
     if (taken.usage) (session.usage ??= new Map()).set(record.id, taken.usage);
     if (taken.childSpend) (session.childSpend ??= new Map()).set(record.id, taken.childSpend);
     if (taken.spendLimit !== undefined) (session.runLimits ??= new Map()).set(record.id, taken.spendLimit);
+    if (taken.runLimits) (session.runCaps ??= new Map()).set(record.id, taken.runLimits);
     if (taken.toolCalls?.length) session.toolCalls = taken.toolCalls;
     if (taken.toolErrors?.length) session.toolErrors = taken.toolErrors;
     for (const file of taken.files ?? []) session.outputs?.files.set(file.path, file);
@@ -4560,7 +4595,7 @@ export class ClientSessions {
     if (!run || now - run.began! < overrunMs) return;
     // The run's own limit (the agent's runLimits, within the runtime's), as `turnLimit` counts it: not only the runtime's,
     // which an admin tenant does not have at all.
-    const maxSeconds = await this.maxSeconds(session);
+    const maxSeconds = await this.maxSeconds(session, run.id);
     const over = now - run.began! - maxSeconds * 1000;
     const id = session.header.id;
     if (!(over >= overrunMs) || !this.supervisor.agents.has(id) || !session.running.has(run.id)) return;
@@ -4570,10 +4605,14 @@ export class ClientSessions {
     else await this.supervisor.stop(id, { flush: false });
   }
 
-  /** The most seconds the agent's runs may take: its own runLimits' maxSeconds within the runtime's maximum for its tenant. */
-  private async maxSeconds(session: Session) {
+  /**
+   * The most seconds a run of the agent may take: the least of its own runLimits' maxSeconds, the run's own (a prompt's
+   * runLimits), and the runtime's maximum for its tenant.
+   */
+  private async maxSeconds(session: Session, run?: string) {
     const most = await this.options.runLimitsFor?.(session.header.tenant) ?? RUN_LIMITS;
-    return Math.min(session.header.config.runLimits?.maxSeconds ?? most.maxSeconds, most.maxSeconds);
+    const its = run === undefined ? undefined : session.runCaps?.get(run)?.maxSeconds;
+    return Math.min(session.header.config.runLimits?.maxSeconds ?? most.maxSeconds, its ?? most.maxSeconds, most.maxSeconds);
   }
 
   /** A session unloading keeps its watchers, idle, and answers its polls. */

@@ -644,6 +644,8 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(next(entry["key"] for entry in await self.runtime.list_agents() if entry["id"] == researcher.id), "py-researcher")
         defined = await self.runtime.upsert_definition("py-researcher", name="Researcher", builtins=["web_search"])
         self.assertEqual((await self.runtime.upsert_definition("py-researcher", name="Researcher", builtins=["web_search"]))["revision"], defined["revision"])
+        limited = await self.runtime.upsert_definition("py-limited", name="Limited", run_limits={"maxResponses": 20, "maxSeconds": 600})
+        self.assertEqual(limited["runLimits"], {"maxResponses": 20, "maxSeconds": 600})
         self.assertEqual((await self.runtime.http.get(f"{self.url}/v1/agents/{researcher.id}", headers={"Authorization": f"Bearer {self.token}"})).json()["builtins"], ["web_fetch"])
         # MCP servers of its own, without credentials.
         server = {"name": "kb", "url": "http://127.0.0.1:9/mcp", "auth": {"type": "runtime"}}
@@ -922,6 +924,19 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
 
         await asyncio.to_thread(scenario)
 
+    async def test_send_returns_at_once_and_wait_gets_the_run(self):
+        agent = await self.agents.upsert("py-send")
+        sent = await agent.send("Go", idempotency_key="py-fire-1")
+        self.assertEqual(sent["id"], "py-fire-1")
+        self.assertIn(sent["state"], ("running", "queued", "completed"))
+        self.assertEqual((await agent.wait(sent["id"])).status, "completed")
+
+        def in_sync():
+            with sync.Agents(self.token, url=self.url) as agents:
+                handle = agents.upsert("py-send-sync")
+                return handle.wait(handle.send("Go")["id"]).status
+        self.assertEqual(await asyncio.to_thread(in_sync), "completed")
+
     async def test_initial_messages_begin_an_agents_history_when_it_is_made(self):
         imported = [{"role": "user", "content": "My name is Ada.", "timestamp": 1},
                     {"role": "assistant", "content": [{"type": "text", "text": "Hello, Ada."}], "api": "openai-completions", "provider": "openrouter", "model": "openai/gpt-4o-mini",
@@ -1197,6 +1212,16 @@ class ServeToolsTest(unittest.IsolatedAsyncioTestCase):
         listed = (await self.runtime.post(self.app, self.APP, [{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, {"jsonrpc": "2.0", "method": "notifications/initialized"}], subject="alice")).json()
         self.assertEqual([entry["name"] for entry in listed[0]["result"]["tools"]], ["list_todos", "whoami"])
         self.assertEqual((await self.runtime.post(self.app, self.APP, {"jsonrpc": "2.0", "method": "notifications/initialized"}, subject="alice")).status_code, 202)
+
+    async def test_a_function_of_identity_lists_each_caller_its_own_tools(self):
+        @tool
+        def admin_only() -> str:
+            """Admin only."""
+            return "done"
+        app = serve_tools(lambda identity: [whoami, admin_only] if identity.context.get("role") == "admin" else [whoami], **self.runtime.options)
+        listed = lambda role: self.runtime.post(app, self.APP, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, subject="u", context={"role": role})
+        self.assertEqual([entry["name"] for entry in (await listed("admin")).json()["result"]["tools"]], ["whoami", "admin_only"])
+        self.assertEqual([entry["name"] for entry in (await listed("member")).json()["result"]["tools"]], ["whoami"])
 
     async def test_anything_but_the_runtimes_token_for_this_server_is_refused(self):
         call = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "list_todos", "arguments": {}}}

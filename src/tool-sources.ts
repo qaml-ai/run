@@ -380,6 +380,9 @@ export class ToolSources {
    * List a definition's MCP servers as it is saved, as an agent made from it would: what each offers, or why it could
    * not be listed. A server that refuses the definition's credentials (401, 403) is a mistake in them: a 400 now.
    */
+  /** Forget this node's listings of these servers (a definition was applied), so they are listed afresh. */
+  forget(tenant: string, servers: McpServerSpec[]) { this.mcp.forget(tenant, servers.map(server => server.url)); }
+
   async listed(tenant: string, definition: string, servers: McpServerSpec[]): Promise<ToolSourceView[]> {
     const context: SourceContext = { tenant, agent: definition, definition };
     return Promise.all(servers.map(async (spec): Promise<ToolSourceView> => {
@@ -460,7 +463,7 @@ export class ToolSources {
       },
       call: async ({ name, args, signal, origin, actor, run: runId, toolCallId, innerCallId, idempotencyKey, onProgress, approval, inputResponses, requestState, elicit }) => {
         // An approved call proves it to the tool: in its identity token and its `_meta`.
-        const turn = { ...(actor ? { actor } : {}), ...(origin ? { origin } : {}), ...(approval ? { approval } : {}) };
+        const turn = { ...(actor ? { actor } : {}), ...(origin ? { origin } : {}), ...(approval ? { approval } : {}), ...(runId ? { request: runId } : {}), ...(toolCallId ? { toolCall: toolCallId } : {}) };
         // What a file URL is bound to: the call's stable key, else its tool call (and its place in a js_exec run).
         const call = idempotencyKey ?? (toolCallId && (innerCallId ? `${toolCallId}:${innerCallId}` : toolCallId)) ?? randomUUID();
         if (builtins.includes(name)) {

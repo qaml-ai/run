@@ -165,6 +165,7 @@ export const WebhookEvents = {
   "run.completed": envelope("run.completed", z.object({
     ...runFacts, usage: runUsage,
     stopped: z.enum(["input_required", "spend_limit", "turn_limit"]).optional().openapi({ description: "Why it stopped early: waiting on input (inputIds), a spend limit, or the run's own limits (turn_limit: its model responses or time, see runLimits)" }),
+    limit: z.enum(["run", "agent", "tenant", "credit"]).optional().openapi({ description: "With stopped spend_limit, which limit stopped it: the run's own (spendLimit on the prompt), its agent's, the tenant's monthly cap, or the account's prepaid credit" }),
     inputIds: z.array(z.string()).optional(),
     replyIndex: z.number().optional().openapi({ description: "The final assistant message's index in the agent's history" }),
     messageCount: z.number().optional().openapi({ description: "Messages in the agent's history after it" }),
@@ -284,6 +285,7 @@ export const PromptInput = z.object({
   allowDisconnected: z.boolean().optional().openapi({ description: "Run even though the agent's tools need its application and none is connected (else 409 APPLICATION_NOT_CONNECTED): its calls then fail as not connected" }),
   whileRunning: z.enum(["queue", "steer"]).optional().openapi({ description: "What happens if the agent is working on a turn when this arrives. queue (default): it runs as the next turn. steer: the running turn takes it after its current step. The 202 says so at once (steer: \"accepted\"; \"queued\" when no turn could take it), and this request completes as soon as the turn takes the message (steeredInto names the turn, whose own request has its outcome; a steer_taken event marks it), so steered messages never wait for the turn's end, nor count against the agent's queue once taken. If the turn ends first, it runs as a turn of its own. With no turn running, both start one" }),
   spendLimit: SpendLimitInput.optional().openapi({ description: "This run's own budget in USD: it ends before its next model request once it has spent this. The agent's spendLimit is unchanged and counts the run too" }),
+  runLimits: z.strictObject({ maxResponses: z.number().int().min(1).optional(), maxSeconds: z.number().int().min(1).optional() }).optional().openapi({ description: "This run's own limits: at most this many model responses, or seconds. They only lower the agent's runLimits and the runtime's; at one, the run ends with stopped \"turn_limit\"" }),
   output: z.strictObject({
     schema: z.record(z.string(), z.unknown()).openapi({ description: "A JSON Schema for an object (type: \"object\"; at most 64 KB)", example: { type: "object", properties: { sentiment: { type: "string", enum: ["positive", "neutral", "negative"] } }, required: ["sentiment"] } }),
   }).optional().openapi({ description: "Structured output: the agent ends this run by calling a final_output tool whose arguments are the schema, checked against it (a call that does not fit goes back to the model with what is wrong). The run's outcome.result.output is that object. A model that answers in text instead is asked once more, with a reminder; a run that still ends without an output fails with code output_missing. The tool stays declared until a prompt without output. Not with whileRunning: steer" }),
@@ -355,6 +357,7 @@ export const AgentInput = z.object({
   fileTools: z.boolean().openapi({ description: "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; the mounts stay open to fs in js_exec, attachments and tool outputs. For applications with file tools of their own" }).optional(),
   codeMode: z.boolean().openapi({ description: "false: no js_exec (code mode). The model calls every tool directly, and the system prompt carries only the runtime text those tools need: for an agent with no tools (with fileTools: false too, and no builtins or tool sources), only the application's instructions and a short note on who sent each message. For a tool-less agent, such as a classifier. Best set when the agent is made: changed later, its tools change, while a conversation under way keeps the runtime text it began with" }).optional(),
   ttlSeconds: z.number().int().nullable().optional().openapi({ description: "Agent lifetime: 60 to 31622400 seconds, or null to live until deleted. Default: until deleted for an agent made with an Idempotency-Key, 86400 for one made without" }),
+  idleTtlSeconds: z.number().int().min(60).max(31_622_400).nullable().optional().openapi({ description: "Instead of ttlSeconds: the agent lives this long (60 to 31622400 seconds) from its latest run, so one in use is kept and one left idle expires. Not with ttlSeconds" }),
   mounts: z.array(MountInput).optional().openapi({ description: "Volumes for the agent's file tools. Its own workspace volume is at /workspace beside them unless they include {workspace: false} or a mount at /workspace; {workspace: true, path?} places it. The first is where relative paths resolve" }),
   remount: z.boolean().optional().openapi({ description: "An upsert of an existing agent: true sets the mounts given, between its turns, where other mounts are a 409" }),
   subject: z.string().optional().openapi({ description: "Who the agent acts for (a user id in your app): the `sub` of the identity tokens its tool servers with auth \"runtime\" get. Set only here" }),
@@ -694,6 +697,7 @@ export const Usage = z.object({
 const ThinkingLevel = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 const DefinitionLimits = z.object({
   ttlSeconds: z.number().int().nullable().optional().openapi({ description: "Agent lifetime: 60 to 31622400 seconds, or null to live until deleted. Default: until deleted for an agent made with an Idempotency-Key, 86400 for one made without" }),
+  idleTtlSeconds: z.number().int().min(60).max(31_622_400).nullable().optional().openapi({ description: "Instead of ttlSeconds: the agent lives this long (60 to 31622400 seconds) from its latest run, so one in use is kept and one left idle expires. Not with ttlSeconds" }),
 }).openapi("DefinitionLimits");
 const definitionName = z.string().trim().min(1).max(120);
 const openApiFields = {

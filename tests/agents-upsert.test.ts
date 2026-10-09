@@ -177,11 +177,34 @@ test("an agent's history is the list of its messages", async t => {
   assert.deepEqual(history.map(message => message.role), ["user", "assistant"]);
 });
 
+test("send returns the request as soon as the runtime has it; wait gets its run", async t => {
+  const { make } = await setup(t, () => ({ role: "assistant", content: "done", delayMs: 300 }));
+  const agent = await make();
+  const sent = await agent.send("Go", { idempotencyKey: "fire-1" });
+  assert.equal(sent.id, "fire-1");
+  assert.ok(["running", "queued"].includes(sent.state), sent.state);
+  assert.equal((await agent.send("Go", { idempotencyKey: "fire-1" })).id, "fire-1", "the same key is the same request");
+  const run = await agent.wait(sent.id);
+  assert.equal(run.text, "done");
+});
+
+test("a run takes limits of its own: at its maxResponses it stops as turn_limit, and the agent's stay as they were", async t => {
+  const { make, r } = await setup(t, (_body, index) => toolCall("js_exec", { code: `return ${index}` }, `call_${index}`));
+  const agent = await make();
+  const run = await agent.run("Go", { runLimits: { maxResponses: 2 }, throwOnError: false });
+  assert.equal(run.raw?.stopped, "turn_limit");
+  assert.match(run.error!.message, /limit of 2 model responses/);
+  assert.equal(r.model.bodies.length, 2);
+  assert.equal((await r.call(`/v1/agents/${agent.id}/prompt`, { body: { text: "x", runLimits: { idleSeconds: 5 } } })).status, 400, "only maxResponses and maxSeconds");
+  assert.equal((await r.call(`/v1/agents/${agent.id}`)).json.runLimits, null, "the agent's own limits are unchanged");
+});
+
 test("a run takes a budget of its own", async t => {
   // Every response costs something and asks for another tool call: only the budget ends the run.
   const { make } = await setup(t, (_body, index) => ({ ...toolCall("js_exec", { code: `return ${index}` }, `call_${index}`), usage: { prompt_tokens: 100_000, completion_tokens: 0 } }));
   const agent = await make();
   const run = await agent.run("Go", { spendLimit: { usd: 0.001 }, throwOnError: false });
   assert.equal(run.raw?.stopped, "spend_limit");
+  assert.equal(run.raw?.limit, "run", "the run's own limit stopped it");
   assert.match(run.error!.message, /This run has reached its spend limit/);
 });

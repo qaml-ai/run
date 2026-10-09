@@ -188,6 +188,16 @@
                 ],
                 "description": "Why it stopped early: waiting on input (inputIds), a spend limit, or the run's own limits (turn_limit: its model responses or time, see runLimits)"
               },
+              "limit": {
+                "type": "string",
+                "enum": [
+                  "run",
+                  "agent",
+                  "tenant",
+                  "credit"
+                ],
+                "description": "With stopped spend_limit, which limit stopped it: the run's own (spendLimit on the prompt), its agent's, the tenant's monthly cap, or the account's prepaid credit"
+              },
               "inputIds": {
                 "type": "array",
                 "items": {
@@ -2134,6 +2144,15 @@
             ],
             "description": "Agent lifetime: 60 to 31622400 seconds, or null to live until deleted. Default: until deleted for an agent made with an Idempotency-Key, 86400 for one made without"
           },
+          "idleTtlSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 60,
+            "maximum": 31622400,
+            "description": "Instead of ttlSeconds: the agent lives this long (60 to 31622400 seconds) from its latest run, so one in use is kept and one left idle expires. Not with ttlSeconds"
+          },
           "mounts": {
             "type": "array",
             "items": {
@@ -2553,6 +2572,21 @@
                 "description": "This run's own budget in USD: it ends before its next model request once it has spent this. The agent's spendLimit is unchanged and counts the run too"
               }
             ]
+          },
+          "runLimits": {
+            "type": "object",
+            "properties": {
+              "maxResponses": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "maxSeconds": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "additionalProperties": false,
+            "description": "This run's own limits: at most this many model responses, or seconds. They only lower the agent's runLimits and the runtime's; at one, the run ends with stopped \"turn_limit\""
           },
           "output": {
             "type": "object",
@@ -5661,6 +5695,15 @@
               "null"
             ],
             "description": "Agent lifetime: 60 to 31622400 seconds, or null to live until deleted. Default: until deleted for an agent made with an Idempotency-Key, 86400 for one made without"
+          },
+          "idleTtlSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 60,
+            "maximum": 31622400,
+            "description": "Instead of ttlSeconds: the agent lives this long (60 to 31622400 seconds) from its latest run, so one in use is kept and one left idle expires. Not with ttlSeconds"
           }
         }
       },
@@ -9561,6 +9604,16 @@
             "required": false,
             "description": "Also send the agent's children's progress, from its delegate calls: subagent_start, subagent_event (a child's event, streamed text left out) and subagent_end. Without it, none of them",
             "name": "subagents",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Only this request's events and response (a run's id, a prompt's requestId), besides snapshots"
+            },
+            "required": false,
+            "description": "Only this request's events and response (a run's id, a prompt's requestId), besides snapshots",
+            "name": "request",
             "in": "query"
           },
           {
