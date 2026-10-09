@@ -59,6 +59,11 @@ A **prepaid tenant** pays for:
   tokens in, $8 per million image tokens in and $30 per million image tokens out (`AGENT_PRICE_IMAGE_TEXT_INPUT_USD`,
   `AGENT_PRICE_IMAGE_INPUT_USD`, `AGENT_PRICE_IMAGE_OUTPUT_USD`), as OpenAI reports them. The hour's usage entry counts
   them apart (`image`, `images`), and `/v1/usage` has a row with `kind: "image"`. See [Images](../guides/images.md).
+- Both may run on the operator's **Azure OpenAI** deployments instead of the platform's OpenAI key
+  (`AGENT_AZURE_OPENAI_*`, see [Configuration](configuration.md)): Azure's global prices for `gpt-image-2.5-flare` and
+  `gpt-transcribe` are OpenAI's, so tenants are charged the same, from the tokens or seconds the answer reports. Logs
+  mark those requests `"via": "azure"` (`images_generated`, `transcribed`), and a fallback to OpenAI (`images_fallback`,
+  `transcription_fallback`).
 - **Storage**, $0.10 per GB-month of what its agents and volumes keep in Storage
   (transcripts, journals, volume trees and snapshots, file chunks, each chunk once
   however many files share it), charged once a UTC day, on one node, for that day.

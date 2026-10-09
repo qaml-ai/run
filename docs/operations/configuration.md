@@ -38,6 +38,9 @@
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | Stripe, for credit purchases (development; see [Billing](billing.md)) |
 | `AGENT_STRIPE_PORTAL_CONFIGURATION` | Product-specific `bpc_` configuration for Stripe-hosted cards and invoices; see [Billing](billing.md) |
 | `AGENT_STRIPE_SECRET_ARN` | instead: a Secrets Manager secret holding `{secretKey, webhookSecret}`, read at startup; while it has no value, purchases are off |
+| `AGENT_AZURE_OPENAI_ENDPOINT`, `AGENT_AZURE_OPENAI_API_KEY` | optional: an Azure OpenAI resource (`https://<resource>.openai.azure.com` or `.cognitiveservices.azure.com`) that images and transcription made on the platform's OpenAI key go to instead of OpenAI; a tenant's own key, an operator-set one and a key scope's stay on OpenAI. When Azure is rate limited, down or has no such deployment, the platform's OpenAI key (`platformKeys.openai`, which this needs) makes it instead. Billing is unchanged |
+| `AGENT_AZURE_IMAGE_DEPLOYMENT`, `AGENT_AZURE_TRANSCRIPTION_DEPLOYMENT`, `AGENT_AZURE_OPENAI_API_VERSION` | its deployments of `gpt-image-2.5-flare` and `gpt-transcribe` (default: those names; empty leaves that kind on OpenAI), and the data-plane API version (default `2025-04-01-preview`) |
+| `AGENT_AZURE_OPENAI_SECRET_ARN` | instead: a Secrets Manager secret holding `{endpoint, apiKey, imageDeployment?, transcriptionDeployment?, apiVersion?}`, read at startup; while it has no value, both stay on OpenAI |
 | `GITHUB_ORG` | console GitHub sign-in admits active members of this organization (default `qaml-ai`) |
 | `AGENT_OPEN_SIGNUP` | `true` admits any GitHub account instead, and allows Google sign-in and, with account mail, email sign-up (see [Billing](billing.md)) |
 | `AGENT_DISCORD_MANAGED_ENABLED` | `true` enables the hosted Camel Discord integration; off by default. Requires the platform application settings below; see [Managed Discord](managed-discord.md) |
