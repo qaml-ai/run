@@ -1,6 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { createPrivateKey, createPublicKey, randomBytes, randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { createLocalJWKSet, errors, exportJWK, generateKeyPair, importJWK, jwtVerify, SignJWT, type JWK } from "jose";
+import { createLocalJWKSet, errors, importJWK, jwtVerify, SignJWT, type JWK } from "jose";
 import type { Accounts, Sealed } from "./accounts.ts";
 import type { Db } from "./db.ts";
 import { HttpError } from "./http.ts";
@@ -35,6 +35,16 @@ const ALGORITHM = "EdDSA";
 const TOKEN_SECONDS = 120;
 const KEYS_TTL_MS = 10 * 60_000;
 const aad = (kid: string) => `runtime-signing:${kid}`;
+/** An Ed25519 key's PKCS#8 encoding before its 32-byte seed. */
+const ED25519_PKCS8 = Buffer.from("302e020100300506032b657004220420", "hex");
+/**
+ * A new Ed25519 signing key, from a seed of node:crypto's randomBytes (a simulator's seeded stream, so its runs replay;
+ * WebCrypto's key generation draws from its own), as JWKs.
+ */
+function ed25519Key() {
+  const privateKey = createPrivateKey({ key: Buffer.concat([ED25519_PKCS8, randomBytes(32)]), format: "der", type: "pkcs8" });
+  return { publicJwk: createPublicKey(privateKey).export({ format: "jwk" }) as JWK, privateJwk: privateKey.export({ format: "jwk" }) as JWK };
+}
 type Keys = { signing?: { kid: string; key: CryptoKey }; published: JWK[] };
 
 /** The turn a tool call belongs to, for requests made on its behalf deep in a transport (MCP). */
@@ -75,11 +85,11 @@ export class RuntimeSigner {
     let rows = await select();
     if (!rows.some(row => row.retired_at === null)) {
       if (!this.available) throw new HttpError(503, "This runtime has no AGENT_SECRETS_KEY, so it cannot sign identity tokens");
-      const { publicKey, privateKey } = await generateKeyPair(ALGORITHM, { crv: "Ed25519", extractable: true });
+      const { publicJwk: key, privateJwk } = ed25519Key();
       const kid = randomUUID();
-      const publicJwk = { ...await exportJWK(publicKey), kid, alg: ALGORITHM, use: "sig" };
+      const publicJwk = { ...key, kid, alg: ALGORITHM, use: "sig" };
       await this.db.query("insert into signing_keys (kid, public_jwk, private_sealed, created_at) values ($1, $2, $3, $4)",
-        [kid, JSON.stringify(publicJwk), JSON.stringify(this.accounts.seal(aad(kid), JSON.stringify(await exportJWK(privateKey)))), Date.now()]);
+        [kid, JSON.stringify(publicJwk), JSON.stringify(this.accounts.seal(aad(kid), JSON.stringify(privateJwk))), Date.now()]);
       rows = await select();
     }
     const active = rows.find(row => row.retired_at === null)!;
