@@ -10,7 +10,7 @@ import { nodeConfig } from "../src/node-config.ts";
 import { createNode, nodeDeps, type RuntimeNode } from "../src/node.ts";
 import type { Db } from "../src/db.ts";
 import { REAL_NETWORK, type Network } from "../src/node-context.ts";
-import { freePort, sha, token } from "./cluster-helpers.ts";
+import { onFreePort, sha, token } from "./cluster-helpers.ts";
 import { testDatabase } from "./database.ts";
 import { fakeModel, lastUser, toolCall, toolResults, until } from "./runtime-server.ts";
 import { fakeExecutor } from "./fake-executor.ts";
@@ -40,8 +40,7 @@ test("two nodes run in one process, each serving its own agents and forwarding t
   const counted = countingDb();
   const recorded = recordingNetwork();
   t.after(async () => { for (const node of nodes) await node.close().catch(() => {}); });
-  for (const name of ["a", "b"]) {
-    const port = await freePort();
+  for (const name of ["a", "b"]) await onFreePort(async port => {
     const config = nodeConfig({
       PORT: String(port), HOST: "127.0.0.1", AGENT_NODE_URL: `http://127.0.0.1:${port}`, AGENT_DATABASE_URL: databaseUrl,
       AGENT_DATA_DIR: join(root, "shared"), AGENT_STORAGE: "shared-file", AGENT_HOSTING: "inline", AGENT_LEASE_TTL_MS: "1500", AGENT_SCHEDULER_INTERVAL_MS: "200",
@@ -51,9 +50,9 @@ test("two nodes run in one process, each serving its own agents and forwarding t
     // Node b's database is not a pg.Pool: anything with Db's methods will do. Its network is its own too.
     const deps = await nodeDeps(config);
     const node = await createNode(config, name === "b" ? { ...deps, db: counted.wrap(deps.db), network: recorded.network, codeExecutor: executor } : deps);
+    try { assert.equal((await node.start()).port, port); } catch (error) { await node.close().catch(() => {}); throw error; }
     nodes.push(node);
-    assert.equal((await node.start()).port, port);
-  }
+  });
   const [a, b] = nodes.map(node => node.node);
   assert.notEqual(a, b);
   const call = async (base: string, path: string, body?: unknown) => {
