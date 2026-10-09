@@ -63,7 +63,7 @@ export interface AgentConfig {
   mcp?: ToolServer;
   /** A definition (reusable configuration with tool sources: MCP servers, OpenAPI specs, built-ins) to make it from. */
   definition?: string;
-  /** Tools the runtime answers itself (web_fetch, web_search, schedule, ask_user, delegate), without a definition. */
+  /** Tools the runtime answers itself (web_fetch, web_search, schedule, ask_user, delegate, agents), without a definition. */
   builtins?: Builtin[];
   /**
    * Sub-agents: who the agent may hand tasks to (definitions, or agents by key), with `delegate` as its tool. Without a definition;
@@ -243,7 +243,7 @@ export type StreamPart =
   | { type: "input_required"; input: RunInput; raw: AgentEvent }
   /** With `subagents: true`: a delegate call's child agent started on its task, and ended. */
   | { type: "subagent_start"; toolCallId: string; agentId: string; name: string; raw: AgentEvent }
-  | { type: "subagent_end"; toolCallId: string; agentId: string; status: "completed" | "input_required" | "failed"; raw: AgentEvent }
+  | { type: "subagent_end"; toolCallId: string; agentId: string; status: "completed" | "input_required" | "failed" | "aborted"; raw: AgentEvent }
   /** Always last: the run as it ended. */
   | { type: "done"; run: Run };
 

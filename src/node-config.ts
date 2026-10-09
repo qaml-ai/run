@@ -8,6 +8,7 @@ import { codeCapacity } from "./codemode.ts";
 import { v8Settings } from "./v8-exec.ts";
 import { BACKLOG_BYTES } from "./transcript.ts";
 import { agentProcessEnv } from "./rpc.ts";
+import { MULTI_AGENT_LIMITS } from "./multi-agent.ts";
 
 /**
  * A node's settings, read from its environment once and checked before anything starts. `createNode` (node.ts) reads
@@ -46,6 +47,11 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
   // that work was left (a drain, a retirement, a dead peer found), so this is the backstop.
   const orphanMs = Number(env.AGENT_ORPHAN_SWEEP_MS ?? 10_000);
   if (!Number.isInteger(orphanMs) || orphanMs < 0) throw new Error("AGENT_ORPHAN_SWEEP_MS must be a non-negative integer (0: no sweep)");
+  // How often every node sweeps for sub-agents whose ending did not reach their parent (its node lost as it ended); 0: never.
+  const childSweepMs = Number(env.AGENT_CHILD_SWEEP_MS ?? MULTI_AGENT_LIMITS.sweepMs);
+  if (!Number.isInteger(childSweepMs) || childSweepMs < 0) throw new Error("AGENT_CHILD_SWEEP_MS must be a non-negative integer (0: no sweep)");
+  // Turns sub-agent notifications may start per chain root and hour: past it they land without one, so agents cannot wake each other forever.
+  const wakesPerHour = positiveSetting("AGENT_WAKES_PER_HOUR", MULTI_AGENT_LIMITS.wakesPerHour);
   const hosting = (env.AGENT_HOSTING ?? "process") as Hosting;
   if (!["process", "inline"].includes(hosting)) throw new Error("AGENT_HOSTING must be process or inline");
   const toolTimeoutMs = Number(env.AGENT_TOOL_TIMEOUT_MS ?? 15_000);
@@ -91,7 +97,7 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     publicUrlSet: !!env.AGENT_PUBLIC_URL,
     // Where browsers reach the runtime, as browser tokens say: AGENT_PUBLIC_URL unless set; empty for none.
     browserUrl: env.AGENT_BROWSER_URL?.replace(/\/+$/, ""),
-    maxAgents, maxAgentsPerTenant, drainMs, retireMaxMs, orphanMs, hosting, toolTimeoutMs, runLimits, streamTimeouts, runRetentionSeconds, idleMs,
+    maxAgents, maxAgentsPerTenant, drainMs, retireMaxMs, orphanMs, childSweepMs, wakesPerHour, hosting, toolTimeoutMs, runLimits, streamTimeouts, runRetentionSeconds, idleMs,
     leaseTtlMs: Number(env.AGENT_LEASE_TTL_MS ?? 90_000),
     runtime: env.AGENT_RUNTIME,
     serviceName: env.AGENT_SERVICE_NAME,

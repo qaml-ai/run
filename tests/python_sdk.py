@@ -1369,6 +1369,8 @@ class ServeToolsTest(unittest.IsolatedAsyncioTestCase):
             await verify_runtime_token("not-a-token", audience=self.APP, **self.runtime.options)
         identity = await verify_runtime_token(self.runtime.token("https://app.test/mcp/", actor="bob"), audience=self.APP, **self.runtime.options)
         self.assertEqual(identity.user, "bob")
+        child = await verify_runtime_token(self.runtime.token(self.APP, parent_agent_id="client_parent", root_agent_id="client_root"), audience=self.APP, **self.runtime.options)
+        self.assertEqual((child.parent_agent_id, child.root_agent_id), ("client_parent", "client_root"))
 
     async def test_a_token_from_another_tenant_is_refused_and_tenant_is_required(self):
         response = await self.runtime.post(self.app, self.APP, {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "list_todos", "arguments": {}}},

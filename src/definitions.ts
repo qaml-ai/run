@@ -9,7 +9,7 @@ import { jsonWithinLimit } from "./limits.ts";
 import type { Accounts } from "./accounts.ts";
 import type { Outbound } from "./outbound.ts";
 import { builtinsInput, managedBuiltinsRefusal } from "./builtins.ts";
-import { delegateSettings, type DelegateSettings } from "./multi-agent.ts";
+import { delegateSettings, startsChildren, type DelegateSettings } from "./multi-agent.ts";
 import { searchOrder } from "./web-search.ts";
 import { canonical } from "../shared/durable-json.ts";
 import { humanInputSettings, type HumanInputSettings } from "./inputs.ts";
@@ -44,13 +44,13 @@ export interface DefinitionSpec {
   fileTools?: boolean;
   /** false: agents get no js_exec, and call every tool directly (AgentConfig.codeMode). */
   codeMode?: boolean;
-  /** Built-in tools to enable: web_fetch, web_search, schedule, ask_user, delegate. */
+  /** Built-in tools to enable: web_fetch, web_search, schedule, ask_user, delegate, agents. */
   builtins?: string[];
   /** The search providers web_search tries, in order, instead of the runtime's (AGENT_WEB_SEARCH_PROVIDERS). */
   webSearch?: { providers: string[] };
   /** Human input: how long inputs wait (expiresInSeconds), what happens when they expire (onExpire), who else may answer (approvers). */
   humanInput?: HumanInputSettings;
-  /** With the delegate builtin: the agents its agents may start or message, and how deep and wide (multi-agent.ts). */
+  /** With the delegate or agents builtin: the agents its agents may start or message, and how deep and wide (multi-agent.ts). */
   delegate?: DelegateSettings;
   /** Made for this channel, and deleted with it. */
   channel?: string;
@@ -82,7 +82,7 @@ export function sources(spec: DefinitionSpec): Sources | undefined {
   const found: Sources = {
     ...(spec.builtins?.length ? { builtins: spec.builtins } : {}), ...(spec.webSearch && spec.builtins?.includes("web_search") ? { webSearch: spec.webSearch } : {}), ...(spec.mcpServers?.length ? { mcpServers: spec.mcpServers } : {}),
     ...(spec.openApi?.length ? { openApi: spec.openApi } : {}), ...(spec.humanInput ? { humanInput: spec.humanInput } : {}),
-    ...(spec.delegate && spec.builtins?.includes("delegate") ? { delegate: spec.delegate } : {}),
+    ...(spec.delegate && startsChildren(spec.builtins) ? { delegate: spec.delegate } : {}),
   };
   return Object.keys(found).length ? found : undefined;
 }

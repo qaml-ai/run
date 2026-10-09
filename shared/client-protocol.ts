@@ -8,10 +8,10 @@ export const DRAINING_NOTIFICATION = "notifications/agent-runtime/draining";
 /** `uncertain` marks an outcome nobody can confirm (timeout after claim, restart). It is informational, never a gate. */
 export type Outcome = { result: unknown; error?: never; uncertain?: never } | { error: string; uncertain?: boolean; result?: never };
 /** How an outcome ended: its error, the runtime's or the model's (`result.error`), and why its turn stopped early. */
-export function outcomeEnding(outcome: Outcome | undefined): { error?: string; stopped?: "input_required" | "spend_limit" | "turn_limit" } {
+export function outcomeEnding(outcome: Outcome | undefined): { error?: string; stopped?: "input_required" | "spend_limit" | "turn_limit" | "agent_loop_limit" } {
   const result = (outcome?.result ?? {}) as { error?: unknown; stopped?: unknown };
   const error = outcome?.error ?? (typeof result.error === "string" ? result.error : undefined);
-  const stopped = result.stopped === "input_required" || result.stopped === "spend_limit" || result.stopped === "turn_limit" ? result.stopped : undefined;
+  const stopped = result.stopped === "input_required" || result.stopped === "spend_limit" || result.stopped === "turn_limit" || result.stopped === "agent_loop_limit" ? result.stopped : undefined;
   return { ...(error !== undefined ? { error } : {}), ...(stopped ? { stopped } : {}) };
 }
 /** `expiresAt` is null for agents that live until deleted. */
@@ -24,7 +24,7 @@ export type RequestRecord = {
   /** An ended request's error, from `outcome`: the runtime's, or the model's (`outcome.result.error`). Absent when it succeeded. */
   error?: string;
   /** Why an ended run stopped early, from `outcome.result.stopped`. */
-  stopped?: "input_required" | "spend_limit" | "turn_limit";
+  stopped?: "input_required" | "spend_limit" | "turn_limit" | "agent_loop_limit";
   /** How an ended request ended: `failed` when it has an `error` or stopped at a limit. */
   status?: "completed" | "input_required" | "failed";
   /** When the agent actually started this run (runs queue behind each other). */
