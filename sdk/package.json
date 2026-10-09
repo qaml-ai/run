@@ -1,6 +1,6 @@
 {
   "name": "@camelai/run",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "description": "SDK for camelRun: define tools in your app, and the runtime runs the model loop, history and sandbox.",
   "type": "module",
   "license": "MIT",

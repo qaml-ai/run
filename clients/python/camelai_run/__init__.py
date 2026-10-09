@@ -26,7 +26,7 @@ import uuid
 import httpx
 
 # pyproject.toml's version; tests/python_sdk.py checks they match.
-__version__ = "0.12.0"
+__version__ = "0.13.0"
 
 __all__ = [
     "Agents", "Agent", "Run", "RunInput", "InputDetail", "Mount", "WorkspaceMount", "RunStream", "StreamPart", "Runs", "StatelessRunStream",
