@@ -79,7 +79,7 @@ export class Sim {
   /** Every pause a node took, when (virtual ms) and for how long: the checkers excuse what a stopped node could not do. */
   readonly pauses: { node: string; at: number; ms: number }[] = [];
   /** Pauses armed to start as a node next hears a database answer (to a statement that matches, if one is given). */
-  private readonly dbPauses = new Map<string, { ms: number; statement?: string }>();
+  private readonly dbPauses = new Map<string, { ms: number; statement?: string; skip: number }>();
   /** Work done as no node at all: the fakes, the database, the client. */
   private readonly world = new AsyncResource("SimWorld");
 
@@ -158,7 +158,7 @@ export class Sim {
     // A pause armed for this node's next database answer starts as the answer arrives: the node hears it only after.
     const gate = (text: string) => {
       const armed = this.dbPauses.get(name);
-      if (armed && !this.env.isPaused(clock) && (!armed.statement || text.replace(/\s+/g, " ").toLowerCase().includes(armed.statement.toLowerCase()))) {
+      if (armed && !this.env.isPaused(clock) && (!armed.statement || text.replace(/\s+/g, " ").toLowerCase().includes(armed.statement.toLowerCase())) && armed.skip-- <= 0) {
         this.dbPauses.delete(name);
         this.pauses.push({ node: name, at: this.env.elapsed, ms: armed.ms });
         void this.env.pause(clock, armed.ms);
@@ -239,8 +239,9 @@ export class Sim {
   /**
    * Node `name` stops for `ms` as it next hears a database answer (to a statement containing `statement`, if given):
    * between a request's statements, exactly where a race needs time to pass, which a pause at a fixed time rarely is.
+   * `nth` picks a later answer to it: the statement's second (2) or third run, as when one query serves two steps.
    */
-  pauseAtDbAnswer(name: string, ms: number, statement?: string) { this.dbPauses.set(name, { ms, ...(statement ? { statement } : {}) }); }
+  pauseAtDbAnswer(name: string, ms: number, statement?: string, nth = 1) { this.dbPauses.set(name, { ms, ...(statement ? { statement } : {}), skip: nth - 1 }); }
 
   /** Node `name`'s wall clock jumps by `ms` (forward or back), from now on and across its restarts: its machine's clock. */
   jumpClock(name: string, ms: number) {

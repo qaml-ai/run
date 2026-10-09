@@ -2,7 +2,8 @@
 
 - `camelai_run.sync`: a synchronous client with the same names (`Agents`, `Agent`, `AgentRuntime`, `Runs`) for
   scripts, Django and Flask views and Celery tasks: upsert, get, fork, run, stream, steer, answer inputs, stateless
-  runs. It holds no connection and does not serve tools. See [the synchronous client](../reference/sdk.md#the-synchronous-client-python).
+  runs. It holds no connection, so it does not serve tools from its own process and has no `on_event` or `on_input`;
+  it also has no volumes, no `create_agent` and no `client.steer` (use the async client for those). See [the synchronous client](../reference/sdk.md#the-synchronous-client-python).
 - `camelai_run.sync.serve_tools` serves tools as a WSGI app (Django, Flask), plain functions in the request's thread;
   `camelai_run.sync.verify_runtime_token` and `TestRuntime` are its synchronous token check and test runtime.
 - `verify_webhook(body, headers, secret)` verifies a webhook request (Standard Webhooks signature, constant-time,

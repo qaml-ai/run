@@ -62,3 +62,24 @@ test("a compactionSummary in imported history stands for everything before it: h
   for (const gone of ["OLD-QUESTION", "OLD-ANSWER"]) assert.ok(!sent.includes(gone), `${gone} is summarized`);
   assert.ok(sent.indexOf("SUMMARY-OF-EARLIER") < sent.indexOf("KEPT-QUESTION"));
 });
+
+test("imported messages need only their role and content: usage, stopReason, timestamps and isError are filled in", async t => {
+  const bodies: any[] = [];
+  const r = await runtime(t, body => { bodies.push(body); return { role: "assistant", content: "Carrying on." }; });
+  const initialMessages = [
+    { role: "user", content: "Find the report" },
+    { role: "assistant", content: [{ type: "toolCall", id: "call_1", name: "search", arguments: { q: "report" } }] },
+    { role: "toolResult", toolCallId: "call_1", toolName: "search", content: [{ type: "text", text: "report.pdf" }] },
+    { role: "assistant", content: [{ type: "text", text: "It is report.pdf." }] },
+  ];
+  const agent = (await r.call("/v1/agents", { body: { initialMessages } })).json.id;
+  assert.equal((await r.prompt(agent, "Thanks")).outcome.result.reply, "Carrying on.", "the next run reads the imported history");
+  assert.match(JSON.stringify(bodies[0].messages), /It is report\.pdf/);
+  const history = (await r.call(`/v1/agents/${agent}/history`)).json.messages;
+  assert.deepEqual(history.slice(0, 4).map((message: any) => [message.role, message.stopReason, message.usage?.totalTokens, message.isError, typeof message.timestamp]), [
+    ["user", undefined, undefined, undefined, "number"],
+    ["assistant", "toolUse", 0, undefined, "number"],
+    ["toolResult", undefined, undefined, false, "number"],
+    ["assistant", "stop", 0, undefined, "number"],
+  ]);
+});

@@ -2528,7 +2528,9 @@ run's id, so a retried request never runs twice, and to find the run later.
 A conversation that began elsewhere continues on an agent made with its history:
 `initialMessages` on `POST /v1/agents` (`createAgent({ initialMessages })`, or an
 upsert's first create; Python `agents.upsert(key, initial_messages=[…])`). They
-are [Pi](https://github.com/earendil-works/pi) messages, kept as they are:
+are [Pi](https://github.com/earendil-works/pi) messages, kept as they are, with
+what a message leaves out filled in (a timestamp; an assistant message's `usage`,
+zero, and `stopReason`; a tool result's `isError`, false):
 
 - `user` (content a string, or text, image and file blocks), `assistant` (text,
   thinking and `toolCall` blocks, with its `usage`, `provider` and `model` if you
