@@ -207,7 +207,7 @@ export function generatePlan(seed: string, options: { steps?: number; durationMs
     if (create) {
       create.spawner = true;
       for (const step of steps) if (step.op.op === "prompt" && step.op.agent === 0 && multi.float() < 0.6) step.op.spawn = true;
-      extra.env = { AGENT_CHILD_SWEEP_MS: "2000" };
+      extra.env = { AGENT_CHILD_SWEEP_MS: "2000", AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "10.0.0.0/8" };
     }
   }
   // A database with a tail for some seeds, from a stream of its own, so every other draw of the plan stays as it was.

@@ -2014,7 +2014,7 @@ export class ClientSessions {
    * once, and an agent already in the chain is refused. A child already busy (a persistent worker) queues the task.
    */
   private async startChild(session: Session, run: RequestRecord, call: ToolCall, settings: DelegateSettings | undefined,
-    child: { agent: string; made: boolean; name?: string; base: string; task: string; output?: unknown; make?: (depth: number) => Promise<string> }): Promise<McpResult> {
+    child: { agent: string; made: boolean; name?: string; preferred?: string; base: string; task: string; output?: unknown; make?: (depth: number) => Promise<string> }): Promise<McpResult> {
     const { header } = session;
     const tenant = header.tenant;
     const submit = this.options.submit!;
@@ -2026,7 +2026,7 @@ export class ClientSessions {
     let { agent } = child;
     const { made, task, output } = child;
     if (chain.includes(agent)) throw new Error(`${child.base} is already working on this task's chain`);
-    const row = await this.childRow(session, { id: requestId, child: agent, name: child.name, base: child.base, depth, root: chain[0], run: run.id, toolCallId, made }, settings?.maxParallel ?? MULTI_AGENT_LIMITS.maxParallel);
+    const row = await this.childRow(session, { id: requestId, child: agent, name: child.name, ...(child.preferred ? { preferred: child.preferred } : {}), base: child.base, depth, root: chain[0], run: run.id, toolCallId, made }, settings?.maxParallel ?? MULTI_AGENT_LIMITS.maxParallel);
     if (row.state !== "running" && row.status === "failed" && !row.ended_at) throw new Error("This sub-agent could not be started");
     (session.children ??= new Map()).set(toolCallId, { agent, requestId, made, done: true });
     const at = { toolCallId, agentId: agent, requestId };
@@ -2073,7 +2073,9 @@ export class ClientSessions {
     if (!rows[0]) throw new Error(`${call.name} asked to start an agent this account does not have`);
     reachable("a tool's spawn directive started a background child");
     const output = schema === undefined ? undefined : outputInput({ schema });
-    return this.startChild(session, run, call, header.sources?.delegate, { agent, made: false, ...(name !== undefined ? { name: name as string } : {}), base: String(rows[0].name ?? "").replace(/[^A-Za-z0-9_-]/g, "-").slice(0, 56) || "worker", task, ...(output ? { output } : {}) });
+    // A worker given task after task keeps one name while it runs one, and numbered ones beside it.
+    const base = (name as string | undefined) ?? (String(rows[0].name ?? "").replace(/[^A-Za-z0-9_-]/g, "-").slice(0, 56) || "worker");
+    return this.startChild(session, run, call, header.sources?.delegate, { agent, made: false, preferred: base.slice(0, 64), base: base.slice(0, 56), task, ...(output ? { output } : {}) });
   }
 
   /**
@@ -2081,7 +2083,7 @@ export class ClientSessions {
    * time per parent (only its owner runs its turns), so `max` running children holds. A name is unique among the running
    * ones: the default is the target's name and the next number.
    */
-  private async childRow(session: Session, child: { id: string; child: string; name?: string; base: string; depth: number; root: string; run: string; toolCallId: string; made: boolean }, max: number) {
+  private async childRow(session: Session, child: { id: string; child: string; name?: string; base: string; depth: number; root: string; run: string; toolCallId: string; made: boolean; preferred?: string }, max: number) {
     const previous = session.spawning ?? Promise.resolve();
     let release!: () => void;
     session.spawning = new Promise<void>(resolve => { release = resolve; });
@@ -2095,8 +2097,9 @@ export class ClientSessions {
       const running = Number((await this.db.query("select count(distinct child) as n from agent_children where parent = $1 and state = 'running' and ended_at is null and kind <> 'resume'", [parent])).rows[0].n);
       if (running >= max) throw new Error(`${running} sub-agents are running, this agent's most at once: wait for one to finish (wait_agent) before starting another`);
       let next = Number((await this.db.query("select count(*) as n from agent_children where parent = $1 and kind = 'spawn' and name like $2", [parent, `${child.base}-%`])).rows[0].n) + 1;
+      // A tool's directive prefers its name, and takes the next numbered one when a running sibling has it.
       for (let attempt = 0; attempt < 10; attempt++) {
-        const name = child.name ?? `${child.base}-${next++}`;
+        const name = child.name ?? (attempt === 0 && child.preferred ? child.preferred : `${child.base}-${next++}`);
         const now = Date.now();
         const { rows } = await underClaim(this.db, session.claim, sql => sql.query(`insert into agent_children (id, tenant, parent, child, request_id, name, depth, root, parent_run, tool_call_id, made, checked_at, created_at, updated_at)
           values ($1, $2, $3, $4, $1, $5, $6, $7, $8, $9, $10, $11, $11, $11) on conflict do nothing returning *`, [child.id, session.header.tenant, parent, child.child, name, child.depth, child.root, child.run, child.toolCallId, child.made, now]));
