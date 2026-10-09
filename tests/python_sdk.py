@@ -1048,6 +1048,12 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         fork = self.runtime.volume((await volume.fork(snapshot=snapshot["id"]))["id"])
         self.assertEqual(await fork.read_text("docs/readme.md"), "hello volumes")
         self.assertEqual([change["kind"] for change in (await volume.changes())["changes"]], ["write", "write"])
+        then = await volume.read_all(prefix="/docs", snapshot=snapshot["id"])
+        self.assertEqual((then["snapshot"], [(entry["path"], entry["text"]) for entry in then["files"]]), (snapshot["id"], [("/docs/readme.md", "hello volumes")]))
+        self.assertEqual([entry["text"] for entry in (await volume.read_all())["files"]], ["changed"])
+        self.assertEqual((await volume.read("docs/readme.md", snapshot=snapshot["id"]))[0], b"hello volumes")
+        self.assertEqual([change["path"] for change in (await volume.changes(prefix="/docs"))["changes"]], ["/docs/readme.md", "/docs/readme.md"])
+        self.assertEqual([entry["seq"] for entry in await self.runtime.volumes([volume.id])], [(await volume.info())["seq"]])
 
         agent = await self.runtime.create_agent(tools=[], mounts=[{"volumeId": volume.id, "path": "/docs", "mode": "ro", "subpath": "/docs"}])
         result = await agent.execute('return (await tools.read({ path: "/docs/readme.md" })).content')

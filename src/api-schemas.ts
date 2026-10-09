@@ -851,6 +851,16 @@ export const Link = z.object({
   maxBytes: z.number().optional(), contentType: z.string().optional(),
 }).openapi("Link");
 export const FileList = z.object({ files: z.array(VolumeFile), next: z.string().optional().openapi({ description: "Pass as `after` for the next page" }) }).openapi("FileList");
+export const FileContents = z.object({
+  seq: z.number().openapi({ description: "The volume's change number the files were read at (the snapshot's, for a snapshot)" }),
+  snapshot: z.string().optional(),
+  files: z.array(z.object({
+    path: z.string(), size: z.number(), version: z.number(), contentType: z.string(),
+    sha256: z.string().openapi({ description: "Of the file's bytes, hex" }),
+    text: z.string().optional().openapi({ description: "The contents, for a file that is UTF-8 text" }),
+    data: z.string().optional().openapi({ description: "The contents base64, for any other file" }),
+  })),
+}).openapi("FileContents");
 export const Changes = z.object({
   seq: z.number(),
   changes: z.array(z.object({ seq: z.number(), path: z.string(), kind: z.enum(["write", "delete"]), version: z.number().optional(), size: z.number().optional(), by: z.string().optional(), at: z.number() })),

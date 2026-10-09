@@ -7101,6 +7101,61 @@
         "required": [
           "files"
         ]
+      },
+      "FileContents": {
+        "type": "object",
+        "properties": {
+          "seq": {
+            "type": "number",
+            "description": "The volume's change number the files were read at (the snapshot's, for a snapshot)"
+          },
+          "snapshot": {
+            "type": "string"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "size": {
+                  "type": "number"
+                },
+                "version": {
+                  "type": "number"
+                },
+                "contentType": {
+                  "type": "string"
+                },
+                "sha256": {
+                  "type": "string",
+                  "description": "Of the file's bytes, hex"
+                },
+                "text": {
+                  "type": "string",
+                  "description": "The contents, for a file that is UTF-8 text"
+                },
+                "data": {
+                  "type": "string",
+                  "description": "The contents base64, for any other file"
+                }
+              },
+              "required": [
+                "path",
+                "size",
+                "version",
+                "contentType",
+                "sha256"
+              ]
+            }
+          }
+        },
+        "required": [
+          "seq",
+          "files"
+        ]
       }
     },
     "parameters": {}
@@ -13792,15 +13847,34 @@
     },
     "/v1/volumes": {
       "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Comma-separated volume ids (at most 50): those volumes, each with its seq, files and bytes (Volume), instead of every volume"
+            },
+            "required": false,
+            "description": "Comma-separated volume ids (at most 50): those volumes, each with its seq, files and bytes (Volume), instead of every volume",
+            "name": "ids",
+            "in": "query"
+          }
+        ],
         "responses": {
           "200": {
-            "description": "The tenant's volumes",
+            "description": "The tenant's volumes; with ids, those volumes as they are now",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/VolumeSummary"
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/VolumeSummary"
+                      },
+                      {
+                        "$ref": "#/components/schemas/Volume"
+                      }
+                    ]
                   }
                 }
               }
@@ -14295,6 +14369,16 @@
             "description": "Changes after this seq",
             "name": "since",
             "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Only changes at or under this path"
+            },
+            "required": false,
+            "description": "Only changes at or under this path",
+            "name": "prefix",
+            "in": "query"
           }
         ],
         "responses": {
@@ -14363,15 +14447,45 @@
             "required": false,
             "name": "limit",
             "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "List (or read) a snapshot of the volume instead of the volume as it is"
+            },
+            "required": false,
+            "description": "List (or read) a snapshot of the volume instead of the volume as it is",
+            "name": "snapshot",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true"
+              ],
+              "description": "Every matching file with its contents, in one answer at one seq (FileContents): at most 1,000 files and 16 MiB, else 413"
+            },
+            "required": false,
+            "description": "Every matching file with its contents, in one answer at one seq (FileContents): at most 1,000 files and 16 MiB, else 413",
+            "name": "content",
+            "in": "query"
           }
         ],
         "responses": {
           "200": {
-            "description": "Files under prefix, in path order, a page at a time",
+            "description": "Files under prefix, in path order, a page at a time; with content=true, all of them with their contents (FileContents)",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FileList"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FileList"
+                    },
+                    {
+                      "$ref": "#/components/schemas/FileContents"
+                    }
+                  ]
                 }
               }
             }
@@ -14484,6 +14598,16 @@
             "description": "Path inside the volume; may contain /",
             "name": "path",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Read the file as a snapshot of the volume has it"
+            },
+            "required": false,
+            "description": "Read the file as a snapshot of the volume has it",
+            "name": "snapshot",
+            "in": "query"
           },
           {
             "schema": {
