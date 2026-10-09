@@ -82,6 +82,12 @@ if (!result.ok) console.log(formatProblems(result.problems));
   first one made (its check runs again only for its `data`).
 - `project.archive({ version?, path? })` gives a version's files (or the
   project as it is) as a tar.gz stream, for a build.
+- `publish({ pin: true, labels })` pins the version: kept until
+  `project.unpin(version)`, past `keep` (pinned versions do not count against
+  it), up to 10,000 of them. Pin releases your application runs, so their source
+  is always there; `project.pin(version, labels?)` pins one later.
+  `project.versions({ labels })` finds versions by label, e.g.
+  `{ release: "v12" }`.
 - `project.restore(version)` puts the project back as a version had it, in
   place: the agent working in it sees the files change. The version stays
   published; publish again to make the restored files a new version.
@@ -176,4 +182,6 @@ app = serve_tools([publish_tool(project=lambda identity: projects.get(volume_of_
 | read every file of it at once | `GET /v1/volumes/:id/files?content=true&snapshot=snap_…` |
 | list and delete versions | `GET /v1/volumes/:id/snapshots`, `DELETE /v1/volumes/:id/snapshots/:snapshot` |
 | restore a version in place | `POST /v1/volumes/:id/restore {snapshot}` |
+| pin a version, label it | `PATCH /v1/volumes/:id/snapshots/:snapshot {pinned, labels}`, or `pinned`/`labels` on the create |
+| bring in a version kept elsewhere | `POST /v1/volumes/:id/snapshots {name, files, pinned, labels}` |
 | download a version as a tar.gz | `GET /v1/volumes/:id/archive?snapshot=snap_…` |

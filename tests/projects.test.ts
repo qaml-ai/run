@@ -157,3 +157,62 @@ test("a project is restored in place to a published version, and a check hands w
   const live = await unpack(await project.archive());
   assert.equal(readFileSync(join(live, "bot.ts"), "utf8"), "export const v = 3;\n");
 });
+
+test("pinned versions outlast keep and the snapshot cap, carry labels, and a snapshot can be made from contents", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
+  const sdk = new AgentRuntime({ url: r.base, apiKey: OPERATOR });
+  const project = await sdk.projects.create({ key: "bot-pinned", template: { "bot.ts": "export const v = 1;\n" } });
+  const store = () => "stored";
+  // A release pins its version with a label; plain publishes come and go with keep.
+  const release = await project.publish({ store, pin: true, labels: { release: "v1" } });
+  assert.ok(release.ok);
+  assert.deepEqual([release.version.pinned, release.version.labels], [true, { release: "v1" }]);
+  for (let i = 2; i <= 4; i++) {
+    await project.volume.write("bot.ts", `export const v = ${i};\n`);
+    assert.ok((await project.publish({ store, keep: 2 })).ok);
+  }
+  const versions = await project.versions();
+  assert.equal(versions.length, 3, "the pinned release and the last two");
+  assert.ok(versions.some(version => version.id === release.version.id));
+  assert.deepEqual((await project.versions({ labels: { release: "v1" } })).map(version => version.id), [release.version.id]);
+  assert.deepEqual(await project.versions({ labels: { release: "v9" } }), []);
+  // Labels change by PATCH; ?label= filters over REST too.
+  await project.pin(release.version.id, { release: "v1", channel: "stable" });
+  assert.equal((await r.call(`/v1/volumes/${project.id}/snapshots?label=channel:stable&label=release:v1`)).json.length, 1);
+  assert.equal((await r.call(`/v1/volumes/${project.id}/snapshots`, { method: "PATCH" as never, body: {} })).status, 404);
+  assert.equal((await r.call(`/v1/volumes/${project.id}/snapshots/${release.version.id}`, { method: "PATCH", body: { labels: { ["k".repeat(65)]: "x" } } })).status, 400);
+
+  // A pinned snapshot is kept from a delete, unless forced or unpinned; restoring another version keeps it.
+  await assert.rejects(project.volume.deleteSnapshot(release.version.id), (error: { status?: number }) => error.status === 409);
+  const latest = versions.at(-1)!;
+  await project.restore(release.version.id);
+  assert.equal(await project.volume.readText("bot.ts"), "export const v = 1;\n");
+  assert.equal((await project.versions()).length, 3, "a restore keeps every snapshot");
+  assert.ok((await project.unpin(latest.id)).pinned === false);
+
+  // From contents: a pinned snapshot of files given, the volume untouched; read, archived and restored like any other.
+  const before = await project.volume.info();
+  const imported = await project.volume.snapshot({ name: "published:import-v0", pinned: true, labels: { release: "v0" }, files: { "/bot.ts": "export const v = 0;\n", "/data.bin": new Uint8Array([0, 1, 2]) } });
+  assert.deepEqual([imported.pinned, imported.files, imported.bytes], [true, 2, 23]);
+  const after = await project.volume.info();
+  assert.deepEqual([after.seq, after.files], [before.seq, before.files], "the volume is untouched");
+  const read = await project.files({ version: imported.id });
+  assert.deepEqual(read.files.map(file => [file.path, file.text ?? file.data]), [["/bot.ts", "export const v = 0;\n"], ["/data.bin", "AAEC"]]);
+  assert.ok((await project.archive({ version: imported.id })).seq >= 0);
+  assert.equal(new TextDecoder().decode((await project.volume.read("bot.ts", { snapshot: imported.id })).data), "export const v = 0;\n");
+  for (const files of [{ "/": "x" }, { "/a": 1 }, Object.fromEntries(Array.from({ length: 1001 }, (_, i) => [`/f${i}`, "x"]))]) {
+    const refused = await r.call(`/v1/volumes/${project.id}/snapshots`, { body: { files } });
+    assert.ok(refused.status === 400 || refused.status === 413, `${refused.status} ${refused.text}`);
+  }
+
+  // Pinned snapshots count apart: a volume at its 100 others still takes a pinned one, and refuses a 101st other.
+  const crowded = await sdk.createVolume({ name: "crowded" });
+  const volume = sdk.volume(crowded.id);
+  for (let i = 0; i < 100; i++) await volume.snapshot({ name: `s${i}` });
+  await assert.rejects(volume.snapshot({ name: "one too many" }), (error: { status?: number }) => error.status === 409);
+  assert.ok((await volume.snapshot({ name: "kept", pinned: true })).pinned);
+  // A forced delete takes a pinned one; deleting the volume takes the rest, pinned or not.
+  await volume.deleteSnapshot((await volume.snapshots({ labels: {} })).at(-1)!.id, { force: true });
+  assert.equal((await r.call(`/v1/volumes/${crowded.id}`, { method: "DELETE" })).status, 200);
+  assert.equal((await r.call(`/v1/volumes/${project.id}`, { method: "DELETE" })).status, 200);
+});

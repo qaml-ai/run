@@ -21,6 +21,10 @@ from . import Tool, ToolContext
 _PUBLISHED = "published:"
 
 
+def _version(snapshot):
+    return {key: snapshot[key] for key in ("id", "seq", "name", "createdAt", "pinned", "labels")}
+
+
 def file_bytes(file):
     """A project file's contents as bytes, whichever way it came ("text", or base64 "data")."""
     return file["text"].encode() if "text" in file else base64.b64decode(file.get("data", ""))
@@ -69,17 +73,26 @@ class Project:
         """A version's files (or the project as it is now) as tar.gz bytes, for a build."""
         return await self.volume.archive(snapshot=version, path=path)
 
-    async def versions(self):
-        """Published versions, oldest first: {"id", "seq", "name", "createdAt"}."""
-        return [{key: snapshot[key] for key in ("id", "seq", "name", "createdAt")}
-                for snapshot in await self.volume.snapshots() if snapshot["name"].startswith(_PUBLISHED)]
+    async def versions(self, *, labels=None):
+        """Published versions, oldest first: {"id", "seq", "name", "createdAt", "pinned", "labels"}; with `labels`, only
+        those that have every one."""
+        return [_version(snapshot) for snapshot in await self.volume.snapshots(labels=labels) if snapshot["name"].startswith(_PUBLISHED)]
 
-    async def publish(self, *, store, validate=None, prefix=None, keep=20, idempotency_key=None, identity=None):
+    async def pin(self, version, *, labels=None):
+        """Keep a version until it is unpinned, past `keep`; `labels` replace its labels."""
+        return _version(await self.volume.update_snapshot(version, pinned=True, labels=labels))
+
+    async def unpin(self, version):
+        """Let a version go with the others once it is older than `keep`."""
+        return _version(await self.volume.update_snapshot(version, pinned=False))
+
+    async def publish(self, *, store, validate=None, prefix=None, keep=20, idempotency_key=None, identity=None, pin=False, labels=None):
         """Snapshot the project, read every file at the snapshot, `validate` them (a list of problems, empty to publish, or
         {"problems", "data"}) and `store(files, version, about)` them: {"ok": True, "version", "stored", "checked"?}, or
         {"ok": False, "problems"} (the snapshot is then deleted). `about` is {"project", "identity", "checked"?}: `checked`
         is the check's `data` (a bundle's manifest, say), so nothing is worked out twice. Versions beyond `keep`
-        (default 20) are deleted; the same `idempotency_key` publishes once."""
+        (default 20) are deleted, pinned ones apart: `pin=True` keeps this version until it is unpinned, and `labels` label
+        it. The same `idempotency_key` publishes once."""
         keep = min(max(1, keep), 90)
         name = f"{_PUBLISHED}{idempotency_key or uuid.uuid4()}"[:120]
         about = {"project": self, "identity": identity}
@@ -90,8 +103,8 @@ class Project:
                 files = (await self.files(prefix=prefix, version=done["id"]))["files"]
                 _, checked = await _check(validate, files)
                 return self._published(done, await _maybe(store(files, done, self._about(about, checked))), checked)
-        snapshot = await self.volume.snapshot(name=name)
-        version = {key: snapshot[key] for key in ("id", "seq", "name", "createdAt")}
+        snapshot = await self.volume.snapshot(name=name, pinned=True if pin else None, labels=labels)
+        version = _version(snapshot)
         try:
             files = (await self.files(prefix=prefix, version=version["id"]))["files"]
             problems, checked = await _check(validate, files)
@@ -99,7 +112,8 @@ class Project:
                 await self.volume.delete_snapshot(version["id"])
                 return {"ok": False, "problems": problems}
             stored = await _maybe(store(files, version, self._about(about, checked)))
-            versions = await self.versions()
+            # Pinned versions stay, and do not count against `keep`.
+            versions = [old for old in await self.versions() if not old["pinned"]]
             for old in versions[:max(0, len(versions) - keep)]:
                 await self.volume.delete_snapshot(old["id"])
             return self._published(version, stored, checked)

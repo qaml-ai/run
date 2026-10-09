@@ -151,6 +151,16 @@ const agent = await agents.upsert("support", { mounts: [{ volumeId: docs.id, pat
 - `volume.snapshot()` and `volume.fork({ snapshot })` copy metadata only: a fork
   shares its source's content and diverges independently. `read`, `list` and
   `readAll` take `{ snapshot }` to read a snapshot as it was.
+- A snapshot can be pinned (`snapshot({ pinned: true })`, or
+  `updateSnapshot(id, { pinned })`, `PATCH /v1/volumes/:id/snapshots/:id`): it is
+  kept until unpinned, counts against 10,000 pinned snapshots rather than the
+  100 others, and deleting it takes unpinning first or `deleteSnapshot(id,
+  { force: true })`. Snapshots take `labels`, your own string map (16 at most),
+  and `snapshots({ labels })` (`?label=key:value`) lists those that have them.
+  Deleting a volume deletes all its snapshots, pinned ones too.
+- `volume.snapshot({ files })` makes a snapshot of the files given (path to
+  text or bytes; 1,000 files and 16 MiB at most) instead of the volume, which it
+  leaves untouched: for bringing in versions kept elsewhere.
 - `volume.restore(snapshot)` (`POST /v1/volumes/:id/restore {snapshot}`) makes
   the volume as a snapshot was, in place: files the snapshot lacks are removed
   and files that differ are written back, in one write, each a change that

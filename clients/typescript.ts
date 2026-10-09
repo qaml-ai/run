@@ -547,7 +547,8 @@ export interface Volume { id: string; name: string; createdAt: number; seq?: num
   /** A create with a `key` whose volume was made before: this is that volume. */
   existing?: boolean }
 export interface VolumeFile { path: string; version: number; size: number; updatedAt: number; by?: string; contentType: string }
-export interface VolumeSnapshot { id: string; volume: string; name: string; seq: number; createdAt: number; files: number; bytes: number }
+/** `pinned`: kept until unpinned (publish's pruning passes it by; deleting it takes `force`). `labels`: your own. */
+export interface VolumeSnapshot { id: string; volume: string; name: string; seq: number; createdAt: number; files: number; bytes: number; pinned: boolean; labels: Record<string, string> }
 export interface VolumeChanges { seq: number; changes: { seq: number; path: string; kind: "write" | "delete"; version?: number; size?: number; by?: string; at: number }[]; gap?: boolean }
 /** A signed URL for one file: send `method` to `url` with no Authorization header, until `expiresAt`. */
 export interface FileLink { url: string; method: "GET" | "PUT"; path: string; expiresAt: number; maxBytes?: number; contentType?: string }
@@ -1214,9 +1215,28 @@ export class VolumeHandle {
   private file(path: string) { return this.path(`/files/${path.split("/").filter(Boolean).map(encodeURIComponent).join("/")}`); }
   info(): Promise<Volume> { return this.transport.json(this.path(), this.token); }
   delete() { return this.transport.json(this.path(), this.token, "DELETE", undefined, false); }
-  snapshot(options: { name?: string } = {}): Promise<VolumeSnapshot> { return this.transport.json(this.path("/snapshots"), this.token, "POST", options, false); }
-  snapshots(): Promise<VolumeSnapshot[]> { return this.transport.json(this.path("/snapshots"), this.token); }
-  deleteSnapshot(id: string) { return this.transport.json(this.path(`/snapshots/${encodeURIComponent(id)}`), this.token, "DELETE", undefined, false); }
+  /**
+   * A snapshot of the volume, or with `files` (path to text or bytes) a snapshot of those files instead, the volume
+   * untouched: for bringing in versions kept elsewhere (at most 1,000 files and 16 MiB). `pinned` keeps it until unpinned.
+   */
+  snapshot(options: { name?: string; pinned?: boolean; labels?: Record<string, string>; files?: Record<string, string | Uint8Array> } = {}): Promise<VolumeSnapshot> {
+    const files = options.files && Object.fromEntries(Object.entries(options.files).map(([path, content]) =>
+      [path, typeof content === "string" ? content : { data: btoa(Array.from(content, byte => String.fromCharCode(byte)).join("")) }]));
+    return this.transport.json(this.path("/snapshots"), this.token, "POST", { ...options, ...(files ? { files } : {}) }, false);
+  }
+  /** Oldest first; with `labels`, only those that have every one. */
+  snapshots(options: { labels?: Record<string, string> } = {}): Promise<VolumeSnapshot[]> {
+    const query = new URLSearchParams(Object.entries(options.labels ?? {}).map(([key, value]) => ["label", `${key}:${value}`])).toString();
+    return this.transport.json(this.path(`/snapshots${query ? `?${query}` : ""}`), this.token);
+  }
+  /** Pin or unpin a snapshot, or replace its labels. */
+  updateSnapshot(id: string, update: { pinned?: boolean; labels?: Record<string, string> }): Promise<VolumeSnapshot> {
+    return this.transport.json(this.path(`/snapshots/${encodeURIComponent(id)}`), this.token, "PATCH", update, false);
+  }
+  /** A pinned snapshot is kept (409) unless `force`. */
+  deleteSnapshot(id: string, options: { force?: boolean } = {}) {
+    return this.transport.json(this.path(`/snapshots/${encodeURIComponent(id)}${options.force ? "?force=true" : ""}`), this.token, "DELETE", undefined, false);
+  }
   /**
    * The files as a tar.gz, streamed: as the volume is (or as `snapshot` has them), under `path` (names relative to it)
    * and matching `glob`. For a build that wants the whole tree; at most 10,000 files and 1 GiB.

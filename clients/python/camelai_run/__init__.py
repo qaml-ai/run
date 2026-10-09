@@ -1060,14 +1060,26 @@ class Volume:
     async def delete(self):
         return await self._json(method="DELETE")
 
-    async def snapshot(self, *, name=None):
-        return await self._json("/snapshots", "POST", {} if name is None else {"name": name})
+    async def snapshot(self, *, name=None, pinned=None, labels=None, files=None):
+        """A snapshot of the volume, or with `files` (path to str or bytes) a snapshot of those files instead, the volume
+        untouched (at most 1,000 files and 16 MiB). `pinned` keeps it until unpinned; `labels` are your own."""
+        body = {key: value for key, value in {"name": name, "pinned": pinned, "labels": labels}.items() if value is not None}
+        if files is not None:
+            body["files"] = {path: content if isinstance(content, str) else {"data": base64.b64encode(bytes(content)).decode()} for path, content in files.items()}
+        return await self._json("/snapshots", "POST", body)
 
-    async def snapshots(self):
-        return await self._json("/snapshots")
+    async def snapshots(self, *, labels=None):
+        """Oldest first; with `labels`, only those that have every one."""
+        query = urlencode([("label", f"{key}:{value}") for key, value in (labels or {}).items()])
+        return await self._json(f"/snapshots{'?' + query if query else ''}")
 
-    async def delete_snapshot(self, snapshot_id):
-        return await self._json(f"/snapshots/{quote(snapshot_id)}", "DELETE")
+    async def update_snapshot(self, snapshot_id, *, pinned=None, labels=None):
+        """Pin or unpin a snapshot, or replace its labels."""
+        return await self._json(f"/snapshots/{quote(snapshot_id)}", "PATCH", {key: value for key, value in {"pinned": pinned, "labels": labels}.items() if value is not None})
+
+    async def delete_snapshot(self, snapshot_id, *, force=False):
+        """A pinned snapshot is kept (409) unless `force`."""
+        return await self._json(f"/snapshots/{quote(snapshot_id)}{'?force=true' if force else ''}", "DELETE")
 
     async def archive(self, *, snapshot=None, path=None, glob=None):
         """The files as tar.gz bytes: as the volume is (or as `snapshot` has them), under `path` (names relative to it)
