@@ -518,3 +518,12 @@ test("a notification delivered while the checks run is in its parent's history o
   const result = await runPlan(plan, { quiet: true });
   assert.deepEqual(result.failures, []);
 });
+
+test("a notification whose landing the database refuses for now is landed when tried again, not lost (seed 39319804)", async () => {
+  // Minimized from seed 39319804: the notification's run marked the row landed, then counting its wake met a deadlock
+  // (40P01), which failed the run: the message never reached history, and its request, ended, was never sent again.
+  // Landing and counting are one transaction now, tried again on a transient refusal.
+  const plan: Plan = JSON.parse(readFileSync(new URL("./sim/cases/notification-landing-deadlock.json", import.meta.url), "utf8"));
+  const result = await runPlan(plan, { quiet: true });
+  assert.deepEqual(result.failures, []);
+});

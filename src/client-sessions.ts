@@ -2406,25 +2406,39 @@ export class ClientSessions {
     const notice = params.notice as { source: { agentId: string; name: string }; root: string; costUsd: number; metadata: Record<string, any> };
     const { metadata } = notice;
     const now = Date.now();
-    if (metadata.kind === "message") {
-      if (metadata.to === "parent") this.publish(session, { type: "event", requestId: record.id, event: { type: "subagent_message", agentId: notice.source.agentId, name: notice.source.name, text: params.text } });
-    } else {
-      const childRequest = record.id.slice("child_".length);
-      const landed = await this.db.query("update agent_children set landed_at = $3, landed_by = 'notice', state = 'notified', updated_at = $3 where child = $1 and request_id = $2 and landed_at is null returning tool_call_id", [notice.source.agentId, childRequest, now]);
-      if (!landed.rows.length) {
-        const row = (await this.db.query("select landed_by from agent_children where child = $1 and request_id = $2", [notice.source.agentId, childRequest])).rows[0];
-        // Only this request lands its notice: found landed by one, it is this run's first owner's landing.
-        always(row?.landed_by !== "notice" || again, "a child's ending lands in its parent at most once");
-        if (row && row.landed_by !== "notice") return { outcome: { result: { error: null, skipped: "wait_agent answered this sub-agent's ending already" } } };
+    const message = metadata.kind === "message";
+    const childRequest = record.id.slice("child_".length);
+    const refused = await this.runLimit(session, "prompt");
+    // Landing and the wake it counts go together, in a transaction (run again should it lose a race): a landing that
+    // failed counted nothing, and one landed already (this run's earlier attempt, or its earlier owner) counts nothing again.
+    const landing = await transaction(this.db, async sql => {
+      let fresh = message && !again, toolCallId: string | undefined;
+      if (!message) {
+        const landed = await sql.query("update agent_children set landed_at = $3, landed_by = 'notice', state = 'notified', updated_at = $3 where child = $1 and request_id = $2 and landed_at is null returning tool_call_id", [notice.source.agentId, childRequest, now]);
+        if (landed.rows.length) { fresh = true; toolCallId = landed.rows[0].tool_call_id ?? undefined; }
+        else {
+          const row = (await sql.query("select landed_by from agent_children where child = $1 and request_id = $2", [notice.source.agentId, childRequest])).rows[0];
+          if (row && row.landed_by !== "notice") return { skipped: true as const };
+        }
       }
-      if (landed.rows.length) {
-        this.chargeNotice(session, record.id, notice.costUsd);
-        const toolCallId = landed.rows[0].tool_call_id as string | undefined;
-        this.publish(session, { type: "event", requestId: record.id, event: { type: "subagent_end", ...toolCallId ? { toolCallId } : {}, agentId: notice.source.agentId, requestId: childRequest, name: notice.source.name, status: metadata.status, ...(metadata.error ? { error: metadata.error } : {}), background: true } });
-      }
+      if (refused) return { fresh, toolCallId };
+      const hour = Math.floor(now / 3_600_000);
+      const { rows } = fresh ? await sql.query("insert into agent_wakes (root, hour, turns) values ($1, $2, 1) on conflict (root, hour) do update set turns = agent_wakes.turns + 1 returning turns", [notice.root, hour])
+        : await sql.query("select turns from agent_wakes where root = $1 and hour = $2", [notice.root, hour]);
+      return { fresh, toolCallId, turns: Number(rows[0]?.turns ?? 0) };
+    });
+    if ("skipped" in landing) return { outcome: { result: { error: null, skipped: "wait_agent answered this sub-agent's ending already" } } };
+    if (message) {
+      if (metadata.to === "parent" && landing.fresh) this.publish(session, { type: "event", requestId: record.id, event: { type: "subagent_message", agentId: notice.source.agentId, name: notice.source.name, text: params.text } });
+    } else if (landing.fresh) {
+      this.chargeNotice(session, record.id, notice.costUsd);
+      this.publish(session, { type: "event", requestId: record.id, event: { type: "subagent_end", ...landing.toolCallId ? { toolCallId: landing.toolCallId } : {}, agentId: notice.source.agentId, requestId: childRequest, name: notice.source.name, status: metadata.status, ...(metadata.error ? { error: metadata.error } : {}), background: true } });
     }
-    const refusal = await this.wakeRefusal(session, notice.root, now, again);
+    const cap = this.options.wakesPerHour ?? MULTI_AGENT_LIMITS.wakesPerHour;
+    const refusal = refused ? { stopped: "spend_limit", message: refused.message }
+      : (landing.turns ?? 0) > cap ? { stopped: "agent_loop_limit", message: `This agent's chain has had ${cap} turns started by sub-agent notifications and messages this hour, its limit (AGENT_WAKES_PER_HOUR): the message is in its history, but no turn ran. Send a message to go on` } : undefined;
     if (!refusal) return { params };
+    if (refusal.stopped === "agent_loop_limit") sometimes(true, "a notification reached its chain's wake cap");
     // Durable before the message lands: whoever has the turn next keeps the refusal.
     this.upsertRequest(session, { ...session.requests.get(record.id)!, landOnly: refusal });
     await this.commit(session, true);
@@ -2432,19 +2446,20 @@ export class ClientSessions {
   }
 
   /**
-   * Why a turn a notification or message would start must not run: the agent's spend limit (a monthly cap, spent credit)
-   * or its chain's wake cap, counted here (`count`: false for a turn counted already).
+   * A notification's or message's landing (`landNotice`), tried again when the database refuses it for now or cannot be
+   * reached, as a run's start is (`startStep`). Should it still fail, the message lands anyway, without its bookkeeping:
+   * it is the runtime's, and its request is never sent again. Undefined: the session was given up meanwhile.
    */
-  private async wakeRefusal(session: Session, root: string, now: number, counted = false): Promise<{ stopped: string; message: string } | undefined> {
-    const refused = await this.runLimit(session, "prompt");
-    if (refused) return { stopped: "spend_limit", message: refused.message };
-    const cap = this.options.wakesPerHour ?? MULTI_AGENT_LIMITS.wakesPerHour;
-    const hour = Math.floor(now / 3_600_000);
-    const { rows } = counted ? await this.db.query("select turns from agent_wakes where root = $1 and hour = $2", [root, hour])
-      : await this.db.query("insert into agent_wakes (root, hour, turns) values ($1, $2, 1) on conflict (root, hour) do update set turns = agent_wakes.turns + 1 returning turns", [root, hour]);
-    if (Number(rows[0]?.turns ?? 0) <= cap) return undefined;
-    sometimes(true, "a notification reached its chain's wake cap");
-    return { stopped: "agent_loop_limit", message: `This agent's chain has had ${cap} turns started by sub-agent notifications and messages this hour, its limit (AGENT_WAKES_PER_HOUR): the message is in its history, but no turn ran. Send a message to go on` };
+  private async landing(session: Session, record: RequestRecord, params: any, again = false): Promise<{ params: any } | { outcome: Outcome } | undefined> {
+    let result: { params: any } | { outcome: Outcome } | undefined, tries = 0;
+    try {
+      if (!await this.startStep(session, record, async () => { result = await this.landNotice(session, record, params, again || tries++ > 0); return true; })) return undefined;
+    } catch (error) {
+      console.error(JSON.stringify({ type: "notice_landing_failed", agent: session.header.id, request: record.id, error: safeError(error) }));
+      return { params };
+    }
+    if (tries > 1) reachable("a notification's landing met a transient refusal and was tried again");
+    return result;
   }
 
   /**
@@ -4379,7 +4394,8 @@ export class ClientSessions {
       reachable("a child's notification whose node was lost before its message landed landed on the next owner");
       const params = { ...notice, requestId: record.id };
       if (refused) return { result: await this.execute(session, record, { ...params, landOnly: refused }) };
-      const landing = await this.landNotice(session, record, params, true);
+      const landing = await this.landing(session, record, params, true);
+      if (!landing) return { error: "The runtime stopped during this request", uncertain: true };
       return "outcome" in landing ? landing.outcome : { result: await this.execute(session, record, landing.params) };
     }
     return { error: "The runtime restarted during this request", uncertain: true };
@@ -4490,7 +4506,9 @@ export class ClientSessions {
       // A new message supersedes inputs still waiting: the agent closes their calls before it reads it.
       if (record.method === "prompt" && !await this.startStep(session, record, () => this.cancelInputs(session, "superseded").then(() => true))) return;
       // A child's notification lands once, charged to this run; at a cap it lands without a turn.
-      const landing = record.method === "prompt" && (params as { notice?: unknown } | undefined)?.notice !== undefined && !session.resuming.has(record.id) ? await this.landNotice(session, record, params) : undefined;
+      const landing = record.method === "prompt" && (params as { notice?: unknown } | undefined)?.notice !== undefined && !session.resuming.has(record.id) ? await this.landing(session, record, params) : undefined;
+      // Given up while its landing waited: the run stays as it is, for whoever has the agent next.
+      if (record.method === "prompt" && (params as { notice?: unknown } | undefined)?.notice !== undefined && !session.resuming.has(record.id) && !landing) return;
       if (landing && "params" in landing) params = landing.params;
       value = landing && "outcome" in landing ? landing.outcome : session.resuming.delete(record.id) ? await this.resume(session, record) : { result: await this.execute(session, record, params) };
       // The files the run wrote and presented, so an application can fetch them (agent.files).
