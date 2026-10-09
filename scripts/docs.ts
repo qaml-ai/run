@@ -94,7 +94,9 @@ export function brokenLinks() {
     for (const name of readdirSync(new URL(dir, docs))) {
       if (statSync(new URL(dir + name, docs)).isDirectory()) walk(`${dir}${name}/`);
       else if (name.endsWith(".md")) for (const [, link] of read(dir + name).matchAll(/\]\((?!https?:|mailto:|#)([^)\s#]+)(?:#[^)\s]*)?\)/g)) {
-        if (!existsSync(new URL(posix.normalize(posix.join(dir, link!)), docs))) broken.push(`${dir}${name}: ${link}`);
+        // Unreleased notes link as the release notes they become do (scripts/release-notes.ts).
+        const base = dir === "operations/unreleased/" ? "operations/" : dir;
+        if (!existsSync(new URL(posix.normalize(posix.join(base, link!)), docs))) broken.push(`${dir}${name}: ${link}`);
       }
     }
   };
