@@ -1516,6 +1516,9 @@ export class ClientSessions {
       session.hosted = session.header.mounts ?? [];
       const definitions = await steps.time("tools", this.toolset(session));
       const { cpuMs, maxTimeoutMs } = await this.codeLimits(session.header.tenant);
+      // Lost or given up while it got ready (its node fenced, or is leaving): it starts nothing. A host started now would
+      // serve an owner that is gone, and whoever loads the agent next would find it and take it for theirs, still starting.
+      if (session.fault || session.leaving) throw session.fault ?? new Error("Agent stopped");
       const result = await steps.time("init", this.supervisor.start(session.header.id, { ...session.header.config, apiKey, mounts: VolumeService.markWorkspace(session.header.id, session.header.mounts ?? []).map(({ path, mode, workspace }) => ({ path, mode, ...workspace ? { workspace } : {} })), ...(this.options.retry ? { retry: this.options.retry } : {}), ...(this.options.streamTimeouts ? { streamTimeouts: this.options.streamTimeouts } : {}), ...(session.resuming.size ? { resume: true } : {}), tenant: session.header.tenant, codeLimits: { cpuMs, maxTimeoutMs } }, {
         definitions,
         codeSlot: async signal => this.codeGate.acquire(session.header.tenant, (await this.codeLimits(session.header.tenant)).concurrent, signal),
