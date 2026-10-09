@@ -379,7 +379,7 @@ The token itself (for servers that verify it by hand, e.g. with `jose`):
 { "iss": "https://agents.camelai.dev", "aud": "https://tools.example.com/mcp",
   "sub": "u_123", "tenant": "acme", "agent": "client_…", "definition": "def_…",
   "ctx": { "org": "acme" }, "act": "u_456", "origin": { … }, "req": "run_…", "tcid": "toolu_…",
-  "iat": 1790000000, "exp": 1790000120, "jti": "…" }
+  "par": "client_…", "root": "client_…", "iat": 1790000000, "exp": 1790000120, "jti": "…" }
 ```
 
 ```ts
@@ -404,6 +404,10 @@ if (payload.tenant !== "acme") throw new Error("Not our tenant's agent");
 - `act` and `origin` are absent outside a turn (listing a server's tools as an
   agent starts), and so are `req`, the run's request id, and `tcid`, the model's
   tool call (`identity.requestId` and `toolCallId` in the SDKs).
+- `par` and `root` are set only in a [sub-agent](multi-agent.md)'s run: the agent
+  that started it and the first agent of its chain, from the run's chain as
+  the runtime signed it (`identity.parentAgentId` and `rootAgentId` in the SDKs).
+  Authorize a sub-agent's call by `root` when only the first agent's user is yours.
 - The keys are at `/.well-known/jwks.json` (cache them for minutes);
   `/.well-known/oauth-authorization-server` names the issuer for MCP clients.
 
@@ -528,7 +532,7 @@ Tools the runtime answers itself, given to an agent as `builtins` when it is
 made or upserted (`agents.upsert("researcher", { builtins: ["web_search",
 "web_fetch"] })`, or `PATCH /v1/agents/:id/configuration`), or by the definition
 it is made from (whose builtins it then has):
-`"builtins": ["web_fetch", "web_search", "schedule", "ask_user", "delegate", "generate_image"]`.
+`"builtins": ["web_fetch", "web_search", "schedule", "ask_user", "delegate", "generate_image", "agents"]`.
 
 - `web_fetch` (`{url, maxCharacters?}`) reads a public page as text (HTML
   reduced to readable text, 20,000 characters by default, at most 100,000), or
@@ -558,6 +562,9 @@ it is made from (whose builtins it then has):
   else the platform's, charged per token on prepaid credit, and counts against
   the agent's and the run's spend limits. Saving a definition or an agent with
   it and no OpenAI key answers with a warning. See [Images](images.md#in-an-agent).
+- `agents` (with the same settings) starts sub-agents in the background
+  (`spawn_agent`, `wait_agent`, `list_agents`); each one's answer arrives as a
+  notification. See [Background sub-agents](multi-agent.md#background-sub-agents).
 
 ## Seeing an agent's tools
 

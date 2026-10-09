@@ -7,6 +7,10 @@ runs it, and it is durable: a sub-agent is an agent of its own, and a parent
 whose node is lost while it waits collects the sub-agent's answer on another
 node.
 
+The `agents` built-in starts sub-agents in the **background** instead: the
+model goes on at once, and each one's answer arrives as a message of its own
+when it ends. See [Background sub-agents](#background-sub-agents).
+
 camelRun has no handoffs: an agent cannot pass its conversation to another
 agent. See [Coming from the OpenAI Agents SDK](#coming-from-the-openai-agents-sdk).
 
@@ -75,7 +79,9 @@ A sub-agent the runtime makes is a real agent:
 - It is **linked to its parent**: `parentAgentId` and `parentRunId` in
   `GET /v1/agents/{id}` and the agent list, and in the metadata of its run.
 - It **acts for whom the parent acts** (`subject`, `context`) and uses the
-  parent's key scope. It is billed to the same account.
+  parent's key scope. It is billed to the same account. Its tool servers'
+  [identity tokens](tools.md) also name its parent and its chain's first agent
+  (`par` and `root`; `identity.parentAgentId` and `rootAgentId` in the SDKs).
 - It has its **own workspace**. Pass it what it needs in the task, or mount a
   shared [volume](files.md#volumes) in both definitions.
 - It **lives a day**, as a scratch agent does. Read its history in the meantime
@@ -162,6 +168,95 @@ A browser token that lists its `events` needs these types listed too.
 A sub-agent's events are relayed while it runs on the same node as its parent,
 which it does unless a node was lost; its own stream and history always have
 everything.
+
+## Background sub-agents
+
+The `agents` builtin gives the model three tools, with the same `delegate`
+settings (whom it may start, `maxDepth`, `maxParallel`). The builtin needs them,
+as `delegate` does; an agent may have both builtins.
+
+```ts
+const lead = await agents.upsert("research-lead", {
+  instructions: "Start a researcher for each question, and write the report as their answers come in.",
+  builtins: ["agents"], delegate: { agents: ["researcher"], maxParallel: 8 },
+});
+```
+
+| Tool | |
+| --- | --- |
+| `spawn_agent({ agent \| instructions, task, output?, name? })` | Starts a sub-agent, as `delegate` would, and returns `{ agentId, name }` at once. `name` is the model's handle for it, unique among its running sub-agents (default: the agent's name and a number, `researcher-1`) |
+| `wait_agent({ agents?, timeoutMs? })` | Waits until one of the given sub-agents (names or ids; default: any running one) ends, or `timeoutMs` passes (default 5 minutes, at most 10). Returns each one's `status`, with the answer (`text`, `output?`, `error?`) of those that ended |
+| `list_agents()` | The agent's sub-agents: `{ agentId, name, status, startedAt, endedAt? }`, `status` being `running`, `completed`, `failed`, `aborted` or `input_required` |
+
+The sub-agent is the same as a delegated one: the same targets, chain and
+depth limit, identity and key scope, and it lives a day. It gets what its parent
+agent may still spend (its `spendLimit`) as its own run's limit. A stateless run
+(`POST /v1/runs`) cannot start one: nothing would hear it end.
+
+### Notifications
+
+When a sub-agent's run ends (completed, failed, aborted, or waiting on a
+person), the runtime sends its parent a prompt with request id
+`child_<the child's request id>`. It queues behind the parent's running turn,
+or starts a turn if the parent is idle. Its message is a user message with a
+source of its own, in history, events and exports:
+
+```json
+{ "role": "user", "content": [{ "type": "text", "text": "Found 3 sources: …" }],
+  "source": { "kind": "agent", "agentId": "client_…", "name": "researcher-1" }, "requestId": "child_spawn_…",
+  "metadata": { "agentId": "client_…", "name": "researcher-1", "status": "completed", "output": { … }, "usage": { … } } }
+```
+
+The model reads it in a block only the runtime writes, never as the person:
+
+```text
+<agent_notification name="researcher-1" status="completed">
+Found 3 sources: …
+</agent_notification>
+```
+
+The sub-agent's text cannot close the block or open another: such tags in it
+(and in any user message or tool result) are neutralized, as sender blocks are.
+UIs should render a message with `source` as a notification, not as the user.
+
+A sub-agent whose ending a `wait_agent` call answered sends no notification.
+A parent waiting on a person (an approval, `ask_user`) gets its notifications
+once they answer: a new message would supersede what it asked.
+
+### Exactly once
+
+Each sub-agent has a row in `agent_children`, written before its prompt is sent
+and keyed by the `spawn_agent` call, so a turn resumed on another node finds
+the same sub-agent and never starts a second. Its ending is delivered by the node
+that ran it, as the run ends, and otherwise by a sweep on any node (every
+`AGENT_CHILD_SWEEP_MS`, default 15 s). Every delivery sends the same request,
+which the parent takes once, so a node lost on the way (the sub-agent's, the
+parent's, or both) delays the notification by a sweep and never repeats it.
+
+### Cost and loop guards
+
+- What the sub-agent spent is charged to the parent's spend limit when its
+  notification lands (or its `wait_agent` answers it), and shows in that run's
+  `usage.subagentCostUsd`.
+- Spend limits apply to the turns notifications start. A parent at its limit
+  gets the notification in history, without a turn: the run ends with
+  `stopped: "spend_limit"`.
+- Notifications may start at most `AGENT_WAKES_PER_HOUR` turns (default 100)
+  per chain of agents (counted by its first agent) and clock hour, so agents
+  that keep starting each other stop. Past it, a notification lands in history
+  without a turn, and its run ends with `stopped: "agent_loop_limit"`, naming
+  the limit. Send the agent a message to go on.
+- At most `maxParallel` sub-agents run at once per parent; past it,
+  `spawn_agent` fails and the model waits for one.
+
+### Events
+
+With `?subagents=1` (`subagents: true` in the SDKs), the parent's stream has
+`subagent_start` (with `background: true`) when a sub-agent starts,
+`subagent_event` with its events while it runs on the parent's node, and
+`subagent_end` (with `background: true`, `name` and `status`) when its
+notification lands or a `wait_agent` answers it. Its own stream and history
+always have everything.
 
 ## Coming from the OpenAI Agents SDK
 
