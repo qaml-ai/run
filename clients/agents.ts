@@ -696,7 +696,7 @@ export class Agent {
    * Stop the agent: its running turn, and the runs queued behind it (each fails with code `cancelled`), so nothing runs
    * after the stop. `queued: "keep"` stops the running turn only.
    */
-  abort(options: { queued?: "cancel" | "keep" } = {}) { return this.client.abort(options); }
+  abort(options: { queued?: "cancel" | "keep"; children?: "abort" | "keep" } = {}) { return this.client.abort(options); }
   /**
    * A new agent with this one's configuration, a copy of its history and a fork of its workspace, each its own from
    * then on: try another direction without losing this one. By default the history ends with the last turn that ended

@@ -171,7 +171,7 @@ everything.
 
 ## Background sub-agents
 
-The `agents` builtin gives the model three tools, with the same `delegate`
+The `agents` builtin gives the model five tools, with the same `delegate`
 settings (whom it may start, `maxDepth`, `maxParallel`). The builtin needs them,
 as `delegate` does; an agent may have both builtins.
 
@@ -187,6 +187,8 @@ const lead = await agents.upsert("research-lead", {
 | `spawn_agent({ agent \| instructions, task, output?, name? })` | Starts a sub-agent, as `delegate` would, and returns `{ agentId, name }` at once. `name` is the model's handle for it, unique among its running sub-agents (default: the agent's name and a number, `researcher-1`) |
 | `wait_agent({ agents?, timeoutMs? })` | Waits until one of the given sub-agents (names or ids; default: any running one) ends, or `timeoutMs` passes (default 5 minutes, at most 10). Returns each one's `status`, with the answer (`text`, `output?`, `error?`) of those that ended |
 | `list_agents()` | The agent's sub-agents: `{ agentId, name, status, startedAt, endedAt? }`, `status` being `running`, `completed`, `failed`, `aborted` or `input_required` |
+| `send_message({ to, text })` | Messages one of its sub-agents (name or id) or, from a sub-agent, its parent (`"parent"`). See [Messages](#messages) |
+| `interrupt_agent({ agent })` | Aborts one of its running sub-agents; its notification follows with status `aborted` |
 
 The sub-agent is the same as a delegated one: the same targets, chain and
 depth limit, identity and key scope, and it lives a day. It gets what its parent
@@ -224,6 +226,40 @@ one already on its way ends without its message (`result.skipped`).
 A parent waiting on a person (an approval, `ask_user`) gets its notifications
 once they answer: a new message would supersede what it asked.
 
+A sub-agent that waits on a person notifies with status `input_required`, and
+`metadata.inputs` lists what it asked. Answer its inputs as any agent's
+(`POST /v1/agents/{child}/inputs/{id}`, or a browser token with the `children`
+scope reads them); it resumes, and its next ending notifies again.
+
+### Messages
+
+`send_message` goes between an agent and its own sub-agents and parent, no one
+else:
+
+- **Parent to sub-agent:** the text joins the sub-agent's running turn, or
+  starts a turn that keeps its history. A sub-agent that had finished works
+  again, and its answer comes back as a new notification. The sub-agent reads
+  `<agent_message name="parent">…</agent_message>`.
+- **Sub-agent to parent:** `to: "parent"`, which the runtime resolves through
+  the run's signed chain. It reaches the parent as a notification does, without
+  the sub-agent's turn ending, as `<agent_message name="researcher-1">…`, with
+  `source` and `metadata.kind: "message"`. The parent's stream has
+  `subagent_message` (`{ agentId, name, text }`). A sub-agent the runtime made has
+  `send_message` even without the builtin.
+
+A turn sends at most 20 messages, and the turns messages start count against
+the wake cap below, so two agents messaging each other stop.
+
+### Stopping sub-agents
+
+- `interrupt_agent`, or `POST /v1/agents/{child}/abort` for one sub-agent: its
+  turn is aborted, and its parent's notification says `aborted`.
+- Aborting the parent (`agent.abort()`, `POST /v1/agents/{id}/abort`) aborts its
+  running sub-agents too. `{ "children": "keep" }` (`abort({ children: "keep" })`)
+  leaves them running.
+- Deleting the parent aborts its running sub-agents and deletes the ones the
+  runtime made. Named agents it started (`{ agent: "…" }` targets) stay.
+
 ### Exactly once
 
 Each sub-agent has a row in `agent_children`, written before its prompt is sent
@@ -242,11 +278,13 @@ parent's, or both) delays the notification by a sweep and never repeats it.
 - Spend limits apply to the turns notifications start. A parent at its limit
   gets the notification in history, without a turn: the run ends with
   `stopped: "spend_limit"`.
-- Notifications may start at most `AGENT_WAKES_PER_HOUR` turns (default 100)
-  per chain of agents (counted by its first agent) and clock hour, so agents
-  that keep starting each other stop. Past it, a notification lands in history
-  without a turn, and its run ends with `stopped: "agent_loop_limit"`, naming
-  the limit. Send the agent a message to go on.
+- Notifications and messages may start at most `AGENT_WAKES_PER_HOUR` turns
+  (default 100) per chain of agents (counted by its first agent) and clock hour,
+  so agents that keep starting each other stop. Past it, a notification or
+  message lands in history without a turn, and its run ends with
+  `stopped: "agent_loop_limit"`, naming the limit. Send the agent a message to
+  go on. A refusal is recorded before the message lands, so a node lost then
+  never lets the turn run on another.
 - At most `maxParallel` sub-agents run at once per parent; past it,
   `spawn_agent` fails and the model waits for one.
 
@@ -256,8 +294,13 @@ With `?subagents=1` (`subagents: true` in the SDKs), the parent's stream has
 `subagent_start` (with `background: true`) when a sub-agent starts,
 `subagent_event` with its events while it runs on the parent's node, and
 `subagent_end` (with `background: true`, `name` and `status`) when its
-notification lands or a `wait_agent` answers it. Its own stream and history
-always have everything.
+notification lands or a `wait_agent` answers it, and `subagent_message` when it
+messages its parent. Its own stream and history always have everything.
+
+A browser token minted with the `children` scope (with the others it needs:
+`{ "scopes": ["events", "history", "children"] }`) reads the agent's sub-agents
+too, by their ids, as it reads the agent: a chat can reload a sub-agent's
+transcript with its parent's token.
 
 ## Coming from the OpenAI Agents SDK
 

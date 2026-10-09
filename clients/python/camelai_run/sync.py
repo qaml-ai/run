@@ -543,9 +543,10 @@ class Agent:
         """Change its model, instructions, thinking level or declared tools between runs."""
         return self.client.configure(model=model, system_prompt=instructions, thinking_level=thinking_level, tools=tools, max_output_tokens=max_output_tokens, temperature=temperature)
 
-    def abort(self, *, queued=None):
-        """Stop the agent: its running turn, and the runs queued behind it unless queued="keep"."""
-        return self.client.abort(queued=queued)
+    def abort(self, *, queued=None, children=None):
+        """Stop the agent: its running turn, and the runs queued behind it unless queued="keep", and its background
+        sub-agents unless children="keep"."""
+        return self.client.abort(queued=queued, children=children)
 
     def fork(self, *, key=None, name=None, at_message=None, ttl_seconds=_DEFAULT, subject=None, context=None, instructions_append=None, model_headers=_DEFAULT):
         """A new agent with this one's configuration, a copy of its history and a fork of its workspace (see camelai_run.Agent.fork)."""

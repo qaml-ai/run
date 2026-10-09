@@ -84,7 +84,7 @@ export interface HostIO {
 }
 
 /** Tools a lost node's open call to is made again on resume, not closed as unknown: each is keyed by its call (multi-agent.ts). */
-export const RERUN = ["delegate", "spawn_agent", "wait_agent", "list_agents"];
+export const RERUN = ["delegate", "spawn_agent", "wait_agent", "list_agents", "send_message", "interrupt_agent"];
 
 /** The latest assistant message's tool calls that have no result yet. */
 export function openCalls(messages: AgentMessage[]): ToolCall[] {
@@ -1019,6 +1019,12 @@ export function createAgentHost(hostIO: HostIO) {
     try {
       // Aborted before this host had it (its session's `aborted`): a turn resumed from the transcript is open here, and is closed.
       if (method === "continue" && params?.aborted) return await abortedBeforeLoop();
+      // A notification's turn the runtime refused as it landed (a cap), resumed here: closed without the model.
+      if (method === "continue" && params?.landOnly) {
+        const { stopped: why, message: said } = params.landOnly as { stopped: string; message: string };
+        const done = await abortedBeforeLoop();
+        return { ...done, error: said, code: why, stopped: why };
+      }
       if (method === "prompt") await useOutput(params.output?.schema);
       if (method === "execute") {
         const { returned: _returned, cpuMs: _cpuMs, ...result } = await runCode({ ...codeRequest(params), bridge: bridge(active.signal), signal: active.signal, onEvent: event => io.emit(event) });

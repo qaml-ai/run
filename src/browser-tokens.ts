@@ -2,8 +2,12 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { HttpError } from "./http.ts";
 import { outcomeEnding } from "../shared/client-protocol.ts";
 
-/** What a browser token may read of its one agent. */
-export const BROWSER_SCOPES = ["events", "state", "history", "inputs"] as const;
+/**
+ * What a browser token may read of its agent; `children` extends what it reads to the agent's background sub-agents
+ * (spawn_agent's), which tokens get only when they ask.
+ */
+export const BROWSER_SCOPES = ["events", "state", "history", "inputs", "children"] as const;
+const DEFAULT_SCOPES = ["events", "state", "history", "inputs"] as const;
 export type BrowserScope = typeof BROWSER_SCOPES[number];
 /** Fields a token may hide from its reader. */
 export const BROWSER_REDACTIONS = ["usage.cost"] as const;
@@ -47,8 +51,8 @@ export class BrowserTokens {
       }
       return [...new Set(value as string[])];
     };
-    const scopes = (list("scopes", body.scopes, BROWSER_SCOPES) ?? [...BROWSER_SCOPES]) as BrowserScope[];
-    if (!scopes.length) throw new HttpError(400, "scopes must name at least one of events, state, history, inputs");
+    const scopes = (list("scopes", body.scopes, BROWSER_SCOPES) ?? [...DEFAULT_SCOPES]) as BrowserScope[];
+    if (!scopes.some(scope => scope !== "children")) throw new HttpError(400, "scopes must name at least one of events, state, history, inputs");
     const events = list("events", body.events);
     const redact = list("redact", body.redact, BROWSER_REDACTIONS);
     if (body.subject !== undefined && (typeof body.subject !== "string" || !body.subject || body.subject.length > 200)) throw new HttpError(400, "subject must be a string of at most 200 characters");

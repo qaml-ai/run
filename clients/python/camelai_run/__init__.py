@@ -663,7 +663,8 @@ class _RuntimeCalls:
     def browser_token(self, agent_id, *, ttl_seconds=None, scopes=None, events=None, redact=None, subject=None):
         """A token a browser reads one agent with (the TypeScript SDK's watchAgent): mint one per user, after your own
         access checks. It reads only that agent's events, state, history and inputs (or `scopes`), for `ttl_seconds`
-        (default 900, 5 to 3600). Returns {"token", "expiresAt", "agentId", "url"}."""
+        (default 900, 5 to 3600); with "children" among its scopes, its background sub-agents too. Returns
+        {"token", "expiresAt", "agentId", "url"}."""
         body = {key: value for key, value in {"ttlSeconds": ttl_seconds, "scopes": scopes, "events": events, "redact": redact, "subject": subject}.items() if value is not None}
         return self._rest("POST", f"/v1/agents/{_path(agent_id)}/browser-tokens", body, retry=False)
 
@@ -1344,11 +1345,11 @@ class _AgentCalls:
         """The agent's process (when loaded) and whether it is busy: busy, activeRun, queuedRuns, as GET /v1/agents/{id} and its state say too."""
         return self.request("status")
 
-    def abort(self, *, queued=None):
+    def abort(self, *, queued=None, children=None):
         """Stop the agent: its running turn ends (code "aborted"), and the runs queued behind it are cancelled (code
-        "cancelled"), so nothing runs after the stop; queued="keep" stops the running turn only. Returns
-        {"aborted", "cancelled": [ids]}."""
-        return self.request("abort", {"queued": queued} if queued else {})
+        "cancelled"), so nothing runs after the stop; queued="keep" stops the running turn only. Its running background
+        sub-agents are aborted too, unless children="keep". Returns {"aborted", "cancelled": [ids]}."""
+        return self.request("abort", {**({"queued": queued} if queued else {}), **({"children": children} if children else {})})
 
     def outcomes(self):
         return self._http("/state")
@@ -2376,10 +2377,10 @@ class Agent:
         """Change its model, instructions, thinking level or tools between runs."""
         return await self.client.configure(model=model, system_prompt=instructions, thinking_level=thinking_level, tools=tools, max_output_tokens=max_output_tokens, temperature=temperature)
 
-    async def abort(self, *, queued=None):
+    async def abort(self, *, queued=None, children=None):
         """Stop the agent: its running turn, and the runs queued behind it (each fails with code "cancelled"), so nothing
-        runs after the stop. queued="keep" stops the running turn only."""
-        return await self.client.abort(queued=queued)
+        runs after the stop. queued="keep" stops the running turn only; children="keep" leaves its background sub-agents running."""
+        return await self.client.abort(queued=queued, children=children)
 
     async def fork(self, *, key=None, name=None, at_message=None, ttl_seconds=_DEFAULT, subject=None, context=None, instructions_append=None,
                    model_headers=_DEFAULT, tools=None, on_event=None, on_input=None, on_error=None, attach=None, takeover=False):
