@@ -119,6 +119,40 @@ def trace_ids(requests):
             for resource in request["body"]["resourceSpans"] for scope in resource["scopeSpans"] for span in scope["spans"]]
 
 
+HELLO = (ROOT / "tests" / "fixtures" / "audio" / "hello.ogg").read_bytes()
+
+
+def fake_transcriber(requests):
+    """OpenAI's transcription endpoint on localhost (and the voice note at /hello.ogg): answers every audio with one
+    transcript, keeping each request's model, file name and size."""
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/ogg")
+            self.send_header("Content-Length", str(len(HELLO)))
+            self.end_headers()
+            self.wfile.write(HELLO)
+
+        def do_POST(self):
+            body = self.rfile.read(int(self.headers["Content-Length"]))
+            form = httpx.Request("POST", "http://x", content=body, headers={"Content-Type": self.headers["Content-Type"]})
+            requests.append({"key": self.headers["Authorization"], "type": self.headers["Content-Type"].split(";")[0], "bytes": len(body), "has_audio": HELLO[:64] in body})
+            answer = json.dumps({"text": "Hello from camelRun.", "languages": [{"code": "en"}], "usage": {"type": "duration", "seconds": 5}}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(answer)))
+            self.end_headers()
+            self.wfile.write(answer)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
 class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.directory = tempfile.TemporaryDirectory(prefix="camelai-python-sdk-")
@@ -132,6 +166,8 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         tenants.write_text(json.dumps({"tenants": {"python": {"tokenSha256": hashlib.sha256(self.token.encode()).hexdigest(), "apiKeys": {"openrouter": "unset"}}}}))
         self.bodies, self.script = [], []
         self.model = fake_model(self.bodies, self.script)
+        self.transcribed = []
+        self.transcriber = fake_transcriber(self.transcribed)
         self.host = await asyncio.create_subprocess_exec(
             "node", "--experimental-strip-types", "--disable-warning=ExperimentalWarning", str(ROOT / "src" / "server.ts"), stdout=asyncio.subprocess.PIPE,
             env={"PATH": os.environ["PATH"], "HOME": self.directory.name,
@@ -142,6 +178,8 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
                  "AGENT_SECRETS_KEY": "ab" * 32, "AGENT_OUTBOUND_ALLOW_HTTP": "true", "AGENT_OUTBOUND_ALLOW_CIDRS": "127.0.0.1/32",
                  # Trace export to a local OTLP receiver, flushed quickly.
                  "AGENT_TELEMETRY_INTERVAL_MS": "100",
+                 # Transcription, on a local stand-in for OpenAI's.
+                 "AGENT_TRANSCRIPTION_URL": f"http://127.0.0.1:{self.transcriber.server_port}",
                  **({"AGENT_RUNTIME": os.environ["AGENT_RUNTIME"]} if "AGENT_RUNTIME" in os.environ else {})},
         )
         ready = json.loads(await asyncio.wait_for(self.host.stdout.readline(), 15))
@@ -749,6 +787,8 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         database(f"drop schema {self.schema} cascade")
         self.model.shutdown()
         self.model.server_close()
+        self.transcriber.shutdown()
+        self.transcriber.server_close()
         self.directory.cleanup()
 
     async def test_an_approval_answered_by_on_input_resumes_the_turn(self):
@@ -1154,6 +1194,44 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         link = await agent.files.link("/workspace/uploads/py-files/report.txt")
         self.assertEqual((await self.runtime.http.get(link["url"])).content, b"quarterly numbers")
         await agent.destroy()
+
+
+    async def test_audio_is_transcribed_in_messages_runs_and_on_its_own(self):
+        put = await self.runtime.http.put(f"{self.url}/v1/providers/openai/key", headers={"Authorization": f"Bearer {self.token}"}, json={"apiKey": "py-openai-key", "verify": False})
+        self.assertEqual(put.status_code, 200, put.text)
+        # On its own: bytes, a local path, a URL; async and sync.
+        local = Path(self.directory.name) / "voice.ogg"
+        local.write_bytes(HELLO)
+        alone = await self.agents.transcriptions.create(HELLO, language="en", subject="user_1", context={"org": "o1"})
+        self.assertEqual((alone["text"], alone["language"], alone["durationSeconds"], alone["model"]), ("Hello from camelRun.", "en", 5, "openai/gpt-transcribe"))
+        self.assertEqual(self.transcribed[-1]["key"], "Bearer py-openai-key")
+        self.assertEqual((await self.runtime.transcriptions.create(local))["text"], "Hello from camelRun.")
+        by_url = await self.runtime.transcriptions.create(url=f"http://127.0.0.1:{self.transcriber.server_port}/hello.ogg")
+        self.assertEqual(by_url["text"], "Hello from camelRun.")
+        with self.assertRaises(AgentError) as refused:
+            await self.runtime.transcriptions.create(b"plain text, not audio")
+        self.assertEqual(refused.exception.status, 415)
+        with self.assertRaises(AgentError):
+            await self.runtime.transcriptions.create()
+        with sync.Agents(self.token, url=self.url) as agents:
+            self.assertEqual(await asyncio.to_thread(agents.transcriptions.create, HELLO), alone)
+        self.assertEqual(len(self.transcribed), 4)
+        # Attached to a message: the model reads the transcript; transcribe=False keeps it a file.
+        agent = await self.runtime.create_agent(tools=[])
+        await agent.prompt("", files=[{"name": "voice.ogg", "data": HELLO, "content_type": "audio/ogg"}], idempotency_key="py-voice")
+        user = next(message for message in reversed(self.bodies[-1]["messages"]) if message["role"] == "user")["content"]
+        text = "".join(part.get("text", "") for part in user) if isinstance(user, list) else user
+        self.assertIn("/workspace/uploads/py-voice/voice.ogg (audio/ogg, 0:05, en), transcript:\nHello from camelRun.", text)
+        await agent.prompt("keep it", files=[{"name": "kept.ogg", "data": HELLO, "transcribe": False}], idempotency_key="py-kept")
+        self.assertEqual(len(self.transcribed), 5)
+        history = await agent._http("/history")
+        files = [block for message in history["messages"] if message["role"] == "user" for block in message["content"] if block.get("type") == "file"]
+        self.assertEqual([(block["path"].rsplit("/", 1)[-1], "transcript" in block) for block in files], [("voice.ogg", True), ("kept.ogg", False)])
+        await agent.destroy()
+        # A stateless run takes audio as input: by URL, with no text.
+        run = await self.agents.run("", files=[{"url": f"http://127.0.0.1:{self.transcriber.server_port}/hello.ogg"}])
+        self.assertEqual(run.text, "seen")
+        self.assertEqual(len(self.transcribed), 6)
 
 
 TODOS = [{"owner": "alice", "team": "acme", "text": "ship it"}, {"owner": "bob", "team": "acme", "text": "review it"}, {"owner": "alice", "team": "other", "text": "not this team"}]
