@@ -28,6 +28,13 @@ if ! aws secretsmanager describe-secret --secret-id "$id" >/dev/null 2>&1; then
 fi
 aws secretsmanager put-secret-value --secret-id "$id" --secret-string "file://$work/value" >/dev/null
 echo "Stored $id."
-# Tasks read this secret at startup; roll the service so new tasks pick it up.
-aws ecs update-service --region "$REGION" --cluster "$NAME" --service "$NAME" --force-new-deployment >/dev/null
-echo "Rolling the ECS service: platform-key images and transcription now go to Azure (look for \"via\":\"azure\" in images_generated and transcribed logs)."
+# Tasks read this secret at startup. The running revision must name it (the Terraform change ships with a deploy of the
+# running tag); then rolling the service is enough.
+running=$(aws ecs describe-services --cluster "$NAME" --services "$NAME" --query 'services[0].taskDefinition' --output text)
+if aws ecs describe-task-definition --task-definition "$running" --query 'taskDefinition.containerDefinitions[0].environment[].name' --output text | tr '\t' '\n' | grep -qx AGENT_AZURE_OPENAI_SECRET_ARN; then
+  aws ecs update-service --cluster "$NAME" --service "$NAME" --force-new-deployment >/dev/null
+  echo "Rolling the ECS service: platform-key images and transcription now go to Azure (\"via\":\"azure\" in images_generated and transcribed logs)."
+else
+  tag=$(aws ecs describe-task-definition --task-definition "$running" --query 'taskDefinition.containerDefinitions[0].image' --output text)
+  echo "The running revision does not read the secret yet: apply the Terraform change, then deploy the running image (${tag##*:}) with infra/ecs-deploy.sh ${tag##*:}."
+fi
