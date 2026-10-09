@@ -199,7 +199,7 @@ type Session = {
   route?: Map<string, ToolServer>;
   /** The servers the running agent's tools were built from, and what each listed then. */
   servers?: ToolServer[];
-  /** The mounts the running agent started with, which its prompt describes (see `turnMounts`). */
+  /** The mounts the running agent started with, which its prompt describes: when they change, its next run starts it again. */
   hosted?: Mount[];
   /** The tools its code reaches (not direct-only), which `tools.search` ranks. */
   searchable?: ToolDefinition[];
@@ -1560,22 +1560,8 @@ export class ClientSessions {
       { tools: () => defaultExposure(tools), call: call => this.callAttached(session, call), sources: async () => [{ kind: "application", name: "application", status: "listed", connected: !!session.attached?.open, tools: defaultExposure(tools) }] },
       ...volumes && header.mounts?.length && !bare ? [view("files", fileServer(volumes.definitions().filter(tool => fileTools !== false || tool.name === "present_file"), ({ name, args, signal }) => volumes.tool(this.toolContext(session), name, args, signal)))] : [],
       ...multiAgent ? [multiAgent] : [],
-      ...sources && this.options.sources ? [this.options.sources.server({ tenant, agent: header.id, ...(definition ? { definition: definition.id } : {}), claim: session.claim, ...(header.identity ? { identity: header.identity } : {}), mounts: () => this.turnMounts(session), onWrite: this.toolContext(session).onWrite }, sources)] : [],
+      ...sources && this.options.sources ? [this.options.sources.server({ tenant, agent: header.id, ...(definition ? { definition: definition.id } : {}), claim: session.claim, ...(header.identity ? { identity: header.identity } : {}), mounts: () => session.header.mounts ?? [], onWrite: this.toolContext(session).onWrite }, sources)] : [],
     ];
-  }
-
-  /**
-   * The mounts a turn may use: the ones its agent started with, which its prompt describes, that are still mounted
-   * (read-only if either says so). A mount removed meanwhile is gone at once; one added appears from the next turn,
-   * which starts the agent again (`run`).
-   */
-  private turnMounts(session: Session): Mount[] {
-    const current = session.header.mounts ?? [];
-    if (!session.hosted || session.hosted === current) return current;
-    return session.hosted.flatMap(mount => {
-      const now = current.find(other => other.volumeId === mount.volumeId && other.path === mount.path && (other.subpath ?? "/") === (mount.subpath ?? "/"));
-      return now ? [now.mode === "rw" && mount.mode === "ro" ? { ...now, mode: "ro" as const } : now] : [];
-    });
   }
 
   /**
@@ -1586,7 +1572,7 @@ export class ClientSessions {
   private toolContext(session: Session): ToolContext {
     const header = session.header;
     return {
-      tenant: header.tenant, agent: header.id, mounts: this.turnMounts(session), model: () => session.header.config.model, seen: session.seen ??= new Map(),
+      tenant: header.tenant, agent: header.id, mounts: header.mounts ?? [], model: () => session.header.config.model, seen: session.seen ??= new Map(),
       onWrite: file => {
         const files = session.outputs?.files;
         if (files && (files.has(file.path) || files.size < OUTPUT_FILES)) files.set(file.path, file);
@@ -2868,7 +2854,7 @@ export class ClientSessions {
   }
 
   /**
-   * Replace a tenant's agent's mounts: a removed one at once, the rest from its next turn (see `remount`).
+   * Replace a tenant's agent's mounts: they apply from its next tool call (see `remount`).
    */
   async setMounts(id: string, tenant: string, requested: unknown) {
     const session = (await this.owns(id, tenant)) ? await this.load(id) : undefined;
@@ -2876,8 +2862,9 @@ export class ClientSessions {
     return this.remount(session, requested);
   }
   /**
-   * Set an agent's mounts (`requested`, as given). A running turn loses a removed mount at once and keeps the rest it
-   * began with; the next one starts the agent again with the new mounts (`turnMounts`, `run`).
+   * Set an agent's mounts (`requested`, as given). They apply from the agent's next tool call (a call under way keeps
+   * the mounts it began with), so a turn can swap a mount and go on working in it; the next run starts the agent again,
+   * so its prompt describes them (`run`).
    */
   private async remount(session: Session, requested: unknown) {
     if (!this.options.volumes) throw new HttpError(404, "Volumes are not enabled on this runtime");

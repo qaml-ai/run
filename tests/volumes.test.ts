@@ -421,7 +421,7 @@ test("the agent's own workspace at /scratch beside a project at /workspace: atta
   await assert.rejects(f.sessions.setMounts(agent.session.id, "default", [{ workspace: true, path: "/scratch", mode: "ro" }]), /A mount is/);
 });
 
-test("mounts changed during a turn: the turn loses a removed mount at once, and the next turn has the new ones and is told so", async t => {
+test("mounts changed during a turn apply from the next tool call; the next run's prompt describes them", async t => {
   const f = await agents(t);
   const a = await f.volumes.create("default", { name: "a" }), b = await f.volumes.create("default", { name: "b" }), c = await f.volumes.create("default", { name: "c" });
   let id = "";
@@ -442,16 +442,14 @@ test("mounts changed during a turn: the turn loses a removed mount at once, and 
   const results = (body: any) => body.messages.filter((message: any) => message.role === "tool").map((message: any) => message.content);
   assert.equal((await agent.prompt("go")).error, null);
   assert.match(systemText(bodies[1]), /Files: \/a \(read-write\), \/workspace \(read-write\);/);
-  assert.deepEqual(results(bodies[2]).slice(1).map((text: string) => text.replace(/\{.*\}/, "saved")), [
-    "/a/two.txt is not inside a mount. Mounted: /workspace", "/b/two.txt is not inside a mount. Mounted: /workspace", "saved",
-  ], "the removed mount is gone at once; the added one waits for the next turn, whose prompt names it");
+  assert.deepEqual(results(bodies[2]).slice(1).map((text: string) => text.replace(/\{.*\}/, "saved")), ["/a/two.txt is not inside a mount. Mounted: /b, /workspace", "saved", "saved"],
+    "from the next call on, the removed mount is gone and the added one is there");
   assert.equal(await exists(f.volumes, a.id, "/two.txt"), false, "nothing is written to a volume once it is unmounted");
-  assert.equal(await exists(f.volumes, b.id, "/two.txt"), false);
-  assert.ok(await exists(f.volumes, own, "/two.txt"), "a mount the turn still has works");
+  assert.ok(await exists(f.volumes, b.id, "/two.txt"));
+  assert.ok(await exists(f.volumes, own, "/two.txt"));
 
   assert.equal((await agent.prompt("again")).error, null);
-  const next = systemText(bodies[3]);
-  assert.match(next, /Files: \/b \(read-write\), \/workspace \(read-write\);/, "the next turn is told of its new mounts");
+  assert.match(systemText(bodies[3]), /Files: \/b \(read-write\), \/workspace \(read-write\);/, "the next run is told of its new mounts");
   assert.deepEqual(results(bodies[4]).slice(-2).map((text: string) => JSON.parse(text)), [
     { path: "/b/three.txt", size: 1, contentType: "text/plain" }, { path: "/", entries: [{ name: "b", type: "directory", mode: "rw" }, { name: "workspace", type: "directory", mode: "rw" }] },
   ]);
@@ -461,6 +459,40 @@ test("mounts changed during a turn: the turn loses a removed mount at once, and 
   await agent.waitForRequest("remount-1");
   assert.equal((await agent.prompt("third")).error, null);
   assert.match(systemText(bodies.at(-1)), /Files: \/c \(read-only\); relative paths/);
+});
+
+test("a turn swaps the volume at /bot (as camel-bots' open_bot does) and goes on working in the new one", async t => {
+  const f = await agents(t);
+  const draftA = await f.volumes.create("default", { name: "bot A" }), draftB = await f.volumes.create("default", { name: "bot B" });
+  await f.volumes.call(draftA.id, "default", "commit", { path: "/bot.ts", ...await f.volumes.store("default", Buffer.from("// bot A")) });
+  await f.volumes.call(draftB.id, "default", "commit", { path: "/bot.ts", ...await f.volumes.store("default", Buffer.from("// bot B")) });
+  let id = "";
+  const { bodies, model } = await fixtureModel(t, async (_body, index) => {
+    if (index === 1) return toolCalls([["read", { path: "/bot/bot.ts" }]]);
+    if (index === 2) {
+      // The application's open_bot tool, in effect: /bot becomes the other bot's draft.
+      await f.sessions.setMounts(id, "default", [{ volumeId: draftB.id, path: "/bot", mode: "rw" }, { workspace: true }]);
+      return toolCalls([["read", { path: "/bot/bot.ts" }], ["write", { path: "/bot/notes.md", content: "edited" }]]);
+    }
+    if (index === 3) {
+      await f.sessions.setMounts(id, "default", [{ volumeId: draftB.id, path: "/bot", mode: "ro" }, { workspace: true }]);
+      return toolCalls([["write", { path: "/bot/late.md", content: "x" }]]);
+    }
+    return { role: "assistant", content: "done" };
+  });
+  f.setModel(model);
+  const agent = await f.start([{ volumeId: draftA.id, path: "/bot", mode: "rw" }, { workspace: true }]);
+  id = agent.session.id;
+  const results = (body: any) => body.messages.filter((message: any) => message.role === "tool").map((message: any) => message.content);
+  assert.equal((await agent.prompt("open bot B and edit it")).error, null);
+  assert.match(results(bodies[1])[0], /bot A/);
+  const [read, write] = results(bodies[2]).slice(1);
+  assert.match(read, /bot B/, "a read of /bot in the same turn sees the swapped-in volume");
+  assert.match(write, /"path":"\/bot\/notes.md"/);
+  assert.ok(await exists(f.volumes, draftB.id, "/notes.md"), "the write lands in the new volume");
+  assert.equal(await exists(f.volumes, draftA.id, "/notes.md"), false, "the old one is untouched");
+  assert.match(results(bodies[3]).at(-1), /read-only/, "a mount made read-only is read-only from the next call");
+  assert.equal(await exists(f.volumes, draftB.id, "/late.md"), false);
 });
 
 test("an edit based on a stale read is rejected and the model sees why", async t => {

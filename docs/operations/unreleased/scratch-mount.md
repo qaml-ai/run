@@ -10,8 +10,9 @@
 
 - Fix: mounts changed while the agent was running (`PUT /v1/agents/:id/mounts` mid-turn, or an upsert's
   `remount: true`) never reached its prompt: its environment text named the old mounts until the agent happened to
-  restart, while its file tools used the new ones. Now a turn loses a removed mount at once and keeps the others it
-  began with, MCP tools' file outputs included (they could still be saved to an unmounted volume); the next turn
-  restarts the agent with the new mounts and its prompt describes them.
+  restart. Now the next run restarts it with the current mounts, and its prompt describes them.
+- Mount changes apply at the agent's next tool call (a call under way keeps the mounts it began with): a removed
+  volume is refused, a read-only one is read-only, an added or swapped-in one is usable at its path. MCP and other tool
+  outputs follow too; before, they could still be saved to a volume unmounted since the agent started.
 - Fix: forking an agent whose workspace was left out (`{workspace: false}`) gave the fork a new workspace at
   /workspace.

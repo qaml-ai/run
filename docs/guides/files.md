@@ -116,10 +116,13 @@ const agent = await agents.upsert("support", { mounts: [{ volumeId: docs.id, pat
   under the mount. Only your own volumes can be mounted, and an agent's mounts
   are fixed when it is made: an upsert with other mounts is a 409, unless it
   sends `remount: true`, which sets them between its turns.
-- `PUT /v1/agents/:id/mounts` replaces them during a turn too: the turn loses a
-  removed mount at once (its file tools and tool outputs can no longer reach
-  it) and keeps the others it began with. The next turn has the new mounts, and
-  its prompt describes them.
+- `PUT /v1/agents/:id/mounts` replaces them during a turn too. Mount changes
+  apply at the agent's next tool call (a call under way keeps the mounts it
+  began with): a removed volume is refused, a read-only one is read-only, and
+  one added or swapped in is there at its path, so a tool can swap `/bot` for
+  another volume and the model goes on working in it. Tool outputs go to the
+  workspace as it is then. The running turn's environment text updates at the
+  next run.
 - The agent's own workspace stays at `/workspace` beside the mounts you give
   (after them). `{workspace: true}` among them puts it at that position,
   `{workspace: false}` leaves it out, and a mount you give at `/workspace` takes

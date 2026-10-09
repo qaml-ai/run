@@ -416,7 +416,7 @@ export class ToolSources {
     // `call` binds the URLs of files sent to it; `source` (an MCP server or OpenAPI spec) is sent files only if it takes them.
     const files = (tool: string, id: string | undefined, call?: string, source?: McpServerSpec | OpenApiSpec) => {
       const volumes = this.options.volumes;
-      // The mounts as they are at the call: one removed since the agent started is gone (client-sessions.ts `turnMounts`).
+      // The mounts as they are when the call begins: never a volume unmounted since the agent started.
       const mounts = context.mounts?.() ?? [];
       if (!volumes || !mounts.length) return undefined;
       if (!id || id !== run.id) run = { id, left: TOOL_FILE_LIMITS.runBytes };
