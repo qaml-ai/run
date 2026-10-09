@@ -1167,6 +1167,11 @@ export function api(context: ApiContext) {
   });
   route(createRoute({ method: "delete", path: "/v1/volumes/{id}/snapshots/{snapshotId}", request: { params: volumeId.extend({ snapshotId: z.string() }) }, responses: { 200: reply("The snapshot is deleted", schema.Deleted) } }),
     async c => json(c, 200, await (await volume(c)).call("deleteSnapshot", { snapshot: c.req.param("snapshotId") })));
+  route(createRoute({ method: "post", path: "/v1/volumes/{id}/restore", request: { params: volumeId, body: content(schema.RestoreInput) }, responses: { 200: reply("The volume is as the snapshot was: what it lacked is removed, what differed is written, each a change", schema.Restored), 404: reply("Unknown volume or snapshot", schema.ApiError) } }), async c => {
+    const target = await volume(c);
+    const { snapshot } = parse(schema.RestoreInput, await readJson(c.req.raw.body, 4096, {}));
+    return json(c, 200, await target.call("restore", { snapshot }));
+  });
   route(createRoute({ method: "post", path: "/v1/volumes/{id}/fork", request: { params: volumeId, body: content(schema.ForkInput) }, responses: { 201: reply("A new, independent volume with the same files", schema.Volume) } }), async c => {
     const target = await volume(c);
     const { name, snapshot } = await readJson(c.req.raw.body, 4096, {});

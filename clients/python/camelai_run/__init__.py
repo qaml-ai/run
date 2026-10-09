@@ -1006,6 +1006,11 @@ class Volume:
     async def delete_snapshot(self, snapshot_id):
         return await self._json(f"/snapshots/{quote(snapshot_id)}", "DELETE")
 
+    async def restore(self, snapshot):
+        """Make this volume as a snapshot of it was, in place: files the snapshot lacks are removed and files that differ
+        are written back, each a change agents mounting it see. {"snapshot", "seq", "written", "removed"}."""
+        return await self._json("/restore", "POST", {"snapshot": snapshot})
+
     async def fork(self, *, name=None, snapshot=None):
         """A new volume with this one's files (or a snapshot's); only metadata is copied."""
         return await self._json("/fork", "POST", {key: value for key, value in {"name": name, "snapshot": snapshot}.items() if value is not None})

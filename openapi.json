@@ -7116,6 +7116,45 @@
           "bytes"
         ]
       },
+      "Restored": {
+        "type": "object",
+        "properties": {
+          "snapshot": {
+            "type": "string"
+          },
+          "seq": {
+            "type": "number",
+            "description": "The volume's seq after the restore"
+          },
+          "written": {
+            "type": "number",
+            "description": "Files written back as the snapshot had them"
+          },
+          "removed": {
+            "type": "number",
+            "description": "Files the snapshot did not have, removed"
+          }
+        },
+        "required": [
+          "snapshot",
+          "seq",
+          "written",
+          "removed"
+        ]
+      },
+      "RestoreInput": {
+        "type": "object",
+        "properties": {
+          "snapshot": {
+            "type": "string",
+            "description": "The snapshot (snap_…) to make the volume as"
+          }
+        },
+        "required": [
+          "snapshot"
+        ],
+        "additionalProperties": false
+      },
       "ForkInput": {
         "type": "object",
         "properties": {
@@ -14413,6 +14452,72 @@
                   "required": [
                     "deleted"
                   ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/volumes/{id}/restore": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestoreInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The volume is as the snapshot was: what it lacked is removed, what differed is written, each a change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Restored"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown volume or snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             }

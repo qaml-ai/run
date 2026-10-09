@@ -80,3 +80,39 @@ test("publishTool finds the project from the call's identity, never its argument
   assert.equal(refused.isError, true);
   assert.match(String(refused.content[0].text), /Not published\. Fix these and publish again:\n\/secret\.ts: no secrets in a project/);
 });
+
+test("a project is restored in place to a published version, and a check hands what it computed to store and the result", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
+  const sdk = new AgentRuntime({ url: r.base, apiKey: OPERATOR });
+  const project = await sdk.projects.create({ key: "bot-restore", template: { "bot.ts": "export const v = 1;\n", "lib/util.ts": "export const u = 1;\n" } });
+  // The check bundles as it checks; the bundle reaches store and the result, so nothing bundles twice.
+  const bundle = (files: ProjectFile[]) => ({ problems: [], data: { entries: files.map(file => file.path), bytes: files.reduce((sum, file) => sum + file.size, 0) } });
+  const kept: unknown[] = [];
+  const published = await project.publish({ validate: bundle, store: (_files, version, { checked }) => { kept.push(checked); return version.id; } });
+  assert.ok(published.ok);
+  assert.deepEqual(published.checked, { entries: ["/bot.ts", "/lib/util.ts"], bytes: 40 });
+  assert.deepEqual(kept, [published.checked]);
+  const retried = await project.publish({ validate: bundle, store: (_files, _version, { checked }) => checked, idempotencyKey: "k" });
+  const again = await project.publish({ validate: bundle, store: (_files, _version, { checked }) => checked, idempotencyKey: "k" });
+  assert.ok(retried.ok && again.ok);
+  assert.deepEqual(again.stored, retried.stored, "a retried publish hands on the same data");
+
+  // The agent changes the project: a file changed, one added, one removed, a directory where a file was.
+  await project.volume.write("bot.ts", "export const v = 2;\n");
+  await project.volume.write("extra.ts", "export const e = 1;\n");
+  await project.volume.remove("lib/util.ts");
+  await project.volume.write("lib/util.ts/nested.ts", "export const n = 1;\n").catch(() => {});
+  const before = (await project.volume.info()).seq;
+  const restored = await project.restore(published.version.id);
+  assert.ok(restored.written >= 2 && restored.removed >= 1, JSON.stringify(restored));
+  const files = (await project.files()).files.map(file => [file.path, file.text]);
+  assert.deepEqual(files, [["/bot.ts", "export const v = 1;\n"], ["/lib/util.ts", "export const u = 1;\n"]]);
+  // Each restored file is a change, as agents mounting it hear of changes.
+  const changes = (await project.volume.changes(before)).changes.map(change => [change.path, change.kind]);
+  assert.ok(changes.some(([path, kind]) => path === "/bot.ts" && kind === "write"));
+  assert.ok(changes.some(([path, kind]) => path === "/extra.ts" && kind === "delete"));
+  // Restoring again changes nothing; the version is still published; an unknown snapshot is a 404.
+  assert.deepEqual({ ...await project.restore(published.version.id), seq: 0 }, { snapshot: published.version.id, seq: 0, written: 0, removed: 0 });
+  assert.ok((await project.versions()).some(version => version.id === published.version.id));
+  await assert.rejects(project.restore("snap_0000000000000000"), (error: { status?: number }) => error.status === 404);
+});

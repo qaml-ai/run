@@ -972,6 +972,16 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         await project.volume.write("secret.py", "x = 1\n")
         self.assertEqual(await project.publish(validate=check, store=lambda *args: None), {"ok": False, "problems": [{"path": "/secret.py", "message": "no secrets"}]})
         self.assertEqual(len(await project.versions()), 1)
+        # Restored in place to the published version: the secret goes, and the version stays.
+        restored = await project.restore(result["version"]["id"])
+        self.assertEqual((restored["written"], restored["removed"]), (0, 1))
+        self.assertEqual([file["path"] for file in (await project.files())["files"]], ["/bot.py"])
+        self.assertEqual(len(await project.versions()), 1)
+        # A check may hand what it computed to store and the result.
+        bundled = await project.publish(validate=lambda files: {"problems": [], "data": {"entries": len(files)}},
+                                        store=lambda files, version, about: about["checked"])
+        self.assertEqual((bundled["stored"], bundled["checked"]), ({"entries": 1}, {"entries": 1}))
+        await project.volume.write("secret.py", "x = 1\n")
 
         # The tool takes no arguments; the project comes from the call's identity.
         other = await projects.create("py-bot-2", template={"bot.py": "def two(): pass\n"})

@@ -1125,6 +1125,13 @@ export class VolumeHandle {
   snapshot(options: { name?: string } = {}): Promise<VolumeSnapshot> { return this.transport.json(this.path("/snapshots"), this.token, "POST", options, false); }
   snapshots(): Promise<VolumeSnapshot[]> { return this.transport.json(this.path("/snapshots"), this.token); }
   deleteSnapshot(id: string) { return this.transport.json(this.path(`/snapshots/${encodeURIComponent(id)}`), this.token, "DELETE", undefined, false); }
+  /**
+   * Make this volume as a snapshot of it was, in place: files the snapshot lacks are removed and files that differ are
+   * written back, each a change agents mounting it see. The snapshot stays.
+   */
+  restore(snapshot: string): Promise<{ snapshot: string; seq: number; written: number; removed: number }> {
+    return this.transport.json(this.path("/restore"), this.token, "POST", { snapshot }, false);
+  }
   /** A new volume with this one's files (or a snapshot's); only metadata is copied. */
   fork(options: { name?: string; snapshot?: string } = {}): Promise<Volume> { return this.transport.json(this.path("/fork"), this.token, "POST", options, false); }
   /** Changes after `since` (a seq), oldest first; `prefix` keeps those at or under a path. */

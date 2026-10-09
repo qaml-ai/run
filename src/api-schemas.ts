@@ -854,6 +854,11 @@ export const FileManifest = z.object({
   files: z.array(FileValue.extend({ path: z.string().openapi({ description: "Relative to root" }) })),
   archive: z.object({ uri: z.string(), mimeType: z.literal("application/gzip") }).openapi({ description: "Every file, as a tar.gz with paths relative to root" }),
 }).openapi("FileManifest", { description: "A directory sent to a tool: its files as they were when the call was made" });
+export const RestoreInput = z.strictObject({ snapshot: z.string().openapi({ description: "The snapshot (snap_…) to make the volume as" }) }).openapi("RestoreInput");
+export const Restored = z.object({
+  snapshot: z.string(), seq: z.number().openapi({ description: "The volume's seq after the restore" }),
+  written: z.number().openapi({ description: "Files written back as the snapshot had them" }), removed: z.number().openapi({ description: "Files the snapshot did not have, removed" }),
+}).openapi("Restored");
 export const Snapshot = z.object({ id: z.string(), volume: z.string(), name: z.string(), seq: z.number(), createdAt: z.number(), files: z.number(), bytes: z.number() }).openapi("Snapshot");
 export const VolumeFile = z.object({
   path: z.string(), version: z.number(), size: z.number(), updatedAt: z.number(), by: z.string().optional(),
