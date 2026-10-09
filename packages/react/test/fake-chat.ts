@@ -1,7 +1,7 @@
 import { vi } from "vitest";
 import type { AgentChat, ChatSnapshot } from "@camelai/run/chat";
 
-export const EMPTY: ChatSnapshot = { status: "ready", messages: [], inputs: [], error: null, hasOlder: false, connected: true, agentId: "client_x" };
+export const EMPTY: ChatSnapshot = { status: "ready", messages: [], inputs: [], error: null, hasOlder: false, connected: true, loaded: true, agentId: "client_x" };
 
 /** A chat whose snapshot a test sets, and whose actions record their calls. */
 export function fakeChat(initial: Partial<ChatSnapshot> = {}) {

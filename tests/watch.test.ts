@@ -310,3 +310,37 @@ test("a watcher takes the runtime's reconnect hint as no event, and reconnects a
   assert.equal(requests[1].cursor, "5");
   assert.ok(!events.some(event => (event as { type?: string }).type === "reconnect"), "the hint is not an event");
 });
+
+test("a watcher reads pending inputs beside the stream, and history and state together, then says it has loaded", async () => {
+  const encoder = new TextEncoder();
+  const open = new Set<string>(), together: string[][] = [];
+  const later = (path: string, value: unknown) => new Promise<Response>(resolve => {
+    open.add(path);
+    together.push([...open]);
+    setTimeout(() => { open.delete(path); resolve(Response.json(value)); }, 30);
+  });
+  const fetch: typeof globalThis.fetch = async input => {
+    const path = new URL(String(input)).pathname.split("/").pop()!;
+    if (path === "inputs") return later(path, [{ id: "in_1", toolCallId: "call_1" }]);
+    if (path === "events") {
+      open.add(path);
+      together.push([...open]);
+      return new Response(new ReadableStream({ start(controller) {
+        controller.enqueue(encoder.encode("event: ready\ndata: {}\n\n"));
+        controller.enqueue(encoder.encode(`id: 5\ndata: ${JSON.stringify({ type: "snapshot", turn: null })}\n\n`));
+      } }), { headers: { "Content-Type": "text/event-stream" } });
+    }
+    if (path === "history") return later(path, { entries: [{ index: 0, message: { role: "user", content: "hi", timestamp: 1 } }, { index: 1, message: { role: "assistant", content: [{ type: "text", text: "hello" }], timestamp: 2 } }], next: null });
+    if (path === "state") return later(path, { requests: [] });
+    return new Response(null, { status: 404 });
+  };
+  const seen: AgentView[] = [];
+  const watcher = watchAgent({ url: "https://runtime.test", agentId: "client_x", token: "t", fetch, onChange: state => seen.push({ ...state, messages: [...state.messages] }) });
+  try {
+    await until(() => seen.some(view => view.loaded) && watcher.state.pendingInputs.length > 0, "loaded");
+    assert.ok(together.some(paths => paths.includes("inputs") && paths.includes("events")), `inputs and the stream: ${JSON.stringify(together)}`);
+    assert.ok(together.some(paths => paths.includes("history") && paths.includes("state")), `history and state: ${JSON.stringify(together)}`);
+    assert.ok(seen.filter(view => !view.loaded).every(view => view.messages.length === 0), "not loaded until history is in");
+    assert.equal(seen.find(view => view.loaded)!.messages.length, 2);
+  } finally { watcher.close(); }
+});
