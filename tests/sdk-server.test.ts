@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { AgentRuntime, nodeListener, schema, tool, type ToolContext } from "../clients/node.ts";
+import { AgentRuntime, nodeListener, schema, tool, type ToolContext, type Tools } from "../clients/node.ts";
 import { RuntimeTokenError, runtimeAuth, runtimeIdentity, serveTools, verifyRuntimeToken } from "../clients/server.ts";
 import { testRuntime } from "../clients/testing.ts";
 import { OPERATOR, runtime, toolCall, toolResults, type T } from "./runtime-server.ts";
@@ -205,4 +205,23 @@ test("nodeListener streams a response: an SSE body's chunks arrive as they are w
   let rest = "";
   for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) rest += new TextDecoder().decode(chunk.value);
   assert.equal(rest, "data: second\n\n");
+});
+
+test("serveTools lists each caller its own tools: a function of identity, or a ToolServer whose listTools gets the context", async () => {
+  const rt = await testRuntime();
+  const ping = tool({ description: "Ping", input: schema.Object({}), execute: () => "pong" });
+  const admin = tool({ description: "Admin only", input: schema.Object({}), execute: () => "done" });
+  const listed = async (handler: (request: Request) => Promise<Response>, context: Record<string, unknown>) =>
+    ((await (await handler(await rt.request(APP, { jsonrpc: "2.0", id: 1, method: "tools/list" }, { subject: "u", context }))).json()) as any).result.tools.map((entry: any) => entry.name);
+  const byRole = serveTools((identity): Tools => identity.context.role === "admin" ? { ping, admin } : { ping }, rt.options);
+  assert.deepEqual(await listed(byRole, { role: "admin" }), ["ping", "admin"]);
+  assert.deepEqual(await listed(byRole, { role: "member" }), ["ping"]);
+  // A member's call to a tool it is not offered is refused, as an unknown tool.
+  await assert.rejects(rt.callTool(byRole, APP, "admin", {}, { subject: "u", context: { role: "member" } }), /missing/);
+  assert.equal((await rt.callTool(byRole, APP, "admin", {}, { subject: "u", context: { role: "admin" } })).isError, undefined);
+
+  const seen: unknown[] = [];
+  const custom = serveTools({ listTools: context => { seen.push(context?.identity?.context); return []; }, callTool: async () => ({ content: [] }) }, rt.options);
+  await listed(custom, { org: "acme" });
+  assert.deepEqual(seen, [{ org: "acme" }]);
 });

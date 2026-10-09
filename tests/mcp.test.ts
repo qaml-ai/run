@@ -127,6 +127,32 @@ test("tool lists refresh when the server says they changed, and edits keep seale
   assert.deepEqual([...mcp.seen.authorizations], ["Bearer s3cret"]);
 });
 
+test("applying a definition lists its servers afresh: a tool added without a list_changed notice reaches the agent at once", async t => {
+  // A bare JSON-RPC server whose tools change quietly (no notification), as many servers' do across a deploy.
+  const tools = [{ name: "first", description: "First", inputSchema: { type: "object" } }];
+  const url = await listen(t, async (req, res) => {
+    let text = "";
+    for await (const chunk of req) text += chunk;
+    const message = text ? JSON.parse(text) : {};
+    if (message.id === undefined) { res.writeHead(202).end(); return; }
+    const result = message.method === "initialize" ? { protocolVersion: message.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "quiet", version: "1" } }
+      : message.method === "tools/list" ? { tools } : {};
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
+  });
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }), LOCAL);
+  const definition = (await r.call("/v1/definitions", { body: { name: "Quiet", mcpServers: [{ name: "quiet", url: `${url}/mcp`, exposure: "direct" }] } })).json;
+  const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json.id;
+  const offered = (index: number) => r.model.bodies[index].tools.map((tool: any) => tool.function.name).filter((name: string) => name.startsWith("quiet__")).sort();
+  await r.prompt(agent, "hi");
+  assert.deepEqual(offered(0), ["quiet__first"]);
+  tools.push({ name: "second", description: "Second", inputSchema: { type: "object" } });
+  const applied = await r.call(`/v1/definitions/${definition.id}`, { method: "PATCH", body: { systemPrompt: "Use quiet's tools.", apply: "all" } });
+  assert.equal(applied.json.applied[0].status !== "failed", true, JSON.stringify(applied.json));
+  await until(async () => (await r.call(`/v1/definitions/${definition.id}/agents`)).json[0].revision === 2, "the agent to take revision 2");
+  await r.prompt(agent, "again");
+  assert.deepEqual(offered(1), ["quiet__first", "quiet__second"], "listed afresh, not from the 5-minute cache");
+});
+
 test("an agent shows every tool source and what its model gets, connecting to MCP servers only when asked", async t => {
   const mcp = await mcpServer(t);
   const r = await runtime(t, () => ({ role: "assistant", content: "ok" }), { ...LOCAL, AGENT_IDLE_MS: "1000" });

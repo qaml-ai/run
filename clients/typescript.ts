@@ -31,6 +31,10 @@ export interface RuntimeIdentity {
   origin?: Record<string, unknown>;
   /** The call was approved by a person: which input, who (their ids), and when. */
   approval?: { input: string; by: Record<string, unknown>; at: number };
+  /** The run (its request id) this call was made in, when made in one. */
+  requestId?: string;
+  /** The model's tool call this request is for, when made for one. */
+  toolCallId?: string;
 }
 /** A runtime identity from its claims (a verified token's payload, or an attached call's `_meta`). */
 export function identityFromClaims(claims: Record<string, any>): RuntimeIdentity {
@@ -43,6 +47,7 @@ export function identityFromClaims(claims: Record<string, any>): RuntimeIdentity
     ...(text(claims.definition) ? { definition: claims.definition } : {}),
     context: isRecord(claims.ctx) ? claims.ctx : {}, ...(isRecord(claims.origin) ? { origin: claims.origin } : {}),
     ...(isRecord(claims.approval) ? { approval: claims.approval as RuntimeIdentity["approval"] & object } : {}),
+    ...(text(claims.req) ? { requestId: claims.req } : {}), ...(text(claims.tcid) ? { toolCallId: claims.tcid } : {}),
   };
 }
 export interface ToolContext {
@@ -127,13 +132,19 @@ export interface McpTool { name: string; title?: string; description?: string; i
 /** An MCP `tools/call` result: complete, or (MCP's multi round-trip requests) asking for input to retry with. */
 export type CallToolResult = { content: Array<Record<string, unknown>>; structuredContent?: Record<string, unknown>; isError?: boolean; resultType?: "complete" }
   | { resultType: "input_required"; inputRequests?: Record<string, { method: string; params?: Record<string, unknown> }>; requestState?: string; content?: never };
+/** Who a `tools/list` is for: the identity and origin a call would carry, and the request's signal. */
+export type ListToolsContext = Pick<ToolContext, "identity" | "origin" | "signal">;
 /**
  * The MCP server an application attaches to its agent: the SDK relays the runtime's
  * `tools/list` and `tools/call` to it over the agent's connection. Throw from `callTool`
  * only when the call could not be answered; a tool's own failure is an `isError` result.
  */
 export interface ToolServer {
-  listTools(): McpTool[] | Promise<McpTool[]>;
+  /**
+   * The tools to list. `context` says who asks, as a call's does (`identity`: always from `serveTools`, where the
+   * runtime's token carries it), so a server can offer each agent or user its own tools.
+   */
+  listTools(context?: ListToolsContext): McpTool[] | Promise<McpTool[]>;
   callTool(name: string, args: Record<string, unknown>, context: ToolContext): Promise<CallToolResult>;
 }
 const META = "agent-runtime/";
@@ -193,7 +204,10 @@ export async function answerMcp(
   const params = isRecord(message.params) ? message.params : {};
   if (message.method === "initialize") return { result: { protocolVersion: typeof params.protocolVersion === "string" ? params.protocolVersion : "2025-06-18", capabilities: { tools: {} }, serverInfo: info } };
   if (message.method === "ping") return { result: {} };
-  if (message.method === "tools/list") return { result: { tools: await server.listTools() } };
+  if (message.method === "tools/list") {
+    const { identity, origin, signal } = context(params);
+    return { result: { tools: await server.listTools({ ...(identity ? { identity } : {}), ...(origin ? { origin } : {}), signal }) } };
+  }
   if (message.method !== "tools/call") return { error: { code: -32601, message: `Unknown method ${message.method}` } };
   try {
     const result = await server.callTool(String(params.name), isRecord(params.arguments) ? params.arguments : {}, context(params));
@@ -340,6 +354,8 @@ export interface CreateAgentOptions extends AgentOptions {
   definition?: string;
   /** Agent lifetime in seconds (60 to 366 days), or null to keep it until deleted. Default: until deleted with an `idempotencyKey` of yours, else one day. */
   ttlSeconds?: number | null;
+  /** Instead of `ttlSeconds`: the agent lives this long (60 seconds to 366 days) from its latest run, so one in use is kept and one left idle expires. */
+  idleTtlSeconds?: number;
   /** Who the agent acts for (a user id in your app): `sub` in the identity tokens its tool servers get. Set only at creation. */
   subject?: string;
   /** Claims your tool servers need (org, workspace, thread…): `ctx` in its identity tokens. Set only at creation. */
@@ -446,7 +462,9 @@ export interface DefinitionInput {
   fileTools?: boolean;
   /** false: its agents get no js_exec, and call every tool directly. */
   codeMode?: boolean;
-  limits?: { ttlSeconds?: number | null }; mounts?: unknown[]; builtins?: Builtin[];
+  limits?: { ttlSeconds?: number | null; idleTtlSeconds?: number | null }; mounts?: unknown[]; builtins?: Builtin[];
+  /** The most one of its agents' runs may take; an agent given its own keeps them when the definition is applied. */
+  runLimits?: { maxResponses?: number; maxSeconds?: number; firstTokenSeconds?: number; idleSeconds?: number };
   /** Who its agents may hand tasks to (sub-agents); it adds the delegate builtin. */
   delegate?: DelegateSettings;
   /** The search providers web_search tries, in order, instead of the runtime's. */
@@ -640,6 +658,8 @@ export interface RunResult {
   error: string | null;
   /** Why it stopped early: waiting on human input (`inputs`), or its spend limit. */
   stopped?: "input_required" | "spend_limit" | "turn_limit";
+  /** With stopped "spend_limit": which limit stopped it (the run's own, its agent's, the tenant's monthly cap, or prepaid credit). */
+  limit?: "run" | "agent" | "tenant" | "credit";
   inputs?: AgentInput[];
   replyIndex?: number;
   /** Messages in the agent's history after it. */
@@ -882,8 +902,9 @@ export class AgentRuntime {
     const server = options.mcp ?? toolServer(options.tools ?? {});
     // A key of the caller's makes the agent durable (it lives until deleted); one the SDK makes up, only so a retried
     // create finds the same agent, keeps a scratch agent's day, said explicitly since any key would make it durable.
-    const ttlSeconds = options.ttlSeconds !== undefined ? options.ttlSeconds : options.idempotencyKey === undefined ? 86_400 : undefined;
-    const session = await this.transport.json("/v1/agents", key, "POST", { mcp: { tools: await server.listTools() }, ...provisioning(options), ...(ttlSeconds !== undefined ? { ttlSeconds } : {}) }, true,
+    const ttlSeconds = options.ttlSeconds !== undefined || options.idleTtlSeconds !== undefined ? options.ttlSeconds : options.idempotencyKey === undefined ? 86_400 : undefined;
+    const session = await this.transport.json("/v1/agents", key, "POST", { mcp: { tools: await server.listTools() }, ...provisioning(options), ...(ttlSeconds !== undefined ? { ttlSeconds } : {}),
+      ...(options.idleTtlSeconds !== undefined ? { idleTtlSeconds: options.idleTtlSeconds } : {}) }, true,
       { "Idempotency-Key": options.idempotencyKey ?? globalThis.crypto.randomUUID(), ...traceHeader(options.traceparent) });
     return this.connectAgent(session, options);
   }
@@ -1127,6 +1148,22 @@ export class VolumeHandle {
   snapshot(options: { name?: string } = {}): Promise<VolumeSnapshot> { return this.transport.json(this.path("/snapshots"), this.token, "POST", options, false); }
   snapshots(): Promise<VolumeSnapshot[]> { return this.transport.json(this.path("/snapshots"), this.token); }
   deleteSnapshot(id: string) { return this.transport.json(this.path(`/snapshots/${encodeURIComponent(id)}`), this.token, "DELETE", undefined, false); }
+  /**
+   * The files as a tar.gz, streamed: as the volume is (or as `snapshot` has them), under `path` (names relative to it)
+   * and matching `glob`. For a build that wants the whole tree; at most 10,000 files and 1 GiB.
+   */
+  async archive(options: { snapshot?: string; path?: string; glob?: string } = {}): Promise<{ body: ReadableStream<Uint8Array>; seq: number }> {
+    const query = new URLSearchParams(Object.entries(options).filter(([, value]) => value !== undefined) as [string, string][]).toString();
+    const response = await this.transport.raw(this.path(`/archive${query ? `?${query}` : ""}`), this.token);
+    return { body: response.body!, seq: Number(response.headers.get("x-volume-seq")) };
+  }
+  /**
+   * Make this volume as a snapshot of it was, in place: files the snapshot lacks are removed and files that differ are
+   * written back, each a change agents mounting it see. The snapshot stays.
+   */
+  restore(snapshot: string): Promise<{ snapshot: string; seq: number; written: number; removed: number }> {
+    return this.transport.json(this.path("/restore"), this.token, "POST", { snapshot }, false);
+  }
   /** A new volume with this one's files (or a snapshot's); only metadata is copied. */
   fork(options: { name?: string; snapshot?: string } = {}): Promise<Volume> { return this.transport.json(this.path("/fork"), this.token, "POST", options, false); }
   /** Changes after `since` (a seq), oldest first; `prefix` keeps those at or under a path. */
@@ -1618,8 +1655,8 @@ export class AgentClient {
    * budget: it ends before its next model request once it has spent that; the agent's spendLimit is unchanged.
    * `output: { schema }` (a JSON Schema for an object) asks for structured output: the run ends with an answer that fits it, as `output`.
    */
-  async prompt(text: string, options?: RunRequestOptions & { files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; whileRunning?: "queue" | "steer"; spendLimit?: { usd: number }; output?: { schema: Record<string, unknown> }; history?: "full" | "none" }) {
-    const result = await this.message("prompt", text, options, { ...(options?.actor ? { actor: options.actor } : {}), ...(options?.whileRunning === "steer" ? { whileRunning: "steer" } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}), ...(options?.spendLimit ? { spendLimit: options.spendLimit } : {}), ...(options?.output ? { output: options.output } : {}), ...(options?.history === "none" ? { history: "none" } : {}) });
+  async prompt(text: string, options?: RunRequestOptions & { files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; whileRunning?: "queue" | "steer"; spendLimit?: { usd: number }; runLimits?: { maxResponses?: number; maxSeconds?: number }; output?: { schema: Record<string, unknown> }; history?: "full" | "none" }) {
+    const result = await this.message("prompt", text, options, { ...(options?.actor ? { actor: options.actor } : {}), ...(options?.whileRunning === "steer" ? { whileRunning: "steer" } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}), ...(options?.spendLimit ? { spendLimit: options.spendLimit } : {}), ...(options?.runLimits ? { runLimits: options.runLimits } : {}), ...(options?.output ? { output: options.output } : {}), ...(options?.history === "none" ? { history: "none" } : {}) });
     // A steered message's request completes as the running turn takes it, naming the turn: its outcome is the turn's.
     const into = options?.whileRunning === "steer" && isRecord(result) && typeof result.steeredInto === "string" && !("reply" in result) ? result.steeredInto : undefined;
     return into ? this.waitForRequest(into, { ...(options?.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}), ...(options?.signal ? { signal: options.signal } : {}) }) : result;
@@ -1644,6 +1681,25 @@ export class AgentClient {
     const record = await this.transport.json(this.path("/requests"), this.session.token, "POST", { id, method: "prompt", params }, true, traceHeader(options?.traceparent)) as RequestRecord;
     if (record.outcome) this.settle(id, record.outcome);
     return steerReceipt(record);
+  }
+
+  /**
+   * Send a message and return as soon as the runtime has it (202), without waiting for its run: `{ id, state }`, the
+   * request's id and whether it runs or is queued. Follow it with `waitForRequest(id)`, the stream, or a webhook.
+   */
+  async submit(text: string, options?: RequestOptions & { files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; spendLimit?: { usd: number }; runLimits?: { maxResponses?: number; maxSeconds?: number }; output?: { schema: Record<string, unknown> }; history?: "full" | "none"; allowDisconnected?: boolean }): Promise<{ id: string; state: string }> {
+    if (this.closed || this.closing || this.fatal) throw this.fatal ?? new AgentError("Client closed");
+    const id = options?.idempotencyKey ?? globalThis.crypto.randomUUID();
+    if (!REQUEST_ID.test(id)) throw new AgentError(`An idempotency key is 1 to 80 letters, digits, _ and -: ${JSON.stringify(id.slice(0, 100))} is not`, 400);
+    const files = options?.files?.length ? await this.attach(id, options.files) : undefined;
+    const params = {
+      text, ...(files ? { files } : {}), ...(options?.actor ? { actor: options.actor } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}),
+      ...(options?.spendLimit ? { spendLimit: options.spendLimit } : {}), ...(options?.runLimits ? { runLimits: options.runLimits } : {}), ...(options?.output ? { output: options.output } : {}), ...(options?.history === "none" ? { history: "none" } : {}),
+      ...(options?.from ? { from: options.from } : {}), ...(options?.metadata ? { metadata: options.metadata } : {}),
+    };
+    const record = await this.transport.json(this.path("/requests"), this.session.token, "POST", { id, method: "prompt", params }, true, traceHeader(options?.traceparent)) as RequestRecord;
+    if (record.outcome) this.settle(id, record.outcome);
+    return { id: record.id, state: record.state };
   }
 
   /**

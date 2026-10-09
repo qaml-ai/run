@@ -208,14 +208,16 @@ export interface ServeOptions extends Omit<VerifyOptions, "audience"> {
 }
 
 /**
- * Serve tools (`tool({...})` definitions, or any `ToolServer`) as a stateless MCP server over
- * Streamable HTTP, for the runtime to call with its identity tokens: a fetch handler
- * (`(Request) => Promise<Response>`). Every call's context carries the verified `identity`;
- * requests without a valid token get a 401. The same tools can be attached to an agent instead.
+ * Serve tools (`tool({...})` definitions, any `ToolServer`, or a function of the caller's identity returning the tools,
+ * to offer each agent or user its own) as a stateless MCP server over Streamable HTTP, for the runtime to call with its
+ * identity tokens: a fetch handler (`(Request) => Promise<Response>`). Every call's context carries the verified
+ * `identity`; requests without a valid token get a 401. The same tools can be attached to an agent instead.
  */
-export function serveTools(tools: Tools | ToolServer, options: ServeOptions): (request: Request) => Promise<Response> {
+export function serveTools(tools: Tools | ToolServer | ((identity: RuntimeIdentity) => Tools | Promise<Tools>), options: ServeOptions): (request: Request) => Promise<Response> {
   requireTenant(options);
-  const server: ToolServer = typeof (tools as ToolServer).listTools === "function" && typeof (tools as ToolServer).callTool === "function" ? tools as ToolServer : toolServer(tools as Tools);
+  const of = async (identity: RuntimeIdentity | undefined) => toolServer(await (tools as (identity: RuntimeIdentity) => Tools | Promise<Tools>)(identity!));
+  const server: ToolServer = typeof tools === "function" ? { listTools: async context => (await of(context?.identity)).listTools(), callTool: async (name, args, context) => (await of(context.identity)).callTool(name, args, context) }
+    : typeof (tools as ToolServer).listTools === "function" && typeof (tools as ToolServer).callTool === "function" ? tools as ToolServer : toolServer(tools as Tools);
   const issuer = issuerOf(options);
   const json = (status: number, body: unknown, headers: Record<string, string> = {}) =>
     new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", ...headers } });

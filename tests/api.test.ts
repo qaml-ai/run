@@ -685,6 +685,7 @@ test("a tenant's monthly spend cap ends a turn after the response that crosses i
   assert.equal((await call(`/v1/agents/${agent.id}/prompt`, { token: alice, body: { text: "go", requestId: "first" } })).status, 202);
   const first = await settled("first");
   assert.equal(first.result.stopped, "spend_limit");
+  assert.equal(first.result.limit, "tenant");
   assert.match(first.result.error, /monthly spend limit of \$0\.25/);
   assert.equal(bodies.length, 2, "the turn ended after the response that crossed the cap");
   const history = (await call(`/v1/agents/${agent.id}/history`, { token: alice })).json.messages;

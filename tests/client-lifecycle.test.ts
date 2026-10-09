@@ -157,6 +157,23 @@ test("expired agents are removed, but an agent without a lifetime stays until de
   assert.deepEqual((await f.sessions.list("default")).map(agent => agent.id), [lasting.id]);
 });
 
+test("an agent with an idle lifetime lives on from its runs, and expires once left idle", async t => {
+  const f = await fixture(t, { idleMs: 100 });
+  const made = await f.sessions.create([], { model: configuredModel() }, "idle", {}, "default", undefined, undefined, undefined, undefined, { idleTtlMs: 1_500 });
+  const state = () => fetch(`${f.url}/clients/${made.id}/state`, { headers: { Authorization: `Bearer ${made.token}` } });
+  const run = (id: string) => fetch(`${f.url}/clients/${made.id}/requests`, { method: "POST", headers: { Authorization: `Bearer ${made.token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ id, method: "execute", params: { code: "return 1", allowDisconnected: true } }) });
+  assert.equal((await run("early")).status, 202);
+  assert.equal((await f.header(made.id)).expiresAt, made.expiresAt, "a run with most of the window left leaves the expiry be");
+  await sleep(1_000);
+  assert.equal((await run("later")).status, 202);
+  assert.ok((await f.header(made.id)).expiresAt - made.expiresAt! >= 900, "one after half of it moves it on");
+  await sleep(1_000);
+  assert.equal((await state()).status, 200, "past its first expiry, it lives on from its latest run");
+  await sleep(1_000);
+  assert.equal((await state()).status, 410, "left idle, it expires");
+});
+
 test("scoped credentials cannot inject assistant or tool history", async t => {
   const f = await fixture(t);
   const agent = await f.start();

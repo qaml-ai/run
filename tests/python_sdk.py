@@ -1,4 +1,6 @@
 """Run with: python3 tests/python_sdk.py (requires httpx)."""
+import io
+import tarfile
 import asyncio
 import base64
 import hashlib
@@ -642,6 +644,8 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(next(entry["key"] for entry in await self.runtime.list_agents() if entry["id"] == researcher.id), "py-researcher")
         defined = await self.runtime.upsert_definition("py-researcher", name="Researcher", builtins=["web_search"])
         self.assertEqual((await self.runtime.upsert_definition("py-researcher", name="Researcher", builtins=["web_search"]))["revision"], defined["revision"])
+        limited = await self.runtime.upsert_definition("py-limited", name="Limited", run_limits={"maxResponses": 20, "maxSeconds": 600})
+        self.assertEqual(limited["runLimits"], {"maxResponses": 20, "maxSeconds": 600})
         self.assertEqual((await self.runtime.http.get(f"{self.url}/v1/agents/{researcher.id}", headers={"Authorization": f"Bearer {self.token}"})).json()["builtins"], ["web_fetch"])
         # MCP servers of its own, without credentials.
         server = {"name": "kb", "url": "http://127.0.0.1:9/mcp", "auth": {"type": "runtime"}}
@@ -920,6 +924,19 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
 
         await asyncio.to_thread(scenario)
 
+    async def test_send_returns_at_once_and_wait_gets_the_run(self):
+        agent = await self.agents.upsert("py-send")
+        sent = await agent.send("Go", idempotency_key="py-fire-1")
+        self.assertEqual(sent["id"], "py-fire-1")
+        self.assertIn(sent["state"], ("running", "queued", "completed"))
+        self.assertEqual((await agent.wait(sent["id"])).status, "completed")
+
+        def in_sync():
+            with sync.Agents(self.token, url=self.url) as agents:
+                handle = agents.upsert("py-send-sync")
+                return handle.wait(handle.send("Go")["id"]).status
+        self.assertEqual(await asyncio.to_thread(in_sync), "completed")
+
     async def test_initial_messages_begin_an_agents_history_when_it_is_made(self):
         imported = [{"role": "user", "content": "My name is Ada.", "timestamp": 1},
                     {"role": "assistant", "content": [{"type": "text", "text": "Hello, Ada."}], "api": "openai-completions", "provider": "openrouter", "model": "openai/gpt-4o-mini",
@@ -972,6 +989,18 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         await project.volume.write("secret.py", "x = 1\n")
         self.assertEqual(await project.publish(validate=check, store=lambda *args: None), {"ok": False, "problems": [{"path": "/secret.py", "message": "no secrets"}]})
         self.assertEqual(len(await project.versions()), 1)
+        # Restored in place to the published version: the secret goes, and the version stays.
+        restored = await project.restore(result["version"]["id"])
+        self.assertEqual((restored["written"], restored["removed"]), (0, 1))
+        self.assertEqual([file["path"] for file in (await project.files())["files"]], ["/bot.py"])
+        self.assertEqual(len(await project.versions()), 1)
+        archive = tarfile.open(fileobj=io.BytesIO(await project.archive(version=result["version"]["id"])), mode="r:gz")
+        self.assertEqual(archive.extractfile("bot.py").read(), b"def run(): pass\n")
+        # A check may hand what it computed to store and the result.
+        bundled = await project.publish(validate=lambda files: {"problems": [], "data": {"entries": len(files)}},
+                                        store=lambda files, version, about: about["checked"])
+        self.assertEqual((bundled["stored"], bundled["checked"]), ({"entries": 1}, {"entries": 1}))
+        await project.volume.write("secret.py", "x = 1\n")
 
         # The tool takes no arguments; the project comes from the call's identity.
         other = await projects.create("py-bot-2", template={"bot.py": "def two(): pass\n"})
@@ -985,6 +1014,12 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         refused = await tests.call_tool(app, "https://app.test/mcp", "publish", {}, subject="owner", context={"bot": "1"})
         self.assertTrue(refused["isError"])
         self.assertIn("/secret.py: no secrets", refused["content"][0]["text"])
+        # No idempotency key and JSON-RPC id 1 every time: each publish is its own, not the first one's files again.
+        bare = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "publish", "arguments": {}}}
+        for text in ("def three(): pass\n", "def four(): pass\n"):
+            await other.volume.write("bot.py", text)
+            self.assertNotIn("error", (await tests.post(app, "https://app.test/mcp", bare, subject="owner", context={"bot": "2"})).json())
+            self.assertEqual(stored[-1], [text])
 
     async def test_key_scopes_tokens_usage_webhooks_and_rotated_credentials(self):
         deliveries = []
@@ -1177,6 +1212,16 @@ class ServeToolsTest(unittest.IsolatedAsyncioTestCase):
         listed = (await self.runtime.post(self.app, self.APP, [{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, {"jsonrpc": "2.0", "method": "notifications/initialized"}], subject="alice")).json()
         self.assertEqual([entry["name"] for entry in listed[0]["result"]["tools"]], ["list_todos", "whoami"])
         self.assertEqual((await self.runtime.post(self.app, self.APP, {"jsonrpc": "2.0", "method": "notifications/initialized"}, subject="alice")).status_code, 202)
+
+    async def test_a_function_of_identity_lists_each_caller_its_own_tools(self):
+        @tool
+        def admin_only() -> str:
+            """Admin only."""
+            return "done"
+        app = serve_tools(lambda identity: [whoami, admin_only] if identity.context.get("role") == "admin" else [whoami], **self.runtime.options)
+        listed = lambda role: self.runtime.post(app, self.APP, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, subject="u", context={"role": role})
+        self.assertEqual([entry["name"] for entry in (await listed("admin")).json()["result"]["tools"]], ["whoami", "admin_only"])
+        self.assertEqual([entry["name"] for entry in (await listed("member")).json()["result"]["tools"]], ["whoami"])
 
     async def test_anything_but_the_runtimes_token_for_this_server_is_refused(self):
         call = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "list_todos", "arguments": {}}}

@@ -97,8 +97,11 @@ test("tool servers with auth \"runtime\" get a short-lived token the runtime sig
   assert.equal(call.agent, agent.id);
   assert.equal(call.tenant, "alice");
   assert.equal(call.exp! - call.iat!, 120);
+  assert.equal(call.req, accepted.json.id, "the run it was made in");
+  assert.equal(typeof call.tcid, "string", "the model's tool call it is for");
   const listing = app.seen.find(entry => entry.path === "/mcp" && !entry.claims?.act);
   assert.ok(listing, "requests outside a turn (listing tools) carry the agent's identity without an actor");
+  assert.equal(listing!.claims!.req, undefined, "nor a run");
   const api = app.seen.find(entry => entry.path === "/api/whoami")!.claims!;
   assert.deepEqual([api.aud, api.sub, api.act], [`${app.url}/api-audience`, "u_123", "u_456"]);
   assert.equal(new Set(app.seen.map(entry => entry.claims?.jti)).size, app.seen.length, "every request has its own token");

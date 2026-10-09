@@ -445,12 +445,18 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     const config = { ...sessionConfig(params, fallback, systemPrompt, tenants.modelEndpoints(tenant), custom), ...(modelHeaders ? { modelHeaders } : {}) };
     const ttl = params.ttlSeconds;
     validTtl(ttl);
+    // An idle lifetime instead: the agent lives this long from its latest run.
+    const idle = params.idleTtlSeconds;
+    if (idle !== undefined && idle !== null) {
+      if (!Number.isInteger(idle) || idle < 60 || idle > 366 * 86_400) throw new HttpError(400, "idleTtlSeconds must be an integer from 60 to 31622400, or null");
+      if (ttl !== undefined && ttl !== null) throw new HttpError(400, "Give ttlSeconds (a lifetime from creation) or idleTtlSeconds (from its latest run), not both");
+    }
     // An agent made with a key is one the application comes back to: it lives until deleted, unless it says otherwise.
     // One made without is a scratch agent nothing can find again once its id is lost: it lives a day, unless it says.
     const lifetime = run ? run.ttlMs : ttl === undefined ? (key !== undefined ? null : undefined) : ttl === null ? null : ttl * 1000;
     const { reconfigure, ...made_ } = await clients.create(params.tools ?? [], config, key, { name: params.name, type: params.type }, tenant, lifetime, params.mounts,
       made && { definition: made.ref, provision: made.provision, overrides: made.overrides, sources: made.sources }, identity,
-      { keyScope, spendLimit, builtins, delegate, mcpServers, ...(remount ? { remount } : {}), ...(parent ? { parent } : {}), ...(run ? { run: { retentionMs: run.retentionMs, fingerprint: run.fingerprint } } : {}), ...(mcpTools !== undefined ? { toolsHash: createHash("sha256").update(JSON.stringify(mcpTools)).digest("hex") } : {}), ...(admit ? { admit } : {}) }, steps);
+      { keyScope, spendLimit, builtins, delegate, mcpServers, ...(remount ? { remount } : {}), ...(idle && !run ? { idleTtlMs: idle * 1000 } : {}), ...(parent ? { parent } : {}), ...(run ? { run: { retentionMs: run.retentionMs, fingerprint: run.fingerprint } } : {}), ...(mcpTools !== undefined ? { toolsHash: createHash("sha256").update(JSON.stringify(mcpTools)).digest("hex") } : {}), ...(admit ? { admit } : {}) }, steps);
     outcome.agent = made_.id;
     outcome.upsert = !!reconfigure;
     const warnings = await warningsFor(tenant, made ? made.sources : builtins && { builtins });

@@ -28,7 +28,7 @@ from . import (
     _AgentCalls, _DEFAULT, _PartReader, _RuntimeCalls, _Session, _UPLOAD_TIMEOUT, _answer_for, _attachment, _bearer,
     _check_request_id, _env, _error, _file_claims, _file_token, _http_sync, _issuer_of, _message_params, _origin, _outcome_run, _output_request,
     _prompt_extra, _public_key_sync, _require_tenant, _retry_after, _run_frame, _sender, _sse_frames,
-    _stateless_run, _steer_receipt, _token_header, _tool_server_answer, _tool_server_response, _trace_header, _unauthorized,
+    _stateless_run, _steer_receipt, _token_header, _tool_server_answer, _tool_table, _tool_server_response, _trace_header, _unauthorized,
     _unique_name, _verified,
 )
 from . import AgentFiles as _AsyncFiles, RunInput as _AsyncInput, Runs as _AsyncRuns, TestRuntime as _AsyncTestRuntime
@@ -234,9 +234,9 @@ class AgentClient(_AgentCalls):
         return attached
 
     def _prompt_params(self, request_id, text, *, actor=None, from_=None, files=None, metadata=None, while_running=None, allow_disconnected=False,
-                       spend_limit=None, output=None, history=None):
+                       spend_limit=None, output=None, history=None, run_limits=None):
         attached = self._attach(request_id, files) if files else None
-        return _message_params(text, attached, _prompt_extra(actor, while_running, allow_disconnected, spend_limit, output, history), from_, metadata)
+        return _message_params(text, attached, _prompt_extra(actor, while_running, allow_disconnected, spend_limit, output, history, run_limits), from_, metadata)
 
     def prompt(self, text, *, actor=None, from_=None, files=None, metadata=None, while_running=None, idempotency_key=None, allow_disconnected=False,
                spend_limit=None, output=None, history=None, timeout=None, traceparent=None):
@@ -450,13 +450,14 @@ class Agent:
         return self.client.files
 
     def run(self, text, *, user=None, files=None, metadata=None, idempotency_key=None, timeout=None, throw_on_error=True, while_running=None,
-            allow_disconnected=False, spend_limit=None, output=None, traceparent=None, history=None):
+            allow_disconnected=False, spend_limit=None, output=None, traceparent=None, history=None, run_limits=None):
         """Send a message and wait for the run it starts: its reply, or the input it waits on. As camelai_run.Agent.run:
         `timeout` (seconds) only stops the wait, a failed run raises RunError unless throw_on_error=False, and the same
         idempotency_key returns the same run."""
         request_id = idempotency_key or str(uuid.uuid4())
         params = self.client._prompt_params(request_id, text, from_=_sender(user) if user else None, files=files, metadata=metadata, while_running=while_running,
-                                            allow_disconnected=allow_disconnected, spend_limit=spend_limit, output=_output_request(output), history=history)
+                                            allow_disconnected=allow_disconnected, spend_limit=spend_limit, output=_output_request(output), history=history,
+                                            run_limits=run_limits)
         record = self.client._submit("prompt", params, request_id, traceparent)
         return self._settled(request_id, self.client._outcome(request_id, record, timeout), output, throw_on_error, timeout)
 
@@ -490,6 +491,21 @@ class Agent:
         # Other inputs of the run still wait: it resumes once they are answered too.
         pending = [RunInput(self, other, input._output) for other in self.client.inputs(state="pending") if other["requestId"] == input["requestId"]]
         return Run(input["requestId"], "input_required", inputs=pending)
+
+    def send(self, text, *, user=None, files=None, metadata=None, idempotency_key=None, allow_disconnected=False, spend_limit=None,
+             output=None, traceparent=None, history=None, run_limits=None):
+        """Send a message and return as soon as the runtime has it, without waiting for the run: {"id", "state"} (running
+        or queued). Get its outcome later with wait(id), the agent's events, or a run.completed webhook."""
+        request_id = idempotency_key or str(uuid.uuid4())
+        params = self.client._prompt_params(request_id, text, from_=_sender(user) if user else None, files=files, metadata=metadata,
+                                            allow_disconnected=allow_disconnected, spend_limit=spend_limit, output=_output_request(output), history=history,
+                                            run_limits=run_limits)
+        record = self.client._submit("prompt", params, request_id, traceparent)
+        return {"id": record["id"], "state": record["state"]}
+
+    def wait(self, request_id, *, timeout=None, throw_on_error=True):
+        """A run sent with send, once it ends: as run answers (RunError if it failed, unless throw_on_error=False)."""
+        return self._settled(request_id, self.client._outcome(request_id, timeout=timeout), None, throw_on_error, timeout)
 
     def pending_inputs(self):
         """Inputs waiting on people, across the agent's runs."""
@@ -729,7 +745,7 @@ def serve_tools(tools, *, runtime, tenant=None, audience=None, issuer=None, meta
     identity; requests without a valid token get a 401. `audience` is your server's URL as the runtime calls it (or a
     list of those); by default the request's URL. `http` is an httpx.Client to read the runtime's keys with."""
     _require_tenant(tenant)
-    table = tools if isinstance(tools, dict) else {item.name: item for item in tools}
+    table = _tool_table(tools)
     issuer = _issuer_of(runtime, issuer)
 
     def app(environ, start_response):
@@ -785,9 +801,11 @@ class TestRuntime(_AsyncTestRuntime):
         with httpx.Client(transport=httpx.WSGITransport(app=app)) as client:
             return client.post(url, json=message, headers=headers)
 
-    def call_tool(self, app, url, name, arguments, **identity):
-        """Call one tool through a WSGI app as `identity`: its CallToolResult, or the error raised."""
-        response = self.post(app, url, {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": arguments}}, **identity)
+    def call_tool(self, app, url, name, arguments, idempotency_key=None, **identity):
+        """Call one tool through a WSGI app as `identity`: its CallToolResult, or the error raised. Each call carries its
+        own idempotency key, as each of the runtime's calls does; pass `idempotency_key` to send one again."""
+        meta = {"agent-runtime/idempotencyKey": idempotency_key or str(uuid.uuid4())}
+        response = self.post(app, url, {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": arguments, "_meta": meta}}, **identity)
         body = response.json()
         if response.status_code != 200:
             raise RuntimeError(f"HTTP {response.status_code}: {body.get('error')}")

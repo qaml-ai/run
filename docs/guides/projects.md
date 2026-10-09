@@ -67,7 +67,11 @@ if (!result.ok) console.log(formatProblems(result.problems));
 - `files` are `{path, size, contentType, sha256, text | data}`: `text` for UTF-8
   files, base64 `data` for any other (`fileBytes(file)` gives the bytes).
 - `validate` returns problems, `{path?, line?, message}`. Any problem keeps the
-  version from being published, and its snapshot is deleted.
+  version from being published, and its snapshot is deleted. It may return
+  `{problems, data}` instead: `data`, whatever the check worked out (a bundle,
+  its manifest), reaches `store` as `checked` and comes back in the result
+  (`result.checked`, and `published`'s argument in `publishTool`), so `store`
+  does not work it out again.
 - `store` runs once per version. It gets the version (`{id, seq, name,
   createdAt}`) and `{project, identity}` (the identity when `publishTool`
   published it); keep `version.id` to read that version again with
@@ -75,7 +79,12 @@ if (!result.ok) console.log(formatProblems(result.problems));
 - `project.versions()` lists the published versions, oldest first. A volume
   keeps at most 100 snapshots, so older versions beyond `keep` are deleted.
 - `idempotencyKey` publishes once per key: a retried call gets the version the
-  first one made.
+  first one made (its check runs again only for its `data`).
+- `project.archive({ version?, path? })` gives a version's files (or the
+  project as it is) as a tar.gz stream, for a build.
+- `project.restore(version)` puts the project back as a version had it, in
+  place: the agent working in it sees the files change. The version stays
+  published; publish again to make the restored files a new version.
 
 ## The publish tool
 
@@ -99,9 +108,28 @@ export default {
 };
 ```
 
+An agent whose project changes during its life (one builder per user that
+moves its `/bot` mount from bot to bot with `remount: true`) has no project in
+its identity: its `context` was fixed when it was made. Look up what it has
+mounted now instead, from the agent the call came from:
+
+```ts
+project: async identity => {
+  const mount = (await agents.runtime.mounts(identity.agent)).find(entry => entry.path === "/bot");
+  if (!mount) throw new Error("No bot is open in this builder");
+  return agents.runtime.projects.get(mount.volumeId);
+},
+```
+
+Check that the volume is one of the user's projects (a key or row of yours
+names it) before you publish it: the mount was set by your code, but the lookup
+is what decides which project a publish reaches.
+
 It takes no arguments. On success the model gets `{published: true, version}`;
 otherwise the call fails with the problems, one a line (`/bot.ts:12: …`), so the
-model fixes them and publishes again. A retried call publishes once.
+model fixes them and publishes again. A retried call publishes once: the
+runtime sends each call's idempotency key. A client that sends none gets a new
+version for every call.
 
 ## In Python
 
@@ -147,3 +175,5 @@ app = serve_tools([publish_tool(project=lambda identity: projects.get(volume_of_
 | take a version | `POST /v1/volumes/:id/snapshots {name}` |
 | read every file of it at once | `GET /v1/volumes/:id/files?content=true&snapshot=snap_…` |
 | list and delete versions | `GET /v1/volumes/:id/snapshots`, `DELETE /v1/volumes/:id/snapshots/:snapshot` |
+| restore a version in place | `POST /v1/volumes/:id/restore {snapshot}` |
+| download a version as a tar.gz | `GET /v1/volumes/:id/archive?snapshot=snap_…` |

@@ -11,6 +11,7 @@ test("an agent's spend limit ends the turn that crosses it and refuses new promp
 
   const first = await r.prompt(id, "go");
   assert.equal(first.outcome.result.stopped, "spend_limit");
+  assert.equal(first.outcome.result.limit, "agent");
   assert.match(first.outcome.result.error, /This agent has reached its spend limit of \$0\.2 \(\$0\.3 spent/);
   assert.equal(r.model.bodies.length, 2, "the turn ended after the response that crossed the limit");
   assert.equal((await r.call(`/v1/agents/${id}`)).json.spendLimit.spent.toFixed(2), "0.30");

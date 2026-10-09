@@ -6,7 +6,7 @@ import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { BillingAlerts } from "./billing-alerts.ts";
 import type { Accounts, Principal } from "./accounts.ts";
-import { answerList, type ClientSessions } from "./client-sessions.ts";
+import { answerList, type ClientSessions, type StreamReader } from "./client-sessions.ts";
 import { personal, type ConsoleAuth } from "./console-auth.ts";
 import type { Journey } from "./journey.ts";
 import { checkNewPassword, checkPassword, normalizeEmail } from "./passwords.ts";
@@ -26,14 +26,15 @@ import type { Webhooks } from "./webhooks.ts";
 import type { Telemetry } from "./telemetry.ts";
 import { definitionRoutes } from "./definitions-api.ts";
 import { runRoutes, type RunsContext } from "./runs.ts";
-import type { RequestRecord } from "../shared/client-protocol.ts";
+import type { ClientEvent, RequestRecord, TurnSnapshot } from "../shared/client-protocol.ts";
 import * as schema from "./api-schemas.ts";
-import { normalizePath, VOLUME_LIMITS, type VolumeService } from "./volumes.ts";
+import { normalizePath, VOLUME_LIMITS, type FileEntry, type VolumeService } from "./volumes.ts";
 import { actorInput, identityInput } from "./identity.ts";
 import { languageInput, transcribeRequest, type TranscriptionService } from "./transcription.ts";
 import { AUDIO_LIMITS } from "./limits.ts";
-import { declaredType, fileResponse, type FileLinks } from "./files.ts";
+import { declaredType, downloadHeaders, fileResponse, type FileLinks } from "./files.ts";
 import type { FileUrls } from "./file-arguments.ts";
+import { tar } from "./tar.ts";
 import { idempotency } from "./idempotency.ts";
 import { BrowserTokens, readableFrame, readableMessage, readableRequest, type BrowserClaims } from "./browser-tokens.ts";
 import type { Help } from "./help.ts";
@@ -600,6 +601,7 @@ export function api(context: ApiContext) {
         wait: z.string().optional().openapi({ description: "With poll: seconds (at most 25) to wait for the next event when none is buffered" }),
         snapshot: z.enum(["1", "0"]).optional().openapi({ description: "By default, where the stream cannot replay (no Last-Event-ID, or one behind the buffer), it starts with a snapshot of the running turn instead of what is buffered or a 409. Each message_update is its delta alone, so a subscriber folds from the snapshot. 0: no snapshot; behind the buffer is a 409" }),
         subagents: z.enum(["1"]).optional().openapi({ description: "Also send the agent's children's progress, from its delegate calls: subagent_start, subagent_event (a child's event, streamed text left out) and subagent_end. Without it, none of them" }),
+        request: z.string().optional().openapi({ description: "Only this request's events and response (a run's id, a prompt's requestId), besides snapshots" }),
       }),
     },
     responses: {
@@ -610,7 +612,12 @@ export function api(context: ApiContext) {
     security: readers,
   }), c => {
     const browser = c.var.principal.browser;
-    return clients.watchFor(c, c.req.param("id")!, c.var.principal.tenant, browser && { show: data => readableFrame(browser, data), until: browser.exp });
+    const reader: StreamReader | undefined = browser && { show: data => readableFrame(browser, data), until: browser.exp };
+    // `request`: only that request's frames (its events and its response); snapshots of the running turn still come.
+    const request = c.req.query("request");
+    const own = (data: ClientEvent | TurnSnapshot) => data.type === "event" ? data.requestId === request : data.type === "response" ? data.id === request : true;
+    return clients.watchFor(c, c.req.param("id")!, c.var.principal.tenant, request === undefined ? reader
+      : { show: data => own(data) ? (reader ? reader.show(data) : data) : undefined, until: reader?.until ?? Infinity });
   });
   route(createRoute({ method: "get", path: "/v1/agents/{id}/state", request: { params: agentId }, security: readers, responses: { 200: reply("Request state and the stream's cursor; for a browser token, each request only as how it ended", schema.SessionState) } }), async c => {
     const state = await clients.stateFor(c.req.param("id")!, c.var.principal.tenant);
@@ -1167,6 +1174,32 @@ export function api(context: ApiContext) {
   });
   route(createRoute({ method: "delete", path: "/v1/volumes/{id}/snapshots/{snapshotId}", request: { params: volumeId.extend({ snapshotId: z.string() }) }, responses: { 200: reply("The snapshot is deleted", schema.Deleted) } }),
     async c => json(c, 200, await (await volume(c)).call("deleteSnapshot", { snapshot: c.req.param("snapshotId") })));
+  route(createRoute({
+    method: "get", path: "/v1/volumes/{id}/archive",
+    request: { params: volumeId, query: z.object({
+      snapshot: z.string().optional().openapi({ description: "Archive a snapshot (a project's version) instead of the volume as it is" }),
+      path: z.string().optional().openapi({ description: "Only the files under this directory (default /); their names in the archive are relative to it" }),
+      glob: z.string().optional().openapi({ description: "Only files matching this pattern, relative to path (e.g. **/*.ts)" }),
+    }) },
+    responses: { 200: binary("A tar.gz of the files, as the volume (or the snapshot) has them at one seq, named relative to path; X-Volume-Seq is that seq. At most 10,000 files and 1 GiB, else 413") },
+  }), async c => {
+    const target = await volume(c);
+    const { snapshot, path, glob } = c.req.query();
+    const at = await target.call("archive", { ...(snapshot ? { snapshot } : {}), ...(path ? { path } : {}), ...(glob ? { glob } : {}) }) as { seq: number; root: string; files: ({ path: string } & FileEntry)[] };
+    const service = volumes();
+    const archive = tar(at.files.map(file => ({ name: at.root === "/" ? file.path.slice(1) : file.path.slice(at.root.length + 1), size: file.size, mtime: file.updatedAt, stream: () => service.stream(target.tenant, file) })));
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) { const next = await archive.next(); if (next.done) controller.close(); else controller.enqueue(new Uint8Array(next.value)); },
+      async cancel() { await archive.return(undefined); },
+    }).pipeThrough(new CompressionStream("gzip") as unknown as ReadableWritablePair<Uint8Array, Uint8Array>);
+    const name = `${snapshot ?? target.id}.tar.gz`;
+    return new Response(body, { headers: { ...downloadHeaders("application/gzip", name), "X-Volume-Seq": String(at.seq), "Cache-Control": "no-store" } });
+  });
+  route(createRoute({ method: "post", path: "/v1/volumes/{id}/restore", request: { params: volumeId, body: content(schema.RestoreInput) }, responses: { 200: reply("The volume is as the snapshot was: what it lacked is removed, what differed is written, each a change", schema.Restored), 404: reply("Unknown volume or snapshot", schema.ApiError) } }), async c => {
+    const target = await volume(c);
+    const { snapshot } = parse(schema.RestoreInput, await readJson(c.req.raw.body, 4096, {}));
+    return json(c, 200, await target.call("restore", { snapshot }));
+  });
   route(createRoute({ method: "post", path: "/v1/volumes/{id}/fork", request: { params: volumeId, body: content(schema.ForkInput) }, responses: { 201: reply("A new, independent volume with the same files", schema.Volume) } }), async c => {
     const target = await volume(c);
     const { name, snapshot } = await readJson(c.req.raw.body, 4096, {});

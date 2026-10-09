@@ -46,7 +46,9 @@ with it close, and `GET /v1/agents/{id}/credentials` (the SDKs' `agents.get`)
 gives the new one from then on.
 
 Agents made without a key are scratch agents: they expire after a day unless you
-set `ttlSeconds`.
+set `ttlSeconds`. `idleTtlSeconds` instead makes an agent live that long from its
+latest run, so one in use is kept and one left alone expires (an agent for a chat
+that should go once nobody has written in a week, say).
 
 ## Runs
 

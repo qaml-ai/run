@@ -15,7 +15,8 @@ import { HttpError } from "./http.ts";
 export type AgentIdentity = { subject?: string; context?: Record<string, unknown> };
 /** Who a call is for: the agent's identity, and in its turn who is acting and where it came from. */
 /** `approval`: the call was approved by a person (inputs.ts): which input, who, and when. */
-export type TokenClaims = { tenant: string; agent: string; definition?: string; identity?: AgentIdentity; actor?: string; origin?: Record<string, unknown>; approval?: Record<string, unknown> };
+/** `request` and `toolCall`: the run (its request id) and the model's tool call a request is made for. */
+export type TokenClaims = { tenant: string; agent: string; definition?: string; identity?: AgentIdentity; actor?: string; origin?: Record<string, unknown>; approval?: Record<string, unknown>; request?: string; toolCall?: string };
 
 /**
  * What a call-bound file URL grants (file-arguments.ts): one file at one version, or a file, a manifest or an archive of a
@@ -36,7 +37,7 @@ const aad = (kid: string) => `runtime-signing:${kid}`;
 type Keys = { signing?: { kid: string; key: CryptoKey }; published: JWK[] };
 
 /** The turn a tool call belongs to, for requests made on its behalf deep in a transport (MCP). */
-export const callScope = new AsyncLocalStorage<{ actor?: string; origin?: Record<string, unknown>; approval?: Record<string, unknown> }>();
+export const callScope = new AsyncLocalStorage<{ actor?: string; origin?: Record<string, unknown>; approval?: Record<string, unknown>; request?: string; toolCall?: string }>();
 
 export class RuntimeSigner {
   /** The runtime's public URL; without AGENT_PUBLIC_URL, the address it listens on, once known. */
@@ -122,10 +123,11 @@ export class RuntimeSigner {
   async token(audience: string, claims: TokenClaims): Promise<string> {
     const { signing } = await this.load();
     if (!signing) throw new Error("This runtime cannot sign identity tokens");
-    const { identity, actor, origin, tenant, agent, definition, approval } = claims;
+    const { identity, actor, origin, tenant, agent, definition, approval, request, toolCall } = claims;
     return new SignJWT({
       tenant, agent, ...(definition ? { definition } : {}), ...(identity?.context ? { ctx: identity.context } : {}),
       ...(actor ? { act: actor } : {}), ...(origin ? { origin } : {}), ...(approval ? { approval } : {}),
+      ...(request ? { req: request } : {}), ...(toolCall ? { tcid: toolCall } : {}),
     })
       .setProtectedHeader({ alg: ALGORITHM, kid: signing.kid, typ: "JWT" })
       .setIssuer(this.issuer).setAudience(audience).setSubject(identity?.subject ?? agent)

@@ -212,6 +212,8 @@ export interface RunOptions {
   allowDisconnected?: boolean;
   /** This run's own budget (USD): it ends before its next model request once it has spent this. The agent's spendLimit is unchanged. */
   spendLimit?: { usd: number };
+  /** This run's own limits: at most this many model responses, or seconds. They only lower the agent's; at one, the run ends with stopped "turn_limit". */
+  runLimits?: { maxResponses?: number; maxSeconds?: number };
   /**
    * Structured output: a schema for an object (zod, TypeBox or JSON Schema). The agent ends the run with an answer
    * that fits it, as `run.output`; a run that ends without one fails (code output_missing). Not with whileRunning: "steer".
@@ -643,6 +645,19 @@ export class Agent {
     };
   }
 
+  /**
+   * Send a message and return as soon as the runtime has it, without waiting for the run: `{ id, state }` (state
+   * running or queued). Get its outcome later with `wait(id)`, the agent's events, or a run.completed webhook.
+   */
+  send(text: string, options: Omit<RunOptions, "whileRunning" | "throwOnError" | "signal" | "timeoutMs"> = {}): Promise<{ id: string; state: string }> {
+    const { whileRunning: _whileRunning, ...message } = promptOptions(options.idempotencyKey ?? globalThis.crypto.randomUUID(), options);
+    return this.client.submit(text, message);
+  }
+  /** A run sent with `send`, once it ends: as `run` answers (thrown if it failed, unless `throwOnError` is false). */
+  wait<T = unknown>(id: string, options: { throwOnError?: boolean; signal?: AbortSignal; timeoutMs?: number } = {}): Promise<Run<T>> {
+    return this.settle<T>(id, this.client.waitForRequest(id, { ...(options.signal ? { signal: options.signal } : {}), ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}) }), options.throwOnError);
+  }
+
   /** Inputs waiting on people, across the agent's runs. */
   async pendingInputs(): Promise<RunInput[]> { return (await this.client.inputs("pending")).map(input => this.input(input)); }
   /** The agent's whole history (`historyPage` reads a page at a time). */
@@ -703,6 +718,7 @@ function promptOptions(id: string, options: RunOptions) {
     ...messageOptions(options), idempotencyKey: id,
     ...(options.signal ? { signal: options.signal } : {}), ...(options.whileRunning ? { whileRunning: options.whileRunning } : {}),
     ...(options.allowDisconnected ? { allowDisconnected: true } : {}), ...(options.spendLimit ? { spendLimit: options.spendLimit } : {}),
+    ...(options.runLimits ? { runLimits: options.runLimits } : {}),
     ...(options.output ? { output: outputRequest(options.output) } : {}), ...(options.traceparent ? { traceparent: options.traceparent } : {}),
     ...(options.history === "none" ? { history: "none" as const } : {}),
   };

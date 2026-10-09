@@ -246,6 +246,19 @@ app = serve_tools([refund], runtime="https://run.camelai.com", tenant="acme")  #
 Behind a proxy, run uvicorn with `--proxy-headers` (and `--forwarded-allow-ips`
 naming the proxy), or pass `audience="https://tools.example.com/mcp"`.
 
+To offer each agent its own tools (an admin's, a plan's), pass a function of the
+caller's identity instead of the tools; a tool it is not given is refused if
+called. A `ToolServer` of your own gets the same as `listTools(context)`:
+`{identity, origin, signal}`.
+
+```ts
+serveTools(identity => identity.context.role === "admin" ? { refund, ban } : { refund }, options);
+```
+
+```python
+serve_tools(lambda identity: [refund, ban] if identity.context.get("role") == "admin" else [refund], runtime=..., tenant=...)
+```
+
 ### A server that moves
 
 By default a token's audience is the server's URL, so a server that moves (a new
@@ -365,7 +378,7 @@ The token itself (for servers that verify it by hand, e.g. with `jose`):
 ```json
 { "iss": "https://agents.camelai.dev", "aud": "https://tools.example.com/mcp",
   "sub": "u_123", "tenant": "acme", "agent": "client_…", "definition": "def_…",
-  "ctx": { "org": "acme" }, "act": "u_456", "origin": { … },
+  "ctx": { "org": "acme" }, "act": "u_456", "origin": { … }, "req": "run_…", "tcid": "toolu_…",
   "iat": 1790000000, "exp": 1790000120, "jti": "…" }
 ```
 
@@ -389,7 +402,8 @@ if (payload.tenant !== "acme") throw new Error("Not our tenant's agent");
   so a token cannot be replayed against a server that is not yours.
   Tokens live two minutes, and each request gets its own `jti`.
 - `act` and `origin` are absent outside a turn (listing a server's tools as an
-  agent starts).
+  agent starts), and so are `req`, the run's request id, and `tcid`, the model's
+  tool call (`identity.requestId` and `toolCallId` in the SDKs).
 - The keys are at `/.well-known/jwks.json` (cache them for minutes);
   `/.well-known/oauth-authorization-server` names the issuer for MCP clients.
 

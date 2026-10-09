@@ -23,7 +23,7 @@ import { callParams, type CallInput } from "./mcp-results.ts";
  */
 export interface McpServer { url: string; headers: Record<string, string>; token?: () => Promise<string>; scope?: string }
 type Connection = {
-  key: string; server: McpServer;
+  key: string; tenant: string; server: McpServer;
   client?: Client; connecting?: Promise<Client>;
   tools?: { list: Tool[]; at: number }; listing?: Promise<Tool[]>;
   lastUsed: number;
@@ -56,7 +56,7 @@ export class McpConnections {
     const key = this.key(tenant, server);
     let connection = this.connections.get(key);
     if (!connection) {
-      connection = { key, server, lastUsed: Date.now() };
+      connection = { key, tenant, server, lastUsed: Date.now() };
       this.connections.set(key, connection);
       if (this.connections.size > MAX_CONNECTIONS) {
         const oldest = [...this.connections.values()].sort((a, b) => a.lastUsed - b.lastUsed)[0];
@@ -117,6 +117,14 @@ export class McpConnections {
       connection.tools = { list: list.slice(0, MAX_TOOLS), at: Date.now() };
       return connection.tools.list;
     }).finally(() => { connection.listing = undefined; });
+  }
+
+  /**
+   * Forget this node's listing of the tenant's servers at `urls` (any credentials or agent scope): the next `tools` lists
+   * them afresh. A definition applied to an agent does this, so tools added since reach it at once, not after the cache's TTL.
+   */
+  forget(tenant: string, urls: string[]) {
+    for (const connection of this.connections.values()) if (connection.tenant === tenant && urls.includes(connection.server.url)) connection.tools = undefined;
   }
 
   /** The server's tools as this node last listed them, and when, without connecting; undefined if it has not. */
