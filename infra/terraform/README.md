@@ -112,6 +112,8 @@ and the RDS instance also have deletion protection in AWS.
     `AGENT_STRIPE_SECRET_ARN` (credit purchases stay off until `infra/stripe.sh` stores its value);
   - `AGENT_TOOL_SEARCH=embeddings,jev` and `AGENT_TOOL_SEARCH_SECRET_ARN` (tools.search uses the
     platform's OpenRouter key from the tenants secret; `infra/tool-search.sh` stores a dedicated one instead).
+  - `AGENT_AZURE_OPENAI_SECRET_ARN` (images and transcription on the platform's OpenAI key go to the Azure OpenAI
+    deployments once `infra/azure-openai.sh` stores the resource's endpoint and key; OpenAI is the fallback).
   - `AGENT_OPENAI_APPS_CHALLENGE` from `openai_apps_challenge`, when set: the ChatGPT plugin's domain-verification
     token (`plugins/chatgpt/README.md`).
 

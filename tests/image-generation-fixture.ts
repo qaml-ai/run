@@ -31,21 +31,22 @@ export function png(width: number, height: number) {
 }
 export const PHOTO = png(1024, 1024);
 
-export type ImageCall = { key: string; path: string; fields: Record<string, string>; images: { name: string; type: string; bytes: number }[]; mask?: string };
+export type ImageCall = { key: string; apiKey?: string; path: string; fields: Record<string, string>; images: { name: string; type: string; bytes: number }[]; mask?: string };
 
 /**
  * OpenAI's images endpoints (and an image at /photo.png, to fetch by URL), recording each request. Each image made is
  * a PNG of the size asked; usage is 10 text tokens and 1,000 image tokens per image given in, 1,000 tokens per image out.
- * A prompt with "forbidden" in it is refused by its safety system.
+ * A prompt with "forbidden" in it is refused by its safety system. As Azure (`azure`), a prompt with "busy" in it is rate
+ * limited, and one with "filtered" is refused by its content filter.
  */
-async function fakeOpenAI(t: T) {
+async function fakeOpenAI(t: T, azure = false) {
   const requests: ImageCall[] = [];
   const base = await listen(t, async (req, res) => {
     if (req.method === "GET" && req.url === "/photo.png") return res.writeHead(200, { "Content-Type": "image/png" }).end(PHOTO);
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(chunk);
     const body = Buffer.concat(chunks);
-    const call: ImageCall = { key: String(req.headers.authorization), path: req.url!, fields: {}, images: [] };
+    const call: ImageCall = { key: String(req.headers.authorization), ...(req.headers["api-key"] ? { apiKey: String(req.headers["api-key"]) } : {}), path: req.url!, fields: {}, images: [] };
     if (String(req.headers["content-type"]).startsWith("multipart/form-data")) {
       const form = await new Request("http://x", { method: "POST", headers: { "Content-Type": req.headers["content-type"]! }, body }).formData();
       for (const [name, value] of form) {
@@ -57,6 +58,11 @@ async function fakeOpenAI(t: T) {
       for (const [name, value] of Object.entries(JSON.parse(body.toString()))) call.fields[name] = String(value);
     }
     requests.push(call);
+    if (azure && call.fields.prompt?.includes("busy")) return res.writeHead(429, { "Content-Type": "application/json", "Retry-After": "30" }).end(JSON.stringify({ error: { code: "429", message: "Rate limit exceeded" } }));
+    if (azure && call.fields.prompt?.includes("filtered")) {
+      const error = { code: "contentFilter", message: "Your task failed as a result of our safety system.", inner_error: { code: "ResponsibleAIPolicyViolation", content_filter_results: { hate: { filtered: false, severity: "safe" }, violence: { filtered: true, severity: "medium" } } } };
+      return res.writeHead(400, { "Content-Type": "application/json" }).end(JSON.stringify({ error }));
+    }
     if (call.fields.prompt?.includes("forbidden")) {
       const error = { message: "Your request was rejected by the safety system.", type: "image_generation_user_error", code: "moderation_blocked", moderation_details: { moderation_stage: "input", categories: ["violence"] } };
       return res.writeHead(400, { "Content-Type": "application/json" }).end(JSON.stringify({ error }));
@@ -72,14 +78,19 @@ async function fakeOpenAI(t: T) {
   return { base, requests };
 }
 
-/** The runtime, its model answering with `respond` (by default "ok"), and the fake OpenAI. */
-export async function start(t: T, respond: (body: any, index: number) => object = () => ({ role: "assistant", content: "ok" })) {
+/**
+ * The runtime, its model answering with `respond` (by default "ok"), and the fake OpenAI; with `azure`, a fake Azure OpenAI
+ * resource too, which the platform's key goes to.
+ */
+export async function start(t: T, respond: (body: any, index: number) => object = () => ({ role: "assistant", content: "ok" }), options: { azure?: boolean } = {}) {
   const openai = await fakeOpenAI(t);
+  const azure = options.azure ? await fakeOpenAI(t, true) : undefined;
   const r = await runtime(t, free(respond), {
     AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", AGENT_IMAGES_URL: openai.base,
+    ...(azure ? { AGENT_AZURE_OPENAI_ENDPOINT: azure.base, AGENT_AZURE_OPENAI_API_KEY: "azure-test-key", AGENT_AZURE_IMAGE_DEPLOYMENT: "images-eastus2" } : {}),
     AGENT_BILLING_ADMINS: "ops", AGENT_PRICE_AGENT_HOUR_USD: "0",
     // $100 per million image tokens out and $10 in, so an image (1,000 tokens) is $0.10 and an image given is $0.01.
     AGENT_PRICE_IMAGE_TEXT_INPUT_USD: "0", AGENT_PRICE_IMAGE_INPUT_USD: "10", AGENT_PRICE_IMAGE_OUTPUT_USD: "100",
   }, tenantsFile);
-  return { r, openai };
+  return { r, openai, azure };
 }
