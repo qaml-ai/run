@@ -1,6 +1,6 @@
-import { createPrivateKey, createPublicKey, randomBytes, randomUUID } from "node:crypto";
+import { createPrivateKey, createPublicKey, randomBytes, randomUUID, sign, type KeyObject } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { createLocalJWKSet, errors, importJWK, jwtVerify, SignJWT, type JWK } from "jose";
+import { createLocalJWKSet, errors, jwtVerify, type JWK } from "jose";
 import type { Accounts, Sealed } from "./accounts.ts";
 import type { Db } from "./db.ts";
 import { HttpError } from "./http.ts";
@@ -45,7 +45,16 @@ function ed25519Key() {
   const privateKey = createPrivateKey({ key: Buffer.concat([ED25519_PKCS8, randomBytes(32)]), format: "der", type: "pkcs8" });
   return { publicJwk: createPublicKey(privateKey).export({ format: "jwk" }) as JWK, privateJwk: privateKey.export({ format: "jwk" }) as JWK };
 }
-type Keys = { signing?: { kid: string; key: CryptoKey }; published: JWK[] };
+type Keys = { signing?: { kid: string; key: KeyObject }; published: JWK[] };
+const base64url = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+/**
+ * A JWT signed with an Ed25519 key, at once: node:crypto signs synchronously, where WebCrypto (jose's SignJWT) finishes
+ * on a thread of its own, at a moment a simulator cannot replay.
+ */
+function signJwt(header: Record<string, unknown>, payload: Record<string, unknown>, key: KeyObject) {
+  const signed = `${base64url(header)}.${base64url(payload)}`;
+  return `${signed}.${sign(null, Buffer.from(signed), key).toString("base64url")}`;
+}
 
 /** The turn a tool call belongs to, for requests made on its behalf deep in a transport (MCP). */
 export const callScope = new AsyncLocalStorage<{ actor?: string; origin?: Record<string, unknown>; approval?: Record<string, unknown>; request?: string; toolCall?: string; parent?: string; root?: string }>();
@@ -94,7 +103,7 @@ export class RuntimeSigner {
     }
     const active = rows.find(row => row.retired_at === null)!;
     const signing = this.available
-      ? { kid: active.kid as string, key: await importJWK(JSON.parse(this.accounts.unseal(aad(active.kid), active.private_sealed as Sealed)), ALGORITHM) as CryptoKey }
+      ? { kid: active.kid as string, key: createPrivateKey({ key: JSON.parse(this.accounts.unseal(aad(active.kid), active.private_sealed as Sealed)), format: "jwk" }) }
       : undefined;
     return { ...(signing ? { signing } : {}), published: rows.map(row => row.public_jwk as JWK) };
   }
@@ -106,11 +115,8 @@ export class RuntimeSigner {
   async fileToken(grant: FileGrant, expiresAt: number): Promise<string> {
     const { signing } = await this.load();
     if (!signing) throw new Error("This runtime cannot sign file URLs");
-    return new SignJWT({ ...grant })
-      .setProtectedHeader({ alg: ALGORITHM, kid: signing.kid, typ: FILE_TYPE })
-      .setIssuer(this.issuer).setAudience(FILE_AUDIENCE).setSubject(grant.agent)
-      .setIssuedAt().setExpirationTime(Math.floor(expiresAt / 1000))
-      .sign(signing.key);
+    return signJwt({ alg: ALGORITHM, kid: signing.kid, typ: FILE_TYPE },
+      { ...grant, iss: this.issuer, aud: FILE_AUDIENCE, sub: grant.agent, iat: Math.floor(Date.now() / 1000), exp: Math.floor(expiresAt / 1000) }, signing.key);
   }
 
   /**
@@ -135,15 +141,13 @@ export class RuntimeSigner {
     const { signing } = await this.load();
     if (!signing) throw new Error("This runtime cannot sign identity tokens");
     const { identity, actor, origin, tenant, agent, definition, approval, request, toolCall, parent, root } = claims;
-    return new SignJWT({
+    const now = Math.floor(Date.now() / 1000);
+    return signJwt({ alg: ALGORITHM, kid: signing.kid, typ: "JWT" }, {
       tenant, agent, ...(definition ? { definition } : {}), ...(identity?.context ? { ctx: identity.context } : {}),
       ...(actor ? { act: actor } : {}), ...(origin ? { origin } : {}), ...(approval ? { approval } : {}),
       ...(request ? { req: request } : {}), ...(toolCall ? { tcid: toolCall } : {}), ...(parent ? { par: parent } : {}), ...(root ? { root } : {}),
-    })
-      .setProtectedHeader({ alg: ALGORITHM, kid: signing.kid, typ: "JWT" })
-      .setIssuer(this.issuer).setAudience(audience).setSubject(identity?.subject ?? agent)
-      .setIssuedAt().setExpirationTime(`${TOKEN_SECONDS}s`).setJti(randomUUID())
-      .sign(signing.key);
+      iss: this.issuer, aud: audience, sub: identity?.subject ?? agent, iat: now, exp: now + TOKEN_SECONDS, jti: randomUUID(),
+    }, signing.key);
   }
 }
 
