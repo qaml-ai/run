@@ -229,7 +229,11 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     for (const deadline = Date.now() + leaseTtlMs; ;) {
       const peers = await ownership.livePeers();
       if (!peers.length) break;
-      if (Date.now() >= deadline) throw new Error(`AGENT_STORAGE=file is for one node, but other nodes share this database (${peers.join(", ")}); use shared-file or s3 for several nodes`);
+      if (Date.now() >= deadline) {
+        // Joined first, so two such nodes starting together see each other; it leaves before it fails (see `start`).
+        await ownership.close().catch(() => {});
+        throw new Error(`AGENT_STORAGE=file is for one node, but other nodes share this database (${peers.join(", ")}); use shared-file or s3 for several nodes`);
+      }
       await new Promise(resolve => setTimeout(resolve, 1_000));
     }
   }
@@ -1080,9 +1084,13 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     req.once("close", () => clearTimeout(timer));
   });
   const start = () => new Promise<AddressInfo>((resolve, reject) => {
-    server.once("error", reject);
+    // A node that cannot listen (its port taken) leaves the cluster it joined as it was made, then fails. Its heartbeat
+    // would otherwise outlive it: peers would count it live and route to it until they found it dead, or for its whole
+    // lease when whatever holds the port accepts their probes; and agents its first sweep took would wait as long.
+    const failed = (error: Error) => void leave("listen_failed", 0).catch(() => {}).finally(() => reject(error));
+    server.once("error", failed);
     server.listen(port, config.host ?? "127.0.0.1", () => {
-      server.off("error", reject);
+      server.off("error", failed);
       // Without AGENT_PUBLIC_URL the issuer is where this node listens: known only now when PORT is 0.
       if (!config.publicUrlSet) signer.issuer = links.publicUrl = origins.canonical = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
       console.log(JSON.stringify({ type: "listening", address: server.address(), node, tenants: tenants.source, hosting, storage: deps.storage ? "given" : storageDescriptor.kind, github: github ? (github.open ? "open" : "org") : false, google: !!google, accountEmail: accountMailSettings?.provider ?? false, keyStorage: accounts.canStoreKeys, sandbox, toolSearch: rerankers.length ? rerankers.map(stage => stage.kind).join(",") : "keyword", stripe: stripe ? (stripe.live ? "live" : "test") : false }));
