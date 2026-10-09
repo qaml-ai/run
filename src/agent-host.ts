@@ -10,7 +10,7 @@ import type { Outbound } from "./outbound.ts";
 import { scriptValue } from "./mcp-results.ts";
 import { errorText, IDENTITY_KEY, PERSISTENCE_FAILED, SCOPE_KEY, scratchMount, type AgentConfig, type CallContext, type Credentials, type RunStop, type ToolBridge } from "./protocol.ts";
 import { applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS, leadingSystemMessage, OUTPUT, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER, OUTPUT_TOOL } from "./system-prompt.ts";
-import { renderMessages, senderInput, stamp } from "./sender.ts";
+import { renderMessages, senderInput, stamp, type MessageSource } from "./sender.ts";
 import type { SearchHit, SearchQuery } from "./tool-search.ts";
 import type { AppendLog } from "../shared/append-log.ts";
 import { Transcript, readTranscriptLog, summaryMessage, type Backlog, type CompactionState, type TranscriptRecord } from "./transcript.ts";
@@ -84,7 +84,7 @@ export interface HostIO {
 }
 
 /** Tools a lost node's open call to is made again on resume, not closed as unknown: each is keyed by its call (multi-agent.ts). */
-export const RERUN = ["delegate"];
+export const RERUN = ["delegate", "spawn_agent", "wait_agent", "list_agents", "send_message", "interrupt_agent"];
 
 /** The latest assistant message's tool calls that have no result yet. */
 export function openCalls(messages: AgentMessage[]): ToolCall[] {
@@ -683,10 +683,12 @@ export function createAgentHost(hostIO: HostIO) {
 
   /**
    * The user messages a request adds: given whole, or as text and attached files; marked with its sender (if any), request
-   * and metadata, and a prompt's `history: "none"` (only the runtime marks it: see `freshTurn`).
+   * and metadata, and a prompt's `history: "none"` (only the runtime marks it: see `freshTurn`). A sub-agent's notification
+   * (`notice`, only the runtime sends one) is marked with its source and the runtime's metadata instead.
    */
   function userMessages(params: Record<string, any>): AgentMessage[] {
-    const marks = { from: senderInput(params.from), requestId: params.requestId, metadata: params.metadata };
+    const notice = params.notice as { source: MessageSource; metadata: Record<string, unknown> } | undefined;
+    const marks = notice ? { requestId: params.requestId, metadata: notice.metadata, source: notice.source } : { from: senderInput(params.from), requestId: params.requestId, metadata: params.metadata };
     const marked = (messages: AgentMessage[]) => messages.map(message => {
       const { history: _history, ...rest } = message as AgentMessage & { history?: string };
       return (params.history === "none" ? { ...rest, history: "none" } : rest) as AgentMessage;
@@ -1017,6 +1019,12 @@ export function createAgentHost(hostIO: HostIO) {
     try {
       // Aborted before this host had it (its session's `aborted`): a turn resumed from the transcript is open here, and is closed.
       if (method === "continue" && params?.aborted) return await abortedBeforeLoop();
+      // A notification's turn the runtime refused as it landed (a cap), resumed here: closed without the model.
+      if (method === "continue" && params?.landOnly) {
+        const { stopped: why, message: said } = params.landOnly as { stopped: string; message: string };
+        const done = await abortedBeforeLoop();
+        return { ...done, error: said, code: why, stopped: why };
+      }
       if (method === "prompt") await useOutput(params.output?.schema);
       if (method === "execute") {
         const { returned: _returned, cpuMs: _cpuMs, ...result } = await runCode({ ...codeRequest(params), bridge: bridge(active.signal), signal: active.signal, onEvent: event => io.emit(event) });
@@ -1058,6 +1066,18 @@ export function createAgentHost(hostIO: HostIO) {
           agent.state.messages = stateMessages();
         }
         if (active.signal.aborted) return await abortedBeforeLoop();
+        if (params.landOnly) {
+          // The runtime's refusal of a turn its message would start (a cap reached): the message lands in history, and no model is asked.
+          const messages = await fittedImages(promptMessages!);
+          for (const message of messages) {
+            io.emit({ type: "message_start", message });
+            await transcript.push(message);
+            io.emit({ type: "message_end", message });
+          }
+          await transcript.setActive(false);
+          const { stopped: why, message: said } = params.landOnly as { stopped: string; message: string };
+          return { messages: transcript.total, error: said, code: why, stopped: why };
+        }
         // Images enter the transcript as requests carry them: scaled down once here, not on every request after.
         const messages = await fittedImages(promptMessages!);
         if (params.history === "none") agent.state.messages = freshTurn(messages[0])!;

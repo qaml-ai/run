@@ -18,6 +18,8 @@ return Response.json(await agents.runtime.browserToken(agent.id, { ttlSeconds: 9
 
 - The token reads that one agent: only `GET /v1/agents/:id/events`, `/state`,
   `/history` and `/inputs` (or the `scopes` you name). Everything else is a 403.
+  Add `children` to its scopes, and it reads the same of the agent's
+  [background sub-agents](multi-agent.md#background-sub-agents), by their ids.
 - It lasts `ttlSeconds` (default 900, 5 to 3600), and its event stream ends when
   it expires. It is stateless: nothing revokes it sooner, so keep it short.
 - `events` limits the event types it gets (the watcher needs `turn_opened`,

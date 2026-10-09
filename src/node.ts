@@ -229,7 +229,11 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     for (const deadline = Date.now() + leaseTtlMs; ;) {
       const peers = await ownership.livePeers();
       if (!peers.length) break;
-      if (Date.now() >= deadline) throw new Error(`AGENT_STORAGE=file is for one node, but other nodes share this database (${peers.join(", ")}); use shared-file or s3 for several nodes`);
+      if (Date.now() >= deadline) {
+        // Joined first, so two such nodes starting together see each other; it leaves before it fails (see `start`).
+        await ownership.close().catch(() => {});
+        throw new Error(`AGENT_STORAGE=file is for one node, but other nodes share this database (${peers.join(", ")}); use shared-file or s3 for several nodes`);
+      }
       await new Promise(resolve => setTimeout(resolve, 1_000));
     }
   }
@@ -675,7 +679,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     tracing: telemetry,
     // A self-hosted runtime configured by its environment takes keys there too.
     ...(config.selfHostedTenant ? { modelKeyHint: "On this self-hosted runtime, AGENT_TENANT_API_KEYS in its environment sets keys too ({\"anthropic\": \"sk-ant-...\"}; restart it after)." } : {}),
-    secret: sessionSecret, toolTimeoutMs, idleMs, streamTimeouts, ...(config.runOverrunMs !== undefined ? { runOverrunMs: config.runOverrunMs } : {}), maxAgentsPerTenant, codeCapacity: config.codeCapacity, ...(config.snapshotBytes !== undefined ? { snapshotBytes: config.snapshotBytes } : {}), orphanSweepMs: orphanMs, watcherLimitFor: tenant => tenants.maxWatchers(tenant), busyAgents, agentLimitFor: async tenant => {
+    secret: sessionSecret, toolTimeoutMs, idleMs, streamTimeouts, ...(config.runOverrunMs !== undefined ? { runOverrunMs: config.runOverrunMs } : {}), maxAgentsPerTenant, codeCapacity: config.codeCapacity, ...(config.snapshotBytes !== undefined ? { snapshotBytes: config.snapshotBytes } : {}), orphanSweepMs: orphanMs, childSweepMs: config.childSweepMs, wakesPerHour: config.wakesPerHour, watcherLimitFor: tenant => tenants.maxWatchers(tenant), busyAgents, agentLimitFor: async tenant => {
       // Agents hosted on this node stay within the tenant's busy limit too: its own, or its tier's (else the default).
       const { limit, source } = await accounts.billing.busyLimit(tenant);
       return source === "default" ? undefined : limit;
@@ -737,6 +741,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     submit: (agent, tenant, request) => submitAnywhere(agent, tenant, request),
     // The delegate builtin's children: agents made as POST /v1/agents makes them, and their requests waited on wherever they run.
     createAgent: (tenant, params, key, parent) => createAgent(tenant, params, key, parent) as Promise<{ id: string }>,
+    deleteAgent: (agent, tenant) => deleteAnywhere(agent, tenant),
     requestAnywhere: (agent, tenant, requestId, waitMs, signal) => requestAnywhere(agent, tenant, requestId, waitMs, signal),
   });
   // An agent loaded on another node: this node's idle watchers of it end, and reconnect to that node.
@@ -1080,9 +1085,13 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     req.once("close", () => clearTimeout(timer));
   });
   const start = () => new Promise<AddressInfo>((resolve, reject) => {
-    server.once("error", reject);
+    // A node that cannot listen (its port taken) leaves the cluster it joined as it was made, then fails. Its heartbeat
+    // would otherwise outlive it: peers would count it live and route to it until they found it dead, or for its whole
+    // lease when whatever holds the port accepts their probes; and agents its first sweep took would wait as long.
+    const failed = (error: Error) => void leave("listen_failed", 0).catch(() => {}).finally(() => reject(error));
+    server.once("error", failed);
     server.listen(port, config.host ?? "127.0.0.1", () => {
-      server.off("error", reject);
+      server.off("error", failed);
       // Without AGENT_PUBLIC_URL the issuer is where this node listens: known only now when PORT is 0.
       if (!config.publicUrlSet) signer.issuer = links.publicUrl = origins.canonical = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
       console.log(JSON.stringify({ type: "listening", address: server.address(), node, tenants: tenants.source, hosting, storage: deps.storage ? "given" : storageDescriptor.kind, github: github ? (github.open ? "open" : "org") : false, google: !!google, accountEmail: accountMailSettings?.provider ?? false, keyStorage: accounts.canStoreKeys, sandbox, toolSearch: rerankers.length ? rerankers.map(stage => stage.kind).join(",") : "keyword", stripe: stripe ? (stripe.live ? "live" : "test") : false }));
@@ -1128,6 +1137,9 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   const orphanTimer = orphanMs ? setInterval(() => void clients.resumeSoon(), orphanMs) : undefined;
   orphanTimer?.unref();
   if (orphanMs) void clients.resumeSoon();
+  // Sub-agents' endings whose delivery to their parent a lost node left undone, delivered by whichever node gets to them first.
+  const childTimer = config.childSweepMs ? setInterval(() => void clients.sweepChildren(), config.childSweepMs) : undefined;
+  childTimer?.unref();
   // Storage is charged to prepaid tenants once a UTC day, by whichever node claims the day's job first.
   const { billingMs, reconcileDays } = config;
   // The charge reads tracked totals; a full listing of Storage corrects them every AGENT_STORAGE_RECONCILE_DAYS (0: never, but for the first).
@@ -1229,6 +1241,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     clearInterval(sweepTimer);
     clearInterval(purgeTimer);
     clearInterval(orphanTimer);
+    clearInterval(childTimer);
     clearInterval(billingTimer);
     clearInterval(workTimer);
     if (retireTimer) clearInterval(retireTimer);

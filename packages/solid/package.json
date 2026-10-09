@@ -1,6 +1,6 @@
 {
   "name": "@camelai/run-solid",
-  "version": "0.18.0",
+  "version": "0.19.0",
   "description": "Solid bindings for chatting with agents on camelRun.",
   "type": "module",
   "license": "MIT",
@@ -31,7 +31,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@camelai/run": "0.18.0"
+    "@camelai/run": "0.19.0"
   },
   "peerDependencies": {
     "solid-js": "^1.8.0"

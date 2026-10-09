@@ -26,7 +26,7 @@ import uuid
 import httpx
 
 # pyproject.toml's version; tests/python_sdk.py checks they match.
-__version__ = "0.14.0"
+__version__ = "0.15.0"
 
 __all__ = [
     "Agents", "Agent", "Run", "RunInput", "InputDetail", "Mount", "WorkspaceMount", "RunStream", "StreamPart", "Runs", "StatelessRunStream",
@@ -94,6 +94,9 @@ class RuntimeIdentity:
     # The run (its request id) the call was made in, and the model's tool call it is for, when there are.
     request_id: str | None = None
     tool_call_id: str | None = None
+    # In a sub-agent's run (delegate, spawn_agent): the agent that started it, and the first agent of its chain.
+    parent_agent_id: str | None = None
+    root_agent_id: str | None = None
     # A verified token's full claims (serve_tools, verify_runtime_token).
     claims: dict | None = field(default=None, repr=False, compare=False)
 
@@ -108,7 +111,8 @@ def identity_from_claims(claims):
                            context=claims["ctx"] if isinstance(claims.get("ctx"), dict) else {}, actor=actor,
                            definition=text(claims.get("definition")), origin=claims["origin"] if isinstance(claims.get("origin"), dict) else None,
                            approval=claims["approval"] if isinstance(claims.get("approval"), dict) else None,
-                           request_id=text(claims.get("req")), tool_call_id=text(claims.get("tcid")))
+                           request_id=text(claims.get("req")), tool_call_id=text(claims.get("tcid")),
+                           parent_agent_id=text(claims.get("par")), root_agent_id=text(claims.get("root")))
 
 
 class InputRequired(Exception):
@@ -659,7 +663,8 @@ class _RuntimeCalls:
     def browser_token(self, agent_id, *, ttl_seconds=None, scopes=None, events=None, redact=None, subject=None):
         """A token a browser reads one agent with (the TypeScript SDK's watchAgent): mint one per user, after your own
         access checks. It reads only that agent's events, state, history and inputs (or `scopes`), for `ttl_seconds`
-        (default 900, 5 to 3600). Returns {"token", "expiresAt", "agentId", "url"}."""
+        (default 900, 5 to 3600); with "children" among its scopes, its background sub-agents too. Returns
+        {"token", "expiresAt", "agentId", "url"}."""
         body = {key: value for key, value in {"ttlSeconds": ttl_seconds, "scopes": scopes, "events": events, "redact": redact, "subject": subject}.items() if value is not None}
         return self._rest("POST", f"/v1/agents/{_path(agent_id)}/browser-tokens", body, retry=False)
 
@@ -1072,10 +1077,10 @@ def _definition_fields(fields):
 
 
 def _with_multi_agent(fields):
-    """`delegate` settings bring their builtin: given the settings, the builtin is added."""
+    """`delegate` settings bring their builtin: given the settings without delegate or agents, delegate is added."""
     fields = _definition_fields(fields)
     builtins = fields.get("builtins") or []
-    return {**fields, "builtins": [*builtins, "delegate"]} if fields.get("delegate") and "delegate" not in builtins else fields
+    return {**fields, "builtins": [*builtins, "delegate"]} if fields.get("delegate") and "delegate" not in builtins and "agents" not in builtins else fields
 
 
 class Volume:
@@ -1340,11 +1345,11 @@ class _AgentCalls:
         """The agent's process (when loaded) and whether it is busy: busy, activeRun, queuedRuns, as GET /v1/agents/{id} and its state say too."""
         return self.request("status")
 
-    def abort(self, *, queued=None):
+    def abort(self, *, queued=None, children=None):
         """Stop the agent: its running turn ends (code "aborted"), and the runs queued behind it are cancelled (code
-        "cancelled"), so nothing runs after the stop; queued="keep" stops the running turn only. Returns
-        {"aborted", "cancelled": [ids]}."""
-        return self.request("abort", {"queued": queued} if queued else {})
+        "cancelled"), so nothing runs after the stop; queued="keep" stops the running turn only. Its running background
+        sub-agents are aborted too, unless children="keep". Returns {"aborted", "cancelled": [ids]}."""
+        return self.request("abort", {**({"queued": queued} if queued else {}), **({"children": children} if children else {})})
 
     def outcomes(self):
         return self._http("/state")
@@ -2372,10 +2377,10 @@ class Agent:
         """Change its model, instructions, thinking level or tools between runs."""
         return await self.client.configure(model=model, system_prompt=instructions, thinking_level=thinking_level, tools=tools, max_output_tokens=max_output_tokens, temperature=temperature)
 
-    async def abort(self, *, queued=None):
+    async def abort(self, *, queued=None, children=None):
         """Stop the agent: its running turn, and the runs queued behind it (each fails with code "cancelled"), so nothing
-        runs after the stop. queued="keep" stops the running turn only."""
-        return await self.client.abort(queued=queued)
+        runs after the stop. queued="keep" stops the running turn only; children="keep" leaves its background sub-agents running."""
+        return await self.client.abort(queued=queued, children=children)
 
     async def fork(self, *, key=None, name=None, at_message=None, ttl_seconds=_DEFAULT, subject=None, context=None, instructions_append=None,
                    model_headers=_DEFAULT, tools=None, on_event=None, on_input=None, on_error=None, attach=None, takeover=False):
@@ -3034,12 +3039,13 @@ class TestRuntime:
         self.options = {"runtime": self.url, "http": self.http, "tenant": "test"}
 
     def token(self, audience, *, subject=None, actor=None, tenant="test", agent="client_test", definition=None, context=None, origin=None,
-              expires_in=120, claims=None, header=None):
+              parent_agent_id=None, root_agent_id=None, expires_in=120, claims=None, header=None):
         """A token for `audience` as the runtime would sign it; `claims` and `header` override, to test rejections."""
         import time
         now = int(time.time())
         payload = {"iss": self.url, "aud": audience, "sub": subject or agent, "tenant": tenant, "agent": agent, "iat": now, "exp": now + expires_in, "jti": str(uuid.uuid4())}
-        payload.update({key: value for key, value in (("definition", definition), ("ctx", context), ("act", actor), ("origin", origin)) if value is not None})
+        payload.update({key: value for key, value in (("definition", definition), ("ctx", context), ("act", actor), ("origin", origin),
+                                                      ("par", parent_agent_id), ("root", root_agent_id)) if value is not None})
         payload.update(claims or {})
         signed = f"{_b64encode(json.dumps({'alg': 'EdDSA', 'kid': self.kid, 'typ': 'JWT', **(header or {})}).encode())}.{_b64encode(json.dumps(payload).encode())}"
         return f"{signed}.{_b64encode(self.key.sign(signed.encode()))}"

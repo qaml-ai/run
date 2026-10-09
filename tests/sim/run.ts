@@ -52,7 +52,18 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
   const sim = await Sim.create({
     seed: plan.seed, buggify: plan.buggify, quiet: options.quiet ?? true, ...(plan.dbLatencyMs ? { dbLatencyMs: plan.dbLatencyMs } : {}), ...(plan.dbSpikes ? { dbSpikes: plan.dbSpikes } : {}), storageFaults: !!plan.storageFaults,
     env: { AGENT_LEASE_TTL_MS: String(plan.leaseTtlMs), AGENT_ORPHAN_SWEEP_MS: "2000", ...plan.env }, ...(plan.startAt ? { start: Date.parse(plan.startAt) } : {}),
-    respond: body => ({ content: `done ${runOf(body) ?? "?"}`, delayMs: low + modelRandom.int(high - low + 1) }),
+    respond: body => {
+      const delayMs = low + modelRandom.int(high - low + 1);
+      const system = JSON.stringify((body.messages ?? []).filter((message: any) => message.role === "system"));
+      const last = body.messages?.at(-1);
+      // A background child: it messages its parent, then answers. A run asked to spawn starts one, then answers.
+      if (system.includes("SIM CHILD")) return last?.role === "tool" ? { content: "child done", delayMs } : { tool_calls: [{ index: 0, id: "call_message", type: "function", function: { name: "send_message", arguments: JSON.stringify({ to: "parent", text: "progress" }) } }], delayMs };
+      const users = (body.messages ?? []).filter((message: any) => message.role === "user");
+      if (last?.role === "user" && JSON.stringify(users.at(-1)?.content ?? "").includes("spawn-me")) {
+        return { tool_calls: [{ index: 0, id: "call_spawn", type: "function", function: { name: "spawn_agent", arguments: JSON.stringify({ instructions: "You are a SIM CHILD.", task: "child task" }) } }], delayMs };
+      }
+      return { content: `done ${runOf(body) ?? "?"}`, delayMs };
+    },
   });
   const history: Event[] = [];
   const agents = new Map<number, string>();
@@ -134,7 +145,7 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
       switch (op.op) {
         case "create": {
           const madeAt = sim.env.elapsed;
-          void client(op, op.node, "/v1/agents", { name: `agent-${op.agent}`, ...(op.ttlSeconds ? { ttlSeconds: op.ttlSeconds } : {}) }, { "Idempotency-Key": `agent-${op.agent}` })
+          void client(op, op.node, "/v1/agents", { name: `agent-${op.agent}`, ...(op.ttlSeconds ? { ttlSeconds: op.ttlSeconds } : {}), ...(op.spawner ? { builtins: ["agents"], delegate: { instructions: true } } : {}) }, { "Idempotency-Key": `agent-${op.agent}` })
             .then(answer => {
               if (answer?.status !== 201 && answer?.status !== 200) return;
               agents.set(op.agent, answer.json.id);
@@ -166,7 +177,7 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
           if (!agent) return;
           const askedAt = sim.env.elapsed;
           const byBody = first?.key === "requestId";
-          const text = `run-${op.run} agent-${of}`;
+          const text = `run-${op.run} agent-${of}${first?.spawn ? " spawn-me" : ""}`;
           void client(op, op.node, `/v1/agents/${agent}/prompt`, byBody ? { text, requestId: `run-${op.run}` } : { text }, byBody ? {} : { "Idempotency-Key": `run-${op.run}` })
             .then(answer => {
               if (!answer) return;
@@ -314,6 +325,36 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
       }, `run-${run} to end`, Math.max(1, healedAt + bound - sim.env.elapsed)).catch(() => undefined);
       if (!record) failures.push(`I3: run-${run} (agent-${agent}, ${id}) never ended within ${bound} ms of recovery`);
       else records.set(run, record);
+    }
+    // I21: every background child's ending reaches its parent, and each notification or message lands once: no request's
+    // message is twice in its agent's history.
+    const parents = new Set((await sim.db.query("select distinct parent from agent_children")).rows.map(row => row.parent as string));
+    const goneIds = new Set([...goneAgents].map(agent => agents.get(agent)));
+    if (parents.size) {
+      const open = await sim.until(async () => {
+        const { rows } = await sim.db.query("select parent, id from agent_children where state = 'running'");
+        return rows.filter(row => !goneIds.has(row.parent)).length === 0 || undefined;
+      }, "every background child's ending to reach its parent", Math.max(1, healedAt + 2 * plan.leaseTtlMs + 90_000 + high * 4 - sim.env.elapsed)).catch(() => false);
+      if (!open) {
+        const { rows } = await sim.db.query("select parent, id, kind, ended_at, claimed_until from agent_children where state = 'running'");
+        for (const row of rows.filter(row => !goneIds.has(row.parent))) failures.push(`I21: background child row ${row.id} (${row.kind}) of ${row.parent} never reached its parent (ended ${row.ended_at ?? "never"})`);
+      }
+      for (const parent of parents) {
+        if (goneIds.has(parent)) continue;
+        // A notification lands (`landed_at`) as its turn begins, and its message is in history once the turn has it: the
+        // turns it and the messages started end first.
+        const turns = await sim.until(async () => {
+          const requests: any[] = (await sim.call(live()[0], `/v1/agents/${parent}`)).json?.requests ?? [];
+          return requests.filter(request => /^(?:child|msg)_/.test(request.id)).every(request => request.state === "completed") || undefined;
+        }, `${parent}'s notification turns to end`, Math.max(1, healedAt + 2 * plan.leaseTtlMs + 120_000 + high * 4 - sim.env.elapsed)).catch(() => false);
+        if (!turns) failures.push(`I21: ${parent}'s notification or message turns never ended`);
+        const messages: any[] = (await sim.call(live()[0], `/v1/agents/${parent}/history`)).json?.messages ?? [];
+        const seen = new Map<string, number>();
+        for (const message of messages) if (message.role === "user" && message.requestId) seen.set(message.requestId, (seen.get(message.requestId) ?? 0) + 1);
+        for (const [request, times] of seen) if (times > 1) failures.push(`I21: ${parent}'s message of request ${request} is in its history ${times} times`);
+        const { rows } = await sim.db.query("select request_id from agent_children where parent = $1 and landed_by = 'notice'", [parent]);
+        for (const row of rows) if (seen.get(`child_${row.request_id}`) !== 1) failures.push(`I21: ${parent}'s notification of ${row.request_id} landed, but is ${seen.get(`child_${row.request_id}`) ?? 0} times in its history`);
+      }
     }
     // I15: what a run that succeeded said is kept: its prompt, and its answer after it, are in its agent's history.
     const histories = new Map<number, string[]>();
