@@ -20,6 +20,7 @@
     "build:console": "vite build --config console/vite.config.ts",
     "openapi": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/openapi.ts",
     "docs": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/docs.ts",
+    "release-notes": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/release-notes.ts",
     "reconcile:storage": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/reconcile-storage.ts",
     "bench:execute": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/bench-execute.ts",
     "bench:v8-exec": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/bench-v8-exec.ts",
