@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
  * under the job's AGENT_HOSTING. Files are dealt longest first to the shard with the least
  * time so far, by their seconds in tests/timings.json, so every shard gets the same files on
  * every runner and together they run each file once. A file the table does not know counts
- * as DEFAULT_SECONDS. `test-shard.ts --plan 4` prints every shard.
+ * as DEFAULT_SECONDS. `test-shard.ts --plan 5 4` prints every shard, for five process shards and four inline.
  *
  * Every shard also records each file's wall time, as CI runs it (several files at once), in
  * test-timings/<hosting>-<index>of<count>.json (scripts/test-timings-reporter.ts); CI keeps
@@ -22,6 +22,10 @@ const TEST_ARGS = ["--experimental-strip-types", "--test", "--test-timeout=24000
 const tests = new URL("../tests/", import.meta.url);
 const timingsFile = new URL("timings.json", tests);
 const files = readdirSync(tests).filter(name => name.endsWith(".test.ts")).sort();
+// The simulator hosts its nodes inline whatever AGENT_HOSTING says (tests/sim/sim.ts), so its files would only
+// run twice the same way: they run in the inline shards alone.
+const inlineOnly = (file: string) => file.startsWith("sim-");
+const filesFor = (hosting: string) => files.filter(file => hosting === "inline" || !inlineOnly(file));
 
 function run(args: string[], timingsOut: string) {
   const reporters = [
@@ -38,10 +42,10 @@ function* jsonFiles(dir: string): Generator<string> {
   }
 }
 
-function shard(index: number, count: number, seconds: Record<string, number>) {
+function shard(index: number, count: number, hosting: string, seconds: Record<string, number>) {
   const weight = (file: string) => seconds[file] ?? DEFAULT_SECONDS;
   const shards = Array.from({ length: count }, () => ({ files: [] as string[], seconds: 0 }));
-  for (const file of [...files].sort((a, b) => weight(b) - weight(a) || a.localeCompare(b))) {
+  for (const file of filesFor(hosting).sort((a, b) => weight(b) - weight(a) || a.localeCompare(b))) {
     const lightest = shards.reduce((best, next) => next.seconds < best.seconds ? next : best);
     lightest.files.push(file);
     lightest.seconds += weight(file);
@@ -58,24 +62,25 @@ if (process.argv[2] === "--update") {
     if (!hosting) continue;
     Object.assign(table[hosting] ??= {}, JSON.parse(readFileSync(path, "utf8")));
   }
-  for (const seconds of Object.values(table)) {
-    for (const file of Object.keys(seconds)) if (!files.includes(file)) delete seconds[file];
+  for (const [hosting, seconds] of Object.entries(table)) {
+    for (const file of Object.keys(seconds)) if (!filesFor(hosting).includes(file)) delete seconds[file];
   }
   const sorted = Object.fromEntries(Object.entries(table).map(([hosting, seconds]) => [hosting, Object.fromEntries(Object.entries(seconds).sort(([a], [b]) => a.localeCompare(b)))]));
   writeFileSync(timingsFile, `${JSON.stringify(sorted, null, 2)}\n`);
 } else if (process.argv[2] === "--plan") {
-  const count = Number(process.argv[3] ?? 4);
+  const counts: Record<string, number> = { process: Number(process.argv[3] ?? 5), inline: Number(process.argv[4] ?? process.argv[3] ?? 4) };
   for (const [hosting, seconds] of Object.entries(JSON.parse(readFileSync(timingsFile, "utf8")) as Record<string, Record<string, number>>)) {
+    const count = counts[hosting];
     for (let index = 1; index <= count; index++) {
-      const planned = shard(index, count, seconds);
+      const planned = shard(index, count, hosting, seconds);
       console.log(`${hosting} ${index}/${count}: ~${Math.round(planned.seconds)}s ${planned.files.join(" ")}`);
     }
   }
 } else {
   const [index, count] = (process.argv[2]?.match(/^(\d+)\/(\d+)$/) ?? []).slice(1).map(Number);
-  if (!(count >= 1 && index >= 1 && index <= count)) throw new Error("Usage: test-shard.ts <index>/<count> | --plan <count> | --update <dir>");
+  if (!(count >= 1 && index >= 1 && index <= count)) throw new Error("Usage: test-shard.ts <index>/<count> | --plan <process count> [<inline count>] | --update <dir>");
   const hosting = process.env.AGENT_HOSTING ?? "process";
-  const planned = shard(index, count, JSON.parse(readFileSync(timingsFile, "utf8"))[hosting] ?? {});
+  const planned = shard(index, count, hosting, JSON.parse(readFileSync(timingsFile, "utf8"))[hosting] ?? {});
   console.log(`# shard ${index}/${count} (${hosting}): ~${Math.round(planned.seconds)}s of ${planned.files.join(", ")}`);
   const timingsDir = fileURLToPath(new URL("../test-timings/", import.meta.url));
   mkdirSync(timingsDir, { recursive: true });
