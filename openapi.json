@@ -2139,7 +2139,7 @@
             "items": {
               "$ref": "#/components/schemas/MountInput"
             },
-            "description": "Volumes for the agent's file tools. Its own workspace volume is at /workspace beside them unless they include {workspace: false} or a mount at /workspace; {workspace: true} places it. The first is where relative paths resolve"
+            "description": "Volumes for the agent's file tools. Its own workspace volume is at /workspace beside them unless they include {workspace: false} or a mount at /workspace; {workspace: true, path?} places it. The first is where relative paths resolve"
           },
           "remount": {
             "type": "boolean",
@@ -2251,13 +2251,18 @@
         "properties": {
           "workspace": {
             "type": "boolean"
+          },
+          "path": {
+            "type": "string",
+            "description": "With true: where it is mounted, absolute and normalized (default /workspace), e.g. /scratch beside a project volume at /workspace",
+            "example": "/scratch"
           }
         },
         "required": [
           "workspace"
         ],
         "additionalProperties": false,
-        "description": "The agent's own workspace volume at /workspace, where uploads, tool outputs and scratch files go. It is mounted beside the mounts given (last) unless they leave it out: true places it at this position, false leaves it out, and a mount given at /workspace takes its place"
+        "description": "The agent's own workspace volume, where attachments, tool outputs and scratch files go. It is mounted at /workspace beside the mounts given (last) unless they leave it out: true places it at this position (at `path`), false leaves it out, and a mount given at /workspace takes its place"
       },
       "Builtin": {
         "type": "string",

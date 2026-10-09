@@ -217,8 +217,11 @@ export const Mount = z.object({
   notify: z.boolean().optional().openapi({ description: "Prompt the agent when others change files under this mount" }),
 }).openapi("Mount");
 /** A mount as given: a volume, or the agent's own workspace. */
-export const MountInput = z.union([Mount, z.strictObject({ workspace: z.boolean() }).openapi("WorkspaceMount", {
-  description: "The agent's own workspace volume at /workspace, where uploads, tool outputs and scratch files go. It is mounted beside the mounts given (last) unless they leave it out: true places it at this position, false leaves it out, and a mount given at /workspace takes its place",
+export const MountInput = z.union([Mount, z.strictObject({
+  workspace: z.boolean(),
+  path: z.string().optional().openapi({ description: "With true: where it is mounted, absolute and normalized (default /workspace), e.g. /scratch beside a project volume at /workspace", example: "/scratch" }),
+}).openapi("WorkspaceMount", {
+  description: "The agent's own workspace volume, where attachments, tool outputs and scratch files go. It is mounted at /workspace beside the mounts given (last) unless they leave it out: true places it at this position (at `path`), false leaves it out, and a mount given at /workspace takes its place",
 })]).openapi("MountInput");
 
 export const SpendLimitInput = z.object({ usd: z.number().min(0).max(1_000_000) }).strict().openapi("SpendLimitInput", {
@@ -352,7 +355,7 @@ export const AgentInput = z.object({
   fileTools: z.boolean().openapi({ description: "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; the mounts stay open to fs in js_exec, attachments and tool outputs. For applications with file tools of their own" }).optional(),
   codeMode: z.boolean().openapi({ description: "false: no js_exec (code mode). The model calls every tool directly, and the system prompt carries only the runtime text those tools need: for an agent with no tools (with fileTools: false too, and no builtins or tool sources), only the application's instructions and a short note on who sent each message. For a tool-less agent, such as a classifier. Best set when the agent is made: changed later, its tools change, while a conversation under way keeps the runtime text it began with" }).optional(),
   ttlSeconds: z.number().int().nullable().optional().openapi({ description: "Agent lifetime: 60 to 31622400 seconds, or null to live until deleted. Default: until deleted for an agent made with an Idempotency-Key, 86400 for one made without" }),
-  mounts: z.array(MountInput).optional().openapi({ description: "Volumes for the agent's file tools. Its own workspace volume is at /workspace beside them unless they include {workspace: false} or a mount at /workspace; {workspace: true} places it. The first is where relative paths resolve" }),
+  mounts: z.array(MountInput).optional().openapi({ description: "Volumes for the agent's file tools. Its own workspace volume is at /workspace beside them unless they include {workspace: false} or a mount at /workspace; {workspace: true, path?} places it. The first is where relative paths resolve" }),
   remount: z.boolean().optional().openapi({ description: "An upsert of an existing agent: true sets the mounts given, between its turns, where other mounts are a 409" }),
   subject: z.string().optional().openapi({ description: "Who the agent acts for (a user id in your app): the `sub` of the identity tokens its tool servers with auth \"runtime\" get. Set only here" }),
   context: z.record(z.string(), z.unknown()).optional().openapi({ description: "Claims your tool servers need (org, workspace, thread…), carried as `ctx` in its identity tokens; at most 4 KB. Set only here" }),

@@ -115,18 +115,30 @@ const agent = await agents.upsert("support", { mounts: [{ volumeId: docs.id, pat
   prompts the agent (about a second after, coalesced) when others change files
   under the mount. Only your own volumes can be mounted, and an agent's mounts
   are fixed when it is made: an upsert with other mounts is a 409, unless it
-  sends `remount: true`, which sets them between its turns (`PUT
-  /v1/agents/:id/mounts` replaces them at once).
+  sends `remount: true`, which sets them between its turns.
+- `PUT /v1/agents/:id/mounts` replaces them during a turn too. Mount changes
+  apply at the agent's next tool call (a call under way keeps the mounts it
+  began with): a removed volume is refused, a read-only one is read-only, and
+  one added or swapped in is there at its path, so a tool can swap `/bot` for
+  another volume and the model goes on working in it. Tool outputs go to the
+  workspace as it is then. The running turn's environment text updates at the
+  next run.
 - The agent's own workspace stays at `/workspace` beside the mounts you give
   (after them). `{workspace: true}` among them puts it at that position,
   `{workspace: false}` leaves it out, and a mount you give at `/workspace` takes
   its place. The first mount is where relative paths resolve, e.g.
   `[{volumeId, path: "/bot", mode: "rw"}]` has `/bot` first and `/workspace`
   second; `[{workspace: false}]` is no mounts at all.
-- Attachments are saved under `/workspace/uploads/<request>/`, files tools
-  return under `/workspace/tool-outputs/`, and the model keeps scratch files in
-  `/workspace/tmp/`. Without a `/workspace`, they go to the first read-write
-  mount (and an agent with none cannot take attachments or tool files).
+- `{workspace: true, path: "/scratch"}` mounts the workspace elsewhere, e.g.
+  beside a project volume at `/workspace`:
+  `[{volumeId: project, path: "/workspace", mode: "rw"}, {workspace: true, path: "/scratch"}]`.
+  The path is absolute, written normalized, and clear of the other mounts.
+- Attachments are saved under `uploads/<request>/` in the agent's own
+  workspace, files tools return under `tool-outputs/`, and the model keeps
+  scratch files in `tmp/`, wherever the workspace is mounted (`/workspace/...`
+  by default, `/scratch/...` above). Without it, they go to a read-write
+  `/workspace`, else the first read-write mount (and an agent with none cannot
+  take attachments or tool files).
 - An agent's own workspace is deleted with the agent, whether or not it is
   still mounted; volumes it only mounted stay.
 - `createVolume({ name }, { idempotencyKey })` (Python

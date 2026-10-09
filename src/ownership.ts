@@ -181,6 +181,12 @@ export class Ownership {
 
   /** Extend this node's heartbeat. A failure is retried next tick; the watchdog fences at the deadline. */
   async renew() {
+    // A node that fenced rejoins at the next tick, under its new session, whether or not it takes an actor: an idle one
+    // would otherwise stay out of the cluster, no peer for a retiring task to retire to. Not one that drains or closed.
+    if (!this.registered && !this.registering && !this.closed && !this.draining) {
+      await this.register().catch(error => console.error(JSON.stringify({ type: "heartbeat_rejoin_failed", error: safeError(error) })));
+      return;
+    }
     if (!this.registered || this.renewing) return;
     this.renewing = true;
     const session = this.session;

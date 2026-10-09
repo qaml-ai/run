@@ -28,7 +28,7 @@ import httpx
 __version__ = "0.12.0"
 
 __all__ = [
-    "Agents", "Agent", "Run", "RunInput", "InputDetail", "RunStream", "StreamPart", "Runs", "StatelessRunStream",
+    "Agents", "Agent", "Run", "RunInput", "InputDetail", "Mount", "WorkspaceMount", "RunStream", "StreamPart", "Runs", "StatelessRunStream",
     "tool", "Tool", "ToolContext", "InputRequired", "RuntimeIdentity", "identity_from_claims",
     "AgentError", "RunError",
     "AgentRuntime", "AgentClient", "AgentFiles", "Download", "Volume", "Telemetry", "DEFAULT_URL",
@@ -638,7 +638,7 @@ class _RuntimeCalls:
         return self._rest("GET", f"/v1/agents/{quote(agent_id)}/mounts")
 
     def set_mounts(self, agent_id, mounts):
-        """Replace an agent's mounts; an idle agent restarts so its tools describe them."""
+        """Replace an agent's mounts: a removed one at once, the rest from its next turn, which is told of them."""
         return self._rest("PUT", f"/v1/agents/{quote(agent_id)}/mounts", {"mounts": mounts}, retry=False)
 
     def me(self):
@@ -778,8 +778,8 @@ class AgentRuntime(_RuntimeCalls):
         thinking level and tool sources; `tools` are added as the agent's attached MCP server.
         `ttl_seconds` is the agent's lifetime, or None to keep it until it is deleted (default: until deleted with an
         idempotency_key of yours, else one day).
-        `mounts` ([{"volumeId", "path", "mode": "ro" | "rw", "subpath"?, "notify"?}]) are the volumes its
-        file tools see; by default it gets its own workspace volume at /workspace. `key_scope` names a key scope
+        `mounts` (Mount and WorkspaceMount dicts) are the volumes its file tools see, beside its own workspace volume
+        at /workspace unless they leave it out ({"workspace": False}) or place it ({"workspace": True, "path"?}). `key_scope` names a key scope
         (PUT /v1/key-scopes/:scope/providers/:provider) whose keys its model calls use first; `spend_limit` ({"usd": n}) the most it may spend on model calls from now on; `run_limits`
         ({"maxResponses": n, "maxSeconds": n}) the most one run may take, within the runtime's maximums (1,000 responses and
         2 hours by default), past which a run stops with stopped "turn_limit"; `model_headers` non-secret headers for each model call.
@@ -1863,6 +1863,24 @@ class Run:
     source_errors: list = field(default_factory=list)
     # The runtime's result as sent.
     raw: dict | None = field(default=None, repr=False)
+
+
+class Mount(TypedDict):
+    """A volume an agent's file tools see at `path`: read-only or read-write, only its `subpath` directory, and with
+    `notify` the agent is prompted when others change files under it."""
+    volumeId: str
+    path: str
+    mode: str
+    subpath: NotRequired[str]
+    notify: NotRequired[bool]
+
+
+class WorkspaceMount(TypedDict):
+    """The agent's own workspace among its mounts: {"workspace": True} places it (at /workspace, or at `path`, e.g.
+    "/scratch" beside a project volume at /workspace; attachments and tool outputs go there), {"workspace": False}
+    leaves it out."""
+    workspace: bool
+    path: NotRequired[str]
 
 
 class InputDetail(TypedDict):
