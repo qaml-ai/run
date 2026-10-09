@@ -550,6 +550,19 @@ changing its history with `agent.client.setMetadata({ name, type })`
 (`npm run studio`) at `/studio/agents`; Studio observes the runtime, and your
 application keeps serving its tools.
 
+## 0.18.0 (TypeScript) / 0.14.0 (Python), 2026-10-09
+
+Needs runtime 0.7.0 or later (run.camelai.com has it).
+
+- Pinned versions: `project.publish({ pin, labels })`, `project.pin(version, labels?)`, `project.unpin(version)` and
+  `project.versions({ labels })`. A pinned version is kept past `keep`, up to 10,000 of them. `ProjectVersion` has
+  `pinned` and `labels`.
+- Snapshots: `volume.snapshot({ name, pinned, labels, files })`, where `files` makes a snapshot of the contents given,
+  leaving the volume untouched, and answers each file's `sha256` (`contents`). Also `volume.snapshots({ labels })`,
+  `volume.updateSnapshot(id, { pinned, labels })` and `volume.deleteSnapshot(id, { force })` (a pinned one needs
+  `force`). `VolumeSnapshot` has `pinned` and `labels`.
+- Python: the same, snake_case (`update_snapshot`, `delete_snapshot(id, force=True)`, `project.pin` / `unpin`).
+
 ## 0.17.0 (TypeScript) / 0.13.0 (Python), 2026-10-09
 
 Needs runtime 0.6.0 or later (run.camelai.com has it). Python 0.13.0 has the same features, with snake_case names.
