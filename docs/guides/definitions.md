@@ -23,6 +23,12 @@ const agent = await agents.upsert(`ticket-${ticket.id}`, { definition: definitio
 Saving a definition lists its MCP servers: credentials a server refuses are a
 400 that says so, and the answer's `toolSources` shows what each offers.
 
+A definition is where a source's credentials go: they are sealed once, for all
+its agents. An agent without a definition, or a stateless run, can list MCP
+servers of its own, but without credentials (identity tokens or none); see
+[An agent's own MCP servers](tools.md#an-agents-own-mcp-servers). An agent made
+from a definition has only its definition's sources.
+
 Each MCP server and OpenAPI source takes `exposure`: `"direct"` (the model calls
 its tools itself), `"codemode"` (only from code in `js_exec`) or `"both"`. Left
 out, a source of up to 10 tools is `both` and a larger one `codemode`, so by

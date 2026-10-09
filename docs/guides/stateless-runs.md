@@ -48,7 +48,7 @@ curl -s https://run.camelai.com/v1/runs -H "Authorization: Bearer $CAMELAI_API_K
 | --- | --- | --- |
 | History | None: each run starts empty | Kept: each run continues the conversation |
 | Lifetime | Its result is kept for a retention window (a day by default), then deleted | Until you delete it (keyed) |
-| Tools | Built-ins (`web_fetch`, `web_search`, `delegate`), a definition's MCP servers and OpenAPI specs, `js_exec` | Also tools served by your process (`tools`), schedules and human input |
+| Tools | Built-ins (`web_fetch`, `web_search`, `delegate`), its own MCP servers, a definition's MCP servers and OpenAPI specs, `js_exec` | Also tools served by your process (`tools`), schedules and human input |
 | Listed in `GET /v1/agents` | No | Yes |
 | Use it for | Classify, extract, vote, judge, summarize: one answer per input | Chats, assistants, anything that remembers |
 
@@ -67,12 +67,15 @@ The fields an agent takes, plus the input:
   `temperature` (see [Output length and temperature](models-and-keys.md#output-length-and-temperature)), `builtins`
   (`web_fetch`, `web_search`, `delegate`), `delegate`, `keyScope`, `modelHeaders`,
   `runLimits`, `subject`, `context`.
+- `mcpServers`: MCP servers of its own, as an agent's: no credentials, only
+  `"auth": {"type": "runtime"}` (identity tokens) or none. See
+  [An agent's own MCP servers](tools.md#an-agents-own-mcp-servers).
 - `output`: a schema for a structured answer (see [Structured output](structured-output.md)).
 - `spendLimit`: the run's budget in USD.
 - `fileTools: true`: a workspace and file tools. Without files or this, a run has
   no volume at all.
 - `codeMode`: whether the model gets `js_exec`. A run with no tools at all (no
-  definition, `builtins`, `delegate`, files or mounts) gets neither `js_exec` nor
+  definition, `builtins`, `delegate`, `mcpServers`, files or mounts) gets neither `js_exec` nor
   file tools, so its model sees only your instructions and the input: right for a
   classifier or a vote. A run with tools keeps `js_exec`. Set `codeMode` (or
   `fileTools`) to have it otherwise; what you set wins.
@@ -159,8 +162,9 @@ past either is turned away cheaply (429 `BUSY_AGENT_LIMIT` or `RATE_LIMITED`, wi
   policy, an MCP server's elicitation) ends the run with status
   `input_required`, and for a run that is final: there is no way to answer it
   and resume. Use an agent for work that needs a person's go-ahead.
-- **MCP servers and OpenAPI specs come through a definition.** Name one with
-  `definition`; a run takes no inline `mcpServers`. Tools served by your process
+- **Servers with credentials, and OpenAPI specs, come through a definition.**
+  A run's own `mcpServers` take no token or headers; name a definition with
+  `definition` for those. Tools served by your process
   (`tools`, an attached MCP server) need an agent: a run has no process connected.
   Serve them over HTTP (`serveTools`) and name them in a definition instead.
 - The CLI runs one with `camelrun run --stateless "…" [--definition key]`.

@@ -419,7 +419,7 @@ An agent's tools come from four kinds of place. Pick by where your code runs:
 | Your situation | Use | How |
 | --- | --- | --- |
 | A long-lived server or worker, and the tools touch its state | **Attached tools** | `tools` on `upsert`; the SDK holds a connection and the runtime calls your functions over it. One process serves an agent's tools at a time; closing it on SIGTERM finishes its calls, so deploys lose none |
-| Serverless functions, several instances, or one backend serving many users' agents | **Served tools** | `serveTools(tools)` on an HTTPS endpoint of yours, named in a **definition** with `auth: { type: "runtime" }`; the runtime calls it with a signed token saying who each call is for. Safe through your deploys and restarts |
+| Serverless functions, several instances, or one backend serving many users' agents | **Served tools** | `serveTools(tools)` on an HTTPS endpoint of yours, named in a **definition** with `auth: { type: "runtime" }` (or in the agent's own `mcpServers`); the runtime calls it with a signed token saying who each call is for. Safe through your deploys and restarts |
 | A third-party API | **OpenAPI** or **MCP** sources in a definition | the runtime calls the API itself, with credentials it stores sealed |
 | Web search, fetching pages, scheduling, asking the user | **Built-ins**, on the agent or in its definition | `builtins: ["web_search", "web_fetch", "schedule", "ask_user"]` |
 | Other agents doing tasks for this one | The **`delegate`** built-in, with the agents it may reach | `delegate: { agents: ["researcher"] }`. See [Multi-agent](https://run.camelai.com/docs/guides/multi-agent.md) |
@@ -918,7 +918,7 @@ either way:
 | `subject` | whom the agent acts for: `subject` given when it was made (its id if none) |
 | `actor` | who is acting in this turn: the run's `user` (`from.id`), or an `actor` given with the message |
 | `context` | claims given when the agent was made (`context: { org, workspace }`) |
-| `tenant`, `agent`, `definition` | whose agent it is, and which |
+| `tenant`, `agent`, `definition` | whose agent it is, and which (`definition` only for an agent made from one) |
 | `origin` | where the turn came from: a channel, its conversation and sender |
 | `approval` | the person's approval, for a call that needed one |
 
@@ -964,7 +964,9 @@ if (payload.tenant !== "acme") throw new Error("Not our tenant's agent");
 
 ## Definitions' sources
 
-A [definition](https://run.camelai.com/docs/guides/definitions.md) lists tool sources the runtime calls itself.
+A [definition](https://run.camelai.com/docs/guides/definitions.md) lists tool sources the runtime calls itself. An
+agent without a definition can also have [MCP servers of its
+own](https://run.camelai.com/docs/guides/tools.md#an-agents-own-mcp-servers), without credentials.
 
 ### MCP servers
 
@@ -1034,6 +1036,42 @@ Every operation of an OpenAPI 3 spec (JSON or YAML) is a tool:
   an `Idempotency-Key` header. A 2xx answer is the result (JSON, text, or a file
   saved to the workspace); any other status is a tool error quoting the method,
   path, status and the start of the body.
+
+## An agent's own MCP servers
+
+An agent made without a definition, and a [stateless run](https://run.camelai.com/docs/guides/stateless-runs.md),
+can list MCP servers itself, with no definition:
+
+```ts
+const agent = await agents.upsert("support", {
+  instructions: "…",
+  mcpServers: [{ name: "kb", url: "https://mcp.example.com/mcp", auth: { type: "runtime" } }],
+});
+```
+
+```bash
+curl -X POST "$BASE/v1/agents" -H "Authorization: Bearer $KEY" -H "Idempotency-Key: support" \
+  -d '{"mcpServers": [{"name": "kb", "url": "https://mcp.example.com/mcp", "auth": {"type": "runtime"}}]}'
+```
+
+- They take no credentials: `auth` is `{"type": "runtime"}` or left out, and
+  there are no `headers`. A server with a token or headers is a 400 saying to
+  use a definition.
+- Why: a definition seals its credentials once, for every agent made from it.
+  Credentials on each agent or run would be secrets stored, copied and rotated
+  per agent. Identity tokens need none: the runtime signs one for each request,
+  naming the agent, its `subject` and `context` (and no `definition`).
+- Everything else is as in a definition: `allowTools`, `denyTools`, `exposure`,
+  `timeoutMs`, `audience`, `approval`, and the same outbound checks.
+- They are not listed when saved. A server that cannot be listed when the agent
+  starts shows in the run's `sourceErrors`.
+- `PATCH /v1/agents/:id/configuration` with `mcpServers` replaces the list;
+  `null` or `[]` removes it. An upsert sets the whole list, so an upsert without
+  `mcpServers` leaves none. They count toward the upsert's `configHash`.
+- Only your API key changes them, never the agent's own token. An agent made
+  from a definition has its definition's servers and refuses its own (400).
+- Only MCP servers: OpenAPI specs are fetched and stored when saved, so they stay
+  in definitions.
 
 ## Built-ins
 
@@ -1329,7 +1367,7 @@ curl -s https://run.camelai.com/v1/runs -H "Authorization: Bearer $CAMELAI_API_K
 | --- | --- | --- |
 | History | None: each run starts empty | Kept: each run continues the conversation |
 | Lifetime | Its result is kept for a retention window (a day by default), then deleted | Until you delete it (keyed) |
-| Tools | Built-ins (`web_fetch`, `web_search`, `delegate`), a definition's MCP servers and OpenAPI specs, `js_exec` | Also tools served by your process (`tools`), schedules and human input |
+| Tools | Built-ins (`web_fetch`, `web_search`, `delegate`), its own MCP servers, a definition's MCP servers and OpenAPI specs, `js_exec` | Also tools served by your process (`tools`), schedules and human input |
 | Listed in `GET /v1/agents` | No | Yes |
 | Use it for | Classify, extract, vote, judge, summarize: one answer per input | Chats, assistants, anything that remembers |
 
@@ -1348,12 +1386,15 @@ The fields an agent takes, plus the input:
   `temperature` (see [Output length and temperature](https://run.camelai.com/docs/guides/models-and-keys.md#output-length-and-temperature)), `builtins`
   (`web_fetch`, `web_search`, `delegate`), `delegate`, `keyScope`, `modelHeaders`,
   `runLimits`, `subject`, `context`.
+- `mcpServers`: MCP servers of its own, as an agent's: no credentials, only
+  `"auth": {"type": "runtime"}` (identity tokens) or none. See
+  [An agent's own MCP servers](https://run.camelai.com/docs/guides/tools.md#an-agents-own-mcp-servers).
 - `output`: a schema for a structured answer (see [Structured output](https://run.camelai.com/docs/guides/structured-output.md)).
 - `spendLimit`: the run's budget in USD.
 - `fileTools: true`: a workspace and file tools. Without files or this, a run has
   no volume at all.
 - `codeMode`: whether the model gets `js_exec`. A run with no tools at all (no
-  definition, `builtins`, `delegate`, files or mounts) gets neither `js_exec` nor
+  definition, `builtins`, `delegate`, `mcpServers`, files or mounts) gets neither `js_exec` nor
   file tools, so its model sees only your instructions and the input: right for a
   classifier or a vote. A run with tools keeps `js_exec`. Set `codeMode` (or
   `fileTools`) to have it otherwise; what you set wins.
@@ -1440,8 +1481,9 @@ past either is turned away cheaply (429 `BUSY_AGENT_LIMIT` or `RATE_LIMITED`, wi
   policy, an MCP server's elicitation) ends the run with status
   `input_required`, and for a run that is final: there is no way to answer it
   and resume. Use an agent for work that needs a person's go-ahead.
-- **MCP servers and OpenAPI specs come through a definition.** Name one with
-  `definition`; a run takes no inline `mcpServers`. Tools served by your process
+- **Servers with credentials, and OpenAPI specs, come through a definition.**
+  A run's own `mcpServers` take no token or headers; name a definition with
+  `definition` for those. Tools served by your process
   (`tools`, an attached MCP server) need an agent: a run has no process connected.
   Serve them over HTTP (`serveTools`) and name them in a definition instead.
 - The CLI runs one with `camelrun run --stateless "…" [--definition key]`.
@@ -3124,6 +3166,12 @@ const agent = await agents.upsert(`ticket-${ticket.id}`, { definition: definitio
 Saving a definition lists its MCP servers: credentials a server refuses are a
 400 that says so, and the answer's `toolSources` shows what each offers.
 
+A definition is where a source's credentials go: they are sealed once, for all
+its agents. An agent without a definition, or a stateless run, can list MCP
+servers of its own, but without credentials (identity tokens or none); see
+[An agent's own MCP servers](https://run.camelai.com/docs/guides/tools.md#an-agents-own-mcp-servers). An agent made
+from a definition has only its definition's sources.
+
 Each MCP server and OpenAPI source takes `exposure`: `"direct"` (the model calls
 its tools itself), `"codemode"` (only from code in `js_exec`) or `"both"`. Left
 out, a source of up to 10 tools is `both` and a larger one `codemode`, so by
@@ -4201,6 +4249,7 @@ brought to `config` if it differs. Returns a connected `Agent`. See
 | `name` | `name=` | a label, shown in the console |
 | `builtins` | `builtins=` | tools the runtime answers itself, without a definition: `web_fetch`, `web_search`, `schedule`, `ask_user`, `delegate` |
 | `delegate` | `delegate=` | sub-agents it may hand tasks to (`{ agents, instructions?, maxDepth?, maxParallel? }`); brings its builtin. See [Multi-agent](https://run.camelai.com/docs/guides/multi-agent.md) |
+| `mcpServers` | `mcp_servers=` | remote MCP servers of its own, without a definition: `[{ name, url, auth?: { type: "runtime" }, allowTools?, … }]`, no credentials. See [An agent's own MCP servers](https://run.camelai.com/docs/guides/tools.md#an-agents-own-mcp-servers) |
 | `subagents` | `subagents=` | also deliver its sub-agents' progress: `subagent_start`, `subagent_event`, `subagent_end` events, and stream parts |
 | `attach` | `attach=` | `false`: declare `tools` without serving them (another process does) |
 | `takeover` | `takeover=` | replace the process serving the tools now |
@@ -4306,7 +4355,7 @@ run = await agents.run("Ship on Friday?", instructions="Vote yes or no.", output
 
 `config` takes an agent's configuration (`model`, `instructions`,
 `instructionsAppend`, `definition`, `builtins`: `web_fetch`, `web_search`,
-`delegate`; `delegate`, `thinkingLevel`, `maxOutputTokens`, `temperature`, `subject`, `context`, `keyScope`,
+`delegate`; `delegate`, `mcpServers` (no credentials), `thinkingLevel`, `maxOutputTokens`, `temperature`, `subject`, `context`, `keyScope`,
 `runLimits`, `modelHeaders`, `mounts`, `fileTools`, `codeMode`, `name`; a run with
 no tools defaults to `codeMode: false` and `fileTools: false`) and the run's own:
 `input`, `files` (inline bytes), `output`, `user`, `metadata`, `idempotencyKey`,

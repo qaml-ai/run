@@ -289,6 +289,43 @@ export const PromptInput = z.object({
   ])).optional().openapi({ description: "Attached files (at most 20): saved in the agent's workspace under uploads/<requestId>/, named in the message, and shown natively (images, PDFs) to models that take them. Audio is transcribed before the request is accepted, and the model reads the transcript" }),
 }, { error: SEND_TEXT }).refine(prompt => !!prompt.text?.trim() || !!prompt.files?.length, SEND_TEXT).openapi("PromptInput");
 
+const SourceAuthInput = z.union([
+  z.object({ type: z.literal("bearer"), token: z.string() }).openapi({ description: "A bearer token; stored encrypted and never returned" }),
+  z.object({ type: z.literal("runtime") }).openapi({ description: "Each request carries a JWT the runtime signs (EdDSA, two minutes, audience the server's URL) naming the tenant, agent, subject, context and actor; verify it against /.well-known/jwks.json" }),
+]).openapi("SourceAuthInput");
+const SourceAuth = z.object({ type: z.enum(["bearer", "runtime"]) }).openapi("SourceAuth");
+const approvalMode = z.enum(["never", "always"]);
+const approvalFields = {
+  default: z.enum(["never", "always", "destructive"]).optional().openapi({ description: "never (the default), always, or destructive: tools annotated destructiveHint (MCP), operations other than GET, HEAD and OPTIONS (OpenAPI)" }),
+  tools: z.record(z.string(), approvalMode).optional().openapi({ description: "Per tool, by its own name: overrides the default" }),
+};
+const mcpServerFields = {
+  name: z.string().openapi({ description: "Its tools reach the model as <name>__<tool>: 1–32 letters and digits, single underscores between them" }),
+  url: z.string().openapi({ description: "The server's Streamable HTTP (or older SSE) endpoint; https, on a public address" }),
+  allowTools: z.array(z.string()).max(512).optional().openapi({ description: "Only these of its tools" }),
+  denyTools: z.array(z.string()).max(512).optional().openapi({ description: "None of these of its tools" }),
+  exposure: z.enum(["direct", "codemode", "both"]).optional().openapi({ description: "How the model calls its tools: directly, from js_exec (the default), or both" }),
+  timeoutMs: z.number().int().min(1_000).max(1_200_000).optional().openapi({ description: "How long a call may go without an answer; default 60000. Each progress notification the server sends restarts it, up to 1200000 in all" }),
+  audience: z.string().optional().openapi({ description: "With auth \"runtime\": the tokens' aud, when not the server's url (behind a proxy, say): a URL on its origin, or a name that stays when the server moves, urn:camelrun:<tenant>:<name>" }),
+  approval: z.strictObject(approvalFields).optional().openapi({ description: "Which tools the user approves before each call. Those tools are declared to the model directly; an approved call carries _meta[\"agent-runtime/approval\"] and an approval claim in its identity token" }),
+};
+const McpServerInput = z.object({
+  ...mcpServerFields,
+  headers: z.record(z.string(), z.string()).optional().openapi({ description: "Sent with every request to the server; stored encrypted and never returned. Leave out with auth to keep the ones stored for a server of this name and origin" }),
+  auth: SourceAuthInput.optional(),
+}).openapi("McpServerInput");
+const McpServer = z.object({
+  ...mcpServerFields,
+  headerNames: z.array(z.string()).optional().openapi({ description: "Headers the server gets; their values are never returned" }),
+  auth: SourceAuth.optional(),
+}).openapi("McpServer");
+/** An agent's or run's own MCP server: a definition's fields, but no credentials (see the tools guide). */
+const InlineMcpServerInput = z.looseObject({
+  ...mcpServerFields,
+  auth: z.looseObject({ type: z.literal("runtime", { error: "An agent's or run's own MCP servers carry no credentials: give auth { type: \"runtime\" } or none, and no headers. A server that needs a token or headers goes in a definition" }) }).optional()
+    .openapi({ description: "Each request carries a JWT the runtime signs, naming the tenant, agent, subject, context and actor (no definition); verify it against /.well-known/jwks.json. The only auth an agent's own server takes" }),
+}).openapi("InlineMcpServerInput", { description: "An MCP server of the agent's (or run's) own, as a definition's is, but with no credentials: no headers and no bearer token (a 400 says to use a definition, which seals them once). Not listed when saved: a server that cannot be listed shows in a run's sourceErrors" });
+
 export const AgentInput = z.object({
   mcp: z.object({ tools: z.array(z.unknown()) }).optional().openapi({ description: "The application's attached MCP server: its tools/list, whose tools the agent calls back through the application's connection. The SDKs send it" }),
   definition: z.string().optional().openapi({ description: "Make the agent from this definition (GET /v1/definitions). It supplies the model, system prompt, thinking level, fileTools and tool sources; name, type, ttlSeconds, mounts and initialMessages given here override its defaults. model, thinkingLevel, maxOutputTokens, temperature, fileTools, codeMode and runLimits given here are the agent's own: applying the definition later keeps them. systemPrompt cannot be given with a definition; use systemPromptAppend" }),
@@ -309,6 +346,7 @@ export const AgentInput = z.object({
   context: z.record(z.string(), z.unknown()).optional().openapi({ description: "Claims your tool servers need (org, workspace, thread…), carried as `ctx` in its identity tokens; at most 4 KB. Set only here" }),
   builtins: z.array(Builtin).max(8).optional().openapi({ description: "Tools the runtime answers itself (web_fetch, web_search, schedule, ask_user, delegate), for an agent without a definition; one made from a definition has its definition's. An upsert without builtins leaves the agent none" }),
   delegate: DelegateSettings.optional().openapi({ description: "With the delegate builtin: who the agent may hand tasks to. Not with a definition, whose own it takes" }),
+  mcpServers: z.array(InlineMcpServerInput).max(64).optional().openapi({ description: "Remote MCP servers whose tools the runtime calls for the agent, for an agent without a definition; one made from a definition has its definition's. No credentials: auth \"runtime\" or none. An upsert without mcpServers leaves the agent none" }),
   keyScope: z.string().optional().openapi({ description: "A key scope (PUT /v1/key-scopes/{scope}/providers/{provider}) whose keys the agent's model calls use first, before the tenant's own", example: "org_abc123" }),
   spendLimit: SpendLimitInput.optional(),
   runLimits: RunLimits.optional().openapi({ description: "The most one run may take (model responses, seconds); an agent from a definition gets the definition's unless this is given" }),
@@ -401,8 +439,9 @@ export const RunInput = z.strictObject({
   temperature: Temperature.optional(),
   builtins: z.array(z.enum(["web_fetch", "web_search", "delegate"])).max(8).optional().openapi({ description: "Tools the runtime answers itself. Not schedule or ask_user: a run has no later and no one to ask" }),
   delegate: DelegateSettings.optional(),
+  mcpServers: z.array(InlineMcpServerInput).max(64).optional().openapi({ description: "Remote MCP servers whose tools the run may call, as an agent's own: no credentials (auth \"runtime\" or none). A server that cannot be listed shows in sourceErrors" }),
   fileTools: z.boolean().optional().openapi({ description: "true: the run gets a workspace volume and file tools. Default: none, unless input has files" }),
-  codeMode: z.boolean().optional().openapi({ description: "true: the model gets js_exec. Default: true when the run has tools (builtins, a definition, files), false for a tool-less run, whose model then sees only your instructions" }),
+  codeMode: z.boolean().optional().openapi({ description: "true: the model gets js_exec. Default: true when the run has tools (builtins, MCP servers, a definition, files), false for a tool-less run, whose model then sees only your instructions" }),
   mounts: z.array(Mount).optional().openapi({ description: "Existing volumes for the run's file tools" }),
   output: PromptInput.shape.output,
   keyScope: z.string().optional(),
@@ -518,6 +557,7 @@ export const AgentDetail = AgentSummary.extend({
   modelHeaders: ModelHeaders.nullable(),
   builtins: z.array(Builtin).openapi({ description: "The tools the runtime answers itself: its own, or its definition's" }),
   delegate: DelegateSettings.nullable().openapi({ description: "Who it may delegate to, with the delegate builtin" }),
+  mcpServers: z.array(McpServer).openapi({ description: "Its remote MCP servers: its own, or its definition's (without credentials' values)" }),
   parentRunId: z.string().optional().openapi({ description: "For a child a delegate call made: the run of parentAgentId that made it" }),
   spendLimit: z.object({ usd: z.number(), spent: z.number().openapi({ description: "Model spend since the limit was set" }) }).nullable(),
   runLimits: RunLimits.nullable().openapi({ description: "Its own run limits, as set; null: the runtime's" }),
@@ -641,31 +681,6 @@ const DefinitionLimits = z.object({
   ttlSeconds: z.number().int().nullable().optional().openapi({ description: "Agent lifetime: 60 to 31622400 seconds, or null to live until deleted. Default: until deleted for an agent made with an Idempotency-Key, 86400 for one made without" }),
 }).openapi("DefinitionLimits");
 const definitionName = z.string().trim().min(1).max(120);
-const SourceAuthInput = z.union([
-  z.object({ type: z.literal("bearer"), token: z.string() }).openapi({ description: "A bearer token; stored encrypted and never returned" }),
-  z.object({ type: z.literal("runtime") }).openapi({ description: "Each request carries a JWT the runtime signs (EdDSA, two minutes, audience the server's URL) naming the tenant, agent, subject, context and actor; verify it against /.well-known/jwks.json" }),
-]).openapi("SourceAuthInput");
-const SourceAuth = z.object({ type: z.enum(["bearer", "runtime"]) }).openapi("SourceAuth");
-const approvalMode = z.enum(["never", "always"]);
-const approvalFields = {
-  default: z.enum(["never", "always", "destructive"]).optional().openapi({ description: "never (the default), always, or destructive: tools annotated destructiveHint (MCP), operations other than GET, HEAD and OPTIONS (OpenAPI)" }),
-  tools: z.record(z.string(), approvalMode).optional().openapi({ description: "Per tool, by its own name: overrides the default" }),
-};
-const mcpServerFields = {
-  name: z.string().openapi({ description: "Its tools reach the model as <name>__<tool>: 1–32 letters and digits, single underscores between them" }),
-  url: z.string().openapi({ description: "The server's Streamable HTTP (or older SSE) endpoint; https, on a public address" }),
-  allowTools: z.array(z.string()).max(512).optional().openapi({ description: "Only these of its tools" }),
-  denyTools: z.array(z.string()).max(512).optional().openapi({ description: "None of these of its tools" }),
-  exposure: z.enum(["direct", "codemode", "both"]).optional().openapi({ description: "How the model calls its tools: directly, from js_exec (the default), or both" }),
-  timeoutMs: z.number().int().min(1_000).max(1_200_000).optional().openapi({ description: "How long a call may go without an answer; default 60000. Each progress notification the server sends restarts it, up to 1200000 in all" }),
-  audience: z.string().optional().openapi({ description: "With auth \"runtime\": the tokens' aud, when not the server's url (behind a proxy, say): a URL on its origin, or a name that stays when the server moves, urn:camelrun:<tenant>:<name>" }),
-  approval: z.strictObject(approvalFields).optional().openapi({ description: "Which tools the user approves before each call. Those tools are declared to the model directly; an approved call carries _meta[\"agent-runtime/approval\"] and an approval claim in its identity token" }),
-};
-const McpServerInput = z.object({
-  ...mcpServerFields,
-  headers: z.record(z.string(), z.string()).optional().openapi({ description: "Sent with every request to the server; stored encrypted and never returned. Leave out with auth to keep the ones stored for a server of this name and origin" }),
-  auth: SourceAuthInput.optional(),
-}).openapi("McpServerInput");
 const openApiFields = {
   name: z.string().openapi({ description: "Its operations reach the model as <name>__<operationId>: 1–32 letters and digits, single underscores between them" }),
   baseUrl: z.string().optional().openapi({ description: "Where requests go; default the spec's first server. https, on a public address" }),
@@ -691,11 +706,6 @@ const OpenApi = z.object({
   headerNames: z.array(z.string()).optional(),
   auth: SourceAuth.optional(),
 }).openapi("OpenApi");
-const McpServer = z.object({
-  ...mcpServerFields,
-  headerNames: z.array(z.string()).optional().openapi({ description: "Headers the server gets; their values are never returned" }),
-  auth: SourceAuth.optional(),
-}).openapi("McpServer");
 const definitionFields = {
   description: z.string().trim().min(1).max(1000).openapi({ description: "What its agents are for, in a sentence or two: shown to models as the description of each agent's MCP tool (/v1/agents/{id}/mcp)" }),
   model: z.string().openapi({ description: "A model id from GET /v1/models; the runtime default when omitted" }),
@@ -767,6 +777,7 @@ export const ConfigureInput = z.object({
   modelHeaders: ModelHeaders.nullable().optional().openapi({ description: "Replaces the agent's model headers; null or {} removes them" }),
   builtins: z.array(Builtin).max(8).optional().openapi({ description: "Replaces the agent's builtins; [] removes them. Not for an agent made from a definition, whose builtins are its definition's" }),
   delegate: DelegateSettings.nullable().optional().openapi({ description: "Replaces who the agent may delegate to (with the delegate builtin); null removes it" }),
+  mcpServers: z.array(InlineMcpServerInput).max(64).nullable().optional().openapi({ description: "Replaces the agent's own MCP servers; null or [] removes them. No credentials: auth \"runtime\" or none. Not for an agent made from a definition, whose servers are its definition's" }),
 }).strict().refine(input => Object.keys(input).some(key => key !== "requestId"), "Give at least one configuration field").openapi("ConfigureInput", { description: "On an agent made from a definition, a model, thinkingLevel, maxOutputTokens, temperature or runLimits set here stays when the definition is applied; a systemPrompt set here is replaced by it" });
 
 const ChannelAccess = z.object({

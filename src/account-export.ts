@@ -10,6 +10,7 @@ import type { VolumeService } from "./volumes.ts";
 import type { Webhooks } from "./webhooks.ts";
 import type { Telemetry } from "./telemetry.ts";
 import { ZipWriter } from "./zip.ts";
+import { mcpServerView } from "./tool-sources.ts";
 
 /**
  * A tenant's data as one zip (GET /v1/account/export), written as it is read: each agent's
@@ -178,7 +179,7 @@ function agentView(header: any) {
     ...(config.systemPromptAppend ? { systemPromptAppend: config.systemPromptAppend } : {}), ...(config.thinkingLevel ? { thinkingLevel: config.thinkingLevel } : {}),
     ...(config.maxOutputTokens != null ? { maxOutputTokens: config.maxOutputTokens } : {}), ...(config.temperature != null ? { temperature: config.temperature } : {}),
     tools: header.definitions ?? [], mounts: header.mounts ?? [], definition: header.definition ?? null, keyScope: header.keyScope ?? null,
-    identity: header.identity ?? null, builtins: header.sources?.builtins ?? [], expiresAt: header.expiresAt,
+    identity: header.identity ?? null, builtins: header.sources?.builtins ?? [], mcpServers: (header.sources?.mcpServers ?? []).map(mcpServerView), expiresAt: header.expiresAt,
     ...(config.modelHeaders ? { modelHeaders: Object.keys(config.modelHeaders) } : {}),
   };
 }
