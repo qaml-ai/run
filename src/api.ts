@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { HistoryFormatError, toPiMessages } from "../clients/history-formats.ts";
 import { safeError } from "./metrics.ts";
 import { OpenAPIHono, createRoute, z, type RouteConfig } from "@hono/zod-openapi";
 import type { Context } from "hono";
@@ -506,7 +507,13 @@ export function api(context: ApiContext) {
     if (!body || typeof body !== "object" || Array.isArray(body)) throw new HttpError(400, "Send an agent object");
     for (const key of Object.keys(body)) if (!Object.hasOwn(schema.AgentInput.shape, key)) throw new HttpError(400, `Unknown agent field: ${key}`);
     if (body.model !== undefined && typeof body.model !== "string") throw new HttpError(400, 'model must be a "provider/model-id" string; see GET /v1/models');
-    const { prompt, ...params } = body;
+    const { prompt, importMessages, ...params } = body;
+    // A conversation from another API (Anthropic's, OpenAI's) is history to begin with, as Pi messages.
+    if (importMessages !== undefined) {
+      if (params.initialMessages !== undefined) throw new HttpError(400, "Give initialMessages or importMessages, not both");
+      try { params.initialMessages = toPiMessages(importMessages); }
+      catch (error) { throw error instanceof HistoryFormatError ? new HttpError(400, error.message) : error; }
+    }
     // A first prompt is checked before anything is made, and sent once the agent is: it runs when the agent has started.
     const first = prompt === undefined ? undefined : promptRequest(parse(schema.PromptInput, prompt), undefined, c.req.header("traceparent"));
     // Counted as the key's agent is found: an upsert that changes nothing is not a create, though its headers say where the tenant stands.

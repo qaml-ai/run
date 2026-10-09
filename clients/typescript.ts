@@ -5,6 +5,7 @@ import { Check } from "typebox/value";
 import { DRAINING_NOTIFICATION, FRAME_BYTES, type ClientEvent, type Outcome, type RequestMethod, type RequestRecord, type SessionCredentials, type SessionState } from "../shared/client-protocol.ts";
 export { Type as schema };
 export type { RequestRecord, SessionCredentials, SessionState };
+import type { ImportMessages } from "./history-formats.ts";
 export type * from "./types.ts";
 
 /**
@@ -371,6 +372,8 @@ export interface CreateAgentOptions extends AgentOptions {
   /** Sampling temperature, 0 to 2. Refused (400) for a model that takes none (Claude Opus 4.7 and later, Sonnet 5.5, Fable; o-series, GPT-5) or a reasoning model at a thinkingLevel other than off. */
   temperature?: number;
   initialMessages?: Message[];
+  /** History in another API's format (Anthropic Messages, OpenAI Responses or Chat Completions), converted to Pi messages by the runtime (`toPiMessages`); not with initialMessages. */
+  importMessages?: ImportMessages;
   /** Volumes for the agent's file tools (read, write, edit, ls, glob, grep). Default: its own workspace volume at /workspace. */
   mounts?: Mount[];
   /** Tools the runtime answers itself, for an agent without a definition (one made from a definition has its definition's). */
@@ -776,7 +779,7 @@ const AGENT_KEY = /^[A-Za-z0-9_-]{1,80}$/;
 const REQUEST_ID = AGENT_KEY;
 /** A create request's fields, from the options given. */
 function provisioning(options: CreateAgentOptions) {
-  const fields = ["subject", "context", "keyScope", "spendLimit", "runLimits", "modelHeaders", "definition", "mounts", "model", "thinkingLevel", "maxOutputTokens", "temperature", "initialMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "delegate", "mcpServers", "prompt"] as const;
+  const fields = ["subject", "context", "keyScope", "spendLimit", "runLimits", "modelHeaders", "definition", "mounts", "model", "thinkingLevel", "maxOutputTokens", "temperature", "initialMessages", "importMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "delegate", "mcpServers", "prompt"] as const;
   return withMultiAgent(Object.fromEntries(fields.filter(field => options[field] !== undefined).map(field => [field, options[field]])));
 }
 /** `delegate` settings bring their builtin: given the settings, the builtin is added. */
@@ -1776,4 +1779,5 @@ export class AgentClient {
 }
 
 export { Agents, Agent, Runs } from "./agents.ts";
+export { HistoryFormatError, toPiMessages, type HistoryFormat, type ImportMessages } from "./history-formats.ts";
 export type { AgentsOptions, AgentConfig, Run, RunFailure, RunInput, RunOptions, RunStream, StreamPart, StatelessRunConfig, InputValue, AnswerOptions, OutputSchema, OutputOf, StandardOutputSchema } from "./agents.ts";

@@ -2,9 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { Sim, TOKEN } from "./sim/sim.ts";
 import type { SimDb } from "./sim/db.ts";
 import { runPlan } from "./sim/run.ts";
+import { resumeId } from "../src/client-sessions.ts";
 import type { Plan } from "./sim/workload.ts";
 
 // Cluster scenarios (tests/cluster-*.test.ts) in the simulator: the same steps, on virtual time, so they run the same
@@ -289,4 +291,74 @@ test("a run whose start the database refuses for now is tried again, not failed:
   assert.equal(record.outcome.error, undefined, JSON.stringify(record.outcome));
   assert.ok(sim.env.logs.some(log => log.line.includes('"run_start_retry"')), "its start was tried again");
   assert.ok(sim.hooks.reached.includes("a run's start met a transient refusal and was tried again"));
+});
+
+/**
+ * An agent behind an approval policy on a store's MCP server (tools.sim): its first model call deletes an item, which waits
+ * for approval; the next says what the call returned. Returns the suspended run's id and its approval, and the store's calls.
+ */
+async function approvalAsked(sim: Sim) {
+  const calls: unknown[] = [];
+  sim.net.add("tools.sim", createServer(async (req, res) => {
+    let text = "";
+    for await (const chunk of req) text += chunk;
+    if (req.method !== "POST") return void res.writeHead(405).end();
+    const message = JSON.parse(text);
+    if (message.id === undefined) return void res.writeHead(202).end();
+    const reply = (result: object) => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
+    if (message.method === "initialize") return reply({ protocolVersion: message.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "shop", version: "1" } });
+    if (message.method === "tools/list") return reply({ tools: [{ name: "delete_item", description: "Delete an item", inputSchema: { type: "object", properties: { id: { type: "string" } } }, annotations: { destructiveHint: true } }] });
+    if (message.method === "tools/call") { calls.push(message.params); return reply({ content: [{ type: "text", text: `deleted ${message.params.arguments.id}` }] }); }
+    reply({});
+  }), work => sim.asWorld(work));
+  await sim.start("a");
+  await sim.start("b");
+  const definition = await sim.call("a", "/v1/definitions", { body: { name: "Shop", mcpServers: [{ name: "shop", url: "http://tools.sim/mcp", approval: { default: "destructive" } }] } });
+  assert.equal(definition.status, 201, JSON.stringify(definition.json));
+  const agent = (await sim.call("a", "/v1/agents", { body: { definition: definition.json.id } })).json.id;
+  const suspension = await prompt(sim, "a", agent, "Delete item a");
+  const [input] = (await outcome(sim, "a", agent, suspension)).outcome.result.inputs;
+  assert.equal(input.kind, "approval");
+  return { agent, suspension, input: input.id as string, calls };
+}
+const approvalWorld = (seed: number) => Sim.create({
+  seed, env: { AGENT_LEASE_TTL_MS: "3000", AGENT_ORPHAN_SWEEP_MS: "2000", AGENT_IDLE_MS: "5000", AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "10.0.0.0/8" },
+  respond: (body, served) => served.length === 0
+    ? { tool_calls: [{ index: 0, id: "call_delete", type: "function", function: { name: "shop__delete_item", arguments: JSON.stringify({ id: "a" }) } }] }
+    : { content: `heard: ${body.messages.filter((message: any) => message.role === "tool").at(-1)?.content}` },
+});
+
+test("an approval whose node is lost as its resume starts runs the approved call once on the next owner, not suspended with nothing to answer", async t => {
+  const sim = await approvalWorld(43);
+  t.after(() => sim.close());
+  const { agent, suspension, input, calls } = await approvalAsked(sim);
+  // a takes the answer (b forwards it), begins the resume run, and has its agent mark the turn active: its third log
+  // append from here. It stops there, before the agent releases the call to run it, past its lease: b takes the agent
+  // over and finds the turn still suspended on the very call the resume answers.
+  sim.pauseAtDbAnswer("a", 10_000, "insert into log_records", 3);
+  await sim.env.settle(sim.request("b", `/v1/agents/${agent}/inputs/${input}`, { body: { action: "accept" } }).catch(() => undefined));
+  const record = await outcome(sim, "b", agent, resumeId(suspension));
+  assert.equal(record.resumes, 1);
+  assert.equal(record.outcome.result.stopped, undefined, JSON.stringify(record.outcome));
+  assert.match(record.outcome.result.reply, /^heard: deleted a/);
+  assert.equal(calls.length, 1, "the approved call ran once");
+  assert.ok(sim.hooks.reached.includes("a resume found its turn still suspended on the calls it answers"), "the node was lost where this is about");
+  assert.deepEqual(sim.model.served.map(served => served.from), ["a.sim", "b.sim"]);
+  assert.deepEqual(sim.hooks.violations, []);
+  // Nothing is left open: the agent unloads idle, and its row no longer says it has work.
+  await sim.until(async () => !(await sim.db.query("select pending_runs from agents where id = $1", [agent])).rows[0].pending_runs, "pending_runs to clear");
+});
+
+test("an approval whose node is lost after its agent released the call ends it as unknown on the next owner, never running it again", async t => {
+  const sim = await approvalWorld(44);
+  t.after(() => sim.close());
+  const { agent, suspension, input, calls } = await approvalAsked(sim);
+  // One append later: the call is released (it may be running), so the next owner must not run it again.
+  sim.pauseAtDbAnswer("a", 10_000, "insert into log_records", 4);
+  await sim.env.settle(sim.request("b", `/v1/agents/${agent}/inputs/${input}`, { body: { action: "accept" } }).catch(() => undefined));
+  const record = await outcome(sim, "b", agent, resumeId(suspension));
+  assert.equal(record.resumes, 1);
+  assert.match(record.outcome.result.reply, /outcome is unknown/);
+  assert.equal(calls.length, 0, "never sent again");
+  assert.deepEqual(sim.hooks.violations, []);
 });

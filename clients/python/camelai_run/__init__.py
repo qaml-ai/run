@@ -539,7 +539,9 @@ class _RuntimeCalls:
         credentials ({"id", "token", "expiresAt", "reconfigured"?}); connect with connect_agent. Keyed agents live until deleted.
         `prompt` (the prompt call's body, {"text", "requestId", ...}) is sent once the agent is made: the answer's "prompt" is
         its request, or {"error": {"status", "code", "message"}} when it was refused. A retry with the same requestId sends it once.
-        `initial_messages` (Pi messages) is the history it begins with, used only when the agent is made.
+        `initial_messages` (Pi messages) is the history it begins with, used only when the agent is made; `import_messages`
+        ({"format": "anthropic" | "openai-responses" | "openai-chat", "messages": [...], "model"?}) is one in another API's
+        format, which the runtime converts (not both).
         `traceparent` (a W3C trace context) makes that first prompt's run continue the caller's trace."""
         if not self.api_key:
             raise AgentError("No API key: set CAMELAI_API_KEY (or pass api_key). Create one at https://run.camelai.com/console/tokens. Coding agents: read https://run.camelai.com/SKILL.md")
@@ -766,7 +768,7 @@ class AgentRuntime(_RuntimeCalls):
             raise
         return then(value) if then else value
 
-    async def create_agent(self, *, tools, system_prompt=None, name=None, type=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, on_input=None, builtins=None, delegate=None, subagents=False, prompt=None, traceparent=None, initial_messages=None, max_output_tokens=None, temperature=None, mcp_servers=None):
+    async def create_agent(self, *, tools, system_prompt=None, name=None, type=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, on_input=None, builtins=None, delegate=None, subagents=False, prompt=None, traceparent=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, mcp_servers=None):
         """Provision an agent. `model` is "provider/model-id", e.g. "anthropic/claude-sonnet-5-5".
         `definition` makes it from a definition (GET /v1/definitions), which supplies the model, system prompt,
         thinking level and tool sources; `tools` are added as the agent's attached MCP server.
@@ -787,7 +789,7 @@ class AgentRuntime(_RuntimeCalls):
         # subject: who the agent acts for; context: claims for its tool servers' identity tokens. Set only here.
         body = _provisioning(tools, definition=definition, name=name, type=type, system_prompt=system_prompt, model=model, thinking_level=thinking_level,
                              mounts=mounts, subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits, model_headers=model_headers, builtins=builtins,
-                             delegate=delegate, prompt=prompt, initial_messages=initial_messages, max_output_tokens=max_output_tokens, temperature=temperature, mcp_servers=mcp_servers)
+                             delegate=delegate, prompt=prompt, initial_messages=initial_messages, import_messages=import_messages, max_output_tokens=max_output_tokens, temperature=temperature, mcp_servers=mcp_servers)
         # A key of the caller's makes the agent durable (it lives until deleted); one the SDK makes up, only so a retried
         # create finds the same agent, keeps a scratch agent's day, said explicitly since any key would make it durable.
         if ttl_seconds is not _DEFAULT:
@@ -944,12 +946,12 @@ class Telemetry:
 
 def _provisioning(tools, *, definition=None, name=None, type=None, system_prompt=None, model=None, thinking_level=None, mounts=None,
                   subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, system_prompt_append=None, file_tools=None, builtins=None,
-                  delegate=None, prompt=None, code_mode=None, initial_messages=None, max_output_tokens=None, temperature=None, mcp_servers=None):
+                  delegate=None, prompt=None, code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, mcp_servers=None):
     """A create request's body: the tools as the attached MCP server's tools/list, and the fields given."""
     optional = {"definition": definition, "name": name, "type": type, "systemPrompt": system_prompt, "model": model, "thinkingLevel": thinking_level,
                 "mounts": mounts, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit, "runLimits": run_limits, "modelHeaders": model_headers,
                 "systemPromptAppend": system_prompt_append, "fileTools": file_tools, "codeMode": code_mode, "builtins": builtins, "delegate": delegate, "mcpServers": mcp_servers, "prompt": prompt,
-                "initialMessages": initial_messages, "maxOutputTokens": max_output_tokens, "temperature": temperature}
+                "initialMessages": initial_messages, "importMessages": import_messages, "maxOutputTokens": max_output_tokens, "temperature": temperature}
     return _with_multi_agent({"mcp": {"tools": [item.mcp_tool() for item in tools]}, **{key: value for key, value in optional.items() if value is not None}})
 
 
@@ -2358,7 +2360,7 @@ class Agents:
     async def upsert(self, key, *, model=None, instructions=None, tools=None, definition=None, thinking_level=None, subject=None, context=None,
                      key_scope=None, spend_limit=None, run_limits=None, model_headers=None, mounts=None, name=None, instructions_append=None, file_tools=None,
                      builtins=None, delegate=None, subagents=False, on_event=None, on_input=None, on_error=None, attach=None, takeover=False, connection=None,
-                     code_mode=None, initial_messages=None, max_output_tokens=None, temperature=None, mcp_servers=None):
+                     code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, mcp_servers=None):
         """The agent for `key` (your name for it: "support-triage", or "user-123"), made now if there is none, and set
         to this configuration if it differs. The same key is the same agent, with its history and files, until
         agent.delete(); any number of processes may upsert it. `tools` (@tool functions) run in this process, which
@@ -2373,14 +2375,16 @@ class Agents:
         prompt is little more than your instructions (for a tool-less agent). An upsert of the configuration the agent has
         already is not counted as an agent create; agent.config_hash says which configuration it asked for.
         `initial_messages` (Pi messages: user, assistant, toolResult, compactionSummary) is the history the agent begins
-        with, a conversation from elsewhere: used only when the agent is made (see the multi-user guide).
+        with, a conversation from elsewhere: used only when the agent is made (see the multi-user guide). `import_messages`
+        ({"format": "anthropic" | "openai-responses" | "openai-chat", "messages": [...], "model"?}) is one in another API's
+        format (Anthropic Messages, OpenAI Responses or Chat Completions), which the runtime converts (not both).
         `max_output_tokens` caps each model response (within the model's maximum); `temperature` (0 to 2) sets sampling, for a
         model and thinking level that take one (a 400 otherwise)."""
         tools = list(tools or [])
         session = await self.runtime.upsert_agent(key, tools=tools, definition=definition, system_prompt=instructions, model=model, thinking_level=thinking_level,
                                                   subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits,
                                                   model_headers=model_headers, mounts=mounts, name=name, system_prompt_append=instructions_append, file_tools=file_tools, builtins=builtins,
-                                                  delegate=delegate, code_mode=code_mode, initial_messages=initial_messages,
+                                                  delegate=delegate, code_mode=code_mode, initial_messages=initial_messages, import_messages=import_messages,
                                                   max_output_tokens=max_output_tokens, temperature=temperature, mcp_servers=mcp_servers)
         # The upsert declared these tools already (between the agent's turns, if it runs).
         agent = await self.agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error, attach=attach, takeover=takeover, subagents=subagents,

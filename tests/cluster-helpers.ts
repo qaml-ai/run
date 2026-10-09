@@ -25,6 +25,21 @@ export async function freePort() {
   return port;
 }
 
+/** Whether `error` is a listen that found its port taken (EADDRINUSE), as Node says it or a node's stderr does. */
+export const addressInUse = (error: unknown) => (error as { addressInUse?: boolean })?.addressInUse === true
+  || (error as { code?: string })?.code === "EADDRINUSE" || /EADDRINUSE/.test(String(error));
+
+/**
+ * `use` on a port free a moment ago, again on another if something took it before `use` listened on it: a port
+ * must be chosen before listening wherever its URL is configuration (AGENT_NODE_URL), so the race cannot be avoided.
+ */
+export async function onFreePort<T>(use: (port: number) => Promise<T>, attempts = 5): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    const port = await freePort();
+    try { return await use(port); } catch (error) { if (attempt >= attempts || !addressInUse(error)) throw error; }
+  }
+}
+
 /** Runtime nodes sharing a database and storage (shared files here, S3 in production) with short heartbeats. */
 export async function cluster(t: { after(fn: () => Promise<void>): void }) {
   const root = await mkdtemp(join(tmpdir(), "agent-cluster-"));
@@ -32,11 +47,7 @@ export async function cluster(t: { after(fn: () => Promise<void>): void }) {
   writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(token), apiKeys: { anthropic: "fixture-key", openrouter: "fixture-key" } } } }));
   const children: ChildProcess[] = [];
   const start = async (name: string, env: Record<string, string> = {}, fixedPort?: number): Promise<{ name: string; url: string; child: ChildProcess; logs: any[] }> => {
-    // freePort's port can be taken by another process before the node listens on it: then start again on another.
-    for (let attempt = 1; ; attempt++) {
-      try { return await launch(name, env, fixedPort ?? await freePort()); }
-      catch (error) { if (fixedPort !== undefined || attempt >= 5 || !(error as { addressInUse?: boolean }).addressInUse) throw error; }
-    }
+    return fixedPort !== undefined ? launch(name, env, fixedPort) : onFreePort(port => launch(name, env, port));
   };
   const launch = async (name: string, env: Record<string, string>, port: number) => {
     const url = `http://127.0.0.1:${port}`;
@@ -69,7 +80,8 @@ export async function cluster(t: { after(fn: () => Promise<void>): void }) {
       for (const line of lines) { try { logs.push(JSON.parse(line)); } catch { /* not a log record */ } }
       if (logs.some(entry => entry.type === "listening")) ready.resolve();
     });
-    child.on("exit", code => ready.reject(Object.assign(new Error(`node ${name} exited: ${code}`), { addressInUse: errors.includes("EADDRINUSE") })));
+    // On close, not exit: by then stderr is read to its end, so a listen error in it is seen.
+    child.on("close", code => ready.reject(Object.assign(new Error(`node ${name} exited: ${code}`), { addressInUse: errors.includes("EADDRINUSE") })));
     await ready.promise;
     return { name, url, child, logs };
   };

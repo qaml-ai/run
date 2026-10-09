@@ -940,6 +940,22 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
                 return [message["content"] for message in agents.upsert("py-imported-sync", initial_messages=imported).history()]
         self.assertEqual(await asyncio.to_thread(made_in_sync), [imported[0]["content"], imported[1]["content"]])
 
+    async def test_import_messages_converts_another_apis_conversation(self):
+        conversation = {"format": "anthropic", "model": "anthropic/claude-sonnet-5", "messages": [
+            {"role": "user", "content": "My name is Grace."},
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_1", "name": "remember", "input": {"name": "Grace"}}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "REMEMBERED"}]},
+            {"role": "assistant", "content": "Nice to meet you, Grace."}]}
+        agent = await self.agents.upsert("py-import-anthropic", import_messages=conversation)
+        self.assertEqual([message["role"] for message in await agent.history()], ["user", "assistant", "toolResult", "assistant"])
+        await agent.run("What is my name?")
+        self.assertIn("REMEMBERED", json.dumps(self.bodies[-1]))
+
+        def made_in_sync():
+            with sync.Agents(self.token, url=self.url) as agents:
+                return [message["role"] for message in agents.upsert("py-import-sync", import_messages={"format": "openai-chat", "messages": [{"role": "user", "content": "hi"}]}).history()]
+        self.assertEqual(await asyncio.to_thread(made_in_sync), ["user"])
+
     async def test_key_scopes_tokens_usage_webhooks_and_rotated_credentials(self):
         deliveries = []
         receiver = webhook_receiver(deliveries)

@@ -71,6 +71,11 @@ export interface AgentView {
   connected: boolean;
   /** The token expired (or was refused) and could not be renewed: the watcher has stopped. Watch again with a new one. */
   expired: boolean;
+  /**
+   * Whether the agent's history and state have been read since it connected (or the token reads no history): until
+   * then, `messages` may be empty only because they are on their way. Show a loading state, not an empty chat.
+   */
+  loaded: boolean;
 }
 export interface Watcher {
   readonly state: AgentView;
@@ -190,7 +195,7 @@ export function watchAgent(options: WatchOptions): Watcher {
   let token = options.token, expiresAt = options.expiresAt;
   const closed = new AbortController();
   const messages = new Map<number, Message>();
-  const state: AgentView = { messages: [], indexes: [], partial: null, progress: new Map(), subagents: new Map(), running: false, pendingInputs: [], lastOutcome: null, hasOlder: false, transport: null, connected: false, expired: false };
+  const state: AgentView = { messages: [], indexes: [], partial: null, progress: new Map(), subagents: new Map(), running: false, pendingInputs: [], lastOutcome: null, hasOlder: false, transport: null, connected: false, expired: false, loaded: false };
   /** Where the page older than those held ends (its `before`); null: there is none; undefined: no page yet. */
   let before: number | null | undefined;
   /** The index the next finished message takes, once the stream has said (a run's start, or a snapshot). */
@@ -271,13 +276,19 @@ export function watchAgent(options: WatchOptions): Watcher {
         next = turn.start + (turn.count ?? turn.messages.length);
         for (const [offset, message] of turn.messages.entries()) messages.set(turn.start + offset, message);
       } else next = undefined;
-      await newest();
-      // No turn in it: none runs, or the token does not show it. Its state says which, where the token reads it: read
-      // after history, so a run that began in between is running here too, never a message in history with no turn.
+      // History, and without a turn in it the agent's state (none runs, or the token does not show it), read together: a
+      // run that begins after the snapshot reaches this watcher as the stream's events, taken in after these reads.
+      type Known = { requests?: { method: string; state: string; began?: number }[] } | undefined;
+      const read = () => json200("/state").catch(() => undefined) as Promise<Known>;
+      const runs = (known: Known) => !!known?.requests?.some(request => request.state === "running" && request.began && ["prompt", "continue", "resume"].includes(request.method));
+      const [, known] = await Promise.all([newest(), turn ? undefined : read()]);
       if (!turn) {
-        const known = await json200("/state").catch(() => undefined) as { requests?: { method: string; state: string; began?: number }[] } | undefined;
-        state.running = !!known?.requests?.some(request => request.state === "running" && request.began && ["prompt", "continue", "resume"].includes(request.method));
+        state.running = runs(known);
+        // A run that began between the two reads: history has its message, the state read before it did not. Read the
+        // state again then, so a message never shows with its turn not running.
+        if (!state.running && messages.get(Math.max(-1, ...messages.keys()))?.role === "user") state.running = runs(await read());
       }
+      state.loaded = true;
       return;
     }
     if (data.type === "response") {
@@ -314,7 +325,7 @@ export function watchAgent(options: WatchOptions): Watcher {
       case "tool_execution_update": state.progress.set(event.toolCallId, event.partialResult); break;
       case "tool_execution_end": state.progress.delete(event.toolCallId); break;
       case "input_required": state.pendingInputs = [...state.pendingInputs.filter(input => input.id !== event.input.id), event.input]; break;
-      case "input_resolved": state.pendingInputs = state.pendingInputs.filter(input => input.id !== event.id); break;
+      case "input_resolved": resolved.add(event.id); state.pendingInputs = state.pendingInputs.filter(input => input.id !== event.id); break;
       // A sub-agent's messages as it finishes them, under its delegate call; each change is a new view and map.
       case "subagent_start": state.subagents = new Map(state.subagents).set(event.toolCallId, { agentId: event.agentId, name: event.name, messages: [] }); break;
       case "subagent_event": {
@@ -378,8 +389,15 @@ export function watchAgent(options: WatchOptions): Watcher {
     changed();
   }
 
+  /** Inputs the stream said were answered, so the first read of pending inputs (made beside it) cannot bring them back. */
+  const resolved = new Set<string>();
   async function run() {
-    state.pendingInputs = await json200("/inputs?state=pending").catch(error => { report(error); return []; });
+    // Pending inputs are read while the stream opens; the stream's own input events win over the read.
+    void json200("/inputs?state=pending").then((pending: AgentInput[]) => {
+      const known = new Set(state.pendingInputs.map(input => input.id));
+      state.pendingInputs = [...pending.filter(input => !resolved.has(input.id) && !known.has(input.id)), ...state.pendingInputs];
+      changed();
+    }, report);
     let mode: "sse" | "poll" = options.transport === "poll" ? "poll" : "sse";
     let failures = 0, backoff = 500;
     while (!closed.signal.aborted) {

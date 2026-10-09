@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { AgentRuntime, schema, tool } from "../clients/typescript.ts";
-import { cluster, fakeModel, freePort, jsExec, lookup, token, toolMessages, until } from "./cluster-helpers.ts";
+import { cluster, fakeModel, jsExec, lookup, token, toolMessages, until } from "./cluster-helpers.ts";
 
 test("a turn whose node died between model steps resumes on the next owner, calling the model once more", { timeout: 90_000 }, async t => {
   const c = await cluster(t);
@@ -90,8 +90,9 @@ test("a turn whose node died during a tool call continues with the outcome unkno
 test("a turn that keeps killing its node is resumed at most twice, then fails as uncertain", { timeout: 120_000 }, async t => {
   const c = await cluster(t);
   const model = await fakeModel(t, () => undefined);
-  const port = await freePort();
-  let node = await c.start("a", model.env, port);
+  let node = await c.start("a", model.env);
+  // Each restart comes back at the same address, as a replaced task on its host would.
+  const port = Number(new URL(node.url).port);
   const created = await new AgentRuntime({ url: node.url, apiKey: token }).createAgent({ tools: {}, idempotencyKey: "doomed-agent" });
   await created.close();
   const client = await new AgentRuntime({ url: node.url, apiKey: token }).connectAgent(created.session, { tools: {} });
