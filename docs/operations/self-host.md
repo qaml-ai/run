@@ -104,7 +104,7 @@ and a real model turn end to end.
 
 ## Upgrade
 
-The Compose file runs a pinned release, `ghcr.io/qaml-ai/run:0.6.0`. Each
+The Compose file runs a pinned release, `ghcr.io/qaml-ai/run:0.7.0`. Each
 release is a version in the [release notes](release-notes.md); read the notes
 of every version between yours and the new one, then set it in `.env` and
 restart:
