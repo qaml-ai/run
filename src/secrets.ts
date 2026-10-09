@@ -1,3 +1,5 @@
+import { azureOpenAIConfig, type AzureOpenAI } from "./azure-openai.ts";
+
 /** Read a Secrets Manager secret's string on each call; the SDK loads only when a secret is configured. */
 export async function secretReader(secretId: string, env = process.env): Promise<() => Promise<string>> {
   const { GetSecretValueCommand, SecretsManagerClient } = await import("@aws-sdk/client-secrets-manager");
@@ -70,8 +72,24 @@ export async function runtimeSecrets(env = process.env) {
     try { journeyReportSecret = (await read(reportArn)).trim() || undefined; }
     catch (error) { if ((error as Error).name !== "ResourceNotFoundException") throw error; journeyReportSecret = undefined; }
   }
+  // The platform's Azure OpenAI resource, for images and transcription on the platform's key (azure-openai.ts). Like
+  // Stripe's, the secret may exist before anyone stores its value: until then they stay on OpenAI.
+  const azureArn = exclusive(["AGENT_AZURE_OPENAI_ENDPOINT", "AGENT_AZURE_OPENAI_API_KEY"], "AGENT_AZURE_OPENAI_SECRET_ARN");
+  let azureOpenAI: AzureOpenAI | undefined;
+  if (azureArn) {
+    let text = "";
+    try { text = await read(azureArn); }
+    catch (error) { if ((error as Error).name !== "ResourceNotFoundException") throw error; }
+    if (text.trim()) azureOpenAI = azureOpenAIConfig(JSON.parse(text), "AGENT_AZURE_OPENAI_SECRET_ARN");
+  } else {
+    azureOpenAI = azureOpenAIConfig({
+      endpoint: env.AGENT_AZURE_OPENAI_ENDPOINT, apiKey: env.AGENT_AZURE_OPENAI_API_KEY,
+      imageDeployment: env.AGENT_AZURE_IMAGE_DEPLOYMENT, transcriptionDeployment: env.AGENT_AZURE_TRANSCRIPTION_DEPLOYMENT, apiVersion: env.AGENT_AZURE_OPENAI_API_VERSION,
+    }, "AGENT_AZURE_OPENAI_ENDPOINT and AGENT_AZURE_OPENAI_API_KEY");
+  }
   return {
     ...(journeySecret === undefined ? {} : { journeySecret }),
+    ...(azureOpenAI ? { azureOpenAI } : {}),
     ...(journeyReportSecret ? { journeyReportSecret } : {}),
     toolSearchKey,
     sessionSecret: sessionArn ? await read(sessionArn) : env.AGENT_SESSION_SECRET,

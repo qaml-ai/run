@@ -71,6 +71,7 @@ import { V8Exec } from "./v8-exec.ts";
 import { pricingFromEnvironment } from "./pricing.ts";
 import { openaiTranscription, Transcriber } from "./transcription.ts";
 import { Imager, openaiImages } from "./images.ts";
+import { azureCredentials } from "./azure-openai.ts";
 import { searchProvidersFromEnvironment, WebSearch } from "./web-search.ts";
 import { WebRender } from "./web-render.ts";
 import { Stripe } from "./stripe.ts";
@@ -337,7 +338,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   });
   // A provider's key for speech to text and images, as a model call resolves it: its key scope's, its own, else the
   // platform's, which a prepaid tenant pays for (per second of audio, per token of an image).
-  const providerKey = async (tenant: string, keyScope: string | undefined, provider: string) => {
+  const providerKey = async (tenant: string, keyScope: string | undefined, provider: string, azureDeployment?: string) => {
     const entry = keyScope ? await keyScopes.entry(tenant, keyScope, provider) : undefined;
     // A scope's entry, as its model calls take it: its key, or an address (a gateway) that needs none.
     if (entry?.apiKey || entry?.baseUrl) return { apiKey: entry.apiKey ?? "", ...(entry.baseUrl ? { baseUrl: entry.baseUrl } : {}), ...(entry.headers ? { headers: entry.headers } : {}), platform: false };
@@ -345,18 +346,21 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     if (!resolved) return undefined;
     const platform = resolved.source !== "tenant";
     if (resolved.source === "platform") { const limited = await accounts.billing.creditLimit(tenant); if (limited) throw limited; }
+    // The platform's key goes to its Azure OpenAI deployment when there is one, falling back on OpenAI (azure-openai.ts).
+    const azure = secrets.azureOpenAI;
+    if (resolved.source === "platform" && provider === "openai" && azure && azureDeployment) return { ...azureCredentials(azure, azureDeployment, { apiKey: resolved.key }), platform };
     return { apiKey: resolved.key, platform };
   };
   // Speech to text, for audio attached to messages and POST /v1/transcriptions.
   const transcriber = new Transcriber({
     provider: openaiTranscription({ outbound, ...(env.AGENT_TRANSCRIPTION_URL ? { baseUrl: env.AGENT_TRANSCRIPTION_URL } : {}) }),
-    key: providerKey,
+    key: (tenant, keyScope, provider) => providerKey(tenant, keyScope, provider, secrets.azureOpenAI?.transcriptionDeployment),
     price: () => accounts.billing.pricing.transcription,
   });
   // Images made, for POST /v1/images.
   const imager = new Imager({
     provider: openaiImages({ outbound, ...(env.AGENT_IMAGES_URL ? { baseUrl: env.AGENT_IMAGES_URL } : {}) }),
-    key: providerKey,
+    key: (tenant, keyScope, provider) => providerKey(tenant, keyScope, provider, secrets.azureOpenAI?.imageDeployment),
     price: () => accounts.billing.pricing.image,
   });
   // Files sent to tools as URLs bound to their call, signed with the identity tokens' key (file-arguments.ts).
