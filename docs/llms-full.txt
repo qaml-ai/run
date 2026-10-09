@@ -5468,6 +5468,21 @@ changing its history with `agent.client.setMetadata({ name, type })`
 (`npm run studio`) at `/studio/agents`; Studio observes the runtime, and your
 application keeps serving its tools.
 
+## 0.19.0 (TypeScript) / 0.15.0 (Python), 2026-10-09
+
+Needs runtime 0.8.0 or later (run.camelai.com has it).
+
+- Images: `agents.images.generate(prompt, options?)` and `agents.images.edit(prompt, images, options?)` (also
+  `runtime.images`), with the `ImageOptions`, `ImagesResult` and `GeneratedImage` types. See [Images](https://run.camelai.com/docs/reference/sdk.md#images).
+- `Builtin` includes `generate_image` and `agents`; `RunUsage` has `imageCostUsd`; `usage.recorded` events type
+  `kind: "image"` and `images`.
+- Tool servers: `identity.parentAgentId` and `identity.rootAgentId` on a sub-agent's calls (from `delegate` or
+  `spawn_agent`). A sub-agent's notification in history carries `source: { kind: "agent", agentId, name }`.
+- Python: `agents.images.generate(prompt, ...)` and `agents.images.edit(prompt, images, ...)` (also `runtime.images`,
+  and the synchronous clients'), images given as bytes, local paths or `{"url"}`; `identity.parent_agent_id` and
+  `root_agent_id`.
+- The CLI's MCP tools take `generate_image` among an agent's builtins.
+
 ## 0.18.0 (TypeScript) / 0.14.0 (Python), 2026-10-09
 
 Needs runtime 0.7.0 or later (run.camelai.com has it).
