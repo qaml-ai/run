@@ -95,6 +95,10 @@ await agent.files.upload("/workspace/in/config.json", JSON.stringify(config));
 Python has the same: `agent.files.download(path)` (`.data`, `.content_type`, `.version`), `list(path=...)`,
 `link(path, expires_in=...)`, `upload(path, data)`.
 
+Tools of a definition's sources take the agent's files as `{"$file": path}`,
+and their file outputs are saved to the workspace: see
+[Files in tool calls](tools.md#files-in-tool-calls).
+
 ## Volumes
 
 A volume is a shared file tree. Without `mounts`, each agent gets its own

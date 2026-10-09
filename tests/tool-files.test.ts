@@ -68,7 +68,7 @@ async function fileServer(t: T, runtimeBase: () => string) {
   return { url: `${url}/mcp`, seen };
 }
 
-test("MCP tools take files by {$file}: base64 or a signed link, only from the agent's mounts", async t => {
+test("MCP tools take files by {$file}: base64 or a call-bound URL, only from the agent's mounts", async t => {
   let base = "";
   const mcp = await fileServer(t, () => base);
   const steps = [
@@ -87,7 +87,7 @@ test("MCP tools take files by {$file}: base64 or a signed link, only from the ag
   await put(r.base, workspace, "report.pdf", PDF);
   await put(r.base, workspace, "notes.txt", "workspace notes");
   await put(r.base, workspace, "big.bin", Buffer.alloc(TOOL_FILE_LIMITS.inlineBytes + 1));
-  const definition = (await r.call("/v1/definitions", { body: { name: "Files", mcpServers: [{ name: "files", url: mcp.url, exposure: "both" }] } })).json;
+  const definition = (await r.call("/v1/definitions", { body: { name: "Files", mcpServers: [{ name: "files", url: mcp.url, exposure: "both", fileArguments: "on" }] } })).json;
   const agent = (await r.call("/v1/agents", { body: { definition: definition.id, mounts: [{ volumeId: workspace, path: "/workspace", mode: "rw" }, { volumeId: data, path: "/data", mode: "ro" }] } })).json;
   await r.prompt(agent.id, "send the files");
 
@@ -179,7 +179,7 @@ test("OpenAPI operations upload files (multipart, raw bytes, base64) and save bi
     toolCall("js_exec", { code: "const file = await tools.docs__render({}); return file.path.split('/').pop() + ':' + file.contentType + ':' + file.size;" }),
     toolCall("docs__text", {}),
   ][index] ?? { role: "assistant", content: "done" }, LOCAL);
-  const definition = await r.call("/v1/definitions", { body: { name: "Docs", openApi: [{ name: "docs", spec: `${api.url}/openapi.json`, exposure: "both" }] } });
+  const definition = await r.call("/v1/definitions", { body: { name: "Docs", openApi: [{ name: "docs", spec: `${api.url}/openapi.json`, exposure: "both", fileArguments: "on" }] } });
   assert.equal(definition.status, 201, definition.text);
   assert.deepEqual(definition.json.openApi[0].tools, ["upload", "putRaw", "putAny", "postJson", "render", "text"], "upload operations are tools now");
   const agent = (await r.call("/v1/agents", { body: { definition: definition.json.id } })).json;

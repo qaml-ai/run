@@ -102,6 +102,8 @@ Definitions take the REST API's field names (`systemPrompt`, `mcpServers`, `open
 The same `@tool` functions get the same identity when attached to an agent.
 `verify_runtime_token(token, runtime=..., tenant=..., audience=...)` checks a token on its own,
 and `TestRuntime()` signs tokens for tests: `await TestRuntime().call_tool(app, url, "list_todos", {}, subject="alice")`.
+A tool sent one of the agent's files gets a URL bound to the call; `verify_file_url(url, runtime=..., tenant=..., agent=...)`
+checks it came from the runtime for that agent.
 
 Keep the API key on your backend: it can create and control every
 agent in your tenant. Sign in at https://run.camelai.com/console to add provider

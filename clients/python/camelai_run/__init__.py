@@ -32,7 +32,7 @@ __all__ = [
     "tool", "Tool", "ToolContext", "InputRequired", "RuntimeIdentity", "identity_from_claims",
     "AgentError", "RunError",
     "AgentRuntime", "AgentClient", "AgentFiles", "Download", "Volume", "Telemetry", "DEFAULT_URL",
-    "serve_tools", "verify_runtime_token", "RuntimeTokenError", "TestRuntime", "verify_webhook", "WebhookVerificationError",
+    "serve_tools", "verify_runtime_token", "verify_file_url", "RuntimeTokenError", "TestRuntime", "verify_webhook", "WebhookVerificationError",
 ]
 # Distinguishes "not given" from None (which means "never expires") in create_agent.
 _DEFAULT = object()
@@ -2547,8 +2547,8 @@ def _token_header(token):
     return pieces, header
 
 
-def _verified(pieces, key, *, runtime, audience, tenants, issuer, clock_tolerance):
-    """The identity a token carries, once its signature, issuer, tenant, audience and times check out."""
+def _signed_claims(pieces, key, *, runtime, issuer, clock_tolerance):
+    """A token's claims, once its signature, issuer and times check out."""
     import time
     from cryptography.exceptions import InvalidSignature
     try:
@@ -2559,19 +2559,63 @@ def _verified(pieces, key, *, runtime, audience, tenants, issuer, clock_toleranc
     now = time.time()
     if claims.get("iss") != _issuer_of(runtime, issuer):
         raise RuntimeTokenError("Token is from another issuer")
-    if claims.get("tenant") not in tenants:
-        raise RuntimeTokenError("Token is for another tenant's agent")
-    if not _audience_matches(claims.get("aud"), audience):
-        raise RuntimeTokenError("Token is for another server")
     if not isinstance(claims.get("exp"), (int, float)) or claims["exp"] + clock_tolerance < now:
         raise RuntimeTokenError("Token has expired")
     if isinstance(claims.get("nbf"), (int, float)) and claims["nbf"] - clock_tolerance > now:
         raise RuntimeTokenError("Token is not valid yet")
     if isinstance(claims.get("iat"), (int, float)) and claims["iat"] - clock_tolerance > now:
         raise RuntimeTokenError("Token is issued in the future")
+    return claims
+
+
+def _verified(pieces, key, *, runtime, audience, tenants, issuer, clock_tolerance):
+    """The identity a token carries, once its signature, issuer, tenant, audience and times check out."""
+    claims = _signed_claims(pieces, key, runtime=runtime, issuer=issuer, clock_tolerance=clock_tolerance)
+    if claims.get("tenant") not in tenants:
+        raise RuntimeTokenError("Token is for another tenant's agent")
+    if not _audience_matches(claims.get("aud"), audience):
+        raise RuntimeTokenError("Token is for another server")
     identity = identity_from_claims(claims)
     identity.claims = claims
     return identity
+
+
+def _file_token(url, runtime):
+    """A file URL's token, once the URL is at the runtime (either hosted name for camelRun's)."""
+    from urllib.parse import unquote
+    parsed = urlparse(url)
+    runtime = runtime.rstrip("/")
+    allowed = _HOSTED if runtime in _HOSTED else (runtime,)
+    if not any(urlparse(origin)[:2] == parsed[:2] for origin in allowed):
+        raise RuntimeTokenError("The URL is not at the runtime")
+    parts = parsed.path.split("/")
+    if len(parts) != 5 or parts[:3] != ["", "v1", "files"] or not parts[3]:
+        raise RuntimeTokenError("Not a file URL")
+    return unquote(parts[3])
+
+
+def _file_claims(pieces, key, *, runtime, tenant, agent, issuer, clock_tolerance):
+    """What a file URL's token grants, once it checks out and is for `tenant` and `agent` (each a string or a list) when given."""
+    claims = _signed_claims(pieces, key, runtime=runtime, issuer=issuer, clock_tolerance=clock_tolerance)
+    if claims.get("aud") != "camelrun:file":
+        raise RuntimeTokenError("Token is not for a file")
+    if tenant is not None and claims.get("tenant") not in ({tenant} if isinstance(tenant, str) else set(tenant)):
+        raise RuntimeTokenError("Token is for another tenant's agent")
+    if agent is not None and claims.get("agent") not in ({agent} if isinstance(agent, str) else set(agent)):
+        raise RuntimeTokenError("Token is for another agent")
+    return claims
+
+
+async def verify_file_url(url, *, runtime, tenant=None, agent=None, issuer=None, http=None, clock_tolerance=30):
+    """Check that a file URL a tool was sent ({"$file": path} in a call's arguments) came from the runtime, for the
+    tenant and agent you expect (each a string or a list; optional), and has not expired: the URL is at `runtime`, and
+    its token is signed by the runtime's keys for files. Returns what it grants: tenant, agent, call, tool, volume, path
+    (in the volume), agentPath (as the agent names it), kind (file, manifest or archive), version or snapshot, and exp.
+    The runtime checks it again when the URL is fetched. camelai_run.sync.verify_file_url is the same, synchronous."""
+    runtime = runtime.rstrip("/")
+    pieces, header = _token_header(_file_token(url, runtime))
+    key = await _public_key(f"{runtime}/.well-known/jwks.json", header["kid"], http)
+    return _file_claims(pieces, key, runtime=runtime, tenant=tenant, agent=agent, issuer=issuer, clock_tolerance=clock_tolerance)
 
 
 def _audience_matches(given, audience):
@@ -2772,6 +2816,15 @@ class TestRuntime:
         payload.update(claims or {})
         signed = f"{_b64encode(json.dumps({'alg': 'EdDSA', 'kid': self.kid, 'typ': 'JWT', **(header or {})}).encode())}.{_b64encode(json.dumps(payload).encode())}"
         return f"{signed}.{_b64encode(self.key.sign(signed.encode()))}"
+
+    def file_url(self, *, expires_in=300, header=None, **claims):
+        """A file URL as the runtime would send a tool, for verify_file_url to check; `claims` set what it grants.
+        Only checking works: nothing serves it."""
+        grant = {"tenant": "test", "agent": "client_test", "call": "call_test", "tool": "app__tool", "volume": "vol_test",
+                 "path": "/report.pdf", "agentPath": "/workspace/report.pdf", "kind": "file", "version": 1, **claims}
+        token = self.token("camelrun:file", tenant=grant["tenant"], agent=grant["agent"], expires_in=expires_in, claims=grant,
+                           header={"typ": "file+jwt", **(header or {})})
+        return f"{self.url}/v1/files/{token}/{quote(grant['path'].rsplit('/', 1)[-1] or 'file')}"
 
     async def post(self, app, url, message, token=None, **identity):
         """POST a JSON-RPC message to an ASGI app at `url`, with a token for `identity` (or `token`; "" for none)."""

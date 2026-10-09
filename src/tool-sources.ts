@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { Accounts, Sealed } from "./accounts.ts";
@@ -19,7 +20,7 @@ import { callScope, type AgentIdentity, type RuntimeSigner } from "./identity.ts
 import { checkDocument, definition as operationTool, operations, parseSpec, request as operationRequest, result as operationResult, type Operation } from "./openapi.ts";
 import { acceptFiles, resolveFiles, savedContent, ToolFiles } from "./tool-files.ts";
 import { TOOL_FILE_LIMITS } from "./limits.ts";
-import type { FileLinks } from "./files.ts";
+import { takesFiles, type FileArguments, type FileUrls, type FileValue } from "./file-arguments.ts";
 import type { Mount, VolumeService } from "./volumes.ts";
 import type { ToolContext } from "./volume-tools.ts";
 import type { HumanInputSettings } from "./inputs.ts";
@@ -54,6 +55,8 @@ export interface McpServerSpec {
   /** The `aud` of its identity tokens when not its URL (a server behind a proxy, say); auth "runtime" only. */
   audience?: string;
   approval?: ApprovalPolicy;
+  /** Whether its tools are sent the agent's files (`{"$file": path}`); by default on with auth "runtime" only (takesFiles). */
+  fileArguments?: FileArguments;
 }
 /**
  * An OpenAPI spec as a definition stores it: fetched and checked when the definition is saved,
@@ -75,6 +78,8 @@ export interface OpenApiSpec {
   /** The `aud` of its identity tokens when not its URL (a server behind a proxy, say); auth "runtime" only. */
   audience?: string;
   approval?: ApprovalPolicy;
+  /** As an MCP server's. */
+  fileArguments?: FileArguments;
 }
 /** Built-in tools a definition enables, its remote MCP servers and its OpenAPI specs. */
 /** `webSearch.providers`: the order web_search tries providers in for this agent, instead of the runtime's. */
@@ -105,6 +110,11 @@ const MAX_SOURCES = 64;
 const API_TIMEOUT_MS = 30_000;
 type Context = { tenant: string; accounts?: Accounts; outbound: Outbound };
 const bad = (message: string) => new HttpError(400, message);
+const fileArgumentsInput = (value: unknown, label: string) => {
+  if (value === undefined) return {};
+  if (value !== "on" && value !== "off") throw bad(`${label}: fileArguments is "on" or "off"`);
+  return { fileArguments: value as FileArguments };
+};
 const strings = (value: unknown, label: string, max: number) => {
   if (value === undefined) return undefined;
   if (!Array.isArray(value) || value.length > max || value.some(entry => typeof entry !== "string" || !entry || entry.length > 200)) throw bad(`${label} must be a list of at most ${max} names`);
@@ -143,8 +153,8 @@ export function mcpServersInput(input: unknown, previous: McpServerSpec[] | unde
   if (!Array.isArray(input) || input.length > MAX_SOURCES) throw bad(`mcpServers must be a list of at most ${MAX_SOURCES} servers`);
   const names = new Set<string>();
   return input.map((server: any) => {
-    if (!server || typeof server !== "object" || Array.isArray(server)) throw bad("An MCP server is { name, url, headers?, auth?, allowTools?, denyTools?, exposure?, timeoutMs?, approval? }");
-    const { name, url, headers, auth, allowTools, denyTools, exposure, timeoutMs, audience, approval } = server;
+    if (!server || typeof server !== "object" || Array.isArray(server)) throw bad("An MCP server is { name, url, headers?, auth?, allowTools?, denyTools?, exposure?, timeoutMs?, approval?, fileArguments? }");
+    const { name, url, headers, auth, allowTools, denyTools, exposure, timeoutMs, audience, approval, fileArguments } = server;
     if (typeof name !== "string" || name.length > 32 || !SERVER_NAME.test(name)) throw bad("An MCP server's name is 1–32 letters and digits, single underscores between them, starting with a letter");
     if (names.has(name)) throw bad(`Two MCP servers are named ${name}`);
     names.add(name);
@@ -156,7 +166,7 @@ export function mcpServersInput(input: unknown, previous: McpServerSpec[] | unde
     const spec: McpServerSpec = {
       name, url: checked.toString(), ...(allowTools !== undefined ? { allowTools: strings(allowTools, "allowTools", 512) } : {}),
       ...(denyTools !== undefined ? { denyTools: strings(denyTools, "denyTools", 512) } : {}), ...(exposure ? { exposure } : {}), ...(timeoutMs ? { timeoutMs } : {}),
-      ...(approval !== undefined ? { approval: approvalInput(approval, `MCP server ${name}`) } : {}),
+      ...(approval !== undefined ? { approval: approvalInput(approval, `MCP server ${name}`) } : {}), ...fileArgumentsInput(fileArguments, `MCP server ${name}`),
     };
     const credentials = sealCredentials(headers, auth, previous?.find(other => other.name === name), checked, sealedAad(definition, name), context);
     return { ...spec, ...credentials, ...audienceInput(audience, credentials.auth, `MCP server ${name}`, checked, context.tenant) };
@@ -191,8 +201,8 @@ export async function openApiInput(input: unknown, previous: OpenApiSpec[] | und
   if (!Array.isArray(input) || input.length > MAX_SOURCES) throw bad(`openApi must be a list of at most ${MAX_SOURCES} specs`);
   const names = new Set<string>();
   return Promise.all(input.map(async (entry: any) => {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw bad("An OpenAPI source is { name, spec (a URL or the document), baseUrl?, headers?, auth?, allowTools?, denyTools?, exposure?, timeoutMs?, approval? }");
-    const { name, spec, baseUrl, headers, auth, allowTools, denyTools, exposure, timeoutMs, audience, approval } = entry;
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw bad("An OpenAPI source is { name, spec (a URL or the document), baseUrl?, headers?, auth?, allowTools?, denyTools?, exposure?, timeoutMs?, approval?, fileArguments? }");
+    const { name, spec, baseUrl, headers, auth, allowTools, denyTools, exposure, timeoutMs, audience, approval, fileArguments } = entry;
     if (typeof name !== "string" || name.length > 32 || !SERVER_NAME.test(name)) throw bad("An OpenAPI source's name is 1–32 letters and digits, single underscores between them, starting with a letter");
     if (names.has(name)) throw bad(`Two OpenAPI sources are named ${name}`);
     names.add(name);
@@ -226,7 +236,7 @@ export async function openApiInput(input: unknown, previous: OpenApiSpec[] | und
     const stored: OpenApiSpec = {
       name, ...(specUrl ? { spec: specUrl } : {}), baseUrl: checked.toString(), operations: chosen,
       ...(allow ? { allowTools: allow } : {}), ...(deny ? { denyTools: deny } : {}), ...(exposure ? { exposure } : {}), ...(timeoutMs ? { timeoutMs } : {}),
-      ...(approval !== undefined ? { approval: approvalInput(approval, `OpenAPI source ${name}`, true) } : {}),
+      ...(approval !== undefined ? { approval: approvalInput(approval, `OpenAPI source ${name}`, true) } : {}), ...fileArgumentsInput(fileArguments, `OpenAPI source ${name}`),
     };
     const credentials = sealCredentials(headers, auth, kept && { ...kept, url: kept.baseUrl }, checked, sealedAad(definition, name, "openapi"), context);
     return { ...stored, ...credentials, ...audienceInput(audience, credentials.auth, `OpenAPI source ${name}`, checked, context.tenant) };
@@ -312,16 +322,17 @@ export class ToolSources {
   private readonly accounts?: Accounts;
   private readonly mcp: McpConnections;
   private readonly outbound: Outbound;
-  private readonly options: { scheduler?: Scheduler; search?: WebSearch; render?: WebRender; volumes?: VolumeService; links?: FileLinks };
+  private readonly options: { scheduler?: Scheduler; search?: WebSearch; render?: WebRender; volumes?: VolumeService; fileUrls?: FileUrls };
 
   private readonly signer?: RuntimeSigner;
 
-  constructor(options: { accounts?: Accounts; mcp: McpConnections; outbound: Outbound; scheduler?: Scheduler; signer?: RuntimeSigner; search?: WebSearch; render?: WebRender; volumes?: VolumeService; links?: FileLinks }) {
+  /** `fileUrls` signs the URLs of files sent to tools (file-arguments.ts). */
+  constructor(options: { accounts?: Accounts; mcp: McpConnections; outbound: Outbound; scheduler?: Scheduler; signer?: RuntimeSigner; search?: WebSearch; render?: WebRender; volumes?: VolumeService; fileUrls?: FileUrls }) {
     this.accounts = options.accounts;
     this.mcp = options.mcp;
     this.outbound = options.outbound;
     this.signer = options.signer;
-    // Kept whole: the scheduler, volumes and links may be getters for ones made later.
+    // Kept whole: the scheduler, volumes and file URLs may be getters for ones made later.
     this.options = options;
   }
 
@@ -357,7 +368,7 @@ export class ToolSources {
     const own = (tool: Tool) => { const exposure = tool._meta?.["agent-runtime/exposure"]; return ["direct", "codemode", "both"].includes(exposure as string) ? { exposure: exposure as Exposure } : {}; };
     return defaultExposure(tools.filter(tool => this.offered(spec, tool)).map((tool): ToolDefinition => gated({
       name: mcpToolName(spec.name, tool.name), description: (tool.description || tool.title || tool.name).slice(0, MAX_DESCRIPTION),
-      parameters: acceptFiles(tool.inputSchema), ...own(tool),
+      parameters: takesFiles(spec) ? acceptFiles(tool.inputSchema) : tool.inputSchema, ...own(tool),
     }, needsApproval(spec.approval, tool.name, tool.annotations?.destructiveHint === true))), spec.exposure);
   }
 
@@ -388,7 +399,7 @@ export class ToolSources {
     const builtins = builtinNames(sources?.builtins);
     const mcpServer = (name: string) => sources?.mcpServers?.find(server => name.startsWith(`${server.name}__`));
     const apiAsks = (api: OpenApiSpec, operation: Operation) => needsApproval(api.approval, operation.name, !operation.readOnly, operation.method);
-    const apiTools = (api: OpenApiSpec) => defaultExposure(api.operations.map(operation => gated(operationTool(api.name, operation), apiAsks(api, operation))), api.exposure);
+    const apiTools = (api: OpenApiSpec) => defaultExposure(api.operations.map(operation => gated(operationTool(api.name, operation, takesFiles(api)), apiAsks(api, operation))), api.exposure);
     type Listing = { tools: ToolDefinition[]; at: number } | { error: string; at: number };
     const list = async (spec: McpServerSpec): Promise<Listing> => {
       try {
@@ -402,11 +413,13 @@ export class ToolSources {
     const listed = new Map<string, Listing>();
     // What the calls of the current run may still save to the workspace.
     let run = { id: undefined as string | undefined, left: TOOL_FILE_LIMITS.runBytes };
-    const files = (tool: string, id: string | undefined) => {
+    // `call` binds the URLs of files sent to it; `source` (an MCP server or OpenAPI spec) is sent files only if it takes them.
+    const files = (tool: string, id: string | undefined, call?: string, source?: McpServerSpec | OpenApiSpec) => {
       const volumes = this.options.volumes;
       if (!volumes || !context.mounts?.length) return undefined;
       if (!id || id !== run.id) run = { id, left: TOOL_FILE_LIMITS.runBytes };
-      return new ToolFiles({ volumes, links: this.options.links, tenant: context.tenant, agent: context.agent, mounts: context.mounts, tool, run, onWrite: context.onWrite });
+      const refuse = source && !takesFiles(source) ? `${source.name} is not sent files: $file needs fileArguments "on" in its definition` : undefined;
+      return new ToolFiles({ volumes, urls: this.options.fileUrls, tenant: context.tenant, agent: context.agent, mounts: context.mounts, tool, ...(call ? { call } : {}), ...(refuse ? { refuse } : {}), run, onWrite: context.onWrite });
     };
     return {
       // Only saved outputs: remote servers' own file references are dropped (savedContent).
@@ -446,8 +459,10 @@ export class ToolSources {
       call: async ({ name, args, signal, origin, actor, run: runId, toolCallId, innerCallId, idempotencyKey, onProgress, approval, inputResponses, requestState, elicit }) => {
         // An approved call proves it to the tool: in its identity token and its `_meta`.
         const turn = { ...(actor ? { actor } : {}), ...(origin ? { origin } : {}), ...(approval ? { approval } : {}) };
-        const callFiles = files(name, runId);
+        // What a file URL is bound to: the call's stable key, else its tool call (and its place in a js_exec run).
+        const call = idempotencyKey ?? (toolCallId && (innerCallId ? `${toolCallId}:${innerCallId}` : toolCallId)) ?? randomUUID();
         if (builtins.includes(name)) {
+          const callFiles = files(name, runId);
           // web_fetch reads URLs the model chooses: never the operator's own services, however they are allowed for configured ones.
           const services = { outbound: this.outbound.withoutOrigins(), scheduler: this.options.scheduler, search: this.options.search, render: this.options.render };
           return runBuiltin(services, { ...context, ...(sources?.webSearch ? { searchProviders: sources.webSearch.providers } : {}), ...(callFiles ? { files: callFiles } : {}) }, name, args, signal);
@@ -456,15 +471,18 @@ export class ToolSources {
         const operation = api?.operations.find(entry => operationTool(api.name, entry).name === name);
         if (api && operation) {
           if (apiAsks(api, operation) && !approval) return APPROVAL_REQUIRED;
-          const { url, init } = await operationRequest(api.baseUrl, operation, args, callFiles);
-          if (api.sealed && !context.definition) throw new Error(`OpenAPI source ${api.name} has sealed credentials but no definition to unseal them with`);
-          const secrets = api.sealed ? this.headers(sealedAad(context.definition!, api.name, "openapi"), api.sealed) : {};
-          if (api.auth?.type === "runtime") secrets.Authorization = `Bearer ${await this.identityToken(context, audienceOf(api.audience, api.baseUrl, context.tenant), turn)}`;
-          // The call's key, as APIs that dedupe writes take one (Stripe's convention).
-          if (idempotencyKey) init.headers = { ...init.headers as Record<string, string>, "Idempotency-Key": idempotencyKey };
-          // Text answers are capped lower as they are read (openapi.ts).
-          const response = await this.outbound.fetch(url, { ...init, signal, timeoutMs: api.timeoutMs ?? API_TIMEOUT_MS, maxBytes: TOOL_FILE_LIMITS.responseBytes, secrets });
-          return operationResult(operation, response, callFiles);
+          const callFiles = files(name, runId, call, api);
+          try {
+            const { url, init } = await operationRequest(api.baseUrl, operation, args, callFiles);
+            if (api.sealed && !context.definition) throw new Error(`OpenAPI source ${api.name} has sealed credentials but no definition to unseal them with`);
+            const secrets = api.sealed ? this.headers(sealedAad(context.definition!, api.name, "openapi"), api.sealed) : {};
+            if (api.auth?.type === "runtime") secrets.Authorization = `Bearer ${await this.identityToken(context, audienceOf(api.audience, api.baseUrl, context.tenant), turn)}`;
+            // The call's key, as APIs that dedupe writes take one (Stripe's convention).
+            if (idempotencyKey) init.headers = { ...init.headers as Record<string, string>, "Idempotency-Key": idempotencyKey };
+            // Text answers are capped lower as they are read (openapi.ts).
+            const response = await this.outbound.fetch(url, { ...init, signal, timeoutMs: api.timeoutMs ?? API_TIMEOUT_MS, maxBytes: TOOL_FILE_LIMITS.responseBytes, secrets });
+            return await operationResult(operation, response, callFiles);
+          } finally { callFiles?.release(); }
         }
         const spec = mcpServer(name);
         if (!spec) throw new Error(`Unknown tool ${name}`);
@@ -472,13 +490,21 @@ export class ToolSources {
         const tool = (await this.mcp.tools(context.tenant, server)).find(entry => this.offered(spec, entry) && mcpToolName(spec.name, entry.name) === name);
         if (!tool) throw new Error(`${spec.name} no longer offers ${name.slice(spec.name.length + 2)}`);
         if (needsApproval(spec.approval, tool.name, tool.annotations?.destructiveHint === true) && !approval) return APPROVAL_REQUIRED;
-        const resolved = await resolveFiles(args, tool.inputSchema, callFiles) as Record<string, unknown>;
-        // The tool's own deadline (its listing's _meta), else the server's, else the default; progress restarts it.
-        let timeoutMs = spec.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-        try { timeoutMs = declaredTimeout(tool._meta) ?? timeoutMs; } catch { /* a server's invalid deadline is ignored */ }
-        const result = await callScope.run(turn, () => this.mcp.call(context.tenant, server, tool.name, resolved, signal, { timeoutMs, maxTotalMs: MAX_TIMEOUT_MS }, { ...callMeta({ toolCallId, innerCallId, idempotencyKey, origin, actor }), ...(approval ? { "agent-runtime/approval": approval } : {}) }, onProgress, { inputResponses, requestState, elicit }))
-          .catch(error => { throw !signal.aborted && error instanceof McpError && error.code === ErrorCode.RequestTimeout ? timedOut(timeoutMs) : error; }) as McpResult;
-        return savedContent(result, callFiles);
+        const callFiles = files(name, runId, call, spec);
+        try {
+          // Each file sent as a URI, described by its argument's JSON pointer (SEP-2631's FileValue).
+          const sent: Record<string, FileValue> = {};
+          const resolved = await resolveFiles(args, tool.inputSchema, callFiles, undefined, { at: "", values: sent }) as Record<string, unknown>;
+          // The tool's own deadline (its listing's _meta), else the server's, else the default; progress restarts it.
+          let timeoutMs = spec.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+          try { timeoutMs = declaredTimeout(tool._meta) ?? timeoutMs; } catch { /* a server's invalid deadline is ignored */ }
+          const meta = { ...callMeta({ toolCallId, innerCallId, idempotencyKey, origin, actor }), ...(approval ? { "agent-runtime/approval": approval } : {}), ...(Object.keys(sent).length ? { "camelrun/files": sent } : {}) };
+          const result = await callScope.run(turn, () => this.mcp.call(context.tenant, server, tool.name, resolved, signal, { timeoutMs, maxTotalMs: MAX_TIMEOUT_MS }, meta, onProgress, { inputResponses, requestState, elicit }))
+            .catch(error => { throw !signal.aborted && error instanceof McpError && error.code === ErrorCode.RequestTimeout ? timedOut(timeoutMs) : error; }) as McpResult;
+          // Files it links to are fetched as a URL the model chose would be: never from the operator's own services.
+          const links = takesFiles(spec) ? (url: string) => this.outbound.withoutOrigins().fetch(url, { signal, timeoutMs: API_TIMEOUT_MS, maxBytes: TOOL_FILE_LIMITS.responseBytes }) : undefined;
+          return await savedContent(result, callFiles, links);
+        } finally { callFiles?.release(); }
       },
     };
   }

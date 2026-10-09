@@ -100,6 +100,19 @@ export function schemaAccepts(schema: object, value: unknown) {
   try { return validator(schema).Check(value); } catch { return false; }
 }
 
+const namesFile = (value: unknown): boolean => !!value && typeof value === "object"
+  && (Array.isArray(value) ? value.some(namesFile) : Object.hasOwn(value, "$file") || Object.values(value).some(namesFile));
+
+/**
+ * Why arguments naming a file (`{"$file": path}`) do not fit a tool that takes none: its source is not sent files
+ * (fileArguments off), so its schema offers no `$file`. Said so, rather than as the schema's own complaint, which reads
+ * as though the path were wrong.
+ */
+export function filesRefused(name: string, parameters: unknown, args: unknown) {
+  if (!namesFile(args) || JSON.stringify(parameters ?? {}).includes('"$file"')) return undefined;
+  return `${name} is not sent files: file arguments ({"$file": path}) are off for this tool. Pass what it needs in its own parameters (text, or a URL it can fetch), or use a tool that takes files`;
+}
+
 const indexes = new WeakMap<ToolDefinition[], Map<string, ToolDefinition>>();
 
 export function validateToolCall(definitions: ToolDefinition[], name: unknown, args: unknown) {
@@ -111,6 +124,8 @@ export function validateToolCall(definitions: ToolDefinition[], name: unknown, a
   const json = jsonWithinLimit(args, SANDBOX_LIMITS.argumentBytes, "Tool arguments");
   const check = validator(tool.parameters);
   if (!check.Check(args)) {
+    const refused = filesRefused(tool.name, tool.parameters, args);
+    if (refused) throw new Error(refused);
     if (json.length > DETAILED_ERROR_BYTES) throw new Error(`Invalid arguments for tool: ${tool.name}. It takes ${inputSignature(tool.parameters)}`);
     // Say what is wrong and what the tool takes, so the next call can be right without tools.describe.
     const problems = [...check.Errors(args)].slice(0, 3).map(error => `${error.instancePath || "arguments"} ${error.message}${error.keyword === "additionalProperties" ? ` (${(error.params as { additionalProperties?: string[] }).additionalProperties?.join(", ")})` : ""}`);

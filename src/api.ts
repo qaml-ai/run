@@ -33,6 +33,7 @@ import { actorInput, identityInput } from "./identity.ts";
 import { languageInput, transcribeRequest, type TranscriptionService } from "./transcription.ts";
 import { AUDIO_LIMITS } from "./limits.ts";
 import { declaredType, fileResponse, type FileLinks } from "./files.ts";
+import type { FileUrls } from "./file-arguments.ts";
 import { idempotency } from "./idempotency.ts";
 import { BrowserTokens, readableFrame, readableMessage, readableRequest, type BrowserClaims } from "./browser-tokens.ts";
 import type { Help } from "./help.ts";
@@ -84,6 +85,8 @@ export interface ApiContext {
   billingAdmins?: string[];
   /** Signs and verifies file links (`/v1/links`). */
   links?: FileLinks;
+  /** Serves the URLs of files sent to tools (`/v1/files`, file-arguments.ts). */
+  fileUrls?: FileUrls;
   /** Mints and checks browser tokens (`/v1/agents/:id/browser-tokens`); without it there are none. */
   browserTokens?: BrowserTokens;
   /** How long a request holds its Idempotency-Key before a retry may take it over (default 2 minutes). */
@@ -219,6 +222,20 @@ export function api(context: ApiContext) {
     if (grant.contentType && declared && declared !== grant.contentType) throw new HttpError(415, `This link takes ${grant.contentType}`);
     const { chunks: _chunks, ...entry } = await volumes().put(grant.tenant, grant.volume, grant.path, (c.req.raw.body ?? []) as AsyncIterable<Uint8Array>, { contentType: grant.contentType ?? declared, by: "link", limit });
     return json(c, 201, entry);
+  });
+
+  // A file sent to a tool: its URL's token is its credential, bound to the call (file-arguments.ts). Read-only.
+  route(createRoute({
+    method: "get", path: "/v1/files/{token}/{name}", security: [],
+    request: { params: z.object({ token: z.string(), name: z.string().openapi({ description: "The file's name, for tools and browsers; not checked" }) }), headers: z.object({ range: z.string().optional().openapi({ description: "bytes=start-end (a file's URL)" }) }) },
+    responses: {
+      200: { description: "The file; a directory's manifest (JSON: snapshot, root, files with their own URLs, and archive); or its archive (tar.gz)", content: { "application/octet-stream": { schema: z.string().openapi({ format: "binary" }) }, "application/json": { schema: schema.FileManifest } } },
+      206: binary("The requested range"),
+      410: reply("The file changed since the call, or the call's files are no longer kept", schema.ApiError),
+    },
+  }), async c => {
+    if (!context.fileUrls) throw new HttpError(404, "File URLs are not enabled on this runtime");
+    return context.fileUrls.serve(c.req.param("token")!, c.req.header("range"));
   });
 
   // Stripe's webhook authenticates by its signature, not a token, so it comes before the check below.
@@ -1145,7 +1162,8 @@ export function api(context: ApiContext) {
     async c => json(c, 200, await (await volume(c)).call("snapshots")));
   route(createRoute({ method: "post", path: "/v1/volumes/{id}/snapshots", request: { params: volumeId, body: content(schema.VolumeInput) }, responses: { 201: reply("The snapshot: a copy of the file metadata, sharing contents", schema.Snapshot) } }), async c => {
     const target = await volume(c);
-    return json(c, 201, await target.call("snapshot", await readJson(c.req.raw.body, 4096, {})));
+    const { name } = await readJson(c.req.raw.body, 4096, {}) ?? {};
+    return json(c, 201, await target.call("snapshot", { name }));
   });
   route(createRoute({ method: "delete", path: "/v1/volumes/{id}/snapshots/{snapshotId}", request: { params: volumeId.extend({ snapshotId: z.string() }) }, responses: { 200: reply("The snapshot is deleted", schema.Deleted) } }),
     async c => json(c, 200, await (await volume(c)).call("deleteSnapshot", { snapshot: c.req.param("snapshotId") })));

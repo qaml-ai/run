@@ -299,6 +299,7 @@ const approvalFields = {
   default: z.enum(["never", "always", "destructive"]).optional().openapi({ description: "never (the default), always, or destructive: tools annotated destructiveHint (MCP), operations other than GET, HEAD and OPTIONS (OpenAPI)" }),
   tools: z.record(z.string(), approvalMode).optional().openapi({ description: "Per tool, by its own name: overrides the default" }),
 };
+const fileArguments = z.enum(["on", "off"]).openapi({ description: "Whether the model may send the agent's files to its tools ({\"$file\": path}), and the runtime saves files they link to. Default on with auth \"runtime\", off otherwise: another party's server could be sent any file the agent can read" });
 const mcpServerFields = {
   name: z.string().openapi({ description: "Its tools reach the model as <name>__<tool>: 1–32 letters and digits, single underscores between them" }),
   url: z.string().openapi({ description: "The server's Streamable HTTP (or older SSE) endpoint; https, on a public address" }),
@@ -308,6 +309,7 @@ const mcpServerFields = {
   timeoutMs: z.number().int().min(1_000).max(1_200_000).optional().openapi({ description: "How long a call may go without an answer; default 60000. Each progress notification the server sends restarts it, up to 1200000 in all" }),
   audience: z.string().optional().openapi({ description: "With auth \"runtime\": the tokens' aud, when not the server's url (behind a proxy, say): a URL on its origin, or a name that stays when the server moves, urn:camelrun:<tenant>:<name>" }),
   approval: z.strictObject(approvalFields).optional().openapi({ description: "Which tools the user approves before each call. Those tools are declared to the model directly; an approved call carries _meta[\"agent-runtime/approval\"] and an approval claim in its identity token" }),
+  fileArguments: fileArguments.optional(),
 };
 const McpServerInput = z.object({
   ...mcpServerFields,
@@ -696,6 +698,7 @@ const openApiFields = {
   audience: z.string().optional().openapi({ description: "With auth \"runtime\": the tokens' aud, when not baseUrl (behind a proxy, say): a URL on its origin, or a name that stays when the server moves, urn:camelrun:<tenant>:<name>" }),
   approval: z.strictObject({ ...approvalFields, methods: z.array(z.enum(["GET", "PUT", "POST", "DELETE", "PATCH", "HEAD", "OPTIONS"])).optional().openapi({ description: "Operations of these methods, unless named in tools" }) }).optional()
     .openapi({ description: "Which operations the user approves before each call. They are declared to the model directly; with auth \"runtime\", an approved call's identity token carries an approval claim" }),
+  fileArguments: fileArguments.optional(),
 };
 const OpenApiInput = z.object({
   ...openApiFields,
@@ -832,6 +835,17 @@ export const Volume = VolumeSummary.extend({
   origin: z.object({ volume: z.string(), snapshot: z.string().optional(), seq: z.number() }).optional().openapi({ description: "What a fork was copied from" }),
 }).openapi("Volume");
 export const ForkInput = z.object({ name: z.string().optional(), snapshot: z.string().optional().openapi({ description: "Fork this snapshot instead of the current state" }) }).openapi("ForkInput");
+const FileValue = z.object({
+  uri: z.string().openapi({ description: "A URL to the file, bound to the call (GET /v1/files/{token}/{name}), or a data: URI" }),
+  name: z.string(), mimeType: z.string(), size: z.number(),
+  digest: z.object({ algorithm: z.literal("sha-256"), value: z.string().openapi({ description: "Hex" }) }).optional().openapi({ description: "Absent for files over 64 MiB" }),
+}).openapi("FileValue", { description: "A file sent to a tool, as MCP SEP-2631 (draft) describes one" });
+export const FileManifest = z.object({
+  snapshot: z.string().openapi({ description: "The snapshot made for the call, which every URL here reads" }),
+  root: z.string().openapi({ description: "The directory, as the agent names it" }),
+  files: z.array(FileValue.extend({ path: z.string().openapi({ description: "Relative to root" }) })),
+  archive: z.object({ uri: z.string(), mimeType: z.literal("application/gzip") }).openapi({ description: "Every file, as a tar.gz with paths relative to root" }),
+}).openapi("FileManifest", { description: "A directory sent to a tool: its files as they were when the call was made" });
 export const Snapshot = z.object({ id: z.string(), volume: z.string(), name: z.string(), seq: z.number(), createdAt: z.number(), files: z.number(), bytes: z.number() }).openapi("Snapshot");
 export const VolumeFile = z.object({
   path: z.string(), version: z.number(), size: z.number(), updatedAt: z.number(), by: z.string().optional(),

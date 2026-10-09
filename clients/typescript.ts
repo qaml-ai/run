@@ -420,11 +420,16 @@ export type SourceAuth = { type: "bearer"; token: string } | { type: "runtime" }
  * Not listed when saved: one that cannot be listed shows in a run's `sourceErrors`.
  */
 export interface InlineMcpServer {
-  name: string; url: string; auth?: { type: "runtime" }; audience?: string; allowTools?: string[]; denyTools?: string[]; exposure?: "direct" | "codemode" | "both"; timeoutMs?: number;
+  name: string; url: string; auth?: { type: "runtime" }; audience?: string; allowTools?: string[]; denyTools?: string[]; exposure?: "direct" | "codemode" | "both"; timeoutMs?: number; fileArguments?: "on" | "off";
   /** Which tools the user approves before each call. */
   approval?: { default?: "never" | "always" | "destructive"; tools?: Record<string, "never" | "always"> };
 }
-interface SourceOptions { name: string; headers?: Record<string, string>; auth?: SourceAuth; audience?: string; allowTools?: string[]; denyTools?: string[]; exposure?: "direct" | "codemode" | "both"; timeoutMs?: number }
+/**
+ * `fileArguments`: whether the model may send the agent's files to the source's tools (`{"$file": path}`, as a URL bound
+ * to the call; see docs/guides/tools.md), and the runtime saves files they link to. Default "on" with auth runtime,
+ * "off" for any other source, which could be sent any file the agent can read.
+ */
+interface SourceOptions { name: string; headers?: Record<string, string>; auth?: SourceAuth; audience?: string; allowTools?: string[]; denyTools?: string[]; exposure?: "direct" | "codemode" | "both"; timeoutMs?: number; fileArguments?: "on" | "off" }
 export interface DefinitionInput {
   name: string;
   /** What its agents are for: shown to models as the description of each agent's MCP tool (/v1/agents/:id/mcp). */

@@ -32,6 +32,13 @@ export const READ_ALL_LIMITS = Object.freeze({ files: 1000, bytes: 16 * 1024 * 1
 /** `data` as text when it is valid UTF-8, else undefined. */
 const utf8 = (data: Buffer) => { try { return new TextDecoder("utf-8", { fatal: true }).decode(data); } catch { return undefined; } };
 export const VOLUME_LIMITS = Object.freeze({ fileBytes: 256 * 1024 * 1024, files: 100_000, mounts: 16, snapshots: 100, changes: 1000, listing: 1000 });
+/**
+ * Snapshots the runtime makes of a directory for one tool call (file-arguments.ts) are named with this prefix. They are
+ * not listed, do not count toward VOLUME_LIMITS.snapshots, and are deleted after their call; any left after a crash
+ * go once they are TEMPORARY_SNAPSHOT_MS old, when the next is made.
+ */
+export const TEMPORARY_SNAPSHOT = "file-arg:";
+const TEMPORARY_SNAPSHOT_MS = 15 * 60_000;
 const FOLD_AFTER_RECORDS = 1024;
 const NOTIFY_DELAY_MS = 1000;
 
@@ -453,7 +460,7 @@ export class VolumeService {
   }
 
   private async snapshots(id: string): Promise<SnapshotSummary[]> {
-    return (await this.db.query(`select ${SNAPSHOT_COLUMNS} from volume_snapshots where volume = $1 order by created_at, id`, [id])).rows;
+    return (await this.db.query(`select ${SNAPSHOT_COLUMNS} from volume_snapshots where volume = $1 and name not like '${TEMPORARY_SNAPSHOT}%' order by created_at, id`, [id])).rows;
   }
 
   private check(volume: Volume, path: string, ifMatch: unknown) {
@@ -490,19 +497,40 @@ export class VolumeService {
       return { path, deleted: true, seq: change.seq };
     }
     if (op === "snapshot") {
+      // `directory`: a temporary snapshot of one directory for a tool call, within `limit` (runtime code only).
+      const temporary = args.directory !== undefined;
       const name = args.name === undefined ? `seq ${volume.seq}` : args.name;
       if (typeof name !== "string" || !name.trim() || name.length > 120) throw new HttpError(400, "name must be 1–120 characters");
+      if (temporary !== name.startsWith(TEMPORARY_SNAPSHOT)) throw new HttpError(400, `Snapshot names starting with ${TEMPORARY_SNAPSHOT} are the runtime's own`);
+      let files: [string, FileEntry][] = [...volume.tree.files];
+      if (temporary) {
+        const directory = normalizePath(args.directory);
+        const { files: most, bytes: budget } = args.limit as { files: number; bytes: number };
+        files = [];
+        let bytes = 0;
+        for (const file of volume.tree.walk(directory)) {
+          bytes += file[1].size;
+          if (files.push(file) > most) throw new HttpError(413, `${directory} has more than ${most} files`);
+          if (bytes > budget) throw new HttpError(413, `${directory} holds more than ${budget} bytes`);
+        }
+      }
       // Metadata only: the snapshot shares every chunk with the volume.
-      const snapshot: SnapshotSummary = { id: newId("snap", 8), volume: id, name: name.trim(), seq: volume.seq, createdAt: Date.now(), files: volume.tree.files.size, bytes: volume.tree.bytes };
-      // It refers to every chunk the volume's files do: a collection under way stands down.
-      await this.touch(volume.header.tenant, [...volume.tree.files.values()].flatMap(entry => entry.chunks));
+      const snapshot: SnapshotSummary = { id: newId("snap", 8), volume: id, name: name.trim(), seq: volume.seq, createdAt: Date.now(), files: files.length, bytes: files.reduce((sum, [, entry]) => sum + entry.size, 0) };
+      // It refers to every chunk its files do: a collection under way stands down.
+      await this.touch(volume.header.tenant, files.flatMap(([, entry]) => entry.chunks));
       // The file map can hold 100,000 entries, so it is a blob; the summary is a row.
-      await this.storage.writeBlob(snapshotFilesKey(id, snapshot.id), Buffer.from(JSON.stringify(Object.fromEntries(volume.tree.files))));
-      await this.fenced(volume, async sql => {
-        if ((await sql.query("select count(*) as count from volume_snapshots where volume = $1", [id])).rows[0].count >= VOLUME_LIMITS.snapshots) throw new HttpError(409, `A volume keeps at most ${VOLUME_LIMITS.snapshots} snapshots; delete one first`);
+      await this.storage.writeBlob(snapshotFilesKey(id, snapshot.id), Buffer.from(JSON.stringify(Object.fromEntries(files))));
+      const stale = await this.fenced(volume, async sql => {
+        const pattern = `${TEMPORARY_SNAPSHOT}%`;
+        // Temporary ones a crash left behind go now; they and the rest count separately, so tool calls never fill a volume's snapshots.
+        const left = temporary ? (await sql.query("delete from volume_snapshots where volume = $1 and name like $2 and created_at < $3 returning id", [id, pattern, Date.now() - TEMPORARY_SNAPSHOT_MS])).rows.map(row => row.id as string) : [];
+        const count = (await sql.query(`select count(*) as count from volume_snapshots where volume = $1 and name ${temporary ? "" : "not "}like $2`, [id, pattern])).rows[0].count;
+        if (count >= VOLUME_LIMITS.snapshots) throw new HttpError(409, temporary ? `${VOLUME_LIMITS.snapshots} tool calls are reading this volume's directories now; retry in a few minutes` : `A volume keeps at most ${VOLUME_LIMITS.snapshots} snapshots; delete one first`);
         await sql.query("insert into volume_snapshots (id, volume, name, seq, created_at, files, bytes) values ($1, $2, $3, $4, $5, $6, $7)",
           [snapshot.id, id, snapshot.name, snapshot.seq, snapshot.createdAt, snapshot.files, snapshot.bytes]);
+        return left;
       });
+      for (const old of stale) await this.storage.removeBlob(snapshotFilesKey(id, old)).catch(() => {});
       return snapshot;
     }
     if (op === "deleteSnapshot") {

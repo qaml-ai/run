@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { exportJWK, generateKeyPair, importJWK, SignJWT, type JWK } from "jose";
+import { createLocalJWKSet, errors, exportJWK, generateKeyPair, importJWK, jwtVerify, SignJWT, type JWK } from "jose";
 import type { Accounts, Sealed } from "./accounts.ts";
 import type { Db } from "./db.ts";
 import { HttpError } from "./http.ts";
@@ -16,6 +16,18 @@ export type AgentIdentity = { subject?: string; context?: Record<string, unknown
 /** Who a call is for: the agent's identity, and in its turn who is acting and where it came from. */
 /** `approval`: the call was approved by a person (inputs.ts): which input, who, and when. */
 export type TokenClaims = { tenant: string; agent: string; definition?: string; identity?: AgentIdentity; actor?: string; origin?: Record<string, unknown>; approval?: Record<string, unknown> };
+
+/**
+ * What a call-bound file URL grants (file-arguments.ts): one file at one version, or a file, a manifest or an archive of a
+ * directory in a snapshot made for the call. `path` is in the volume; `agentPath` is the path as the agent names it.
+ */
+export type FileGrant = {
+  tenant: string; agent: string; call: string; tool: string; volume: string; path: string; agentPath: string;
+  kind: "file" | "manifest" | "archive"; version?: number; snapshot?: string;
+};
+/** The `aud` of file URL tokens, which no tool source can have (theirs are URLs on their own origin). */
+export const FILE_AUDIENCE = "camelrun:file";
+const FILE_TYPE = "file+jwt";
 
 const ALGORITHM = "EdDSA";
 const TOKEN_SECONDS = 120;
@@ -77,6 +89,34 @@ export class RuntimeSigner {
 
   /** The published keys, for /.well-known/jwks.json. */
   async jwks() { return { keys: (await this.load()).published }; }
+
+  /** A file URL's token (file-arguments.ts), valid until `expiresAt` (ms), signed with the same key as identity tokens. */
+  async fileToken(grant: FileGrant, expiresAt: number): Promise<string> {
+    const { signing } = await this.load();
+    if (!signing) throw new Error("This runtime cannot sign file URLs");
+    return new SignJWT({ ...grant })
+      .setProtectedHeader({ alg: ALGORITHM, kid: signing.kid, typ: FILE_TYPE })
+      .setIssuer(this.issuer).setAudience(FILE_AUDIENCE).setSubject(grant.agent)
+      .setIssuedAt().setExpirationTime(Math.floor(expiresAt / 1000))
+      .sign(signing.key);
+  }
+
+  /**
+   * The grant a file URL's token carries: signed by one of this runtime's keys, for files, and not expired. A key made
+   * on another node since the keys were read is looked for once more.
+   */
+  async verifyFileToken(token: string): Promise<FileGrant & { exp: number }> {
+    const verify = async () => (await jwtVerify(token, createLocalJWKSet(await this.jwks()), { issuer: this.issuer, audience: FILE_AUDIENCE, algorithms: [ALGORITHM], typ: FILE_TYPE })).payload;
+    try {
+      return await verify().catch(error => {
+        if (!(error instanceof errors.JWKSNoMatchingKey) || Date.now() - (this.cache?.at ?? 0) < 10_000) throw error;
+        this.cache = undefined;
+        return verify();
+      }) as FileGrant & { exp: number };
+    } catch (error) {
+      throw new HttpError(403, error instanceof errors.JWTExpired ? "This link has expired" : "Invalid link");
+    }
+  }
 
   /** A token for one request to `audience` (the server's URL), valid for two minutes. */
   async token(audience: string, claims: TokenClaims): Promise<string> {
