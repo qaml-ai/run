@@ -23,6 +23,8 @@ export type ToolCall = {
   elicit?: boolean;
   /** The W3C trace context of the call's span, when its run's trace is exported: work the call starts (a subagent's run) continues the trace under it. */
   traceparent?: string;
+  /** In a child's run: its parent agent and its chain's first, from the run's signed chain (identity tokens' `par` and `root`). */
+  lineage?: { parent: string; root: string };
 };
 /**
  * A call's idempotency key: the agent, the history index of the message that made the call, the model's id for it,

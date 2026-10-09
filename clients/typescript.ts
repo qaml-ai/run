@@ -414,9 +414,10 @@ export interface CreateAgentOptions extends AgentOptions {
 }
 /**
  * A tool the runtime answers itself: web_fetch, web_search, schedule (wake-ups), ask_user (questions, waiting for the answer),
- * or delegate (sub-agents: needs `delegate` settings).
+ * delegate (sub-agents: needs `delegate` settings), or agents (sub-agents in the background: spawn_agent, wait_agent and
+ * list_agents, with the same settings).
  */
-export type Builtin = "web_fetch" | "web_search" | "schedule" | "ask_user" | "delegate" | "generate_image";
+export type Builtin = "web_fetch" | "web_search" | "schedule" | "ask_user" | "delegate" | "generate_image" | "agents";
 /**
  * A delegate target: a definition's key or id, as a string or `{ definition }`, or an existing agent's key
  * (`{ agent }`, which keeps its own history across calls). `name` is what the model calls it (default: the key); `description`
@@ -829,9 +830,9 @@ function provisioning(options: CreateAgentOptions) {
   const fields = ["subject", "context", "keyScope", "spendLimit", "runLimits", "modelHeaders", "definition", "mounts", "remount", "model", "thinkingLevel", "maxOutputTokens", "temperature", "initialMessages", "importMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "delegate", "mcpServers", "prompt"] as const;
   return withMultiAgent(Object.fromEntries(fields.filter(field => options[field] !== undefined).map(field => [field, options[field]])));
 }
-/** `delegate` settings bring their builtin: given the settings, the builtin is added. */
+/** `delegate` settings bring their builtin: given the settings without delegate or agents, delegate is added. */
 function withMultiAgent<T extends { builtins?: Builtin[]; delegate?: unknown }>(input: T): T {
-  return input.delegate && !input.builtins?.includes("delegate") ? { ...input, builtins: [...input.builtins ?? [], "delegate"] } : input;
+  return input.delegate && !input.builtins?.some(name => name === "delegate" || name === "agents") ? { ...input, builtins: [...input.builtins ?? [], "delegate"] } : input;
 }
 
 /** The `traceparent` header, when there is one to send. */

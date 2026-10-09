@@ -461,9 +461,9 @@ export class ToolSources {
           ...mcp,
         ];
       },
-      call: async ({ name, args, signal, origin, actor, run: runId, toolCallId, innerCallId, idempotencyKey, onProgress, approval, inputResponses, requestState, elicit }) => {
+      call: async ({ name, args, signal, origin, actor, run: runId, toolCallId, innerCallId, idempotencyKey, onProgress, approval, inputResponses, requestState, elicit, lineage }) => {
         // An approved call proves it to the tool: in its identity token and its `_meta`.
-        const turn = { ...(actor ? { actor } : {}), ...(origin ? { origin } : {}), ...(approval ? { approval } : {}), ...(runId ? { request: runId } : {}), ...(toolCallId ? { toolCall: toolCallId } : {}) };
+        const turn = { ...(actor ? { actor } : {}), ...(origin ? { origin } : {}), ...(approval ? { approval } : {}), ...(runId ? { request: runId } : {}), ...(toolCallId ? { toolCall: toolCallId } : {}), ...(lineage ?? {}) };
         // What a file URL is bound to: the call's stable key, else its tool call (and its place in a js_exec run).
         const call = idempotencyKey ?? (toolCallId && (innerCallId ? `${toolCallId}:${innerCallId}` : toolCallId)) ?? randomUUID();
         if (builtins.includes(name)) {

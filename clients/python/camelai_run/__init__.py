@@ -1072,10 +1072,10 @@ def _definition_fields(fields):
 
 
 def _with_multi_agent(fields):
-    """`delegate` settings bring their builtin: given the settings, the builtin is added."""
+    """`delegate` settings bring their builtin: given the settings without delegate or agents, delegate is added."""
     fields = _definition_fields(fields)
     builtins = fields.get("builtins") or []
-    return {**fields, "builtins": [*builtins, "delegate"]} if fields.get("delegate") and "delegate" not in builtins else fields
+    return {**fields, "builtins": [*builtins, "delegate"]} if fields.get("delegate") and "delegate" not in builtins and "agents" not in builtins else fields
 
 
 class Volume:
