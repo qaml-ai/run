@@ -341,6 +341,13 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
       }
       for (const parent of parents) {
         if (goneIds.has(parent)) continue;
+        // A notification lands (`landed_at`) as its turn begins, and its message is in history once the turn has it: the
+        // turns it and the messages started end first.
+        const turns = await sim.until(async () => {
+          const requests: any[] = (await sim.call(live()[0], `/v1/agents/${parent}`)).json?.requests ?? [];
+          return requests.filter(request => /^(?:child|msg)_/.test(request.id)).every(request => request.state === "completed") || undefined;
+        }, `${parent}'s notification turns to end`, Math.max(1, healedAt + 2 * plan.leaseTtlMs + 120_000 + high * 4 - sim.env.elapsed)).catch(() => false);
+        if (!turns) failures.push(`I21: ${parent}'s notification or message turns never ended`);
         const messages: any[] = (await sim.call(live()[0], `/v1/agents/${parent}/history`)).json?.messages ?? [];
         const seen = new Map<string, number>();
         for (const message of messages) if (message.role === "user" && message.requestId) seen.set(message.requestId, (seen.get(message.requestId) ?? 0) + 1);

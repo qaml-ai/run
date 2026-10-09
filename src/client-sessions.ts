@@ -391,8 +391,12 @@ const CONNECTION_LOST = "The server running this tool disconnected during the ca
   "taken effect. Check whether it did before trying it again; if you cannot check, tell the user it is unknown whether it went through.";
 /** How long a replaced connection stays open for the tool calls it has to answer. */
 const DRAIN_MS = 30_000;
-/** How long a node holds a child's row while it delivers the child's ending, before another may. */
-const CHILD_CLAIM_MS = 60_000;
+/**
+ * How long a node holds a child's row while it delivers the child's ending, before another may: two sweeps. A node lost
+ * mid-delivery delays the notification by that much; one slower than it is joined by another node's delivery, which the
+ * parent takes once all the same (its request id).
+ */
+const childClaimMs = (sweepMs: number | undefined) => Math.max(5_000, 2 * (sweepMs || MULTI_AGENT_LIMITS.sweepMs));
 /** How often a sweep asks after a child's resume that is not sent yet: it waits on a person, maybe for days. */
 const RESUME_CHECK_MS = 10 * 60_000;
 /** How long a spawned child may go without its request (its agent being made, its prompt sent) before a sweep calls it never started. */
@@ -2204,7 +2208,7 @@ export class ClientSessions {
     const ended = await this.recordEnding(row, record);
     if (ended.landed_at !== null) return;
     const now = Date.now();
-    const claimed = (await this.db.query("update agent_children set claimed_until = $2 where id = $1 and state = 'running' and ended_at is not null and (claimed_until is null or claimed_until < $3) returning *", [ended.id, now + CHILD_CLAIM_MS, now])).rows[0];
+    const claimed = (await this.db.query("update agent_children set claimed_until = $2 where id = $1 and state = 'running' and ended_at is not null and (claimed_until is null or claimed_until < $3) returning *", [ended.id, now + childClaimMs(this.options.childSweepMs), now])).rows[0];
     if (claimed) await this.deliverChild(claimed);
   }
 
@@ -2249,7 +2253,7 @@ export class ClientSessions {
       const { rows } = await this.db.query(`update agent_children set claimed_until = $2
         where id in (select id from agent_children where state = 'running' and (claimed_until is null or claimed_until < $1) and (ended_at is not null or checked_at < $3)
           order by checked_at limit 50 for update skip locked)
-        returning *`, [now, now + CHILD_CLAIM_MS, now - every]);
+        returning *`, [now, now + childClaimMs(every), now - every]);
       for (const claimed of rows) {
         let row = claimed;
         if (row.ended_at === null) {
