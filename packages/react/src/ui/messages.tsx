@@ -121,7 +121,9 @@ export function MessageList({ className, children, suggestions = [] }: { classNa
   useLayoutEffect(() => { if (atBottom.current && !anchor.current) toBottom(); }, [messages, toBottom]);
 
   const waiting = status === "submitted" && !messages.some(message => message.role === "assistant" && message.streaming);
-  const empty = !messages.length && status !== "connecting";
+  // Until history is read, no messages is no news: the empty state waits for it.
+  const loaded = useAgentSelector(snapshot => snapshot.loaded);
+  const empty = !messages.length && loaded;
   return (
     <div className={cx("agent-chat__viewport", className)}>
       <div ref={scroller} className="agent-chat__messages" role="log" aria-label={labels.conversation} aria-live="off" tabIndex={0} onScroll={onScroll}>

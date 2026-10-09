@@ -59,6 +59,7 @@ to under 30 KB). `state` is:
 | `pendingInputs` | inputs the agent waits on (answer them through your server) |
 | `lastOutcome` | how the latest run ended: `{id, stopped?, error?}` |
 | `hasOlder` | whether `loadOlder()` has more |
+| `loaded` | history and state have been read since it connected: until then, no messages means they are on their way, so show a loading state rather than an empty chat |
 | `connected`, `transport` | `sse`, or `poll` where a proxy buffers streams |
 | `expired` | the token expired (or was refused) and could not be renewed: the watcher stopped; watch again with a new token |
 

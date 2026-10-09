@@ -80,6 +80,11 @@ export interface ChatSnapshot {
   error: ChatError | null;
   hasOlder: boolean;
   connected: boolean;
+  /**
+   * Whether the agent's history and state have been read since it connected. Until then, no messages means they are
+   * on their way, not an empty conversation: show a loading state.
+   */
+  loaded: boolean;
   agentId: string | null;
 }
 
@@ -456,7 +461,7 @@ export function readsFrom(minted: { url?: string; proxy?: boolean }, endpoint: s
 }
 
 const newId = () => `cm_${globalThis.crypto.randomUUID().replace(/-/g, "")}`;
-const EMPTY: ChatSnapshot = { status: "connecting", messages: [], inputs: [], error: null, hasOlder: false, connected: false, agentId: null };
+const EMPTY: ChatSnapshot = { status: "connecting", messages: [], inputs: [], error: null, hasOlder: false, connected: false, loaded: false, agentId: null };
 
 /** A chat with the user's agent, through your agent handler: see `AgentChatOptions` and `ChatSnapshot`. */
 export function createAgentChat(options: AgentChatOptions): AgentChat {
@@ -533,7 +538,7 @@ export function createAgentChat(options: AgentChatOptions): AgentChat {
       : stableInputs.some(input => !input.answering) ? "input_required"
       : !view?.transport ? "connecting"
       : "ready";
-    const next: ChatSnapshot = { status, messages, inputs: stableInputs, error, hasOlder: view?.hasOlder ?? false, connected: view?.connected ?? false, agentId };
+    const next: ChatSnapshot = { status, messages, inputs: stableInputs, error, hasOlder: view?.hasOlder ?? false, connected: view?.connected ?? false, loaded: view?.loaded ?? false, agentId };
     return reuse(snapshot, next);
   }
   function emit() {
