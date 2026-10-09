@@ -60,8 +60,14 @@ export async function runtimeSecrets(env = process.env) {
     try { toolSearchKey = (await read(toolSearchArn)).trim() || null; }
     catch (error) { if ((error as Error).name !== "ResourceNotFoundException") throw error; toolSearchKey = null; }
   }
-  // Journey events' signing secret (src/journey.ts): named only where the operator set one.
-  const journeySecret = journeyArn ? (await read(journeyArn)).trim() : env.AGENT_JOURNEY_SECRET;
+  // Journey events' signing secret (src/journey.ts): named only where the operator set one. Like Stripe's, the
+  // secret may exist before anyone stores its value: null, and until then journey events are off.
+  let journeySecret: string | null | undefined = env.AGENT_JOURNEY_SECRET;
+  if (journeyArn) {
+    try { journeySecret = (await read(journeyArn)).trim() || null; }
+    catch (error) { if ((error as Error).name !== "ResourceNotFoundException") throw error; journeySecret = null; }
+    if (journeySecret === null) console.error(JSON.stringify({ type: "journey_not_configured", reason: "AGENT_JOURNEY_SECRET_ARN has no value yet" }));
+  }
   // The secret the admin site asks the journey store's reports with (src/admin-report.ts). Like Stripe's, the secret
   // may exist before anyone stores its value: until then the site says reports are not configured.
   const reportArn = exclusive(["AGENT_JOURNEY_REPORT_SECRET"], "AGENT_JOURNEY_REPORT_SECRET_ARN");
@@ -72,7 +78,8 @@ export async function runtimeSecrets(env = process.env) {
   }
   return {
     ...(journeySecret === undefined ? {} : { journeySecret }),
-    ...(journeyReportSecret ? { journeyReportSecret } : {}),
+    // Reports are the journey store's: with journey events waiting for their secret, they wait too.
+    ...(journeyReportSecret && journeySecret !== null ? { journeyReportSecret } : {}),
     toolSearchKey,
     sessionSecret: sessionArn ? await read(sessionArn) : env.AGENT_SESSION_SECRET,
     secretsKey: keyArn ? await read(keyArn) : env.AGENT_SECRETS_KEY,
