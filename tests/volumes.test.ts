@@ -197,6 +197,14 @@ test("a read of many files at once is refused past its limits, saying to narrow 
   assert.equal((await volumes.call(id, "acme", "readAll", { path: "/many", glob: "000*.txt" })).files.length, 10);
 });
 
+test("a read of many files at once is refused past its limits, saying to narrow it", async t => {
+  const { volumes, write } = await service(t);
+  const { id } = await volumes.create("acme");
+  for (let index = 0; index <= READ_ALL_LIMITS.files; index++) await write(id, `/many/${String(index).padStart(4, "0")}.txt`, "x");
+  await assert.rejects(volumes.call(id, "acme", "readAll", { path: "/many" }), (error: Error & { status?: number }) => error.status === 413 && /More than 1000 files match; narrow prefix or glob/.test(error.message));
+  assert.equal((await volumes.call(id, "acme", "readAll", { path: "/many", glob: "000*.txt" })).files.length, 10);
+});
+
 test("large files are read in bounded windows that fetch only the chunks they cover", async t => {
   const { db } = await testDatabase();
   const storage = memoryStorage(postgresTail(db, { unfenced: true }));

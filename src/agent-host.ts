@@ -19,6 +19,7 @@ import { backgroundTokens, compactionNeed, compactionSettings, contextTokens, ex
 import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
 import { isStalled, streamTimeouts } from "./model-stream.ts";
 import { forcedToolChoice } from "./tool-choice.ts";
+import { filesRefused, schemaAccepts } from "./tool-policy.ts";
 import { callSettings } from "./pi-catalog.ts";
 import { describeFile, documentPayload, FILE_LIMITS, nativeBlock, unseen, validFileRef, type FileRef } from "./files.ts";
 import { CHUNK_BYTES, chunksOf, type HistoryChunk } from "./history-pages.ts";
@@ -37,6 +38,13 @@ const FORCED_OUTPUT_REQUESTS = 3;
 
 /** Images one agent scales down at once for its requests (`fitImage`). */
 const FIT_CONCURRENCY = 2;
+/** A direct call's arguments, as Pi checks them; ones naming a file for a tool that takes none are refused saying so. */
+const checkedArguments: typeof validateToolArguments = (tool, call) => {
+  try { return validateToolArguments(tool, call); } catch (error) {
+    const refused = filesRefused(tool.name, tool.parameters, call.arguments);
+    throw refused ? new Error(refused) : error;
+  }
+};
 /** A file as requests carry it: its bytes (base64; an image's type if it was scaled down), or why an image is omitted. */
 type Hydrated = { data: string; mimeType?: string } | { omitted: string };
 const hydratedSize = (value: Hydrated) => "data" in value ? value.data.length : value.omitted.length;
@@ -279,7 +287,7 @@ export function createAgentHost(hostIO: HostIO) {
       const tool = agent!.state.tools.find(entry => entry.name === call.name);
       try {
         if (!tool) throw new Error(`${call.name} is no longer available to this agent`);
-        return await tool.execute(call.id, validateToolArguments(tool, call), signal) as Settled;
+        return await tool.execute(call.id, checkedArguments(tool, call), signal) as Settled;
       } catch (error) { return { content: [{ type: "text", text: errorText(error) }], isError: true }; }
     }));
     for (const [index, call] of calls.entries()) {
@@ -552,6 +560,12 @@ export function createAgentHost(hostIO: HostIO) {
     return tools.filter(tool => config.codeMode === false || ["direct", "both"].includes(tool.exposure ?? "codemode")).map(tool => ({
         name: tool.name, label: tool.name, description: tool.description,
         parameters: tool.parameters as AgentTool["parameters"], executionMode: tool.executionMode,
+        // Ahead of Pi's own check, whose complaint about a file named for a tool that takes none reads as a wrong path.
+        prepareArguments: (args: unknown) => {
+          const refused = filesRefused(tool.name, tool.parameters, args);
+          if (refused && !schemaAccepts(tool.parameters, args)) throw new Error(refused);
+          return args as Record<string, unknown>;
+        },
         execute: async (toolCallId, args, signal) => {
           signal?.throwIfAborted();
           const value = await io.tool(tool.name, args as Record<string, unknown>, { toolCallId, ...made(toolCallId) });
@@ -1158,7 +1172,7 @@ export function createAgentHost(hostIO: HostIO) {
         try {
           if (!tool || !toolCall) throw new Error(`${toolCall?.name ?? "This tool"} is no longer available to this agent`);
           // The arguments as Pi gave them the first time: the approval is bound to them (inputs.ts).
-          result = await tool.execute(call.toolCallId, validateToolArguments(tool, toolCall), signal) as Settled;
+          result = await tool.execute(call.toolCallId, checkedArguments(tool, toolCall), signal) as Settled;
         } catch (error) { result = { content: [{ type: "text", text: errorText(error) }], isError: true }; }
         // Asked again (another round of input): the call stays open, as it did the first time.
         if ((result!.details as { inputRequired?: boolean } | undefined)?.inputRequired) {

@@ -76,6 +76,12 @@ export const TOOL_FILE_LIMITS = Object.freeze({
   textBytes: 64 * 1024,
   /** What one tool call, and all the calls of one run, may save. */
   callBytes: 64 * 1024 * 1024, runBytes: 256 * 1024 * 1024,
+  /** A call-bound file URL's lifetime, in seconds; a directory's snapshot is kept this long after its call ends. */
+  urlSeconds: 5 * 60,
+  /** A directory sent to a tool: its files, and their bytes. */
+  directoryFiles: 1000, directoryBytes: 256 * 1024 * 1024,
+  /** Files up to this size carry a sha-256 digest (each is read to compute it). */
+  digestBytes: 64 * 1024 * 1024,
 });
 
 /** Audio transcribed (transcription.ts): what a provider takes, and what one message may carry. */

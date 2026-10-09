@@ -19,7 +19,7 @@ import httpx
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "clients" / "python"))
-from camelai_run import AgentClient, _answer_for, _origin, AgentError, AgentRuntime, Agents, RunError, Runs, RuntimeTokenError, TestRuntime, ToolContext, WebhookVerificationError, _answer_mcp, _tool_context, serve_tools, tool, verify_runtime_token, verify_webhook
+from camelai_run import AgentClient, _answer_for, _origin, AgentError, AgentRuntime, Agents, RunError, Runs, RuntimeTokenError, TestRuntime, ToolContext, WebhookVerificationError, _answer_mcp, _tool_context, serve_tools, tool, verify_file_url, verify_runtime_token, verify_webhook
 from camelai_run import sync
 
 DATABASE_URL = os.environ.get("AGENT_TEST_DATABASE_URL", "postgres://postgres:test@127.0.0.1:55432/postgres")
@@ -1172,6 +1172,26 @@ class ServeToolsTest(unittest.IsolatedAsyncioTestCase):
         identity = await verify_runtime_token(self.runtime.token(self.APP, tenant="b"), audience=self.APP, **{**options, "tenant": ["a", "b"]})
         self.assertEqual(identity.tenant, "b")
 
+    async def test_verify_file_url_checks_the_url_is_the_runtimes_for_a_file_of_the_agent(self):
+        url = self.runtime.file_url(agent="client_a")
+        claims = await verify_file_url(url, agent="client_a", **self.runtime.options)
+        self.assertEqual((claims["kind"], claims["agentPath"], claims["version"], claims["tenant"]), ("file", "/workspace/report.pdf", 1, "test"))
+        self.assertEqual((await verify_file_url(url, runtime=self.runtime.url, http=self.runtime.http))["agent"], "client_a")
+        stranger = TestRuntime()
+        cases = [
+            (url, {"agent": "client_b"}, "another agent"),
+            (url, {"tenant": ["acme"]}, "another tenant"),
+            (url.replace("https://runtime.test", "https://evil.test"), {}, "not at the runtime"),
+            (f"{self.runtime.url}/v1/links/x/y", {}, "Not a file URL"),
+            (self.runtime.file_url(expires_in=-120), {}, "expired"),
+            (f"{self.runtime.url}/v1/files/{self.runtime.token(self.APP)}/x", {}, "not for a file"),
+            (stranger.file_url().replace(stranger.url, self.runtime.url), {}, "does not publish"),
+        ]
+        for target, options, error in cases:
+            with self.assertRaisesRegex(RuntimeTokenError, error):
+                await verify_file_url(target, **{**self.runtime.options, **options})
+        await stranger.http.aclose()
+
     async def test_the_hosted_runtime_signs_as_agents_camelai_dev_at_either_url(self):
         for url in ("https://run.camelai.com", "https://agents.camelai.dev"):
             runtime = TestRuntime(url)
@@ -1334,6 +1354,12 @@ class WsgiServeToolsTest(unittest.TestCase):
             sync.serve_tools([list_todos], **options)
         with self.assertRaisesRegex(TypeError, "Pass tenant="):
             sync.verify_runtime_token(self.runtime.token(self.APP), audience=self.APP, **options)
+
+    def test_verify_file_url_is_synchronous(self):
+        url = self.runtime.file_url(kind="manifest", snapshot="snap_1", version=None)
+        self.assertEqual(sync.verify_file_url(url, **self.runtime.options)["kind"], "manifest")
+        with self.assertRaisesRegex(RuntimeTokenError, "another agent"):
+            sync.verify_file_url(url, agent="client_other", **self.runtime.options)
 
     def test_a_real_wsgi_server_runs_plain_tools_in_the_request_thread(self):
         from wsgiref.simple_server import WSGIRequestHandler, make_server

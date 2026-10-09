@@ -415,6 +415,9 @@ own](#an-agents-own-mcp-servers), without credentials.
   identity tokens, above). `headers` and `auth` are stored sealed; the API
   returns only `headerNames` and `auth.type`. Updating a server without them
   keeps its stored credentials, unless its URL moved to another origin.
+- `fileArguments` (`"on"` or `"off"`) says whether its tools are sent the
+  agent's files: on by default with `auth: {"type": "runtime"}` only. See
+  [Files in tool calls](#files-in-tool-calls).
 - Tools reach the model as `<server>__<tool>`, filtered by `allowTools` and
   `denyTools`. A server can set a tool's own exposure in `tools/list` with
   `_meta["agent-runtime/exposure"]`, and its deadline with
@@ -439,8 +442,8 @@ own](#an-agents-own-mcp-servers), without credentials.
 
 Each call carries `_meta` for the server: `agent-runtime/idempotencyKey` (stable
 across attempts), `agent-runtime/callId`, `agent-runtime/toolCallId` (and
-`agent-runtime/innerCallId` for a call from code), `agent-runtime/actor` and
-`agent-runtime/origin`.
+`agent-runtime/innerCallId` for a call from code), `agent-runtime/actor`,
+`agent-runtime/origin`, and `camelrun/files` when files are sent.
 
 ### OpenAPI specs
 
@@ -457,7 +460,8 @@ Every operation of an OpenAPI 3 spec (JSON or YAML) is a tool:
   operation's path, query and header parameters by name, plus `body` for the
   request body (JSON, or form-encoded with nested values in brackets, as Stripe
   reads them). A `multipart/form-data` body's file fields, and a binary body,
-  take `{"$file": path}` and stream the file.
+  take `{"$file": path}` and stream the file, when the source's
+  `fileArguments` is on (as for MCP servers).
 - The spec is fetched and checked when the definition is saved, and its
   operations (after `allowTools`/`denyTools`, at most 1024) are stored with it:
   an agent's tools never change under it. Save the definition again to take a
@@ -583,18 +587,132 @@ of tools costs a script nothing until it asks. Ranking is by keywords, and, on
 the hosted runtime, also by meaning (embeddings, then a model that drops tools
 that cannot do what is asked); searches ranked by meaning are billed at cost.
 
-## Files through tool calls
+## Files in tool calls
 
 Tools of a definition's sources take and return files without their bytes
-passing through the model:
+passing through the model. The model names a file by its path, as
+`{"$file": "/workspace/report.pdf"}`, and the runtime sends it the way the
+tool's schema asks.
 
-- **In.** An argument `{"$file": "/workspace/report.pdf"}` names a file in the
-  agent's mounts. The runtime fills it in by the tool's schema: a base64 field
-  gets the content (up to 4 MiB), a URL field a signed link to the file (15
-  minutes), an OpenAPI multipart or binary body the streamed file.
-- **Out.** Images, audio, blobs and file responses are saved to
-  `/workspace/tool-outputs/<tool>/<call>/<name>`, and the model gets a reference
-  to each (shown natively when it is an image or PDF it can view).
+### Marking a parameter
+
+A string parameter takes a file when it is marked as MCP's file inputs proposal
+(SEP-2631, a draft) marks one:
+
+```json
+{"type": "object", "properties": {
+  "attachment": {"type": "string", "format": "uri",
+    "x-mcp-file": {"accept": ["application/pdf", "image/*"], "maxSize": 10485760, "transferModes": ["url", "inline"]}},
+  "site": {"type": "string", "format": "uri", "x-mcp-file": {}, "x-camelrun-directory": true}
+}}
+```
+
+- `accept`: the MIME types it takes (`image/*` and `*/*` work). Others are a
+  tool error.
+- `maxSize`: the most bytes it takes. A larger file is a tool error.
+- `transferModes`: `url` (the default), `inline`, or both.
+- `x-camelrun-directory: true`: the parameter takes a directory.
+
+Unmarked parameters take files too, as before: a base64 field
+(`contentEncoding: base64`, OpenAPI's `format: byte` or `binary`) gets the
+content (up to 4 MiB), and a `format: uri` field, or one named like a URL
+(`source_url`), gets a URL. An OpenAPI multipart or binary body streams the
+file. The model sees `{"$file": path}` offered beside the field, with what the
+tool takes.
+
+### What the tool receives
+
+- **A URL**, `https://<runtime>/v1/files/<token>/<name>`. It answers `GET`
+  (with `Range`) with the file, and nothing else.
+- **Inline**, when `transferModes` has `inline` and the file is at most 4 MiB:
+  a `data:<type>;base64,…` URI. With `inline` alone, a larger file is a tool
+  error.
+- **A directory**: the URL of a manifest:
+
+```json
+{"snapshot": "snap_…", "root": "/workspace/site",
+ "files": [{"path": "index.html", "uri": "https://…/v1/files/…/index.html", "name": "index.html",
+            "mimeType": "text/html", "size": 1840, "digest": {"algorithm": "sha-256", "value": "9f86d0…"}}],
+ "archive": {"uri": "https://…/v1/files/…/site.tar.gz", "mimeType": "application/gzip"}}
+```
+
+  Each file has its own URL, and `archive` is a tar.gz of them all, with paths
+  relative to the directory. A directory has at most 1,000 files and 256 MiB.
+
+An MCP call also carries `_meta["camelrun/files"]`: each file sent as a URI,
+by its argument's JSON pointer, as SEP-2631 describes a file:
+
+```json
+{"/attachment": {"uri": "https://…", "name": "report.pdf", "mimeType": "application/pdf",
+                 "size": 48213, "digest": {"algorithm": "sha-256", "value": "e3b0c4…"}}}
+```
+
+`digest` is the sha-256 of the bytes, in hex; files over 64 MiB have none.
+OpenAPI calls have no `_meta`.
+
+### URL lifetime, binding and versions
+
+- A URL lasts 5 minutes: fetch the file while the call runs.
+- It is bound to one call. Its token names the tenant, the agent, the call (its
+  idempotency key), the tool and the file.
+- A file's URL serves the version the call named. Once the file changes, it
+  answers 410 ("changed since the call"), so a tool never gets a mix of
+  versions.
+- A directory is sent as a snapshot made for the call. Its files read as they
+  were then, whatever the agent writes meanwhile. The snapshot is deleted after
+  the call, once its URLs have expired; it is not listed with the volume's
+  snapshots and does not count toward them.
+- An expired or altered URL answers 403.
+
+### Verifying a URL
+
+A tool can check that a URL came from camelRun, for the agent it expects:
+
+```ts
+import { verifyFileUrl } from "@camelai/run/server";
+
+const file = await verifyFileUrl(args.attachment, { runtime: "https://run.camelai.com", tenant: "acme", agent: expectedAgent });
+// { tenant, agent, call, tool, volume, path, agentPath, kind: "file" | "manifest" | "archive", version | snapshot, exp }
+```
+
+```python
+from camelai_run import verify_file_url
+
+file = await verify_file_url(arguments["attachment"], runtime="https://run.camelai.com", tenant="acme")
+```
+
+It checks that the URL is at the runtime and that its token is signed by the
+runtime's keys (`/.well-known/jwks.json`, the identity tokens' keys) for files,
+and has not expired. `camelai_run.sync.verify_file_url` is the synchronous one;
+`testRuntime().fileUrl()` (Python `TestRuntime().file_url()`) makes one to test
+with.
+
+### Which sources get files
+
+A source's `fileArguments` says whether it is sent files: `"on"` or `"off"`.
+
+- By default it is on for sources with `auth: {"type": "runtime"}`: your own
+  servers, which check who is calling.
+- It is off for every other source. Its tools are not offered `{"$file": …}`,
+  a `$file` argument is a tool error, and nothing about files reaches it. A
+  model talked into it could otherwise send any file the agent can read to
+  another party's server.
+- Set `"fileArguments": "on"` on a third-party server you trust with the
+  agent's files.
+
+```json
+{"mcpServers": [{"name": "docs", "url": "https://mcp.example.com/mcp", "fileArguments": "on"}]}
+```
+
+### Files a tool returns
+
+- Images, audio, blobs and long text resources are saved to
+  `/workspace/tool-outputs/<tool>/<call>/<name>`, and the model gets a
+  reference to each (shown natively when it is an image or PDF it can view).
+  So are binary OpenAPI responses and `web_fetch` downloads.
+- For sources with `fileArguments` on, a `resource_link` to an `https:` or
+  `data:` URI is saved too. It is fetched through the outbound guard, at most
+  64 MiB. The transcript keeps the file's path, never the URL.
 - One call may save 64 MiB, and one run 256 MiB.
 
 ## Outbound calls
