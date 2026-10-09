@@ -25,6 +25,7 @@ export const PAGES: { section: string; path: string; about: string }[] = [
   { section: "Guides", path: "frontend.md", about: "a streaming chat with each user's agent in your app: `npm create @camelai/run-app`, or one server route and one React component in an app you have" },
   { section: "Guides", path: "guides/browser.md", about: "browser tokens and the watcher: showing an agent live in a web page" },
   { section: "Guides", path: "guides/voice.md", about: "audio in messages transcribed for the model, and POST /v1/transcriptions: formats, limits, billing, privacy" },
+  { section: "Guides", path: "guides/images.md", about: "making and editing images with POST /v1/images: sizes, quality, saving to volumes, safety refusals, limits, cost per image" },
   { section: "Guides", path: "guides/files.md", about: "attachments, what the model sees, files out, volumes, signed links" },
   { section: "Guides", path: "guides/multi-user.md", about: "an agent per user or conversation, identity, spend limits and keys per customer" },
   { section: "Guides", path: "guides/webhooks.md", about: "run and input events, signatures, delivery" },

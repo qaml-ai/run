@@ -70,6 +70,7 @@ import { checkSandbox, type CodeExecutor } from "./codemode.ts";
 import { V8Exec } from "./v8-exec.ts";
 import { pricingFromEnvironment } from "./pricing.ts";
 import { openaiTranscription, Transcriber } from "./transcription.ts";
+import { Imager, openaiImages } from "./images.ts";
 import { searchProvidersFromEnvironment, WebSearch } from "./web-search.ts";
 import { WebRender } from "./web-render.ts";
 import { Stripe } from "./stripe.ts";
@@ -334,21 +335,29 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     outbound: outbound.withoutOrigins(), key: webKey, price: accounts.billing.pricing.webRender, endpoint: config.firecrawlUrl,
     onRender: (tenant, agent, usage) => accounts.recordUsage(tenant, agent, usage),
   });
-  // Speech to text, for audio attached to messages and POST /v1/transcriptions: on the tenant's OpenAI key as a model call
-  // resolves it (its key scope's, its own, else the platform's, which a prepaid tenant pays for per second of audio).
+  // A provider's key for speech to text and images, as a model call resolves it: its key scope's, its own, else the
+  // platform's, which a prepaid tenant pays for (per second of audio, per token of an image).
+  const providerKey = async (tenant: string, keyScope: string | undefined, provider: string) => {
+    const entry = keyScope ? await keyScopes.entry(tenant, keyScope, provider) : undefined;
+    // A scope's entry, as its model calls take it: its key, or an address (a gateway) that needs none.
+    if (entry?.apiKey || entry?.baseUrl) return { apiKey: entry.apiKey ?? "", ...(entry.baseUrl ? { baseUrl: entry.baseUrl } : {}), ...(entry.headers ? { headers: entry.headers } : {}), platform: false };
+    const resolved = await accounts.providerKey(tenant, provider);
+    if (!resolved) return undefined;
+    const platform = resolved.source !== "tenant";
+    if (resolved.source === "platform") { const limited = await accounts.billing.creditLimit(tenant); if (limited) throw limited; }
+    return { apiKey: resolved.key, platform };
+  };
+  // Speech to text, for audio attached to messages and POST /v1/transcriptions.
   const transcriber = new Transcriber({
     provider: openaiTranscription({ outbound, ...(env.AGENT_TRANSCRIPTION_URL ? { baseUrl: env.AGENT_TRANSCRIPTION_URL } : {}) }),
-    key: async (tenant, keyScope, provider) => {
-      const entry = keyScope ? await keyScopes.entry(tenant, keyScope, provider) : undefined;
-      // A scope's entry, as its model calls take it: its key, or an address (a gateway) that needs none.
-      if (entry?.apiKey || entry?.baseUrl) return { apiKey: entry.apiKey ?? "", ...(entry.baseUrl ? { baseUrl: entry.baseUrl } : {}), ...(entry.headers ? { headers: entry.headers } : {}), platform: false };
-      const resolved = await accounts.providerKey(tenant, provider);
-      if (!resolved) return undefined;
-      const platform = resolved.source !== "tenant";
-      if (resolved.source === "platform") { const limited = await accounts.billing.creditLimit(tenant); if (limited) throw limited; }
-      return { apiKey: resolved.key, platform };
-    },
+    key: providerKey,
     price: () => accounts.billing.pricing.transcription,
+  });
+  // Images made, for POST /v1/images.
+  const imager = new Imager({
+    provider: openaiImages({ outbound, ...(env.AGENT_IMAGES_URL ? { baseUrl: env.AGENT_IMAGES_URL } : {}) }),
+    key: providerKey,
+    price: () => accounts.billing.pricing.image,
   });
   // Files sent to tools as URLs bound to their call, signed with the identity tokens' key (file-arguments.ts).
   const fileUrls = new FileUrls({ signer, get volumes() { return volumes; }, publicUrl: () => links.publicUrl });
@@ -1002,16 +1011,28 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   // Browser tokens: HMACs under a key derived from the session secret, so any node checks any node's.
   const browserTokens = new BrowserTokens(sessionSecret);
   if (billingMailer) app.route("/", billingMailer.feedback());
+  // A transcription or images asked for alone count as a run: refused past a monthly cap, spent credit or runs per minute.
+  const admitAlone = async (tenant: string) => {
+    const refused = await accounts.runLimit(tenant);
+    if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
+    await rateLimits.run(tenant);
+  };
   app.route("/", api({ accounts, journey, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return `${chosen.provider}/${chosen.id}`; }, keyScopes, webhooks, telemetry, scheduler, accountDeletions, ...(config.idempotencyLockMs !== undefined ? { idempotencyLockMs: config.idempotencyLockMs } : {}), channels, volumes, definitions, links, fileUrls, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, historyPage: historyPageAnywhere, verifyKeys: config.verifyKeys,
     rateLimits, clientAddress: c => requestClient(c).address, runRetentionSeconds, requestAnywhere,
     transcriptions: {
       transcriber, outbound: outbound.withoutOrigins(),
-      admit: async tenant => {
-        const refused = await accounts.runLimit(tenant);
-        if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
-        await rateLimits.run(tenant);
-      },
+      admit: admitAlone,
       record: (tenant, usage) => accounts.recordUsage(tenant, "", usage),
+    },
+    images: {
+      imager, outbound: outbound.withoutOrigins(),
+      admit: admitAlone,
+      record: (tenant, usage) => accounts.recordUsage(tenant, "", usage),
+      owns: (tenant, volume) => volumes.owns(volume, tenant),
+      save: async (tenant, volume, path, bytes, contentType) => {
+        const { chunks: _chunks, ...entry } = await volumes.put(tenant, volume, path, bytes, { contentType, by: "images" });
+        return entry;
+      },
     },
     runPrecheck: async tenant => { await rateLimits.runsLeft(tenant); const refused = await busyAgents.check(tenant); if (refused) throw refused; },
     createRun: (tenant, params, key, run) => createAgent(tenant, params, key, undefined, undefined, run) as Promise<{ id: string; existing?: boolean }>,

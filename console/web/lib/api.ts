@@ -120,7 +120,7 @@ export interface OAuthGrant { id: string; clientName: string; login: string | nu
 export interface Usage {
   since: number;
   totals: { responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
-  days: { day: string; model: string; kind: "turn" | "compaction" | "transcription"; responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; platformCost: number }[];
+  days: { day: string; model: string; kind: "turn" | "compaction" | "transcription" | "image"; responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; platformCost: number }[];
 }
 /** Credit amounts are integer micro-USD. */
 export type LedgerKind = "grant" | "purchase" | "usage" | "storage" | "adjustment" | "refund";

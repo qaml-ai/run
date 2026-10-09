@@ -590,12 +590,12 @@ export type DefinitionConfig = { id: string; revision: number; config: Pick<Agen
 /**
  * A model response's usage, a web tool's call (`searches`: web searches, `renders`: pages web_fetch had
  * rendered), tool search's ranking by meaning (`toolSearch`: `toolSearches` searches, none for
- * embedding a catalog ahead of them), or audio transcribed (kind `transcription`: `audioSeconds` of it),
- * with its cost in `usage.cost.total`.
+ * embedding a catalog ahead of them), audio transcribed (kind `transcription`: `audioSeconds` of it), or
+ * images made (kind `image`: `images` of them, their tokens in `usage`), with its cost in `usage.cost.total`.
  */
 export type UsageRecord = {
-  provider?: string; model?: string; usage: any; timestamp?: number; kind?: "turn" | "compaction" | "transcription"; platform?: boolean; searches?: number; renders?: number; toolSearch?: boolean; toolSearches?: number;
-  transcriptions?: number; audioSeconds?: number;
+  provider?: string; model?: string; usage: any; timestamp?: number; kind?: "turn" | "compaction" | "transcription" | "image"; platform?: boolean; searches?: number; renders?: number; toolSearch?: boolean; toolSearches?: number;
+  transcriptions?: number; audioSeconds?: number; images?: number;
   /** For a model response: the run it was in, who acted in it, whom the agent acts for, and its key scope (for usage webhooks). */
   requestId?: string; actor?: string; identity?: AgentIdentity; keyScope?: string;
 };

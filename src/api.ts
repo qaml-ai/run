@@ -31,7 +31,8 @@ import * as schema from "./api-schemas.ts";
 import { normalizePath, snapshotContents, VOLUME_LIMITS, type FileEntry, type VolumeService } from "./volumes.ts";
 import { actorInput, identityInput } from "./identity.ts";
 import { languageInput, transcribeRequest, type TranscriptionService } from "./transcription.ts";
-import { AUDIO_LIMITS } from "./limits.ts";
+import { imageOptions, imageRequest, type ImageService, type ImageSource } from "./images.ts";
+import { AUDIO_LIMITS, IMAGE_LIMITS } from "./limits.ts";
 import { declaredType, downloadHeaders, fileResponse, type FileLinks } from "./files.ts";
 import type { FileUrls } from "./file-arguments.ts";
 import { tar } from "./tar.ts";
@@ -106,6 +107,8 @@ export interface ApiContext {
   rateLimits?: Pick<RateLimits, "agentCreate" | "tenantLimit">;
   /** `POST /v1/transcriptions`; without it, transcription is not enabled. */
   transcriptions?: TranscriptionService;
+  /** `POST /v1/images`; without it, image generation is not enabled. */
+  images?: ImageService;
   /** The caller's address (Get Help's per-source limit); by default the load balancer's, as `clientAddress` reads it without Cloudflare. */
   clientAddress?: (c: Context) => string | undefined;
 }
@@ -124,7 +127,7 @@ const OAUTH_ROUTES = [
   /^(?:GET|DELETE) \/v1\/agents\/[^/]+$/,
   /^(?:GET|POST|PUT|PATCH|DELETE) \/v1\/agents\/[^/]+\/(?:abort|configuration|events|fork|history|inputs|inputs\/[^/]+|mounts|prompt|requests\/[^/]+|schedules|schedules\/[^/]+|state|uploads\/[^/]+\/[^/]+)$/,
   /^(?:GET|POST|PATCH|DELETE) \/v1\/definitions(?:\/[^/]+(?:\/agents)?)?$/,
-  /^POST \/v1\/transcriptions$/,
+  /^POST \/v1\/(?:transcriptions|images)$/,
   /^(?:POST \/v1\/runs|(?:GET|DELETE) \/v1\/runs\/[^/]+|GET \/v1\/runs\/[^/]+\/(?:events|messages)|POST \/v1\/runs\/[^/]+\/abort)$/,
 ];
 /** An agent's token is for the application that serves it, which an OAuth grant is not: its answers leave it out. */
@@ -304,7 +307,7 @@ export function api(context: ApiContext) {
   // Idempotency-Key on every POST: an agent's is its own key (create or upsert), and a prompt's its request's id.
   app.use("/v1/*", idempotency({
     db: () => clients.db, tenant: c => c.var.principal.tenant, lockMs: context.idempotencyLockMs,
-    skip: path => path === "/v1/agents" || path === "/v1/definitions" || path === "/v1/runs" || path === "/v1/transcriptions" || /^\/v1\/agents\/[^/]+\/(?:prompt|fork)$/.test(path),
+    skip: path => path === "/v1/agents" || path === "/v1/definitions" || path === "/v1/runs" || path === "/v1/transcriptions" || path === "/v1/images" || /^\/v1\/agents\/[^/]+\/(?:prompt|fork)$/.test(path),
     // Answers with a secret shown once: API tokens (a new tenant's too), signing secrets, browser tokens, signed links.
     secret: path => /^\/v1\/(?:tokens|tenants|webhooks|webhooks\/[^/]+\/secret|usage-webhook\/secret|agents\/[^/]+\/(?:browser-tokens|links|credentials\/rotate)|volumes\/[^/]+\/links)$/.test(path),
   }));
@@ -846,6 +849,57 @@ export function api(context: ApiContext) {
     const language = languageInput(input.language);
     return json(c, 200, await transcribeRequest(service, c.var.principal.tenant, {
       audio: bytes ? { bytes } : { url: input.url! }, ...(language ? { language } : {}), ...(input.prompt ? { prompt: input.prompt } : {}),
+      ...(input.keyScope ? { keyScope: input.keyScope } : {}), ...(identity ? { identity } : {}), ...(actor ? { actor } : {}),
+    }, c.req.raw.signal));
+  });
+
+  route(createRoute({
+    method: "post", path: "/v1/images",
+    request: { body: { content: { "application/json": { schema: schema.ImageInput }, "multipart/form-data": { schema: schema.ImageForm } } } },
+    responses: { 200: reply("The images made: base64, or where they were saved", schema.Images) },
+  }), async c => {
+    const service = context.images;
+    if (!service) throw new HttpError(404, "Image generation is not enabled on this runtime");
+    const type = c.req.header("content-type") ?? "";
+    let input: z.infer<typeof schema.ImageInput>, images: ImageSource[] = [], mask: ImageSource | undefined;
+    const base64 = (data: string) => {
+      if (!/^[A-Za-z0-9+/]*={0,2}$/.test(data)) throw new HttpError(400, "data must be base64");
+      return { bytes: new Uint8Array(Buffer.from(data, "base64")) };
+    };
+    if (/^multipart\/form-data(;|$)/i.test(type)) {
+      // The images and the form, read whole: at most the images' limit and a little for the fields.
+      const body = await readBytes(c.req.raw.body, IMAGE_LIMITS.inputTotalBytes + 256 * 1024);
+      let form: FormData;
+      try { form = await new Request("https://localhost", { method: "POST", headers: { "Content-Type": type }, body }).formData(); }
+      catch { throw new HttpError(400, "Invalid multipart body"); }
+      const parts = [...form.getAll("image"), ...form.getAll("image[]")];
+      if (parts.some(part => !(part instanceof Blob))) throw new HttpError(400, "Send each image to edit as a file part named image");
+      images = await Promise.all((parts as Blob[]).map(async part => ({ bytes: new Uint8Array(await part.arrayBuffer()) })));
+      const masked = form.get("mask");
+      if (masked !== null && !(masked instanceof Blob)) throw new HttpError(400, "Send the mask as a file part named mask");
+      if (masked) mask = { bytes: new Uint8Array(await masked.arrayBuffer()) };
+      const field = (name: string) => { const value = form.get(name); return typeof value === "string" && value !== "" ? value : undefined; };
+      let claims: unknown;
+      try { claims = field("context") === undefined ? undefined : JSON.parse(field("context")!); } catch { throw new HttpError(400, "context must be JSON"); }
+      const count = field("n");
+      input = parse(schema.ImageInput, {
+        ...Object.fromEntries(["prompt", "size", "quality", "format", "background", "keyScope", "volumeId", "path", "subject", "actor"].flatMap(name => field(name) === undefined ? [] : [[name, field(name)]])),
+        ...(count !== undefined ? { n: Number(count) } : {}), ...(claims !== undefined ? { context: claims } : {}),
+      });
+    } else {
+      // Base64 of the largest images, and the fields.
+      input = parse(schema.ImageInput, await readJson(c.req.raw.body, Math.ceil(IMAGE_LIMITS.inputTotalBytes * 4 / 3) + 256 * 1024));
+      images = (input.images ?? []).map(image => "data" in image ? base64(image.data) : image);
+      if (input.mask) mask = "data" in input.mask ? base64(input.mask.data) : input.mask;
+    }
+    if (input.path !== undefined && input.volumeId === undefined) throw new HttpError(400, "path is where in volumeId to save the images: send volumeId too");
+    let path: string | undefined;
+    try { path = input.volumeId === undefined ? undefined : normalizePath(input.path ?? "/images"); } catch { throw new HttpError(400, "Invalid path"); }
+    const identity = identityInput({ subject: input.subject, context: input.context });
+    const actor = actorInput(input.actor);
+    return json(c, 200, await imageRequest(service, c.var.principal.tenant, {
+      prompt: input.prompt, images, ...(mask ? { mask } : {}), options: imageOptions(input),
+      ...(input.volumeId !== undefined ? { volume: { id: input.volumeId, path: path! } } : {}),
       ...(input.keyScope ? { keyScope: input.keyScope } : {}), ...(identity ? { identity } : {}), ...(actor ? { actor } : {}),
     }, c.req.raw.signal));
   });

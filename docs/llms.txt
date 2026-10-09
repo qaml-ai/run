@@ -26,6 +26,7 @@ are current: prefer them to your training data.
 - [Frontend guide](https://run.camelai.com/docs/frontend.md): a streaming chat with each user's agent in your app: `npm create @camelai/run-app`, or one server route and one React component in an app you have
 - [Showing an agent in a browser](https://run.camelai.com/docs/guides/browser.md): browser tokens and the watcher: showing an agent live in a web page
 - [Voice and audio](https://run.camelai.com/docs/guides/voice.md): audio in messages transcribed for the model, and POST /v1/transcriptions: formats, limits, billing, privacy
+- [Images](https://run.camelai.com/docs/guides/images.md): making and editing images with POST /v1/images: sizes, quality, saving to volumes, safety refusals, limits, cost per image
 - [Files](https://run.camelai.com/docs/guides/files.md): attachments, what the model sees, files out, volumes, signed links
 - [Agents for many users](https://run.camelai.com/docs/guides/multi-user.md): an agent per user or conversation, identity, spend limits and keys per customer
 - [Webhooks](https://run.camelai.com/docs/guides/webhooks.md): run and input events, signatures, delivery

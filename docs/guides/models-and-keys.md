@@ -196,8 +196,9 @@ In Python, `await agents.runtime.set_scope_key("org_abc123", "openrouter", api_k
   (agent time is charged as usual), and their calls are counted in `/v1/usage`
   under the model as usual.
 - A scope's (else the tenant's, else the platform's) `openai` key also transcribes
-  its agents' audio, and `POST /v1/transcriptions` with that `keyScope`: see
-  [Voice and audio](voice.md).
+  its agents' audio, and `POST /v1/transcriptions` with that `keyScope` (see
+  [Voice and audio](voice.md)), and makes images for `POST /v1/images` with that
+  `keyScope` (see [Images](images.md)).
 
 ## Model headers
 

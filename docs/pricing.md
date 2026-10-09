@@ -14,6 +14,7 @@ rates below as your account is charged them.
 | `web_search` on the platform's keys | Per search, by the provider that answered: Exa $0.007, Brave $0.005, Parallel $0.001 |
 | `web_fetch` page rendering on the platform's key | $0.00083 per page Firecrawl renders |
 | [Transcription](guides/voice.md) on the platform's OpenAI key | $0.0045 per minute of audio (`gpt-transcribe`), billed per second |
+| [Images](guides/images.md) on the platform's OpenAI key | Per token as OpenAI bills `gpt-image-2.5-flare`: $5 per million text tokens in, $8 per million image tokens in, $30 per million image tokens out. A 1024x1024 image is $0.0059 at `low`, $0.0132 at `medium`, $0.0527 at `high` |
 
 ## Credit
 

@@ -493,7 +493,7 @@
                   "string",
                   "null"
                 ],
-                "description": "null for a transcription made with POST /v1/transcriptions, which no agent made"
+                "description": "null for a transcription made with POST /v1/transcriptions, or images made with POST /v1/images, which no agent made"
               },
               "requestId": {
                 "type": [
@@ -534,9 +534,10 @@
                 "enum": [
                   "response",
                   "compaction",
-                  "transcription"
+                  "transcription",
+                  "image"
                 ],
-                "description": "response: a model response of a run; compaction: a summary of older context; transcription: audio transcribed (audioSeconds of it; no tokens)"
+                "description": "response: a model response of a run; compaction: a summary of older context; transcription: audio transcribed (audioSeconds of it; no tokens); image: images made (images of them; input is text and image tokens in, output image tokens out)"
               },
               "input": {
                 "type": "number"
@@ -556,6 +557,10 @@
               "audioSeconds": {
                 "type": "number",
                 "description": "For a transcription: the seconds of audio billed"
+              },
+              "images": {
+                "type": "number",
+                "description": "For images made: how many"
               },
               "cost": {
                 "type": "object",
@@ -605,7 +610,7 @@
           "created",
           "data"
         ],
-        "description": "A model response's usage and cost, or a transcription's"
+        "description": "A model response's usage and cost, a transcription's, or images'"
       },
       "Error": {
         "type": "object",
@@ -4323,9 +4328,10 @@
                   "enum": [
                     "turn",
                     "compaction",
-                    "transcription"
+                    "transcription",
+                    "image"
                   ],
-                  "description": "turn: the agent's own responses; compaction: summaries of older context; transcription: audio transcribed (responses counts transcriptions)"
+                  "description": "turn: the agent's own responses; compaction: summaries of older context; transcription: audio transcribed (responses counts transcriptions); image: images made (responses counts images)"
                 }
               },
               "required": [
@@ -4458,6 +4464,315 @@
             "description": "Who asked (a user id in your app): usage.recorded's actor"
           }
         }
+      },
+      "Images": {
+        "type": "object",
+        "properties": {
+          "images": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "contentType": {
+                  "type": "string",
+                  "example": "image/png"
+                },
+                "width": {
+                  "type": "number"
+                },
+                "height": {
+                  "type": "number"
+                },
+                "data": {
+                  "type": "string",
+                  "description": "The image, base64 (without volumeId)"
+                },
+                "volumeId": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string",
+                  "description": "Where it was saved (with volumeId): read it with GET /v1/volumes/{id}/files/{path}"
+                },
+                "size": {
+                  "type": "number"
+                },
+                "version": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "contentType"
+              ]
+            }
+          },
+          "model": {
+            "type": "string",
+            "example": "openai/gpt-image-2.5-flare"
+          },
+          "usage": {
+            "type": "object",
+            "properties": {
+              "inputTokens": {
+                "type": "number"
+              },
+              "outputTokens": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "inputTokens",
+              "outputTokens"
+            ],
+            "description": "The tokens the provider billed: text and images in, images out"
+          },
+          "costUsd": {
+            "type": "number",
+            "description": "What it cost at the runtime's price: charged to prepaid credit when it ran on the platform's key"
+          }
+        },
+        "required": [
+          "images",
+          "model",
+          "usage",
+          "costUsd"
+        ]
+      },
+      "ImageInput": {
+        "type": "object",
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32000,
+            "description": "What to make, or how to change the images given: at most 32,000 characters"
+          },
+          "size": {
+            "type": "string",
+            "enum": [
+              "1024x1024",
+              "1536x1024",
+              "1024x1536"
+            ],
+            "description": "Square, landscape or portrait. Default 1024x1024"
+          },
+          "quality": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "description": "Default medium. Higher quality costs more (see Pricing) and takes longer"
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "png",
+              "jpeg",
+              "webp"
+            ],
+            "description": "The images' format. Default png"
+          },
+          "background": {
+            "type": "string",
+            "enum": [
+              "transparent",
+              "opaque"
+            ],
+            "description": "transparent needs png or webp. Default: the model's choice"
+          },
+          "keyScope": {
+            "type": "string",
+            "description": "A key scope whose OpenAI key is used first, before the tenant's own"
+          },
+          "volumeId": {
+            "type": "string",
+            "description": "Save the images into this volume of yours (under path) and answer their paths, instead of their bytes"
+          },
+          "path": {
+            "type": "string",
+            "maxLength": 1000,
+            "description": "With volumeId: the directory to save them in. Default /images"
+          },
+          "subject": {
+            "type": "string",
+            "description": "Who it is for (a user id in your app): usage.recorded's subject"
+          },
+          "context": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Your claims (org, workspace…), carried as usage.recorded's context; at most 4 KB"
+          },
+          "actor": {
+            "type": "string",
+            "description": "Who asked (a user id in your app): usage.recorded's actor"
+          },
+          "n": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4,
+            "description": "How many images to make, 1 to 4. Default 1"
+          },
+          "images": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "string",
+                      "description": "The image's bytes, base64"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "url": {
+                      "type": "string",
+                      "description": "An https URL to fetch the image from (public addresses only)"
+                    }
+                  },
+                  "required": [
+                    "url"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "maxItems": 4,
+            "description": "Images to edit (at most 4; PNG, JPEG or WebP, 25 MB each and 50 MB in all): the prompt says how to change or combine them"
+          },
+          "mask": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "string",
+                    "description": "The image's bytes, base64"
+                  }
+                },
+                "required": [
+                  "data"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "description": "An https URL to fetch the image from (public addresses only)"
+                  }
+                },
+                "required": [
+                  "url"
+                ],
+                "additionalProperties": false
+              }
+            ],
+            "description": "Where to edit the first image: transparent where it may change, an image with an alpha channel in its format and size"
+          }
+        },
+        "required": [
+          "prompt"
+        ],
+        "additionalProperties": false
+      },
+      "ImageForm": {
+        "type": "object",
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32000,
+            "description": "What to make, or how to change the images given: at most 32,000 characters"
+          },
+          "size": {
+            "type": "string",
+            "enum": [
+              "1024x1024",
+              "1536x1024",
+              "1024x1536"
+            ],
+            "description": "Square, landscape or portrait. Default 1024x1024"
+          },
+          "quality": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "description": "Default medium. Higher quality costs more (see Pricing) and takes longer"
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "png",
+              "jpeg",
+              "webp"
+            ],
+            "description": "The images' format. Default png"
+          },
+          "background": {
+            "type": "string",
+            "enum": [
+              "transparent",
+              "opaque"
+            ],
+            "description": "transparent needs png or webp. Default: the model's choice"
+          },
+          "keyScope": {
+            "type": "string",
+            "description": "A key scope whose OpenAI key is used first, before the tenant's own"
+          },
+          "volumeId": {
+            "type": "string",
+            "description": "Save the images into this volume of yours (under path) and answer their paths, instead of their bytes"
+          },
+          "path": {
+            "type": "string",
+            "maxLength": 1000,
+            "description": "With volumeId: the directory to save them in. Default /images"
+          },
+          "subject": {
+            "type": "string",
+            "description": "Who it is for (a user id in your app): usage.recorded's subject"
+          },
+          "context": {
+            "type": "string",
+            "description": "JSON of your claims, as context in ImageInput"
+          },
+          "actor": {
+            "type": "string",
+            "description": "Who asked (a user id in your app): usage.recorded's actor"
+          },
+          "n": {
+            "type": "string",
+            "description": "How many images to make, 1 to 4"
+          },
+          "image": {
+            "type": "string",
+            "format": "binary",
+            "description": "An image to edit; a part each, at most 4"
+          },
+          "mask": {
+            "type": "string",
+            "format": "binary",
+            "description": "A mask for the first image"
+          }
+        },
+        "required": [
+          "prompt"
+        ]
       },
       "Billing": {
         "type": "object",
@@ -4652,6 +4967,29 @@
               "transcription": {
                 "type": "integer",
                 "description": "Per minute of audio transcribed on the platform's OpenAI key (gpt-transcribe), billed per second, in micro-USD (1 USD = 1000000)"
+              },
+              "image": {
+                "type": "object",
+                "properties": {
+                  "textInput": {
+                    "type": "integer",
+                    "description": "Per million text tokens in, in micro-USD (1 USD = 1000000)"
+                  },
+                  "imageInput": {
+                    "type": "integer",
+                    "description": "Per million image tokens in (images to edit), in micro-USD (1 USD = 1000000)"
+                  },
+                  "output": {
+                    "type": "integer",
+                    "description": "Per million image tokens out, in micro-USD (1 USD = 1000000)"
+                  }
+                },
+                "required": [
+                  "textInput",
+                  "imageInput",
+                  "output"
+                ],
+                "description": "Images made on the platform's OpenAI key (gpt-image-2.5-flare), per token as the provider bills"
               }
             },
             "required": [
@@ -4663,7 +5001,8 @@
               "maxPurchase",
               "webSearch",
               "webRender",
-              "transcription"
+              "transcription",
+              "image"
             ],
             "description": "Model usage on platform keys passes through provider-reported cost (catalog estimate if unavailable) plus provider credit funding costs; tools.search's ranking by meaning is charged at cost"
           }
@@ -10952,6 +11291,59 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Transcription"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/images": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImageInput"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/ImageForm"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The images made: base64, or where they were saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Images"
                 }
               }
             }

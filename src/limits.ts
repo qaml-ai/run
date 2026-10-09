@@ -94,6 +94,17 @@ export const AUDIO_LIMITS = Object.freeze({
   timeoutMs: 5 * 60_000,
 });
 
+/** Images made (images.ts): a request's prompt, the images it gives to edit, and the images it asks for. */
+export const IMAGE_LIMITS = Object.freeze({
+  promptChars: 32_000,
+  /** Images to edit: OpenAI's 50 MB for a request's images together, and a side a header may say. */
+  inputs: 4, inputBytes: 25 * 1000 * 1000, inputTotalBytes: 50 * 1000 * 1000, inputSide: 8000,
+  /** Images one request makes (n); generate_image makes one a call. */
+  count: 4,
+  /** A provider's answer (OpenAI says complex prompts take up to two minutes), and its JSON of base64 images. */
+  timeoutMs: 180_000, responseBytes: 64 * 1024 * 1024,
+});
+
 /** Transient provider failures (overload, rate limit, 5xx, network) are retried with backoff. */
 export const DEFAULT_RETRY = Object.freeze({ maxAttempts: 3, baseDelayMs: 2_000 });
 

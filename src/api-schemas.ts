@@ -181,10 +181,10 @@ export const WebhookEvents = {
     agentId: z.string(), requestId: z.string(), inputId: z.string(), state: z.enum(["answered", "declined", "cancelled", "expired", "superseded"]),
   }), "An input settled"),
   "usage.recorded": envelope("usage.recorded", z.object({
-    agentId: z.string().nullable().openapi({ description: "null for a transcription made with POST /v1/transcriptions, which no agent made" }), requestId: z.string().nullable(), subject: z.string().nullable(), actor: z.string().nullable(), context: z.record(z.string(), z.unknown()), keyScope: z.string().nullable(),
-    provider: z.string(), model: z.string(), kind: z.enum(["response", "compaction", "transcription"]).openapi({ description: "response: a model response of a run; compaction: a summary of older context; transcription: audio transcribed (audioSeconds of it; no tokens)" }), input: z.number(), output: z.number(), cacheRead: z.number(), cacheWrite: z.number(),
-    reasoning: z.number().optional(), audioSeconds: z.number().optional().openapi({ description: "For a transcription: the seconds of audio billed" }), cost: z.object({ usd: z.number(), source: z.enum(["provider", "catalog"]) }), at: z.number(),
-  }), "A model response's usage and cost, or a transcription's"),
+    agentId: z.string().nullable().openapi({ description: "null for a transcription made with POST /v1/transcriptions, or images made with POST /v1/images, which no agent made" }), requestId: z.string().nullable(), subject: z.string().nullable(), actor: z.string().nullable(), context: z.record(z.string(), z.unknown()), keyScope: z.string().nullable(),
+    provider: z.string(), model: z.string(), kind: z.enum(["response", "compaction", "transcription", "image"]).openapi({ description: "response: a model response of a run; compaction: a summary of older context; transcription: audio transcribed (audioSeconds of it; no tokens); image: images made (images of them; input is text and image tokens in, output image tokens out)" }), input: z.number(), output: z.number(), cacheRead: z.number(), cacheWrite: z.number(),
+    reasoning: z.number().optional(), audioSeconds: z.number().optional().openapi({ description: "For a transcription: the seconds of audio billed" }), images: z.number().optional().openapi({ description: "For images made: how many" }), cost: z.object({ usd: z.number(), source: z.enum(["provider", "catalog"]) }), at: z.number(),
+  }), "A model response's usage and cost, a transcription's, or images'"),
 };
 
 export const Model = z.object({
@@ -687,11 +687,50 @@ export const Transcription = z.object({
   model: z.string().openapi({ example: "openai/gpt-transcribe" }),
   costUsd: z.number().openapi({ description: "What it cost at the runtime's price: charged to prepaid credit when it ran on the platform's key" }),
 }).openapi("Transcription");
+const ImageSource = z.union([
+  z.strictObject({ data: z.string().openapi({ description: "The image's bytes, base64" }) }),
+  z.strictObject({ url: z.string().openapi({ description: "An https URL to fetch the image from (public addresses only)" }) }),
+]);
+const ImageFields = {
+  prompt: z.string().min(1).max(32_000).openapi({ description: "What to make, or how to change the images given: at most 32,000 characters" }),
+  size: z.enum(["1024x1024", "1536x1024", "1024x1536"]).optional().openapi({ description: "Square, landscape or portrait. Default 1024x1024" }),
+  quality: z.enum(["low", "medium", "high"]).optional().openapi({ description: "Default medium. Higher quality costs more (see Pricing) and takes longer" }),
+  format: z.enum(["png", "jpeg", "webp"]).optional().openapi({ description: "The images' format. Default png" }),
+  background: z.enum(["transparent", "opaque"]).optional().openapi({ description: "transparent needs png or webp. Default: the model's choice" }),
+  keyScope: TranscriptionFields.keyScope,
+  volumeId: z.string().optional().openapi({ description: "Save the images into this volume of yours (under path) and answer their paths, instead of their bytes" }),
+  path: z.string().max(1_000).optional().openapi({ description: "With volumeId: the directory to save them in. Default /images" }),
+  subject: TranscriptionFields.subject, context: TranscriptionFields.context, actor: TranscriptionFields.actor,
+};
+export const ImageInput = z.strictObject({
+  ...ImageFields,
+  n: z.number().int().min(1).max(4).optional().openapi({ description: "How many images to make, 1 to 4. Default 1" }),
+  images: z.array(ImageSource).max(4).optional().openapi({ description: "Images to edit (at most 4; PNG, JPEG or WebP, 25 MB each and 50 MB in all): the prompt says how to change or combine them" }),
+  mask: ImageSource.optional().openapi({ description: "Where to edit the first image: transparent where it may change, an image with an alpha channel in its format and size" }),
+}).openapi("ImageInput");
+export const ImageForm = z.object({
+  ...ImageFields,
+  n: z.string().optional().openapi({ description: "How many images to make, 1 to 4" }),
+  context: z.string().optional().openapi({ description: "JSON of your claims, as context in ImageInput" }),
+  image: z.any().optional().openapi({ type: "string", format: "binary", description: "An image to edit; a part each, at most 4" }),
+  mask: z.any().optional().openapi({ type: "string", format: "binary", description: "A mask for the first image" }),
+}).openapi("ImageForm");
+export const Images = z.object({
+  images: z.array(z.object({
+    contentType: z.string().openapi({ example: "image/png" }), width: z.number().optional(), height: z.number().optional(),
+    data: z.string().optional().openapi({ description: "The image, base64 (without volumeId)" }),
+    volumeId: z.string().optional(), path: z.string().optional().openapi({ description: "Where it was saved (with volumeId): read it with GET /v1/volumes/{id}/files/{path}" }),
+    size: z.number().optional(), version: z.number().optional(),
+  })),
+  model: z.string().openapi({ example: "openai/gpt-image-2.5-flare" }),
+  usage: z.object({ inputTokens: z.number(), outputTokens: z.number() }).openapi({ description: "The tokens the provider billed: text and images in, images out" }),
+  costUsd: z.number().openapi({ description: "What it cost at the runtime's price: charged to prepaid credit when it ran on the platform's key" }),
+}).openapi("Images");
 
 export const Usage = z.object({
   since: z.number(),
   totals: Totals,
-  days: z.array(Totals.extend({ day: z.string(), model: z.string(), kind: z.enum(["turn", "compaction", "transcription"]).openapi({ description: "turn: the agent's own responses; compaction: summaries of older context; transcription: audio transcribed (responses counts transcriptions)" }) })),
+  days: z.array(Totals.extend({ day: z.string(), model: z.string(), kind: z.enum(["turn", "compaction", "transcription", "image"]).openapi({ description: "turn: the agent's own responses; compaction: summaries of older context; transcription: audio transcribed (responses counts transcriptions); image: images made (responses counts images)" }) })),
 }).openapi("Usage");
 
 const ThinkingLevel = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
@@ -972,6 +1011,7 @@ export const Billing = z.object({
     webSearch: z.object({ exa: micros("Per search Exa answers"), brave: micros("Per search Brave answers"), parallel: micros("Per search Parallel answers") }).openapi({ description: "Per web_search on the platform's key for the provider that answered" }),
     webRender: micros("Per page web_fetch has Firecrawl render on the platform's key"),
     transcription: micros("Per minute of audio transcribed on the platform's OpenAI key (gpt-transcribe), billed per second"),
+    image: z.object({ textInput: micros("Per million text tokens in"), imageInput: micros("Per million image tokens in (images to edit)"), output: micros("Per million image tokens out") }).openapi({ description: "Images made on the platform's OpenAI key (gpt-image-2.5-flare), per token as the provider bills" }),
   }).openapi({ description: "Model usage on platform keys passes through provider-reported cost (catalog estimate if unavailable) plus provider credit funding costs; tools.search's ranking by meaning is charged at cost" }),
 }).openapi("Billing");
 export const BillingAlertChoices = z.object({ low: z.boolean(), depleted: z.boolean(), problems: z.boolean(), receipts: z.boolean() });
