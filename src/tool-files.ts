@@ -1,12 +1,12 @@
 import { randomBytes } from "node:crypto";
-import { errorText } from "./protocol.ts";
+import { errorText, scratchMount } from "./protocol.ts";
 import { safeName, type FileRef } from "./files.ts";
 import { digestOf, type FileUrls, type FileValue } from "./file-arguments.ts";
 import { fileRef } from "./inspect.ts";
 import { TOOL_FILE_LIMITS } from "./limits.ts";
 import type { McpResult } from "./mcp-results.ts";
 import { resolve, type ToolContext } from "./volume-tools.ts";
-import { TEMPORARY_SNAPSHOT, type FileEntry, type Mount, type VolumeService } from "./volumes.ts";
+import { TEMPORARY_SNAPSHOT, VolumeService, type FileEntry, type Mount } from "./volumes.ts";
 
 /**
  * Files through the calls of tool sources (MCP servers, OpenAPI operations, web_fetch), without
@@ -135,10 +135,9 @@ export async function readCapped(response: Response, maxBytes: number): Promise<
 
 /**
  * One tool call's access to the agent's files: reading the files its arguments name (within the
- * agent's mounts, read-only ones included), and saving its outputs to the agent's workspace (the
- * writable /workspace mount, else the first writable one) within the call's and the run's budget.
- * `refuse` says why its arguments may not name files (its source's fileArguments is off); `urls`
- * signs URLs bound to `call`. `release` ends the call: snapshots made for it go once its URLs expire.
+ * agent's mounts, read-only ones included), and saving its outputs to the agent's workspace (`scratchMount`) within
+ * the call's and the run's budget. `refuse` says why its arguments may not name files (its source's fileArguments is
+ * off); `urls` signs URLs bound to `call`. `release` ends the call: snapshots made for it go once its URLs expire.
  */
 export class ToolFiles {
   private readonly options: { volumes: VolumeService; urls?: FileUrls; tenant: string; agent: string; mounts: Mount[]; tool: string; call?: string; refuse?: string; run: { left: number }; onWrite?: ToolContext["onWrite"] };
@@ -235,7 +234,7 @@ export class ToolFiles {
   /** Save one of the call's outputs as `name` (sanitized), and refer to it as the transcript does. */
   async save(name: string, source: Uint8Array | AsyncIterable<Uint8Array>, contentType?: string): Promise<FileRef> {
     const { volumes, tenant, agent, mounts, run } = this.options;
-    const mount = mounts.find(entry => entry.path === "/workspace" && entry.mode === "rw") ?? mounts.find(entry => entry.mode === "rw");
+    const mount = scratchMount(VolumeService.markWorkspace(agent, mounts));
     if (!mount) throw new Error("this agent has no writable mount to save it to");
     const budget = Math.min(this.left, run.left);
     if (budget <= 0) throw new Error(`the tool has saved as much as it may (${TOOL_FILE_LIMITS.callBytes} bytes a call, ${TOOL_FILE_LIMITS.runBytes} a run)`);

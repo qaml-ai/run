@@ -380,6 +380,89 @@ test("file tools work from js_exec, and agents share a volume through mounts", a
   await assert.rejects(f.sessions.setMounts(reader.session.id, "default", [{ volumeId: workspace, path: "/a", mode: "ro" }, { volumeId: workspace, path: "/a/b", mode: "ro" }]), /overlaps/);
 });
 
+/** The system text a model request carries, joined. */
+const systemText = (body: any) => body.messages.filter((message: any) => message.role === "system" || message.role === "developer").map((message: any) => typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text).join("")).join("\n");
+const toolCalls = (calls: [string, unknown][]) => ({ role: "assistant", tool_calls: calls.map(([name, args], index) => ({ index, id: `call_${index}_${name}`, type: "function", function: { name, arguments: JSON.stringify(args) } })) });
+const exists = (volumes: VolumeService, volume: string, path: string) => volumes.call(volume, "default", "stat", { path }).then(() => true, () => false);
+
+test("the agent's own workspace at /scratch beside a project at /workspace: attachments, scratch and forks follow it", async t => {
+  const f = await agents(t);
+  const project = await f.volumes.create("default", { name: "project" });
+  const { bodies, model } = await fixtureModel(t);
+  f.setModel(model);
+  const agent = await f.start([{ volumeId: project.id, path: "/workspace", mode: "rw" }, { workspace: true, path: "/scratch" }]);
+  const own = VolumeService.workspaceOf(agent.session.id);
+  assert.deepEqual((await f.sessions.inspect(agent.session.id, "default")).mounts, [{ volumeId: project.id, path: "/workspace", mode: "rw" }, { volumeId: own, path: "/scratch", mode: "rw" }]);
+  assert.equal((await agent.prompt("Read it", { files: [{ name: "q3.csv", data: new TextEncoder().encode("a,b") }] })).error, null);
+  const system = systemText(bodies[0]);
+  assert.match(system, /Files: \/workspace \(read-write\), \/scratch \(read-write\); relative paths resolve against \/workspace\. Attachments are saved under \/scratch\/uploads\/<request>\/ and files that tools return under \/scratch\/tool-outputs\/; keep scratch data under \/scratch\/tmp\//);
+  assert.ok(bodies[0].tools.find((tool: any) => tool.function.name === "js_exec").function.description.includes("/scratch/tmp/tickets.json"));
+  const named = JSON.stringify(bodies[0].messages).match(/\[File (\/scratch\/uploads\/[^ ]+\/q3\.csv) /);
+  assert.ok(named, "the attachment is saved in the scratch volume");
+  assert.ok(await exists(f.volumes, own, named[1].slice("/scratch".length)));
+  assert.equal(await exists(f.volumes, project.id, "/uploads"), false, "nothing of the agent's own lands in the project");
+
+  // A fork's workspace is a fork of the source's, at the same path; an agent without one forks without one.
+  const forked = await f.sessions.fork(agent.session.id, "default", {});
+  const forkOwn = VolumeService.workspaceOf(forked.id);
+  assert.deepEqual((await f.sessions.inspect(forked.id, "default")).mounts, [{ volumeId: project.id, path: "/workspace", mode: "rw" }, { volumeId: forkOwn, path: "/scratch", mode: "rw" }]);
+  assert.ok(await exists(f.volumes, forkOwn, named[1].slice("/scratch".length)));
+  const bare = await f.start([{ volumeId: project.id, path: "/project", mode: "ro" }, { workspace: false }]);
+  const bareFork = await f.sessions.fork(bare.session.id, "default", {});
+  assert.deepEqual((await f.sessions.inspect(bareFork.id, "default")).mounts.map((mount: Mount) => mount.path), ["/project"]);
+
+  // The path is absolute, written normalized, and clear of the other mounts.
+  for (const path of ["scratch", "/scratch/", "/a/../scratch", "/", 7]) {
+    await assert.rejects(f.sessions.setMounts(agent.session.id, "default", [{ workspace: true, path }]), /workspace path must be absolute and normalized/, String(path));
+  }
+  await assert.rejects(f.sessions.setMounts(agent.session.id, "default", [{ volumeId: project.id, path: "/workspace", mode: "rw" }, { workspace: true, path: "/workspace/tmp" }]), /overlaps another mount/);
+  await assert.rejects(f.sessions.setMounts(agent.session.id, "default", [{ workspace: true, path: "/data" }, { volumeId: project.id, path: "/data", mode: "ro" }]), /overlaps another mount/);
+  await assert.rejects(f.sessions.setMounts(agent.session.id, "default", [{ workspace: false, path: "/scratch" }]), /A mount is/);
+  await assert.rejects(f.sessions.setMounts(agent.session.id, "default", [{ workspace: true, path: "/scratch", mode: "ro" }]), /A mount is/);
+});
+
+test("mounts changed during a turn: the turn loses a removed mount at once, and the next turn has the new ones and is told so", async t => {
+  const f = await agents(t);
+  const a = await f.volumes.create("default", { name: "a" }), b = await f.volumes.create("default", { name: "b" }), c = await f.volumes.create("default", { name: "c" });
+  let id = "";
+  const { bodies, model } = await fixtureModel(t, async (_body, index) => {
+    if (index === 1) return toolCalls([["write", { path: "/a/one.txt", content: "1" }]]);
+    if (index === 2) {
+      // Mid-turn, between two steps: /a goes, /b comes.
+      await f.sessions.setMounts(id, "default", [{ volumeId: b.id, path: "/b", mode: "rw" }]);
+      return toolCalls([["write", { path: "/a/two.txt", content: "2" }], ["write", { path: "/b/two.txt", content: "2" }], ["write", { path: "/workspace/two.txt", content: "2" }]]);
+    }
+    if (index === 4) return toolCalls([["write", { path: "/b/three.txt", content: "3" }], ["ls", { path: "/" }]]);
+    return { role: "assistant", content: "done" };
+  });
+  f.setModel(model);
+  const agent = await f.start([{ volumeId: a.id, path: "/a", mode: "rw" }]);
+  id = agent.session.id;
+  const own = VolumeService.workspaceOf(id);
+  const results = (body: any) => body.messages.filter((message: any) => message.role === "tool").map((message: any) => message.content);
+  assert.equal((await agent.prompt("go")).error, null);
+  assert.match(systemText(bodies[1]), /Files: \/a \(read-write\), \/workspace \(read-write\);/);
+  assert.deepEqual(results(bodies[2]).slice(1).map((text: string) => text.replace(/\{.*\}/, "saved")), [
+    "/a/two.txt is not inside a mount. Mounted: /workspace", "/b/two.txt is not inside a mount. Mounted: /workspace", "saved",
+  ], "the removed mount is gone at once; the added one waits for the next turn, whose prompt names it");
+  assert.equal(await exists(f.volumes, a.id, "/two.txt"), false, "nothing is written to a volume once it is unmounted");
+  assert.equal(await exists(f.volumes, b.id, "/two.txt"), false);
+  assert.ok(await exists(f.volumes, own, "/two.txt"), "a mount the turn still has works");
+
+  assert.equal((await agent.prompt("again")).error, null);
+  const next = systemText(bodies[3]);
+  assert.match(next, /Files: \/b \(read-write\), \/workspace \(read-write\);/, "the next turn is told of its new mounts");
+  assert.deepEqual(results(bodies[4]).slice(-2).map((text: string) => JSON.parse(text)), [
+    { path: "/b/three.txt", size: 1, contentType: "text/plain" }, { path: "/", entries: [{ name: "b", type: "directory", mode: "rw" }, { name: "workspace", type: "directory", mode: "rw" }] },
+  ]);
+
+  // An upsert's remount: true is a configure between turns; the next turn has those mounts and is told so.
+  await f.sessions.submit(id, "default", { id: "remount-1", method: "configure", params: { mounts: [{ volumeId: c.id, path: "/c", mode: "ro" }, { workspace: false }] } });
+  await agent.waitForRequest("remount-1");
+  assert.equal((await agent.prompt("third")).error, null);
+  assert.match(systemText(bodies.at(-1)), /Files: \/c \(read-only\); relative paths/);
+});
+
 test("an edit based on a stale read is rejected and the model sees why", async t => {
   const f = await agents(t);
   let volume = "";

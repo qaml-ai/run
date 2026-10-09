@@ -90,7 +90,7 @@ export interface Sources { builtins?: string[]; webSearch?: { providers: string[
  * MCP servers with credentials come only from one; an agent's own builtins and MCP servers have none), its mounts (for files in and out), and who
  * hears of files saved.
  */
-export type SourceContext = { tenant: string; agent: string; definition?: string; claim?: Claim; identity?: AgentIdentity; mounts?: Mount[]; onWrite?: ToolContext["onWrite"] };
+export type SourceContext = { tenant: string; agent: string; definition?: string; claim?: Claim; identity?: AgentIdentity; mounts?: () => Mount[]; onWrite?: ToolContext["onWrite"] };
 
 const SERVER_NAME = /^[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)*$/;
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$/;
@@ -381,7 +381,7 @@ export class ToolSources {
    * not be listed. A server that refuses the definition's credentials (401, 403) is a mistake in them: a 400 now.
    */
   async listed(tenant: string, definition: string, servers: McpServerSpec[]): Promise<ToolSourceView[]> {
-    const context: SourceContext = { tenant, agent: definition, definition, mounts: [] };
+    const context: SourceContext = { tenant, agent: definition, definition };
     return Promise.all(servers.map(async (spec): Promise<ToolSourceView> => {
       const source = { kind: "mcp" as const, name: spec.name, url: spec.url, ...(spec.exposure ? { exposure: spec.exposure } : {}) };
       try {
@@ -416,10 +416,12 @@ export class ToolSources {
     // `call` binds the URLs of files sent to it; `source` (an MCP server or OpenAPI spec) is sent files only if it takes them.
     const files = (tool: string, id: string | undefined, call?: string, source?: McpServerSpec | OpenApiSpec) => {
       const volumes = this.options.volumes;
-      if (!volumes || !context.mounts?.length) return undefined;
+      // The mounts as they are at the call: one removed since the agent started is gone (client-sessions.ts `turnMounts`).
+      const mounts = context.mounts?.() ?? [];
+      if (!volumes || !mounts.length) return undefined;
       if (!id || id !== run.id) run = { id, left: TOOL_FILE_LIMITS.runBytes };
       const refuse = source && !takesFiles(source) ? `${source.name} is not sent files: $file needs fileArguments "on" in its definition` : undefined;
-      return new ToolFiles({ volumes, urls: this.options.fileUrls, tenant: context.tenant, agent: context.agent, mounts: context.mounts, tool, ...(call ? { call } : {}), ...(refuse ? { refuse } : {}), run, onWrite: context.onWrite });
+      return new ToolFiles({ volumes, urls: this.options.fileUrls, tenant: context.tenant, agent: context.agent, mounts, tool, ...(call ? { call } : {}), ...(refuse ? { refuse } : {}), run, onWrite: context.onWrite });
     };
     return {
       // Only saved outputs: remote servers' own file references are dropped (savedContent).

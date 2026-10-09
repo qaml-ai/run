@@ -154,7 +154,7 @@ const earlier = await agent.fork({ atMessage: 4 }); // history through message 4
 - **Compaction.** The copy keeps the source's summaries, so the fork's model sees
   what the source's would at that point: the summary, then the messages after it.
   History (`/history`) has every message.
-- **Files.** The fork's workspace (`/workspace`) is a
+- **Files.** The fork's workspace (at the source's path, `/workspace` by default) is a
   [fork of the source's volume](guides/files.md#volumes) as it is when you fork,
   not as it was at `atMessage`. Other volumes the source mounts are mounted as
   they are, shared. Files the history refers to (attachments) stay the fork's,

@@ -503,9 +503,11 @@ export interface AgentSummary {
 export interface Mount { volumeId: string; path: string; mode: "ro" | "rw"; subpath?: string; notify?: boolean }
 /**
  * A mount as given: a volume, or the agent's own workspace at /workspace, which is beside the others (after them) by
- * default: `{ workspace: true }` places it, `{ workspace: false }` leaves it out.
+ * default: `{ workspace: true }` places it, `{ workspace: false }` leaves it out. `path` mounts it elsewhere (absolute
+ * and normalized), e.g. `{ workspace: true, path: "/scratch" }` beside a project volume at /workspace: attachments
+ * and tool outputs go there.
  */
-export type MountInput = Mount | { workspace: boolean };
+export type MountInput = Mount | { workspace: true; path?: string } | { workspace: false };
 /** Where a fork came from: the agent, and the history index of its last message the fork began with (null: none). */
 export interface ForkedFrom { agentId: string; atMessage: number | null }
 /**
@@ -952,7 +954,7 @@ export class AgentRuntime {
   definitions(): Promise<Definition[]> { return this.transport.json("/v1/definitions", this.operator()); }
   deleteDefinition(id: string): Promise<{ deleted: boolean }> { return this.transport.json(`/v1/definitions/${encodeURIComponent(id)}`, this.operator(), "DELETE", undefined, false); }
   mounts(agentId: string): Promise<Mount[]> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/mounts`, this.operator()); }
-  /** Replace an agent's mounts; an idle agent restarts so its tools describe them. */
+  /** Replace an agent's mounts: a removed one at once, the rest from its next turn, which is told of them. */
   setMounts(agentId: string, mounts: MountInput[]): Promise<Mount[]> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/mounts`, this.operator(), "PUT", { mounts }, false); }
   /**
    * Every source of an agent's tools (its application, file tools, built-ins, MCP servers, OpenAPI

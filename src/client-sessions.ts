@@ -5,7 +5,7 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { HttpBindings } from "@hono/node-server";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import type { AgentConfig, Credentials, RunLimits, ToolDefinition } from "./protocol.ts";
-import { errorText, PERSISTENCE_FAILED } from "./protocol.ts";
+import { errorText, PERSISTENCE_FAILED, scratchMount } from "./protocol.ts";
 import { enqueueEvents, usageCost, webhookEvent, type WebhookEvent } from "./webhooks.ts";
 import { AgentSupervisor } from "./supervisor.ts";
 import { platformUsage } from "./platform-pricing.ts";
@@ -199,6 +199,8 @@ type Session = {
   route?: Map<string, ToolServer>;
   /** The servers the running agent's tools were built from, and what each listed then. */
   servers?: ToolServer[];
+  /** The mounts the running agent started with, which its prompt describes (see `turnMounts`). */
+  hosted?: Mount[];
   /** The tools its code reaches (not direct-only), which `tools.search` ranks. */
   searchable?: ToolDefinition[];
   /** Runs (prompt, execute, continue) execute one at a time, in the order accepted. */
@@ -1487,9 +1489,10 @@ export class ClientSessions {
       session.platformKey = platform;
       session.catalogPriced = !!priced;
       // Its tool servers are listed (remote MCP servers connected to) before its host starts.
+      session.hosted = session.header.mounts ?? [];
       const definitions = await steps.time("tools", this.toolset(session));
       const { cpuMs, maxTimeoutMs } = await this.codeLimits(session.header.tenant);
-      const result = await steps.time("init", this.supervisor.start(session.header.id, { ...session.header.config, apiKey, mounts: (session.header.mounts ?? []).map(({ path, mode }) => ({ path, mode })), ...(this.options.retry ? { retry: this.options.retry } : {}), ...(this.options.streamTimeouts ? { streamTimeouts: this.options.streamTimeouts } : {}), ...(session.resuming.size ? { resume: true } : {}), tenant: session.header.tenant, codeLimits: { cpuMs, maxTimeoutMs } }, {
+      const result = await steps.time("init", this.supervisor.start(session.header.id, { ...session.header.config, apiKey, mounts: VolumeService.markWorkspace(session.header.id, session.header.mounts ?? []).map(({ path, mode, workspace }) => ({ path, mode, ...workspace ? { workspace } : {} })), ...(this.options.retry ? { retry: this.options.retry } : {}), ...(this.options.streamTimeouts ? { streamTimeouts: this.options.streamTimeouts } : {}), ...(session.resuming.size ? { resume: true } : {}), tenant: session.header.tenant, codeLimits: { cpuMs, maxTimeoutMs } }, {
         definitions,
         codeSlot: async signal => this.codeGate.acquire(session.header.tenant, (await this.codeLimits(session.header.tenant)).concurrent, signal),
         runLimit: async () => {
@@ -1557,8 +1560,22 @@ export class ClientSessions {
       { tools: () => defaultExposure(tools), call: call => this.callAttached(session, call), sources: async () => [{ kind: "application", name: "application", status: "listed", connected: !!session.attached?.open, tools: defaultExposure(tools) }] },
       ...volumes && header.mounts?.length && !bare ? [view("files", fileServer(volumes.definitions().filter(tool => fileTools !== false || tool.name === "present_file"), ({ name, args, signal }) => volumes.tool(this.toolContext(session), name, args, signal)))] : [],
       ...multiAgent ? [multiAgent] : [],
-      ...sources && this.options.sources ? [this.options.sources.server({ tenant, agent: header.id, ...(definition ? { definition: definition.id } : {}), claim: session.claim, ...(header.identity ? { identity: header.identity } : {}), mounts: header.mounts ?? [], onWrite: this.toolContext(session).onWrite }, sources)] : [],
+      ...sources && this.options.sources ? [this.options.sources.server({ tenant, agent: header.id, ...(definition ? { definition: definition.id } : {}), claim: session.claim, ...(header.identity ? { identity: header.identity } : {}), mounts: () => this.turnMounts(session), onWrite: this.toolContext(session).onWrite }, sources)] : [],
     ];
+  }
+
+  /**
+   * The mounts a turn may use: the ones its agent started with, which its prompt describes, that are still mounted
+   * (read-only if either says so). A mount removed meanwhile is gone at once; one added appears from the next turn,
+   * which starts the agent again (`run`).
+   */
+  private turnMounts(session: Session): Mount[] {
+    const current = session.header.mounts ?? [];
+    if (!session.hosted || session.hosted === current) return current;
+    return session.hosted.flatMap(mount => {
+      const now = current.find(other => other.volumeId === mount.volumeId && other.path === mount.path && (other.subpath ?? "/") === (mount.subpath ?? "/"));
+      return now ? [now.mode === "rw" && mount.mode === "ro" ? { ...now, mode: "ro" as const } : now] : [];
+    });
   }
 
   /**
@@ -1569,7 +1586,7 @@ export class ClientSessions {
   private toolContext(session: Session): ToolContext {
     const header = session.header;
     return {
-      tenant: header.tenant, agent: header.id, mounts: header.mounts ?? [], model: () => session.header.config.model, seen: session.seen ??= new Map(),
+      tenant: header.tenant, agent: header.id, mounts: this.turnMounts(session), model: () => session.header.config.model, seen: session.seen ??= new Map(),
       onWrite: file => {
         const files = session.outputs?.files;
         if (files && (files.has(file.path) || files.size < OUTPUT_FILES)) files.set(file.path, file);
@@ -2452,12 +2469,13 @@ export class ClientSessions {
     const cut = forkCut(records, input.atMessage);
     const from: ForkedFrom = { agentId: sourceId, atMessage: cut.through };
     // The source's own workspace is forked for the fork, under the id its workspace has; shared volumes stay shared.
-    let mounts: Mount[] | undefined = source.mounts;
+    let mounts: unknown[] | undefined = source.mounts;
     const workspace = VolumeService.workspaceOf(sourceId);
-    if (this.options.volumes && mounts?.some(mount => mount.volumeId === workspace)) {
+    if (this.options.volumes && source.mounts) {
       const into = VolumeService.workspaceOf(made.id);
-      await steps.time("volume", this.options.volumes.call(workspace, tenant, "fork", { name: "workspace", into }));
-      mounts = mounts.map(mount => mount.volumeId === workspace ? { ...mount, volumeId: into } : mount);
+      if (source.mounts.some(mount => mount.volumeId === workspace)) await steps.time("volume", this.options.volumes.call(workspace, tenant, "fork", { name: "workspace", into }));
+      // Given as the source's were, so the fork's workspace is where the source's is, and there is none if it had none.
+      mounts = VolumeService.given(made.id, source.mounts.map(mount => mount.volumeId === workspace ? { ...mount, volumeId: into } : mount));
     }
     const spend = (await this.db.query("select usd from agent_spend_limits where agent = $1", [sourceId])).rows[0];
     const { initialMessages: _initial, ...config } = {
@@ -2850,15 +2868,17 @@ export class ClientSessions {
   }
 
   /**
-   * Replace a tenant's agent's mounts. Access checks use them at once; an idle agent
-   * restarts so its prompt describes them (a busy one picks them up next start).
+   * Replace a tenant's agent's mounts: a removed one at once, the rest from its next turn (see `remount`).
    */
   async setMounts(id: string, tenant: string, requested: unknown) {
     const session = (await this.owns(id, tenant)) ? await this.load(id) : undefined;
     if (!session) throw new HttpError(404, "Unknown agent");
     return this.remount(session, requested);
   }
-  /** Set an agent's mounts (`requested`, as given); an idle agent stops, so its next start's prompt describes them. */
+  /**
+   * Set an agent's mounts (`requested`, as given). A running turn loses a removed mount at once and keeps the rest it
+   * began with; the next one starts the agent again with the new mounts (`turnMounts`, `run`).
+   */
   private async remount(session: Session, requested: unknown) {
     if (!this.options.volumes) throw new HttpError(404, "Volumes are not enabled on this runtime");
     const { id, tenant } = session.header;
@@ -2866,7 +2886,6 @@ export class ClientSessions {
     await this.options.volumes.watch(id, tenant, session.header.mounts ?? [], mounts, session.claim);
     session.header.mounts = mounts;
     await this.writeHeader(session);
-    if (this.supervisor.agents.has(id) && !this.busy(session)) await this.supervisor.stop(id);
     return mounts;
   }
 
@@ -3305,12 +3324,12 @@ export class ClientSessions {
   }
 
   /**
-   * Where a request's attachments go: `uploads/<request>/<name>` in the agent's /workspace mount,
-   * else its first writable one. Requests have their own directories, so names only collide within one.
+   * Where a request's attachments go: `uploads/<request>/<name>` in the agent's workspace (`scratchMount`).
+   * Requests have their own directories, so names only collide within one.
    */
   private uploadTarget(session: Pick<Session, "header">, requestId: string, name: string) {
     const mounts = session.header.mounts ?? [];
-    const mount = mounts.find(entry => entry.path === "/workspace" && entry.mode === "rw") ?? mounts.find(entry => entry.mode === "rw");
+    const mount = scratchMount(VolumeService.markWorkspace(session.header.id, mounts));
     if (!this.options.volumes || !mount) throw new HttpError(400, "Attaching files needs a writable mount, like the default /workspace");
     if (!validId(requestId)) throw new HttpError(400, "Invalid request id");
     return resolveMount(mounts, `${mount.path}/uploads/${requestId}/${safeName(name)}`)!;
@@ -3802,6 +3821,8 @@ export class ClientSessions {
         try {
           // Accepted already (here, or by a node it was taken over from): it takes its busy slot regardless of the limit.
           await this.holdBusy(session, true);
+          // Mounts changed since the agent started: it starts again, so this turn's prompt and tools describe them.
+          if (session.hosted && canonical(session.hosted) !== canonical(session.header.mounts ?? []) && this.supervisor.agents.has(session.header.id) && !session.starting) await this.supervisor.stop(session.header.id);
           await this.ensureStarted(session);
         } catch (error) {
           // No room here for a run this node took over: another node with room takes it (see `handBack`).
