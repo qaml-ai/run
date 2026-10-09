@@ -2,7 +2,7 @@
 -- the child's prompt is sent and keyed by the spawn call (`id`), so a resumed turn finds the same child. When the child's
 -- run (`request_id`) ends, its notification (`notice`, the parent's prompt params, written once) is submitted to the
 -- parent as request `child_<request_id>`, which dedupes; the row is then `notified`. A wait_agent call that answers
--- the ending also makes it `notified`, without the prompt. `claimed_until` keeps other nodes off a delivery in flight;
+-- the ending also makes it `notified`: a notification sent anyway then lands nothing. `claimed_until` keeps other nodes off a delivery in flight;
 -- `checked_at` is when a sweep last asked whether the child's run ended. `landed_at`: when the ending reached the
 -- parent (its notification's turn began, or a wait answered it), which charges the child's spend once.
 create table agent_children (

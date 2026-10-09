@@ -219,7 +219,8 @@ The sub-agent's text cannot close the block or open another: such tags in it
 (and in any user message or tool result) are neutralized, as sender blocks are.
 UIs should render a message with `source` as a notification, not as the user.
 
-A sub-agent whose ending a `wait_agent` call answered sends no notification.
+A sub-agent whose ending a `wait_agent` call answered adds no notification:
+one already on its way ends without its message (`result.skipped`).
 A parent waiting on a person (an approval, `ask_user`) gets its notifications
 once they answer: a new message would supersede what it asked.
 

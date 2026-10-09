@@ -87,8 +87,13 @@ test("wait_agent answers a child's ending in its result, so no notification foll
   assert.equal(listed.agents[0].status, "completed");
   assert.equal(listed.agents[0].agentId, spawned.agentId);
   assert.ok(listed.agents[0].endedAt >= listed.agents[0].startedAt);
+  // The wait took the ending: a notification already on its way ends without its message.
   await sleep(1_000);
-  assert.ok(!(await parentRequests(r, parent)).some(request => request.id.startsWith("child_")), "the wait took the ending: no notification");
+  for (const request of (await parentRequests(r, parent)).filter(request => request.id.startsWith("child_"))) {
+    assert.match((await until(async () => { const found = (await r.call(`/v1/agents/${parent}/requests/${request.id}`)).json; return found.state === "completed" && found; }, "the notification")).outcome.result.skipped, /wait_agent/);
+  }
+  const history = (await r.call(`/v1/agents/${parent}/history`)).json.messages;
+  assert.ok(!history.some((message: any) => message.source), "no notification in history");
 });
 
 test("spawn_agent refuses past maxParallel running children and past the depth limit", async t => {

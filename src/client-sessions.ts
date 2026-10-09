@@ -2073,17 +2073,17 @@ export class ClientSessions {
     const parent = session.header.id, tenant = session.header.tenant;
     const rows = async () => (await this.db.query("select * from agent_children where parent = $1 order by created_at, id", [parent])).rows;
     const pick = (all: any[]) => {
-      if (names === undefined) return all.filter(row => row.state === "running");
+      if (names === undefined) return all.filter(row => row.landed_at === null);
       return (names as string[]).map(name => {
         const named = all.filter(row => row.name === name || row.child === name);
         if (!named.length) throw new Error(`You have no sub-agent ${name}`);
-        return named.find(row => row.state === "running") ?? named.at(-1);
+        return named.find(row => row.landed_at === null) ?? named.at(-1);
       });
     };
     let chosen = pick(await rows());
     if (!chosen.length) return jsonResult({ agents: [], message: "No sub-agents are running" });
-    const waiting = chosen.filter(row => row.state === "running" && row.ended_at === null);
-    if (waiting.length && !chosen.some(row => row.state === "running" && row.ended_at !== null)) {
+    const waiting = chosen.filter(row => row.ended_at === null);
+    if (waiting.length && !chosen.some(row => row.landed_at === null && row.ended_at !== null)) {
       // The first of them to end, or the timeout.
       const stop = new AbortController();
       const abort = () => stop.abort();
@@ -2107,7 +2107,7 @@ export class ClientSessions {
     }
     const answers = [];
     for (const row of chosen) {
-      const taken = row.state === "running" && row.ended_at !== null ? await this.takeEnding(session, run, row) : undefined;
+      const taken = row.landed_at === null && row.ended_at !== null ? await this.takeEnding(session, run, row) : undefined;
       const notice = (taken ?? row).notice as ChildNotice | null;
       answers.push({
         agentId: row.child, name: row.name, status: row.ended_at === null && !taken ? "running" : row.status ?? taken?.status,
@@ -2119,13 +2119,14 @@ export class ClientSessions {
   }
 
   /**
-   * Take an ended child's notice for a wait in run `run`: once, unless a delivery of its notification is in flight. It is
-   * charged to the run as a notification's landing would be, and its row is notified, so no notification follows.
+   * Take an ended child's notice for a wait in run `run`, once: unless its notification landed first. It is charged to the
+   * run as the notification's landing would be, and its row is notified: a notification already on its way to the parent
+   * finds it taken as it lands, and ends without its message (`landNotice`).
    */
   private async takeEnding(session: Session, run: RequestRecord, row: any) {
     const now = Date.now();
     const { rows } = await this.db.query(`update agent_children set state = 'notified', landed_at = $2, landed_by = 'wait', updated_at = $2
-      where id = $1 and state = 'running' and landed_at is null and ended_at is not null and (claimed_until is null or claimed_until < $2) returning *`, [row.id, now]);
+      where id = $1 and landed_at is null and ended_at is not null returning *`, [row.id, now]);
     const taken = rows[0];
     if (!taken) return undefined;
     const notice = taken.notice as ChildNotice;
