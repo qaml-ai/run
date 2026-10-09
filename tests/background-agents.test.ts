@@ -137,7 +137,7 @@ test("two agents waking each other through notifications stop at the wake cap wi
   const stopped = done.find(request => request.outcome.result.stopped === "agent_loop_limit");
   assert.ok(stopped, JSON.stringify(done.map(request => request.outcome)));
   assert.equal(stopped.status, "failed");
-  assert.match(stopped.outcome.result.error, /3 turns started by sub-agent notifications this hour/);
+  assert.match(stopped.outcome.result.error, /3 turns started by sub-agent notifications and messages this hour/);
   await sleep(1_500);
   // Nothing more: the fourth notification landed without a turn, so no fifth child.
   const after = (await parentRequests(r, parent)).filter(request => request.id.startsWith("child_"));
