@@ -17,6 +17,14 @@ Changes on main since the last tag.
   `verifyRuntimeToken` (both SDKs) already take a list of audiences, for accepting an old and a new URL while agents
   move. See [A server that moves](../guides/tools.md#a-server-that-moves).
 
+### File tools without versions
+
+- The model's file tools (`read`, `write`, `edit`, `ls`, `present_file`, and `fs` in `js_exec`) no longer show file
+  versions, and `write` and `edit` no longer take one. The runtime remembers the version of each file the agent last
+  read or wrote, and refuses a write or edit of a file that changed since then: "<path> changed since you last read
+  it. Read it again". Writing a file only if it does not exist yet (`version: 0`) is gone from the model's tools.
+  The files API and the SDKs' volume and file calls keep versions and `If-Match`; `run.files` keeps its versions.
+
 ### Runtime
 
 - Speech to text. Audio attached to a message (a voice note, a recording) is transcribed before the message is
@@ -37,6 +45,11 @@ Changes on main since the last tag.
   models that always reason (o-series, GPT-5), and any reasoning model at a `thinkingLevel` other than `off`. Set on
   an agent from a definition, both stay its own when the definition is applied. Compaction summaries keep the
   runtime's settings. See [Output length and temperature](../guides/models-and-keys.md#output-length-and-temperature).
+- `mcpServers` on agents without a definition (`POST /v1/agents`, upserts, `PATCH /v1/agents/:id/configuration`)
+  and on stateless runs: MCP servers of their own, without credentials (`auth: {"type": "runtime"}` or none; a token
+  or headers is a 400 that says to use a definition). They count toward an upsert's `configHash`, a fork copies
+  them, and `GET /v1/agents/:id` shows them. An agent from a definition refuses them. OpenAPI specs stay in
+  definitions. See [An agent's own MCP servers](../guides/tools.md#an-agents-own-mcp-servers).
 
 ### Admin site
 
@@ -51,6 +64,7 @@ Changes on main since the last tag.
 
 - `maxOutputTokens` and `temperature` on `agents.upsert`, `agents.run`, definitions and `agent.configure` (`null`
   removes either there).
+- `mcpServers` on `agents.upsert`, `createAgent`/`upsertAgent` and `agents.run` (`InlineMcpServer`: no credentials).
 
 ### Definitions that reach live agents
 
@@ -79,6 +93,8 @@ Changes on main since the last tag.
 - `verify_webhook(body, headers, secret)` verifies a webhook request (Standard Webhooks signature, constant-time,
   within 5 minutes) and returns its event.
 - `initial_messages=` on `agents.upsert` and `create_agent`: the history an agent begins with.
+- `mcp_servers=` on `agents.upsert` (async and sync), `create_agent`, `upsert_agent` and `agents.run`: MCP servers
+  of the agent's or run's own, without credentials.
 - `max_output_tokens=` and `temperature=` on `agents.upsert`, `create_agent`, `agents.run` and `configure` (`None`
   removes either there); definitions take `maxOutputTokens` and `temperature` as fields.
 - `AgentRuntime` manages key scopes (`set_scope_key`, `key_scope`, `set_scope_provider`, ...), API tokens

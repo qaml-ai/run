@@ -58,8 +58,10 @@ changed or deleted later still reads as it was when attached.
 
 `read`, `write`, `edit`, `ls`, `glob` and `grep` work on mount paths
 (`/workspace/notes.md`). `read` shows an image or PDF to a model that can view
-it. Every file has a version, and `write` and `edit` take one, so an edit based on
-a stale read fails and the model reads again. An application whose own tools
+it. The runtime remembers which version of each file the agent last read or wrote,
+so a `write` or `edit` of a file someone else changed since then fails ("changed
+since you last read it; read it again") and the model reads again. The model
+never sees version numbers; the files API for applications keeps them. An application whose own tools
 handle files can leave these out with `fileTools: false` (in a definition, or when
 the agent is made).
 
@@ -68,7 +70,7 @@ Code in `js_exec` has `fs` over the same mounts:
 ```js
 const csv = await fs.readFile("/workspace/data.csv", { encoding: "utf8" });
 await fs.writeFile("/workspace/out/chart.png", png, { contentType: "image/png" });
-await fs.stat("/workspace/out/chart.png");  // {path, type, size, version, updatedAt, contentType}
+await fs.stat("/workspace/out/chart.png");  // {path, type, size, updatedAt, contentType}
 await fs.list("/workspace/out");
 ```
 

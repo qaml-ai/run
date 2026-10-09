@@ -2026,6 +2026,14 @@
           "delegate": {
             "$ref": "#/components/schemas/DelegateSettings"
           },
+          "mcpServers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InlineMcpServerInput"
+            },
+            "maxItems": 64,
+            "description": "Remote MCP servers whose tools the runtime calls for the agent, for an agent without a definition; one made from a definition has its definition's. No credentials: auth \"runtime\" or none. An upsert without mcpServers leaves the agent none"
+          },
           "keyScope": {
             "type": "string",
             "description": "A key scope (PUT /v1/key-scopes/{scope}/providers/{provider}) whose keys the agent's model calls use first, before the tenant's own",
@@ -2161,6 +2169,103 @@
             "additionalProperties": false
           }
         ]
+      },
+      "InlineMcpServerInput": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Its tools reach the model as <name>__<tool>: 1–32 letters and digits, single underscores between them"
+          },
+          "url": {
+            "type": "string",
+            "description": "The server's Streamable HTTP (or older SSE) endpoint; https, on a public address"
+          },
+          "allowTools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 512,
+            "description": "Only these of its tools"
+          },
+          "denyTools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 512,
+            "description": "None of these of its tools"
+          },
+          "exposure": {
+            "type": "string",
+            "enum": [
+              "direct",
+              "codemode",
+              "both"
+            ],
+            "description": "How the model calls its tools: directly, from js_exec (the default), or both"
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 1200000,
+            "description": "How long a call may go without an answer; default 60000. Each progress notification the server sends restarts it, up to 1200000 in all"
+          },
+          "audience": {
+            "type": "string",
+            "description": "With auth \"runtime\": the tokens' aud, when not the server's url (behind a proxy, say): a URL on its origin, or a name that stays when the server moves, urn:camelrun:<tenant>:<name>"
+          },
+          "approval": {
+            "type": "object",
+            "properties": {
+              "default": {
+                "type": "string",
+                "enum": [
+                  "never",
+                  "always",
+                  "destructive"
+                ],
+                "description": "never (the default), always, or destructive: tools annotated destructiveHint (MCP), operations other than GET, HEAD and OPTIONS (OpenAPI)"
+              },
+              "tools": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string",
+                  "enum": [
+                    "never",
+                    "always"
+                  ]
+                },
+                "description": "Per tool, by its own name: overrides the default"
+              }
+            },
+            "additionalProperties": false,
+            "description": "Which tools the user approves before each call. Those tools are declared to the model directly; an approved call carries _meta[\"agent-runtime/approval\"] and an approval claim in its identity token"
+          },
+          "auth": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "runtime"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "additionalProperties": {},
+            "description": "Each request carries a JWT the runtime signs, naming the tenant, agent, subject, context and actor (no definition); verify it against /.well-known/jwks.json. The only auth an agent's own server takes"
+          }
+        },
+        "required": [
+          "name",
+          "url"
+        ],
+        "additionalProperties": {},
+        "description": "An MCP server of the agent's (or run's) own, as a definition's is, but with no credentials: no headers and no bearer token (a 400 says to use a definition, which seals them once). Not listed when saved: a server that cannot be listed shows in a run's sourceErrors"
       },
       "SpendLimitInput": {
         "type": "object",
@@ -2503,6 +2608,13 @@
                   }
                 ]
               },
+              "mcpServers": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/McpServer"
+                },
+                "description": "Its remote MCP servers: its own, or its definition's (without credentials' values)"
+              },
               "parentRunId": {
                 "type": "string",
                 "description": "For a child a delegate call made: the run of parentAgentId that made it"
@@ -2620,6 +2732,7 @@
               "modelHeaders",
               "builtins",
               "delegate",
+              "mcpServers",
               "spendLimit",
               "runLimits",
               "maxOutputTokens",
@@ -2769,6 +2882,110 @@
           "name",
           "status",
           "tools"
+        ]
+      },
+      "McpServer": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Its tools reach the model as <name>__<tool>: 1–32 letters and digits, single underscores between them"
+          },
+          "url": {
+            "type": "string",
+            "description": "The server's Streamable HTTP (or older SSE) endpoint; https, on a public address"
+          },
+          "allowTools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 512,
+            "description": "Only these of its tools"
+          },
+          "denyTools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 512,
+            "description": "None of these of its tools"
+          },
+          "exposure": {
+            "type": "string",
+            "enum": [
+              "direct",
+              "codemode",
+              "both"
+            ],
+            "description": "How the model calls its tools: directly, from js_exec (the default), or both"
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 1200000,
+            "description": "How long a call may go without an answer; default 60000. Each progress notification the server sends restarts it, up to 1200000 in all"
+          },
+          "audience": {
+            "type": "string",
+            "description": "With auth \"runtime\": the tokens' aud, when not the server's url (behind a proxy, say): a URL on its origin, or a name that stays when the server moves, urn:camelrun:<tenant>:<name>"
+          },
+          "approval": {
+            "type": "object",
+            "properties": {
+              "default": {
+                "type": "string",
+                "enum": [
+                  "never",
+                  "always",
+                  "destructive"
+                ],
+                "description": "never (the default), always, or destructive: tools annotated destructiveHint (MCP), operations other than GET, HEAD and OPTIONS (OpenAPI)"
+              },
+              "tools": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string",
+                  "enum": [
+                    "never",
+                    "always"
+                  ]
+                },
+                "description": "Per tool, by its own name: overrides the default"
+              }
+            },
+            "additionalProperties": false,
+            "description": "Which tools the user approves before each call. Those tools are declared to the model directly; an approved call carries _meta[\"agent-runtime/approval\"] and an approval claim in its identity token"
+          },
+          "headerNames": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Headers the server gets; their values are never returned"
+          },
+          "auth": {
+            "$ref": "#/components/schemas/SourceAuth"
+          }
+        },
+        "required": [
+          "name",
+          "url"
+        ]
+      },
+      "SourceAuth": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "bearer",
+              "runtime"
+            ]
+          }
+        },
+        "required": [
+          "type"
         ]
       },
       "ForkedFrom": {
@@ -3338,6 +3555,17 @@
             },
             "additionalProperties": false,
             "description": "Replaces who the agent may delegate to (with the delegate builtin); null removes it"
+          },
+          "mcpServers": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/InlineMcpServerInput"
+            },
+            "maxItems": 64,
+            "description": "Replaces the agent's own MCP servers; null or [] removes them. No credentials: auth \"runtime\" or none. Not for an agent made from a definition, whose servers are its definition's"
           }
         },
         "additionalProperties": false,
@@ -5253,110 +5481,6 @@
           }
         }
       },
-      "McpServer": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string",
-            "description": "Its tools reach the model as <name>__<tool>: 1–32 letters and digits, single underscores between them"
-          },
-          "url": {
-            "type": "string",
-            "description": "The server's Streamable HTTP (or older SSE) endpoint; https, on a public address"
-          },
-          "allowTools": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "maxItems": 512,
-            "description": "Only these of its tools"
-          },
-          "denyTools": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "maxItems": 512,
-            "description": "None of these of its tools"
-          },
-          "exposure": {
-            "type": "string",
-            "enum": [
-              "direct",
-              "codemode",
-              "both"
-            ],
-            "description": "How the model calls its tools: directly, from js_exec (the default), or both"
-          },
-          "timeoutMs": {
-            "type": "integer",
-            "minimum": 1000,
-            "maximum": 1200000,
-            "description": "How long a call may go without an answer; default 60000. Each progress notification the server sends restarts it, up to 1200000 in all"
-          },
-          "audience": {
-            "type": "string",
-            "description": "With auth \"runtime\": the tokens' aud, when not the server's url (behind a proxy, say): a URL on its origin, or a name that stays when the server moves, urn:camelrun:<tenant>:<name>"
-          },
-          "approval": {
-            "type": "object",
-            "properties": {
-              "default": {
-                "type": "string",
-                "enum": [
-                  "never",
-                  "always",
-                  "destructive"
-                ],
-                "description": "never (the default), always, or destructive: tools annotated destructiveHint (MCP), operations other than GET, HEAD and OPTIONS (OpenAPI)"
-              },
-              "tools": {
-                "type": "object",
-                "additionalProperties": {
-                  "type": "string",
-                  "enum": [
-                    "never",
-                    "always"
-                  ]
-                },
-                "description": "Per tool, by its own name: overrides the default"
-              }
-            },
-            "additionalProperties": false,
-            "description": "Which tools the user approves before each call. Those tools are declared to the model directly; an approved call carries _meta[\"agent-runtime/approval\"] and an approval claim in its identity token"
-          },
-          "headerNames": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "Headers the server gets; their values are never returned"
-          },
-          "auth": {
-            "$ref": "#/components/schemas/SourceAuth"
-          }
-        },
-        "required": [
-          "name",
-          "url"
-        ]
-      },
-      "SourceAuth": {
-        "type": "object",
-        "properties": {
-          "type": {
-            "type": "string",
-            "enum": [
-              "bearer",
-              "runtime"
-            ]
-          }
-        },
-        "required": [
-          "type"
-        ]
-      },
       "OpenApi": {
         "type": "object",
         "properties": {
@@ -6427,13 +6551,21 @@
               }
             ]
           },
+          "mcpServers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InlineMcpServerInput"
+            },
+            "maxItems": 64,
+            "description": "Remote MCP servers whose tools the run may call, as an agent's own: no credentials (auth \"runtime\" or none). A server that cannot be listed shows in sourceErrors"
+          },
           "fileTools": {
             "type": "boolean",
             "description": "true: the run gets a workspace volume and file tools. Default: none, unless input has files"
           },
           "codeMode": {
             "type": "boolean",
-            "description": "true: the model gets js_exec. Default: true when the run has tools (builtins, a definition, files), false for a tool-less run, whose model then sees only your instructions"
+            "description": "true: the model gets js_exec. Default: true when the run has tools (builtins, MCP servers, a definition, files), false for a tool-less run, whose model then sees only your instructions"
           },
           "mounts": {
             "type": "array",

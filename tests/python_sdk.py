@@ -19,7 +19,7 @@ import httpx
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "clients" / "python"))
-from camelai_run import AgentClient, _answer_for, _origin, AgentError, AgentRuntime, Agents, RunError, RuntimeTokenError, TestRuntime, ToolContext, WebhookVerificationError, _answer_mcp, _tool_context, serve_tools, tool, verify_runtime_token, verify_webhook
+from camelai_run import AgentClient, _answer_for, _origin, AgentError, AgentRuntime, Agents, RunError, Runs, RuntimeTokenError, TestRuntime, ToolContext, WebhookVerificationError, _answer_mcp, _tool_context, serve_tools, tool, verify_runtime_token, verify_webhook
 from camelai_run import sync
 
 DATABASE_URL = os.environ.get("AGENT_TEST_DATABASE_URL", "postgres://postgres:test@127.0.0.1:55432/postgres")
@@ -642,6 +642,14 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         defined = await self.runtime.upsert_definition("py-researcher", name="Researcher", builtins=["web_search"])
         self.assertEqual((await self.runtime.upsert_definition("py-researcher", name="Researcher", builtins=["web_search"]))["revision"], defined["revision"])
         self.assertEqual((await self.runtime.http.get(f"{self.url}/v1/agents/{researcher.id}", headers={"Authorization": f"Bearer {self.token}"})).json()["builtins"], ["web_fetch"])
+        # MCP servers of its own, without credentials.
+        server = {"name": "kb", "url": "http://127.0.0.1:9/mcp", "auth": {"type": "runtime"}}
+        served = await self.agents.upsert("py-own-mcp", mcp_servers=[server])
+        self.assertEqual((await self.runtime.http.get(f"{self.url}/v1/agents/{served.id}", headers={"Authorization": f"Bearer {self.token}"})).json()["mcpServers"], [server])
+        with self.assertRaises(AgentError) as refused:
+            await self.agents.upsert("py-own-mcp-bearer", mcp_servers=[{**server, "auth": {"type": "bearer", "token": "secret"}}])
+        self.assertEqual(refused.exception.status, 400)
+        self.assertEqual(Runs._request("hi", mcp_servers=[server])["mcpServers"], [server])
         joined = await asyncio.gather(agent.client.request("status", idempotency_key="py-status"), agent.client.request("status", idempotency_key="py-status"))
         self.assertEqual(joined[0], joined[1])
         page = await agent.history_page(limit=1)

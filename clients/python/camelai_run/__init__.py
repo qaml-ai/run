@@ -762,7 +762,7 @@ class AgentRuntime(_RuntimeCalls):
             raise
         return then(value) if then else value
 
-    async def create_agent(self, *, tools, system_prompt=None, name=None, type=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, on_input=None, builtins=None, delegate=None, subagents=False, prompt=None, traceparent=None, initial_messages=None, max_output_tokens=None, temperature=None):
+    async def create_agent(self, *, tools, system_prompt=None, name=None, type=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, on_input=None, builtins=None, delegate=None, subagents=False, prompt=None, traceparent=None, initial_messages=None, max_output_tokens=None, temperature=None, mcp_servers=None):
         """Provision an agent. `model` is "provider/model-id", e.g. "anthropic/claude-sonnet-5-5".
         `definition` makes it from a definition (GET /v1/definitions), which supplies the model, system prompt,
         thinking level and tool sources; `tools` are added as the agent's attached MCP server.
@@ -775,13 +775,15 @@ class AgentRuntime(_RuntimeCalls):
         2 hours by default), past which a run stops with stopped "turn_limit"; `model_headers` non-secret headers for each model call.
         `prompt` (the prompt call's body) is sent once the agent is made; `traceparent` (a W3C trace context) makes its run continue that trace.
         `initial_messages` is the history it begins with: Pi user, assistant, toolResult and compactionSummary messages (dicts),
-        a conversation from elsewhere (see the multi-user guide)."""
+        a conversation from elsewhere (see the multi-user guide).
+        `mcp_servers` ([{"name", "url", "auth"?: {"type": "runtime"}, ...}]) are remote MCP servers of its own, without a
+        definition: no credentials, only the runtime's identity tokens or none (a server that needs a token or headers goes in a definition)."""
         if not self.api_key:
             raise AgentError("No API key: set CAMELAI_API_KEY (or pass api_key). Create one at https://run.camelai.com/console/tokens")
         # subject: who the agent acts for; context: claims for its tool servers' identity tokens. Set only here.
         body = _provisioning(tools, definition=definition, name=name, type=type, system_prompt=system_prompt, model=model, thinking_level=thinking_level,
                              mounts=mounts, subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits, model_headers=model_headers, builtins=builtins,
-                             delegate=delegate, prompt=prompt, initial_messages=initial_messages, max_output_tokens=max_output_tokens, temperature=temperature)
+                             delegate=delegate, prompt=prompt, initial_messages=initial_messages, max_output_tokens=max_output_tokens, temperature=temperature, mcp_servers=mcp_servers)
         # A key of the caller's makes the agent durable (it lives until deleted); one the SDK makes up, only so a retried
         # create finds the same agent, keeps a scratch agent's day, said explicitly since any key would make it durable.
         if ttl_seconds is not _DEFAULT:
@@ -938,11 +940,11 @@ class Telemetry:
 
 def _provisioning(tools, *, definition=None, name=None, type=None, system_prompt=None, model=None, thinking_level=None, mounts=None,
                   subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, system_prompt_append=None, file_tools=None, builtins=None,
-                  delegate=None, prompt=None, code_mode=None, initial_messages=None, max_output_tokens=None, temperature=None):
+                  delegate=None, prompt=None, code_mode=None, initial_messages=None, max_output_tokens=None, temperature=None, mcp_servers=None):
     """A create request's body: the tools as the attached MCP server's tools/list, and the fields given."""
     optional = {"definition": definition, "name": name, "type": type, "systemPrompt": system_prompt, "model": model, "thinkingLevel": thinking_level,
                 "mounts": mounts, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit, "runLimits": run_limits, "modelHeaders": model_headers,
-                "systemPromptAppend": system_prompt_append, "fileTools": file_tools, "codeMode": code_mode, "builtins": builtins, "delegate": delegate, "prompt": prompt,
+                "systemPromptAppend": system_prompt_append, "fileTools": file_tools, "codeMode": code_mode, "builtins": builtins, "delegate": delegate, "mcpServers": mcp_servers, "prompt": prompt,
                 "initialMessages": initial_messages, "maxOutputTokens": max_output_tokens, "temperature": temperature}
     return _with_multi_agent({"mcp": {"tools": [item.mcp_tool() for item in tools]}, **{key: value for key, value in optional.items() if value is not None}})
 
@@ -2258,14 +2260,14 @@ class Runs:
     @staticmethod
     def _request(input, *, instructions=None, instructions_append=None, model=None, definition=None, thinking_level=None, output=None, builtins=None, delegate=None,
                  file_tools=None, mounts=None, files=None, user=None, metadata=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None,
-                 model_headers=None, name=None, retention_seconds=None, code_mode=None, max_output_tokens=None, temperature=None):
+                 model_headers=None, name=None, retention_seconds=None, code_mode=None, max_output_tokens=None, temperature=None, mcp_servers=None):
         parts = [{"type": "text", "text": input}]
         for file in files or []:
             entry = file if isinstance(file, dict) else {"data": file}
             data = entry["data"]
             parts.append({"type": "file", "data": base64.b64encode(bytes(data)).decode(), **{key: entry[key] for key in ("name", "contentType") if entry.get(key)}})
         fields = {"input": input if len(parts) == 1 else parts, "systemPrompt": instructions, "systemPromptAppend": instructions_append, "model": model, "definition": definition,
-                  "thinkingLevel": thinking_level, "output": _output_request(output), "builtins": builtins, "delegate": delegate, "fileTools": file_tools, "mounts": mounts,
+                  "thinkingLevel": thinking_level, "output": _output_request(output), "builtins": builtins, "delegate": delegate, "mcpServers": mcp_servers, "fileTools": file_tools, "mounts": mounts,
                   "from": _sender(user) if user else None, "metadata": metadata, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit,
                   "runLimits": run_limits, "modelHeaders": model_headers, "name": name, "retentionSeconds": retention_seconds, "codeMode": code_mode,
                   "maxOutputTokens": max_output_tokens, "temperature": temperature}
@@ -2331,7 +2333,8 @@ class Agents:
         """A stateless run: a configuration and `input` in, its result (a Run) out, nothing carried over and no agent kept.
         It is as durable as an agent's run (a node lost mid-run, or a deploy, goes on from its last step), and counts toward
         busy agents and runs per minute as one does. Options: instructions, model, output (a pydantic model or JSON Schema),
-        definition, builtins ("web_fetch", "web_search", "delegate"), thinking_level, files (bytes, inline), user, metadata,
+        definition, builtins ("web_fetch", "web_search", "delegate"), mcp_servers (no credentials: auth {"type": "runtime"} or none),
+        thinking_level, files (bytes, inline), user, metadata,
         idempotency_key, spend_limit, run_limits, retention_seconds, throw_on_error. A failed run raises RunError unless
         throw_on_error=False. For a conversation that carries over, upsert an agent instead.
 
@@ -2342,7 +2345,7 @@ class Agents:
     async def upsert(self, key, *, model=None, instructions=None, tools=None, definition=None, thinking_level=None, subject=None, context=None,
                      key_scope=None, spend_limit=None, run_limits=None, model_headers=None, mounts=None, name=None, instructions_append=None, file_tools=None,
                      builtins=None, delegate=None, subagents=False, on_event=None, on_input=None, on_error=None, attach=None, takeover=False, connection=None,
-                     code_mode=None, initial_messages=None, max_output_tokens=None, temperature=None):
+                     code_mode=None, initial_messages=None, max_output_tokens=None, temperature=None, mcp_servers=None):
         """The agent for `key` (your name for it: "support-triage", or "user-123"), made now if there is none, and set
         to this configuration if it differs. The same key is the same agent, with its history and files, until
         agent.delete(); any number of processes may upsert it. `tools` (@tool functions) run in this process, which
@@ -2350,7 +2353,8 @@ class Agents:
         HTTP (serve_tools) and name them in a definition instead. `builtins` are tools the runtime answers itself
         ("web_fetch", "web_search", "schedule", "ask_user"), without a definition. `delegate` ({"agents": [...]}) lets it hand
         tasks to sub-agents (its builtin comes with it; see the multi-agent guide); subagents=True delivers its sub-agents'
-        progress as events.
+        progress as events. `mcp_servers` ([{"name", "url", "auth"?: {"type": "runtime"}, ...}]) are remote MCP servers of its
+        own, without a definition and without credentials: the runtime's identity tokens or none (a token or headers go in a definition).
         attach=False declares the tools without serving them (another process does); takeover=True replaces the process serving them now.
         code_mode=False gives the agent no js_exec: the model calls every tool directly, and with file_tools=False and no tools its
         prompt is little more than your instructions (for a tool-less agent). An upsert of the configuration the agent has
@@ -2364,7 +2368,7 @@ class Agents:
                                                   subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits,
                                                   model_headers=model_headers, mounts=mounts, name=name, system_prompt_append=instructions_append, file_tools=file_tools, builtins=builtins,
                                                   delegate=delegate, code_mode=code_mode, initial_messages=initial_messages,
-                                                  max_output_tokens=max_output_tokens, temperature=temperature)
+                                                  max_output_tokens=max_output_tokens, temperature=temperature, mcp_servers=mcp_servers)
         # The upsert declared these tools already (between the agent's turns, if it runs).
         agent = await self.agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error, attach=attach, takeover=takeover, subagents=subagents,
                                  connection=connection, _sync=False)

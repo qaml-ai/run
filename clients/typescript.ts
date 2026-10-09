@@ -378,6 +378,11 @@ export interface CreateAgentOptions extends AgentOptions {
   /** Who the agent may hand tasks to (sub-agents), without a definition; it adds the delegate builtin. See the multi-agent guide. */
   delegate?: DelegateSettings;
   /**
+   * Remote MCP servers of the agent's own, without a definition (one made from a definition has its definition's). They
+   * carry no credentials: auth `{ type: "runtime" }` (identity tokens) or none. A server that needs a token or headers goes in a definition.
+   */
+  mcpServers?: InlineMcpServer[];
+  /**
    * A first prompt, sent in the same call once the agent is made (upsertAgent returns its request, or why it was refused).
    * Give it a `requestId`: a retried call with the same key and requestId sends it once.
    */
@@ -406,6 +411,16 @@ export type SourceAuth = { type: "bearer"; token: string } | { type: "runtime" }
  * js_exec; both) defaults to both for a source of up to 10 tools, else codemode; `"direct"` keeps them out of js_exec.
  * A tool's own exposure (its `_meta["agent-runtime/exposure"]` in tools/list) beats the source's.
  */
+/**
+ * An MCP server of an agent's or a stateless run's own: a definition's server without credentials. `auth: { type: "runtime" }`
+ * gives each request an identity token the runtime signs; there are no headers or bearer tokens (put those in a definition).
+ * Not listed when saved: one that cannot be listed shows in a run's `sourceErrors`.
+ */
+export interface InlineMcpServer {
+  name: string; url: string; auth?: { type: "runtime" }; audience?: string; allowTools?: string[]; denyTools?: string[]; exposure?: "direct" | "codemode" | "both"; timeoutMs?: number;
+  /** Which tools the user approves before each call. */
+  approval?: { default?: "never" | "always" | "destructive"; tools?: Record<string, "never" | "always"> };
+}
 interface SourceOptions { name: string; headers?: Record<string, string>; auth?: SourceAuth; audience?: string; allowTools?: string[]; denyTools?: string[]; exposure?: "direct" | "codemode" | "both"; timeoutMs?: number }
 export interface DefinitionInput {
   name: string;
@@ -761,7 +776,7 @@ const AGENT_KEY = /^[A-Za-z0-9_-]{1,80}$/;
 const REQUEST_ID = AGENT_KEY;
 /** A create request's fields, from the options given. */
 function provisioning(options: CreateAgentOptions) {
-  const fields = ["subject", "context", "keyScope", "spendLimit", "runLimits", "modelHeaders", "definition", "mounts", "model", "thinkingLevel", "maxOutputTokens", "temperature", "initialMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "delegate", "prompt"] as const;
+  const fields = ["subject", "context", "keyScope", "spendLimit", "runLimits", "modelHeaders", "definition", "mounts", "model", "thinkingLevel", "maxOutputTokens", "temperature", "initialMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "delegate", "mcpServers", "prompt"] as const;
   return withMultiAgent(Object.fromEntries(fields.filter(field => options[field] !== undefined).map(field => [field, options[field]])));
 }
 /** `delegate` settings bring their builtin: given the settings, the builtin is added. */
@@ -1028,6 +1043,8 @@ export interface RunRequest {
   /** Sampling temperature, 0 to 2. Refused (400) for a model that takes none (Claude Opus 4.7 and later, Sonnet 5.5, Fable; o-series, GPT-5) or a reasoning model at a thinkingLevel other than off. */
   temperature?: number;
   builtins?: ("web_fetch" | "web_search" | "delegate")[]; delegate?: DelegateSettings;
+  /** Remote MCP servers the run may call, without credentials (auth `{ type: "runtime" }` or none). */
+  mcpServers?: InlineMcpServer[];
   /** true: a workspace volume and file tools. Default: none, unless the input has files. */
   fileTools?: boolean; mounts?: Mount[];
   /** js_exec. Default: on for a run with tools, off for a tool-less one. */
