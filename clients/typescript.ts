@@ -35,7 +35,7 @@ export interface RuntimeIdentity {
   requestId?: string;
   /** The model's tool call this request is for, when made for one. */
   toolCallId?: string;
-  /** In a sub-agent's run (delegate, spawn_agent): the agent that started it. */
+  /** In a sub-agent's run (delegate, spawn_agent, a tool's spawnAgent): the agent that started it. */
   parentAgentId?: string;
   /** In a sub-agent's run: the first agent of its chain (the parent's parent's..., or the parent). */
   rootAgentId?: string;
@@ -135,7 +135,7 @@ export type Tools = Record<string, Tool>;
 /** A tool as an MCP server lists it (`tools/list`). Runtime options ride in `_meta` under "agent-runtime/". */
 export interface McpTool { name: string; title?: string; description?: string; inputSchema: Record<string, unknown>; annotations?: Record<string, unknown>; _metadata?: Record<string, string> }
 /** An MCP `tools/call` result: complete, or (MCP's multi round-trip requests) asking for input to retry with. */
-export type CallToolResult = { content: Array<Record<string, unknown>>; structuredContent?: Record<string, unknown>; isError?: boolean; resultType?: "complete" }
+export type CallToolResult = { content: Array<Record<string, unknown>>; structuredContent?: Record<string, unknown>; isError?: boolean; resultType?: "complete"; _meta?: Record<string, unknown> }
   | { resultType: "input_required"; inputRequests?: Record<string, { method: string; params?: Record<string, unknown> }>; requestState?: string; content?: never };
 /** Who a `tools/list` is for: the identity and origin a call would carry, and the request's signal. */
 export type ListToolsContext = Pick<ToolContext, "identity" | "origin" | "signal">;
@@ -222,6 +222,27 @@ export async function answerMcp(
     return { error: { code: -32603, message: String(error).slice(0, 2048) } };
   }
 }
+const SPAWN = Symbol.for("camelrun.spawn");
+/**
+ * Return this from a tool served with auth "runtime" (`serveTools`) to start `agent`, an agent of your tenant you
+ * prepared (with its key, after your own checks), on `task` as a background sub-agent of the calling agent. The model
+ * gets `{ agentId, name }`; the sub-agent's answer reaches the calling agent later, as a notification.
+ */
+export function spawnAgent(directive: { agent: string; task: string; name?: string; output?: Record<string, unknown> }): CallToolResult {
+  const result = { content: [{ type: "text", text: `Starting ${directive.name ?? directive.agent}` }], _meta: { "camelrun/spawn": directive } };
+  Object.defineProperty(result, SPAWN, { value: true });
+  return result;
+}
+/**
+ * A history message the runtime wrote, as such: a background sub-agent's notification (with its status) or a message
+ * between agents. Undefined for anyone else's (a person's, or the agent's own).
+ */
+export function agentNotice(message: unknown): { kind: "notification" | "message"; agentId: string; name: string; status?: string; error?: string } | undefined {
+  const { source, metadata } = (message ?? {}) as { source?: { kind?: string; agentId: string; name: string }; metadata?: Record<string, unknown> };
+  if (source?.kind !== "agent") return undefined;
+  const text = (value: unknown) => typeof value === "string" && value ? value : undefined;
+  return { kind: metadata?.kind === "message" ? "message" : "notification", agentId: source.agentId, name: source.name, ...(text(metadata?.status) ? { status: metadata!.status as string } : {}), ...(text(metadata?.error) ? { error: metadata!.error as string } : {}) };
+}
 /** `tool({...})` definitions as an attached MCP server: JSON results become a text block (and structured content for objects). */
 export function toolServer(tools: Tools): ToolServer {
   return {
@@ -249,7 +270,7 @@ export function toolServer(tools: Tools): ToolServer {
       // A tool that returns nothing did its work: the model hears null, not a failure it would retry.
       if (result === undefined) result = null;
       if (byteLength(JSON.stringify(result)) > 1024 * 1024) throw new Error("Tool must return a bounded JSON value");
-      if (definition.resultFormat === "content") return result as CallToolResult;
+      if (definition.resultFormat === "content" || (isRecord(result) && (result as Record<symbol, unknown>)[SPAWN])) return result as CallToolResult;
       return { content: [{ type: "text", text: JSON.stringify(result) }], ...(isRecord(result) ? { structuredContent: result } : {}) };
     },
   };

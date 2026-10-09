@@ -30,7 +30,7 @@ __version__ = "0.15.0"
 
 __all__ = [
     "Agents", "Agent", "Run", "RunInput", "InputDetail", "Mount", "WorkspaceMount", "RunStream", "StreamPart", "Runs", "StatelessRunStream",
-    "tool", "Tool", "ToolContext", "InputRequired", "RuntimeIdentity", "identity_from_claims",
+    "tool", "Tool", "ToolContext", "InputRequired", "RuntimeIdentity", "identity_from_claims", "spawn_agent", "SpawnAgent", "agent_notice",
     "AgentError", "RunError",
     "AgentRuntime", "AgentClient", "AgentFiles", "Download", "Volume", "Telemetry", "Transcriptions", "Images", "DEFAULT_URL",
     "serve_tools", "verify_runtime_token", "verify_file_url", "RuntimeTokenError", "TestRuntime", "verify_webhook", "WebhookVerificationError",
@@ -94,11 +94,22 @@ class RuntimeIdentity:
     # The run (its request id) the call was made in, and the model's tool call it is for, when there are.
     request_id: str | None = None
     tool_call_id: str | None = None
-    # In a sub-agent's run (delegate, spawn_agent): the agent that started it, and the first agent of its chain.
+    # In a sub-agent's run (delegate, spawn_agent, a tool's spawn directive): the agent that started it, and its chain's first.
     parent_agent_id: str | None = None
     root_agent_id: str | None = None
     # A verified token's full claims (serve_tools, verify_runtime_token).
     claims: dict | None = field(default=None, repr=False, compare=False)
+
+
+def agent_notice(message):
+    """Who wrote a history message the runtime made, if it did: a background sub-agent's notification (kind
+    "notification", with its status) or a message between agents (kind "message"). None for anyone else's."""
+    source = message.get("source") if isinstance(message, dict) else None
+    if not isinstance(source, dict) or source.get("kind") != "agent":
+        return None
+    metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+    return {"kind": "message" if metadata.get("kind") == "message" else "notification", "agentId": source.get("agentId"), "name": source.get("name"),
+            **({"status": metadata["status"]} if metadata.get("status") else {}), **({"error": metadata["error"]} if metadata.get("error") else {})}
 
 
 def identity_from_claims(claims):
@@ -219,8 +230,23 @@ class Tool:
         return await self(**arguments)
 
 
+class SpawnAgent(dict):
+    """A tool's answer that starts a background sub-agent: see spawn_agent."""
+
+
+def spawn_agent(agent, task, *, name=None, output=None):
+    """Return this from a tool served with auth "runtime" (serve_tools) to start `agent`, an agent of your tenant you
+    prepared, on `task` as a background sub-agent of the calling agent. The model gets {"agentId", "name"}; the sub-agent's
+    answer reaches the calling agent later as a notification. `name`: the model's handle for it; `output`: a JSON Schema."""
+    directive = {"agent": agent, "task": task, **({"name": name} if name else {}), **({"output": output} if output else {})}
+    return SpawnAgent(content=[{"type": "text", "text": f"Starting {name or agent}"}], _meta={"camelrun/spawn": directive})
+
+
 def _call_tool_result(result):
-    """A tool's JSON value as an MCP tools/call result: a text block, plus structured content for objects."""
+    """A tool's JSON value as an MCP tools/call result: a text block, plus structured content for objects. A spawn
+    directive (spawn_agent) is the result as it is."""
+    if isinstance(result, SpawnAgent):
+        return dict(result)
     text = json.dumps(result, allow_nan=False)
     return {"content": [{"type": "text", "text": text}], **({"structuredContent": result} if isinstance(result, dict) else {})}
 

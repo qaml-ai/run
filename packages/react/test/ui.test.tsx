@@ -50,6 +50,25 @@ describe("<AgentChat>", () => {
     expect(screen.getByText("sales.csv").closest("a")!.getAttribute("href")).toBe("https://files.test/workspace/sales.csv");
   });
 
+  it("shows a background sub-agent's notification and messages as notices, never as the user's", () => {
+    const chat = scripted();
+    render(<AgentChat chat={chat.chat} />);
+    const source = { kind: "agent", agentId: "client_child", name: "researcher-1" };
+    chat.show({ messages: [
+      user("Research it", 1),
+      user("Halfway there", 2, { source, metadata: { agentId: "client_child", name: "researcher-1", kind: "message", to: "parent" } }),
+      user("Found **3** sources", 3, { source, metadata: { agentId: "client_child", name: "researcher-1", status: "completed", usage: null } }),
+      user("It broke", 4, { source, metadata: { agentId: "client_child", name: "researcher-1", status: "failed", error: "It broke" } }),
+    ] });
+    expect(screen.getByText("Message from sub-agent researcher-1")).toBeTruthy();
+    expect(screen.getByText("Sub-agent researcher-1 finished")).toBeTruthy();
+    expect(screen.getByText("3").tagName).toBe("STRONG");
+    const failed = screen.getByText("Sub-agent researcher-1 failed").closest("details")!;
+    expect(failed.getAttribute("data-status")).toBe("failed");
+    // Only the person's message is a bubble.
+    expect(document.querySelectorAll(".agent-chat__bubble").length).toBe(1);
+  });
+
   it("shows a delegate call's sub-agent as a collapsible transcript under its call", () => {
     const chat = scripted();
     render(<AgentChat chat={chat.chat} />);

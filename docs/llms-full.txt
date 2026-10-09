@@ -4207,6 +4207,68 @@ A browser token minted with the `children` scope (with the others it needs:
 too, by their ids, as it reads the agent: a chat can reload a sub-agent's
 transcript with its parent's token.
 
+### Workers your tools prepare
+
+A tool can start a sub-agent for the model, so the model never names an agent:
+your tool does the authorization and setup with your API key, and answers with
+a spawn directive. Use it for workers per customer object (a bot, a repo, a
+ticket) that keep their history across tasks.
+
+```ts
+import { serveTools, spawnAgent } from "@camelai/run/server";
+import { tool, schema } from "@camelai/run";
+
+export default { fetch: serveTools({
+  work_on_bot: tool({
+    description: "Hand a task to the bot's worker", input: schema.Object({ bot: schema.String(), task: schema.String() }),
+    execute: async ({ bot, task }, { identity }) => {
+      await assertOwnsBot(identity!.rootAgentId ?? identity!.agent, bot);
+      const worker = await agents.upsert(`bot-worker-${bot}`, { instructions: "You maintain one bot." });
+      return spawnAgent({ agent: worker.id, task, name: `bot-${bot}` });
+    },
+  }),
+}, { runtime: "https://run.camelai.com", tenant: "acme" }) };
+```
+
+```python
+from camelai_run import spawn_agent, tool
+
+@tool
+async def work_on_bot(bot: str, task: str) -> dict:
+    """Hand a task to the bot's worker"""
+    worker = await agents.upsert(f"bot-worker-{bot}", instructions="You maintain one bot.")
+    return spawn_agent(worker.id, task, name=f"bot-{bot}")
+```
+
+The directive is `_meta["camelrun/spawn"]: { agent, task, name?, output? }` on
+the tool's result, if you answer MCP yourself. The runtime takes it only from a
+tool server with auth `"runtime"` (a definition's or the agent's own), and checks
+that the agent is your tenant's, is not already in the calling agent's chain,
+and that the depth and `maxParallel` limits allow it (the calling agent's
+`delegate` settings, or the defaults). The model's call then answers
+`{ agentId, name }`, and the worker's answer arrives as a notification. The
+calling agent needs no `agents` builtin for this.
+
+A worker is an agent of its own, so its runs go one at a time: a task given to
+a worker that is busy queues behind its current run (the call answers
+`queued: true`), and each task notifies when it ends. Deleting the parent leaves
+such workers alone; aborting it aborts the worker only while it runs the
+parent's task.
+
+### In the SDKs and UIs
+
+- `agentNotice(message)` (Python `agent_notice`) tells a history message the
+  runtime wrote apart: `{ kind: "notification" | "message", agentId, name, status?, error? }`,
+  or undefined for anyone else's.
+- `stream()` parts and watcher events include `subagent_message`;
+  `abort({ children: "keep" })` keeps background sub-agents running.
+- `<AgentChat>` shows notifications and agent messages as collapsible notices
+  (`AgentNotice`), never as the user's bubbles; the chat model's
+  `UserChatMessage.agent` says which (`labels.agentNotification` and
+  `labels.agentMessage` name them).
+- Tool servers read `identity.parentAgentId` and `identity.rootAgentId` in a
+  sub-agent's calls.
+
 ## Coming from the OpenAI Agents SDK
 
 | OpenAI Agents SDK | camelRun |

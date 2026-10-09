@@ -259,4 +259,6 @@ export function serveTools(tools: Tools | ToolServer | ((identity: RuntimeIdenti
 }
 
 export { createAgentHandler, agentKeyFor } from "./handler.ts";
+/** A tool's answer that starts a background sub-agent you prepared (see `spawnAgent`). */
+export { spawnAgent } from "./typescript.ts";
 export type { AgentAuth, AgentHandler, AgentHandlerOptions, AgentSetup, HandlerAction, SendEvent } from "./handler.ts";

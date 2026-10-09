@@ -107,6 +107,8 @@ export type AgentEvent =
   | { type: "subagent_event"; toolCallId: string; agentId: string; event: AgentEvent }
   /** With `subagents: true`: the child's run ended, and how; a background child's as its notification lands (or a wait_agent takes it). */
   | { type: "subagent_end"; toolCallId: string; agentId: string; requestId: string; status: "completed" | "input_required" | "failed" | "aborted"; error?: string; name?: string; background?: true }
+  /** With `subagents: true`: a background sub-agent messaged its parent (send_message). */
+  | { type: "subagent_message"; agentId: string; name: string; text: string }
   /** The stream could not replay what was missed: recover from state (the SDK does). */
   | { type: "replay_gap"; cursor: number }
   /** Where the stream could not replay: the running turn as of now, to fold from. */
