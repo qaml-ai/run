@@ -156,13 +156,16 @@ test("a volume is served by one node: other nodes forward to it, agents anywhere
   // An agent served by B mounts the volume; its file tools reach the owner on A.
   const agent = await viaB.createAgent({ tools: {}, idempotencyKey: "volume-agent", mounts: [{ volumeId: id, path: "/shared", mode: "rw" }] });
   t.after(() => agent.close());
-  const edited = JSON.parse((await agent.execute(`
-    const read = await tools.read({ path: "/shared/plan.md" });
-    return await tools.edit({ path: "/shared/plan.md", old: "draft", new: "final", version: read.version });`)).output[0]);
+  await agent.execute(`
+    await tools.read({ path: "/shared/plan.md" });
+    return await tools.edit({ path: "/shared/plan.md", old: "draft", new: "final" });`);
+  const edited = await viaA.volume(id).read("plan.md");
   assert.equal(edited.version, first.version + 1);
-  assert.equal(await viaA.volume(id).readText("plan.md"), "final");
+  assert.equal(new TextDecoder().decode(edited.data), "final");
   assert.equal(await c.owner(id), a.url, "the volume did not move to the agent's node");
-  await assert.rejects(agent.execute(`return await tools.edit({ path: "/shared/plan.md", old: "final", new: "x", version: ${first.version} })`), /changed since you read it/);
+  // Someone else changes it: the agent's next edit, based on what it read, is refused until it reads again.
+  await viaA.volume(id).write("plan.md", "final", { version: edited.version });
+  await assert.rejects(agent.execute('return await tools.edit({ path: "/shared/plan.md", old: "final", new: "x" })'), /changed since you last read it/);
 
   // A dies owning the volume. Once its heartbeat expires, B serves it from storage.
   a.child.kill("SIGKILL");
@@ -170,7 +173,7 @@ test("a volume is served by one node: other nodes forward to it, agents anywhere
   await sleep(1500 + 500);
   assert.equal(await viaB.volume(id).readText("plan.md"), "final");
   assert.equal(await c.owner(id), b.url);
-  assert.equal(JSON.parse((await agent.execute('return await tools.read({ path: "/shared/plan.md" })', { timeoutMs: 20_000 })).output[0]).version, edited.version);
+  assert.equal(JSON.parse((await agent.execute('return await tools.read({ path: "/shared/plan.md" })', { timeoutMs: 20_000 })).output[0]).content, "final");
   await agent.execute('await tools.write({ path: "/shared/after.md", content: "written after takeover" })');
   assert.deepEqual((await viaB.volume(id).list()).files.map(file => file.path), ["/after.md", "/plan.md"]);
 });

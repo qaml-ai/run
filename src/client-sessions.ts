@@ -137,6 +137,8 @@ type Session = {
   requests: Map<string, RequestRecord>;
   /** The requests still running, so nothing scans every retained record. */
   running: Map<string, RequestRecord>;
+  /** The version of each file the agent last read or wrote with its file tools (volume-tools.ts `seen`), on this node. */
+  seen?: Map<string, number>;
   log: AppendLog<JournalRecord>;
   /** Streamed events live only in memory; durable state is recovered through /state. */
   cursor: number; events: BufferedEvent[]; eventBytes: number;
@@ -1564,7 +1566,7 @@ export class ClientSessions {
   private toolContext(session: Session): ToolContext {
     const header = session.header;
     return {
-      tenant: header.tenant, agent: header.id, mounts: header.mounts ?? [], model: () => session.header.config.model,
+      tenant: header.tenant, agent: header.id, mounts: header.mounts ?? [], model: () => session.header.config.model, seen: session.seen ??= new Map(),
       onWrite: file => {
         const files = session.outputs?.files;
         if (files && (files.has(file.path) || files.size < OUTPUT_FILES)) files.set(file.path, file);
