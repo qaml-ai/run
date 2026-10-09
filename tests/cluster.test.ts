@@ -88,8 +88,12 @@ test("watchers on any node share the owner's stream: each gets every event, besi
 
 test("watching an idle agent loads it nowhere; when a node loads it, other nodes' idle watchers move to it at once", { timeout: 90_000 }, async t => {
   const c = await cluster(t);
-  const a = await c.start("a", { AGENT_IDLE_MS: "1000" });
-  const b = await c.start("b", { AGENT_IDLE_MS: "1000" });
+  // A lease that outlasts a database or CPU stall on a loaded runner. Under the cluster's 1.5 s, a stall of about a second
+  // fenced both nodes after the watcher had reconnected: A's session was lost and the watcher's stream ended before the
+  // run it waits for (a client would reconnect; this one does not). Nothing here waits for a lease to run out.
+  const env = { AGENT_IDLE_MS: "1000", AGENT_LEASE_TTL_MS: "6000" };
+  const a = await c.start("a", env);
+  const b = await c.start("b", env);
   const agent = await new AgentRuntime({ url: a.url, apiKey: token }).createAgent({ tools: lookup([]) });
   await agent.execute("return 1");
   await agent.close();
