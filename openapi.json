@@ -7079,6 +7079,10 @@
         "properties": {
           "name": {
             "type": "string"
+          },
+          "key": {
+            "type": "string",
+            "description": "Your name for the volume (1–200 letters, digits and ._:-): the first create with a key makes it, every later one answers with it (existing: true), for as long as it lives. A deleted one's key makes no other"
           }
         }
       },

@@ -17,6 +17,7 @@ export const PAGES: { section: string; path: string; about: string }[] = [
   { section: "Start", path: "quickstart.md", about: "a working agent in five minutes, in TypeScript, Python or curl" },
   { section: "Start", path: "concepts.md", about: "durable keyed agents, runs, forking, events, where tools run, processes, people in the loop, idempotency" },
   { section: "Start", path: "pricing.md", about: "what runs, agent time, storage and web search cost; credit, starting credit and its limits" },
+  { section: "Guides", path: "guides/projects.md", about: "an agent builds a bot, site or report in a volume of its own; your application checks and publishes versions" },
   { section: "Guides", path: "guides/tools.md", about: "writing tools; attached and served tools; identity tokens; MCP, OpenAPI and built-in sources" },
   { section: "Guides", path: "guides/human-input.md", about: "approvals, questions and forms; answering them and resuming the run" },
   { section: "Guides", path: "guides/stateless-runs.md", about: "one call, configuration and input in and result out, nothing carried over and no agent kept (POST /v1/runs, agents.run): runs or agents, following, idempotency, durability, limits" },

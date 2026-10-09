@@ -31,11 +31,12 @@ test("a run stops at its agent's limit of model responses with stopped turn_limi
   // Only the tenant sets them; null returns to the runtime's.
   assert.equal((await r.call(`/clients/${id}/requests`, { token, body: { id: "self", method: "configure", params: { runLimits: { maxResponses: 100 } } } })).status, 403);
   assert.equal((await r.call(`/v1/agents/${id}/configuration`, { method: "PATCH", body: { runLimits: { maxResponses: 1 } } })).status, 202);
-  assert.deepEqual((await r.call(`/v1/agents/${id}`)).json.runLimits, { maxResponses: 1 });
+  // A configuration change is queued like a run (202): it shows once the agent has taken it.
+  await until(async () => (await r.call(`/v1/agents/${id}`)).json.runLimits?.maxResponses === 1, "the new run limits to apply");
   assert.equal((await r.prompt(id, "once")).outcome.result.stopped, "turn_limit");
   assert.equal(r.model.bodies.length, 7);
   assert.equal((await r.call(`/v1/agents/${id}/configuration`, { method: "PATCH", body: { runLimits: null } })).status, 202);
-  assert.equal((await r.call(`/v1/agents/${id}`)).json.runLimits, null);
+  await until(async () => (await r.call(`/v1/agents/${id}`)).json.runLimits === null, "the run limits to be removed");
 });
 
 test("self-serve tenants get the runtime's maximums (or the operator's per tenant); admin tenants none unless their entry sets one", { timeout: 120_000 }, async t => {
