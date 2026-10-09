@@ -509,3 +509,21 @@ test("a notification refused at the wake cap whose node is lost after its messag
   assert.ok(sim.hooks.reached.includes("a turn refused as its notification landed was resumed on another node, and kept the refusal"), sim.hooks.reached.join(", "));
   assert.deepEqual(sim.hooks.violations, []);
 });
+
+test("a notification delivered while the checks run is in its parent's history once its turn ends (seed 29880893)", async () => {
+  // Minimized from seed 29880893: both nodes were lost around the child's ending, so its notification was delivered late,
+  // as I21 looked. A notification lands (landed_at) as its turn begins, and its message is in history only once the turn
+  // has it: I21 read the history in between and found it missing.
+  const plan: Plan = JSON.parse(readFileSync(new URL("./sim/cases/notification-turn-running.json", import.meta.url), "utf8"));
+  const result = await runPlan(plan, { quiet: true });
+  assert.deepEqual(result.failures, []);
+});
+
+test("a notification whose landing the database refuses for now is landed when tried again, not lost (seed 39319804)", async () => {
+  // Minimized from seed 39319804: the notification's run marked the row landed, then counting its wake met a deadlock
+  // (40P01), which failed the run: the message never reached history, and its request, ended, was never sent again.
+  // A landing is now tried again on a transient refusal, as a run's start is.
+  const plan: Plan = JSON.parse(readFileSync(new URL("./sim/cases/notification-landing-deadlock.json", import.meta.url), "utf8"));
+  const result = await runPlan(plan, { quiet: true });
+  assert.deepEqual(result.failures, []);
+});
