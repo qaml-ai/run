@@ -118,12 +118,16 @@ test("watching an idle agent loads it nowhere; when a node loads it, other nodes
 test("a load that fails after reading the agent leaves no session behind: the node forwards to whoever loads it next", { timeout: 90_000 }, async t => {
   const c = await cluster(t);
   const model = await fakeModel(t, () => ({ role: "assistant", content: "ok" }));
-  const a = await c.start("a", { ...model.env, AGENT_IDLE_MS: "1000", AGENT_ORPHAN_SWEEP_MS: "0" });
-  const b = await c.start("b", { ...model.env, AGENT_IDLE_MS: "1000", AGENT_ORPHAN_SWEEP_MS: "0" });
+  // A lease that outlasts a database or CPU stall on a loaded runner: under the cluster's 1.5 s, a stall just after the
+  // create fenced A, which leaves its ownership row naming its old session, so the raw row never cleared.
+  const env = { ...model.env, AGENT_IDLE_MS: "1000", AGENT_ORPHAN_SWEEP_MS: "0", AGENT_LEASE_TTL_MS: "6000" };
+  const a = await c.start("a", env);
+  const b = await c.start("b", env);
   const call = (base: string, path: string, body?: unknown) => fetch(base + path, { method: body ? "POST" : "GET", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
   const made = await (await call(a.url, "/v1/agents", {})).json() as any;
   const agent = made.id as string;
-  await until(async () => !await c.owner(agent), "the idle agent to be released", 20_000);
+  // Released, or let go by a fence: either way no node holds it.
+  await until(async () => !await c.liveOwner(agent), "the idle agent to be released", 20_000);
   // The first write clearing its pending mark fails (a sequence counts it: a failed transaction does not undo that),
   // as a database failover might make it fail.
   await c.db.query(`create table fail_once (agent text primary key); create sequence fail_once_count;
