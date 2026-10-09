@@ -8,6 +8,6 @@
     "test": "tsx --test tests/*.test.ts"
   },
   "engines": { "node": ">=22.13" },
-  "dependencies": { "@camelai/run": "^0.18.0", "@hono/node-server": "^2.1.0", "hono": "^4.13.0", "typebox": "^1.1.38" },
+  "dependencies": { "@camelai/run": "^0.19.0", "@hono/node-server": "^2.1.0", "hono": "^4.13.0", "typebox": "^1.1.38" },
   "devDependencies": { "tsx": "^4.20.0" }
 }

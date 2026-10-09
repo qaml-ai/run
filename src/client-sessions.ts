@@ -22,7 +22,7 @@ import { scheduleInput, type Scheduler } from "./scheduler.ts";
 import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, readJson } from "./http.ts";
 import { rateLimitHeaders, type RateLimitState } from "./rate-limits.ts";
 import { VolumeService, type Mount } from "./volumes.ts";
-import { databaseRetryable, databaseUnavailable, type Db, type Sql } from "./db.ts";
+import { databaseRetryable, databaseUnavailable, transaction, type Db, type Sql } from "./db.ts";
 import { LostClaim, underClaim, type Claim, type Ownership } from "./ownership.ts";
 import type { BusyAgents } from "./busy-agents.ts";
 import { deleteTail } from "./log-tail.ts";
@@ -50,7 +50,7 @@ import { answerInput, argumentsHash, expiresAt, INPUT_LIMITS, inputRequests, inp
 import { recordHandoff, recordStart, recordWatchRefused, safeError, Steps } from "./metrics.ts";
 import { BackgroundSpans, inputSpans, RunSpans, type ToolSource, type Tracing } from "./telemetry.ts";
 import { newSpanId, newTraceId, parseTraceparent, sampledAt } from "./otlp.ts";
-import { agentsTools, childNotice, childStatus, definitionId, delegateSettings, delegateTool, MULTI_AGENT_LIMITS, PARENT_KEYS, startsChildren, SUBAGENT_EVENTS, type AgentTarget, type ChildNotice, type DelegateSettings } from "./multi-agent.ts";
+import { agentMessage, agentsTools, childNotice, childStatus, definitionId, delegateSettings, delegateTool, MULTI_AGENT_LIMITS, PARENT_KEYS, SEND_MESSAGE, startsChildren, SUBAGENT_EVENTS, type AgentTarget, type ChildNotice, type DelegateSettings } from "./multi-agent.ts";
 import { clock, random } from "./node-context.ts";
 import { always, reachable, sometimes } from "./assert.ts";
 
@@ -261,6 +261,8 @@ type Session = {
   aborted?: Set<string>;
   /** The spawn_agent call writing its child's row: the next waits, so the running children's count holds (`childRow`). */
   spawning?: Promise<void>;
+  /** The send_message calls of each running run, by request id: at most MULTI_AGENT_LIMITS.messagesPerRun. */
+  messagesSent?: Map<string, Set<string>>;
 };
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const validId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(value);
@@ -391,6 +393,8 @@ const CONNECTION_LOST = "The server running this tool disconnected during the ca
 const DRAIN_MS = 30_000;
 /** How long a node holds a child's row while it delivers the child's ending, before another may. */
 const CHILD_CLAIM_MS = 60_000;
+/** How often a sweep asks after a child's resume that is not sent yet: it waits on a person, maybe for days. */
+const RESUME_CHECK_MS = 10 * 60_000;
 /** How long a spawned child may go without its request (its agent being made, its prompt sent) before a sweep calls it never started. */
 const CHILD_START_GRACE_MS = 120_000;
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -477,7 +481,7 @@ const scopeAfter = (header: SessionHeader, update: { keyScope?: unknown }) => Ob
  * A request as callers see it: queued parameters stay internal, and an ended one's error, early stop and `status` are on
  * top. `state` says only whether it ended; `status` how, as the SDKs' runs say it: completed, input_required or failed.
  */
-const visible = ({ params: _params, announce: _announce, handedOff: _handedOff, carried: _carried, ...record }: RequestRecord): RequestRecord => {
+const visible = ({ params: _params, announce: _announce, handedOff: _handedOff, carried: _carried, notice: _notice, landOnly: _landOnly, ...record }: RequestRecord): RequestRecord => {
   if (record.state !== "completed") return record;
   const ending = outcomeEnding(record.outcome);
   const status = ending.error !== undefined || ending.stopped === "spend_limit" || ending.stopped === "turn_limit" || ending.stopped === "agent_loop_limit" ? "failed" : ending.stopped === "input_required" ? "input_required" : "completed";
@@ -596,6 +600,8 @@ export interface ClientSessionOptions {
    * (`parent`). Without it, agents cannot delegate.
    */
   createAgent?: (tenant: string, params: Record<string, unknown>, key: string, parent: NonNullable<SessionHeader["parent"]>) => Promise<{ id: string }>;
+  /** Delete a tenant's agent on whichever node serves it: a deleted parent's children the runtime made. */
+  deleteAgent?: (agent: string, tenant: string) => Promise<unknown>;
   /** One of an agent's requests on whichever node serves it, once it settles or `waitMs` passes (see `awaitRequest`). */
   requestAnywhere?: (agent: string, tenant: string, requestId: string, waitMs: number, signal?: AbortSignal) => Promise<RequestRecord | undefined>;
   /** How often to sweep for children's endings not delivered (`sweepChildren`); MULTI_AGENT_LIMITS.sweepMs by default. */
@@ -1745,25 +1751,28 @@ export class ClientSessions {
   }
 
   /**
-   * The delegate tool of an agent whose sources enable it (multi-agent.ts), answered here rather than by a tool source: a
-   * delegate call's child is an agent of its own.
+   * The delegate and agents tools of an agent whose sources enable them (multi-agent.ts), answered here rather than by a
+   * tool source: a child is an agent of its own. A child spawn_agent made has send_message, to message its parent.
    */
   private multiAgentServer(session: Session, sources: Sources | undefined): ToolServer | undefined {
     const settings = startsChildren(sources?.builtins) ? sources!.delegate : undefined;
-    if (!settings) return undefined;
-    const delegating = sources!.builtins!.includes("delegate"), spawning = sources!.builtins!.includes("agents");
+    const spawned = !!session.header.key?.startsWith("spawn-");
+    if (!settings && !spawned) return undefined;
+    const delegating = !!settings && sources!.builtins!.includes("delegate"), spawning = !!settings && sources!.builtins!.includes("agents");
     const tools = async () => {
-      const describe = await this.targetDescriptions(session.header.tenant, settings.agents ?? []);
-      return [...delegating ? [delegateTool(settings, describe)] : [], ...spawning ? agentsTools(settings, describe) : []];
+      const describe = await this.targetDescriptions(session.header.tenant, settings?.agents ?? []);
+      return [...delegating ? [delegateTool(settings!, describe)] : [], ...spawning ? agentsTools(settings!, describe) : spawned ? [SEND_MESSAGE] : []];
     };
     return {
       tools,
       sources: async () => (await tools()).map((tool): ToolSourceView => ({ kind: "builtin", name: tool.name, status: "listed", tools: [tool] })),
       call: async call => {
-        if (call.name === "delegate" && delegating) return this.delegate(session, settings, call);
-        if (call.name === "spawn_agent" && spawning) return this.spawnAgent(session, settings, call);
+        if (call.name === "delegate" && delegating) return this.delegate(session, settings!, call);
+        if (call.name === "spawn_agent" && spawning) return this.spawnAgent(session, settings!, call);
         if (call.name === "wait_agent" && spawning) return this.waitAgents(session, call);
         if (call.name === "list_agents" && spawning) return jsonResult({ agents: await this.childrenOf(session.header.id) });
+        if (call.name === "send_message" && (spawning || spawned)) return this.sendMessage(session, settings, call);
+        if (call.name === "interrupt_agent" && spawning) return this.interruptAgent(session, call);
         throw new Error(`Unknown tool ${call.name}`);
       },
     };
@@ -1986,7 +1995,7 @@ export class ClientSessions {
     let agent = made ? this.agentId(tenant, key) : await this.agentByKey(tenant, target!.agent!);
     if (!agent) throw new Error(`The agent ${target!.name} does not exist`);
     if (chain.includes(agent)) throw new Error(`${target!.name} is already working on this task's chain`);
-    const row = await this.childRow(session, { id: requestId, child: agent, name: asked as string | undefined, base: target?.name ?? "subagent", depth, root: chain[0], run: run.id, toolCallId }, settings.maxParallel ?? MULTI_AGENT_LIMITS.maxParallel);
+    const row = await this.childRow(session, { id: requestId, child: agent, name: asked as string | undefined, base: target?.name ?? "subagent", depth, root: chain[0], run: run.id, toolCallId, made }, settings.maxParallel ?? MULTI_AGENT_LIMITS.maxParallel);
     if (row.state !== "running" && row.status === "failed" && !row.ended_at) throw new Error("This sub-agent could not be started");
     (session.children ??= new Map()).set(toolCallId, { agent, requestId, made, done: true });
     const at = { toolCallId, agentId: agent, requestId };
@@ -2016,7 +2025,7 @@ export class ClientSessions {
    * time per parent (only its owner runs its turns), so `max` running children holds. A name is unique among the running
    * ones: the default is the target's name and the next number.
    */
-  private async childRow(session: Session, child: { id: string; child: string; name?: string; base: string; depth: number; root: string; run: string; toolCallId: string }, max: number) {
+  private async childRow(session: Session, child: { id: string; child: string; name?: string; base: string; depth: number; root: string; run: string; toolCallId: string; made: boolean }, max: number) {
     const previous = session.spawning ?? Promise.resolve();
     let release!: () => void;
     session.spawning = new Promise<void>(resolve => { release = resolve; });
@@ -2026,14 +2035,15 @@ export class ClientSessions {
       const found = async () => (await this.db.query("select * from agent_children where id = $1", [child.id])).rows[0];
       const existing = await found();
       if (existing) return existing;
-      const running = Number((await this.db.query("select count(*) as n from agent_children where parent = $1 and state = 'running' and ended_at is null", [parent])).rows[0].n);
+      // Children running: one waiting on a person (a resume row) is not.
+      const running = Number((await this.db.query("select count(distinct child) as n from agent_children where parent = $1 and state = 'running' and ended_at is null and kind <> 'resume'", [parent])).rows[0].n);
       if (running >= max) throw new Error(`${running} sub-agents are running, this agent's most at once: wait for one to finish (wait_agent) before starting another`);
-      let next = Number((await this.db.query("select count(*) as n from agent_children where parent = $1 and name like $2", [parent, `${child.base}-%`])).rows[0].n) + 1;
+      let next = Number((await this.db.query("select count(*) as n from agent_children where parent = $1 and kind = 'spawn' and name like $2", [parent, `${child.base}-%`])).rows[0].n) + 1;
       for (let attempt = 0; attempt < 10; attempt++) {
         const name = child.name ?? `${child.base}-${next++}`;
         const now = Date.now();
-        const { rows } = await underClaim(this.db, session.claim, sql => sql.query(`insert into agent_children (id, tenant, parent, child, request_id, name, depth, root, parent_run, tool_call_id, checked_at, created_at, updated_at)
-          values ($1, $2, $3, $4, $1, $5, $6, $7, $8, $9, $10, $10, $10) on conflict do nothing returning *`, [child.id, session.header.tenant, parent, child.child, name, child.depth, child.root, child.run, child.toolCallId, now]));
+        const { rows } = await underClaim(this.db, session.claim, sql => sql.query(`insert into agent_children (id, tenant, parent, child, request_id, name, depth, root, parent_run, tool_call_id, made, checked_at, created_at, updated_at)
+          values ($1, $2, $3, $4, $1, $5, $6, $7, $8, $9, $10, $11, $11, $11) on conflict do nothing returning *`, [child.id, session.header.tenant, parent, child.child, name, child.depth, child.root, child.run, child.toolCallId, child.made, now]));
         if (rows[0]) return rows[0];
         if (child.name) throw new Error(`A sub-agent named ${child.name} is running: pick another name`);
       }
@@ -2053,10 +2063,19 @@ export class ClientSessions {
     (child.taps ??= new Set()).add(tap);
   }
 
-  /** An agent's background children, oldest first: what list_agents answers. */
+  /**
+   * An agent's background children, by when each started: what list_agents answers. Each as its latest run says (a
+   * message or a resume starts it again); one whose resume waits on a person is input_required.
+   */
   private async childrenOf(parent: string) {
-    const { rows } = await this.db.query("select child, name, status, ended_at, created_at from agent_children where parent = $1 order by created_at, id limit 200", [parent]);
-    return rows.map(row => ({ agentId: row.child as string, name: row.name as string, status: row.ended_at === null ? (row.status ?? "running") as string : row.status as string, startedAt: Number(row.created_at), ...row.ended_at !== null ? { endedAt: Number(row.ended_at) } : {} }));
+    const { rows } = await this.db.query(`select * from (select distinct on (child) child, name, status, kind, ended_at, landed_by, created_at,
+      min(created_at) over (partition by child) as started from agent_children where parent = $1 and landed_by is distinct from 'steer' and landed_by is distinct from 'superseded'
+      order by child, created_at desc, id desc) latest order by started, child limit 200`, [parent]);
+    return rows.map(row => ({
+      agentId: row.child as string, name: row.name as string,
+      status: row.ended_at === null ? row.kind === "resume" ? "input_required" : "running" : row.status as string,
+      startedAt: Number(row.started), ...row.ended_at !== null ? { endedAt: Number(row.ended_at) } : {},
+    }));
   }
 
   /**
@@ -2072,26 +2091,31 @@ export class ClientSessions {
     if (timeoutMs !== undefined && (!Number.isInteger(timeoutMs) || (timeoutMs as number) < 1_000 || (timeoutMs as number) > MULTI_AGENT_LIMITS.maxWaitMs)) throw new Error(`timeoutMs is an integer from 1000 to ${MULTI_AGENT_LIMITS.maxWaitMs}`);
     const parent = session.header.id, tenant = session.header.tenant;
     const rows = async () => (await this.db.query("select * from agent_children where parent = $1 order by created_at, id", [parent])).rows;
+    // Rows of runs folded into another (a message a running turn took) are no one's to wait for; a resume waits on a person, and only when named.
+    const open = (row: any) => row.landed_at === null;
     const pick = (all: any[]) => {
-      if (names === undefined) return all.filter(row => row.landed_at === null);
+      if (names === undefined) return all.filter(row => open(row) && row.kind !== "resume");
       return (names as string[]).map(name => {
-        const named = all.filter(row => row.name === name || row.child === name);
+        const named = all.filter(row => (row.name === name || row.child === name) && !["steer", "superseded"].includes(row.landed_by));
         if (!named.length) throw new Error(`You have no sub-agent ${name}`);
-        return named.find(row => row.landed_at === null) ?? named.at(-1);
+        return named.find(open) ?? named.at(-1);
       });
     };
     let chosen = pick(await rows());
     if (!chosen.length) return jsonResult({ agents: [], message: "No sub-agents are running" });
-    const waiting = chosen.filter(row => row.ended_at === null);
-    if (waiting.length && !chosen.some(row => row.landed_at === null && row.ended_at !== null)) {
-      // The first of them to end, or the timeout.
+    // A resume not yet sent (its person has not answered) is answered as waiting on them, not waited for.
+    const waitable = (row: any) => row.ended_at === null && row.kind !== "resume";
+    const ready = () => chosen.some(row => open(row) && row.ended_at !== null) || !chosen.some(waitable);
+    const deadline = Date.now() + ((timeoutMs as number | undefined) ?? MULTI_AGENT_LIMITS.waitMs);
+    // Until one of them ends, or the timeout: a run folded into another (a steered message) ends without being an answer.
+    while (!ready() && Date.now() < deadline) {
       const stop = new AbortController();
       const abort = () => stop.abort();
       call.signal.addEventListener("abort", abort, { once: true });
-      const timer = setTimeout(abort, (timeoutMs as number | undefined) ?? MULTI_AGENT_LIMITS.waitMs);
+      const timer = setTimeout(abort, deadline - Date.now());
       const timedOut = new Promise<void>(resolve => stop.signal.addEventListener("abort", () => resolve(), { once: true }));
       try {
-        await Promise.race([timedOut, ...waiting.map(async row => {
+        await Promise.race([timedOut, ...chosen.filter(waitable).map(async row => {
           let record: RequestRecord | undefined;
           try { record = await this.childOutcome(row.child, tenant, row.request_id, stop.signal); }
           catch (error) {
@@ -2103,14 +2127,15 @@ export class ClientSessions {
       } catch (error) { if (!stop.signal.aborted) throw error; }
       finally { clearTimeout(timer); call.signal.removeEventListener("abort", abort); stop.abort(); }
       call.signal.throwIfAborted();
-      chosen = pick(await rows()).filter(row => chosen.some(was => was.id === row.id));
+      chosen = pick(await rows());
+      if (!chosen.length) return jsonResult({ agents: [], message: "No sub-agents are running" });
     }
     const answers = [];
     for (const row of chosen) {
       const taken = row.landed_at === null && row.ended_at !== null ? await this.takeEnding(session, run, row) : undefined;
       const notice = (taken ?? row).notice as ChildNotice | null;
       answers.push({
-        agentId: row.child, name: row.name, status: row.ended_at === null && !taken ? "running" : row.status ?? taken?.status,
+        agentId: row.child, name: row.name, status: row.ended_at === null && !taken ? row.kind === "resume" ? "input_required" : "running" : row.status ?? taken?.status,
         ...(taken ? { text: notice!.text, ...(notice!.notice.metadata.output !== undefined ? { output: notice!.notice.metadata.output } : {}), ...(notice!.notice.metadata.error ? { error: notice!.notice.metadata.error } : {}) }
           : row.ended_at !== null ? { note: "Its answer comes (or came) as a notification" } : {}),
       });
@@ -2142,12 +2167,31 @@ export class ClientSessions {
     (session.childSpend ??= new Map()).set(runId, (session.childSpend.get(runId) ?? 0) + usd);
   }
 
-  /** Record a child's ending on its row once (the first recorded wins), as its notice; returns the row as it now is. */
-  private async recordEnding(row: { id: string; child: string; name: string; root: string }, record: Pick<RequestRecord, "status" | "error" | "outcome">) {
-    const notice = childNotice({ agentId: row.child, name: row.name, root: row.root }, record);
+  /**
+   * Record a child's ending on its row once (the first recorded wins), as its notice; returns the row as it now is. A
+   * message its running turn took (`steeredInto`) is folded into that turn, whose own row answers: it lands nothing. One
+   * that waits on a person gets the row of the turn it resumes once they answer, which notifies again.
+   */
+  private async recordEnding(row: { id: string; tenant?: string; parent?: string; child: string; name: string; root: string; request_id?: string }, record: Pick<RequestRecord, "status" | "error" | "outcome" | "steeredInto">) {
     const now = Date.now();
-    const { rows } = await this.db.query("update agent_children set ended_at = $2, status = $3, notice = $4, updated_at = $2 where id = $1 and ended_at is null returning *", [row.id, now, notice.notice.metadata.status, JSON.stringify(notice)]);
-    return rows[0] ?? (await this.db.query("select * from agent_children where id = $1", [row.id])).rows[0];
+    if (record.steeredInto) {
+      const { rows } = await this.db.query("update agent_children set ended_at = $2, state = 'notified', landed_at = $2, landed_by = 'steer', updated_at = $2 where id = $1 and ended_at is null returning *", [row.id, now]);
+      return rows[0] ?? (await this.db.query("select * from agent_children where id = $1", [row.id])).rows[0];
+    }
+    const notice = childNotice({ agentId: row.child, name: row.name, root: row.root }, record);
+    const status = notice.notice.metadata.status;
+    const ended = await transaction(this.db, async sql => {
+      const { rows } = await sql.query("update agent_children set ended_at = $2, status = $3, notice = $4, updated_at = $2 where id = $1 and ended_at is null returning *", [row.id, now, status, JSON.stringify(notice)]);
+      const done = rows[0];
+      // Its resume, once a person answers: a row of its own, written with this ending so no sweep can miss it.
+      if (done && status === "input_required") {
+        const resume = resumeId(done.request_id);
+        await sql.query(`insert into agent_children (id, tenant, parent, child, request_id, name, depth, root, parent_run, tool_call_id, kind, made, checked_at, created_at, updated_at)
+          values ($1, $2, $3, $4, $1, $5, $6, $7, $8, $9, 'resume', $10, $11, $11, $11) on conflict do nothing`, [resume, done.tenant, done.parent, done.child, done.name, done.depth, done.root, done.parent_run, done.tool_call_id, done.made, now]);
+      }
+      return done;
+    });
+    return ended ?? (await this.db.query("select * from agent_children where id = $1", [row.id])).rows[0];
   }
 
   /** A child's run ended on this node (the fast path): its ending is recorded and delivered to its parent now. */
@@ -2155,6 +2199,7 @@ export class ClientSessions {
     const row = (await this.db.query("select * from agent_children where child = $1 and request_id = $2", [child, record.id])).rows[0];
     if (!row || row.state !== "running") return;
     const ended = await this.recordEnding(row, record);
+    if (ended.landed_at !== null) return;
     const now = Date.now();
     const claimed = (await this.db.query("update agent_children set claimed_until = $2 where id = $1 and state = 'running' and ended_at is not null and (claimed_until is null or claimed_until < $3) returning *", [ended.id, now + CHILD_CLAIM_MS, now])).rows[0];
     if (claimed) await this.deliverChild(claimed);
@@ -2212,12 +2257,14 @@ export class ClientSessions {
             if (!gone) { await this.db.query("update agent_children set claimed_until = null where id = $1", [row.id]); continue; }
           }
           // A child whose request is missing past the time its spawn takes was never started (its parent's turn was lost first).
-          const failure = gone ? "The sub-agent was deleted before it answered" : !record && Number(row.created_at) < now - CHILD_START_GRACE_MS ? "The sub-agent was never started" : undefined;
+          // A resume's is missing until a person answers, for as long as they take: it is asked after less often.
+          const failure = gone ? "The sub-agent was deleted before it answered" : !record && row.kind !== "resume" && Number(row.created_at) < now - CHILD_START_GRACE_MS ? "The sub-agent was never started" : undefined;
           if (record?.state !== "completed" && !failure) {
-            await this.db.query("update agent_children set claimed_until = null, checked_at = $2 where id = $1", [row.id, now]);
+            await this.db.query("update agent_children set claimed_until = null, checked_at = $2 where id = $1", [row.id, !record && row.kind === "resume" ? now + RESUME_CHECK_MS : now]);
             continue;
           }
           row = await this.recordEnding(row, failure ? { status: "failed", error: failure } : record!);
+          if (row.landed_at !== null) continue;
           reachable("a sweep found a child's ended run that no one had recorded");
         }
         else reachable("a sweep delivered a child's ending recorded before");
@@ -2228,32 +2275,169 @@ export class ClientSessions {
     } finally { this.sweepingChildren = false; }
   }
 
+  /** Whether `child` is one of `parent`'s background sub-agents (a browser token's `children` scope). */
+  async isChildOf(child: string, parent: string) {
+    return (await this.db.query("select 1 from agent_children where parent = $1 and child = $2 limit 1", [parent, child])).rows.length > 0;
+  }
+
+  /** The latest row of one of the agent's children, by its name or id; undefined when it has none by that name. */
+  private async childNamed(parent: string, name: string) {
+    const { rows } = await this.db.query(`select * from agent_children where parent = $1 and (name = $2 or child = $2) and landed_by is distinct from 'steer'
+      order by created_at desc, id desc limit 1`, [parent, name]);
+    return rows[0];
+  }
+
   /**
-   * A child's notification starting its run on the parent: it lands once (`landed_at`, which a wait_agent may have taken
-   * first: then the run ends without it), what the child spent is charged here, and the turn runs unless the agent is at
-   * its spend limit or the chain's root at its wake cap: then the notification lands in history and no model is asked.
+   * A send_message call: to one of the agent's children (by name or id), or to its parent ("parent", from the run's signed
+   * chain), and no one else. Its request id is the call's, so a call made again (a turn resumed on another node) sends
+   * nothing twice. To the parent, it is delivered as a notification is, without the child's turn ending. To a child, it
+   * joins the child's running turn, or starts one that keeps its history: a row of its own, written first, so that
+   * turn's end notifies the parent again. At most MULTI_AGENT_LIMITS.messagesPerRun per run.
    */
-  private async landNotice(session: Session, record: RequestRecord, params: any): Promise<{ params: any } | { outcome: Outcome }> {
-    const notice = params.notice as ChildNotice["notice"];
-    const childRequest = record.id.slice("child_".length);
-    const now = Date.now();
-    const landed = await this.db.query("update agent_children set landed_at = $3, landed_by = 'notice', state = 'notified', updated_at = $3 where child = $1 and request_id = $2 and landed_at is null returning tool_call_id", [notice.source.agentId, childRequest, now]);
-    if (!landed.rows.length) {
-      const row = (await this.db.query("select landed_by from agent_children where child = $1 and request_id = $2", [notice.source.agentId, childRequest])).rows[0];
-      always(row?.landed_by !== "notice", "a child's ending lands in its parent at most once");
-      if (row) return { outcome: { result: { error: null, skipped: "wait_agent answered this sub-agent's ending already" } } };
+  private async sendMessage(session: Session, settings: DelegateSettings | undefined, call: ToolCall): Promise<McpResult> {
+    const { header } = session;
+    const tenant = header.tenant;
+    const run = this.runningRun(session);
+    const { submit } = this.options;
+    if (!submit) throw new Error("Sub-agents are not enabled on this runtime");
+    if (!run || !call.toolCallId || call.innerCallId || !call.idempotencyKey) throw new Error("send_message is called directly, not from js_exec");
+    const { to, text } = call.args as { to?: unknown; text?: unknown };
+    if (typeof to !== "string" || !to) throw new Error("Say whom the message is for: a sub-agent's name or agentId, or \"parent\"");
+    if (typeof text !== "string" || !text.trim() || text.length > MULTI_AGENT_LIMITS.taskChars) throw new Error(`The message is 1 to ${MULTI_AGENT_LIMITS.taskChars} characters`);
+    const requestId = `msg_${call.idempotencyKey}`;
+    const sent = session.messagesSent ??= new Map();
+    const count = sent.get(run.id) ?? new Set<string>();
+    if (!count.has(requestId) && count.size >= MULTI_AGENT_LIMITS.messagesPerRun) {
+      throw new Error(`This turn has sent ${count.size} messages, the most one turn may send: finish the turn, or wait for answers (wait_agent)`);
     }
-    this.chargeNotice(session, record.id, notice.costUsd);
+    count.add(requestId);
+    sent.set(run.id, count);
+    const lineage = this.lineage(session, run);
+    if (to === "parent") {
+      if (!lineage) throw new Error("You have no parent agent to message: only a sub-agent has one");
+      // The parent's name for this agent, as its notifications say.
+      const named = (await this.db.query("select name from agent_children where parent = $1 and child = $2 order by created_at desc limit 1", [lineage.parent, header.id])).rows[0]?.name as string | undefined;
+      const message = agentMessage({ agentId: header.id, name: named ?? header.metadata?.name ?? "subagent", root: lineage.root }, text, "parent");
+      await submit(lineage.parent, tenant, { id: requestId, method: "prompt", params: { ...message, allowDisconnected: true } });
+      return jsonResult({ sent: true, to: "parent" });
+    }
+    const latest = await this.childNamed(header.id, to);
+    if (!latest) throw new Error(`You have no sub-agent ${to}: you can message the sub-agents you started (by name or agentId), and "parent"`);
+    const child = latest.child as string;
+    // The child's turn is placed in this agent's chain, signed, so its "parent" and depth hold in it.
+    const place = this.delegation(header.id, run.id, run.metadata);
+    const chain = [...place.chain, header.id];
+    const depth = Number(latest.depth);
+    const maxDepth = Math.min(place.maxDepth, settings?.maxDepth ?? MULTI_AGENT_LIMITS.maxDepth);
+    const metadata = { [PARENT_KEYS.agent]: header.id, [PARENT_KEYS.run]: run.id, [PARENT_KEYS.toolCall]: call.toolCallId, [PARENT_KEYS.depth]: String(depth), [PARENT_KEYS.maxDepth]: String(maxDepth), [PARENT_KEYS.chain]: chain.join(","),
+      [PARENT_KEYS.signature]: this.delegationSignature(child, requestId, String(depth), String(maxDepth), chain.join(",")) };
+    const message = agentMessage({ agentId: header.id, name: "parent", root: chain[0] }, text, "child");
+    const now = Date.now();
+    // Written first, as a spawn's row is; a running turn of the child takes the message in (whileRunning: steer), and its
+    // row is then folded into that turn's (`recordEnding`).
+    const running = (await this.db.query("select 1 from agent_children where parent = $1 and child = $2 and state = 'running' and ended_at is null and kind <> 'resume' and id <> $3 limit 1", [header.id, child, requestId])).rows.length > 0;
+    await transaction(this.db, async sql => {
+      const { rows } = await sql.query(`insert into agent_children (id, tenant, parent, child, request_id, name, depth, root, parent_run, tool_call_id, kind, made, checked_at, created_at, updated_at)
+        values ($1, $2, $3, $4, $1, $5, $6, $7, $8, $9, 'message', $10, $11, $11, $11) on conflict do nothing returning id`, [requestId, tenant, header.id, child, latest.name, depth, chain[0], run.id, call.toolCallId, latest.made, now]);
+      // A new message supersedes what the child waits on a person for: its resume will not come.
+      if (rows.length && !running) await sql.query("update agent_children set ended_at = $3, state = 'notified', landed_at = $3, landed_by = 'superseded', updated_at = $3 where parent = $1 and child = $2 and kind = 'resume' and ended_at is null", [header.id, child, now]);
+    });
+    const at = { toolCallId: call.toolCallId, agentId: child, requestId };
+    try {
+      const record = await submit(child, tenant, { id: requestId, method: "prompt", params: { ...message, metadata, ...running ? { whileRunning: "steer" } : {} } });
+      if (record.steer !== "accepted" && !record.steeredInto) this.relayChild(session, run.id, at);
+      return jsonResult({ sent: true, to: latest.name, agentId: child, ...record.steer === "accepted" || record.steeredInto ? { into: "its running turn" } : { into: "a new turn: its answer comes as a notification" } });
+    } catch (error) {
+      if ((error as HttpError).code !== "IDEMPOTENCY_CONFLICT") await this.db.query("update agent_children set state = 'notified', status = 'failed', updated_at = $2 where id = $1 and ended_at is null", [requestId, Date.now()]);
+      throw error;
+    }
+  }
+
+  /** An interrupt_agent call: abort one of the agent's running children; its notification follows, aborted. */
+  private async interruptAgent(session: Session, call: ToolCall): Promise<McpResult> {
+    const { agent: name } = call.args as { agent?: unknown };
+    if (typeof name !== "string" || !name) throw new Error("Name the sub-agent to interrupt");
+    const latest = await this.childNamed(session.header.id, name);
+    if (!latest) throw new Error(`You have no sub-agent ${name}`);
+    const running = (await this.db.query("select * from agent_children where parent = $1 and child = $2 and ended_at is null and kind <> 'resume' order by created_at desc", [session.header.id, latest.child])).rows;
+    if (!running.length) return jsonResult({ agentId: latest.child, name: latest.name, interrupted: false, status: latest.status ?? "running", message: "It is not running" });
+    await this.abortChild(session.header.tenant, running[0], call.idempotencyKey ? `interrupt_${call.idempotencyKey}` : undefined);
+    return jsonResult({ agentId: latest.child, name: latest.name, interrupted: true, message: "Its turn is being aborted: its notification follows" });
+  }
+
+  /**
+   * Abort a background child's running turn: one the runtime made at once; a named agent only while it runs this row's
+   * request, never another's.
+   */
+  private async abortChild(tenant: string, row: any, id = `abort-${randomUUID()}`) {
+    const submit = this.options.submit ?? ((agent, tenant, request) => this.submit(agent, tenant, request));
+    if (!row.made) {
+      const record = await this.requestOf(row.child, tenant, row.request_id, 0).catch(() => undefined);
+      if (record?.state !== "running" || !record.began) return;
+    }
+    await submit(row.child, tenant, { id, method: "abort", params: {} });
+  }
+
+  /** Abort the agent's running background children: its abort or deletion cascades to them (`children: "keep"` opts out). */
+  private abortBackground(session: Session) {
+    const { id, tenant } = session.header;
+    void (async () => {
+      const { rows } = await this.db.query("select * from agent_children where parent = $1 and state = 'running' and ended_at is null and kind <> 'resume'", [id]);
+      await Promise.all(rows.map(row => this.abortChild(tenant, row).catch(error => console.error(JSON.stringify({ type: "subagent_abort_failed", agent: id, child: row.child, error: safeError(error) })))));
+    })().catch(error => console.error(JSON.stringify({ type: "subagent_abort_failed", agent: id, error: safeError(error) })));
+  }
+
+  /**
+   * A child's notification, or an agent's message, starting its run: a notification lands once (`landed_at`, which a
+   * wait_agent may have taken first: then the run ends without it), and what the child spent is charged here; a child's
+   * message is shown on the stream (`subagent_message`). The turn runs unless the agent is at its spend limit or the
+   * chain's root at its wake cap: then the message lands in history and no model is asked. The decision is made durable
+   * on the run's record before the message lands, so a next owner of a turn cut short keeps it (`resume`). `again`: the
+   * run's next owner landing it (its first may have done this already).
+   */
+  private async landNotice(session: Session, record: RequestRecord, params: any, again = false): Promise<{ params: any } | { outcome: Outcome }> {
+    const notice = params.notice as { source: { agentId: string; name: string }; root: string; costUsd: number; metadata: Record<string, any> };
     const { metadata } = notice;
-    const toolCallId = landed.rows[0]?.tool_call_id as string | undefined;
-    this.publish(session, { type: "event", requestId: record.id, event: { type: "subagent_end", ...toolCallId ? { toolCallId } : {}, agentId: notice.source.agentId, requestId: childRequest, name: notice.source.name, status: metadata.status, ...(metadata.error ? { error: metadata.error } : {}), background: true } });
+    const now = Date.now();
+    if (metadata.kind === "message") {
+      if (metadata.to === "parent") this.publish(session, { type: "event", requestId: record.id, event: { type: "subagent_message", agentId: notice.source.agentId, name: notice.source.name, text: params.text } });
+    } else {
+      const childRequest = record.id.slice("child_".length);
+      const landed = await this.db.query("update agent_children set landed_at = $3, landed_by = 'notice', state = 'notified', updated_at = $3 where child = $1 and request_id = $2 and landed_at is null returning tool_call_id", [notice.source.agentId, childRequest, now]);
+      if (!landed.rows.length) {
+        const row = (await this.db.query("select landed_by from agent_children where child = $1 and request_id = $2", [notice.source.agentId, childRequest])).rows[0];
+        // Only this request lands its notice: found landed by one, it is this run's first owner's landing.
+        always(row?.landed_by !== "notice" || again, "a child's ending lands in its parent at most once");
+        if (row && row.landed_by !== "notice") return { outcome: { result: { error: null, skipped: "wait_agent answered this sub-agent's ending already" } } };
+      }
+      if (landed.rows.length) {
+        this.chargeNotice(session, record.id, notice.costUsd);
+        const toolCallId = landed.rows[0].tool_call_id as string | undefined;
+        this.publish(session, { type: "event", requestId: record.id, event: { type: "subagent_end", ...toolCallId ? { toolCallId } : {}, agentId: notice.source.agentId, requestId: childRequest, name: notice.source.name, status: metadata.status, ...(metadata.error ? { error: metadata.error } : {}), background: true } });
+      }
+    }
+    const refusal = await this.wakeRefusal(session, notice.root, now, again);
+    if (!refusal) return { params };
+    // Durable before the message lands: whoever has the turn next keeps the refusal.
+    this.upsertRequest(session, { ...session.requests.get(record.id)!, landOnly: refusal });
+    await this.commit(session, true);
+    return { params: { ...params, landOnly: refusal } };
+  }
+
+  /**
+   * Why a turn a notification or message would start must not run: the agent's spend limit (a monthly cap, spent credit)
+   * or its chain's wake cap, counted here (`count`: false for a turn counted already).
+   */
+  private async wakeRefusal(session: Session, root: string, now: number, counted = false): Promise<{ stopped: string; message: string } | undefined> {
     const refused = await this.runLimit(session, "prompt");
-    if (refused) return { params: { ...params, landOnly: { stopped: "spend_limit", message: refused.message } } };
+    if (refused) return { stopped: "spend_limit", message: refused.message };
     const cap = this.options.wakesPerHour ?? MULTI_AGENT_LIMITS.wakesPerHour;
-    const { rows } = await this.db.query("insert into agent_wakes (root, hour, turns) values ($1, $2, 1) on conflict (root, hour) do update set turns = agent_wakes.turns + 1 returning turns", [notice.root, Math.floor(now / 3_600_000)]);
-    if (Number(rows[0].turns) <= cap) return { params };
+    const hour = Math.floor(now / 3_600_000);
+    const { rows } = counted ? await this.db.query("select turns from agent_wakes where root = $1 and hour = $2", [root, hour])
+      : await this.db.query("insert into agent_wakes (root, hour, turns) values ($1, $2, 1) on conflict (root, hour) do update set turns = agent_wakes.turns + 1 returning turns", [root, hour]);
+    if (Number(rows[0]?.turns ?? 0) <= cap) return undefined;
     sometimes(true, "a notification reached its chain's wake cap");
-    return { params: { ...params, landOnly: { stopped: "agent_loop_limit", message: `This agent's chain has had ${cap} turns started by sub-agent notifications this hour, its limit (AGENT_WAKES_PER_HOUR): the notification is in its history, but no turn ran. Send a message to go on` } } };
+    return { stopped: "agent_loop_limit", message: `This agent's chain has had ${cap} turns started by sub-agent notifications and messages this hour, its limit (AGENT_WAKES_PER_HOUR): the message is in its history, but no turn ran. Send a message to go on` };
   }
 
   /**
@@ -2380,7 +2564,7 @@ export class ClientSessions {
    * without the model (an abort queues one) and configuration still go ahead. The running run is marked aborted durably
    * first (`abortedAt`), so no node resumes it should this one be lost before it ends. Returns the cancelled runs' ids.
    */
-  private async stop(session: Session, queued: "cancel" | "keep" = "cancel"): Promise<string[]> {
+  private async stop(session: Session, queued: "cancel" | "keep" = "cancel", children: "abort" | "keep" = "abort"): Promise<string[]> {
     const id = session.header.id;
     const announcing = queued === "cancel" && await (this.options.runEvents?.(session.header.tenant) ?? false);
     const now = Date.now();
@@ -2405,6 +2589,7 @@ export class ClientSessions {
     if (unannounced.length) void this.announce(session, unannounced);
     this.markAborted(session);
     this.abortChildren(session);
+    if (children === "abort") this.abortBackground(session);
     if (this.supervisor.agents.has(id)) await this.supervisor.request(id, "abort", queued === "cancel" ? { clearQueued: true } : {});
     return cancelled.map(record => record.id);
   }
@@ -3229,12 +3414,12 @@ export class ClientSessions {
    * Stop a tenant's agent (`stop`): its running turn, and unless `queued` is "keep", the runs queued behind it. Returns
    * the cancelled runs' ids, or false when the agent is not theirs.
    */
-  async abortAgent(id: string, tenant: string, queued: "cancel" | "keep" = "cancel"): Promise<false | { cancelled: string[] }> {
+  async abortAgent(id: string, tenant: string, queued: "cancel" | "keep" = "cancel", children: "abort" | "keep" = "abort"): Promise<false | { cancelled: string[] }> {
     if (!await this.owns(id, tenant)) return false;
     const session = await this.load(id);
     if (!session) return false;
     await session.starting?.catch(() => {});
-    const cancelled = await this.stop(session, queued);
+    const cancelled = await this.stop(session, queued, children);
     if (this.options.inputs) await this.cancelInputs(session, "aborted");
     return { cancelled };
   }
@@ -3277,7 +3462,13 @@ export class ClientSessions {
   /** Revoke a tenant's agent, stop it and unload it; the purge sweep, started now, then deletes its data. */
   async destroyAgent(id: string, tenant: string, agentsOnly = false) {
     if (!await this.owns(id, tenant, agentsOnly)) return false;
+    // The children the runtime made for it go with it (their own, in turn); named agents it started stay, aborted.
+    const made = (await this.db.query("select distinct child from agent_children where parent = $1 and made", [id])).rows.map(row => row.child as string);
     await this.delete(id);
+    for (const child of made) {
+      await (this.options.deleteAgent ?? ((agent, tenant) => this.destroyAgent(agent, tenant)))(child, tenant)
+        .catch(error => { if ((error as HttpError).status !== 404) console.error(JSON.stringify({ type: "subagent_delete_failed", agent: id, child, error: safeError(error) })); });
+    }
     return true;
   }
 
@@ -3561,7 +3752,9 @@ export class ClientSessions {
     if (params.history !== undefined && (body.method !== "prompt" || params.whileRunning === "steer" || !["full", "none"].includes(params.history))) throw new HttpError(400, 'history is "full" or "none", for a prompt that starts its own turn (not whileRunning: steer)');
     if (params.history === "full") delete params.history;
     if (params.whileRunning === "queue") delete params.whileRunning;
-    if (body.method === "abort" && (Object.keys(params).some(key => key !== "queued") || ![undefined, "cancel", "keep"].includes(params.queued))) throw new HttpError(400, "An abort takes { queued?: \"cancel\" | \"keep\" }: whether the runs queued behind the running one are cancelled too (the default) or kept");
+    if (body.method === "abort" && (Object.keys(params).some(key => key !== "queued" && key !== "children") || ![undefined, "cancel", "keep"].includes(params.queued) || ![undefined, "abort", "keep"].includes(params.children))) {
+      throw new HttpError(400, "An abort takes { queued?: \"cancel\" | \"keep\", children?: \"abort\" | \"keep\" }: whether the runs queued behind the running one are cancelled too (the default) or kept, and whether its running background sub-agents are aborted too (the default) or kept");
+    }
     // A message records the request that sent it, so an application can match it to its own.
     if (isMessage) params.requestId = body.id;
     try {
@@ -3576,7 +3769,9 @@ export class ClientSessions {
     // A child's notification (`notice`) is the runtime's alone. Its child's run was counted and checked already, and it is
     // never refused at a limit: it lands without a turn instead (`landNotice`).
     const notice = params.notice !== undefined;
-    if (notice && (!trusted || body.method !== "prompt" || params.whileRunning !== undefined || !validNotice(params.notice))) throw new HttpError(400, "Invalid request");
+    // A parent's message to its child may join the child's running turn; anything else of the runtime's is a turn of its own.
+    const steerable = params.notice?.metadata?.kind === "message" && params.notice.metadata.to === "child";
+    if (notice && (!trusted || body.method !== "prompt" || (params.whileRunning !== undefined && !steerable) || !validNotice(params.notice))) throw new HttpError(400, "Invalid request");
     const rate = isRun && body.method !== "resume" && !notice ? await this.options.runRate?.(session.header.tenant) ?? undefined : undefined;
     const limited = body.method === "resume" || notice ? undefined : await this.runLimit(session, body.method);
     if (limited) throw limited;
@@ -3997,7 +4192,7 @@ export class ClientSessions {
     if (record.method === "status") return live ? { ...await this.supervisor.request(id, "status", {}), running: true, ...activityOf(session.running.values()) } : { running: false, ...activityOf(session.running.values()) };
     // Aborting a suspended turn cancels its inputs: the turn is closed without the model. Its children are aborted too.
     if (record.method === "abort") {
-      const cancelled = await this.stop(session, params?.queued === "keep" ? "keep" : "cancel");
+      const cancelled = await this.stop(session, params?.queued === "keep" ? "keep" : "cancel", params?.children === "keep" ? "keep" : "abort");
       await this.cancelInputs(session, "aborted");
       return live ? { aborted: true, cancelled } : { aborted: false, running: false, cancelled };
     }
@@ -4152,28 +4347,33 @@ export class ClientSessions {
   private async resume(session: Session, record: RequestRecord): Promise<Outcome> {
     const handoff = session.handoff, ended = session.ended;
     session.handoff = session.ended = undefined;
-    if (handoff && "continue" in handoff) return { result: await this.execute(session, record, {}, "continue") };
+    // A notification's or message's turn refused as it landed (`landNotice`): no owner asks the model for it.
+    const refused = session.requests.get(record.id)?.landOnly;
+    const refusedOutcome = (finished: unknown) => refused ? { ...finished as object, error: refused.message, code: refused.stopped, stopped: refused.stopped } : finished;
+    if (refused) reachable("a turn refused as its notification landed was resumed on another node, and kept the refusal");
+    if (handoff && "continue" in handoff) return { result: await this.execute(session, record, refused ? { landOnly: refused } : {}, "continue") };
     // A resume whose turn is still suspended on the calls it answers: its node was lost before the agent took the answers
     // (the agent releases each call durably before running it, so one still waiting never ran). It runs again from its
     // inputs, as one whose turn never became active does; taken as the turn's outcome, it would end suspended with
     // nothing left to answer, and the approved call would never run.
     const suspended = (handoff?.finished as { stopped?: string } | undefined)?.stopped === "input_required";
     if (suspended && record.method === "resume") reachable("a resume found its turn still suspended on the calls it answers");
-    else if (handoff) return { result: handoff.finished };
+    else if (handoff) return { result: refusedOutcome(handoff.finished) };
     // Its turn ended before its node was lost, which then never recorded the run's end: the outcome is the turn's.
     else if (ended && await this.endedTurnOf(session, record, ended)) {
       reachable("a resumed run took the outcome of its turn that had ended");
-      return { result: ended.finished };
+      return { result: refusedOutcome(ended.finished) };
     }
     if (record.method === "resume") return { result: await this.execute(session, record, {}) };
-    // A child's notification whose node was lost after its run began, before its message landed: it lands now, from its
-    // row (the message is the runtime's, so nothing of it is unknown). What the child spent was counted with the message.
-    const notice = record.method === "prompt" && record.id.startsWith("child_")
-      ? (await this.db.query("select notice from agent_children where parent = $1 and request_id = $2", [session.header.id, record.id.slice("child_".length)])).rows[0]?.notice as ChildNotice | undefined : undefined;
-    if (notice) {
+    // A notification or message whose node was lost after its run began, before its message landed: it lands now, from its
+    // record (the message is the runtime's, so nothing of it is unknown).
+    const notice = record.method === "prompt" ? session.requests.get(record.id)?.notice as { notice?: unknown } | undefined : undefined;
+    if (notice?.notice !== undefined) {
       reachable("a child's notification whose node was lost before its message landed landed on the next owner");
-      this.chargeNotice(session, record.id, notice.notice.costUsd);
-      return { result: await this.execute(session, record, { ...notice, requestId: record.id }) };
+      const params = { ...notice, requestId: record.id };
+      if (refused) return { result: await this.execute(session, record, { ...params, landOnly: refused }) };
+      const landing = await this.landNotice(session, record, params, true);
+      return "outcome" in landing ? landing.outcome : { result: await this.execute(session, record, landing.params) };
     }
     return { error: "The runtime restarted during this request", uncertain: true };
   }
@@ -4250,11 +4450,13 @@ export class ClientSessions {
         if (session.requests.get(record.id)?.state !== "running") return;
         // Work taken over runs: any put-off loads of it are over.
         if (session.inherited?.delete(record.id)) void this.db.query("update agents set resume_failures = 0, resume_after = null where id = $1 and resume_failures > 0", [session.header.id]).catch(() => {});
-        // Durable before any side effect: after a crash this run is "began", never repeated.
-        const { params: _params, handedOff, carried, ...rest } = session.requests.get(record.id)!;
+        // Durable before any side effect: after a crash this run is "began", never repeated. A notification's or message's
+        // params are the runtime's, and kept: its next owner lands it (`resume`).
+        const { params: queuedParams, handedOff, carried, ...rest } = session.requests.get(record.id)!;
+        const notice = record.method === "prompt" && (queuedParams as { notice?: unknown } | undefined)?.notice !== undefined ? queuedParams : undefined;
         // A turn handed off at a step boundary goes on as it was: not a resume, and its time limit counts from its first begin.
         continued = session.resuming.has(record.id) && handedOff ? { handedOff, carried } : undefined;
-        record = this.upsertRequest(session, { ...rest, began: continued && rest.began ? rest.began : Date.now(), ...(session.resuming.has(record.id) && !continued ? { resumes: (rest.resumes ?? 0) + 1 } : {}) });
+        record = this.upsertRequest(session, { ...rest, ...notice ? { notice } : {}, began: continued && rest.began ? rest.began : Date.now(), ...(session.resuming.has(record.id) && !continued ? { resumes: (rest.resumes ?? 0) + 1 } : {}) });
         // Code has no effect outside its sandbox until it calls a tool, and every tool call
         // makes this record durable first (`beforeEffect`; the application's tools do it when
         // their call is recorded, which is appended after it). So an execution needs no commit of its
@@ -4336,7 +4538,7 @@ export class ClientSessions {
       catch (error) { this.fail(session, error, "transcript"); return; }
       if (this.closed || session.fault || session.leaving || session.requests.get(record.id)?.state !== "running") return;
     }
-    const { params: _params, ...finished } = record;
+    const { params: _params, notice: _notice, landOnly: _landOnly, ...finished } = record;
     // Until the response is published, a drain or release must not close the stream and drop it.
     session.settling++;
     try {
@@ -4347,13 +4549,14 @@ export class ClientSessions {
       session.runCaps?.delete(record.id);
       session.childSpend?.delete(record.id);
       session.imageSpend?.delete(record.id);
+      session.messagesSent?.delete(record.id);
       session.aborted?.delete(record.id);
       try { await this.commit(session, true); }
       catch { return; /* The fault is reported to every later request. */ }
       if (run) {
         this.hook("runEnded", session, completed);
         // A background child's run: its ending goes to its parent now (a sweep delivers it should this node be lost first).
-        if (completed.id.startsWith("spawn_") && completed.metadata?.[PARENT_KEYS.agent]) {
+        if ((/^(?:spawn|msg)_/.test(completed.id) && completed.metadata?.[PARENT_KEYS.agent]) || completed.id.startsWith("resume_")) {
           void this.childEnded(session.header.id, visible(completed)).catch(error => console.error(JSON.stringify({ type: "child_notice_failed", child: session.header.id, error: safeError(error) })));
         }
         const usage = session.usage;
@@ -4414,6 +4617,8 @@ export class ClientSessions {
       this.publish(session, { type: "event", requestId: id, event: { type: "steer_taken", steeredInto: turn } });
       this.publish(session, { type: "response", id, outcome });
       if (done.announce) void this.announce(session, [done]);
+      // A parent's message its running turn took: the turn's own row answers for it.
+      if (id.startsWith("msg_") && done.metadata?.[PARENT_KEYS.agent]) await this.childEnded(session.header.id, visible(done));
     })().catch(() => { /* The fault is reported to every later request. */ });
   }
 
@@ -4694,6 +4899,7 @@ export class ClientSessions {
     session.header.revoked = true;
     await this.writeHeader(session);
     this.abortChildren(session);
+    this.abortBackground(session);
     await this.interrupt(session, "Session revoked");
     this.endStreams(session);
     await this.releaseVolumes(session.header, session.claim);

@@ -290,11 +290,14 @@ export function api(context: ApiContext) {
     if (principal.via === "oauth" && !OAUTH_ROUTES.some(allowed => allowed.test(`${c.req.method} ${c.req.path}`))) {
       throw new HttpError(403, "An OAuth access token works with agents only: it cannot get agent tokens or make API tokens, links, webhooks, telemetry exports, channels or provider keys. Use an API token or the console");
     }
-    // A browser token reads its one agent's events, state, history and inputs, as its scopes say, and nothing else.
+    // A browser token reads its one agent's events, state, history and inputs, as its scopes say, and nothing else; with
+    // the children scope, its background sub-agents' too.
     if (principal.browser) {
       const [, agent, scope] = BROWSER_ROUTE.exec(c.req.path) ?? [];
       if (c.req.method !== "GET" || !scope) throw new HttpError(403, "A browser token only reads an agent's events, state, history and inputs");
-      if (agent !== principal.browser.agent) throw new HttpError(403, "This browser token is for another agent");
+      if (agent !== principal.browser.agent && !(principal.browser.scopes.includes("children") && await clients.isChildOf(agent, principal.browser.agent))) {
+        throw new HttpError(403, principal.browser.scopes.includes("children") ? "This browser token is for another agent, and this one is not its sub-agent" : "This browser token is for another agent");
+      }
       if (!principal.browser.scopes.includes(scope as BrowserClaims["scopes"][number])) throw new HttpError(403, `This browser token does not read ${scope}`);
     }
     await next();
@@ -655,10 +658,10 @@ export function api(context: ApiContext) {
   });
   route(createRoute({
     method: "post", path: "/v1/agents/{id}/abort", request: { params: agentId, body: { ...content(schema.AbortInput), required: false } },
-    responses: { 200: reply("The agent is stopped: its running turn is aborted, and the runs queued behind it are cancelled (unless queued: \"keep\")", schema.Aborted) },
+    responses: { 200: reply("The agent is stopped: its running turn is aborted, the runs queued behind it are cancelled (unless queued: \"keep\"), and its running background sub-agents are aborted (unless children: \"keep\"). On a sub-agent, it stops that one alone, and its parent's notification follows with status aborted", schema.Aborted) },
   }), async c => {
-    const { queued } = parse(schema.AbortInput, await readJson(c.req.raw.body, 1024, {}));
-    const stopped = await clients.abortAgent(c.req.param("id")!, c.var.principal.tenant, queued);
+    const { queued, children } = parse(schema.AbortInput, await readJson(c.req.raw.body, 1024, {}));
+    const stopped = await clients.abortAgent(c.req.param("id")!, c.var.principal.tenant, queued, children);
     return json(c, 200, { aborted: true, cancelled: stopped ? stopped.cancelled : [] });
   });
   route(createRoute({ method: "post", path: "/v1/agents/{id}/prompt", request: { params: agentId, headers: traceHeaders, body: content(schema.PromptInput) }, responses: { 202: { ...reply("The accepted request", schema.RequestRecord), headers: rateLimited("Runs") } } }), async c => {

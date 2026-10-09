@@ -737,6 +737,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     submit: (agent, tenant, request) => submitAnywhere(agent, tenant, request),
     // The delegate builtin's children: agents made as POST /v1/agents makes them, and their requests waited on wherever they run.
     createAgent: (tenant, params, key, parent) => createAgent(tenant, params, key, parent) as Promise<{ id: string }>,
+    deleteAgent: (agent, tenant) => deleteAnywhere(agent, tenant),
     requestAnywhere: (agent, tenant, requestId, waitMs, signal) => requestAnywhere(agent, tenant, requestId, waitMs, signal),
   });
   // An agent loaded on another node: this node's idle watchers of it end, and reconnect to that node.
