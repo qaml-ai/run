@@ -3,7 +3,7 @@
 
 # agent-launcher (sandbox/launcher.c): starts the runtime, and the confined processes it asks for. Static, so the
 # final image needs no libseccomp.
-FROM node:22-bookworm-slim AS launcher
+FROM public.ecr.aws/docker/library/node:22-bookworm-slim AS launcher
 RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev libseccomp-dev && rm -rf /var/lib/apt/lists/*
 COPY sandbox/launcher.c /src/launcher.c
 RUN gcc -O2 -Wall -Wextra -Werror -static -o /agent-launcher /src/launcher.c -lseccomp
@@ -11,7 +11,7 @@ RUN gcc -O2 -Wall -Wextra -Werror -static -o /agent-launcher /src/launcher.c -ls
 # v8-exec (sandbox/v8-exec): js_exec on a bare V8 isolate, one process per execution (src/v8-exec.ts).
 # Built on the build machine's own architecture and cross-compiled to the target's: rusty_v8 ships
 # prebuilt static V8 libraries for both, so no V8 build and no emulated compile.
-FROM --platform=$BUILDPLATFORM rust:1.95.0-slim-bookworm AS v8exec
+FROM --platform=$BUILDPLATFORM public.ecr.aws/docker/library/rust:1.95.0-slim-bookworm AS v8exec
 ARG TARGETARCH
 RUN set -eux; case "$TARGETARCH" in \
       arm64) triple=aarch64-unknown-linux-gnu; gnu=aarch64-linux-gnu; deb=arm64 ;; \
@@ -31,7 +31,7 @@ COPY sandbox/v8-exec/src ./src
 RUN --mount=type=cache,target=/usr/local/cargo/registry --mount=type=cache,target=/src/target,id=v8exec-$TARGETARCH \
     cargo build --release --locked --target "$(cat /triple)" && cp "target/$(cat /triple)/release/v8-exec" /v8-exec
 
-FROM node:22-bookworm-slim
+FROM public.ecr.aws/docker/library/node:22-bookworm-slim
 
 WORKDIR /app
 # Runtime dependencies only, exactly as locked; UI build tooling is in devDependencies.
