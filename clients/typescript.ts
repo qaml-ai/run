@@ -1150,9 +1150,9 @@ export class AgentRuntime {
   /**
    * A token a browser reads one agent with (`@camelai/run/watch`): mint one per user, after your
    * own access checks. It reads only that agent's events, state, history and inputs (or `scopes`), for
-   * `ttlSeconds` (default 900, 5 to 3600).
+   * `ttlSeconds` (default 900, 5 to 3600). With `children` among its scopes, it reads its background sub-agents too.
    */
-  browserToken(agentId: string, options: { ttlSeconds?: number; scopes?: ("events" | "state" | "history" | "inputs")[]; events?: string[]; redact?: "usage.cost"[]; subject?: string } = {}): Promise<{ token: string; expiresAt: number; agentId: string; url?: string }> {
+  browserToken(agentId: string, options: { ttlSeconds?: number; scopes?: ("events" | "state" | "history" | "inputs" | "children")[]; events?: string[]; redact?: "usage.cost"[]; subject?: string } = {}): Promise<{ token: string; expiresAt: number; agentId: string; url?: string }> {
     return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/browser-tokens`, this.operator(), "POST", options, false);
   }
   /** Who the API key is: `tenant` is your tenant's id, which serveTools and verifyRuntimeToken take. */
@@ -1986,7 +1986,10 @@ export class AgentClient {
    * Stop the agent: its running turn ends (code `aborted`), and the runs queued behind it are cancelled (code
    * `cancelled`), so nothing runs after the stop; `queued: "keep"` stops the running turn only. Resolves with the ids it cancelled.
    */
-  abort(options: { queued?: "cancel" | "keep" } = {}): Promise<{ aborted: boolean; cancelled?: string[] }> { return this.request("abort", options.queued ? { queued: options.queued } : {}); }
+  /** `children: "keep"`: its running background sub-agents (spawn_agent) go on; by default they are aborted too. */
+  abort(options: { queued?: "cancel" | "keep"; children?: "abort" | "keep" } = {}): Promise<{ aborted: boolean; cancelled?: string[] }> {
+    return this.request("abort", { ...options.queued ? { queued: options.queued } : {}, ...options.children ? { children: options.children } : {} });
+  }
   /**
    * A request's record. `wait` (seconds, at most 25): while it runs, answer once it settles, or when the wait ends
    * with it still running: one call that waits, with no stream connected.

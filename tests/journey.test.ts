@@ -104,6 +104,8 @@ test("journey events are configured by AGENT_JOURNEY_URL and a secret, and off w
   assert.equal(journeyConfig({}, undefined), undefined);
   assert.throws(() => journeyConfig({}, SECRET), /without AGENT_JOURNEY_URL/);
   assert.throws(() => journeyConfig({ AGENT_JOURNEY_URL: "https://example.com" }, undefined), /AGENT_JOURNEY_SECRET/);
+  // A secret that is named and has no value yet (null) is not a mistake: journey events are off until it has one.
+  assert.equal(journeyConfig({ AGENT_JOURNEY_URL: "https://example.com", AGENT_JOURNEY_COLLECT_UNKNOWN: "true" }, null), undefined);
   // Not a secret, base64url where the store reads standard base64, and a key too short to sign with.
   for (const secret of ["not-a-secret", "whsec_abc-def_ghijklmnopqrstuv", `whsec_${Buffer.from("short").toString("base64")}`]) {
     assert.throws(() => journeyConfig({ AGENT_JOURNEY_URL: "https://example.com" }, secret), /whsec_/, secret);

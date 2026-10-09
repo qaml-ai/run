@@ -273,6 +273,12 @@ test("runtime credentials including billing email load once from Secrets Manager
   // The admin site's report secret is named only where set, and one with no value yet leaves reports off.
   assert.equal((await runtimeSecrets({ AGENT_JOURNEY_REPORT_SECRET: "whsec_plain" })).journeyReportSecret, "whsec_plain");
   assert.equal("journeyReportSecret" in await runtimeSecrets({ ...env, AGENT_JOURNEY_REPORT_SECRET_ARN: arn("journey-report-unset") }), false);
+  // So may journey events' own secret: null, which leaves them off (journeyConfig) rather than the runtime failing to
+  // start, and the reports with them, whether or not theirs has a value.
+  assert.equal((await runtimeSecrets({ ...env, AGENT_JOURNEY_SECRET_ARN: arn("journey-unset") })).journeySecret, null);
+  const waiting = await runtimeSecrets({ ...env, AGENT_JOURNEY_SECRET_ARN: arn("journey-unset"), AGENT_JOURNEY_REPORT_SECRET: "whsec_plain" });
+  assert.deepEqual([waiting.journeySecret, "journeyReportSecret" in waiting], [null, false]);
+  assert.equal("journeySecret" in await runtimeSecrets(env), false);
   await assert.rejects(runtimeSecrets({ ...env, AGENT_JOURNEY_REPORT_SECRET: "x", AGENT_JOURNEY_REPORT_SECRET_ARN: arn("journey-report-unset") }), /AGENT_JOURNEY_REPORT_SECRET or AGENT_JOURNEY_REPORT_SECRET_ARN, not both/);
   // Google sign-in likewise stays off until its client is stored.
   assert.equal((await runtimeSecrets({ ...env, AGENT_GOOGLE_OAUTH_SECRET_ARN: arn("google-unset") })).google, undefined);

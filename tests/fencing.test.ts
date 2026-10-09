@@ -167,3 +167,54 @@ test("two creates of one agent at once on one node leave one claim, still curren
     await sleep(5);
   }
 });
+
+test("a node that fences while an agent's start gets ready starts no host for it: the agent's next load starts its own", { timeout: 60_000 }, async t => {
+  const { db } = await testDatabase();
+  const root = await mkdtemp(join(tmpdir(), "fencing-"));
+  const ownership = new Ownership(db, { node: "http://a" });
+  await ownership.start();
+  const storage = memoryStorage(postgresTail(db));
+  const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, storage });
+  // The start looks up the agent's key as it gets ready: held there, it is still getting ready as the node fences.
+  const asked = Promise.withResolvers<void>(), key = Promise.withResolvers<void>();
+  let held = true;
+  const sessions = new ClientSessions(supervisor, { db, storage, prefix: "client-sessions/", ownership, secret: "fencing-test-secret-with-32-characters", apiKeyFor: async () => {
+    if (held) { asked.resolve(); await key.promise; }
+    return "fixture-only";
+  } });
+  t.after(async () => {
+    key.resolve();
+    await sessions.close(); await supervisor.close(); await ownership.close();
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  });
+  const { id } = await sessions.create([], { model }, "fenced-start", {}, "default");
+  const starting = sessions.sessions.get(id)!.starting!;
+  await asked.promise;
+  ownership.fence("test");
+  held = false;
+  key.resolve();
+  await starting.catch(() => {});
+  // Before, the start went on: a host for an owner that was gone, which the agent's next load (here or after this node
+  // rejoined) took for its own while it was still starting, so its first run failed with "Agent is not initialized".
+  assert.equal(supervisor.agents.has(id), false, "no host for the session the node lost");
+  await sessions.submit(id, "default", { id: "after-fence", method: "execute", params: { code: "return 1" } });
+  for (let tries = 0; sessions.sessions.get(id)?.requests.get("after-fence")?.state !== "completed"; tries++) {
+    assert.ok(tries < 1000, "the agent ran a request");
+    await sleep(5);
+  }
+  assert.equal(sessions.sessions.get(id)!.requests.get("after-fence")!.outcome?.error, undefined);
+});
+
+test("an agent stopped while its start has no host yet gets none, and its next start makes its own", async t => {
+  const root = await mkdtemp(join(tmpdir(), "fencing-"));
+  const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined });
+  t.after(async () => { await supervisor.close(); await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); });
+  const bridge = { definitions: [], call: async () => null };
+  const start = supervisor.start("agent_stopped_early", { model }, bridge);
+  // Before, the stop found no host and did nothing, and the start made one after it.
+  await supervisor.stop("agent_stopped_early");
+  await assert.rejects(start, /Agent stopped/);
+  assert.equal(supervisor.agents.has("agent_stopped_early"), false);
+  await supervisor.start("agent_stopped_early", { model }, bridge);
+  assert.equal(supervisor.agents.has("agent_stopped_early"), true);
+});

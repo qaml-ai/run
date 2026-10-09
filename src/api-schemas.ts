@@ -268,6 +268,7 @@ export const DelegateSettings = z.strictObject({
 }).openapi("DelegateSettings", { description: "With the delegate or agents builtin: who the model may hand tasks to, and how deep and wide. See the multi-agent guide" });
 export const AbortInput = z.strictObject({
   queued: z.enum(["cancel", "keep"]).optional().openapi({ description: "cancel (default): the runs queued behind the running one (prompts, steered messages not yet read, continues, executions) are cancelled too, each ending with code cancelled, so nothing runs after the stop. keep: only the running turn is stopped, and the next queued run starts" }),
+  children: z.enum(["abort", "keep"]).optional().openapi({ description: "abort (default): the agent's running background sub-agents (spawn_agent) are aborted too, and their notifications follow with status aborted. keep: they go on" }),
 }).openapi("AbortInput");
 export const Aborted = z.object({
   aborted: z.literal(true),
@@ -601,7 +602,7 @@ export const EventPoll = z.object({
 
 export const BrowserTokenInput = z.object({
   ttlSeconds: z.number().int().min(5).max(3600).optional().openapi({ description: "How long it lives: 5 to 3600 seconds, default 900. Nothing revokes it sooner" }),
-  scopes: z.array(z.enum(["events", "state", "history", "inputs"])).optional().openapi({ description: "What it reads of the agent: GET /v1/agents/{id}/<scope>. Default all four" }),
+  scopes: z.array(z.enum(["events", "state", "history", "inputs", "children"])).optional().openapi({ description: "What it reads of the agent: GET /v1/agents/{id}/<scope>. Default events, state, history and inputs. children: it reads the same of the agent's background sub-agents (spawn_agent's), by their ids" }),
   events: z.array(z.string()).max(64).optional().openapi({ description: "Only these event types (message_update, tool_execution_end, ...) reach it; default every one but the runtime's own (codemode, compaction_usage, spend_limit_reached, turn_limit_reached). Outcomes (response) and snapshots always do, an outcome only as whether and why its run stopped" }),
   redact: z.array(z.enum(["usage.cost"])).optional().openapi({ description: "Fields it does not see: usage.cost, a response's provider cost, in messages, snapshots and history" }),
   subject: z.string().max(200).optional().openapi({ description: "Whom it is for, in your app (a user id)" }),
