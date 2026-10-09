@@ -2129,13 +2129,16 @@ export class ClientSessions {
     const taken = rows[0];
     if (!taken) return undefined;
     const notice = taken.notice as ChildNotice;
-    const cost = notice.notice.costUsd;
-    if (cost > 0) {
-      this.spent(session, cost);
-      (session.childSpend ??= new Map()).set(run.id, (session.childSpend.get(run.id) ?? 0) + cost);
-    }
+    this.chargeNotice(session, run.id, notice.notice.costUsd);
     this.publish(session, { type: "event", requestId: run.id, event: { type: "subagent_end", toolCallId: taken.tool_call_id, agentId: taken.child, requestId: taken.request_id, status: taken.status, ...(notice.notice.metadata.error ? { error: notice.notice.metadata.error } : {}), background: true } });
     return taken;
+  }
+
+  /** What a background child spent, charged to its parent (its spend limit) and to the parent's run `runId` (its usage). */
+  private chargeNotice(session: Session, runId: string, usd: number) {
+    if (!(usd > 0)) return;
+    this.spent(session, usd);
+    (session.childSpend ??= new Map()).set(runId, (session.childSpend.get(runId) ?? 0) + usd);
   }
 
   /** Record a child's ending on its row once (the first recorded wins), as its notice; returns the row as it now is. */
@@ -2171,6 +2174,7 @@ export class ClientSessions {
     } catch (error) {
       const status = (error as HttpError).status;
       if (status !== 404 && status !== 410 && (error as HttpError).code !== "IDEMPOTENCY_CONFLICT") {
+        reachable("a child's notification failed to reach its parent and was left for a sweep");
         console.error(JSON.stringify({ type: "child_notice_failed", agent: row.parent, child: row.child, error: safeError(error) }));
         return void await release();
       }
@@ -2207,14 +2211,15 @@ export class ClientSessions {
             if (!gone) { await this.db.query("update agent_children set claimed_until = null where id = $1", [row.id]); continue; }
           }
           // A child whose request is missing past the time its spawn takes was never started (its parent's turn was lost first).
-          if (gone || (!record && Number(row.created_at) < now - CHILD_START_GRACE_MS)) record = { status: "failed", error: gone ? "The sub-agent was deleted before it answered" : "The sub-agent was never started" } as RequestRecord;
-          if (record?.state !== "completed" && record?.status !== "failed") {
+          const failure = gone ? "The sub-agent was deleted before it answered" : !record && Number(row.created_at) < now - CHILD_START_GRACE_MS ? "The sub-agent was never started" : undefined;
+          if (record?.state !== "completed" && !failure) {
             await this.db.query("update agent_children set claimed_until = null, checked_at = $2 where id = $1", [row.id, now]);
             continue;
           }
-          row = await this.recordEnding(row, record);
+          row = await this.recordEnding(row, failure ? { status: "failed", error: failure } : record!);
           reachable("a sweep found a child's ended run that no one had recorded");
         }
+        else reachable("a sweep delivered a child's ending recorded before");
         await this.deliverChild(row);
       }
     } catch (error) {
@@ -2237,10 +2242,7 @@ export class ClientSessions {
       always(row?.landed_by !== "notice", "a child's ending lands in its parent at most once");
       if (row) return { outcome: { result: { error: null, skipped: "wait_agent answered this sub-agent's ending already" } } };
     }
-    if (notice.costUsd > 0) {
-      this.spent(session, notice.costUsd);
-      (session.childSpend ??= new Map()).set(record.id, (session.childSpend.get(record.id) ?? 0) + notice.costUsd);
-    }
+    this.chargeNotice(session, record.id, notice.costUsd);
     const { metadata } = notice;
     const toolCallId = landed.rows[0]?.tool_call_id as string | undefined;
     this.publish(session, { type: "event", requestId: record.id, event: { type: "subagent_end", ...toolCallId ? { toolCallId } : {}, agentId: notice.source.agentId, requestId: childRequest, name: notice.source.name, status: metadata.status, ...(metadata.error ? { error: metadata.error } : {}), background: true } });
@@ -4163,6 +4165,15 @@ export class ClientSessions {
       return { result: ended.finished };
     }
     if (record.method === "resume") return { result: await this.execute(session, record, {}) };
+    // A child's notification whose node was lost after its run began, before its message landed: it lands now, from its
+    // row (the message is the runtime's, so nothing of it is unknown). What the child spent was counted with the message.
+    const notice = record.method === "prompt" && record.id.startsWith("child_")
+      ? (await this.db.query("select notice from agent_children where parent = $1 and request_id = $2", [session.header.id, record.id.slice("child_".length)])).rows[0]?.notice as ChildNotice | undefined : undefined;
+    if (notice) {
+      reachable("a child's notification whose node was lost before its message landed landed on the next owner");
+      this.chargeNotice(session, record.id, notice.notice.costUsd);
+      return { result: await this.execute(session, record, { ...notice, requestId: record.id }) };
+    }
     return { error: "The runtime restarted during this request", uncertain: true };
   }
 
