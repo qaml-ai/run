@@ -3,19 +3,25 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { cluster, fakeModel, sleep, token, until } from "./cluster-helpers.ts";
 
+// A lease that outlasts a database or CPU stall on a loaded runner. Under the cluster's 1.5 s (fresh for 500 ms), stalls
+// of a second cut A's model call, so the model was called again, or fenced both nodes and moved the work twice. A node
+// SIGKILLed is still found dead in a few seconds: a peer ends its late heartbeat (Ownership.reap).
+const LEASE = { AGENT_LEASE_TTL_MS: "6000" };
+
 /** A tenant's agent whose first model call hangs on node A, which then dies: its turn is left unfinished, owned by a dead node. */
 async function orphaned(t: Parameters<typeof cluster>[0], env: Record<string, string>) {
   const c = await cluster(t);
   const model = await fakeModel(t, (_body, index) => index === 0 ? undefined : { role: "assistant", content: "resumed" });
-  const a = await c.start("a", { ...model.env, ...env });
-  const b = await c.start("b", { ...model.env, ...env });
+  const a = await c.start("a", { ...model.env, ...LEASE, ...env });
+  const b = await c.start("b", { ...model.env, ...LEASE, ...env });
   const call = (base: string, path: string, body?: unknown) => fetch(base + path, { method: body ? "POST" : "GET", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then(response => response.json() as Promise<any>);
   const agent = (await call(a.url, "/v1/agents", {})).id as string;
   await call(a.url, `/v1/agents/${agent}/prompt`, { text: "go", requestId: "turn-1" });
   await until(() => model.bodies.length === 1, "A to call the model");
   a.child.kill("SIGKILL");
   await once(a.child, "close");
-  await sleep(1500 + 500);
+  // Until B ends A's heartbeat, a few seconds after the kill (B's sweep, when on, may take the agent at once).
+  await until(async () => await c.liveOwner(agent) !== a.url, "B to find A dead");
   return { c, b, model, agent, call };
 }
 
@@ -44,7 +50,7 @@ test("an agent whose node died is resumed by the others' sweep, with no one read
 test("a run a drain left queued runs on another node's sweep, with no one reading the agent", { timeout: 90_000 }, async t => {
   const c = await cluster(t);
   const model = await fakeModel(t, async (_body, index) => { if (index === 0) await sleep(2_000); return { role: "assistant", content: `answer ${index}` }; });
-  const env = { ...model.env, AGENT_ORPHAN_SWEEP_MS: "500" };
+  const env = { ...model.env, ...LEASE, AGENT_ORPHAN_SWEEP_MS: "500" };
   const a = await c.start("a", env);
   await c.start("b", env);
   const call = (path: string, body?: unknown) => fetch(a.url + path, { method: body ? "POST" : "GET", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then(response => response.json() as Promise<any>);
@@ -72,7 +78,7 @@ test("a full node's sweep leaves an orphaned turn for a node with room, and neve
     if (asked.includes("occupy")) await gate.promise;
     return { role: "assistant", content: "done" };
   });
-  const env = { ...model.env, AGENT_ORPHAN_SWEEP_MS: "300", AGENT_IDLE_MS: "1000" };
+  const env = { ...model.env, ...LEASE, AGENT_ORPHAN_SWEEP_MS: "300", AGENT_IDLE_MS: "1000" };
   const a = await c.start("a", env);
   // B has room for one agent; the tenant may have more busy across the fleet, so only B's capacity is in the way.
   const b = await c.start("b", { ...env, AGENT_MAX_AGENTS: "1", AGENT_MAX_AGENTS_PER_TENANT: "4" });
@@ -86,8 +92,9 @@ test("a full node's sweep leaves an orphaned turn for a node with room, and neve
   await until(() => model.bodies.length === 2, "B's own turn to take its slot");
   a.child.kill("SIGKILL");
   await once(a.child, "close");
+  await until(async () => await c.liveOwner(orphan) !== a.url, "B to find A dead");
   // B sweeps several times while full: the orphan's turn must not end.
-  await sleep(1500 + 1_500);
+  await sleep(1_500);
   // Requests to it on B, which has no room for it: a read answers from storage, and a prompt or an
   // application's connection is asked to retry, instead of B loading it only to hand it back.
   const read = await call(b.url, `/v1/agents/${orphan}/state`);

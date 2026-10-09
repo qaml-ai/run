@@ -36,6 +36,8 @@ test("a SIGSTOP shorter than the fresh window: no takeover, no cut, and effects 
   assert.equal(calls.length, 160);
   assert.ok(model.served.every(entry => entry.node === "a" && !entry.cut), "every model call was A's, and none was cut");
   assert.ok(!a.logs.some(entry => entry.type === "lease_interrupt" || entry.type === "self_fence"), "no cut, no fence");
-  assert.ok(!b.logs.some(entry => entry.type === "node_reaped"), "B found A alive");
+  // A, by name: a node a failed start left behind (a port taken before it listened, so it started again on another) is
+  // rightly found dead.
+  assert.ok(!b.logs.some(entry => entry.type === "node_reaped" && entry.node === a.url), "B found A alive");
   assert.equal(await c.owner(looping.session.id), a.url);
 });
