@@ -2231,8 +2231,8 @@ export class ClientSessions {
     const notice = params.notice as ChildNotice["notice"];
     const childRequest = record.id.slice("child_".length);
     const now = Date.now();
-    const landed = await this.db.query("update agent_children set landed_at = $3, landed_by = 'notice', state = 'notified', updated_at = $3 where child = $1 and request_id = $2 and landed_at is null", [notice.source.agentId, childRequest, now]);
-    if (!landed.rowCount) {
+    const landed = await this.db.query("update agent_children set landed_at = $3, landed_by = 'notice', state = 'notified', updated_at = $3 where child = $1 and request_id = $2 and landed_at is null returning tool_call_id", [notice.source.agentId, childRequest, now]);
+    if (!landed.rows.length) {
       const row = (await this.db.query("select landed_by from agent_children where child = $1 and request_id = $2", [notice.source.agentId, childRequest])).rows[0];
       always(row?.landed_by !== "notice", "a child's ending lands in its parent at most once");
       if (row) return { outcome: { result: { error: null, skipped: "wait_agent answered this sub-agent's ending already" } } };
@@ -2242,7 +2242,8 @@ export class ClientSessions {
       (session.childSpend ??= new Map()).set(record.id, (session.childSpend.get(record.id) ?? 0) + notice.costUsd);
     }
     const { metadata } = notice;
-    this.publish(session, { type: "event", requestId: record.id, event: { type: "subagent_end", agentId: notice.source.agentId, requestId: childRequest, name: notice.source.name, status: metadata.status, ...(metadata.error ? { error: metadata.error } : {}), background: true } });
+    const toolCallId = landed.rows[0]?.tool_call_id as string | undefined;
+    this.publish(session, { type: "event", requestId: record.id, event: { type: "subagent_end", ...toolCallId ? { toolCallId } : {}, agentId: notice.source.agentId, requestId: childRequest, name: notice.source.name, status: metadata.status, ...(metadata.error ? { error: metadata.error } : {}), background: true } });
     const refused = await this.runLimit(session, "prompt");
     if (refused) return { params: { ...params, landOnly: { stopped: "spend_limit", message: refused.message } } };
     const cap = this.options.wakesPerHour ?? MULTI_AGENT_LIMITS.wakesPerHour;
@@ -4619,7 +4620,7 @@ export class ClientSessions {
     });
   }
 
-  private async callAttached(session: Session, { name, args, signal, toolCallId, innerCallId, idempotencyKey, origin, actor, onProgress, approval, inputResponses, requestState, elicit }: ToolCall): Promise<McpResult> {
+  private async callAttached(session: Session, { name, args, signal, toolCallId, innerCallId, idempotencyKey, origin, actor, onProgress, approval, inputResponses, requestState, elicit, lineage }: ToolCall): Promise<McpResult> {
     const attached = await this.attachedServer(session, signal);
     if (!attached) throw new ToolFailure("not_connected", "No application is connected to answer this tool call; it did not run");
     // The tool's own deadline, else the runtime's; each progress notification restarts it, up to TOOL_DEADLINES.maxTotalMs.
@@ -4631,6 +4632,7 @@ export class ClientSessions {
       tenant: header.tenant, agent: header.id, sub: header.identity?.subject ?? header.id,
       ...(header.definition ? { definition: header.definition.id } : {}), ...(header.identity?.context ? { ctx: header.identity.context } : {}),
       ...(actor ? { act: actor } : {}), ...(origin ? { origin } : {}), ...(approval ? { approval } : {}),
+      ...(lineage ? { par: lineage.parent, root: lineage.root } : {}),
     };
     const _meta = {
       "agent-runtime/callId": randomUUID(), "agent-runtime/identity": identity, ...callMeta({ toolCallId, innerCallId, idempotencyKey, origin, actor }),

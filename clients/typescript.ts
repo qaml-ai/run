@@ -35,6 +35,10 @@ export interface RuntimeIdentity {
   requestId?: string;
   /** The model's tool call this request is for, when made for one. */
   toolCallId?: string;
+  /** In a sub-agent's run (delegate, spawn_agent): the agent that started it. */
+  parentAgentId?: string;
+  /** In a sub-agent's run: the first agent of its chain (the parent's parent's..., or the parent). */
+  rootAgentId?: string;
 }
 /** A runtime identity from its claims (a verified token's payload, or an attached call's `_meta`). */
 export function identityFromClaims(claims: Record<string, any>): RuntimeIdentity {
@@ -48,6 +52,7 @@ export function identityFromClaims(claims: Record<string, any>): RuntimeIdentity
     context: isRecord(claims.ctx) ? claims.ctx : {}, ...(isRecord(claims.origin) ? { origin: claims.origin } : {}),
     ...(isRecord(claims.approval) ? { approval: claims.approval as RuntimeIdentity["approval"] & object } : {}),
     ...(text(claims.req) ? { requestId: claims.req } : {}), ...(text(claims.tcid) ? { toolCallId: claims.tcid } : {}),
+    ...(text(claims.par) ? { parentAgentId: claims.par } : {}), ...(text(claims.root) ? { rootAgentId: claims.root } : {}),
   };
 }
 export interface ToolContext {

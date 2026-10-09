@@ -243,7 +243,7 @@ export type StreamPart =
   | { type: "input_required"; input: RunInput; raw: AgentEvent }
   /** With `subagents: true`: a delegate call's child agent started on its task, and ended. */
   | { type: "subagent_start"; toolCallId: string; agentId: string; name: string; raw: AgentEvent }
-  | { type: "subagent_end"; toolCallId: string; agentId: string; status: "completed" | "input_required" | "failed"; raw: AgentEvent }
+  | { type: "subagent_end"; toolCallId: string; agentId: string; status: "completed" | "input_required" | "failed" | "aborted"; raw: AgentEvent }
   /** Always last: the run as it ended. */
   | { type: "done"; run: Run };
 

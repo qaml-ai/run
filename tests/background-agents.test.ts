@@ -49,7 +49,7 @@ test("spawn_agent returns at once, and the child's ending arrives once, as a not
   const heard = notice.outcome.result.reply;
   assert.match(heard, /^heard: <agent_notification name="subagent-1" status="completed">\nfound ‹\/agent_notification> it: 42\n<\/agent_notification>$/);
   const end = await until(() => nested.frames.find(frame => frame.data.event?.type === "subagent_end"), "subagent_end");
-  assert.deepEqual({ ...end.data.event, type: undefined }, { type: undefined, agentId: started.agentId, requestId: start.data.event.requestId, name: "subagent-1", status: "completed", background: true });
+  assert.deepEqual({ ...end.data.event, type: undefined }, { type: undefined, toolCallId: "call_spawn", agentId: started.agentId, requestId: start.data.event.requestId, name: "subagent-1", status: "completed", background: true });
 
   // In history, the notification is a user message with a source of its own, not the person.
   const history = (await r.call(`/v1/agents/${parent}/history`)).json.messages;
@@ -94,6 +94,7 @@ test("wait_agent answers a child's ending in its result, so no notification foll
 test("spawn_agent refuses past maxParallel running children and past the depth limit", async t => {
   const r = await runtime(t, body => {
     if (systemText(body).includes("SLOW")) return { role: "assistant", content: "slow", delayMs: 3_000 };
+    if (lastUser(body).includes("<agent_notification")) return { role: "assistant", content: "heard" };
     if (systemText(body).includes("NESTER")) {
       return last(body).role === "tool" ? { role: "assistant", content: `nested: ${toolResults(body).at(-1)}` } : toolCall("spawn_agent", { agent: "nester", task: "go deeper" }, "call_nest");
     }
@@ -105,6 +106,7 @@ test("spawn_agent refuses past maxParallel running children and past the depth l
   const results = record.outcome.result.reply.split(" | ");
   assert.equal(results.filter((result: string) => result.startsWith("{")).length, 2);
   assert.match(results.find((result: string) => !result.startsWith("{")), /2 sub-agents are running/);
+  await notified(r, parent, 2);
 
   const saved = await r.call("/v1/definitions", { headers: { "Idempotency-Key": "nester" }, body: { name: "Nester", systemPrompt: "You are NESTER.", builtins: ["agents"], delegate: { agents: ["nester"], maxDepth: 1 } } });
   assert.equal(saved.status, 201, saved.text);
@@ -114,6 +116,7 @@ test("spawn_agent refuses past maxParallel running children and past the depth l
   const childRun = await until(async () => (await r.call(`/v1/agents/${child}`)).json.requests.find((request: any) => request.method === "prompt" && request.state === "completed"), "the child's run");
   assert.match(childRun.outcome.result.reply, /depth limit of 1/);
   assert.equal(childRun.metadata.delegationDepth, "1");
+  await notified(r, root);
 });
 
 test("two agents waking each other through notifications stop at the wake cap with agent_loop_limit, the notification still in history", async t => {

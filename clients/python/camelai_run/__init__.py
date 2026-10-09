@@ -94,6 +94,9 @@ class RuntimeIdentity:
     # The run (its request id) the call was made in, and the model's tool call it is for, when there are.
     request_id: str | None = None
     tool_call_id: str | None = None
+    # In a sub-agent's run (delegate, spawn_agent): the agent that started it, and the first agent of its chain.
+    parent_agent_id: str | None = None
+    root_agent_id: str | None = None
     # A verified token's full claims (serve_tools, verify_runtime_token).
     claims: dict | None = field(default=None, repr=False, compare=False)
 
@@ -108,7 +111,8 @@ def identity_from_claims(claims):
                            context=claims["ctx"] if isinstance(claims.get("ctx"), dict) else {}, actor=actor,
                            definition=text(claims.get("definition")), origin=claims["origin"] if isinstance(claims.get("origin"), dict) else None,
                            approval=claims["approval"] if isinstance(claims.get("approval"), dict) else None,
-                           request_id=text(claims.get("req")), tool_call_id=text(claims.get("tcid")))
+                           request_id=text(claims.get("req")), tool_call_id=text(claims.get("tcid")),
+                           parent_agent_id=text(claims.get("par")), root_agent_id=text(claims.get("root")))
 
 
 class InputRequired(Exception):
@@ -3034,12 +3038,13 @@ class TestRuntime:
         self.options = {"runtime": self.url, "http": self.http, "tenant": "test"}
 
     def token(self, audience, *, subject=None, actor=None, tenant="test", agent="client_test", definition=None, context=None, origin=None,
-              expires_in=120, claims=None, header=None):
+              parent_agent_id=None, root_agent_id=None, expires_in=120, claims=None, header=None):
         """A token for `audience` as the runtime would sign it; `claims` and `header` override, to test rejections."""
         import time
         now = int(time.time())
         payload = {"iss": self.url, "aud": audience, "sub": subject or agent, "tenant": tenant, "agent": agent, "iat": now, "exp": now + expires_in, "jti": str(uuid.uuid4())}
-        payload.update({key: value for key, value in (("definition", definition), ("ctx", context), ("act", actor), ("origin", origin)) if value is not None})
+        payload.update({key: value for key, value in (("definition", definition), ("ctx", context), ("act", actor), ("origin", origin),
+                                                      ("par", parent_agent_id), ("root", root_agent_id)) if value is not None})
         payload.update(claims or {})
         signed = f"{_b64encode(json.dumps({'alg': 'EdDSA', 'kid': self.kid, 'typ': 'JWT', **(header or {})}).encode())}.{_b64encode(json.dumps(payload).encode())}"
         return f"{signed}.{_b64encode(self.key.sign(signed.encode()))}"
