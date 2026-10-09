@@ -14,6 +14,10 @@ locals {
     google-oauth = "Google OAuth client for agent runtime console sign-in. Set with infra/google-oauth.sh."
     stripe       = "Stripe secret key and webhook signing secret for agent runtime credit purchases. Set with infra/stripe.sh."
     tool-search  = "OpenRouter API key for tools.search ranking by meaning (embeddings and Jev). Set with infra/tool-search.sh."
+    # Journey events (journey.tf): each stays off until infra/journey.sh stores its value. Two secrets, never one
+    # value: whoever can ask the store for reports must not be able to sign an event or an erasure.
+    journey        = "Standard Webhooks secret (whsec_...) that signs journey events to the operator's analytics store. Set with infra/journey.sh."
+    journey-report = "Standard Webhooks secret (whsec_...) the admin site asks the journey store's reports with. Never the journey secret's value. Set with infra/journey.sh."
     # Read only while discord_managed_enabled is true; empty, the integration stays off.
     discord-managed = "Managed Camel Discord application: JSON {applicationId, botToken, clientSecret, publicKey}. See docs/operations/managed-discord.md."
   }

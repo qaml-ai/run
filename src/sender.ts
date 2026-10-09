@@ -67,9 +67,10 @@ const escapeParts = (parts: Part[]) => parts.map(part => part.type === "text" &&
 
 const attribute = (value: unknown) => String(value ?? "").replace(/[^A-Za-z0-9_-]/g, "");
 
-/** A sub-agent's notification as the model reads it: its text in a block only the runtime writes, its markers neutralized. */
+/** A sub-agent's notification, or an agent's message, as the model reads it: its text in a block only the runtime writes, its markers neutralized. */
 function noticeBlock(source: MessageSource, metadata: Record<string, unknown> | undefined, parts: Part[]): Part[] {
   const text = escapeParts(parts).flatMap(part => part.type === "text" && part.text !== undefined ? [part.text] : []).join("\n");
+  if (metadata?.kind === "message") return [{ type: "text", text: `<agent_message name="${attribute(source.name)}">\n${text}\n</agent_message>` }];
   return [{ type: "text", text: `<agent_notification name="${attribute(source.name)}" status="${attribute(metadata?.status)}">\n${text}\n</agent_notification>` }];
 }
 
