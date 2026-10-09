@@ -2842,9 +2842,11 @@ class TestRuntime:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as client:
             return await client.post(url, json=message, headers=headers)
 
-    async def call_tool(self, app, url, name, arguments, **identity):
-        """Call one tool through an ASGI app as `identity`: its CallToolResult, or the error raised."""
-        response = await self.post(app, url, {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": arguments}}, **identity)
+    async def call_tool(self, app, url, name, arguments, idempotency_key=None, **identity):
+        """Call one tool through an ASGI app as `identity`: its CallToolResult, or the error raised. Each call carries its
+        own idempotency key, as each of the runtime's calls does; pass `idempotency_key` to send one again."""
+        meta = {"agent-runtime/idempotencyKey": idempotency_key or str(uuid.uuid4())}
+        response = await self.post(app, url, {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": arguments, "_meta": meta}}, **identity)
         body = response.json()
         if response.status_code != 200:
             raise RuntimeError(f"HTTP {response.status_code}: {body.get('error')}")

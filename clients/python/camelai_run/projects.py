@@ -146,8 +146,10 @@ def publish_tool(*, project, store, validate=None, prefix=None, keep=20, descrip
         if context.identity is None:
             raise RuntimeError('publish needs the runtime\'s identity token: serve it with serve_tools and auth {"type": "runtime"}')
         target = await _maybe(project(context.identity))
+        # A key that is only this request's JSON-RPC id (a client that sends none) is no key: unrelated calls share ids.
+        keyed = context.idempotency_key != context.call_id
         result = await target.publish(store=store, validate=validate, prefix=prefix, keep=keep,
-                                      idempotency_key=context.idempotency_key, identity=context.identity)
+                                      idempotency_key=context.idempotency_key if keyed else None, identity=context.identity)
         if not result["ok"]:
             raise RuntimeError("Not published. Fix these and publish again:\n" + format_problems(result["problems"]))
         return published(result) if published else {"published": True, "version": result["version"]["id"]}

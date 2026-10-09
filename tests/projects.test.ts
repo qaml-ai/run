@@ -79,6 +79,23 @@ test("publishTool finds the project from the call's identity, never its argument
   const refused = await rt.callTool(handler, "https://app.test/mcp", "publish", {}, { subject: "owner", context: { bot: "a" } });
   assert.equal(refused.isError, true);
   assert.match(String(refused.content[0].text), /Not published\. Fix these and publish again:\n\/secret\.ts: no secrets in a project/);
+
+  // A client that sends no idempotency key and reuses JSON-RPC id 1 for every call: each publish is its own, never the
+  // first one's version stored again with its old files.
+  const bare = async () => {
+    const response = await handler(await rt.request("https://app.test/mcp", { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "publish", arguments: {} } }, { subject: "owner", context: { bot: "b" } }));
+    return ((await response.json()) as any).result;
+  };
+  const b = sdk.projects.get(projects.get("b")!);
+  await b.volume.write("bot.ts", "export const name = \"b2\";\n");
+  assert.equal((await bare()).isError, undefined);
+  await b.volume.write("bot.ts", "export const name = \"b3\";\n");
+  assert.equal((await bare()).isError, undefined);
+  assert.deepEqual(stored.slice(-2), ['export const name = "b2";\n', 'export const name = "b3";\n']);
+  // A retry with the runtime's key publishes once.
+  const versions = (await b.versions()).length;
+  for (let i = 0; i < 2; i++) await rt.callTool(handler, "https://app.test/mcp", "publish", {}, { subject: "owner", context: { bot: "b" } }, { idempotencyKey: "turn-1:call-1" });
+  assert.equal((await b.versions()).length, versions + 1);
 });
 
 test("a project is restored in place to a published version, and a check hands what it computed to store and the result", async t => {

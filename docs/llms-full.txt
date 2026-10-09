@@ -699,7 +699,9 @@ is what decides which project a publish reaches.
 
 It takes no arguments. On success the model gets `{published: true, version}`;
 otherwise the call fails with the problems, one a line (`/bot.ts:12: …`), so the
-model fixes them and publishes again. A retried call publishes once.
+model fixes them and publishes again. A retried call publishes once: the
+runtime sends each call's idempotency key. A client that sends none gets a new
+version for every call.
 
 ## In Python
 

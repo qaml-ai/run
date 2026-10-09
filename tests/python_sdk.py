@@ -995,6 +995,12 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         refused = await tests.call_tool(app, "https://app.test/mcp", "publish", {}, subject="owner", context={"bot": "1"})
         self.assertTrue(refused["isError"])
         self.assertIn("/secret.py: no secrets", refused["content"][0]["text"])
+        # No idempotency key and JSON-RPC id 1 every time: each publish is its own, not the first one's files again.
+        bare = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "publish", "arguments": {}}}
+        for text in ("def three(): pass\n", "def four(): pass\n"):
+            await other.volume.write("bot.py", text)
+            self.assertNotIn("error", (await tests.post(app, "https://app.test/mcp", bare, subject="owner", context={"bot": "2"})).json())
+            self.assertEqual(stored[-1], [text])
 
     async def test_key_scopes_tokens_usage_webhooks_and_rotated_credentials(self):
         deliveries = []

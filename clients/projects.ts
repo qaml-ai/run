@@ -173,7 +173,9 @@ export function publishTool<T, D = undefined>(options: Omit<PublishOptions<T, D>
     async execute(_args, context) {
       if (!context.identity) throw new Error("publish needs the runtime's identity token: serve it with serveTools and auth { type: \"runtime\" }");
       const project = await options.project(context.identity);
-      const result = await project.publish({ ...options, idempotencyKey: context.idempotencyKey }, { identity: context.identity });
+      // A key that is only this request's JSON-RPC id (a client that sends none) is no key: unrelated calls share ids.
+      const keyed = context.idempotencyKey !== context.callId;
+      const result = await project.publish({ ...options, ...(keyed ? { idempotencyKey: context.idempotencyKey } : {}) }, { identity: context.identity });
       if (!result.ok) throw new Error(`Not published. Fix these and publish again:\n${formatProblems(result.problems)}`);
       return options.published ? options.published(result) : { published: true, version: result.version.id };
     },
