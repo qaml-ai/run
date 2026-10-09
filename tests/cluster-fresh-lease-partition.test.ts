@@ -7,17 +7,20 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentRuntime, schema, tool } from "../clients/typescript.ts";
-import { cluster, databaseLink, freePort, nodeLink, sha, sleep, token, until } from "./cluster-helpers.ts";
+import { cluster, databaseLink, nodeLink, onFreePort, sha, sleep, token, until } from "./cluster-helpers.ts";
 import { PROD, type Served, servingModel, slowLookup, busyAgents } from "./fresh-lease-helpers.ts";
 
 test("a node cut off from its peers and the database is reaped, and from the moment a peer resumes its agents it makes no model or tool call", { timeout: 120_000 }, async t => {
   const c = await cluster(t);
   const model = await servingModel(t);
-  const port = await freePort();
-  const peers = await nodeLink(port);
   const database = await databaseLink(new URL(c.databaseUrl));
   t.after(() => database.close());
-  const a = await c.start("a", { ...model.env("a"), ...PROD, AGENT_NODE_URL: peers.url, AGENT_DATABASE_URL: database.url, AGENT_DATABASE_QUERY_TIMEOUT_MS: "2000" }, port);
+  // A's peers reach it through a link to its port, so the port is chosen first (and again if it was taken).
+  const { peers, a } = await onFreePort(async port => {
+    const peers = await nodeLink(port);
+    try { return { peers, a: await c.start("a", { ...model.env("a"), ...PROD, AGENT_NODE_URL: peers.url, AGENT_DATABASE_URL: database.url, AGENT_DATABASE_QUERY_TIMEOUT_MS: "2000" }, port) }; }
+    catch (error) { peers.cut(); throw error; }
+  });
   const b = await c.start("b", { ...model.env("b"), ...PROD });
   const calls: { key: string; at: number }[] = [];
   const { looping, streaming } = await busyAgents(t, a.url, calls, model.served);

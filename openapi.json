@@ -2091,6 +2091,34 @@
             "items": {},
             "description": "History to begin with (a conversation from elsewhere): Pi user, assistant and toolResult messages, and compactionSummary messages, the last of which stands in for everything before it. Only when the agent is made; at most 16 MB of JSON. See the multi-user guide"
           },
+          "importMessages": {
+            "type": "object",
+            "properties": {
+              "format": {
+                "type": "string",
+                "enum": [
+                  "anthropic",
+                  "openai-responses",
+                  "openai-chat"
+                ],
+                "description": "anthropic: Messages API messages; openai-responses: Responses API input items; openai-chat: Chat Completions messages"
+              },
+              "messages": {
+                "type": "array",
+                "items": {}
+              },
+              "model": {
+                "type": "string",
+                "description": "The model that wrote the assistant turns, as provider/model-id: its signed thinking or encrypted reasoning is sent back to that same model; any other model gets reasoning as text, or none",
+                "example": "anthropic/claude-sonnet-5"
+              }
+            },
+            "required": [
+              "format",
+              "messages"
+            ],
+            "description": "History to begin with in another API's format, with its tool calls and results, converted to Pi messages (initialMessages; not both). Images must be base64 or data: URLs; system and developer messages are left out (the agent's prompt replaces them). Only when the agent is made"
+          },
           "fileTools": {
             "type": "boolean",
             "description": "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; the mounts stay open to fs in js_exec, attachments and tool outputs. For applications with file tools of their own"
