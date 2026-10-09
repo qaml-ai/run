@@ -50,7 +50,7 @@ import { BackgroundSpans, inputSpans, RunSpans, type ToolSource, type Tracing } 
 import { newSpanId, newTraceId, parseTraceparent, sampledAt } from "./otlp.ts";
 import { definitionId, delegateSettings, delegateTool, MULTI_AGENT_LIMITS, PARENT_KEYS, SUBAGENT_EVENTS, type AgentTarget, type DelegateSettings } from "./multi-agent.ts";
 import { clock, random } from "./node-context.ts";
-import { sometimes } from "./assert.ts";
+import { always, reachable, sometimes } from "./assert.ts";
 
 /** Another live node owns this agent; the server forwards the request there. */
 export class NotOwner extends HttpError {
@@ -3718,8 +3718,13 @@ export class ClientSessions {
     const handoff = session.handoff;
     session.handoff = undefined;
     if (handoff && "continue" in handoff) return { result: await this.execute(session, record, {}, "continue") };
-    if (handoff) return { result: handoff.finished };
-    // A resume whose turn never became active did nothing yet: it runs again from its inputs.
+    // A resume whose turn is still suspended on the calls it answers: its node was lost before the agent took the answers
+    // (the agent releases each call durably before running it, so one still waiting never ran). It runs again from its
+    // inputs, as one whose turn never became active does; taken as the turn's outcome, it would end suspended with
+    // nothing left to answer, and the approved call would never run.
+    const suspended = (handoff?.finished as { stopped?: string } | undefined)?.stopped === "input_required";
+    if (suspended && record.method === "resume") reachable("a resume found its turn still suspended on the calls it answers");
+    else if (handoff) return { result: handoff.finished };
     if (record.method === "resume") return { result: await this.execute(session, record, {}) };
     return { error: "The runtime restarted during this request", uncertain: true };
   }
@@ -3835,7 +3840,10 @@ export class ClientSessions {
       if (failed?.code === "model_key_missing" && this.options.modelKeyHint) value = { result: { ...failed, error: `${failed.error} ${this.options.modelKeyHint}` } };
       // A suspended turn's outcome lists what it waits on.
       if ((value.result as { stopped?: string } | undefined)?.stopped === "input_required" && this.options.inputs) {
-        const inputs = (await this.options.inputs.forRequest(session.header.id, record.id)).filter(row => row.state === "pending").map(inputView);
+        const rows = await this.options.inputs.forRequest(session.header.id, record.id);
+        // Its inputs are its own: a run that ends suspended with none would wait for an answer no one can give.
+        always(rows.length > 0, "a run that ends suspended asked for input");
+        const inputs = rows.filter(row => row.state === "pending").map(inputView);
         value = { result: { ...value.result as object, inputs } };
       }
     }
