@@ -251,7 +251,7 @@ export class Imager {
     const generated = await provider.generate(request, credentials, signal).catch(error => {
       // The platform's Azure deployment rate limited or down: the platform's OpenAI key instead.
       if (!(error instanceof ImageFailed && error.transient && credentials.fallback) || signal.aborted) throw error;
-      console.error(JSON.stringify({ type: "images_fallback", tenant: context.tenant, from: credentials.via ?? provider.id, error: error.message.slice(0, 200) }));
+      console.error(JSON.stringify({ type: "images_fallback", tenant: context.tenant, via: credentials.via ?? provider.id, error: safeError(error) }));
       via = credentials.fallback.via;
       return provider.generate(request, credentials.fallback, signal);
     });

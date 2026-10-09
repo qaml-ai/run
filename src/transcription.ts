@@ -151,7 +151,7 @@ export class Transcriber {
     const transcript = await provider.transcribe(audio, options, credentials, signal).catch(error => {
       // The platform's Azure deployment rate limited or down: the platform's OpenAI key instead.
       if (!(error instanceof TranscriptionFailed && error.transient && credentials.fallback) || signal.aborted) throw error;
-      console.error(JSON.stringify({ type: "transcription_fallback", tenant: context.tenant, from: credentials.via ?? provider.id, error: error.message.slice(0, 200) }));
+      console.error(JSON.stringify({ type: "transcription_fallback", tenant: context.tenant, via: credentials.via ?? provider.id, error: safeError(error) }));
       via = credentials.fallback.via;
       return provider.transcribe(audio, options, credentials.fallback, signal);
     });
