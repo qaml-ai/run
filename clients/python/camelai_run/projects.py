@@ -65,6 +65,10 @@ class Project:
         The version stays published; publish again to make the restored files a new one."""
         return await self.volume.restore(version)
 
+    async def archive(self, *, version=None, path=None):
+        """A version's files (or the project as it is now) as tar.gz bytes, for a build."""
+        return await self.volume.archive(snapshot=version, path=path)
+
     async def versions(self):
         """Published versions, oldest first: {"id", "seq", "name", "createdAt"}."""
         return [{key: snapshot[key] for key in ("id", "seq", "name", "createdAt")}

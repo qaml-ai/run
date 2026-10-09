@@ -1,4 +1,6 @@
 """Run with: python3 tests/python_sdk.py (requires httpx)."""
+import io
+import tarfile
 import asyncio
 import base64
 import hashlib
@@ -977,6 +979,8 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((restored["written"], restored["removed"]), (0, 1))
         self.assertEqual([file["path"] for file in (await project.files())["files"]], ["/bot.py"])
         self.assertEqual(len(await project.versions()), 1)
+        archive = tarfile.open(fileobj=io.BytesIO(await project.archive(version=result["version"]["id"])), mode="r:gz")
+        self.assertEqual(archive.extractfile("bot.py").read(), b"def run(): pass\n")
         # A check may hand what it computed to store and the result.
         bundled = await project.publish(validate=lambda files: {"problems": [], "data": {"entries": len(files)}},
                                         store=lambda files, version, about: about["checked"])

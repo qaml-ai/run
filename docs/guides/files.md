@@ -144,6 +144,10 @@ const agent = await agents.upsert("support", { mounts: [{ volumeId: docs.id, pat
   and files that differ are written back, in one write, each a change that
   agents mounting it see. It answers `{snapshot, seq, written, removed}`; the
   snapshot stays.
+- `volume.archive({ snapshot?, path?, glob? })` (`GET /v1/volumes/:id/archive`)
+  streams the files as a tar.gz, as the volume or a snapshot has them at one
+  `seq` (`X-Volume-Seq`), named relative to `path`: for a build that wants the
+  whole tree. At most 10,000 files and 1 GiB (else 413).
 - `volume.readAll({ prefix?, glob?, snapshot? })` (Python `read_all`) reads every
   matching file with its contents in one request, as the volume was at one `seq`:
   `{seq, files: [{path, size, version, contentType, sha256, text | data}]}`

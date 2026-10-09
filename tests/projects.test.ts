@@ -1,4 +1,9 @@
 import { test } from "node:test";
+import { execFileSync } from "node:child_process";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import assert from "node:assert/strict";
 import { AgentRuntime, fileBytes, publishTool, type ProjectFile } from "../clients/typescript.ts";
 import { serveTools } from "../clients/server.ts";
@@ -132,4 +137,23 @@ test("a project is restored in place to a published version, and a check hands w
   assert.deepEqual({ ...await project.restore(published.version.id), seq: 0 }, { snapshot: published.version.id, seq: 0, written: 0, removed: 0 });
   assert.ok((await project.versions()).some(version => version.id === published.version.id));
   await assert.rejects(project.restore("snap_0000000000000000"), (error: { status?: number }) => error.status === 404);
+
+  // A version as a tar.gz, for a build: its files as it had them, named relative to the path asked for.
+  await project.volume.write("bot.ts", "export const v = 3;\n");
+  const unpack = async (archive: { body: ReadableStream<Uint8Array> }) => {
+    const dir = await mkdtemp(join(tmpdir(), "project-archive-"));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    writeFileSync(join(dir, "a.tar.gz"), Buffer.from(await new Response(archive.body).arrayBuffer()));
+    execFileSync("tar", ["-xzf", "a.tar.gz"], { cwd: dir });
+    return dir;
+  };
+  const whole = await project.archive({ version: published.version.id });
+  assert.ok(whole.seq > 0);
+  const dir = await unpack(whole);
+  assert.equal(readFileSync(join(dir, "bot.ts"), "utf8"), "export const v = 1;\n");
+  assert.equal(readFileSync(join(dir, "lib/util.ts"), "utf8"), "export const u = 1;\n");
+  const lib = await unpack(await project.archive({ path: "/lib" }));
+  assert.deepEqual(readdirSync(lib).sort(), ["a.tar.gz", "util.ts"]);
+  const live = await unpack(await project.archive());
+  assert.equal(readFileSync(join(live, "bot.ts"), "utf8"), "export const v = 3;\n");
 });

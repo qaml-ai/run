@@ -14469,6 +14469,73 @@
         }
       }
     },
+    "/v1/volumes/{id}/archive": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Archive a snapshot (a project's version) instead of the volume as it is"
+            },
+            "required": false,
+            "description": "Archive a snapshot (a project's version) instead of the volume as it is",
+            "name": "snapshot",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Only the files under this directory (default /); their names in the archive are relative to it"
+            },
+            "required": false,
+            "description": "Only the files under this directory (default /); their names in the archive are relative to it",
+            "name": "path",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Only files matching this pattern, relative to path (e.g. **/*.ts)"
+            },
+            "required": false,
+            "description": "Only files matching this pattern, relative to path (e.g. **/*.ts)",
+            "name": "glob",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A tar.gz of the files, as the volume (or the snapshot) has them at one seq, named relative to path; X-Volume-Seq is that seq. At most 10,000 files and 1 GiB, else 413",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/volumes/{id}/restore": {
       "post": {
         "parameters": [

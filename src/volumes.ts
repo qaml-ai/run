@@ -29,6 +29,8 @@ import { clock } from "./node-context.ts";
 export const CHUNK_BYTES = 1024 * 1024;
 /** What one read of many files (GET /v1/volumes/:id/files?content=true) returns at most. */
 export const READ_ALL_LIMITS = Object.freeze({ files: 1000, bytes: 16 * 1024 * 1024 });
+/** The most one archive (GET /v1/volumes/:id/archive) holds. */
+export const ARCHIVE_LIMITS = Object.freeze({ files: 10_000, bytes: 1024 * 1024 * 1024 });
 /** `data` as text when it is valid UTF-8, else undefined. */
 const utf8 = (data: Buffer) => { try { return new TextDecoder("utf-8", { fatal: true }).decode(data); } catch { return undefined; } };
 export const VOLUME_LIMITS = Object.freeze({ fileBytes: 256 * 1024 * 1024, files: 100_000, mounts: 16, snapshots: 100, changes: 1000, listing: 1000 });
@@ -390,11 +392,12 @@ export class VolumeService {
     volume.lastActive = Date.now();
     try {
       if (op === "info") return this.summary(volume.header, volume.tree, volume.seq);
-      if (op === "stat" || op === "list" || op === "readAll") {
+      if (op === "stat" || op === "list" || op === "readAll" || op === "archive") {
         // As the volume is now, or as a snapshot of it was: one tree, so a listing and its reads agree.
         const at = args.snapshot === undefined ? { tree: volume.tree, seq: volume.seq } : await this.snapshotTree(id, args.snapshot);
         if (op === "stat") return this.stat(at.tree, normalizePath(args.path));
         if (op === "list") return this.listFiles(at.tree, args);
+        if (op === "archive") return this.archiveEntries(at, args);
         return await this.readAll(volume.header.tenant, at, args);
       }
       if (op === "ls") return this.ls(volume, normalizePath(args.path));
@@ -483,6 +486,21 @@ export class VolumeService {
       return { ...file, sha256: createHash("sha256").update(data).digest("hex"), ...(text !== undefined ? { text } : { data: data.toString("base64") }) };
     }));
     return { seq: at.seq, ...(at.snapshot ? { snapshot: at.snapshot } : {}), files };
+  }
+
+  /** What an archive of `path` (and `glob`) holds, at one seq or a snapshot's: each file with the chunks to stream. */
+  private archiveEntries(at: { tree: Tree; seq: number; snapshot?: string }, args: Record<string, any>) {
+    const path = normalizePath(args.path ?? "/");
+    const pattern = args.glob === undefined ? undefined : globRegex(args.glob);
+    const files: ({ path: string } & FileEntry)[] = [];
+    let bytes = 0;
+    for (const [file, entry] of at.tree.walk(path)) {
+      if (pattern && !pattern.test(relativeTo(file, path))) continue;
+      if (files.length === ARCHIVE_LIMITS.files) throw new HttpError(413, `More than ${ARCHIVE_LIMITS.files} files match; narrow path or glob`);
+      if ((bytes += entry.size) > ARCHIVE_LIMITS.bytes) throw new HttpError(413, `The files that match are more than ${ARCHIVE_LIMITS.bytes} bytes; narrow path or glob`);
+      files.push({ path: file, ...entry });
+    }
+    return { seq: at.seq, ...(at.snapshot ? { snapshot: at.snapshot } : {}), root: path, files };
   }
 
   private async snapshots(id: string): Promise<SnapshotSummary[]> {

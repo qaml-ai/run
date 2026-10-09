@@ -80,6 +80,8 @@ if (!result.ok) console.log(formatProblems(result.problems));
   keeps at most 100 snapshots, so older versions beyond `keep` are deleted.
 - `idempotencyKey` publishes once per key: a retried call gets the version the
   first one made (its check runs again only for its `data`).
+- `project.archive({ version?, path? })` gives a version's files (or the
+  project as it is) as a tar.gz stream, for a build.
 - `project.restore(version)` puts the project back as a version had it, in
   place: the agent working in it sees the files change. The version stays
   published; publish again to make the restored files a new version.
@@ -174,3 +176,4 @@ app = serve_tools([publish_tool(project=lambda identity: projects.get(volume_of_
 | read every file of it at once | `GET /v1/volumes/:id/files?content=true&snapshot=snap_…` |
 | list and delete versions | `GET /v1/volumes/:id/snapshots`, `DELETE /v1/volumes/:id/snapshots/:snapshot` |
 | restore a version in place | `POST /v1/volumes/:id/restore {snapshot}` |
+| download a version as a tar.gz | `GET /v1/volumes/:id/archive?snapshot=snap_…` |

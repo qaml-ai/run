@@ -84,6 +84,11 @@ export class Project {
    */
   restore(version: string) { return this.volume.restore(version); }
 
+  /** A version's files (or the project as it is now) as a tar.gz stream, for a build. */
+  archive(options: { version?: string; path?: string } = {}) {
+    return this.volume.archive({ ...(options.version ? { snapshot: options.version } : {}), ...(options.path ? { path: options.path } : {}) });
+  }
+
   /** Published versions, oldest first. */
   async versions(): Promise<ProjectVersion[]> {
     return (await this.volume.snapshots()).filter(snapshot => snapshot.name.startsWith(PUBLISHED))

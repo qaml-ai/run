@@ -1006,6 +1006,16 @@ class Volume:
     async def delete_snapshot(self, snapshot_id):
         return await self._json(f"/snapshots/{quote(snapshot_id)}", "DELETE")
 
+    async def archive(self, *, snapshot=None, path=None, glob=None):
+        """The files as tar.gz bytes: as the volume is (or as `snapshot` has them), under `path` (names relative to it)
+        and matching `glob`. At most 10,000 files and 1 GiB."""
+        query = {key: value for key, value in {"snapshot": snapshot, "path": path, "glob": glob}.items() if value is not None}
+        response = await _transfer(self.runtime.http, "GET", f"{self.runtime.base}/v1/volumes/{self.id}/archive" + (f"?{urlencode(query)}" if query else ""),
+                                   headers={"Authorization": f"Bearer {self.runtime._operator()}"})
+        if not response.is_success:
+            raise AgentError(_error(response), response.status_code)
+        return response.content
+
     async def restore(self, snapshot):
         """Make this volume as a snapshot of it was, in place: files the snapshot lacks are removed and files that differ
         are written back, each a change agents mounting it see. {"snapshot", "seq", "written", "removed"}."""
