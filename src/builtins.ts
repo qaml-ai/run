@@ -22,8 +22,8 @@ export { readableText };
  * fetches (a PDF, an image) to the agent's workspace (tool-files.ts), `web_search` asks web
  * search APIs in turn (see web-search.ts), `schedule` lets an agent set, list and
  * cancel its own wake-ups in the shared scheduler, and `ask_user` asks the user questions,
- * suspending the turn until they answer (inputs.ts). `delegate` (multi-agent.ts) is the sessions' own: no tool source
- * answers it here.
+ * suspending the turn until they answer (inputs.ts). `delegate` (multi-agent.ts) and `generate_image` (images.ts) are
+ * the sessions' own: no tool source answers them here.
  */
 export const BUILTINS = {
   web_fetch: ["web_fetch"],
@@ -31,6 +31,7 @@ export const BUILTINS = {
   schedule: ["schedule", "list_schedules", "cancel_schedule"],
   ask_user: ["ask_user"],
   delegate: [],
+  generate_image: [],
 } as const;
 export type Builtin = keyof typeof BUILTINS;
 /**
@@ -46,12 +47,18 @@ export function managedBuiltinsRefusal(builtins: readonly string[] | undefined) 
 /**
  * What builtins a definition or agent enables cannot do for its tenant, as warnings for its save: web_search
  * without a key (the tenant's, an admin's or the platform's) for any provider it would try, `order` unless
- * the definition pins its own. web_fetch works without its renderer's key, so it is never warned about.
+ * the definition pins its own; generate_image without an OpenAI key. web_fetch works without its renderer's key, so it
+ * is never warned about.
  */
 export async function builtinWarnings(sources: { builtins?: readonly string[]; webSearch?: { providers: readonly string[] } } | undefined, order: readonly string[], keyed: () => Promise<(provider: string) => boolean>): Promise<string[]> {
-  if (!sources?.builtins?.includes("web_search")) return [];
-  const providers = sources.webSearch?.providers ?? order;
-  return providers.some(await keyed()) ? [] : [webSearchUnavailable(providers)];
+  const search = sources?.builtins?.includes("web_search"), images = sources?.builtins?.includes("generate_image");
+  if (!search && !images) return [];
+  const has = await keyed();
+  const providers = sources!.webSearch?.providers ?? order;
+  return [
+    ...search && !providers.some(has) ? [webSearchUnavailable(providers)] : [],
+    ...images && !has("openai") ? ["generate_image can't make images for this account: add an OpenAI key under Models & keys (PUT /v1/providers/openai/key)"] : [],
+  ];
 }
 /** `builtins` as a definition or an agent gives them: distinct names of BUILTINS. */
 export function builtinsInput(value: unknown): Builtin[] {

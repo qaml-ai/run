@@ -72,9 +72,10 @@ async function fakeOpenAI(t: T) {
   return { base, requests };
 }
 
-export async function start(t: T) {
+/** The runtime, its model answering with `respond` (by default "ok"), and the fake OpenAI. */
+export async function start(t: T, respond: (body: any, index: number) => object = () => ({ role: "assistant", content: "ok" })) {
   const openai = await fakeOpenAI(t);
-  const r = await runtime(t, free(() => ({ role: "assistant", content: "ok" })), {
+  const r = await runtime(t, free(respond), {
     AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", AGENT_IMAGES_URL: openai.base,
     AGENT_BILLING_ADMINS: "ops", AGENT_PRICE_AGENT_HOUR_USD: "0",
     // $100 per million image tokens out and $10 in, so an image (1,000 tokens) is $0.10 and an image given is $0.01.

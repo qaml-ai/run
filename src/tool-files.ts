@@ -171,10 +171,10 @@ export class ToolFiles {
     };
   }
 
-  /** A named file's bytes, for sending inline. */
-  async read(path: string): Promise<Buffer> {
+  /** A named file's bytes, for sending inline (at most `maxBytes`). */
+  async read(path: string, maxBytes: number = TOOL_FILE_LIMITS.inlineBytes): Promise<Buffer> {
     const file = await this.open(path);
-    if (file.size > TOOL_FILE_LIMITS.inlineBytes) throw new Error(`${file.path} is ${file.size} bytes; at most ${TOOL_FILE_LIMITS.inlineBytes} can be sent inline`);
+    if (file.size > maxBytes) throw new Error(`${file.path} is ${file.size} bytes; at most ${maxBytes} can be sent${maxBytes === TOOL_FILE_LIMITS.inlineBytes ? " inline" : ""}`);
     return this.bytes(file);
   }
 
