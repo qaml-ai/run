@@ -550,14 +550,40 @@ changing its history with `agent.client.setMetadata({ name, type })`
 (`npm run studio`) at `/studio/agents`; Studio observes the runtime, and your
 application keeps serving its tools.
 
-## Unreleased
+## 0.17.0 (TypeScript) / 0.13.0 (Python), 2026-10-09
 
-- Speech to text: `agents.transcriptions.create({ file | url, language, prompt })` (Python:
-  `transcriptions.create(file or url=…)`, async and in `camelai_run.sync`). See [Voice and audio](../guides/voice.md).
-- Attachments take `{ url }` (fetched by the runtime) and `transcribe: true | false`; audio is transcribed for the
-  model by default, and a message (or a stateless run's `input`) may be `""` when it has audio.
-- `usage.recorded`'s type takes `kind: "transcription"`, `audioSeconds`, and `agentId` / `subject` null for a
-  transcription made alone.
+Needs runtime 0.6.0 or later (run.camelai.com has it). Python 0.13.0 has the same features, with snake_case names.
+
+- Projects: `runtime.projects.create({ key, template })` and `get(id)`; `project.mount(path)`, `files`, `versions`,
+  `publish({ validate, store, keep, idempotencyKey })`, `restore(version)` and `archive({ version })`; and `publishTool`
+  for `serveTools`, which finds the project from the call's identity. `validate` may return `{ problems, data }`, and
+  `data` reaches `store` as `checked`. Python: `camelai_run.projects`. See [Projects](../guides/projects.md).
+- Volumes: `createVolume({ key })` gives a key's volume, the same one every time; `createVolume({ name },
+  { idempotencyKey })`. Also `volume.readAll({ prefix, glob, snapshot })`, `runtime.volumes(ids)`,
+  `volume.changes(since, { prefix })`, `{ snapshot }` on `read` and `list`, `volume.restore(snapshot)` and
+  `volume.archive({ snapshot, path, glob })` (a tar.gz).
+- Mounts: `MountInput` takes `{ workspace: false }` (no own workspace) and `{ workspace: true, path? }` (where it
+  goes, e.g. `/scratch`). Changed: an agent's own workspace now stays beside the `mounts` it is given. Upserts take
+  `remount: true` to change an existing agent's mounts.
+- Agents: `maxOutputTokens` and `temperature`; `mcpServers` (`InlineMcpServer`, no credentials); `importMessages`
+  (Anthropic Messages, OpenAI Responses or Chat Completions) and `toPiMessages` to convert one locally; `idleTtlSeconds`.
+  Definitions take `applyOnUpdate`, `runLimits` (typed now) and `limits.idleTtlSeconds`. Python's definition methods
+  take snake_case field names too.
+- Runs: `runLimits` on one run; `agent.send(text)` and `agent.wait(id)` (`client.submit` one level down) to send
+  without waiting; `result.limit` says which spend limit stopped a run.
+- Voice: `agents.transcriptions.create({ file | url, language, prompt })`; attachments take `{ url }` and
+  `transcribe`, and a message with audio may have no text (a stateless run's `input` may be `""`). `usage.recorded`'s
+  type takes `kind: "transcription"`, `audioSeconds`, and a null `agentId` / `subject` for a transcription made
+  alone. See [Voice and audio](../guides/voice.md).
+- Tool servers: `serveTools` takes a function of the caller's identity in place of the tools, and a `ToolServer`'s
+  `listTools(context)` gets `{ identity, origin, signal }`. `identity.requestId` and `toolCallId` are set during a
+  turn. Audiences may be `urn:camelrun:<tenant>:<name>`. `verifyFileUrl` checks a file URL a tool was sent. In
+  tests, `testRuntime().fileUrl()` makes one, and `callTool` sends a fresh idempotency key on each call.
+- Chat: `ChatSnapshot.loaded` (`AgentView.loaded`) is true once history and state have been read. The React kit's
+  empty state waits for it.
+- Python only: `camelai_run.sync`, a synchronous client for scripts and WSGI apps (with `serve_tools`, `TestRuntime`
+  and `verify_runtime_token`); `verify_webhook`; and `AgentRuntime` methods for key scopes, API tokens, usage,
+  webhooks and agent credentials.
 
 ## 0.12.0 (Python), 2026-10-08
 

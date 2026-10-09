@@ -154,7 +154,8 @@ test("verifying an identity token by hand checks its tenant, as the SDKs do", as
 
 test("unreleased notes are a file per change, gathered by heading into a version's notes", async () => {
   const { fragments, gather } = await import("../scripts/release-notes.ts");
-  assert.ok(gather(fragments()).startsWith("### "), "every file begins with a ### section");
+  const notes = gather(fragments());
+  assert.ok(notes === "" || notes.startsWith("### "), "every file begins with a ### section");
   assert.equal(gather([{ name: "b.md", text: "### Runtime\n\n- second\n" }, { name: "a.md", text: "### Runtime\n\n- first\n\n### Python SDK\n\n- py\n" }]),
     "### Runtime\n\n- first\n- second\n\n### Python SDK\n\n- py\n");
   assert.throws(() => gather([{ name: "x.md", text: "- no heading\n" }]), /x\.md: begin with/);

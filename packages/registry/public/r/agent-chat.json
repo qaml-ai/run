@@ -5,8 +5,8 @@
   "title": "Agent chat",
   "description": "A streaming chat with the user's agent on camelRun: markdown, tool cards and generative UI, questions and approvals, files, stop, and scroll that follows the reply. Talks to a createAgentHandler route.",
   "dependencies": [
-    "@camelai/run@0.16.0",
-    "@camelai/run-react@0.16.0"
+    "@camelai/run@0.17.0",
+    "@camelai/run-react@0.17.0"
   ],
   "registryDependencies": [
     "button",
