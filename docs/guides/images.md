@@ -9,6 +9,16 @@ prepaid account pays for per token, at OpenAI's prices (see [Pricing](../pricing
 
 ## Making an image
 
+```ts
+const { images: [image], costUsd } = await agents.images.generate("A watercolor camel crossing dunes at dawn", { size: "1536x1024" });
+await writeFile("camel.png", Buffer.from(image.data!, "base64"));
+```
+
+```python
+result = await agents.images.generate("A watercolor camel crossing dunes at dawn", size="1536x1024")
+Path("camel.png").write_bytes(base64.b64decode(result["images"][0]["data"]))
+```
+
 ```bash
 curl -X POST "$RUNTIME/v1/images" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"prompt": "A watercolor camel crossing dunes at dawn", "size": "1536x1024"}'
@@ -41,6 +51,14 @@ Runs-per-minute limits count each request as a run.
 ## Editing images
 
 Give up to 4 images (PNG, JPEG or WebP) in `images`, and the prompt says how to change or combine them:
+
+```ts
+const { images } = await agents.images.edit("Put this camel on a beach", [await readFile("camel.png")], { quality: "high" });
+```
+
+```python
+result = await agents.images.edit("Put this camel on a beach", [Path("camel.png")], quality="high")
+```
 
 ```bash
 curl -X POST "$RUNTIME/v1/images" -H "Authorization: Bearer $TOKEN" -F prompt="Put this camel on a beach" \

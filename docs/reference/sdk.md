@@ -450,6 +450,32 @@ text = camelai_run.sync.Agents().transcriptions.create(b"...")["text"]  # synchr
 It resolves with `{ text, language, durationSeconds, model, costUsd }` (Python: that dict). It is not
 retried, as each attempt is billed.
 
+### Images
+
+`agents.images` (`runtime.images`) makes images on their own, `POST /v1/images`: `generate(prompt, options?)` from a
+prompt, `edit(prompt, images, options?)` from up to 4 images (bytes, a Blob/File or `{ url }`; Python: bytes, a local
+path or `{"url"}`), with `mask` for the first. Agents make images with the `generate_image` builtin instead. See
+[Images](../guides/images.md).
+
+```ts
+const { images: [image], costUsd } = await agents.images.generate("A watercolor camel at dawn", { size: "1536x1024" });
+await writeFile("camel.png", Buffer.from(image.data!, "base64"));
+const blue = await agents.images.edit("Make the camel blue", [await readFile("camel.png")], { quality: "high" });
+```
+
+```python
+result = await agents.images.generate("A watercolor camel at dawn", size="1536x1024")
+Path("camel.png").write_bytes(base64.b64decode(result["images"][0]["data"]))
+blue = await agents.images.edit("Make the camel blue", [Path("camel.png")], quality="high")
+images = camelai_run.sync.Agents().images.generate("A camel")["images"]  # synchronous
+```
+
+Options: `size`, `quality` (`low`, `medium`, `high`), `format`, `background`, `n` (1 to 4), `keyScope` (`key_scope=`),
+`volumeId` and `path` (`volume_id=`, `path=`: save the images there and answer their paths), and `subject`, `context`,
+`actor` for its `usage.recorded` event. It resolves with `{ images: [{ contentType, width, height, data } | { …,
+volumeId, path, size, version }], model, usage: { inputTokens, outputTokens }, costUsd }` (Python: that dict). It is
+not retried, as each attempt is billed. A run's `usage.imageCostUsd` is what its `generate_image` calls cost.
+
 ### Events, reconnects and replay
 
 An eager client (and a lazy one, while something listens) holds one SSE stream

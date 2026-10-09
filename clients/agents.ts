@@ -275,6 +275,8 @@ export class Agents {
   readonly runs: Runs;
   /** Speech to text on its own: `create({ file | url })`. Audio attached to a message is transcribed without it. */
   get transcriptions() { return this.runtime.transcriptions; }
+  /** Images on their own: `generate(prompt)`, `edit(prompt, images)`. Agents make them with the `generate_image` builtin. */
+  get images() { return this.runtime.images; }
   private readonly open = new Set<Agent>();
   private readonly connection: "eager" | "lazy";
   constructor(options: AgentsOptions = {}) {
