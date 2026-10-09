@@ -25,7 +25,8 @@ export function gather(fragments: { name: string; text: string }[]) {
 }
 
 export function fragments() {
-  return readdirSync(unreleased).filter(name => name.endsWith(".md")).map(name => ({ name, text: readFileSync(new URL(name, unreleased), "utf8") }));
+  // README.md says what the folder is for; it stays when the notes are gathered.
+  return readdirSync(unreleased).filter(name => name.endsWith(".md") && name !== "README.md").map(name => ({ name, text: readFileSync(new URL(name, unreleased), "utf8") }));
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

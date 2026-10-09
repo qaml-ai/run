@@ -11,6 +11,293 @@ Changes on main since the last tag are in [unreleased/](unreleased/), a file for
 any order never conflict here), gathered into a version's notes when it is tagged: `npm run release-notes` shows them
 together, and `npm run release-notes -- <version>` writes them here and removes the files.
 
+## 0.6.0 (runtime-v0.6.0, 2026-10-09)
+
+Projects (keyed volumes, publish, restore, archives), files in tool calls, speech to text, an agent's own MCP servers,
+history imported from Anthropic's and OpenAI's APIs, idle lifetimes and per-run limits, Bedrock API keys for the whole
+account, and Pi 1.1 (Claude Haiku 5.5). The TypeScript SDK 0.17.0 and Python SDK 0.13.0 use it ([SDK
+reference](../reference/sdk.md)).
+
+**Before upgrading a self-hosted runtime:** MCP servers and OpenAPI sources without `auth: {"type": "runtime"}` are no
+longer sent the agent's files (`{"$file": path}`); set `"fileArguments": "on"` on a third-party source you trust with
+them. An agent given `mounts` now keeps its own workspace at /workspace beside them (`{"workspace": false}` leaves it
+out). Bedrock takes Bedrock API keys only (as before: never AWS access keys). Migration 059 runs on start.
+
+**Known issue:** Claude Sonnet 5.5's cache-read price is Pi's catalog price, $0.20 per million tokens, where Anthropic
+charges $0.10, so cache reads on Sonnet 5.5 are billed at twice Anthropic's price on the platform's keys until Pi
+fixes its catalog upstream; the runtime does not patch the catalog.
+
+### Files in tool calls: call-bound URLs, directories, and which sources get files
+
+- Breaking: a source is sent the agent's files only when its `fileArguments` is `"on"`. That is the default for
+  sources with `auth: {"type": "runtime"}`; every other MCP server and OpenAPI source is now `"off"`: its tools are
+  not offered `{"$file": path}`, and a `$file` argument is a tool error that tells the model file arguments are off
+  for that tool. Set `"fileArguments": "on"` on a third-party source you trust with the agent's files. chiridion's
+  and camel-bots' own servers use runtime auth, so they keep getting files.
+- A file goes to a tool as a URL bound to the call, `GET /v1/files/{token}/{name}`, instead of a 15-minute signed
+  link: its token is an EdDSA JWT the runtime signs with its identity tokens' key (`aud: "camelrun:file"`), naming
+  the tenant, agent, call, tool and the file's version. It lasts 5 minutes, takes `Range`, and answers 410 once the
+  file changes. Links an application signs (`POST /v1/agents/:id/links`) are unchanged.
+- Parameters marked as MCP's SEP-2631 draft marks them (`format: uri` with `x-mcp-file: {accept, maxSize,
+  transferModes}`) take files: `accept` and `maxSize` are enforced, and `transferModes: ["inline"]` sends a small
+  file as a `data:` URI. With `x-camelrun-directory: true` a parameter takes a directory, sent as a manifest of a
+  snapshot made for the call (each file with its own URL and sha-256, and a tar.gz of them all), at most 1,000
+  files and 256 MiB.
+- An MCP call carries `_meta["camelrun/files"]`: each file sent as a URI, by its argument's JSON pointer, with its
+  name, type, size and sha-256.
+- For sources with `fileArguments` on, `resource_link` results to `https:` or `data:` URIs are saved to the
+  workspace like other tool outputs; the transcript keeps their paths.
+- SDKs: `verifyFileUrl` (`@camelai/run/server`) and `verify_file_url` (Python, async and `camelai_run.sync`) check
+  that a URL came from the runtime for the agent a tool expects; `testRuntime().fileUrl()` and
+  `TestRuntime().file_url()` make one to test with. Sources take `fileArguments` in the SDKs' types.
+- Snapshot names starting with `file-arg:` are the runtime's own.
+- See [Files in tool calls](../guides/tools.md#files-in-tool-calls).
+
+### Volumes: the workspace beside other mounts
+
+- **Changed:** an agent's own workspace now stays at /workspace beside the `mounts` it is given (after them), for
+  uploads, tool outputs and scratch files; before, given mounts replaced it. `{workspace: false}` among the mounts
+  leaves it out (`[{workspace: false}]` is no mounts at all; `[]` is now the workspace alone), `{workspace: true}` puts
+  it at that position, and a mount given at /workspace takes its place. Stateless runs are unchanged: their own
+  mounts are all they get. Chiridion (default workspace) and camel-bots (/bot beside the workspace) need no change.
+- `remount: true` on an upsert sets the mounts it gives (between the agent's turns), where other mounts are a 409.
+  SDKs: `upsert(key, { mounts, remount: true })`, Python `remount=True`.
+- Fix: an agent whose mounts no longer include its own workspace (changed with `PUT /v1/agents/:id/mounts`) left that
+  volume behind when it was deleted. It is deleted with the agent now.
+- The SDKs' `createVolume({ name }, { idempotencyKey })` and Python `create_volume(idempotency_key=…)` send an
+  `Idempotency-Key`: the same key makes the volume once (for a day).
+- Docs: where uploads, tool outputs and scratch files go; deleting an agent takes your API key, never its own token.
+
+### Volumes: the agent's workspace at a path of its own
+
+- `{workspace: true, path: "/scratch"}` mounts the agent's own workspace at that path, so a project volume can sit
+  at /workspace beside it. Attachments (`uploads/<request>/`), tool outputs, saved long tool results, the prompt's
+  environment text and js_exec's example all follow the workspace wherever it is; forks keep it at the same path.
+  The path must be absolute, normalized and clear of the other mounts. SDK types: `MountInput` (TypeScript), `Mount`
+  and `WorkspaceMount` (Python).
+
+### Mount changes during a turn
+
+- Fix: mounts changed while the agent was running (`PUT /v1/agents/:id/mounts` mid-turn, or an upsert's
+  `remount: true`) never reached its prompt: its environment text named the old mounts until the agent happened to
+  restart. Now the next run restarts it with the current mounts, and its prompt describes them.
+- Mount changes apply at the agent's next tool call (a call under way keeps the mounts it began with): a removed
+  volume is refused, a read-only one is read-only, an added or swapped-in one is usable at its path. MCP and other tool
+  outputs follow too; before, they could still be saved to a volume unmounted since the agent started.
+- Fix: forking an agent whose workspace was left out (`{workspace: false}`) gave the fork a new workspace at
+  /workspace.
+
+### Projects
+
+- `POST /v1/volumes {key}`: the tenant's volume for a key, made the first time and the same one every time after
+  (`existing: true`), for as long as it lives; a deleted one's key makes no other. SDKs: `createVolume({ key })`,
+  Python `create_volume(key=)`.
+- TypeScript SDK: `runtime.projects.create({ key, template })`, `project.mount(path)`, `project.publish({ validate,
+  store })` (snapshot, read every file at it, check, store; the snapshot is the version), `project.versions()`, and
+  `publishTool(...)` for `serveTools`, which finds the project from the call's identity. Python: `camelai_run.projects`
+  (`Projects`, `publish_tool`). See [Projects](../guides/projects.md).
+
+### Projects: restore in place, and checks that hand on what they computed
+
+- `POST /v1/volumes/:id/restore {snapshot}` makes a volume as a snapshot of it was, in place: files the snapshot
+  lacks are removed and files that differ are written back, in one write, each a change agents mounting it see.
+  SDKs: `volume.restore(snapshot)`, and `project.restore(version)` for a published version.
+- `GET /v1/volumes/:id/archive?snapshot=&path=&glob=` streams a volume's files (or a snapshot's) as a tar.gz, named
+  relative to `path`, at most 10,000 files and 1 GiB. SDKs: `volume.archive(...)`, `project.archive({ version })`.
+- A project's `validate` may return `{problems, data}`: `data` reaches `store` as `checked` and comes back in the
+  publish result (and `publishTool`'s `published`), so what the check computed (a bundle, its manifest) is not
+  computed again. Both SDKs.
+- The projects guide shows `publishTool`'s `project(identity)` for an agent whose mounts change during its life: look
+  up its current mounts (`runtime.mounts(identity.agent)`).
+- Fix: `publishTool` called by a client that sends no idempotency key (`_meta["agent-runtime/idempotencyKey"]`) took
+  the JSON-RPC id as the publish's key, so a later call with the same id (every call of `testRuntime().callTool`,
+  which sent id 1) stored the first publish's files again. Only a key that outlives the request dedupes now, and
+  `callTool` / `call_tool` send a fresh key per call (`idempotencyKey` / `idempotency_key=` to repeat one). Both SDKs.
+
+### Reading many files at once, and snapshots
+
+- `GET /v1/volumes/:id/files?content=true` returns every matching file with its contents in one answer, as the
+  volume was at one seq: `{seq, files: [{path, size, version, contentType, sha256, text | data}]}`, at most 1,000
+  files and 16 MiB (else 413). SDKs: `volume.readAll({ prefix, glob, snapshot })`, Python `read_all`.
+- `GET /v1/volumes/:id/changes?prefix=` keeps the changes at or under a path, and `GET /v1/volumes?ids=a,b` returns up
+  to 50 volumes as they are now, each with its seq (SDKs: `changes(since, { prefix })`, `runtime.volumes(ids)`).
+- `snapshot=` reads a snapshot: on the listing, on `content=true`, and on `GET /v1/volumes/:id/files/{path}`
+  (SDKs: `list`, `read`, `readAll` take `snapshot`).
+
+### Runtime
+
+- Speech to text. Audio attached to a message (a voice note, a recording) is transcribed before the message is
+  accepted, and the model reads the transcript, so every model hears it; history keeps the audio file with its
+  transcript. A file of type `audio/*` is transcribed by default (`transcribe: false` keeps it a plain file; `true`
+  asks for any file); a message with audio needs no `text`. Files attach by URL too (`{url}`, fetched through the
+  outbound guard). `POST /v1/transcriptions` transcribes audio alone (multipart, base64 or a URL; `language`,
+  `prompt`). It runs on OpenAI's `gpt-transcribe` with the tenant's OpenAI
+  key as model calls resolve it, else the platform's: $0.0045 a minute, per second, on prepaid credit. Ogg (Opus,
+  Vorbis), WebM, MP3, M4A/MP4, WAV and FLAC, 25 MB and 30 minutes a file, 5 files and 30 minutes a message.
+  Transcriptions count toward spend limits, monthly caps and credit, and are `usage.recorded` events with the new
+  `kind: "transcription"` (and `audioSeconds`; `agentId` is null for one made alone): a consumer that switches on
+  `kind` should treat an unknown one as other usage. Channels' voice messages and audio files are transcribed with no setup. See
+  [Voice and audio](../guides/voice.md).
+- `maxOutputTokens` and `temperature` on agents, definitions, `PATCH /v1/agents/:id/configuration` and stateless
+  runs: the most the model writes in one response (at most its own maximum), and its sampling temperature (0 to 2).
+  A temperature the model would refuse is a 400 where it is set: Claude Opus 4.7 and later, Sonnet 5.5 and Fable,
+  models that always reason (o-series, GPT-5), and any reasoning model at a `thinkingLevel` other than `off`. Set on
+  an agent from a definition, both stay its own when the definition is applied. Compaction summaries keep the
+  runtime's settings. See [Output length and temperature](../guides/models-and-keys.md#output-length-and-temperature).
+- `mcpServers` on agents without a definition (`POST /v1/agents`, upserts, `PATCH /v1/agents/:id/configuration`)
+  and on stateless runs: MCP servers of their own, without credentials (`auth: {"type": "runtime"}` or none; a token
+  or headers is a 400 that says to use a definition). They count toward an upsert's `configHash`, a fork copies
+  them, and `GET /v1/agents/:id` shows them. An agent from a definition refuses them. OpenAPI specs stay in
+  definitions. See [An agent's own MCP servers](../guides/tools.md#an-agents-own-mcp-servers).
+
+### Lifetimes, limits and tool servers, for products built on the runtime
+
+- `idleTtlSeconds` on agents and definition `limits`, instead of `ttlSeconds`: the agent lives that long (60 seconds
+  to 366 days) from its latest run, so one in use is kept and one left alone expires. With `ttlSeconds` it is a 400.
+  Both SDKs: `idleTtlSeconds` / `idle_ttl_seconds=` on `createAgent`.
+- `runLimits: {maxResponses?, maxSeconds?}` on `POST /v1/agents/:id/prompt`: that run's own limits, applied only
+  where lower than the agent's (or the runtime's). Both SDKs take `runLimits` / `run_limits=` on `run`, `stream`,
+  `prompt` and `send`.
+- A run stopped by a spend limit says which: `result.limit` is `run`, `agent`, `tenant` (the monthly cap) or
+  `credit`.
+- Applying a definition (`apply: "all"`, or `applyOnUpdate`) drops the tool lists the runtime holds for its MCP
+  servers, so the agents it reaches see a server's new tools at once instead of within the cache's lifetime.
+- Identity tokens carry the run's request id (`req`) and the model's tool call id (`tcid`) during a turn: the SDKs'
+  `identity.requestId` and `identity.toolCallId` (`request_id`, `tool_call_id`). A tool can tie its work to the run
+  that asked for it, or make a tool call idempotent.
+- `GET /v1/agents/:id/events?request=<id>` (and `/clients/:id/events`): only that request's events and its response.
+- Both SDKs: `agent.send(text, options)` sends a message without waiting for its run (`{id, state}`, the prompt's
+  202), and `agent.wait(id)` gives the run later; `AgentClient.submit` / `client.submit` is the same one level down.
+- `serveTools` / `serve_tools` take a function of the caller's identity instead of the tools, so each agent can be
+  offered its own; a tool it is not given is refused. A `ToolServer`'s `listTools(context)` gets
+  `{identity, origin, signal}`.
+- The TypeScript SDK's `DefinitionInput` has `runLimits` (the API took it already). The Python SDK's definition
+  methods take each field's Python spelling too (`run_limits=`, `system_prompt=`, `mcp_servers=`), besides the REST
+  name.
+
+### Importing conversations from other APIs
+
+- `importMessages: {format, messages, model?}` on agent creates and upserts: a conversation in Anthropic's Messages
+  format, OpenAI's Responses input items or Chat Completions messages, tool calls and results included, converted
+  to the Pi messages the agent begins with. Reasoning goes back to the model that wrote it (`model`) as it came, and
+  to any other as text. Python: `import_messages=`; TypeScript also exports `toPiMessages` to convert one locally.
+  See [Bringing in existing conversations](../guides/multi-user.md#bringing-in-existing-conversations).
+
+### Tool servers that move
+
+- An MCP server's or OpenAPI source's `audience` (auth `runtime`) may be a name of the tenant's own,
+  `urn:camelrun:<tenant>:<name>`, besides a URL on the server's origin: tokens keep naming it when the server moves
+  to another URL or domain. Another tenant's name, like another origin's URL, is a 400. `serveTools` and
+  `verifyRuntimeToken` (both SDKs) already take a list of audiences, for accepting an old and a new URL while agents
+  move. See [A server that moves](../guides/tools.md#a-server-that-moves).
+
+### Definitions that reach live agents
+
+- `applyOnUpdate: true` on a definition: every save that makes a new revision (an upsert that changes it, or a
+  `PATCH`) also applies it to every live agent made from it, as `apply: "all"` does, and the answer carries
+  `applied` (`POST /v1/definitions` answers with it too). An upsert that changes nothing applies nothing. See
+  [Definitions](../guides/definitions.md).
+
+### Bedrock API keys for the whole account, and their region
+
+- `PUT /v1/providers/amazon-bedrock/key` takes `{apiKey, region}`: an account's own Bedrock API key (a bearer token)
+  and the AWS region its calls go to (it was refused as needing AWS credentials). The console's Models page asks for
+  the region, and `GET /v1/providers` shows it. Migration 059 runs on start.
+- Fix: a key scope entry's Bedrock `region` now reaches the call. Before, Pi's client took the region from the
+  runtime host's `AWS_REGION` (or the catalog's `us-east-1`), unless the entry's `baseUrl` was a regional endpoint.
+- Bedrock takes Bedrock API keys only: no AWS access keys or SigV4, never the host's AWS credentials. See
+  [Amazon Bedrock](../guides/models-and-keys.md#amazon-bedrock).
+
+### Pi 1.1: Claude Haiku 5.5, Bedrock inference profiles
+
+- The runtime runs on Pi 1.1 (`@earendil-works/pi-ai` and `pi-agent-core` 1.1.0). New in the catalog: Claude Haiku 5.5
+  (`anthropic/claude-haiku-5-5`, and on Bedrock `amazon-bedrock/global.anthropic.claude-haiku-5-5` and its `us.`,
+  `eu.`, `au.` and `jp.` profiles), and Claude Sonnet 5.5's `us.` and `eu.` profiles on Bedrock. Haiku 5.5's prompts
+  over 100,000 tokens are priced higher, as Anthropic prices them.
+- Bedrock serves Anthropic's models only through inference profiles: a base id (`amazon-bedrock/anthropic.claude-sonnet-5`)
+  is no longer listed in `GET /v1/models`, and an agent that names one is called through its global profile (its US
+  one where it has no global one).
+- A Claude model that always reasons on Anthropic's API does on Bedrock too (Haiku, Sonnet and Opus 5.5, Opus 5,
+  Fable): a call asking for no reasoning gets the least it takes, as on Anthropic.
+- History's assistant messages carry `durationMs` (how long the response took) and tool results theirs (how long
+  the tool ran) ([events](../reference/events.md)).
+- Context estimates count 3.5 characters a token (4 before), so compaction starts a little earlier on text-heavy history.
+- Anthropic tool changes mid-conversation use the `inline-tools-2026-09-15` beta; Bedrock's Claude 5 calls bind thinking to
+  their prompt, dropping stale thinking blocks after the tools or system prompt change instead of failing.
+- The provider `azure-openai-responses` is now `azure`, as Pi names it.
+
+### File tools without versions
+
+- The model's file tools (`read`, `write`, `edit`, `ls`, `present_file`, and `fs` in `js_exec`) no longer show file
+  versions, and `write` and `edit` no longer take one. The runtime remembers the version of each file the agent last
+  read or wrote, and refuses a write or edit of a file that changed since then: "<path> changed since you last read
+  it. Read it again". Writing a file only if it does not exist yet (`version: 0`) is gone from the model's tools.
+  The files API and the SDKs' volume and file calls keep versions and `If-Match`; `run.files` keeps its versions.
+
+### Faster chat loading
+
+- `watchAgent` and `createAgentChat` (`@camelai/run`) read pending inputs while the event stream opens, and history
+  and state together once it has: opening a chat takes three round trips (token, stream, history and state) where it
+  took five. Their state has `loaded` (`ChatSnapshot.loaded`): true once history and state are read, so a UI shows
+  a loading state, not an empty chat, before it. The React kit's empty state waits for it.
+
+### Imported history
+
+- Fix: an imported assistant message without `usage` (which the guide says is optional) could fail the agent's next
+  run ("Cannot read properties of undefined (reading 'totalTokens')"). Imported messages now get what they leave out:
+  a timestamp, an assistant message's `usage` (zero) and `stopReason` (`toolUse` when it calls tools), a tool
+  result's `isError` (false).
+
+### Fixes
+
+- An answered input (an approval, an `ask_user` answer, a tool's own question) is no longer lost when the node running
+  its resume is lost just as the resume starts. The next owner found the turn still suspended and ended the resume
+  `input_required` with no inputs, so an approved call never ran and the agent waited for an answer no one could give.
+  The resume now runs again from its answers there: an approved call runs once. A call the agent had already released
+  to run still ends as of unknown outcome and is never run again.
+- A run whose node is lost after its turn ended, but before the run recorded its end, now ends on the next owner with
+  the turn's reply (and structured output) from history. A prompt in that window used to end `uncertain` ("The runtime
+  restarted during this request") though its reply was written, and a resumed approval or answer completed with no
+  `reply`.
+
+### TypeScript SDK
+
+- `maxOutputTokens` and `temperature` on `agents.upsert`, `agents.run`, definitions and `agent.configure` (`null`
+  removes either there).
+- `mcpServers` on `agents.upsert`, `createAgent`/`upsertAgent` and `agents.run` (`InlineMcpServer`: no credentials).
+- `agents.transcriptions.create({ file | url, language, prompt })` (also `runtime.transcriptions`); attachments take
+  `{ url }` and `transcribe`, and a message with audio may have no text. See [Voice and audio](../guides/voice.md).
+
+### Python SDK
+
+- `camelai_run.sync`: a synchronous client with the same names (`Agents`, `Agent`, `AgentRuntime`, `Runs`) for
+  scripts, Django and Flask views and Celery tasks: upsert, get, fork, run, stream, steer, answer inputs, stateless
+  runs. It holds no connection, so it does not serve tools from its own process and has no `on_event` or `on_input`;
+  it also has no volumes, no `create_agent` and no `client.steer` (use the async client for those). See [the synchronous client](../reference/sdk.md#the-synchronous-client-python).
+- `camelai_run.sync.serve_tools` serves tools as a WSGI app (Django, Flask), plain functions in the request's thread;
+  `camelai_run.sync.verify_runtime_token` and `TestRuntime` are its synchronous token check and test runtime.
+- `verify_webhook(body, headers, secret)` verifies a webhook request (Standard Webhooks signature, constant-time,
+  within 5 minutes) and returns its event.
+- `initial_messages=` on `agents.upsert` and `create_agent`: the history an agent begins with.
+- `mcp_servers=` on `agents.upsert` (async and sync), `create_agent`, `upsert_agent` and `agents.run`: MCP servers
+  of the agent's or run's own, without credentials.
+- `max_output_tokens=` and `temperature=` on `agents.upsert`, `create_agent`, `agents.run` and `configure` (`None`
+  removes either there); definitions take `maxOutputTokens` and `temperature` as fields.
+- `AgentRuntime` manages key scopes (`set_scope_key`, `key_scope`, `set_scope_provider`, ...), API tokens
+  (`tokens`, `create_token`, `revoke_token`), usage (`usage`), webhook endpoints (`create_webhook`, `webhooks`,
+  `update_webhook`, `delete_webhook`, `rotate_webhook_secret`) and agent tokens (`rotate_agent_credentials`).
+- `transcriptions.create(file or url=…)` on `Agents` and `AgentRuntime`, async and in `camelai_run.sync`; attachments
+  take `{"url"}` and `"transcribe"`, and a message with audio may have no text.
+
+### Admin site
+
+- `GET /api/activity-trend` on the admin site, for its chart: sign-ups and returning active accounts by UTC day over
+  the `days` days (14 by default, 90 at most) that end on `end_date` (today by default). A returning active account
+  is one made before that day whose agents got at least one model response on it (`usage`); the days are UTC because
+  that is how usage is kept. `incomplete_date` names the day still going.
+- `POST /api/report` also takes `kind: "pages"` (dates only), for the journey store's report on the operator's
+  website pages about the runtime.
+
 ## 0.5.0 (runtime-v0.5.0, 2026-10-08)
 
 Stateless runs, steer receipts and stops that cancel the queue, faster resume, js_exec on V8, and email and

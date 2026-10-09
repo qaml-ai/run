@@ -585,7 +585,6 @@ Needs runtime 0.6.0 or later (run.camelai.com has it). Python 0.13.0 has the sam
   and `verify_runtime_token`); `verify_webhook`; and `AgentRuntime` methods for key scopes, API tokens, usage,
   webhooks and agent credentials.
 
-
 ## 0.12.0 (Python), 2026-10-08
 
 Python's side of TypeScript 0.16.0. Needs runtime 0.5.0 or later (run.camelai.com has it).
