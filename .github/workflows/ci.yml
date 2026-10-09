@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16-alpine
+        image: public.ecr.aws/docker/library/postgres:16-alpine
         env: { POSTGRES_PASSWORD: test }
         ports: ["5432:5432"]
         options: --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 20
@@ -48,7 +48,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16-alpine
+        image: public.ecr.aws/docker/library/postgres:16-alpine
         env: { POSTGRES_PASSWORD: test }
         ports: ["5432:5432"]
         options: --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 20
@@ -68,7 +68,7 @@ jobs:
       # raise them as the devbox's runs do. A service container takes no server flags, so set it and restart.
       - name: Postgres max_connections 300
         run: |
-          id=$(docker ps -q --filter ancestor=postgres:16-alpine)
+          id=$(docker ps -q --filter ancestor=public.ecr.aws/docker/library/postgres:16-alpine)
           docker exec "$id" psql -U postgres -c "alter system set max_connections = 300"
           docker restart "$id"
           until docker exec "$id" pg_isready -U postgres -h 127.0.0.1; do sleep 1; done
@@ -130,7 +130,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     services:
       postgres:
-        image: postgres:16-alpine
+        image: public.ecr.aws/docker/library/postgres:16-alpine
         env: { POSTGRES_PASSWORD: test }
         ports: ["5432:5432"]
         options: --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 20
@@ -140,6 +140,7 @@ jobs:
         with: { node-version: 22, cache: npm }
       - run: npm ci && npm run build:console
       - uses: docker/setup-buildx-action@v3
+        with: { driver-opts: "image=mirror.gcr.io/moby/buildkit:buildx-stable-1" }
       # Layers are cached across runs, so only changed stages (usually just src) rebuild.
       - uses: docker/build-push-action@v6
         with:
@@ -204,6 +205,7 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
       - if: steps.image.outputs.pushed != 'true'
         uses: docker/setup-buildx-action@v3
+        with: { driver-opts: "image=mirror.gcr.io/moby/buildkit:buildx-stable-1" }
       - if: steps.image.outputs.pushed != 'true'
         uses: docker/build-push-action@v6
         with:
