@@ -212,10 +212,11 @@ test("runs queue per agent: a busy agent accepts more work, and runs that never 
   assert.equal(config.status, 202);
   const waiting = agent2.execute("return 3", { idempotencyKey: "waiting" }).catch(error => error);
   await sleep(100);
-  // The process dies with its call running (no drain), as a crash would.
+  // The host goes down with the call running, and only then its application: closed first, the application's disconnect
+  // could fail the call (connection lost, a plain error) before the restart, and "began" would not end as unknown.
+  await f.restartHost();
   await agent2.close({ drainMs: 0 });
   await began; await waiting;
-  await f.restartHost();
   const resumed = await new AgentRuntime(f.runtimeOptions).connectAgent(agent2.session, { tools: {} });
   f.clients.push(resumed);
   const settledWaiting = await resumed.waitForRequest("waiting", { timeoutMs: 20_000 });

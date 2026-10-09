@@ -1,4 +1,4 @@
-import type { Sql } from "./db.ts";
+import { transaction, type Db } from "./db.ts";
 
 /** One UTC day of the platform: sign-ups that day, and the tenants that used models and what they used. */
 export interface AdminDay { day: string; signups: number; activeTenants: number; responses: number; cost: number; platformCost: number }
@@ -25,45 +25,49 @@ const DAY_MS = 86_400_000;
  * table; admin tenants live in the tenants file), how far they got, and model usage across all tenants, per UTC day
  * as `usage` keeps it. Read-only.
  */
-export async function adminStats(db: Sql, options: { days: number; recent: number; now?: number }): Promise<AdminStats> {
+export async function adminStats(db: Db, options: { days: number; recent: number; now?: number }): Promise<AdminStats> {
   const now = options.now ?? Date.now();
   const since = new Date(now - (options.days - 1) * DAY_MS).toISOString().slice(0, 10);
   const today = new Date(now).toISOString().slice(0, 10);
-  const [signups, activation, agents, purchases, daily, recent] = await Promise.all([
-    db.query(`
-      select count(*) total,
-        count(*) filter (where t.created_at > $1) last24h, count(*) filter (where t.created_at > $2) last7d, count(*) filter (where t.created_at > $3) last30d,
-        count(d.tenant) deleted,
-        count(*) filter (where d.tenant is null and (t.github_id is not null or t.github is not null)) github,
-        count(*) filter (where d.tenant is null and t.google_sub is not null) google,
-        count(*) filter (where d.tenant is null and t.email_signup) email
-      from tenants t left join account_deletions d on d.tenant = t.id`, [now - DAY_MS, now - 7 * DAY_MS, now - 30 * DAY_MS]),
-    db.query(`
-      select count(*) tenants,
-        count(*) filter (where exists (select 1 from api_tokens k where k.tenant = t.id)) with_token,
-        count(*) filter (where exists (select 1 from agents a where a.tenant = t.id)) with_agent,
-        count(*) filter (where exists (select 1 from usage u where u.tenant = t.id and u.responses > 0)) with_usage,
-        count(*) filter (where exists (select 1 from credit_accounts c where c.tenant = t.id and c.purchased > 0)) purchased
-      from tenants t where not exists (select 1 from account_deletions d where d.tenant = t.id)`),
-    db.query("select count(*) live, count(distinct tenant) tenants from agents where not revoked"),
-    db.query("select count(*) count, count(distinct tenant) buyers, coalesce(sum(amount), 0) amount from credit_ledger where kind = 'purchase'"),
-    db.query(`
-      select to_char(series.day, 'YYYY-MM-DD') as day,
-        (select count(*) from tenants t where t.created_at >= extract(epoch from series.day) * 1000 and t.created_at < extract(epoch from series.day) * 1000 + $3) signups,
-        count(distinct u.tenant) filter (where u.responses > 0) active_tenants,
-        coalesce(sum(u.responses), 0) responses, coalesce(sum(u.cost), 0) cost, coalesce(sum(u.platform_cost), 0) platform_cost
-      from generate_series($1::date, $2::date, interval '1 day') as series(day) left join usage u on u.day = series.day::date
-      group by series.day order by series.day`, [since, today, DAY_MS]),
-    db.query(`
-      select t.id, t.github, t.google_email, (t.github_id is not null or t.github is not null) as by_github, t.google_sub is not null as by_google, t.email_signup as by_email, t.created_at, d.tenant is not null as deleted,
-        (select count(*) from api_tokens k where k.tenant = t.id) tokens,
-        (select count(*) from agents a where a.tenant = t.id and not a.revoked) agents,
-        (select coalesce(sum(responses), 0) from usage u where u.tenant = t.id) responses,
-        (select coalesce(sum(cost), 0) from usage u where u.tenant = t.id) cost,
-        coalesce(c.balance, 0) balance, coalesce(c.purchased, 0) purchased
-      from tenants t left join account_deletions d on d.tenant = t.id left join credit_accounts c on c.tenant = t.id
-      order by t.created_at desc limit $1`, [options.recent]),
-  ]);
+  // One snapshot: on separate pool connections, a usage flush that commits mid-read shows in some counts and not others.
+  const [signups, activation, agents, purchases, daily, recent] = await transaction(db, async sql => {
+    await sql.query("set transaction isolation level repeatable read, read only");
+    return Promise.all([
+      sql.query(`
+        select count(*) total,
+          count(*) filter (where t.created_at > $1) last24h, count(*) filter (where t.created_at > $2) last7d, count(*) filter (where t.created_at > $3) last30d,
+          count(d.tenant) deleted,
+          count(*) filter (where d.tenant is null and (t.github_id is not null or t.github is not null)) github,
+          count(*) filter (where d.tenant is null and t.google_sub is not null) google,
+          count(*) filter (where d.tenant is null and t.email_signup) email
+        from tenants t left join account_deletions d on d.tenant = t.id`, [now - DAY_MS, now - 7 * DAY_MS, now - 30 * DAY_MS]),
+      sql.query(`
+        select count(*) tenants,
+          count(*) filter (where exists (select 1 from api_tokens k where k.tenant = t.id)) with_token,
+          count(*) filter (where exists (select 1 from agents a where a.tenant = t.id)) with_agent,
+          count(*) filter (where exists (select 1 from usage u where u.tenant = t.id and u.responses > 0)) with_usage,
+          count(*) filter (where exists (select 1 from credit_accounts c where c.tenant = t.id and c.purchased > 0)) purchased
+        from tenants t where not exists (select 1 from account_deletions d where d.tenant = t.id)`),
+      sql.query("select count(*) live, count(distinct tenant) tenants from agents where not revoked"),
+      sql.query("select count(*) count, count(distinct tenant) buyers, coalesce(sum(amount), 0) amount from credit_ledger where kind = 'purchase'"),
+      sql.query(`
+        select to_char(series.day, 'YYYY-MM-DD') as day,
+          (select count(*) from tenants t where t.created_at >= extract(epoch from series.day) * 1000 and t.created_at < extract(epoch from series.day) * 1000 + $3) signups,
+          count(distinct u.tenant) filter (where u.responses > 0) active_tenants,
+          coalesce(sum(u.responses), 0) responses, coalesce(sum(u.cost), 0) cost, coalesce(sum(u.platform_cost), 0) platform_cost
+        from generate_series($1::date, $2::date, interval '1 day') as series(day) left join usage u on u.day = series.day::date
+        group by series.day order by series.day`, [since, today, DAY_MS]),
+      sql.query(`
+        select t.id, t.github, t.google_email, (t.github_id is not null or t.github is not null) as by_github, t.google_sub is not null as by_google, t.email_signup as by_email, t.created_at, d.tenant is not null as deleted,
+          (select count(*) from api_tokens k where k.tenant = t.id) tokens,
+          (select count(*) from agents a where a.tenant = t.id and not a.revoked) agents,
+          (select coalesce(sum(responses), 0) from usage u where u.tenant = t.id) responses,
+          (select coalesce(sum(cost), 0) from usage u where u.tenant = t.id) cost,
+          coalesce(c.balance, 0) balance, coalesce(c.purchased, 0) purchased
+        from tenants t left join account_deletions d on d.tenant = t.id left join credit_accounts c on c.tenant = t.id
+        order by t.created_at desc limit $1`, [options.recent]),
+    ]);
+  });
   const n = (value: unknown) => Number(value ?? 0);
   const s = signups.rows[0], a = activation.rows[0];
   return {

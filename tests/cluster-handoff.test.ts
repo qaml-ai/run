@@ -210,8 +210,12 @@ test("an approved call whose node dies while it runs ends as outcome unknown on 
   const c = await cluster(t);
   const model = await fakeModel(t, (body, index) => index === 0 ? { role: "assistant", tool_calls: [{ index: 0, id: "call_wipe", type: "function", function: { name: "wipe", arguments: "{}" } }] }
     : { role: "assistant", content: toolMessages(body).some((content: string) => /outcome is unknown/.test(content)) ? "noted the unknown outcome" : "unexpected" });
-  const a = await c.start("a", model.env);
-  const b = await c.start("b", model.env);
+  // A lease that outlasts a database or CPU stall on a loaded runner: under the cluster's 1.5 s, a stall of about a second
+  // fences both nodes and moves the agent mid-run, beyond the one death this is about. B still takes over soon after A
+  // dies: it ends a dead peer's late heartbeat (Ownership.reap).
+  const lease = { AGENT_LEASE_TTL_MS: "6000" };
+  const a = await c.start("a", { ...model.env, ...lease });
+  const b = await c.start("b", { ...model.env, ...lease });
   let executions = 0;
   const entered = Promise.withResolvers<void>();
   const gate = Promise.withResolvers<void>();
@@ -232,7 +236,7 @@ test("an approved call whose node dies while it runs ends as outcome unknown on 
   await entered.promise;
   a.child.kill("SIGKILL");
   await once(a.child, "close");
-  await sleep(1500 + 500);
+  await until(async () => await c.owner(created.session.id) === b.url, "B to take the agent over");
   const result = await client.waitForRequest(resume, { timeoutMs: 60_000 });
   assert.equal(result.reply, "noted the unknown outcome");
   assert.equal(executions, 1, "the approved call was never sent again");

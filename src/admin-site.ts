@@ -5,7 +5,7 @@ import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from "jose";
 import { ADMIN_REPORT_PATH, ADMIN_REPORT_REQUEST_BYTES, adminReport, adminReportRequest, boundedText, type AdminReportSource } from "./admin-report.ts";
 import { ADMIN_TIME_ZONE, ADMIN_TREND_DAYS, AdminRangeError, adminSignals, adminToday, adminTrend } from "./admin-signals.ts";
 import { adminStats } from "./admin-stats.ts";
-import type { Sql } from "./db.ts";
+import type { Db } from "./db.ts";
 
 /**
  * The team's admin site (platform stats), on a hostname of its own behind Cloudflare Access. Cloudflare Access's policy for
@@ -25,7 +25,7 @@ export interface AdminSiteOptions {
   team: string;
   /** The Access application's audience (AUD) tag. */
   audience: string;
-  db: Sql;
+  db: Db;
   /** The console's build, which holds the site's page (admin.html) and the assets it shares with the console. */
   consoleDir: string;
   /** The keys tokens are checked with; by default the team's, fetched and cached. */
