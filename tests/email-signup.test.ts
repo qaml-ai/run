@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { listen, OPERATOR, runtime, sleep, until, type T } from "./runtime-server.ts";
+import { freshWindow, listen, OPERATOR, runtime, sleep, until, type T } from "./runtime-server.ts";
 import { accountMailConfig } from "../src/account-mail.ts";
 
 /**
@@ -197,6 +197,8 @@ test("password reset: the same answer for any address; the link sets a new passw
 test("mailing a link is limited per source and per address, whether or not the address has an account", async t => {
   const r = await emailRuntime(t, { AGENT_RATE_LIMIT_EMAILS_PER_ADDRESS: "2", AGENT_RATE_LIMIT_EMAIL_REQUESTS_PER_IP: "4" });
   const from = (ip: string) => ({ "X-Forwarded-For": ip });
+  // Requests are counted per clock hour (per source) and per UTC day (per address): the counting below stays in one hour.
+  await freshWindow(3600, 30_000);
   // A password refused costs nothing against the address.
   for (let i = 0; i < 3; i++) assert.equal((await r.post("/console/auth/signup", { email: "max@example.test", password: "password1234" }, from("203.0.113.9"))).status, 400);
   assert.equal((await r.post("/console/auth/signup", { email: "max@example.test", password: PASSWORD }, from("203.0.113.1"))).status, 202);

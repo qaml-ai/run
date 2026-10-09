@@ -14,7 +14,8 @@ import { checkProviderKey } from "../src/key-check.ts";
 import { Accounts } from "../src/accounts.ts";
 import { Tenants } from "../src/tenants.ts";
 import { testDatabase } from "./database.ts";
-import { attachSilently } from "./runtime-server.ts";
+import { attachSilently, freshWindow } from "./runtime-server.ts";
+import { PASSWORD_WINDOW_SECONDS } from "../src/rate-limits.ts";
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const alice = "alice-operator-token-at-least-24-chars";
@@ -391,6 +392,8 @@ test("failed password sign-ins are limited per address and per source; a success
   await call("/v1/tenants/alice/password", { method: "PUT", token: alice, body: { email: "alice@example.test", password: PASSWORD } });
   await call("/v1/tenants/bob/password", { method: "PUT", token: bob, body: { email: "bob@example.test", password: PASSWORD } });
   const signIn = (email: string, password: string, ip: string) => call("/console/auth/password", { body: { email, password }, headers: { ...browser, "CF-Connecting-IP": ip } });
+  // Failures are counted in fixed 15-minute windows on the clock: the counting below (a few seconds) stays in one.
+  await freshWindow(PASSWORD_WINDOW_SECONDS, 30_000);
   assert.equal((await signIn("alice@example.test", PASSWORD, "203.0.113.1")).status, 200);
   for (let i = 0; i < 3; i++) assert.equal((await signIn("alice@example.test", "wrong-password-xyz", `203.0.113.${10 + i}`)).status, 401);
   // The address has failed three times, from three sources: now even the right password waits.
@@ -417,6 +420,8 @@ test("sign-ups per address per day: behind Cloudflare, a new account past the li
     const callback = await call(`/console/auth/callback?code=abc&state=${authorize.searchParams.get("state")}`, { headers: { ...headers, Cookie: cookies } });
     return { location: decodeURIComponent(callback.headers.get("location")!), session: callback.headers.getSetCookie().some(value => value.startsWith("ar_session=")) };
   };
+  // Sign-ups are counted per UTC day: the counting below stays in one.
+  await freshWindow(86_400, 30_000);
   assert.equal((await signIn("Carol", "203.0.113.5")).session, true);
   const refused = await signIn("Dave", "203.0.113.5");
   assert.equal(refused.session, false);

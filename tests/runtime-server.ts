@@ -16,6 +16,16 @@ export const OTHER_OPERATOR = "other-operator-token-at-least-24-chars";
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 export const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+/**
+ * Wait, if the clock is less than `marginMs` from the end of a fixed rate-limit window of `windowSeconds`, for the next
+ * one to start. The runtime's fixed windows align to the clock (UTC), and a count that crosses into the next window
+ * starts again from nothing: a test that counts up to a limit and expects a refusal would see none.
+ */
+export async function freshWindow(windowSeconds: number, marginMs: number) {
+  const windowMs = windowSeconds * 1000, left = windowMs - Date.now() % windowMs;
+  if (left < marginMs) await sleep(left + 200);
+}
+
 export async function until<V>(check: () => V | Promise<V>, what: string, timeoutMs = 15_000): Promise<Exclude<V, false | 0 | "" | null | undefined>> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
