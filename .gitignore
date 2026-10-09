@@ -20,3 +20,4 @@ sim-failures/
 sim-corpus/
 sim-corpus-*/
 sim-mcp/
+test-timings/

@@ -37,14 +37,18 @@ jobs:
       - run: npm run test:ui
       - run: npm run build:console && npm run build
   test:
-    # Both hosting modes run the full suite side by side, each split over four shards balanced by
-    # tests/timings.json (scripts/test-shard.ts). A 2-vCPU runner runs test files one at a time.
-    # js_exec runs on v8-exec, built once by the v8-exec job.
-    name: test (${{ matrix.hosting }} ${{ matrix.shard }}/4)
+    # Both hosting modes run the full suite side by side, process hosting over six shards and inline (the faster,
+    # though it alone runs the simulator's files) over five, balanced by tests/timings.json (scripts/test-shard.ts). A 4-vCPU runner runs three test files at
+    # once. Each shard keeps its files' times as an artifact, to rebalance from. js_exec runs on v8-exec, built
+    # once by the v8-exec job.
+    name: test (${{ matrix.hosting }} ${{ matrix.shard }}/${{ matrix.hosting == 'process' && 6 || 5 }})
     needs: v8-exec
     strategy:
       fail-fast: false
-      matrix: { hosting: [process, inline], shard: [1, 2, 3, 4] }
+      matrix:
+        hosting: [process, inline]
+        shard: [1, 2, 3, 4, 5, 6]
+        exclude: [{ hosting: inline, shard: 6 }]
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -73,11 +77,15 @@ jobs:
           docker restart "$id"
           until docker exec "$id" pg_isready -U postgres -h 127.0.0.1; do sleep 1; done
           docker exec "$id" psql -U postgres -tAc "show max_connections"
-      - run: npm run test:shard -- ${{ matrix.shard }}/4
+      - run: npm run test:shard -- ${{ matrix.shard }}/${{ matrix.hosting == 'process' && 6 || 5 }}
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with: { name: "test-timings-${{ matrix.hosting }}-${{ matrix.shard }}", path: test-timings/, retention-days: 30, if-no-files-found: ignore }
   sim:
     # The deterministic simulator (tests/sim, npm run sim): ten fixed seeds, each run twice and required to replay to the
     # same trace, and 50 fresh seeds drawn from the run's id. A failing seed prints the commands that reproduce it, and
-    # its plan, history and logs are kept as the sim-failures artifact (npm run sim -- --replay <file>).
+    # its plan, history and logs are kept as the sim-failures artifact (npm run sim -- --replay <file>). Seeds are
+    # CPU-bound and deterministic, so they run one process per vCPU.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -86,13 +94,13 @@ jobs:
         with: { node-version: 22, cache: npm }
       - run: npm ci
       - name: fixed seeds, twice each
-        run: npm run -s sim -- --seeds 1-10 --twice --jobs 2
+        run: npm run -s sim -- --seeds 1-10 --twice --jobs 4
       - name: fresh seeds
         if: ${{ !cancelled() }}
         run: |
           from=$(( 100000 + (GITHUB_RUN_ID % 1000000) * 50 ))
           echo "seeds $from-$((from + 49)) (rerun one: npm run sim -- --seed <n>)"
-          npm run -s sim -- --seeds $from-$((from + 49)) --jobs 2
+          npm run -s sim -- --seeds $from-$((from + 49)) --jobs 4
       - uses: actions/upload-artifact@v4
         if: ${{ failure() }}
         with: { name: sim-failures, path: sim-failures/, if-no-files-found: ignore }
