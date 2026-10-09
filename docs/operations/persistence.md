@@ -175,7 +175,8 @@ refers to any more, so they stop being stored and billed:
   row, so it is deleted, and taken off the storage meter, once.
 - **Volumes.** A deleted volume's tree and snapshot maps are removed after the grace
   period; a deleted snapshot's map at once.
-- **Switches.** Off unless `AGENT_GC_ENABLED=true`; `AGENT_GC_DRY_RUN=true` marks and
+- **Switches.** Off unless `AGENT_GC_ENABLED=true` (the hosted runtime, run.camelai.com, has collected since
+  2026-10-01; a self-hosted runtime collects only once you turn it on); `AGENT_GC_DRY_RUN=true` marks and
   logs what it would delete (`storage_gc_dry_run`) without deleting. Pins and which
   chunks writes created are recorded either way. To roll it out: deploy with it off,
   run `scripts/backfill-pins.ts` (in the image, so it can run as a one-off task), enable
