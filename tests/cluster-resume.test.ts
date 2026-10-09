@@ -64,8 +64,12 @@ test("a structured run whose node died between model steps resumes with final_ou
 test("a turn whose node died during a tool call continues with the outcome unknown, without calling the tool again", { timeout: 90_000 }, async t => {
   const c = await cluster(t);
   const model = await fakeModel(t, (_body, index) => index === 0 ? jsExec("return await tools.slow({})") : { role: "assistant", content: "noted the unknown outcome" });
-  const a = await c.start("a", model.env);
-  const b = await c.start("b", model.env);
+  // A lease that outlasts a database or CPU stall on a loaded runner: under the cluster's 1.5 s, a stall fenced both nodes
+  // on CI and moved the agent mid-run beyond the one death this is about, spending its resumes. B still takes over soon
+  // after A dies: it ends a dead peer's late heartbeat (Ownership.reap).
+  const lease = { AGENT_LEASE_TTL_MS: "6000" };
+  const a = await c.start("a", { ...model.env, ...lease });
+  const b = await c.start("b", { ...model.env, ...lease });
   let executions = 0;
   const entered = Promise.withResolvers<void>();
   const gate = Promise.withResolvers<void>();
