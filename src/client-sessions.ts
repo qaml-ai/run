@@ -2212,15 +2212,18 @@ export class ClientSessions {
    * apply when an agent is made.
    */
   private reconfiguration(header: SessionHeader, definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools" | "apiKey">, metadata: AgentMetadata,
-    mounts: unknown, origin: { definition: DefinitionRef } | undefined, identity: AgentIdentity | undefined, provisionHash: string, own: Pick<Sources, "builtins" | "delegate" | "mcpServers"> = {}) {
+    mounts: unknown, origin: { definition: DefinitionRef } | undefined, identity: AgentIdentity | undefined, provisionHash: string, own: Pick<Sources, "builtins" | "delegate" | "mcpServers"> = {}, remount = false) {
     const differs = (a: unknown, b: unknown) => canonical(a ?? null) !== canonical(b ?? null);
+    const remounted = mounts !== undefined && differs((header.mounts ?? []).map(({ volumeId, path, mode }) => ({ volumeId, path, mode })), (VolumeService.resolved(header.id, mounts as unknown[]) as { volumeId: string; path: string; mode?: string }[]).map(({ volumeId, path, mode }) => ({ volumeId, path, mode: mode ?? "rw" })));
     const fixed = [
       ...differs(header.identity?.subject, identity?.subject) ? ["subject"] : [], ...differs(header.identity?.context, identity?.context) ? ["context"] : [],
       ...(header.definition?.id ?? null) !== (origin?.definition.id ?? null) ? ["definition"] : [],
-      ...mounts !== undefined && differs((header.mounts ?? []).map(({ volumeId, path, mode }) => ({ volumeId, path, mode })), (mounts as { volumeId: string; path: string; mode?: string }[]).map(({ volumeId, path, mode }) => ({ volumeId, path, mode: mode ?? "rw" }))) ? ["mounts"] : [],
+      // Mounts change only when the upsert says so (`remount`): its configure request then sets them between turns.
+      ...remounted && !remount ? ["mounts"] : [],
     ];
-    if (fixed.length) throw new HttpError(409, `An existing agent's ${fixed.join(", ")} cannot change; delete it (DELETE /v1/agents/${header.id}) or use another idempotency key`);
+    if (fixed.length) throw new HttpError(409, `An existing agent's ${fixed.join(", ")} cannot change; delete it (DELETE /v1/agents/${header.id}) or use another idempotency key${fixed.includes("mounts") ? ", or send remount: true to change its mounts" : ""}`);
     return {
+      ...remounted ? { mounts } : {},
       provisionHash, model: `${config.model.provider}/${config.model.id}`, thinkingLevel: config.thinkingLevel ?? "off",
       systemPromptAppend: config.systemPromptAppend ?? "", fileTools: config.fileTools !== false, codeMode: config.codeMode !== false, runLimits: config.runLimits ?? null,
       maxOutputTokens: config.maxOutputTokens ?? null, temperature: config.temperature ?? null, name: metadata.name ?? null, type: metadata.type ?? null,
@@ -2267,7 +2270,7 @@ export class ClientSessions {
    * (`origin.definition`), and `origin.provision` stands for its configuration in the
    * idempotency check, so a retry after the definition changed returns the same agent.
    */
-  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, given: string | undefined, metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string; spendLimit?: number; toolsHash?: string; builtins?: string[]; delegate?: DelegateSettings; mcpServers?: McpServerSpec[]; parent?: SessionHeader["parent"]; fork?: { id: string; from: ForkedFrom; records: TranscriptRecord[] }; admit?: (unchanged: boolean) => Promise<unknown>; run?: RunSettings } = {}, steps = new Steps()): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
+  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, given: string | undefined, metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string; spendLimit?: number; toolsHash?: string; remount?: boolean; builtins?: string[]; delegate?: DelegateSettings; mcpServers?: McpServerSpec[]; parent?: SessionHeader["parent"]; fork?: { id: string; from: ForkedFrom; records: TranscriptRecord[] }; admit?: (unchanged: boolean) => Promise<unknown>; run?: RunSettings } = {}, steps = new Steps()): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
     metadata = agentMetadata(metadata);
     validateDefinitions(definitions);
     // The caller's key, shown in listings; an agent made without one gets a key nothing else knows.
@@ -2288,7 +2291,7 @@ export class ClientSessions {
     const own = { ...(access.builtins?.length ? { builtins: access.builtins } : {}), ...(access.delegate ? { delegate: access.delegate } : {}), ...(access.mcpServers?.length ? { mcpServers: access.mcpServers } : {}) };
     const provisionHash = hash(canonical({ ...origin ? { definition: origin.provision } : { definitions, config: safeConfig, ...(Object.keys(metadata).length ? { metadata } : {}), ...(mounts !== undefined ? { mounts } : {}), ...own }, ...(identity ? { identity } : {}) }));
     // The same key for an existing agent updates it: create or reconfigure (the last upsert wins).
-    const changes = (header: SessionHeader) => ({ reconfigure: { ...this.reconfiguration(header, definitions, safeConfig, metadata, mounts, origin, identity, provisionHash, own), ...(access.toolsHash ? { toolsHash: access.toolsHash } : {}) } });
+    const changes = (header: SessionHeader) => ({ reconfigure: { ...this.reconfiguration(header, definitions, safeConfig, metadata, mounts, origin, identity, provisionHash, own, access.remount), ...(access.toolsHash ? { toolsHash: access.toolsHash } : {}) } });
     // An agent's own sources are its builtins (and their settings) and MCP servers; one made from a definition has the definition's.
     const sources: Sources | undefined = origin ? origin.sources : Object.keys(own).length ? own : undefined;
     // The caller counts the create (its rate limit) now, told whether the key's agent has this configuration already:
@@ -2853,7 +2856,12 @@ export class ClientSessions {
   async setMounts(id: string, tenant: string, requested: unknown) {
     const session = (await this.owns(id, tenant)) ? await this.load(id) : undefined;
     if (!session) throw new HttpError(404, "Unknown agent");
+    return this.remount(session, requested);
+  }
+  /** Set an agent's mounts (`requested`, as given); an idle agent stops, so its next start's prompt describes them. */
+  private async remount(session: Session, requested: unknown) {
     if (!this.options.volumes) throw new HttpError(404, "Volumes are not enabled on this runtime");
+    const { id, tenant } = session.header;
     const mounts = await this.options.volumes.mountsFor(tenant, id, requested ?? []);
     await this.options.volumes.watch(id, tenant, session.header.mounts ?? [], mounts, session.claim);
     session.header.mounts = mounts;
@@ -3082,12 +3090,12 @@ export class ClientSessions {
     // Applying a definition reads the tenant's definitions, so only the tenant may ask for it, not the agent's own token.
     const applying = body.method === "configure" && body.params.definition !== undefined;
     // Which keys an agent calls models with, and how much it may spend, are the tenant's to choose, never the agent's own.
-    for (const key of ["keyScope", "spendLimit", "runLimits", "modelHeaders", "builtins", "delegate", "mcpServers", ...UPSERT_KEYS]) if (body.method === "configure" && !trusted && Object.hasOwn(body.params, key)) throw new HttpError(403, `Only the tenant can change an agent's ${key}`);
+    for (const key of ["keyScope", "spendLimit", "runLimits", "modelHeaders", "builtins", "delegate", "mcpServers", "mounts", ...UPSERT_KEYS]) if (body.method === "configure" && !trusted && Object.hasOwn(body.params, key)) throw new HttpError(403, `Only the tenant can change an agent's ${key}`);
     const spendLimit = body.method === "configure" && Object.hasOwn(body.params, "spendLimit") ? spendInput(body.params.spendLimit) : undefined;
     if (applying && (!trusted || !this.options.definitionFor || Object.keys(body.params).length !== 1 || typeof body.params.definition?.id !== "string")) throw new HttpError(400, "Apply a definition with PATCH /v1/definitions/<id> and apply: \"all\"");
     try {
       if (body.method === "configure" && !applying) {
-        const { spendLimit: _limit, provisionHash: _hash, name: _name, type: _type, toolsHash: _tools, builtins, delegate, mcpServers, ...update } = body.params;
+        const { spendLimit: _limit, provisionHash: _hash, name: _name, type: _type, toolsHash: _tools, mounts: _mounts, builtins, delegate, mcpServers, ...update } = body.params;
         const checked = configurationUpdate(update, this.options.modelEndpoints?.(session.header.tenant), await this.options.customProviders?.(session.header.tenant, scopeAfter(session.header, update)));
         // A model, thinking level, maxOutputTokens or temperature that leaves the agent asking its model for what it refuses is refused now.
         const refusal = configurationRefusal(session.header.config, checked);
@@ -3588,11 +3596,14 @@ export class ClientSessions {
       const { provisionHash, name, type, toolsHash: declared, ...asked } = params;
       // The hash of the tools as the application declared them: given by an upsert, else of a configure's own mcp.tools.
       const toolsHash = declared ?? (asked.mcp?.tools !== undefined ? hash(JSON.stringify(asked.mcp.tools)) : undefined);
-      const { builtins, delegate, mcpServers, ...given } = provisionHash !== undefined ? this.upsertChanges(session.header, asked) : asked;
+      const { mounts, ...wanted } = asked;
+      const { builtins, delegate, mcpServers, ...given } = provisionHash !== undefined ? this.upsertChanges(session.header, wanted) : wanted;
       // The agent's own builtins, their settings and MCP servers (an agent from a definition has the definition's): its sources, with the tools they offer.
       const reSourced = builtins !== undefined || delegate !== undefined || mcpServers !== undefined;
       const sources = reSourced ? ownSources(session.header.sources, { builtins, delegate, mcpServers }, this.inlineServers(session.header.tenant)) : session.header.sources;
-      const changed = provisionHash === undefined || reSourced || Object.keys(given).length > 0 || (name !== undefined && name !== (session.header.metadata?.name ?? null)) || (type !== undefined && type !== (session.header.metadata?.type ?? null));
+      // An upsert with remount: true sets its mounts here, between turns; the agent's next start describes them.
+      if (mounts !== undefined) await this.remount(session, mounts);
+      const changed = provisionHash === undefined || reSourced || mounts !== undefined || Object.keys(given).length > 0 || (name !== undefined && name !== (session.header.metadata?.name ?? null)) || (type !== undefined && type !== (session.header.metadata?.type ?? null));
       const { keyScope, ...update } = (applied?.update ?? configurationUpdate(given, this.options.modelEndpoints?.(session.header.tenant), await this.options.customProviders?.(session.header.tenant, scopeAfter(session.header, given)))) as ReturnType<typeof configurationUpdate> & { fileTools?: boolean; codeMode?: boolean };
       // Checked again as it applies, after the configuration queued before it (a definition's own change is not: its calls leave out what does not apply).
       const refusal = applied ? undefined : configurationRefusal(session.header.config, update);
@@ -4233,16 +4244,19 @@ export class ClientSessions {
     await this.releaseVolumes(session.header, session.claim);
   }
 
-  /** A deleted agent stops watching its mounts, and its own workspace goes with it; shared volumes stay. */
+  /**
+   * A deleted agent stops watching its mounts, and its own workspace goes with it, mounted or not (mounts set later may
+   * have left it out); shared volumes stay.
+   */
   private async releaseVolumes(header: SessionHeader, claim: Claim | undefined) {
     const volumes = this.options.volumes;
+    if (!volumes) return;
     const mounts = header.mounts ?? [];
-    if (!volumes || !mounts.length) return;
     const id = header.id, tenant = header.tenant;
     try {
-      await volumes.watch(id, tenant, mounts, [], claim);
-      const workspace = VolumeService.workspaceOf(id);
-      if (mounts.some(mount => mount.volumeId === workspace)) await volumes.call(workspace, tenant, "delete");
+      if (mounts.length) await volumes.watch(id, tenant, mounts, [], claim);
+      // A stateless run's mounts never change: without any, it never had a workspace.
+      if (mounts.length || !header.run) await volumes.call(VolumeService.workspaceOf(id), tenant, "delete");
     } catch (error) {
       if ((error as { status?: number }).status !== 404) console.error(JSON.stringify({ type: "agent_volumes_release_failed", agent: id, error: errorText(error) }));
     }

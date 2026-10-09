@@ -185,6 +185,12 @@ class Tree {
   }
 }
 
+/** `{workspace: true}`: the agent's own workspace volume, mounted at /workspace beside its other mounts. */
+/** `{workspace: true}` places the agent's own workspace among its mounts; `{workspace: false}` leaves it out. */
+const isWorkspace = (mount: unknown, value = true) => !!mount && typeof mount === "object" && (mount as { workspace?: unknown }).workspace === value && Object.keys(mount).length === 1;
+/** A mount given at /workspace itself, which takes the workspace's place. */
+const atWorkspace = (mount: unknown) => { try { return !!mount && typeof mount === "object" && normalizePath((mount as { path?: unknown }).path) === "/workspace"; } catch { return false; } };
+
 export class VolumeService {
   readonly db: Db;
   readonly storage: Storage;
@@ -731,24 +737,42 @@ export class VolumeService {
     }
   }
 
+  /**
+   * Mounts as given, with the agent's own workspace at /workspace: where `{workspace: true}` places it, else last;
+   * none with `{workspace: false}`, or when a mount given is at /workspace itself.
+   */
+  static resolved(agent: string, mounts: unknown[]): unknown[] {
+    const own = { volumeId: VolumeService.workspaceOf(agent), path: "/workspace", mode: "rw" };
+    const listed = mounts.filter(mount => !isWorkspace(mount, false)).map(mount => isWorkspace(mount) ? own : mount);
+    return mounts.some(mount => isWorkspace(mount) || isWorkspace(mount, false) || atWorkspace(mount)) ? listed : [...listed, own];
+  }
   /** The id of an agent's default workspace volume, stable so re-provisioning finds it. */
   static workspaceOf(agent: string) { return `vol_${sha256(`workspace:${agent}`).slice(0, 24)}`; }
 
   /**
-   * Validate an agent's mounts: the tenant's own volumes at distinct, non-nested
-   * absolute paths. Without `requested`, the agent gets its own workspace volume at /workspace.
+   * Validate an agent's mounts: the tenant's own volumes at distinct, non-nested absolute paths. The agent's own
+   * workspace volume is at /workspace beside them (see `resolved`) unless they leave it out with `{workspace: false}`
+   * or put another volume there.
    */
   async mountsFor(tenant: string, agent: string, requested: unknown): Promise<Mount[]> {
-    if (requested === undefined) {
+    const workspace = async (): Promise<Mount> => {
       const id = VolumeService.workspaceOf(agent);
       await this.writeNew({ version: 1, id, tenant, name: "workspace", createdAt: Date.now() });
       if ((await this.readHeader(id))?.tenant !== tenant) throw new HttpError(409, "Workspace volume belongs to another tenant");
-      return [{ volumeId: id, path: "/workspace", mode: "rw" }];
-    }
+      return { volumeId: id, path: "/workspace", mode: "rw" };
+    };
+    if (requested === undefined) return [await workspace()];
     if (!Array.isArray(requested) || requested.length > VOLUME_LIMITS.mounts) throw new HttpError(400, `mounts must be an array of at most ${VOLUME_LIMITS.mounts}`);
+    if (requested.filter(input => isWorkspace(input) || isWorkspace(input, false)).length > 1) throw new HttpError(400, "Give {workspace: true} or {workspace: false} once");
+    const own = VolumeService.workspaceOf(agent);
     const mounts: Mount[] = [];
-    for (const input of requested) {
-      if (!input || typeof input !== "object" || Object.keys(input).some(key => !["volumeId", "path", "mode", "subpath", "notify"].includes(key))) throw new HttpError(400, "A mount is {volumeId, path, mode: \"ro\" | \"rw\", subpath?, notify?}");
+    for (const input of VolumeService.resolved(agent, requested)) {
+      if ((input as Mount).volumeId === own && (input as Mount).path === "/workspace" && Object.keys(input as object).length === 3) {
+        if (mounts.some(other => within("/workspace", other.path) || within(other.path, "/workspace"))) throw new HttpError(400, "Mount path /workspace (the agent's own workspace) overlaps another mount; leave the workspace out with {workspace: false}");
+        mounts.push(await workspace());
+        continue;
+      }
+      if (!input || typeof input !== "object" || Object.keys(input).some(key => !["volumeId", "path", "mode", "subpath", "notify"].includes(key))) throw new HttpError(400, "A mount is {volumeId, path, mode: \"ro\" | \"rw\", subpath?, notify?}, or {workspace: true | false} to place or leave out the agent's own workspace at /workspace");
       const { volumeId, mode, notify } = input as Record<string, unknown>;
       const path = normalizePath((input as Record<string, unknown>).path, "mount path");
       if (path === "/") throw new HttpError(400, "A mount path needs a name, like /workspace");

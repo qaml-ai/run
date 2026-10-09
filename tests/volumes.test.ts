@@ -24,6 +24,7 @@ import { testDatabase } from "./database.ts";
 import { postgresTail } from "../src/log-tail.ts";
 import { applicationTools } from "../src/mcp-results.ts";
 import { pdfBytes, PNG } from "./file-fixtures.ts";
+import { until } from "./runtime-server.ts";
 
 type Context = { after(fn: () => Promise<void> | void): void };
 const bytes = (text: string) => Buffer.from(text, "utf8");
@@ -358,7 +359,7 @@ test("file tools work from js_exec, and agents share a volume through mounts", a
   await assert.rejects(writer.execute('return await tools.read({ path: "/workspace/missing.md" })'), /does not exist/);
 
   // A second agent mounts the writer's workspace read-only and is told about changes.
-  const reader = await f.start([{ volumeId: workspace, path: "/shared", mode: "ro", subpath: "/notes", notify: true }]);
+  const reader = await f.start([{ volumeId: workspace, path: "/shared", mode: "ro", subpath: "/notes", notify: true }, { workspace: false }]);
   assert.equal(JSON.parse((await reader.execute('return await tools.read({ path: "/shared/today.md" })')).output[0]).content, "ship volumes\nDONE tests\n");
   await assert.rejects(reader.execute('return await tools.write({ path: "/shared/today.md", content: "x" })'), /mounted read-only/);
   await assert.rejects(reader.execute('return await tools.ls({ path: "/workspace" })'), /not inside a mount/);
@@ -374,7 +375,7 @@ test("file tools work from js_exec, and agents share a volume through mounts", a
 
   // Mounts change through the owner of the agent; an idle agent restarts without the file tools.
   await reader.waitForRequest(wake.id);
-  await f.sessions.setMounts(reader.session.id, "default", []);
+  await f.sessions.setMounts(reader.session.id, "default", [{ workspace: false }]);
   await assert.rejects(reader.execute('return await tools.read({ path: "/shared/today.md" })'), /tools\.read is not a tool/);
   await assert.rejects(f.sessions.setMounts(reader.session.id, "default", [{ volumeId: workspace, path: "/a", mode: "ro" }, { volumeId: workspace, path: "/a/b", mode: "ro" }]), /overlaps/);
 });
@@ -478,7 +479,15 @@ test("the REST API and SDK manage volumes within a tenant, and nothing crosses t
   const agent = await a.createAgent({ tools: {}, mounts: [{ volumeId: created.id, path: "/reports", mode: "ro", subpath: "/data" }] });
   t.after(() => agent.close());
   assert.equal(JSON.parse((await agent.execute('return await tools.ls({ path: "/reports" })')).output[0]).entries[0].name, "large.bin");
-  assert.deepEqual(await a.mounts(agent.session.id), [{ volumeId: created.id, path: "/reports", mode: "ro", subpath: "/data" }]);
+  const given = await a.mounts(agent.session.id);
+  assert.deepEqual(given[0], { volumeId: created.id, path: "/reports", mode: "ro", subpath: "/data" });
+  assert.deepEqual(given.slice(1).map(mount => [mount.path, mount.volumeId === VolumeService.workspaceOf(agent.session.id)]), [["/workspace", true]], "its own workspace beside the mounts given");
+  const bare = await a.createAgent({ tools: {}, mounts: [{ volumeId: created.id, path: "/reports", mode: "ro" }, { workspace: false }] });
+  t.after(() => bare.close());
+  assert.deepEqual((await a.mounts(bare.session.id)).map(mount => mount.path), ["/reports"], "{workspace: false} leaves it out");
+  const replaced = await a.createAgent({ tools: {}, mounts: [{ volumeId: created.id, path: "/workspace", mode: "rw" }] });
+  t.after(() => replaced.close());
+  assert.deepEqual((await a.mounts(replaced.session.id)).map(mount => [mount.path, mount.volumeId]), [["/workspace", created.id]], "a mount at /workspace takes its place");
   const files = (await a.toolSources(agent.session.id, { schemas: true })).find(source => source.kind === "files")!;
   assert.ok(files.tools.some(tool => tool.name === "read" && tool.parameters));
   const plain = await a.createAgent({ tools: {} });
@@ -499,6 +508,35 @@ test("the REST API and SDK manage volumes within a tenant, and nothing crosses t
   await assert.rejects(b.setMounts(bobs.session.id, [{ volumeId: created.id, path: "/stolen", mode: "ro" }]), (error: AgentError) => error.status === 404);
   await assert.rejects(b.setMounts(agent.session.id, []), (error: AgentError) => error.status === 404, "nor change Alice's agents' mounts");
   await assert.rejects(b.mounts(agent.session.id), (error: AgentError) => error.status === 404);
+
+  // A volume made with an idempotency key is made once.
+  const keyed = await a.createVolume({ name: "draft" }, { idempotencyKey: "draft-bot-1" });
+  assert.equal((await a.createVolume({ name: "draft" }, { idempotencyKey: "draft-bot-1" })).id, keyed.id);
+
+  // {workspace: true} keeps the agent's own workspace beside other mounts; the first mount is where relative paths go.
+  const both = await a.upsertAgent("builder-1", { tools: {}, mounts: [{ volumeId: keyed.id, path: "/bot", mode: "rw" }, { workspace: true }] });
+  const mounted = await a.mounts(both.session.id);
+  assert.deepEqual(mounted.map(mount => [mount.path, mount.mode]), [["/bot", "rw"], ["/workspace", "rw"]]);
+  assert.match(mounted[1].volumeId, /^vol_[a-f0-9]{24}$/);
+  assert.equal((await a.upsertAgent("builder-1", { tools: {}, mounts: [{ volumeId: keyed.id, path: "/bot", mode: "rw" }, { workspace: true }] })).session.id, both.session.id, "the same mounts again are no change");
+  await assert.rejects(a.createAgent({ tools: {}, mounts: [{ workspace: true }, { volumeId: keyed.id, path: "/workspace/bot", mode: "rw" }] }), /overlaps/);
+  // Other mounts on an upsert are a 409, unless it says remount: true; then they are set between its turns.
+  const elsewhere = [{ volumeId: keyed.id, path: "/draft", mode: "rw" as const }, { workspace: true as const }];
+  await assert.rejects(a.upsertAgent("builder-1", { tools: {}, mounts: elsewhere }), (error: AgentError) => error.status === 409 && /mounts cannot change.*remount: true/.test(error.message));
+  const moved = await a.upsertAgent("builder-1", { tools: {}, mounts: elsewhere, remount: true });
+  assert.ok(moved.reconfigured);
+  await until(async () => (await a.mounts(both.session.id))[0].path === "/draft", "the new mounts");
+  assert.deepEqual((await a.mounts(both.session.id)).map(mount => mount.volumeId), [keyed.id, mounted[1].volumeId], "the same workspace");
+  await a.upsertAgent("builder-1", { tools: {}, mounts: [{ volumeId: keyed.id, path: "/bot", mode: "rw" }, { workspace: true }], remount: true });
+  await until(async () => (await a.mounts(both.session.id))[0].path === "/bot", "the mounts back");
+
+  // An agent's own workspace goes with it even when later mounts left it out.
+  const dropped = mounted[1].volumeId;
+  await a.setMounts(both.session.id, [{ volumeId: keyed.id, path: "/bot", mode: "rw" }]);
+  assert.ok((await a.volume(dropped).info()).id === dropped, "still there while the agent is");
+  assert.equal((await fetch(`${url}/v1/agents/${both.session.id}`, { method: "DELETE", headers: { Authorization: `Bearer ${alice}` } })).status, 200);
+  await until(async () => (await a.volume(dropped).info().then(() => false, (error: AgentError) => error.status === 404)), "the dropped workspace to be deleted");
+  assert.ok((await a.volume(keyed.id).info()).id === keyed.id, "the mounted volume stays");
 
   // Deleting an agent deletes its own workspace, not the volumes it merely mounted.
   await plain.destroy();

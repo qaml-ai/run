@@ -130,7 +130,8 @@ export function runRoutes(route: Route, context: () => RunsContext) {
     const toolless = config.definition === undefined && !config.builtins?.length && !config.delegate && !config.mcpServers?.length && !files.length && !mounts?.length && !config.fileTools;
     const params = {
       ...toolless ? { codeMode: false, fileTools: false } : {}, ...config, type: "run", ...(name !== undefined ? { name } : {}),
-      mounts: mounts ?? (files.length || config.fileTools ? undefined : []),
+      // A run's own mounts are all it gets: no workspace beside them unless it names one.
+      mounts: mounts ? (mounts.some(mount => "workspace" in mount) ? mounts : [...mounts, { workspace: false }]) : files.length || config.fileTools ? undefined : [{ workspace: false }],
     };
     const made = await createRun(tenant, params, key, { retentionMs, fingerprint, ttlMs: RUN_BOUND_MS + retentionMs });
     const runId = runIdOf(made.id);

@@ -375,7 +375,9 @@ export interface CreateAgentOptions extends AgentOptions {
   /** History in another API's format (Anthropic Messages, OpenAI Responses or Chat Completions), converted to Pi messages by the runtime (`toPiMessages`); not with initialMessages. */
   importMessages?: ImportMessages;
   /** Volumes for the agent's file tools (read, write, edit, ls, glob, grep). Default: its own workspace volume at /workspace. */
-  mounts?: Mount[];
+  mounts?: MountInput[];
+  /** An upsert of an existing agent: true changes its mounts to these (between its turns), where different mounts are otherwise a 409. */
+  remount?: boolean;
   /** Tools the runtime answers itself, for an agent without a definition (one made from a definition has its definition's). */
   builtins?: Builtin[];
   /** Who the agent may hand tasks to (sub-agents), without a definition; it adds the delegate builtin. See the multi-agent guide. */
@@ -499,6 +501,11 @@ export interface AgentSummary {
   parentAgentId?: string;
 }
 export interface Mount { volumeId: string; path: string; mode: "ro" | "rw"; subpath?: string; notify?: boolean }
+/**
+ * A mount as given: a volume, or the agent's own workspace at /workspace, which is beside the others (after them) by
+ * default: `{ workspace: true }` places it, `{ workspace: false }` leaves it out.
+ */
+export type MountInput = Mount | { workspace: boolean };
 /** Where a fork came from: the agent, and the history index of its last message the fork began with (null: none). */
 export interface ForkedFrom { agentId: string; atMessage: number | null }
 /**
@@ -784,7 +791,7 @@ const AGENT_KEY = /^[A-Za-z0-9_-]{1,80}$/;
 const REQUEST_ID = AGENT_KEY;
 /** A create request's fields, from the options given. */
 function provisioning(options: CreateAgentOptions) {
-  const fields = ["subject", "context", "keyScope", "spendLimit", "runLimits", "modelHeaders", "definition", "mounts", "model", "thinkingLevel", "maxOutputTokens", "temperature", "initialMessages", "importMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "delegate", "mcpServers", "prompt"] as const;
+  const fields = ["subject", "context", "keyScope", "spendLimit", "runLimits", "modelHeaders", "definition", "mounts", "remount", "model", "thinkingLevel", "maxOutputTokens", "temperature", "initialMessages", "importMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "delegate", "mcpServers", "prompt"] as const;
   return withMultiAgent(Object.fromEntries(fields.filter(field => options[field] !== undefined).map(field => [field, options[field]])));
 }
 /** `delegate` settings bring their builtin: given the settings, the builtin is added. */
@@ -894,7 +901,11 @@ export class AgentRuntime {
   providers(): Promise<ProviderSummary[]> { return this.transport.json("/v1/providers", this.operator()); }
   /** The tenant's agents, each with the key it was made with (null for one made without) and its name. */
   listAgents(): Promise<AgentSummary[]> { return this.transport.json("/v1/agents", this.operator()); }
-  createVolume(options: { name?: string } = {}): Promise<Volume> { return this.transport.json("/v1/volumes", this.operator(), "POST", options, false); }
+  /** A new volume. With `idempotencyKey`, the same key makes it once: a retry, or another process, gets the same volume. */
+  createVolume(options: { name?: string } = {}, request: { idempotencyKey?: string } = {}): Promise<Volume> {
+    const key = request.idempotencyKey;
+    return this.transport.json("/v1/volumes", this.operator(), "POST", options, !!key, key ? { "Idempotency-Key": key } : {});
+  }
   listVolumes(): Promise<Volume[]> { return this.transport.json("/v1/volumes", this.operator()); }
   /** Several volumes as they are now (each one's seq, files and bytes), in one request; at most 50. */
   volumes(ids: string[]): Promise<Volume[]> { return this.transport.json(`/v1/volumes?ids=${ids.map(encodeURIComponent).join(",")}`, this.operator()); }
@@ -942,7 +953,7 @@ export class AgentRuntime {
   deleteDefinition(id: string): Promise<{ deleted: boolean }> { return this.transport.json(`/v1/definitions/${encodeURIComponent(id)}`, this.operator(), "DELETE", undefined, false); }
   mounts(agentId: string): Promise<Mount[]> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/mounts`, this.operator()); }
   /** Replace an agent's mounts; an idle agent restarts so its tools describe them. */
-  setMounts(agentId: string, mounts: Mount[]): Promise<Mount[]> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/mounts`, this.operator(), "PUT", { mounts }, false); }
+  setMounts(agentId: string, mounts: MountInput[]): Promise<Mount[]> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/mounts`, this.operator(), "PUT", { mounts }, false); }
   /**
    * Every source of an agent's tools (its application, file tools, built-ins, MCP servers, OpenAPI
    * specs) and what each offers the model. `schemas` includes input schemas; `refresh` lists MCP servers now.
@@ -1056,7 +1067,7 @@ export interface RunRequest {
   /** Remote MCP servers the run may call, without credentials (auth `{ type: "runtime" }` or none). */
   mcpServers?: InlineMcpServer[];
   /** true: a workspace volume and file tools. Default: none, unless the input has files. */
-  fileTools?: boolean; mounts?: Mount[];
+  fileTools?: boolean; mounts?: MountInput[];
   /** js_exec. Default: on for a run with tools, off for a tool-less one. */
   codeMode?: boolean;
   output?: { schema: Record<string, unknown> };
