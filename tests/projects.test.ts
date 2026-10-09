@@ -1,4 +1,9 @@
 import { test } from "node:test";
+import { execFileSync } from "node:child_process";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import assert from "node:assert/strict";
 import { AgentRuntime, fileBytes, publishTool, type ProjectFile } from "../clients/typescript.ts";
 import { serveTools } from "../clients/server.ts";
@@ -79,4 +84,76 @@ test("publishTool finds the project from the call's identity, never its argument
   const refused = await rt.callTool(handler, "https://app.test/mcp", "publish", {}, { subject: "owner", context: { bot: "a" } });
   assert.equal(refused.isError, true);
   assert.match(String(refused.content[0].text), /Not published\. Fix these and publish again:\n\/secret\.ts: no secrets in a project/);
+
+  // A client that sends no idempotency key and reuses JSON-RPC id 1 for every call: each publish is its own, never the
+  // first one's version stored again with its old files.
+  const bare = async () => {
+    const response = await handler(await rt.request("https://app.test/mcp", { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "publish", arguments: {} } }, { subject: "owner", context: { bot: "b" } }));
+    return ((await response.json()) as any).result;
+  };
+  const b = sdk.projects.get(projects.get("b")!);
+  await b.volume.write("bot.ts", "export const name = \"b2\";\n");
+  assert.equal((await bare()).isError, undefined);
+  await b.volume.write("bot.ts", "export const name = \"b3\";\n");
+  assert.equal((await bare()).isError, undefined);
+  assert.deepEqual(stored.slice(-2), ['export const name = "b2";\n', 'export const name = "b3";\n']);
+  // A retry with the runtime's key publishes once.
+  const versions = (await b.versions()).length;
+  for (let i = 0; i < 2; i++) await rt.callTool(handler, "https://app.test/mcp", "publish", {}, { subject: "owner", context: { bot: "b" } }, { idempotencyKey: "turn-1:call-1" });
+  assert.equal((await b.versions()).length, versions + 1);
+});
+
+test("a project is restored in place to a published version, and a check hands what it computed to store and the result", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
+  const sdk = new AgentRuntime({ url: r.base, apiKey: OPERATOR });
+  const project = await sdk.projects.create({ key: "bot-restore", template: { "bot.ts": "export const v = 1;\n", "lib/util.ts": "export const u = 1;\n" } });
+  // The check bundles as it checks; the bundle reaches store and the result, so nothing bundles twice.
+  const bundle = (files: ProjectFile[]) => ({ problems: [], data: { entries: files.map(file => file.path), bytes: files.reduce((sum, file) => sum + file.size, 0) } });
+  const kept: unknown[] = [];
+  const published = await project.publish({ validate: bundle, store: (_files, version, { checked }) => { kept.push(checked); return version.id; } });
+  assert.ok(published.ok);
+  assert.deepEqual(published.checked, { entries: ["/bot.ts", "/lib/util.ts"], bytes: 40 });
+  assert.deepEqual(kept, [published.checked]);
+  const retried = await project.publish({ validate: bundle, store: (_files, _version, { checked }) => checked, idempotencyKey: "k" });
+  const again = await project.publish({ validate: bundle, store: (_files, _version, { checked }) => checked, idempotencyKey: "k" });
+  assert.ok(retried.ok && again.ok);
+  assert.deepEqual(again.stored, retried.stored, "a retried publish hands on the same data");
+
+  // The agent changes the project: a file changed, one added, one removed, a directory where a file was.
+  await project.volume.write("bot.ts", "export const v = 2;\n");
+  await project.volume.write("extra.ts", "export const e = 1;\n");
+  await project.volume.remove("lib/util.ts");
+  await project.volume.write("lib/util.ts/nested.ts", "export const n = 1;\n").catch(() => {});
+  const before = (await project.volume.info()).seq;
+  const restored = await project.restore(published.version.id);
+  assert.ok(restored.written >= 2 && restored.removed >= 1, JSON.stringify(restored));
+  const files = (await project.files()).files.map(file => [file.path, file.text]);
+  assert.deepEqual(files, [["/bot.ts", "export const v = 1;\n"], ["/lib/util.ts", "export const u = 1;\n"]]);
+  // Each restored file is a change, as agents mounting it hear of changes.
+  const changes = (await project.volume.changes(before)).changes.map(change => [change.path, change.kind]);
+  assert.ok(changes.some(([path, kind]) => path === "/bot.ts" && kind === "write"));
+  assert.ok(changes.some(([path, kind]) => path === "/extra.ts" && kind === "delete"));
+  // Restoring again changes nothing; the version is still published; an unknown snapshot is a 404.
+  assert.deepEqual({ ...await project.restore(published.version.id), seq: 0 }, { snapshot: published.version.id, seq: 0, written: 0, removed: 0 });
+  assert.ok((await project.versions()).some(version => version.id === published.version.id));
+  await assert.rejects(project.restore("snap_0000000000000000"), (error: { status?: number }) => error.status === 404);
+
+  // A version as a tar.gz, for a build: its files as it had them, named relative to the path asked for.
+  await project.volume.write("bot.ts", "export const v = 3;\n");
+  const unpack = async (archive: { body: ReadableStream<Uint8Array> }) => {
+    const dir = await mkdtemp(join(tmpdir(), "project-archive-"));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    writeFileSync(join(dir, "a.tar.gz"), Buffer.from(await new Response(archive.body).arrayBuffer()));
+    execFileSync("tar", ["-xzf", "a.tar.gz"], { cwd: dir });
+    return dir;
+  };
+  const whole = await project.archive({ version: published.version.id });
+  assert.ok(whole.seq > 0);
+  const dir = await unpack(whole);
+  assert.equal(readFileSync(join(dir, "bot.ts"), "utf8"), "export const v = 1;\n");
+  assert.equal(readFileSync(join(dir, "lib/util.ts"), "utf8"), "export const u = 1;\n");
+  const lib = await unpack(await project.archive({ path: "/lib" }));
+  assert.deepEqual(readdirSync(lib).sort(), ["a.tar.gz", "util.ts"]);
+  const live = await unpack(await project.archive());
+  assert.equal(readFileSync(join(live, "bot.ts"), "utf8"), "export const v = 3;\n");
 });

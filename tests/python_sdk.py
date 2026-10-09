@@ -1,4 +1,6 @@
 """Run with: python3 tests/python_sdk.py (requires httpx)."""
+import io
+import tarfile
 import asyncio
 import base64
 import hashlib
@@ -972,6 +974,18 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         await project.volume.write("secret.py", "x = 1\n")
         self.assertEqual(await project.publish(validate=check, store=lambda *args: None), {"ok": False, "problems": [{"path": "/secret.py", "message": "no secrets"}]})
         self.assertEqual(len(await project.versions()), 1)
+        # Restored in place to the published version: the secret goes, and the version stays.
+        restored = await project.restore(result["version"]["id"])
+        self.assertEqual((restored["written"], restored["removed"]), (0, 1))
+        self.assertEqual([file["path"] for file in (await project.files())["files"]], ["/bot.py"])
+        self.assertEqual(len(await project.versions()), 1)
+        archive = tarfile.open(fileobj=io.BytesIO(await project.archive(version=result["version"]["id"])), mode="r:gz")
+        self.assertEqual(archive.extractfile("bot.py").read(), b"def run(): pass\n")
+        # A check may hand what it computed to store and the result.
+        bundled = await project.publish(validate=lambda files: {"problems": [], "data": {"entries": len(files)}},
+                                        store=lambda files, version, about: about["checked"])
+        self.assertEqual((bundled["stored"], bundled["checked"]), ({"entries": 1}, {"entries": 1}))
+        await project.volume.write("secret.py", "x = 1\n")
 
         # The tool takes no arguments; the project comes from the call's identity.
         other = await projects.create("py-bot-2", template={"bot.py": "def two(): pass\n"})
@@ -985,6 +999,12 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         refused = await tests.call_tool(app, "https://app.test/mcp", "publish", {}, subject="owner", context={"bot": "1"})
         self.assertTrue(refused["isError"])
         self.assertIn("/secret.py: no secrets", refused["content"][0]["text"])
+        # No idempotency key and JSON-RPC id 1 every time: each publish is its own, not the first one's files again.
+        bare = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "publish", "arguments": {}}}
+        for text in ("def three(): pass\n", "def four(): pass\n"):
+            await other.volume.write("bot.py", text)
+            self.assertNotIn("error", (await tests.post(app, "https://app.test/mcp", bare, subject="owner", context={"bot": "2"})).json())
+            self.assertEqual(stored[-1], [text])
 
     async def test_key_scopes_tokens_usage_webhooks_and_rotated_credentials(self):
         deliveries = []

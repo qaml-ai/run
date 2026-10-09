@@ -1006,6 +1006,21 @@ class Volume:
     async def delete_snapshot(self, snapshot_id):
         return await self._json(f"/snapshots/{quote(snapshot_id)}", "DELETE")
 
+    async def archive(self, *, snapshot=None, path=None, glob=None):
+        """The files as tar.gz bytes: as the volume is (or as `snapshot` has them), under `path` (names relative to it)
+        and matching `glob`. At most 10,000 files and 1 GiB."""
+        query = {key: value for key, value in {"snapshot": snapshot, "path": path, "glob": glob}.items() if value is not None}
+        response = await _transfer(self.runtime.http, "GET", f"{self.runtime.base}/v1/volumes/{self.id}/archive" + (f"?{urlencode(query)}" if query else ""),
+                                   headers={"Authorization": f"Bearer {self.runtime._operator()}"})
+        if not response.is_success:
+            raise AgentError(_error(response), response.status_code)
+        return response.content
+
+    async def restore(self, snapshot):
+        """Make this volume as a snapshot of it was, in place: files the snapshot lacks are removed and files that differ
+        are written back, each a change agents mounting it see. {"snapshot", "seq", "written", "removed"}."""
+        return await self._json("/restore", "POST", {"snapshot": snapshot})
+
     async def fork(self, *, name=None, snapshot=None):
         """A new volume with this one's files (or a snapshot's); only metadata is copied."""
         return await self._json("/fork", "POST", {key: value for key, value in {"name": name, "snapshot": snapshot}.items() if value is not None})
@@ -2855,9 +2870,11 @@ class TestRuntime:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as client:
             return await client.post(url, json=message, headers=headers)
 
-    async def call_tool(self, app, url, name, arguments, **identity):
-        """Call one tool through an ASGI app as `identity`: its CallToolResult, or the error raised."""
-        response = await self.post(app, url, {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": arguments}}, **identity)
+    async def call_tool(self, app, url, name, arguments, idempotency_key=None, **identity):
+        """Call one tool through an ASGI app as `identity`: its CallToolResult, or the error raised. Each call carries its
+        own idempotency key, as each of the runtime's calls does; pass `idempotency_key` to send one again."""
+        meta = {"agent-runtime/idempotencyKey": idempotency_key or str(uuid.uuid4())}
+        response = await self.post(app, url, {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": arguments, "_meta": meta}}, **identity)
         body = response.json()
         if response.status_code != 200:
             raise RuntimeError(f"HTTP {response.status_code}: {body.get('error')}")

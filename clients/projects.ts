@@ -19,17 +19,23 @@ export type ProjectFile = VolumeContents["files"][number];
 export interface ProjectVersion { id: string; seq: number; name: string; createdAt: number }
 /** What stops files from being published: shown to the model as `path:line: message`. */
 export interface Problem { path?: string; line?: number; message: string }
-export type PublishResult<T> = { ok: true; version: ProjectVersion; stored: T } | { ok: false; problems: Problem[] };
-export interface PublishOptions<T> {
+/** What a check found: its problems, and what it worked out on the way (a manifest, a bundle) for `store`. */
+export interface Checked<D> { problems?: Problem[]; data: D }
+export type PublishResult<T, D = undefined> = { ok: true; version: ProjectVersion; stored: T; checked?: D } | { ok: false; problems: Problem[] };
+export interface PublishOptions<T, D = undefined> {
   /** Only the files at or under this path (default: all). */
   prefix?: string;
-  /** What is wrong with the files: an empty list publishes them. */
-  validate?: (files: ProjectFile[]) => Problem[] | Promise<Problem[]>;
+  /**
+   * What is wrong with the files: an empty list publishes them. Or `{ problems, data }`: `data` (what the check
+   * computed, such as a bundle's manifest) goes to `store` as `checked` and comes back in the result, so nothing is
+   * worked out twice.
+   */
+  validate?: (files: ProjectFile[]) => Problem[] | Checked<D> | Promise<Problem[] | Checked<D>>;
   /**
    * Keep the files (in your database, your object store): called once per published version, with the project and,
    * from `publishTool`, the identity of the call that published it.
    */
-  store: (files: ProjectFile[], version: ProjectVersion, about: { project: Project; identity?: RuntimeIdentity }) => T | Promise<T>;
+  store: (files: ProjectFile[], version: ProjectVersion, about: { project: Project; identity?: RuntimeIdentity; checked?: D }) => T | Promise<T>;
   /** How many published versions the project keeps (older snapshots are deleted; default 20, at most 90). */
   keep?: number;
   /** Publishing twice with the same key publishes once: a retried tool call passes its `idempotencyKey`. */
@@ -44,6 +50,13 @@ export function fileBytes(file: ProjectFile): Uint8Array {
 /** Problems as the model reads them, one a line. */
 export function formatProblems(problems: Problem[]): string {
   return problems.map(problem => `${problem.path ? `${problem.path}${problem.line ? `:${problem.line}` : ""}: ` : ""}${problem.message}`).join("\n");
+}
+
+/** A check's answer, whichever form it took. */
+async function check<D>(validate: PublishOptions<unknown, D>["validate"], files: ProjectFile[]): Promise<{ problems: Problem[]; checked?: D }> {
+  const answer = await validate?.(files);
+  if (!answer) return { problems: [] };
+  return Array.isArray(answer) ? { problems: answer } : { problems: answer.problems ?? [], checked: answer.data };
 }
 
 export class Project {
@@ -65,6 +78,17 @@ export class Project {
     return this.volume.readAll({ ...(options.prefix ? { prefix: options.prefix } : {}), ...(options.version ? { snapshot: options.version } : {}) });
   }
 
+  /**
+   * Put the project back as a published version had it, in place: the agent working in it sees the files change, as
+   * if it had made them. The version stays published; publish again to make the restored files a new one.
+   */
+  restore(version: string) { return this.volume.restore(version); }
+
+  /** A version's files (or the project as it is now) as a tar.gz stream, for a build. */
+  archive(options: { version?: string; path?: string } = {}) {
+    return this.volume.archive({ ...(options.version ? { snapshot: options.version } : {}), ...(options.path ? { path: options.path } : {}) });
+  }
+
   /** Published versions, oldest first. */
   async versions(): Promise<ProjectVersion[]> {
     return (await this.volume.snapshots()).filter(snapshot => snapshot.name.startsWith(PUBLISHED))
@@ -75,27 +99,33 @@ export class Project {
    * Snapshot the project, read every file at the snapshot, `validate` them, and `store` them: `{ ok: true, version }`,
    * or `{ ok: false, problems }` (the snapshot is then deleted). Files written while it runs are not in this version.
    */
-  async publish<T>(options: PublishOptions<T>, about: { identity?: RuntimeIdentity } = {}): Promise<PublishResult<T>> {
+  async publish<T, D = undefined>(options: PublishOptions<T, D>, about: { identity?: RuntimeIdentity } = {}): Promise<PublishResult<T, D>> {
     const keep = Math.min(Math.max(1, options.keep ?? 20), 90);
     const name = `${PUBLISHED}${options.idempotencyKey ?? crypto.randomUUID()}`.slice(0, 120);
     if (options.idempotencyKey) {
       const done = (await this.versions()).find(version => version.name === name);
-      if (done) return { ok: true, version: done, stored: await options.store((await this.files({ prefix: options.prefix, version: done.id })).files, done, { project: this, ...about }) };
+      if (done) {
+        // Published already (a retried call): its files are checked again only for what the check hands on.
+        const { files } = await this.files({ prefix: options.prefix, version: done.id });
+        const { checked } = await check(options.validate, files);
+        const stored = await options.store(files, done, { project: this, ...about, ...(checked !== undefined ? { checked } : {}) });
+        return { ok: true, version: done, stored, ...(checked !== undefined ? { checked } : {}) };
+      }
     }
     const snapshot = await this.volume.snapshot({ name });
     const version: ProjectVersion = { id: snapshot.id, seq: snapshot.seq, name: snapshot.name, createdAt: snapshot.createdAt };
     try {
       const { files } = await this.files({ prefix: options.prefix, version: version.id });
-      const problems = await options.validate?.(files) ?? [];
+      const { problems, checked } = await check(options.validate, files);
       if (problems.length) {
         await this.volume.deleteSnapshot(version.id);
         return { ok: false, problems };
       }
-      const stored = await options.store(files, version, { project: this, ...about });
+      const stored = await options.store(files, version, { project: this, ...about, ...(checked !== undefined ? { checked } : {}) });
       // Older versions beyond `keep` go (a volume keeps 100 snapshots at most).
       const versions = await this.versions();
       await Promise.all(versions.slice(0, Math.max(0, versions.length - keep)).map(old => this.volume.deleteSnapshot(old.id)));
-      return { ok: true, version, stored };
+      return { ok: true, version, stored, ...(checked !== undefined ? { checked } : {}) };
     } catch (error) {
       await this.volume.deleteSnapshot(version.id).catch(() => {});
       throw error;
@@ -133,11 +163,12 @@ export class Projects {
  * Problems go back to the model (the call fails with them) so it fixes them and publishes again. A retried call
  * publishes once.
  */
-export function publishTool<T>(options: Omit<PublishOptions<T>, "idempotencyKey"> & {
+export function publishTool<T, D = undefined>(options: Omit<PublishOptions<T, D>, "idempotencyKey"> & {
+  /** The project the call is for, from its identity. An agent whose project changes (remounted) is looked up as it is now. */
   project: (identity: RuntimeIdentity) => Project | Promise<Project>;
   description?: string;
-  /** What the model is told on success (default: the version id). */
-  published?: (result: { version: ProjectVersion; stored: T }) => unknown;
+  /** What the model is told on success (default: the version id); `checked` is what `validate` handed on. */
+  published?: (result: { version: ProjectVersion; stored: T; checked?: D }) => unknown;
 }): Tool {
   return {
     description: options.description ?? "Publish the project: its files are checked, and if nothing is wrong they become the new version. If anything is wrong, the call fails with what to fix; fix it and publish again.",
@@ -147,7 +178,9 @@ export function publishTool<T>(options: Omit<PublishOptions<T>, "idempotencyKey"
     async execute(_args, context) {
       if (!context.identity) throw new Error("publish needs the runtime's identity token: serve it with serveTools and auth { type: \"runtime\" }");
       const project = await options.project(context.identity);
-      const result = await project.publish({ ...options, idempotencyKey: context.idempotencyKey }, { identity: context.identity });
+      // A key that is only this request's JSON-RPC id (a client that sends none) is no key: unrelated calls share ids.
+      const keyed = context.idempotencyKey !== context.callId;
+      const result = await project.publish({ ...options, ...(keyed ? { idempotencyKey: context.idempotencyKey } : {}) }, { identity: context.identity });
       if (!result.ok) throw new Error(`Not published. Fix these and publish again:\n${formatProblems(result.problems)}`);
       return options.published ? options.published(result) : { published: true, version: result.version.id };
     },

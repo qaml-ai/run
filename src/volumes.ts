@@ -29,6 +29,8 @@ import { clock } from "./node-context.ts";
 export const CHUNK_BYTES = 1024 * 1024;
 /** What one read of many files (GET /v1/volumes/:id/files?content=true) returns at most. */
 export const READ_ALL_LIMITS = Object.freeze({ files: 1000, bytes: 16 * 1024 * 1024 });
+/** The most one archive (GET /v1/volumes/:id/archive) holds. */
+export const ARCHIVE_LIMITS = Object.freeze({ files: 10_000, bytes: 1024 * 1024 * 1024 });
 /** `data` as text when it is valid UTF-8, else undefined. */
 const utf8 = (data: Buffer) => { try { return new TextDecoder("utf-8", { fatal: true }).decode(data); } catch { return undefined; } };
 export const VOLUME_LIMITS = Object.freeze({ fileBytes: 256 * 1024 * 1024, files: 100_000, mounts: 16, snapshots: 100, changes: 1000, listing: 1000 });
@@ -356,20 +358,28 @@ export class VolumeService {
 
   /** Append a record durably, then apply it. A failed append fences the volume until it reloads. */
   private async commit(volume: Volume, record: TreeRecord) {
+    return (await this.commitAll(volume, [record]))[0]!;
+  }
+
+  /** Records written together, in one flush: all of them take effect, or none does. */
+  private async commitAll(volume: Volume, records: TreeRecord[]) {
     if (volume.fault) throw volume.fault;
-    volume.log.append(record);
+    for (const record of records) volume.log.append(record);
     try { await volume.log.flush(true); }
     catch (error) {
       volume.fault = new HttpError(503, `Volume moved or storage failed; retry (${errorText(error)})`);
       if (this.loaded.get(volume.header.id) === volume) this.loaded.delete(volume.header.id);
       throw volume.fault;
     }
-    const change = this.apply(volume, record)!;
-    this.queueNotification(volume, change);
+    const changes = records.map(record => {
+      const change = this.apply(volume, record)!;
+      this.queueNotification(volume, change);
+      return change;
+    });
     if (volume.log.appendedSinceRewrite >= FOLD_AFTER_RECORDS) {
       await volume.log.rewrite(() => this.fold(volume)).catch(() => {});
     }
-    return change;
+    return changes;
   }
 
   private fold(volume: Volume): TreeRecord[] {
@@ -385,11 +395,12 @@ export class VolumeService {
     volume.lastActive = Date.now();
     try {
       if (op === "info") return this.summary(volume.header, volume.tree, volume.seq);
-      if (op === "stat" || op === "list" || op === "readAll") {
+      if (op === "stat" || op === "list" || op === "readAll" || op === "archive") {
         // As the volume is now, or as a snapshot of it was: one tree, so a listing and its reads agree.
         const at = args.snapshot === undefined ? { tree: volume.tree, seq: volume.seq } : await this.snapshotTree(id, args.snapshot);
         if (op === "stat") return this.stat(at.tree, normalizePath(args.path));
         if (op === "list") return this.listFiles(at.tree, args);
+        if (op === "archive") return this.archiveEntries(at, args);
         return await this.readAll(volume.header.tenant, at, args);
       }
       if (op === "ls") return this.ls(volume, normalizePath(args.path));
@@ -480,6 +491,21 @@ export class VolumeService {
     return { seq: at.seq, ...(at.snapshot ? { snapshot: at.snapshot } : {}), files };
   }
 
+  /** What an archive of `path` (and `glob`) holds, at one seq or a snapshot's: each file with the chunks to stream. */
+  private archiveEntries(at: { tree: Tree; seq: number; snapshot?: string }, args: Record<string, any>) {
+    const path = normalizePath(args.path ?? "/");
+    const pattern = args.glob === undefined ? undefined : globRegex(args.glob);
+    const files: ({ path: string } & FileEntry)[] = [];
+    let bytes = 0;
+    for (const [file, entry] of at.tree.walk(path)) {
+      if (pattern && !pattern.test(relativeTo(file, path))) continue;
+      if (files.length === ARCHIVE_LIMITS.files) throw new HttpError(413, `More than ${ARCHIVE_LIMITS.files} files match; narrow path or glob`);
+      if ((bytes += entry.size) > ARCHIVE_LIMITS.bytes) throw new HttpError(413, `The files that match are more than ${ARCHIVE_LIMITS.bytes} bytes; narrow path or glob`);
+      files.push({ path: file, ...entry });
+    }
+    return { seq: at.seq, ...(at.snapshot ? { snapshot: at.snapshot } : {}), root: path, files };
+  }
+
   private async snapshots(id: string): Promise<SnapshotSummary[]> {
     return (await this.db.query(`select ${SNAPSHOT_COLUMNS} from volume_snapshots where volume = $1 and name not like '${TEMPORARY_SNAPSHOT}%' order by created_at, id`, [id])).rows;
   }
@@ -516,6 +542,27 @@ export class VolumeService {
       this.check(volume, path, args.ifMatch);
       const change = await this.commit(volume, { t: "del", seq: volume.seq + 1, path, at: Date.now(), ...(typeof args.by === "string" ? { by: args.by } : {}) });
       return { path, deleted: true, seq: change.seq };
+    }
+    if (op === "restore") {
+      // The volume becomes as the snapshot was, in place: one write that removes what the snapshot lacks and writes
+      // what differs, each a change agents mounting it see (a fork would be another volume).
+      const { files } = await this.snapshotFiles(id, args.snapshot);
+      const wanted = new Map(files);
+      await this.touch(volume.header.tenant, files.flatMap(([, entry]) => entry.chunks));
+      const at = Date.now(), by = typeof args.by === "string" ? { by: args.by } : {};
+      let seq = volume.seq;
+      const records: TreeRecord[] = [];
+      // Removals first, so a file the snapshot has where a directory is now (or the other way) finds the way clear.
+      for (const path of volume.tree.files.keys()) if (!wanted.has(path)) records.push({ t: "del", seq: ++seq, path, at, ...by });
+      const removed = records.length;
+      for (const [path, entry] of wanted) {
+        const current = volume.tree.files.get(path);
+        if (current && current.contentType === entry.contentType && current.chunks.join() === entry.chunks.join()) continue;
+        const { by: _by, ...kept } = entry;
+        records.push({ t: "put", seq: ++seq, path, entry: { ...kept, version: seq, updatedAt: at, ...by } });
+      }
+      if (records.length) await this.commitAll(volume, records);
+      return { snapshot: args.snapshot as string, seq: volume.seq, written: records.length - removed, removed };
     }
     if (op === "snapshot") {
       // `directory`: a temporary snapshot of one directory for a tool call, within `limit` (runtime code only).

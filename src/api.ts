@@ -28,12 +28,13 @@ import { definitionRoutes } from "./definitions-api.ts";
 import { runRoutes, type RunsContext } from "./runs.ts";
 import type { RequestRecord } from "../shared/client-protocol.ts";
 import * as schema from "./api-schemas.ts";
-import { normalizePath, VOLUME_LIMITS, type VolumeService } from "./volumes.ts";
+import { normalizePath, VOLUME_LIMITS, type FileEntry, type VolumeService } from "./volumes.ts";
 import { actorInput, identityInput } from "./identity.ts";
 import { languageInput, transcribeRequest, type TranscriptionService } from "./transcription.ts";
 import { AUDIO_LIMITS } from "./limits.ts";
-import { declaredType, fileResponse, type FileLinks } from "./files.ts";
+import { declaredType, downloadHeaders, fileResponse, type FileLinks } from "./files.ts";
 import type { FileUrls } from "./file-arguments.ts";
+import { tar } from "./tar.ts";
 import { idempotency } from "./idempotency.ts";
 import { BrowserTokens, readableFrame, readableMessage, readableRequest, type BrowserClaims } from "./browser-tokens.ts";
 import type { Help } from "./help.ts";
@@ -1167,6 +1168,32 @@ export function api(context: ApiContext) {
   });
   route(createRoute({ method: "delete", path: "/v1/volumes/{id}/snapshots/{snapshotId}", request: { params: volumeId.extend({ snapshotId: z.string() }) }, responses: { 200: reply("The snapshot is deleted", schema.Deleted) } }),
     async c => json(c, 200, await (await volume(c)).call("deleteSnapshot", { snapshot: c.req.param("snapshotId") })));
+  route(createRoute({
+    method: "get", path: "/v1/volumes/{id}/archive",
+    request: { params: volumeId, query: z.object({
+      snapshot: z.string().optional().openapi({ description: "Archive a snapshot (a project's version) instead of the volume as it is" }),
+      path: z.string().optional().openapi({ description: "Only the files under this directory (default /); their names in the archive are relative to it" }),
+      glob: z.string().optional().openapi({ description: "Only files matching this pattern, relative to path (e.g. **/*.ts)" }),
+    }) },
+    responses: { 200: binary("A tar.gz of the files, as the volume (or the snapshot) has them at one seq, named relative to path; X-Volume-Seq is that seq. At most 10,000 files and 1 GiB, else 413") },
+  }), async c => {
+    const target = await volume(c);
+    const { snapshot, path, glob } = c.req.query();
+    const at = await target.call("archive", { ...(snapshot ? { snapshot } : {}), ...(path ? { path } : {}), ...(glob ? { glob } : {}) }) as { seq: number; root: string; files: ({ path: string } & FileEntry)[] };
+    const service = volumes();
+    const archive = tar(at.files.map(file => ({ name: at.root === "/" ? file.path.slice(1) : file.path.slice(at.root.length + 1), size: file.size, mtime: file.updatedAt, stream: () => service.stream(target.tenant, file) })));
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) { const next = await archive.next(); if (next.done) controller.close(); else controller.enqueue(new Uint8Array(next.value)); },
+      async cancel() { await archive.return(undefined); },
+    }).pipeThrough(new CompressionStream("gzip") as unknown as ReadableWritablePair<Uint8Array, Uint8Array>);
+    const name = `${snapshot ?? target.id}.tar.gz`;
+    return new Response(body, { headers: { ...downloadHeaders("application/gzip", name), "X-Volume-Seq": String(at.seq), "Cache-Control": "no-store" } });
+  });
+  route(createRoute({ method: "post", path: "/v1/volumes/{id}/restore", request: { params: volumeId, body: content(schema.RestoreInput) }, responses: { 200: reply("The volume is as the snapshot was: what it lacked is removed, what differed is written, each a change", schema.Restored), 404: reply("Unknown volume or snapshot", schema.ApiError) } }), async c => {
+    const target = await volume(c);
+    const { snapshot } = parse(schema.RestoreInput, await readJson(c.req.raw.body, 4096, {}));
+    return json(c, 200, await target.call("restore", { snapshot }));
+  });
   route(createRoute({ method: "post", path: "/v1/volumes/{id}/fork", request: { params: volumeId, body: content(schema.ForkInput) }, responses: { 201: reply("A new, independent volume with the same files", schema.Volume) } }), async c => {
     const target = await volume(c);
     const { name, snapshot } = await readJson(c.req.raw.body, 4096, {});

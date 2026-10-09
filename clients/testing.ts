@@ -64,9 +64,13 @@ export async function testRuntime(options: { url?: string } = {}) {
     return new Request(serverUrl, { method: "POST", headers, body: JSON.stringify(message) });
   }
 
-  /** Call one tool through a fetch handler as `identity`: its CallToolResult, or the JSON-RPC error thrown. */
-  async function callTool(handler: (request: Request) => Promise<Response>, serverUrl: string, name: string, args: Record<string, unknown>, identity: TestIdentity) {
-    const response = await handler(await request(serverUrl, { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }, identity));
+  /**
+   * Call one tool through a fetch handler as `identity`: its CallToolResult, or the JSON-RPC error thrown. Each call
+   * carries its own idempotency key, as each of the runtime's calls does; pass `idempotencyKey` to send one again.
+   */
+  async function callTool(handler: (request: Request) => Promise<Response>, serverUrl: string, name: string, args: Record<string, unknown>, identity: TestIdentity, options: { idempotencyKey?: string } = {}) {
+    const _meta = { "agent-runtime/idempotencyKey": options.idempotencyKey ?? crypto.randomUUID() };
+    const response = await handler(await request(serverUrl, { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args, _meta } }, identity));
     const body = await response.json() as any;
     if (!response.ok) throw new Error(`HTTP ${response.status}: ${body.error ?? JSON.stringify(body)}`);
     if (body.error) throw new Error(body.error.message);
