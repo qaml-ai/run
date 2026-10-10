@@ -638,9 +638,8 @@ test("under runLimits.contextTokens, a context whose fixed part nearly fills the
   await supervisor.start("tight", { model: fake.model(1_000_000), apiKey: "fixture", systemPrompt: `Rules ${"r".repeat(36_000)}`, runLimits: { contextTokens: 20_000 } }, { ...bridge, background: (event: any) => background.push(event) } as never);
   const turns = 16;
   for (let index = 0; index < turns; index++) {
-    const events: any[] = [];
-    assert.equal((await supervisor.request("tight", "prompt", { text: turn(index) }, event => events.push(event))).error, null);
-    assert.equal(events.filter(event => event.type === "compaction_start").length, 0, "no turn waits for the limit's summary");
+    // At the limit a turn waits for its summary (its own stream); below it, the summary is made in the background.
+    assert.equal((await supervisor.request("tight", "prompt", { text: turn(index) }, event => background.push(event))).error, null);
     await until(() => !background.some(event => event.type === "compaction_start") || background.filter(event => event.type === "compaction_end").length === background.filter(event => event.type === "compaction_start").length, "the compaction ended");
   }
   const ended = background.filter(event => event.type === "compaction_end" && event.summarizedMessages > 0);

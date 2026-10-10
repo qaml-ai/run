@@ -418,8 +418,7 @@ export function createAgentHost(hostIO: HostIO) {
     let need = compactionNeed(view, config.model, systemTokens(system));
     if (need === "blocking" || trims(budget)) need = "blocking";
     else need ??= trims(budget - backgroundTokens(config.model)) ? "background"
-      // The agent's own limit never holds up a turn: its compaction runs in the background.
-      : limited !== config.model && grown(view, limited.contextWindow) && compactionNeed(view, limited, systemTokens(system)) ? "background" : undefined;
+      : limited !== config.model && grown(view, limited.contextWindow) ? compactionNeed(view, limited, systemTokens(system)) : undefined;
     return { system, view, budget, need };
   }
 

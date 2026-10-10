@@ -2515,7 +2515,7 @@
           "contextTokens": {
             "type": "integer",
             "minimum": 20000,
-            "description": "The most context one model request carries, in tokens: older context is summarized (compacted) before a request would pass it, starting in the background somewhat below it, and again only once a quarter of it is new. Default the model's context window, and never above it. At least 20,000. A long-lived agent on a large-window model costs less per request with a lower one, since each request reads its whole context"
+            "description": "The most context one model request carries, in tokens: older context is summarized (compacted) before a request would pass it, starting in the background somewhat below it. Default the model's context window, and never above it. At least 20,000. A long-lived agent on a large-window model costs less per request with a lower one, since each request reads its whole context"
           }
         },
         "additionalProperties": false,
@@ -3743,7 +3743,7 @@
               "contextTokens": {
                 "type": "integer",
                 "minimum": 20000,
-                "description": "The most context one model request carries, in tokens: older context is summarized (compacted) before a request would pass it, starting in the background somewhat below it, and again only once a quarter of it is new. Default the model's context window, and never above it. At least 20,000. A long-lived agent on a large-window model costs less per request with a lower one, since each request reads its whole context"
+                "description": "The most context one model request carries, in tokens: older context is summarized (compacted) before a request would pass it, starting in the background somewhat below it. Default the model's context window, and never above it. At least 20,000. A long-lived agent on a large-window model costs less per request with a lower one, since each request reads its whole context"
               }
             },
             "additionalProperties": false,
