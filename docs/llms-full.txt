@@ -2041,7 +2041,7 @@ app.post("/api/agent", nodeListener(handler));    // before any body parser for 
 | `authorize(request, { thread, action })` | Required. Return `{ userId, name?, agentKey? }` or `null`. |
 | `agent` | How the user's agent is made: `{ instructions, model, tools, definition, context, spendLimit, … }`, or a function of the user. |
 | `onSend({ auth, text, data, request })` | Before each message: return `{ text?, metadata? }`, or `throw new Response(…)` to refuse it (quotas, moderation). |
-| `browserToken` | `{ ttlSeconds, events, redact, url }` for the tokens it mints (default 15 minutes, no provider cost). |
+| `browserToken` | `{ ttlSeconds, events, redact, scopes, url }` for the tokens it mints (default 15 minutes, no provider cost). `scopes: ["events", "state", "history", "inputs", "children"]` adds `children`, to read the agent's background sub-agents too. |
 | `allowedOrigins` | Other origins whose pages may call the route (with CORS). |
 | `linkAnyMountedPath` | `true`: file links for any path in the agent's mounts, so the boundary is what the agent can read. Default: only files it presented, or in its own workspace volume. |
 | `proxy` | `true`: browsers read their agent through this route too, and only ever talk to your origin (see [Reading through your route](https://run.camelai.com/docs/frontend.md#reading-through-your-route-proxy)). Default `false`. |
@@ -4096,8 +4096,10 @@ const lead = await agents.upsert("research-lead", {
 | `interrupt_agent({ agent })` | Aborts one of its running sub-agents; its notification follows with status `aborted` |
 
 The sub-agent is the same as a delegated one: the same targets, chain and
-depth limit, identity and key scope, and it lives a day. It gets what its parent
-agent may still spend (its `spendLimit`) as its own run's limit. A stateless run
+depth limit, identity and key scope, and it lives a day. Its run's spend limit
+is a share of what its parent agent may still spend (its `spendLimit`): what no
+running sub-agent holds, split evenly among the slots `maxParallel` leaves, so
+sub-agents started together share it rather than each getting all of it. A stateless run
 (`POST /v1/runs`) cannot start one: nothing would hear it end.
 
 ### Notifications
@@ -4247,7 +4249,10 @@ the tool's result, if you answer MCP yourself. The runtime takes it only from a
 tool server with auth `"runtime"` (a definition's or the agent's own), and checks
 that the agent is your tenant's, is not already in the calling agent's chain,
 and that the depth and `maxParallel` limits allow it (the calling agent's
-`delegate` settings, or the defaults). The model's call then answers
+`delegate` settings, or the defaults). An agent that starts sub-agents only
+through your tools can set those limits alone, `delegate: { maxParallel, maxDepth }`
+without the `delegate` or `agents` builtin, which gives the model no tool of
+its own to start them. The model's call then answers
 `{ agentId, name }`, and the worker's answer arrives as a notification. The
 calling agent needs no `agents` builtin for this.
 
@@ -4260,8 +4265,8 @@ parent's task.
 ### In the SDKs and UIs
 
 - `agentNotice(message)` (Python `agent_notice`) tells a history message the
-  runtime wrote apart: `{ kind: "notification" | "message", agentId, name, status?, error? }`,
-  or undefined for anyone else's.
+  runtime wrote apart: `{ kind: "notification" | "message", agentId, name, status?, error?, output?, usage?, inputs? }`
+  (a notification's structured `output`, its `usage`, and the `inputs` it waits on), or undefined for anyone else's.
 - `stream()` parts and watcher events include `subagent_message`;
   `abort({ children: "keep" })` keeps background sub-agents running.
 - `<AgentChat>` shows notifications and agent messages as collapsible notices

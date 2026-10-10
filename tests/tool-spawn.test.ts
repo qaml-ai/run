@@ -59,6 +59,7 @@ test("a trusted tool prepares a persistent worker and starts it as a background 
   const history = (await r.call(`/v1/agents/${parent.session.id}/history`)).json.messages;
   const told = history.map(agentNotice).filter(Boolean);
   assert.deepEqual(told.map((notice: any) => [notice.kind, notice.status, notice.agentId]).sort(), [["notification", "completed", workers.get("a")], ["notification", "completed", workers.get("a")]]);
+  assert.ok(told.every((notice: any) => notice.usage && "costUsd" in notice.usage), "a notice carries its child's usage");
   assert.deepEqual(history.filter((message: any) => message.source).map((message: any) => text(message)).sort(), ["worked on t1", "worked on t2"]);
   const worker = (await r.call(`/v1/agents/${workers.get("a")}`)).json.requests.filter((request: any) => request.method === "prompt");
   assert.equal(worker.length, 2);

@@ -1336,6 +1336,8 @@ class ServeToolsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(agent_notice({"role": "user", "source": source, "metadata": {"status": "failed", "error": "broke"}}),
                          {"kind": "notification", "agentId": "client_a", "name": "bot-a", "status": "failed", "error": "broke"})
         self.assertEqual(agent_notice({"role": "user", "source": source, "metadata": {"kind": "message"}})["kind"], "message")
+        told = agent_notice({"role": "user", "source": source, "metadata": {"status": "completed", "output": {"ok": True}, "usage": {"costUsd": 0.1}, "inputs": ["in_1"]}})
+        self.assertEqual((told["output"], told["usage"], told["inputs"]), ({"ok": True}, {"costUsd": 0.1}, ["in_1"]))
         self.assertIsNone(agent_notice({"role": "user", "content": "hi"}))
 
     async def test_each_call_is_answered_as_the_user_the_token_names(self):

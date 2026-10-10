@@ -103,13 +103,16 @@ class RuntimeIdentity:
 
 def agent_notice(message):
     """Who wrote a history message the runtime made, if it did: a background sub-agent's notification (kind
-    "notification", with its status) or a message between agents (kind "message"). None for anyone else's."""
+    "notification", with its status, structured output, usage and the inputs it waits on) or a message between agents
+    (kind "message"). None for anyone else's."""
     source = message.get("source") if isinstance(message, dict) else None
     if not isinstance(source, dict) or source.get("kind") != "agent":
         return None
     metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
     return {"kind": "message" if metadata.get("kind") == "message" else "notification", "agentId": source.get("agentId"), "name": source.get("name"),
-            **({"status": metadata["status"]} if metadata.get("status") else {}), **({"error": metadata["error"]} if metadata.get("error") else {})}
+            **({"status": metadata["status"]} if metadata.get("status") else {}), **({"error": metadata["error"]} if metadata.get("error") else {}),
+            **({"output": metadata["output"]} if "output" in metadata else {}), **({"usage": metadata["usage"]} if "usage" in metadata else {}),
+            **({"inputs": metadata["inputs"]} if metadata.get("inputs") else {})}
 
 
 def identity_from_claims(claims):

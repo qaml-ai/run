@@ -237,11 +237,15 @@ export function spawnAgent(directive: { agent: string; task: string; name?: stri
  * A history message the runtime wrote, as such: a background sub-agent's notification (with its status) or a message
  * between agents. Undefined for anyone else's (a person's, or the agent's own).
  */
-export function agentNotice(message: unknown): { kind: "notification" | "message"; agentId: string; name: string; status?: string; error?: string } | undefined {
+export function agentNotice(message: unknown): { kind: "notification" | "message"; agentId: string; name: string; status?: string; error?: string; output?: unknown; usage?: Record<string, unknown> | null; inputs?: string[] } | undefined {
   const { source, metadata } = (message ?? {}) as { source?: { kind?: string; agentId: string; name: string }; metadata?: Record<string, unknown> };
   if (source?.kind !== "agent") return undefined;
   const text = (value: unknown) => typeof value === "string" && value ? value : undefined;
-  return { kind: metadata?.kind === "message" ? "message" : "notification", agentId: source.agentId, name: source.name, ...(text(metadata?.status) ? { status: metadata!.status as string } : {}), ...(text(metadata?.error) ? { error: metadata!.error as string } : {}) };
+  const inputs = Array.isArray(metadata?.inputs) ? (metadata!.inputs as unknown[]).filter((id): id is string => typeof id === "string") : undefined;
+  return {
+    kind: metadata?.kind === "message" ? "message" : "notification", agentId: source.agentId, name: source.name, ...(text(metadata?.status) ? { status: metadata!.status as string } : {}), ...(text(metadata?.error) ? { error: metadata!.error as string } : {}),
+    ...(metadata?.output !== undefined ? { output: metadata.output } : {}), ...(metadata?.usage !== undefined ? { usage: metadata.usage as Record<string, unknown> | null } : {}), ...(inputs?.length ? { inputs } : {}),
+  };
 }
 /** `tool({...})` definitions as an attached MCP server: JSON results become a text block (and structured content for objects). */
 export function toolServer(tools: Tools): ToolServer {

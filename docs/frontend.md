@@ -79,7 +79,7 @@ app.post("/api/agent", nodeListener(handler));    // before any body parser for 
 | `authorize(request, { thread, action })` | Required. Return `{ userId, name?, agentKey? }` or `null`. |
 | `agent` | How the user's agent is made: `{ instructions, model, tools, definition, context, spendLimit, … }`, or a function of the user. |
 | `onSend({ auth, text, data, request })` | Before each message: return `{ text?, metadata? }`, or `throw new Response(…)` to refuse it (quotas, moderation). |
-| `browserToken` | `{ ttlSeconds, events, redact, url }` for the tokens it mints (default 15 minutes, no provider cost). |
+| `browserToken` | `{ ttlSeconds, events, redact, scopes, url }` for the tokens it mints (default 15 minutes, no provider cost). `scopes: ["events", "state", "history", "inputs", "children"]` adds `children`, to read the agent's background sub-agents too. |
 | `allowedOrigins` | Other origins whose pages may call the route (with CORS). |
 | `linkAnyMountedPath` | `true`: file links for any path in the agent's mounts, so the boundary is what the agent can read. Default: only files it presented, or in its own workspace volume. |
 | `proxy` | `true`: browsers read their agent through this route too, and only ever talk to your origin (see [Reading through your route](#reading-through-your-route-proxy)). Default `false`. |
