@@ -11,6 +11,84 @@ Changes on main since the last tag are in [unreleased/](unreleased/), a file for
 any order never conflict here), gathered into a version's notes when it is tagged: `npm run release-notes` shows them
 together, and `npm run release-notes -- <version>` writes them here and removes the files.
 
+## 0.8.0 (runtime-v0.8.0, 2026-10-09)
+
+Images (`POST /v1/images` and the `generate_image` builtin, with image usage and billing) and background sub-agents
+(the `agents` builtin: `spawn_agent`, `wait_agent`, `list_agents`, with exactly-once completion notifications). The
+TypeScript SDK 0.19.0 and Python SDK 0.15.0 use it ([SDK reference](../reference/sdk.md)).
+
+**Before upgrading a self-hosted runtime:** migration 061 runs on start (the `agent_children` and `agent_wakes`
+tables). Image generation uses the tenant's OpenAI key (or a key scope's); the platform's key is billed at the prices
+in `AGENT_PRICE_IMAGE_TEXT_INPUT_USD`, `AGENT_PRICE_IMAGE_INPUT_USD` and `AGENT_PRICE_IMAGE_OUTPUT_USD`.
+`usage.recorded` consumers that switch on `kind` should map `image`. New settings: `AGENT_WAKES_PER_HOUR` (default
+100) and `AGENT_CHILD_SWEEP_MS` (default 15 s).
+
+### Images
+
+- `POST /v1/images` makes images from a prompt, or edits up to 4 images given (base64, URL or multipart, with an
+  optional mask), with OpenAI's `gpt-image-2.5-flare` on the OpenAI key a model call would use (a key scope's, the
+  tenant's own, else the platform's). It takes `size` (`1024x1024`, `1536x1024`, `1024x1536`), `quality` (`low`,
+  `medium` by default, `high`), `format`, `background` and `n` (1 to 4), and answers the images as base64, or, with
+  `volumeId`, saves them in that volume and answers their paths. See [Images](../guides/images.md).
+- On the platform's key it is billed per token at OpenAI's prices ($5 per million text tokens in, $8 per million image
+  tokens in, $30 per million image tokens out: a 1024x1024 image is $0.0059 at `low`, $0.0132 at `medium`, $0.0527 at
+  `high`), with spend limits checked against its estimate first. Usage kind `image`: a `GET /v1/usage` row, `image`
+  and `images` on the hour's ledger entry, and `usage.recorded` events with `kind: "image"` and `images`. Operators
+  set the prices with `AGENT_PRICE_IMAGE_TEXT_INPUT_USD`, `AGENT_PRICE_IMAGE_INPUT_USD` and
+  `AGENT_PRICE_IMAGE_OUTPUT_USD` (per million tokens).
+- OpenAI's safety refusals are 400 `IMAGE_REFUSED`, with the `stage` and `categories` it names, and are not charged.
+  New codes: `IMAGE_UNAVAILABLE`, `IMAGE_REFUSED`, `IMAGE_TOO_LARGE`, `UNSUPPORTED_IMAGE`, `IMAGE_FAILED`.
+- `usage.recorded` consumers that map kinds should map `image`; as before, treat a kind you do not know as other usage.
+
+### generate_image builtin
+
+- Agents, definitions and stateless runs take a `generate_image` builtin: the model makes an image, or edits images
+  from its files, with `gpt-image-2.5-flare` (as `POST /v1/images` does). The image is saved to the workspace under
+  `tool-outputs/generate_image/`, shown to the model, and presented to the user with `present_file`. A stateless run
+  with it gets a workspace. See [Images](../guides/images.md#in-an-agent).
+- Its images are billed per token like `POST /v1/images`, with the run's facts on `usage.recorded` (`kind: "image"`),
+  and count against the agent's and the run's spend limits (checked against the estimate before anything is sent). A
+  run's `usage.imageCostUsd` says what they cost, and a sub-agent's count toward its parent's spend.
+- Saving a definition or an agent with `generate_image` and no OpenAI key to use answers with a warning; the console's
+  definition editor offers it.
+
+### Background sub-agents
+
+- The `agents` builtin gives the model `spawn_agent`, `wait_agent` and `list_agents`, with the same `delegate` settings
+  (targets, `maxDepth`, `maxParallel`). `spawn_agent` starts a sub-agent and returns `{ agentId, name }` at once. When
+  the child's run ends (completed, failed, aborted or waiting on a person), its answer reaches the parent once, as a
+  user message with `source: { kind: "agent", agentId, name }` that the model reads in an `<agent_notification>` block,
+  and starts a turn or queues behind the running one. `wait_agent` waits for children instead, and answers their
+  endings itself. See [Background sub-agents](../guides/multi-agent.md#background-sub-agents).
+- Delivery is exactly once across node loss: each child has a row in the new `agent_children` table (migration 061),
+  its notification has request id `child_<request>`, and every node sweeps for undelivered endings every
+  `AGENT_CHILD_SWEEP_MS` (default 15 s).
+- A child's spend is charged to its parent's spend limit when its notification lands. A parent at its spend limit, or a
+  chain past `AGENT_WAKES_PER_HOUR` (default 100) turns started by notifications this hour, gets the notification in
+  history without a turn: `stopped: "spend_limit"` or `"agent_loop_limit"`.
+- Identity tokens of a sub-agent's run (from `delegate` or `spawn_agent`) carry `par` (its parent agent) and `root` (its
+  chain's first agent); the SDKs read them as `identity.parentAgentId` and `identity.rootAgentId`
+  (`parent_agent_id`, `root_agent_id` in Python).
+
+### Journey events
+
+- A journey secret that is named (`AGENT_JOURNEY_SECRET_ARN`) and has no value yet no longer stops the runtime from
+  starting: journey events and the admin site's reports stay off until it has one, and the log says
+  `journey_not_configured`. The Terraform module now makes the two secret containers (`journey`, `journey-report`),
+  lets the task role read them and sets the journey settings from `journey_url` and the `journey_*` variables;
+  `infra/journey.sh` stores the two values and rolls the service. See
+  [Admin analytics](admin-analytics.md#connecting-the-journey-store).
+
+### Images in the SDKs
+
+- TypeScript: `agents.images.generate(prompt, options?)` and `agents.images.edit(prompt, images, options?)` (also
+  `runtime.images`), with the `ImageOptions`, `ImagesResult` and `GeneratedImage` types; `Builtin` includes
+  `generate_image`, `RunUsage` has `imageCostUsd`, and `usage.recorded` events type `kind: "image"` and `images`.
+- Python: `agents.images.generate(prompt, ...)` and `agents.images.edit(prompt, images, ...)` (also `runtime.images`,
+  and the synchronous clients'), images given as bytes, local paths or `{"url"}`. See
+  [SDK reference](../reference/sdk.md#images).
+- The CLI's MCP tools take `generate_image` among an agent's builtins.
+
 ## 0.7.0 (runtime-v0.7.0, 2026-10-09)
 
 Pinned snapshots, labels, and snapshots made from contents, for projects as the store of record. The TypeScript SDK

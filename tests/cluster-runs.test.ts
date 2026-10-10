@@ -114,8 +114,12 @@ test("a run whose node dies after its tool call completed resumes on another nod
   const mcp = await mcpServer(t);
   // The tool call, then a model call that never answers on A (its node dies during it), then the answer on B.
   const model = await fakeModel(t, (_body, index) => index === 0 ? effect(1) : index === 1 ? undefined : { role: "assistant", content: "effect done once" });
-  const a = await c.start("a", { ...model.env, ...LOCAL });
-  const b = await c.start("b", { ...model.env, ...LOCAL });
+  // A lease that outlasts a database or CPU stall on a loaded runner, as cluster-resume's has: under the cluster's 1.5 s, a
+  // stall fenced B as well and moved the run again, a second resume. B still takes over soon after A dies: it ends a dead
+  // peer's late heartbeat (Ownership.reap).
+  const lease = { AGENT_LEASE_TTL_MS: "6000" };
+  const a = await c.start("a", { ...model.env, ...LOCAL, ...lease });
+  const b = await c.start("b", { ...model.env, ...LOCAL, ...lease });
   const created = await api(a.url, "/v1/runs", { definition: await definition(a.url, mcp.url), input: "do the thing" });
   assert.equal(created.status, 202, JSON.stringify(created.json));
   const runId = created.json.id;
