@@ -4304,8 +4304,9 @@ export class ClientSessions {
         reachable("an abort reached a notification's run before its message landed, which landed without a turn");
         params = { ...params, landOnly: STOPPED_NOTICE };
       }
-      else if (method !== "continue") throw new Error("The run was aborted");
-      params = { ...params, aborted: true };
+      // Ended as an abort, as the agent ends one it has (code aborted), not as a runtime failure.
+      else if (method !== "continue") return { error: "The run was aborted", code: "aborted" };
+      else params = { ...params, aborted: true };
     }
     try {
       return await this.supervisor.request(id, method, params, RUN_METHODS.includes(record.method)
