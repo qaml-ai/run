@@ -63,7 +63,7 @@ export interface AgentConfig {
   mcp?: ToolServer;
   /** A definition (reusable configuration with tool sources: MCP servers, OpenAPI specs, built-ins) to make it from. */
   definition?: string;
-  /** Tools the runtime answers itself (web_fetch, web_search, schedule, ask_user, delegate), without a definition. */
+  /** Tools the runtime answers itself (web_fetch, web_search, schedule, ask_user, delegate, agents), without a definition. */
   builtins?: Builtin[];
   /**
    * Sub-agents: who the agent may hand tasks to (definitions, or agents by key), with `delegate` as its tool. Without a definition;
@@ -243,7 +243,7 @@ export type StreamPart =
   | { type: "input_required"; input: RunInput; raw: AgentEvent }
   /** With `subagents: true`: a delegate call's child agent started on its task, and ended. */
   | { type: "subagent_start"; toolCallId: string; agentId: string; name: string; raw: AgentEvent }
-  | { type: "subagent_end"; toolCallId: string; agentId: string; status: "completed" | "input_required" | "failed"; raw: AgentEvent }
+  | { type: "subagent_end"; toolCallId: string; agentId: string; status: "completed" | "input_required" | "failed" | "aborted"; raw: AgentEvent }
   /** Always last: the run as it ended. */
   | { type: "done"; run: Run };
 
@@ -696,7 +696,7 @@ export class Agent {
    * Stop the agent: its running turn, and the runs queued behind it (each fails with code `cancelled`), so nothing runs
    * after the stop. `queued: "keep"` stops the running turn only.
    */
-  abort(options: { queued?: "cancel" | "keep" } = {}) { return this.client.abort(options); }
+  abort(options: { queued?: "cancel" | "keep"; children?: "abort" | "keep" } = {}) { return this.client.abort(options); }
   /**
    * A new agent with this one's configuration, a copy of its history and a fork of its workspace, each its own from
    * then on: try another direction without losing this one. By default the history ends with the last turn that ended

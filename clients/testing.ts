@@ -10,6 +10,8 @@
 export interface TestIdentity {
   subject?: string; actor?: string; tenant?: string; agent?: string; definition?: string;
   context?: Record<string, unknown>; origin?: Record<string, unknown>;
+  /** A sub-agent's: the agent that started it, and its chain's first. */
+  parentAgentId?: string; rootAgentId?: string;
 }
 
 const encode = (value: unknown) => base64url(new TextEncoder().encode(typeof value === "string" ? value : JSON.stringify(value)));
@@ -40,6 +42,7 @@ export async function testRuntime(options: { url?: string } = {}) {
       iss: url, aud: audience, sub: identity.subject ?? agent, tenant: identity.tenant ?? "test", agent,
       ...(identity.definition ? { definition: identity.definition } : {}), ...(identity.context ? { ctx: identity.context } : {}),
       ...(identity.actor ? { act: identity.actor } : {}), ...(identity.origin ? { origin: identity.origin } : {}),
+      ...(identity.parentAgentId ? { par: identity.parentAgentId } : {}), ...(identity.rootAgentId ? { root: identity.rootAgentId } : {}),
       iat: now, exp: now + (overrides.expiresIn ?? 120), jti: crypto.randomUUID(), ...overrides.claims,
     };
     const signed = `${encode({ alg: "EdDSA", kid, typ: "JWT", ...overrides.header })}.${encode(claims)}`;

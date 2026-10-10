@@ -112,6 +112,29 @@ test("a run that fails, or is aborted, gives its slot back before it is seen to 
   assert.equal((await f.db.query("select count(*)::int as n from busy_agents")).rows[0].n, 0, "no slot is left held");
 });
 
+test("a run an abort cancels while it is still being accepted gives its slot back before it is seen to end", async t => {
+  const f = await fixture(t, { busyLimit: 1, releaseDelayMs: 25, timeout: 30_000 });
+  const idle = await f.start();
+  const other = await f.start();
+  const client = raw(f);
+  // The run's record is taken, and its durable write held (a slow disk): it is still being accepted when the abort comes.
+  const session = f.sessions.sessions.get(idle.session.id)!;
+  const flush = session.log.flush.bind(session.log);
+  const held = Promise.withResolvers<void>();
+  session.log.flush = async (durable?: boolean) => { if (durable) await held.promise; return flush(durable); };
+  const accepting = f.post(idle, "/requests", { id: "cancelled", method: "execute", params: { code: "return 1" } });
+  for (let tries = 0; !session.requests.has("cancelled"); tries++) { assert.ok(tries < 1000, "the run was taken"); await sleep(5); }
+  const aborting = f.sessions.abortAgent(idle.session.id, "default");
+  for (let tries = 0; session.requests.get("cancelled")?.state !== "completed"; tries++) { assert.ok(tries < 1000, "the abort cancelled the run"); await sleep(5); }
+  session.log.flush = flush;
+  held.resolve();
+  assert.deepEqual(await aborting, { cancelled: ["cancelled"] });
+  assert.equal((await accepting).status, 202);
+  assert.equal((await client.ended(idle, "cancelled", "poll")).result.code, "cancelled");
+  await client.start(other, "after", "execute", { code: "return 2" });
+  await client.ended(other, "after", "wait");
+});
+
 test("property: at a busy limit, runs that succeed, fail or are aborted across agents never exceed it, and the slot of every run seen to end is free", { timeout: 600_000 }, async t => {
   const limit = 2;
   const f = await fixture(t, { busyLimit: limit, releaseDelayMs: 10, timeout: 30_000 });
