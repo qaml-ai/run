@@ -2654,6 +2654,7 @@ export class ClientSessions {
         const notice = (record.params as { notice?: { metadata?: { to?: string } } } | undefined)?.notice;
         if (notice && notice.metadata?.to !== "child") {
           this.upsertRequest(session, { ...record, landOnly: STOPPED_NOTICE });
+          reachable("an abort reached a notification queued behind the turn, which lands without one");
           kept = true;
           continue;
         }

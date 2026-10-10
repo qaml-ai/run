@@ -531,11 +531,70 @@ test("a notification whose landing the database refuses for now is landed when t
 test("a notification an abort reaches before its turn lands without one, not lost (seed 23594457)", async () => {
   // Minimized from seed 23594457: the parent was aborted while a child's notification run waited to land; the run ended
   // aborted after its row was marked landed, and the message never reached history. An abort now lands a notification
-  // (and a child's message to its parent) without a turn, whether it was queued or about to begin.
+  // (and a child's message to its parent) without a turn, whether it was queued or about to begin. Timing elsewhere
+  // moves where this plan's abort lands; the two scenarios below reach each path on purpose.
   const plan: Plan = JSON.parse(readFileSync(new URL("./sim/cases/notification-aborted.json", import.meta.url), "utf8"));
   const result = await runPlan(plan, { quiet: true });
   assert.deepEqual(result.failures, []);
-  assert.ok(result.reached.includes("an abort reached a notification's run before its message landed, which landed without a turn"), result.reached.join(", "));
+});
+
+/**
+ * A parent that spawns a worker, then takes a three-second turn ("busy") the worker's notification queues behind. The
+ * worker answers after a second; the notification's turn says "heard".
+ */
+const abortWorld = (seed: number) => Sim.create({
+  seed, env: { AGENT_CHILD_SWEEP_MS: "2000", AGENT_IDLE_MS: "600000" },
+  respond: body => {
+    const system = JSON.stringify(body.messages.filter((message: any) => message.role === "system"));
+    const last = body.messages.at(-1), said = JSON.stringify(last.content);
+    if (system.includes("WORKER")) return { content: "worked", delayMs: 1_000 };
+    if (last.role === "tool") return { content: "spawned" };
+    if (said.includes("<agent_notification")) return { content: "heard" };
+    if (said.includes("busy")) return { content: "busy done", delayMs: 3_000 };
+    return { tool_calls: [{ index: 0, id: "call_spawn", type: "function", function: { name: "spawn_agent", arguments: JSON.stringify({ instructions: "You are a WORKER.", task: "work" }) } }] };
+  },
+});
+/** The parent's notification ended aborted, its message in history once, and no turn ran for it. */
+async function landedWithoutTurn(sim: Sim, parent: string) {
+  const id = (await sim.until(async () => (await sim.call("a", `/v1/agents/${parent}`)).json.requests.find((request: any) => request.id.startsWith("child_") && request.state === "completed"), "the notification to end")).id;
+  const record = await outcome(sim, "a", parent, id);
+  assert.equal(record.outcome.result?.code, "aborted", JSON.stringify(record.outcome));
+  const history = (await sim.call("a", `/v1/agents/${parent}/history`)).json.messages;
+  assert.equal(history.filter((message: any) => message.requestId === id).length, 1, "the notification is in history once");
+  assert.ok(!sim.model.served.some(served => JSON.stringify(served.body.messages.at(-1).content).includes("<agent_notification")), "no turn ran for it");
+  assert.deepEqual(sim.hooks.violations, []);
+}
+
+test("an abort that reaches a notification queued behind the parent's turn lands it without a turn", async t => {
+  const sim = await abortWorld(54);
+  t.after(() => sim.close());
+  await sim.start("a");
+  const parent = (await sim.call("a", "/v1/agents", { body: { builtins: ["agents"], delegate: { instructions: true } } })).json.id;
+  await outcome(sim, "a", parent, await prompt(sim, "a", parent, "spawn"));
+  await prompt(sim, "a", parent, "busy");
+  await sim.until(async () => (await sim.call("a", `/v1/agents/${parent}`)).json.requests.some((request: any) => request.id.startsWith("child_") && request.state === "running" && !request.began), "the notification to queue");
+  assert.equal((await sim.call("a", `/v1/agents/${parent}/abort`, { body: {} })).status, 200);
+  await landedWithoutTurn(sim, parent);
+  assert.ok(sim.hooks.reached.includes("an abort reached a notification queued behind the turn, which lands without one"), sim.hooks.reached.join(", "));
+});
+
+test("an abort that reaches a notification's run after it began, before its message landed, lands it without a turn", async t => {
+  const sim = await abortWorld(55);
+  t.after(() => sim.close());
+  await sim.start("a");
+  const parent = (await sim.call("a", "/v1/agents", { body: { builtins: ["agents"], delegate: { instructions: true } } })).json.id;
+  await outcome(sim, "a", parent, await prompt(sim, "a", parent, "spawn"));
+  await prompt(sim, "a", parent, "busy");
+  await sim.until(async () => (await sim.call("a", `/v1/agents/${parent}`)).json.requests.some((request: any) => request.id.startsWith("child_") && request.state === "running"), "the notification to queue");
+  // The notification's run begins, and its start (settling the inputs a new message supersedes) meets statement
+  // timeouts, so it waits to try again: the abort comes then.
+  const db = sim.db as SimDb;
+  db.errors = { rate: 1, codes: ["57014"], random: { float: () => 0, int: () => 0 }, only: /agent_inputs/ };
+  await sim.until(async () => (await sim.call("a", `/v1/agents/${parent}`)).json.requests.some((request: any) => request.id.startsWith("child_") && request.began), "the notification's run to begin");
+  await sim.call("a", `/v1/agents/${parent}/abort`, { body: {} });
+  db.errors = undefined;
+  await landedWithoutTurn(sim, parent);
+  assert.ok(sim.hooks.reached.includes("an abort reached a notification's run before its message landed, which landed without a turn"), sim.hooks.reached.join(", "));
 });
 
 /**
