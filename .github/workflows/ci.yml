@@ -2,6 +2,9 @@ name: CI
 on:
   push: { branches: [main] }
   pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
 concurrency:
   # A newer push to a PR supersedes its running check. Every main commit runs on its own, in parallel,
   # because each one gates its own deploy.
@@ -9,18 +12,17 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   checks:
+    timeout-minutes: 30
     # The Python SDK tests start a real runtime, whose js_exec runs on the v8-exec job's binary.
     needs: v8-exec
-    runs-on: ubuntu-latest
+    # The organization runner group admits only this workflow on main; PRs use hosted runners.
+    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
     services:
       postgres:
         image: public.ecr.aws/docker/library/postgres:16-alpine
         env: { POSTGRES_PASSWORD: test }
-        ports: ["5432:5432"]
+        ports: ["5432"]
         options: --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 20
-    env:
-      # The Python SDK tests start a real runtime.
-      AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:5432/postgres
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -31,12 +33,19 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: npm ci
+      - name: Isolate Python dependencies per checkout
+        run: |
+          python -m venv .venv
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       - run: pip install -r clients/python/requirements.txt
       - run: npm run typecheck
       - run: npm run test:python
+        env:
+          AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/postgres
       - run: npm run test:ui
       - run: npm run build:console && npm run build
   test:
+    timeout-minutes: 30
     # Both hosting modes run the full suite side by side, each split over four shards balanced by
     # tests/timings.json (scripts/test-shard.ts). A 2-vCPU runner runs test files one at a time.
     # js_exec runs on v8-exec, built once by the v8-exec job.
@@ -45,16 +54,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix: { hosting: [process, inline], shard: [1, 2, 3, 4] }
-    runs-on: ubuntu-latest
+    # The organization runner group admits only this workflow on main; PRs use hosted runners.
+    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
     services:
       postgres:
         image: public.ecr.aws/docker/library/postgres:16-alpine
         env: { POSTGRES_PASSWORD: test }
-        ports: ["5432:5432"]
+        ports: ["5432"]
         options: --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 20
     env:
-      # Every test that runs the runtime gets its own schema in this database.
-      AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:5432/postgres
       AGENT_HOSTING: ${{ matrix.hosting }}
     steps:
       - uses: actions/checkout@v4
@@ -68,17 +76,21 @@ jobs:
       # raise them as the devbox's runs do. A service container takes no server flags, so set it and restart.
       - name: Postgres max_connections 300
         run: |
-          id=$(docker ps -q --filter ancestor=public.ecr.aws/docker/library/postgres:16-alpine)
+          id="${{ job.services.postgres.id }}"
           docker exec "$id" psql -U postgres -c "alter system set max_connections = 300"
           docker restart "$id"
           until docker exec "$id" pg_isready -U postgres -h 127.0.0.1; do sleep 1; done
           docker exec "$id" psql -U postgres -tAc "show max_connections"
       - run: npm run test:shard -- ${{ matrix.shard }}/4
+        env:
+          TEST_CONCURRENCY: ${{ runner.environment == 'self-hosted' && '2' || '1' }}
+          AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/postgres
   sim:
     # The deterministic simulator (tests/sim, npm run sim): ten fixed seeds, each run twice and required to replay to the
     # same trace, and 50 fresh seeds drawn from the run's id. A failing seed prints the commands that reproduce it, and
     # its plan, history and logs are kept as the sim-failures artifact (npm run sim -- --replay <file>).
-    runs-on: ubuntu-latest
+    # The organization runner group admits only this workflow on main; PRs use hosted runners.
+    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -97,9 +109,11 @@ jobs:
         if: ${{ failure() }}
         with: { name: sim-failures, path: sim-failures/, if-no-files-found: ignore }
   v8-exec:
+    timeout-minutes: 30
     # js_exec's engine (sandbox/v8-exec), built here on x86_64 for the test shards, which run its tests
     # (seccomp included) and every js_exec suite on it; the image job builds and runs it on ARM64.
-    runs-on: ubuntu-latest
+    # The organization runner group admits only this workflow on main; PRs use hosted runners.
+    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
     steps:
       - uses: actions/checkout@v4
       # The binary itself, keyed by everything it is built from: a hit skips cargo altogether.
@@ -107,7 +121,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: sandbox/v8-exec/target/release/v8-exec
-          key: v8-exec-binary-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('sandbox/v8-exec/Cargo.lock', 'sandbox/v8-exec/Cargo.toml', 'sandbox/v8-exec/rust-toolchain.toml', 'sandbox/v8-exec/src/**') }}
+          key: v8-exec-binary-${{ runner.os }}-${{ runner.arch }}-${{ runner.environment }}-${{ hashFiles('sandbox/v8-exec/Cargo.lock', 'sandbox/v8-exec/Cargo.toml', 'sandbox/v8-exec/rust-toolchain.toml', 'sandbox/v8-exec/src/**') }}
       # The toolchain is sandbox/v8-exec/rust-toolchain.toml's; rusty_v8's prebuilt V8 library is cached with the target dir.
       - if: steps.binary.outputs.cache-hit != 'true'
         uses: actions/cache@v4
@@ -115,7 +129,7 @@ jobs:
           path: |
             ~/.cargo/registry
             sandbox/v8-exec/target
-          key: v8-exec-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('sandbox/v8-exec/Cargo.lock', 'sandbox/v8-exec/rust-toolchain.toml') }}
+          key: v8-exec-${{ runner.os }}-${{ runner.arch }}-${{ runner.environment }}-${{ hashFiles('sandbox/v8-exec/Cargo.lock', 'sandbox/v8-exec/rust-toolchain.toml') }}
       - if: steps.binary.outputs.cache-hit != 'true'
         run: cd sandbox/v8-exec && cargo build --release --locked
       - uses: actions/upload-artifact@v4

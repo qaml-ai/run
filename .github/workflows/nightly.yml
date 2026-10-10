@@ -11,19 +11,20 @@ on:
       seed: { description: "PROP_SEED: replay one seed (with path)", default: "" }
       path: { description: "PROP_PATH: the failing path fast-check printed", default: "" }
       replay_path: { description: "PROP_REPLAY_PATH: a command sequence's replay path, from the printed replay command", default: "" }
+permissions:
+  contents: read
 concurrency: { group: nightly, cancel-in-progress: false }
 jobs:
   properties:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
     timeout-minutes: 90
     services:
       postgres:
         image: public.ecr.aws/docker/library/postgres:16-alpine
         env: { POSTGRES_PASSWORD: test }
-        ports: ["5432:5432"]
+        ports: ["5432"]
         options: --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 20
     env:
-      AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:5432/postgres
       PROP_SCALE: ${{ inputs.scale || '100' }}
       PROP_SEED: ${{ inputs.seed }}
       PROP_PATH: ${{ inputs.path }}
@@ -34,4 +35,7 @@ jobs:
         with: { node-version: 22, cache: npm }
       - run: npm ci
       # An empty PROP_SEED (a scheduled run) means a fresh seed per property.
-      - run: npm run test:props
+      # The shared host has 16 vCPUs; keep file concurrency within this job's resource budget.
+      - run: node --experimental-strip-types --disable-warning=ExperimentalWarning --test --test-concurrency=2 --test-timeout=3600000 tests/prop-*.test.ts
+        env:
+          AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/postgres

@@ -62,3 +62,17 @@ npm run openapi                  # regenerate openapi.json after changing /v1 ro
 
 The storage tests also run against S3 with `AGENT_TEST_S3_BUCKET=<bucket>`.
 `npm run studio` and `npm run demo:clients` need `AGENT_DATABASE_URL`.
+
+### Shared Azure CI
+
+Main-branch CI and Nightly use the `azure-ci` organization runners when `CI_RUNNER_LABELS` is set to
+`["self-hosted","Linux","X64","azure-ci"]`. Delete the variable to return new jobs to GitHub-hosted runners.
+PRs and non-main dispatches always use hosted runners; ARM64 image and publishing jobs remain on native ARM hosts.
+The runner group independently restricts execution to the CI and Nightly workflow files on main. It grants access
+only to run, camel-bots and camelAI. This trusts commits pushed to main; it does not enforce code review.
+
+The pool on camel-devbox has two slots shared across the repositories, an aggregate limit of 8 vCPUs and 24 GiB,
+and higher CPU scheduling weight than the continuously running DST jobs. It reserves no cores. Every test job uses
+its own Postgres container and allocated port; Docker commands target the exact service container ID. Test shards
+run two files at a time on Azure (`TEST_CONCURRENCY`), one on hosted runners. The nightly run uses two file workers.
+Python dependencies live in a checkout-local virtual environment. Manual CI dispatch does not trigger deployment.

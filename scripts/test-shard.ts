@@ -13,7 +13,8 @@ import { fileURLToPath } from "node:url";
  */
 const DEFAULT_SECONDS = 5;
 // Per test file as well as per test: the longest cluster files (tests/cluster-fresh-lease-*) run past two minutes on a CI runner.
-const TEST_ARGS = ["--experimental-strip-types", "--test", "--test-timeout=240000"];
+// Keep CI's file concurrency independent of the shared host's CPU count.
+const TEST_ARGS = ["--experimental-strip-types", "--test", `--test-concurrency=${process.env.TEST_CONCURRENCY ?? 1}`, "--test-timeout=240000"];
 const tests = new URL("../tests/", import.meta.url);
 const timingsFile = new URL("timings.json", tests);
 const files = readdirSync(tests).filter(name => name.endsWith(".test.ts")).sort();
