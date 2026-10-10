@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { normalizeContext, type Api, type Model } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
-import { contextTokens, explicitKeyStream, runCompaction } from "../src/compaction.ts";
+import { compactionNeed, contextTokens, explicitKeyStream, runCompaction } from "../src/compaction.ts";
 import { readTranscript } from "../src/transcript.ts";
 import { ClientSessions } from "../src/client-sessions.ts";
 import { Accounts } from "../src/accounts.ts";
@@ -646,4 +646,33 @@ test("under runLimits.contextTokens, a context whose fixed part nearly fills the
   assert.ok(ended.length >= 2, `it compacts: ${ended.length}`);
   // A quarter of the limit (5,000 tokens) is about two turns: never a summary on every turn.
   assert.ok(ended.length <= turns / 2, `${ended.length} compactions in ${turns} turns`);
+});
+
+test("the system prompt counts once: a provider's usage report already includes it, a bare estimate does not", async t => {
+  const fake = await provider(t);
+  const model = fake.model(25_000);
+  const usage = (input: number) => ({ input, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: input + 10, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } });
+  const user = { role: "user", content: "next", timestamp: 1 } as any;
+  const answer = { role: "assistant", content: [{ type: "text", text: "ok" }], api: "openai-completions", provider: "openai", model: "fixture", stopReason: "stop", usage: usage(15_000), timestamp: 2 } as any;
+  // 15,000 reported (system prompt included) is below the 17,500 where a 25,000 window starts compacting in the background.
+  assert.equal(contextTokens([user, answer], 9_000), 15_010);
+  assert.equal(compactionNeed([user, answer], model, 9_000), undefined);
+  // With no report, the estimate is all there is: the system prompt is added to it.
+  assert.ok(contextTokens([user], 9_000) >= 9_000);
+  const long = [{ role: "user", content: "x".repeat(40_000), timestamp: 1 } as any];
+  assert.equal(compactionNeed(long, model), undefined, "about 10,000 estimated");
+  assert.equal(compactionNeed(long, model, 9_000), "background", "and 9,000 more for the system prompt");
+});
+
+test("a compaction whose cut keeps every message makes no summary call and writes nothing", async t => {
+  const fake = await provider(t);
+  const context = [
+    { role: "user", content: "Remember the task code PELICAN-42.", timestamp: 1 },
+    { role: "assistant", content: [{ type: "text", text: "noted" }], api: "openai-completions", provider: "openai", model: "fixture", stopReason: "stop", timestamp: 2,
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } },
+    { role: "user", content: "next", timestamp: 3 },
+  ] as any[];
+  const outcome = await runCompaction({ context, offset: 0, model: fake.model(25_000), apiKey: "fixture" });
+  assert.ok("skipped" in outcome, JSON.stringify(outcome));
+  assert.equal(fake.summarizations().length, 0);
 });

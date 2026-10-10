@@ -75,8 +75,9 @@ test("OpenRouter models on a tenant's endpoint use its Responses API, reasoning 
   assert.equal(first.headers.authorization, `Bearer ${first.headers["x-agent-runtime-identity"]}`);
   assert.deepEqual(second.body.input.find((item: any) => item.type === "reasoning"), reasoning, "the reasoning item goes back whole");
 
-  // The last response filled most of the 4k window: the next turn compacts first, through the endpoint too.
-  await r.prompt(agent, "And 6 times 8?");
+  // The last response filled most of the 4k window: the next turn compacts first, through the endpoint too. It is long
+  // enough to be the recent context compaction keeps, so the first turn is what it summarizes.
+  await r.prompt(agent, `And 6 times 8? ${"Some background. ".repeat(400)}`);
   const summarizing = endpoint.requests[2];
   assert.equal(summarizing.path, "/agent-runtime/llm/openrouter/v1/responses");
   assert.ok(summarizing.headers["x-agent-runtime-identity"]);
@@ -156,8 +157,9 @@ test("a Codex model on a tenant's endpoint gets the ChatGPT backend's own reques
   assert.deepEqual([first.headers["session-id"], first.headers["x-client-request-id"]], [agent, agent]);
   assert.deepEqual(second.body.input.find((item: any) => item.type === "reasoning"), reasoning, "the reasoning item goes back whole");
 
-  // The last response filled most of the window: the next turn compacts first, through the endpoint too.
-  await r.prompt(agent, "And 6 times 8?");
+  // The last response filled most of the window: the next turn compacts first, through the endpoint too. It is long
+  // enough to be the recent context compaction keeps, so the first turn is what it summarizes.
+  await r.prompt(agent, `And 6 times 8? ${"Some background. ".repeat(6_000)}`);
   const summarizing = endpoint.requests[2];
   assert.equal(summarizing.path, "/agent-runtime/llm/openai-codex/codex/responses");
   assert.equal(summarizing.headers["chatgpt-account-id"], "passthrough");

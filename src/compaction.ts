@@ -38,9 +38,11 @@ export const MAX_WORKING_CHARS = 12_000_000;
  * Tokens the context will cost: the provider's last usage report plus an estimate for
  * later messages, or pi's per-message estimate if larger. Providers that report no
  * usage (some proxies) would otherwise look empty and never compact. Pi counts nothing
- * for file references, so what each stands for is added (see `fileChars`).
+ * for file references, so what each stands for is added (see `fileChars`). `fixedTokens`, what
+ * every request carries besides messages (the system prompt), counts toward the estimate only: a
+ * provider's report already includes it.
  */
-export function contextTokens(messages: AgentMessage[]): number {
+export function contextTokens(messages: AgentMessage[], fixedTokens = 0): number {
   let estimated = 0;
   const files = messages.map(message => Math.ceil(fileChars(message) / 4));
   messages.forEach((message, index) => { estimated += estimateTokens(message) + files[index]; });
@@ -48,7 +50,7 @@ export function contextTokens(messages: AgentMessage[]): number {
   const since = messages.find(message => message.role === "compactionSummary")?.timestamp ?? -Infinity;
   const reported = estimateContextTokens(messages.map(message => message.role === "assistant" && message.timestamp < since ? { ...message, usage: undefined as never } : message));
   const trailing = files.slice((reported.lastUsageIndex ?? -1) + 1).reduce((sum, tokens) => sum + tokens, 0);
-  return Math.max(reported.tokens + trailing, estimated);
+  return Math.max(reported.tokens + trailing, estimated + fixedTokens);
 }
 
 /** Pi's per-message estimate of `messages`' tokens, file references included: unlike `contextTokens`, for any part of a context. */
@@ -78,7 +80,7 @@ export function backgroundTokens(model: Model<Api>): number {
  */
 export function compactionNeed(messages: AgentMessage[], model: Model<Api>, fixedTokens = 0): "blocking" | "background" | undefined {
   const settings = compactionSettings(model);
-  const tokens = contextTokens(messages) + fixedTokens;
+  const tokens = contextTokens(messages, fixedTokens);
   if (shouldCompact(tokens, model.contextWindow, settings)) return "blocking";
   let chars = 0;
   for (const message of messages) if ((chars += messageChars(message)) > MAX_WORKING_CHARS) return "blocking";
@@ -385,7 +387,8 @@ export async function runCompaction(options: {
   const prepared = prepareCompaction(entries(context, offset, previous) as never, settings);
   if (!prepared.ok) throw prepared.error;
   const preparation = prepared.value;
-  if (!preparation) return { skipped: "Nothing before the recent context to summarize" };
+  // A cut that keeps everything would only add a summary of nothing, and change the cached prefix for it.
+  if (!preparation || (!preparation.messagesToSummarize.length && !preparation.turnPrefixMessages.length)) return { skipped: "Nothing before the recent context to summarize" };
   const complete = summarizer(apiKey, options.onResponse, options.modelHeaders, options.gate, options.outbound ?? outboundOfProcess());
   // Leave room for the summarization prompt and the summary itself.
   const chunkBudget = Math.max(4_000, Math.floor((model.contextWindow - settings.reserveTokens) * 0.6));
