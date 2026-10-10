@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { createServer } from "node:http";
 import { storageOwner } from "../../src/storage-usage.ts";
 import { RUN_START_ATTEMPTS } from "../../src/client-sessions.ts";
 import { prng } from "./env.ts";
@@ -58,10 +59,14 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
       const last = body.messages?.at(-1);
       // A background child: it messages its parent, then answers. A run asked to spawn starts one, then answers.
       if (system.includes("SIM CHILD")) return last?.role === "tool" ? { content: "child done", delayMs } : { tool_calls: [{ index: 0, id: "call_message", type: "function", function: { name: "send_message", arguments: JSON.stringify({ to: "parent", text: "progress" }) } }], delayMs };
+      if (system.includes("SIM WORKER")) return { content: "worker done", delayMs };
       const users = (body.messages ?? []).filter((message: any) => message.role === "user");
-      if (last?.role === "user" && JSON.stringify(users.at(-1)?.content ?? "").includes("spawn-me")) {
+      const asked = last?.role === "user" ? JSON.stringify(users.at(-1)?.content ?? "") : "";
+      if (asked.includes("spawn-me")) {
         return { tool_calls: [{ index: 0, id: "call_spawn", type: "function", function: { name: "spawn_agent", arguments: JSON.stringify({ instructions: "You are a SIM CHILD.", task: "child task" }) } }], delayMs };
       }
+      // A worker the app's tool prepares (a spawn directive), started as a background child too.
+      if (asked.includes("tool-me")) return { tool_calls: [{ index: 0, id: "call_tool", type: "function", function: { name: "app__work", arguments: "{}" } }], delayMs };
       return { content: `done ${runOf(body) ?? "?"}`, delayMs };
     },
   });
@@ -92,6 +97,23 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
   const tried = new Map<number, { volume: number; invoked: number }>();
   try {
     for (const node of plan.nodes) await sim.start(node, {}, { skewMs: plan.skews[node] ?? 0, wallDrift: plan.drifts?.[node]?.wall, drift: plan.drifts?.[node]?.monotonic });
+    // A spawner's app: one runtime-auth MCP tool that answers with a spawn directive for a worker made now.
+    const spawner = plan.steps.some(step => step.op.op === "create" && step.op.spawner);
+    if (spawner) {
+      const worker = (await sim.call(plan.nodes[0], "/v1/agents", { body: { name: "sim-worker", systemPrompt: "You are a SIM WORKER.", ttlSeconds: null }, headers: { "Idempotency-Key": "sim-worker" } })).json?.id;
+      sim.net.add("tools.sim", createServer(async (req, res) => {
+        let text = "";
+        for await (const chunk of req) text += chunk;
+        if (req.method !== "POST") return void res.writeHead(405).end();
+        const message = JSON.parse(text);
+        if (message.id === undefined) return void res.writeHead(202).end();
+        const reply = (result: object) => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
+        if (message.method === "initialize") return reply({ protocolVersion: message.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "app", version: "1" } });
+        if (message.method === "tools/list") return reply({ tools: [{ name: "work", description: "Hand the worker a task", inputSchema: { type: "object", properties: {} } }] });
+        if (message.method === "tools/call") return reply({ content: [{ type: "text", text: "starting" }], _meta: { "camelrun/spawn": { agent: worker, task: "worker task", name: "worker" } } });
+        reply({});
+      }), work => sim.asWorld(work));
+    }
     // The database refuses some statements from here on (a node that cannot start for it is restarted, as ECS would).
     if (plan.dbErrors && "errors" in sim.db) sim.db.errors = { ...plan.dbErrors, random: prng(`${plan.seed}:db-errors`) };
     sim.storageFaults = plan.storageFaults;
@@ -145,7 +167,8 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
       switch (op.op) {
         case "create": {
           const madeAt = sim.env.elapsed;
-          void client(op, op.node, "/v1/agents", { name: `agent-${op.agent}`, ...(op.ttlSeconds ? { ttlSeconds: op.ttlSeconds } : {}), ...(op.spawner ? { builtins: ["agents"], delegate: { instructions: true } } : {}) }, { "Idempotency-Key": `agent-${op.agent}` })
+          void client(op, op.node, "/v1/agents", { name: `agent-${op.agent}`, ...(op.ttlSeconds ? { ttlSeconds: op.ttlSeconds } : {}),
+            ...(op.spawner ? { builtins: ["agents"], delegate: { instructions: true }, mcpServers: [{ name: "app", url: "http://tools.sim/mcp", auth: { type: "runtime" } }] } : {}) }, { "Idempotency-Key": `agent-${op.agent}` })
             .then(answer => {
               if (answer?.status !== 201 && answer?.status !== 200) return;
               agents.set(op.agent, answer.json.id);
@@ -177,7 +200,8 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
           if (!agent) return;
           const askedAt = sim.env.elapsed;
           const byBody = first?.key === "requestId";
-          const text = `run-${op.run} agent-${of}${first?.spawn ? " spawn-me" : ""}`;
+          // Half the spawning runs start a child themselves, half through the app's tool.
+          const text = `run-${op.run} agent-${of}${first?.spawn ? op.run % 2 ? " tool-me" : " spawn-me" : ""}`;
           void client(op, op.node, `/v1/agents/${agent}/prompt`, byBody ? { text, requestId: `run-${op.run}` } : { text }, byBody ? {} : { "Idempotency-Key": `run-${op.run}` })
             .then(answer => {
               if (!answer) return;
