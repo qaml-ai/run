@@ -4,10 +4,9 @@ import { createHash } from "node:crypto";
 import { transaction } from "../src/db.ts";
 import { clientAddress, clientKey, loopback, RateLimited, RateLimits, rateLimitConfig, rateLimitHeaders, type RateLimitConfig } from "../src/rate-limits.ts";
 import { errorHeaders } from "../src/http.ts";
-import { setTimeout as sleep } from "node:timers/promises";
 import { Tenants } from "../src/tenants.ts";
 import { testDatabase } from "./database.ts";
-import { OPERATOR, OTHER_OPERATOR, runtime, until } from "./runtime-server.ts";
+import { freshWindow, OPERATOR, OTHER_OPERATOR, runtime, until } from "./runtime-server.ts";
 import { cluster, token as clusterToken } from "./cluster-helpers.ts";
 
 const headers = (values: Record<string, string>) => (name: string) => values[name];
@@ -184,12 +183,6 @@ test("a tenant's window as X-RateLimit-* headers: limit, what is left, and secon
   assert.deepEqual(await tenantLimits.agentCreate("paid", false), { limit: 3, remaining: 3, reset: 60 }, "a new minute starts afresh");
 });
 
-/** Wait, if the clock minute is about to turn over, for the next one: fixed windows reset with it. */
-async function freshMinute() {
-  const into = Date.now() % 60_000;
-  if (into > 40_000) await sleep(60_000 - into + 200);
-}
-
 test("creates and runs answer with X-RateLimit-* headers; an upsert that changes nothing is not a create, and gives the same configHash", { timeout: 180_000 }, async t => {
   const r = await runtime(t, () => ({ content: "ok" }), { AGENT_RATE_LIMIT_FREE_AGENT_CREATES: "3", AGENT_BILLING_ADMINS: "alice" }, { tenants: {
     alice: { tokenSha256: sha(OPERATOR), apiKeys: { openrouter: "fixture-model-key" } },
@@ -199,7 +192,7 @@ test("creates and runs answer with X-RateLimit-* headers; an upsert that changes
   const dave = (await r.call("/v1/tenants", { body: { id: "dave" } })).json.token.token as string;
   const limitsOf = (headers: Headers) => ({ limit: headers.get("x-ratelimit-limit"), remaining: headers.get("x-ratelimit-remaining"), reset: Number(headers.get("x-ratelimit-reset")) });
   const upsert = (key: string, body: object, token = carol) => r.call("/v1/agents", { body, token, headers: { "Idempotency-Key": key } });
-  await freshMinute();
+  await freshWindow(60, 20_000);
 
   // The default limits: busy agents and runs on free credit, and what buying credit raises them to; creates only against abuse.
   const billing = (await r.call("/v1/billing", { token: carol })).json;
@@ -300,6 +293,8 @@ test("the server answers 429 RATE_LIMITED with Retry-After and the limit: per ad
   } });
   // A self-serve tenant (prepaid, on free credit) and its API token.
   const carol = (await r.call("/v1/tenants", { body: { id: "carol" } })).json.token.token as string;
+  // Creates and runs are counted in fixed clock minutes: the counting below stays in one.
+  await freshWindow(60, 20_000);
   const from = (ip: string, extra: Record<string, string> = {}) => ({ "CF-Connecting-IP": ip, ...extra });
   for (let i = 0; i < 4; i++) assert.equal((await r.call("/v1/me", { token: carol, headers: from("203.0.113.5") })).status, 200);
   // A forged hop header (what peers send) does not skip the count.

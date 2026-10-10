@@ -3524,10 +3524,11 @@
                 "events",
                 "state",
                 "history",
-                "inputs"
+                "inputs",
+                "children"
               ]
             },
-            "description": "What it reads of the agent: GET /v1/agents/{id}/<scope>. Default all four"
+            "description": "What it reads of the agent: GET /v1/agents/{id}/<scope>. Default events, state, history and inputs. children: it reads the same of the agent's background sub-agents (spawn_agent's), by their ids"
           },
           "events": {
             "type": "array",
@@ -3586,6 +3587,14 @@
               "keep"
             ],
             "description": "cancel (default): the runs queued behind the running one (prompts, steered messages not yet read, continues, executions) are cancelled too, each ending with code cancelled, so nothing runs after the stop. keep: only the running turn is stopped, and the next queued run starts"
+          },
+          "children": {
+            "type": "string",
+            "enum": [
+              "abort",
+              "keep"
+            ],
+            "description": "abort (default): the agent's running background sub-agents (spawn_agent) are aborted too, and their notifications follow with status aborted. keep: they go on"
           }
         },
         "additionalProperties": false
@@ -10341,7 +10350,7 @@
         },
         "responses": {
           "200": {
-            "description": "The agent is stopped: its running turn is aborted, and the runs queued behind it are cancelled (unless queued: \"keep\")",
+            "description": "The agent is stopped: its running turn is aborted, the runs queued behind it are cancelled (unless queued: \"keep\"), and its running background sub-agents are aborted (unless children: \"keep\"). On a sub-agent, it stops that one alone, and its parent's notification follows with status aborted",
             "content": {
               "application/json": {
                 "schema": {

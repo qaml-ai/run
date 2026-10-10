@@ -5,7 +5,7 @@ import type { ToolDefinition } from "./protocol.ts";
 /**
  * Sub-agents: the `delegate` built-in, answered by the runtime's sessions (client-sessions.ts) rather than a tool source,
  * starts a child agent on a task and returns its answer. The `agents` built-in starts children in the background instead
- * (spawn_agent, wait_agent, list_agents): each one's ending reaches its parent as a notification. Both need an allowlist
+ * (spawn_agent, wait_agent, list_agents, send_message, interrupt_agent): each one's ending reaches its parent as a notification. Both need an allowlist
  * of targets (`delegate`), beside `builtins` on an agent or a definition.
  */
 export const MULTI_AGENT_LIMITS = Object.freeze({
@@ -43,7 +43,7 @@ export interface DelegateSettings {
 }
 
 /** Stream events of an agent's children, sent only to subscribers that ask for them (`?subagents=1`). */
-export const SUBAGENT_EVENTS: readonly string[] = ["subagent_start", "subagent_event", "subagent_end"];
+export const SUBAGENT_EVENTS: readonly string[] = ["subagent_start", "subagent_event", "subagent_end", "subagent_message"];
 /**
  * What a child's run carries in its prompt's metadata: who started it, and where it is in the chain. Where it is counts
  * only with `signature`, the runtime's MAC over it for that agent and run (ClientSessions' `delegation`): a caller's
@@ -170,8 +170,27 @@ export function agentsTools(settings: DelegateSettings, describe: (target: Agent
     name: "list_agents", exposure: "direct",
     description: "List the sub-agents you started with spawn_agent: each one's agentId, name, status (running, completed, failed, aborted or input_required), startedAt and endedAt (ms since the epoch).",
     parameters: { type: "object", additionalProperties: false, properties: {} },
+  }, SEND_MESSAGE, {
+    name: "interrupt_agent", exposure: "direct",
+    description: "Stop one of your running sub-agents: its turn is aborted, and its notification follows with status aborted. Send it a message afterwards to give it new work; it keeps its history.",
+    parameters: { type: "object", additionalProperties: false, required: ["agent"], properties: {
+      agent: { type: "string", description: "The sub-agent's name or agentId" },
+    } },
   }];
 }
+
+/**
+ * send_message, for the `agents` builtin's agents and for any sub-agent (a background or delegated child) to its parent.
+ * A child of a parent with the builtin always has it: its "parent" is its run's signed chain.
+ */
+export const SEND_MESSAGE: ToolDefinition = {
+  name: "send_message", exposure: "direct",
+  description: `Send a message to one of your sub-agents (by name or agentId), or to "parent", the agent that started you. A sub-agent gets it in its running turn, or as a new turn that keeps its history (one that had finished works again, and its answer comes back as a new notification). Your parent gets it as an <agent_message> block, without your turn ending. At most ${MULTI_AGENT_LIMITS.messagesPerRun} messages per turn.`,
+  parameters: { type: "object", additionalProperties: false, required: ["to", "text"], properties: {
+    to: { type: "string", description: "A sub-agent's name or agentId, or \"parent\"" },
+    text: { type: "string", minLength: 1, maxLength: MULTI_AGENT_LIMITS.taskChars },
+  } },
+};
 
 /** How a child's run ended, as its parent hears it. */
 export type ChildStatus = "completed" | "failed" | "aborted" | "input_required";
@@ -215,3 +234,13 @@ export function childNotice(child: { agentId: string; name: string; root: string
   };
 }
 export type ChildNotice = ReturnType<typeof childNotice>;
+
+/**
+ * A message between an agent and its parent or child, as the recipient's prompt params: the text, rendered for the model
+ * in an <agent_message name="…"> block (sender.ts), and the runtime's `notice`: who sent it (`from`, by its name in the
+ * recipient's eyes), the chain's root (for the wake cap), and which way it went.
+ */
+export function agentMessage(from: { agentId: string; name: string; root: string }, text: string, to: "parent" | "child") {
+  const source: AgentSource = { kind: "agent", agentId: from.agentId, name: from.name };
+  return { text, notice: { source, root: from.root, costUsd: 0, metadata: { agentId: from.agentId, name: from.name, kind: "message", to } } };
+}

@@ -168,10 +168,12 @@ test("a failed email is retried alone, with the first attempt's context, and nev
 test("a submission already sending answers in progress; a suppressed user address asks for another", async t => {
   const { help, state } = await setup(t);
   const input = submission();
-  const release = Promise.withResolvers<void>();
-  state.respond = async () => { await release.promise; return { messageId: "late" }; };
+  const release = Promise.withResolvers<void>(), sending = Promise.withResolvers<void>();
+  state.respond = async () => { sending.resolve(); await release.promise; return { messageId: "late" }; };
   const first = help.submit(alice, input);
-  await new Promise(resolve => setTimeout(resolve, 100));
+  // The second goes in once the first is sending, so it holds the request: after a fixed wait instead, a slow first
+  // could still be reserving it, the second would take it and wait on `release` itself, and the test would hang.
+  await sending.promise;
   const second = await help.submit(alice, input);
   assert.equal(second.status, 409);
   assert.equal(code(second), "HELP_IN_PROGRESS");

@@ -1,14 +1,32 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import { createServer } from "node:net";
 import { AgentRuntime } from "../clients/typescript.ts";
 import { watchEvents } from "./runtime-server.ts";
 import { cluster, fakeModel, lookup, sleep, token, until } from "./cluster-helpers.ts";
 
-test("a node with single-host file storage refuses to start beside another node on the same database", { timeout: 60_000 }, async t => {
+/** The nodes whose heartbeat is live: the cluster as its peers see it. */
+const live = async (c: Awaited<ReturnType<typeof cluster>>) => (await c.db.query("select node from runtime_nodes where expires_at > now() order by node")).rows.map(row => row.node);
+
+test("a node with single-host file storage refuses to start beside another node on the same database, and leaves no heartbeat", { timeout: 60_000 }, async t => {
   const c = await cluster(t);
-  await c.start("a");
-  await assert.rejects(c.start("b", { AGENT_STORAGE: "file" }), /node b exited: 1/);
+  const a = await c.start("a");
+  // It waits out its lease for the peer to go, renewing its own heartbeat, which would be live seconds after it failed.
+  await assert.rejects(c.start("b", { AGENT_STORAGE: "file", AGENT_LEASE_TTL_MS: "4000" }), /node b exited: 1/);
+  assert.deepEqual(await live(c), [a.url]);
+});
+
+test("a node whose port is taken leaves the cluster it joined before it fails: peers never count its heartbeat", { timeout: 60_000 }, async t => {
+  const c = await cluster(t);
+  const a = await c.start("a");
+  // Whatever holds the port accepts connections, so a peer's probe would find the failed node alive for its whole lease.
+  const holder = createServer().listen(0, "127.0.0.1");
+  await once(holder, "listening");
+  t.after(() => new Promise<void>(resolve => holder.close(() => resolve())));
+  const port = (holder.address() as { port: number }).port;
+  await assert.rejects(c.start("b", { AGENT_LEASE_TTL_MS: "60000" }, port), /node b exited: 1/);
+  assert.deepEqual(await live(c), [a.url]);
 });
 
 test("any node serves any agent: requests are forwarded to the owner, and a survivor takes over when it dies", { timeout: 90_000 }, async t => {

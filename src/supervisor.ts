@@ -53,6 +53,8 @@ export class AgentSupervisor {
   readonly reserved = new Map<string, string | undefined>();
   /** Agents being stopped. They are already out of `agents`, so no new work reaches a dying agent. */
   private readonly stopping = new Map<string, Promise<void>>();
+  /** Starts under way that have no host yet, by agent: a stop meanwhile cancels them (see `stop`). */
+  private readonly unhosted = new Map<string, Set<{ cancelled: boolean; settled: Promise<void> }>>();
   /** Turns being closed without their agent (`closeTurn`): the latest close of each, which the next one and a start wait for. */
   private readonly closing = new Map<string, Promise<void>>();
   readonly root: string;
@@ -154,22 +156,35 @@ export class AgentSupervisor {
   /** Start an agent. `claim` is its owner's, which fences the transcript's writes. */
   async start(id: string, config: Omit<AgentConfig, "id" | "directory" | "tools">, bridge: ToolBridge, claim?: Claim) {
     if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id)) throw new Error("Invalid agent id");
-    await this.stopping.get(id);
-    // A close of its turn writes first: the agent then loads the transcript as it left it.
-    await this.closing.get(id);
-    validateDefinitions(bridge.definitions);
-    if (this.agents.has(id) || this.starting.has(id)) throw new Error("Agent already exists");
-    if (!this.reserved.delete(id) && this.full) throw Object.assign(new Error("Agent capacity reached"), { status: 503 });
-    this.starting.add(id);
+    // Until it has a host, a stop cancels it (see `stop`).
+    const settled = Promise.withResolvers<void>();
+    const pending = { cancelled: false, settled: settled.promise };
+    const starts = this.unhosted.get(id) ?? new Set();
+    this.unhosted.set(id, starts.add(pending));
+    const hosted = () => { starts.delete(pending); if (!starts.size && this.unhosted.get(id) === starts) this.unhosted.delete(id); settled.resolve(); };
     try {
-      const directory = resolve(join(this.root, id));
-      await mkdir(directory, { recursive: true, mode: 0o700 });
-      const storage = this.options.storage;
-      const log = storage ? storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id), claim) : fileAppendLog<TranscriptRecord>(transcriptPath(directory));
-      const transcript = bridge.committing ? committing(log, bridge.committing) : log;
-      const init = { ...config, id, directory, tools: bridge.definitions };
-      return this.hosting === "inline" ? await this.startInline(id, init, bridge, transcript) : await this.startProcess(id, directory, init, bridge, transcript);
-    } finally { this.starting.delete(id); }
+      await this.stopping.get(id);
+      // A close of its turn writes first: the agent then loads the transcript as it left it.
+      await this.closing.get(id);
+      validateDefinitions(bridge.definitions);
+      if (this.agents.has(id) || this.starting.has(id)) throw new Error("Agent already exists");
+      if (!this.reserved.delete(id) && this.full) throw Object.assign(new Error("Agent capacity reached"), { status: 503 });
+      this.starting.add(id);
+      try {
+        const directory = resolve(join(this.root, id));
+        await mkdir(directory, { recursive: true, mode: 0o700 });
+        // Stopped before it had a host (its node lost the agent, say): it makes none. Made anyway, the host would serve an
+        // owner that is gone, and whoever loads the agent next would take it for theirs while it is still starting.
+        if (pending.cancelled) throw new Error("Agent stopped");
+        // From here until the host is in `agents`, nothing waits: a stop finds the host there.
+        hosted();
+        const storage = this.options.storage;
+        const log = storage ? storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id), claim) : fileAppendLog<TranscriptRecord>(transcriptPath(directory));
+        const transcript = bridge.committing ? committing(log, bridge.committing) : log;
+        const init = { ...config, id, directory, tools: bridge.definitions };
+        return this.hosting === "inline" ? await this.startInline(id, init, bridge, transcript) : await this.startProcess(id, directory, init, bridge, transcript);
+      } finally { this.starting.delete(id); }
+    } finally { hosted(); }
   }
 
   private async startProcess(id: string, directory: string, init: AgentConfig, bridge: ToolBridge, transcript: AppendLog<TranscriptRecord>) {
@@ -391,7 +406,15 @@ export class AgentSupervisor {
    */
   stop(id: string, options: { flush?: boolean } = {}): Promise<void> {
     const handle = this.agents.get(id);
-    if (!handle) return this.stopping.get(id) ?? Promise.resolve();
+    if (!handle) {
+      // Still starting, with no host yet: the start gives up, and a later start of the agent waits until it has.
+      const starts = this.unhosted.get(id);
+      if (!starts?.size) return this.stopping.get(id) ?? Promise.resolve();
+      for (const pending of starts) pending.cancelled = true;
+      const stopped = Promise.all([...starts].map(pending => pending.settled)).then(() => {}).finally(() => { if (this.stopping.get(id) === stopped) this.stopping.delete(id); });
+      this.stopping.set(id, stopped);
+      return stopped;
+    }
     this.agents.delete(id);
     const stopped = this.halt(handle, options.flush ?? true).finally(() => { if (this.stopping.get(id) === stopped) this.stopping.delete(id); });
     this.stopping.set(id, stopped);
