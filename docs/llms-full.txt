@@ -5582,6 +5582,22 @@ changing its history with `agent.client.setMetadata({ name, type })`
 (`npm run studio`) at `/studio/agents`; Studio observes the runtime, and your
 application keeps serving its tools.
 
+## 0.20.0 (TypeScript) / 0.16.0 (Python), 2026-10-10
+
+Needs runtime 0.9.0 or later (run.camelai.com has it).
+
+- Workers your tools prepare: `spawnAgent({ agent, task, name?, output? })` (from `@camelai/run` and
+  `@camelai/run/server`; Python `spawn_agent(...)`) builds a tool result that starts a background sub-agent. See
+  [Workers your tools prepare](https://run.camelai.com/docs/guides/multi-agent.md#workers-your-tools-prepare).
+- `agentNotice(message)` (Python `agent_notice`) tells sub-agents' notifications and messages apart in history, with
+  `output`, `usage` and `inputs`. `<AgentChat>` renders them as notices; the chat's `UserChatMessage.agent` carries
+  them.
+- `agent.abort({ children: "keep" })` keeps background sub-agents running (aborting stops them by default).
+  `subagent_message` is in the event types, and `SubagentView.status` includes `aborted`.
+- `delegate: { maxParallel, maxDepth }` alone is sent with no builtin, to bound the sub-agents your tools start.
+- `createAgentHandler`'s `browserToken.scopes` (add `children` to read sub-agents with the chat's token).
+- `CallToolResult` has `_meta`.
+
 ## 0.19.0 (TypeScript) / 0.15.0 (Python), 2026-10-09
 
 Needs runtime 0.8.0 or later (run.camelai.com has it).

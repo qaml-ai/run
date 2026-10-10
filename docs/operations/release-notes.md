@@ -11,6 +11,84 @@ Changes on main since the last tag are in [unreleased/](unreleased/), a file for
 any order never conflict here), gathered into a version's notes when it is tagged: `npm run release-notes` shows them
 together, and `npm run release-notes -- <version>` writes them here and removes the files.
 
+## 0.9.0 (runtime-v0.9.0, 2026-10-10)
+
+Background sub-agents: messages between agents (`send_message`), `interrupt_agent` and a stop that reaches
+running sub-agents, workers your tools prepare (`_meta["camelrun/spawn"]`), spend shares for sub-agents started
+together, and notifications that are never lost (to a database error, an abort, or a node lost mid-delivery). Plus
+start and fence fixes. The TypeScript SDK 0.20.0 and Python SDK 0.16.0 use it ([SDK reference](../reference/sdk.md)).
+
+**Before upgrading a self-hosted runtime:** migrations 062 (`agent_children` kinds) and 063 (`agent_children.budget`)
+run on start. Aborting an agent now aborts its running background sub-agents too; pass `children: "keep"` to keep
+them. A node lost while delivering a sub-agent's notification now gives it up after two sweeps (30 s by default)
+instead of a minute.
+
+### Background sub-agents: messages and stopping
+
+- `send_message` (with the `agents` builtin, and for any sub-agent the runtime made): a parent messages its sub-agent,
+  which takes it in its running turn or starts a turn that keeps its history (a finished one works again and notifies
+  again), and a sub-agent messages its parent (`to: "parent"`), which reads it as an `<agent_message>` block. The
+  parent's stream has `subagent_message`. Message turns count against `AGENT_WAKES_PER_HOUR`; a turn sends at most 20.
+  See [Messages](../guides/multi-agent.md#messages).
+- `interrupt_agent` aborts one of the agent's sub-agents. Aborting a parent aborts its running background sub-agents
+  unless `children: "keep"` (REST and the SDKs), and deleting it deletes the sub-agents the runtime made.
+- A sub-agent that waits on a person notifies with `input_required`, and again when it resumes and ends.
+- Browser tokens take a `children` scope: the agent's sub-agents' events, state, history and inputs.
+- A notification or message turn refused at the wake cap or a spend limit stays refused on another node if its node is
+  lost as the message lands. Migration 062 extends `agent_children`.
+
+### Workers your tools prepare
+
+- A tool from a server with auth "runtime" can start a background sub-agent for the calling agent: its result's
+  `_meta["camelrun/spawn"]: { agent, task, name?, output? }` names an agent of the tenant the tool prepared, and the
+  model's call answers `{ agentId, name }`; the worker's answer arrives as a notification. A busy worker queues the
+  task. The SDKs build it: `spawnAgent(...)` (TypeScript, `@camelai/run/server` too) and `spawn_agent(...)` (Python).
+  See [Workers your tools prepare](../guides/multi-agent.md#workers-your-tools-prepare).
+- `agentNotice(message)` (Python `agent_notice`) tells sub-agents' notifications and messages apart in history, and
+  `<AgentChat>` renders them as notices, not as the user's messages. `subagent_message` is in the SDKs' event types.
+
+### Background sub-agents: shares, limits alone, notices
+
+- A background sub-agent's run gets a share of its parent agent's spend limit: what no running sub-agent holds, split
+  evenly among the slots `maxParallel` leaves. Sub-agents started together (by `spawn_agent` or a tool's spawn
+  directive) share it rather than each getting all of it. Migration 063 adds `agent_children.budget`.
+- `delegate: { maxParallel, maxDepth }` alone, without the `delegate` or `agents` builtin, bounds the sub-agents an
+  agent's tools start (`camelrun/spawn`) without giving the model a tool to start them.
+- SDKs: a notice (`agentNotice`, `agent_notice`, the chat's `UserChatMessage.agent`) carries the notification's
+  structured `output`, its `usage` and the `inputs` it waits on; `SubagentView.status` includes `aborted`; and
+  `createAgentHandler`'s `browserToken.scopes` chooses what its tokens read (add `children` for sub-agents).
+
+### Background sub-agents: notifications are never lost
+
+- A notification whose landing the database refused for now (a deadlock, a serialization failure, a statement timeout)
+  failed its run and was lost: its landing is now tried again, as a run's start is.
+- An abort of the parent cancelled a notification queued behind its turn, or ended one about to start, and the
+  sub-agent's answer never reached history: it now lands without a turn (the run ends `aborted`).
+- A node lost while delivering a notification held it for a minute; another node now takes over after two sweeps.
+
+### A node that fails to start leaves the cluster
+
+- A node joins the cluster (its heartbeat) before it listens. One whose port was taken, or that refused to run
+  `AGENT_STORAGE=file` beside another node, used to exit with its heartbeat still live: peers counted it as a live
+  peer (a retiring task could take it for its replacement, a draining one route work to it) until they found it dead,
+  or for its whole lease when whatever held the port accepted their probes. It now leaves first, as a draining node
+  does, so peers never see it.
+
+### A run is no longer failed by a fence while its agent starts
+
+- A node that lost an agent (it fenced itself, say after a database stall) while the agent's process was still getting
+  ready to start went on and started it anyway, for an owner that was gone. The agent's next load, on that node once it
+  rejoined, took that process for its own while it was still starting, and its first run failed with "Agent is not
+  initialized": a queued run a drain or a deploy had left for the next owner failed instead of running. Such a start now
+  gives up, and the next load starts the agent afresh. A stop while an agent starts now stops the start too.
+
+### Fixes
+
+- A run that an abort cancels while the runtime is still accepting it now gives its agent's busy slot back before the
+  run is seen to end, as other cancelled, failed and finished runs already did. A client that started another agent's
+  run as soon as it saw the cancelled one end could be refused with 429 `BUSY_AGENT_LIMIT` at its tenant's busy limit,
+  for as long as the slot took to free.
+
 ## 0.8.0 (runtime-v0.8.0, 2026-10-09)
 
 Images (`POST /v1/images` and the `generate_image` builtin, with image usage and billing) and background sub-agents
