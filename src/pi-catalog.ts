@@ -20,7 +20,22 @@ for (const { id } of piGetModels(BEDROCK as never) as Model<Api>[]) {
   const held = base && PROFILES.get(base);
   if (base && (!held || id.startsWith("global.") || (id.startsWith("us.") && !held.startsWith("global.")))) PROFILES.set(base, id);
 }
-const corrected = (model: Model<Api> | undefined): Model<Api> | undefined => {
+/**
+ * Prices Pi's catalog has wrong, by provider and id, checked against the provider's own pricing. Drop each once Pi
+ * ships the fix (pi-ai 1.1.0 still has them):
+ * - Claude Sonnet 5.5 cache reads are $0.10 per million tokens (0.05x input, platform.claude.com/docs pricing), not
+ *   $0.20. Cloudflare's AI Gateway passes Anthropic's prices through. Bedrock's price for it is not published: left.
+ */
+const PRICES: Record<string, Record<string, Partial<Model<Api>["cost"]>>> = {
+  anthropic: { "claude-sonnet-5-5": { cacheRead: 0.1 } },
+  "cloudflare-ai-gateway": { "claude-sonnet-5-5": { cacheRead: 0.1 } },
+};
+const priced = (model: Model<Api>): Model<Api> => {
+  const fix = PRICES[model.provider]?.[model.id];
+  return fix ? { ...model, cost: { ...model.cost, ...fix } } : model;
+};
+const corrected = (found: Model<Api> | undefined): Model<Api> | undefined => {
+  const model = found && priced(found);
   const claude = model?.provider === BEDROCK ? ANTHROPIC_ID.exec(model.id)?.[1] : undefined;
   if (!model || !claude) return model;
   return piModel("anthropic", claude)?.thinkingLevelMap?.off === null ? { ...model, thinkingLevelMap: { ...model.thinkingLevelMap, off: null } } : model;
@@ -41,6 +56,16 @@ export function reasoningFloor(model: Model<Api>): ThinkingLevel | undefined {
   const known = getModel(model.provider, model.id) ?? (rest.length ? getModel(provider, rest.join("/")) : undefined) ?? model;
   if (!known.reasoning || known.thinkingLevelMap?.off !== null) return undefined;
   return known.thinkingLevelMap?.minimal === null ? "low" : "minimal";
+}
+
+/**
+ * An agent's model with the catalog's prices now: an agent keeps the model it was given, prices included, so one made
+ * before a price changed (PRICES) would go on counting the old one. A model the catalog doesn't have at the same
+ * endpoint (a tenant's endpoint or provider, priced by the tenant) is as it was.
+ */
+export function withCatalogPrices<T extends Model<Api>>(model: T): T {
+  const known = getModel(model.provider, model.id);
+  return known && known.baseUrl === model.baseUrl && JSON.stringify(known.cost) !== JSON.stringify(model.cost) ? { ...model, cost: known.cost } : model;
 }
 
 /** Pi's models for a provider, as this runtime corrects them: no Bedrock base id that has inference profiles. */
