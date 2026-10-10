@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { AgentRuntime } from "../clients/typescript.ts";
 import { OPERATOR, runtime, sleep, toolCall, toolResults, until, watchEvents } from "./runtime-server.ts";
 
 const systemText = (body: any) => body.messages.filter((message: any) => message.role === "system" || message.role === "developer")
@@ -230,4 +231,9 @@ test("children started together share what the parent may spend, and limits alon
   // With the builtin, limits alone are not enough: it needs targets.
   assert.equal((await r.call("/v1/agents", { body: { builtins: ["agents"], delegate: { maxParallel: 2 } } })).status, 400);
   assert.equal((await r.call("/v1/agents", { body: { delegate: {} } })).status, 400);
+  // The SDK sends limits alone as they are, adding no builtin (one with targets brings delegate).
+  const sdk = new AgentRuntime({ url: r.base, apiKey: OPERATOR });
+  const saved = await sdk.upsertDefinition("limits-only", { name: "Limits only", delegate: { maxParallel: 3, maxDepth: 1 } });
+  assert.deepEqual([saved.builtins ?? [], saved.delegate], [[], { maxParallel: 3, maxDepth: 1 }]);
+  assert.deepEqual((await sdk.createDefinition({ name: "Targets", delegate: { instructions: true } })).builtins, ["delegate"]);
 });

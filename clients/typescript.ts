@@ -862,7 +862,10 @@ function provisioning(options: CreateAgentOptions) {
 }
 /** `delegate` settings bring their builtin: given the settings without delegate or agents, delegate is added. */
 function withMultiAgent<T extends { builtins?: Builtin[]; delegate?: unknown }>(input: T): T {
-  return input.delegate && !input.builtins?.some(name => name === "delegate" || name === "agents") ? { ...input, builtins: [...input.builtins ?? [], "delegate"] } : input;
+  // Settings with targets bring their builtin; limits alone (maxParallel, maxDepth) need none, and must have none.
+  const delegate = input.delegate as { agents?: unknown[]; instructions?: boolean } | null | undefined;
+  const targets = !!delegate && (!!delegate.agents?.length || !!delegate.instructions);
+  return targets && !input.builtins?.some(name => name === "delegate" || name === "agents") ? { ...input, builtins: [...input.builtins ?? [], "delegate"] } : input;
 }
 
 /** The `traceparent` header, when there is one to send. */
