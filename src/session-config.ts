@@ -1,5 +1,5 @@
 import { getModel, temperatureRefusal } from './pi-catalog.ts';
-import type { AgentConfig, RunLimits } from './protocol.ts';
+import { MIN_CONTEXT_TOKENS, type AgentConfig, type RunLimits } from './protocol.ts';
 import { validateDefinitions } from './tool-policy.ts';
 import { validateInitialMessages } from './history.ts';
 import { attachedTools } from './mcp-results.ts';
@@ -153,15 +153,17 @@ export function modelHeadersInput(value: unknown): Record<string, string> | null
 }
 
 /**
- * An agent's or definition's `runLimits`: `{maxResponses?, maxSeconds?, firstTokenSeconds?, idleSeconds?}`, positive integers
- * (the stream timeouts at most an hour). Null (or `{}`) for none.
+ * An agent's or definition's `runLimits`: `{maxResponses?, maxSeconds?, firstTokenSeconds?, idleSeconds?, contextTokens?}`, positive integers
+ * (the stream timeouts at most an hour, contextTokens at least MIN_CONTEXT_TOKENS). Null (or `{}`) for none.
  */
 export function runLimitsInput(value: unknown): RunLimits | null {
   if (value === null) return null;
   const valid = (key: string, max: number) => (value as Record<string, unknown>)[key] === undefined || (Number.isSafeInteger((value as Record<string, unknown>)[key]) && ((value as Record<string, number>)[key]) >= 1 && ((value as Record<string, number>)[key]) <= max);
-  const keys = ['maxResponses', 'maxSeconds', 'firstTokenSeconds', 'idleSeconds'];
-  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !keys.includes(key)) || !valid('maxResponses', 1_000_000) || !valid('maxSeconds', 31_536_000) || !valid('firstTokenSeconds', 3_600) || !valid('idleSeconds', 3_600)) {
-    throw new HttpError(400, 'runLimits must be {maxResponses?, maxSeconds?, firstTokenSeconds?, idleSeconds?} with positive integers (the last two at most 3600), or null');
+  const keys = ['maxResponses', 'maxSeconds', 'firstTokenSeconds', 'idleSeconds', 'contextTokens'];
+  const context = (value as Record<string, unknown> | null)?.contextTokens;
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !keys.includes(key)) || !valid('maxResponses', 1_000_000) || !valid('maxSeconds', 31_536_000) || !valid('firstTokenSeconds', 3_600) || !valid('idleSeconds', 3_600)
+    || (context !== undefined && (!Number.isSafeInteger(context) || (context as number) < MIN_CONTEXT_TOKENS))) {
+    throw new HttpError(400, `runLimits must be {maxResponses?, maxSeconds?, firstTokenSeconds?, idleSeconds?, contextTokens?} with positive integers (firstTokenSeconds and idleSeconds at most 3600, contextTokens at least ${MIN_CONTEXT_TOKENS}), or null`);
   }
   return Object.keys(value).length ? value as RunLimits : null;
 }

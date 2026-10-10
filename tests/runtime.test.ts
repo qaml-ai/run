@@ -124,9 +124,10 @@ test("real Pi provider loop calls codemode and persists native messages across p
   assert.equal(await readFile(join(root, "workspaces", "pi", "pi.txt"), "utf8"), "from Pi");
   const saved = await readTranscript(join(root, "sessions", "pi"));
   assert.deepEqual(saved.map((m: any) => m.role), ["user", "assistant", "toolResult", "assistant"]);
-  // One appended record per finished message plus turn markers, never a rewrite per delta.
+  // One appended record per finished message plus turn markers, never a rewrite per delta; the system prompt the model saw is pinned with the first.
   const records = (await readFile(join(root, "sessions", "pi", "transcript.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
-  assert.deepEqual(records.map((r: any) => r.t), ["turn", "message", "message", "message", "message", "turn"]);
+  assert.deepEqual(records.map((r: any) => r.t), ["turn", "system", "message", "message", "message", "message", "turn"]);
+  assert.equal(records[1].leading, true);
   assert.equal(records.at(-1).active, false);
   assert.ok(requests[1].messages.some((m: any) => m.role === "tool" && m.content.includes("from Pi")));
   await supervisor.stop("pi");

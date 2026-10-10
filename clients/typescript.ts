@@ -394,8 +394,8 @@ export interface CreateAgentOptions extends AgentOptions {
   keyScope?: string;
   /** The most the agent may spend on model calls from now on (USD); PATCH /v1/agents/:id/configuration sets a new one. */
   spendLimit?: { usd: number };
-  /** The most one run may take: model responses, and seconds; the runtime's maximums (1,000 and 2 hours by default) apply over them. At either, the run stops with `stopped: "turn_limit"`. `firstTokenSeconds` and `idleSeconds`: how long a model request may go quiet (before its first token, between events) before it fails as stalled and is retried. */
-  runLimits?: { maxResponses?: number; maxSeconds?: number; firstTokenSeconds?: number; idleSeconds?: number };
+  /** The most one run may take: model responses, and seconds; the runtime's maximums (1,000 and 2 hours by default) apply over them. At either, the run stops with `stopped: "turn_limit"`. `firstTokenSeconds` and `idleSeconds`: how long a model request may go quiet (before its first token, between events) before it fails as stalled and is retried. `contextTokens`: the most context one model request carries; older context is compacted below it (default the model's context window). */
+  runLimits?: { maxResponses?: number; maxSeconds?: number; firstTokenSeconds?: number; idleSeconds?: number; contextTokens?: number };
   /** Non-secret headers for each of its model calls, e.g. cf-aig-metadata; never auth headers. */
   modelHeaders?: Record<string, string>;
   systemPrompt?: string;
@@ -495,7 +495,7 @@ export interface DefinitionInput {
   codeMode?: boolean;
   limits?: { ttlSeconds?: number | null; idleTtlSeconds?: number | null }; mounts?: unknown[]; builtins?: Builtin[];
   /** The most one of its agents' runs may take; an agent given its own keeps them when the definition is applied. */
-  runLimits?: { maxResponses?: number; maxSeconds?: number; firstTokenSeconds?: number; idleSeconds?: number };
+  runLimits?: { maxResponses?: number; maxSeconds?: number; firstTokenSeconds?: number; idleSeconds?: number; contextTokens?: number };
   /** Who its agents may hand tasks to (sub-agents); it adds the delegate builtin. */
   delegate?: DelegateSettings;
   /** The search providers web_search tries, in order, instead of the runtime's. */

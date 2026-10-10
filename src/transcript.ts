@@ -93,6 +93,12 @@ export class Transcript {
   compaction?: CompactionState;
   /** The pinned leading system message; until a change needs one, it is built from configuration. */
   system?: SystemMessage;
+  /**
+   * The leading system message as the model sees it now, pinned with the first message written while none is: from
+   * then on a change of configuration (mounts, prompt, tools) follows as a system message of its own instead of
+   * rebuilding the leading one, so the provider's cached prefix holds.
+   */
+  pin?: () => SystemMessage | undefined;
   /** Later system messages, each placed before the message at absolute index `at`. */
   updates: { at: number; message: SystemMessage }[] = [];
   /** A turn was running when the log was last written. */
@@ -256,7 +262,12 @@ export class Transcript {
   }
 
   push(message: AgentMessage) { return this.append([message]); }
-  append(messages: AgentMessage[]) { return this.commit(() => messages.map(message => ({ t: "message" as const, message }))); }
+  append(messages: AgentMessage[]) {
+    return this.commit(() => {
+      const leading = !this.system && messages.length ? this.pin?.() : undefined;
+      return [...(leading ? [{ t: "system" as const, message: leading, leading: true as const }] : []), ...messages.map(message => ({ t: "message" as const, message }))];
+    });
+  }
   retract() { return this.commit(() => [{ t: "retract" }]); }
   setActive(active: boolean) { return this.commit(() => [{ t: "turn", active }]); }
   /** Leave tool calls open for a person's input, or (`released`) give them back to the turn. */

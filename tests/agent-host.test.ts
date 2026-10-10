@@ -174,7 +174,7 @@ test("a write that fails leaves memory as the log has it, and the agent refuses 
   await assert.rejects(host.handle("prompt", { text: "three" }), /Session persistence failed: Error: disk full/);
 });
 
-test("the leading system message and a change after it are one commit", async t => {
+test("the leading system message is pinned in one commit with the first message, and a change follows it", async t => {
   const fake = await setup(t);
   const flushes: TranscriptRecord[][] = [];
   const file = fileAppendLog<TranscriptRecord>(fake.path);
@@ -189,8 +189,8 @@ test("the leading system message and a change after it are one commit", async t 
   fake.respond(answer("One."));
   await host.handle("prompt", { text: "one" });
   await host.handle("configure", { systemPrompt: "New rules" });
-  const declared = flushes.find(batch => batch.some(record => record.t === "system"))!;
-  assert.deepEqual(declared.map(record => record.t === "system" && (record.leading ? "leading" : "change")), ["leading", "change"]);
+  const kinds = flushes.filter(batch => batch.some(record => record.t === "system")).map(batch => batch.map(record => record.t === "system" ? (record.leading ? "leading" : "change") : record.t));
+  assert.deepEqual(kinds, [["leading", "message"], ["change"]]);
 });
 
 test("resume: a lost delegate call is made again (it finds the child its call started), while other open calls are closed as unknown", async t => {

@@ -582,3 +582,50 @@ test("usage a response reported before the summary was written does not count ag
   // Once a request carried the summary, its report is the measure.
   assert.ok(contextTokens([summary, answer(1_500, 100_000), user, answer(3_000, 5_000)]) >= 5_010);
 });
+
+test("runLimits.contextTokens compacts a large-window model's context below it, where the window alone would not", async t => {
+  const fake = await provider(t);
+  const supervisor = await fixture(t);
+  const background: any[] = [], unbounded: any[] = [];
+  await supervisor.start("bounded", { model: fake.model(1_000_000), apiKey: "fixture", runLimits: { contextTokens: 20_000 } }, { ...bridge, background: (event: any) => background.push(event) } as never);
+  await supervisor.start("unbounded", { model: fake.model(1_000_000), apiKey: "fixture" }, { ...bridge, background: (event: any) => unbounded.push(event) } as never);
+  // About 2,250 tokens a turn: past 14,000 (20,000 less its reserve and background margin) after seven.
+  for (let index = 0; index < 9; index++) {
+    for (const id of ["bounded", "unbounded"]) assert.equal((await supervisor.request(id, "prompt", { text: turn(index) })).error, null);
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  await until(() => background.some(event => event.type === "compaction_end"), "the bounded agent compacted");
+  const ended = background.find(event => event.type === "compaction_end");
+  assert.ok(ended.summarizedMessages > 0 && ended.tokensBefore < 20_000, JSON.stringify(ended));
+  assert.equal(unbounded.filter(event => event.type.startsWith("compaction")).length, 0, "the window alone is far off");
+  assert.equal((await supervisor.request("bounded", "status")).compacted, true);
+  assert.equal((await supervisor.request("unbounded", "status")).compacted, false);
+  await supervisor.request("bounded", "prompt", { text: "AFTER" });
+  const sent = text(fake.chat().at(-1)!);
+  assert.match(sent, /SUMMARY-MARKER-[0-9]+[\s\S]*AFTER/, `the summary took over: ${sent.match(/TURN-[0-9]+|SUMMARY-MARKER-[0-9]+|AFTER/g)}`);
+  assert.doesNotMatch(sent, /TURN-0 /);
+});
+
+test("a mount added after the first message is appended after the cached prefix, not rebuilt into the leading system message", async t => {
+  const fake = await provider(t);
+  const root = await mkdtemp(join(tmpdir(), "mount-cache-"));
+  const storage = fileStorage(join(root, "state"));
+  const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, storage });
+  t.after(async () => { await supervisor.close(); await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); });
+  const model = { ...fake.model(100_000), compat: { supportsMidConvoSystemMessages: true, supportsMidConvoToolAdditions: true } } as Model<Api>;
+  const workspace = { path: "/workspace", mode: "rw" as const };
+  await supervisor.start("agent", { model, apiKey: "fixture", systemPrompt: "Rules", mounts: [workspace] }, bridge);
+  await supervisor.request("agent", "prompt", { text: "one" });
+  const first = fake.chat().at(-1)!;
+  assert.match(text(first), /\/workspace \(read-write\)/);
+  assert.doesNotMatch(text(first), /\/bot/);
+  // A mount change starts the agent again with its new mounts, which its environment section describes.
+  await supervisor.stop("agent");
+  await supervisor.start("agent", { model, apiKey: "fixture", systemPrompt: "Rules", mounts: [{ path: "/bot", mode: "rw" }, workspace] }, bridge);
+  await supervisor.request("agent", "prompt", { text: "two" });
+  const second = fake.chat().at(-1)!;
+  assert.deepEqual(second.messages.slice(0, first.messages.length), first.messages, "the prefix the provider cached is byte-identical");
+  assert.match(JSON.stringify(second.messages.slice(first.messages.length)), /Updated system prompt section \\"environment\\"[\s\S]*\/bot \(read-write\)/);
+  const log = await records(storage.log(AgentSupervisor.transcriptKey("agent")));
+  assert.equal(log.filter(record => record.t === "system" && (record as { leading?: boolean }).leading).length, 1, "pinned once, with the first message");
+});
