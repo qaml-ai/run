@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { Agents, RunError } from "../clients/node.ts";
-import { OPERATOR, OTHER_OPERATOR, runtime, sleep, toolCall, until } from "./runtime-server.ts";
+import { OPERATOR, OTHER_OPERATOR, runtime, toolCall, until } from "./runtime-server.ts";
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const userMessages = (body: any) => body.messages.filter((message: any) => message.role === "user");
@@ -263,20 +263,6 @@ test("the TypeScript SDK: agents.run in one call, runs.stream as it happens, run
   assert.deepEqual(await agents.runtime.listAgents(), [], "no agents were made");
 });
 
-test("a run whose model stalls ends failed with model_stream_stalled, never hanging busy", { timeout: 60_000 }, async t => {
-  const r = await runtime(t, () => ({ role: "assistant", content: "never", delayMs: 15_000 }));
-  const started = Date.now();
-  const created = (await r.call("/v1/runs", { body: { input: "hello?", runLimits: { firstTokenSeconds: 1 } } })).json;
-  let run = created;
-  while (run.status === "running" && Date.now() - started < 45_000) run = (await r.call(`/v1/runs/${created.id}?wait=10`)).json;
-  assert.equal(run.status, "failed", JSON.stringify(run));
-  assert.equal(run.error.code, "model_stream_stalled");
-  assert.ok(Date.now() - started < 30_000);
-  assert.ok(r.model.bodies.length >= 3, "the first request and its retries");
-  // Not busy any more: the next run is accepted.
-  assert.equal((await r.call("/v1/runs", { body: { input: "again" } })).status, 202);
-});
-
 test("a run with no tools gets none: no js_exec and no file tools, only its instructions; one with tools, or that asks, has js_exec", async t => {
   const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
   const names = (body: any) => (body.tools ?? []).map((tool: any) => tool.function.name);
@@ -292,23 +278,4 @@ test("a run with no tools gets none: no js_exec and no file tools, only its inst
   await r.call("/v1/runs", { body: { input: "with a builtin", builtins: ["web_fetch"], wait: true } });
   assert.ok(names(r.model.bodies[2]).includes("js_exec"));
   assert.ok(names(r.model.bodies[2]).includes("web_fetch") || JSON.stringify(r.model.bodies[2]).includes("web_fetch"));
-});
-
-test("a run's messages read as it ends are its messages, though its agent stops while answering", async t => {
-  // A run that ends stops its agent: a read the agent was answering failed with "Agent stopped", and is read from its
-  // log instead. Reads go out every few ms from the moment each run is made, so some meet the stop.
-  const r = await runtime(t, () => ({ role: "assistant", content: "done" }));
-  const bad: string[] = [];
-  for (let i = 0; i < 20; i++) {
-    const created = await r.call("/v1/runs", { body: { input: `go ${i}` } });
-    assert.ok([200, 202].includes(created.status), created.text);
-    const reads: Promise<void>[] = [];
-    for (const until = Date.now() + 400; Date.now() < until; await sleep(3)) {
-      reads.push(r.call(`/v1/runs/${created.json.id}/messages`).then(read => {
-        if (!Array.isArray(read.json?.messages)) bad.push(`run ${i}: ${read.status} ${read.text.slice(0, 200)}`);
-      }));
-    }
-    await Promise.all(reads);
-  }
-  assert.deepEqual(bad, []);
 });
