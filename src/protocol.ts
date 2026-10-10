@@ -10,11 +10,14 @@ export type CallContext = { toolCallId: string; innerCallId?: string; messageInd
 import type { HistoryChunk } from "./history-pages.ts";
 import type { CommitEffect } from "../shared/append-log.ts";
 import type { TranscriptRecord } from "./transcript.ts";
+/** The least `runLimits.contextTokens` may be: below it, a summary and the recent messages it keeps would not fit. */
+export const MIN_CONTEXT_TOKENS = 20_000;
 /**
  * The most one run may take (model responses, seconds), and how long one of its model requests may go quiet: before its
- * first token (`firstTokenSeconds`) and between events once it streams (`idleSeconds`; model-stream.ts).
+ * first token (`firstTokenSeconds`) and between events once it streams (`idleSeconds`; model-stream.ts). `contextTokens`:
+ * the most context one request carries, which compaction keeps it within as it does the model's window (agent-host.ts).
  */
-export type RunLimits = { maxResponses?: number; maxSeconds?: number; firstTokenSeconds?: number; idleSeconds?: number };
+export type RunLimits = { maxResponses?: number; maxSeconds?: number; firstTokenSeconds?: number; idleSeconds?: number; contextTokens?: number };
 /**
  * Why a turn ended early on a limit: spend (the agent's, the run's or the tenant's), or the run's responses or time.
  * `handoff`: its node is leaving the cluster (a deploy retiring it, or a drain), so the turn stops at this step boundary

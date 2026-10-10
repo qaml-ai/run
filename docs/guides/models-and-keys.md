@@ -257,3 +257,13 @@ only where it is lower than the agent's. Values above the runtime's maximums cou
 which its operator sets (see [Configuration](../operations/configuration.md),
 `AGENT_MAX_RUN_RESPONSES`). Only you can set them, not the agent's own token. They are counted on the node running the
 turn: a turn resumed on another node after its node was lost counts again from there.
+
+### Context size
+
+A long history is compacted (its older part summarized) before a request would not fit the model's context window.
+On a model with a large window that is late: every request reads the whole context, so a long-lived agent pays for
+its history on each step long before it nears a million tokens. `runLimits.contextTokens` (at least 20,000) keeps
+each of the agent's requests within that many tokens instead: compaction starts in the background somewhat below
+it, and the summary, the recent messages and the system prompt carry on from there. Set it like the other run
+limits, on the agent or its definition; a single run cannot set it. For a chat agent whose turns mostly need what
+happened recently, 100,000 is a reasonable start.

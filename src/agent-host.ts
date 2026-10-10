@@ -362,7 +362,7 @@ export function createAgentHost(hostIO: HostIO) {
       const context = transcript.context.slice();
       const offset = transcript.offset;
       // An overflow means the real limit is lower than assumed: keep about a fifth of the context.
-      const keepRecentTokens = reason === "overflow" ? Math.max(1_000, Math.floor(contextTokens([...summaryView(), ...context]) * 0.2)) : undefined;
+      const keepRecentTokens = reason === "overflow" ? Math.max(1_000, Math.floor(contextTokens([...summaryView(), ...context]) * 0.2)) : compactionSettings(compactionModel()).keepRecentTokens;
       const outcome = await runCompaction({
         // The summarizer reads messages as the model does, senders included; rendering keeps their count, so the cut still indexes the context.
         context: renderMessages(context), offset, previous, model: config.model, apiKey: perCall() ? () => io.modelAuth() : apiKey, signal, keepRecentTokens, modelHeaders: config.modelHeaders, gate, outbound: io.modelOutbound,
@@ -393,6 +393,15 @@ export function createAgentHost(hostIO: HostIO) {
   const systemTokens = (system: SystemMessage) => Math.ceil(getSystemMessageText(system).length / 4);
 
   /**
+   * The model as compaction measures it: its context window lowered to the agent's `runLimits.contextTokens`, if that is
+   * lower. Only when to compact and how much to keep follow it; trimming, the last resort, keeps the model's own window.
+   */
+  function compactionModel(): AgentConfig["model"] {
+    const limit = config.runLimits?.contextTokens;
+    return limit && limit < config.model.contextWindow ? { ...config.model, contextWindow: limit } : config.model;
+  }
+
+  /**
    * Before every model request: a context near its limit starts compacting in the background and is sent whole; one
    * that would not fit waits for a compaction running already, else compacts first. Trimming is the last resort.
    */
@@ -405,7 +414,7 @@ export function createAgentHost(hostIO: HostIO) {
     const [system, ...view] = liveView(messages) as [SystemMessage, ...AgentMessage[]];
     const budget = config.model.contextWindow - compactionSettings(config.model).reserveTokens - systemTokens(system);
     const trims = (tokens: number) => { try { return boundedContext(view, tokens).length !== view.length; } catch { return true; } };
-    let need = compactionNeed(view, config.model, systemTokens(system));
+    let need = compactionNeed(view, compactionModel(), systemTokens(system));
     if (need === "blocking" || trims(budget)) need = "blocking";
     else need ??= trims(budget - backgroundTokens(config.model)) ? "background" : undefined;
     return { system, view, budget, need };
@@ -795,6 +804,8 @@ export function createAgentHost(hostIO: HostIO) {
       // One whose index cannot be read now (null) is left for the next start.
       const indexed = io.history ? await io.history.indexed().catch(() => null) : null;
       transcript = new Transcript(io.transcript, indexed ?? undefined, io.historyBacklogBytes);
+      // What the model saw first stays first: a mount or tool change after the first message is appended, not rebuilt into it.
+      transcript.pin = () => agent ? leading() : undefined;
       await transcript.load();
       let recovered = false;
       let resume: { continue: true } | { finished: { messages: number; error: string | null; reply?: string; stopped?: string; output?: unknown } } | undefined;

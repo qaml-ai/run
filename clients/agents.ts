@@ -90,7 +90,7 @@ export interface AgentConfig {
   /** The most it may spend on model calls from now on (USD). */
   spendLimit?: { usd: number };
   /** The most one run may take: model responses, and seconds (within the runtime's 1,000 and 2 hours by default); and how long a model request may go quiet before it fails as stalled and is retried: before its first token (default 120 s, 300 for a reasoning model thinking high or more) and between events (default 45 s). */
-  runLimits?: { maxResponses?: number; maxSeconds?: number; firstTokenSeconds?: number; idleSeconds?: number };
+  runLimits?: { maxResponses?: number; maxSeconds?: number; firstTokenSeconds?: number; idleSeconds?: number; contextTokens?: number };
   modelHeaders?: Record<string, string>;
   mounts?: MountInput[];
   /** An upsert of an existing agent: true changes its mounts to `mounts` (between its turns), where different mounts are otherwise a 409. */

@@ -2511,6 +2511,11 @@
             "minimum": 1,
             "maximum": 3600,
             "description": "Seconds a model response may go quiet once it streams before it fails as stalled and is retried; default the runtime's (45)"
+          },
+          "contextTokens": {
+            "type": "integer",
+            "minimum": 20000,
+            "description": "The most context one model request carries, in tokens: older context is summarized (compacted) before a request would pass it, starting in the background somewhat below it. Default the model's context window, and never above it. At least 20,000. A long-lived agent on a large-window model costs less per request with a lower one, since each request reads its whole context"
           }
         },
         "additionalProperties": false,
@@ -3734,6 +3739,11 @@
                 "minimum": 1,
                 "maximum": 3600,
                 "description": "Seconds a model response may go quiet once it streams before it fails as stalled and is retried; default the runtime's (45)"
+              },
+              "contextTokens": {
+                "type": "integer",
+                "minimum": 20000,
+                "description": "The most context one model request carries, in tokens: older context is summarized (compacted) before a request would pass it, starting in the background somewhat below it. Default the model's context window, and never above it. At least 20,000. A long-lived agent on a large-window model costs less per request with a lower one, since each request reads its whole context"
               }
             },
             "additionalProperties": false,
@@ -5914,7 +5924,7 @@
                 "$ref": "#/components/schemas/RunLimits"
               },
               {
-                "description": "The most one run may take, and how long its model requests may go quiet. At maxResponses or maxSeconds, the turn ends before its next model request, after the tool calls of the response that reached it, with stopped \"turn_limit\" and code turn_limit; send another message to continue. Values above the runtime's maximums count as those. A model request that stalls (firstTokenSeconds, idleSeconds) is retried like other transient provider errors; when retries run out the run fails with code model_stream_stalled"
+                "description": "The most one run may take, how long its model requests may go quiet, and how much context each carries. At maxResponses or maxSeconds, the turn ends before its next model request, after the tool calls of the response that reached it, with stopped \"turn_limit\" and code turn_limit; send another message to continue. Values above the runtime's maximums count as those. A model request that stalls (firstTokenSeconds, idleSeconds) is retried like other transient provider errors; when retries run out the run fails with code model_stream_stalled"
               }
             ]
           },
@@ -6288,7 +6298,7 @@
                 "$ref": "#/components/schemas/RunLimits"
               },
               {
-                "description": "The most one run may take, and how long its model requests may go quiet. At maxResponses or maxSeconds, the turn ends before its next model request, after the tool calls of the response that reached it, with stopped \"turn_limit\" and code turn_limit; send another message to continue. Values above the runtime's maximums count as those. A model request that stalls (firstTokenSeconds, idleSeconds) is retried like other transient provider errors; when retries run out the run fails with code model_stream_stalled"
+                "description": "The most one run may take, how long its model requests may go quiet, and how much context each carries. At maxResponses or maxSeconds, the turn ends before its next model request, after the tool calls of the response that reached it, with stopped \"turn_limit\" and code turn_limit; send another message to continue. Values above the runtime's maximums count as those. A model request that stalls (firstTokenSeconds, idleSeconds) is retried like other transient provider errors; when retries run out the run fails with code model_stream_stalled"
               }
             ]
           },
@@ -6769,7 +6779,7 @@
                   "object",
                   "null"
                 ],
-                "description": "The most one run may take, and how long its model requests may go quiet. At maxResponses or maxSeconds, the turn ends before its next model request, after the tool calls of the response that reached it, with stopped \"turn_limit\" and code turn_limit; send another message to continue. Values above the runtime's maximums count as those. A model request that stalls (firstTokenSeconds, idleSeconds) is retried like other transient provider errors; when retries run out the run fails with code model_stream_stalled"
+                "description": "The most one run may take, how long its model requests may go quiet, and how much context each carries. At maxResponses or maxSeconds, the turn ends before its next model request, after the tool calls of the response that reached it, with stopped \"turn_limit\" and code turn_limit; send another message to continue. Values above the runtime's maximums count as those. A model request that stalls (firstTokenSeconds, idleSeconds) is retried like other transient provider errors; when retries run out the run fails with code model_stream_stalled"
               }
             ]
           },
@@ -7230,7 +7240,7 @@
                 "$ref": "#/components/schemas/RunLimits"
               },
               {
-                "description": "The most one run may take, and how long its model requests may go quiet. At maxResponses or maxSeconds, the turn ends before its next model request, after the tool calls of the response that reached it, with stopped \"turn_limit\" and code turn_limit; send another message to continue. Values above the runtime's maximums count as those. A model request that stalls (firstTokenSeconds, idleSeconds) is retried like other transient provider errors; when retries run out the run fails with code model_stream_stalled"
+                "description": "The most one run may take, how long its model requests may go quiet, and how much context each carries. At maxResponses or maxSeconds, the turn ends before its next model request, after the tool calls of the response that reached it, with stopped \"turn_limit\" and code turn_limit; send another message to continue. Values above the runtime's maximums count as those. A model request that stalls (firstTokenSeconds, idleSeconds) is retried like other transient provider errors; when retries run out the run fails with code model_stream_stalled"
               }
             ]
           },
