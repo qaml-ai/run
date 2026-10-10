@@ -71,7 +71,7 @@ PRs and non-main dispatches always use hosted runners; ARM64 image and publishin
 The runner group independently restricts execution to the CI and Nightly workflow files on main. It grants access
 only to run, camel-bots and camelAI. This trusts commits pushed to main; it does not enforce code review.
 
-The pool on camel-devbox has two slots shared across the repositories, an aggregate limit of 8 vCPUs and 24 GiB,
+The pool on camel-devbox has four slots shared across the repositories, an aggregate limit of 8 vCPUs and 24 GiB,
 and higher CPU scheduling weight than the continuously running DST jobs. It reserves no cores. Every test job uses
 its own Postgres container and allocated port; Docker commands target the exact service container ID. Test shards
 run two files at a time on Azure (`TEST_CONCURRENCY`), one on hosted runners. The nightly run uses two file workers.
