@@ -44,7 +44,7 @@ export interface WatchOptions {
   subagents?: boolean;
 }
 /** A sub-agent a delegate call started, as its relayed events tell it: its finished messages, and how it ended. */
-export interface SubagentView { agentId: string; name: string; messages: Message[]; status?: "completed" | "input_required" | "failed"; error?: string }
+export interface SubagentView { agentId: string; name: string; messages: Message[]; status?: "completed" | "input_required" | "failed" | "aborted"; error?: string }
 /** What a watcher knows of its agent. */
 export interface AgentView {
   /**

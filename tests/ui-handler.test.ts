@@ -296,3 +296,13 @@ test("an agent whose setup changes is reattached, not attached twice", async t =
   await sleep(200);
   assert.equal(streams.filter(signal => !signal.aborted).length, 1);
 });
+
+test("browserToken.scopes chooses what the handler's tokens read, e.g. without events", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "hi" }));
+  const handler = handlerFor(t, r, { browserToken: { url: r.base, scopes: ["history", "children"] } });
+  const minted = await post(handler, { action: "token" });
+  assert.equal(minted.status, 200, JSON.stringify(minted.json));
+  const read = (path: string) => fetch(`${r.base}/v1/agents/${minted.json.agentId}/${path}`, { headers: { Authorization: `Bearer ${minted.json.token}` } });
+  assert.equal((await read("history")).status, 200);
+  assert.equal((await read("state")).status, 403, "state is not among its scopes");
+});

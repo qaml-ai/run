@@ -80,6 +80,8 @@ export interface AgentHandlerOptions<A extends AgentAuth = AgentAuth> {
     ttlSeconds?: number;
     events?: string[];
     redact?: "usage.cost"[];
+    /** What the token reads (default: the runtime's: events, state, history and inputs). Add `children` to read the agent's background sub-agents too. */
+    scopes?: ("events" | "state" | "history" | "inputs" | "children")[];
     /** Where browsers reach the runtime, when not where this server does (a token's `url` by default). */
     url?: string;
   };
@@ -352,6 +354,7 @@ export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: Age
     const token = options.browserToken ?? {};
     const minted = await call(`/v1/agents/${encodeURIComponent(agent.id)}/browser-tokens`, {
       subject: auth.userId.slice(0, 200), redact: token.redact ?? ["usage.cost"], ttlSeconds: token.ttlSeconds ?? 3600, ...(token.events ? { events: token.events } : {}),
+      ...(token.scopes ? { scopes: token.scopes } : {}),
     });
     if (readTokens.size >= MAX_CACHED) readTokens.delete(readTokens.keys().next().value!);
     readTokens.set(agent.id, { token: minted.token, expiresAt: minted.expiresAt });
@@ -416,6 +419,7 @@ export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: Age
         const minted = await call(`${path}/browser-tokens`, {
           subject: auth.userId.slice(0, 200), redact: token.redact ?? ["usage.cost"],
           ...(token.ttlSeconds !== undefined ? { ttlSeconds: token.ttlSeconds } : {}), ...(token.events ? { events: token.events } : {}),
+          ...(token.scopes ? { scopes: token.scopes } : {}),
         });
         return { token: minted.token, expiresAt: minted.expiresAt, agentId: minted.agentId, url: token.url ?? minted.url ?? url };
       }

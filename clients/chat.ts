@@ -51,7 +51,8 @@ export type AssistantPart = TextPart | ReasoningPart | ToolPart | FilePart;
  * A message the runtime wrote, not the person: a background sub-agent's notification (it ended, and how) or a message
  * between an agent and its sub-agent. Render it as a notification, not as the user's.
  */
-export interface AgentNotice { kind: "notification" | "message"; agentId: string; name: string; status?: string; error?: string }
+/** A sub-agent's notification (`status`, its structured `output`, `usage`, the `inputs` it waits on) or message. */
+export interface AgentNotice { kind: "notification" | "message"; agentId: string; name: string; status?: string; error?: string; output?: unknown; usage?: Record<string, unknown> | null; inputs?: string[] }
 export interface UserChatMessage {
   id: string; role: "user"; parts: UserPart[]; text: string;
   from?: Sender; metadata?: Record<string, string>;
@@ -419,7 +420,11 @@ function userMessage(id: string, message: ProjectInput["messages"][number] & { r
 function agentNotice(source: { agentId: string; name: string }, metadata: Record<string, unknown> | undefined): AgentNotice {
   const text = (value: unknown) => typeof value === "string" ? value : undefined;
   const status = text(metadata?.status), error = text(metadata?.error);
-  return { kind: metadata?.kind === "message" ? "message" : "notification", agentId: source.agentId, name: source.name, ...(status ? { status } : {}), ...(error ? { error } : {}) };
+  const inputs = Array.isArray(metadata?.inputs) ? (metadata!.inputs as unknown[]).filter((id): id is string => typeof id === "string") : undefined;
+  return {
+    kind: metadata?.kind === "message" ? "message" : "notification", agentId: source.agentId, name: source.name, ...(status ? { status } : {}), ...(error ? { error } : {}),
+    ...(metadata?.output !== undefined ? { output: metadata.output } : {}), ...(metadata?.usage !== undefined ? { usage: metadata.usage as Record<string, unknown> | null } : {}), ...(inputs?.length ? { inputs } : {}),
+  };
 }
 
 function toolAt(id: string, name: string, args: Record<string, unknown>, result: ToolResultMessage | undefined, pending: ChatInput | undefined, progress: unknown, writing: boolean): ToolPart {

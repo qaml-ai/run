@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { AgentRuntime } from "../clients/typescript.ts";
 import { OPERATOR, runtime, sleep, toolCall, toolResults, until, watchEvents } from "./runtime-server.ts";
 
 const systemText = (body: any) => body.messages.filter((message: any) => message.role === "system" || message.role === "developer")
@@ -203,4 +204,36 @@ test("aborting a parent while a child's notification waits keeps the notificatio
   const history = (await r.call(`/v1/agents/${parent}/history`)).json.messages;
   assert.equal(history.filter((message: any) => message.source?.kind === "agent").length, 1, "the notification is in history");
   assert.ok(!history.some((message: any) => message.role === "assistant" && text(message) === "heard"), "no turn ran for it");
+});
+
+test("children started together share what the parent may spend, and limits alone bound a tool's spawns without a tool for the model", async t => {
+  const r = await runtime(t, body => {
+    if (systemText(body).includes("SLOW")) return { role: "assistant", content: "slow", delayMs: 2_000 };
+    if (lastUser(body).includes("<agent_notification")) return { role: "assistant", content: "heard" };
+    if (last(body).role === "tool") return { role: "assistant", content: toolResults(body).join(" | ") };
+    return { role: "assistant", tool_calls: [1, 2, 3].map(n => ({ index: n - 1, id: `s${n}`, type: "function", function: { name: "spawn_agent", arguments: JSON.stringify({ instructions: "You are SLOW.", task: `t${n}` }) } })) };
+  });
+  const parent = (await r.call("/v1/agents", { body: { builtins: ["agents"], delegate: { instructions: true, maxParallel: 3 }, spendLimit: { usd: 0.9 } } })).json.id;
+  const record = await r.prompt(parent, "fan out");
+  const children = record.outcome.result.reply.split(" | ").map((result: string) => JSON.parse(result).agentId);
+  assert.equal(children.length, 3);
+  // Each child holds a third of the $0.90 (its run's spend limit), not all of it.
+  const { rows } = await r.db.query("select child, budget from agent_children where parent = $1 order by child", [parent]);
+  assert.deepEqual(rows.map((row: any) => row.child).sort(), [...children].sort());
+  for (const row of rows) assert.ok(Math.abs(row.budget - 0.3) < 1e-9, `a third: ${row.budget}`);
+  await notified(r, parent, 3);
+
+  // delegate with only maxParallel and maxDepth, no builtin: accepted, and the model gets no delegate or spawn tool.
+  const limited = await r.call("/v1/agents", { body: { delegate: { maxParallel: 2, maxDepth: 1 } } });
+  assert.equal(limited.status, 201, limited.text);
+  const tools = (await r.call(`/v1/agents/${limited.json.id}`)).json.tools.map((tool: any) => tool.name);
+  assert.ok(!tools.includes("delegate") && !tools.includes("spawn_agent"), tools.join(","));
+  // With the builtin, limits alone are not enough: it needs targets.
+  assert.equal((await r.call("/v1/agents", { body: { builtins: ["agents"], delegate: { maxParallel: 2 } } })).status, 400);
+  assert.equal((await r.call("/v1/agents", { body: { delegate: {} } })).status, 400);
+  // The SDK sends limits alone as they are, adding no builtin (one with targets brings delegate).
+  const sdk = new AgentRuntime({ url: r.base, apiKey: OPERATOR });
+  const saved = await sdk.upsertDefinition("limits-only", { name: "Limits only", delegate: { maxParallel: 3, maxDepth: 1 } });
+  assert.deepEqual([saved.builtins ?? [], saved.delegate], [[], { maxParallel: 3, maxDepth: 1 }]);
+  assert.deepEqual((await sdk.createDefinition({ name: "Targets", delegate: { instructions: true } })).builtins, ["delegate"]);
 });

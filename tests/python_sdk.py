@@ -691,6 +691,8 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(next(entry["key"] for entry in await self.runtime.list_agents() if entry["id"] == researcher.id), "py-researcher")
         defined = await self.runtime.upsert_definition("py-researcher", name="Researcher", builtins=["web_search"])
         self.assertEqual((await self.runtime.upsert_definition("py-researcher", name="Researcher", builtins=["web_search"]))["revision"], defined["revision"])
+        limited = await self.runtime.upsert_definition("py-limits-only", name="Limits only", delegate={"maxParallel": 3, "maxDepth": 1})
+        self.assertEqual((limited.get("builtins") or [], limited["delegate"]), ([], {"maxParallel": 3, "maxDepth": 1}))
         limited = await self.runtime.upsert_definition("py-limited", name="Limited", run_limits={"maxResponses": 20, "maxSeconds": 600})
         self.assertEqual(limited["runLimits"], {"maxResponses": 20, "maxSeconds": 600})
         self.assertEqual((await self.runtime.http.get(f"{self.url}/v1/agents/{researcher.id}", headers={"Authorization": f"Bearer {self.token}"})).json()["builtins"], ["web_fetch"])
@@ -1336,6 +1338,8 @@ class ServeToolsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(agent_notice({"role": "user", "source": source, "metadata": {"status": "failed", "error": "broke"}}),
                          {"kind": "notification", "agentId": "client_a", "name": "bot-a", "status": "failed", "error": "broke"})
         self.assertEqual(agent_notice({"role": "user", "source": source, "metadata": {"kind": "message"}})["kind"], "message")
+        told = agent_notice({"role": "user", "source": source, "metadata": {"status": "completed", "output": {"ok": True}, "usage": {"costUsd": 0.1}, "inputs": ["in_1"]}})
+        self.assertEqual((told["output"], told["usage"], told["inputs"]), ({"ok": True}, {"costUsd": 0.1}, ["in_1"]))
         self.assertIsNone(agent_notice({"role": "user", "content": "hi"}))
 
     async def test_each_call_is_answered_as_the_user_the_token_names(self):

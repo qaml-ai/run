@@ -103,13 +103,16 @@ class RuntimeIdentity:
 
 def agent_notice(message):
     """Who wrote a history message the runtime made, if it did: a background sub-agent's notification (kind
-    "notification", with its status) or a message between agents (kind "message"). None for anyone else's."""
+    "notification", with its status, structured output, usage and the inputs it waits on) or a message between agents
+    (kind "message"). None for anyone else's."""
     source = message.get("source") if isinstance(message, dict) else None
     if not isinstance(source, dict) or source.get("kind") != "agent":
         return None
     metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
     return {"kind": "message" if metadata.get("kind") == "message" else "notification", "agentId": source.get("agentId"), "name": source.get("name"),
-            **({"status": metadata["status"]} if metadata.get("status") else {}), **({"error": metadata["error"]} if metadata.get("error") else {})}
+            **({"status": metadata["status"]} if metadata.get("status") else {}), **({"error": metadata["error"]} if metadata.get("error") else {}),
+            **({"output": metadata["output"]} if "output" in metadata else {}), **({"usage": metadata["usage"]} if "usage" in metadata else {}),
+            **({"inputs": metadata["inputs"]} if metadata.get("inputs") else {})}
 
 
 def identity_from_claims(claims):
@@ -1103,10 +1106,13 @@ def _definition_fields(fields):
 
 
 def _with_multi_agent(fields):
-    """`delegate` settings bring their builtin: given the settings without delegate or agents, delegate is added."""
+    """`delegate` settings with targets bring their builtin: given them without delegate or agents, delegate is added.
+    Limits alone (maxParallel, maxDepth) need no builtin, and get none."""
     fields = _definition_fields(fields)
     builtins = fields.get("builtins") or []
-    return {**fields, "builtins": [*builtins, "delegate"]} if fields.get("delegate") and "delegate" not in builtins and "agents" not in builtins else fields
+    delegate = fields.get("delegate") or {}
+    targets = bool(delegate.get("agents") or delegate.get("instructions")) if isinstance(delegate, dict) else False
+    return {**fields, "builtins": [*builtins, "delegate"]} if targets and "delegate" not in builtins and "agents" not in builtins else fields
 
 
 class Volume:

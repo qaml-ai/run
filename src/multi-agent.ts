@@ -91,9 +91,16 @@ export function delegateInput(value: unknown): DelegateSettings {
     ...(maxDepth !== undefined ? { maxDepth: integer(maxDepth, "delegate.maxDepth", 1, MULTI_AGENT_LIMITS.depthCeiling) } : {}),
     ...(maxParallel !== undefined ? { maxParallel: integer(maxParallel, "delegate.maxParallel", 1, MULTI_AGENT_LIMITS.parallelCeiling) } : {}),
   };
-  if (!settings.agents?.length && !settings.instructions) throw new HttpError(400, "delegate needs agents to delegate to, or instructions: true");
+  // Limits alone (maxParallel, maxDepth) bound the children an agent's tools start (camelrun/spawn) without a tool of
+  // its own to start them; with the delegate or agents builtin, it needs targets (delegateSettings).
+  if (!settings.agents?.length && !settings.instructions && settings.maxParallel === undefined && settings.maxDepth === undefined) {
+    throw new HttpError(400, "delegate needs agents to delegate to, or instructions: true (or, without the delegate and agents builtins, only maxParallel and maxDepth)");
+  }
   return settings;
 }
+
+/** Settings that only bound children (maxParallel, maxDepth), with no targets for a tool of the model's. */
+export const limitsOnly = (settings: DelegateSettings) => !settings.agents?.length && !settings.instructions;
 
 /** The builtins that start children, which `delegate` settings go with. */
 export const MULTI_AGENT_BUILTINS = ["delegate", "agents"] as const;
@@ -105,9 +112,9 @@ export const startsChildren = (builtins: readonly string[] | undefined) => !!bui
  */
 export function delegateSettings(builtins: readonly string[] | undefined, value: unknown): DelegateSettings | undefined {
   const delegate = value === undefined || value === null ? undefined : delegateInput(value);
-  if (delegate && !startsChildren(builtins)) throw new HttpError(400, `delegate settings need the delegate or agents builtin: add "delegate" or "agents" to builtins`);
+  if (delegate && !limitsOnly(delegate) && !startsChildren(builtins)) throw new HttpError(400, `delegate settings need the delegate or agents builtin: add "delegate" or "agents" to builtins`);
   const builtin = builtins?.find(name => (MULTI_AGENT_BUILTINS as readonly string[]).includes(name));
-  if (!delegate && builtin) throw new HttpError(400, `The ${builtin} builtin needs delegate: { agents } (or instructions: true): which agents it may start`);
+  if ((!delegate || limitsOnly(delegate)) && builtin) throw new HttpError(400, `The ${builtin} builtin needs delegate: { agents } (or instructions: true): which agents it may start`);
   return delegate;
 }
 

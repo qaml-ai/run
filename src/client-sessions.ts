@@ -50,7 +50,7 @@ import { answerInput, argumentsHash, expiresAt, INPUT_LIMITS, inputRequests, inp
 import { recordHandoff, recordStart, recordWatchRefused, safeError, Steps } from "./metrics.ts";
 import { BackgroundSpans, inputSpans, RunSpans, type ToolSource, type Tracing } from "./telemetry.ts";
 import { newSpanId, newTraceId, parseTraceparent, sampledAt } from "./otlp.ts";
-import { agentMessage, agentsTools, childNotice, childStatus, definitionId, delegateSettings, delegateTool, MULTI_AGENT_LIMITS, PARENT_KEYS, SEND_MESSAGE, startsChildren, SUBAGENT_EVENTS, type AgentTarget, type ChildNotice, type DelegateSettings } from "./multi-agent.ts";
+import { agentMessage, agentsTools, childNotice, childStatus, definitionId, delegateSettings, limitsOnly, delegateTool, MULTI_AGENT_LIMITS, PARENT_KEYS, SEND_MESSAGE, startsChildren, SUBAGENT_EVENTS, type AgentTarget, type ChildNotice, type DelegateSettings } from "./multi-agent.ts";
 import { clock, random } from "./node-context.ts";
 import { always, reachable, sometimes } from "./assert.ts";
 
@@ -110,7 +110,9 @@ export type ForkedFrom = { agentId: string; atMessage: number | null };
  */
 function ownSources(current: Sources | undefined, given: { builtins?: unknown; delegate?: unknown; mcpServers?: unknown }, inline: (input: unknown) => McpServerSpec[]): Sources | undefined {
   const builtins = given.builtins !== undefined ? builtinsInput(given.builtins) as string[] : current?.builtins ?? [];
-  const delegate = delegateSettings(builtins, given.delegate !== undefined ? given.delegate : startsChildren(builtins) ? current?.delegate : undefined);
+  // Kept when builtins change: settings of a builtin still given, or limits alone (which need none).
+  const kept = current?.delegate && (startsChildren(builtins) || limitsOnly(current.delegate)) ? current.delegate : undefined;
+  const delegate = delegateSettings(builtins, given.delegate !== undefined ? given.delegate : kept);
   const mcpServers = given.mcpServers !== undefined ? inline(given.mcpServers) : current?.mcpServers ?? [];
   const { builtins: _builtins, delegate: _delegate, mcpServers: _servers, ...rest } = current ?? {};
   const next: Sources = { ...rest, ...(builtins.length ? { builtins } : {}), ...(delegate ? { delegate } : {}), ...(mcpServers.length ? { mcpServers } : {}) };
@@ -261,6 +263,8 @@ type Session = {
   aborted?: Set<string>;
   /** The spawn_agent call writing its child's row: the next waits, so the running children's count holds (`childRow`). */
   spawning?: Promise<void>;
+  /** A background child's share of the spend limit being worked out (childShare), one at a time. */
+  sharing?: Promise<void>;
   /** The send_message calls of each running run, by request id: at most MULTI_AGENT_LIMITS.messagesPerRun. */
   messagesSent?: Map<string, Set<string>>;
 };
@@ -2035,9 +2039,7 @@ export class ClientSessions {
     if (!record) {
       try {
         if (child.make) agent = await child.make(depth);
-        // No per-run share: the parent's run may end first. The child gets what the agent may still spend.
-        const spend = await this.spendOf(session);
-        const budget = spend ? Math.max(0, spend.usd - spend.spent) : undefined;
+        const budget = await this.childShare(session, requestId, settings?.maxParallel ?? MULTI_AGENT_LIMITS.maxParallel);
         if (budget !== undefined && budget <= 0) throw new Error("This agent has no budget left for a sub-agent: its spend limit is reached");
         this.relayChild(session, run.id, at);
         record = await submit(agent, tenant, { id: requestId, method: "prompt", params: this.childPrompt(session, run, call, { agent, requestId, depth, maxDepth, chain, task, output, budget }) });
@@ -2576,6 +2578,29 @@ export class ClientSessions {
   private async agentByKey(tenant: string, key: string): Promise<string | undefined> {
     const { rows } = await this.db.query("select id from agents where tenant = $1 and header->>'key' = $2 and not revoked and (expires_at is null or expires_at > $3) order by id limit 1", [tenant, key, Date.now()]);
     return rows[0]?.id;
+  }
+
+  /**
+   * A background child's spend limit, held for it on its row while it runs: an even share of what the agent may still
+   * spend that no running child holds, among the slots `maxParallel` leaves, so children started together share it rather
+   * than each getting all of it. It is the agent's own limit, not its run's: the run may end before the child does.
+   * Undefined when the agent has no spend limit.
+   */
+  private async childShare(session: Session, requestId: string, maxParallel: number) {
+    // One share at a time per agent: children started in one response each see the shares taken before theirs.
+    const previous = session.sharing ?? Promise.resolve();
+    let release!: () => void;
+    session.sharing = new Promise<void>(resolve => { release = resolve; });
+    await previous;
+    try {
+      const spend = await this.spendOf(session);
+      if (!spend) return undefined;
+      const { rows: [held] } = await this.db.query(`select coalesce(sum(budget), 0) as usd, count(*) as n from agent_children
+        where parent = $1 and state = 'running' and ended_at is null and kind = 'spawn' and budget is not null and id <> $2`, [session.header.id, requestId]);
+      const share = Math.max(0, spend.usd - spend.spent - Number(held.usd)) / Math.max(1, maxParallel - Number(held.n));
+      await this.db.query("update agent_children set budget = $2 where id = $1", [requestId, share]);
+      return share;
+    } finally { release(); }
   }
 
   /** What the running run may still spend, within its own spend limit and its agent's; undefined when neither has one. */
