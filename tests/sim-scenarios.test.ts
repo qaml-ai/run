@@ -531,9 +531,184 @@ test("a notification whose landing the database refuses for now is landed when t
 test("a notification an abort reaches before its turn lands without one, not lost (seed 23594457)", async () => {
   // Minimized from seed 23594457: the parent was aborted while a child's notification run waited to land; the run ended
   // aborted after its row was marked landed, and the message never reached history. An abort now lands a notification
-  // (and a child's message to its parent) without a turn, whether it was queued or about to begin.
+  // (and a child's message to its parent) without a turn, whether it was queued or about to begin. Timing elsewhere
+  // moves where this plan's abort lands; the two scenarios below reach each path on purpose.
   const plan: Plan = JSON.parse(readFileSync(new URL("./sim/cases/notification-aborted.json", import.meta.url), "utf8"));
   const result = await runPlan(plan, { quiet: true });
   assert.deepEqual(result.failures, []);
-  assert.ok(result.reached.includes("an abort reached a notification's run before its message landed, which landed without a turn"), result.reached.join(", "));
+});
+
+/**
+ * A parent that spawns a worker, then takes a three-second turn ("busy") the worker's notification queues behind. The
+ * worker answers after a second; the notification's turn says "heard".
+ */
+const abortWorld = (seed: number) => Sim.create({
+  seed, env: { AGENT_CHILD_SWEEP_MS: "2000", AGENT_IDLE_MS: "600000" },
+  respond: body => {
+    const system = JSON.stringify(body.messages.filter((message: any) => message.role === "system"));
+    const last = body.messages.at(-1), said = JSON.stringify(last.content);
+    if (system.includes("WORKER")) return { content: "worked", delayMs: 1_000 };
+    if (last.role === "tool") return { content: "spawned" };
+    if (said.includes("<agent_notification")) return { content: "heard" };
+    if (said.includes("busy")) return { content: "busy done", delayMs: 3_000 };
+    return { tool_calls: [{ index: 0, id: "call_spawn", type: "function", function: { name: "spawn_agent", arguments: JSON.stringify({ instructions: "You are a WORKER.", task: "work" }) } }] };
+  },
+});
+/** The parent's notification ended aborted, its message in history once, and no turn ran for it. */
+async function landedWithoutTurn(sim: Sim, parent: string) {
+  const id = (await sim.until(async () => (await sim.call("a", `/v1/agents/${parent}`)).json.requests.find((request: any) => request.id.startsWith("child_") && request.state === "completed"), "the notification to end")).id;
+  const record = await outcome(sim, "a", parent, id);
+  assert.equal(record.outcome.result?.code, "aborted", JSON.stringify(record.outcome));
+  const history = (await sim.call("a", `/v1/agents/${parent}/history`)).json.messages;
+  assert.equal(history.filter((message: any) => message.requestId === id).length, 1, "the notification is in history once");
+  assert.ok(!sim.model.served.some(served => JSON.stringify(served.body.messages.at(-1).content).includes("<agent_notification")), "no turn ran for it");
+  assert.deepEqual(sim.hooks.violations, []);
+}
+
+test("an abort that reaches a notification queued behind the parent's turn lands it without a turn", async t => {
+  const sim = await abortWorld(54);
+  t.after(() => sim.close());
+  await sim.start("a");
+  const parent = (await sim.call("a", "/v1/agents", { body: { builtins: ["agents"], delegate: { instructions: true } } })).json.id;
+  await outcome(sim, "a", parent, await prompt(sim, "a", parent, "spawn"));
+  await prompt(sim, "a", parent, "busy");
+  await sim.until(async () => (await sim.call("a", `/v1/agents/${parent}`)).json.requests.some((request: any) => request.id.startsWith("child_") && request.state === "running" && !request.began), "the notification to queue");
+  assert.equal((await sim.call("a", `/v1/agents/${parent}/abort`, { body: {} })).status, 200);
+  await landedWithoutTurn(sim, parent);
+  assert.ok(sim.hooks.reached.includes("an abort reached a notification queued behind the turn, which lands without one"), sim.hooks.reached.join(", "));
+});
+
+test("an abort that reaches a notification's run after it began, before its message landed, lands it without a turn", async t => {
+  const sim = await abortWorld(55);
+  t.after(() => sim.close());
+  await sim.start("a");
+  const parent = (await sim.call("a", "/v1/agents", { body: { builtins: ["agents"], delegate: { instructions: true } } })).json.id;
+  await outcome(sim, "a", parent, await prompt(sim, "a", parent, "spawn"));
+  await prompt(sim, "a", parent, "busy");
+  await sim.until(async () => (await sim.call("a", `/v1/agents/${parent}`)).json.requests.some((request: any) => request.id.startsWith("child_") && request.state === "running"), "the notification to queue");
+  // The notification's run begins, and its start (settling the inputs a new message supersedes) meets statement
+  // timeouts, so it waits to try again: the abort comes then.
+  const db = sim.db as SimDb;
+  db.errors = { rate: 1, codes: ["57014"], random: { float: () => 0, int: () => 0 }, only: /agent_inputs/ };
+  await sim.until(async () => (await sim.call("a", `/v1/agents/${parent}`)).json.requests.some((request: any) => request.id.startsWith("child_") && request.began), "the notification's run to begin");
+  await sim.call("a", `/v1/agents/${parent}/abort`, { body: {} });
+  db.errors = undefined;
+  await landedWithoutTurn(sim, parent);
+  assert.ok(sim.hooks.reached.includes("an abort reached a notification's run before its message landed, which landed without a turn"), sim.hooks.reached.join(", "));
+});
+
+/**
+ * Tool-prepared children: a parent on a whose definition has a runtime-auth MCP server (tools.sim) with work_on_bot,
+ * which answers with a spawn directive for the worker (b's agent). The parent's model calls it, and calls it again if
+ * the first call's outcome was lost with its node; the worker answers after three seconds; the notification's turn says
+ * "heard". Returns the parent and the worker, and the tool's calls.
+ */
+async function toolSpawned(sim: Sim, pause?: () => void) {
+  const calls: unknown[] = [];
+  let worker = "";
+  sim.net.add("tools.sim", createServer(async (req, res) => {
+    let text = "";
+    for await (const chunk of req) text += chunk;
+    if (req.method !== "POST") return void res.writeHead(405).end();
+    const message = JSON.parse(text);
+    if (message.id === undefined) return void res.writeHead(202).end();
+    const reply = (result: object) => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
+    if (message.method === "initialize") return reply({ protocolVersion: message.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "app", version: "1" } });
+    if (message.method === "tools/list") return reply({ tools: [{ name: "work_on_bot", description: "Hand a task to the bot's worker", inputSchema: { type: "object", properties: { task: { type: "string" } } } }] });
+    if (message.method === "tools/call") {
+      calls.push(message.params);
+      return reply({ content: [{ type: "text", text: "starting" }], _meta: { "camelrun/spawn": { agent: worker, task: message.params.arguments.task, name: "bot" } } });
+    }
+    reply({});
+  }), work => sim.asWorld(work));
+  for (const node of ["a", "b", "c"]) await sim.start(node);
+  worker = (await sim.call("b", "/v1/agents", { body: { systemPrompt: "You are a WORKER.", ttlSeconds: null }, headers: { "Idempotency-Key": "worker" } })).json.id;
+  await outcome(sim, "b", worker, await prompt(sim, "b", worker, "warm up"));
+  const definition = await sim.call("a", "/v1/definitions", { body: { name: "Lead", mcpServers: [{ name: "app", url: "http://tools.sim/mcp", auth: { type: "runtime" } }] } });
+  assert.equal(definition.status, 201, JSON.stringify(definition.json));
+  const parent = (await sim.call("a", "/v1/agents", { body: { definition: definition.json.id } })).json.id;
+  pause?.();
+  // The first prompt's answer may be lost with a's node; its run ends on whichever node takes the agent.
+  const sent = await sim.env.settle(sim.request("a", `/v1/agents/${parent}/prompt`, { body: { text: "work on the bot" }, headers: { "Idempotency-Key": "turn-1" } }).catch(() => undefined));
+  return { parent, worker, calls, sent };
+}
+const toolSpawnWorld = (seed: number) => Sim.create({
+  seed, env: { AGENT_LEASE_TTL_MS: "3000", AGENT_ORPHAN_SWEEP_MS: "2000", AGENT_CHILD_SWEEP_MS: "2000", AGENT_IDLE_MS: "600000", AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "10.0.0.0/8" },
+  respond: body => {
+    const system = JSON.stringify(body.messages.filter((message: any) => message.role === "system"));
+    const last = body.messages.at(-1);
+    if (system.includes("WORKER")) return { content: "worked", delayMs: 3_000 };
+    if (JSON.stringify(last.content).includes("<agent_notification")) return { content: "heard" };
+    // A call whose outcome was lost with its node is made again, once.
+    if (last.role === "tool") return JSON.stringify(last.content).includes("unknown") && !body.messages.some((message: any) => message.tool_calls?.some((call: any) => call.id === "call_again"))
+      ? { tool_calls: [{ index: 0, id: "call_again", type: "function", function: { name: "app__work_on_bot", arguments: JSON.stringify({ task: "fix it" }) } }] } : { content: "spawned" };
+    return { tool_calls: [{ index: 0, id: "call_work", type: "function", function: { name: "app__work_on_bot", arguments: JSON.stringify({ task: "fix it" }) } }] };
+  },
+});
+/**
+ * Every directive the runtime took started at most one run of the worker, and every row of the parent's children reached
+ * it exactly once: a run that started notifies with its ending, a row whose child never started with a failure.
+ */
+async function toolSpawnedOnce(sim: Sim, node: string, parent: string, worker: string) {
+  const rows = await sim.until(async () => {
+    const { rows } = await sim.db.query("select id, request_id, state, landed_by, status from agent_children where parent = $1 order by created_at", [parent]);
+    return rows.length > 0 && rows.every(row => row.state === "notified") ? rows : undefined;
+  }, "every row to reach the parent", 300_000);
+  const runs = (await sim.call(node, `/v1/agents/${worker}`)).json.requests.filter((request: any) => request.id.startsWith("spawn_"));
+  assert.equal(new Set(runs.map((run: any) => run.id)).size, runs.length);
+  for (const run of runs) assert.ok(rows.some((row: any) => row.request_id === run.id), `the worker's run ${run.id} has its row`);
+  const completed = runs.filter((run: any) => run.status === "completed");
+  assert.equal(completed.length, 1, `one run of the worker did the task: ${JSON.stringify(runs.map((run: any) => [run.id, run.status]))}`);
+  const history = (await sim.call(node, `/v1/agents/${parent}/history`)).json.messages;
+  const notices = history.filter((message: any) => message.source?.kind === "agent");
+  for (const row of rows) {
+    const landed = notices.filter((message: any) => message.requestId === `child_${row.request_id}`).length;
+    assert.equal(landed, 1, `row ${row.id} (${row.status}) reached the parent once`);
+  }
+  assert.equal(notices.filter((message: any) => message.metadata.status === "completed").length, 1, "one notification that the task was done");
+  assert.equal(sim.model.served.filter(served => JSON.stringify(served.body.messages.at(-1).content).includes("<agent_notification") && JSON.stringify(served.body.messages.at(-1).content).includes("completed")).length, 1);
+  assert.deepEqual(sim.hooks.violations, []);
+  return { rows, runs };
+}
+
+test("a tool's spawn directive whose node is lost before the child's row is written starts the worker once, when the model calls again", async t => {
+  const sim = await toolSpawnWorld(51);
+  t.after(() => sim.close());
+  // a has the directive and checks the agent it names: it is lost there, before anything is written.
+  const { parent, worker, calls } = await toolSpawned(sim, () => sim.pauseAtDbAnswer("a", 10_000, "select name from agents where id"));
+  await sim.until(() => sim.pauses.some(pause => pause.node === "a"), "a to stop as it takes the directive");
+  sim.crash("a");
+  const { rows } = await toolSpawnedOnce(sim, "b", parent, worker);
+  assert.equal(rows.length, 1, "the lost directive wrote nothing");
+  assert.equal(calls.length, 2, "the model called the tool again, its first call's outcome unknown");
+});
+
+test("a tool's spawn directive whose node is lost after the child's row, before its prompt, fails that row once and starts the worker once", async t => {
+  const sim = await toolSpawnWorld(52);
+  t.after(() => sim.close());
+  // a commits the row, then asks who serves the worker, to send it the prompt: it is lost there (the turn's first owner
+  // lookup from the prompt on, as the sim runs it).
+  const { parent, worker } = await toolSpawned(sim, () => sim.pauseAtDbAnswer("a", 10_000, "select o.node, extract(epoch from n.expires_at"));
+  await sim.until(() => sim.pauses.some(pause => pause.node === "a"), "a to stop after writing the row");
+  assert.equal((await sim.db.query("select count(*)::int as n from agent_children where parent = $1", [parent])).rows[0].n, 1, "the row was written");
+  sim.crash("a");
+  const { rows } = await toolSpawnedOnce(sim, "b", parent, worker);
+  assert.equal(rows.length, 2);
+  assert.match(rows[0].status, /failed/, "the row whose child never started fails, once");
+  assert.ok(sim.hooks.reached.includes("a sweep found a child's ended run that no one had recorded"), sim.hooks.reached.join(", "));
+});
+
+test("a tool-prepared worker whose node is lost after its run ends, before delivery, notifies its parent once", async t => {
+  const sim = await toolSpawnWorld(53);
+  t.after(() => sim.close());
+  const { parent, worker } = await toolSpawned(sim);
+  await outcome(sim, "a", parent, "turn-1");
+  // b ends the worker's run, and looks up its row to deliver it: it is lost there.
+  sim.pauseAtDbAnswer("b", 10_000, "from agent_children where child");
+  await sim.until(() => sim.pauses.some(pause => pause.node === "b"), "b to stop at the delivery");
+  sim.crash("b");
+  const { rows } = await toolSpawnedOnce(sim, "a", parent, worker);
+  assert.equal(rows.length, 1);
+  assert.ok(sim.hooks.reached.includes("a tool's spawn directive started a background child"));
+  assert.ok(sim.hooks.reached.includes("a sweep found a child's ended run that no one had recorded"), sim.hooks.reached.join(", "));
 });
