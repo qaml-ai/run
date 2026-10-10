@@ -263,7 +263,9 @@ turn: a turn resumed on another node after its node was lost counts again from t
 A long history is compacted (its older part summarized) before a request would not fit the model's context window.
 On a model with a large window that is late: every request reads the whole context, so a long-lived agent pays for
 its history on each step long before it nears a million tokens. `runLimits.contextTokens` (at least 20,000) keeps
-each of the agent's requests within that many tokens instead: compaction starts in the background somewhat below
-it, and the summary, the recent messages and the system prompt carry on from there. Set it like the other run
+each of the agent's requests within about that many tokens instead: compaction starts in the background somewhat
+below it, and the summary, the recent messages and the system prompt carry on from there. It never holds up a turn,
+and after a compaction the next one waits until a quarter of the limit is new, so a system prompt that nearly fills
+the limit is not summarized again on every turn (each summary makes the provider cache the context anew). Set it like the other run
 limits, on the agent or its definition; a single run cannot set it. For a chat agent whose turns mostly need what
 happened recently, 100,000 is a reasonable start.

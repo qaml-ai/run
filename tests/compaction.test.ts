@@ -629,3 +629,22 @@ test("a mount added after the first message is appended after the cached prefix,
   const log = await records(storage.log(AgentSupervisor.transcriptKey("agent")));
   assert.equal(log.filter(record => record.t === "system" && (record as { leading?: boolean }).leading).length, 1, "pinned once, with the first message");
 });
+
+test("under runLimits.contextTokens, a context whose fixed part nearly fills the limit is not summarized again on every turn", async t => {
+  const fake = await provider(t);
+  const supervisor = await fixture(t);
+  const background: any[] = [];
+  // About 9,000 tokens of system prompt: with the summary and recent messages, near the 20,000 limit's background threshold.
+  await supervisor.start("tight", { model: fake.model(1_000_000), apiKey: "fixture", systemPrompt: `Rules ${"r".repeat(36_000)}`, runLimits: { contextTokens: 20_000 } }, { ...bridge, background: (event: any) => background.push(event) } as never);
+  const turns = 16;
+  for (let index = 0; index < turns; index++) {
+    const events: any[] = [];
+    assert.equal((await supervisor.request("tight", "prompt", { text: turn(index) }, event => events.push(event))).error, null);
+    assert.equal(events.filter(event => event.type === "compaction_start").length, 0, "no turn waits for the limit's summary");
+    await until(() => !background.some(event => event.type === "compaction_start") || background.filter(event => event.type === "compaction_end").length === background.filter(event => event.type === "compaction_start").length, "the compaction ended");
+  }
+  const ended = background.filter(event => event.type === "compaction_end" && event.summarizedMessages > 0);
+  assert.ok(ended.length >= 2, `it compacts: ${ended.length}`);
+  // A quarter of the limit (5,000 tokens) is about two turns: never a summary on every turn.
+  assert.ok(ended.length <= turns / 2, `${ended.length} compactions in ${turns} turns`);
+});
