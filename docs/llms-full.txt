@@ -4162,6 +4162,8 @@ the wake cap below, so two agents messaging each other stop.
 - Aborting the parent (`agent.abort()`, `POST /v1/agents/{id}/abort`) aborts its
   running sub-agents too. `{ "children": "keep" }` (`abort({ children: "keep" })`)
   leaves them running.
+- An abort never drops a notification: one waiting for its turn, or about to
+  start it, lands in history without a turn (its run ends `aborted`).
 - Deleting the parent aborts its running sub-agents and deletes the ones the
   runtime made. Named agents it started (`{ agent: "…" }` targets) stay.
 

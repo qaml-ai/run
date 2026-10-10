@@ -174,3 +174,33 @@ test("a child's spend is charged to its parent when its notification lands, and 
   const agent = (await r.call(`/v1/agents/${parent}`)).json;
   assert.equal(agent.spendLimit.spent.toFixed(2), "0.45");
 });
+
+test("aborting a parent while a child's notification waits keeps the notification: it lands without a turn", async t => {
+  // The worker answers only once the parent's long turn is running, and that turn only once the parent is aborted: the
+  // notification is queued behind the turn when the abort comes, whatever the timing.
+  let finishWork!: () => void, finishBusy!: () => void, busyCalled!: () => void;
+  const work = new Promise<void>(resolve => { finishWork = resolve; });
+  const busyDone = new Promise<void>(resolve => { finishBusy = resolve; });
+  const busyStarted = new Promise<void>(resolve => { busyCalled = resolve; });
+  const r = await runtime(t, body => {
+    if (systemText(body).includes("WORKER")) return { role: "assistant", content: "worked", wait: work };
+    if (last(body).role === "tool") return { role: "assistant", content: "spawned" };
+    if (lastUser(body).startsWith("<agent_notification")) return { role: "assistant", content: "heard" };
+    if (lastUser(body).includes("busy")) { busyCalled(); return { role: "assistant", content: "busy done", wait: busyDone }; }
+    return toolCall("spawn_agent", { instructions: "You are a WORKER.", task: "work" }, "call_spawn");
+  });
+  const parent = (await r.call("/v1/agents", { body: { builtins: ["agents"], delegate: { instructions: true } } })).json.id;
+  await r.prompt(parent, "spawn");
+  const busy = await r.call(`/v1/agents/${parent}/prompt`, { body: { text: "busy" } });
+  assert.equal(busy.status, 202);
+  await busyStarted;
+  finishWork();
+  await until(async () => (await parentRequests(r, parent)).find(request => request.id.startsWith("child_") && request.state === "running"), "the notification to queue behind the turn");
+  assert.equal((await r.call(`/v1/agents/${parent}/abort`, { body: {} })).status, 200);
+  finishBusy();
+  const [notice] = await notified(r, parent);
+  assert.equal(notice.outcome.result.code, "aborted", JSON.stringify(notice.outcome));
+  const history = (await r.call(`/v1/agents/${parent}/history`)).json.messages;
+  assert.equal(history.filter((message: any) => message.source?.kind === "agent").length, 1, "the notification is in history");
+  assert.ok(!history.some((message: any) => message.role === "assistant" && text(message) === "heard"), "no turn ran for it");
+});
