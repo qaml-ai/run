@@ -51,6 +51,11 @@ export function contextTokens(messages: AgentMessage[]): number {
   return Math.max(reported.tokens + trailing, estimated);
 }
 
+/** Pi's per-message estimate of `messages`' tokens, file references included: unlike `contextTokens`, for any part of a context. */
+export function messagesTokens(messages: AgentMessage[]): number {
+  return messages.reduce((sum, message) => sum + estimateTokens(message) + Math.ceil(fileChars(message) / 4), 0);
+}
+
 /** Characters the file references in a user message or tool result stand for. */
 function fileChars(message: AgentMessage): number {
   const content = (message as { content?: unknown }).content;

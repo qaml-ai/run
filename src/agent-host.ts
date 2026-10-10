@@ -15,7 +15,7 @@ import type { SearchHit, SearchQuery } from "./tool-search.ts";
 import type { AppendLog } from "../shared/append-log.ts";
 import { Transcript, readTranscriptLog, summaryMessage, type Backlog, type CompactionState, type TranscriptRecord } from "./transcript.ts";
 import { boundedContext, closeInterruptedTurn, importedHistory, interruptedTurnRepairs, validateInitialMessages, validateUserMessages } from "./history.ts";
-import { backgroundTokens, compactionNeed, compactionSettings, contextTokens, explicitKeyStream, MODEL_INTERRUPTED, modelKeyFailure, runCompaction, type ModelGate } from "./compaction.ts";
+import { backgroundTokens, compactionNeed, compactionSettings, contextTokens, explicitKeyStream, messagesTokens, MODEL_INTERRUPTED, modelKeyFailure, runCompaction, type ModelGate } from "./compaction.ts";
 import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
 import { isStalled, streamTimeouts } from "./model-stream.ts";
 import { forcedToolChoice } from "./tool-choice.ts";
@@ -414,10 +414,23 @@ export function createAgentHost(hostIO: HostIO) {
     const [system, ...view] = liveView(messages) as [SystemMessage, ...AgentMessage[]];
     const budget = config.model.contextWindow - compactionSettings(config.model).reserveTokens - systemTokens(system);
     const trims = (tokens: number) => { try { return boundedContext(view, tokens).length !== view.length; } catch { return true; } };
-    let need = compactionNeed(view, compactionModel(), systemTokens(system));
+    const limited = compactionModel();
+    let need = compactionNeed(view, config.model, systemTokens(system));
     if (need === "blocking" || trims(budget)) need = "blocking";
-    else need ??= trims(budget - backgroundTokens(config.model)) ? "background" : undefined;
+    else need ??= trims(budget - backgroundTokens(config.model)) ? "background"
+      : limited !== config.model && grown(view, limited.contextWindow) ? compactionNeed(view, limited, systemTokens(system)) : undefined;
     return { system, view, budget, need };
+  }
+
+  /**
+   * Whether the context gained a quarter of `limit` (runLimits.contextTokens) since the last compaction, which the limit
+   * waits for before compacting again. A system prompt, summary and recent messages that nearly fill the limit would
+   * otherwise be summarized again on every turn, each time writing the provider's cached prefix anew.
+   */
+  function grown(view: AgentMessage[], limit: number): boolean {
+    const since = transcript.compaction?.at;
+    if (since === undefined) return true;
+    return messagesTokens(view.filter(message => message.role !== "compactionSummary" && message.role !== "system" && message.timestamp > since)) >= limit / 4;
   }
 
   /**
