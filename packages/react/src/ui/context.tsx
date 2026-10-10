@@ -42,6 +42,9 @@ export interface Labels {
   result: string;
   /** A delegate call's sub-agent and how many messages it has finished. */
   subagent: (name: string, messages: number) => string;
+  /** A background sub-agent's notification (it ended: completed, failed, aborted, input_required), and a message between agents. */
+  agentNotification: (name: string, status: string) => string;
+  agentMessage: (name: string) => string;
 }
 
 export const defaultLabels: Labels = {
@@ -82,6 +85,8 @@ export const defaultLabels: Labels = {
   arguments: "Arguments",
   result: "Result",
   subagent: (name, messages) => `Sub-agent ${name} · ${messages} message${messages === 1 ? "" : "s"}`,
+  agentNotification: (name, status) => `Sub-agent ${name} ${status === "completed" ? "finished" : status === "input_required" ? "is waiting for input" : status}`,
+  agentMessage: name => name === "parent" ? "Message from the parent agent" : `Message from sub-agent ${name}`,
 };
 
 /** Parts of the chat you can replace with your own components. */

@@ -47,9 +47,16 @@ export interface ToolPart {
 export type UserPart = TextPart | ImagePart;
 export type AssistantPart = TextPart | ReasoningPart | ToolPart | FilePart;
 
+/**
+ * A message the runtime wrote, not the person: a background sub-agent's notification (it ended, and how) or a message
+ * between an agent and its sub-agent. Render it as a notification, not as the user's.
+ */
+export interface AgentNotice { kind: "notification" | "message"; agentId: string; name: string; status?: string; error?: string }
 export interface UserChatMessage {
   id: string; role: "user"; parts: UserPart[]; text: string;
   from?: Sender; metadata?: Record<string, string>;
+  /** Set when the runtime wrote it (`source.kind: "agent"`): a sub-agent's notification or message. */
+  agent?: AgentNotice;
   createdAt: number;
   /** sending: on its way; sent: the agent has it; failed: see `error` (and `chat.retry(id)`). */
   status: "sending" | "sent" | "failed";
@@ -183,7 +190,7 @@ const isAnswer = (value: unknown): value is InputAnswer =>
 export interface LocalSend { id: string; text: string; createdAt: number; status: "sending" | "sent" | "failed"; error?: ChatError; data?: unknown; whileRunning?: "queue" | "steer" }
 
 export interface ProjectInput {
-  messages: readonly (Message & { requestId?: string; metadata?: Record<string, string>; from?: Sender })[];
+  messages: readonly (Message & { requestId?: string; metadata?: Record<string, unknown>; from?: Sender; source?: { kind: "agent"; agentId: string; name: string } })[];
   indexes: readonly number[];
   partial: AssistantMessage | null;
   progress?: ReadonlyMap<string, unknown>;
@@ -404,8 +411,15 @@ function userMessage(id: string, message: ProjectInput["messages"][number] & { r
   });
   return {
     id, role: "user", parts, text: textOfContent(content), createdAt: message.timestamp ?? 0, status: "sent", index,
-    ...(message.from ? { from: message.from } : {}), ...(message.metadata ? { metadata: message.metadata } : {}),
+    ...(message.from ? { from: message.from } : {}),
+    ...(message.source?.kind === "agent" ? { agent: agentNotice(message.source, message.metadata) } : message.metadata ? { metadata: message.metadata as Record<string, string> } : {}),
   };
+}
+
+function agentNotice(source: { agentId: string; name: string }, metadata: Record<string, unknown> | undefined): AgentNotice {
+  const text = (value: unknown) => typeof value === "string" ? value : undefined;
+  const status = text(metadata?.status), error = text(metadata?.error);
+  return { kind: metadata?.kind === "message" ? "message" : "notification", agentId: source.agentId, name: source.name, ...(status ? { status } : {}), ...(error ? { error } : {}) };
 }
 
 function toolAt(id: string, name: string, args: Record<string, unknown>, result: ToolResultMessage | undefined, pending: ChatInput | undefined, progress: unknown, writing: boolean): ToolPart {

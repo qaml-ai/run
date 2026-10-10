@@ -4,10 +4,23 @@ import { useAgent, useAgentSelector, useAgentStatus, useLoadOlder, useMessages }
 import { cx, useUI } from "./context.tsx";
 import { ToolView } from "./tool.tsx";
 
-/** A user's message: its text, who sent it (in a shared chat), and whether it was sent. */
+/** A message the runtime wrote: a sub-agent's notification or message, shown as such and never as the user's. */
+export const AgentNotice = memo(function AgentNotice({ message }: { message: UserChatMessage }) {
+  const { labels, components } = useUI();
+  const notice = message.agent!;
+  return (
+    <details className="agent-chat__message agent-chat__notice" data-kind={notice.kind} data-status={notice.status}>
+      <summary className="agent-chat__notice-title">{notice.kind === "message" ? labels.agentMessage(notice.name) : labels.agentNotification(notice.name, notice.status ?? "completed")}</summary>
+      <components.Markdown text={message.text} streaming={false} className="agent-chat__notice-text" />
+    </details>
+  );
+});
+
+/** A user's message: its text, who sent it (in a shared chat), and whether it was sent. One the runtime wrote is a notice. */
 export const UserMessage = memo(function UserMessage({ message }: { message: UserChatMessage }) {
   const { labels } = useUI();
   const chat = useAgent();
+  if (message.agent) return <AgentNotice message={message} />;
   return (
     <div className="agent-chat__message agent-chat__message--user" data-status={message.status}>
       {message.from?.name && <div className="agent-chat__author">{message.from.name}</div>}

@@ -70,8 +70,22 @@ const Row = memo(function Row({ message, tools }: { message: ChatMessage; tools?
   return message.role === "user" ? <UserBubble message={message} /> : <AssistantTurn message={message} tools={tools} />;
 });
 
+/** A sub-agent's notification or message: the runtime wrote it, so it is a notice, never the user's bubble. */
+function AgentNotice({ message }: { message: UserChatMessage }) {
+  const notice = message.agent!;
+  const title = notice.kind === "message" ? (notice.name === "parent" ? "Message from the parent agent" : `Message from sub-agent ${notice.name}`)
+    : `Sub-agent ${notice.name} ${notice.status === "completed" ? "finished" : notice.status === "input_required" ? "is waiting for input" : notice.status ?? "finished"}`;
+  return (
+    <details className="rounded-lg border px-3 py-2 text-sm" data-status={notice.status}>
+      <summary className={cn("cursor-pointer text-muted-foreground", (notice.status === "failed" || notice.status === "aborted") && "text-destructive")}>{title}</summary>
+      <div className="mt-2"><AgentMarkdown text={message.text} streaming={false} /></div>
+    </details>
+  );
+}
+
 const UserBubble = memo(function UserBubble({ message }: { message: UserChatMessage }) {
   const chat = useAgent();
+  if (message.agent) return <AgentNotice message={message} />;
   return (
     <div className="flex flex-col items-end gap-1">
       {message.from?.name && <span className="text-xs text-muted-foreground">{message.from.name}</span>}

@@ -89,6 +89,10 @@
 :where(.agent-chat__user-text) { margin: 0; white-space: pre-wrap; }
 :where(.agent-chat__user-image) { max-width: 240px; border-radius: calc(var(--agent-radius) - 4px); display: block; }
 :where(.agent-chat__author) { font-size: 0.8em; color: var(--agent-muted-fg); }
+:where(.agent-chat__notice) { align-self: stretch; border: 1px solid var(--agent-border); border-radius: var(--agent-radius); padding: 6px 12px; font-size: 0.9em; }
+:where(.agent-chat__notice-title) { cursor: pointer; color: var(--agent-muted-fg); }
+:where(.agent-chat__notice[data-status="failed"], .agent-chat__notice[data-status="aborted"]) :where(.agent-chat__notice-title) { color: var(--agent-danger); }
+:where(.agent-chat__notice-text) { margin-top: 6px; }
 :where(.agent-chat__note) { font-size: 0.85em; color: var(--agent-muted-fg); }
 :where(.agent-chat__note--error) { color: var(--agent-danger); }
 :where(.agent-chat__link-button) { background: none; border: 0; padding: 0; text-decoration: underline; }

@@ -1693,8 +1693,8 @@ export class ClientSessions {
       if (innerSpan) spans!.innerCall(call, innerSpan, started, Date.now(), code, answer);
       // Listed in the run's outcome (`toolCalls`), ids only: its arguments and result are in history.
       const calls = session.toolCalls ??= [];
-      // A delegate or spawn_agent call names the child agent it ran.
-      const child = (call.name === "delegate" || call.name === "spawn_agent") && call.toolCallId && !call.innerCallId ? session.children?.get(call.toolCallId)?.agent : undefined;
+      // A call that started a child (delegate, spawn_agent, a tool's spawn directive) names it.
+      const child = call.toolCallId && !call.innerCallId ? session.children?.get(call.toolCallId)?.agent : undefined;
       if (calls.length < OUTPUT_TOOL_CALLS) calls.push({ tool: call.name, ...(call.toolCallId ? { toolCallId: call.toolCallId } : {}), ...(call.innerCallId ? { innerCallId: call.innerCallId } : {}), ok: !code, ...(code ? { code } : {}), ...(child ? { agentId: child } : {}) });
     }
   }
@@ -1734,6 +1734,9 @@ export class ClientSessions {
     }
     progressed?.();
     if (result.resultType === "input_required") return this.suspend(session, call, request, result);
+    // A trusted tool prepared a sub-agent: its directive replaces the result (`toolSpawn`).
+    const directive = (result as { _meta?: Record<string, unknown> })._meta?.["camelrun/spawn"];
+    if (directive !== undefined) return this.toolSpawn(session, { ...call, ...(call.toolCallId ? { idempotencyKey: toolCallKey(session.header.id, call.messageIndex, call.toolCallId, call.innerCallId) } : {}) }, directive);
     const content = contentResult(result, server.returnsFiles);
     // The model learns who answered, and how long ago: it should check what may have changed meanwhile.
     if (plan) content.content.push({ type: "text", text: plan.note });
@@ -1988,23 +1991,42 @@ export class ClientSessions {
     const { header } = session;
     const tenant = header.tenant;
     const run = this.runningRun(session);
-    const { createAgent, submit } = this.options;
-    if (!createAgent || !submit) throw new Error("Sub-agents are not enabled on this runtime");
+    if (!this.options.createAgent || !this.options.submit) throw new Error("Sub-agents are not enabled on this runtime");
     if (!run || !call.toolCallId || call.innerCallId || !call.idempotencyKey) throw new Error("spawn_agent is called directly, not from js_exec");
-    // A stateless run ends with its turn: nothing would hear its children.
-    if (header.run) throw new Error("A stateless run cannot start sub-agents in the background: use delegate");
-    const toolCallId = call.toolCallId;
     const { target, instructions, task, output } = this.childTarget(settings, call.args, "start");
     const asked = call.args.name;
     if (asked !== undefined && (typeof asked !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(asked))) throw new Error("A name is 1 to 64 letters, digits, _ and -");
-    const { depth, maxDepth, chain } = this.childPlace(session, run, settings, "Sub-agents have");
-    const requestId = `spawn_${call.idempotencyKey}`;
     const key = `spawn-${call.idempotencyKey}`;
     const made = target?.agent === undefined;
-    let agent = made ? this.agentId(tenant, key) : await this.agentByKey(tenant, target!.agent!);
+    const agent = made ? this.agentId(tenant, key) : await this.agentByKey(tenant, target!.agent!);
     if (!agent) throw new Error(`The agent ${target!.name} does not exist`);
-    if (chain.includes(agent)) throw new Error(`${target!.name} is already working on this task's chain`);
-    const row = await this.childRow(session, { id: requestId, child: agent, name: asked as string | undefined, base: target?.name ?? "subagent", depth, root: chain[0], run: run.id, toolCallId, made }, settings.maxParallel ?? MULTI_AGENT_LIMITS.maxParallel);
+    return this.startChild(session, run, call, settings, {
+      agent, made, ...(asked !== undefined ? { name: asked as string } : {}), base: target?.name ?? "subagent", task, ...(output ? { output } : {}),
+      ...(made ? { make: (depth: number) => this.makeChild(session, run, target, instructions, key, call.toolCallId!, depth) } : {}),
+    });
+  }
+
+  /**
+   * Start a background child on a task, for a spawn_agent call or a trusted tool's spawn directive: its row in
+   * `agent_children`, keyed by the call, is written before its prompt is sent, so made again (a turn resumed on another
+   * node) the call finds the same row, child and request, and never starts it twice. When the child's run ends, its
+   * ending reaches this agent as a notification (`deliverChild`). At most `maxParallel` of the agent's children run at
+   * once, and an agent already in the chain is refused. A child already busy (a persistent worker) queues the task.
+   */
+  private async startChild(session: Session, run: RequestRecord, call: ToolCall, settings: DelegateSettings | undefined,
+    child: { agent: string; made: boolean; name?: string; base: string; task: string; output?: unknown; make?: (depth: number) => Promise<string> }): Promise<McpResult> {
+    const { header } = session;
+    const tenant = header.tenant;
+    const submit = this.options.submit!;
+    // A stateless run ends with its turn: nothing would hear its children.
+    if (header.run) throw new Error("A stateless run cannot start sub-agents in the background: use delegate");
+    const toolCallId = call.toolCallId!;
+    const { depth, maxDepth, chain } = this.childPlace(session, run, settings ?? {}, "Sub-agents have");
+    const requestId = `spawn_${call.idempotencyKey}`;
+    let { agent } = child;
+    const { made, task, output } = child;
+    if (chain.includes(agent)) throw new Error(`${child.base} is already working on this task's chain`);
+    const row = await this.childRow(session, { id: requestId, child: agent, name: child.name, base: child.base, depth, root: chain[0], run: run.id, toolCallId, made }, settings?.maxParallel ?? MULTI_AGENT_LIMITS.maxParallel);
     if (row.state !== "running" && row.status === "failed" && !row.ended_at) throw new Error("This sub-agent could not be started");
     (session.children ??= new Map()).set(toolCallId, { agent, requestId, made, done: true });
     const at = { toolCallId, agentId: agent, requestId };
@@ -2012,7 +2034,7 @@ export class ClientSessions {
     let record = await this.requestOf(agent, tenant, requestId, 0, call.signal).catch(error => { if ((error as HttpError).status === 404) return undefined; throw error; });
     if (!record) {
       try {
-        if (made) agent = await this.makeChild(session, run, target, instructions, key, toolCallId, depth);
+        if (child.make) agent = await child.make(depth);
         // No per-run share: the parent's run may end first. The child gets what the agent may still spend.
         const spend = await this.spendOf(session);
         const budget = spend ? Math.max(0, spend.usd - spend.spent) : undefined;
@@ -2026,7 +2048,32 @@ export class ClientSessions {
         throw error;
       }
     }
-    return jsonResult({ agentId: agent, name: row.name });
+    return jsonResult({ agentId: agent, name: row.name, ...record.began || record.state === "completed" ? {} : { queued: true } });
+  }
+
+  /**
+   * A tool's spawn directive (`_meta["camelrun/spawn"]`: `{ agent, task, name?, output? }`): the tool, from a source the
+   * tenant trusts (an MCP server with auth "runtime", whose identity tokens it verifies), prepared an agent of the tenant's
+   * for this task, and the runtime starts it as a background child, as spawn_agent would. The model sees `{ agentId,
+   * name }` as the call's result, so it never names an agent itself. Limits and the chain hold as for spawn_agent.
+   */
+  private async toolSpawn(session: Session, call: ToolCall, directive: unknown): Promise<McpResult> {
+    const { header } = session;
+    const run = this.runningRun(session);
+    if (!this.options.submit) throw new Error("Sub-agents are not enabled on this runtime");
+    if (session.toolSources?.get(call.name) !== "served") throw new Error(`${call.name} asked to start a sub-agent (camelrun/spawn), which only a tool server with auth "runtime" may`);
+    if (!run || !call.toolCallId || call.innerCallId || !call.idempotencyKey) throw new Error(`${call.name} starts a sub-agent: call it directly, not from js_exec`);
+    const { agent, task, name, output: schema, ...rest } = (directive ?? {}) as Record<string, unknown>;
+    if (!directive || typeof directive !== "object" || Array.isArray(directive) || Object.keys(rest).length || typeof agent !== "string" || !validSessionId(agent) || typeof task !== "string" || !task.trim() || task.length > MULTI_AGENT_LIMITS.taskChars
+      || (name !== undefined && (typeof name !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(name)))) {
+      throw new Error(`${call.name} answered with an invalid camelrun/spawn: { agent: "<agent id>", task, name?, output? }`);
+    }
+    // The tenant's own agent, alive.
+    const { rows } = await this.db.query("select name from agents where id = $1 and tenant = $2 and not revoked and (expires_at is null or expires_at > $3)", [agent, header.tenant, Date.now()]);
+    if (!rows[0]) throw new Error(`${call.name} asked to start an agent this account does not have`);
+    reachable("a tool's spawn directive started a background child");
+    const output = schema === undefined ? undefined : outputInput({ schema });
+    return this.startChild(session, run, call, header.sources?.delegate, { agent, made: false, ...(name !== undefined ? { name: name as string } : {}), base: String(rows[0].name ?? "").replace(/[^A-Za-z0-9_-]/g, "-").slice(0, 56) || "worker", task, ...(output ? { output } : {}) });
   }
 
   /**

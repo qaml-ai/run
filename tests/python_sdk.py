@@ -21,7 +21,7 @@ import httpx
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "clients" / "python"))
-from camelai_run import AgentClient, _answer_for, _origin, AgentError, AgentRuntime, Agents, RunError, Runs, RuntimeTokenError, TestRuntime, ToolContext, WebhookVerificationError, _answer_mcp, _tool_context, serve_tools, tool, verify_file_url, verify_runtime_token, verify_webhook
+from camelai_run import AgentClient, _answer_for, _origin, AgentError, AgentRuntime, Agents, RunError, Runs, RuntimeTokenError, TestRuntime, ToolContext, WebhookVerificationError, agent_notice, spawn_agent, _answer_mcp, _tool_context, serve_tools, tool, verify_file_url, verify_runtime_token, verify_webhook
 from camelai_run import sync
 from camelai_run.projects import Projects, file_bytes, publish_tool
 
@@ -1311,6 +1311,12 @@ async def delete_todo(text: str) -> dict:
     return {"deleted": text}
 
 
+@tool
+async def work_on_bot(bot: str, task: str) -> dict:
+    """Hand a task to the bot's worker"""
+    return spawn_agent(f"client_{bot}", task, name=f"bot-{bot}")
+
+
 class ServeToolsTest(unittest.IsolatedAsyncioTestCase):
     """serve_tools and verify_runtime_token, against TestRuntime: no runtime needed."""
     APP = "https://app.test/mcp"
@@ -1321,6 +1327,16 @@ class ServeToolsTest(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         await self.runtime.http.aclose()
+
+    async def test_a_tool_answers_with_a_spawn_directive_and_notices_are_told_apart(self):
+        app = serve_tools([work_on_bot], **self.runtime.options)
+        result = await self.runtime.call_tool(app, self.APP, "work_on_bot", {"bot": "a", "task": "fix it"}, subject="alice")
+        self.assertEqual(result["_meta"]["camelrun/spawn"], {"agent": "client_a", "task": "fix it", "name": "bot-a"})
+        source = {"kind": "agent", "agentId": "client_a", "name": "bot-a"}
+        self.assertEqual(agent_notice({"role": "user", "source": source, "metadata": {"status": "failed", "error": "broke"}}),
+                         {"kind": "notification", "agentId": "client_a", "name": "bot-a", "status": "failed", "error": "broke"})
+        self.assertEqual(agent_notice({"role": "user", "source": source, "metadata": {"kind": "message"}})["kind"], "message")
+        self.assertIsNone(agent_notice({"role": "user", "content": "hi"}))
 
     async def test_each_call_is_answered_as_the_user_the_token_names(self):
         call = lambda name, **who: self.runtime.call_tool(self.app, self.APP, name, {}, **who)

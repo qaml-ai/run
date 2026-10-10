@@ -17,10 +17,10 @@ import { Composer, type ComposerHandle, type ComposerProps } from "./composer.ts
 import { cx, defaultLabels, UIContext, useUI, type AgentChatComponents, type Labels, type UIContextValue } from "./context.tsx";
 import { FilePreview } from "./file.tsx";
 import { Markdown } from "./markdown.tsx";
-import { AssistantMessage, EmptyState, MessageList, UserMessage } from "./messages.tsx";
+import { AgentNotice, AssistantMessage, EmptyState, MessageList, UserMessage } from "./messages.tsx";
 import { InputCard, ToolCard, ToolView } from "./tool.tsx";
 
-export { Composer, FilePreview, InputCard, Markdown, MessageList, ToolCard, ToolView, UserMessage, AssistantMessage, EmptyState, defaultLabels };
+export { AgentNotice, Composer, FilePreview, InputCard, Markdown, MessageList, ToolCard, ToolView, UserMessage, AssistantMessage, EmptyState, defaultLabels };
 export type { AgentChatComponents, ComposerHandle, ComposerProps, Labels };
 
 export interface AgentChatProps extends Partial<UseAgentChatOptions> {
