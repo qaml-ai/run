@@ -43,6 +43,14 @@ A **prepaid tenant** pays for:
   Responses on the tenant's own key cost no credit. For model calls, `/v1/usage`
   reports raw usage `cost` and `platformCost` including provider credit funding
   costs. Tool-ranking costs already include their funding in both totals.
+  Canceling or deleting an agent does not make its in-flight model request free.
+  Deletion lets cancellation settle before stopping the host, so its final usage
+  can be recorded. If a canceled stream lacks provider usage, billing estimates
+  prompt tokens from the context sent and output tokens from the partial reply;
+  reported counts and provider cost take precedence. These estimates are not an
+  exact reconciliation with the provider's invoice. A deletion that cannot settle
+  within five seconds logs `agent_delete_settle_timeout` before forced cleanup;
+  that path, like a process crash, still needs provider-side usage reconciliation.
 - **Agent time**, $0.01 per hour an agent spends in a run (model calls and tool
   execution, not idle loaded time), metered continuously, with or without its own key.
 - **Web searches and page renders** on the platform's keys (`platformKeys.exa`,

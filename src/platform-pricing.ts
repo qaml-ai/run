@@ -27,17 +27,24 @@ function dearest(provider: string): Model<Api>["cost"] & { contextWindow: number
  * as stored, whose prices are not the tenant's to set. A cost the provider reported itself (`providerCost`) still
  * comes first. A response with no token counts and no provider cost (usage suppressed) is charged as if it filled
  * the model's context window and wrote its longest reply: `estimated`. One aborted before the provider sent usage
- * (`aborted`, what it wrote so far in `chars`) is charged its reply at two characters a token.
+ * (`aborted`) uses the host's input estimate and its partial reply at two characters a token, wherever reported
+ * token counts are missing. Provider-reported cost and token counts take precedence over estimates.
  */
-export function platformUsage<T extends Usage>(usage: T, provider: string, id: string, aborted?: { chars: number }): { usage: T; estimated: boolean; known: boolean } {
+export function platformUsage<T extends Usage>(usage: T, provider: string, id: string, aborted?: { chars: number; inputTokens?: number }): { usage: T; estimated: boolean; known: boolean } {
   const model = catalogModel(provider, id);
   const rates = model ? { ...model.cost, contextWindow: model.contextWindow, maxTokens: model.maxTokens } : dearest(provider);
   const reported = typeof usage.providerCost === "number" && Number.isFinite(usage.providerCost) && usage.providerCost > 0;
   const missing = !reported && count(usage.input) + count(usage.output) + count(usage.cacheRead) + count(usage.cacheWrite) === 0;
   const tokens = missing
-    ? aborted ? { input: 0, output: Math.ceil(count(aborted.chars) / 2), cacheRead: 0, cacheWrite: 0 } : { input: rates.contextWindow, output: rates.maxTokens, cacheRead: 0, cacheWrite: 0 }
+    ? aborted ? { input: Math.min(rates.contextWindow, count(aborted.inputTokens)), output: Math.ceil(count(aborted.chars) / 2), cacheRead: 0, cacheWrite: 0 } : { input: rates.contextWindow, output: rates.maxTokens, cacheRead: 0, cacheWrite: 0 }
     : { input: count(usage.input), output: count(usage.output), cacheRead: count(usage.cacheRead), cacheWrite: count(usage.cacheWrite), cacheWrite1h: Math.min(count(usage.cacheWrite1h), count(usage.cacheWrite)) };
+  // Anthropic-style streams can report prompt usage at their start, but no completion usage before an abort.
+  const partialOutput = !reported && !!aborted && tokens.output === 0 && count(aborted.chars) > 0;
+  if (partialOutput) tokens.output = Math.ceil(count(aborted!.chars) / 2);
+  const partialInput = !reported && !!aborted && tokens.input + tokens.cacheRead + tokens.cacheWrite === 0 && count(aborted.inputTokens) > 0;
+  if (partialInput) tokens.input = Math.min(rates.contextWindow, count(aborted!.inputTokens));
+  const estimated = missing || partialOutput || partialInput;
   const cost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
   calculateCost({ cost: rates } as unknown as Model<Api>, { ...tokens, totalTokens: 0, cost } as never);
-  return { usage: { ...usage, ...(missing ? tokens : {}), cost }, estimated: missing, known: !!model };
+  return { usage: { ...usage, ...(estimated ? tokens : {}), cost }, estimated, known: !!model };
 }

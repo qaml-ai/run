@@ -681,6 +681,8 @@ export interface SessionHooks {
 export class ClientSessions {
   readonly sessions = new Map<string, Session>();
   private readonly loading = new Map<string, Promise<Session | undefined>>();
+  /** Concurrent deletes must wait for the same cancellation before any caller stops the host. */
+  private readonly removing = new Map<string, Promise<void>>();
   readonly supervisor: AgentSupervisor;
   readonly options: ClientSessionOptions;
   readonly storage: Storage;
@@ -4760,7 +4762,7 @@ export class ClientSessions {
    */
   private billable(session: Session, usage: any, provider: string, model: string, abortedChars?: number, quiet = false) {
     if (!session.platformKey || !session.catalogPriced) return usage;
-    const priced = platformUsage(usage, provider, model, abortedChars === undefined ? undefined : { chars: abortedChars });
+    const priced = platformUsage(usage, provider, model, abortedChars === undefined ? undefined : { chars: abortedChars, inputTokens: usage?.estimatedInputTokens });
     if (!quiet && (priced.estimated || !priced.known)) {
       console.log(JSON.stringify({ type: "platform_usage_untrusted", tenant: session.header.tenant, agent: session.header.id, provider, model, estimated: priced.estimated, known: priced.known, aborted: abortedChars !== undefined, usd: priced.usage.cost.total }));
     }
@@ -5009,7 +5011,15 @@ export class ClientSessions {
     }
   }
 
-  async remove(id: string) {
+  remove(id: string): Promise<void> {
+    const existing = this.removing.get(id);
+    if (existing) return existing;
+    const removed = this.removeNow(id).finally(() => { this.removing.delete(id); });
+    this.removing.set(id, removed);
+    return removed;
+  }
+
+  private async removeNow(id: string) {
     // An agent already revoked, and not held here to write it again, is never loaded.
     if (!this.sessions.has(id) && !this.loading.has(id)) {
       const stored = await this.readHeader(id);
@@ -5020,8 +5030,18 @@ export class ClientSessions {
     if (!session || (session.header.revoked && !session.unsettled)) return;
     session.header.revoked = true;
     await this.writeHeader(session);
-    this.abortChildren(session);
-    this.abortBackground(session);
+    // Stop the model while the host and its usage listener are still alive. Killing the host first drops
+    // message_end (and its bill), although the provider still charges for the streamed response.
+    await session.starting?.catch(() => {});
+    await this.stop(session);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const settled = await Promise.race([
+        session.runs.then(() => true),
+        new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), 5_000); }),
+      ]);
+      if (!settled) console.error(JSON.stringify({ type: "agent_delete_settle_timeout", tenant: session.header.tenant, agent: id }));
+    } finally { clearTimeout(timer); }
     await this.interrupt(session, "Session revoked");
     this.endStreams(session);
     await this.releaseVolumes(session.header, session.claim);
