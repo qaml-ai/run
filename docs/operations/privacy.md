@@ -125,7 +125,10 @@ Audio attached to a message is transcribed by default, and `POST /v1/transcripti
 (`src/transcription.ts`, [Voice and audio](../guides/voice.md)). The audio goes to OpenAI's transcription API
 (`/v1/audio/transcriptions`), on the tenant's own OpenAI key or its key scope's (whose address it is sent to, if the
 scope names one), else the platform's: OpenAI processes it under its API data policy (not used for training; kept by
-OpenAI for abuse monitoring as its policy says) and is the processor for it. An attached audio file is saved in the
+OpenAI for abuse monitoring as its policy says) and is the processor for it. On the platform's key, an operator may
+send it to an Azure OpenAI deployment of its own instead (`AGENT_AZURE_OPENAI_*`, [configuration](configuration.md)):
+Microsoft then processes it under the Azure OpenAI data terms (not used for training), and is the processor for it,
+with OpenAI only when Azure cannot take it. An attached audio file is saved in the
 agent's workspace like any attachment, and its transcript on the message's file reference, in the agent's history:
 both go with the agent, are in the account export (`volumes/…`, `agents/<id>/history/…`), and are deleted with it.
 A standalone transcription keeps nothing: the audio is held in memory while it is sent, and the transcript only in
@@ -140,7 +143,8 @@ and the time taken (`transcribed`), and error classes; never audio, a transcript
 The prompt and images go to OpenAI's images API (`/v1/images/generations`, `/v1/images/edits`), on the tenant's own
 OpenAI key or its key scope's (whose address it is sent to, if the scope names one), else the platform's: OpenAI
 processes them under its API data policy (not used for training; kept by OpenAI for abuse monitoring as its policy
-says) and is the processor for them. Nothing is kept unless the request names a volume (`volumeId`), whose files the
+says) and is the processor for them; on the platform's key, Microsoft's Azure OpenAI instead when the operator sends it
+there, as for transcription. Nothing is kept unless the request names a volume (`volumeId`), whose files the
 images made then are: in the account export, and deleted with the volume. The endpoint takes no `Idempotency-Key`,
 whose stored answers would hold the images. Images fetched by URL go through the outbound guard (public addresses
 only). Logs carry the tenant, the model, size, quality, format, counts, tokens, bytes and the time taken

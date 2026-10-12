@@ -29,8 +29,16 @@ export type InputImage = { bytes: Uint8Array; contentType: string; width: number
 /** What a provider made, and the tokens it billed: text and image tokens in, image tokens out. */
 export type GeneratedImages = { images: { bytes: Uint8Array; contentType: string }[]; tokens: ImageTokens; model: string };
 export type ImageTokens = { textInput: number; imageInput: number; output: number };
-/** A provider's key (and where it sends, when a key scope gives an address), as a model call's would be. */
-export type ImageCredentials = { apiKey: string; baseUrl?: string; headers?: Record<string, string> };
+/**
+ * A provider's key (and where it sends, when a key scope gives an address), as a model call's would be. The platform's
+ * may instead be an Azure OpenAI deployment (azure-openai.ts): its address, the deployment it names as the model, its
+ * key as `secrets` (headers sent only to its origin), and the platform's OpenAI key to fall back on (`fallback`) when it
+ * fails for now (rate limited, down).
+ */
+export type ImageCredentials = {
+  apiKey: string; baseUrl?: string; headers?: Record<string, string>;
+  model?: string; query?: string; secrets?: Record<string, string>; via?: "azure"; fallback?: ImageCredentials;
+};
 /** Micro-USD per million tokens of each kind. */
 export type ImagePrice = { textInput: number; imageInput: number; output: number };
 
@@ -44,7 +52,35 @@ export interface ImageProvider {
 
 /** Why a provider made no image: 502 when it failed, 400 when it refused the request (IMAGE_REFUSED when its safety system did). */
 export class ImageFailed extends HttpError {
+  /** It may succeed elsewhere or later: rate limited, the provider down or unreachable. */
+  transient = false;
   constructor(status: number, message: string, code?: string, details?: Record<string, unknown>) { super(status, message, code ?? (status === 502 ? "IMAGE_FAILED" : undefined), details); }
+}
+const transient = (error: ImageFailed) => Object.assign(error, { transient: true });
+
+/** Azure's content filter's categories that filtered (`content_filter_results`: {hate: {filtered, severity}, …}). */
+function filtered(results: unknown): string[] {
+  if (!results || typeof results !== "object") return [];
+  return Object.entries(results as Record<string, any>).filter(([, result]) => result?.filtered === true).map(([name]) => name).slice(0, 10);
+}
+/**
+ * A safety refusal, as OpenAI (`moderation_blocked`, with `moderation_details`) or Azure's content filter (`contentFilter`,
+ * `content_policy_violation`, or an inner `ResponsibleAIPolicyViolation`, with `content_filter_results`) says it: its stage
+ * and categories, or undefined when the error is not one.
+ */
+export function safetyRefusal(error: any): { stage?: "input" | "output"; categories: string[] } | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  if (error.code === "moderation_blocked") {
+    const stage = ["input", "output"].includes(error.moderation_details?.moderation_stage) ? error.moderation_details.moderation_stage : undefined;
+    const categories = Array.isArray(error.moderation_details?.categories) ? (error.moderation_details.categories as unknown[]).filter((value): value is string => typeof value === "string").slice(0, 10) : [];
+    return { ...(stage ? { stage } : {}), categories };
+  }
+  const inner = error.inner_error ?? error.innererror;
+  if (["contentFilter", "content_filter", "content_policy_violation"].includes(error.code) || inner?.code === "ResponsibleAIPolicyViolation") {
+    // Azure filters the prompt (and images given) before the model runs.
+    return { stage: "input", categories: filtered(inner?.content_filter_results ?? error.content_filter_results) };
+  }
+  return undefined;
 }
 
 /** The model images are made with: OpenAI's fast everyday image model, billed per token. */
@@ -75,8 +111,9 @@ export function openaiImages(options: { outbound: Outbound; baseUrl?: string; ti
     id: "openai",
     model: IMAGE_MODEL,
     async generate({ prompt, images, mask, options: asked }, credentials, signal) {
+      const provider = credentials.via === "azure" ? "Azure OpenAI" : "OpenAI";
       const fields: Record<string, string> = {
-        model: IMAGE_MODEL, prompt, size: asked.size, quality: asked.quality, output_format: asked.format, n: String(asked.count),
+        model: credentials.model ?? IMAGE_MODEL, prompt, size: asked.size, quality: asked.quality, output_format: asked.format, n: String(asked.count),
         ...(asked.background ? { background: asked.background } : {}),
       };
       const root = (credentials.baseUrl ?? baseUrl).replace(/\/+$/, "");
@@ -90,41 +127,47 @@ export function openaiImages(options: { outbound: Outbound; baseUrl?: string; ti
         const encoded = new Response(form);
         body = Buffer.from(await encoded.arrayBuffer());
         contentType = encoded.headers.get("content-type")!;
-        url = `${root}/images/edits`;
+        url = `${root}/images/edits${credentials.query ? `?${credentials.query}` : ""}`;
       } else {
         body = JSON.stringify({ ...fields, n: asked.count });
         contentType = "application/json";
-        url = `${root}/images/generations`;
+        url = `${root}/images/generations${credentials.query ? `?${credentials.query}` : ""}`;
       }
       let response: Response;
       try {
         response = await outbound.fetch(url, {
           method: "POST", body, headers: { Accept: "application/json", ...credentials.headers, "Content-Type": contentType },
-          secrets: credentials.apiKey ? { Authorization: `Bearer ${credentials.apiKey}` } : {}, timeoutMs, maxBytes: IMAGE_LIMITS.responseBytes, signal,
+          secrets: credentials.secrets ?? (credentials.apiKey ? { Authorization: `Bearer ${credentials.apiKey}` } : {}), timeoutMs, maxBytes: IMAGE_LIMITS.responseBytes, signal,
         });
       } catch (error) {
         if (signal.aborted) throw error;
-        throw new ImageFailed(502, `OpenAI could not be reached to make the image (${safeError(error)})`);
+        throw transient(new ImageFailed(502, `${provider} could not be reached to make the image (${safeError(error)})`));
       }
+      const refused = (refusal: { stage?: "input" | "output"; categories: string[] }) => new ImageFailed(400,
+        `${provider}'s safety system refused ${refusal.stage === "output" ? "the image it made" : "this request"}${refusal.categories.length ? ` (${refusal.categories.join(", ")})` : ""}`,
+        "IMAGE_REFUSED", { ...(refusal.stage ? { stage: refusal.stage } : {}), categories: refusal.categories });
       if (!response.ok) {
         const error: any = await response.json().then((body: any) => body?.error, () => undefined);
         const status = response.status;
-        if (error?.code === "moderation_blocked") {
-          // What OpenAI's safety system names: the stage (the prompt or input images, or the image made) and categories, never the prompt.
-          const stage = ["input", "output"].includes(error.moderation_details?.moderation_stage) ? error.moderation_details.moderation_stage as string : undefined;
-          const categories = Array.isArray(error.moderation_details?.categories) ? (error.moderation_details.categories as unknown[]).filter((value): value is string => typeof value === "string").slice(0, 10) : [];
-          throw new ImageFailed(400, `OpenAI's safety system refused ${stage === "output" ? "the image it made" : "this request"}${categories.length ? ` (${categories.join(", ")})` : ""}`, "IMAGE_REFUSED", { ...(stage ? { stage } : {}), categories });
-        }
-        // OpenAI's error message names the parameter at fault (never the prompt).
+        // What the safety system names: the stage (the prompt or input images, or the image made) and categories, never the prompt.
+        const refusal = safetyRefusal(error);
+        if (refusal) throw refused(refusal);
+        // The error message names the parameter at fault (never the prompt).
         const detail = typeof error?.message === "string" ? error.message.slice(0, 300) : "";
-        if (status === 401 || status === 403) throw new ImageFailed(502, `OpenAI rejected the API key (HTTP ${status})`);
-        if (status === 400 || status === 413 || status === 415) throw new ImageFailed(400, `OpenAI could not make the image (HTTP ${status}${detail ? `: ${detail}` : ""})`);
-        throw new ImageFailed(502, `OpenAI failed to make the image (HTTP ${status})`);
+        if (status === 401 || status === 403) throw new ImageFailed(502, `${provider} rejected the API key (HTTP ${status})`);
+        // Azure's deployment missing (renamed, or still being made) is the operator's to fix; meanwhile OpenAI serves.
+        if (status === 404 && credentials.via === "azure") throw transient(new ImageFailed(502, `${provider} has no such deployment (HTTP 404)`));
+        if (status === 400 || status === 413 || status === 415) throw new ImageFailed(400, `${provider} could not make the image (HTTP ${status}${detail ? `: ${detail}` : ""})`);
+        const failed = new ImageFailed(502, `${provider} failed to make the image (HTTP ${status})`);
+        throw status === 408 || status === 429 || status >= 500 ? transient(failed) : failed;
       }
       const answer: any = await response.json().catch(() => undefined);
       const data: unknown[] = Array.isArray(answer?.data) ? answer.data : [];
       const made = data.flatMap((entry: any) => typeof entry?.b64_json === "string" ? [Buffer.from(entry.b64_json, "base64")] : []);
-      if (!made.length) throw new ImageFailed(502, "OpenAI answered without an image");
+      // Azure filters the image made out of the answer, saying why beside it.
+      const withheld = data.flatMap((entry: any) => typeof entry?.b64_json !== "string" ? filtered(entry?.content_filter_results) : []);
+      if (!made.length && withheld.length) throw refused({ stage: "output", categories: [...new Set(withheld)] });
+      if (!made.length) throw new ImageFailed(502, `${provider} answered without an image`);
       const usage = answer.usage ?? {};
       const count = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
       const textInput = count(usage.input_tokens_details?.text_tokens), imageInput = count(usage.input_tokens_details?.image_tokens);
@@ -204,10 +247,17 @@ export class Imager {
     if (context.budget !== undefined && estimate > context.budget) throw new HttpError(402, `Making this image costs about $${estimate.toFixed(4)}, more than the $${Math.max(0, context.budget).toFixed(4)} left of this run's spend limit`, "SPEND_LIMIT");
     const { platform, ...credentials } = key;
     const started = Date.now();
-    const generated = await provider.generate(request, credentials, signal);
+    let via = credentials.via;
+    const generated = await provider.generate(request, credentials, signal).catch(error => {
+      // The platform's Azure deployment rate limited or down: the platform's OpenAI key instead.
+      if (!(error instanceof ImageFailed && error.transient && credentials.fallback) || signal.aborted) throw error;
+      console.error(JSON.stringify({ type: "images_fallback", tenant: context.tenant, via: credentials.via ?? provider.id, error: safeError(error) }));
+      via = credentials.fallback.via;
+      return provider.generate(request, credentials.fallback, signal);
+    });
     const usd = this.cost(generated.tokens);
     const { options } = request;
-    console.log(JSON.stringify({ type: "images_generated", tenant: context.tenant, provider: provider.id, model: generated.model, size: options.size, quality: options.quality, format: options.format, images: generated.images.length, inputs: request.images.length, ...generated.tokens, bytes: generated.images.reduce((sum, image) => sum + image.bytes.length, 0), ms: Date.now() - started }));
+    console.log(JSON.stringify({ type: "images_generated", tenant: context.tenant, provider: provider.id, ...(via ? { via } : {}), model: generated.model, size: options.size, quality: options.quality, format: options.format, images: generated.images.length, inputs: request.images.length, ...generated.tokens, bytes: generated.images.reduce((sum, image) => sum + image.bytes.length, 0), ms: Date.now() - started }));
     return {
       generated,
       usage: {
