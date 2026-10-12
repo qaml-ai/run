@@ -88,17 +88,18 @@ test("handles that need the stream keep it: onEvent, served tools, or connection
   assert.equal(counts.open, 0);
 });
 
-test("a lazy run whose agent is deleted mid-run fails with the refusal, and close() stops its wait", async t => {
+test("a lazy run whose agent is deleted mid-run settles, and close() stops its wait", async t => {
   const r = await runtime(t, () => ({ role: "assistant", content: "Late.", delayMs: 1_500 }));
   const agents = new Agents({ url: r.base, apiKey: OPERATOR });
   t.after(() => agents.close());
   const agent = await agents.upsert("deleted");
   const pending = agent.run("Slow").then(() => assert.fail("expected the run to fail"), error => error);
-  await new Promise(resolve => setTimeout(resolve, 300));
+  await until(() => r.model.bodies.length > 0, "the model request to start before deletion");
   assert.equal((await r.call(`/v1/agents/${agent.id}`, { method: "DELETE" })).status, 200);
-  // Settled as revoked by the runtime, or refused by its poll (404, 410): either way the wait ends.
+  // Deletion lets the model abort and report usage before stopping its host. The waiter can see that
+  // structured cancellation, the final revocation, or a refused poll (404, 410): every path must settle.
   const error = await pending;
-  assert.ok(error instanceof RunError ? /revoked/.test(error.message) : error instanceof AgentError && [404, 410].includes(error.status), String(error));
+  assert.ok(error instanceof RunError ? error.code === "aborted" || /revoked/.test(error.message) : error instanceof AgentError && [404, 410].includes(error.status), String(error));
   // The lower-level client stays eager by default; lazy is opt-in there.
   const runtimeClient = new AgentRuntime({ url: r.base, apiKey: OPERATOR });
   const { session } = await runtimeClient.upsertAgent("closing", {});

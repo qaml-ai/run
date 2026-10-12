@@ -20,7 +20,8 @@ jobs:
     timeout-minutes: 90
     services:
       postgres:
-        image: public.ecr.aws/docker/library/postgres:16-alpine
+        # Hosted runners have a Docker Hub pull-limit exemption; ECR Public can throttle them.
+        image: ${{ github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && 'public.ecr.aws/docker/library/postgres:16-alpine' || 'postgres:16-alpine' }}
         env: { POSTGRES_PASSWORD: test }
         ports: ["127.0.0.1::5432"]
         options: --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 20
