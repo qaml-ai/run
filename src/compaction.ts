@@ -7,6 +7,7 @@ import type { CompactionState } from "./transcript.ts";
 import { messageChars } from "./history.ts";
 import { fileChars as charsOf, validFileRef } from "./files.ts";
 import type { Credentials } from "./protocol.ts";
+import { AZURE_CHAT_API_VERSION } from "./azure-openai.ts";
 import { guardedModelFetch, guardedNodeAgents, outboundOfProcess, type Outbound } from "./outbound.ts";
 import { reasoningFloor } from "./pi-catalog.ts";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
@@ -227,6 +228,7 @@ function authorize(model: Model<Api>, asked: any, credentials: Credentials, sink
     return [target, callOptions.fetch || !FETCH_APIS.includes(target.api) ? callOptions : { ...callOptions, fetch: callFetch(sink) }];
   }
   const { apiKey, baseUrl, headers, region, bearer } = credentials;
+  if (model.provider === "azure" || model.api === "azure-openai-responses") return [model, azureOptions(model, options, credentials, modelHeaders, sink)];
   const fetchable = FETCH_APIS.includes(model.api);
   if (!apiKey && !fetchable) throw new Error(`A key scope entry without an apiKey cannot call ${model.provider}'s ${model.api} API`);
   const bedrock = model.api === "bedrock-converse-stream";
@@ -247,6 +249,22 @@ function authorize(model: Model<Api>, asked: any, credentials: Credentials, sink
 }
 
 /**
+ * A call to the platform's Azure OpenAI resource (azure-openai.ts): Pi's Azure client, told the v1 API root, its version
+ * and the model's deployment through its call's `env`, which it reads before the process's (so no AZURE_OPENAI_* of the
+ * host's applies), over the node's network as every model call is. A model the resource has no deployment of is refused
+ * before any request.
+ */
+function azureOptions(model: Model<Api>, options: any, credentials: Credentials, modelHeaders: Record<string, string> | null | undefined, sink: { cost?: number; credits?: number }) {
+  // Deployments are of Responses API models only (azure-openai.ts): Azure's others (DeepSeek on its completions API) have none.
+  const deployment = model.api === "azure-openai-responses" && credentials.deployments && Object.hasOwn(credentials.deployments, model.id) ? credentials.deployments[model.id] : undefined;
+  if (!credentials.baseUrl || !deployment) throw new Error(`No azure deployment is configured for ${model.provider}/${model.id} on this runtime; move the agent to a model you can use (GET /v1/models?available=true)`);
+  return {
+    ...options, apiKey: credentials.apiKey, headers: { ...options?.headers, ...modelHeaders }, fetch: callFetch(sink),
+    env: { AZURE_OPENAI_BASE_URL: credentials.baseUrl, AZURE_OPENAI_API_VERSION: AZURE_CHAT_API_VERSION, AZURE_OPENAI_DEPLOYMENT_NAME_MAP: `${model.id}=${deployment}` },
+  };
+}
+
+/**
  * The only way this runtime calls a model: with the tenant's explicit key. Pi-ai
  * falls back to provider keys in the process environment whenever no key is passed
  * (an `env` option only overrides those, it never hides them), which in a shared
@@ -259,7 +277,7 @@ function authorize(model: Model<Api>, asked: any, credentials: Credentials, sink
  * the provider refused (`model_key_invalid`, with what to do before the provider's own words). Anything else: undefined.
  */
 export function modelKeyFailure(error: string, model: { provider: string; id: string }): { code: "model_key_missing" | "model_key_invalid"; error: string } | undefined {
-  if (/^No \S+ API key is configured for /.test(error)) return { code: "model_key_missing", error };
+  if (/^No \S+ (?:API key|deployment) is configured for /.test(error)) return { code: "model_key_missing", error };
   if (/^401\b/.test(error)) return { code: "model_key_invalid", error: `${model.provider} refused the API key for ${model.provider}/${model.id} (401): set a working one with PUT /v1/providers/${model.provider}/key (or the key scope's entry), or move the agent to a model you can use (GET /v1/models?available=true). ${model.provider} said: ${error}` };
   return undefined;
 }

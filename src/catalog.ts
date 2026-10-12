@@ -10,7 +10,8 @@ export const FETCH_PROVIDERS = ["firecrawl"] as const;
 /** Providers that authenticate with something other than a single API key. */
 const NOT_API_KEY: Record<string, string> = {
   "google-vertex": "a Google Cloud service account",
-  azure: "an Azure endpoint and deployment",
+  // The platform's, where its operator deploys them (azure-openai.ts): GET /v1/models marks those available.
+  azure: "an Azure endpoint and deployment, which only the platform sets",
   "github-copilot": "GitHub OAuth",
   "openai-codex": "ChatGPT OAuth",
   "cloudflare-ai-gateway": "a Cloudflare account and gateway ID",

@@ -3388,6 +3388,21 @@ geography, a tenth dearer). Bedrock refuses a Claude model's base id
 profiles only, and an agent that names a base id is called through its global
 profile. An inference profile's geography must include the key's region.
 
+### Azure OpenAI
+
+The catalog's `azure/<model>` entries (`azure/gpt-6-sol`, `azure/gpt-6-luna`,
+`azure/gpt-6.1-sol`, …) are OpenAI's models on the platform's own Azure OpenAI
+resource. They are the platform's only: an account cannot set an Azure key
+(`GET /v1/providers` says `apiKey: false`), and an account on the platform's keys
+can use those the operator has deployed, which `GET /v1/models?available=true`
+lists. Each costs what the same model does on OpenAI (`cost` in `GET /v1/models`,
+long-context rates included), charged to your credit like any platform key.
+They take the same thinking levels, tools and structured output as OpenAI's
+Responses API. Naming one the operator has not deployed fails clearly: `PATCH
+/v1/agents/:id/configuration` refuses it, and a run on it fails with
+`model_key_missing`, before any call to Azure. Azure's own content filter may
+refuse a prompt OpenAI would answer; the run then fails with Azure's words.
+
 ### Output length and temperature
 
 Two settings shape each model response. `maxOutputTokens` is the most the model
@@ -3427,7 +3442,7 @@ the agent's calls leave it out rather than fail.
 
 The runtime marks the system prompt and tools (and the latest message) as a
 cached prefix on Anthropic's API and on Bedrock's Claude models; OpenAI and
-others cache on their own. The prefix is the same bytes from run to run (no
+others cache on their own (Azure OpenAI too, keyed by the agent). The prefix is the same bytes from run to run (no
 dates or ids in it; files and the sender of a message go in the messages), so
 from an agent's second run on, `usage.cacheRead` counts what came from the cache.
 A provider caches only a prefix past its minimum: on Anthropic 1,024 tokens for
