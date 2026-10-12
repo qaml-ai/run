@@ -81,6 +81,19 @@ test("an agent schedules, lists and cancels its own wake-ups, and wakes up", asy
   assert.deepEqual((await r.call(`/v1/agents/${agent}/schedules`)).json, []);
 });
 
+test("a schedule of an agent at its spend limit records the 402 and moves to its next occurrence instead of retrying", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
+  const agent = (await r.call("/v1/agents", { body: { spendLimit: { usd: 0 } } })).json.id;
+  const created = (await r.call(`/v1/agents/${agent}/schedules`, { body: { text: "daily report", inSeconds: 0, everySeconds: 86_400 } })).json;
+  const [moved] = await until(async () => {
+    const list = (await r.call(`/v1/agents/${agent}/schedules`)).json;
+    return list[0]?.failures ? list : undefined;
+  }, "the refused wake-up");
+  assert.equal(moved.dueAt, created.dueAt + 86_400_000);
+  assert.match(moved.lastError, /^HTTP 402: /);
+  assert.equal(r.model.bodies.length, 0, "no run started");
+});
+
 test("a node that lost the agent can no longer schedule for it", async t => {
   const { db } = await testDatabase();
   const ownership = new Ownership(db, { node: "http://a", ttlMs: 60_000 });

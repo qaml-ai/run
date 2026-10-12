@@ -42,7 +42,7 @@ Then follow the recipe for the answer:
 | 1. Support agent | https://run.camelai.com/docs/guides/tools.md: tools from this project's own functions (step 3 below) |
 | 2. Chat in your web app | https://run.camelai.com/docs/frontend.md: `npm create @camelai/run-app` for a new app, or `createAgentHandler` and `@camelai/run-react` in this one |
 | 3. Discord or Slack bot | https://run.camelai.com/docs/guides/channels.md: a definition, then a channel that uses it |
-| 4. Scheduled worker | https://run.camelai.com/docs/concepts.md#waking-later: `agent.client.schedule({ text, everySeconds })`, or the `schedule` built-in |
+| 4. Scheduled worker | https://run.camelai.com/docs/concepts.md#waking-later: `agent.client.schedule({ text, everySeconds })` (with `history: "none"` when each run stands alone, so the context does not grow), or the `schedule` built-in |
 | 5. Other | what they describe, from this file and https://run.camelai.com/llms.txt |
 
 Ask nothing else: choose the rest yourself (the language from the project, the agent's key, its instructions, the
