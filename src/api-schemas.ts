@@ -631,6 +631,7 @@ export const Upload = z.object({
 export const ScheduleInput = z.object({
   text: z.string().optional().openapi({ description: "Prompt to deliver; give exactly one of text or code" }),
   code: z.string().optional().openapi({ description: "Code to run in the sandbox with the agent's tools" }),
+  history: z.enum(["full", "none"]).optional().openapi({ description: "For a text schedule: what the model sees of the agent's history at each wake-up, as a prompt's history. full (default): all of it. none: only the system prompt and the text, so a periodic agent does not read an ever longer history; its runs are still recorded in the history" }),
   at: z.union([z.string(), z.number()]).optional().openapi({ description: "ISO time or epoch milliseconds" }),
   inSeconds: z.number().optional(),
   everySeconds: z.number().int().min(60).optional(),
@@ -642,6 +643,7 @@ export const Schedule = z.object({
   tenant: z.string(),
   text: z.string().optional(),
   code: z.string().optional(),
+  history: z.literal("none").optional().openapi({ description: "Present when its wake-ups see no history" }),
   dueAt: z.number(),
   everySeconds: z.number().optional(),
   createdAt: z.number(),

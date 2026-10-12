@@ -92,9 +92,10 @@ const DEFINITIONS: Record<string, ToolDefinition> = {
   },
   schedule: {
     name: "schedule", exposure: "both",
-    description: "Schedule a wake-up for yourself: at the time given, you receive `text` as a new message and can act on it. Give inSeconds or at (an ISO time); everySeconds (at least 60) repeats it. Returns its id.",
+    description: "Schedule a wake-up for yourself: at the time given, you receive `text` as a new message and can act on it. Give inSeconds or at (an ISO time); everySeconds (at least 60) repeats it. history \"none\" wakes you with only your instructions and the text, not this conversation, so the text must say all you need. Returns its id.",
     parameters: { type: "object", additionalProperties: false, required: ["text"], properties: {
       text: { type: "string", minLength: 1, maxLength: 32_000, description: "The message you will receive" },
+      history: { type: "string", enum: ["full", "none"], description: "What you will see of this conversation at the wake-up: full (default) or none" },
       inSeconds: { type: "number", minimum: 0 }, at: { type: "string", description: "ISO 8601 time" }, everySeconds: { type: "integer", minimum: 60 },
     } },
   },
@@ -148,7 +149,7 @@ async function builtinValue(services: BuiltinServices, context: BuiltinContext, 
   const scheduler = services.scheduler;
   if (!scheduler) throw new Error("Schedules are not enabled on this runtime");
   if (name === "schedule") {
-    const input = scheduleInput({ text: args.text, ...(args.at !== undefined ? { at: args.at } : {}), ...(args.inSeconds !== undefined ? { inSeconds: args.inSeconds } : {}), ...(args.everySeconds !== undefined ? { everySeconds: args.everySeconds } : {}) });
+    const input = scheduleInput({ text: args.text, ...(args.history !== undefined ? { history: args.history } : {}), ...(args.at !== undefined ? { at: args.at } : {}), ...(args.inSeconds !== undefined ? { inSeconds: args.inSeconds } : {}), ...(args.everySeconds !== undefined ? { everySeconds: args.everySeconds } : {}) });
     // Under the agent's claim: a node that lost the agent mid-turn schedules nothing for it.
     const created = await scheduler.create({ agent: context.agent, tenant: context.tenant, ...input }, context.claim);
     return view(created);
@@ -158,8 +159,8 @@ async function builtinValue(services: BuiltinServices, context: BuiltinContext, 
   throw new Error(`Unknown tool ${name}`);
 }
 
-const view = (schedule: { id: string; text?: string; code?: string; dueAt: number; everySeconds?: number }) => ({
-  id: schedule.id, ...(schedule.text !== undefined ? { text: schedule.text } : { code: schedule.code }), dueAt: new Date(schedule.dueAt).toISOString(),
+const view = (schedule: { id: string; text?: string; code?: string; history?: string; dueAt: number; everySeconds?: number }) => ({
+  id: schedule.id, ...(schedule.text !== undefined ? { text: schedule.text } : { code: schedule.code }), ...(schedule.history ? { history: schedule.history } : {}), dueAt: new Date(schedule.dueAt).toISOString(),
   ...(schedule.everySeconds ? { everySeconds: schedule.everySeconds } : {}),
 });
 

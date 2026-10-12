@@ -76,8 +76,8 @@ export async function* exportAccount(options: ExportOptions, tenant: string): As
       select id, header from agents where tenant = $1 and id > $2 and not revoked and purged_at is null and (expires_at is null or expires_at > $3)
       order by id limit 100`, [tenant, after, Date.now()]);
     for (const { id, header } of rows) {
-      const schedules = (await accounts.db.query("select id, text, code, due_at, every_seconds, created_at from schedules where agent = $1 order by created_at, id", [id])).rows
-        .map(row => ({ id: row.id, ...(row.text !== null ? { text: row.text } : {}), ...(row.code !== null ? { code: row.code } : {}), dueAt: Number(row.due_at), everySeconds: row.every_seconds, createdAt: Number(row.created_at) }));
+      const schedules = (await accounts.db.query("select id, text, code, history, due_at, every_seconds, created_at from schedules where agent = $1 order by created_at, id", [id])).rows
+        .map(row => ({ id: row.id, ...(row.text !== null ? { text: row.text } : {}), ...(row.code !== null ? { code: row.code } : {}), ...(row.history !== null ? { history: row.history } : {}), dueAt: Number(row.due_at), everySeconds: row.every_seconds, createdAt: Number(row.created_at) }));
       yield* zip.file(`agents/${id}/agent.json`, json({ ...agentView(header), schedules }));
       // Every message from the newest back to the first, or the export fails: a history cut short is never exported as whole.
       let total: number | undefined, read = 0, deleted = false;

@@ -4063,6 +4063,13 @@
           "code": {
             "type": "string"
           },
+          "history": {
+            "type": "string",
+            "enum": [
+              "none"
+            ],
+            "description": "Present when its wake-ups see no history"
+          },
           "dueAt": {
             "type": "number"
           },
@@ -4091,6 +4098,14 @@
           "code": {
             "type": "string",
             "description": "Code to run in the sandbox with the agent's tools"
+          },
+          "history": {
+            "type": "string",
+            "enum": [
+              "full",
+              "none"
+            ],
+            "description": "For a text schedule: what the model sees of the agent's history at each wake-up, as a prompt's history. full (default): all of it. none: only the system prompt and the text, so a periodic agent does not read an ever longer history; its runs are still recorded in the history"
           },
           "at": {
             "anyOf": [

@@ -633,7 +633,7 @@ export type Attachment = Uint8Array | Blob | string
   | { url: string; name?: string; contentType?: string; transcribe?: boolean };
 /** A file in the agent's mounts, at the path the agent sees it. */
 export interface AgentFile { path: string; version: number; size: number; updatedAt: number; by?: string; contentType: string }
-export interface Schedule { id: string; agent: string; text?: string; code?: string; dueAt: number; everySeconds?: number; createdAt: number }
+export interface Schedule { id: string; agent: string; text?: string; code?: string; history?: "none"; dueAt: number; everySeconds?: number; createdAt: number }
 /**
  * A steered message as the runtime took it (`steerMessage`, `agent.steer`): `accepted`, the running turn reads it after
  * its current step; `taken`, it has read it already, in the turn `steeredInto` names; `queued`, no turn was running, so it
@@ -2001,9 +2001,10 @@ export class AgentClient {
   }
   /**
    * Wake this agent later: with `text` it gets a prompt, with `code` it runs sandboxed
-   * code against your tools. `everySeconds` (at least 60) repeats it.
+   * code against your tools. `everySeconds` (at least 60) repeats it. `history: "none"` wakes it with only the system
+   * prompt and the text, not its history, as a prompt's `history` does.
    */
-  schedule(input: { text?: string; code?: string; at?: string | Date; inSeconds?: number; everySeconds?: number }): Promise<Schedule> {
+  schedule(input: { text?: string; code?: string; history?: "full" | "none"; at?: string | Date; inSeconds?: number; everySeconds?: number }): Promise<Schedule> {
     return this.http("/schedules", "POST", { ...input, ...(input.at instanceof Date ? { at: input.at.toISOString() } : {}) }, false);
   }
   schedules(): Promise<Schedule[]> { return this.http("/schedules"); }

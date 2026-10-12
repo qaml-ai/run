@@ -16,9 +16,12 @@ import { underClaim, type Claim } from "./ownership.ts";
  * routes, served by its owner, also pass the owner's claim: a node that lost the
  * agent then changes none of its schedules.
  */
-/** A wake-up either prompts the agent (`text`) or runs sandboxed code with its tools (`code`). */
+/**
+ * A wake-up either prompts the agent (`text`) or runs sandboxed code with its tools (`code`). A prompt with history
+ * "none" shows the model only the system prompt and the text, as a prompt's `history: "none"` does.
+ */
 export interface Schedule {
-  id: string; agent: string; tenant: string; text?: string; code?: string;
+  id: string; agent: string; tenant: string; text?: string; code?: string; history?: "none";
   dueAt: number; everySeconds?: number; createdAt: number;
 }
 export type Deliver = (schedule: Schedule, requestId: string) => Promise<void>;
@@ -27,10 +30,10 @@ export type Deliver = (schedule: Schedule, requestId: string) => Promise<void>;
 const CLAIM_TIMEOUT_MS = 60_000;
 const CLAIM_BATCH = 100;
 export const MIN_REPEAT_SECONDS = 60;
-const COLUMNS = "id, agent, tenant, text, code, due_at, every_seconds, created_at";
+const COLUMNS = "id, agent, tenant, text, code, history, due_at, every_seconds, created_at";
 const schedule = (row: any): Schedule => ({
   id: row.id, agent: row.agent, tenant: row.tenant, ...(row.text !== null ? { text: row.text } : {}), ...(row.code !== null ? { code: row.code } : {}),
-  dueAt: row.due_at, ...(row.every_seconds !== null ? { everySeconds: row.every_seconds } : {}), createdAt: row.created_at,
+  ...(row.history === "none" ? { history: "none" as const } : {}), dueAt: row.due_at, ...(row.every_seconds !== null ? { everySeconds: row.every_seconds } : {}), createdAt: row.created_at,
 });
 
 export class Scheduler {
@@ -55,17 +58,19 @@ export class Scheduler {
   }
   stop() { if (this.timer) clearInterval(this.timer); this.timer = undefined; }
 
-  async create(input: { agent: string; tenant: string; text?: string; code?: string; dueAt: number; everySeconds?: number }, claim?: Claim): Promise<Schedule> {
+  async create(input: { agent: string; tenant: string; text?: string; code?: string; history?: string; dueAt: number; everySeconds?: number }, claim?: Claim): Promise<Schedule> {
     const content = input.text ?? input.code;
     if ((input.text === undefined) === (input.code === undefined) || typeof content !== "string" || !content.trim() || content.length > 32_000) throw new Error("Give exactly one of text or code (1–32000 characters)");
     if (!Number.isFinite(input.dueAt)) throw new Error("A schedule needs a due time");
     if (input.everySeconds !== undefined && (!Number.isInteger(input.everySeconds) || input.everySeconds < MIN_REPEAT_SECONDS)) throw new Error(`everySeconds must be an integer of at least ${MIN_REPEAT_SECONDS}`);
-    const created: Schedule = { id: randomUUID(), ...input, dueAt: Math.round(input.dueAt), createdAt: Date.now() };
+    if (input.history !== undefined && (!["full", "none"].includes(input.history) || (input.history === "none" && input.text === undefined))) throw new Error('history is "full" or "none", for a schedule with text');
+    const { history, ...rest } = input;
+    const created: Schedule = { id: randomUUID(), ...rest, ...(history === "none" ? { history } : {}), dueAt: Math.round(input.dueAt), createdAt: Date.now() };
     await underClaim(this.db, claim, async sql => {
       await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`schedules:${input.agent}`]);
       if ((await sql.query("select count(*) as count from schedules where agent = $1", [input.agent])).rows[0].count >= 100) throw new Error("An agent can have at most 100 schedules");
-      await sql.query(`insert into schedules (${COLUMNS}) values ($1, $2, $3, $4, $5, $6, $7, $8)`,
-        [created.id, created.agent, created.tenant, created.text ?? null, created.code ?? null, created.dueAt, created.everySeconds ?? null, created.createdAt]);
+      await sql.query(`insert into schedules (${COLUMNS}) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [created.id, created.agent, created.tenant, created.text ?? null, created.code ?? null, created.history ?? null, created.dueAt, created.everySeconds ?? null, created.createdAt]);
     });
     return created;
   }
@@ -133,12 +138,12 @@ export class Scheduler {
   }
 }
 
-/** Parse `{ text | code, at? (ISO time or ms), inSeconds?, everySeconds? }` into a due time. */
+/** Parse `{ text | code, history?, at? (ISO time or ms), inSeconds?, everySeconds? }` into a due time. */
 export function scheduleInput(body: any, now = Date.now()) {
-  if (!body || typeof body !== "object") throw new Error("Send { text | code, at | inSeconds, everySeconds? }");
+  if (!body || typeof body !== "object") throw new Error("Send { text | code, history?, at | inSeconds, everySeconds? }");
   const at = body.at === undefined ? undefined : typeof body.at === "number" ? body.at : Date.parse(body.at);
   const dueAt = at ?? (body.inSeconds !== undefined ? now + Number(body.inSeconds) * 1000 : body.everySeconds !== undefined ? now + Number(body.everySeconds) * 1000 : NaN);
   if (!Number.isFinite(dueAt)) throw new Error("Give a due time: at (ISO time) or inSeconds");
   if (dueAt > now + 366 * 86_400_000) throw new Error("Schedules can be at most a year ahead");
-  return { ...(body.text !== undefined ? { text: body.text } : {}), ...(body.code !== undefined ? { code: body.code } : {}), dueAt: Math.max(dueAt, now), ...(body.everySeconds !== undefined ? { everySeconds: Number(body.everySeconds) } : {}) };
+  return { ...(body.text !== undefined ? { text: body.text } : {}), ...(body.code !== undefined ? { code: body.code } : {}), ...(body.history !== undefined ? { history: body.history } : {}), dueAt: Math.max(dueAt, now), ...(body.everySeconds !== undefined ? { everySeconds: Number(body.everySeconds) } : {}) };
 }
