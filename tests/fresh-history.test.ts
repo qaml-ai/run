@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Agents } from "../clients/node.ts";
-import { OPERATOR, runtime, toolCall } from "./runtime-server.ts";
+import { OPERATOR, runtime, toolCall, until } from "./runtime-server.ts";
 
 /** The model request's user messages, as text. */
 const userTexts = (body: any) => body.messages.filter((message: any) => message.role === "user")
@@ -72,4 +72,25 @@ test("the SDK: codeMode, history: \"none\" and configHash", async t => {
   assert.deepEqual(userTexts(body).map((text: string) => text.includes("Second question")), [true]);
   assert.deepEqual(body.tool_choice, { type: "function", function: { name: "final_output" } });
   assert.doesNotMatch(JSON.stringify(body), /js_exec/);
+});
+
+test("a schedule with history: \"none\" wakes the agent with its text alone, and one without sees the history", async t => {
+  const r = await runtime(t, (_body, index) => ({ role: "assistant", content: `answer ${index}` }));
+  const id = (await r.call("/v1/agents", { body: {} })).json.id as string;
+  await r.prompt(id, "first question");
+  const fresh = await r.call(`/v1/agents/${id}/schedules`, { body: { text: "nightly triage", history: "none", inSeconds: 0 } });
+  assert.equal(fresh.status, 201, fresh.text);
+  assert.equal(fresh.json.history, "none");
+  await until(() => r.model.bodies.some((body: any) => userTexts(body).some((text: string) => text.includes("nightly triage"))), "the fresh wake-up");
+  const woken = r.model.bodies.find((body: any) => userTexts(body).some((text: string) => text.includes("nightly triage")));
+  assert.deepEqual(userTexts(woken).map((text: string) => text.includes("nightly triage")), [true], "no earlier message");
+  const full = await r.call(`/v1/agents/${id}/schedules`, { body: { text: "with context", history: "full", inSeconds: 0 } });
+  assert.equal(full.json.history, undefined, "full is the default, not stored");
+  await until(() => r.model.bodies.some((body: any) => userTexts(body).some((text: string) => text.includes("with context"))), "the full wake-up");
+  const later = r.model.bodies.find((body: any) => userTexts(body).some((text: string) => text.includes("with context")));
+  assert.ok(userTexts(later).some((text: string) => text.includes("first question")) && userTexts(later).some((text: string) => text.includes("nightly triage")));
+  // Only a text schedule takes it, and only full or none.
+  for (const body of [{ code: "return 1", history: "none", inSeconds: 60 }, { text: "x", history: "some", inSeconds: 60 }]) {
+    assert.equal((await r.call(`/v1/agents/${id}/schedules`, { body })).status, 400, JSON.stringify(body));
+  }
 });
