@@ -516,7 +516,7 @@ export class RunSpans {
           "gen_ai.usage.input_tokens": usage.input ?? 0, "gen_ai.usage.output_tokens": usage.output ?? 0,
           "gen_ai.usage.cache_read.input_tokens": usage.cacheRead || undefined, "gen_ai.usage.cache_creation.input_tokens": usage.cacheWrite || undefined,
           "camelrun.cost.usd": { double: Number(usage.cost?.total) || 0 }, "gen_ai.usage.cost": { double: Number(usage.cost?.total) || 0 },
-          ...(failed ? { "error.type": message.stopReason === "aborted" ? "aborted" : errorClass(message.errorMessage) } : {}),
+          ...(failed ? { "error.type": message.stopReason === "aborted" ? "aborted" : errorClass(message.errorMessage, message.rawStopReason) } : {}),
           ...(content ? { "gen_ai.output.messages": outputMessage(message, FINISH[message.stopReason]), "output.value": outputMessage(message, FINISH[message.stopReason]) } : {}),
         }, failed ? this.failure(message.errorMessage, message.stopReason === "aborted" ? "aborted" : undefined) : undefined, model.spanId);
         break;

@@ -1,6 +1,7 @@
 import { z } from "@hono/zod-openapi";
 import { EVENT_TYPES } from "./webhooks.ts";
 import { MIN_CONTEXT_TOKENS } from "./protocol.ts";
+import { MODEL_ERROR_CLASSES } from "./model-errors.ts";
 
 const SEND_KEY = "Send {\"apiKey\": \"...\"} with the provider's API key";
 const SEND_TEXT = "Send {\"text\": \"...\"}, or attach audio to transcribe";
@@ -159,12 +160,20 @@ const runFacts = {
   method: z.enum(["prompt", "continue", "resume", "execute"]),
   actor: z.string().optional(), metadata: z.record(z.string(), z.string()).optional().openapi({ description: "The metadata the message that started it carried" }),
 };
+/** How a failed model call failed (model-errors.ts `ModelFailure`): on a run's error, its run.failed webhook and its events. */
+export const ModelFailure = z.object({
+  errorClass: z.enum(MODEL_ERROR_CLASSES).openapi({ description: "What kind of failure: billing (the provider's 402, a quota or budget used up), rate_limit (429), server (5xx, overloaded, the provider unreachable), refusal (the model declined, or a safety filter stopped it), auth (401, 403, no key), timeout (the provider's, or the model stream went quiet), other. Values may be added: treat an unknown one as other" }),
+  providerStatus: z.number().int().optional().openapi({ description: "The provider's HTTP status, when its error gives one" }),
+  retryable: z.boolean().openapi({ description: "Whether the runtime retries such a failure itself (3 times, with backoff, on the same model). On a failed run: true means it was transient and its retries ran out, so trying again later, or another model, may work" }),
+  model: z.string().openapi({ description: "The model that failed, as provider/model-id (an id of GET /v1/models)" }),
+}).openapi("ModelFailure");
+const servedModel = z.string().optional().openapi({ description: "The model that made the run's last response, as provider/model-id" });
 const runUsage = z.object({ responses: z.number(), input: z.number(), output: z.number(), cacheRead: z.number(), cacheWrite: z.number(), costUsd: z.number() }).nullable()
   .openapi({ description: "The run's model responses on the node that ended it; null when it made none there" });
 export const WebhookEvents = {
   "run.started": envelope("run.started", z.object({ ...runFacts, resumes: z.number().optional().openapi({ description: "Set when a node resumed a turn whose node was lost" }) }), "A run began"),
   "run.completed": envelope("run.completed", z.object({
-    ...runFacts, usage: runUsage,
+    ...runFacts, usage: runUsage, servedModel,
     stopped: z.enum(["input_required", "spend_limit", "turn_limit"]).optional().openapi({ description: "Why it stopped early: waiting on input (inputIds), a spend limit, or the run's own limits (turn_limit: its model responses or time, see runLimits)" }),
     limit: z.enum(["run", "agent", "tenant", "credit"]).optional().openapi({ description: "With stopped spend_limit, which limit stopped it: the run's own (spendLimit on the prompt), its agent's, the tenant's monthly cap, or the account's prepaid credit" }),
     inputIds: z.array(z.string()).optional(),
@@ -173,7 +182,8 @@ export const WebhookEvents = {
     steeredInto: z.string().optional().openapi({ description: "A prompt sent with whileRunning: steer that a running turn took: that turn's request" }),
   }), "A run ended without an error"),
   "run.failed": envelope("run.failed", z.object({
-    ...runFacts, usage: runUsage, error: z.string(), code: z.string().optional().openapi({ description: "The failure's name, where it has one: cancelled (a stop cancelled it before it began), aborted, model_stream_stalled, turn_limit, spend_limit, output_missing..." }), uncertain: z.boolean().optional().openapi({ description: "A restart cut it short: its effects are unknown" }), steeredInto: z.string().optional(),
+    ...runFacts, usage: runUsage, servedModel, error: z.string(), code: z.string().optional().openapi({ description: "The failure's name, where it has one: cancelled (a stop cancelled it before it began), aborted, model_stream_stalled, turn_limit, spend_limit, output_missing..." }), uncertain: z.boolean().optional().openapi({ description: "A restart cut it short: its effects are unknown" }), steeredInto: z.string().optional(),
+    ...ModelFailure.partial().shape,
   }), "A run ended with an error: the runtime's, or the model's"),
   "input.requested": envelope("input.requested", z.object({
     agentId: z.string(), requestId: z.string(), inputId: z.string(), toolCallId: z.string(), kind: z.enum(["question", "approval", "form", "url"]), expiresAt: z.number(),
@@ -415,7 +425,7 @@ export const RequestRecord = z.object({
   steeredInto: z.string().optional().openapi({ description: "A prompt with whileRunning: steer that a running turn took: that turn's request. This request completes as the turn takes the message; the turn's request has the turn's outcome (reply, output...)" }),
   steer: z.enum(["accepted", "queued"]).optional().openapi({ description: "A prompt with whileRunning: steer, as it was accepted: accepted, the running turn reads it after its current step; queued, no turn could take it, so it runs as a turn of its own" }),
   abortedAt: z.number().optional().openapi({ description: "When the agent was stopped while this run was going: it ends as aborted, and is never resumed elsewhere" }),
-  outcome: Outcome.optional().openapi({ description: "result.code names a run's failure where it has a name: cancelled (a stop cancelled it before it began), aborted (stopped while it ran), model_stream_stalled (its model stopped answering, past every retry), turn_limit, spend_limit, agent_loop_limit (a sub-agent's notification landed without a turn: its chain reached its wake cap), output_missing, model_key_missing, model_key_invalid. result.stopped is input_required when the turn waits on human input, listed in result.inputs. A run's result also has reply, replyIndex, files, toolErrors and toolCalls: every tool call it made (the first 100), as {tool, toolCallId?, innerCallId?, ok, code?, agentId?} (agentId: the child a delegate or spawn_agent call ran), without arguments or results. result.output is a structured answer, for a prompt sent with output. result.usage.subagentCostUsd is what its children spent, and result.usage.imageCostUsd what its generate_image calls spent" }),
+  outcome: Outcome.optional().openapi({ description: "result.code names a run's failure where it has a name: cancelled (a stop cancelled it before it began), aborted (stopped while it ran), model_stream_stalled (its model stopped answering, past every retry), turn_limit, spend_limit, agent_loop_limit (a sub-agent's notification landed without a turn: its chain reached its wake cap), output_missing, model_key_missing, model_key_invalid. result.stopped is input_required when the turn waits on human input, listed in result.inputs. A run's result also has reply, replyIndex, files, toolErrors and toolCalls: every tool call it made (the first 100), as {tool, toolCallId?, innerCallId?, ok, code?, agentId?} (agentId: the child a delegate or spawn_agent call ran), without arguments or results. result.output is a structured answer, for a prompt sent with output. result.usage.subagentCostUsd is what its children spent, and result.usage.imageCostUsd what its generate_image calls spent. result.servedModel is the model that made its last response (provider/model-id); result.modelError, when a model call failed it, says how: {errorClass, providerStatus?, retryable, model} (ModelFailure)" }),
   error: z.string().optional().openapi({ description: "An ended request's error, from its outcome: the runtime's (outcome.error) or the model's (outcome.result.error). Absent when it succeeded" }),
   stopped: z.enum(["input_required", "spend_limit", "turn_limit", "agent_loop_limit"]).optional().openapi({ description: "Why an ended run stopped early (outcome.result.stopped)" }),
   status: z.enum(["completed", "input_required", "failed"]).optional().openapi({ description: "How an ended request ended (state says only that it ended): failed when it has an error or stopped at a spend or turn limit; input_required when it waits on people. Absent while running" }),
@@ -482,7 +492,8 @@ const RunFailure = z.object({
   code: z.string().openapi({ description: "Stable: model_error, runtime_error, output_missing, spend_limit, turn_limit, aborted…" }),
   message: z.string(),
   uncertain: z.boolean().optional().openapi({ description: "The runtime could not tell whether the run's work took effect" }),
-}).openapi("RunFailure");
+  ...ModelFailure.partial().shape,
+}).openapi("RunFailure", { description: "errorClass, providerStatus, retryable and model are there when a model call failed the run (model_error, model_stream_stalled, model_key_invalid…)" });
 export const Run = z.object({
   id: z.string().openapi({ description: "run_…" }),
   status: z.enum(["running", "completed", "input_required", "failed"]).openapi({ description: "running until it ends; then completed, failed, or input_required (a tool asked for approval or input, which a run cannot wait on: it ends there)" }),
@@ -490,6 +501,7 @@ export const Run = z.object({
   output: z.unknown().optional().openapi({ description: "For a run with output: the answer, which fits its schema" }),
   error: RunFailure.nullable(),
   usage: z.record(z.string(), z.unknown()).nullable().openapi({ description: "What its model calls used: responses, input, output, cacheRead, cacheWrite, costUsd (and subagentCostUsd, what its sub-agents spent; imageCostUsd, what its generate_image calls spent)" }),
+  servedModel: z.string().optional().openapi({ description: "The model that made its last response (retries ask the same one), as provider/model-id; absent when it made none" }),
   toolCalls: z.array(z.record(z.string(), z.unknown())),
   toolErrors: z.array(z.record(z.string(), z.unknown())),
   sourceErrors: z.array(z.record(z.string(), z.unknown())),

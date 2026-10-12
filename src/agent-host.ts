@@ -15,9 +15,10 @@ import type { SearchHit, SearchQuery } from "./tool-search.ts";
 import type { AppendLog } from "../shared/append-log.ts";
 import { Transcript, readTranscriptLog, summaryMessage, type Backlog, type CompactionState, type TranscriptRecord } from "./transcript.ts";
 import { boundedContext, closeInterruptedTurn, importedHistory, interruptedTurnRepairs, validateInitialMessages, validateUserMessages } from "./history.ts";
-import { backgroundTokens, compactionNeed, compactionSettings, contextTokens, explicitKeyStream, messagesTokens, MODEL_INTERRUPTED, modelKeyFailure, runCompaction, type ModelGate } from "./compaction.ts";
+import { backgroundTokens, compactionNeed, compactionSettings, contextTokens, explicitKeyStream, messagesTokens, modelKeyFailure, runCompaction, type ModelGate } from "./compaction.ts";
 import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
 import { isStalled, streamTimeouts } from "./model-stream.ts";
+import { MODEL_INTERRUPTED, modelFailure, retriesModelError } from "./model-errors.ts";
 import { forcedToolChoice } from "./tool-choice.ts";
 import { filesRefused, schemaAccepts } from "./tool-policy.ts";
 import { callSettings } from "./pi-catalog.ts";
@@ -301,6 +302,8 @@ export function createAgentHost(hostIO: HostIO) {
 
   /** Whether each model call asks the supervisor for its credentials. */
   const perCall = () => config.apiKey === IDENTITY_KEY || config.apiKey === SCOPE_KEY;
+  /** Where its model requests go, for `retriesModelError`: its tenant's own endpoint retries for itself. */
+  const failureContext = () => ({ ownEndpoint: config.apiKey === IDENTITY_KEY, contextWindow: config.model.contextWindow });
 
   /** The compaction running now, if any: an agent compacts one at a time. */
   let compacting: { done: Promise<boolean>; controller: AbortController; background: boolean } | undefined;
@@ -779,11 +782,11 @@ export function createAgentHost(hostIO: HostIO) {
       }
       // Cut by this node's stale lease: made again at once, as its gate allows, and not counted as a provider failure.
       const interrupted = last.errorMessage === MODEL_INTERRUPTED;
-      // A tenant's own endpoint has retried already: its errors (a credit gate's 402, say) end the turn. A stream that went
-      // quiet is the runtime's own timeout, which no endpoint could have retried: it is retried here like any.
-      if (!interrupted && (!isRetryableAssistantError(last) || (config.apiKey === IDENTITY_KEY && !isStalled(last.errorMessage)))) return;
+      // What the API reports as `retryable` (model-errors.ts): a tenant's own endpoint has retried already, so its errors
+      // (a credit gate's 402, say) end the turn; a stream that went quiet is retried like any.
+      if (!retriesModelError(last, failureContext())) return;
       if (!interrupted && attempt > policy.maxAttempts) {
-        io.emit({ type: "auto_retry_end", success: false, attempt: attempt - 1, finalError: last.errorMessage });
+        io.emit({ type: "auto_retry_end", success: false, attempt: attempt - 1, finalError: last.errorMessage, failure: modelFailure(last, failureContext()) });
         return;
       }
       const delayMs = interrupted ? 0 : policy.baseDelayMs * 2 ** (attempt - 1);
@@ -794,7 +797,7 @@ export function createAgentHost(hostIO: HostIO) {
         agent!.state.messages = agent!.state.messages.slice(0, -1);
         return;
       }
-      io.emit({ type: "auto_retry_start", attempt, maxAttempts: policy.maxAttempts, delayMs, errorMessage: last.errorMessage ?? "Unknown error" });
+      io.emit({ type: "auto_retry_start", attempt, maxAttempts: policy.maxAttempts, delayMs, errorMessage: last.errorMessage ?? "Unknown error", failure: modelFailure(last, failureContext()) });
       // The failed attempt is not history: drop it from the log and the live state, and say so on the stream.
       await transcript.retract();
       io.emit({ type: "message_retracted", index: transcript.total });
@@ -956,7 +959,8 @@ export function createAgentHost(hostIO: HostIO) {
           catch (error) { agent!.abort(); throw error; }
           void index();
         }
-        io.emit(event);
+        // A failed response's event says how it failed, for callers that would otherwise parse its message.
+        io.emit(event.type === "message_end" && event.message.role === "assistant" && event.message.stopReason === "error" ? { ...event, failure: modelFailure(event.message, failureContext()) } : event);
       });
       // final_output, declared by a prompt with an output schema, stays until a prompt without one.
       const kept = getCurrentTools(agent.state.messages).find(tool => tool.name === OUTPUT_TOOL);
@@ -1252,11 +1256,19 @@ export function createAgentHost(hostIO: HostIO) {
     } };
   }
 
-  /** The final answer's text, for callers that relay it (channels), and that message's index in the history. */
+  /**
+   * The final answer's text, for callers that relay it (channels), and that message's index in the history; the model
+   * that made it (`servedModel`, as `provider/model-id`: retries ask the same one); and when it failed, how (`modelError`).
+   */
   function answer(last: AssistantMessage | undefined) {
-    const reply = last?.role === "assistant" && last.stopReason !== "error" ? last.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n").trim() : "";
+    const said = last?.role === "assistant" ? last : undefined;
+    const reply = said && said.stopReason !== "error" ? said.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n").trim() : "";
     const at = reply ? transcript.context.lastIndexOf(last as AgentMessage) : -1;
-    return { error: last?.stopReason === "error" ? last.errorMessage ?? "The model returned an error" : null, ...(reply ? { reply } : {}), ...(at >= 0 ? { replyIndex: transcript.offset + at } : {}) };
+    const failed = said?.stopReason === "error";
+    return {
+      error: failed ? said.errorMessage ?? "The model returned an error" : null, ...(reply ? { reply } : {}), ...(at >= 0 ? { replyIndex: transcript.offset + at } : {}),
+      ...(said ? { servedModel: `${said.provider}/${said.model}` } : {}), ...(failed ? { modelError: modelFailure(said, failureContext()) } : {}),
+    };
   }
 
   /**

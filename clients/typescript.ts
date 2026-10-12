@@ -1,4 +1,4 @@
-import type { AgentEvent, Message, PresentedFile, ThinkingLevel } from "./types.ts";
+import type { AgentEvent, Message, ModelFailure, PresentedFile, ThinkingLevel } from "./types.ts";
 import type { Run } from "./agents.ts";
 import { Type, type TSchema, type Static } from "typebox";
 import { Check } from "typebox/value";
@@ -609,8 +609,8 @@ export type WebhookEvent = { id: string; created: number } & (
       balance: number; threshold: number; previousBalance?: number; source: "balance" | "threshold_changed";
     } }
   | { type: "run.started"; data: RunFacts & { resumes?: number } }
-  | { type: "run.completed"; data: RunFacts & { usage: RunUsage | null; stopped?: "input_required" | "spend_limit" | "turn_limit"; inputIds?: string[]; replyIndex?: number; messageCount?: number; steeredInto?: string } }
-  | { type: "run.failed"; data: RunFacts & { usage: RunUsage | null; error: string; uncertain?: boolean; steeredInto?: string } }
+  | { type: "run.completed"; data: RunFacts & { usage: RunUsage | null; servedModel?: string; stopped?: "input_required" | "spend_limit" | "turn_limit"; inputIds?: string[]; replyIndex?: number; messageCount?: number; steeredInto?: string } }
+  | { type: "run.failed"; data: RunFacts & Partial<ModelFailure> & { usage: RunUsage | null; servedModel?: string; error: string; code?: string; uncertain?: boolean; steeredInto?: string } }
   | { type: "input.requested"; data: { agentId: string; requestId: string; inputId: string; toolCallId: string; kind: AgentInput["kind"]; expiresAt: number } }
   | { type: "input.resolved"; data: { agentId: string; requestId: string; inputId: string; state: Exclude<AgentInput["state"], "pending"> } }
   | { type: "usage.recorded"; data: {
@@ -713,6 +713,10 @@ export interface RunResult {
   files?: AgentFile[];
   presented?: PresentedFile[];
   usage?: RunUsage | null;
+  /** The model that made its last response, as `provider/model-id` (retries ask the same one). */
+  servedModel?: string;
+  /** When a model call failed it: how, without parsing `error`. */
+  modelError?: ModelFailure;
   /** A stable name for `error`, where the runtime gives one (output_missing: a structured run ended without its output; spend_limit, turn_limit: a limit stopped it). */
   code?: string;
   /** A prompt sent with `output`: the answer, which fits its schema. */
@@ -1309,8 +1313,10 @@ export interface StatelessRun {
   status: "running" | "completed" | "input_required" | "failed";
   text: string;
   output?: unknown;
-  error: { code: string; message: string; uncertain?: boolean } | null;
+  error: ({ code: string; message: string; uncertain?: boolean } & Partial<ModelFailure>) | null;
   usage: RunUsage | null;
+  /** The model that made its last response, as `provider/model-id`. */
+  servedModel?: string;
   toolCalls: RunToolCall[]; toolErrors: ToolError[]; sourceErrors: { kind: string; source: string; message: string }[]; files: AgentFile[];
   metadata?: Record<string, string>;
   createdAt?: number; startedAt?: number; endedAt?: number;

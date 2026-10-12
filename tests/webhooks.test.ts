@@ -109,6 +109,9 @@ test("a run that ends with an error is sent as run.failed", async t => {
   const done = await r.prompt(agent, "Hi");
   const failed = await until(() => hook.find("run.failed", done.id), "run.failed");
   assert.match(failed.data.error, /no such model|400/);
+  // How the model call failed, beside error and code.
+  assert.deepEqual([failed.data.errorClass, failed.data.providerStatus, failed.data.retryable, failed.data.model, failed.data.servedModel],
+    ["other", 400, false, "openrouter/openai/gpt-4o-mini", "openrouter/openai/gpt-4o-mini"]);
   assert.equal(hook.find("run.completed", done.id), undefined);
 });
 

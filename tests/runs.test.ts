@@ -47,6 +47,7 @@ test("a stateless run takes its configuration and input and answers with its res
   assert.deepEqual(run.metadata, { voter: "7" });
   assert.equal(run.usage.responses, 1);
   assert.equal(run.usage.input, 10);
+  assert.equal(run.servedModel, "openrouter/openai/gpt-4o-mini", "the model that answered");
   assert.ok(run.expiresAt > run.endedAt + 86_000_000, "kept a day by default");
   assert.match(r.model.bodies[0].messages[0].content, /You vote yes or no/);
   // Read again: the same run, as it ended.
@@ -70,6 +71,28 @@ test("a stateless run takes its configuration and input and answers with its res
   // Another tenant does not see it.
   assert.equal((await r.call(`/v1/runs/${run.id}`, { token: OTHER_OPERATOR })).status, 404);
   assert.equal((await r.call("/v1/runs/run_nope")).status, 404);
+});
+
+test("a run a model call failed says how in its error, beside code and message, and in its events", async t => {
+  // Held back a moment, so the run's event stream is read as it happens.
+  const r = await runtime(t, () => ({ httpStatus: 402, message: "This request requires more credits, or fewer max_tokens", delayMs: 500 }));
+  const created = (await r.call("/v1/runs", { body: { input: "Hello" } })).json;
+  const events = await frames(r.base, created.id);
+  const run = (await r.call(`/v1/runs/${created.id}?wait=10`)).json;
+  assert.equal(run.status, "failed");
+  const failure = { errorClass: "billing", providerStatus: 402, retryable: false, model: "openrouter/openai/gpt-4o-mini" };
+  assert.deepEqual({ ...run.error, message: undefined }, { code: "model_error", message: undefined, ...failure });
+  assert.match(run.error.message, /402/, "code and message as before");
+  assert.equal(r.model.bodies.length, 1, "a 402 is not retried");
+  assert.equal(run.servedModel, "openrouter/openai/gpt-4o-mini");
+  const ended = events.find(frame => frame.data.type === "event" && frame.data.event.type === "message_end" && frame.data.event.message.role === "assistant");
+  assert.deepEqual(ended?.data.event.failure, failure, "the failed response's event");
+  assert.deepEqual(events.at(-1)?.data.outcome.result.modelError, failure, "the response frame's result");
+  // The SDK's run has them on its error too.
+  const agents = new Agents({ url: r.base, apiKey: OPERATOR });
+  const failed = await agents.run({ input: "Hello", throwOnError: false });
+  assert.deepEqual([failed.error?.code, failed.error?.errorClass, failed.error?.providerStatus, failed.error?.retryable, failed.error?.model, failed.servedModel],
+    ["model_error", "billing", 402, false, "openrouter/openai/gpt-4o-mini", "openrouter/openai/gpt-4o-mini"]);
 });
 
 test("without wait a run answers 202 at once; GET with wait has it end", async t => {

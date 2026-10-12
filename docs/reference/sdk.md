@@ -343,7 +343,11 @@ with Agents() as agents:  # CAMELAI_API_KEY
   gives one: `APPLICATION_CONNECTED`, `APPLICATION_REPLACED`, `REPLAY_GAP`,
   `spend_limit`, …), `requestId`, `uncertain`, `retryAfterMs` (Python
   `request_id`, `retry_after` in seconds).
-- `RunError extends AgentError`: a failed run, with `run`.
+- `RunError extends AgentError`: a failed run, with `run`. When a model call failed it,
+  `run.error` also has `errorClass` (`billing`, `rate_limit`, `server`, `refusal`, `auth`,
+  `timeout`, `other`), `providerStatus`, `retryable` and `model`: branch on those, not the
+  message ([Model failures](errors.md#model-failures)). `run.servedModel` (Python
+  `run.served_model`) is the model that made its last response.
 
 The SDKs retry 429 and 503 (honouring `Retry-After`) and transient failures of
 idempotent requests. See [Errors](../reference/errors.md).

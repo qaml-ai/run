@@ -86,7 +86,7 @@ test("resume: a turn that had answered finishes with that answer, and one that h
   const fake = await setup(t);
   await fake.crashedTurn([user("hi"), answer("Hello there.")]);
   const answered = await fake.start({ resume: true });
-  assert.deepEqual(answered.init.resume, { finished: { messages: 2, error: null, reply: "Hello there.", replyIndex: 1 } });
+  assert.deepEqual(answered.init.resume, { finished: { messages: 2, error: null, reply: "Hello there.", replyIndex: 1, servedModel: "faux/faux-1" } });
   assert.equal((await fake.history()).active, false);
 
   const structured = await setup(t);

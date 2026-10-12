@@ -62,6 +62,10 @@ const CLASSES: [string, RegExp][] = [
   ["runtime_restart", /runtime restarted/i],
   // The runtime's own timeout on a model stream that went quiet (model-stream.ts), ahead of the timeouts providers report.
   ["stream_stalled", /^Model stream stalled/],
+  // The model declined, or the provider's safety filter stopped it (pi-ai's words for each provider's stop reason).
+  ["refusal", /^The model refused|content.?filter|^Provider stopped with: (sensitive|guardrail|content_filtered)/i],
+  // A provider's 402, and a quota or budget used up, which some providers send as a 429: what pi-ai never retries.
+  ["billing", /^402\b|\(402\)|insufficient_quota|quota exceeded|out of budget|usage limit (reached|exceeded)|UsageLimitError|subscription_sharing_usage_limit_exceeded/i],
   ["rate_limit", /\b429\b|rate.?limit|too many requests/i],
   ["overloaded", /overloaded|\b529\b/i],
   ["context_overflow", /context.{0,20}(length|window|limit)|too long|maximum context|exceeds? the (maximum|context)/i],
@@ -72,8 +76,16 @@ const CLASSES: [string, RegExp][] = [
   ["network", /ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|socket|network|fetch failed|terminated/i],
 ];
 
-/** A model's or run's error, sorted into one of a few classes for a metric dimension. */
-export function errorClass(message: string | null | undefined): string {
+/** A provider's stop reason (a response's `rawStopReason`) that says its safety filter, or the model's refusal, stopped it. */
+const REFUSED = /^(refusal|sensitive|content_filter(ed)?|guardrail_intervened|SAFETY|PROHIBITED_CONTENT|BLOCKLIST|SPII|RECITATION|IMAGE_SAFETY|IMAGE_PROHIBITED_CONTENT)$|\.content_filter$/i;
+
+/**
+ * A model's or run's error, sorted into one of a few classes for a metric dimension. A failed response's `rawStopReason`,
+ * when given, tells a refusal whose message is the model's own explanation. model-errors.ts maps these onto the API's
+ * classes (a run's `error.errorClass`), so metrics and the API cannot disagree.
+ */
+export function errorClass(message: string | null | undefined, rawStopReason?: string): string {
+  if (rawStopReason && REFUSED.test(rawStopReason)) return "refusal";
   if (!message) return "none";
   return CLASSES.find(([, pattern]) => pattern.test(message))?.[0] ?? "other";
 }
@@ -170,8 +182,9 @@ export function observeTurns(model: () => { provider: string; id: string } | und
         const provider = String(event.message.provider ?? model()?.provider ?? "unknown");
         const id = String(event.message.model ?? model()?.id ?? "unknown");
         const errorMessage = String(event.message.errorMessage ?? "");
+        const stopReason = event.message.rawStopReason;
         emit("model_error", {
-          dimensions: { Provider: provider, Model: id, ErrorClass: errorClass(errorMessage || "error") },
+          dimensions: { Provider: provider, Model: id, ErrorClass: errorClass(errorMessage || "error", stopReason) },
           rollups: [[], ["Provider", "Model"], ["ErrorClass"]],
           metrics: { ModelErrors: 1 },
           properties: { error: safeError(errorMessage) },

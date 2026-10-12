@@ -179,6 +179,10 @@
                 ],
                 "description": "The run's model responses on the node that ended it; null when it made none there"
               },
+              "servedModel": {
+                "type": "string",
+                "description": "The model that made the run's last response, as provider/model-id"
+              },
               "stopped": {
                 "type": "string",
                 "enum": [
@@ -314,6 +318,10 @@
                 ],
                 "description": "The run's model responses on the node that ended it; null when it made none there"
               },
+              "servedModel": {
+                "type": "string",
+                "description": "The model that made the run's last response, as provider/model-id"
+              },
               "error": {
                 "type": "string"
               },
@@ -327,6 +335,31 @@
               },
               "steeredInto": {
                 "type": "string"
+              },
+              "errorClass": {
+                "type": "string",
+                "enum": [
+                  "billing",
+                  "rate_limit",
+                  "server",
+                  "refusal",
+                  "auth",
+                  "timeout",
+                  "other"
+                ],
+                "description": "What kind of failure: billing (the provider's 402, a quota or budget used up), rate_limit (429), server (5xx, overloaded, the provider unreachable), refusal (the model declined, or a safety filter stopped it), auth (401, 403, no key), timeout (the provider's, or the model stream went quiet), other. Values may be added: treat an unknown one as other"
+              },
+              "providerStatus": {
+                "type": "integer",
+                "description": "The provider's HTTP status, when its error gives one"
+              },
+              "retryable": {
+                "type": "boolean",
+                "description": "Whether the runtime retries such a failure itself (3 times, with backoff, on the same model). On a failed run: true means it was transient and its retries ran out, so trying again later, or another model, may work"
+              },
+              "model": {
+                "type": "string",
+                "description": "The model that failed, as provider/model-id (an id of GET /v1/models)"
               }
             },
             "required": [
@@ -2044,7 +2077,7 @@
             "type": "boolean"
           }
         },
-        "description": "result.code names a run's failure where it has a name: cancelled (a stop cancelled it before it began), aborted (stopped while it ran), model_stream_stalled (its model stopped answering, past every retry), turn_limit, spend_limit, agent_loop_limit (a sub-agent's notification landed without a turn: its chain reached its wake cap), output_missing, model_key_missing, model_key_invalid. result.stopped is input_required when the turn waits on human input, listed in result.inputs. A run's result also has reply, replyIndex, files, toolErrors and toolCalls: every tool call it made (the first 100), as {tool, toolCallId?, innerCallId?, ok, code?, agentId?} (agentId: the child a delegate or spawn_agent call ran), without arguments or results. result.output is a structured answer, for a prompt sent with output. result.usage.subagentCostUsd is what its children spent, and result.usage.imageCostUsd what its generate_image calls spent"
+        "description": "result.code names a run's failure where it has a name: cancelled (a stop cancelled it before it began), aborted (stopped while it ran), model_stream_stalled (its model stopped answering, past every retry), turn_limit, spend_limit, agent_loop_limit (a sub-agent's notification landed without a turn: its chain reached its wake cap), output_missing, model_key_missing, model_key_invalid. result.stopped is input_required when the turn waits on human input, listed in result.inputs. A run's result also has reply, replyIndex, files, toolErrors and toolCalls: every tool call it made (the first 100), as {tool, toolCallId?, innerCallId?, ok, code?, agentId?} (agentId: the child a delegate or spawn_agent call ran), without arguments or results. result.output is a structured answer, for a prompt sent with output. result.usage.subagentCostUsd is what its children spent, and result.usage.imageCostUsd what its generate_image calls spent. result.servedModel is the model that made its last response (provider/model-id); result.modelError, when a model call failed it, says how: {errorClass, providerStatus?, retryable, model} (ModelFailure)"
       },
       "AgentInput": {
         "type": "object",
@@ -7001,6 +7034,10 @@
             "additionalProperties": {},
             "description": "What its model calls used: responses, input, output, cacheRead, cacheWrite, costUsd (and subagentCostUsd, what its sub-agents spent; imageCostUsd, what its generate_image calls spent)"
           },
+          "servedModel": {
+            "type": "string",
+            "description": "The model that made its last response (retries ask the same one), as provider/model-id; absent when it made none"
+          },
           "toolCalls": {
             "type": "array",
             "items": {
@@ -7109,12 +7146,38 @@
           "uncertain": {
             "type": "boolean",
             "description": "The runtime could not tell whether the run's work took effect"
+          },
+          "errorClass": {
+            "type": "string",
+            "enum": [
+              "billing",
+              "rate_limit",
+              "server",
+              "refusal",
+              "auth",
+              "timeout",
+              "other"
+            ],
+            "description": "What kind of failure: billing (the provider's 402, a quota or budget used up), rate_limit (429), server (5xx, overloaded, the provider unreachable), refusal (the model declined, or a safety filter stopped it), auth (401, 403, no key), timeout (the provider's, or the model stream went quiet), other. Values may be added: treat an unknown one as other"
+          },
+          "providerStatus": {
+            "type": "integer",
+            "description": "The provider's HTTP status, when its error gives one"
+          },
+          "retryable": {
+            "type": "boolean",
+            "description": "Whether the runtime retries such a failure itself (3 times, with backoff, on the same model). On a failed run: true means it was transient and its retries ran out, so trying again later, or another model, may work"
+          },
+          "model": {
+            "type": "string",
+            "description": "The model that failed, as provider/model-id (an id of GET /v1/models)"
           }
         },
         "required": [
           "code",
           "message"
-        ]
+        ],
+        "description": "errorClass, providerStatus, retryable and model are there when a model call failed the run (model_error, model_stream_stalled, model_key_invalid…)"
       },
       "RunInput": {
         "type": "object",
