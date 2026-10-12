@@ -1362,9 +1362,9 @@ class _AgentCalls:
     def set_metadata(self, *, name, type):
         return self._http("/metadata", "POST", {"name": name, "type": type})
 
-    def schedule(self, *, text=None, code=None, at=None, in_seconds=None, every_seconds=None):
-        """Wake this agent later with a prompt (text) or sandboxed code; every_seconds (>= 60) repeats it."""
-        body = {key: value for key, value in {"text": text, "code": code, "at": at, "inSeconds": in_seconds, "everySeconds": every_seconds}.items() if value is not None}
+    def schedule(self, *, text=None, code=None, at=None, in_seconds=None, every_seconds=None, history=None):
+        """Wake this agent later with a prompt (text) or sandboxed code; every_seconds (>= 60) repeats it. history="none" wakes it with only the system prompt and the text."""
+        body = {key: value for key, value in {"text": text, "code": code, "history": history, "at": at, "inSeconds": in_seconds, "everySeconds": every_seconds}.items() if value is not None}
         return self._http("/schedules", "POST", body, retry=False)
 
     def schedules(self):
@@ -2425,9 +2425,9 @@ class Agent:
                                        instructions_append=instructions_append, model_headers=model_headers, tools=tools,
                                        on_event=on_event, on_input=on_input, on_error=on_error, attach=attach, takeover=takeover)
 
-    async def schedule(self, *, text=None, code=None, at=None, in_seconds=None, every_seconds=None):
-        """Wake the agent later with a message (text), or run code; every_seconds (at least 60) repeats it."""
-        return await self.client.schedule(text=text, code=code, at=at, in_seconds=in_seconds, every_seconds=every_seconds)
+    async def schedule(self, *, text=None, code=None, at=None, in_seconds=None, every_seconds=None, history=None):
+        """Wake the agent later with a message (text), or run code; every_seconds (at least 60) repeats it. history="none" wakes it without its history."""
+        return await self.client.schedule(text=text, code=code, at=at, in_seconds=in_seconds, every_seconds=every_seconds, history=history)
 
     async def schedules(self):
         return await self.client.schedules()

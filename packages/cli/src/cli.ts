@@ -47,7 +47,7 @@ Stateless runs (a configuration and a message in, the result out; nothing carrie
   inputs [agent]                   Questions and approvals waiting on someone
   answer <agent> <inputId> <value> true/false, text, JSON, or "decline"
   schedules list <agent>
-  schedules add <agent> --text t (--in s | --at iso) [--every s]
+  schedules add <agent> --text t (--in s | --at iso) [--every s] [--history none]
   schedules delete <agent> <scheduleId>
 
 Definitions (a definition is its key or its id, def_…)
@@ -82,7 +82,7 @@ const OPTIONS = {
   apply: { type: "boolean" }, "dry-run": { type: "boolean" }, available: { type: "boolean" }, force: { type: "boolean" }, yes: { type: "boolean", short: "y" },
   model: { type: "string" }, prompt: { type: "string" }, "prompt-append": { type: "string" }, thinking: { type: "string" }, name: { type: "string" }, definition: { type: "string" },
   wait: { type: "string" }, "no-wait": { type: "boolean" }, from: { type: "string" }, steer: { type: "boolean" }, "allow-disconnected": { type: "boolean" }, "request-id": { type: "string" },
-  limit: { type: "string" }, key: { type: "string" }, text: { type: "string" }, in: { type: "string" }, at: { type: "string" }, every: { type: "string" },
+  limit: { type: "string" }, key: { type: "string" }, text: { type: "string" }, in: { type: "string" }, at: { type: "string" }, every: { type: "string" }, history: { type: "string" },
   traceparent: { type: "string" }, header: { type: "string", multiple: true }, protocol: { type: "string" }, "sample-rate": { type: "string" },
   content: { type: "boolean" }, "no-content": { type: "boolean" }, stateless: { type: "boolean" },
 } as const;
@@ -325,8 +325,8 @@ async function schedules(args: string[], flags: Flags, api: () => Api, print: (v
       return 0;
     }
     case "add": {
-      if (!flags.text || (!flags.in && !flags.at)) throw new UsageError("Usage: camelrun schedules add <agent> --text t (--in seconds | --at iso) [--every seconds]");
-      const body = { text: flags.text, ...(flags.in ? { inSeconds: Number(flags.in) } : { at: flags.at }), ...(flags.every ? { everySeconds: Number(flags.every) } : {}) };
+      if (!flags.text || (!flags.in && !flags.at)) throw new UsageError("Usage: camelrun schedules add <agent> --text t (--in seconds | --at iso) [--every seconds] [--history none]");
+      const body = { text: flags.text, ...(flags.in ? { inSeconds: Number(flags.in) } : { at: flags.at }), ...(flags.every ? { everySeconds: Number(flags.every) } : {}), ...(flags.history ? { history: flags.history } : {}) };
       const created = await client.call("POST", `/v1/agents/${enc(id)}/schedules`, body);
       print(created, () => `${created.id}: due ${new Date(created.dueAt).toISOString()}`);
       return 0;

@@ -259,12 +259,24 @@ tofu import aws_cloudwatch_log_group.database_proxy /aws/rds/proxy/camelai-agent
     `tenant_spend_alarm_usd_per_hour` ($50) in an hour. A Metrics Insights query
     (`SELECT SUM(ModelCostUsd) … GROUP BY Tenant ORDER BY SUM() DESC LIMIT 1`)
     takes the top tenant each hour; the dashboard's cost by tenant says which;
-  - `-model-billing-errors`: more than 3 model responses refused for credit in
-    15 minutes (`ModelErrors`, `ErrorClass=billing`: provider 402s such as
-    OpenRouter's "requires more credits, or fewer max_tokens"). On the platform
-    keys this is the first sign the OpenRouter or Anthropic balance is low: it
-    cannot cover a full `max_tokens` request. Top the account up. A tenant's own
-    key running dry counts too.
+  - `-turn-failures`: over 40% of turns failed in each of two 15-minute
+    windows, each with at least 5 turns (`Turns`, `Outcome=failed`). A normal
+    day fails 10-20% of turns; the dashboard's failed turns by error class says
+    which kind rose;
+  - `-model-billing-errors`: 2 or more turns failed for credit in 15 minutes
+    (`Turns`, `ErrorClass=billing`: provider 402s such as OpenRouter's "requires
+    more credits, or fewer max_tokens"). A turn retries a refused response
+    three times, so the alarm counts turns, not responses. To tell a platform
+    key from a tenant's:
+    - query the log group for `filter type in ["model_error", "run_failed"] and
+      ErrorClass = "billing"`: `model_error` names the provider and model,
+      `run_failed` the tenant;
+    - compare with `filter type = "model_cost" and Provider = "<provider>"`
+      over the same minutes. If other turns on that provider are still
+      billed, one key ran dry: a tenant's own, or a chiridion org's BYOK key
+      (they run under `chiridion-prod`), and nothing on the platform needs
+      doing. If they stopped, the platform balance cannot cover a full
+      `max_tokens` request: top up the OpenRouter or Anthropic account.
 
   CloudWatch alarms can only notify a topic in their own region, so these use
   the us-west-2 topic `camelai-agent-runtime-alerts` (output

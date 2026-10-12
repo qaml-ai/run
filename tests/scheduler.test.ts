@@ -62,7 +62,7 @@ test("a wake-up claimed by a node that died is delivered by another once the cla
     deliveries.push([node, requestId]);
   });
   const created = await dying.create({ agent: "client_e", tenant: "alice", text: "once", dueAt: Date.now() - 1 });
-  await assert.rejects(dying.scan(), /killed/);
+  await dying.scan();
   crash = false;
   await survivor.scan();
   assert.deepEqual(deliveries, [], "the claim still holds");
@@ -87,19 +87,104 @@ test("repeating wake-ups move to their next occurrence, skipping ones missed whi
   assert.deepEqual(await scheduler.list("client_b"), []);
 });
 
-test("a deleted agent's wake-ups are dropped; other delivery failures are retried", async () => {
-  let failure: { status?: number } = { status: 404 };
-  let attempts = 0;
-  const { db, schedulers: [scheduler] } = await nodes(1, () => { attempts++; throw Object.assign(new Error("failed"), failure); });
+/** Let a wake-up's backoff (its claim's expiry) lapse now, as if its retry were due. */
+const lapse = (db: { query: (sql: string, params?: unknown[]) => Promise<unknown> }, id: string) => db.query("update schedules set claimed_until = now() - interval '1 second' where id = $1", [id]);
+/** How long until a wake-up's retry, in milliseconds. */
+const backoff = async (db: { query: (sql: string, params?: unknown[]) => Promise<{ rows: any[] }> }, id: string) =>
+  Number((await db.query("select extract(epoch from claimed_until - now()) * 1000 as ms from schedules where id = $1", [id])).rows[0].ms);
+
+test("a deleted agent's wake-ups are dropped", async () => {
+  const { db, schedulers: [scheduler] } = await nodes(1, () => { throw Object.assign(new Error("gone"), { status: 404 }); });
   await scheduler.create({ agent: "client_c", tenant: "alice", text: "gone", dueAt: Date.now() - 1 });
   await scheduler.scan();
   assert.deepEqual(await scheduler.list("client_c"), []);
   assert.equal((await db.query("select count(*) as count from schedules")).rows[0].count, 0);
-  failure = { status: 503 };
-  await scheduler.create({ agent: "client_d", tenant: "alice", text: "retry me", dueAt: Date.now() - 1 });
-  await assert.rejects(scheduler.scan(), /failed/);
-  assert.equal((await scheduler.list("client_d")).length, 1, "kept for a retry once the claim times out");
-  assert.equal(attempts, 2);
+});
+
+test("a failed delivery is retried with a backoff and the same request id; a success clears the failure", async () => {
+  const requests: string[] = [];
+  let failing = true;
+  const { db, schedulers: [scheduler] } = await nodes(1, (_node, _schedule, requestId) => {
+    requests.push(requestId);
+    if (failing) throw Object.assign(new Error("owner unreachable"), { status: 503 });
+  });
+  const created = await scheduler.create({ agent: "client_d", tenant: "alice", text: "retry me", dueAt: Date.now() - 1, everySeconds: 3600 });
+  await scheduler.scan();
+  const [retrying] = await scheduler.list("client_d");
+  assert.equal(retrying.dueAt, created.dueAt, "still the same occurrence");
+  assert.equal(retrying.lastError, "HTTP 503: owner unreachable");
+  assert.equal(retrying.failures, undefined, "not given up");
+  assert.ok(Math.abs(await backoff(db, created.id) - 60_000) < 5_000, "retried in a minute");
+  await scheduler.scan();
+  assert.equal(requests.length, 1, "not before its backoff");
+  await lapse(db, created.id);
+  await scheduler.scan();
+  assert.ok(Math.abs(await backoff(db, created.id) - 5 * 60_000) < 5_000, "then in five");
+  failing = false;
+  await lapse(db, created.id);
+  await scheduler.scan();
+  assert.deepEqual(requests, Array(3).fill(`schedule-${created.id}-${created.dueAt}`));
+  const [next] = await scheduler.list("client_d");
+  assert.equal(next.dueAt, created.dueAt + 3_600_000);
+  assert.equal(next.lastError, undefined);
+  assert.equal((await db.query("select attempts from schedules where id = $1", [created.id])).rows[0].attempts, 0);
+});
+
+test("a delivery that keeps failing is given up after its retries: a repeating schedule moves on and records it, a one-off one is dropped", async () => {
+  const requests: string[] = [];
+  const { db, schedulers: [scheduler] } = await nodes(1, (_node, _schedule, requestId) => { requests.push(requestId); throw new Error("connection reset"); });
+  const hourly = await scheduler.create({ agent: "client_f", tenant: "alice", text: "hourly", dueAt: Date.now() - 1, everySeconds: 3600 });
+  const once = await scheduler.create({ agent: "client_f", tenant: "alice", text: "once", dueAt: Date.now() - 1 });
+  for (let attempt = 0; attempt < 4; attempt++) {
+    await Promise.all([lapse(db, hourly.id), lapse(db, once.id)]);
+    await scheduler.scan();
+  }
+  assert.equal(requests.length, 8, "each tried four times: once and after 1, 5 and 15 minutes");
+  const [moved, ...rest] = await scheduler.list("client_f");
+  assert.deepEqual(rest, [], "the one-off schedule is dropped");
+  assert.equal(moved.id, hourly.id);
+  assert.equal(moved.dueAt, hourly.dueAt + 3_600_000, "on to its next occurrence");
+  assert.equal(moved.failures, 1);
+  assert.equal(moved.lastError, "connection reset");
+  assert.ok(moved.lastErrorAt! <= Date.now());
+  await scheduler.scan(moved.dueAt);
+  assert.equal(requests.length, 9, "the next occurrence is delivered as usual");
+});
+
+test("a retry is not let run into a repeating schedule's next occurrence", async () => {
+  let attempts = 0;
+  const { schedulers: [scheduler] } = await nodes(1, () => { attempts++; throw new Error("down"); });
+  // Every minute: a retry a minute later would be the next occurrence, so the occurrence is given up at once.
+  const created = await scheduler.create({ agent: "client_g", tenant: "alice", text: "minutely", dueAt: Date.now() - 1, everySeconds: 60 });
+  await scheduler.scan();
+  const [moved] = await scheduler.list("client_g");
+  assert.equal(attempts, 1);
+  assert.equal(moved.dueAt, created.dueAt + 60_000);
+  assert.equal(moved.failures, 1);
+});
+
+test("a refusal a retry cannot change (a spend limit's 402) gives the occurrence up at once and is recorded", async () => {
+  let attempts = 0;
+  const { schedulers: [scheduler] } = await nodes(1, () => { attempts++; throw Object.assign(new Error("This agent has reached its spend limit"), { status: 402, code: "SPEND_LIMIT" }); });
+  const daily = await scheduler.create({ agent: "client_h", tenant: "alice", text: "daily", dueAt: Date.now() - 1, everySeconds: 86_400 });
+  await scheduler.scan();
+  const [moved] = await scheduler.list("client_h");
+  assert.equal(attempts, 1, "no retries");
+  assert.equal(moved.dueAt, daily.dueAt + 86_400_000);
+  assert.equal(moved.failures, 1);
+  assert.equal(moved.lastError, "HTTP 402: This agent has reached its spend limit");
+  await scheduler.scan(moved.dueAt);
+  assert.equal((await scheduler.list("client_h"))[0].failures, 2, "occurrences given up in a row");
+});
+
+test("one failing wake-up does not hold up the others in its batch", async () => {
+  const delivered: string[] = [];
+  const { schedulers: [scheduler] } = await nodes(1, (_node, schedule) => { if (schedule.text === "bad") throw new Error("down"); delivered.push(schedule.text!); });
+  const now = Date.now();
+  await scheduler.create({ agent: "client_i", tenant: "alice", text: "bad", dueAt: now - 10 });
+  await scheduler.create({ agent: "client_i", tenant: "alice", text: "good", dueAt: now - 5 });
+  await scheduler.scan(now);
+  assert.deepEqual(delivered, ["good"]);
 });
 
 test("schedule input accepts ISO times, offsets and repeats, and rejects nonsense", () => {

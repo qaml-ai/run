@@ -290,10 +290,12 @@ export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefin
     const limits = timeouts?.(model, options.reasoning ?? reasoningFloor(model)) ?? streamTimeouts(model, options.reasoning ?? reasoningFloor(model));
     const call = (credentials: Credentials) => {
       const { signal, cut, done } = gatedSignal(gate, options.signal);
+      let requested = false;
       return watchedStream(model, (watched, activity) => {
         const sink: { cost?: number; credits?: number } = {};
         const [target, callOptions] = authorize(model, options, credentials, sink, modelHeaders?.(), outbound);
         const observe = callOptions.onProviderStreamEvent;
+        requested = true;
         const stream = streamSimple(target, context, { ...callOptions, signal: watched, onProviderStreamEvent: (event: unknown, at: Model<Api>) => { activity(event); return observe?.(event, at); } });
         // The finished message carries the provider's own cost, when it reported one, as `usage.providerCost`.
         const push = stream.push.bind(stream);
@@ -306,6 +308,13 @@ export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefin
         done();
         // Cut by the lease, not by the run: a failure the turn retries once the lease is fresh, not an abort that ends it.
         if (event.type === "error" && cut?.signal.aborted && !options.signal?.aborted) return { type: "error", reason: "error", error: { ...event.error, stopReason: "error", errorMessage: MODEL_INTERRUPTED } };
+        if (requested && event.type === "error" && event.reason === "aborted") {
+          // OpenAI-style streams usually report input usage only at the end. Keep a server-side estimate of
+          // the actual context, including tools, so canceling cannot make a large prompt free.
+          const input = context.messages.reduce((sum, message) => sum + (message.role === "system"
+            ? Math.ceil(JSON.stringify(message).length / 4) : estimateTokens(message)), 0);
+          Object.assign(event.error.usage, { estimatedInputTokens: Math.min(model.contextWindow, input) });
+        }
         return event;
       });
     };

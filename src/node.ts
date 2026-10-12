@@ -771,7 +771,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     db, node,
     deliver: async (schedule, requestId) => {
       // Schedules run unattended: without the application, its tools' calls fail as not connected.
-      const request = schedule.code !== undefined ? { method: "execute", params: { code: schedule.code, allowDisconnected: true } } : { method: "prompt", params: { text: schedule.text!, allowDisconnected: true } };
+      const request = schedule.code !== undefined ? { method: "execute", params: { code: schedule.code, allowDisconnected: true } } : { method: "prompt", params: { text: schedule.text!, ...(schedule.history ? { history: schedule.history } : {}), allowDisconnected: true } };
       await submitAnywhere(schedule.agent, schedule.tenant, { id: requestId, ...request });
     },
     also: now => clients.expireInputs(now),

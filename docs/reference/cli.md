@@ -97,7 +97,7 @@ its id (`def_…`).
 | `history <agent> [--limit n]` | its latest messages, tool calls included |
 | `abort <agent>` | stop it: its running turn, and the runs queued behind it |
 | `inputs [agent]` / `answer <agent> <inputId> <value>` | questions and approvals waiting on someone, and answering them |
-| `schedules list\|add\|delete <agent>` | wake-ups: `add --text t --in 3600 [--every 86400]` |
+| `schedules list\|add\|delete <agent>` | wake-ups: `add --text t --in 3600 [--every 86400] [--history none]` |
 | `definitions list\|get\|agents\|delete` | definitions, and the revision each agent has |
 | `telemetry get\|set\|test\|clear` | export each run as an OpenTelemetry trace to your OTLP/HTTP endpoint ([below](#telemetry)) |
 

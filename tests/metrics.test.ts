@@ -192,13 +192,14 @@ test("an event stream subscriber refused at a limit: counted by the limit's scop
   assert.deepEqual(directive(lines[0]).Dimensions.map((set: string[]) => set.filter(name => name !== "ServiceName")), [[], ["Scope"], ["Tenant"]]);
 });
 
-test("the spend and provider-credit alarms read metrics as the runtime emits them", async () => {
+test("the spend, provider-credit and turn-failure alarms read metrics as the runtime emits them", async () => {
   const terraform = readFileSync(new URL("../infra/terraform/observability.tf", import.meta.url), "utf8");
   setMetricService("camelai-agent-runtime");
   const lines = await captured(() => {
     recordEventMetrics([webhookEvent("usage.recorded", "acme", { agentId: "a", provider: "openrouter", model: "m", cost: { usd: 2, source: "provider" } })]);
     const turns = observeTurns(() => ({ provider: "openrouter", id: "m" }));
     turns.event({ type: "message_end", message: { role: "assistant", stopReason: "error", errorMessage: "402 This request requires more credits, or fewer max_tokens" } });
+    return turns.wrap(async () => ({ messages: 2, error: "402 This request requires more credits, or fewer max_tokens" }))("prompt", {});
   }).finally(() => setMetricService(undefined));
   // The top-tenant query groups ModelCostUsd by the {ServiceName, Tenant} set the runtime writes.
   const cost = directive(lines.find(line => line.type === "model_cost"));
@@ -206,10 +207,18 @@ test("the spend and provider-credit alarms read metrics as the runtime emits the
   assert.ok(cost.Metrics.some((metric: any) => metric.Name === "ModelCostUsd"));
   assert.match(terraform, /SELECT SUM\(ModelCostUsd\) FROM SCHEMA\(AgentRuntime, ServiceName, Tenant\) WHERE ServiceName = '\$\{local\.service_name\}' GROUP BY Tenant ORDER BY SUM\(\) DESC LIMIT 1/);
   assert.match(terraform, /variable "tenant_spend_alarm_usd_per_hour" \{[^}]*default\s+= 50/);
-  // The billing-errors alarm counts ModelErrors in the {ServiceName, ErrorClass} set, class billing.
-  const error = lines.find(line => line.type === "model_error");
-  assert.equal(error.ErrorClass, "billing");
-  assert.ok(directive(error).Dimensions.some((set: string[]) => set.join() === "ServiceName,ErrorClass"));
-  const alarm = terraform.slice(terraform.indexOf('resource "aws_cloudwatch_metric_alarm" "model_billing_errors"')).split("\n}\n")[0];
-  for (const setting of [/metric_name\s+= "ModelErrors"/, /ErrorClass = "billing"/, /period\s+= 900\n/, /threshold\s+= 3\n/, /comparison_operator = "GreaterThanThreshold"/]) assert.match(alarm, setting);
+  // The billing-errors alarm counts failed turns (not their retried responses) in the {ServiceName, ErrorClass} set, class billing.
+  const turn = lines.find(line => line.type === "turn_metrics");
+  assert.equal(turn.Outcome, "failed");
+  assert.equal(turn.ErrorClass, "billing");
+  assert.ok(directive(turn).Dimensions.some((set: string[]) => set.join() === "ServiceName,ErrorClass"));
+  assert.ok(directive(turn).Metrics.some((metric: any) => metric.Name === "Turns"));
+  const alarm = (name: string) => terraform.slice(terraform.indexOf(`resource "aws_cloudwatch_metric_alarm" "${name}"`)).split("\n}\n")[0];
+  for (const setting of [/metric_name\s+= "Turns"/, /ErrorClass = "billing"/, /period\s+= 900\n/, /threshold\s+= 2\n/, /comparison_operator = "GreaterThanOrEqualToThreshold"/]) assert.match(alarm("model_billing_errors"), setting);
+  // The turn-failures alarm divides the {ServiceName, Outcome} set's failed turns by the {ServiceName} set's turns.
+  assert.ok(directive(turn).Dimensions.some((set: string[]) => set.join() === "ServiceName,Outcome"));
+  assert.ok(directive(turn).Dimensions.some((set: string[]) => set.join() === "ServiceName"));
+  const failures = alarm("turn_failures");
+  for (const setting of [/IF\(total >= 5, failed \/ total, 0\)/, /evaluation_periods\s+= 2\n/, /threshold\s+= 0\.4\n/, /Outcome = "failed"/]) assert.match(failures, setting);
+  assert.equal(failures.match(/period\s+= 900\n/g)?.length, 2);
 });

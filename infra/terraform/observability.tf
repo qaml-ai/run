@@ -19,12 +19,16 @@ variable "tenant_spend_alarm_usd_per_hour" {
   default     = 50
 }
 
-# More than a fifth of turns failed over 10 minutes (with at least 10 turns).
+# Over 40% of turns failed in each of two 15-minute windows (with at least 5 turns in each). A normal day fails
+# 10-20% of turns, and at a few turns a minute two or three failures move a 5-minute share past 20%; the
+# 5-minute, 20% version of this alarm flapped for a minute at a time most days. The 30-minute share peaked at 29%
+# in the week to 2026-10-12, and 15-minute windows with 5 turns cover most hours where 5-minute windows with
+# 10 covered few. A full outage raises it in about 20 minutes.
 resource "aws_cloudwatch_metric_alarm" "turn_failures" {
   alarm_name          = "${var.name}-turn-failures"
-  alarm_description   = "Over 20% of turns failed in 10 minutes (turn_metrics Outcome=failed; see the dashboard's error classes)"
+  alarm_description   = "Over 40% of turns failed in each of two 15-minute windows (turn_metrics Outcome=failed, at least 5 turns; see the dashboard's error classes)"
   evaluation_periods  = 2
-  threshold           = 0.2
+  threshold           = 0.4
   comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = local.alarm_topics
@@ -32,7 +36,7 @@ resource "aws_cloudwatch_metric_alarm" "turn_failures" {
 
   metric_query {
     id          = "rate"
-    expression  = "IF(total >= 10, failed / total, 0)"
+    expression  = "IF(total >= 5, failed / total, 0)"
     label       = "Failed turn share"
     return_data = true
   }
@@ -43,7 +47,7 @@ resource "aws_cloudwatch_metric_alarm" "turn_failures" {
       metric_name = "Turns"
       dimensions  = merge(local.runtime_metric, { Outcome = "failed" })
       stat        = "Sum"
-      period      = 300
+      period      = 900
     }
   }
   metric_query {
@@ -53,7 +57,7 @@ resource "aws_cloudwatch_metric_alarm" "turn_failures" {
       metric_name = "Turns"
       dimensions  = local.runtime_metric
       stat        = "Sum"
-      period      = 300
+      period      = 900
     }
   }
 }
@@ -185,20 +189,22 @@ resource "aws_cloudwatch_metric_alarm" "tenant_model_spend" {
   }
 }
 
-# Model providers refusing for credit (402, "requires more credits, or fewer max_tokens"): on the platform's
-# OpenRouter or Anthropic account this means its balance cannot cover a full max_tokens request, the first sign
-# it is running low. A tenant's own key running dry counts too.
+# Turns failed for credit (402, "requires more credits, or fewer max_tokens"), counted once per turn: a turn retries
+# its refused response three times, so a single failed turn made four ModelErrors and raised the alarm on its own
+# (2026-10-12, while other turns on the same provider were billed). On the platform's OpenRouter or Anthropic account a refusal means its balance cannot cover a full
+# max_tokens request, the first sign it is running low, and every turn on it fails (5 in 15 minutes on 2026-09-29).
+# A tenant's own key running dry (chiridion's BYOK orgs run under its tenant) counts too.
 resource "aws_cloudwatch_metric_alarm" "model_billing_errors" {
   alarm_name          = "${var.name}-model-billing-errors"
-  alarm_description   = "Model responses refused for credit (model_error ErrorClass billing: provider 402, requires more credits / fewer max_tokens), more than 3 in 15 minutes: top up the platform OpenRouter or Anthropic account"
+  alarm_description   = "2+ turns failed for credit in 15 minutes (turn_metrics ErrorClass billing: provider 402, requires more credits / fewer max_tokens). If other turns on the same provider still succeed it is one key (often a tenant's own); if they all fail, top up the platform OpenRouter or Anthropic account. Runbook: infra/terraform/README.md, model-billing-errors"
   namespace           = "AgentRuntime"
-  metric_name         = "ModelErrors"
+  metric_name         = "Turns"
   dimensions          = merge(local.runtime_metric, { ErrorClass = "billing" })
   statistic           = "Sum"
   period              = 900
   evaluation_periods  = 1
-  threshold           = 3
-  comparison_operator = "GreaterThanThreshold"
+  threshold           = 2
+  comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = local.alarm_topics
   ok_actions          = local.alarm_topics

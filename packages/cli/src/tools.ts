@@ -193,6 +193,7 @@ export function tools(api: () => Api, options: { local?: LocalFiles } = {}): Too
   tool("add_schedule", "Add schedule", "Wake an agent later with a message: once (inSeconds or at), or repeatedly (everySeconds, at least 60). Each wake-up is a run that uses the account's model credit.", {
     agent, text: z.string(),
     inSeconds: z.number().optional(), at: z.string().optional().describe("ISO time"), everySeconds: z.number().int().min(60).optional(),
+    history: z.enum(["full", "none"]).optional().describe("none: each wake-up sees only the agent's instructions and the text, not its history"),
   }, async ({ agent, ...schedule }) => {
     const client = api();
     return client.call("POST", `/v1/agents/${enc(await client.agentId(agent))}/schedules`, schedule);

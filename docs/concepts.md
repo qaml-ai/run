@@ -287,6 +287,20 @@ at, everySeconds })`, or the `schedule` built-in for the agent to set its own), 
 a [channel](guides/channels.md) (Slack, Telegram, Discord), or by your own code
 from a [webhook](guides/webhooks.md).
 
+A repeating schedule's wake-ups are turns of the agent, so by default each one
+reads all the history before it, and a daily agent's context grows every day.
+`history: "none"` on a text schedule wakes it with only the system prompt and the
+text, as a prompt's `history: "none"` does: the runs are still recorded,
+but no wake-up pays to read the ones before it. Write the text to say everything
+the run needs.
+
+A wake-up the runtime cannot deliver (the agent is busy at its account's limit,
+say) is tried again 1, 5 and 15 minutes later, then given up; a refusal a retry
+cannot change, like an agent or account at its spend limit (402), is given up at
+once. A repeating schedule then moves to its next occurrence, and lists the
+failure: `failures` (occurrences given up in a row) and `lastError`, until a
+delivery succeeds. A one-off schedule given up is removed.
+
 ## Definitions
 
 A **definition** is a reusable configuration: model, instructions, tool sources
