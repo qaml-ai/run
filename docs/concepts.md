@@ -294,6 +294,13 @@ text, as a prompt's `history: "none"` does: the runs are still recorded,
 but no wake-up pays to read the ones before it. Write the text to say everything
 the run needs.
 
+A wake-up the runtime cannot deliver (the agent is busy at its account's limit,
+say) is tried again 1, 5 and 15 minutes later, then given up; a refusal a retry
+cannot change, like an agent or account at its spend limit (402), is given up at
+once. A repeating schedule then moves to its next occurrence, and lists the
+failure: `failures` (occurrences given up in a row) and `lastError`, until a
+delivery succeeds. A one-off schedule given up is removed.
+
 ## Definitions
 
 A **definition** is a reusable configuration: model, instructions, tool sources

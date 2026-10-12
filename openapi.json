@@ -4078,6 +4078,18 @@
           },
           "createdAt": {
             "type": "number"
+          },
+          "failures": {
+            "type": "number",
+            "description": "Occurrences in a row whose delivery was given up (after retries 1, 5 and 15 minutes later, or at once for a refusal a retry cannot change, like a spend limit's 402); the schedule moved on to its next one. Absent once a delivery succeeds"
+          },
+          "lastError": {
+            "type": "string",
+            "description": "Why the latest delivery failed, while it is retried or since it was given up; absent once a delivery succeeds"
+          },
+          "lastErrorAt": {
+            "type": "number",
+            "description": "When it failed, in epoch milliseconds"
           }
         },
         "required": [

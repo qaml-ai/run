@@ -159,9 +159,10 @@ async function builtinValue(services: BuiltinServices, context: BuiltinContext, 
   throw new Error(`Unknown tool ${name}`);
 }
 
-const view = (schedule: { id: string; text?: string; code?: string; history?: string; dueAt: number; everySeconds?: number }) => ({
+const view = (schedule: { id: string; text?: string; code?: string; history?: string; dueAt: number; everySeconds?: number; failures?: number; lastError?: string }) => ({
   id: schedule.id, ...(schedule.text !== undefined ? { text: schedule.text } : { code: schedule.code }), ...(schedule.history ? { history: schedule.history } : {}), dueAt: new Date(schedule.dueAt).toISOString(),
   ...(schedule.everySeconds ? { everySeconds: schedule.everySeconds } : {}),
+  ...(schedule.failures ? { failures: schedule.failures } : {}), ...(schedule.lastError !== undefined ? { lastError: schedule.lastError } : {}),
 });
 
 async function webFetch({ outbound, render }: BuiltinServices, context: BuiltinContext, url: string, maxCharacters: number, signal: AbortSignal): Promise<McpResult> {

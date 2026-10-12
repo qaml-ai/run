@@ -647,6 +647,9 @@ export const Schedule = z.object({
   dueAt: z.number(),
   everySeconds: z.number().optional(),
   createdAt: z.number(),
+  failures: z.number().optional().openapi({ description: "Occurrences in a row whose delivery was given up (after retries 1, 5 and 15 minutes later, or at once for a refusal a retry cannot change, like a spend limit's 402); the schedule moved on to its next one. Absent once a delivery succeeds" }),
+  lastError: z.string().optional().openapi({ description: "Why the latest delivery failed, while it is retried or since it was given up; absent once a delivery succeeds" }),
+  lastErrorAt: z.number().optional().openapi({ description: "When it failed, in epoch milliseconds" }),
 }).openapi("Schedule");
 
 export const TokenInput = z.object({ name: z.string().openapi({ description: "1–80 characters" }) }).openapi("TokenInput");

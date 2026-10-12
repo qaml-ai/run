@@ -633,7 +633,12 @@ export type Attachment = Uint8Array | Blob | string
   | { url: string; name?: string; contentType?: string; transcribe?: boolean };
 /** A file in the agent's mounts, at the path the agent sees it. */
 export interface AgentFile { path: string; version: number; size: number; updatedAt: number; by?: string; contentType: string }
-export interface Schedule { id: string; agent: string; text?: string; code?: string; history?: "none"; dueAt: number; everySeconds?: number; createdAt: number }
+/**
+ * A wake-up. A failed delivery is retried 1, 5 and 15 minutes later, then given up (at once for a refusal a retry
+ * cannot change, like a spend limit's 402): `failures` counts the occurrences given up in a row and `lastError` says
+ * why the latest attempt failed, until a delivery succeeds.
+ */
+export interface Schedule { id: string; agent: string; text?: string; code?: string; history?: "none"; dueAt: number; everySeconds?: number; createdAt: number; failures?: number; lastError?: string; lastErrorAt?: number }
 /**
  * A steered message as the runtime took it (`steerMessage`, `agent.steer`): `accepted`, the running turn reads it after
  * its current step; `taken`, it has read it already, in the turn `steeredInto` names; `queued`, no turn was running, so it

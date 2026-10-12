@@ -12,7 +12,10 @@ import { underClaim, type Claim } from "./ownership.ts";
  * The API writes schedules from any node, so they are kept consistent by their own
  * conditions: creates for one agent take turns (an advisory lock), so its cap holds,
  * and a scan's claim is a token of its own, so only the scan that took a wake-up
- * moves it on, even after its node restarted under the same name. An agent's own
+ * moves it on, even after its node restarted under the same name. A delivery that fails is retried after 1, 5 and 15
+ * minutes (sooner than a repeating schedule's next occurrence), unless the refusal is one a retry cannot change (a
+ * spend limit's 402, say); then that occurrence is given up: a repeating schedule moves to its next one, recording the
+ * failure on the schedule (`failures`, `lastError`), and a one-off one is dropped. An agent's own
  * routes, served by its owner, also pass the owner's claim: a node that lost the
  * agent then changes none of its schedules.
  */
@@ -23,17 +26,24 @@ import { underClaim, type Claim } from "./ownership.ts";
 export interface Schedule {
   id: string; agent: string; tenant: string; text?: string; code?: string; history?: "none";
   dueAt: number; everySeconds?: number; createdAt: number;
+  /** Occurrences in a row whose delivery was given up, and why the latest attempt failed: until a delivery succeeds. */
+  failures?: number; lastError?: string; lastErrorAt?: number;
 }
 export type Deliver = (schedule: Schedule, requestId: string) => Promise<void>;
 
 /** A claim older than this is assumed abandoned by a crashed node and may be retaken. */
 const CLAIM_TIMEOUT_MS = 60_000;
 const CLAIM_BATCH = 100;
+/** How long after each failed delivery of an occurrence it is tried again; past the last, it is given up. */
+export const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000];
+/** Failures a retry may fix: no status (the network, a crash), a timeout, a conflict, a rate limit, or a server error. */
+const retryable = (status: number | undefined) => status === undefined || status >= 500 || [408, 409, 425, 429].includes(status);
 export const MIN_REPEAT_SECONDS = 60;
-const COLUMNS = "id, agent, tenant, text, code, history, due_at, every_seconds, created_at";
+const COLUMNS = "id, agent, tenant, text, code, history, due_at, every_seconds, created_at, failures, last_error, last_error_at";
 const schedule = (row: any): Schedule => ({
   id: row.id, agent: row.agent, tenant: row.tenant, ...(row.text !== null ? { text: row.text } : {}), ...(row.code !== null ? { code: row.code } : {}),
   ...(row.history === "none" ? { history: "none" as const } : {}), dueAt: row.due_at, ...(row.every_seconds !== null ? { everySeconds: row.every_seconds } : {}), createdAt: row.created_at,
+  ...(row.failures ? { failures: row.failures } : {}), ...(row.last_error !== null ? { lastError: row.last_error, lastErrorAt: Number(row.last_error_at) } : {}),
 });
 
 export class Scheduler {
@@ -69,7 +79,7 @@ export class Scheduler {
     await underClaim(this.db, claim, async sql => {
       await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`schedules:${input.agent}`]);
       if ((await sql.query("select count(*) as count from schedules where agent = $1", [input.agent])).rows[0].count >= 100) throw new Error("An agent can have at most 100 schedules");
-      await sql.query(`insert into schedules (${COLUMNS}) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      await sql.query("insert into schedules (id, agent, tenant, text, code, history, due_at, every_seconds, created_at) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         [created.id, created.agent, created.tenant, created.text ?? null, created.code ?? null, created.history ?? null, created.dueAt, created.everySeconds ?? null, created.createdAt]);
     });
     return created;
@@ -102,40 +112,66 @@ export class Scheduler {
     } finally { this.scanning = false; }
   }
 
-  private async claim(now: number): Promise<(Schedule & { claim: string })[]> {
+  private async claim(now: number): Promise<(Schedule & { claim: string; attempts: number })[]> {
     const claim = `${this.node} ${randomUUID()}`;
     const { rows } = await this.db.query(`
       update schedules set claimed_by = $2, claimed_until = now() + $3 * interval '1 millisecond'
       where id in (
         select id from schedules where due_at <= $1 and (claimed_until is null or claimed_until <= now())
         order by due_at limit ${CLAIM_BATCH} for update skip locked)
-      returning ${COLUMNS}`, [now, claim, CLAIM_TIMEOUT_MS]);
-    return rows.map(row => ({ ...schedule(row), claim }));
+      returning ${COLUMNS}, attempts`, [now, claim, CLAIM_TIMEOUT_MS]);
+    return rows.map(row => ({ ...schedule(row), claim, attempts: row.attempts }));
   }
 
   /** Deliver a claimed wake-up, then move it to its next occurrence or drop it. Only the claim holder advances it. */
-  private async fire({ claim, ...due }: Schedule & { claim: string }) {
+  private async fire({ claim, attempts, ...due }: Schedule & { claim: string; attempts: number }) {
     try { await this.deliver(due, `schedule-${due.id}-${due.dueAt}`); }
     catch (error) {
-      // The agent was deleted or expired: drop its schedule. Anything else retries after the claim times out, listed
-      // again meanwhile (its holder is cleared; the claim's time still keeps other nodes off it).
+      // The agent was deleted or expired: drop its schedule.
       const status = (error as { status?: number }).status;
-      if (status !== 404 && status !== 410) {
-        await this.db.query("update schedules set claimed_by = null where id = $1 and due_at = $2 and claimed_by = $3", [due.id, due.dueAt, claim]).catch(() => {});
-        throw error;
+      if (status === 404 || status === 410) {
+        await this.db.query("delete from schedules where id = $1 and due_at = $2 and claimed_by = $3", [due.id, due.dueAt, claim]);
+        return;
       }
-      await this.db.query("delete from schedules where id = $1 and due_at = $2 and claimed_by = $3", [due.id, due.dueAt, claim]);
+      await this.failed(due, claim, attempts + 1, status, error);
       return;
     }
     if (due.everySeconds) {
-      // Next occurrence after now, skipping any missed while nothing was running.
-      const step = due.everySeconds * 1000;
-      const next = due.dueAt + Math.max(1, Math.ceil((Date.now() - due.dueAt + 1) / step)) * step;
-      await this.db.query("update schedules set due_at = $3, claimed_by = null, claimed_until = null where id = $1 and due_at = $2 and claimed_by = $4", [due.id, due.dueAt, next, claim]);
+      await this.db.query(`update schedules set due_at = $3, claimed_by = null, claimed_until = null, attempts = 0, failures = 0, last_error = null, last_error_at = null
+        where id = $1 and due_at = $2 and claimed_by = $4`, [due.id, due.dueAt, nextOccurrence(due), claim]);
     } else {
       await this.db.query("delete from schedules where id = $1 and due_at = $2 and claimed_by = $3", [due.id, due.dueAt, claim]);
     }
   }
+
+  /**
+   * A delivery failed (its `attempt`th of this occurrence): retry it after the next delay, with the same request id, so
+   * one that reached the agent after all does not run twice; or give the occurrence up, moving a repeating schedule on.
+   * Until the retry its claim's expiry holds it, the holder cleared so that it is listed meanwhile.
+   */
+  private async failed(due: Schedule, claim: string, attempt: number, status: number | undefined, error: unknown) {
+    const now = Date.now();
+    const message = `${status !== undefined ? `HTTP ${status}: ` : ""}${error instanceof Error ? error.message : String(error)}`.slice(0, 1000);
+    const delay = retryable(status) ? RETRY_DELAYS_MS[attempt - 1] : undefined;
+    const next = due.everySeconds ? nextOccurrence(due, now) : undefined;
+    const retry = delay !== undefined && (next === undefined || now + delay < next);
+    console.error(JSON.stringify({ type: "schedule_delivery_failed", schedule: due.id, agent: due.agent, tenant: due.tenant, status, attempt, error: message, ...(retry ? { retryInMs: delay } : { gaveUp: true }) }));
+    if (retry) {
+      await this.db.query(`update schedules set attempts = $4, last_error = $5, last_error_at = $6, claimed_by = null, claimed_until = now() + $7 * interval '1 millisecond'
+        where id = $1 and due_at = $2 and claimed_by = $3`, [due.id, due.dueAt, claim, attempt, message, now, delay]);
+    } else if (next !== undefined) {
+      await this.db.query(`update schedules set due_at = $4, attempts = 0, failures = failures + 1, last_error = $5, last_error_at = $6, claimed_by = null, claimed_until = null
+        where id = $1 and due_at = $2 and claimed_by = $3`, [due.id, due.dueAt, claim, next, message, now]);
+    } else {
+      await this.db.query("delete from schedules where id = $1 and due_at = $2 and claimed_by = $3", [due.id, due.dueAt, claim]);
+    }
+  }
+}
+
+/** A repeating schedule's next occurrence after now, skipping any missed while nothing was running. */
+function nextOccurrence(due: { dueAt: number; everySeconds?: number }, now = Date.now()) {
+  const step = due.everySeconds! * 1000;
+  return due.dueAt + Math.max(1, Math.ceil((now - due.dueAt + 1) / step)) * step;
 }
 
 /** Parse `{ text | code, history?, at? (ISO time or ms), inSeconds?, everySeconds? }` into a due time. */
