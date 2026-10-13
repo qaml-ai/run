@@ -28,7 +28,8 @@ function dearest(provider: string): Model<Api>["cost"] & { contextWindow: number
  * comes first. A response with no token counts and no provider cost (usage suppressed) is charged as if it filled
  * the model's context window and wrote its longest reply: `estimated`. One aborted before the provider sent usage
  * (`aborted`) uses the host's input estimate and its partial reply at two characters a token, wherever reported
- * token counts are missing. Provider-reported cost and token counts take precedence over estimates.
+ * input counts are missing. An interrupted output count is a lower bound: the larger of it and the reply
+ * estimate is used. Provider-reported cost takes precedence, and completed responses keep their counts.
  */
 export function platformUsage<T extends Usage>(usage: T, provider: string, id: string, aborted?: { chars: number; inputTokens?: number }): { usage: T; estimated: boolean; known: boolean } {
   const model = catalogModel(provider, id);
@@ -38,9 +39,11 @@ export function platformUsage<T extends Usage>(usage: T, provider: string, id: s
   const tokens = missing
     ? aborted ? { input: Math.min(rates.contextWindow, count(aborted.inputTokens)), output: Math.ceil(count(aborted.chars) / 2), cacheRead: 0, cacheWrite: 0 } : { input: rates.contextWindow, output: rates.maxTokens, cacheRead: 0, cacheWrite: 0 }
     : { input: count(usage.input), output: count(usage.output), cacheRead: count(usage.cacheRead), cacheWrite: count(usage.cacheWrite), cacheWrite1h: Math.min(count(usage.cacheWrite1h), count(usage.cacheWrite)) };
-  // Anthropic-style streams can report prompt usage at their start, but no completion usage before an abort.
-  const partialOutput = !reported && !!aborted && tokens.output === 0 && count(aborted.chars) > 0;
-  if (partialOutput) tokens.output = Math.ceil(count(aborted!.chars) / 2);
+  // A stream may report one or two output tokens at its start and never update them before cancellation.
+  // Nonzero partial usage is not final usage. Never reduce a count the provider has already reported.
+  const outputEstimate = aborted ? Math.ceil(count(aborted.chars) / 2) : 0;
+  const partialOutput = !reported && !!aborted && outputEstimate > tokens.output;
+  if (partialOutput) tokens.output = outputEstimate;
   const partialInput = !reported && !!aborted && tokens.input + tokens.cacheRead + tokens.cacheWrite === 0 && count(aborted.inputTokens) > 0;
   if (partialInput) tokens.input = Math.min(rates.contextWindow, count(aborted!.inputTokens));
   const estimated = missing || partialOutput || partialInput;

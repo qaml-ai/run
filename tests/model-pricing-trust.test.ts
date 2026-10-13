@@ -127,12 +127,18 @@ test("canceled streams charge estimated prompt and output tokens while preservin
   const partial = platformUsage({ ...empty, input: 1000, cacheRead: 5000 }, "openrouter", catalog.id, canceled);
   assert.deepEqual([partial.usage.input, partial.usage.cacheRead, partial.usage.output], [1000, 5000, 200]);
   const outputOnly = platformUsage({ ...empty, output: 42 }, "openrouter", catalog.id, canceled);
-  assert.deepEqual([outputOnly.usage.input, outputOnly.usage.output], [20_000, 42]);
-  // Never replace real token counts or a provider's authoritative cost with an estimate.
-  const complete = platformUsage({ ...empty, input: 1000, output: 42 }, "openrouter", catalog.id, canceled);
+  assert.deepEqual([outputOnly.usage.input, outputOnly.usage.output], [20_000, 200]);
+  // Completed responses retain their counts, even when an estimate would have been larger.
+  const complete = platformUsage({ ...empty, input: 1000, output: 42 }, "openrouter", catalog.id);
   assert.equal(complete.estimated, false);
   assert.equal(complete.usage.output, 42);
-  const priced = platformUsage({ ...empty, providerCost: 0.123 }, "openrouter", catalog.id, canceled);
+  const early = platformUsage({ ...empty, input: 3, cacheWrite: 13356, output: 2 }, "openrouter", catalog.id, canceled);
+  assert.equal(early.estimated, true);
+  assert.deepEqual([early.usage.input, early.usage.cacheWrite, early.usage.output], [3, 13356, 200]);
+  const larger = platformUsage({ ...empty, input: 3, output: 500 }, "openrouter", catalog.id, canceled);
+  assert.equal(larger.estimated, false);
+  assert.equal(larger.usage.output, 500, "a provider count is never reduced");
+  const priced = platformUsage({ ...empty, output: 2, providerCost: 0.123 }, "openrouter", catalog.id, canceled);
   assert.equal(priced.estimated, false);
   assert.equal(priced.usage.providerCost, 0.123);
 });

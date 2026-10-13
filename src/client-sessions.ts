@@ -4765,7 +4765,7 @@ export class ClientSessions {
     if (!session.platformKey || !session.catalogPriced) return usage;
     const priced = platformUsage(usage, provider, model, abortedChars === undefined ? undefined : { chars: abortedChars, inputTokens: usage?.estimatedInputTokens });
     if (!quiet && (priced.estimated || !priced.known)) {
-      console.log(JSON.stringify({ type: "platform_usage_untrusted", tenant: session.header.tenant, agent: session.header.id, provider, model, estimated: priced.estimated, known: priced.known, aborted: abortedChars !== undefined, usd: priced.usage.cost.total }));
+      console.log(JSON.stringify({ type: "platform_usage_untrusted", tenant: session.header.tenant, agent: session.header.id, provider, model, estimated: priced.estimated, known: priced.known, aborted: abortedChars !== undefined, reportedOutputTokens: usage?.output ?? 0, billedOutputTokens: priced.usage.output ?? 0, usd: priced.usage.cost.total }));
     }
     return priced.usage;
   }

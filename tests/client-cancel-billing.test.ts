@@ -6,13 +6,13 @@ import { getModel } from "../src/pi-catalog.ts";
 import { fixture } from "./client-fixture.ts";
 import { until } from "./runtime-server.ts";
 
-for (const action of ["abort", "delete", "concurrent delete"] as const) {
-  test(`${action} during a model stream reports billable usage before the agent stops`, async t => {
+for (const earlyUsage of [false, true]) for (const action of ["abort", "delete", "concurrent delete"] as const) {
+  test(`${action} during a model stream with ${earlyUsage ? "partial nonzero" : "missing"} usage reports billable usage before the agent stops`, async t => {
     const f = await fixture(t);
     const provider = createServer(async (req, res) => {
       for await (const _chunk of req) { /* consume the request */ }
       res.writeHead(200, { "Content-Type": "text/event-stream" });
-      res.write(`data: ${JSON.stringify({ id: "fixture", choices: [{ index: 0, delta: { role: "assistant", content: "Already generated and charged by the provider." }, finish_reason: null }] })}\n\n`);
+      res.write(`data: ${JSON.stringify({ id: "fixture", ...(earlyUsage ? { usage: { prompt_tokens: 1000, completion_tokens: 2, total_tokens: 1002 } } : {}), choices: [{ index: 0, delta: { role: "assistant", content: "Already generated and charged by the provider." }, finish_reason: null }] })}\n\n`);
       // OpenRouter's final usage would arrive at the end, after the client has canceled.
     });
     provider.listen(0, "127.0.0.1");
@@ -42,7 +42,7 @@ for (const action of ["abort", "delete", "concurrent delete"] as const) {
     assert.equal(usage.length, 1);
     assert.equal(usage[0].stopReason, "aborted");
     assert.ok(usage[0].usage.input > 0, "the prompt is billed even without a final provider usage event");
-    assert.ok(usage[0].usage.output > 0, "the streamed output is billed");
+    assert.ok(usage[0].usage.output > 2, "the streamed output is billed beyond a stale early count");
     assert.ok(usage[0].usage.cost.total > 0);
   });
 }

@@ -47,7 +47,10 @@ A **prepaid tenant** pays for:
   Deletion lets cancellation settle before stopping the host, so its final usage
   can be recorded. If a canceled stream lacks provider usage, billing estimates
   prompt tokens from the context sent and output tokens from the partial reply;
-  reported counts and provider cost take precedence. These estimates are not an
+  reported prompt counts and provider cost take precedence. Output counts on an
+  interrupted stream may be stale (even when nonzero), so billing uses the larger
+  of the reported count and the partial-reply estimate. Completed responses retain
+  their reported counts. Estimation logs include reported and billed output counts. These estimates are not an
   exact reconciliation with the provider's invoice. A deletion that cannot settle
   within five seconds logs `agent_delete_settle_timeout` before forced cleanup;
   that path, like a process crash, still needs provider-side usage reconciliation.
