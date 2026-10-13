@@ -618,7 +618,9 @@ token from a refresh token you hold, a database's short-lived password.
   server shows in `toolSources` with `status: "error"`), and the save never
   waits more than a few seconds for it.
 - `auth.url` is checked like every URL you give (see [Outbound
-  calls](#outbound-calls)): `https://`, a public address, no redirects.
+  calls](#outbound-calls)): `https://`, a public address, no redirects. The
+  API returns it with the definition, so put no secret in it: the identity
+  token is what authenticates the runtime.
 
 Each fetch writes a log line and a metric, `tool_credential_exchange`, with
 its outcome (`fetched`, `unreachable`, `blocked`, `timeout`, `unavailable`,
