@@ -50,13 +50,13 @@ export function runView(record: RequestRecord, retentionMs: number) {
   const ended = record.state === "completed";
   const error = !ended ? null
     : outcome?.error !== undefined ? { code: /aborted/i.test(outcome.error) ? "aborted" : "runtime_error", message: outcome.error, ...(outcome.uncertain ? { uncertain: true } : {}) }
-    : typeof result.error === "string" ? { code: typeof result.code === "string" ? result.code : /aborted/i.test(result.error) ? "aborted" : "model_error", message: result.error }
+    : typeof result.error === "string" ? { code: typeof result.code === "string" ? result.code : /aborted/i.test(result.error) ? "aborted" : "model_error", message: result.error, ...result.modelError }
     : result.stopped === "spend_limit" ? { code: "spend_limit", message: "The run reached its spend limit" }
     : result.stopped === "turn_limit" ? { code: "turn_limit", message: "The run reached its limit of model responses or time" } : null;
   return {
     id: record.id, status: !ended ? "running" : error ? "failed" : result.stopped === "input_required" ? "input_required" : "completed",
     text: typeof result.reply === "string" ? result.reply : "", ...(result.output !== undefined ? { output: result.output } : {}), error,
-    usage: result.usage ?? null, toolCalls: result.toolCalls ?? [], toolErrors: result.toolErrors ?? [], sourceErrors: result.sourceErrors ?? [], files: result.files ?? [],
+    usage: result.usage ?? null, ...(typeof result.servedModel === "string" ? { servedModel: result.servedModel } : {}), toolCalls: result.toolCalls ?? [], toolErrors: result.toolErrors ?? [], sourceErrors: result.sourceErrors ?? [], files: result.files ?? [],
     ...(record.metadata ? { metadata: record.metadata } : {}), ...(record.startedAt ? { createdAt: record.startedAt } : {}), ...(record.began ? { startedAt: record.began } : {}),
     ...(record.endedAt ? { endedAt: record.endedAt } : {}), expiresAt: ended && record.endedAt ? record.endedAt + retentionMs : null,
     ...(record.resumes ? { resumes: record.resumes } : {}), ...(record.handoffs?.length ? { handoffs: record.handoffs } : {}),

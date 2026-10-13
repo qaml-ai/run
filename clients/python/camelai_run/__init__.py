@@ -2023,7 +2023,8 @@ class AgentClient(_AgentCalls):
 class Run:
     """A run of the agent: one message and everything the agent did about it. status: "completed" (it answered: text),
     "input_required" (it waits on people: inputs; answer them to resume it) or "failed" (error: {"code", "message",
-    "uncertain"?}; agent.run raises RunError unless throw_on_error=False)."""
+    "uncertain"?}; agent.run raises RunError unless throw_on_error=False). When a model call failed it, error also has
+    "errorClass" (billing, rate_limit, server, refusal, auth, timeout, other), "providerStatus"?, "retryable" and "model"."""
     id: str
     status: str
     # The final reply's text; "" when it said nothing (or failed first).
@@ -2047,6 +2048,8 @@ class Run:
     source_errors: list = field(default_factory=list)
     # The runtime's result as sent.
     raw: dict | None = field(default=None, repr=False)
+    # The model that made its last response, as "provider/model-id" (retries ask the same one); None when it made none.
+    served_model: str | None = None
 
 
 class Mount(TypedDict):
@@ -2086,7 +2089,7 @@ class InputDetail(TypedDict):
 def _run_of(request_id, result, output, make_input):
     """A run from an agent's prompt result: its status, text, output (parsed by a pydantic model) and inputs (make_input of each)."""
     result = result or {}
-    error = ({"code": result.get("code") or "model_error", "message": result["error"]} if result.get("error")
+    error = ({"code": result.get("code") or "model_error", "message": result["error"], **(result.get("modelError") or {})} if result.get("error")
              else {"code": "spend_limit", "message": "The agent reached its spend limit; raise it (spend_limit) to go on"} if result.get("stopped") == "spend_limit"
              else {"code": "turn_limit", "message": "The run reached its limit of model responses or time; send another message to continue"} if result.get("stopped") == "turn_limit" else None)
     # The runtime checked the output against the JSON Schema; a pydantic model parses it too (validators, types).
@@ -2103,7 +2106,7 @@ def _run_of(request_id, result, output, make_input):
     return Run(request_id, status, text=result.get("reply") or "", output=value, inputs=[make_input(input) for input in result.get("inputs") or []], error=error,
                usage=result.get("usage"), files=result.get("files") or [], tool_errors=result.get("toolErrors") or [],
                tool_calls=result.get("toolCalls") or [],
-               source_errors=result.get("sourceErrors") or [], raw=result)
+               source_errors=result.get("sourceErrors") or [], raw=result, served_model=result.get("servedModel"))
 
 
 class RunInput(dict):
@@ -2470,7 +2473,7 @@ def _stateless_run(view, output=None, throw_on_error=True):
             error = {"code": "output_invalid", "message": f"The output does not fit its schema: {invalid}"}
     run = Run(view["id"], "failed" if error else view["status"], text=view.get("text") or "", output=value, error=error, usage=view.get("usage"),
               files=view.get("files") or [], tool_errors=view.get("toolErrors") or [], tool_calls=view.get("toolCalls") or [],
-              source_errors=view.get("sourceErrors") or [], raw=view)
+              source_errors=view.get("sourceErrors") or [], raw=view, served_model=view.get("servedModel"))
     if run.error and throw_on_error:
         raise RunError(run)
     return run

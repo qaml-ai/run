@@ -364,6 +364,71 @@ test("a stream that dies mid-response is retried within the same turn, leaving n
   assert.deepEqual((await supervisor.request("retry", "history")).messages.map((m: any) => m.role), ["user", "assistant"]);
 });
 
+/** A provider answering each request with `statuses[i]` (an error with that HTTP status), or past them with "Recovered.". */
+async function failingProvider(t: { after: (fn: () => Promise<void>) => void }, statuses: number[]) {
+  let requests = 0;
+  const server = createServer(async (req, res) => {
+    for await (const _ of req) { /* drain */ }
+    const status = statuses[requests++];
+    if (status) { res.writeHead(status, { "Content-Type": "application/json" }).end(JSON.stringify({ error: { message: `Fixture failure ${status}` } })); return; }
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    res.write(`data: ${JSON.stringify({ id: "fixture", object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: "Recovered." }, finish_reason: null }] })}\n\n`);
+    res.write(`data: ${JSON.stringify({ id: "fixture", object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`);
+    res.end("data: [DONE]\n\n");
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(async () => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
+  const chosen = { ...model, id: "fixture", api: "openai-completions", provider: "openai", baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`, reasoning: false, input: ["text"] } as Model<Api>;
+  return { chosen, requests: () => requests };
+}
+
+test("a failed model call says how in the run's result and its events; retries are as before", async t => {
+  const { supervisor } = await fixture(t);
+  const bridge = { definitions: [], async call() { return null; } };
+  const retry = { maxAttempts: 2, baseDelayMs: 10 };
+
+  // A 402 is not retried: one request, the run fails with it, classed billing.
+  const billing = await failingProvider(t, [402]);
+  await supervisor.start("billing", { model: billing.chosen, apiKey: "fixture", retry }, bridge);
+  const billingEvents: any[] = [];
+  const billed = await supervisor.request("billing", "prompt", { text: "Hello" }, event => billingEvents.push(event));
+  assert.equal(billing.requests(), 1);
+  assert.match(billed.error, /402/);
+  assert.deepEqual(billed.modelError, { errorClass: "billing", providerStatus: 402, retryable: false, model: "openai/fixture" });
+  assert.equal(billed.servedModel, "openai/fixture");
+  const ended = billingEvents.find(event => event.type === "message_end" && event.message.role === "assistant");
+  assert.deepEqual(ended.failure, billed.modelError, "the failed response's event says the same");
+  assert.equal(billingEvents.some(event => event.type === "auto_retry_start"), false);
+
+  // A 503 every time: the first request and maxAttempts retries, each retry event classed, and the run fails retryable.
+  const down = await failingProvider(t, [503, 503, 503]);
+  await supervisor.start("down", { model: down.chosen, apiKey: "fixture", retry }, bridge);
+  const downEvents: any[] = [];
+  const failed = await supervisor.request("down", "prompt", { text: "Hello" }, event => downEvents.push(event));
+  assert.equal(down.requests(), 3);
+  const server = { errorClass: "server", providerStatus: 503, retryable: true, model: "openai/fixture" };
+  assert.deepEqual(failed.modelError, server);
+  assert.deepEqual(downEvents.filter(event => event.type === "auto_retry_start").map(event => [event.attempt, event.failure]), [[1, server], [2, server]]);
+  assert.deepEqual(downEvents.find(event => event.type === "auto_retry_end").failure, server);
+  assert.equal(downEvents.find(event => event.type === "auto_retry_end").success, false);
+
+  // A 429, then an answer: retried once, no error, and the model that answered.
+  const busy = await failingProvider(t, [429]);
+  await supervisor.start("busy", { model: busy.chosen, apiKey: "fixture", retry }, bridge);
+  const busyEvents: any[] = [];
+  const recovered = await supervisor.request("busy", "prompt", { text: "Hello" }, event => busyEvents.push(event));
+  assert.equal(busy.requests(), 2);
+  assert.equal(recovered.error, null);
+  assert.equal(recovered.reply, "Recovered.");
+  assert.equal(recovered.modelError, undefined);
+  assert.equal(recovered.servedModel, "openai/fixture");
+  assert.deepEqual(busyEvents.find(event => event.type === "auto_retry_start").failure, { errorClass: "rate_limit", providerStatus: 429, retryable: true, model: "openai/fixture" });
+  // The failure is on the event, not the message: history keeps Pi's message as it was.
+  const history = (await supervisor.request("busy", "history")).messages;
+  assert.equal(history.some((message: any) => "failure" in message), false);
+});
+
 test("steering accepted while idle is delivered to the next run; callers can only submit user messages", async t => {
   const requests: any[] = [];
   const chosen = await fakeProvider(t, body => { requests.push(body); return { role: "assistant", content: "ok" }; });

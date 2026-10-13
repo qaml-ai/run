@@ -15,7 +15,7 @@ import {
   type ForkedFrom, type ForkOptions, type MountInput, type RunResult, type RunUsage, type RuntimeOptions, type Sender, type SessionCredentials, type ToolError, type RunToolCall, type ToolServer, type Tools, type AgentFile, type SteerReceipt,
   type RunFrame, type RunInputPart, type RunRequest, type StatelessRun,
 } from "./typescript.ts";
-import type { AgentEvent, ThinkingLevel } from "./types.ts";
+import type { AgentEvent, ModelFailure, ThinkingLevel } from "./types.ts";
 import type { Static, TSchema } from "typebox";
 
 const INSPECT = Symbol.for("nodejs.util.inspect.custom");
@@ -118,8 +118,11 @@ export interface AgentConfig {
   attach?: boolean;
 }
 
-/** A failure, as a run reports it. `code` is stable; `message` is for people. */
-export interface RunFailure {
+/**
+ * A failure, as a run reports it. `code` is stable; `message` is for people. When a model call failed the run
+ * (model_error, model_stream_stalled…), `errorClass`, `providerStatus`, `retryable` and `model` say how.
+ */
+export interface RunFailure extends Partial<ModelFailure> {
   /** e.g. model_error, spend_limit, runtime_error, or the runtime's own (APPLICATION_NOT_CONNECTED…). */
   code: string;
   message: string;
@@ -144,6 +147,8 @@ export interface Run<T = unknown> {
   error: RunFailure | null;
   /** What its model calls used, where the runtime reports it; else null. */
   usage: RunUsage | null;
+  /** The model that made its last response, as `provider/model-id` (retries ask the same one); absent when it made none. */
+  servedModel?: string;
   /** Files it wrote (download them with `agent.files`). */
   files: AgentFile[];
   /**
@@ -491,7 +496,7 @@ export class Runs {
 /** A stateless run as a Run: its failure thrown, unless `throwOnError` is false; its output parsed by a Standard Schema. */
 async function settled<S extends OutputSchema>(run: StatelessRun, config: Pick<StatelessRunConfig<S>, "output" | "throwOnError">): Promise<Run<OutputOf<S>>> {
   let output = run.output as OutputOf<S> | undefined;
-  let error = run.error ? { code: run.error.code, message: run.error.message, ...(run.error.uncertain ? { uncertain: true } : {}) } : null;
+  let error: RunFailure | null = run.error ? { ...run.error } : null;
   const standard = (config.output as StandardOutputSchema<OutputOf<S>> | undefined)?.["~standard"];
   if (standard && output !== undefined && !error) {
     const parsed = await standard.validate(output);
@@ -500,7 +505,7 @@ async function settled<S extends OutputSchema>(run: StatelessRun, config: Pick<S
   }
   const value: Run<OutputOf<S>> = {
     id: run.id, status: error ? "failed" : run.status === "input_required" ? "input_required" : "completed", text: run.text, ...(output !== undefined ? { output } : {}), inputs: [], error,
-    usage: run.usage, files: run.files, toolErrors: run.toolErrors, toolCalls: run.toolCalls, sourceErrors: run.sourceErrors, raw: null,
+    usage: run.usage, ...(run.servedModel ? { servedModel: run.servedModel } : {}), files: run.files, toolErrors: run.toolErrors, toolCalls: run.toolCalls, sourceErrors: run.sourceErrors, raw: null,
   };
   if (value.error && config.throwOnError !== false) throw new RunError(value);
   return value;
@@ -619,7 +624,7 @@ export class Agent {
 
   private async toRun<T>(id: string, result: RunResult | undefined, schema?: OutputSchema): Promise<Run<T>> {
     const raw = result ?? null;
-    let error: RunFailure | null = raw?.error ? { code: raw.code ?? "model_error", message: raw.error }
+    let error: RunFailure | null = raw?.error ? { code: raw.code ?? "model_error", message: raw.error, ...raw.modelError }
       : raw?.stopped === "spend_limit" ? { code: "spend_limit", message: "The agent reached its spend limit; raise it (configure spendLimit) to go on" }
       : raw?.stopped === "turn_limit" ? { code: "turn_limit", message: "The run reached its limit of model responses or time; send another message to continue" } : null;
     // The runtime checked the output against the JSON Schema; a Standard Schema parses it too (refinements, transforms).
@@ -635,7 +640,7 @@ export class Agent {
     return {
       id, status: error ? "failed" : raw?.stopped === "input_required" ? "input_required" : "completed",
       text: raw?.reply ?? "", ...(output !== undefined ? { output } : {}), inputs: (raw?.inputs ?? []).map(input => this.input<T>(input, schema)), error,
-      usage: raw?.usage ?? null, files: raw?.files ?? [], toolErrors: raw?.toolErrors ?? [], toolCalls: raw?.toolCalls ?? [], sourceErrors: raw?.sourceErrors ?? [], raw,
+      usage: raw?.usage ?? null, ...(raw?.servedModel ? { servedModel: raw.servedModel } : {}), files: raw?.files ?? [], toolErrors: raw?.toolErrors ?? [], toolCalls: raw?.toolCalls ?? [], sourceErrors: raw?.sourceErrors ?? [], raw,
     };
   }
 

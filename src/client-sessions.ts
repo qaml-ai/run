@@ -878,12 +878,13 @@ export class ClientSessions {
     const base = { agentId, requestId: record.id, method: record.method, ...(record.actor ? { actor: record.actor } : {}), ...(record.metadata ? { metadata: record.metadata } : {}) };
     if (record.state === "running") return webhookEvent("run.started", tenant, { ...base, ...(record.resumes ? { resumes: record.resumes } : {}) }, `run.started:${agentId}:${record.id}`);
     const outcome = record.outcome ?? { error: "No outcome was recorded" };
-    const result = (outcome.result ?? {}) as { stopped?: string; inputs?: { id: string }[]; replyIndex?: number; messages?: number; code?: unknown };
+    const result = (outcome.result ?? {}) as { stopped?: string; inputs?: { id: string }[]; replyIndex?: number; messages?: number; code?: unknown; servedModel?: string; modelError?: object };
     const { error } = outcomeEnding(outcome);
-    const ended = { ...base, ...(record.steeredInto ? { steeredInto: record.steeredInto } : {}), usage: usage ?? null };
+    const ended = { ...base, ...(record.steeredInto ? { steeredInto: record.steeredInto } : {}), usage: usage ?? null, ...(result.servedModel ? { servedModel: result.servedModel } : {}) };
     const key = `run.ended:${agentId}:${record.id}`;
     // Its code, where the run's outcome has one: `cancelled` (a stop cancelled it before it began), `aborted`, `model_stream_stalled`...
-    if (error !== undefined) return webhookEvent("run.failed", tenant, { ...ended, error, ...(typeof result.code === "string" ? { code: result.code } : {}), ...(outcome.uncertain ? { uncertain: true } : {}) }, key);
+    // And how its model call failed, where it did (errorClass, providerStatus, retryable, model).
+    if (error !== undefined) return webhookEvent("run.failed", tenant, { ...ended, error, ...(typeof result.code === "string" ? { code: result.code } : {}), ...(outcome.error === undefined ? result.modelError : {}), ...(outcome.uncertain ? { uncertain: true } : {}) }, key);
     return webhookEvent("run.completed", tenant, {
       ...ended, ...(result.stopped ? { stopped: result.stopped } : {}), ...(result.inputs?.length ? { inputIds: result.inputs.map(input => input.id) } : {}),
       ...(typeof result.replyIndex === "number" ? { replyIndex: result.replyIndex } : {}), ...(typeof result.messages === "number" ? { messageCount: result.messages } : {}),

@@ -63,7 +63,8 @@ export interface RunSummary {
   /** running: it has not ended yet (poll it with `camelrun runs get`, or the get_run tool). */
   status: "running" | "completed" | "input_required" | "failed";
   text?: string;
-  error?: { code: string; message: string };
+  /** errorClass, providerStatus, retryable and model: how a model call failed it, where one did. */
+  error?: { code: string; message: string; errorClass?: string; providerStatus?: number; retryable?: boolean; model?: string };
   inputs?: { id: string; kind: string; message?: string; detail?: unknown }[];
   toolErrors?: unknown[];
   files?: unknown[];
@@ -79,7 +80,7 @@ export function summarize(agent: string, record: any): RunSummary {
   const outcome = record.outcome ?? {};
   const result = outcome.result ?? {};
   const failure = outcome.error ? { code: outcome.uncertain ? "uncertain" : "runtime_error", message: outcome.error }
-    : result.error ? { code: result.code ?? "model_error", message: result.error }
+    : result.error ? { code: result.code ?? "model_error", message: result.error, ...result.modelError }
     : result.stopped === "spend_limit" ? { code: "spend_limit", message: "The agent reached its spend limit; raise it to go on" }
     : result.stopped === "turn_limit" ? { code: "turn_limit", message: "The run reached its limit of model responses or time; send another message to continue" } : undefined;
   const status = failure ? "failed" : result.stopped === "input_required" ? "input_required" : "completed";

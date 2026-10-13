@@ -115,6 +115,31 @@ A run ends in one of three ways: it answered, it waits on people
 | `runtime_error` | `outcome.error` (no `result`) | The runtime could not carry the run out: e.g. the agent was deleted, code execution failed, a queued run refused for credit |
 | (any, with `uncertain`) | `outcome.uncertain: true` | A restart cut the run short where it could not resume (a code execution, or a turn resumed twice already): its tool calls may or may not have taken effect. Check before retrying |
 
+### Model failures
+
+When a model call failed the run (`model_error`, `model_stream_stalled`, `model_key_invalid`…), its error says how,
+so you need not parse `message`:
+
+```json
+{ "code": "model_error", "message": "402 This request requires more credits…",
+  "errorClass": "billing", "providerStatus": 402, "retryable": false, "model": "openrouter/anthropic/claude-sonnet-5" }
+```
+
+| Field | Meaning |
+| --- | --- |
+| `errorClass` | `billing` (the provider's 402, a quota or budget used up, even one sent as a 429), `rate_limit` (429), `server` (5xx, overloaded, the provider unreachable), `refusal` (the model declined, or the provider's safety filter stopped it), `auth` (401, 403, no key), `timeout` (the provider's, or the model stream went quiet), `other`. Classes may be added: treat an unknown one as `other` |
+| `providerStatus` | The provider's HTTP status, when its error gives one |
+| `retryable` | Whether the runtime retries this kind of failure itself (3 times, with backoff, on the same model). On a failed run, `true` means it was transient and the retries ran out: trying again later, or with another model, may work. `false`: the same request will fail the same way. A model on your own endpoint ([custom models](../guides/custom-models.md)) is not retried by the runtime, except for a stalled stream, so its failures are `false` |
+| `model` | The model that failed, as `provider/model-id` (an id of `GET /v1/models`) |
+
+The same fields are on the `run.failed` webhook, and as `failure` on the stream's events for a failed response
+(`message_end` with `stopReason: "error"`) and its retries (`auto_retry_start`, and `auto_retry_end` when they run
+out). A request record has them as `outcome.result.modelError`. They are the classes the runtime counts in its
+metrics and the same rule it retries by, so they agree with what it did.
+
+A run's `servedModel` (and `run.completed`'s, `run.failed`'s) is the model that made its last response, as
+`provider/model-id`; retries ask the same model.
+
 A request record (`GET …/requests/:requestId`, `GET …/state`) puts an ended run's
 `status` (`completed`, `input_required` or `failed`, as the SDKs' runs say it),
 `error`, whichever kind, and `stopped` on top. Its `state` says only whether it
@@ -160,7 +185,7 @@ by it, and a call that runs twice acts once.
 | | TypeScript | Python |
 | --- | --- | --- |
 | Any failure | `AgentError`: `message`, `status` (HTTP status, or 0 for a run's or the connection's), `code?`, `requestId?`, `uncertain?`, `retryAfterMs?` | `AgentError`: `status`, `code`, `request_id`, `uncertain`, `retry_after` (seconds) |
-| A failed run | `RunError extends AgentError`: `run` (the `Run`, `status: "failed"`, `error: {code, message, uncertain?}`) | `RunError`: `run` |
+| A failed run | `RunError extends AgentError`: `run` (the `Run`, `status: "failed"`, `error: {code, message, uncertain?, errorClass?, providerStatus?, retryable?, model?}`) | `RunError`: `run` (the same in `run.error`) |
 | Another process took the agent's tools | `code: "APPLICATION_REPLACED"`, through `onError`; the client goes on without serving them | the same, through `on_error` |
 | A tool server's token check | `RuntimeTokenError` (`serveTools`, `verifyRuntimeToken`): the call gets 401 | `RuntimeTokenError` |
 

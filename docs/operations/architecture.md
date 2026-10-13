@@ -249,8 +249,9 @@ dimension sets listed:
 | `code_execution` | a js_exec execution (or `execute`) ends; properties `tenant`, `timeoutMs` (what it got) and `requestedTimeoutMs` | `CodeExecutions`, `CodeDurationMs`, `CodeCpuMs` (guest CPU, when it finished) | `ErrorClass` (none, cpu_limit, guest_limit, timeout_tool, timeout_waiting_worker, timeout, aborted, worker_exited, memory, tool_limit, syntax, guest_error) |
 | `watch_refused` | an event stream subscriber is refused (429) at a limit | `WatchersRefused` | `Scope` (agent, tenant, node), `Tenant` |
 
-`ErrorClass` is one of rate_limit, overloaded, context_overflow, auth, billing, timeout,
-provider_5xx, network, runtime_restart, exception, other (none for a success). A failed
+`ErrorClass` is one of rate_limit, overloaded, context_overflow, auth, billing, refusal, timeout,
+stream_stalled, provider_5xx, network, runtime_restart, exception, other (none for a success). A run's
+`error.errorClass` is the same classification in the API's fewer classes (`src/model-errors.ts`). A failed
 tool call also logs `tool_failed` with the tool's name, the tenant and the error's class
 (js_exec's as for `code_execution`), never its text (not a metric). Run events exist
 only for tenants with an endpoint for them. An agent in its own process

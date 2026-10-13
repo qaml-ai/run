@@ -51,6 +51,20 @@ export type Message = UserMessage | AssistantMessage | ToolResultMessage | Syste
 /** A file in the agent's mounts, as a run presents it; download it with `agent.files.download(path)`. */
 export interface PresentedFile { type: "file"; path: string; volume: string; version: number; size: number; contentType: string; caption?: string; [key: string]: unknown }
 
+/**
+ * How a model call failed, without parsing its message: on a failed run's `error`, its `run.failed` webhook, a failed
+ * response's `message_end` and the retry events (`failure`). `errorClass` values may be added: treat an unknown one as "other".
+ */
+export interface ModelFailure {
+  errorClass: "billing" | "rate_limit" | "server" | "refusal" | "auth" | "timeout" | "other" | (string & {});
+  /** The provider's HTTP status, when its error gives one. */
+  providerStatus?: number;
+  /** Whether the runtime retries such a failure itself; on a failed run, true means its retries ran out. */
+  retryable: boolean;
+  /** The model that failed, as `provider/model-id`. */
+  model: string;
+}
+
 /** A delta of the assistant message streaming now (a `message_update`'s `assistantMessageEvent`). */
 export type MessageDelta =
   | { type: "start" }
@@ -73,7 +87,8 @@ export type AgentEvent =
   | { type: "message_start"; message: Message }
   /** A delta alone (`assistantMessageEvent`), without the message it updates: fold it from `message_start`. */
   | { type: "message_update"; assistantMessageEvent: MessageDelta }
-  | { type: "message_end"; message: Message }
+  /** `failure`: how a failed response (`stopReason: "error"`) failed. */
+  | { type: "message_end"; message: Message; failure?: ModelFailure }
   /** A response taken back (before a retry, or a compaction on overflow): the message at `index` is gone. */
   | { type: "message_retracted"; index: number }
   | { type: "tool_execution_start"; toolCallId: string; toolName: string; args: unknown }
@@ -88,8 +103,8 @@ export type AgentEvent =
   | { type: "codemode"; toolCallId: string; event: { type: "output"; text: string } | { type: string; [key: string]: unknown } }
   /** What code run by `execute` logged, as it ran. */
   | { type: "output"; text: string }
-  | { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
-  | { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
+  | { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string; failure?: ModelFailure }
+  | { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string; failure?: ModelFailure }
   | { type: "compaction_start"; reason: string; background?: boolean }
   /** The model call that summarized the history, and what it used (not sent to browser tokens). */
   | { type: "compaction_usage"; provider: string; model: string; usage: MessageUsage; timestamp: number; background?: boolean }

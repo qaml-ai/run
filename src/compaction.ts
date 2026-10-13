@@ -13,6 +13,7 @@ import { reasoningFloor } from "./pi-catalog.ts";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { streamTimeouts, watchedStream, type Stall, type StreamTimeouts } from "./model-stream.ts";
 import { network } from "./node-context.ts";
+import { MODEL_INTERRUPTED } from "./model-errors.ts";
 
 /**
  * Context compaction on top of Pi's compaction functions (vendored from pi-agent-core 0.87.1 in
@@ -287,8 +288,6 @@ export function modelKeyFailure(error: string, model: { provider: string; id: st
  * `open` while it runs, so the host can cut them all when the lease goes stale (`interrupt`).
  */
 export interface ModelGate { wait(signal?: AbortSignal): Promise<void>; open: Set<AbortController> }
-/** Why a model request was cut by its node's stale lease. Retryable (a lost connection): it is made again once the lease is fresh, or by the agent's next owner. */
-export const MODEL_INTERRUPTED = "Model request interrupted: this node's connection to its cluster was lost; it is made again once the node's lease is renewed";
 
 /** A signal for one model request that `gate` can cut, registered in `gate.open` until `done`. */
 function gatedSignal(gate: ModelGate | undefined, signal: AbortSignal | undefined) {
