@@ -1560,12 +1560,18 @@ export class ClientSessions {
         call: (name, args, signal, context) => this.callTool(session, { name, args, signal, ...context }),
         file: ref => this.fileData(session, ref),
         modelAuth: () => this.modelAuth(session),
-        modelAttempt: event => {
+        modelAttempt: async event => {
           if (event.type === "begin" && session.header.revoked) return Promise.reject(new Error("Session revoked"));
           const run = this.runningRun(session);
           const { identity, keyScope } = session.header;
           const scoped = event.type === "begin" ? { ...event, context: { ...(run ? { requestId: run.id, actor: run.actor } : {}), ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) } } : event;
-          return this.options.modelAttempt?.(session.header.tenant, session.header.id, !!session.platformKey, !!session.catalogPriced, scoped) ?? Promise.resolve(false);
+          const tracked = await this.options.modelAttempt?.(session.header.tenant, session.header.id, !!session.platformKey, !!session.catalogPriced, scoped) ?? false;
+          // Persisting a begin may span a database outage; recheck ownership before dispatch.
+          if (event.type === "begin") {
+            if (session.header.revoked) throw new Error("Session revoked");
+            await this.leased(session);
+          }
+          return tracked;
         },
         fs: (op, args, signal) => this.fsCall(session, op, args, signal),
         search: async query => { await this.leased(session); return this.searchTools(session, query); },

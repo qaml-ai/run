@@ -56,7 +56,7 @@ test("a lost commit acknowledgement can be delivered again without a second debi
         if (prop !== "query") { const value = Reflect.get(target, prop); return typeof value === "function" ? value.bind(target) : value; }
         return async (...args: any[]) => {
           const result = await (client.query as any)(...args);
-          if (args[0] === "commit" && once) { once=false; throw new Error("lost commit acknowledgement"); }
+          if (args[0] === "commit" && once) { once=false; throw Object.assign(new Error("lost commit acknowledgement"), {code:"ECONNRESET"}); }
           return result;
         };
       } });
@@ -66,6 +66,10 @@ test("a lost commit acknowledgement can be delivered again without a second debi
   await assert.rejects(flaky.event("payg","agent",true,true,finish(id,0.1)), /lost commit/);
   await attempts.event("payg","agent",true,true,finish(id,0.1));
   assert.equal(await total(db),-100000);
+  once = true;
+  const second = await begin(attempts);
+  await new ModelAttempts(faulty, await accounts(db), undefined, 1_000).event("payg","agent",true,true,finish(second,0.1));
+  assert.equal(await total(db),-200000,"automatic delivery retry also commits each attempt once");
 });
 
 test("reconciliation survives a lost host, includes BYOK cost, and runs concurrently without double billing", async () => {

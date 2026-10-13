@@ -105,6 +105,12 @@ function upstream(model: Model<Api>): Model<Api> {
   if (provider === "amazon-bedrock") rest.shift();
   return { ...model, provider, id: rest.join("/") };
 }
+/** Match the response's accounting name, including its tenant endpoint prefix. */
+function attemptModel(model: Model<Api>, credentials: Credentials): Model<Api> {
+  if (!credentials.identity) return model;
+  const target = upstream(model);
+  return { ...target, provider: `${model.provider}/${target.provider}` };
+}
 /** Pi's options for a call to a tenant's own endpoint: its token also as `IDENTITY_HEADER`, and Bedrock over HTTP/1.1, as any gateway takes it. */
 const identityOptions = (model: Model<Api>, options: any, token: string) =>
   ({ ...options, apiKey: token, headers: { ...options?.headers, [IDENTITY_HEADER]: token }, env: { AWS_BEDROCK_FORCE_HTTP1: "1" }, ...(model.api === "openai-codex-responses" ? codexOptions(token) : {}) });
@@ -310,7 +316,7 @@ export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefin
     const apiKey = options.apiKey;
     // A provider's stream that goes quiet is ended (model-stream.ts), and so is one the turn's abort or the lease reaches, at once.
     const limits = timeouts?.(model, options.reasoning ?? reasoningFloor(model)) ?? streamTimeouts(model, options.reasoning ?? reasoningFloor(model));
-    const call = (credentials: Credentials) => attemptStream(model, credentials.apiKey, "response", attempt, sink => {
+    const call = (credentials: Credentials) => attemptStream(attemptModel(model, credentials), credentials.apiKey, "response", attempt, sink => {
       const { signal, cut, done } = gatedSignal(gate, options.signal);
       let requested = false;
       return watchedStream(model, (watched, activity) => {
@@ -360,7 +366,7 @@ function summarizer(apiKey: ApiKey, onResponse: ((message: AssistantMessage) => 
     let response: AssistantMessage;
     try {
       const credentials = typeof apiKey === "string" ? { apiKey } : await apiKey();
-      const tracked = await attemptStream(model, credentials.apiKey, "compaction", attempt, sink => {
+      const tracked = await attemptStream(attemptModel(model, credentials), credentials.apiKey, "compaction", attempt, sink => {
       const [target, callOptions] = authorize(model, options, credentials, sink, modelHeaders, outbound);
       // Watched like a turn's requests: a summary whose stream goes quiet fails (the context is left as it is) rather than hold the turn.
       return watchedStream(model, (watched, activity) => streamSimple(target, context, { ...callOptions, signal: watched, onProviderStreamEvent: (event: unknown) => activity(event) }),
