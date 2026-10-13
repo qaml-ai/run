@@ -30,12 +30,26 @@ const PRICES: Record<string, Record<string, Partial<Model<Api>["cost"]>>> = {
   anthropic: { "claude-sonnet-5-5": { cacheRead: 0.1 } },
   "cloudflare-ai-gateway": { "claude-sonnet-5-5": { cacheRead: 0.1 } },
 };
+/**
+ * Azure OpenAI's Global Standard prices are OpenAI's, long context included (Microsoft's GPT-6 launch post lists
+ * GPT-6 Sol at $2/$0.20 cached/$2.50 cache writes/$10 out, $4/$0.40/$5/$15 for long context). Pi's `azure` entries have
+ * OpenAI's base rates without the long-context tier, so an azure model is priced as OpenAI's of the same id. Data Zone
+ * deployments cost 10% (US) to 20% (EU) more: the platform's are Global Standard (docs/operations/configuration.md).
+ */
+const AZURE = "azure";
 const priced = (model: Model<Api>): Model<Api> => {
+  const openai = model.provider === AZURE ? piModel("openai", model.id) : undefined;
+  if (openai) return { ...model, cost: priced(openai).cost };
   const fix = PRICES[model.provider]?.[model.id];
   return fix ? { ...model, cost: { ...model.cost, ...fix } } : model;
 };
+/**
+ * Pi's azure models name no endpoint: each resource is its own. Theirs is the platform's, given with each call
+ * (compaction.ts `azureOptions`), so the catalog's address is a placeholder no call reaches (`.invalid` never resolves).
+ */
+const AZURE_PLACEHOLDER_URL = "https://azure-openai.invalid/openai/v1";
 const corrected = (found: Model<Api> | undefined): Model<Api> | undefined => {
-  const model = found && priced(found);
+  const model = found && (found.provider === AZURE && !found.baseUrl ? priced({ ...found, baseUrl: AZURE_PLACEHOLDER_URL }) : priced(found));
   const claude = model?.provider === BEDROCK ? ANTHROPIC_ID.exec(model.id)?.[1] : undefined;
   if (!model || !claude) return model;
   return piModel("anthropic", claude)?.thinkingLevelMap?.off === null ? { ...model, thinkingLevelMap: { ...model.thinkingLevelMap, off: null } } : model;

@@ -71,7 +71,7 @@ import { V8Exec } from "./v8-exec.ts";
 import { pricingFromEnvironment } from "./pricing.ts";
 import { openaiTranscription, Transcriber } from "./transcription.ts";
 import { Imager, openaiImages } from "./images.ts";
-import { azureCredentials } from "./azure-openai.ts";
+import { azureChatCredentials, azureCredentials } from "./azure-openai.ts";
 import { searchProvidersFromEnvironment, WebSearch } from "./web-search.ts";
 import { WebRender } from "./web-render.ts";
 import { Stripe } from "./stripe.ts";
@@ -253,7 +253,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   // Prepaid tenants pay from credit at the rates in src/pricing.ts, which the environment may override.
   // Credit is bought through Stripe Checkout when Stripe is configured (AGENT_STRIPE_SECRET_ARN, or STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET).
   const stripe = secrets.stripe && new Stripe({ ...secrets.stripe, ...config.stripe });
-  const accounts = new Accounts({ tenants, db, secretsKey: secrets.secretsKey, pricing, publicUrl, stripe, maxAgentsPerTenant });
+  const accounts = new Accounts({ tenants, db, secretsKey: secrets.secretsKey, pricing, publicUrl, stripe, maxAgentsPerTenant, ...(secrets.azureOpenAI ? { azureOpenAI: secrets.azureOpenAI } : {}) });
   // Busy agents per tenant, counted across the fleet: each tenant's own maxAgents, its usage tier, or AGENT_MAX_AGENTS_PER_TENANT.
   const busyAgents = new BusyAgents({ db, ownership, limitFor: (tenant, sql) => accounts.billing.busyLimit(tenant, sql) });
   accounts.billing.autoTopup?.start();
@@ -383,7 +383,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   /** The model an agent of `tenant` that names none gets: the first default its key scope or tenant has a key for, else the first. */
   async function defaultModelFor(tenant: string, keyScope?: string) {
     const keyed = await accounts.keyedProviders(tenant);
-    for (const candidate of defaults) if (keyed(candidate.provider) || (keyScope && await keyScopes.entry(tenant, keyScope, candidate.provider))) return candidate;
+    for (const candidate of defaults) if (keyed(candidate.provider, candidate.id) || (keyScope && await keyScopes.entry(tenant, keyScope, candidate.provider))) return candidate;
     return defaults[0];
   }
   modelProviders.onDelete = (tenant, name) => keyScopes.forgetProvider(tenant, name);
@@ -696,6 +696,8 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       const resolved = await accounts.providerKey(tenant, provider);
       // The tenant's own Bedrock key names a region, which each call takes with the key (`scopedKey`).
       if (resolved?.region) return { key: SCOPE_KEY, platform: false };
+      // The platform's Azure resource: each call takes its address and deployments with the key (`scopedKey`).
+      if (resolved && provider === "azure") return { key: SCOPE_KEY, platform: true };
       return resolved && { key: resolved.key, platform: resolved.source !== "tenant" };
     },
     catalogPriced: async tenant => await accounts.billing.mode(tenant) === "prepaid",
@@ -708,6 +710,8 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       if (entry && !providerInfo(provider)) return undefined;
       if (entry) return { ...entry, apiKey: entry.apiKey ?? "", platform: false };
       const resolved = await accounts.providerKey(tenant, provider);
+      const azure = provider === "azure" && accounts.azureChat;
+      if (resolved && azure) return { ...azureChatCredentials(azure), platform: true };
       return resolved && { apiKey: resolved.key, platform: resolved.source !== "tenant", ...(resolved.region ? { region: resolved.region } : {}) };
     },
     modelEndpoints: tenant => tenants.modelEndpoints(tenant),

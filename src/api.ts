@@ -510,7 +510,8 @@ export function api(context: ApiContext) {
     const custom = await context.modelProviders?.resolvable(c.var.principal.tenant, c.req.query("keyScope") ? checkScope(c.req.query("keyScope")) : undefined) ?? {};
     const declared = Object.entries(custom).filter(([provider]) => [undefined, provider].includes(c.req.query("provider")))
       .flatMap(([provider, entry]) => entry.models.map(model => ({ ...modelInfo(resolveModel(`${provider}/${model.id}`, undefined, custom)), available: true })));
-    const models = [...own, ...declared, ...listModels(c.req.query("provider")).map(model => ({ ...model, available: supported.has(model.provider) && keyed(model.provider) }))];
+    // Azure's models are the platform's (azure-openai.ts): available where it deploys them, to a tenant on its keys.
+    const models = [...own, ...declared, ...listModels(c.req.query("provider")).map(model => ({ ...model, available: (supported.has(model.provider) || model.provider === "azure") && keyed(model.provider, model.modelId) }))];
     const shown = available ? models.filter(model => model.available) : models;
     // No model usable: the list stays a list, and a header says why and what to do.
     if (available && !shown.length) c.header(MODELS_HINT_HEADER, NO_MODELS_HINT);
@@ -688,7 +689,9 @@ export function api(context: ApiContext) {
       const scoped = params.keyScope !== undefined ? params.keyScope : (await clients.inspect(c.req.param("id")!, tenant)).keyScope;
       // Resolved in the scope the agent will be in: its own providers come first.
       const custom = await context.modelProviders?.resolvable(tenant, scoped);
-      try { provider = resolveModel(params.model, accounts.tenants.modelEndpoints(tenant), custom).provider; } catch (error) { throw new HttpError(400, errorText(error)); }
+      let id: string;
+      try { ({ provider, id } = resolveModel(params.model, accounts.tenants.modelEndpoints(tenant), custom)); } catch (error) { throw new HttpError(400, errorText(error)); }
+      if (provider === "azure" && !Object.hasOwn(custom ?? {}, provider) && !await accounts.hasKey(tenant, provider, id)) throw new HttpError(400, `No azure deployment is configured for azure/${id} on this runtime for this tenant; choose a model from GET /v1/models?available=true`);
       if (!scoped && !Object.hasOwn(custom ?? {}, provider) && !await accounts.hasKey(tenant, provider)) throw new HttpError(400, `No ${provider} API key is configured for this tenant; set one with PUT /v1/providers/${provider}/key`);
     }
     const submit = context.submit ?? clients.submit.bind(clients);

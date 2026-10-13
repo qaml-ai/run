@@ -119,6 +119,14 @@ email address may sign up again as a new, empty tenant.
 | Audio and transcripts of `POST /v1/transcriptions` | not kept: in the node's memory while the request runs |
 | Prompts and images of `POST /v1/images` | not kept: in the node's memory while the request runs; with `volumeId`, the images made are files of that volume, kept until deleted |
 
+## Azure OpenAI models
+
+An agent on an `azure/<model>` (the platform's Azure OpenAI deployments, `AGENT_AZURE_OPENAI_MODELS`) sends its model
+calls, its context as any model call does, to the operator's Azure OpenAI resource: Microsoft processes them under the
+Azure OpenAI data terms (not used for training; its abuse monitoring may keep prompts as those terms say) and is the
+processor for them. Requests ask Azure to store nothing (`store: false`). Only tenants on the platform's keys can use
+these models.
+
 ## Transcription
 
 Audio attached to a message is transcribed by default, and `POST /v1/transcriptions` transcribes audio alone

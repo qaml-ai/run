@@ -72,6 +72,10 @@ A **prepaid tenant** pays for:
   `gpt-transcribe` are OpenAI's, so tenants are charged the same, from the tokens or seconds the answer reports. Logs
   mark those requests `"via": "azure"` (`images_generated`, `transcribed`), and a fallback to OpenAI (`images_fallback`,
   `transcription_fallback`).
+- **Azure chat models** (`azure/<model>`, the deployments `AGENT_AZURE_OPENAI_MODELS` names) run on the platform's
+  Azure key only, so every response is a platform response, billed like any: from the tokens Azure reports, at the
+  catalog's price for that model, which is OpenAI's of the same id (Azure's Global Standard prices are OpenAI's, long
+  context included; Pi's own `azure` entries lack the long-context tier). Usage rows name the provider `azure`.
 - **Storage**, $0.10 per GB-month of what its agents and volumes keep in Storage
   (transcripts, journals, volume trees and snapshots, file chunks, each chunk once
   however many files share it), charged once a UTC day, on one node, for that day.

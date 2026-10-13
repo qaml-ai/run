@@ -90,7 +90,7 @@ export async function runtimeSecrets(env = process.env) {
   } else {
     azureOpenAI = azureOpenAIConfig({
       endpoint: env.AGENT_AZURE_OPENAI_ENDPOINT, apiKey: env.AGENT_AZURE_OPENAI_API_KEY,
-      imageDeployment: env.AGENT_AZURE_IMAGE_DEPLOYMENT, transcriptionDeployment: env.AGENT_AZURE_TRANSCRIPTION_DEPLOYMENT, apiVersion: env.AGENT_AZURE_OPENAI_API_VERSION,
+      imageDeployment: env.AGENT_AZURE_IMAGE_DEPLOYMENT, transcriptionDeployment: env.AGENT_AZURE_TRANSCRIPTION_DEPLOYMENT, apiVersion: env.AGENT_AZURE_OPENAI_API_VERSION, models: env.AGENT_AZURE_OPENAI_MODELS,
     }, "AGENT_AZURE_OPENAI_ENDPOINT and AGENT_AZURE_OPENAI_API_KEY");
   }
   return {
