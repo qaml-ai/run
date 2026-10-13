@@ -210,6 +210,7 @@ export class AgentSupervisor {
       if (method === "search") return this.search(handle, params);
       if (method === "file") return this.file(handle, params);
       if (method === "model-auth") return this.modelAuth(handle);
+      if (method === "model-attempt") return handle.bridge.modelAttempt?.(params) ?? false;
       if (method === "fs") return this.dispatchFs(handle, params);
       if (method === "history") return this.historyRequest(id, handle, params);
       if (method === "code-slot") return this.codeSlot(handle, params?.id);
@@ -339,6 +340,7 @@ export class AgentSupervisor {
       search: async query => structuredClone(await this.search(handle, structuredClone(query))),
       file: ref => this.file(handle, structuredClone(ref)),
       modelAuth: () => this.modelAuth(handle),
+      modelAttempt: event => handle.bridge.modelAttempt?.(structuredClone(event)) ?? Promise.resolve(false),
       fs: (op, args) => this.dispatchFs(handle, structuredClone({ op, args })),
       codeSlot: signal => handle.bridge.codeSlot?.(signal) ?? Promise.resolve(() => {}),
       ...(this.options.codeExecutor ? { codeExecutor: this.options.codeExecutor } : {}),

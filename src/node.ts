@@ -1,3 +1,4 @@
+import { ModelAttempts } from "./model-attempts.ts";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { readFile } from "node:fs/promises";
@@ -678,6 +679,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
 
   // Human input waits in Postgres; a tool's opaque request state is sealed when the runtime can seal.
   const inputs = new Inputs({ db, ...(accounts.canStoreKeys ? { sealer: accounts } : {}) });
+  const modelAttempts = new ModelAttempts(db, accounts);
   const clients = new ClientSessions(supervisor, {
     runEvents: tenant => subscribers.runs(tenant),
     tracing: telemetry,
@@ -718,6 +720,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     customProviders: (tenant, keyScope) => modelProviders.resolvable(tenant, keyScope),
     modelToken: (audience, claims) => signer.token(audience, claims),
     onUsage: (tenant, agent, message) => accounts.recordUsage(tenant, agent, message),
+    modelAttempt: (tenant, agent, platform, priced, event) => modelAttempts.event(tenant, agent, platform, priced, event),
     transcriber, imager, outbound: outbound.withoutOrigins(),
     onActive: (tenant, agent, ms) => accounts.recordActive(tenant, agent, ms),
     spendLimit: tenant => accounts.runLimit(tenant),
@@ -1152,6 +1155,8 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   const { billingMs, reconcileDays } = config;
   // The charge reads tracked totals; a full listing of Storage corrects them every AGENT_STORAGE_RECONCILE_DAYS (0: never, but for the first).
   const chargeStorage = () => void accounts.billing.chargeStorage(storage, storageUsage, node, { reconcileDays }).catch(error => console.error(JSON.stringify({ type: "storage_charge_failed", error: errorText(error) })));
+  const modelBillingTimer = setInterval(() => void modelAttempts.reconcile().catch(error => console.error(JSON.stringify({ type: "model_attempt_reconcile_failed", error: safeError(error) }))), 60_000);
+  modelBillingTimer.unref();
   const billingTimer = setInterval(chargeStorage, billingMs);
   billingTimer.unref();
   const firstCharge = setTimeout(chargeStorage, Math.min(billingMs, 60_000));
@@ -1251,6 +1256,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     clearInterval(orphanTimer);
     clearInterval(childTimer);
     clearInterval(billingTimer);
+    clearInterval(modelBillingTimer);
     clearInterval(workTimer);
     if (retireTimer) clearInterval(retireTimer);
     clients.draining = true;
@@ -1277,6 +1283,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     await step("supervisor", () => supervisor.close());
     await step("volumes", () => volumes.close());
     await step("mcp", () => mcp.close());
+    await step("model attempts", () => modelAttempts.drain());
     await step("usage", () => accounts.flushUsage());
     await step("auto top-up", async () => { await accounts.billing.autoTopup?.stop(); });
     await step("billing email", async () => { await billingMailer?.stop(); supportMail?.destroy(); await accountMail?.stop(); });

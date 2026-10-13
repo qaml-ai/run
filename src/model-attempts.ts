@@ -1,0 +1,123 @@
+import { createHash } from "node:crypto";
+import { Accounts, applyUsageRows, type Totals } from "./accounts.ts";
+import { postLedger } from "./billing.ts";
+import { transaction, type Db } from "./db.ts";
+import { platformUsage } from "./platform-pricing.ts";
+import { enqueueEvents } from "./webhooks.ts";
+import type { ModelAttemptEvent } from "./model-attempt.ts";
+
+const zero: Totals = { responses: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, platformResponses: 0, platformCost: 0 };
+const hash = (key: string) => createHash("sha256").update(key).digest("hex");
+const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Durable provider attempts. Retried delivery and concurrent reconciliation change each charge only by its delta. */
+export class ModelAttempts {
+  private checking?: Promise<void>;
+  private stopping = new AbortController();
+  readonly db: Db;
+  readonly accounts: Accounts;
+  readonly fetcher: typeof fetch;
+  constructor(db: Db, accounts: Accounts, fetcher: typeof fetch = fetch) { this.db=db; this.accounts=accounts; this.fetcher=fetcher; }
+
+  async event(tenant: string, agent: string, platform: boolean, catalogPriced: boolean, event: ModelAttemptEvent): Promise<boolean> {
+    if (!uuid.test(event.id)) throw new Error("Invalid model attempt id");
+    if (event.type === "begin") {
+      if (!/^[a-f0-9]{64}$/.test(event.keyHash)) throw new Error("Invalid model key fingerprint");
+      const prepaid = await this.accounts.billing.mode(tenant) === "prepaid";
+      await this.db.query(`insert into model_attempts (id,tenant,agent,provider,model,kind,platform,catalog_priced,prepaid,key_hash,context,started_at,updated_at,next_check_at)
+        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12,$13) on conflict (id) do nothing`,
+        [event.id, tenant, agent, event.provider, event.model, event.kind, platform, catalogPriced, prepaid, event.keyHash, JSON.stringify(event.context ?? {}), event.at, Date.now() + 300_000]);
+      const row = (await this.db.query("select tenant,agent,provider,model from model_attempts where id=$1", [event.id])).rows[0];
+      if (row.tenant !== tenant || row.agent !== agent || row.provider !== event.provider || row.model !== event.model) throw new Error("Model attempt identity mismatch");
+      return true;
+    }
+    if (event.type === "generation") {
+      if (!/^gen-[a-zA-Z0-9-]{1,200}$/.test(event.generation)) return true;
+      const result = await this.db.query(`update model_attempts set generation_id=$4, updated_at=$5 where id=$1 and tenant=$2 and agent=$3 and (generation_id is null or generation_id=$4) returning id`, [event.id, tenant, agent, event.generation, Date.now()]);
+      if (!result.rowCount) throw new Error("Model attempt generation mismatch");
+      return true;
+    }
+    await this.settle(event.id, tenant, agent, event.usage, event.chars, event.completed, false);
+    return true;
+  }
+
+  async settle(id: string, tenant: string, agent: string, usage: Record<string, any>, chars: number, completed: boolean, reconciled: boolean) {
+    await transaction(this.db, async sql => {
+      const row = (await sql.query("select * from model_attempts where id=$1 and tenant=$2 and agent=$3 for update", [id, tenant, agent])).rows[0];
+      if (!row) throw new Error("Unknown model attempt");
+      // A provider-reconciled or completed record is final. Delayed host deliveries cannot overwrite it.
+      if (row.state === "settled" || (!reconciled && row.totals)) return;
+      const evidence = chars > 0 || [usage.input, usage.output, usage.cacheRead, usage.cacheWrite, usage.providerCost].some(value => typeof value === "number" && value > 0);
+      if (!completed && !reconciled && !evidence) return; // Unknown is not a zero-cost final result.
+      const pricing = row.platform && row.catalog_priced && !(reconciled && usage.providerCost === 0)
+        ? platformUsage(usage, row.provider, row.model, completed || reconciled ? undefined : { chars, inputTokens: usage.estimatedInputTokens }) : { usage, estimated: false };
+      const final = reconciled || (completed && (!pricing.estimated || typeof usage.providerCost === "number"));
+      const quote = this.accounts.quoteModelUsage(tenant, agent, { provider: row.provider, model: row.model, kind: row.kind === "compaction" ? "compaction" : undefined, platform: row.platform, timestamp: Number(row.started_at), ...row.context, usage: pricing.usage });
+      const previous = row.totals ?? zero;
+      const delta = Object.fromEntries(Object.keys(zero).map(key => [key, quote.totals[key as keyof Totals] - (previous[key] ?? 0)])) as Totals;
+      const amount = row.prepaid ? quote.amount : 0;
+      const adjustment = amount - Number(row.charge);
+      const revision = row.revision + 1;
+      await applyUsageRows(sql, [{ tenant, day: quote.day, model: quote.model, ...delta }]);
+      if (adjustment) {
+        await postLedger(sql, [{ tenant, kind: "usage", amount: -adjustment, key: `model-attempt:${id}:${revision}`, metadata: { attempt: id, revision, reconciled, estimated: !final, tokens: Math.round((quote.totals.cost-previous.cost)*1e6), funding: adjustment-Math.round((quote.totals.cost-previous.cost)*1e6) } }]);
+        // Correct the original minute, not the recovery worker's current hour. Old minutes cannot affect a current cap.
+        const minute = Math.floor(Number(row.started_at) / 60_000);
+        if (minute >= Math.floor((Date.now() - 3_600_000) / 60_000)) await sql.query(`insert into credit_spend_minutes (tenant,minute,amount) values ($1,$2,greatest(0,$3::bigint))
+          on conflict (tenant,minute) do update set amount=greatest(0,credit_spend_minutes.amount+$3::bigint)`, [tenant, minute, adjustment]);
+      }
+      // A correction has a new event id and the same attempt id; the initial response is never emitted twice.
+      for (const event of quote.events) {
+        const facts = { attemptId: id, revision, reconciled, correction: !!row.totals,
+          input: delta.input, output: delta.output, cacheRead: delta.cacheRead, cacheWrite: delta.cacheWrite,
+          cost: { ...(event.data.cost as object), usd: delta.cost } };
+        Object.assign(event.data, facts);
+        if (event.legacy) Object.assign(event.legacy, facts);
+      }
+      await enqueueEvents(sql, quote.events);
+      await sql.query(`update model_attempts set state=$2,totals=$3,charge=$4,revision=$5,updated_at=$6,next_check_at=$7,last_error=null where id=$1`,
+        [id, final ? "settled" : "estimated", JSON.stringify(quote.totals), amount, revision, Date.now(), Date.now()+60_000]);
+    });
+    this.accounts.invalidateModelUsage(tenant);
+    // A committed debit must still wake automatic top-up, but its delivery cannot undo settlement.
+    void this.accounts.billing.autoTopup?.balanceChanged([tenant]).catch(() => {
+      console.error(JSON.stringify({ type: "model_attempt_topup_notify_failed", attempt: id, tenant }));
+    });
+  }
+
+  /** Shutdown waits for existing work only; it never starts a new round of provider requests. */
+  async drain() { this.stopping.abort(); await this.checking; }
+
+  reconcile(): Promise<void> {
+    if (this.stopping.signal.aborted) return Promise.resolve();
+    if (this.checking) return this.checking;
+    return this.checking = this.check().finally(() => { this.checking = undefined; });
+  }
+  private async check() {
+    // The lease is only work distribution. Row locks and revisions enforce exactly-once posting even after expiry.
+    const rows = (await this.db.query(`with claimed as (select id from model_attempts where state<>'settled' and next_check_at<=$1 order by next_check_at limit 25 for update skip locked)
+      update model_attempts a set next_check_at=$2,checks=checks+1 from claimed where a.id=claimed.id returning a.*`, [Date.now(), Date.now()+300_000])).rows;
+    for (const row of rows) {
+      if (this.stopping.signal.aborted) break;
+      try {
+        if (row.provider !== "openrouter" || !row.platform || !row.generation_id) throw new Error("Awaiting provider evidence; no automatic lookup available");
+        const key = this.accounts.tenants.platformKey("openrouter");
+        if (!key || hash(key) !== row.key_hash) throw new Error("Provider key changed; awaiting reconciliation with original account");
+        const response = await this.fetcher(`https://openrouter.ai/api/v1/generation?id=${encodeURIComponent(row.generation_id)}`, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.any([AbortSignal.timeout(10_000), this.stopping.signal]) });
+        if (!response.ok) throw new Error(`Provider lookup HTTP ${response.status}`);
+        const { data } = await response.json() as any;
+        if (data?.id !== row.generation_id || !Number.isFinite(data.total_cost) || data.total_cost < 0 || !Number.isFinite(data.generation_time)) throw new Error("Provider usage is not final or is missing");
+        if (!data.finish_reason && !data.cancelled && !(Array.isArray(data.provider_responses) && data.provider_responses.some((p: any) => Number.isInteger(p.status) && p.status >= 200))) throw new Error("Provider request has no terminal evidence");
+        if (data.is_byok && (!Number.isFinite(data.upstream_inference_cost) || data.upstream_inference_cost < 0)) throw new Error("Provider upstream cost is missing");
+        const cost = data.total_cost + (data.is_byok ? data.upstream_inference_cost : 0);
+        if (!Number.isFinite(cost) || cost < 0) throw new Error("Invalid provider cost");
+        const prompt = Number(data.native_tokens_prompt) || 0, cached = Number(data.native_tokens_cached) || 0;
+        await this.settle(row.id, row.tenant, row.agent, { input: Math.max(0,prompt-cached), output: Number(data.native_tokens_completion)||0, cacheRead: cached, cacheWrite: 0, providerCost: cost, providerCreditCost: data.total_cost }, 0, true, true);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Provider reconciliation failed";
+        await this.db.query("update model_attempts set last_error=$2,next_check_at=$3 where id=$1 and state<>'settled'", [row.id, message, Date.now()+Math.min(86_400_000,60_000*2**Math.min(row.checks,10))]);
+        console.error(JSON.stringify({ type: "model_attempt_unresolved", attempt: row.id, tenant: row.tenant, reason: message }));
+      }
+    }
+  }
+}

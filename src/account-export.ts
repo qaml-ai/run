@@ -53,6 +53,7 @@ volumes/<id>/volume.json   each volume's name and size
 volumes/<id>/files/...     each volume's files
 billing/ledger.jsonl       your credit ledger, one entry per line, newest first
 billing/usage.json         model usage per day and model
+billing/attempts.jsonl     durable model attempts and settlement state (no key fingerprints)
 analytics/account.json     only if this service measures how its website and console are used: the ids your account is known by there, and what was noted of it here
 analytics/summary.json     what the operator's analytics store says of how your account came to be
 analytics/events-*.json    the events it holds of your account, oldest first
@@ -148,6 +149,14 @@ export async function* exportAccount(options: ExportOptions, tenant: string): As
     }
   })());
   yield* zip.file("billing/usage.json", json(await accounts.usage(tenant, 0)));
+  yield* zip.file("billing/attempts.jsonl", (async function* () {
+    for (let after = "00000000-0000-0000-0000-000000000000"; ;) {
+      const { rows } = await accounts.db.query("select id,agent,provider,model,kind,platform,context,generation_id,state,started_at,updated_at,totals,charge,revision,last_error from model_attempts where tenant=$1 and id>$2 order by id limit 200", [tenant, after]);
+      if (!rows.length) return;
+      yield Buffer.from(rows.map(row => JSON.stringify(row)).join("\n") + "\n");
+      after = rows.at(-1)!.id;
+    }
+  })());
 
   // Journey events, where this runtime ever sent any of the account: what it keeps itself, then what the operator's store holds.
   const kept = await journeyKept(accounts.db, tenant);

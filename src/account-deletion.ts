@@ -159,6 +159,8 @@ export class AccountDeletions {
     await transaction(db, async sql => {
       for (const table of TENANT_TABLES) await sql.query(`delete from ${table} where tenant = $1`, [tenant]);
       await deleteJourneyAccount(sql, tenant);
+      // Accounting evidence survives deletion, but customer-provided attribution does not.
+      await sql.query("update model_attempts set context='{}' where tenant=$1", [tenant]);
       await sql.query("delete from billing_confirmation_limits where scope = $1", [`tenant:${tenant}`]);
       await sql.query("delete from storage_usage where (kind = 'tenant' and owner = $1) or (kind = 'volume' and owner in (select id from volumes where tenant = $1))", [tenant]);
       await sql.query("delete from volumes where tenant = $1", [tenant]);

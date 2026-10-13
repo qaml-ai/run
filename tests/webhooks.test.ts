@@ -143,10 +143,14 @@ test("a run whose event could not be written when it ended has it written with t
   const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
   const unloaded = () => until(async () => !(await r.call("/v1/agents")).json.find((entry: any) => entry.id === agent).running, "the idle agent to unload");
 
-  await r.db.query("alter table webhook_deliveries rename to webhook_deliveries_away");
+  // Fail the run-event write specifically; model billing also uses this outbox transactionally.
+  await r.db.query(`create function reject_run_event() returns trigger language plpgsql as $$ begin
+    if new.body->>'type' = 'run.completed' then raise exception 'run event unavailable'; end if;
+    return new; end $$;
+    create trigger reject_run_event before insert on webhook_deliveries for each row execute function reject_run_event()`);
   const lost = await r.prompt(agent, "first");
   await sleep(300);
-  await r.db.query("alter table webhook_deliveries_away rename to webhook_deliveries");
+  await r.db.query("drop trigger reject_run_event on webhook_deliveries; drop function reject_run_event()");
   assert.equal(hook.find("run.completed", lost.id), undefined);
   await unloaded();
 

@@ -80,6 +80,9 @@ test("an account exports everything it stores, then deletes it all but the ledge
   assert.equal(JSON.parse(text("definitions.json"))[0].name, "helper");
   assert.equal(JSON.parse(text("webhooks.json"))[0].url, "https://hooks.example.com/runs");
   assert.match(text("billing/ledger.jsonl"), /"kind":"grant"/);
+  const attempts = text("billing/attempts.jsonl").trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
+  assert.ok(attempts.length > 0);
+  assert.ok(attempts.every(attempt => !Object.hasOwn(attempt, "key_hash") && !Object.hasOwn(attempt, "prepaid")));
   assert.ok(!files.has("keys.json") || !text("keys.json").includes("sk-or-carol-own-key"), "keys never leave");
   assert.ok(!text("tokens.json").includes(token), "tokens never leave");
   assert.deepEqual(JSON.parse(text("discord.json")), {

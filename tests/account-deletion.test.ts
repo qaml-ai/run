@@ -24,6 +24,8 @@ test("a deletion interrupted at any step continues where it stopped, and never w
   await storage.writeBlob("chunks/dave/ab/abc", Buffer.from("file contents"));
   await storage.writeBlob("chunks/other/ab/abc", Buffer.from("another tenant's"));
 
+  await db.query(`insert into model_attempts (id,tenant,agent,provider,model,kind,platform,catalog_priced,prepaid,context,started_at,updated_at,next_check_at)
+    values ('00000000-0000-0000-0000-000000000001','dave','client_a','openrouter','m','response',true,true,true,'{"identity":{"subject":"private"}}',1,1,1)`);
   let purging = false, crash = true;
   const deleted: string[] = [];
   const deletions = new AccountDeletions({
@@ -77,4 +79,5 @@ test("a deletion interrupted at any step continues where it stopped, and never w
   assert.equal(again, "dave-77");
   assert.equal((await db.query("select count(*)::int as n from credit_ledger where tenant = $1", [again])).rows[0].n, 0);
   assert.equal(await deletions.next(), false, "nothing left to do");
+  assert.deepEqual((await db.query("select context,state from model_attempts where tenant='dave'")).rows,[{context:{},state:"pending"}],"retain accounting evidence without identity context");
 });

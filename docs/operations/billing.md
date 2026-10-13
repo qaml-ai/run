@@ -101,13 +101,39 @@ and [usage accounting](https://openrouter.ai/docs/cookbook/administration/usage-
 Every movement is an entry in `credit_ledger` (grant, purchase, usage, storage,
 adjustment, refund), in integer micro-USD, under an idempotency key naming its
 cause; the same statement moves the balance in `credit_accounts`, so the ledger
-always sums to the balance. Token and time charges ride the usage flush (a few
+always sums to the balance.
+
+Agent model calls (including compaction) first persist a UUID in `model_attempts`,
+before contacting the provider. Settlement locks that row and writes usage totals,
+credit balance, ledger and webhook outboxes in one transaction. Redelivery after a
+lost acknowledgment cannot charge the same attempt again. Each revision uses ledger
+key `model-attempt:<uuid>:<revision>`. Interrupted calls may receive an estimated
+charge; reconciliation posts only the difference (including refunds), and keeps the
+response count at one. Usage webhooks carry `attemptId`, `revision`, `reconciled`
+and `correction`; correction costs and token counts are signed deltas, including
+in the legacy usage webhook. Distinct provider attempts in a retried turn have distinct IDs.
+
+Every minute, nodes claim unresolved attempts for reconciliation. Platform OpenRouter
+calls with a captured generation ID use the [generation usage API](https://openrouter.ai/docs/api/api-reference/generations/get-request-&-usage-metadata-for-a-generation),
+including upstream BYOK inference cost. Missing IDs, changed credentials, unavailable
+provider records and unsupported providers remain pending or estimated with
+`last_error` and retry backoff, and emit `model_attempt_unresolved` logs. They are
+never silently finalized as free. A crash before the generation ID is captured
+still requires investigation; this does not promise exactly-once provider execution.
+Existing historical requests are not backfilled. To inspect the outstanding queue:
+
+```sql
+select provider, state, count(*), min(started_at) as oldest_ms
+from model_attempts where state <> 'settled' group by provider, state;
+```
+
+Other usage, including tools and active time, rides the usage flush (a few
 seconds after a response), each batch in one transaction that a retry after a lost
 commit skips. They debit the balance at once but accrue into **one usage entry per
 tenant per UTC hour** (key `usage:<tenant>:<hour>`), which each flush in that hour
 updates in place, adding to its amount and to its breakdown in `metadata` (`tokens`,
 `funding`, `activeMs`, and any other counts); from the next hour on it no longer changes. An hour
-keeps the ledger to 24 usage rows per tenant a day (instead of one per flush per node)
+keeps buffered usage to 24 ledger rows per tenant a day (instead of one per flush per node)
 while a row is still a useful line of history; spend is also kept by minute for an
 hour (`credit_spend_minutes`), for the free-credit limit below. Usage entries from
 before hourly accrual are one per flush, and stay as they are. A prepaid tenant at or below

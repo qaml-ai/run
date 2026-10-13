@@ -676,3 +676,27 @@ test("a compaction whose cut keeps every message makes no summary call and write
   assert.ok("skipped" in outcome, JSON.stringify(outcome));
   assert.equal(fake.summarizations().length, 0);
 });
+
+test("compaction persists each summary attempt and settles before reporting usage", async t => {
+  const fake = await provider(t, { usage: true });
+  const { db } = await testDatabase();
+  const account = new Accounts({ tenants: new Tenants({ read: async () => '{"tenants":{}}' }), db });
+  const { ModelAttempts } = await import("../src/model-attempts.ts");
+  const attempts = new ModelAttempts(db, account);
+  const context = [
+    { role:"user",content:"x".repeat(20000),timestamp:1 },
+    { role:"assistant",content:[{type:"text",text:"noted"}],api:"openai-completions",provider:"openai",model:"fixture",stopReason:"stop",timestamp:2,
+      usage:{input:5000,output:1,cacheRead:0,cacheWrite:0,totalTokens:5001,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}} },
+    { role:"user",content:"next",timestamp:3 },
+  ] as any[];
+  context.splice(2, 0, { ...context[0], timestamp: 3 }, { ...context[1], timestamp: 4 });
+  let reported = 0;
+  const outcome = await runCompaction({context,offset:0,model:fake.model(25000),apiKey:"fixture",keepRecentTokens:1000,
+    attempt:event=>attempts.event("tenant","agent",false,false,event),
+    onResponse:message=>{assert.ok((message.usage as any).billingAttemptId);reported++;account.recordUsage("tenant","agent",{...message,kind:"compaction"});}});
+  assert.ok("state" in outcome, JSON.stringify(outcome));assert.ok(reported>0);
+  await account.flushUsage();
+  const rows=(await db.query("select kind,state from model_attempts")).rows;
+  assert.equal(rows.length,reported);assert.ok(rows.every(row=>row.kind==="compaction" && row.state==="settled"));
+  assert.equal(Number((await db.query("select sum(responses) n from usage")).rows[0].n),reported);
+});

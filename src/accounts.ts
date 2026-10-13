@@ -26,7 +26,7 @@ export type Sealed = { iv: string; tag: string; ciphertext: string };
 export interface GithubUser { login: string; id?: number; createdAt?: number }
 /** A Google account at sign-in, from a verified ID token: its stable `sub` and its verified address. */
 export interface GoogleUser { sub: string; email: string }
-type Totals = { responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; platformResponses: number; platformCost: number };
+export type Totals = { responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; platformResponses: number; platformCost: number };
 /**
  * What a tenant owes from a batch: model tokens, and web searches and renders, on the platform's keys
  * (USD, with their counts), tool search's ranking by meaning (at cost, with the searches' count), and
@@ -380,11 +380,33 @@ export class Accounts {
    * `platform` responses ran on a key that is not the tenant's own; a prepaid tenant pays for them.
    */
   recordUsage(tenant: string, agent: string, message: UsageRecord) {
+    // The durable attempt transaction already wrote these totals and the charge.
+    if (message.usage?.billingAttemptId) return;
+    this.collectUsage(this.pending, tenant, agent, message);
+    this.scheduleFlush();
+  }
+
+  /** Price and describe an attempt without enqueuing it in the volatile usage buffer. */
+  quoteModelUsage(tenant: string, agent: string, message: UsageRecord) {
+    const target = batch();
+    this.collectUsage(target, tenant, agent, message);
+    const [key, totals] = [...target.usage][0];
+    const [, day, model] = JSON.parse(key);
+    const charge = target.charges.get(tenant);
+    return { day, model, totals, amount: charge ? this.amount(charge) : 0, events: target.events };
+  }
+
+  invalidateModelUsage(tenant: string) {
+    this.spend.delete(tenant);
+    this.billing.invalidate([tenant]);
+  }
+
+  private collectUsage(target: Batch, tenant: string, agent: string, message: UsageRecord) {
     const usage = message.usage ?? {};
     const day = new Date(message.timestamp ?? Date.now()).toISOString().slice(0, 10);
     const model = `${message.provider ?? "unknown"}/${message.model ?? "unknown"}`;
     const key = JSON.stringify([tenant, day, message.kind === "compaction" ? `${COMPACTION}${model}` : message.kind === "transcription" ? `${TRANSCRIPTION}${model}` : message.kind === "image" ? `${IMAGE}${model}` : model]);
-    const totals = this.pending.usage.get(key) ?? zero();
+    const totals = target.usage.get(key) ?? zero();
     const cost = usageCost(usage).usd;
     // OpenRouter's response cost is in provider credits. Funding those credits is
     // a separate cost, applied only to model calls on our own OpenRouter key.
@@ -401,9 +423,9 @@ export class Accounts {
       responses: message.kind === "image" ? message.images ?? 1 : 1, input: usage.input ?? 0, output: usage.output ?? 0, cacheRead: usage.cacheRead ?? 0, cacheWrite: usage.cacheWrite ?? 0, cost,
       platformResponses: message.platform ? 1 : 0, platformCost: message.platform ? fundedCost : 0,
     });
-    this.pending.usage.set(key, totals);
+    target.usage.set(key, totals);
     if (message.platform) {
-      const charge = this.charge(tenant);
+      const charge = this.charge(tenant, target);
       // Web searches, renders, tool searches, transcriptions and images are counted apart from model tokens, so the hour's ledger entry shows each.
       if (message.kind === "image") {
         charge.imageCost += cost;
@@ -424,11 +446,11 @@ export class Accounts {
         charge.fundingCost += fundedCost - cost;
       }
     }
-    const spent = this.spend.get(tenant);
+    const spent = target === this.pending ? this.spend.get(tenant) : undefined;
     if (spent?.month === day.slice(0, 7)) spent.cost += cost;
     const event = usageEvent(tenant, agent, message);
-    if (event) this.pending.events.push(event);
-    this.scheduleFlush();
+    if (event) target.events.push(event);
+
   }
 
   /** Count `ms` an agent of `tenant` spent in a turn: model calls and tool execution. */
@@ -438,9 +460,9 @@ export class Accounts {
     this.scheduleFlush();
   }
 
-  private charge(tenant: string) {
-    let charge = this.pending.charges.get(tenant);
-    if (!charge) this.pending.charges.set(tenant, charge = { platformCost: 0, fundingCost: 0, activeMs: 0, toolCost: 0, searches: 0, renders: 0, toolSearchCost: 0, toolSearches: 0, transcriptionCost: 0, transcriptions: 0, audioSeconds: 0, imageCost: 0, images: 0 });
+  private charge(tenant: string, target = this.pending) {
+    let charge = target.charges.get(tenant);
+    if (!charge) target.charges.set(tenant, charge = { platformCost: 0, fundingCost: 0, activeMs: 0, toolCost: 0, searches: 0, renders: 0, toolSearchCost: 0, toolSearches: 0, transcriptionCost: 0, transcriptions: 0, audioSeconds: 0, imageCost: 0, images: 0 });
     return charge;
   }
 
@@ -515,15 +537,7 @@ export class Accounts {
     }
     await transaction(this.db, async sql => {
       if (!(await sql.query("insert into usage_flushes (id) values ($1) on conflict (id) do nothing returning id", [id])).rowCount) return;
-      if (rows.length) await sql.query(`
-        insert into usage (tenant, day, model, responses, input, output, cache_read, cache_write, cost, platform_responses, platform_cost)
-        select tenant, day::date, model, responses, input, output, "cacheRead", "cacheWrite", cost, "platformResponses", "platformCost"
-        from jsonb_to_recordset($1::jsonb) as t(tenant text, day text, model text, responses bigint, input bigint, output bigint, "cacheRead" bigint, "cacheWrite" bigint, cost double precision, "platformResponses" bigint, "platformCost" double precision)
-        on conflict (tenant, day, model) do update set
-          responses = usage.responses + excluded.responses, input = usage.input + excluded.input, output = usage.output + excluded.output,
-          cache_read = usage.cache_read + excluded.cache_read, cache_write = usage.cache_write + excluded.cache_write, cost = usage.cost + excluded.cost,
-          platform_responses = usage.platform_responses + excluded.platform_responses, platform_cost = usage.platform_cost + excluded.platform_cost`,
-      [JSON.stringify(rows)]);
+      await applyUsageRows(sql, rows);
       await accrueUsage(sql, billed);
       // Only tenants with an endpoint that selects usage keep their events.
       await enqueueEvents(sql, events);
@@ -580,4 +594,17 @@ export class Accounts {
     });
     return { since, totals, days };
   }
+}
+
+/** Usage counters changed in the same transaction as their ledger entries. Signed deltas support reconciliation. */
+export async function applyUsageRows(sql: import("./db.ts").Sql, rows: Array<Totals & { tenant: string; day: string; model: string }>) {
+      if (rows.length) await sql.query(`
+        insert into usage (tenant, day, model, responses, input, output, cache_read, cache_write, cost, platform_responses, platform_cost)
+        select tenant, day::date, model, responses, input, output, "cacheRead", "cacheWrite", cost, "platformResponses", "platformCost"
+        from jsonb_to_recordset($1::jsonb) as t(tenant text, day text, model text, responses bigint, input bigint, output bigint, "cacheRead" bigint, "cacheWrite" bigint, cost double precision, "platformResponses" bigint, "platformCost" double precision)
+        on conflict (tenant, day, model) do update set
+          responses = usage.responses + excluded.responses, input = usage.input + excluded.input, output = usage.output + excluded.output,
+          cache_read = usage.cache_read + excluded.cache_read, cache_write = usage.cache_write + excluded.cache_write, cost = usage.cost + excluded.cost,
+          platform_responses = usage.platform_responses + excluded.platform_responses, platform_cost = usage.platform_cost + excluded.platform_cost`,
+      [JSON.stringify(rows)]);
 }
