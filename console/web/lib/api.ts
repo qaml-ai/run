@@ -155,7 +155,7 @@ export interface Definition {
   limits?: { ttlSeconds?: number | null }; mounts?: unknown[]; createdAt: number; updatedAt: number; builtins?: string[];
   /** On a save: builtins its agents cannot use yet (no key), and how to fix it. */
   warnings?: string[];
-  mcpServers?: { name: string; url: string; headerNames?: string[]; auth?: { type: "bearer" } }[];
+  mcpServers?: { name: string; url: string; headerNames?: string[]; auth?: { type: "bearer" | "runtime" | "exchange"; url?: string; audience?: string } }[];
   openApi?: { name: string; spec?: string; baseUrl: string; tools: string[]; allowTools?: string[]; denyTools?: string[]; exposure?: string; timeoutMs?: number; headerNames?: string[]; auth?: { type: "bearer" } }[];
 }
 export interface Channel {
