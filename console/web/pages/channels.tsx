@@ -63,7 +63,7 @@ const TYPES: Record<ChannelType, { label: string; help: string; fields: Field[];
   },
   email: {
     label: "Email",
-    help: "Each email thread sent to the channel's address gets its own agent, which replies in the thread. Only senders whose mail passes SPF or DKIM for their own domain are let in. Available when the runtime has an email domain.",
+    help: "Each email thread sent to the channel's address gets its own agent, which replies in the thread (or to one fixed address, or to nobody). Only senders whose mail passes DMARC or SPF for their own domain are let in, and mail a forwarder you name passes on. Available when the runtime has an email domain.",
     fields: [],
     senders: "ada@example.com, @example.com",
   },
@@ -85,14 +85,20 @@ type Settings = Record<string, any>;
 function initialSettings(type: ChannelType, stored?: Settings): Settings {
   if (type === "github") return { ...GITHUB_DEFAULTS, ...stored };
   if (type === "webhook") return { signature: { type: "standard" }, ...stored, filter: stored?.filter ? JSON.stringify(stored.filter, null, 2) : "" };
-  if (type === "email") return { address: stored?.address ?? "", fromName: stored?.fromName ?? "" };
+  if (type === "email") {
+    const to = typeof stored?.replies === "object" ? stored.replies.to : "";
+    return { address: stored?.address ?? "", fromName: stored?.fromName ?? "", replies: to ? "to" : stored?.replies ?? "sender", to, forwarders: (stored?.forwarders ?? []).join(", ") };
+  }
   return {};
 }
 
 /** The settings to send: every field, an emptied optional one as null so the stored value is cleared. */
 function settingsBody(type: ChannelType, settings: Settings): Settings | undefined {
   if (type === "github") return { ...settings, repos: senders(settings.repos.join ? settings.repos.join(" ") : settings.repos) };
-  if (type === "email") return { ...(settings.address.trim() ? { address: settings.address.trim() } : {}), ...(settings.fromName.trim() ? { fromName: settings.fromName.trim() } : {}) };
+  if (type === "email") return {
+    ...(settings.address.trim() ? { address: settings.address.trim() } : {}), ...(settings.fromName.trim() ? { fromName: settings.fromName.trim() } : {}),
+    replies: settings.replies === "to" ? { to: settings.to.trim() } : settings.replies, forwarders: senders(settings.forwarders),
+  };
   if (type !== "webhook") return undefined;
   const optional = (value: unknown) => typeof value === "string" && value.trim() ? value : null;
   let filter: unknown = null;
@@ -165,6 +171,26 @@ function EmailSettings({ settings, set }: { settings: Settings; set: (next: Sett
       <Label htmlFor="email-from">Sender name</Label>
       <Input id="email-from" className="w-56" placeholder="Support" value={settings.fromName} onChange={change => set({ ...settings, fromName: change.target.value })} />
     </div>
+    <div className="flex flex-col gap-2">
+      <Label>Replies go to</Label>
+      <Select value={settings.replies} onValueChange={replies => set({ ...settings, replies })}>
+        <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="sender">Whoever wrote last</SelectItem>
+          <SelectItem value="to">One fixed address</SelectItem>
+          <SelectItem value="none">Nobody (read them in the agent's history)</SelectItem>
+        </SelectContent>
+      </Select>
+    </div>
+    {settings.replies === "to" && <div className="flex flex-col gap-2">
+      <Label htmlFor="email-to">Fixed address</Label>
+      <Input id="email-to" className="w-56 font-mono text-xs" placeholder="triage@example.com" value={settings.to} onChange={change => set({ ...settings, to: change.target.value })} />
+    </div>}
+    <div className="flex flex-col gap-2">
+      <Label htmlFor="email-forwarders">Trusted forwarders</Label>
+      <Input id="email-forwarders" className="w-72 font-mono text-xs" placeholder="support@example.com, @example.com" value={settings.forwarders} onChange={change => set({ ...settings, forwarders: change.target.value })} />
+    </div>
+    <p className="text-muted-foreground w-full text-xs">A fixed address gets mail only after it has written to the channel's address once. Mail a trusted forwarder passes on keeps its original sender, which nothing proves: allow the forwarder under Allowed senders, and send replies to a fixed address or to nobody.</p>
   </div>;
 }
 

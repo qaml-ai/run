@@ -55,6 +55,11 @@ export interface Inbound {
   /** Vouched for by the provider under the channel's settings (a repository's member), so let in without the allowlist. */
   trusted?: boolean;
   /**
+   * Nothing proves the sender (mail a trusted forwarder passed on): the model sees `from.id` as
+   * `<type>:unverified:<id>`, and the message never answers an input the agent waits on.
+   */
+  unverified?: boolean;
+  /**
    * Wait `debounceMs` before starting on this message; another with the same key arriving meanwhile
    * takes its place and restarts the wait, so a burst (pushes in quick succession) makes one turn.
    */
@@ -720,7 +725,7 @@ export class Channels {
   /** The message, and who sent it: the runtime shows the model the sender apart from what they wrote. */
   private prompt(channel: Channel, inbound: Inbound, { files, notes }: { files: { path: string }[]; notes: string[] }) {
     const { id, name, username } = inbound.sender;
-    const from = { id: `${channel.type}:${id}`, ...(name ? { name: name.slice(0, 200) } : {}), ...(username ? { username: username.slice(0, 200) } : {}) };
+    const from = { id: `${channel.type}:${inbound.unverified ? "unverified:" : ""}${id}`, ...(name ? { name: name.slice(0, 200) } : {}), ...(username ? { username: username.slice(0, 200) } : {}) };
     const text = [inbound.text, ...notes].filter(Boolean).join("\n") || (files.length === 1 ? "(sent a file)" : files.length ? `(sent ${files.length} files)` : "");
     return { text, from, ...(files.length ? { files } : {}), ...(this.provider(channel.type).managed ? { requiredDefinition: channel.definition } : {}) };
   }
@@ -732,7 +737,8 @@ export class Channels {
    */
   private async answerInput(channel: Channel, agent: string, inbound: Inbound): Promise<boolean> {
     const inputs = this.options.inputs;
-    const input = inputs && !inbound.files?.length ? (await inputs.pending(agent))[0] : undefined;
+    // An approval or an answer is only a proven sender's to give.
+    const input = inputs && !inbound.unverified && !inbound.files?.length ? (await inputs.pending(agent))[0] : undefined;
     const answer = input && answerOf(input, inbound.text);
     if (!input || !answer) return false;
     const { id, name, username } = inbound.sender;
@@ -965,7 +971,7 @@ export class Channels {
       const channel = await this.read(binding.channel);
       const item = requestId?.startsWith("in_") ? (await this.db.query("select item from channel_items where id = $1", [requestId])).rows[0]?.item as Item | undefined : undefined;
       const sender = item?.agent === agent.id ? item.inbound?.sender : undefined;
-      return { channel: { id: binding.channel, type: channel?.type }, conversationId: binding.conversationId, ...(sender ? { sender } : {}) };
+      return { channel: { id: binding.channel, type: channel?.type }, conversationId: binding.conversationId, ...(sender ? { sender: item!.inbound!.unverified ? { ...sender, unverified: true } : sender } : {}) };
     },
   };
 

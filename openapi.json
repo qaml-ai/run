@@ -5845,7 +5845,7 @@
           "settings": {
             "type": "object",
             "additionalProperties": {},
-            "description": "Configuration particular to the channel's type; types without any reject it. GitHub: { events, repos, ignoreDrafts, reply, authors, debounceSeconds }. Webhook: { signature, key, prompt, sender, filter, idPath, idHeader }. Email: { address?, fromName? }"
+            "description": "Configuration particular to the channel's type; types without any reject it. GitHub: { events, repos, ignoreDrafts, reply, authors, debounceSeconds }. Webhook: { signature, key, prompt, sender, filter, idPath, idHeader }. Email: { address?, fromName?, replies?: \"sender\" | \"none\" | { to }, forwarders?: [address or @domain], replyToForwarded? }"
           }
         },
         "required": [
@@ -5917,7 +5917,7 @@
           "settings": {
             "type": "object",
             "additionalProperties": {},
-            "description": "Configuration particular to the channel's type; types without any reject it. GitHub: { events, repos, ignoreDrafts, reply, authors, debounceSeconds }. Webhook: { signature, key, prompt, sender, filter, idPath, idHeader }. Email: { address?, fromName? }"
+            "description": "Configuration particular to the channel's type; types without any reject it. GitHub: { events, repos, ignoreDrafts, reply, authors, debounceSeconds }. Webhook: { signature, key, prompt, sender, filter, idPath, idHeader }. Email: { address?, fromName?, replies?: \"sender\" | \"none\" | { to }, forwarders?: [address or @domain], replyToForwarded? }"
           }
         }
       },
