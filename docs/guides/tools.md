@@ -429,10 +429,13 @@ own](#an-agents-own-mcp-servers), without credentials.
 
 - Streamable HTTP, falling back to the older SSE transport when a server answers
   its POST with 400, 404 or 405.
-- `auth` is `{"type": "bearer", "token"}` or `{"type": "runtime"}` (signed
-  identity tokens, above). `headers` and `auth` are stored sealed; the API
-  returns only `headerNames` and `auth.type`. Updating a server without them
-  keeps its stored credentials, unless its URL moved to another origin.
+- `auth` is `{"type": "bearer", "token"}`, `{"type": "runtime"}` (signed
+  identity tokens, above) or `{"type": "exchange", "url"}` (a short-lived
+  credential the runtime fetches from an endpoint of yours; see [Fetched
+  credentials](#fetched-credentials-auth-exchange)). `headers` and a bearer
+  token are stored sealed; the API returns only `headerNames` and `auth`
+  without a token. Updating a server without them keeps its stored
+  credentials, unless its URL moved to another origin.
 - `fileArguments` (`"on"` or `"off"`) says whether its tools are sent the
   agent's files: on by default with `auth: {"type": "runtime"}` only. See
   [Files in tool calls](#files-in-tool-calls).
@@ -448,7 +451,7 @@ own](#an-agents-own-mcp-servers), without credentials.
   64 KiB are saved to the agent's workspace and reach it as files. `isError`
   becomes a tool error; `structuredContent` is what code gets.
 - The runtime lists each server when you save the definition: one that refuses
-  its credentials is a 400 saying so, and the answer's `toolSources` shows what
+  its credentials (or whose credential exchange does) is a 400 saying so, and the answer's `toolSources` shows what
   each server offers (`status: listed`, or `error` with why). A server that
   cannot be reached when an agent starts contributes no tools that run; the
   run's `sourceErrors` lists it.
@@ -462,6 +465,170 @@ Each call carries `_meta` for the server: `agent-runtime/idempotencyKey` (stable
 across attempts), `agent-runtime/callId`, `agent-runtime/toolCallId` (and
 `agent-runtime/innerCallId` for a call from code), `agent-runtime/actor`,
 `agent-runtime/origin`, and `camelrun/files` when files are sent.
+
+### Fetched credentials: `auth: exchange`
+
+A bearer token in a definition is a fixed string, so it has to live as long as
+the definition does. The credentials worth using do not: a GitHub App
+installation token lasts an hour, and so do cloud STS tokens and most OAuth
+access tokens. With `auth: {"type": "exchange"}` the runtime fetches the
+server's credential from an endpoint of yours when it needs one, and fetches
+another before that one expires. Nothing long-lived is stored anywhere but in
+your own service.
+
+```json
+{"name": "Triage", "mcpServers": [{
+  "name": "github", "url": "https://mcp.example.com/github",
+  "auth": {"type": "exchange", "url": "https://app.example.com/camelrun/github-token"}
+}]}
+```
+
+When the runtime is about to call the server and has no fresh credential for
+the agent, it asks your endpoint:
+
+```http
+POST /camelrun/github-token
+Authorization: Bearer <an identity token the runtime signs>
+Content-Type: application/json
+
+{"server": {"name": "github", "url": "https://mcp.example.com/github"},
+ "tenant": "acme", "definition": "def_…", "agent": "client_…"}
+```
+
+and your endpoint answers with the credential and when it expires:
+
+```json
+{"token": "ghs_…", "expiresAt": "2026-10-13T19:00:00Z"}
+```
+
+`expiresAt` is an RFC 3339 time; `{"token": "…", "expiresIn": 3600}` (seconds)
+works too. One of the two is required. The runtime then calls the server with
+`Authorization: Bearer <token>`, plus the entry's static `headers`.
+
+The identity token is the one a [served tool](#identity-who-a-call-is-for)
+gets, with three differences:
+
+```json
+{ "iss": "https://agents.camelai.dev", "aud": "https://app.example.com/camelrun/github-token",
+  "sub": "u_123", "tenant": "acme", "agent": "client_…", "definition": "def_…", "ctx": { "org": "acme" },
+  "exchange": { "server": "github", "url": "https://mcp.example.com/github" },
+  "iat": 1790000000, "exp": 1790000120, "jti": "…" }
+```
+
+- `aud` is your endpoint's URL, as the definition stores it (`GET
+  /v1/definitions/:id` shows it), or `auth.audience` if you give one: a URL on
+  the endpoint's origin, or `urn:camelrun:<tenant>:<name>`. It is never the
+  tool server's audience: the tool server gets the credential and no identity
+  token, so a token for one cannot be used at the other.
+- `exchange` names the tool server the credential is for. Only requests for a
+  credential carry it; no tool call's token does. Decide by it, not by the
+  body, which repeats it for convenience.
+- There is no `act`, `origin`, `req` or `tcid`: a credential is kept across
+  turns and serves everyone who talks to the agent, so its request names the
+  agent and whom it acts for (`sub`, `ctx`), not one turn.
+
+Your endpoint must check, in this order: the signature against
+`/.well-known/jwks.json` (EdDSA), the issuer and expiry; that `aud` is its
+own; that **`tenant` is yours** (anyone can make a tenant and point an
+exchange at your URL: this is the check that keeps them out); and that
+`exchange` is present and names a server you issue for. Then authorize the
+`agent`, `definition`, `sub` and `ctx` as you see fit and answer the narrowest
+credential that does the job. To refuse, answer a 4xx with `{"error": "why"}`:
+the first 200 characters of `error` reach the tool error.
+
+#### A GitHub App
+
+A GitHub App's private key never leaves your service; the agent gets an
+installation token that lasts an hour and reaches only the repositories and
+permissions you choose for it.
+
+```ts
+import { verifyRuntimeToken } from "@camelai/run/server";
+import { SignJWT, importPKCS8 } from "jose";
+
+const AUDIENCE = "https://app.example.com/camelrun/github-token";
+
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const refuse = (status: number, error: string) => Response.json({ error }, { status });
+    if (request.method !== "POST") return refuse(405, "POST only");
+    // Signature (the runtime's published keys), issuer, expiry, audience and tenant.
+    let claims: Record<string, any>;
+    try {
+      const token = (request.headers.get("authorization") ?? "").replace(/^Bearer /, "");
+      ({ claims } = await verifyRuntimeToken(token, { runtime: "https://run.camelai.com", tenant: "acme", audience: AUDIENCE }));
+    } catch (error) { return refuse(401, String(error)); }
+    // A request for a credential, for the server we issue for: a tool call's token has no `exchange`.
+    if (claims.exchange?.server !== "github" || claims.exchange?.url !== "https://mcp.example.com/github") return refuse(403, "not a request for the GitHub server's credential");
+    if (claims.definition !== env.TRIAGE_DEFINITION) return refuse(403, "only the triage definition's agents");
+
+    // The App authenticates as itself (a JWT signed with its private key, ten minutes at most)…
+    const now = Math.floor(Date.now() / 1000);
+    const app = await new SignJWT({}).setProtectedHeader({ alg: "RS256" }).setIssuer(env.GITHUB_APP_ID).setIssuedAt(now - 60).setExpirationTime(now + 540)
+      .sign(await importPKCS8(env.GITHUB_APP_PRIVATE_KEY, "RS256"));
+    // …and asks for an installation token, down-scoped to what triage needs.
+    const github = await fetch(`https://api.github.com/app/installations/${env.GITHUB_INSTALLATION_ID}/access_tokens`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${app}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "acme-triage" },
+      body: JSON.stringify({ repositories: ["api", "web"], permissions: { issues: "write", contents: "read", metadata: "read" } }),
+    });
+    if (!github.ok) return refuse(502, `GitHub answered ${github.status}`);
+    const { token, expires_at } = await github.json() as { token: string; expires_at: string };
+    return Response.json({ token, expiresAt: expires_at });
+  },
+};
+```
+
+(`importPKCS8` takes a PKCS#8 key; GitHub's download is PKCS#1, so convert it
+once: `openssl pkcs8 -topk8 -nocrypt -in app.pem`.) The same shape fits any
+credential your service can mint: an STS `AssumeRole` session, an OAuth access
+token from a refresh token you hold, a database's short-lived password.
+
+#### What the runtime does with a credential
+
+- **Per agent.** A credential is kept for the agent it was fetched for (its
+  tenant, id, `subject` and `context`, definition, server and endpoint), and
+  never used for another: your endpoint decides per caller, so two agents of a
+  definition each ask for their own.
+- **In memory only.** It is never stored, logged, returned by an API, put in
+  an event or a transcript, or shown to the model. Each node of a cluster
+  keeps its own, so an agent that moves to another node asks again there.
+  Issue credentials that can coexist.
+- **Refreshed early.** It is fetched again five minutes before it expires (or
+  a fifth of its lifetime before, for one shorter than 25 minutes). It is kept
+  a day at most whatever expiry it gives, and used for at least five seconds,
+  so one that expires at once cannot cause a fetch per request. Calls made at
+  once share one fetch.
+- **Refused by the server.** When the server answers 401 or 403, the
+  credential is dropped, another is fetched, and the request is sent once
+  more. If the server refuses that one too, the tool call fails.
+- **Your endpoint is down.** It has 5 seconds to answer; a network error, a
+  timeout, a 5xx, a 408 or a 429 is tried again, up to three times within 8
+  seconds. Then, and at once for any other status, an answer that is not the
+  JSON above, or a token already expired, the tool call fails with code
+  `source_unavailable` and a message that says what the endpoint did; the
+  model reads it and the turn goes on, as when an MCP server cannot be
+  reached. An answer that is wrong is never quoted, since it may hold a
+  token.
+- **Saving the definition** lists the server's tools, so it asks for a
+  credential then, before any agent exists. That request is made as the
+  definition: its token's `agent` and `sub` are the definition's id, and its
+  body has no `agent`. An endpoint that refuses it, or answers wrongly, fails
+  the save with a 400 saying what it answered; one that is down does not (the
+  server shows in `toolSources` with `status: "error"`), and the save never
+  waits more than a few seconds for it.
+- `auth.url` is checked like every URL you give (see [Outbound
+  calls](#outbound-calls)): `https://`, a public address, no redirects.
+
+Each fetch writes a log line and a metric, `tool_credential_exchange`, with
+its outcome (`fetched`, `unreachable`, `blocked`, `timeout`, `unavailable`,
+`refused`, `invalid_response`, `expired`, and `rejected` when the server
+refused a credential), the server's name and the endpoint's host.
+
+It is for a definition's MCP servers. OpenAPI sources and an agent's own MCP
+servers do not take it yet, and the endpoint's answer carries a token only,
+not extra headers. A built-in `github-app` auth type, where camelRun holds the
+App's key and mints the token itself, may follow.
 
 ### OpenAPI specs
 
@@ -508,8 +675,8 @@ curl -X POST "$BASE/v1/agents" -H "Authorization: Bearer $KEY" -H "Idempotency-K
 ```
 
 - They take no credentials: `auth` is `{"type": "runtime"}` or left out, and
-  there are no `headers`. A server with a token or headers is a 400 saying to
-  use a definition.
+  there are no `headers`. A server with a token, headers or a credential
+  exchange is a 400 saying to use a definition.
 - Why: a definition seals its credentials once, for every agent made from it.
   Credentials on each agent or run would be secrets stored, copied and rotated
   per agent. Identity tokens need none: the runtime signs one for each request,
