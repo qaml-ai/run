@@ -19,6 +19,7 @@ const host = createAgentHost({
   search: query => rpc.request("search", query),
   file: ref => rpc.request("file", ref),
   modelAuth: () => rpc.request("model-auth"),
+  modelAttempt: event => rpc.request("model-attempt", event),
   fs: (op, args) => rpc.request("fs", { op, args }),
   codeSlot: signal => codeSlot(rpc, signal),
   lease: () => rpc.request("lease"),

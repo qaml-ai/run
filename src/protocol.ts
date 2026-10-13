@@ -1,3 +1,4 @@
+import type { ModelAttemptHook } from "./model-attempt.ts";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
 
@@ -39,6 +40,8 @@ export interface ToolBridge {
   file?(ref: unknown): Promise<string>;
   /** Credentials for one model call, for an agent whose key is `IDENTITY_KEY` or `SCOPE_KEY`. */
   modelAuth?(): Promise<Credentials>;
+  /** Durable provider-call identity and usage, acknowledged before dispatch/completion. */
+  modelAttempt?: ModelAttemptHook;
   /** js_exec's `fs` (`op` is readFile, writeFile, stat, list or remove), answered by the runtime's file tools over the agent's mounts. */
   fs?(op: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
   /** The agent's history index (history-pages.ts): how many messages it has, and writing a chunk where it ends (returning where it ends then). */

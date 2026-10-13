@@ -1,3 +1,5 @@
+import { attemptStream, type UsageSink } from "./model-attempt-stream.ts";
+import type { ModelAttemptHook } from "./model-attempt.ts";
 import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
 import { getProviders, streamSimple, type Api, type Model } from "@earendil-works/pi-ai/compat";
 import { compact, estimateContextTokens, estimateTokens, generateSummary, prepareCompaction, shouldCompact, type CompactionSettings, type Complete } from "./pi-harness/compaction.ts";
@@ -103,6 +105,12 @@ function upstream(model: Model<Api>): Model<Api> {
   if (provider === "amazon-bedrock") rest.shift();
   return { ...model, provider, id: rest.join("/") };
 }
+/** Match the response's accounting name, including its tenant endpoint prefix. */
+function attemptModel(model: Model<Api>, credentials: Credentials): Model<Api> {
+  if (!credentials.identity) return model;
+  const target = upstream(model);
+  return { ...target, provider: `${model.provider}/${target.provider}` };
+}
 /** Pi's options for a call to a tenant's own endpoint: its token also as `IDENTITY_HEADER`, and Bedrock over HTTP/1.1, as any gateway takes it. */
 const identityOptions = (model: Model<Api>, options: any, token: string) =>
   ({ ...options, apiKey: token, headers: { ...options?.headers, [IDENTITY_HEADER]: token }, env: { AWS_BEDROCK_FORCE_HTTP1: "1" }, ...(model.api === "openai-codex-responses" ? codexOptions(token) : {}) });
@@ -166,17 +174,20 @@ export const PROVIDER_ROOTS: Record<string, string> = { openrouter: "https://ope
  * the response's usage as the body streams past: OpenRouter's `usage.cost` (plus the upstream cost
  * of a key brought to OpenRouter), which Pi does not keep. `sink.cost` has it once the body is read.
  */
-function callFetch(sink: { cost?: number; credits?: number }, plan: { rebase?: { from: string[]; to: string }; keyless?: boolean; bearer?: string; base?: typeof fetch } = {}): typeof fetch {
-  const read = (line: string) => {
-    if (!line.startsWith("data:") && !line.startsWith("{") || !line.includes('"cost"')) return;
-    try {
-      const data = JSON.parse(line.startsWith("data:") ? line.slice(5) : line);
+function callFetch(sink: UsageSink, plan: { rebase?: { from: string[]; to: string }; keyless?: boolean; bearer?: string; base?: typeof fetch } = {}): typeof fetch {
+  const read = async (line: string) => {
+    if (!line.startsWith("data:") && !line.startsWith("{")) return;
+    let data: any;
+    try { data = JSON.parse(line.startsWith("data:") ? line.slice(5) : line); } catch { return; }
+    {
+      const generation = data?.id ?? data?.response?.id ?? data?.message?.id;
+      if (typeof generation === "string") await sink.generation?.(generation);
       const usage = data?.usage ?? data?.response?.usage ?? data?.message?.usage;
       if (typeof usage?.cost !== "number" || !Number.isFinite(usage.cost) || usage.cost < 0) return;
       const upstream = usage.is_byok ? Number(usage.cost_details?.upstream_inference_cost) : 0;
       sink.credits = usage.cost;
       sink.cost = usage.cost + (Number.isFinite(upstream) && upstream > 0 ? upstream : 0);
-    } catch { /* not JSON */ }
+    }
   };
   return async (input, init) => {
     let url = String(input);
@@ -201,13 +212,13 @@ function callFetch(sink: { cost?: number; credits?: number }, plan: { rebase?: {
     const decoder = new TextDecoder();
     let pending = "";
     const body = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
-      transform(chunk, controller) {
-        controller.enqueue(chunk);
+      async transform(chunk, controller) {
         const lines = (pending + decoder.decode(chunk, { stream: true })).split("\n");
         pending = lines.pop()!;
-        for (const line of lines) read(line.trim());
+        for (const line of lines) await read(line.trim());
+        controller.enqueue(chunk);
       },
-      flush() { read(pending.trim()); },
+      async flush() { await read(pending.trim()); },
     }));
     return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
   };
@@ -219,7 +230,7 @@ function callFetch(sink: { cost?: number; credits?: number }, plan: { rebase?: {
  * A key scope's `baseUrl` replaces the provider's root (`PROVIDER_ROOTS`) in each request's URL, or for
  * an API that takes no fetch (Bedrock, Google), the model's base URL. An entry without a key sends none.
  */
-function authorize(model: Model<Api>, asked: any, credentials: Credentials, sink: { cost?: number; credits?: number }, modelHeaders: Record<string, string> | null | undefined, outbound: Outbound): [Model<Api>, any] {
+function authorize(model: Model<Api>, asked: any, credentials: Credentials, sink: UsageSink, modelHeaders: Record<string, string> | null | undefined, outbound: Outbound): [Model<Api>, any] {
   // A model that always reasons refuses a call that turns reasoning off: a call asking for none asks for its least.
   const floor = asked?.reasoning ? undefined : reasoningFloor(model);
   const options = floor ? { ...asked, reasoning: floor } : asked;
@@ -255,7 +266,7 @@ function authorize(model: Model<Api>, asked: any, credentials: Credentials, sink
  * host's applies), over the node's network as every model call is. A model the resource has no deployment of is refused
  * before any request.
  */
-function azureOptions(model: Model<Api>, options: any, credentials: Credentials, modelHeaders: Record<string, string> | null | undefined, sink: { cost?: number; credits?: number }) {
+function azureOptions(model: Model<Api>, options: any, credentials: Credentials, modelHeaders: Record<string, string> | null | undefined, sink: UsageSink) {
   // Deployments are of Responses API models only (azure-openai.ts): Azure's others (DeepSeek on its completions API) have none.
   const deployment = model.api === "azure-openai-responses" && credentials.deployments && Object.hasOwn(credentials.deployments, model.id) ? credentials.deployments[model.id] : undefined;
   if (!credentials.baseUrl || !deployment) throw new Error(`No azure deployment is configured for ${model.provider}/${model.id} on this runtime; move the agent to a model you can use (GET /v1/models?available=true)`);
@@ -299,17 +310,16 @@ function gatedSignal(gate: ModelGate | undefined, signal: AbortSignal | undefine
 
 /** `outbound` is the policy calls to endpoints tenants give go through: this process's unless given (its node's). */
 export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefined, modelHeaders?: () => Record<string, string> | null | undefined, gate?: ModelGate,
-  timeouts?: (model: Model<Api>, reasoning: string | undefined) => StreamTimeouts, onStall?: (stall: Stall) => void, outbound: Outbound = outboundOfProcess()): StreamFn {
+  timeouts?: (model: Model<Api>, reasoning: string | undefined) => StreamTimeouts, onStall?: (stall: Stall) => void, outbound: Outbound = outboundOfProcess(), attempt?: ModelAttemptHook): StreamFn {
   return (model, context, options) => {
     if (!options?.apiKey?.trim()) throw new Error(`No ${model.provider} API key is configured for this agent's model, ${model.provider}/${model.id}; set one with PUT /v1/providers/${model.provider}/key, or move the agent to a model you can use (GET /v1/models?available=true)`);
     const apiKey = options.apiKey;
     // A provider's stream that goes quiet is ended (model-stream.ts), and so is one the turn's abort or the lease reaches, at once.
     const limits = timeouts?.(model, options.reasoning ?? reasoningFloor(model)) ?? streamTimeouts(model, options.reasoning ?? reasoningFloor(model));
-    const call = (credentials: Credentials) => {
+    const call = (credentials: Credentials) => attemptStream(attemptModel(model, credentials), credentials.apiKey, "response", attempt, sink => {
       const { signal, cut, done } = gatedSignal(gate, options.signal);
       let requested = false;
       return watchedStream(model, (watched, activity) => {
-        const sink: { cost?: number; credits?: number } = {};
         const [target, callOptions] = authorize(model, options, credentials, sink, modelHeaders?.(), outbound);
         const observe = callOptions.onProviderStreamEvent;
         requested = true;
@@ -334,7 +344,7 @@ export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefin
         }
         return event;
       });
-    };
+    });
     const start = () => {
       const credentials = perCall?.();
       return credentials ? credentials.then(call) : call({ apiKey });
@@ -349,19 +359,24 @@ export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefin
  * Every completed request is reported, so chunks and a run that fails after some are billed too.
  */
 type ApiKey = string | (() => Promise<Credentials>);
-function summarizer(apiKey: ApiKey, onResponse: ((message: AssistantMessage) => void) | undefined, modelHeaders: Record<string, string> | null | undefined, gate: ModelGate | undefined, outbound: Outbound): Complete {
+function summarizer(apiKey: ApiKey, onResponse: ((message: AssistantMessage) => void) | undefined, modelHeaders: Record<string, string> | null | undefined, gate: ModelGate | undefined, outbound: Outbound, attempt?: ModelAttemptHook): Complete {
   return async (model, context, options) => {
-    const sink: { cost?: number; credits?: number } = {};
     await gate?.wait(options?.signal);
     const { signal, done } = gatedSignal(gate, options?.signal);
     let response: AssistantMessage;
     try {
-      const [target, callOptions] = authorize(model, options, typeof apiKey === "string" ? { apiKey } : await apiKey(), sink, modelHeaders, outbound);
+      const credentials = typeof apiKey === "string" ? { apiKey } : await apiKey();
+      const tracked = await attemptStream(attemptModel(model, credentials), credentials.apiKey, "compaction", attempt, sink => {
+      const [target, callOptions] = authorize(model, options, credentials, sink, modelHeaders, outbound);
       // Watched like a turn's requests: a summary whose stream goes quiet fails (the context is left as it is) rather than hold the turn.
-      response = await watchedStream(model, (watched, activity) => streamSimple(target, context, { ...callOptions, signal: watched, onProviderStreamEvent: (event: unknown) => activity(event) }),
-        streamTimeouts(model, callOptions?.reasoning), signal).result();
+      return watchedStream(model, (watched, activity) => streamSimple(target, context, { ...callOptions, signal: watched, onProviderStreamEvent: (event: unknown) => activity(event) }),
+        streamTimeouts(model, callOptions?.reasoning), signal, undefined, event => {
+          if (sink.cost !== undefined) Object.assign(event.type === "done" ? event.message.usage : event.error.usage, { providerCost: sink.cost, providerCreditCost: sink.credits });
+          return event;
+        });
+      });
+      response = await tracked.result();
     } finally { done(); }
-    if (sink.cost !== undefined) Object.assign(response.usage, { providerCost: sink.cost, providerCreditCost: sink.credits });
     if (response.stopReason !== "error") onResponse?.(response);
     return response;
   };
@@ -394,6 +409,7 @@ export type CompactionOutcome = { state: CompactionState } | { skipped: string }
  * chunks, each summary feeding the next as the "previous summary".
  */
 export async function runCompaction(options: {
+  attempt?: ModelAttemptHook;
   context: AgentMessage[]; offset: number; previous?: CompactionState;
   model: Model<Api>; apiKey: ApiKey; signal?: AbortSignal;
   /** Keep less than usual, e.g. after the provider rejected the context as too long. */
@@ -415,7 +431,7 @@ export async function runCompaction(options: {
   const preparation = prepared.value;
   // A cut that keeps everything would only add a summary of nothing, and change the cached prefix for it.
   if (!preparation || (!preparation.messagesToSummarize.length && !preparation.turnPrefixMessages.length)) return { skipped: "Nothing before the recent context to summarize" };
-  const complete = summarizer(apiKey, options.onResponse, options.modelHeaders, options.gate, options.outbound ?? outboundOfProcess());
+  const complete = summarizer(apiKey, options.onResponse, options.modelHeaders, options.gate, options.outbound ?? outboundOfProcess(), options.attempt);
   // Leave room for the summarization prompt and the summary itself.
   const chunkBudget = Math.max(4_000, Math.floor((model.contextWindow - settings.reserveTokens) * 0.6));
   let tokens = 0;

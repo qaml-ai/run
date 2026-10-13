@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
+import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { Accounts, Sealed } from "./accounts.ts";
 import type { ToolDefinition } from "./protocol.ts";
@@ -20,6 +21,7 @@ import { callScope, type AgentIdentity, type RuntimeSigner } from "./identity.ts
 import { checkDocument, definition as operationTool, operations, parseSpec, request as operationRequest, result as operationResult, type Operation } from "./openapi.ts";
 import { acceptFiles, resolveFiles, savedContent, ToolFiles } from "./tool-files.ts";
 import { TOOL_FILE_LIMITS } from "./limits.ts";
+import { CredentialExchange, CredentialExchangeError, type ExchangeAuth, type ExchangeCaller, type ExchangeTarget } from "./credential-exchange.ts";
 import { takesFiles, type FileArguments, type FileUrls, type FileValue } from "./file-arguments.ts";
 import type { Mount, VolumeService } from "./volumes.ts";
 import type { ToolContext } from "./volume-tools.ts";
@@ -34,8 +36,11 @@ import type { HumanInputSettings } from "./inputs.ts";
  * credentials (`inlineMcpServersInput`).
  */
 export type Exposure = "direct" | "codemode" | "both";
-/** How a source is authenticated beyond its headers: a stored bearer token, or a token the runtime signs for each request. */
-export type SourceAuth = { type: "bearer" } | { type: "runtime" };
+/**
+ * How a source is authenticated beyond its headers: a stored bearer token, a token the runtime signs for each request,
+ * or (an MCP server) a credential the runtime fetches from the tenant's own endpoint and refreshes (credential-exchange.ts).
+ */
+export type SourceAuth = { type: "bearer" } | { type: "runtime" } | ExchangeAuth;
 /**
  * Which of a source's tools ask the user before each call: `default` for all (never, always, or
  * destructive: MCP tools annotated destructiveHint, OpenAPI operations that are not GET, HEAD or
@@ -136,9 +141,9 @@ function credentialHeaders(headers: unknown, auth: unknown) {
     const { type, token } = (auth ?? {}) as { type?: unknown; token?: unknown };
     if (type === "oauth") throw bad("OAuth is not supported yet; use a bearer token, the runtime's identity tokens, or headers");
     if (Object.keys(result).some(name => name.toLowerCase() === "authorization")) throw bad("Give an Authorization header or auth, not both");
-    // The runtime's own tokens are minted per request, so nothing is stored for them.
-    if (type === "runtime" && token === undefined) return result;
-    if (type !== "bearer" || typeof token !== "string" || !/^[\x21-\x7e]{1,8192}$/.test(token)) throw bad("auth is { type: \"bearer\", token } or { type: \"runtime\" }");
+    // The runtime's own tokens are minted per request, and an exchange's credentials fetched as they are needed, so nothing is stored for them.
+    if ((type === "runtime" || type === "exchange") && token === undefined) return result;
+    if (type !== "bearer" || typeof token !== "string" || !/^[\x21-\x7e]{1,8192}$/.test(token)) throw bad("auth is { type: \"bearer\", token }, { type: \"runtime\" } or (an MCP server's) { type: \"exchange\", url }");
     result.Authorization = `Bearer ${token}`;
   }
   return result;
@@ -168,7 +173,7 @@ export function mcpServersInput(input: unknown, previous: McpServerSpec[] | unde
       ...(denyTools !== undefined ? { denyTools: strings(denyTools, "denyTools", 512) } : {}), ...(exposure ? { exposure } : {}), ...(timeoutMs ? { timeoutMs } : {}),
       ...(approval !== undefined ? { approval: approvalInput(approval, `MCP server ${name}`) } : {}), ...fileArgumentsInput(fileArguments, `MCP server ${name}`),
     };
-    const credentials = sealCredentials(headers, auth, previous?.find(other => other.name === name), checked, sealedAad(definition, name), context);
+    const credentials = sealCredentials(headers, auth, previous?.find(other => other.name === name), checked, sealedAad(definition, name), context, `MCP server ${name}`);
     return { ...spec, ...credentials, ...audienceInput(audience, credentials.auth, `MCP server ${name}`, checked, context.tenant) };
   });
 }
@@ -271,19 +276,51 @@ export const openApiView = ({ sealed: _sealed, operations: list, ...source }: Op
  * Sealed credentials for a server at `url`. Sent without `headers` and `auth`, it keeps
  * those of its namesake in `previous`, but only at the same origin: credentials belong to it.
  */
-function sealCredentials(headers: unknown, auth: unknown, previous: { url: string; headerNames?: string[]; auth?: SourceAuth; sealed?: Sealed } | undefined, url: URL, aad: string, context: Context) {
+function sealCredentials(headers: unknown, auth: unknown, previous: { url: string; headerNames?: string[]; auth?: SourceAuth; sealed?: Sealed } | undefined, url: URL, aad: string, context: Context, exchangeFor?: string) {
   const kept = headers === undefined && auth === undefined && previous && new URL(previous.url).origin === url.origin ? previous : undefined;
   if (kept?.sealed || kept?.auth) return { ...(kept.headerNames ? { headerNames: kept.headerNames } : {}), ...(kept.auth ? { auth: kept.auth } : {}), ...(kept.sealed ? { sealed: kept.sealed } : {}) };
   const credentials = credentialHeaders(headers, auth);
-  const runtime = (auth as { type?: unknown } | undefined)?.type === "runtime";
-  if (runtime && !context.accounts?.canStoreKeys) throw new HttpError(503, "This runtime has no AGENT_SECRETS_KEY, so it cannot sign identity tokens");
-  const kind: SourceAuth | undefined = runtime ? { type: "runtime" } : auth ? { type: "bearer" } : undefined;
+  const type = (auth as { type?: unknown } | undefined)?.type;
+  const runtime = type === "runtime";
+  // An exchange is asked with an identity token, so it needs the signing key as auth "runtime" does.
+  if ((runtime || type === "exchange") && !context.accounts?.canStoreKeys) throw new HttpError(503, "This runtime has no AGENT_SECRETS_KEY, so it cannot sign identity tokens");
+  if (type === "exchange" && !exchangeFor) throw bad("auth { type: \"exchange\" } is for MCP servers");
+  const kind: SourceAuth | undefined = type === "exchange" ? exchangeInput(auth, exchangeFor!, context) : runtime ? { type: "runtime" } : auth ? { type: "bearer" } : undefined;
   if (!Object.keys(credentials).length) return kind ? { auth: kind } : {};
   if (!context.accounts?.canStoreKeys) throw new HttpError(503, "This runtime has no AGENT_SECRETS_KEY, so it cannot store credentials");
   return {
     ...(headers && Object.keys(headers).length ? { headerNames: Object.keys(headers) } : {}), ...(kind ? { auth: kind } : {}),
     sealed: context.accounts.seal(aad, JSON.stringify(credentials)),
   };
+}
+
+/**
+ * An MCP server's `auth: { type: "exchange", url, audience? }`: where the runtime asks for the server's credential.
+ * `url` is checked as any URL a tenant gives (https, no internal address). `audience`, the `aud` of the identity token
+ * the endpoint is asked with, is by default that URL: the endpoint's own, so never the tool server's (whose requests
+ * carry the credential, not an identity token), and a token for one cannot be replayed at the other. Given, it follows
+ * a source's rule (`ownAudience`): a URL on the endpoint's origin, or a name of the tenant's own.
+ */
+function exchangeInput(auth: unknown, label: string, context: Context): ExchangeAuth {
+  const usage = `${label}: auth is { type: "exchange", url, audience? }: url is the https endpoint of yours that answers { token, expiresAt | expiresIn }`;
+  if (!auth || typeof auth !== "object" || Array.isArray(auth) || Object.keys(auth).some(key => !["type", "url", "audience"].includes(key))) throw bad(usage);
+  const { url, audience } = auth as { url?: unknown; audience?: unknown };
+  if (typeof url !== "string" || !url || url.length > 2048) throw bad(usage);
+  let checked: URL;
+  try { checked = context.outbound.check(url); } catch (error) { throw bad(`${label}: auth.url: ${errorText(error)}`); }
+  if (checked.hash) throw bad(`${label}: auth.url takes no fragment`);
+  if (audience === undefined) return { type: "exchange", url: checked.toString() };
+  if (typeof audience !== "string" || !audience.trim() || audience.length > 2048) throw bad(`${label}: auth.audience is a string of 1–2048 characters`);
+  if (!ownAudience(audience, checked, context.tenant)) throw bad(`${label}: auth.audience must be a URL on the exchange's own origin (${checked.origin}), or a name of your tenant's own, urn:camelrun:${context.tenant}:<name>: its tokens go to your endpoint only`);
+  return { type: "exchange", url: checked.toString(), audience };
+}
+/** Where and as whom to ask for an MCP server's credential: the audience its own if still one it may have, else the endpoint's URL (`audienceOf`). */
+const exchangeTarget = (spec: McpServerSpec, auth: ExchangeAuth, tenant: string): ExchangeTarget =>
+  ({ name: spec.name, url: spec.url, exchange: auth.url, audience: audienceOf(auth.audience, auth.url, tenant) });
+/** The HTTP status an MCP server refused a request's credentials with (401, 403), connecting or after. */
+function refusal(error: unknown): number | undefined {
+  const status = error instanceof StreamableHTTPError ? error.code : (error as { status?: unknown } | undefined)?.status;
+  return status === 401 || status === 403 ? status : undefined;
 }
 
 /** An identity token audience other than the source's URL: only with auth "runtime". */
@@ -301,6 +338,7 @@ function sealCredentials(headers: unknown, auth: unknown, previous: { url: strin
 function audienceInput(audience: unknown, auth: SourceAuth | undefined, label: string, url: URL, tenant: string) {
   if (audience === undefined) return {};
   if (typeof audience !== "string" || !audience.trim() || audience.length > 2048) throw bad(`${label}: audience is a string of 1–2048 characters`);
+  if (auth?.type === "exchange") throw bad(`${label}: with auth { type: "exchange" } the audience goes in auth (auth.audience): it names the exchange's tokens, and the server gets none`);
   if (auth?.type !== "runtime") throw bad(`${label}: audience is for auth { type: "runtime" }, whose tokens it names`);
   if (!ownAudience(audience, url, tenant)) throw bad(`${label}: audience must be a URL on the source's own origin (${url.origin}), or a name of your tenant's own, urn:camelrun:${tenant}:<name>: its tokens go to your servers only`);
   return { audience };
@@ -325,6 +363,8 @@ export class ToolSources {
   private readonly options: { scheduler?: Scheduler; search?: WebSearch; render?: WebRender; volumes?: VolumeService; fileUrls?: FileUrls };
 
   private readonly signer?: RuntimeSigner;
+  /** Credentials fetched for servers with auth "exchange": this node's, in memory only. */
+  readonly exchange: CredentialExchange;
 
   /** `fileUrls` signs the URLs of files sent to tools (file-arguments.ts). */
   constructor(options: { accounts?: Accounts; mcp: McpConnections; outbound: Outbound; scheduler?: Scheduler; signer?: RuntimeSigner; search?: WebSearch; render?: WebRender; volumes?: VolumeService; fileUrls?: FileUrls }) {
@@ -332,6 +372,7 @@ export class ToolSources {
     this.mcp = options.mcp;
     this.outbound = options.outbound;
     this.signer = options.signer;
+    this.exchange = new CredentialExchange({ outbound: options.outbound, signer: options.signer });
     // Kept whole: the scheduler, volumes and file URLs may be getters for ones made later.
     this.options = options;
   }
@@ -353,9 +394,37 @@ export class ToolSources {
     // Credentials are sealed under a definition: an agent's own servers (no definition) carry none.
     if (spec.sealed && !context.definition) throw new Error(`MCP server ${spec.name} has sealed credentials but no definition to unseal them with`);
     const headers = spec.sealed ? this.headers(sealedAad(context.definition!, spec.name), spec.sealed) : {};
+    const exchange = this.exchanged(context, spec);
+    // The credential is the agent's own (the endpoint decides per caller), so the agent has its own session too.
+    if (exchange) return { url: spec.url, headers, token: () => this.exchange.token(exchange.caller, exchange.target), refused: token => this.exchange.refused(exchange.caller, exchange.target, token), scope: `${context.agent}:exchange:${this.exchange.key(exchange.caller, exchange.target)}` };
     if (spec.auth?.type !== "runtime") return { url: spec.url, headers };
     // Each request is signed for the turn it is made in (callScope), and each agent has its own session.
     return { url: spec.url, headers, token: () => this.identityToken(context, audienceOf(spec.audience, spec.url, context.tenant)), scope: context.agent };
+  }
+
+  /** For a server with auth "exchange": whom its credential is asked for, and where. */
+  private exchanged(context: SourceContext, spec: McpServerSpec): { caller: ExchangeCaller; target: ExchangeTarget } | undefined {
+    if (spec.auth?.type !== "exchange") return undefined;
+    return {
+      caller: { tenant: context.tenant, agent: context.agent, ...(context.definition ? { definition: context.definition } : {}), ...(context.identity ? { identity: context.identity } : {}) },
+      target: exchangeTarget(spec, spec.auth, context.tenant),
+    };
+  }
+  /**
+   * Have a server's credential before it is connected to or called (auth "exchange"): a failed exchange is then its own
+   * error, saying what the endpoint did, and not a connection that could not be made. Requests take it from the cache.
+   */
+  private async credential(context: SourceContext, spec: McpServerSpec) {
+    const exchange = this.exchanged(context, spec);
+    if (exchange) await this.exchange.token(exchange.caller, exchange.target);
+  }
+  /** An error from a server with auth "exchange" that refused its credentials: twice, since a refused request is sent once more with a new one. */
+  private rejected(spec: McpServerSpec, error: unknown) {
+    // The exchange's own failure (which may carry its endpoint's status) is already what it is.
+    const status = spec.auth?.type === "exchange" && !(error instanceof CredentialExchangeError) ? refusal(error) : undefined;
+    if (!status || spec.auth?.type !== "exchange") return error;
+    const { origin, pathname } = new URL(spec.auth.url);
+    return new CredentialExchangeError("rejected", `MCP server ${spec.name} refused the credential from its exchange (HTTP ${status}), and a second one fetched after: check what ${origin}${pathname} issues for it`, status);
   }
 
   private offered(spec: McpServerSpec, tool: Tool) {
@@ -388,9 +457,15 @@ export class ToolSources {
     return Promise.all(servers.map(async (spec): Promise<ToolSourceView> => {
       const source = { kind: "mcp" as const, name: spec.name, url: spec.url, ...(spec.exposure ? { exposure: spec.exposure } : {}) };
       try {
+        // Its own deadline (credential-exchange.ts), before the listing's: the save never waits on an endpoint that does not answer.
+        await this.credential(context, spec);
         const tools = this.definitions(spec, await withTimeout(this.mcp.tools(tenant, this.endpoint(context, spec)), LIST_TIMEOUT_MS));
         return { ...source, status: "listed", listedAt: Date.now(), tools };
-      } catch (error) {
+      } catch (raw) {
+        const error = this.rejected(spec, raw);
+        // An exchange that answered, and refused or answered wrongly, is a mistake in the definition or the endpoint: a 400 now.
+        // One that is down is as a server that is: saved, and listed as an error.
+        if (error instanceof CredentialExchangeError && !error.transient) throw new HttpError(400, `${error.message}. Saving lists the server's tools as the definition (its token's agent and sub are the definition's id, and the request's body names no agent)`);
         const status = (error as { status?: number }).status;
         if (status === 401 || status === 403) throw new HttpError(400, `MCP server ${spec.name} refused the definition's credentials (HTTP ${status}): check its headers or auth${spec.auth?.type === "runtime" ? ", and the audience its tokens are checked against" : ""}. ${errorText(error)}`);
         return { ...source, status: "error", error: errorText(error), listedAt: Date.now(), tools: [] };
@@ -406,8 +481,10 @@ export class ToolSources {
     type Listing = { tools: ToolDefinition[]; at: number } | { error: string; at: number };
     const list = async (spec: McpServerSpec): Promise<Listing> => {
       try {
+        await this.credential(context, spec);
         return { tools: this.definitions(spec, await withTimeout(this.mcp.tools(context.tenant, this.endpoint(context, spec)), LIST_TIMEOUT_MS)), at: Date.now() };
-      } catch (error) {
+      } catch (raw) {
+        const error = this.rejected(spec, raw);
         console.error(JSON.stringify({ type: "mcp_tools_unavailable", tenant: context.tenant, agent: context.agent, server: spec.name, error: safeError(error) }));
         return { error: errorText(error), at: Date.now() };
       }
@@ -491,8 +568,10 @@ export class ToolSources {
         }
         const spec = mcpServer(name);
         if (!spec) throw new Error(`Unknown tool ${name}`);
+        // Without a credential (auth "exchange") the source is unavailable for this call: the model reads why, and the turn goes on.
+        await this.credential(context, spec);
         const server = this.endpoint(context, spec);
-        const tool = (await this.mcp.tools(context.tenant, server)).find(entry => this.offered(spec, entry) && mcpToolName(spec.name, entry.name) === name);
+        const tool = (await this.mcp.tools(context.tenant, server).catch(error => { throw this.rejected(spec, error); })).find(entry => this.offered(spec, entry) && mcpToolName(spec.name, entry.name) === name);
         if (!tool) throw new Error(`${spec.name} no longer offers ${name.slice(spec.name.length + 2)}`);
         if (needsApproval(spec.approval, tool.name, tool.annotations?.destructiveHint === true) && !approval) return APPROVAL_REQUIRED;
         const callFiles = files(name, runId, call, spec);
@@ -505,7 +584,7 @@ export class ToolSources {
           try { timeoutMs = declaredTimeout(tool._meta) ?? timeoutMs; } catch { /* a server's invalid deadline is ignored */ }
           const meta = { ...callMeta({ toolCallId, innerCallId, idempotencyKey, origin, actor }), ...(approval ? { "agent-runtime/approval": approval } : {}), ...(Object.keys(sent).length ? { "camelrun/files": sent } : {}) };
           const result = await callScope.run(turn, () => this.mcp.call(context.tenant, server, tool.name, resolved, signal, { timeoutMs, maxTotalMs: MAX_TIMEOUT_MS }, meta, onProgress, { inputResponses, requestState, elicit }))
-            .catch(error => { throw !signal.aborted && error instanceof McpError && error.code === ErrorCode.RequestTimeout ? timedOut(timeoutMs) : error; }) as McpResult;
+            .catch(error => { throw !signal.aborted && error instanceof McpError && error.code === ErrorCode.RequestTimeout ? timedOut(timeoutMs) : this.rejected(spec, error); }) as McpResult;
           // Files it links to are fetched as a URL the model chose would be: never from the operator's own services.
           const links = takesFiles(spec) ? (url: string) => this.outbound.withoutOrigins().fetch(url, { signal, timeoutMs: API_TIMEOUT_MS, maxBytes: TOOL_FILE_LIMITS.responseBytes }) : undefined;
           return await savedContent(result, callFiles, links);

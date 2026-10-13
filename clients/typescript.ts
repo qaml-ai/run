@@ -457,8 +457,12 @@ export type AgentTarget = string | { name?: string; definition: string; descript
 /** Sub-agents: who the model may delegate to, whether it may write a child's instructions itself, and how deep (default 2) and wide (default 4 at once). */
 export interface DelegateSettings { agents?: AgentTarget[]; instructions?: boolean; maxDepth?: number; maxParallel?: number }
 /** A volume the agent's file tools see at `path`; `notify` prompts the agent when others change files there. */
-/** How a tool source is authenticated: a stored bearer token, or identity tokens the runtime signs for each request. */
-export type SourceAuth = { type: "bearer"; token: string } | { type: "runtime" };
+/**
+ * How a tool source is authenticated: a stored bearer token, identity tokens the runtime signs for each request, or
+ * (MCP servers) a short-lived credential the runtime fetches from `url`, an endpoint of yours: it is asked with an
+ * identity token (aud `audience`, else `url`) and answers `{ token, expiresAt | expiresIn }`. See docs/guides/tools.md.
+ */
+export type SourceAuth = { type: "bearer"; token: string } | { type: "runtime" } | { type: "exchange"; url: string; audience?: string };
 /**
  * Options every tool source takes. `exposure` (direct: the model calls the tools itself; codemode: only from code in
  * js_exec; both) defaults to both for a source of up to 10 tools, else codemode; `"direct"` keeps them out of js_exec.

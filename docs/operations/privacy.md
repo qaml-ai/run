@@ -17,7 +17,7 @@ or a file chunk in memory at a time:
 - `discord.json`: managed server bindings, installation names and states, allowed channels, the Discord IDs of
   the administrators who added Camel, and pending setup expiry times; never OAuth tokens or session/state hashes
 - `volumes/<id>/volume.json` and `volumes/<id>/files/...`: every volume's files (agents' workspaces included)
-- `billing/ledger.jsonl` (newest first) and `billing/usage.json` (per day and model)
+- `billing/ledger.jsonl` (newest first), `billing/usage.json` (per day and model), and `billing/attempts.jsonl` (model attempt settlement state, without key fingerprints)
 - `analytics/`: only for an account [journey events](#journey-events) ever knew, what this runtime and the operator's store hold of its journey
 
 Any token of the tenant can export (not a browser token). Entries are deflated and the archive uses
@@ -282,3 +282,5 @@ cannot read whole.
 `$OPERATOR` is the operator token of a tenant in `AGENT_BILLING_ADMINS` (Secrets Manager,
 `<SECRET_PREFIX>/operator-token/<tenant>`). Never run a deletion against a tenant you have not
 verified: it cannot be undone.
+
+Model attempt accounting records (`model_attempts`) survive account deletion for settlement and deduplication. Their customer-provided attribution context is erased; they retain opaque tenant/agent IDs, provider/model, key fingerprint (not the key), generation ID, timestamps, usage totals and charges. No prompts or completions are stored in this table.

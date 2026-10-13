@@ -1,3 +1,4 @@
+import type { ModelAttemptHook } from "./model-attempt.ts";
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import type { ServerResponse } from "node:http";
 import { Hono, type Context } from "hono";
@@ -577,6 +578,8 @@ export interface ClientSessionOptions {
    * retries. Where the tenant then stands (X-RateLimit-* on the answer), when a limit applies.
    */
   runRate?: (tenant: string) => Promise<RateLimitState | undefined | void>;
+  /** Durable accounting acknowledgment before each provider dispatch and terminal response. */
+  modelAttempt?: (tenant: string, agent: string, platform: boolean, catalogPriced: boolean, event: Parameters<ModelAttemptHook>[0]) => Promise<boolean>;
   /** Called with each finished assistant message that reports token usage, and each compaction summary's. */
   onUsage?: (tenant: string, agentId: string, message: UsageRecord) => void;
   /** Whether the tenant has a webhook endpoint for run events; without it, runs write none. */
@@ -658,7 +661,7 @@ const duration = (seconds: number) => {
 /** A model response's cost as the runtime counts it. */
 const responseCost = (usage: any) => usageCost(usage).usd;
 /** A model response that is billed, and counted against spend limits: one the provider completed, with usage. */
-const billed = (message: any) => message?.role === "assistant" && !!message.usage && message.stopReason !== "error";
+const billed = (message: any) => message?.role === "assistant" && !!message.usage && (message.stopReason !== "error" || !!message.usage.billingAttemptId);
 /** A provider key and whether it is the platform's rather than the tenant's own. */
 export type ProviderKey = { key: string; platform: boolean };
 /** An agent, and this node's claim on it: hooks write what the agent owns under it. */
@@ -1557,6 +1560,19 @@ export class ClientSessions {
         call: (name, args, signal, context) => this.callTool(session, { name, args, signal, ...context }),
         file: ref => this.fileData(session, ref),
         modelAuth: () => this.modelAuth(session),
+        modelAttempt: async event => {
+          if (event.type === "begin" && session.header.revoked) return Promise.reject(new Error("Session revoked"));
+          const run = this.runningRun(session);
+          const { identity, keyScope } = session.header;
+          const scoped = event.type === "begin" ? { ...event, context: { ...(run ? { requestId: run.id, actor: run.actor } : {}), ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) } } : event;
+          const tracked = await this.options.modelAttempt?.(session.header.tenant, session.header.id, !!session.platformKey, !!session.catalogPriced, scoped) ?? false;
+          // Persisting a begin may span a database outage; recheck ownership before dispatch.
+          if (event.type === "begin") {
+            if (session.header.revoked) throw new Error("Session revoked");
+            await this.leased(session);
+          }
+          return tracked;
+        },
         fs: (op, args, signal) => this.fsCall(session, op, args, signal),
         search: async query => { await this.leased(session); return this.searchTools(session, query); },
         lease: () => this.leased(session),

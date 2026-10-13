@@ -127,6 +127,10 @@ test("a Bedrock model on a tenant's endpoint gets Converse's own request at its 
   const row = usage.days.find((entry: any) => entry.model === "chiridion/amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0");
   assert.deepEqual([row?.input, row?.output, row?.cost], [1000, 25, 0], JSON.stringify(usage));
 
+  const attemptRows = (await r.db.query("select provider,model,state from model_attempts where agent=$1", [agent])).rows;
+  assert.equal(attemptRows.length, 2);
+  assert.ok(attemptRows.every(attempt => attempt.provider === "chiridion/amazon-bedrock" && attempt.model === "us.anthropic.claude-haiku-4-5-20251001-v1:0" && attempt.state === "settled"));
+
   // The AWS SDK's own retries are off too: an error is one request.
   const outcome = (await r.prompt(agent, "Again?")).outcome;
   assert.match(outcome.result?.error ?? outcome.error, /Upstream provider failed/);

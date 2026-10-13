@@ -18,10 +18,12 @@ import { callParams, type CallInput } from "./mcp-results.ts";
  * guard, with the server's credentials sent to its own origin only.
  */
 /**
- * `token` mints the Authorization for each request (the runtime's identity tokens); such a
- * server gets its own connection per `scope` (an agent), since its tokens name the agent.
+ * `token` mints the Authorization for each request (the runtime's identity tokens, or a credential an exchange gave it);
+ * such a server gets its own connection per `scope` (an agent), since its tokens name the agent. `refused` hears of a
+ * token the server answered 401 or 403 to (a credential that expired early or was revoked): the request is then sent
+ * once more with the next `token()`, since a request refused for its credentials never ran.
  */
-export interface McpServer { url: string; headers: Record<string, string>; token?: () => Promise<string>; scope?: string }
+export interface McpServer { url: string; headers: Record<string, string>; token?: () => Promise<string>; refused?: (token: string) => void; scope?: string }
 type Connection = {
   key: string; tenant: string; server: McpServer;
   client?: Client; connecting?: Promise<Client>;
@@ -69,14 +71,29 @@ export class McpConnections {
 
   /** Requests to the server's own origin carry its credentials; anything else goes without them. */
   private fetcher(server: McpServer): FetchLike {
-    return async (url, init) => this.outbound.fetch(url, {
-      ...init as RequestInit, secrets: server.token ? { ...server.headers, Authorization: `Bearer ${await server.token()}` } : server.headers,
-      // Each MCP request has its own timeout, and a server answering in JSON sends its headers only with a
-      // tool's answer: this only bounds a response that never starts. Closing the connection aborts it.
-      timeoutMs: MAX_TIMEOUT_MS, maxBytes: 8 * 1024 * 1024,
-      // A response may be an event stream carrying the answer (or the server's notifications): only its start is timed.
-      stream: true,
-    });
+    const send = async (url: string | URL, init?: RequestInit) => {
+      const token = await server.token?.();
+      const response = await this.outbound.fetch(url, {
+        ...init, secrets: token === undefined ? server.headers : { ...server.headers, Authorization: `Bearer ${token}` },
+        // Each MCP request has its own timeout, and a server answering in JSON sends its headers only with a
+        // tool's answer: this only bounds a response that never starts. Closing the connection aborts it.
+        timeoutMs: MAX_TIMEOUT_MS, maxBytes: 8 * 1024 * 1024,
+        // A response may be an event stream carrying the answer (or the server's notifications): only its start is timed.
+        stream: true,
+      });
+      return { token, response };
+    };
+    const unauthorized = (response: Response) => response.status === 401 || response.status === 403;
+    return async (url, init) => {
+      const first = await send(url, init as RequestInit);
+      if (!server.refused || first.token === undefined || !unauthorized(first.response)) return first.response;
+      // Its bodies are JSON text (never a stream), so the same request can be sent again.
+      server.refused(first.token);
+      await first.response.body?.cancel().catch(() => {});
+      const second = await send(url, init as RequestInit);
+      if (second.token !== undefined && unauthorized(second.response)) server.refused(second.token);
+      return second.response;
+    };
   }
 
   private client(connection: Connection): Promise<Client> {
