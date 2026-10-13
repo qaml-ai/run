@@ -11,5 +11,5 @@
   (`from.id` `email:unverified:<address>`), cannot answer a pending input, and is never mailed: a channel with
   forwarders must set `replies` to `"none"` or `{"to"}`, or opt in with `settings.replyToForwarded: true`.
 - Nothing changes for existing channels. `email_inbound` logs now also record what was accepted (`direct` or
-  `forwarded`); `email_outbound` records replies not sent. Migration `066_email_thread_forwarded.sql` adds a column to
+  `forwarded`); `email_outbound` records replies not sent. Migration `067_email_thread_forwarded.sql` adds a column to
   `email_threads` ([Email](../guides/channels.md#email)).
