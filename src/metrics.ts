@@ -319,6 +319,21 @@ export function recordWatchRefused(scope: "agent" | "tenant" | "node", tenant: s
 }
 
 /**
+ * A credential exchange asked for a tool server's credential (credential-exchange.ts), or the server refused the one
+ * it gave (`rejected`): which server, the endpoint's host, how it went and how long it took. Never the credential.
+ */
+export function recordCredentialExchange(exchange: { tenant: string; agent: string; definition?: string; server: string; host: string; outcome: string; ms: number; attempts: number; status?: number; lifeMs?: number }) {
+  emit("tool_credential_exchange", {
+    dimensions: { Outcome: exchange.outcome, Tenant: exchange.tenant }, rollups: [[], ["Outcome"], ["Tenant"], ["Tenant", "Outcome"]],
+    metrics: { CredentialExchanges: 1, ...(exchange.attempts ? { CredentialExchangeMs: [exchange.ms, "Milliseconds"] as [number, "Milliseconds"] } : {}) },
+    properties: {
+      agent: exchange.agent, ...(exchange.definition ? { definition: exchange.definition } : {}), server: exchange.server, host: exchange.host, attempts: exchange.attempts,
+      ...(exchange.status ? { status: exchange.status } : {}), ...(exchange.lifeMs ? { lifeSeconds: Math.round(exchange.lifeMs / 1000) } : {}),
+    },
+  });
+}
+
+/**
  * A turn a node leaving the cluster handed off at a step boundary, as its next owner continues it (`turn_handed_off`):
  * why the node left (`retire`: a newer deploy; `drain`: SIGTERM), what was in flight when it began leaving (a model
  * call or tool calls), how long the turn took to reach the boundary from then, and how long the turn then waited

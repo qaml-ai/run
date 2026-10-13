@@ -17,7 +17,8 @@ export type AgentIdentity = { subject?: string; context?: Record<string, unknown
 /** `approval`: the call was approved by a person (inputs.ts): which input, who, and when. */
 /** `request` and `toolCall`: the run (its request id) and the model's tool call a request is made for. */
 /** `parent` and `root`: in a child's run (a delegate or spawn_agent call's), its parent agent and its chain's first, from the run's signed chain. */
-export type TokenClaims = { tenant: string; agent: string; definition?: string; identity?: AgentIdentity; actor?: string; origin?: Record<string, unknown>; approval?: Record<string, unknown>; request?: string; toolCall?: string; parent?: string; root?: string };
+/** `exchange`: only in a token that asks a credential exchange (credential-exchange.ts) for a tool server's credential: that server's name and URL. No tool call's token has it. */
+export type TokenClaims = { tenant: string; agent: string; definition?: string; identity?: AgentIdentity; actor?: string; origin?: Record<string, unknown>; approval?: Record<string, unknown>; request?: string; toolCall?: string; parent?: string; root?: string; exchange?: { server: string; url: string } };
 
 /**
  * What a call-bound file URL grants (file-arguments.ts): one file at one version, or a file, a manifest or an archive of a
@@ -140,12 +141,13 @@ export class RuntimeSigner {
   async token(audience: string, claims: TokenClaims): Promise<string> {
     const { signing } = await this.load();
     if (!signing) throw new Error("This runtime cannot sign identity tokens");
-    const { identity, actor, origin, tenant, agent, definition, approval, request, toolCall, parent, root } = claims;
+    const { identity, actor, origin, tenant, agent, definition, approval, request, toolCall, parent, root, exchange } = claims;
     const now = Math.floor(Date.now() / 1000);
     return signJwt({ alg: ALGORITHM, kid: signing.kid, typ: "JWT" }, {
       tenant, agent, ...(definition ? { definition } : {}), ...(identity?.context ? { ctx: identity.context } : {}),
       ...(actor ? { act: actor } : {}), ...(origin ? { origin } : {}), ...(approval ? { approval } : {}),
       ...(request ? { req: request } : {}), ...(toolCall ? { tcid: toolCall } : {}), ...(parent ? { par: parent } : {}), ...(root ? { root } : {}),
+      ...(exchange ? { exchange } : {}),
       iss: this.issuer, aud: audience, sub: identity?.subject ?? agent, iat: now, exp: now + TOKEN_SECONDS, jti: randomUUID(),
     }, signing.key);
   }

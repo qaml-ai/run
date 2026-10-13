@@ -314,8 +314,17 @@ export const PromptInput = z.object({
 const SourceAuthInput = z.union([
   z.object({ type: z.literal("bearer"), token: z.string() }).openapi({ description: "A bearer token; stored encrypted and never returned" }),
   z.object({ type: z.literal("runtime") }).openapi({ description: "Each request carries a JWT the runtime signs (EdDSA, two minutes, audience the server's URL) naming the tenant, agent, subject, context and actor; verify it against /.well-known/jwks.json" }),
-]).openapi("SourceAuthInput");
-const SourceAuth = z.object({ type: z.enum(["bearer", "runtime"]) }).openapi("SourceAuth");
+  z.strictObject({
+    type: z.literal("exchange"),
+    url: z.string().openapi({ description: "An https endpoint of yours. The runtime POSTs {server: {name, url}, tenant, definition, agent?} to it with Authorization: Bearer <a JWT it signs, as auth \"runtime\"'s, with an exchange claim naming the server>, and it answers {token, expiresAt (RFC 3339) | expiresIn (seconds)}" }),
+    audience: z.string().optional().openapi({ description: "The aud of the JWT the endpoint is asked with, when not its url: a URL on its origin, or urn:camelrun:<tenant>:<name>" }),
+  }).openapi({ description: "MCP servers only: a short-lived credential (a GitHub App installation token, an STS or OAuth access token) the runtime fetches from your endpoint, sends to the server as Authorization: Bearer, keeps in memory per agent and refreshes before it expires. Nothing is stored; see the tools guide" }),
+], { error: "auth is { type: \"bearer\", token }, { type: \"runtime\" } or (an MCP server's) { type: \"exchange\", url, audience? }" }).openapi("SourceAuthInput");
+const SourceAuth = z.object({
+  type: z.enum(["bearer", "runtime", "exchange"]),
+  url: z.string().optional().openapi({ description: "With type exchange: the endpoint the runtime fetches the server's credential from" }),
+  audience: z.string().optional().openapi({ description: "With type exchange: the aud of the token the endpoint is asked with, when not its url" }),
+}).openapi("SourceAuth");
 const approvalMode = z.enum(["never", "always"]);
 const approvalFields = {
   default: z.enum(["never", "always", "destructive"]).optional().openapi({ description: "never (the default), always, or destructive: tools annotated destructiveHint (MCP), operations other than GET, HEAD and OPTIONS (OpenAPI)" }),
