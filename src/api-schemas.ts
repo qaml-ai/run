@@ -883,7 +883,7 @@ const channelFields = {
   access: ChannelAccess.optional(),
   limits: ChannelLimits.optional(),
   greeting: z.string().trim().min(1).max(4096).optional().openapi({ description: "Reply to /start (Telegram)" }),
-  settings: z.record(z.string(), z.unknown()).optional().openapi({ description: "Configuration particular to the channel's type; types without any reject it. GitHub: { events, repos, ignoreDrafts, reply, authors, debounceSeconds }. Webhook: { signature, key, prompt, sender, filter, idPath, idHeader }. Email: { address?, fromName? }" }),
+  settings: z.record(z.string(), z.unknown()).optional().openapi({ description: "Configuration particular to the channel's type; types without any reject it. GitHub: { events, repos, ignoreDrafts, reply, authors, debounceSeconds }. Webhook: { signature, key, prompt, sender, filter, idPath, idHeader }. Email: { address?, fromName?, replies?: \"sender\" | \"none\" | { to }, forwarders?: [address or @domain], replyToForwarded? }" }),
 };
 export const ChannelInput = z.object({ type: z.enum(["telegram", "slack", "discord", "github", "webhook", "email"]), ...channelFields }).openapi("ChannelInput");
 export const ChannelUpdate = z.object(channelFields).openapi("ChannelUpdate");

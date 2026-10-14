@@ -4796,6 +4796,82 @@ curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   messages, so mail clients thread them, and `Auto-Submitted: auto-replied`, so
   other systems do not answer them. Each `send_message` and presented file is an
   email of its own; files up to 10 MiB are attached, larger ones sent as links.
+- **Who replies go to** is `settings.replies`, read each time a message is
+  about to be sent, so a change holds for mail already queued:
+  - `"sender"` (the default): whoever wrote last, as above.
+  - `"none"`: nobody is mailed. A turn's reply is in the agent's history
+    (`GET /v1/agents/:id/messages`; a [`run.completed`](https://run.camelai.com/docs/guides/webhooks.md) event's
+    `replyIndex` says where), which is how an agent drafts an answer for a
+    person to send. `send_message`, presented files, the questions an agent
+    asks ([human input](https://run.camelai.com/docs/guides/human-input.md)) and the runtime's own notices (a failed
+    turn, a rate limit) are not sent anywhere: have the agent put what matters
+    in its reply or its files.
+  - `{"to": "triage@acme.com"}`: every message goes to that one address
+    instead, opening with whose message it answers (`Reply for
+    ada@example.com, subject "…". Sent only to triage@acme.com, not to them.`)
+    and carrying `X-Original-From`. The address must prove itself first, so the
+    runtime never mails someone who did not ask: send one message from it to
+    the channel's address (it need not be on the allowlist). Until SES has
+    proven such a message's From, nothing is sent, and the channel shows no
+    `account.verifiedReplyTo`; a different address starts unproven again. It
+    may not be on the runtime's own domain.
+
+  In `none` and `to` nothing reaches the person who wrote: not replies, files,
+  links, questions or notices. (Mail the runtime drops is never answered in any
+  mode.)
+- **Forwarders.** `settings.forwarders` lists mailboxes (`support@acme.com`) or
+  whole domains (`@acme.com`) whose forwards the channel takes, so a support
+  inbox can pass its mail on:
+
+  ```json
+  {"type": "email", "definition": "def_…",
+   "settings": {"address": "intake", "forwarders": ["support@acme.com"], "replies": "none"},
+   "access": {"allow": ["support@acme.com"]}}
+  ```
+
+  A forward keeps the customer's From, which then fails the sender check. It is
+  accepted on proof of the *forwarder* instead: SES's SPF verdict passed for the
+  envelope sender (the SMTP `MAIL FROM`, `mail.source` in SES's notification),
+  and that address is at a listed domain. SPF passing means the server that
+  handed over the message is one the domain's SPF record authorizes, so only
+  the forwarder's own mail system can produce it. Forwarders that rewrite the
+  envelope sender to their own domain qualify: Google's automatic forwarding and
+  groups (`support+caf_=…@acme.com`), Microsoft 365 (SRS). One that keeps the
+  customer's envelope sender proves nothing and is dropped. `X-Forwarded-For`,
+  `X-Forwarded-To`, `Delivered-To`, `ARC-*` and `Authentication-Results` headers
+  are never read: whoever sends a message writes them. An address entry matches
+  the envelope sender without its `+tag`; a forwarder whose envelope sender does
+  not name the mailbox (SRS) needs the `@domain` entry. The proof is as strong
+  as the domain's SPF record and mail system: `@gmail.com` would trust every
+  Gmail user's forwards, and SPF proves the domain, not the mailbox within it.
+
+  For such a message:
+  - `access.allow` is asked about the forwarder (`support@acme.com`), not the
+    original sender: allow the forwarder, and it brings anyone's mail. Allowing
+    a customer does not let a forward of theirs in.
+  - The conversation's sender is the original From, marked unproven: the text
+    opens `From (forwarded by support@acme.com, unverified): Ada <ada@example.com>`,
+    `from.id` is `email:unverified:ada@example.com`, and a tool's
+    `origin.sender` has `unverified: true`. Such a message never answers an
+    input the agent waits on. Treat its content as untrusted, like any stranger's.
+  - Threads work as usual: a customer's follow-up, forwarded, joins the thread
+    its `References` name.
+  - Mail from the forwarder's own domain is not a forward: its From is proven,
+    and is who must be allowed.
+  - Every drop above still applies. Google Groups marks what it passes on
+    `Precedence: list`, so a group's mail is dropped as bulk: forward from a
+    mailbox instead.
+
+  Replying to a forwarded message would mail an address nobody proved, so a
+  channel with forwarders must set `replies` to `"none"` or `{"to": …}`; the
+  default is refused (400). `settings.replyToForwarded: true` opts in to
+  replying to such senders with `replies: "sender"`. Without it a thread a
+  forwarder last wrote into is never replied to, even after the forwarders are
+  removed. Clear a list with `"forwarders": []`.
+  Decisions are logged as `email_inbound` (`accepted: "direct"` or
+  `"forwarded"`, `dropped` with a reason, `verified: "reply_to"`) and
+  `email_outbound` (`skipped` with a reason), with ids only: no addresses,
+  subjects or bodies.
 - **Receiving.** SES stores each message in S3 and notifies an SNS topic, whose
   HTTPS subscription is `/channels/email/inbound` for every channel. The runtime
   accepts only messages SNS signed (the certificate from SNS's own host) for its
