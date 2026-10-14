@@ -28,6 +28,7 @@ infra/tenant.sh set-spend-limit <tenant> <usd|none>  # model spend per UTC month
 infra/tenant.sh set-password <tenant> <email>     # console sign-in with email and password (stdin, or generated)
 infra/tenant.sh set-password <tenant> --clear     # no more password sign-in
 infra/tenant.sh link-github <tenant> <login>      # that GitHub account signs in to the console as the tenant
+infra/tenant.sh clear-engine <tenant>             # removes a js_exec engine pin (codeEngine) left from QuickJS
 ```
 
 - **`add`**:
@@ -57,6 +58,8 @@ infra/tenant.sh link-github <tenant> <login>      # that GitHub account signs in
     be in `AGENT_BILLING_ADMINS`).
   - A generated password goes to a 0600 file (`~/.config/camelrun/password-<tenant>`, or `PASSWORD_FILE`).
   - Setting or clearing it ends the tenant's password sessions.
+- **`clear-engine`**: QuickJS is gone, and an entry still pinned to it (`"codeEngine": "quickjs"`) stops the runtime
+  loading the tenants file; this removes the pin.
 - **`link-github`**: the account is bound by its numeric id, looked up now, so a renamed account still signs in and
   whoever takes the freed login doesn't. The account's first sign-in uses this tenant.
 
@@ -101,7 +104,8 @@ Which keys a tenant's model calls use, and who pays, is in [Billing](billing.md)
 short:
 
 - **An admin tenant with no `billing` field (or `"billing": "none"`) is unbilled.** A call without a key of its own
-  (or of its key scope) falls back to the platform's keys (the file's top-level `platformKeys`) and is recorded as
+  (or of its key scope) falls back to the platform's keys (the file's top-level `platformKeys`, set as in
+  [Model operations](models.md#platform-keys)) and is recorded as
   platform usage (`platformResponses`, `platformCost` in `GET /v1/usage`). `"platformKeys": false` opts out: then
   the tenant uses only its own keys.
 - **`"billing": "prepaid"`** makes an admin tenant pay for platform-key usage from credit, like a self-serve tenant.

@@ -35,11 +35,14 @@ Resources (AWS account `904534089871`, `us-west-2`), mostly named
 - Monitoring:
   - A Route 53 HTTPS health check on `https://agents.camelai.dev/healthz`. Its
     alarm goes to the SNS topic `camelai-agent-runtime-alerts` in us-east-1.
-  - ALB and ECS alarms (unhealthy hosts, ALB 5xx, target 5xx, running tasks,
-    `EcsControlErrors`) go to the topic of the same name in us-west-2.
+  - About twenty alarms on the ALB, ECS, the database, mail and the runtime's own metrics (turns, models,
+    spend, webhooks) go to the topic of the same name in us-west-2; the two billing alarms go to
+    `camelai-agent-runtime-billing`. Each alarm, its threshold and what to do when it fires:
+    [docs/operations/alarms.md](../docs/operations/alarms.md).
 
-  Subscribe to both topics:
-  `aws sns subscribe --region <region> --topic-arn arn:aws:sns:<region>:904534089871:camelai-agent-runtime-alerts --protocol email --notification-endpoint <email>`
+  Both `-alerts` topics have a confirmed email subscription (checked 2026-10-14). To add one:
+  `aws sns subscribe --region <region> --topic-arn arn:aws:sns:<region>:904534089871:camelai-agent-runtime-alerts --protocol email --notification-endpoint <email>`,
+  then confirm it from the mail.
 
 The runtime moved here from a single EC2 host on 2026-09-24. The host proxied
 to the ALB through Caddy while DNS flipped to the ALB, and was then removed. Git
@@ -51,7 +54,15 @@ history has the cutover runbook.
 - `infra/tenant.sh`: tenants, operator tokens and provider keys in Secrets Manager.
 - `infra/github-oauth.sh`: stores the GitHub OAuth secret, then force-rolls the ECS service.
 - `infra/google-oauth.sh`: stores the Google OAuth client, then force-rolls the ECS service.
+- `infra/azure-openai.sh`: stores the Azure OpenAI resource (images, transcription, `azure/<model>` chat models),
+  then force-rolls the ECS service ([docs/operations/models.md](../docs/operations/models.md#azure-openai)).
+- `infra/stripe-setup.sh`, `infra/stripe.sh`: set up Stripe and store its keys for credit purchases
+  ([docs/operations/billing.md](../docs/operations/billing.md)).
+- `infra/tool-search.sh`: stores a dedicated OpenRouter key for `tools.search` ranking (optional).
+- `infra/journey.sh`: stores the journey signing secrets (journey events and the admin site's reports).
 - `infra/config.sh`: settings shared by the scripts above.
+
+Every runbook is indexed in [docs/operations/README.md](../docs/operations/README.md).
 
 ## Adding a person
 
@@ -152,6 +163,10 @@ that tenant.
 
 ## Deploying changes
 
+Every commit on `main` whose CI passes deploys itself: the Deploy workflow runs `infra/ecs-deploy.sh <commit>` with
+the image CI pushed, and skips a commit production already includes. Following a deploy, deploying or rolling back by
+hand, and shipping settings: [docs/operations/deploys.md](../docs/operations/deploys.md).
+
 ```sh
 infra/ecs-deploy.sh          # build + push this checkout, register a revision, roll, wait
 infra/ecs-deploy.sh <tag>    # deploy an image already in ECR
@@ -174,15 +189,20 @@ Details, including how long a rollout stays `IN_PROGRESS`, are in
 
 Runtime settings that aren't secret (default model, agent caps, idle and tool
 timeouts) are `runtime_env` in `terraform/variables.tf`. Apply the change with
-Terraform, then ship it with `infra/ecs-deploy.sh <running tag>`.
+Terraform, then ship it with `infra/ecs-deploy.sh <running tag>` (or let the next
+main commit's deploy ship it).
 
-## SDKs
+## Releases
 
-- TypeScript: `sdk`, published as `@camelai/run`
-  to GitHub Packages. Bump `version` in `sdk/package.json`, then run
-  `npm publish` from that directory. Installation instructions are in
-  `sdk/README.md`.
-- Python: `clients/python` (`pip install <path or git URL>`).
+Each is a tag on a commit already on `main`, published by a workflow:
+
+- `runtime-v<version>`: the self-hosting image `ghcr.io/qaml-ai/run:<version>` (`publish-image.yml`), with
+  `npm run release-notes -- <version>` run first ([release notes](../docs/operations/release-notes.md)).
+- `sdk-v<version>`: the TypeScript SDK `@camelai/run` and its companion packages on npmjs, with the version in
+  `sdk/package.json` (`publish-sdk.yml`; its header has the first-publish steps for a new package).
+- `py-v<version>`: the Python SDK `camelai-run` on PyPI (`publish-python.yml`).
+
+The hosted runtime does not wait for a tag: it runs `main`.
 
 ## Operations
 
@@ -197,8 +217,9 @@ aws ecs execute-command --region us-west-2 --cluster camelai-agent-runtime --tas
 ```
 
 Logs are in the CloudWatch log group `/ecs/camelai-agent-runtime` (kept 30
-days). The local AWS CLI is v1, which has no `aws logs tail`; use
-`filter-log-events` (here, the last 15 minutes):
+days); queries for common questions are in
+[docs/operations/logs-and-metrics.md](../docs/operations/logs-and-metrics.md). The local AWS CLI is v1, which has
+no `aws logs tail`; use `filter-log-events` (here, the last 15 minutes):
 
 ```sh
 aws logs filter-log-events --region us-west-2 --log-group-name /ecs/camelai-agent-runtime \

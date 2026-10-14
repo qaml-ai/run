@@ -4,17 +4,37 @@ These pages are for people who run the agent runtime or work on its code: how it
 deployed and billed, and what isolates tenants and generated code. To build on the hosted runtime, start
 with the [Quickstart](../quickstart.md) and [Concepts](../concepts.md) instead.
 
+## Runbooks
+
+What to do, for the hosted runtime (AWS account `904534089871`, us-west-2):
+
+| Runbook | Use it when |
+|---|---|
+| [Deploys and infrastructure changes](deploys.md) | following or debugging a deploy, deploying or rolling back by hand, shipping a settings change, applying Terraform (and reading its plan) |
+| [Migrations](migrations.md) | adding a migration, a migration-number clash in `tests/db.test.ts`, renumbering one that is not applied |
+| [Alarms](alarms.md) | an alarm fired: what each one watches, its threshold and topic, what to check first |
+| [Logs and metrics](logs-and-metrics.md) | answering a question from the logs or metrics: Logs Insights queries, counting log events, which models are slow or failing |
+| [Model operations](models.md) | adding or rotating a platform key, the Azure OpenAI deployments and models, a slow or failing model |
+| [Tenants](tenants.md) | `infra/tenant.sh`: making a tenant, tokens and keys, agent and spend limits, credentials for a product |
+| [Billing](billing.md) | credit, the ledger, Stripe, a payment that needs review (`-billing-review`) |
+| [Account email](account-email.md) | sign-up and password mail, SES setup, bounces and complaints |
+| [Email channels](email-channels.md) | turning email channels on (`email_domain`, two steps), reply modes and forwarders, why a message did not arrive |
+| [Fetched tool credentials](tool-credentials.md) | a tenant's `auth: exchange` tool server fails |
+| [Managed Discord](managed-discord.md) | the shared Camel Discord application, onboarding, its secrets |
+| [Account data](privacy.md) | an export or deletion request |
+| [Model attempt reconciliation](model-reconciliation.md) | usage of interrupted model calls, unsettled attempts |
+| [Admin analytics](admin-analytics.md) | the admin site's product signals, run pages and user journeys, and what they need deployed |
+| [`infra/README.md`](../../infra/README.md), [`infra/terraform/README.md`](../../infra/terraform/README.md) | what the AWS resources are, the scripts, how a rollout drains tasks |
+
+## Reference
+
 - [Architecture](architecture.md): control and data planes, ownership, logs, draining, deploys, turn handoff
-- [Release notes](release-notes.md): rollout requirements and incompatible changes
+- [Release notes](release-notes.md): rollout requirements and incompatible changes; [unreleased/](unreleased/) holds
+  a file per change on main since the last tag
 - [Configuration](configuration.md): environment variables, starting a runtime
-- [Managed Discord](managed-discord.md): the shared Camel application, onboarding, platform secrets and pilot checks
 - [Self-hosting](self-host.md): the image, Docker Compose, storage, networking
 - [Persistence](persistence.md): transcripts, history chunks, journals, retries, idle unload, limits per node and tenant
-- [Billing](billing.md): prepaid credit, the ledger, storage metering, Stripe, which keys a tenant's calls use
-- [Tenants](tenants.md): admin tenants and `infra/tenant.sh`: tokens, keys, agent and spend limits, other limits
 - [Model endpoints](model-endpoints.md): a tenant's model calls through a pass-through gateway of the operator's
-- [Account data](privacy.md): export, deletion, what is kept and for how long; handling requests by email
-- [Account email](account-email.md): sign-up, password reset and adding a password by email; SES setup
 - [Tenant isolation](isolation.md)
 - [Sandbox](sandbox.md): the codemode sandbox's layers and limits
 - [Integration seam](integration.md)
