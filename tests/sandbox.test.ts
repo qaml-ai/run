@@ -106,11 +106,24 @@ test("a tool name code gets wrong says which tool it may have meant", async t =>
   await assert.rejects(run("return await tools.list_commits({});"), /tools\.list_commits is not a tool\. Did you mean tools\.camel__list_commits\?/);
   // More than one server has it: each is named.
   await assert.rejects(run("return await tools.read({});"), /Did you mean tools\.camel__read or tools\.helpdesk__read\?/);
-  await assert.rejects(run("return await tools.nothing_like_it({});"), /tools\.nothing_like_it is not a tool\. tools\.search/);
+  // Meaning none: the tools there are, by name (models called bash, ls and their direct tools here).
+  await assert.rejects(run("return await tools.nothing_like_it({});"), /tools\.nothing_like_it is not a tool\. The tools code can call: tools\.camel__list_commits, tools\.camel__read, tools\.helpdesk__read\. tools\.describe/);
+  await assert.rejects(run("return await tools.bash({ command: 'ls' });"), /tools\.bash is not a tool\. There is no shell: this runs JavaScript\. The tools code can call: tools\.camel__list_commits/);
+  await assert.rejects(run("return await tools.write({});"), /tools\.write is not a tool\. Files here are fs\.readFile, fs\.writeFile and fs\.list\./);
   // What code may look up without calling still works: the tools object itself, its names, and real tools.
   assert.deepEqual(JSON.parse((await run("return { keys: Object.keys(tools).length, then: typeof tools.then, json: JSON.stringify(tools) !== undefined, fn: typeof tools.camel__read };")).output.at(-1)!),
     { keys: 6, then: "undefined", json: true, fn: "function" });
   assert.equal((await run("const t = tools; return (await t.camel__read({})).called;")).output.at(-1), "camel__read");
+});
+
+test("an import says what js_exec has instead", async t => {
+  const { run } = await fixture(t, { definitions: [], call: async () => ({}) });
+  await assert.rejects(run('const fs = await import("node:fs"); return 1;'), /Module imports are disabled in js_exec: it runs plain JavaScript, with tools, fs, console and text as globals/);
+});
+
+test("with no tools for code, a tool name says to call tools directly", async t => {
+  const { run } = await fixture(t, { definitions: [], call: async () => ({}) });
+  await assert.rejects(run("return await tools.bot__save({});"), /tools\.bot__save is not a tool\. Code here can call no tools: call yours directly, outside js_exec\./);
 });
 
 test("the model reads what code returned as it is, after what it logged, with cuts marked", async t => {

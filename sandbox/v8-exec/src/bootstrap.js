@@ -79,16 +79,28 @@
     tools.namespaces = async () => parse(await call("tools.namespaces", "null"));
     // A name that is not a tool fails where code reads it, naming the tool it may have meant (a
     // server's prefix left off, most often), rather than as a bare "not a function" at the call.
+    // Meaning none, it lists the tools there are (models call bash, ls or their direct tools here).
     // Symbols and the names a promise, JSON or a conversion look up stay undefined.
     const names = Object.keys(tools);
+    const real = parse(namesJSON);
     const LOOKUPS = ["then", "toJSON", "constructor", "valueOf", "toString", "inspect", "prototype", "__proto__"];
+    const SHELL = ["bash", "sh", "shell", "exec", "terminal", "run_command", "ls", "cat", "grep", "find"];
+    const FILES = ["read", "write", "edit", "ls", "glob", "grep", "read_file", "write_file"];
     const notATool = key => {
       const prefix = key.lastIndexOf("__");
       const bare = (prefix < 0 ? key : key.slice(prefix + 2)).toLowerCase();
       const meant = names.filter(name => name.toLowerCase() === key.toLowerCase() || name.toLowerCase().endsWith("__" + bare));
+      if (meant.length) {
+        return new TypeError("tools." + key + " is not a tool. Did you mean " + meant.slice(0, 3).map(name => "tools." + name).join(" or ") +
+          "? tools.search(\"what it does\") finds tools; tools.describe(name) shows one's arguments.");
+      }
+      const listed = real.slice(0, 40).map(name => "tools." + name).join(", ") + (real.length > 40 ? ", and " + (real.length - 40) + " more" : "");
       return new TypeError("tools." + key + " is not a tool." +
-        (meant.length ? " Did you mean " + meant.slice(0, 3).map(name => "tools." + name).join(" or ") + "?" : "") +
-        " tools.search(\"what it does\") finds tools; tools.describe(name) shows one's arguments.");
+        (SHELL.includes(bare) ? " There is no shell: this runs JavaScript." : "") +
+        (FILES.includes(bare) ? " Files here are fs.readFile, fs.writeFile and fs.list." : "") +
+        (real.length
+          ? " The tools code can call: " + listed + ". tools.describe(name) shows one's arguments."
+          : " Code here can call no tools: call yours directly, outside js_exec."));
     };
     const frozen = Object.freeze(tools);
     const guarded = new Proxy(frozen, {
