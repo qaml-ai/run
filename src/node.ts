@@ -679,7 +679,11 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
 
   // Human input waits in Postgres; a tool's opaque request state is sealed when the runtime can seal.
   const inputs = new Inputs({ db, ...(accounts.canStoreKeys ? { sealer: accounts } : {}) });
-  const modelAttempts = new ModelAttempts(db, accounts, undefined, leaseTtlMs);
+  const modelAttempts = new ModelAttempts(db, accounts, undefined, leaseTtlMs, async (tenant, scope) => {
+    const entry = await keyScopes.entry(tenant, scope, "openrouter");
+    // A gateway credential is not necessarily an OpenRouter key; never send it to another origin.
+    return entry && !entry.baseUrl ? entry.apiKey : undefined;
+  });
   const clients = new ClientSessions(supervisor, {
     runEvents: tenant => subscribers.runs(tenant),
     tracing: telemetry,

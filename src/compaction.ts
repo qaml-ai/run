@@ -174,7 +174,7 @@ export const PROVIDER_ROOTS: Record<string, string> = { openrouter: "https://ope
  * the response's usage as the body streams past: OpenRouter's `usage.cost` (plus the upstream cost
  * of a key brought to OpenRouter), which Pi does not keep. `sink.cost` has it once the body is read.
  */
-function callFetch(sink: UsageSink, plan: { rebase?: { from: string[]; to: string }; keyless?: boolean; bearer?: string; base?: typeof fetch } = {}): typeof fetch {
+export function callFetch(sink: UsageSink, plan: { rebase?: { from: string[]; to: string }; keyless?: boolean; bearer?: string; base?: typeof fetch } = {}): typeof fetch {
   const read = async (line: string) => {
     if (!line.startsWith("data:") && !line.startsWith("{")) return;
     let data: any;
@@ -208,6 +208,13 @@ function callFetch(sink: UsageSink, plan: { rebase?: { from: string[]; to: strin
       headers = bearer;
     }
     const response = await (plan.base ?? network().fetch)(url, { ...init, headers });
+    // Messages API bodies carry Anthropic msg_* IDs; OpenRouter's lookup ID is in this header.
+    // Persist it before exposing any response bytes, including empty/error responses.
+    const generation = response.headers.get("x-generation-id");
+    if (generation) {
+      try { await sink.generation?.(generation); }
+      catch (error) { await response.body?.cancel().catch(() => {}); throw error; }
+    }
     if (!response.body) return response;
     const decoder = new TextDecoder();
     let pending = "";
