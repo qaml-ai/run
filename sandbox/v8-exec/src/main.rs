@@ -195,7 +195,7 @@ fn import_cb<'s>(
   _specifier: v8::Local<'s, v8::String>,
   _attributes: v8::Local<'s, v8::FixedArray>,
 ) -> Option<v8::Local<'s, v8::Promise>> {
-  let message = v8::String::new(scope, "Module imports are disabled in codemode").unwrap();
+  let message = v8::String::new(scope, "Module imports are disabled in js_exec: it runs plain JavaScript, with tools, fs, console and text as globals (no import or require)").unwrap();
   let error = v8::Exception::error(scope, message);
   scope.throw_exception(error);
   None

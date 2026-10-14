@@ -116,6 +116,11 @@ test("a tool name code gets wrong says which tool it may have meant", async t =>
   assert.equal((await run("const t = tools; return (await t.camel__read({})).called;")).output.at(-1), "camel__read");
 });
 
+test("an import says what js_exec has instead", async t => {
+  const { run } = await fixture(t, { definitions: [], call: async () => ({}) });
+  await assert.rejects(run('const fs = await import("node:fs"); return 1;'), /Module imports are disabled in js_exec: it runs plain JavaScript, with tools, fs, console and text as globals/);
+});
+
 test("with no tools for code, a tool name says to call tools directly", async t => {
   const { run } = await fixture(t, { definitions: [], call: async () => ({}) });
   await assert.rejects(run("return await tools.bot__save({});"), /tools\.bot__save is not a tool\. Code here can call no tools: call yours directly, outside js_exec\./);
