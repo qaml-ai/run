@@ -46,8 +46,9 @@ variables from the task definition and destroys the billing Slack channel. When 
 those settings, edit `prod.auto.tfvars` and upload it back (`aws s3 cp prod.auto.tfvars
 s3://camelai-terraform-state-904534089871/agent-runtime/prod.tfvars`) in the same sitting as the apply.
 
-Always apply a saved plan you have read. The state bucket, the RDS instance and
-the session-secret/secrets-key/tenants/github-oauth secrets have
+Always apply a saved plan you have read; [docs/operations/deploys.md](../../docs/operations/deploys.md#applying-terraform)
+lists what to check in it, with commands that list the changed resources and diff the task definition's
+environment. The state bucket, the RDS instance and the session-secret/secrets-key/tenants/github-oauth secrets have
 `prevent_destroy`; Terraform refuses any plan that would delete them. The ALB
 and the RDS instance also have deletion protection in AWS.
 
@@ -222,6 +223,10 @@ tofu import aws_cloudwatch_log_group.database_proxy /aws/rds/proxy/camelai-agent
 
 ## Alarms
 
+Every alarm, its threshold and topic, and what to do when it fires is in
+[docs/operations/alarms.md](../../docs/operations/alarms.md); keep it in step with these files. Both
+`camelai-agent-runtime-alerts` topics have a confirmed email subscription (checked 2026-10-14).
+
 - **Route 53** (`monitoring.tf`, us-east-1): an HTTPS health check on
   `agents.camelai.dev/healthz` (by hostname, so it checks through Cloudflare and the ALB). The
   `-healthz` alarm notifies the us-east-1 topic `camelai-agent-runtime-alerts`
@@ -340,7 +345,7 @@ history.
 | Fargate ARM64, 2 tasks × 1 vCPU / 2 GB (730 h) | ~$58 (each extra task ~$29) |
 | Public IPv4: 2 tasks + 4 ALB addresses ($3.65 each) | ~$22 |
 | ALB hour + LCUs (light traffic) | ~$22 |
-| CloudWatch Logs, Container Insights, 4 alarms | ~$10 |
+| CloudWatch Logs, Container Insights, alarms | ~$10 |
 | **ECS runtime total at minimum** | **~$112** |
 
 ## Secrets
@@ -361,12 +366,6 @@ State lives in `s3://camelai-terraform-state-904534089871/agent-runtime/terrafor
 once by hand, outside this configuration. OpenTofu locks the state with a lock
 object next to it (`use_lockfile`), so no DynamoDB table is needed. State holds
 resource IDs and ARNs but no secret values.
-
-## Known gaps
-
-- Both `camelai-agent-runtime-alerts` topics have one email subscription that
-  is still pending confirmation (checked 2026-09-24), so alarms reach no one
-  until it is confirmed.
 
 ## Hostnames
 
