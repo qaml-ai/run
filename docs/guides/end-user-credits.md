@@ -130,6 +130,7 @@ A balance can go a little below zero. Visible output never passes what a call ho
 but these can:
 
 - output a provider bills without streaming it (hidden reasoning tokens);
+- what streams while the last credit check is answered (milliseconds of output);
 - the gap between the input estimate and the real input;
 - a call whose node died: its hold lapses after 10 minutes, and if the provider
   reports its cost later, it is charged then.
