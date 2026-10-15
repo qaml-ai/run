@@ -314,6 +314,11 @@ export function webhookBacklogLine(backlog: { pending: number; oldestAgeMs: numb
 }
 
 /** An event stream subscriber (a watcher or a waiting poll) refused with 429 at the agent's, tenant's or node's limit. */
+/** A voice connection dropped because its DAVE group held members the voice gateway never named (voice-discord.ts). */
+export function recordDaveRoster(strangers: number) {
+  emit("voice_dave_roster", { dimensions: {}, rollups: [[]], metrics: { VoiceDaveRosterDrops: 1 }, properties: { strangers } });
+}
+
 export function recordWatchRefused(scope: "agent" | "tenant" | "node", tenant: string) {
   emit("watch_refused", { dimensions: { Scope: scope, Tenant: tenant }, rollups: [[], ["Scope"], ["Tenant"]], metrics: { WatchersRefused: 1 } });
 }
