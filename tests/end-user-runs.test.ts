@@ -135,8 +135,34 @@ test("concurrent replies for one end user share their credit: their holds never 
   release();
   const runs = await Promise.all(agents.map((agent, index) => settled(r, `/v1/agents/${agent}/requests/${accepted[index].json.id}`)));
   const refused = runs.filter(run => run.outcome.result?.code === "end_user_credit");
-  assert.ok(runs.every(run => run.outcome.result), JSON.stringify(runs.map(run => run.outcome)));
+  assert.ok(runs.every(run => run.outcome.result), JSON.stringify({ outcomes: runs.map(run => run.outcome), logs: r.logs.filter(line => /error|failed|refused/i.test(line)).slice(-30) }));
   assert.ok(reached < 4 && refused.length === 4 - reached, `${reached} calls made, ${refused.length} refused: ${JSON.stringify(runs.map(run => run.outcome.result))}`);
   const person = (await r.call("/v1/end-users/shared")).json;
   assert.deepEqual([person.balance, person.held], [150_000 - reached * 10_000, 0]);
+});
+
+test("the TypeScript SDK: endUsers configure, grant, get and ledger; an agent's bucket; a run out of credit fails with code end_user_credit", async t => {
+  const { Agents } = await import("../clients/node.ts");
+  const r = await runtime(t, () => ({ content: "seen", usage: { prompt_tokens: 10, completion_tokens: 10, cost: 0.01 } }), { AGENT_MODEL: "openai/gpt-4.1" });
+  const agents = new Agents({ url: r.base, apiKey: (await import("./runtime-server.ts")).OPERATOR });
+  t.after(() => agents.close());
+  const settings = await agents.endUsers.configure({ enabled: true, allowances: { "bot:*": 15_000 }, markupBps: 2_000 });
+  assert.deepEqual([settings.enabled, settings.markupBps], [true, 2_000]);
+  const granted = await agents.endUsers.grant("owner", { amount: 50_000, key: "pi_1" });
+  assert.equal((await agents.endUsers.grant("owner", { amount: 50_000, key: "pi_1" })).entry.id, granted.entry.id);
+  const agent = await agents.upsert("bot-1", { subject: "owner", bucket: "bot:1" });
+  assert.equal((await agent.run("one")).text, "seen");
+  assert.equal((await agent.run("two")).text, "seen");
+  const owner = await agents.endUsers.get("owner", { buckets: ["bot:1"] });
+  assert.deepEqual([owner.today.buckets[0].allowanceSpent, owner.balance], [15_000, 50_000 - 6_000], "$0.015 free, the other $0.005 at +20% from the balance");
+  const { entries } = await agents.endUsers.ledger("owner", { limit: 2 });
+  assert.deepEqual(entries.map(entry => [entry.kind, entry.bucket, entry.raw]), [["usage", "bot:1", 10_000], ["usage", "bot:1", 10_000]]);
+  await agents.endUsers.adjust("owner", { amount: -owner.balance, key: "zero" });
+  await agents.endUsers.update("owner", { allowances: { "bot:1": 0 } });
+  await assert.rejects(agent.run("three"), (error: any) => error.code === "END_USER_CREDIT" && error.status === 402);
+  // A stateless run spends from its own bucket.
+  await agents.endUsers.update("owner", { allowances: { "bot:1": null } });
+  const run = await agents.run({ input: "four", subject: "owner", bucket: "bot:2", throwOnError: false });
+  assert.equal(run.error, null);
+  assert.deepEqual((await agents.endUsers.list()).endUsers.map(user => user.id), ["owner"]);
 });

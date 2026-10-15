@@ -24,7 +24,7 @@ import httpx
 
 from . import (
     DEFAULT_URL, AgentError, Download, InputDetail, InputRequired, Mount, WorkspaceMount, Run, RunError, RuntimeIdentity, RuntimeTokenError, StreamPart,
-    Telemetry, Tool, ToolContext, Transcriptions, Images, WebhookVerificationError, identity_from_claims, tool, verify_webhook,
+    Telemetry, Tool, ToolContext, Transcriptions, Images, EndUsers, WebhookVerificationError, identity_from_claims, tool, verify_webhook,
     _AgentCalls, _DEFAULT, _PartReader, _RuntimeCalls, _Session, _TRANSCRIPTION_TIMEOUT, _UPLOAD_TIMEOUT, _answer_for, _attachment, _bearer,
     _check_request_id, _env, _error, _file_claims, _file_token, _http_sync, _issuer_of, _message_params, _origin, _outcome_run, _output_request,
     _prompt_extra, _public_key_sync, _require_tenant, _retry_after, _run_frame, _sender, _sse_frames,
@@ -36,7 +36,7 @@ from . import AgentFiles as _AsyncFiles, RunInput as _AsyncInput, Runs as _Async
 __all__ = [
     "Agents", "Agent", "Run", "RunInput", "InputDetail", "Mount", "WorkspaceMount", "RunStream", "StreamPart", "Runs", "StatelessRunStream",
     "tool", "Tool", "ToolContext", "InputRequired", "RuntimeIdentity", "identity_from_claims",
-    "AgentError", "RunError", "AgentRuntime", "AgentClient", "AgentFiles", "Download", "Telemetry", "Transcriptions", "Images", "DEFAULT_URL",
+    "AgentError", "RunError", "AgentRuntime", "AgentClient", "AgentFiles", "Download", "Telemetry", "Transcriptions", "Images", "EndUsers", "DEFAULT_URL",
     "serve_tools", "verify_runtime_token", "verify_file_url", "RuntimeTokenError", "TestRuntime", "verify_webhook", "WebhookVerificationError",
 ]
 
@@ -74,6 +74,8 @@ class AgentRuntime(_RuntimeCalls):
         # Speech to text on its own: create.
         self.transcriptions = Transcriptions(self)
         self.images = Images(self)
+        # Your users' credit: configure, grant, get, ledger and the rest.
+        self.end_users = EndUsers(self)
 
     def _form(self, path, fields, file):
         """A multipart POST with the API key (a transcription's audio), not retried: its answer."""
@@ -664,6 +666,7 @@ class Agents:
         # Speech to text on its own: create(file or url=...). Audio attached to a message is transcribed without it.
         self.transcriptions = self.runtime.transcriptions
         self.images = self.runtime.images
+        self.end_users = self.runtime.end_users
         self._open = set()
 
     def run(self, input, **options):
@@ -676,7 +679,7 @@ class Agents:
 
     def upsert(self, key, *, model=None, instructions=None, tools=None, definition=None, thinking_level=None, subject=None, context=None,
                key_scope=None, spend_limit=None, run_limits=None, model_headers=None, mounts=None, remount=None, name=None, instructions_append=None, file_tools=None,
-               builtins=None, delegate=None, code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, mcp_servers=None):
+               builtins=None, delegate=None, code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, mcp_servers=None, bucket=None):
         """The agent for `key`, made now if there is none, and set to this configuration if it differs (see
         camelai_run.Agents.upsert). `tools` are declared, never served here: a process with the async SDK serves them
         (Agents().get(key, tools=...)). Tools for serverless or many workers: serve_tools and a definition. An upsert
@@ -690,7 +693,7 @@ class Agents:
                                             subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits,
                                             model_headers=model_headers, mounts=mounts, remount=remount, name=name, system_prompt_append=instructions_append, file_tools=file_tools,
                                             builtins=builtins, delegate=delegate, code_mode=code_mode, initial_messages=initial_messages, import_messages=import_messages,
-                                            max_output_tokens=max_output_tokens, temperature=temperature, mcp_servers=mcp_servers)
+                                            max_output_tokens=max_output_tokens, temperature=temperature, mcp_servers=mcp_servers, bucket=bucket)
         agent = self.agent(session, tools=tools)
         agent.config_hash = session.get("configHash")
         return agent

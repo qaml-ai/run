@@ -45,7 +45,7 @@ Every event is an envelope:
 | `usage.recorded` | A model response's usage was counted, a transcription's, or images' | `agentId`, `requestId`, `subject`, `actor`, `context`, `keyScope`, `provider`, `model`, `kind` (`response`, `compaction`, `transcription` or `image`), tokens, `audioSeconds` (a transcription's, with no tokens), `images` (how many images were made), `cost: {usd, source}`, `at`. A [transcription](voice.md) made with `POST /v1/transcriptions`, or [images](images.md) made with `POST /v1/images`, has `agentId: null`, and the `subject`, `context` and `actor` it was sent with. Treat a `kind` you do not know as other usage: kinds may be added |
 | `billing.balance.low` | Funded balance crosses below the alert threshold (default $2) | `balance`, `previousBalance`, `threshold` (integer micro-USD), `source` |
 | `billing.balance.depleted` | Positive balance reaches zero or below | Same balance fields |
-| `end_user.balance.low` | An end user's balance falls below your `lowBalance` | `endUser`, `balance`, `previousBalance`, `threshold` (integer micro-USD) |
+| `end_user.balance.low` | An [end user's](end-user-credits.md) balance falls below your `lowBalance` | `endUser`, `balance`, `previousBalance`, `threshold` (integer micro-USD) |
 | `end_user.credit.exhausted` | An end user ran out: `reason` `allowance` (a bucket's free allowance for the day is used up; their balance may still pay), `balance` (their balance reached zero, or a call was refused for it), or `daily_limit` (their paid spend reached the daily limit) | `endUser`, `reason`, `bucket`, `balance`, `day`; `allowance` or `dailyLimit` for those reasons |
 
 Billing events are recorded in the transaction that changes the balance, including

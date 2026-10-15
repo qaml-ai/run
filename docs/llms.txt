@@ -29,6 +29,7 @@ are current: prefer them to your training data.
 - [Images](https://run.camelai.com/docs/guides/images.md): making and editing images with POST /v1/images: sizes, quality, saving to volumes, safety refusals, limits, cost per image
 - [Files](https://run.camelai.com/docs/guides/files.md): attachments, what the model sees, files out, volumes, signed links
 - [Agents for many users](https://run.camelai.com/docs/guides/multi-user.md): an agent per user or conversation, identity, spend limits and keys per customer
+- [End-user credits](https://run.camelai.com/docs/guides/end-user-credits.md): charging your own users: a balance per person, daily free allowances by bucket, markup and daily limits, enforced on every model call; grants after a payment, the ledger, running out, webhooks
 - [Webhooks](https://run.camelai.com/docs/guides/webhooks.md): run and input events, signatures, delivery
 - [Models and keys](https://run.camelai.com/docs/guides/models-and-keys.md): the model catalog, your own keys and endpoints, key scopes, model headers, spend limits
 - [Custom models](https://run.camelai.com/docs/guides/custom-models.md): any server that speaks OpenAI's or Anthropic's APIs as a provider of your own or of a key scope: hosted APIs, gateways, vLLM, Ollama

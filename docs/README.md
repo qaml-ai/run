@@ -19,6 +19,7 @@ model-written code in a sandbox, and wakes agents when there is work.
    - [Files](guides/files.md): attachments, what the model sees, files out, volumes, signed links
    - [Voice and audio](guides/voice.md): audio in messages, transcribed for the model; transcribing on its own
    - [Images](guides/images.md): making and editing images with POST /v1/images
+   - [End-user credits](guides/end-user-credits.md): charging your own users, with a balance and daily allowances per person
    - [Agents for many users](guides/multi-user.md): per-user agents, identity, spend
    - [Webhooks](guides/webhooks.md): run and input events, signatures, delivery
    - [Observability](guides/observability.md): OpenTelemetry traces in LangSmith, Langfuse, Honeycomb, Datadog or any OTLP backend

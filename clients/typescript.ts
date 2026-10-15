@@ -394,6 +394,8 @@ export interface CreateAgentOptions extends AgentOptions {
   keyScope?: string;
   /** The most the agent may spend on model calls from now on (USD); PATCH /v1/agents/:id/configuration sets a new one. */
   spendLimit?: { usd: number };
+  /** With end-user credits on (`endUsers.configure`): the bucket of its subject's credit its runs spend from. Default "default". */
+  bucket?: string;
   /** The most one run may take: model responses, and seconds; the runtime's maximums (1,000 and 2 hours by default) apply over them. At either, the run stops with `stopped: "turn_limit"`. `firstTokenSeconds` and `idleSeconds`: how long a model request may go quiet (before its first token, between events) before it fails as stalled and is retried. `contextTokens`: the most context one model request carries; older context is compacted below it (default the model's context window). */
   runLimits?: { maxResponses?: number; maxSeconds?: number; firstTokenSeconds?: number; idleSeconds?: number; contextTokens?: number };
   /** Non-secret headers for each of its model calls, e.g. cf-aig-metadata; never auth headers. */
@@ -612,6 +614,11 @@ export type WebhookEvent = { id: string; created: number } & (
       /** Integer micro-USD, including negative balances. */
       balance: number; threshold: number; previousBalance?: number; source: "balance" | "threshold_changed";
     } }
+  | { type: "end_user.balance.low"; data: { endUser: string; balance: number; previousBalance: number; threshold: number } }
+  | { type: "end_user.credit.exhausted"; data: {
+      /** allowance: a bucket's free allowance for the day is used up (the balance may still pay); balance: no credit left; daily_limit: the day's paid spend reached its limit. */
+      endUser: string; reason: "allowance" | "balance" | "daily_limit"; bucket: string | null; balance: number; day: string; allowance?: number; dailyLimit?: number | null;
+    } }
   | { type: "run.started"; data: RunFacts & { resumes?: number } }
   | { type: "run.completed"; data: RunFacts & { usage: RunUsage | null; servedModel?: string; stopped?: "input_required" | "spend_limit" | "turn_limit"; inputIds?: string[]; replyIndex?: number; messageCount?: number; steeredInto?: string } }
   | { type: "run.failed"; data: RunFacts & Partial<ModelFailure> & { usage: RunUsage | null; servedModel?: string; error: string; code?: string; uncertain?: boolean; steeredInto?: string } }
@@ -708,8 +715,10 @@ export interface RunResult {
   error: string | null;
   /** Why it stopped early: waiting on human input (`inputs`), or its spend limit. */
   stopped?: "input_required" | "spend_limit" | "turn_limit";
-  /** With stopped "spend_limit": which limit stopped it (the run's own, its agent's, the tenant's monthly cap, or prepaid credit). */
-  limit?: "run" | "agent" | "tenant" | "credit";
+  /** With stopped "spend_limit": which limit stopped it (the run's own, its agent's, the tenant's monthly cap, prepaid credit, or its end user's credit: code `end_user_credit`). */
+  limit?: "run" | "agent" | "tenant" | "credit" | "end_user";
+  /** With limit "end_user": why its end user's credit stopped it (`balance`: none left; `daily_limit`: the day's limit reached). */
+  reason?: "balance" | "daily_limit";
   inputs?: AgentInput[];
   replyIndex?: number;
   /** Messages in the agent's history after it. */
@@ -721,7 +730,7 @@ export interface RunResult {
   servedModel?: string;
   /** When a model call failed it: how, without parsing `error`. */
   modelError?: ModelFailure;
-  /** A stable name for `error`, where the runtime gives one (output_missing: a structured run ended without its output; spend_limit, turn_limit: a limit stopped it). */
+  /** A stable name for `error`, where the runtime gives one (output_missing: a structured run ended without its output; spend_limit, turn_limit: a limit stopped it; end_user_credit: its end user's credit ran out). */
   code?: string;
   /** A prompt sent with `output`: the answer, which fits its schema. */
   output?: unknown;
@@ -870,7 +879,7 @@ const AGENT_KEY = /^[A-Za-z0-9_-]{1,80}$/;
 const REQUEST_ID = AGENT_KEY;
 /** A create request's fields, from the options given. */
 function provisioning(options: CreateAgentOptions) {
-  const fields = ["subject", "context", "keyScope", "spendLimit", "runLimits", "modelHeaders", "definition", "mounts", "remount", "model", "thinkingLevel", "maxOutputTokens", "temperature", "initialMessages", "importMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "delegate", "mcpServers", "prompt"] as const;
+  const fields = ["subject", "context", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "definition", "mounts", "remount", "model", "thinkingLevel", "maxOutputTokens", "temperature", "initialMessages", "importMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "delegate", "mcpServers", "prompt"] as const;
   return withMultiAgent(Object.fromEntries(fields.filter(field => options[field] !== undefined).map(field => [field, options[field]])));
 }
 /** `delegate` settings bring their builtin: given the settings without delegate or agents, delegate is added. */
@@ -926,6 +935,8 @@ export interface TranscriptionInput {
   keyScope?: string;
   /** Who it is for, your claims, and who asked: carried to its `usage.recorded` event. */
   subject?: string; context?: Record<string, unknown>; actor?: string;
+  /** With end-user credits on: the bucket of `subject`'s credit it spends from. */
+  bucket?: string;
   signal?: AbortSignal;
 }
 export interface Transcription {
@@ -986,6 +997,8 @@ export interface ImageOptions {
   volumeId?: string; path?: string;
   /** Who it is for, your claims, and who asked: carried to its `usage.recorded` event. */
   subject?: string; context?: Record<string, unknown>; actor?: string;
+  /** With end-user credits on: the bucket of `subject`'s credit it spends from. */
+  bucket?: string;
   signal?: AbortSignal;
 }
 /** One image made: its bytes as base64 (`data`), or where it was saved (`volumeId`, `path`, with `volumeId` given). */
@@ -1045,6 +1058,71 @@ export class Images {
   }
 }
 
+/** Integer micro-USD: 1 USD = 1,000,000. */
+export type Micros = number;
+/** How the tenant meters its end users (`endUsers.settings`). Allowances are raw cost per UTC day, by bucket, prefix ("bot:*") or "*". */
+export interface EndUserSettings { enabled: boolean; allowances: Record<string, Micros>; dailyLimit: Micros | null; markupBps: number; lowBalance: Micros | null; updatedAt: number | null }
+/** One bucket's day for an end user: its allowance, spent from it (raw) and from the balance (charged), held, and left. */
+export interface EndUserBucketDay { bucket: string; allowance: Micros; allowanceSpent: Micros; paidSpent: Micros; held: Micros; allowanceLeft: Micros }
+/** An end user as they stand: balance, what calls in flight hold, what paid spend may still take today, and today by bucket. */
+export interface EndUser {
+  id: string; enabled: boolean; balance: Micros; held: Micros; available: Micros; dailyLimit: Micros | null; markupBps: number;
+  overrides: { allowances: Record<string, Micros>; dailyLimit: Micros | null };
+  today: { day: string; paidSpent: Micros; buckets: EndUserBucketDay[] };
+  createdAt: number | null; updatedAt: number | null;
+}
+/** A ledger entry: `amount` moved the balance; for usage, `raw` is the call's cost and `allowance` what the bucket's allowance covered. */
+export interface EndUserLedgerEntry {
+  id: number; kind: "grant" | "refund" | "adjustment" | "usage"; amount: Micros; raw: Micros; allowance: Micros; bucket: string | null; key: string;
+  reference: string | null; metadata: Record<string, unknown>; balanceAfter: Micros; createdAt: number;
+}
+/** An entry of yours: `key` is its idempotency key (a payment's id), `reference` shown in the ledger. */
+export interface EndUserEntryInput { amount: Micros; key: string; reference?: string; metadata?: Record<string, unknown> }
+
+/**
+ * Your users' credit (`runtime.endUsers`, `agents.endUsers`): turn it on, credit a person after they pay, read their
+ * balance and history. Agents and calls with a `subject` spend that person's credit, from their `bucket`'s daily
+ * allowance first, then their balance; a run that runs out fails with code `end_user_credit`. Amounts are micro-USD.
+ *
+ *   await agents.endUsers.configure({ enabled: true, allowances: { builder: 50_000_000, "bot:*": 1_000_000 } });
+ *   await agents.endUsers.grant(user.id, { amount: 10_000_000, key: paymentIntent.id });
+ */
+export class EndUsers {
+  private readonly transport: Transport;
+  private readonly key: () => string;
+  constructor(transport: Transport, key: () => string) { this.transport = transport; this.key = key; }
+  private path(id: string) { return `/v1/end-users/${encodeURIComponent(id)}`; }
+  /** How the tenant meters its end users. */
+  settings(): Promise<EndUserSettings> { return this.transport.json("/v1/end-user-settings", this.key()); }
+  /** Change the settings; fields left out keep their values. A changed allowance keeps what was spent today. */
+  configure(input: Partial<Omit<EndUserSettings, "updatedAt">>): Promise<EndUserSettings> { return this.transport.json("/v1/end-user-settings", this.key(), "PUT", input); }
+  /** An end user: balance, limits and today's spend by bucket (`buckets` adds ones unused today). One never seen is at zero. */
+  get(id: string, options: { buckets?: string[] } = {}): Promise<EndUser> {
+    return this.transport.json(`${this.path(id)}${options.buckets?.length ? `?buckets=${options.buckets.map(encodeURIComponent).join(",")}` : ""}`, this.key());
+  }
+  /** End users by id, a page at a time: pass `next` as `after`. */
+  list(options: { after?: string; limit?: number } = {}): Promise<{ endUsers: { id: string; balance: Micros; createdAt: number; updatedAt: number }[]; next?: string }> {
+    const query = new URLSearchParams(Object.entries(options).filter(([, value]) => value !== undefined).map(([name, value]) => [name, String(value)]));
+    return this.transport.json(`/v1/end-users${query.size ? `?${query}` : ""}`, this.key());
+  }
+  /** A person's own allowances (merged key by key; null removes one) and daily limit (null: the tenant's). */
+  update(id: string, overrides: { allowances?: Record<string, Micros | null>; dailyLimit?: Micros | null }): Promise<EndUser> { return this.transport.json(this.path(id), this.key(), "PATCH", overrides); }
+  /** Their ledger, newest first, a page at a time: pass `next` as `before`. */
+  ledger(id: string, options: { before?: number; limit?: number } = {}): Promise<{ entries: EndUserLedgerEntry[]; next?: number }> {
+    const query = new URLSearchParams(Object.entries(options).filter(([, value]) => value !== undefined).map(([name, value]) => [name, String(value)]));
+    return this.transport.json(`${this.path(id)}/ledger${query.size ? `?${query}` : ""}`, this.key());
+  }
+  /** Add credit (after a payment): once per `key`; the same key again returns the first entry. */
+  grant(id: string, input: EndUserEntryInput) { return this.entry(id, "grant", input); }
+  /** Take credit back (money returned to the person). */
+  refund(id: string, input: EndUserEntryInput) { return this.entry(id, "refund", input); }
+  /** Move the balance by a signed amount. */
+  adjust(id: string, input: EndUserEntryInput) { return this.entry(id, "adjustment", input); }
+  private entry(id: string, kind: "grant" | "refund" | "adjustment", input: EndUserEntryInput): Promise<{ entry: EndUserLedgerEntry; replayed: boolean }> {
+    return this.transport.json(`${this.path(id)}/entries`, this.key(), "POST", { kind, ...input }, true);
+  }
+}
+
 /** The tenant's OpenTelemetry trace export (`runtime.telemetry`): set it, read it, test it, clear it. */
 export class Telemetry {
   private readonly transport: Transport;
@@ -1076,8 +1154,11 @@ export class AgentRuntime {
   readonly transcriptions: Transcriptions;
   /** Images on their own: `generate`, `edit`. */
   readonly images: Images;
+  /** Your users' credit: `configure`, `grant`, `get`, `ledger` and the rest. */
+  readonly endUsers: EndUsers;
   constructor(options: RuntimeOptions = {}) {
     this.options = options; this.transport = new Transport(options);
+    this.endUsers = new EndUsers(this.transport, () => this.operator());
     this.telemetry = new Telemetry(this.transport, () => this.operator());
     this.transcriptions = new Transcriptions(this.transport, () => this.operator());
     this.images = new Images(this.transport, () => this.operator());
@@ -1306,6 +1387,8 @@ export interface RunRequest {
   keyScope?: string; modelHeaders?: Record<string, string>;
   /** The run's budget (USD). */
   spendLimit?: { usd: number };
+  /** With end-user credits on: the bucket of `subject`'s credit it spends from. */
+  bucket?: string;
   runLimits?: { maxResponses?: number; maxSeconds?: number };
   subject?: string; context?: Record<string, unknown>; actor?: string; from?: Sender; metadata?: Record<string, string>; name?: string;
   /** How long its result, events and messages are kept once it ends (60 to 604800 seconds; default a day). */
