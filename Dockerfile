@@ -46,8 +46,9 @@ COPY clients/history-formats.ts ./clients/history-formats.ts
 COPY packages/cli/package.json ./packages/cli/package.json
 COPY packages/cli/src ./packages/cli/src
 COPY migrations ./migrations
-# One-off tasks around storage collection (docs/operations/persistence.md): pin backfill, and the check before deletion.
-COPY scripts/backfill-pins.ts scripts/verify-gc.ts scripts/check-storage.ts ./scripts/
+# One-off tasks: around storage collection (docs/operations/persistence.md), pin backfill and the check before deletion;
+# and the live Discord voice check infra/voice-check.sh runs.
+COPY scripts/backfill-pins.ts scripts/verify-gc.ts scripts/check-storage.ts scripts/voice-check.ts ./scripts/
 # Served at /docs/, /llms.txt and /llms-full.txt, and the UI registry at /r/ (src/docs.ts).
 COPY docs ./docs
 COPY packages/registry/public/r ./packages/registry/public/r

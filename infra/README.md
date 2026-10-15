@@ -51,6 +51,8 @@ history has the cutover runbook.
 - `infra/tenant.sh`: tenants, operator tokens and provider keys in Secrets Manager.
 - `infra/github-oauth.sh`: stores the GitHub OAuth secret, then force-rolls the ECS service.
 - `infra/google-oauth.sh`: stores the Google OAuth client, then force-rolls the ECS service.
+- `infra/voice-check.sh`: a one-off task in the service's network proving Discord voice works from there (two test
+  bots, before `AGENT_VOICE` is turned on); `cleanup` removes what it made.
 - `infra/config.sh`: settings shared by the scripts above.
 
 ## Adding a person

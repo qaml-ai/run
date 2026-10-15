@@ -28,4 +28,7 @@
   `voice.*` events in TypeScript's `WebhookEvent`. See [Voice calls](../guides/voice-calls.md).
 - The simulator holds voice calls for some seeds (a simulated transport), checked by I23: every open session ends up
   held by its owner alone, on one connection, and an ended one by none.
+- `infra/voice-check.sh` runs `scripts/voice-check.ts` (in the image) as a one-off task in the service's subnets,
+  security group and public IP: two test bots in a voice channel, one listening through the runtime's transport and
+  segmenter. Run it, and see it PASS, before turning voice on.
 - Migration 070.
