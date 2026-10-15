@@ -6,7 +6,7 @@ import { platformUsage } from "./platform-pricing.ts";
 import { enqueueEvents } from "./webhooks.ts";
 import { clock, network } from "./node-context.ts";
 import type { AttemptAck, ModelAttemptEvent } from "./model-attempt.ts";
-import { settleUsage, utcDay, type EndUserCredits } from "./end-user-credits.ts";
+import { lockEndUser, settleUsage, utcDay, type EndUserCredits } from "./end-user-credits.ts";
 import { catalogRates } from "./platform-pricing.ts";
 import { usageCost } from "./webhooks.ts";
 
@@ -135,7 +135,11 @@ export class ModelAttempts {
       if (!row) throw new Error("Unknown model attempt");
       // The host's report ends the call: its end user's hold goes, spent or not (an outcome still unknown is posted when
       // it is known, as the tenant's charge is).
-      if (row.end_user && !reconciled) await sql.query("delete from end_user_holds where id=$1", [id]);
+      // The end user's row first, as everything that touches their holds locks it (end-user-credits.ts).
+      if (row.end_user && !reconciled) {
+        await lockEndUser(sql, tenant, row.end_user);
+        await sql.query("delete from end_user_holds where id=$1", [id]);
+      }
       // A provider-reconciled or completed record is final. Delayed host deliveries cannot overwrite it.
       if (row.state === "settled" || (!reconciled && !completed && row.totals)) return;
       const evidence = chars > 0 || [usage.input, usage.output, usage.cacheRead, usage.cacheWrite, usage.providerCost].some(value => typeof value === "number" && value > 0);
