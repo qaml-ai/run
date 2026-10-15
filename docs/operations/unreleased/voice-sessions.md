@@ -24,4 +24,6 @@
   credentials Discord no longer takes (4004, 4006, 4009, 4011) wait 15 s for new ones.
 - SDKs: `agents.voice` (`runtime.voice`): `create`, `get`, `list`, `update`, `end`, in TypeScript and Python; the
   `voice.*` events in TypeScript's `WebhookEvent`. See [Voice calls](../guides/voice-calls.md).
+- The simulator holds voice calls for some seeds (a simulated transport), checked by I23: every open session ends up
+  held by its owner alone, on one connection, and an ended one by none.
 - Migration 070.

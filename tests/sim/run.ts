@@ -49,12 +49,14 @@ function runOf(body: any): number | undefined {
  */
 /** The end user every agent acts for, when a plan has end-user credits (I22). */
 const END_USER = "sim-user";
+/** Voice session N's server id: VOICE_GUILD + N. */
+const VOICE_GUILD = 100000000000000000n;
 
 export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: (sim: Sim, agents: Map<number, string>) => Promise<void> } = {}): Promise<RunResult> {
   const modelRandom = prng(`${plan.seed}:model`);
   const [low, high] = plan.modelDelayMs;
   const sim = await Sim.create({
-    seed: plan.seed, buggify: plan.buggify, quiet: options.quiet ?? true, ...(plan.dbLatencyMs ? { dbLatencyMs: plan.dbLatencyMs } : {}), ...(plan.dbSpikes ? { dbSpikes: plan.dbSpikes } : {}), storageFaults: !!plan.storageFaults,
+    seed: plan.seed, buggify: plan.buggify, quiet: options.quiet ?? true, ...(plan.dbLatencyMs ? { dbLatencyMs: plan.dbLatencyMs } : {}), ...(plan.dbSpikes ? { dbSpikes: plan.dbSpikes } : {}), storageFaults: !!plan.storageFaults, ...(plan.voice ? { voice: true } : {}),
     env: { AGENT_LEASE_TTL_MS: String(plan.leaseTtlMs), AGENT_ORPHAN_SWEEP_MS: "2000", ...plan.env }, ...(plan.startAt ? { start: Date.parse(plan.startAt) } : {}),
     respond: body => {
       const delayMs = low + modelRandom.int(high - low + 1);
@@ -122,6 +124,8 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
       await sim.call(plan.nodes[0], "/v1/end-user-settings", { method: "PUT", body: { enabled: true, allowances: { "*": plan.endUsers.allowance } } });
       await sim.call(plan.nodes[0], `/v1/end-users/${END_USER}/entries`, { body: { kind: "grant", amount: plan.endUsers.grant, key: "sim-grant" } });
     }
+    // Voice sessions transcribe with an OpenAI key: the account has one (unchecked; no speech is simulated).
+    if (plan.voice) await sim.call(plan.nodes[0], "/v1/providers/openai/key", { method: "PUT", body: { apiKey: "sim-openai-key", verify: false } });
     // The database refuses some statements from here on (a node that cannot start for it is restarted, as ECS would).
     if (plan.dbErrors && "errors" in sim.db) sim.db.errors = { ...plan.dbErrors, random: prng(`${plan.seed}:db-errors`) };
     sim.storageFaults = plan.storageFaults;
@@ -295,6 +299,19 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
           break;
         case "databaseDown": sim.databaseDown(op.node); break;
         case "databaseUp": sim.databaseDown(op.node, false); break;
+        // Voice session N: bot 3's call in server N (VOICE_GUILD + N), Discord session sim-voice-N (I23).
+        case "voice":
+          void client(op, op.node, "/v1/voice/sessions", {
+            discord: { guildId: String(VOICE_GUILD + BigInt(op.session)), channelId: "200000000000000002", userId: "300000000000000003", sessionId: `sim-voice-${op.session}`, endpoint: "c-sim-1.discord.media", token: `sim-token-${op.session}` },
+          }, { "Idempotency-Key": `voice-${op.session}` });
+          break;
+        case "voiceEnd": {
+          void sim.request(op.node, "/v1/voice/sessions?state=live", {}).then(answer => {
+            const session = (answer.json?.sessions ?? []).find((entry: any) => entry.discord?.guildId === String(VOICE_GUILD + BigInt(op.session)));
+            return session && client(op, op.node, `/v1/voice/sessions/${session.id}`, undefined, undefined, "DELETE");
+          }, () => undefined);
+          break;
+        }
       }
       history.push({ op, invoked: sim.env.elapsed, ended: sim.env.elapsed, result: "ok" });
     });
@@ -545,6 +562,33 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
       // refuses a client's: given up at once, which is the schedule working.
       const refused = sim.env.logs.some(log => log.line.includes('"schedule_delivery_failed"') && log.line.includes(`"schedule":"${request.slice("schedule-".length, "schedule-".length + 36)}"`) && log.line.includes('"status":402'));
       if (status !== 200 && !(plan.endUsers && refused)) failures.push(`I13: schedule ${schedule} of agent-${agent} never delivered its prompt (${request}: ${status})`);
+    }
+
+    // I23: every voice session left open is held by one node, which owns it (actor voice:<id>), on exactly one
+    // connection; an ended session by none. A session that moved (a deploy, a crash, a fence) is taken by a scan, so
+    // the bound is a lease and a few scans past recovery.
+    if (plan.voice && sim.voice) {
+      const voice = sim.voice;
+      const sessions = async () => (await sim.db.query("select id, guild, state from voice_sessions")).rows as { id: string; guild: string; state: string }[];
+      const wrong = async () => {
+        const found: string[] = [];
+        for (const session of await sessions()) {
+          const number = (BigInt(session.guild) - VOICE_GUILD).toString();
+          const open = voice.open(`sim-voice-${number}`);
+          if (session.state === "ended") {
+            if (open.length) found.push(`I23: voice session ${number} ended, and its call is still held on ${open.map(connection => connection.node).join(", ")}`);
+            continue;
+          }
+          const owner = (await sim.db.query(`select o.node from actor_owners o join runtime_nodes n on n.node = o.node and n.session = o.session
+            where o.actor = $1 and n.expires_at > now()`, [`voice:${session.id}`])).rows[0]?.node as string | undefined;
+          const ownerName = [...sim.nodes.values()].find(node => node.url === owner)?.name;
+          if (open.length !== 1 || open[0].node !== ownerName) found.push(`I23: voice session ${number} is open, held on ${open.length ? open.map(connection => connection.node).join(", ") : "no node"}, owned by ${ownerName ?? owner ?? "no node"}`);
+        }
+        return found;
+      };
+      let last: string[] = [];
+      await sim.until(async () => (last = await wrong()).length === 0, "voice sessions held once", plan.leaseTtlMs * 2 + 30_000, 1_000).catch(() => {});
+      failures.push(...last);
     }
 
     // I14: a prompt sent again with its key is the same request: every answer that names one names the first's, no retry

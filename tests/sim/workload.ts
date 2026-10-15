@@ -50,7 +50,11 @@ export type Op =
   /** Volumes: one made, a file written (each write its own path and content), a volume forked (I2, I11). */
   | { op: "volume"; volume: number; node: string }
   | { op: "write"; volume: number; write: number; node: string }
-  | { op: "forkVolume"; volume: number; fork: number; node: string };
+  | { op: "forkVolume"; volume: number; fork: number; node: string }
+  /** A client starts voice session N (a bot's call in server N, I23). */
+  | { op: "voice"; session: number; node: string }
+  /** A client ends voice session N. */
+  | { op: "voiceEnd"; session: number; node: string };
 
 /**
  * A run of the simulation as explicit data: the cluster, its settings, the model's latency, the BUGGIFY plan and every
@@ -101,6 +105,8 @@ export type Plan = {
    * model response costs `cost`; their money must add up whatever the faults (I22).
    */
   endUsers?: { grant: number; allowance: number; cost: number };
+  /** Voice sessions: the nodes hold calls (a simulated voice transport), which must each end held by one node (I23). */
+  voice?: boolean;
 };
 
 /** Which fault classes a run uses: each run enables a random subset (swarm testing). */
@@ -218,6 +224,16 @@ export function generatePlan(seed: string, options: { steps?: number; durationMs
   // One end user paying for every agent, for some seeds, from a stream of its own: concurrent calls across nodes share their credit.
   const paying = prng(`${seed}:end-users`);
   if (paying.float() < 0.4) extra.endUsers = { grant: [5_000, 20_000, 1_000_000][paying.int(3)], allowance: [0, 10_000][paying.int(2)], cost: 3_000 };
+  // Voice calls for some seeds, from a stream of their own: sessions started early, some ended later, held across the faults.
+  const calls = prng(`${seed}:voice`);
+  if (calls.float() < 0.3) {
+    extra.voice = true;
+    for (let session = 0, count = 1 + calls.int(3); session < count; session++) {
+      steps.push({ at: 20 + session * 10, op: { op: "voice", session, node: nodes[calls.int(nodes.length)] } });
+      if (calls.float() < 0.4) steps.push({ at: 1_000 + calls.int(Math.floor(durationMs * 0.8)), op: { op: "voiceEnd", session, node: nodes[calls.int(nodes.length)] } });
+    }
+    steps.sort((a, b) => a.at - b.at);
+  }
   // A database with a tail for some seeds, from a stream of its own, so every other draw of the plan stays as it was.
   const latency = prng(`${seed}:db-latency`);
   const tail = latency.float() < 0.3 ? { dbLatencyMs: [1, 5] as [number, number], dbSpikes: { rate: 0.01 + latency.int(2) * 0.01, ms: [200, 800] as [number, number] } } : {};
