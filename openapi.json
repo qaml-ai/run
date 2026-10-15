@@ -1329,7 +1329,9 @@
                 "billing.topup.action_required",
                 "billing.topup.no_card",
                 "billing.topup.limit",
-                "billing.topup.reconcile"
+                "billing.topup.reconcile",
+                "end_user.balance.low",
+                "end_user.credit.exhausted"
               ]
             },
             "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded"
@@ -1382,7 +1384,9 @@
                 "billing.topup.action_required",
                 "billing.topup.no_card",
                 "billing.topup.limit",
-                "billing.topup.reconcile"
+                "billing.topup.reconcile",
+                "end_user.balance.low",
+                "end_user.credit.exhausted"
               ]
             },
             "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded"
@@ -1424,7 +1428,9 @@
                 "billing.topup.action_required",
                 "billing.topup.no_card",
                 "billing.topup.limit",
-                "billing.topup.reconcile"
+                "billing.topup.reconcile",
+                "end_user.balance.low",
+                "end_user.credit.exhausted"
               ]
             },
             "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded"

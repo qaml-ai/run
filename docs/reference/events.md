@@ -315,3 +315,5 @@ dedupe by `id`. See [Webhooks](../guides/webhooks.md).
 | `input.requested` | `agentId`, `requestId`, `inputId`, `toolCallId`, `kind`, `expiresAt` |
 | `input.resolved` | `agentId`, `requestId`, `inputId`, `state` |
 | `usage.recorded` | `agentId` (null for a [transcription](../guides/voice.md) or [images](../guides/images.md) made alone), `requestId`, `subject`, `actor`, `context`, `keyScope`, `provider`, `model`, `kind` (`response`, `compaction`, `transcription`, `image`), `input`, `output`, `cacheRead`, `cacheWrite`, `reasoning?`, `audioSeconds?` (a transcription's), `images?` (how many images were made), `cost: {usd, source}`, `at` |
+| `end_user.balance.low` | `endUser`, `balance`, `previousBalance`, `threshold` (integer micro-USD): an [end user's](../guides/end-user-credits.md) balance fell below the tenant's `lowBalance` |
+| `end_user.credit.exhausted` | `endUser`, `reason` (`allowance`, `balance`, `daily_limit`), `bucket`, `balance`, `day`, `allowance?`, `dailyLimit?` |
