@@ -54,6 +54,9 @@ volumes/<id>/files/...     each volume's files
 billing/ledger.jsonl       your credit ledger, one entry per line, newest first
 billing/usage.json         model usage per day and model
 billing/attempts.jsonl     durable model attempts and settlement state (no key fingerprints)
+end-users/settings.json    how you meter your own users' credit
+end-users/end-users.jsonl  each of your users' balance and overrides
+end-users/ledger.jsonl     their credit ledger: your grants, refunds and adjustments, and each call's usage
 analytics/account.json     only if this service measures how its website and console are used: the ids your account is known by there, and what was noted of it here
 analytics/summary.json     what the operator's analytics store says of how your account came to be
 analytics/events-*.json    the events it holds of your account, oldest first
@@ -155,6 +158,25 @@ export async function* exportAccount(options: ExportOptions, tenant: string): As
       if (!rows.length) return;
       yield Buffer.from(rows.map(row => JSON.stringify(row)).join("\n") + "\n");
       after = rows.at(-1)!.id;
+    }
+  })());
+
+  // The tenant's own users' credit (end-user-credits.ts): its settings, each user's balance and overrides, and their ledger.
+  yield* zip.file("end-users/settings.json", json((await accounts.db.query("select enabled, allowances, daily_limit, markup_bps, low_balance, updated_at from end_user_settings where tenant=$1", [tenant])).rows[0] ?? null));
+  yield* zip.file("end-users/end-users.jsonl", (async function* () {
+    for (let after = ""; ;) {
+      const { rows } = await accounts.db.query("select id, balance, allowances, daily_limit, created_at, updated_at from end_users where tenant=$1 and id>$2 order by id limit 200", [tenant, after]);
+      if (!rows.length) return;
+      yield Buffer.from(rows.map(row => JSON.stringify(row)).join("\n") + "\n");
+      after = rows.at(-1)!.id;
+    }
+  })());
+  yield* zip.file("end-users/ledger.jsonl", (async function* () {
+    for (let after = 0; ;) {
+      const { rows } = await accounts.db.query("select id, end_user, kind, amount, raw, allowance, bucket, idempotency_key, reference, metadata, balance_after, created_at from end_user_ledger where tenant=$1 and id>$2 order by id limit 200", [tenant, after]);
+      if (!rows.length) return;
+      yield Buffer.from(rows.map(row => JSON.stringify(row)).join("\n") + "\n");
+      after = Number(rows.at(-1)!.id);
     }
   })());
 
