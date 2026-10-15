@@ -49,6 +49,8 @@ const TENANT_TABLES = [
   "agent_inputs", "schedules", "channel_agents", "volume_watchers", "channels",
   "chunk_pins", "chunk_touches", "gc_candidates", "storage_gc",
   "billing_email_outbox", "billing_recipients", "billing_events", "billing_alert_settings", "billing_auto_settings", "help_requests",
+  // The tenant's own users' credit: their ids are the tenant's customers' data.
+  "end_user_settings", "end_users", "end_user_ledger", "end_user_days", "end_user_holds",
 ];
 
 export class AccountDeletions {
@@ -160,7 +162,7 @@ export class AccountDeletions {
       for (const table of TENANT_TABLES) await sql.query(`delete from ${table} where tenant = $1`, [tenant]);
       await deleteJourneyAccount(sql, tenant);
       // Accounting evidence survives deletion, but customer-provided attribution does not.
-      await sql.query("update model_attempts set context='{}' where tenant=$1", [tenant]);
+      await sql.query("update model_attempts set context='{}', end_user=null where tenant=$1", [tenant]);
       await sql.query("delete from billing_confirmation_limits where scope = $1", [`tenant:${tenant}`]);
       await sql.query("delete from storage_usage where (kind = 'tenant' and owner = $1) or (kind = 'volume' and owner in (select id from volumes where tenant = $1))", [tenant]);
       await sql.query("delete from volumes where tenant = $1", [tenant]);

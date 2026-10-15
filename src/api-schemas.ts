@@ -1043,6 +1043,66 @@ export const Billing = z.object({
     image: z.object({ textInput: micros("Per million text tokens in"), imageInput: micros("Per million image tokens in (images to edit)"), output: micros("Per million image tokens out") }).openapi({ description: "Images made on the platform's OpenAI key (gpt-image-2.5-flare), per token as the provider bills" }),
   }).openapi({ description: "Model usage on platform keys passes through provider-reported cost (catalog estimate if unavailable) plus provider credit funding costs; tools.search's ranking by meaning is charged at cost" }),
 }).openapi("Billing");
+const allowanceMap = (description: string) => z.record(z.string(), z.number().int().nonnegative()).openapi({
+  description: `${description}: micro-USD of raw cost per UTC day, keyed by a bucket ("builder"), a prefix of buckets ("bot:*") or every bucket ("*"). A bucket takes its own key, else the longest prefix it starts with, else "*", else none`,
+  example: { builder: 50_000_000, "bot:*": 1_000_000 },
+});
+export const EndUserSettings = z.object({
+  enabled: z.boolean().openapi({ description: "Whether runs and calls with a subject are metered and limited by their end user's credit" }),
+  allowances: allowanceMap("Free allowances, spent before the paid balance"),
+  dailyLimit: micros("The most an end user's paid spend may be per UTC day (charged amounts); null: no limit").nullable(),
+  markupBps: z.number().int().openapi({ description: "Added to the raw cost of paid spend, in basis points (2500: +25%)" }),
+  lowBalance: micros("end_user.balance.low fires when a balance falls below this; null: never").nullable(),
+  updatedAt: z.number().nullable(),
+}).openapi("EndUserSettings");
+export const EndUserSettingsInput = z.object({
+  enabled: z.boolean().optional(), allowances: allowanceMap("Free allowances (replaces the current map)").optional(),
+  dailyLimit: z.number().int().nullable().optional(), markupBps: z.number().int().min(0).max(100_000).optional(), lowBalance: z.number().int().nullable().optional(),
+}).openapi("EndUserSettingsInput", { description: "Fields left out keep their current values" });
+export const EndUserBucketDay = z.object({
+  bucket: z.string(), allowance: micros("The bucket's allowance today (raw cost)"), allowanceSpent: micros("Spent from it today (raw cost)"),
+  paidSpent: micros("Charged to the balance today for this bucket"), held: micros("Held for calls in flight (allowance and balance)"),
+  allowanceLeft: micros("Left of the allowance today, after holds"),
+});
+export const EndUser = z.object({
+  id: z.string().openapi({ description: "The end user: the subject of the agents and calls that spend for them" }),
+  enabled: z.boolean().openapi({ description: "Whether the tenant meters its end users" }),
+  balance: micros("Paid credit left (charged units); slightly negative only by the documented overspend tolerance"),
+  held: micros("Of the balance, what calls in flight hold"),
+  available: micros("What paid spend may still take today: the balance less holds, within the daily limit"),
+  dailyLimit: micros("The daily limit on paid spend that applies (the user's own, else the tenant's); null: none").nullable(),
+  markupBps: z.number().int(),
+  overrides: z.object({ allowances: z.record(z.string(), z.number().int()), dailyLimit: z.number().int().nullable() }).openapi({ description: "The user's own allowances and daily limit, over the tenant's" }),
+  today: z.object({ day: z.string(), paidSpent: micros("Charged to the balance today, every bucket"), buckets: z.array(EndUserBucketDay) }),
+  createdAt: z.number().nullable().openapi({ description: "null: never metered or credited yet" }), updatedAt: z.number().nullable(),
+}).openapi("EndUser");
+export const EndUserSummary = z.object({ id: z.string(), balance: micros("Paid credit left"), createdAt: z.number(), updatedAt: z.number() });
+export const EndUserList = z.object({ endUsers: z.array(EndUserSummary), next: z.string().optional().openapi({ description: "Pass as `after` for the next page" }) }).openapi("EndUserList");
+export const EndUserUpdate = z.object({
+  allowances: z.record(z.string(), z.number().int().nonnegative().nullable()).optional().openapi({ description: "Merged into the user's own allowances key by key; null removes a key" }),
+  dailyLimit: z.number().int().nonnegative().nullable().optional().openapi({ description: "The user's own daily limit on paid spend; null: the tenant's" }),
+}).openapi("EndUserUpdate");
+export const EndUserEntryInput = z.object({
+  kind: z.enum(["grant", "refund", "adjustment"]).openapi({ description: "grant: adds amount (a payment, a gift); refund: takes amount back (money returned to the user); adjustment: moves the balance by a signed amount" }),
+  amount: z.number().int().openapi({ description: "micro-USD: positive for a grant or refund, signed for an adjustment" }),
+  key: z.string().min(1).max(255).openapi({ description: "Idempotency key, e.g. the payment's id: the same key and entry again returns the first; with another entry it is a 409" }),
+  reference: z.string().max(500).optional().openapi({ description: "Your reference, shown in the ledger" }),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+}).openapi("EndUserEntryInput");
+export const EndUserLedgerEntry = z.object({
+  id: z.number().int(),
+  kind: z.enum(["grant", "refund", "adjustment", "usage"]),
+  amount: micros("What moved the balance: positive adds credit, negative spends it"),
+  raw: micros("usage: the call's raw cost"), allowance: micros("usage: the part of the raw cost the bucket's allowance covered"),
+  bucket: z.string().nullable(), key: z.string(), reference: z.string().nullable(),
+  metadata: z.record(z.string(), z.unknown()).openapi({ description: "usage: the call (kind, provider, model, agent, requestId, markupBps)" }),
+  balanceAfter: micros("The balance after this entry"), createdAt: z.number(),
+}).openapi("EndUserLedgerEntry");
+export const EndUserEntry = z.object({ entry: EndUserLedgerEntry, replayed: z.boolean().openapi({ description: "The key was posted already: this is that entry" }) }).openapi("EndUserEntry");
+export const EndUserLedger = z.object({
+  entries: z.array(EndUserLedgerEntry).openapi({ description: "Newest first" }),
+  next: z.number().int().optional().openapi({ description: "Pass as `before` for the next page" }),
+}).openapi("EndUserLedger");
 export const BillingAlertChoices = z.object({ low: z.boolean(), depleted: z.boolean(), problems: z.boolean(), receipts: z.boolean() });
 export const BillingRecipient = z.object({ id: z.uuid(), email: z.email(), status: z.enum(["pending", "verified", "bounced", "unsubscribed"]), events: BillingAlertChoices });
 export const BillingAlerts = z.object({ threshold: micros("Low-balance threshold"), emailEnabled: z.boolean(), recipients: z.array(BillingRecipient) });

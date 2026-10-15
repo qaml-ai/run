@@ -7525,6 +7525,441 @@
           }
         ]
       },
+      "EndUserSettings": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether runs and calls with a subject are metered and limited by their end user's credit"
+          },
+          "allowances": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "description": "Free allowances, spent before the paid balance: micro-USD of raw cost per UTC day, keyed by a bucket (\"builder\"), a prefix of buckets (\"bot:*\") or every bucket (\"*\"). A bucket takes its own key, else the longest prefix it starts with, else \"*\", else none",
+            "example": {
+              "builder": 50000000,
+              "bot:*": 1000000
+            }
+          },
+          "dailyLimit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "The most an end user's paid spend may be per UTC day (charged amounts); null: no limit, in micro-USD (1 USD = 1000000)"
+          },
+          "markupBps": {
+            "type": "integer",
+            "description": "Added to the raw cost of paid spend, in basis points (2500: +25%)"
+          },
+          "lowBalance": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "end_user.balance.low fires when a balance falls below this; null: never, in micro-USD (1 USD = 1000000)"
+          },
+          "updatedAt": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "enabled",
+          "allowances",
+          "dailyLimit",
+          "markupBps",
+          "lowBalance",
+          "updatedAt"
+        ]
+      },
+      "EndUserSettingsInput": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "allowances": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "description": "Free allowances (replaces the current map): micro-USD of raw cost per UTC day, keyed by a bucket (\"builder\"), a prefix of buckets (\"bot:*\") or every bucket (\"*\"). A bucket takes its own key, else the longest prefix it starts with, else \"*\", else none",
+            "example": {
+              "builder": 50000000,
+              "bot:*": 1000000
+            }
+          },
+          "dailyLimit": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "markupBps": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100000
+          },
+          "lowBalance": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "description": "Fields left out keep their current values"
+      },
+      "EndUserList": {
+        "type": "object",
+        "properties": {
+          "endUsers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "balance": {
+                  "type": "integer",
+                  "description": "Paid credit left, in micro-USD (1 USD = 1000000)"
+                },
+                "createdAt": {
+                  "type": "number"
+                },
+                "updatedAt": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "id",
+                "balance",
+                "createdAt",
+                "updatedAt"
+              ]
+            }
+          },
+          "next": {
+            "type": "string",
+            "description": "Pass as `after` for the next page"
+          }
+        },
+        "required": [
+          "endUsers"
+        ]
+      },
+      "EndUser": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The end user: the subject of the agents and calls that spend for them"
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether the tenant meters its end users"
+          },
+          "balance": {
+            "type": "integer",
+            "description": "Paid credit left (charged units); slightly negative only by the documented overspend tolerance, in micro-USD (1 USD = 1000000)"
+          },
+          "held": {
+            "type": "integer",
+            "description": "Of the balance, what calls in flight hold, in micro-USD (1 USD = 1000000)"
+          },
+          "available": {
+            "type": "integer",
+            "description": "What paid spend may still take today: the balance less holds, within the daily limit, in micro-USD (1 USD = 1000000)"
+          },
+          "dailyLimit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "The daily limit on paid spend that applies (the user's own, else the tenant's); null: none, in micro-USD (1 USD = 1000000)"
+          },
+          "markupBps": {
+            "type": "integer"
+          },
+          "overrides": {
+            "type": "object",
+            "properties": {
+              "allowances": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "integer"
+                }
+              },
+              "dailyLimit": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "allowances",
+              "dailyLimit"
+            ],
+            "description": "The user's own allowances and daily limit, over the tenant's"
+          },
+          "today": {
+            "type": "object",
+            "properties": {
+              "day": {
+                "type": "string"
+              },
+              "paidSpent": {
+                "type": "integer",
+                "description": "Charged to the balance today, every bucket, in micro-USD (1 USD = 1000000)"
+              },
+              "buckets": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "bucket": {
+                      "type": "string"
+                    },
+                    "allowance": {
+                      "type": "integer",
+                      "description": "The bucket's allowance today (raw cost), in micro-USD (1 USD = 1000000)"
+                    },
+                    "allowanceSpent": {
+                      "type": "integer",
+                      "description": "Spent from it today (raw cost), in micro-USD (1 USD = 1000000)"
+                    },
+                    "paidSpent": {
+                      "type": "integer",
+                      "description": "Charged to the balance today for this bucket, in micro-USD (1 USD = 1000000)"
+                    },
+                    "held": {
+                      "type": "integer",
+                      "description": "Held for calls in flight (allowance and balance), in micro-USD (1 USD = 1000000)"
+                    },
+                    "allowanceLeft": {
+                      "type": "integer",
+                      "description": "Left of the allowance today, after holds, in micro-USD (1 USD = 1000000)"
+                    }
+                  },
+                  "required": [
+                    "bucket",
+                    "allowance",
+                    "allowanceSpent",
+                    "paidSpent",
+                    "held",
+                    "allowanceLeft"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "day",
+              "paidSpent",
+              "buckets"
+            ]
+          },
+          "createdAt": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "null: never metered or credited yet"
+          },
+          "updatedAt": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "enabled",
+          "balance",
+          "held",
+          "available",
+          "dailyLimit",
+          "markupBps",
+          "overrides",
+          "today",
+          "createdAt",
+          "updatedAt"
+        ]
+      },
+      "EndUserUpdate": {
+        "type": "object",
+        "properties": {
+          "allowances": {
+            "type": "object",
+            "additionalProperties": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "description": "Merged into the user's own allowances key by key; null removes a key"
+          },
+          "dailyLimit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "The user's own daily limit on paid spend; null: the tenant's"
+          }
+        }
+      },
+      "EndUserLedger": {
+        "type": "object",
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EndUserLedgerEntry"
+            },
+            "description": "Newest first"
+          },
+          "next": {
+            "type": "integer",
+            "description": "Pass as `before` for the next page"
+          }
+        },
+        "required": [
+          "entries"
+        ]
+      },
+      "EndUserLedgerEntry": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "grant",
+              "refund",
+              "adjustment",
+              "usage"
+            ]
+          },
+          "amount": {
+            "type": "integer",
+            "description": "What moved the balance: positive adds credit, negative spends it, in micro-USD (1 USD = 1000000)"
+          },
+          "raw": {
+            "type": "integer",
+            "description": "usage: the call's raw cost, in micro-USD (1 USD = 1000000)"
+          },
+          "allowance": {
+            "type": "integer",
+            "description": "usage: the part of the raw cost the bucket's allowance covered, in micro-USD (1 USD = 1000000)"
+          },
+          "bucket": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "key": {
+            "type": "string"
+          },
+          "reference": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "usage: the call (kind, provider, model, agent, requestId, markupBps)"
+          },
+          "balanceAfter": {
+            "type": "integer",
+            "description": "The balance after this entry, in micro-USD (1 USD = 1000000)"
+          },
+          "createdAt": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "amount",
+          "raw",
+          "allowance",
+          "bucket",
+          "key",
+          "reference",
+          "metadata",
+          "balanceAfter",
+          "createdAt"
+        ]
+      },
+      "EndUserEntry": {
+        "type": "object",
+        "properties": {
+          "entry": {
+            "$ref": "#/components/schemas/EndUserLedgerEntry"
+          },
+          "replayed": {
+            "type": "boolean",
+            "description": "The key was posted already: this is that entry"
+          }
+        },
+        "required": [
+          "entry",
+          "replayed"
+        ]
+      },
+      "EndUserEntryInput": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "grant",
+              "refund",
+              "adjustment"
+            ],
+            "description": "grant: adds amount (a payment, a gift); refund: takes amount back (money returned to the user); adjustment: moves the balance by a signed amount"
+          },
+          "amount": {
+            "type": "integer",
+            "description": "micro-USD: positive for a grant or refund, signed for an adjustment"
+          },
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255,
+            "description": "Idempotency key, e.g. the payment's id: the same key and entry again returns the first; with another entry it is a 409"
+          },
+          "reference": {
+            "type": "string",
+            "maxLength": 500,
+            "description": "Your reference, shown in the ledger"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {}
+          }
+        },
+        "required": [
+          "kind",
+          "amount",
+          "key"
+        ]
+      },
       "MountsInput": {
         "type": "object",
         "properties": {
@@ -14751,6 +15186,332 @@
                   "required": [
                     "aborted"
                   ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/end-user-settings": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "How the tenant meters its end users",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EndUserSettings"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EndUserSettingsInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The settings now; a changed allowance applies to the next call and keeps what was spent today",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EndUserSettings"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/end-users": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The previous page's next"
+            },
+            "required": false,
+            "description": "The previous page's next",
+            "name": "after",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "1–200, default 50"
+            },
+            "required": false,
+            "description": "1–200, default 50",
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The tenant's end users (each metered or credited at least once), by id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EndUserList"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/end-users/{id}": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The end user: the subject of the agents and calls that spend for them (URL-encoded)"
+            },
+            "required": true,
+            "description": "The end user: the subject of the agents and calls that spend for them (URL-encoded)",
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Comma-separated buckets to include in today's spend even if unused today, e.g. builder,bot:42"
+            },
+            "required": false,
+            "description": "Comma-separated buckets to include in today's spend even if unused today, e.g. builder,bot:42",
+            "name": "buckets",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The end user's balance, limits and today's spend by bucket; one never seen is shown at zero",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EndUser"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The end user: the subject of the agents and calls that spend for them (URL-encoded)"
+            },
+            "required": true,
+            "description": "The end user: the subject of the agents and calls that spend for them (URL-encoded)",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EndUserUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The end user with their new overrides; what they spent is unchanged",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EndUser"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/end-users/{id}/ledger": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The end user: the subject of the agents and calls that spend for them (URL-encoded)"
+            },
+            "required": true,
+            "description": "The end user: the subject of the agents and calls that spend for them (URL-encoded)",
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Entries older than this id: the previous page's next"
+            },
+            "required": false,
+            "description": "Entries older than this id: the previous page's next",
+            "name": "before",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "1–200, default 50"
+            },
+            "required": false,
+            "description": "1–200, default 50",
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The end user's ledger, newest first: grants, refunds, adjustments and each call's usage",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EndUserLedger"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/end-users/{id}/entries": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The end user: the subject of the agents and calls that spend for them (URL-encoded)"
+            },
+            "required": true,
+            "description": "The end user: the subject of the agents and calls that spend for them (URL-encoded)",
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EndUserEntryInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The key was posted already: its entry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EndUserEntry"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "The entry, posted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EndUserEntry"
                 }
               }
             }

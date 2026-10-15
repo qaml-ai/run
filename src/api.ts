@@ -26,6 +26,8 @@ import type { Webhooks } from "./webhooks.ts";
 import type { Telemetry } from "./telemetry.ts";
 import { definitionRoutes } from "./definitions-api.ts";
 import { runRoutes, type RunsContext } from "./runs.ts";
+import { endUserRoutes } from "./end-users-api.ts";
+import type { EndUserCredits } from "./end-user-credits.ts";
 import type { ClientEvent, RequestRecord, TurnSnapshot } from "../shared/client-protocol.ts";
 import * as schema from "./api-schemas.ts";
 import { normalizePath, snapshotContents, VOLUME_LIMITS, type FileEntry, type VolumeService } from "./volumes.ts";
@@ -109,6 +111,8 @@ export interface ApiContext {
   transcriptions?: TranscriptionService;
   /** `POST /v1/images`; without it, image generation is not enabled. */
   images?: ImageService;
+  /** The tenant's own users' credit (`/v1/end-users`, end-user-credits.ts); without it, end users are not metered. */
+  endUsers?: EndUserCredits;
   /** The caller's address (Get Help's per-source limit); by default the load balancer's, as `clientAddress` reads it without Cloudflare. */
   clientAddress?: (c: Context) => string | undefined;
 }
@@ -1192,6 +1196,7 @@ export function api(context: ApiContext) {
   channelRoutes(route, () => context.channels);
   definitionRoutes(route, () => context);
   runRoutes(route, () => context);
+  endUserRoutes(route, () => context.endUsers);
 
   route(createRoute({ method: "get", path: "/v1/agents/{id}/mounts", request: { params: agentId }, responses: { 200: reply("The agent's mounts", z.array(schema.Mount)) } }),
     async c => json(c, 200, (await clients.inspect(c.req.param("id")!, c.var.principal.tenant)).mounts));
