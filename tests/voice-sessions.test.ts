@@ -1,53 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { Accounts } from "../src/accounts.ts";
-import { Tenants } from "../src/tenants.ts";
 import { HttpError } from "../src/http.ts";
-import { Ownership } from "../src/ownership.ts";
-import { VoiceSessions, type VoiceSessionsOptions } from "../src/voice-sessions.ts";
-import type { Db } from "../src/db.ts";
-import { testDatabase } from "./database.ts";
-import { discordGrant, fakeTransport } from "./voice-fakes.ts";
-
-type T = { after(fn: () => Promise<void> | void): void };
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-const AGENT = `client_${"a".repeat(40)}`;
-
-async function until<V>(check: () => V | Promise<V>, what: string, timeoutMs = 10_000): Promise<Exclude<V, false | 0 | "" | null | undefined>> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const value = await check();
-    if (value) return value as Exclude<V, false | 0 | "" | null | undefined>;
-    if (Date.now() > deadline) throw new Error(`Timed out waiting for ${what}`);
-    await sleep(20);
-  }
-}
-
-/** Nodes holding voice sessions over one database, each with its own heartbeat, sharing one fake transport. */
-async function voiceCluster(t: T, options: Partial<VoiceSessionsOptions> & { ttlMs?: number } = {}) {
-  const { db } = await testDatabase();
-  const accounts = new Accounts({ tenants: new Tenants({ read: async () => JSON.stringify({ tenants: {} }) }), db, secretsKey: randomBytes(32).toString("hex") });
-  const fake = fakeTransport();
-  const nodes: { name: string; ownership: Ownership; voice: VoiceSessions }[] = [];
-  t.after(async () => { for (const node of nodes) { await node.voice.stop().catch(() => {}); await node.ownership.close().catch(() => {}); } });
-  const node = async (name: string, db_: Db = db) => {
-    const ownership = new Ownership(db_, { node: name, ttlMs: options.ttlMs ?? 90_000 });
-    await ownership.start();
-    const voice = new VoiceSessions({
-      db: db_, accounts, node: name, ownership, transports: { discord: fake.transport },
-      admit: async () => {}, agentOwned: async agent => agent === AGENT, ...options,
-    });
-    nodes.push({ name, ownership, voice });
-    return { name, ownership, voice };
-  };
-  // Webhook endpoints selecting the voice events, so they land in the outbox.
-  await db.query("insert into webhook_endpoints (id, tenant, url, events, secret, created_at) values ('we_1', 'alice', 'https://example.test/hook', $1, '{}', 0)",
-    [["voice.session.started", "voice.session.ended", "voice.utterance"]]);
-  const events = async (type?: string) => (await db.query("select body from webhook_deliveries where tenant = 'alice' order by created_at, id")).rows
-    .map(row => row.body).filter(body => type === undefined || body.type === type);
-  return { db, accounts, fake, node, events };
-}
+import { VoiceSessions } from "../src/voice-sessions.ts";
+import { AGENT, discordGrant, fakeTranscriber, fakeTransport, sleep, until, voiceCluster } from "./voice-fakes.ts";
 
 test("a session is stored sealed, taken and connected by the node that took it, and is live once ready", async t => {
   const { db, fake, node, events } = await voiceCluster(t);
@@ -113,9 +69,10 @@ test("a tenant that may not spend, or a runtime that cannot seal, makes no sessi
   const { node, db } = await voiceCluster(t, { admit: async () => { throw new HttpError(402, "Out of credit", "SPEND_LIMIT"); } });
   const a = await node("http://a");
   await assert.rejects(a.voice.create("alice", { discord: discordGrant() }), (error: HttpError) => error.status === 402 && error.code === "SPEND_LIMIT");
-  const unsealed = new VoiceSessions({ db, accounts: { canStoreKeys: false } as any, node: "x", transports: { discord: fakeTransport().transport }, admit: async () => {}, agentOwned: async () => true });
+  const rest = { node: "x", admit: async () => {}, agentOwned: async () => true, transcriber: fakeTranscriber().transcriber, canTranscribe: async () => true, record: () => {}, submit: async () => ({}) };
+  const unsealed = new VoiceSessions({ db, accounts: { canStoreKeys: false } as any, transports: { discord: fakeTransport().transport }, ...rest });
   await assert.rejects(unsealed.create("alice", { discord: discordGrant() }), (error: HttpError) => error.status === 503);
-  const none = new VoiceSessions({ db, accounts: { canStoreKeys: true } as any, node: "x", transports: {}, admit: async () => {}, agentOwned: async () => true });
+  const none = new VoiceSessions({ db, accounts: { canStoreKeys: true } as any, transports: {}, ...rest });
   await assert.rejects(none.create("alice", { discord: discordGrant() }), (error: HttpError) => error.status === 404);
   assert.equal(Number((await db.query("select count(*) as count from voice_sessions")).rows[0].count), 0);
 });
