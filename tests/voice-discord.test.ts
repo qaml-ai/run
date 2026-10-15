@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { discordVoice } from "../src/voice-discord.ts";
 import type { VoiceCredentials, VoiceHandlers } from "../src/voice-sessions.ts";
 import { fakeDiscordVoice } from "./fake-discord-voice.ts";
-import { discordGrant, opusPacket, until, voiceCluster } from "./voice-fakes.ts";
+import { discordGrant, opusPacket, speechPacket, until, voiceCluster } from "./voice-fakes.ts";
 
 /** A Discord voice connection to the fake server, recording what it reports. */
 function connect(credentials: VoiceCredentials) {
@@ -87,7 +87,7 @@ test("a session on the Discord transport: the call's speech becomes utterances",
   voice.members(["400000000000000004", grant.userId]);
   const created = await a.voice.create("alice", { discord: grant, silenceMs: 300 });
   await until(async () => (await a.voice.get("alice", created.id)).state === "live", "live");
-  await voice.speak("400000000000000004", 5_002, Array.from({ length: 50 }, () => opusPacket()));
+  await voice.speak("400000000000000004", 5_002, Array.from({ length: 50 }, (_, index) => speechPacket(index)));
   const [utterance] = await until(async () => { const found = await events("voice.utterance"); return found.length && found; }, "the utterance");
   assert.equal(utterance.data.speakerId, "400000000000000004");
   assert.equal(utterance.data.text, "heard 1.0 seconds");

@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import OpusScript from "opusscript";
 import { Accounts } from "../src/accounts.ts";
 import { Tenants } from "../src/tenants.ts";
 import { Ownership } from "../src/ownership.ts";
@@ -47,11 +48,33 @@ export function fakeTransport() {
   return { transport, connections, open: () => connections.filter(connection => !connection.closed) };
 }
 
-/** An Opus packet as Discord sends one: 20 ms of hybrid full-band audio (TOC 0x78), its payload `fill`. */
+/** An Opus packet's shape as Discord sends one, for transports that pass bytes on: TOC 0x78 (20 ms), its payload `fill`. */
 export const opusPacket = (fill = 1) => Uint8Array.from([0x78, ...Array.from({ length: 40 }, () => fill)]);
+
+/** Real Opus packets (48 kHz stereo, 20 ms): `loud` a 440 Hz tone at about -13 dBFS, else digital silence (encoded). */
+const encoded = (() => {
+  const encoder = new OpusScript(48_000, 2, OpusScript.Application.AUDIO);
+  const frame = (amplitude: number) => {
+    const pcm = Buffer.alloc(960 * 2 * 2);
+    for (let i = 0; i < 960; i++) {
+      const sample = Math.round(amplitude * 32_767 * Math.sin(2 * Math.PI * 440 * i / 48_000));
+      pcm.writeInt16LE(sample, i * 4);
+      pcm.writeInt16LE(sample, i * 4 + 2);
+    }
+    return pcm;
+  };
+  const loud = Array.from({ length: 10 }, () => new Uint8Array(encoder.encode(frame(0.3), 960)));
+  const quiet = Array.from({ length: 10 }, () => new Uint8Array(encoder.encode(frame(0), 960)));
+  encoder.delete();
+  return { loud, quiet };
+})();
+/** Speech: a loud packet (the nth of a few, as an encoder makes them in a row). */
+export const speechPacket = (index = 0) => encoded.loud[index % encoded.loud.length];
+/** Encoded silence: what a sender that never stops sends in its pauses. */
+export const quietPacket = (index = 0) => encoded.quiet[index % encoded.quiet.length];
 /** `seconds` of speech, packet by packet, into a connection from `speaker`. */
 export function speak(connection: FakeConnection, speaker: string, seconds: number) {
-  for (let index = 0; index < Math.round(seconds * 50); index++) connection.handlers.packet(speaker, opusPacket());
+  for (let index = 0; index < Math.round(seconds * 50); index++) connection.handlers.packet(speaker, speechPacket(index));
 }
 
 /**

@@ -90,7 +90,10 @@ sessions are listed for 30 days.
 ## Utterances
 
 Each person's audio is cut into utterances: their speech until `silenceMs` passes without any, at most 30 seconds each
-(a longer monologue goes on in the next), and none shorter than 300 ms. Each is transcribed as
+(a longer monologue goes on in the next), and none with less than 300 ms of speech. Silence is either no audio (a
+person's client stops sending when they stop talking) or quiet audio, under -45 dBFS: a sender that never stops (a bot
+playing a file, a client set to transmit always) sends encoded silence in its pauses. Quiet beyond 200 ms before and
+after the speech is trimmed. Each is transcribed as
 [`POST /v1/transcriptions`](voice.md#transcribing-on-its-own) transcribes audio, in the order each person spoke.
 
 With `deliver.webhooks`, each goes to your [webhook endpoints](webhooks.md) that select `voice.utterance`:
@@ -117,7 +120,8 @@ nothing more.
 
 ## Cost
 
-Only speech is paid for: Discord sends no audio during silence, and each utterance is transcribed at the
+Only speech is paid for: Discord sends no audio while people are silent, quiet audio is trimmed from each utterance, and
+each utterance is transcribed at the
 [transcription price](../pricing.md), per second, as `usage.recorded` with `kind: "transcription"`, the session's
 `subject`, and `context.voiceSession`. Holding the call itself costs nothing.
 
