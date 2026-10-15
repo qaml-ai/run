@@ -10,8 +10,10 @@
 - Sessions end on their own after `maxMinutes` (240), `idleMinutes` without speech (30), `emptySeconds` alone in the
   call (60), or when Discord stops taking their credentials and no new ones come within 15 s. Webhooks
   `voice.session.started` and `voice.session.ended` (with `reason`). The credentials are sealed and dropped at the end.
-- Each speaker's audio is cut into utterances (`silenceMs`, default 800; at most 30 s each; under 300 ms dropped),
-  packed as Ogg Opus without decoding, and transcribed as `POST /v1/transcriptions` is: the same model and price per
+- Each speaker's audio is cut into utterances (`silenceMs`, default 800, of no packets or of quiet ones under -45 dBFS,
+  as senders that never stop send encoded silence; quiet beyond 200 ms on each side trimmed and not billed; at most 30 s
+  each; under 300 ms of speech dropped),
+  packed as Ogg Opus (packets decoded only for their level, never re-encoded), and transcribed as `POST /v1/transcriptions` is: the same model and price per
   second, recorded as usage of the session's `subject` (`usage.recorded`, with `context.voiceSession`). Each transcript
   goes out as a `voice.utterance` webhook and, with `deliver.agent`, as a prompt to that agent from the speaker. A
   tenant out of credit ends the session (`budget`). Audio is never written anywhere; a session needs a transcription key.
