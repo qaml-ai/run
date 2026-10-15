@@ -22,4 +22,6 @@
   prebuilt for linux arm64 and x64), loaded only when `AGENT_VOICE=true`; off by default. Endpoints must be Discord's
   (`*.discord.media`). A dropped voice socket is resumed or rejoined with the same credentials; a kick (4014, 4022) or
   credentials Discord no longer takes (4004, 4006, 4009, 4011) wait 15 s for new ones.
+- SDKs: `agents.voice` (`runtime.voice`): `create`, `get`, `list`, `update`, `end`, in TypeScript and Python; the
+  `voice.*` events in TypeScript's `WebhookEvent`. See [Voice calls](../guides/voice-calls.md).
 - Migration 070.

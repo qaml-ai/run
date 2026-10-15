@@ -314,6 +314,9 @@ dedupe by `id`. See [Webhooks](../guides/webhooks.md).
 | `run.failed` | the above, `usage`, `error`, `code?` (the outcome's code: `cancelled`, `aborted`, `model_stream_stalled`, `turn_limit`…), `uncertain?`, `steeredInto?` |
 | `input.requested` | `agentId`, `requestId`, `inputId`, `toolCallId`, `kind`, `expiresAt` |
 | `input.resolved` | `agentId`, `requestId`, `inputId`, `state` |
+| `voice.session.started` | `session`, `provider`, `guildId`, `channelId`, `botUserId`, `subject`, `metadata`: a [voice session](../guides/voice-calls.md) connected (once) |
+| `voice.session.ended` | the above, `reason` (`requested`, `empty`, `idle`, `max_duration`, `budget`, `kicked`, `credentials`, `error`), `limit?` (`tenant`, `end_user`), `endUserReason?`, `startedAt`, `endedAt`, `utterances`, `speechSeconds`, `costUsd` |
+| `voice.utterance` | the above facts, `speakerId`, `seq`, `text`, `language`, `seconds`, `startedAt`, `endedAt`, `ended` (`silence`, `max`, `error`, `handoff`, `end`), `costUsd` |
 | `usage.recorded` | `agentId` (null for a [transcription](../guides/voice.md) or [images](../guides/images.md) made alone), `requestId`, `subject`, `actor`, `context`, `keyScope`, `provider`, `model`, `kind` (`response`, `compaction`, `transcription`, `image`), `input`, `output`, `cacheRead`, `cacheWrite`, `reasoning?`, `audioSeconds?` (a transcription's), `images?` (how many images were made), `cost: {usd, source}`, `at` |
 | `end_user.balance.low` | `endUser`, `balance`, `previousBalance`, `threshold` (integer micro-USD): an [end user's](../guides/end-user-credits.md) balance fell below the tenant's `lowBalance` |
 | `end_user.credit.exhausted` | `endUser`, `reason` (`allowance`, `balance`, `daily_limit`), `bucket`, `balance`, `day`, `allowance?`, `dailyLimit?` |

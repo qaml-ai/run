@@ -455,6 +455,24 @@ text = camelai_run.sync.Agents().transcriptions.create(b"...")["text"]  # synchr
 It resolves with `{ text, language, durationSeconds, model, costUsd }` (Python: that dict). It is not
 retried, as each attempt is billed.
 
+### Voice calls
+
+`agents.voice` (`runtime.voice`) holds Discord voice calls for your bot, `/v1/voice/sessions`: `create` (from what
+Discord answered your gateway's OP 4), `get`, `list({ state, limit, after })`, `update` (Discord moved the call) and
+`end` (its answer's `leave` is the OP 4 that takes the bot out of the channel). See [Voice calls](../guides/voice-calls.md).
+
+```ts
+const session = await agents.voice.create({ discord: { guildId, channelId, userId, sessionId, endpoint, token }, subject: ownerId });
+await agents.voice.update(session.id, { discord: { endpoint, token } });
+const { leave } = await agents.voice.end(session.id);
+```
+
+```python
+session = await agents.voice.create({"guildId": ..., "channelId": ..., "userId": ..., "sessionId": ..., "endpoint": ..., "token": ...}, subject=owner_id)
+await agents.voice.update(session["id"], discord={"endpoint": ..., "token": ...})
+leave = (await agents.voice.end(session["id"]))["leave"]
+```
+
 ### Images
 
 `agents.images` (`runtime.images`) makes images on their own, `POST /v1/images`: `generate(prompt, options?)` from a

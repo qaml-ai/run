@@ -145,6 +145,18 @@ goes through the outbound guard (public addresses only). Logs carry the tenant, 
 and the time taken (`transcribed`), and error classes; never audio, a transcript or a URL's query
 (`tests/transcription-api.test.ts` checks the logs).
 
+## Voice calls
+
+A voice session (`src/voice-sessions.ts`, [Voice calls](../guides/voice-calls.md)) keeps a `voice_sessions` row: the
+Discord server, channel and bot ids, its settings (with the tenant's `subject`, `context` and `metadata`), counts and
+times. The voice credentials the app forwarded (session id, endpoint, token) are sealed with `AGENT_SECRETS_KEY` and
+dropped when the session ends; ended rows are deleted after 30 days, and with the account. Audio is never written
+anywhere: an utterance's Opus packets are held in the owning node's memory until it is transcribed (as
+[Transcription](#transcription) says), then dropped. A transcript lives in the `voice.utterance` webhook delivery
+until it is delivered (or for 3 days), and with `deliver.agent` in that agent's history as a prompt. Logs carry ids,
+lengths, counts and close codes (`voice_*` lines), never audio, transcripts or the credentials;
+@discordjs/voice's own debug output, which prints the voice gateway's packets, stays off.
+
 ## Images
 
 `POST /v1/images` makes images from a prompt, or edits images given (`src/images.ts`, [Images](../guides/images.md)).

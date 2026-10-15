@@ -43,6 +43,9 @@ Every event is an envelope:
 | `input.requested` | The agent asks a person for input (the run waits) | `agentId`, `requestId`, `inputId`, `toolCallId`, `kind`, `expiresAt` |
 | `input.resolved` | An input settled | `agentId`, `requestId`, `inputId`, `state` |
 | `usage.recorded` | A model response's usage was counted, a transcription's, or images' | `agentId`, `requestId`, `subject`, `actor`, `context`, `keyScope`, `provider`, `model`, `kind` (`response`, `compaction`, `transcription` or `image`), tokens, `audioSeconds` (a transcription's, with no tokens), `images` (how many images were made), `cost: {usd, source}`, `at`. A [transcription](voice.md) made with `POST /v1/transcriptions`, or [images](images.md) made with `POST /v1/images`, has `agentId: null`, and the `subject`, `context` and `actor` it was sent with. Treat a `kind` you do not know as other usage: kinds may be added |
+| `voice.session.started` | A [voice session](voice-calls.md) connected and is listening (once) | `session`, `provider`, `guildId`, `channelId`, `botUserId`, `subject`, `metadata` |
+| `voice.session.ended` | A voice session ended; your app leaves the channel | as above, and `reason`, `limit` and `endUserReason` with `budget`, `startedAt`, `endedAt`, `utterances`, `speechSeconds`, `costUsd` |
+| `voice.utterance` | A person's utterance in a voice session, transcribed | as above, and `speakerId`, `seq`, `text`, `language`, `seconds`, `startedAt`, `endedAt`, `ended`, `costUsd` |
 | `billing.balance.low` | Funded balance crosses below the alert threshold (default $2) | `balance`, `previousBalance`, `threshold` (integer micro-USD), `source` |
 | `billing.balance.depleted` | Positive balance reaches zero or below | Same balance fields |
 | `end_user.balance.low` | An [end user's](end-user-credits.md) balance falls below your `lowBalance` | `endUser`, `balance`, `previousBalance`, `threshold` (integer micro-USD) |
