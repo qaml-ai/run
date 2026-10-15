@@ -44,6 +44,8 @@ export type RequestRecord = {
   carried?: unknown;
   /** Who the application said is acting in this run: passed to its tool calls (`act` in identity tokens). */
   actor?: string;
+  /** The bucket of its end user's credit this run spends from, when the tenant named one for it (end-user credits). */
+  bucket?: string;
   /** A `resume` run's suspension: the run whose turn waited on human input, which this one continues. */
   suspension?: string;
   /** The application's key-value data sent with a message (prompt, steer), also kept on the message. */

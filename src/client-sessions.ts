@@ -1,4 +1,5 @@
-import type { ModelAttemptHook } from "./model-attempt.ts";
+import { END_USER_CREDIT, type AttemptAck, type ModelAttemptHook } from "./model-attempt.ts";
+import { bucketInput, creditError, DEFAULT_BUCKET, MICROS, type CreditHold, type EndUserCredits } from "./end-user-credits.ts";
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import type { ServerResponse } from "node:http";
 import { Hono, type Context } from "hono";
@@ -85,6 +86,8 @@ interface SessionHeader {
   identity?: AgentIdentity;
   /** The key scope its model calls take keys from first (key-scopes.ts); set by the tenant, never by the agent. */
   keyScope?: string;
+  /** The bucket of its end user's credit its runs spend from, unless a run names its own (end-user-credits.ts); set by the tenant, never by the agent. */
+  bucket?: string;
   /** The key it was made with (an upsert's, or a create's Idempotency-Key), shown in listings; none for one made without. */
   key?: string;
   /** sha256 of the application's tools as it last declared them (its tools/list as JSON): its ready event tells it, so it reconfigures only on a change. */
@@ -578,8 +581,14 @@ export interface ClientSessionOptions {
    * retries. Where the tenant then stands (X-RateLimit-* on the answer), when a limit applies.
    */
   runRate?: (tenant: string) => Promise<RateLimitState | undefined | void>;
-  /** Durable accounting acknowledgment before each provider dispatch and terminal response. */
-  modelAttempt?: (tenant: string, agent: string, platform: boolean, catalogPriced: boolean, event: Parameters<ModelAttemptHook>[0]) => Promise<boolean>;
+  /** Durable accounting acknowledgment before each provider dispatch and terminal response (and its end user's hold, as it streams). */
+  modelAttempt?: (tenant: string, agent: string, platform: boolean, catalogPriced: boolean, event: Parameters<ModelAttemptHook>[0]) => Promise<boolean | AttemptAck>;
+  /**
+   * The tenant's own users' credit (end-user-credits.ts): runs of an agent with a subject spend their end user's, in the
+   * run's bucket. Its model calls hold and settle through `modelAttempt`; audio and images hold here; runs are refused
+   * (402 END_USER_CREDIT) and turns stopped at a step boundary when the end user has nothing left.
+   */
+  endUsers?: EndUserCredits;
   /** Called with each finished assistant message that reports token usage, and each compaction summary's. */
   onUsage?: (tenant: string, agentId: string, message: UsageRecord) => void;
   /** Whether the tenant has a webhook endpoint for run events; without it, runs write none. */
@@ -1554,6 +1563,10 @@ export class ClientSessions {
           if (limited) return { stopped: "spend_limit" as const, message: typeof limited === "string" ? limited : limited.message, limit: agentLimit ? "agent" as const : runLimit ? "run" as const : typeof tenantLimit === "string" ? "tenant" as const : "credit" as const };
           const turn = await this.turnLimit(session);
           if (turn) return { stopped: "turn_limit" as const, message: turn };
+          // Its end user has nothing left for its next model request: stopped here, rather than refused at the request.
+          const payer = this.payer(session, this.runningRun(session));
+          const broke = payer && await this.options.endUsers?.refusal(session.header.tenant, payer.id, payer.bucket);
+          if (broke) return { stopped: "spend_limit" as const, message: broke.message, limit: "end_user" as const, code: END_USER_CREDIT, reason: broke.reason };
           // This node is leaving: the turn stops at this step boundary, and its next owner continues it (`park`).
           return this.handingOff ? { stopped: "handoff" as const, message: `This node is leaving the cluster (${this.handingOff.reason}); the turn continues on another` } : undefined;
         },
@@ -1564,7 +1577,10 @@ export class ClientSessions {
           if (event.type === "begin" && session.header.revoked) return Promise.reject(new Error("Session revoked"));
           const run = this.runningRun(session);
           const { identity, keyScope } = session.header;
-          const scoped = event.type === "begin" ? { ...event, context: { ...(run ? { requestId: run.id, actor: run.actor } : {}), ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) } } : event;
+          // Who pays is the runtime's to say, never the host's: the agent's subject, from its run's bucket.
+          const payer = event.type === "begin" ? this.payer(session, run) : undefined;
+          const { endUser: _given, ...asked } = event as Extract<typeof event, { type: "begin" }>;
+          const scoped = event.type === "begin" ? { ...asked, ...(payer ? { endUser: payer } : {}), context: { ...(run ? { requestId: run.id, actor: run.actor } : {}), ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) } } : event;
           const tracked = await this.options.modelAttempt?.(session.header.tenant, session.header.id, !!session.platformKey, !!session.catalogPriced, scoped) ?? false;
           // Persisting a begin may span a database outage; recheck ownership before dispatch.
           if (event.type === "begin") {
@@ -1839,6 +1855,7 @@ export class ClientSessions {
         const { identity, keyScope } = header;
         return generateImage(imager, {
           tenant: header.tenant, ...(keyScope ? { keyScope } : {}), ...(budget !== undefined ? { budget } : {}), files,
+          hold: usd => this.endUserHold(session, run, usd, "image"),
           record: usage => {
             const cost = usage.usage.cost.total as number;
             this.options.onUsage?.(header.tenant, header.id, { ...usage, ...(run ? { requestId: run.id } : {}), ...(run?.actor ? { actor: run.actor } : {}), ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) });
@@ -1984,6 +2001,8 @@ export class ClientSessions {
       name: target?.name ?? "subagent", type: "subagent", ttlSeconds: MULTI_AGENT_LIMITS.childTtlSeconds,
       ...header.identity?.subject !== undefined ? { subject: header.identity.subject } : {}, ...header.identity?.context ? { context: header.identity.context } : {},
       ...header.keyScope ? { keyScope: header.keyScope } : {},
+      // Its parent's end user pays for it, from the bucket the parent's run spends.
+      ...run.bucket ?? header.bucket ? { bucket: run.bucket ?? header.bucket } : {},
     }, key, { agentId: header.id, runId: run.id, toolCallId, depth })).id;
   }
 
@@ -2983,7 +3002,7 @@ export class ClientSessions {
    * (`origin.definition`), and `origin.provision` stands for its configuration in the
    * idempotency check, so a retry after the definition changed returns the same agent.
    */
-  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, given: string | undefined, metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string; spendLimit?: number; toolsHash?: string; remount?: boolean; idleTtlMs?: number; builtins?: string[]; delegate?: DelegateSettings; mcpServers?: McpServerSpec[]; parent?: SessionHeader["parent"]; fork?: { id: string; from: ForkedFrom; records: TranscriptRecord[] }; admit?: (unchanged: boolean) => Promise<unknown>; run?: RunSettings } = {}, steps = new Steps()): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
+  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, given: string | undefined, metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string; spendLimit?: number; bucket?: string; toolsHash?: string; remount?: boolean; idleTtlMs?: number; builtins?: string[]; delegate?: DelegateSettings; mcpServers?: McpServerSpec[]; parent?: SessionHeader["parent"]; fork?: { id: string; from: ForkedFrom; records: TranscriptRecord[] }; admit?: (unchanged: boolean) => Promise<unknown>; run?: RunSettings } = {}, steps = new Steps()): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
     metadata = agentMetadata(metadata);
     validateDefinitions(definitions);
     // The caller's key, shown in listings; an agent made without one gets a key nothing else knows.
@@ -3004,7 +3023,7 @@ export class ClientSessions {
     const own = { ...(access.builtins?.length ? { builtins: access.builtins } : {}), ...(access.delegate ? { delegate: access.delegate } : {}), ...(access.mcpServers?.length ? { mcpServers: access.mcpServers } : {}) };
     const provisionHash = hash(canonical({ ...origin ? { definition: origin.provision } : { definitions, config: safeConfig, ...(Object.keys(metadata).length ? { metadata } : {}), ...(mounts !== undefined ? { mounts } : {}), ...own }, ...(identity ? { identity } : {}) }));
     // The same key for an existing agent updates it: create or reconfigure (the last upsert wins).
-    const changes = (header: SessionHeader) => ({ reconfigure: { ...this.reconfiguration(header, definitions, safeConfig, metadata, mounts, origin, identity, provisionHash, own, access.remount), ...(access.toolsHash ? { toolsHash: access.toolsHash } : {}) } });
+    const changes = (header: SessionHeader) => ({ reconfigure: { ...this.reconfiguration(header, definitions, safeConfig, metadata, mounts, origin, identity, provisionHash, own, access.remount), ...(access.toolsHash ? { toolsHash: access.toolsHash } : {}), ...(access.bucket !== undefined && access.bucket !== header.bucket ? { bucket: access.bucket } : {}) } });
     // An agent's own sources are its builtins (and their settings) and MCP servers; one made from a definition has the definition's.
     const sources: Sources | undefined = origin ? origin.sources : Object.keys(own).length ? own : undefined;
     // The caller counts the create (its rate limit) now, told whether the key's agent has this configuration already:
@@ -3051,7 +3070,7 @@ export class ClientSessions {
         // A new agent's first ids are reserved with its row (`writeHeader`).
         const cursor = Date.now() * 1000;
         session = {
-          header: { version: 3, id, tenant, digest: hash(token), expiresAt: access.idleTtlMs ? Date.now() + access.idleTtlMs : ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, ...(access.idleTtlMs ? { idleTtlMs: access.idleTtlMs } : {}), metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(sources ? { sources } : {}), ...(origin?.overrides?.length ? { overrides: origin.overrides } : {}), ...(identity ? { identity } : {}), ...(access.keyScope ? { keyScope: access.keyScope } : {}), ...(access.toolsHash ? { toolsHash: access.toolsHash } : {}), ...(given !== undefined ? { key: given } : {}), ...(access.fork ? { forkedFrom: access.fork.from } : {}), ...(access.parent ? { parent: access.parent } : {}), ...(access.run ? { run: access.run } : {}) },
+          header: { version: 3, id, tenant, digest: hash(token), expiresAt: access.idleTtlMs ? Date.now() + access.idleTtlMs : ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, ...(access.idleTtlMs ? { idleTtlMs: access.idleTtlMs } : {}), metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(sources ? { sources } : {}), ...(origin?.overrides?.length ? { overrides: origin.overrides } : {}), ...(identity ? { identity } : {}), ...(access.keyScope ? { keyScope: access.keyScope } : {}), ...(access.bucket ? { bucket: access.bucket } : {}), ...(access.toolsHash ? { toolsHash: access.toolsHash } : {}), ...(given !== undefined ? { key: given } : {}), ...(access.fork ? { forkedFrom: access.fork.from } : {}), ...(access.parent ? { parent: access.parent } : {}), ...(access.run ? { run: access.run } : {}) },
           claim, requests: new Map(), running: new Map(), log: this.storage.log<JournalRecord>(this.journalKey(id), claim),
           cursor, reserved: cursor + this.eventBlock, events: [], eventBytes: 0, watchers: new Set(), polls: new Set(), inflight: 0, runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
         };
@@ -3296,7 +3315,7 @@ export class ClientSessions {
     const definition = session.header.definition && { id: session.header.definition.id, revision: session.header.definition.revision };
     return { ...metadata, ...(definition ? { definition } : {}), tools: session.header.definitions, systemPrompt: session.header.config.systemPrompt ?? "",
       ...(session.header.config.systemPromptAppend ? { systemPromptAppend: session.header.config.systemPromptAppend } : {}),
-      ...(session.header.config.fileTools === false ? { fileTools: false } : {}), ...(session.header.config.codeMode === false ? { codeMode: false } : {}), mounts: session.header.mounts ?? [], keyScope: session.header.keyScope ?? null, modelHeaders: session.header.config.modelHeaders ?? null,
+      ...(session.header.config.fileTools === false ? { fileTools: false } : {}), ...(session.header.config.codeMode === false ? { codeMode: false } : {}), mounts: session.header.mounts ?? [], keyScope: session.header.keyScope ?? null, bucket: session.header.bucket ?? null, modelHeaders: session.header.config.modelHeaders ?? null,
       builtins: session.header.sources?.builtins ?? [], delegate: session.header.sources?.delegate ?? null, mcpServers: (session.header.sources?.mcpServers ?? []).map(mcpServerView),
       ...(session.header.parent ? { parentAgentId: session.header.parent.agentId, parentRunId: session.header.parent.runId } : {}),
       spendLimit: await this.spendOf(session).then(spend => spend && { usd: spend.usd, spent: spend.spent }), runLimits: session.header.config.runLimits ?? null,
@@ -3814,12 +3833,18 @@ export class ClientSessions {
     // Applying a definition reads the tenant's definitions, so only the tenant may ask for it, not the agent's own token.
     const applying = body.method === "configure" && body.params.definition !== undefined;
     // Which keys an agent calls models with, and how much it may spend, are the tenant's to choose, never the agent's own.
-    for (const key of ["keyScope", "spendLimit", "runLimits", "modelHeaders", "builtins", "delegate", "mcpServers", "mounts", ...UPSERT_KEYS]) if (body.method === "configure" && !trusted && Object.hasOwn(body.params, key)) throw new HttpError(403, `Only the tenant can change an agent's ${key}`);
+    for (const key of ["keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "builtins", "delegate", "mcpServers", "mounts", ...UPSERT_KEYS]) if (body.method === "configure" && !trusted && Object.hasOwn(body.params, key)) throw new HttpError(403, `Only the tenant can change an agent's ${key}`);
     const spendLimit = body.method === "configure" && Object.hasOwn(body.params, "spendLimit") ? spendInput(body.params.spendLimit) : undefined;
+    // Which of its end user's buckets the agent's runs spend from: the tenant's to say, applied at once, as a spend limit is.
+    const agentBucket = body.method === "configure" && Object.hasOwn(body.params, "bucket") ? body.params.bucket === null ? null : bucketInput(body.params.bucket) : undefined;
+    // A run's own bucket, likewise the tenant's alone: an agent's token choosing one could spend another bucket's allowance.
+    if (body.method !== "configure" && body.params.bucket !== undefined && (!trusted || !MODEL_RUNS.includes(body.method))) {
+      throw new HttpError(trusted ? 400 : 403, trusted ? "bucket is for a model run (prompt, continue)" : "Only the tenant can choose a run's bucket");
+    }
     if (applying && (!trusted || !this.options.definitionFor || Object.keys(body.params).length !== 1 || typeof body.params.definition?.id !== "string")) throw new HttpError(400, "Apply a definition with PATCH /v1/definitions/<id> and apply: \"all\"");
     try {
       if (body.method === "configure" && !applying) {
-        const { spendLimit: _limit, provisionHash: _hash, name: _name, type: _type, toolsHash: _tools, mounts: _mounts, builtins, delegate, mcpServers, ...update } = body.params;
+        const { spendLimit: _limit, bucket: _bucket, provisionHash: _hash, name: _name, type: _type, toolsHash: _tools, mounts: _mounts, builtins, delegate, mcpServers, ...update } = body.params;
         const checked = configurationUpdate(update, this.options.modelEndpoints?.(session.header.tenant), await this.options.customProviders?.(session.header.tenant, scopeAfter(session.header, update)));
         // A model, thinking level, maxOutputTokens or temperature that leaves the agent asking its model for what it refuses is refused now.
         const refusal = configurationRefusal(session.header.config, checked);
@@ -3858,13 +3883,19 @@ export class ClientSessions {
     if (session.running.size >= MAX_OPEN_REQUESTS) throw new HttpError(429, "Too many requests queued for this agent");
     // A spend limit applies at once, ahead of queued runs, so an application can set an allowance and then prompt.
     if (spendLimit !== undefined) await this.setSpendLimit(session, spendLimit);
+    if (agentBucket !== undefined && (session.header.bucket ?? null) !== agentBucket) {
+      if (agentBucket === null) delete session.header.bucket;
+      else session.header.bucket = agentBucket;
+      await this.writeHeader(session);
+    }
     const isRun = RUN_METHODS.includes(body.method);
     // An agent that lives while it is used lives on from each run it is sent.
     if (isRun) await this.stillUsed(session);
     // Who is acting in a run is recorded apart from what the agent is asked to do.
     let actor: string | undefined;
-    let { actor: rawActor, ...params } = body.params;
+    let { actor: rawActor, bucket: rawBucket, ...params } = body.params;
     if (spendLimit !== undefined) delete params.spendLimit;
+    let bucket = body.method === "configure" || rawBucket === undefined ? undefined : bucketInput(rawBucket);
     if (rawActor !== undefined && !isRun) throw new HttpError(400, "actor is only for runs (prompt, continue, execute)");
     const isMessage = ["prompt", "steer"].includes(body.method);
     if (params.from !== undefined && !isMessage) throw new HttpError(400, "from is only for messages (prompt, steer)");
@@ -3892,8 +3923,11 @@ export class ClientSessions {
       if (params.metadata !== undefined) params.metadata = metadataInput(params.metadata);
       // The sender acts, unless the application names someone else.
       actor = actorInput(rawActor) ?? (isRun ? params.from?.id : undefined);
-      // A resumed turn acts for whoever the suspended one did.
-      if (body.method === "resume") actor = session.requests.get(params.suspension)?.actor;
+      // A resumed turn acts for whoever the suspended one did, and spends from the same bucket.
+      if (body.method === "resume") {
+        actor = session.requests.get(params.suspension)?.actor;
+        bucket = session.requests.get(params.suspension)?.bucket;
+      }
     } catch (error) { throw new HttpError(400, errorText(error)); }
     // A child's notification (`notice`) is the runtime's alone. Its child's run was counted and checked already, and it is
     // never refused at a limit: it lands without a turn instead (`landNotice`).
@@ -3902,7 +3936,7 @@ export class ClientSessions {
     const steerable = params.notice?.metadata?.kind === "message" && params.notice.metadata.to === "child";
     if (notice && (!trusted || body.method !== "prompt" || (params.whileRunning !== undefined && !steerable) || !validNotice(params.notice))) throw new HttpError(400, "Invalid request");
     const rate = isRun && body.method !== "resume" && !notice ? await this.options.runRate?.(session.header.tenant) ?? undefined : undefined;
-    const limited = body.method === "resume" || notice ? undefined : await this.runLimit(session, body.method);
+    const limited = body.method === "resume" || notice ? undefined : await this.runLimit(session, body.method, bucket);
     if (limited) throw limited;
     const trace = isRun ? await this.traceFor(session, traceparent, body.method === "resume" ? session.requests.get(params.suspension)?.trace : undefined) : undefined;
     // A run makes its agent busy: it takes one of the tenant's busy slots across the fleet (429 at the limit), held
@@ -3935,7 +3969,7 @@ export class ClientSessions {
         if (work && work.fingerprint !== fingerprint) throw new HttpError(409, "Request ID reused with different arguments", "IDEMPOTENCY_CONFLICT");
         if (!work) {
           const budget = params.spendLimit?.usd as number | undefined;
-          work = { fingerprint, files: this.attach(session, body.id, params.files).then(files => this.transcribeAttached(session, body.id, files, { actor, budget })) };
+          work = { fingerprint, files: this.attach(session, body.id, params.files).then(files => this.transcribeAttached(session, body.id, files, { actor, budget, bucket })) };
           attaching.set(body.id, work);
           const done = () => { if (attaching.get(body.id) === work) attaching.delete(body.id); };
           work.files.then(done, done);
@@ -3963,7 +3997,7 @@ export class ClientSessions {
       const record = this.upsertRequest(session, {
         startedAt: Date.now(), ...(body.method === "prompt" && typeof body.params.text === "string" ? { prompt: body.params.text } : {}),
         ...(body.method === "execute" && typeof body.params.code === "string" ? { code: body.params.code } : {}),
-        id: body.id, method: body.method, fingerprint, state: "running", ...(queued ? { params } : {}), ...(actor ? { actor } : {}), ...(params.metadata ? { metadata: params.metadata } : {}),
+        id: body.id, method: body.method, fingerprint, state: "running", ...(queued ? { params } : {}), ...(actor ? { actor } : {}), ...(bucket ? { bucket } : {}), ...(params.metadata ? { metadata: params.metadata } : {}),
         ...(body.method === "resume" ? { suspension: params.suspension } : {}), ...(trace ? { trace } : {}),
       });
       // Taken: its running record now keeps the agent busy, so it is no longer being admitted. An abort that cancels it
@@ -4205,7 +4239,7 @@ export class ClientSessions {
    * (`untranscribed`), so a voice note from a channel still reaches the agent. A spend limit refuses either way. Files
    * come back with their transcript and (`cost`) what it cost, for the run's budget; the rest as they were.
    */
-  private async transcribeAttached(session: Session, requestId: string, files: (FileRef & { transcribe?: boolean })[], run: { actor?: string; budget?: number }): Promise<(FileRef & { cost?: number })[]> {
+  private async transcribeAttached(session: Session, requestId: string, files: (FileRef & { transcribe?: boolean })[], run: { actor?: string; budget?: number; bucket?: string }): Promise<(FileRef & { cost?: number })[]> {
     const plain = files.map(({ transcribe: _transcribe, ...file }) => file as FileRef & { cost?: number });
     let chosen = files.flatMap((file, index) => file.transcribe ?? essence(file.contentType).startsWith("audio/") ? [index] : []);
     if (!chosen.length) return plain;
@@ -4241,15 +4275,20 @@ export class ClientSessions {
     if (estimate > budget) throw new HttpError(402, `Transcribing this message's audio costs about $${estimate.toFixed(4)}, more than the $${Math.max(0, budget).toFixed(4)} left of ${budget === left ? "this agent's" : "this run's"} spend limit`, "SPEND_LIMIT");
     const { identity, keyScope } = session.header;
     const facts = { requestId, ...(run.actor ? { actor: run.actor } : {}), ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) };
+    // Its end user's credit holds the estimate before any audio is sent, and pays what the transcripts cost.
+    const held = audio.length ? await this.endUserHold(session, { id: requestId, ...(run.bucket ? { bucket: run.bucket } : {}) } as RequestRecord, estimate, "transcription") : undefined;
+    let total = 0;
     const done = await Promise.allSettled(audio.map(async ({ index, bytes, header }) => {
       try {
         const { transcript, usage } = await transcriber.transcribe({ tenant, ...(keyScope ? { keyScope } : {}) }, { bytes, header }, {}, AbortSignal.timeout(AUDIO_LIMITS.timeoutMs + 10_000));
         const cost = usage.usage.cost.total as number;
         this.options.onUsage?.(tenant, session.header.id, { ...usage, ...facts });
         this.spent(session, cost);
+        total += cost;
         plain[index] = { ...plain[index], transcript, cost };
       } catch (error) { failed(index, error); }
     }));
+    await held?.settle(total);
     const refused = done.find(result => result.status === "rejected");
     if (refused) throw (refused as PromiseRejectedResult).reason;
     return plain;
@@ -4763,6 +4802,39 @@ export class ClientSessions {
     })().catch(() => { /* The fault is reported to every later request. */ });
   }
 
+  /**
+   * Who pays for the agent's work, and from which bucket: its subject (an end user of the tenant's), from the running
+   * run's own bucket, else the agent's, else the default. Undefined for an agent with no subject: its tenant pays.
+   */
+  private payer(session: Session, run: RequestRecord | undefined): { id: string; bucket: string } | undefined {
+    const id = session.header.identity?.subject;
+    return id === undefined || !this.options.endUsers ? undefined : { id, bucket: run?.bucket ?? session.header.bucket ?? DEFAULT_BUCKET };
+  }
+
+  /**
+   * Hold `usd` of its end user's credit for work of the agent's that is not a model call (audio to transcribe, an image),
+   * before it is sent: a refusal is a 402 END_USER_CREDIT. Settle it with what the work cost, or release it if none was
+   * done. Undefined when nobody's credit is metered.
+   */
+  private async endUserHold(session: Session, run: RequestRecord | undefined, usd: number, call: string): Promise<CreditHold | undefined> {
+    const payer = this.payer(session, run);
+    return payer && this.options.endUsers?.hold(session.header.tenant, payer.id, payer.bucket, usd, call, { agent: session.header.id, ...(run ? { requestId: run.id } : {}) });
+  }
+
+  /**
+   * Charge the agent's end user for a call it made that held nothing beforehand (a web search, a page rendered, a tool
+   * search's ranking), as the call is recorded. Never throws: a charge that fails is logged.
+   */
+  endUserCharge(agent: string, usage: UsageRecord) {
+    const session = this.sessions.get(agent), endUsers = this.options.endUsers;
+    const payer = session && this.payer(session, this.runningRun(session));
+    const usd = Number(usage.usage?.cost?.total ?? 0);
+    if (!session || !payer || !endUsers || !(usd > 0)) return;
+    const call = usage.searches ? "web_search" : usage.renders ? "web_fetch" : usage.toolSearch ? "tool_search" : "tool";
+    void endUsers.charge(session.header.tenant, payer.id, payer.bucket, Math.round(usd * MICROS), `charge:${randomUUID()}`, { call, agent, ...(usage.provider ? { provider: usage.provider } : {}) })
+      .catch(error => console.error(JSON.stringify({ type: "end_user_charge_failed", tenant: session.header.tenant, agent, error: safeError(error) })));
+  }
+
   /** The agent's spend limit, read once per load; its owner keeps it current. */
   private async spendOf(session: Session) {
     if (session.spend === undefined) {
@@ -4914,10 +4986,17 @@ export class ClientSessions {
   }
 
   /** Why a run may not start: a model run's spend limit (a monthly cap or spent credit), or for any run, spent credit. */
-  private async runLimit(session: Session, method: string): Promise<HttpError | undefined> {
+  private async runLimit(session: Session, method: string, bucket?: string): Promise<HttpError | undefined> {
     const tenant = session.header.tenant;
     const refused = (refusal: Refusal | undefined, code: string) => typeof refusal === "string" ? new HttpError(402, refusal, code) : refusal;
-    if (MODEL_RUNS.includes(method)) return refused(await this.agentSpendLimit(session) ?? await this.options.spendLimit?.(tenant), "SPEND_LIMIT");
+    if (MODEL_RUNS.includes(method)) {
+      const limited = refused(await this.agentSpendLimit(session) ?? await this.options.spendLimit?.(tenant), "SPEND_LIMIT");
+      if (limited) return limited;
+      // Its end user has nothing left in the run's bucket.
+      const payer = this.payer(session, bucket ? { bucket } as RequestRecord : undefined);
+      const broke = payer && await this.options.endUsers?.refusal(tenant, payer.id, payer.bucket);
+      return broke ? creditError(broke) : undefined;
+    }
     if (RUN_METHODS.includes(method)) return refused(await this.options.creditLimit?.(tenant), "INSUFFICIENT_CREDIT");
     return undefined;
   }
@@ -4973,9 +5052,9 @@ export class ClientSessions {
   }
 
   private toolSearchUsage(session: Session, usd: number, searches: number) {
-    this.options.onUsage?.(session.header.tenant, session.header.id, {
-      provider: "runtime", model: "tool_search", usage: { cost: { total: usd } }, platform: true, toolSearch: true, toolSearches: searches,
-    });
+    const usage: UsageRecord = { provider: "runtime", model: "tool_search", usage: { cost: { total: usd } }, platform: true, toolSearch: true, toolSearches: searches };
+    this.options.onUsage?.(session.header.tenant, session.header.id, usage);
+    this.endUserCharge(session.header.id, usage);
   }
 
   private async callAttached(session: Session, { name, args, signal, toolCallId, innerCallId, idempotencyKey, origin, actor, onProgress, approval, inputResponses, requestState, elicit, lineage }: ToolCall): Promise<McpResult> {

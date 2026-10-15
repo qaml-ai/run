@@ -1,5 +1,5 @@
 import { ModelAttempts } from "./model-attempts.ts";
-import { EndUserCredits } from "./end-user-credits.ts";
+import { bucketInput, EndUserCredits } from "./end-user-credits.ts";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { readFile } from "node:fs/promises";
@@ -336,11 +336,12 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   const search = new WebSearch({
     outbound: outbound.withoutOrigins(), ...searchProvidersFromEnvironment(env), key: webKey, timeoutMs: config.searchTimeoutMs,
     price: provider => accounts.billing.pricing.webSearch[provider],
-    onSearch: (tenant, agent, usage) => accounts.recordUsage(tenant, agent, usage),
+    // Its end user pays for it too, where the tenant meters them (end-user-credits.ts).
+    onSearch: (tenant, agent, usage) => { accounts.recordUsage(tenant, agent, usage); clients.endUserCharge(agent, usage); },
   });
   const render = new WebRender({
     outbound: outbound.withoutOrigins(), key: webKey, price: accounts.billing.pricing.webRender, endpoint: config.firecrawlUrl,
-    onRender: (tenant, agent, usage) => accounts.recordUsage(tenant, agent, usage),
+    onRender: (tenant, agent, usage) => { accounts.recordUsage(tenant, agent, usage); clients.endUserCharge(agent, usage); },
   });
   // A provider's key for speech to text and images, as a model call resolves it: its key scope's, its own, else the
   // platform's, which a prepaid tenant pays for (per second of audio, per token of an image).
@@ -432,7 +433,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
    * `run`: a stateless run's session (POST /v1/runs), which lives `ttlMs` at most and is never reconfigured. */
   async function provisionAgent(tenant: string, params: any, key: string | undefined, steps: Steps, outcome: { agent?: string; upsert: boolean }, parent?: { agentId: string; runId: string; toolCallId: string; depth: number }, admit?: (unchanged: boolean) => Promise<unknown>, run?: RunSettings & { ttlMs: number }) {
     // The application's tools are its attached MCP server's: the tools/list it declares.
-    const { mcp: _mcp, subject: _subject, context: _context, keyScope, spendLimit: limit, modelHeaders: headers, builtins: asked, delegate: delegating, mcpServers: servers, remount, ...rest } = params ?? {};
+    const { mcp: _mcp, subject: _subject, context: _context, keyScope, spendLimit: limit, bucket: givenBucket, modelHeaders: headers, builtins: asked, delegate: delegating, mcpServers: servers, remount, ...rest } = params ?? {};
     if (remount !== undefined && typeof remount !== "boolean") throw new HttpError(400, "remount must be true or false");
     // The application's tools as it declared them, whose hash its connections are told (`toolsHash`).
     const mcpTools = params?.mcp?.tools;
@@ -448,6 +449,8 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     // With the delegate builtin, who the agent may delegate to.
     const delegate = delegateSettings(builtins, delegating);
     const spendLimit = limit === undefined ? undefined : spendInput(limit) ?? undefined;
+    // Which bucket of its end user's credit its runs spend from (end-user-credits.ts).
+    const bucket = givenBucket === undefined || givenBucket === null ? undefined : bucketInput(givenBucket);
     const modelHeaders = headers === undefined ? null : modelHeadersInput(headers);
     // A delegate's inline child runs on its parent's model, which the runtime passes as it is. It is taken again from the
     // runtime's own defaults or the catalog by name: the parent's prices and endpoint are never copied.
@@ -475,7 +478,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     const lifetime = run ? run.ttlMs : ttl === undefined ? (key !== undefined ? null : undefined) : ttl === null ? null : ttl * 1000;
     const { reconfigure, ...made_ } = await clients.create(params.tools ?? [], config, key, { name: params.name, type: params.type }, tenant, lifetime, params.mounts,
       made && { definition: made.ref, provision: made.provision, overrides: made.overrides, sources: made.sources }, identity,
-      { keyScope, spendLimit, builtins, delegate, mcpServers, ...(remount ? { remount } : {}), ...(idle && !run ? { idleTtlMs: idle * 1000 } : {}), ...(parent ? { parent } : {}), ...(run ? { run: { retentionMs: run.retentionMs, fingerprint: run.fingerprint } } : {}), ...(mcpTools !== undefined ? { toolsHash: createHash("sha256").update(JSON.stringify(mcpTools)).digest("hex") } : {}), ...(admit ? { admit } : {}) }, steps);
+      { keyScope, spendLimit, ...(bucket ? { bucket } : {}), builtins, delegate, mcpServers, ...(remount ? { remount } : {}), ...(idle && !run ? { idleTtlMs: idle * 1000 } : {}), ...(parent ? { parent } : {}), ...(run ? { run: { retentionMs: run.retentionMs, fingerprint: run.fingerprint } } : {}), ...(mcpTools !== undefined ? { toolsHash: createHash("sha256").update(JSON.stringify(mcpTools)).digest("hex") } : {}), ...(admit ? { admit } : {}) }, steps);
     outcome.agent = made_.id;
     outcome.upsert = !!reconfigure;
     const warnings = await warningsFor(tenant, made ? made.sources : builtins && { builtins });
@@ -685,7 +688,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     const entry = await keyScopes.entry(tenant, scope, "openrouter");
     // A gateway credential is not necessarily an OpenRouter key; never send it to another origin.
     return entry && !entry.baseUrl ? entry.apiKey : undefined;
-  });
+  }, endUsers);
   const clients = new ClientSessions(supervisor, {
     runEvents: tenant => subscribers.runs(tenant),
     tracing: telemetry,
@@ -727,6 +730,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     modelToken: (audience, claims) => signer.token(audience, claims),
     onUsage: (tenant, agent, message) => accounts.recordUsage(tenant, agent, message),
     modelAttempt: (tenant, agent, platform, priced, event) => modelAttempts.event(tenant, agent, platform, priced, event),
+    endUsers,
     transcriber, imager, outbound: outbound.withoutOrigins(),
     onActive: (tenant, agent, ms) => accounts.recordActive(tenant, agent, ms),
     spendLimit: tenant => accounts.runLimit(tenant),

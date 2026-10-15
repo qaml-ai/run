@@ -26,9 +26,9 @@ export type RunLimits = { maxResponses?: number; maxSeconds?: number; firstToken
  */
 /**
  * Why a turn must end: `limit` says which spend limit stopped it (the run's own, its agent's, the tenant's monthly cap,
- * or the account's prepaid credit).
+ * the account's prepaid credit, or its end user's credit: then `code` is end_user_credit and `reason` says why).
  */
-export type RunStop = { stopped: "spend_limit" | "turn_limit" | "handoff"; message: string; limit?: "run" | "agent" | "tenant" | "credit" };
+export type RunStop = { stopped: "spend_limit" | "turn_limit" | "handoff"; message: string; limit?: "run" | "agent" | "tenant" | "credit" | "end_user"; code?: string; reason?: string };
 export interface ToolBridge {
   definitions: ToolDefinition[];
   call(name: string, args: Record<string, unknown>, signal: AbortSignal, context?: CallContext): Promise<unknown>;

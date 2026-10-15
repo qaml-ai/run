@@ -65,6 +65,7 @@ export const PlanSchema = z.object({
   startAt: z.string().datetime().optional().describe("When the run starts (default 2030-01-01T00:00Z): near a day's or month's end, for billing"),
   env: z.record(z.string().regex(/^AGENT_[A-Z_]+$/), z.string().max(100)).optional().describe("Settings for every node (AGENT_*): a long run's timers, retention, billing interval, GC"),
   durationMs: z.number().int().min(1_000).max(CAPS.durationMs).describe("Virtual ms the steps span; then every fault heals, crashed nodes restart, and the run settles and is checked"),
+  endUsers: z.object({ grant: z.number().int().min(0).max(1_000_000_000), allowance: z.number().int().min(0).max(1_000_000_000), cost: z.number().int().min(0).max(1_000_000) }).optional().describe("End-user credits: every agent acts for one end user, granted `grant` micro-USD with `allowance` free a day; each model response costs `cost` micro-USD; checked by I22"),
 });
 
 export const CHECKERS = {
@@ -82,6 +83,7 @@ export const CHECKERS = {
   I20: "A run's start that meets a transient refusal is tried again (RUN_START_ATTEMPTS times) before the run fails with it",
   I19: "A request the database refused for now (serialization failure, deadlock, statement timeout) is answered 503, never 400",
   I14: "A prompt sent again with its key is one request: every answer names the first's, none is refused as another, and its prompt is in the history once",
+  I22: "An end user's money adds up: their ledger sums to their balance, each day's spend by bucket is the ledger's, each settled call posted its cost once, no settled call keeps a hold, and paid spend passes the grants by no more than one call per agent",
   assertion: "No always() failed and no unreachable() was reached in the runtime's code",
   "real I/O": "Nothing touched the real network, disk or clock (the leak detector)",
   determinism: "With twice: the second run of the plan hashes the same as the first",

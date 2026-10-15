@@ -27,13 +27,13 @@ import type { Telemetry } from "./telemetry.ts";
 import { definitionRoutes } from "./definitions-api.ts";
 import { runRoutes, type RunsContext } from "./runs.ts";
 import { endUserRoutes } from "./end-users-api.ts";
-import type { EndUserCredits } from "./end-user-credits.ts";
+import { bucketInput, DEFAULT_BUCKET, type EndUserCredits } from "./end-user-credits.ts";
 import type { ClientEvent, RequestRecord, TurnSnapshot } from "../shared/client-protocol.ts";
 import * as schema from "./api-schemas.ts";
 import { normalizePath, snapshotContents, VOLUME_LIMITS, type FileEntry, type VolumeService } from "./volumes.ts";
 import { actorInput, identityInput } from "./identity.ts";
 import { languageInput, transcribeRequest, type TranscriptionService } from "./transcription.ts";
-import { imageOptions, imageRequest, type ImageService, type ImageSource } from "./images.ts";
+import { imageOptions, imageRequest, type Hold, type ImageService, type ImageSource } from "./images.ts";
 import { AUDIO_LIMITS, IMAGE_LIMITS } from "./limits.ts";
 import { declaredType, downloadHeaders, fileResponse, type FileLinks } from "./files.ts";
 import type { FileUrls } from "./file-arguments.ts";
@@ -198,6 +198,13 @@ export function api(context: ApiContext) {
   /** The routes a browser token may read, besides the tenant's own tokens. */
   const readers = [...DOCUMENT.security, { browser: [] }];
 
+  /** A standalone call's hold on its end user's credit (its subject's, in `bucket`), where the tenant meters end users. */
+  const endUserHold = (tenant: string, subject: string | undefined, bucket: string | undefined, call: string): Hold | undefined => {
+    const endUsers = context.endUsers;
+    if (subject === undefined || !endUsers) return undefined;
+    const named = bucket === undefined ? DEFAULT_BUCKET : bucketInput(bucket);
+    return usd => endUsers.hold(tenant, subject, named, usd, call);
+  };
   const volumes = () => {
     if (!context.volumes) throw new HttpError(404, "Volumes are not enabled on this runtime");
     return context.volumes;
@@ -843,7 +850,7 @@ export function api(context: ApiContext) {
       let claims: unknown;
       try { claims = field("context") === undefined ? undefined : JSON.parse(field("context")!); } catch { throw new HttpError(400, "context must be JSON"); }
       input = parse(schema.TranscriptionInput, {
-        data: "", ...Object.fromEntries(["language", "prompt", "keyScope", "subject", "actor"].flatMap(name => field(name) === undefined ? [] : [[name, field(name)]])),
+        data: "", ...Object.fromEntries(["language", "prompt", "keyScope", "subject", "actor", "bucket"].flatMap(name => field(name) === undefined ? [] : [[name, field(name)]])),
         ...(claims !== undefined ? { context: claims } : {}),
       });
     } else {
@@ -857,9 +864,10 @@ export function api(context: ApiContext) {
     const identity = identityInput({ subject: input.subject, context: input.context });
     const actor = actorInput(input.actor);
     const language = languageInput(input.language);
+    const hold = endUserHold(c.var.principal.tenant, identity?.subject, input.bucket, "transcription");
     return json(c, 200, await transcribeRequest(service, c.var.principal.tenant, {
       audio: bytes ? { bytes } : { url: input.url! }, ...(language ? { language } : {}), ...(input.prompt ? { prompt: input.prompt } : {}),
-      ...(input.keyScope ? { keyScope: input.keyScope } : {}), ...(identity ? { identity } : {}), ...(actor ? { actor } : {}),
+      ...(input.keyScope ? { keyScope: input.keyScope } : {}), ...(identity ? { identity } : {}), ...(actor ? { actor } : {}), ...(hold ? { hold } : {}),
     }, c.req.raw.signal));
   });
 
@@ -893,7 +901,7 @@ export function api(context: ApiContext) {
       try { claims = field("context") === undefined ? undefined : JSON.parse(field("context")!); } catch { throw new HttpError(400, "context must be JSON"); }
       const count = field("n");
       input = parse(schema.ImageInput, {
-        ...Object.fromEntries(["prompt", "size", "quality", "format", "background", "keyScope", "volumeId", "path", "subject", "actor"].flatMap(name => field(name) === undefined ? [] : [[name, field(name)]])),
+        ...Object.fromEntries(["prompt", "size", "quality", "format", "background", "keyScope", "volumeId", "path", "subject", "actor", "bucket"].flatMap(name => field(name) === undefined ? [] : [[name, field(name)]])),
         ...(count !== undefined ? { n: Number(count) } : {}), ...(claims !== undefined ? { context: claims } : {}),
       });
     } else {
@@ -907,10 +915,11 @@ export function api(context: ApiContext) {
     try { path = input.volumeId === undefined ? undefined : normalizePath(input.path ?? "/images"); } catch { throw new HttpError(400, "Invalid path"); }
     const identity = identityInput({ subject: input.subject, context: input.context });
     const actor = actorInput(input.actor);
+    const hold = endUserHold(c.var.principal.tenant, identity?.subject, input.bucket, "image");
     return json(c, 200, await imageRequest(service, c.var.principal.tenant, {
       prompt: input.prompt, images, ...(mask ? { mask } : {}), options: imageOptions(input),
       ...(input.volumeId !== undefined ? { volume: { id: input.volumeId, path: path! } } : {}),
-      ...(input.keyScope ? { keyScope: input.keyScope } : {}), ...(identity ? { identity } : {}), ...(actor ? { actor } : {}),
+      ...(input.keyScope ? { keyScope: input.keyScope } : {}), ...(identity ? { identity } : {}), ...(actor ? { actor } : {}), ...(hold ? { hold } : {}),
     }, c.req.raw.signal));
   });
 

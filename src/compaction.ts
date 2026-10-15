@@ -1,5 +1,5 @@
 import { attemptStream, type UsageSink } from "./model-attempt-stream.ts";
-import type { ModelAttemptHook } from "./model-attempt.ts";
+import type { CreditStop, ModelAttemptHook } from "./model-attempt.ts";
 import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
 import { getProviders, streamSimple, type Api, type Model } from "@earendil-works/pi-ai/compat";
 import { compact, estimateContextTokens, estimateTokens, generateSummary, prepareCompaction, shouldCompact, type CompactionSettings, type Complete } from "./pi-harness/compaction.ts";
@@ -317,14 +317,19 @@ function gatedSignal(gate: ModelGate | undefined, signal: AbortSignal | undefine
 
 /** `outbound` is the policy calls to endpoints tenants give go through: this process's unless given (its node's). */
 export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefined, modelHeaders?: () => Record<string, string> | null | undefined, gate?: ModelGate,
-  timeouts?: (model: Model<Api>, reasoning: string | undefined) => StreamTimeouts, onStall?: (stall: Stall) => void, outbound: Outbound = outboundOfProcess(), attempt?: ModelAttemptHook): StreamFn {
+  timeouts?: (model: Model<Api>, reasoning: string | undefined) => StreamTimeouts, onStall?: (stall: Stall) => void, outbound: Outbound = outboundOfProcess(), attempt?: ModelAttemptHook,
+  onRefused?: (stop: CreditStop) => void): StreamFn {
   return (model, context, options) => {
     if (!options?.apiKey?.trim()) throw new Error(`No ${model.provider} API key is configured for this agent's model, ${model.provider}/${model.id}; set one with PUT /v1/providers/${model.provider}/key, or move the agent to a model you can use (GET /v1/models?available=true)`);
     const apiKey = options.apiKey;
     // A provider's stream that goes quiet is ended (model-stream.ts), and so is one the turn's abort or the lease reaches, at once.
     const limits = timeouts?.(model, options.reasoning ?? reasoningFloor(model)) ?? streamTimeouts(model, options.reasoning ?? reasoningFloor(model));
-    const call = (credentials: Credentials) => attemptStream(attemptModel(model, credentials), credentials.apiKey, "response", attempt, sink => {
-      const { signal, cut, done } = gatedSignal(gate, options.signal);
+    // What the request's context comes to, as the host estimates it: its end user's hold, and the input billed for a request cut short.
+    const input = () => Math.min(model.contextWindow, context.messages.reduce((sum, message) => sum + (message.role === "system"
+      ? Math.ceil(JSON.stringify(message).length / 4) : estimateTokens(message)), 0));
+    const estimate = { inputTokens: input(), maxOutputTokens: options.maxTokens ?? model.maxTokens, rates: { input: model.cost.input, output: model.cost.output } };
+    const call = (credentials: Credentials) => attemptStream(attemptModel(model, credentials), credentials.apiKey, "response", attempt, (sink, halt) => {
+      const { signal, cut, done } = gatedSignal(gate, options.signal ? AbortSignal.any([options.signal, halt]) : halt);
       let requested = false;
       return watchedStream(model, (watched, activity) => {
         const [target, callOptions] = authorize(model, options, credentials, sink, modelHeaders?.(), outbound);
@@ -345,13 +350,11 @@ export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefin
         if (requested && event.type === "error" && event.reason === "aborted") {
           // OpenAI-style streams usually report input usage only at the end. Keep a server-side estimate of
           // the actual context, including tools, so canceling cannot make a large prompt free.
-          const input = context.messages.reduce((sum, message) => sum + (message.role === "system"
-            ? Math.ceil(JSON.stringify(message).length / 4) : estimateTokens(message)), 0);
-          Object.assign(event.error.usage, { estimatedInputTokens: Math.min(model.contextWindow, input) });
+          Object.assign(event.error.usage, { estimatedInputTokens: estimate.inputTokens });
         }
         return event;
       });
-    });
+    }, estimate, onRefused);
     const start = () => {
       const credentials = perCall?.();
       return credentials ? credentials.then(call) : call({ apiKey });
@@ -373,15 +376,17 @@ function summarizer(apiKey: ApiKey, onResponse: ((message: AssistantMessage) => 
     let response: AssistantMessage;
     try {
       const credentials = typeof apiKey === "string" ? { apiKey } : await apiKey();
-      const tracked = await attemptStream(attemptModel(model, credentials), credentials.apiKey, "compaction", attempt, sink => {
+      const inputTokens = Math.min(model.contextWindow, context.messages.reduce((sum, message) => sum + estimateTokens(message as AgentMessage), 0) + Math.ceil((context.systemPrompt?.length ?? 0) / 4));
+      const estimate = { inputTokens, maxOutputTokens: options?.maxTokens ?? model.maxTokens, rates: { input: model.cost.input, output: model.cost.output } };
+      const tracked = await attemptStream(attemptModel(model, credentials), credentials.apiKey, "compaction", attempt, (sink, halt) => {
       const [target, callOptions] = authorize(model, options, credentials, sink, modelHeaders, outbound);
       // Watched like a turn's requests: a summary whose stream goes quiet fails (the context is left as it is) rather than hold the turn.
       return watchedStream(model, (watched, activity) => streamSimple(target, context, { ...callOptions, signal: watched, onProviderStreamEvent: (event: unknown) => activity(event) }),
-        streamTimeouts(model, callOptions?.reasoning), signal, undefined, event => {
+        streamTimeouts(model, callOptions?.reasoning), signal ? AbortSignal.any([signal, halt]) : halt, undefined, event => {
           if (sink.cost !== undefined) Object.assign(event.type === "done" ? event.message.usage : event.error.usage, { providerCost: sink.cost, providerCreditCost: sink.credits });
           return event;
         });
-      });
+      }, estimate);
       response = await tracked.result();
     } finally { done(); }
     if (response.stopReason !== "error") onResponse?.(response);

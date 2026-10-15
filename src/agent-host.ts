@@ -1,4 +1,4 @@
-import type { ModelAttemptHook } from "./model-attempt.ts";
+import { END_USER_CREDIT, type CreditStop, type ModelAttemptHook } from "./model-attempt.ts";
 import { mkdir } from "node:fs/promises";
 import { Agent, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
 import { convertToLlm } from "./pi-harness/messages.ts";
@@ -114,7 +114,16 @@ export function createAgentHost(hostIO: HostIO) {
   let busy = false;
   let active: AbortController | undefined;
   /** Why the current run ended early: a spend limit, tool calls waiting on a person's input, or a hand-off (its node is leaving). */
-  let stopped: { stopped: RunStop["stopped"] | "input_required"; error?: string; code?: string; limit?: RunStop["limit"] } | undefined;
+  let stopped: { stopped: RunStop["stopped"] | "input_required"; error?: string; code?: string; limit?: RunStop["limit"]; reason?: string } | undefined;
+  /**
+   * A model call its end user's credit refused (before it was made) or cut (where its hold ran out, as it streamed):
+   * the running turn stops there, as at a spend limit, and is not retried.
+   */
+  const creditStop = (refused: CreditStop) => {
+    if (!busy || stopped) return;
+    stopped = { stopped: "spend_limit", error: refused.message, code: END_USER_CREDIT, limit: "end_user", reason: refused.reason };
+    io.emit({ type: "spend_limit_reached", message: refused.message });
+  };
   /** Messages a compaction folded into the summary during the current run, still in Pi's live state. */
   let dropped = new WeakSet<AgentMessage>();
   let summary: { state: CompactionState; message: AgentMessage } | undefined;
@@ -507,7 +516,7 @@ export function createAgentHost(hostIO: HostIO) {
    */
   async function unforced(signal: AbortSignal) {
     const last = agent!.state.messages.at(-1) as AssistantMessage | undefined;
-    if (!forcing.last || signal.aborted || last?.role !== "assistant" || last.stopReason !== "error" || isRetryableAssistantError(last) || isContextOverflow(last, config.model.contextWindow)) return;
+    if (!forcing.last || signal.aborted || stopped || last?.role !== "assistant" || last.stopReason !== "error" || isRetryableAssistantError(last) || isContextOverflow(last, config.model.contextWindow)) return;
     forcing = { left: 0, reminding: false, last: false };
     await transcript.retract();
     io.emit({ type: "message_retracted", index: transcript.total });
@@ -764,6 +773,8 @@ export function createAgentHost(hostIO: HostIO) {
     for (let attempt = 1; ; attempt++) {
       const last = agent!.state.messages.at(-1) as AssistantMessage | undefined;
       if (signal.aborted || !last || last.role !== "assistant" || last.stopReason !== "error") return;
+      // Its end user's credit refused it: asking again would be refused again.
+      if (stopped?.code === END_USER_CREDIT) return;
       if (isContextOverflow(last, config.model.contextWindow)) {
         if (overflowHandled) return;
         overflowHandled = true;
@@ -891,7 +902,7 @@ export function createAgentHost(hostIO: HostIO) {
       // A request whose stream goes quiet ends as a retryable error (model-stream.ts), said on the run's stream as it happens.
       const stream = explicitKeyStream(() => perCall() ? io.modelAuth() : undefined, () => config.modelHeaders, gate,
         (model, reasoning) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts),
-        stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: config.model.provider, model: config.model.id }), io.modelOutbound, io.modelAttempt);
+        stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: config.model.provider, model: config.model.id }), io.modelOutbound, io.modelAttempt, creditStop);
       agent = new Agent({
         initialState: {
           model: config.model,
@@ -935,7 +946,7 @@ export function createAgentHost(hostIO: HostIO) {
             stopped = { stopped: "handoff" };
             return { action: "end" };
           }
-          stopped = { stopped: limit.stopped, error: limit.message, code: limit.stopped, ...(limit.limit ? { limit: limit.limit } : {}) };
+          stopped = { stopped: limit.stopped, error: limit.message, code: limit.code ?? limit.stopped, ...(limit.limit ? { limit: limit.limit } : {}), ...(limit.reason ? { reason: limit.reason } : {}) };
           io.emit({ type: `${limit.stopped}_reached`, message: limit.message });
           return { action: "end" };
         },
