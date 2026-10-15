@@ -4605,7 +4605,7 @@ export class ClientSessions {
         // A run queued behind the one that reached the cap never begins; a resumed turn is stopped by the host.
         // A child's notification is never refused: at a limit it lands without a turn (`landNotice`).
         if (!session.resuming.has(record.id) && (params as { notice?: unknown } | undefined)?.notice === undefined) {
-          const limited = await this.runLimit(session, record.method);
+          const limited = await this.runLimit(session, record.method, record.bucket);
           if (limited) throw limited;
         }
         try {
