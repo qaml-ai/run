@@ -127,6 +127,13 @@ Azure OpenAI data terms (not used for training; its abuse monitoring may keep pr
 processor for them. Requests ask Azure to store nothing (`store: false`). Only tenants on the platform's keys can use
 these models.
 
+## OpenRouter models
+
+An agent on an `openrouter/<model>` sends its model calls through OpenRouter, which routes each to a provider serving
+that model. Every call asks OpenRouter to use only providers that don't store or train on prompts
+(`provider.data_collection: "deny"`), unless the tenant's entry allows it ([Tenants](tenants.md), "OpenRouter data
+collection").
+
 ## Transcription
 
 Audio attached to a message is transcribed by default, and `POST /v1/transcriptions` transcribes audio alone

@@ -336,6 +336,49 @@ test("model calls require the agent's explicit key and never read provider keys 
   } finally { delete process.env.OPENAI_API_KEY; }
 });
 
+test("OpenRouter calls ask for providers that don't collect data, unless the tenant allows it", async t => {
+  const bodies: any[] = [];
+  const server = createServer(async (req, res) => {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    bodies.push(JSON.parse(body));
+    res.writeHead(401, { "Content-Type": "application/json" }).end(JSON.stringify({ error: { message: "fixture", type: "authentication_error" } }));
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(async () => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
+  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const model = (provider: string, id: string, baseUrl: string) => ({ ...(getModel as (provider: string, id: string) => Model<Api>)(provider, id), baseUrl });
+  // OpenRouter's Messages API and its completions API, and Anthropic's own.
+  const messages = model("openrouter", "anthropic/claude-sonnet-5", base), completions = model("openrouter", "openai/gpt-5.6-luna", `${base}/v1`), anthropic = model("anthropic", "claude-sonnet-5", base);
+  const context = normalizeContext({ systemPrompt: "fixture", messages: [{ role: "user", content: "hi", timestamp: Date.now() }] });
+  const call = async (target: Model<Api>, dataCollection?: "allow" | "deny", options: Record<string, unknown> = {}) => {
+    await (await explicitKeyStream(undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, () => dataCollection)(target, context, { apiKey: "k", maxRetries: 0, ...options })).result();
+    return bodies.at(-1);
+  };
+  assert.deepEqual((await call(messages)).provider, { data_collection: "deny" });
+  assert.deepEqual((await call(completions, "deny")).provider, { data_collection: "deny" });
+  assert.equal((await call(anthropic)).provider, undefined, "only OpenRouter's");
+  assert.equal((await call(completions, "allow")).provider, undefined, "a tenant that allows it");
+  // An agent's own payload change (documents) still applies, with other routing preferences kept.
+  const own = await call(completions, undefined, { onPayload: (payload: any) => ({ ...payload, provider: { order: ["deepseek"] }, marked: true }) });
+  assert.deepEqual([own.provider, own.marked], [{ order: ["deepseek"], data_collection: "deny" }, true]);
+  // Compaction's summaries too.
+  const turns = Array.from({ length: 6 }, (_, index) => ({ role: index % 2 ? "assistant" : "user", content: index % 2 ? [{ type: "text", text: "x".repeat(4000) }] : "y".repeat(4000), timestamp: Date.now(), ...(index % 2 ? { api: completions.api, provider: completions.provider, model: completions.id, stopReason: "stop", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } } : {}) })) as any[];
+  await assert.rejects(runCompaction({ context: turns, offset: 0, model: completions, apiKey: "k", keepRecentTokens: 1_000 }), /fixture|401/);
+  assert.deepEqual(bodies.at(-1).provider, { data_collection: "deny" });
+  await assert.rejects(runCompaction({ context: turns, offset: 0, model: completions, apiKey: "k", keepRecentTokens: 1_000, dataCollection: "allow" }), /fixture|401/);
+  assert.equal(bodies.at(-1).provider, undefined);
+  // The tenants file: "allow", or absent to deny.
+  const tenants = (entry: object) => new Tenants({ read: async () => JSON.stringify({ tenants: { a: { tokenSha256: "a".repeat(64), ...entry } } }) });
+  const allowed = tenants({ openRouterDataCollection: "allow" });
+  await allowed.reload();
+  const denied = tenants({});
+  await denied.reload();
+  assert.deepEqual([allowed.openRouterDataCollection("a"), denied.openRouterDataCollection("a"), denied.openRouterDataCollection("other")], ["allow", "deny", "deny"]);
+  await assert.rejects(tenants({ openRouterDataCollection: "deny" }).reload(), /invalid openRouterDataCollection/);
+});
+
 test("model and summarization requests carry only the tenant's key, whatever provider credentials the host has", async t => {
   const hostEnv = {
     OPENAI_API_KEY: "host-openai", OPENROUTER_API_KEY: "host-openrouter",

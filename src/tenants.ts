@@ -54,6 +54,11 @@ export interface Tenant {
   billing?: "prepaid" | "none";
   /** false: an unbilled tenant's agents never fall back to the platform's keys (the file's `platformKeys`), only its own and its apiKeys. */
   platformKeys?: boolean;
+  /**
+   * "allow": OpenRouter may route its agents' calls to providers that store or train on prompts. Absent: every call asks
+   * OpenRouter for providers that don't (`provider.data_collection: "deny"`, compaction.ts `DataCollection`).
+   */
+  openRouterDataCollection?: "allow";
   /** The tenant's own pass-through model endpoints, by the provider name its models are named under (`<name>/<provider>/<model id>`). */
   modelEndpoints?: Record<string, ModelEndpoint>;
 }
@@ -130,6 +135,7 @@ export class Tenants {
       if (tenant.billing !== undefined && tenant.billing !== "prepaid" && tenant.billing !== "none") throw new Error(`Tenant ${tenant.id} has an invalid billing: "prepaid", "none", or absent for none`);
       if (tenant.platformKeys !== undefined && typeof tenant.platformKeys !== "boolean") throw new Error(`Tenant ${tenant.id} has an invalid platformKeys: false, or absent to use the platform's keys`);
       if (tenant.platformKeys === false && tenant.billing === "prepaid") throw new Error(`Tenant ${tenant.id} is prepaid, so it pays for the platform's keys: platformKeys: false is for unbilled tenants`);
+      if (tenant.openRouterDataCollection !== undefined && tenant.openRouterDataCollection !== "allow") throw new Error(`Tenant ${tenant.id} has an invalid openRouterDataCollection: "allow", or absent to deny it`);
       if (tenant.modelEndpoints !== undefined) validEndpoints(tenant.id, tenant.modelEndpoints);
       next.set(tenant.id, {
         id: tenant.id, tokenSha256: tenant.tokenSha256, apiKeys: { ...(tenant.apiKeys ?? {}) }, ...(tenant.github ? { github: tenant.github } : {}), ...(tenant.githubId !== undefined ? { githubId: tenant.githubId } : {}),
@@ -141,6 +147,7 @@ export class Tenants {
         ...(tenant.codeCpuMs !== undefined ? { codeCpuMs: tenant.codeCpuMs } : {}), ...(tenant.codeMaxTimeoutMs !== undefined ? { codeMaxTimeoutMs: tenant.codeMaxTimeoutMs } : {}),
         ...(tenant.codeConcurrency !== undefined ? { codeConcurrency: tenant.codeConcurrency } : {}),
         ...(tenant.billing ? { billing: tenant.billing } : {}), ...(tenant.platformKeys === false ? { platformKeys: false } : {}), ...(tenant.modelEndpoints ? { modelEndpoints: tenant.modelEndpoints } : {}),
+        ...(tenant.openRouterDataCollection ? { openRouterDataCollection: tenant.openRouterDataCollection } : {}),
       });
     }
     this.byId = next;
@@ -189,6 +196,9 @@ export class Tenants {
   codeLimits(id: string) { const tenant = this.byId.get(id); return { cpuMs: tenant?.codeCpuMs, maxTimeoutMs: tenant?.codeMaxTimeoutMs, concurrent: tenant?.codeConcurrency }; }
 
   rateLimit(id: string, limit: "agentCreates" | "runs") { const tenant = this.byId.get(id); return limit === "runs" ? tenant?.maxRunsPerMinute : tenant?.maxAgentCreatesPerMinute; }
+
+  /** Whether OpenRouter may route the tenant's calls to providers that collect data: "allow" only when its entry says so. */
+  openRouterDataCollection(id: string): "allow" | "deny" { return this.byId.get(id)?.openRouterDataCollection ?? "deny"; }
 
   /** The tenant's monthly spend cap in USD, if its entry sets one. */
   maxMonthlyCost(id: string) { return this.byId.get(id)?.maxMonthlyCost; }

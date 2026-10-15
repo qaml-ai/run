@@ -103,6 +103,8 @@ export interface AgentConfig {
   streamTimeouts?: { firstTokenMs?: number; idleMs?: number };
   /** A run that began elsewhere will resume: leave an interrupted turn open to continue it. */
   resume?: boolean;
+  /** Whether OpenRouter may route its model calls to providers that collect data, set by the runtime from the tenant's entry: "deny" unless "allow" (compaction.ts `DataCollection`). */
+  openRouterDataCollection?: "allow" | "deny";
   /** The agent's tenant, set by the runtime, for its metric lines. */
   tenant?: string;
   /** The tenant's js_exec limits, set by the runtime (never the agent's configuration): CPU per execution, the longest timeoutMs, and the engine. */

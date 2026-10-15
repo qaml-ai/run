@@ -232,15 +232,36 @@ export function callFetch(sink: UsageSink, plan: { rebase?: { from: string[]; to
 }
 
 /**
+ * Whether OpenRouter may route a call to providers that store or train on its data (OpenRouter's provider preference
+ * `data_collection`, https://openrouter.ai/docs/features/provider-routing): "deny" unless the tenant's entry allows it
+ * (tenants.ts `openRouterDataCollection`). A model only such providers serve then fails with OpenRouter's own error.
+ */
+export type DataCollection = "allow" | "deny";
+
+/** Pi's options for an OpenRouter call that asks it to route only to providers that don't collect its data. */
+function denyDataCollection(options: any) {
+  const onPayload = options?.onPayload;
+  return {
+    ...options,
+    onPayload: async (payload: unknown, model: Model<Api>) => {
+      const body = ((await onPayload?.(payload, model)) ?? payload) as Record<string, any>;
+      if (!body || typeof body !== "object" || Array.isArray(body)) return body;
+      return { ...body, provider: { ...(body.provider && typeof body.provider === "object" ? body.provider : {}), data_collection: "deny" } };
+    },
+  };
+}
+
+/**
  * Pi's model and options for one call with `credentials`, reading the provider's cost into `sink`.
  * Headers are Pi's, then a key scope entry's, then the agent's own `modelHeaders` (never auth headers).
  * A key scope's `baseUrl` replaces the provider's root (`PROVIDER_ROOTS`) in each request's URL, or for
  * an API that takes no fetch (Bedrock, Google), the model's base URL. An entry without a key sends none.
  */
-function authorize(model: Model<Api>, asked: any, credentials: Credentials, sink: UsageSink, modelHeaders: Record<string, string> | null | undefined, outbound: Outbound): [Model<Api>, any] {
+function authorize(model: Model<Api>, asked: any, credentials: Credentials, sink: UsageSink, modelHeaders: Record<string, string> | null | undefined, outbound: Outbound, dataCollection?: DataCollection): [Model<Api>, any] {
   // A model that always reasons refuses a call that turns reasoning off: a call asking for none asks for its least.
   const floor = asked?.reasoning ? undefined : reasoningFloor(model);
-  const options = floor ? { ...asked, reasoning: floor } : asked;
+  const reasoned = floor ? { ...asked, reasoning: floor } : asked;
+  const options = !credentials.identity && model.provider === "openrouter" && dataCollection !== "allow" ? denyDataCollection(reasoned) : reasoned;
   if (credentials.identity) {
     const target = upstream(model);
     const callOptions = identityOptions(model, { ...options, headers: { ...options?.headers, ...modelHeaders } }, credentials.apiKey);
@@ -318,7 +339,7 @@ function gatedSignal(gate: ModelGate | undefined, signal: AbortSignal | undefine
 /** `outbound` is the policy calls to endpoints tenants give go through: this process's unless given (its node's). */
 export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefined, modelHeaders?: () => Record<string, string> | null | undefined, gate?: ModelGate,
   timeouts?: (model: Model<Api>, reasoning: string | undefined) => StreamTimeouts, onStall?: (stall: Stall) => void, outbound: Outbound = outboundOfProcess(), attempt?: ModelAttemptHook,
-  onRefused?: (stop: CreditStop) => void): StreamFn {
+  onRefused?: (stop: CreditStop) => void, dataCollection?: () => DataCollection | undefined): StreamFn {
   return (model, context, options) => {
     if (!options?.apiKey?.trim()) throw new Error(`No ${model.provider} API key is configured for this agent's model, ${model.provider}/${model.id}; set one with PUT /v1/providers/${model.provider}/key, or move the agent to a model you can use (GET /v1/models?available=true)`);
     const apiKey = options.apiKey;
@@ -332,7 +353,7 @@ export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefin
       const { signal, cut, done } = gatedSignal(gate, options.signal ? AbortSignal.any([options.signal, halt]) : halt);
       let requested = false;
       return watchedStream(model, (watched, activity) => {
-        const [target, callOptions] = authorize(model, options, credentials, sink, modelHeaders?.(), outbound);
+        const [target, callOptions] = authorize(model, options, credentials, sink, modelHeaders?.(), outbound, dataCollection?.());
         const observe = callOptions.onProviderStreamEvent;
         requested = true;
         const stream = streamSimple(target, context, { ...callOptions, signal: watched, onProviderStreamEvent: (event: unknown, at: Model<Api>) => { activity(event); return observe?.(event, at); } });
@@ -369,7 +390,7 @@ export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefin
  * Every completed request is reported, so chunks and a run that fails after some are billed too.
  */
 type ApiKey = string | (() => Promise<Credentials>);
-function summarizer(apiKey: ApiKey, onResponse: ((message: AssistantMessage) => void) | undefined, modelHeaders: Record<string, string> | null | undefined, gate: ModelGate | undefined, outbound: Outbound, attempt?: ModelAttemptHook): Complete {
+function summarizer(apiKey: ApiKey, onResponse: ((message: AssistantMessage) => void) | undefined, modelHeaders: Record<string, string> | null | undefined, gate: ModelGate | undefined, outbound: Outbound, attempt?: ModelAttemptHook, dataCollection?: DataCollection): Complete {
   return async (model, context, options) => {
     await gate?.wait(options?.signal);
     const { signal, done } = gatedSignal(gate, options?.signal);
@@ -379,7 +400,7 @@ function summarizer(apiKey: ApiKey, onResponse: ((message: AssistantMessage) => 
       const inputTokens = Math.min(model.contextWindow, context.messages.reduce((sum, message) => sum + estimateTokens(message as AgentMessage), 0) + Math.ceil((context.systemPrompt?.length ?? 0) / 4));
       const estimate = { inputTokens, maxOutputTokens: options?.maxTokens ?? model.maxTokens, rates: { input: model.cost.input, output: model.cost.output } };
       const tracked = await attemptStream(attemptModel(model, credentials), credentials.apiKey, "compaction", attempt, (sink, halt) => {
-      const [target, callOptions] = authorize(model, options, credentials, sink, modelHeaders, outbound);
+      const [target, callOptions] = authorize(model, options, credentials, sink, modelHeaders, outbound, dataCollection);
       // Watched like a turn's requests: a summary whose stream goes quiet fails (the context is left as it is) rather than hold the turn.
       return watchedStream(model, (watched, activity) => streamSimple(target, context, { ...callOptions, signal: watched, onProviderStreamEvent: (event: unknown) => activity(event) }),
         streamTimeouts(model, callOptions?.reasoning), signal ? AbortSignal.any([signal, halt]) : halt, undefined, event => {
@@ -434,6 +455,8 @@ export async function runCompaction(options: {
   gate?: ModelGate;
   /** The policy calls to endpoints tenants give go through: this process's unless given (its node's). */
   outbound?: Outbound;
+  /** Whether OpenRouter may route its calls to providers that collect data (`DataCollection`): "deny" unless "allow". */
+  dataCollection?: DataCollection;
 }): Promise<CompactionOutcome> {
   const { context, offset, previous, model, apiKey, signal } = options;
   const defaults = compactionSettings(model);
@@ -443,7 +466,7 @@ export async function runCompaction(options: {
   const preparation = prepared.value;
   // A cut that keeps everything would only add a summary of nothing, and change the cached prefix for it.
   if (!preparation || (!preparation.messagesToSummarize.length && !preparation.turnPrefixMessages.length)) return { skipped: "Nothing before the recent context to summarize" };
-  const complete = summarizer(apiKey, options.onResponse, options.modelHeaders, options.gate, options.outbound ?? outboundOfProcess(), options.attempt);
+  const complete = summarizer(apiKey, options.onResponse, options.modelHeaders, options.gate, options.outbound ?? outboundOfProcess(), options.attempt, options.dataCollection);
   // Leave room for the summarization prompt and the summary itself.
   const chunkBudget = Math.max(4_000, Math.floor((model.contextWindow - settings.reserveTokens) * 0.6));
   let tokens = 0;

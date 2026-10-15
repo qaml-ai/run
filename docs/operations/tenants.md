@@ -108,5 +108,12 @@ short:
 - **Self-serve tenants are prepaid**, except those that signed up before billing existed, which stay unbilled and use only
   their own keys.
 
+## OpenRouter data collection
+
+Every model call through OpenRouter (an `openrouter/<model>` agent's turns and its compaction summaries, on any key)
+asks OpenRouter to route only to providers that don't store or train on prompts (`provider: { data_collection: "deny" }`,
+[provider routing](https://openrouter.ai/docs/features/provider-routing)). A model only such providers serve then
+fails with OpenRouter's error. `"openRouterDataCollection": "allow"` in a tenant's entry lets its calls go to them too.
+
 A product run by camelAI, such as camel-bots, is an unbilled admin tenant on the platform's keys, with a
 `set-spend-limit` cap as its safety net.
