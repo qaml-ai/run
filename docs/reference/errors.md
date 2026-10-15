@@ -33,6 +33,7 @@ retry.
 | 401 | `UNAUTHORIZED` | No valid token; the message says where to create one (https://run.camelai.com/console/tokens) |
 | 402 | `SPEND_LIMIT` | A spend limit is reached: the agent's, or the account's monthly cap; or a message's audio, or an image, would cost more than the run's or agent's spend limit has left |
 | 402 | `INSUFFICIENT_CREDIT` | The account's prepaid credit is spent: no runs start and no files are stored |
+| 402 | `END_USER_CREDIT` | With [end-user credits](../guides/end-user-credits.md) on: the run's or call's end user (its subject) has nothing left in its bucket: no allowance today and no balance (`reason: "balance"`), or their daily limit is reached (`reason: "daily_limit"`). The body names `endUser` and `bucket`. Grant them credit, or wait for tomorrow's allowance |
 | 403 | `FORBIDDEN` | The token may not do this |
 | 404 | `NOT_FOUND` | No such agent, request, input or other resource for this account, or no such path at all (the message points at `/llms.txt`) |
 | 409 | `IDEMPOTENCY_CONFLICT` | The Idempotency-Key or request id was used for another request |
@@ -112,6 +113,7 @@ A run ends in one of three ways: it answered, it waits on people
 | `output_invalid` | (the SDKs only) | The output fit the JSON Schema the runtime checked, but not the zod or pydantic schema the SDK parsed it with (a refinement or validator the JSON Schema cannot say) |
 | `spend_limit` | `result.stopped: "spend_limit"` | A spend limit stopped the turn after the response that crossed it; its tool calls ran. `result.limit` says which: `run` (the run's own `spendLimit`), `agent`, `tenant` (the monthly cap) or `credit` (prepaid credit spent). Raise that limit and send the next message |
 | `turn_limit` | `result.stopped: "turn_limit"` | The run made as many model responses (1,000 by default) or ran as long (2 hours) as its [run limits](../guides/models-and-keys.md#run-limits) allow; the turn stopped after that response's tool calls. Send another message to continue, or raise the agent's `runLimits` |
+| `end_user_credit` | `result.stopped: "spend_limit"`, `limit: "end_user"`, `reason` | The run's [end user](../guides/end-user-credits.md) ran out of credit: a model call was refused, or cut where its hold ended mid-reply (what streamed is kept). `reason` is `balance` or `daily_limit`. Not retried. Grant them credit and send the next message |
 | `runtime_error` | `outcome.error` (no `result`) | The runtime could not carry the run out: e.g. the agent was deleted, code execution failed, a queued run refused for credit |
 | (any, with `uncertain`) | `outcome.uncertain: true` | A restart cut the run short where it could not resume (a code execution, or a turn resumed twice already): its tool calls may or may not have taken effect. Check before retrying |
 

@@ -54,8 +54,10 @@ def fake_model(bodies, script=None):
             delta = dict(script.pop(0)) if script else {"role": "assistant", "content": "seen"}
             # A slow model: `delayMs` before it answers.
             time.sleep(delta.pop("delayMs", 0) / 1000)
+            # `usage` (prompt_tokens, completion_tokens, cost) comes with the last chunk.
+            usage = delta.pop("usage", None)
             for delta, finish in ((delta, None), ({}, "tool_calls" if "tool_calls" in delta else "stop")):
-                self.wfile.write(f"data: {json.dumps({'id': 'fixture', 'object': 'chat.completion.chunk', 'choices': [{'index': 0, 'delta': delta, 'finish_reason': finish}]})}\n\n".encode())
+                self.wfile.write(f"data: {json.dumps({'id': 'fixture', 'object': 'chat.completion.chunk', 'choices': [{'index': 0, 'delta': delta, 'finish_reason': finish}], **({'usage': usage} if usage and finish else {})})}\n\n".encode())
             self.wfile.write(b"data: [DONE]\n\n")
 
         def log_message(self, *_):
@@ -1149,6 +1151,36 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await asyncio.to_thread(managed), ("5678", True, "python", None))
         finally:
             receiver.shutdown()
+
+    async def test_end_users_credit_their_users_and_a_run_spends_from_its_bucket(self):
+        end_users = self.agents.end_users
+        settings = await end_users.configure(enabled=True, allowances={"bot:*": 1_000_000}, markup_bps=2_500)
+        self.assertEqual((settings["enabled"], settings["markupBps"], settings["dailyLimit"]), (True, 2_500, None))
+        granted = await end_users.grant("person", amount=500_000, key="pi_1", reference="Stripe pi_1")
+        again = await end_users.grant("person", amount=500_000, key="pi_1", reference="Stripe pi_1")
+        self.assertEqual((granted["replayed"], again["replayed"], again["entry"]["id"]), (False, True, granted["entry"]["id"]))
+        agent = await self.agents.upsert("bot-7", subject="person", bucket="bot:7")
+        detail = (await self.runtime.http.get(f"{self.url}/v1/agents/{agent.id}", headers={"Authorization": f"Bearer {self.token}"})).json()
+        self.assertEqual(detail["bucket"], "bot:7")
+        self.script.append({"role": "assistant", "content": "seen", "usage": {"prompt_tokens": 10, "completion_tokens": 10, "cost": 0.01}})
+        self.assertEqual((await agent.run("hello")).text, "seen")
+        usage = [entry for entry in (await end_users.ledger("person"))["entries"] if entry["kind"] == "usage"]
+        self.assertEqual([entry["bucket"] for entry in usage], ["bot:7"])
+        self.assertEqual((usage[0]["raw"], usage[0]["allowance"], usage[0]["amount"]), (10_000, 10_000, 0), "the bucket's allowance paid for it")
+        person = await end_users.get("person", buckets=["bot:8"])
+        self.assertEqual([bucket["bucket"] for bucket in person["today"]["buckets"]], ["bot:7", "bot:8"])
+        # Nothing left (the bucket's allowance taken away, and no balance): the run is refused with why.
+        await end_users.adjust("person", amount=-person["balance"], key="zero")
+        await end_users.update("person", allowances={"bot:7": 0})
+        with self.assertRaises(AgentError) as refused:
+            await agent.run("again")
+        self.assertEqual(refused.exception.code, "END_USER_CREDIT")
+        self.assertEqual((await end_users.list())["endUsers"][0]["id"], "person")
+
+        def synchronous():
+            with sync.AgentRuntime(url=self.url, api_key=self.token) as runtime:
+                return runtime.end_users.get("person")["balance"], runtime.end_users.settings()["enabled"]
+        self.assertEqual(await asyncio.to_thread(synchronous), (0, True))
 
     async def test_volumes_files_snapshots_and_mounts(self):
         created = await self.runtime.create_volume(name="shared docs")

@@ -32,7 +32,7 @@ __all__ = [
     "Agents", "Agent", "Run", "RunInput", "InputDetail", "Mount", "WorkspaceMount", "RunStream", "StreamPart", "Runs", "StatelessRunStream",
     "tool", "Tool", "ToolContext", "InputRequired", "RuntimeIdentity", "identity_from_claims", "spawn_agent", "SpawnAgent", "agent_notice",
     "AgentError", "RunError",
-    "AgentRuntime", "AgentClient", "AgentFiles", "Download", "Volume", "Telemetry", "Transcriptions", "Images", "DEFAULT_URL",
+    "AgentRuntime", "AgentClient", "AgentFiles", "Download", "Volume", "Telemetry", "Transcriptions", "Images", "EndUsers", "DEFAULT_URL",
     "serve_tools", "verify_runtime_token", "verify_file_url", "RuntimeTokenError", "TestRuntime", "verify_webhook", "WebhookVerificationError",
 ]
 # Distinguishes "not given" from None (which means "never expires") in create_agent.
@@ -810,6 +810,8 @@ class AgentRuntime(_RuntimeCalls):
         self.transcriptions = Transcriptions(self)
         # Images on their own: generate, edit.
         self.images = Images(self)
+        # Your users' credit: configure, grant, get, ledger and the rest.
+        self.end_users = EndUsers(self)
 
     async def _form(self, path, fields, file):
         """A multipart POST with the API key (a transcription's audio), not retried: its answer."""
@@ -972,9 +974,9 @@ def _trace_header(traceparent):
     return {"traceparent": traceparent} if traceparent else {}
 
 
-def _transcription_form(language=None, prompt=None, key_scope=None, subject=None, context=None, actor=None):
+def _transcription_form(language=None, prompt=None, key_scope=None, subject=None, context=None, actor=None, bucket=None):
     """A transcription's fields, as the request names them, the ones given."""
-    fields = {"language": language, "prompt": prompt, "keyScope": key_scope, "subject": subject, "context": context, "actor": actor}
+    fields = {"language": language, "prompt": prompt, "keyScope": key_scope, "subject": subject, "context": context, "actor": actor, "bucket": bucket}
     return {key: value for key, value in fields.items() if value is not None}
 
 
@@ -987,14 +989,14 @@ class Transcriptions:
         self._runtime = runtime
 
     def create(self, file=None, *, url=None, name=None, content_type=None, language=None, prompt=None, key_scope=None,
-               subject=None, context=None, actor=None):
+               subject=None, context=None, actor=None, bucket=None):
         """Transcribe audio: `file` (bytes, or a local path as str or Path) or `url` for the runtime to fetch (public
         addresses only). Ogg (Opus, Vorbis), WebM, MP3, M4A/MP4, WAV or FLAC; at most 25 MB and 30 minutes. `language`:
         ISO 639-1 ("en") or a locale ("pt-BR"), detected when left out; `prompt`: names or jargon to expect;
         `key_scope`: whose OpenAI key goes first;
-        `subject`, `context` and `actor` are carried to its usage.recorded event. Returns {"text", "language",
-        "durationSeconds", "model", "costUsd"}. Not retried: each attempt is billed."""
-        fields = _transcription_form(language, prompt, key_scope, subject, context, actor)
+        `subject`, `context` and `actor` are carried to its usage.recorded event; with end-user credits on, `subject` pays for it from
+        `bucket`. Returns {"text", "language", "durationSeconds", "model", "costUsd"}. Not retried: each attempt is billed."""
+        fields = _transcription_form(language, prompt, key_scope, subject, context, actor, bucket)
         if (file is None) == (url is None):
             raise AgentError("Give the audio as file (bytes or a path) or url, one of them")
         if url is not None:
@@ -1029,30 +1031,100 @@ class Images:
         self._runtime = runtime
 
     def generate(self, prompt, *, size=None, quality=None, format=None, background=None, n=None, key_scope=None, volume_id=None, path=None,
-                 subject=None, context=None, actor=None):
+                 subject=None, context=None, actor=None, bucket=None):
         """Make images from `prompt`. `size`: "1024x1024" (default), "1536x1024" or "1024x1536"; `quality`: "low",
         "medium" (default) or "high"; `format`: "png" (default), "jpeg" or "webp"; `background`: "transparent" (png or
         webp) or "opaque"; `n`: 1 to 4. `key_scope`: whose OpenAI key goes first. `volume_id` (and `path`, a directory,
         default /images) saves them in that volume and answers their paths instead of their bytes. `subject`, `context`
-        and `actor` are carried to its usage.recorded event. Returns {"images": [{"contentType", "width", "height",
+        and `actor` are carried to its usage.recorded event; with end-user credits on, `subject` pays for it from `bucket`. Returns {"images": [{"contentType", "width", "height",
         "data" | "volumeId", "path", "size", "version"}], "model", "usage": {"inputTokens", "outputTokens"}, "costUsd"}.
         Not retried: each attempt is billed."""
-        return self._send(prompt, [], None, size, quality, format, background, n, key_scope, volume_id, path, subject, context, actor)
+        return self._send(prompt, [], None, size, quality, format, background, n, key_scope, volume_id, path, subject, context, actor, bucket)
 
     def edit(self, prompt, images, *, mask=None, size=None, quality=None, format=None, background=None, n=None, key_scope=None, volume_id=None,
-             path=None, subject=None, context=None, actor=None):
+             path=None, subject=None, context=None, actor=None, bucket=None):
         """Edit or combine `images` (at most 4; each bytes, a local path, or {"url"}; PNG, JPEG or WebP) as `prompt` says.
         `mask` says where the first may change (transparent there, in its format and size). Otherwise as generate."""
         if not images:
             raise AgentError("Give the images to edit")
-        return self._send(prompt, images, mask, size, quality, format, background, n, key_scope, volume_id, path, subject, context, actor)
+        return self._send(prompt, images, mask, size, quality, format, background, n, key_scope, volume_id, path, subject, context, actor, bucket)
 
-    def _send(self, prompt, images, mask, size, quality, format, background, n, key_scope, volume_id, path, subject, context, actor):
+    def _send(self, prompt, images, mask, size, quality, format, background, n, key_scope, volume_id, path, subject, context, actor, bucket):
         fields = {"size": size, "quality": quality, "format": format, "background": background, "n": n, "keyScope": key_scope,
-                  "volumeId": volume_id, "path": path, "subject": subject, "context": context, "actor": actor}
+                  "volumeId": volume_id, "path": path, "subject": subject, "context": context, "actor": actor, "bucket": bucket}
         body = {"prompt": prompt, **{key: value for key, value in fields.items() if value is not None},
                 **({"images": [_image_source(image) for image in images]} if images else {}), **({"mask": _image_source(mask)} if mask is not None else {})}
         return self._runtime._rest("POST", "/v1/images", body, retry=False, timeout=_IMAGES_TIMEOUT)
+
+
+class EndUsers:
+    """Your users' credit (runtime.end_users, agents.end_users). Agents and calls with a `subject` spend that person's credit,
+    from their bucket's daily allowance first, then their balance (with your markup), within their daily limit; a run that
+    runs out fails with code "end_user_credit". You take payments; after one, grant the credit. Amounts are integer
+    micro-USD (1 USD = 1_000_000). Its calls are awaited from AgentRuntime, and plain from the synchronous one.
+
+        await agents.end_users.configure(enabled=True, allowances={"builder": 50_000_000, "bot:*": 1_000_000})
+        await agents.end_users.grant(user_id, amount=10_000_000, key=payment_intent_id)
+    """
+
+    def __init__(self, runtime):
+        self._runtime = runtime
+
+    @staticmethod
+    def _path(end_user):
+        return f"/v1/end-users/{quote(end_user, safe='')}"
+
+    def settings(self):
+        """How the tenant meters its end users: {"enabled", "allowances", "dailyLimit", "markupBps", "lowBalance", "updatedAt"}."""
+        return self._runtime._rest("GET", "/v1/end-user-settings")
+
+    def configure(self, *, enabled=None, allowances=None, daily_limit=_DEFAULT, markup_bps=None, low_balance=_DEFAULT):
+        """Change the settings; what is left out keeps its value. `allowances`: raw cost per UTC day by bucket ("builder"), prefix
+        ("bot:*") or "*", replacing the map; `daily_limit`: the most a person's paid spend may be a day (None: no limit);
+        `markup_bps`: added to paid spend (2500 is +25%); `low_balance`: end_user.balance.low fires below it (None: never).
+        A changed allowance keeps what was spent today."""
+        body = {**({"enabled": enabled} if enabled is not None else {}), **({"allowances": allowances} if allowances is not None else {}),
+                **({"dailyLimit": daily_limit} if daily_limit is not _DEFAULT else {}), **({"markupBps": markup_bps} if markup_bps is not None else {}),
+                **({"lowBalance": low_balance} if low_balance is not _DEFAULT else {})}
+        return self._runtime._rest("PUT", "/v1/end-user-settings", body)
+
+    def get(self, end_user, *, buckets=None):
+        """A person's balance, holds, what paid spend may still take today ("available"), limits and today's spend by bucket
+        (`buckets` adds ones unused today). One never seen is shown at zero."""
+        query = f"?buckets={','.join(quote(bucket, safe='') for bucket in buckets)}" if buckets else ""
+        return self._runtime._rest("GET", self._path(end_user) + query)
+
+    def list(self, *, after=None, limit=None):
+        """End users by id, a page at a time: {"endUsers": [{"id", "balance", ...}], "next"?}; pass next as `after`."""
+        query = urlencode({key: value for key, value in (("after", after), ("limit", limit)) if value is not None})
+        return self._runtime._rest("GET", "/v1/end-users" + (f"?{query}" if query else ""))
+
+    def update(self, end_user, *, allowances=None, daily_limit=_DEFAULT):
+        """A person's own allowances (merged key by key; a key set to None is removed) and daily limit (None: the tenant's)."""
+        body = {**({"allowances": allowances} if allowances is not None else {}), **({"dailyLimit": daily_limit} if daily_limit is not _DEFAULT else {})}
+        return self._runtime._rest("PATCH", self._path(end_user), body)
+
+    def ledger(self, end_user, *, before=None, limit=None):
+        """Their ledger, newest first: {"entries": [...], "next"?}; pass next as `before`. Usage entries carry the call's raw
+        cost ("raw"), what the bucket's allowance covered ("allowance") and what the balance paid ("amount", negative)."""
+        query = urlencode({key: value for key, value in (("before", before), ("limit", limit)) if value is not None})
+        return self._runtime._rest("GET", self._path(end_user) + "/ledger" + (f"?{query}" if query else ""))
+
+    def grant(self, end_user, *, amount, key, reference=None, metadata=None):
+        """Add credit (after a payment), once per `key` (the payment's id): {"entry", "replayed"}."""
+        return self._entry(end_user, "grant", amount, key, reference, metadata)
+
+    def refund(self, end_user, *, amount, key, reference=None, metadata=None):
+        """Take credit back (money returned to the person)."""
+        return self._entry(end_user, "refund", amount, key, reference, metadata)
+
+    def adjust(self, end_user, *, amount, key, reference=None, metadata=None):
+        """Move the balance by a signed amount."""
+        return self._entry(end_user, "adjustment", amount, key, reference, metadata)
+
+    def _entry(self, end_user, kind, amount, key, reference, metadata):
+        body = {"kind": kind, "amount": amount, "key": key, **({"reference": reference} if reference is not None else {}), **({"metadata": metadata} if metadata is not None else {})}
+        return self._runtime._rest("POST", self._path(end_user) + "/entries", body)
 
 
 class Telemetry:
@@ -1092,12 +1164,12 @@ class Telemetry:
 
 def _provisioning(tools, *, definition=None, name=None, type=None, system_prompt=None, model=None, thinking_level=None, mounts=None, remount=None,
                   subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, system_prompt_append=None, file_tools=None, builtins=None,
-                  delegate=None, prompt=None, code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, mcp_servers=None):
+                  delegate=None, prompt=None, code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, mcp_servers=None, bucket=None):
     """A create request's body: the tools as the attached MCP server's tools/list, and the fields given."""
     optional = {"definition": definition, "name": name, "type": type, "systemPrompt": system_prompt, "model": model, "thinkingLevel": thinking_level,
                 "mounts": mounts, "remount": remount, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit, "runLimits": run_limits, "modelHeaders": model_headers,
                 "systemPromptAppend": system_prompt_append, "fileTools": file_tools, "codeMode": code_mode, "builtins": builtins, "delegate": delegate, "mcpServers": mcp_servers, "prompt": prompt,
-                "initialMessages": initial_messages, "importMessages": import_messages, "maxOutputTokens": max_output_tokens, "temperature": temperature}
+                "initialMessages": initial_messages, "importMessages": import_messages, "maxOutputTokens": max_output_tokens, "temperature": temperature, "bucket": bucket}
     return _with_multi_agent({"mcp": {"tools": [item.mcp_tool() for item in tools]}, **{key: value for key, value in optional.items() if value is not None}})
 
 
@@ -2326,7 +2398,8 @@ class Agent:
         history="none" shows the model only the instructions (and tools) and this message, as a new conversation would, without
         making an agent: for many independent questions to one agent. The run is still recorded in the history, and later runs
         without it see it. Not with while_running="steer". `run_limits` ({"maxResponses"?, "maxSeconds"?}) are this run's own
-        limits, lowering the agent's: at one, it ends with stopped "turn_limit"."""
+        limits, lowering the agent's: at one, it ends with stopped "turn_limit". With end-user credits on, a run its subject's credit
+        stops fails with code "end_user_credit"."""
         return await self._run(text, idempotency_key or str(uuid.uuid4()), user=user, files=files, metadata=metadata, timeout=timeout,
                                throw_on_error=throw_on_error, while_running=while_running, allow_disconnected=allow_disconnected, spend_limit=spend_limit,
                                output=output, traceparent=traceparent, history=history, run_limits=run_limits)
@@ -2513,7 +2586,7 @@ class Runs:
     @staticmethod
     def _request(input, *, instructions=None, instructions_append=None, model=None, definition=None, thinking_level=None, output=None, builtins=None, delegate=None,
                  file_tools=None, mounts=None, files=None, user=None, metadata=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None,
-                 model_headers=None, name=None, retention_seconds=None, code_mode=None, max_output_tokens=None, temperature=None, mcp_servers=None):
+                 model_headers=None, name=None, retention_seconds=None, code_mode=None, max_output_tokens=None, temperature=None, mcp_servers=None, bucket=None):
         parts = [{"type": "text", "text": input}] if input else []
         for file in files or []:
             entry = file if isinstance(file, dict) else {"data": file}
@@ -2530,7 +2603,7 @@ class Runs:
                   "thinkingLevel": thinking_level, "output": _output_request(output), "builtins": builtins, "delegate": delegate, "mcpServers": mcp_servers, "fileTools": file_tools, "mounts": mounts,
                   "from": _sender(user) if user else None, "metadata": metadata, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit,
                   "runLimits": run_limits, "modelHeaders": model_headers, "name": name, "retentionSeconds": retention_seconds, "codeMode": code_mode,
-                  "maxOutputTokens": max_output_tokens, "temperature": temperature}
+                  "maxOutputTokens": max_output_tokens, "temperature": temperature, "bucket": bucket}
         return {key: value for key, value in fields.items() if value is not None}
 
     async def create(self, input, *, idempotency_key=None, wait=None, traceparent=None, **config):
@@ -2590,6 +2663,8 @@ class Agents:
         self.transcriptions = self.runtime.transcriptions
         # Images on their own: generate(prompt), edit(prompt, images). Agents make them with the generate_image builtin.
         self.images = self.runtime.images
+        # Your users' credit: what each person may spend, their balance and history (see EndUsers).
+        self.end_users = self.runtime.end_users
         self._open = set()
         self.connection = connection
 
@@ -2609,7 +2684,7 @@ class Agents:
     async def upsert(self, key, *, model=None, instructions=None, tools=None, definition=None, thinking_level=None, subject=None, context=None,
                      key_scope=None, spend_limit=None, run_limits=None, model_headers=None, mounts=None, remount=None, name=None, instructions_append=None, file_tools=None,
                      builtins=None, delegate=None, subagents=False, on_event=None, on_input=None, on_error=None, attach=None, takeover=False, connection=None,
-                     code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, mcp_servers=None):
+                     code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, mcp_servers=None, bucket=None):
         """The agent for `key` (your name for it: "support-triage", or "user-123"), made now if there is none, and set
         to this configuration if it differs. The same key is the same agent, with its history and files, until
         agent.delete(); any number of processes may upsert it. `tools` (@tool functions) run in this process, which
@@ -2628,13 +2703,14 @@ class Agents:
         ({"format": "anthropic" | "openai-responses" | "openai-chat", "messages": [...], "model"?}) is one in another API's
         format (Anthropic Messages, OpenAI Responses or Chat Completions), which the runtime converts (not both).
         `max_output_tokens` caps each model response (within the model's maximum); `temperature` (0 to 2) sets sampling, for a
-        model and thinking level that take one (a 400 otherwise)."""
+        model and thinking level that take one (a 400 otherwise). `bucket`, with end-user credits on (agents.end_users), is the bucket
+        of its subject's credit its runs spend from (default "default")."""
         tools = list(tools or [])
         session = await self.runtime.upsert_agent(key, tools=tools, definition=definition, system_prompt=instructions, model=model, thinking_level=thinking_level,
                                                   subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits,
                                                   model_headers=model_headers, mounts=mounts, remount=remount, name=name, system_prompt_append=instructions_append, file_tools=file_tools, builtins=builtins,
                                                   delegate=delegate, code_mode=code_mode, initial_messages=initial_messages, import_messages=import_messages,
-                                                  max_output_tokens=max_output_tokens, temperature=temperature, mcp_servers=mcp_servers)
+                                                  max_output_tokens=max_output_tokens, temperature=temperature, mcp_servers=mcp_servers, bucket=bucket)
         # The upsert declared these tools already (between the agent's turns, if it runs).
         agent = await self.agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error, attach=attach, takeover=takeover, subagents=subagents,
                                  connection=connection, _sync=False)

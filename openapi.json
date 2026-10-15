@@ -7217,7 +7217,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Stable: model_error, runtime_error, output_missing, spend_limit, turn_limit, aborted…"
+            "description": "Stable: model_error, runtime_error, output_missing, spend_limit, turn_limit, end_user_credit, aborted…"
           },
           "message": {
             "type": "string"
@@ -7225,6 +7225,14 @@
           "uncertain": {
             "type": "boolean",
             "description": "The runtime could not tell whether the run's work took effect"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "balance",
+              "daily_limit"
+            ],
+            "description": "With end_user_credit: the subject had no credit left (balance), or reached its daily limit (daily_limit)"
           },
           "errorClass": {
             "type": "string",

@@ -501,9 +501,10 @@ export const RunInput = z.strictObject({
   retentionSeconds: z.number().int().min(60).max(7 * 86_400).optional().openapi({ description: "How long the run's result, events and messages are kept once it ends, before they are deleted: 60 to 604800 seconds. Default: the runtime's (86400)" }),
 }).openapi("RunInput");
 const RunFailure = z.object({
-  code: z.string().openapi({ description: "Stable: model_error, runtime_error, output_missing, spend_limit, turn_limit, aborted…" }),
+  code: z.string().openapi({ description: "Stable: model_error, runtime_error, output_missing, spend_limit, turn_limit, end_user_credit, aborted…" }),
   message: z.string(),
   uncertain: z.boolean().optional().openapi({ description: "The runtime could not tell whether the run's work took effect" }),
+  reason: z.enum(["balance", "daily_limit"]).optional().openapi({ description: "With end_user_credit: the subject had no credit left (balance), or reached its daily limit (daily_limit)" }),
   ...ModelFailure.partial().shape,
 }).openapi("RunFailure", { description: "errorClass, providerStatus, retryable and model are there when a model call failed the run (model_error, model_stream_stalled, model_key_invalid…)" });
 export const Run = z.object({

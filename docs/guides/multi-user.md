@@ -67,6 +67,8 @@ messages through your server. See [Showing an agent in a browser](browser.md).
 
 ## Spend: limits and keys per user
 
+- To charge each person for what their agents spend, with a balance, daily free
+  allowances and a markup, see [End-user credits](end-user-credits.md).
 - `spendLimit: { usd }` caps what one agent may spend on model calls from now on
   (set it on upsert, or `PATCH /v1/agents/:id/configuration`). Setting it starts
   counting from zero, so you can set the remaining allowance before each run. An

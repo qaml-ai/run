@@ -89,6 +89,8 @@ export interface AgentConfig {
   keyScope?: string;
   /** The most it may spend on model calls from now on (USD). */
   spendLimit?: { usd: number };
+  /** With end-user credits on (`agents.endUsers`): the bucket of its subject's credit its runs spend from. Default "default". */
+  bucket?: string;
   /** The most one run may take: model responses, and seconds (within the runtime's 1,000 and 2 hours by default); and how long a model request may go quiet before it fails as stalled and is retried: before its first token (default 120 s, 300 for a reasoning model thinking high or more) and between events (default 45 s). */
   runLimits?: { maxResponses?: number; maxSeconds?: number; firstTokenSeconds?: number; idleSeconds?: number; contextTokens?: number };
   modelHeaders?: Record<string, string>;
@@ -128,6 +130,8 @@ export interface RunFailure extends Partial<ModelFailure> {
   message: string;
   /** The runtime could not tell whether the run's work took effect (a restart cut it short). */
   uncertain?: boolean;
+  /** With code end_user_credit: why its end user's credit stopped it (`balance`, `daily_limit`). */
+  reason?: string;
 }
 
 /**
@@ -283,6 +287,8 @@ export class Agents {
   get transcriptions() { return this.runtime.transcriptions; }
   /** Images on their own: `generate(prompt)`, `edit(prompt, images)`. Agents make them with the `generate_image` builtin. */
   get images() { return this.runtime.images; }
+  /** Your users' credit: what each person may spend, their balance and history (see EndUsers). */
+  get endUsers() { return this.runtime.endUsers; }
   private readonly open = new Set<Agent>();
   private readonly connection: "eager" | "lazy";
   constructor(options: AgentsOptions = {}) {
@@ -365,7 +371,7 @@ export class Agents {
 }
 
 /** A stateless run's configuration (an agent's, but for tools that need a connected process) and its input. */
-export interface StatelessRunConfig<S extends OutputSchema = never> extends Pick<AgentConfig, "model" | "instructions" | "instructionsAppend" | "definition" | "delegate" | "mcpServers" | "thinkingLevel" | "maxOutputTokens" | "temperature" | "subject" | "context" | "keyScope" | "runLimits" | "modelHeaders" | "mounts" | "name" | "fileTools"> {
+export interface StatelessRunConfig<S extends OutputSchema = never> extends Pick<AgentConfig, "model" | "instructions" | "instructionsAppend" | "definition" | "delegate" | "mcpServers" | "thinkingLevel" | "maxOutputTokens" | "temperature" | "subject" | "context" | "keyScope" | "bucket" | "runLimits" | "modelHeaders" | "mounts" | "name" | "fileTools"> {
   /** js_exec. Default: on for a run with tools (builtins, MCP servers, a definition, files), off for a tool-less run. */
   codeMode?: boolean;
   /** What the run is asked. It may be empty when `files` has audio, whose transcript is then the input. */
@@ -624,7 +630,7 @@ export class Agent {
 
   private async toRun<T>(id: string, result: RunResult | undefined, schema?: OutputSchema): Promise<Run<T>> {
     const raw = result ?? null;
-    let error: RunFailure | null = raw?.error ? { code: raw.code ?? "model_error", message: raw.error, ...raw.modelError }
+    let error: RunFailure | null = raw?.error ? { code: raw.code ?? "model_error", message: raw.error, ...raw.modelError, ...(raw.reason ? { reason: raw.reason } : {}) }
       : raw?.stopped === "spend_limit" ? { code: "spend_limit", message: "The agent reached its spend limit; raise it (configure spendLimit) to go on" }
       : raw?.stopped === "turn_limit" ? { code: "turn_limit", message: "The run reached its limit of model responses or time; send another message to continue" } : null;
     // The runtime checked the output against the JSON Schema; a Standard Schema parses it too (refinements, transforms).

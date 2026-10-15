@@ -50,7 +50,7 @@ export function runView(record: RequestRecord, retentionMs: number) {
   const ended = record.state === "completed";
   const error = !ended ? null
     : outcome?.error !== undefined ? { code: /aborted/i.test(outcome.error) ? "aborted" : "runtime_error", message: outcome.error, ...(outcome.uncertain ? { uncertain: true } : {}) }
-    : typeof result.error === "string" ? { code: typeof result.code === "string" ? result.code : /aborted/i.test(result.error) ? "aborted" : "model_error", message: result.error, ...result.modelError }
+    : typeof result.error === "string" ? { code: typeof result.code === "string" ? result.code : /aborted/i.test(result.error) ? "aborted" : "model_error", message: result.error, ...result.modelError, ...(typeof result.reason === "string" ? { reason: result.reason } : {}) }
     : result.stopped === "spend_limit" ? { code: "spend_limit", message: "The run reached its spend limit" }
     : result.stopped === "turn_limit" ? { code: "turn_limit", message: "The run reached its limit of model responses or time" } : null;
   return {
