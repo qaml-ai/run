@@ -32,7 +32,7 @@ __all__ = [
     "Agents", "Agent", "Run", "RunInput", "InputDetail", "Mount", "WorkspaceMount", "RunStream", "StreamPart", "Runs", "StatelessRunStream",
     "tool", "Tool", "ToolContext", "InputRequired", "RuntimeIdentity", "identity_from_claims", "spawn_agent", "SpawnAgent", "agent_notice",
     "AgentError", "RunError",
-    "AgentRuntime", "AgentClient", "AgentFiles", "Download", "Volume", "Telemetry", "Transcriptions", "Images", "EndUsers", "DEFAULT_URL",
+    "AgentRuntime", "AgentClient", "AgentFiles", "Download", "Volume", "Telemetry", "Transcriptions", "Images", "EndUsers", "Voice", "DEFAULT_URL",
     "serve_tools", "verify_runtime_token", "verify_file_url", "RuntimeTokenError", "TestRuntime", "verify_webhook", "WebhookVerificationError",
 ]
 # Distinguishes "not given" from None (which means "never expires") in create_agent.
@@ -812,6 +812,8 @@ class AgentRuntime(_RuntimeCalls):
         self.images = Images(self)
         # Your users' credit: configure, grant, get, ledger and the rest.
         self.end_users = EndUsers(self)
+        # Voice calls held for your bot: create, get, list, update, end.
+        self.voice = Voice(self)
 
     async def _form(self, path, fields, file):
         """A multipart POST with the API key (a transcription's audio), not retried: its answer."""
@@ -1125,6 +1127,57 @@ class EndUsers:
     def _entry(self, end_user, kind, amount, key, reference, metadata):
         body = {"kind": kind, "amount": amount, "key": key, **({"reference": reference} if reference is not None else {}), **({"metadata": metadata} if metadata is not None else {})}
         return self._runtime._rest("POST", self._path(end_user) + "/entries", body)
+
+
+class Voice:
+    """Voice calls the runtime holds for your bot (runtime.voice, agents.voice). Your app joins the voice channel on its
+    own gateway (OP 4) and forwards what Discord answers; the runtime listens, transcribes each person's utterances and
+    sends them to your webhooks (voice.utterance) or an agent. Its calls are awaited from AgentRuntime, and plain from
+    the synchronous one.
+
+        session = await agents.voice.create({"guildId": ..., "channelId": ..., "userId": bot_id, "sessionId": ...,
+                                             "endpoint": ..., "token": ...}, subject=owner_id)
+        # post session["notice"]["text"] in the voice channel's chat; later:
+        ended = await agents.voice.end(session["id"])  # then send ended["leave"] on your gateway
+    """
+
+    def __init__(self, runtime):
+        self._runtime = runtime
+
+    def create(self, discord, *, subject=None, bucket=None, context=None, key_scope=None, agent=None, webhooks=None, language=None,
+               prompt=None, silence_ms=None, max_minutes=None, idle_minutes=None, empty_seconds=None, ignore_user_ids=None,
+               metadata=None, notice=None, idempotency_key=None):
+        """Start a session from `discord`: {"guildId", "channelId", "userId" (the bot), "sessionId" (its
+        VOICE_STATE_UPDATE), "endpoint", "token" (VOICE_SERVER_UPDATE)}. `subject` pays (its `bucket` with end-user
+        credits on); utterances go to your webhooks (`webhooks`, default True) and/or `agent` as prompts. `silence_ms`
+        (default 800) ends an utterance; `max_minutes` (240), `idle_minutes` (30) and `empty_seconds` (60) end the
+        session. Returns the session with "notice": post its "text" in the voice channel's chat now. Raises 409
+        VOICE_SESSION_EXISTS when the bot has one in the server."""
+        fields = {"subject": subject, "bucket": bucket, "context": context, "keyScope": key_scope, "language": language, "prompt": prompt,
+                  "silenceMs": silence_ms, "maxMinutes": max_minutes, "idleMinutes": idle_minutes, "emptySeconds": empty_seconds,
+                  "ignoreUserIds": ignore_user_ids, "metadata": metadata, "notice": notice}
+        deliver = {key: value for key, value in {"agent": agent, "webhooks": webhooks}.items() if value is not None}
+        body = {"provider": "discord", "discord": discord, **{key: value for key, value in fields.items() if value is not None}, **({"deliver": deliver} if deliver else {})}
+        headers = {"Idempotency-Key": idempotency_key} if idempotency_key is not None else None
+        return self._runtime._rest("POST", "/v1/voice/sessions", body, retry=idempotency_key is not None, headers=headers)
+
+    def get(self, session_id):
+        return self._runtime._rest("GET", f"/v1/voice/sessions/{quote(session_id, safe='')}")
+
+    def list(self, *, state=None, limit=None, after=None):
+        """Newest first: "live" or "ended" ones, a page at a time ({"sessions", "next"}; pass next as `after`)."""
+        query = urlencode({key: value for key, value in {"state": state, "limit": limit, "after": after}.items() if value is not None})
+        return self._runtime._rest("GET", f"/v1/voice/sessions{'?' + query if query else ''}")
+
+    def update(self, session_id, *, discord=None, ignore_user_ids=None, metadata=None):
+        """Discord moved the call: `discord` with what changed ({"endpoint", "token"}, or "channelId", "sessionId"); the
+        session reconnects with it."""
+        body = {key: value for key, value in {"discord": discord, "ignoreUserIds": ignore_user_ids, "metadata": metadata}.items() if value is not None}
+        return self._runtime._rest("PATCH", f"/v1/voice/sessions/{quote(session_id, safe='')}", body)
+
+    def end(self, session_id):
+        """End it. The answer's "leave" is the OP 4 your gateway sends to leave the channel."""
+        return self._runtime._rest("DELETE", f"/v1/voice/sessions/{quote(session_id, safe='')}")
 
 
 class Telemetry:
@@ -2665,6 +2718,8 @@ class Agents:
         self.images = self.runtime.images
         # Your users' credit: what each person may spend, their balance and history (see EndUsers).
         self.end_users = self.runtime.end_users
+        # Voice calls held for your bot: create, get, list, update, end.
+        self.voice = self.runtime.voice
         self._open = set()
         self.connection = connection
 

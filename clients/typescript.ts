@@ -630,7 +630,35 @@ export type WebhookEvent = { id: string; created: number } & (
       /** `transcription`: audio transcribed (`audioSeconds` of it, no tokens); `image`: images made (`images` of them). More kinds may come: treat one you do not know as other usage. */
       provider: string; model: string; kind: "response" | "compaction" | "transcription" | "image"; input: number; output: number; cacheRead: number; cacheWrite: number; reasoning?: number;
       audioSeconds?: number; images?: number; cost: { usd: number; source: "provider" | "catalog" }; at: number;
-    } });
+    } }
+  | { type: "voice.session.started"; data: VoiceFacts }
+  | { type: "voice.session.ended"; data: VoiceFacts & {
+      reason: VoiceEndReason; limit?: "tenant" | "end_user"; endUserReason?: string;
+      startedAt: number | null; endedAt: number; utterances: number; speechSeconds: number; costUsd: number;
+    } }
+  | { type: "voice.utterance"; data: VoiceUtterance });
+/** What every voice.* event says of its session. */
+type VoiceFacts = { session: string; provider: "discord"; guildId: string; channelId: string; botUserId: string; subject: string | null; metadata: Record<string, unknown> };
+/**
+ * Why a voice session ended: `requested` (you ended it), `empty` (no one else in the call for `emptySeconds`), `idle` (no
+ * speech for `idleMinutes`), `max_duration`, `budget` (the account's or the end user's credit: `limit`), `kicked` (the
+ * bot left the channel and no new credentials came), `credentials` (Discord stopped taking them), `error`.
+ */
+export type VoiceEndReason = "requested" | "empty" | "idle" | "max_duration" | "budget" | "kicked" | "credentials" | "error";
+/** One person's utterance in a voice session, transcribed (`voice.utterance`). */
+export type VoiceUtterance = VoiceFacts & {
+  speakerId: string;
+  /** Its number in the session, from 1, in the order transcripts were made. */
+  seq: number;
+  text: string; language: string | null;
+  /** Seconds of speech (pauses shorter than `silenceMs` included). */
+  seconds: number;
+  startedAt: number; endedAt: number;
+  /** silence; max (cut at 30 s, the speech goes on in the next); error (the speaker's stream broke); handoff (the session moved nodes); end. */
+  ended: "silence" | "max" | "error" | "handoff" | "end";
+  costUsd: number;
+};
+
 /**
  * A file to attach to a message: bytes or a Blob (a File keeps its name and type), `{ name, data,
  * contentType? }`, a local path (Node entry), `{ path }` for a file already in the agent's mounts, or `{ url }` for the
@@ -1123,6 +1151,101 @@ export class EndUsers {
   }
 }
 
+/** What Discord answered your bot's OP 4 with: its VOICE_STATE_UPDATE (`sessionId`) and the guild's VOICE_SERVER_UPDATE. */
+export interface DiscordVoiceGrant {
+  guildId: string; channelId: string;
+  /** The bot's own user id. */
+  userId: string;
+  sessionId: string;
+  /** host[:port], a *.discord.media host; null while Discord moves the call. */
+  endpoint: string | null;
+  token: string;
+}
+export interface VoiceSessionInput {
+  provider?: "discord";
+  discord: DiscordVoiceGrant;
+  /** The end user the session is for: its usage is theirs (and their credit, with end-user credits on). */
+  subject?: string;
+  /** With end-user credits on: the bucket of `subject`'s credit it spends from. */
+  bucket?: string;
+  /** Your claims, carried in usage.recorded's context. */
+  context?: Record<string, unknown>;
+  /** Transcribe with this key scope's OpenAI key. */
+  keyScope?: string;
+  /** Where utterances go: your webhook endpoints that select voice.utterance (default), and/or an agent, as prompts from their speakers. */
+  deliver?: { agent?: string; webhooks?: boolean };
+  /** The language spoken (en, pt-BR); detected per utterance when left out. */
+  language?: string;
+  /** Words to expect: names, jargon. */
+  prompt?: string;
+  /** Silence that ends an utterance (200-5000 ms, default 800). */
+  silenceMs?: number;
+  /** The longest session (default 240 minutes, at most 720). */
+  maxMinutes?: number;
+  /** No speech for this long ends it (default 30 minutes). */
+  idleMinutes?: number;
+  /** No one else in the call for this long ends it (default 60 seconds). */
+  emptySeconds?: number;
+  /** Users never transcribed and not counted as company: other bots. */
+  ignoreUserIds?: string[];
+  /** Echoed in every voice.* event (at most 4 KB of JSON). */
+  metadata?: Record<string, unknown>;
+  /** The notice text to post ({bot} is the bot's id). */
+  notice?: string;
+  /** An Idempotency-Key: the same key answers the same session. */
+  idempotencyKey?: string;
+}
+export interface VoiceSession {
+  id: string; provider: "discord";
+  discord: { guildId: string; channelId: string; userId: string };
+  /** connecting; live (listening); reconnecting (moving between nodes, or waiting for new credentials); ended. */
+  state: "connecting" | "live" | "reconnecting" | "ended";
+  endReason: VoiceEndReason | null; limit?: "tenant" | "end_user"; endUserReason?: string;
+  deliver: { agent?: string; webhooks: boolean };
+  subject?: string; bucket?: string; context?: Record<string, unknown>; keyScope?: string; language?: string; prompt?: string;
+  silenceMs: number; maxMinutes: number; idleMinutes: number; emptySeconds: number; ignoreUserIds: string[]; metadata: Record<string, unknown>;
+  utterances: number; speechSeconds: number; costUsd: number;
+  createdAt: number; startedAt: number | null; lastSpeechAt: number | null; endedAt: number | null;
+}
+/** A new session, and the notice to post now in the voice channel's chat: people must know they are transcribed. */
+export type VoiceSessionCreated = VoiceSession & { notice: { required: true; channelId: string; text: string } };
+/** An ended session, and the OP 4 your gateway sends to leave the channel (ending stops the listening, not the bot's presence). */
+export type VoiceSessionEnded = VoiceSession & { leave: { op: 4; d: { guild_id: string; channel_id: null; self_mute: boolean; self_deaf: boolean } } };
+
+/**
+ * Voice calls the runtime holds for your bot (`runtime.voice`, `agents.voice`). Your app joins the voice channel on its
+ * own gateway (OP 4) and forwards what Discord answers; the runtime listens, transcribes each person's utterances and
+ * sends them to your webhooks (`voice.utterance`) or an agent.
+ *
+ *   const session = await agents.voice.create({ discord: { guildId, channelId, userId: botId, sessionId, endpoint, token }, subject: ownerId });
+ *   await postInVoiceChat(session.notice.channelId, session.notice.text);
+ *   // later, Discord moved the call: await agents.voice.update(session.id, { discord: { endpoint, token } });
+ *   const { leave } = await agents.voice.end(session.id); gateway.send(leave);
+ */
+export class Voice {
+  private readonly transport: Transport;
+  private readonly key: () => string;
+  constructor(transport: Transport, key: () => string) { this.transport = transport; this.key = key; }
+  private path(id: string) { return `/v1/voice/sessions/${encodeURIComponent(id)}`; }
+  /** Start a session. Throws 409 VOICE_SESSION_EXISTS when the bot has one in the server (`details.session`). */
+  create(input: VoiceSessionInput): Promise<VoiceSessionCreated> {
+    const { idempotencyKey, ...body } = input;
+    return this.transport.json("/v1/voice/sessions", this.key(), "POST", body, idempotencyKey !== undefined, idempotencyKey !== undefined ? { "Idempotency-Key": idempotencyKey } : {});
+  }
+  get(id: string): Promise<VoiceSession> { return this.transport.json(this.path(id), this.key()); }
+  /** Newest first: `live` or `ended` ones, a page at a time (`after`: the previous page's `next`). */
+  list(options: { state?: "live" | "ended"; limit?: number; after?: string } = {}): Promise<{ sessions: VoiceSession[]; next: string | null }> {
+    const query = new URLSearchParams(Object.entries(options).flatMap(([name, value]) => value === undefined ? [] : [[name, String(value)]]));
+    return this.transport.json(`/v1/voice/sessions${query.size ? `?${query}` : ""}`, this.key());
+  }
+  /** Discord moved the call (a new VOICE_SERVER_UPDATE, or a move to another channel): the session reconnects with these. */
+  update(id: string, input: { discord?: Partial<Pick<DiscordVoiceGrant, "channelId" | "sessionId" | "endpoint" | "token">>; ignoreUserIds?: string[]; metadata?: Record<string, unknown> }): Promise<VoiceSession> {
+    return this.transport.json(this.path(id), this.key(), "PATCH", input);
+  }
+  /** End it; send the answer's `leave` on your gateway to leave the channel. Ending an ended session answers it again. */
+  end(id: string): Promise<VoiceSessionEnded> { return this.transport.json(this.path(id), this.key(), "DELETE"); }
+}
+
 /** The tenant's OpenTelemetry trace export (`runtime.telemetry`): set it, read it, test it, clear it. */
 export class Telemetry {
   private readonly transport: Transport;
@@ -1156,12 +1279,15 @@ export class AgentRuntime {
   readonly images: Images;
   /** Your users' credit: `configure`, `grant`, `get`, `ledger` and the rest. */
   readonly endUsers: EndUsers;
+  /** Voice calls held for your bot: `create`, `get`, `list`, `update`, `end`. */
+  readonly voice: Voice;
   constructor(options: RuntimeOptions = {}) {
     this.options = options; this.transport = new Transport(options);
     this.endUsers = new EndUsers(this.transport, () => this.operator());
     this.telemetry = new Telemetry(this.transport, () => this.operator());
     this.transcriptions = new Transcriptions(this.transport, () => this.operator());
     this.images = new Images(this.transport, () => this.operator());
+    this.voice = new Voice(this.transport, () => this.operator());
   }
   /**
    * The agent for `key`: made if there is none, set to `options` if it differs. Returns its credentials;

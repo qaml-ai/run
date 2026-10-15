@@ -289,6 +289,8 @@ export class Agents {
   get images() { return this.runtime.images; }
   /** Your users' credit: what each person may spend, their balance and history (see EndUsers). */
   get endUsers() { return this.runtime.endUsers; }
+  /** Voice calls held for your bot, from the credentials its gateway got: `create`, `get`, `list`, `update`, `end`. */
+  get voice() { return this.runtime.voice; }
   private readonly open = new Set<Agent>();
   private readonly connection: "eager" | "lazy";
   constructor(options: AgentsOptions = {}) {

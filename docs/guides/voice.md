@@ -145,5 +145,6 @@ for training). See [Account data](../operations/privacy.md#transcription).
   given the sound later, beside it.
 - **Timestamps or speaker labels.** Transcripts are text only, from the one model.
 - **Live voice.** Transcription of streaming audio as it is spoken (OpenAI's realtime transcription sessions),
-  and speech out (text to speech), are not offered yet.
+  and speech out (text to speech), are not offered yet. Discord voice calls are: camelRun listens in a call for your
+  bot and sends each person's utterances, transcribed, to your webhooks or an agent. See [Voice calls](voice-calls.md).
 - **Audio in `initialMessages`.** Transcribe it first with `POST /v1/transcriptions` and import the text.

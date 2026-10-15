@@ -18,6 +18,7 @@ model-written code in a sandbox, and wakes agents when there is work.
    - [Showing an agent in a browser](guides/browser.md): browser tokens and the watcher
    - [Files](guides/files.md): attachments, what the model sees, files out, volumes, signed links
    - [Voice and audio](guides/voice.md): audio in messages, transcribed for the model; transcribing on its own
+   - [Voice calls](guides/voice-calls.md): Discord voice calls camelRun listens to for your bot, utterances to webhooks or an agent
    - [Images](guides/images.md): making and editing images with POST /v1/images
    - [End-user credits](guides/end-user-credits.md): charging your own users, with a balance and daily allowances per person
    - [Agents for many users](guides/multi-user.md): per-user agents, identity, spend

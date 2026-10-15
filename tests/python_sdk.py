@@ -1249,6 +1249,20 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         await agent.destroy()
 
 
+    async def test_voice_sessions_need_the_runtime_to_hold_calls(self):
+        # This runtime runs without AGENT_VOICE: each call reaches the API and is answered that voice is off.
+        discord = {"guildId": "1", "channelId": "2", "userId": "3", "sessionId": "s", "endpoint": "c-1.discord.media", "token": "t"}
+        for call in (lambda: self.agents.voice.create(discord, subject="user_1", agent=None, silence_ms=600), lambda: self.runtime.voice.list(state="live"),
+                     lambda: self.runtime.voice.end("vs_000000000000000000000000")):
+            with self.assertRaises(AgentError) as refused:
+                await call()
+            self.assertEqual(refused.exception.status, 404)
+            self.assertIn("Voice sessions are not enabled", str(refused.exception))
+        with sync.Agents(self.token, url=self.url) as agents:
+            with self.assertRaises(AgentError) as refused:
+                await asyncio.to_thread(agents.voice.get, "vs_000000000000000000000000")
+            self.assertEqual(refused.exception.status, 404)
+
     async def test_audio_is_transcribed_in_messages_runs_and_on_its_own(self):
         put = await self.runtime.http.put(f"{self.url}/v1/providers/openai/key", headers={"Authorization": f"Bearer {self.token}"}, json={"apiKey": "py-openai-key", "verify": False})
         self.assertEqual(put.status_code, 200, put.text)
