@@ -84,10 +84,11 @@ test("a long reply stops at the end of its end user's credit, mid-stream, and is
     requests++;
     res.writeHead(200, { "Content-Type": "text/event-stream" });
     res.on("close", () => { closed = true; });
-    // 50,000 characters, 100 at a time: about $4.50 at gpt-5.5-pro's output price, if it were all read.
+    // 50,000 characters, 100 every 20 ms (5,000 a second, far faster than a model writes): about $4.50 at
+    // gpt-5.5-pro's output price, if it were all read.
     for (let index = 0; index < 500 && !res.destroyed; index++) {
       res.write(`data: ${JSON.stringify({ id: "long", object: "chat.completion.chunk", choices: [{ index: 0, delta: { content: chunk }, finish_reason: null }] })}\n\n`);
-      await sleep(2);
+      await sleep(20);
     }
     if (!res.destroyed) res.end(`data: ${JSON.stringify({ id: "long", object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 100, completion_tokens: 12_500 } })}\n\ndata: [DONE]\n\n`);
   });
@@ -101,10 +102,13 @@ test("a long reply stops at the end of its end user's credit, mid-stream, and is
   assert.equal(requests, 1, "a turn its end user's credit stopped is not retried");
   await until(() => closed, "the provider's stream to be cut");
   const [entry] = await usage(r, "reader");
-  // $0.50 at 90 micro-USD a character (2 characters a token) is about 5,500 characters, less the input's estimate.
-  assert.ok(entry.raw > 300_000 && entry.raw <= 500_000 + 100 * 90, `charged ${entry.raw} for what streamed before the line`);
+  // $0.50 at 90 micro-USD a character (2 characters a token) is about 5,500 characters, less the input's estimate. What
+  // the provider streams while the line's credit check is answered is billed too (it was generated): a slow machine's
+  // round trip, at this stream's pace, is a few chunks at most.
+  const slack = 3 * 100 * 90;
+  assert.ok(entry.raw > 300_000 && entry.raw <= 500_000 + slack, `charged ${entry.raw} for what streamed before the line`);
   const person = (await r.call("/v1/end-users/reader")).json;
-  assert.ok(person.balance >= -100 * 90, `balance ${person.balance}: at most one chunk past zero`);
+  assert.ok(person.balance >= -slack, `balance ${person.balance}: at most a few chunks past zero`);
   assert.equal(person.held, 0);
   const history = (await r.call(`/v1/agents/${id}/history`)).json;
   const reply = JSON.stringify(history).match(/x{100,}/)?.[0] ?? "";
