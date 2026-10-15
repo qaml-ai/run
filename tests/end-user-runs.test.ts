@@ -76,6 +76,23 @@ test("a run's own bucket, the agent's bucket and a stateless run's each spend th
   assert.equal((await r.call("/v1/runs?wait=30", { body: { input: "six" } })).status, 200);
 });
 
+test("a run's own bucket is what its start is checked against, not the agent's: an agent in a bucket with no allowance runs from the run's", async t => {
+  // camel-bots' bot agents: no bucket of their own ("default", $0 under "*": 0), each prompt naming the bot's. The
+  // queued run's start once checked the agent's bucket, and every such run failed before it began.
+  const r = await runtime(t, (_body: any) => ({ content: "done", usage: { prompt_tokens: 10, completion_tokens: 10, cost: 0.01 } }), { AGENT_MODEL: "openai/gpt-4.1" });
+  await settings(r, { allowances: { "bot:*": 1_000_000, "*": 0 } });
+  const { id } = (await r.call("/v1/agents", { body: { subject: "owner" } })).json;
+  const accepted = await r.call(`/v1/agents/${id}/prompt`, { body: { text: "hi", requestId: "own-bucket", bucket: "bot:7", spendLimit: { usd: 0.25 } } });
+  assert.equal(accepted.status, 202, accepted.text);
+  const record = await settled(r, `/v1/agents/${id}/requests/own-bucket`);
+  assert.equal(record.outcome.error, undefined, JSON.stringify(record.outcome));
+  assert.equal(record.outcome.result.reply, "done");
+  assert.deepEqual((await usage(r, "owner")).map((entry: any) => entry.bucket), ["bot:7"]);
+  // Without one, the agent's own ("default", no allowance) is refused at accept, as before.
+  const refused = await r.call(`/v1/agents/${id}/prompt`, { body: { text: "hi" } });
+  assert.deepEqual([refused.status, refused.json.code, refused.json.bucket], [402, "END_USER_CREDIT", "default"], refused.text);
+});
+
 test("a long reply stops at the end of its end user's credit, mid-stream, and is not retried", async t => {
   let requests = 0, closed = false;
   const chunk = "x".repeat(100);
