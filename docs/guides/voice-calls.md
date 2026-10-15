@@ -11,6 +11,10 @@ can open the voice connection. You forward them to `POST /v1/voice/sessions`, an
 WebSocket, the UDP audio, and Discord's end-to-end encryption (DAVE).
 
 Voice calls are off unless the runtime runs with `AGENT_VOICE=true` (see [Configuration](../operations/configuration.md)).
+A runtime that holds calls needs to reach Discord's voice servers: WebSocket over TLS, and UDP out with replies let back
+in (a stateful firewall or NAT whose UDP mappings outlive 5 seconds, as the connection sends a keepalive every 5). No
+inbound port is opened. `scripts/voice-check.ts` checks it with two test bots (`infra/voice-check.sh` runs it in the
+hosted runtime's network).
 
 ## Start a session
 
