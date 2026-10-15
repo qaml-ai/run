@@ -15,7 +15,7 @@ import { discordGrant, fakeTransport } from "./voice-fakes.ts";
 test("/v1/voice/sessions: create, read, list, update and end a session over HTTP", async t => {
   const root = await mkdtemp(join(tmpdir(), "agent-voice-"));
   t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
-  writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(token), apiKeys: { openrouter: "fixture-key" } } } }));
+  writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(token), apiKeys: { openrouter: "fixture-key", openai: "fixture-key" } } } }));
   const { url: databaseUrl } = await testDatabase();
   const fake = fakeTransport();
   let node: RuntimeNode | undefined;

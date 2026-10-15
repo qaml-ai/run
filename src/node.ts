@@ -778,6 +778,10 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
     },
     agentOwned: (agent, tenant) => clients.owns(agent, tenant, true),
+    // Utterances are transcribed and billed as POST /v1/transcriptions is, and prompt agents wherever they run.
+    transcriber, canTranscribe: async (tenant, keyScope) => !!await transcriber.options.key(tenant, keyScope, transcriber.provider),
+    record: (tenant, usage) => accounts.recordUsage(tenant, "", usage),
+    submit: (agent, tenant, request) => submitAnywhere(agent, tenant, request),
     perTenant: () => config.voice.perTenant, perNode: config.voice.perNode,
   });
   // An agent loaded on another node: this node's idle watchers of it end, and reconnect to that node.
