@@ -9,6 +9,7 @@ import { checkedAudio, languageInput, type Transcribed, type Transcriber } from 
 import { enqueueEvents, webhookEvent, type WebhookEvent } from "./webhooks.ts";
 import type { UsageRecord } from "./client-sessions.ts";
 import { oggOpus, Segmenter, type Cut } from "./voice-audio.ts";
+import { bucketInput, DEFAULT_BUCKET } from "./end-user-credits.ts";
 
 /**
  * Voice sessions: calls camelRun holds for a tenant's bot. Joining a voice channel is the one step that needs the bot's
@@ -199,6 +200,17 @@ function discordInput(value: unknown, endpoints: RegExp, partial = false): Parti
   return out;
 }
 
+/**
+ * The tenant's end users' credit (end-user-credits.ts), for sessions with a subject: refused before a session starts
+ * when the subject has nothing left in its bucket, and each utterance's transcription held before it is sent and
+ * settled with what it cost, as `POST /v1/transcriptions` does. Undefined answers: the tenant does not meter end users.
+ */
+export interface VoiceCredit {
+  refusal(tenant: string, endUser: string, bucket: string): Promise<{ reason: string; message: string } | undefined>;
+  /** Throws 402 END_USER_CREDIT (`details.reason`) when the subject cannot cover `usd`. */
+  hold(tenant: string, endUser: string, bucket: string, usd: number, call: string, metadata?: Record<string, unknown>): Promise<{ settle(usd: number): Promise<void>; release(): Promise<void> } | undefined>;
+}
+
 export interface VoiceSessionsOptions {
   db: Db;
   accounts: Pick<Accounts, "seal" | "unseal" | "canStoreKeys">;
@@ -221,6 +233,8 @@ export interface VoiceSessionsOptions {
   /** Submit a request to an agent wherever it is served (an utterance's prompt). */
   submit(agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }): Promise<unknown>;
   transcriptionsPerNode?: number;
+  /** End users' credit; without it, sessions are billed to the tenant alone. */
+  credit?: VoiceCredit;
   /** Live sessions per tenant (VOICE_LIMITS.perTenant). */
   perTenant?: (tenant: string) => number;
   perNode?: number;
@@ -309,7 +323,7 @@ export class VoiceSessions {
     const webhooks = deliverGiven.webhooks !== false;
     if (!agent && !webhooks) throw new HttpError(400, "deliver must send utterances somewhere: an agent, webhooks, or both");
     const identity = identityInput({ subject: input.subject, context: input.context });
-    const bucket = input.bucket === undefined ? undefined : text(input.bucket, "bucket", /^[A-Za-z0-9:_.-]{1,64}$/, "1-64 letters, digits, ':', '_', '.' or '-'");
+    const bucket = input.bucket === undefined ? undefined : bucketInput(input.bucket);
     const keyScope = input.keyScope === undefined ? undefined : text(input.keyScope, "keyScope", /^.{1,100}$/s, "a key scope's name");
     const language = languageInput(input.language);
     const prompt = input.prompt === undefined ? undefined : text(input.prompt, "prompt", new RegExp(`^[\\s\\S]{1,${VOICE_LIMITS.promptChars}}$`), `at most ${VOICE_LIMITS.promptChars} characters`);
@@ -342,6 +356,8 @@ export class VoiceSessions {
     const options = this.settings(input);
     if (options.deliver.agent && !await this.options.agentOwned(options.deliver.agent, tenant)) throw new HttpError(404, "Unknown agent in deliver.agent");
     await this.options.admit(tenant);
+    const refused = options.subject !== undefined ? await this.options.credit?.refusal(tenant, options.subject, options.bucket ?? DEFAULT_BUCKET) : undefined;
+    if (refused) throw new HttpError(402, refused.message, "END_USER_CREDIT", { endUser: options.subject, bucket: options.bucket ?? DEFAULT_BUCKET, reason: refused.reason });
     if (!await this.options.canTranscribe(tenant, options.keyScope)) {
       throw new HttpError(400, `Voice sessions transcribe with an OpenAI key: add one under Models & keys (PUT /v1/providers/openai/key)${options.keyScope ? `, or to key scope ${options.keyScope}` : ""}`, "TRANSCRIPTION_UNAVAILABLE");
     }
@@ -660,12 +676,26 @@ export class VoiceSessions {
         await this.endFor(origin, { reason: "budget", limit: "tenant" });
         return;
       }
-      await this.options.ownership?.whenFresh();
+      // The subject's credit: what the audio costs, held before it is sent (refused: the session ends).
+      let hold: Awaited<ReturnType<VoiceCredit["hold"]>>;
+      const { credit } = this.options;
+      try {
+        hold = options.subject !== undefined && credit
+          ? await credit.hold(origin.tenant, options.subject, options.bucket ?? DEFAULT_BUCKET, this.options.transcriber.cost(cut.seconds), "voice", { session: origin.id })
+          : undefined;
+      } catch (error) {
+        if ((error as HttpError).code !== "END_USER_CREDIT") throw error;
+        const reason = (error as HttpError).details?.reason;
+        await this.endFor(origin, { reason: "budget", limit: "end_user", ...(typeof reason === "string" ? { endUserReason: reason } : {}) });
+        return;
+      }
       const bytes = oggOpus(cut.packets);
       try {
+        await this.options.ownership?.whenFresh();
         done = await this.options.transcriber.transcribe({ tenant: origin.tenant, ...(options.keyScope ? { keyScope: options.keyScope } : {}) }, { bytes, header: checkedAudio(bytes) },
           { ...(options.language ? { language: options.language } : {}), ...(options.prompt ? { prompt: options.prompt } : {}) }, AbortSignal.timeout(5 * 60_000));
       } catch (error) {
+        await hold?.release().catch(() => {});
         const code = (error as HttpError).code;
         // No key any more (deleted), or no credit: nothing more can be transcribed.
         if (code === "TRANSCRIPTION_UNAVAILABLE") await this.endFor(origin, { reason: "error", detail: "no transcription key" });
@@ -673,6 +703,9 @@ export class VoiceSessions {
         else console.error(JSON.stringify({ type: "voice_transcription_failed", session: origin.id, seconds: cut.seconds, error: safeError(error) }));
         return;
       }
+      // Settled with what it cost; a hold that cannot be settled expires, as a model call's does.
+      await hold?.settle(done.usage.usage.cost.total as number).catch(error =>
+        console.error(JSON.stringify({ type: "voice_credit_settle_failed", session: origin.id, error: safeError(error) })));
     } finally { free(); }
     const { transcript, usage } = done;
     const identity = { ...(options.subject !== undefined ? { subject: options.subject } : {}), context: { ...options.context, voiceSession: origin.id } };

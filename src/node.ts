@@ -784,6 +784,8 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     transcriber, canTranscribe: async (tenant, keyScope) => !!await transcriber.options.key(tenant, keyScope, transcriber.provider),
     record: (tenant, usage) => accounts.recordUsage(tenant, "", usage),
     submit: (agent, tenant, request) => submitAnywhere(agent, tenant, request),
+    // A session's subject pays from its bucket, where the tenant meters its end users (end-user-credits.ts).
+    credit: endUsers,
     perTenant: () => config.voice.perTenant, perNode: config.voice.perNode,
   });
   // An agent loaded on another node: this node's idle watchers of it end, and reconnect to that node.
