@@ -15,4 +15,8 @@
   second, recorded as usage of the session's `subject` (`usage.recorded`, with `context.voiceSession`). Each transcript
   goes out as a `voice.utterance` webhook and, with `deliver.agent`, as a prompt to that agent from the speaker. A
   tenant out of credit ends the session (`budget`). Audio is never written anywhere; a session needs a transcription key.
+- Discord's voice connections run on @discordjs/voice 0.19.2 with @snazzah/davey 0.1.12 for DAVE (a native module,
+  prebuilt for linux arm64 and x64), loaded only when `AGENT_VOICE=true`; off by default. Endpoints must be Discord's
+  (`*.discord.media`). A dropped voice socket is resumed or rejoined with the same credentials; a kick (4014, 4022) or
+  credentials Discord no longer takes (4004, 4006, 4009, 4011) wait 15 s for new ones.
 - Migration 070.

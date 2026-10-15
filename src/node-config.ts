@@ -139,8 +139,8 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     channelApis: { telegram: env.AGENT_TELEGRAM_API_URL, slack: env.AGENT_SLACK_API_URL, discord: env.AGENT_DISCORD_API_URL, github: env.AGENT_GITHUB_API_URL },
     // Managed Discord servers a tenant may connect, on free credit and otherwise, unless its tenants entry says.
     discordServers: { free: Number(env.AGENT_DISCORD_MANAGED_FREE_SERVERS ?? 1), paid: Number(env.AGENT_DISCORD_MANAGED_SERVERS ?? 10) },
-    // Voice sessions (src/voice-sessions.ts): live ones per tenant, and the most one node holds.
-    voice: { perTenant: Number(env.AGENT_VOICE_SESSIONS_PER_TENANT ?? 10), perNode: Number(env.AGENT_VOICE_SESSIONS_PER_NODE ?? 200) },
+    // Voice sessions (src/voice-sessions.ts): on with AGENT_VOICE=true; live ones per tenant, and the most one node holds.
+    voice: { enabled: env.AGENT_VOICE === "true", perTenant: Number(env.AGENT_VOICE_SESSIONS_PER_TENANT ?? 10), perNode: Number(env.AGENT_VOICE_SESSIONS_PER_NODE ?? 200) },
     verifyKeys: env.AGENT_VERIFY_KEYS !== "false",
     billingAdmins: (env.AGENT_BILLING_ADMINS ?? "").split(",").map(value => value.trim()).filter(Boolean),
     purgeMs, billingMs, reconcileDays,
