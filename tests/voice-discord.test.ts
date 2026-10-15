@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { discordVoice } from "../src/voice-discord.ts";
+import { discordVoice, RosterGuard } from "../src/voice-discord.ts";
 import type { VoiceCredentials, VoiceHandlers } from "../src/voice-sessions.ts";
 import { fakeDiscordVoice } from "./fake-discord-voice.ts";
-import { discordGrant, opusPacket, speechPacket, until, voiceCluster } from "./voice-fakes.ts";
+import { discordGrant, opusPacket, sleep, speechPacket, until, voiceCluster } from "./voice-fakes.ts";
 
 /** A Discord voice connection to the fake server, recording what it reports. */
 function connect(credentials: VoiceCredentials) {
@@ -94,4 +94,53 @@ test("a session on the Discord transport: the call's speech becomes utterances",
   const ended = await a.voice.end("alice", created.id);
   assert.equal(ended.state, "ended");
   await until(() => !voice.connected(), "the socket to close");
+});
+
+test("the DAVE roster guard: a member the voice gateway never named, past the grace, is a stranger; one named in time is not", async () => {
+  let members: string[] | undefined = ["self", "ada"];
+  let named = new Set(["ada"]);
+  const found: string[][] = [];
+  const guard = new RosterGuard({ self: "self", graceMs: 100, members: () => members, named: () => named, stranger: strangers => found.push(strangers) });
+  guard.check();
+  assert.deepEqual(found, [], "everyone is named");
+  // A member the gateway names late (Clients Connect trailing the Welcome): pending, then cleared.
+  members = ["self", "ada", "bob"];
+  guard.check();
+  await sleep(40);
+  named = new Set(["ada", "bob"]);
+  guard.check();
+  await sleep(150);
+  assert.deepEqual(found, []);
+  // One never named: a stranger once the grace passes, found by the guard's own recheck.
+  members = ["self", "ada", "bob", "eve"];
+  guard.check();
+  await sleep(150);
+  assert.deepEqual(found, [["eve"]]);
+  // No group (no DAVE, or not joined yet): nothing to check.
+  members = undefined;
+  guard.check();
+  await sleep(150);
+  assert.equal(found.length, 1);
+  guard.close();
+});
+
+test("a stranger in the DAVE group drops the connection, which joins again; one that keeps coming back ends it", async t => {
+  const voice = await fakeDiscordVoice(t);
+  const grant = discordGrant({ endpoint: voice.endpoint });
+  voice.members(["400000000000000004"]);
+  const lost: string[] = [], diagnostics: { event: string; fields: Record<string, unknown> }[] = [];
+  let ready = 0;
+  // The group as davey would report it: the bot, the named member, and someone the gateway never named.
+  const connection = discordVoice({ roster: { graceMs: 50, members: () => [grant.userId, "400000000000000004", "666000000000000666"] } }).connect(grant, {
+    ready: () => { ready++; }, packet: () => {}, broken: () => {}, lost: (reason, detail) => lost.push(`${reason}:${detail}`),
+    diagnostic: (event, fields) => diagnostics.push({ event, fields }),
+  });
+  t.after(() => connection.close());
+  await until(() => lost.length === 1, "the connection to give up", 15_000);
+  assert.deepEqual(lost, ["error:dave_roster"]);
+  const drops = diagnostics.filter(entry => entry.event === "dave_roster");
+  assert.equal(drops.length, 4, "three drops and joins again, then the fourth gives up");
+  assert.deepEqual(drops[0].fields, { strangers: 1, drops: 1 });
+  assert.equal(voice.identifies.length, 4, "each drop joined again with a new voice socket");
+  assert.ok(ready >= 4);
 });

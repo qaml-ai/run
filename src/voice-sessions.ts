@@ -265,6 +265,7 @@ export class VoiceSessions {
   private scanning = false;
   private prunedAt = 0;
   private stopped = false;
+  private rescan = false;
   /** Sessions being taken now. */
   private readonly taking = new Set<string>();
   /** Utterances being transcribed or delivered, and the last one of each session's speaker (they go one at a time). */
@@ -277,7 +278,7 @@ export class VoiceSessions {
     this.options = options;
     this.db = options.db;
     // A fenced node's claims are void: the connections close, and a peer takes the sessions once its heartbeat expires.
-    options.ownership?.onFence(() => { for (const held of [...this.held.values()]) this.drop(held, false); });
+    options.ownership?.onFence(() => { for (const held of [...this.held.values()]) void this.drop(held, false); });
   }
 
   /** Sessions this node holds now. */
@@ -306,7 +307,8 @@ export class VoiceSessions {
    */
   async release() {
     const released = [...this.held.values()];
-    for (const held of released) this.drop(held, true);
+    // Released before peers are told, so the scan a notification starts finds them free.
+    await Promise.all(released.map(held => this.drop(held, true)));
     if (released.length) await this.notify(released.map(held => held.id)).catch(() => {});
   }
 
@@ -444,7 +446,8 @@ export class VoiceSessions {
    * limits. Any node may run it; one at a time here.
    */
   async scan(now = Date.now()) {
-    if (this.scanning) return;
+    // A scan asked for while one runs (a peer's notification) runs again after it: what it was told may be newer.
+    if (this.scanning) { this.rescan = true; return; }
     this.scanning = true;
     try {
       // With whether a node holds each now (a live heartbeat names it): those are left to it, without trying to take them.
@@ -456,8 +459,8 @@ export class VoiceSessions {
       const open = new Map((rows as Row[]).map(row => [row.id, row]));
       for (const held of [...this.held.values()]) {
         const row = open.get(held.id);
-        if (!this.options.ownership?.holds(held.claim)) this.drop(held, false);
-        else if (!row) this.drop(held, true, "end");
+        if (!this.options.ownership?.holds(held.claim)) void this.drop(held, false);
+        else if (!row) void this.drop(held, true, "end");
         else {
           if (row.revision !== held.revision) this.apply(held, row);
           await this.limits(held, now);
@@ -472,6 +475,10 @@ export class VoiceSessions {
       }
       await this.prune(now);
     } finally { this.scanning = false; }
+    if (this.rescan) {
+      this.rescan = false;
+      await this.scan();
+    }
   }
 
   /** A session changed on some node (`pg_notify`): apply it here at once if this node holds it. */
@@ -479,7 +486,7 @@ export class VoiceSessions {
     const held = this.held.get(id);
     if (held) {
       const row = (await this.db.query("select * from voice_sessions where id = $1", [id])).rows[0] as Row | undefined;
-      if (!row || row.state === "ended") this.drop(held, true, "end");
+      if (!row || row.state === "ended") void this.drop(held, true, "end");
       else if (row.revision !== held.revision) this.apply(held, row);
       return;
     }
@@ -565,7 +572,7 @@ export class VoiceSessions {
   private apply(held: Held, row: Row) {
     held.revision = row.revision;
     held.row = row;
-    if (row.state === "ended") { this.drop(held, true, "end"); return; }
+    if (row.state === "ended") { void this.drop(held, true, "end"); return; }
     const credentials = this.credentials(row);
     const moved = JSON.stringify(credentials) !== JSON.stringify(held.credentials);
     held.credentials = credentials;
@@ -584,14 +591,14 @@ export class VoiceSessions {
    * Stop holding a session: its connection closes, what its speakers said so far is cut (and still transcribed: the
    * session ended, or moves to another node), and released (`release`), any node may take it at once.
    */
-  private drop(held: Held, release: boolean, cut: "handoff" | "end" = "handoff") {
+  private async drop(held: Held, release: boolean, cut: "handoff" | "end" = "handoff") {
     if (this.held.get(held.id) !== held) return;
     this.held.delete(held.id);
     held.segmenter.flush(cut);
     console.log(JSON.stringify({ type: "voice_session_released", session: held.id, node: this.options.node, epoch: held.claim.epoch, release }));
     held.connection?.close();
     held.connection = undefined;
-    if (release) void this.options.ownership?.release(held.claim).catch(() => {});
+    if (release) await this.options.ownership?.release(held.claim).catch(() => {});
   }
 
   /** The connection is ready: the session is live, and the first time, `voice.session.started` goes out. */
@@ -799,7 +806,7 @@ export class VoiceSessions {
     catch (error) { if (held) held.ending = false; throw error; }
     if (row) console.log(JSON.stringify({ type: "voice_session_ended", session: id, tenant: row.tenant, reason: ending.reason, ...(ending.limit ? { limit: ending.limit } : {}), ...(ending.detail ? { detail: ending.detail } : {}), node: this.options.node }));
     const local = held ?? this.held.get(id);
-    if (local) this.drop(local, true, "end");
+    if (local) void this.drop(local, true, "end");
     else await this.notify([id]).catch(() => {});
     return row;
   }
