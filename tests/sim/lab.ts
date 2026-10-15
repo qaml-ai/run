@@ -48,6 +48,8 @@ const Op = z.discriminatedUnion("op", [
   z.object({ op: z.literal("volume"), volume: Count, node: Node }).describe("A client makes volume N (no Idempotency-Key: make each volume once)"),
   z.object({ op: z.literal("write"), volume: Count, write: Count, node: Node }).describe("A client writes f-M.txt to volume N; checked by I2 and I11"),
   z.object({ op: z.literal("forkVolume"), volume: Count, fork: Count, node: Node }).describe("A client forks volume N; checked by I11"),
+  z.object({ op: z.literal("voice"), session: Count, node: Node }).describe("A client starts voice session N, a bot's call in server N (needs voice: true; each session number once per plan); checked by I23"),
+  z.object({ op: z.literal("voiceEnd"), session: Count, node: Node }).describe("A client ends voice session N"),
 ]);
 export const PlanSchema = z.object({
   seed: z.string().min(1).max(200).describe("Every other draw (model latency per call, BUGGIFY decisions, ids) comes from it"),
@@ -66,6 +68,7 @@ export const PlanSchema = z.object({
   env: z.record(z.string().regex(/^AGENT_[A-Z_]+$/), z.string().max(100)).optional().describe("Settings for every node (AGENT_*): a long run's timers, retention, billing interval, GC"),
   durationMs: z.number().int().min(1_000).max(CAPS.durationMs).describe("Virtual ms the steps span; then every fault heals, crashed nodes restart, and the run settles and is checked"),
   endUsers: z.object({ grant: z.number().int().min(0).max(1_000_000_000), allowance: z.number().int().min(0).max(1_000_000_000), cost: z.number().int().min(0).max(1_000_000) }).optional().describe("End-user credits: every agent acts for one end user, granted `grant` micro-USD with `allowance` free a day; each model response costs `cost` micro-USD; checked by I22"),
+  voice: z.boolean().optional().describe("Voice sessions: the nodes hold calls on a simulated transport (voice ops); checked by I23"),
 });
 
 export const CHECKERS = {
@@ -84,6 +87,7 @@ export const CHECKERS = {
   I19: "A request the database refused for now (serialization failure, deadlock, statement timeout) is answered 503, never 400",
   I14: "A prompt sent again with its key is one request: every answer names the first's, none is refused as another, and its prompt is in the history once",
   I22: "An end user's money adds up: their ledger sums to their balance, each day's spend by bucket is the ledger's, each settled call posted its cost once, no settled call keeps a hold, and paid spend passes the grants by no more than one call per agent",
+  I23: "Every voice session left open is held by one node, its owner, on one connection; an ended one by none",
   assertion: "No always() failed and no unreachable() was reached in the runtime's code",
   "real I/O": "Nothing touched the real network, disk or clock (the leak detector)",
   determinism: "With twice: the second run of the plan hashes the same as the first",
@@ -180,11 +184,12 @@ export class SimLab {
       }
       if (op.op === "partition" && op.a === op.b) errors.push(`steps.${index}.op: a partition from a node to itself`);
     });
-    for (const [kind, key] of [["prompt", "run"], ["fork", "fork"], ["schedule", "schedule"], ["write", "write"], ["forkVolume", "fork"], ["volume", "volume"]] as const) {
+    for (const [kind, key] of [["prompt", "run"], ["fork", "fork"], ["schedule", "schedule"], ["write", "write"], ["forkVolume", "fork"], ["volume", "volume"], ["voice", "session"]] as const) {
       const numbers = plan.steps.filter(step => step.op.op === kind).map(step => (step.op as any)[key]);
       const twice = numbers.filter((number, index) => numbers.indexOf(number) !== index);
       if (twice.length) errors.push(`${kind}: ${key} ${[...new Set(twice)].join(", ")} used twice (each must be unique: a shared number is one request)`);
     }
+    if (!plan.voice && plan.steps.some(step => step.op.op === "voice" || step.op.op === "voiceEnd")) errors.push("voice: voice ops need voice: true");
     const prompted = new Set(plan.steps.flatMap(step => step.op.op === "prompt" ? [step.op.run] : []));
     plan.steps.forEach(({ op }, index) => { if (op.op === "retry" && !prompted.has(op.run)) errors.push(`steps.${index}.op: a retry of run ${op.run}, which no prompt makes`); });
     if (typeof plan.buggify === "object") for (const site of Object.keys(plan.buggify)) if (!BUGGIFY_SITES.includes(site)) errors.push(`buggify: no site ${site}`);

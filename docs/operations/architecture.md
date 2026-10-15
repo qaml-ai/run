@@ -332,6 +332,8 @@ timed steps (`tests/sim/workload.ts`). `runPlan` (`tests/sim/run.ts`) runs one, 
   prompt sent again with its key is the same request, and its prompt is in the history once (I14); what a run that
   succeeded said, its prompt and its answer, is in its agent's history (I15); storage is charged once a day (I16) and
   reconciled on schedule, and metered exactly when no node was lost (I17); what is deleted or expires is purged (I18);
+- every voice session left open is held by one node, its owner, on one connection, and an ended one by none, after
+  deploys, crashes, fences and partitions (I23, for plans with voice calls on a simulated transport);
 - no assertion is violated and there is no real I/O.
 
 Long plans (`npm run sim -- --long`, `generateLongPlan`) run hours of virtual time (2 to 26), starting near a day's or a

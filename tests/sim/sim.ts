@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { nodeConfig } from "../../src/node-config.ts";
 import { createNode, type NodeDeps, type RuntimeNode } from "../../src/node.ts";
-import { nodeContext, type Clock } from "../../src/node-context.ts";
+import { clock, nodeContext, type Clock } from "../../src/node-context.ts";
+import type { VoiceTransport } from "../../src/voice-sessions.ts";
 import { runtimeSecrets } from "../../src/secrets.ts";
 import { tenantsFromEnvironment } from "../../src/tenants.ts";
 import { memoryStorage } from "../../shared/storage.ts";
@@ -20,6 +21,29 @@ import { SimHooks, type BuggifyPlan } from "./hooks.ts";
 
 export const TOKEN = "simulation-operator-token-at-least-24-chars";
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+
+/**
+ * Voice calls in the simulation: each node's transport records the connections its voice sessions open and close (by
+ * the Discord session id each was given), and a connection is ready a moment after it opens, on its node's clock. A
+ * crashed process's connections die with it. I23 reads them.
+ */
+export class SimVoice {
+  readonly connections: { node: string; session: string; openedAt: number; closedAt?: number; dead: () => boolean }[] = [];
+  private readonly elapsed: () => number;
+  constructor(elapsed: () => number) { this.elapsed = elapsed; }
+  transport(node: string, dead: () => boolean): VoiceTransport {
+    return {
+      connect: (credentials, handlers) => {
+        const connection: SimVoice["connections"][number] = { node, session: credentials.sessionId, openedAt: this.elapsed(), dead };
+        this.connections.push(connection);
+        clock().setTimeout(() => { if (connection.closedAt === undefined && !dead()) handlers.ready(); }, 50);
+        return { update: () => {}, others: () => undefined, close: () => { connection.closedAt ??= this.elapsed(); } };
+      },
+    };
+  }
+  /** The connections of a Discord session open now: not closed, on a process still running. */
+  open(session: string) { return this.connections.filter(connection => connection.session === session && connection.closedAt === undefined && !connection.dead()); }
+}
 
 /** A runtime node in the simulation: its handles, how to reach it, and how it was started (to start it again). */
 export type SimNode = {
@@ -66,6 +90,8 @@ export class Sim {
    */
   storageFaults?: StorageFaults;
   private faultyStorage = false;
+  /** Voice calls, for a run that holds some (its nodes then have a voice transport). */
+  voice?: SimVoice;
   readonly storageInjected = new Map<string, number>();
   readonly nodes = new Map<string, SimNode>();
   readonly model: { served: Served[] };
@@ -100,7 +126,7 @@ export class Sim {
    * A world for `seed`, its database migrated; `respond` is the model's script; `env` applies to every node; `buggify`
    * says which BUGGIFY sites fire. Installs the simulation's environment and hooks for the process until `close`.
    */
-  static async create(options: { seed: string | number; respond: (body: any, served: Served[]) => Answer; env?: Record<string, string>; buggify?: BuggifyPlan; quiet?: boolean; database?: "pglite" | "postgres"; dbLatencyMs?: [number, number]; dbSpikes?: { rate: number; ms: [number, number] }; storageFaults?: boolean; start?: number }) {
+  static async create(options: { seed: string | number; respond: (body: any, served: Served[]) => Answer; env?: Record<string, string>; buggify?: BuggifyPlan; quiet?: boolean; database?: "pglite" | "postgres"; dbLatencyMs?: [number, number]; dbSpikes?: { rate: number; ms: [number, number] }; storageFaults?: boolean; start?: number; voice?: boolean }) {
     const seed = String(options.seed);
     // The nightly mode runs on a real Postgres server, on the machine's clock: not deterministic, but it has real
     // sessions whose transactions interleave (SIM_DATABASE=postgres, or `database`).
@@ -111,6 +137,7 @@ export class Sim {
     sim.dbLatencyMs = options.dbLatencyMs;
     sim.dbSpikes = options.dbSpikes;
     sim.faultyStorage = !!options.storageFaults;
+    if (options.voice) sim.voice = new SimVoice(() => sim.env.elapsed);
     return sim;
   }
 
@@ -177,6 +204,7 @@ export class Sim {
       clock,
       random: prng(`${this.seed}:${name}:${incarnation}`),
       codeExecutor: fakeExecutor(),
+      ...(this.voice ? { voiceTransports: { discord: this.voice.transport(name, () => dead) } } : {}),
       storage: (tail, meter) => this.faultyStorage
         ? simStorage(tail, meter, this.objects, () => dead, () => this.storageFaults, prng(`${this.seed}:storage:${name}#${incarnation}`), this.storageInjected)
         : memoryStorage(tail, meter, { logs: guarded(this.objects.logs, () => dead), blobs: guarded(this.objects.blobs, () => dead) }),
