@@ -134,7 +134,8 @@ test("concurrent replies for one end user share their credit: their holds never 
   assert.ok(held <= 150_000, `${held} held of 150000`);
   release();
   const runs = await Promise.all(agents.map((agent, index) => settled(r, `/v1/agents/${agent}/requests/${accepted[index].json.id}`)));
-  const refused = runs.filter(run => run.outcome.result.code === "end_user_credit");
+  const refused = runs.filter(run => run.outcome.result?.code === "end_user_credit");
+  assert.ok(runs.every(run => run.outcome.result), JSON.stringify(runs.map(run => run.outcome)));
   assert.ok(reached < 4 && refused.length === 4 - reached, `${reached} calls made, ${refused.length} refused: ${JSON.stringify(runs.map(run => run.outcome.result))}`);
   const person = (await r.call("/v1/end-users/shared")).json;
   assert.deepEqual([person.balance, person.held], [150_000 - reached * 10_000, 0]);

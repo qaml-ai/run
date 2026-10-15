@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { transaction, type Db, type Sql } from "./db.ts";
 import { HttpError } from "./http.ts";
+import { enqueueEvents, webhookEvent } from "./webhooks.ts";
 
 /**
  * End-user credits: a tenant's own users as billing subjects. An end user is an agent's or a call's `subject` (who it
@@ -298,7 +299,7 @@ export class EndUserCredits {
       await sql.query("delete from end_user_holds where tenant = $1 and end_user = $2 and (expires_at <= $3 or id = $4)", [tenant, endUser, now, call.id]);
       const left = await room(sql, tenant, user, await this.settings(tenant, sql), bucket, now);
       const taken = split(call.want, left);
-      if (taken.raw < Math.max(1, Math.min(call.min, call.want))) return { refused: refusal(endUser, bucket, left) };
+      if (taken.raw < Math.max(1, Math.min(call.min, call.want))) return { refused: await refused(sql, tenant, user, bucket, left, now) };
       await sql.query("insert into end_user_holds (id, tenant, end_user, bucket, day, allowance, paid, expires_at, created_at) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         [call.id, tenant, endUser, bucket, left.day, taken.allowance, taken.paid, now + HOLD_MS, now]);
       return { hold: { id: call.id, ...taken } };
@@ -314,7 +315,7 @@ export class EndUserCredits {
       const user = await lockEndUser(sql, tenant, endUser, now);
       const left = await room(sql, tenant, user, await this.settings(tenant, sql), bucket, now);
       const taken = split(Math.max(0, want), left);
-      if (taken.raw <= 0) return { refused: refusal(endUser, bucket, left) };
+      if (taken.raw <= 0) return { refused: await refused(sql, tenant, user, bucket, left, now) };
       const updated = await sql.query("update end_user_holds set allowance = allowance + $2, paid = paid + $3, expires_at = $4 where id = $1", [id, taken.allowance, taken.paid, now + HOLD_MS]);
       // A hold that expired (its call went quiet for HOLD_MS) is held again from here; one its call settled already is
       // not: the call is over.
@@ -482,9 +483,22 @@ export async function settleUsage(sql: Sql, call: { tenant: string; endUser: str
       sql.query("select coalesce(sum(allowance), 0)::bigint as allowance from end_user_holds where tenant = $1 and end_user = $2 and bucket = $3 and day = $4 and expires_at > $5", [tenant, endUser, bucket, day, now]),
     ]);
     const more = raw - previous.raw;
-    const covered = Math.min(more, Math.max(0, allowed - Number(spent?.allowance_spent ?? 0) - Number(held.allowance)));
+    const before = Number(spent?.allowance_spent ?? 0);
+    const covered = Math.min(more, Math.max(0, allowed - before - Number(held.allowance)));
     allowance = previous.allowance + covered;
     paid = previous.paid + marked(more - covered, markupBps);
+    // The bucket's allowance for the day is used up with this call: said once per user, bucket and day.
+    if (allowed > 0 && before < allowed && before + covered >= allowed) {
+      await exhausted(sql, tenant, endUser, { bucket, reason: "allowance", day, allowance: allowed, balance: Number(user.balance) - (paid - previous.paid) }, `allowance:${tenant}:${endUser}:${bucket}:${day}`);
+    }
+    // So is the daily limit on paid spend: once per user and day.
+    const limit = user.daily_limit !== null && user.daily_limit !== undefined ? Number(user.daily_limit) : settings?.daily_limit !== null && settings?.daily_limit !== undefined ? Number(settings.daily_limit) : null;
+    if (limit !== null && paid > previous.paid) {
+      const today = Number((await sql.query("select coalesce(sum(paid_spent), 0)::bigint as paid from end_user_days where tenant = $1 and end_user = $2 and day = $3", [tenant, endUser, day])).rows[0].paid);
+      if (today < limit && today + paid - previous.paid >= limit) {
+        await exhausted(sql, tenant, endUser, { bucket, reason: "daily_limit", day, dailyLimit: limit, balance: Number(user.balance) - (paid - previous.paid) }, `daily_limit:${tenant}:${endUser}:${day}`);
+      }
+    }
   } else {
     allowance = Math.min(raw, previous.allowance);
     paid = Math.min(previous.paid, marked(raw - allowance, markupBps));
@@ -510,6 +524,55 @@ export async function appendEntry(sql: Sql, entry: { tenant: string; endUser: st
     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) on conflict (tenant, idempotency_key) do nothing returning *`,
   [entry.tenant, entry.endUser, entry.kind, entry.amount, entry.raw ?? 0, entry.allowance ?? 0, entry.bucket ?? null, entry.key, entry.reference ?? null, JSON.stringify(entry.metadata ?? {}), after, now])).rows[0];
   if (!row) throw new Error(`Ledger key ${entry.key} was posted already`);
-  if (entry.amount) await sql.query("update end_users set balance = $3, updated_at = $4 where tenant = $1 and id = $2", [entry.tenant, entry.endUser, after, now]);
+  if (entry.amount) {
+    await sql.query("update end_users set balance = $3, updated_at = $4 where tenant = $1 and id = $2", [entry.tenant, entry.endUser, after, now]);
+    await balanceNotices(sql, entry.tenant, entry.endUser, balance, after, entry.bucket ?? null);
+  }
   return entryView(row);
+}
+
+/**
+ * The webhooks a balance's move fires, in the transaction that moves it: end_user.balance.low as it falls below the
+ * tenant's `lowBalance`, end_user.credit.exhausted (reason balance) as it reaches zero. Each fires once until the balance
+ * rises past it again (its flag on the user's row, which the caller holds locked).
+ */
+async function balanceNotices(sql: Sql, tenant: string, endUser: string, before: number, after: number, bucket: string | null) {
+  const [{ rows: [user] }, { rows: [settings] }] = await Promise.all([
+    sql.query("select low_notified, depleted_notified from end_users where tenant = $1 and id = $2", [tenant, endUser]),
+    sql.query("select low_balance from end_user_settings where tenant = $1", [tenant]),
+  ]);
+  const threshold = settings?.low_balance === null || settings?.low_balance === undefined ? null : Number(settings.low_balance);
+  let low: boolean = user.low_notified, depleted: boolean = user.depleted_notified;
+  if (threshold !== null && after < threshold && before >= threshold && !low) {
+    await enqueueEvents(sql, [webhookEvent("end_user.balance.low", tenant, { endUser, balance: after, threshold, previousBalance: before })]);
+    low = true;
+  } else if (threshold === null || after >= threshold) low = false;
+  if (after <= 0 && before > 0 && !depleted) {
+    await enqueueEvents(sql, [webhookEvent("end_user.credit.exhausted", tenant, { endUser, reason: "balance", bucket, balance: after, day: utcDay(Date.now()) })]);
+    depleted = true;
+  } else if (after > 0) depleted = false;
+  if (low !== user.low_notified || depleted !== user.depleted_notified) {
+    await sql.query("update end_users set low_notified = $3, depleted_notified = $4 where tenant = $1 and id = $2", [tenant, endUser, low, depleted]);
+  }
+}
+
+/** end_user.credit.exhausted, once per `key` (a bucket's allowance for a day, the daily limit for a day). */
+async function exhausted(sql: Sql, tenant: string, endUser: string, data: Record<string, unknown>, key: string) {
+  await enqueueEvents(sql, [webhookEvent("end_user.credit.exhausted", tenant, { endUser, ...data }, key)]);
+}
+
+/**
+ * A call refused for the user's credit (their row locked): why, and its webhook. With no balance left (not merely all of
+ * it held), end_user.credit.exhausted fires once until they are credited again, as when a debit takes the balance to
+ * zero; at the daily limit, once a day.
+ */
+async function refused(sql: Sql, tenant: string, user: any, bucket: string, room: Room, now: number): Promise<CreditRefusal> {
+  const said = refusal(user.id, bucket, room);
+  if (said.reason === "daily_limit") {
+    await exhausted(sql, tenant, user.id, { bucket, reason: "daily_limit", day: room.day, dailyLimit: room.dailyLimit, balance: room.balance }, `daily_limit:${tenant}:${user.id}:${room.day}`);
+  } else if (!user.depleted_notified && room.balance <= 0) {
+    await enqueueEvents(sql, [webhookEvent("end_user.credit.exhausted", tenant, { endUser: user.id, reason: "balance", bucket, balance: room.balance, day: room.day })]);
+    await sql.query("update end_users set depleted_notified = true, updated_at = $3 where tenant = $1 and id = $2", [tenant, user.id, now]);
+  }
+  return said;
 }
