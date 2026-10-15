@@ -599,6 +599,21 @@ changing its history with `agent.client.setMetadata({ name, type })`
 (`npm run studio`) at `/studio/agents`; Studio observes the runtime, and your
 application keeps serving its tools.
 
+## 0.21.0 (TypeScript) / 0.17.0 (Python), 2026-10-15
+
+Needs runtime 0.10.0 or later (run.camelai.com has it).
+
+- End-user credits: `agents.endUsers` (Python `agents.end_users`, sync too): `configure`, `settings`, `get`, `list`,
+  `update`, `ledger`, `grant`, `refund`, `adjust`; `bucket` on upserts, stateless runs, transcriptions and images. A run
+  its end user's credit stopped fails with code `end_user_credit` and a `reason`. See
+  [End-user credits](../guides/end-user-credits.md).
+- Voice sessions: `agents.voice` (`runtime.voice`): `create`, `get`, `list`, `update`, `end`, in TypeScript and Python;
+  the `voice.*` and `end_user.*` events in TypeScript's `WebhookEvent`. See [Voice calls](../guides/voice-calls.md).
+- Model failures carry `errorClass`, `providerStatus`, `retryable` and `model`, and runs `servedModel`.
+- Schedules take `history: "none"`, and report `failures`, `lastError` and `lastErrorAt`.
+- `runLimits.contextTokens` bounds the context of each model request.
+- Tool sources take `auth: { type: "exchange", url, audience? }`: credentials fetched from your server for each call.
+
 ## 0.20.0 (TypeScript) / 0.16.0 (Python), 2026-10-10
 
 Needs runtime 0.9.0 or later (run.camelai.com has it).

@@ -11,6 +11,177 @@ Changes on main since the last tag are in [unreleased/](unreleased/), a file for
 any order never conflict here), gathered into a version's notes when it is tagged: `npm run release-notes` shows them
 together, and `npm run release-notes -- <version>` writes them here and removes the files.
 
+## 0.10.0 (runtime-v0.10.0, 2026-10-15)
+
+End-user credits (a tenant's own users as billing subjects: balances, daily allowances by bucket, markup and daily
+limits, enforced on every model call, with webhooks), Discord voice sessions (held, transcribed and delivered by
+camelRun, paid for by end users), schedules without history and with backed-off retries, fetched credentials for tool
+servers, structured model failures, platform models on Azure OpenAI, and compaction fixes. The TypeScript SDK 0.21.0
+and Python SDK 0.17.0 use it ([SDK reference](../reference/sdk.md)).
+
+**Before upgrading a self-hosted runtime:** migrations 064 to 070 run on start (schedule history and failures, durable
+model attempts, email forwarding, end-user credits, voice sessions). End-user credits are off until a tenant turns
+them on (`PUT /v1/end-user-settings`); voice sessions are off unless `AGENT_VOICE=true`.
+
+### Platform images, transcription and chat models on Azure OpenAI
+
+- An operator can send images and transcription made on the platform's OpenAI key to its own Azure OpenAI deployments
+  (`AGENT_AZURE_OPENAI_ENDPOINT` and `AGENT_AZURE_OPENAI_API_KEY`, or `AGENT_AZURE_OPENAI_SECRET_ARN`; deployments
+  default to `gpt-image-2.5-flare` and `gpt-transcribe`). A tenant's own key, an operator-set one and a key scope's stay
+  on OpenAI. When Azure is rate limited, down or has no such deployment, the platform's OpenAI key makes it instead.
+  Billing is unchanged. Azure's content filter refusals are `IMAGE_REFUSED`, as OpenAI's are. See
+  [Configuration](configuration.md).
+- Hosted: Terraform adds the `azure-openai` secret, its ECS environment variable and the task role's read of it;
+  `infra/azure-openai.sh` stores the resource's endpoint and key and rolls the service.
+- The same resource can serve the catalog's `azure/<model>` chat models (`azure/gpt-6-sol`, `azure/gpt-6-luna`, …) as
+  platform models: `AGENT_AZURE_OPENAI_MODELS` (or `models` in the secret) names each model's deployment. Tenants on the
+  platform's keys see those as available in `GET /v1/models` and are billed at OpenAI's price for the same model
+  (Azure's Global Standard price); an undeployed one is refused with a clear error. `azure` models are now priced as
+  OpenAI's of the same id, long-context tier included (Pi's entries lacked it). `scripts/azure-models-check.ts` checks
+  the deployments with one minimal call each. `infra/azure-openai.sh` takes the models as a fourth argument.
+
+### Compaction counts the system prompt once, and never summarizes nothing
+
+- When to compact counted the system prompt twice once the provider had reported usage, since its report already
+  includes it. Compaction then started about one system prompt's worth of tokens early.
+- A compaction whose cut kept every message still made a summary call and wrote an empty summary. That changed the
+  start of the context and made the provider write it all to its cache again. It is now skipped.
+
+### contextTokens no longer summarizes on every turn
+
+- After a compaction for `runLimits.contextTokens`, the next one waits until a quarter of the limit is new since the
+  last. An agent whose system prompt, summary and recent messages nearly filled the limit was summarized again on
+  almost every turn, and each summary made the provider write the whole context to its cache again.
+
+### Smaller contexts, and a cached prefix that survives mount changes
+
+- `runLimits.contextTokens` keeps each of an agent's model requests within that many tokens: older context is
+  compacted below it, as it is below the model's window otherwise. On a large-window model a long-lived agent then
+  stops paying to read its whole history on every request ([Context size](../guides/models-and-keys.md#context-size)).
+- The system prompt the model saw first is pinned with the agent's first message. A change of mounts (or another
+  configuration change) before the first change of prompt or tools now follows as a system message of its own,
+  instead of rewriting the start of the context, which made the provider write the whole prompt and history to its
+  cache again.
+
+### Email channels: where replies go, and trusted forwarders
+
+- An email channel takes `settings.replies`: `"sender"` (the default, as before), `"none"` (nobody is mailed; a turn's
+  reply is read from the agent's history, which is how an agent drafts answers for a person to send) or
+  `{"to": "<address>"}` (every reply, file, question and notice goes to that one address, saying whose message it
+  answers; never to the person who wrote). A fixed address gets mail only after it has written to the channel's address
+  once, with a From SES proves; the channel then shows `account.verifiedReplyTo`.
+- `settings.forwarders` (addresses or `@domain`) lets a mailbox forward into a channel. A forward is accepted on proof
+  of the forwarder (SES's SPF verdict passing for an envelope sender at a listed domain), never on headers;
+  `access.allow` is asked about the forwarder; and the original sender reaches the agent marked unverified
+  (`from.id` `email:unverified:<address>`), cannot answer a pending input, and is never mailed: a channel with
+  forwarders must set `replies` to `"none"` or `{"to"}`, or opt in with `settings.replyToForwarded: true`.
+- Nothing changes for existing channels. `email_inbound` logs now also record what was accepted (`direct` or
+  `forwarded`); `email_outbound` records replies not sent. Migration `068_email_thread_forwarded.sql` adds a column to
+  `email_threads` ([Email](../guides/channels.md#email)).
+
+### End-user credits
+
+- Tenants can charge their own users: `PUT /v1/end-user-settings` turns it on, with daily free allowances by bucket
+  (`builder`, `bot:*`), a markup and a daily limit on paid spend. Each subject has a balance and a ledger
+  (`/v1/end-users/{id}`, `/ledger`, `/entries` for grants, refunds and adjustments, idempotent by key). Agents take a
+  `bucket`; so do `POST /v1/runs`, `/v1/transcriptions`, `/v1/images` and prompts sent with the API key.
+- Every model call of a subject's work holds its estimate before it is made and as it streams; a run that runs out is
+  refused (402 `END_USER_CREDIT`) or stops mid-reply (code `end_user_credit`, `reason` `balance` or `daily_limit`).
+  Transcriptions and images hold and settle too; web search, page renders and tool search are charged as recorded.
+- Webhooks `end_user.balance.low` and `end_user.credit.exhausted` (`allowance`, `balance`, `daily_limit`).
+- Migration 069. SDKs: `agents.endUsers` (TypeScript) and `agents.end_users` (Python), `bucket` on upserts and stateless
+  runs. See [End-user credits](../guides/end-user-credits.md).
+- The simulator has an end-user scenario (one subject pays for every agent), checked by I22.
+
+### Schedule deliveries back off, then move on
+
+- A schedule whose delivery fails is retried 1, 5 and 15 minutes later (with the same request id, so a delivery that
+  did reach the agent never runs twice), instead of every minute for ever. After that, or at once for a refusal a
+  retry cannot change (a spend limit's or spent credit's 402, a 400 or 403), the occurrence is given up: a repeating
+  schedule moves to its next occurrence and a one-off one is removed. Schedules list `failures` (occurrences given up
+  in a row), `lastError` and `lastErrorAt` until a delivery succeeds; each failure is logged as
+  `schedule_delivery_failed` ([Waking later](../concepts.md#waking-later)).
+- A failed delivery no longer holds up the other wake-ups due in the same scan for a minute.
+
+### Schedules without history
+
+- A text schedule takes `history: "none"` (REST, the SDKs' `schedule`, the `schedule` built-in, `camelrun schedules
+  add --history none`, the MCP server's `add_schedule`): each wake-up shows the model only the system prompt and the
+  schedule's text, as a prompt's `history: "none"` does, so a periodic agent no longer reads an ever longer history on
+  every run. The runs are still recorded in the history. Schedules list it as `history: "none"`; the default is
+  unchanged ([Waking later](../concepts.md#waking-later)).
+
+### Claude Sonnet 5.5 cache reads at Anthropic's price
+
+- Fixes the known issue in 0.6.0's notes: Claude Sonnet 5.5's cache reads (`anthropic/claude-sonnet-5-5`, and through
+  Cloudflare's AI Gateway) are priced at $0.10 per million tokens, Anthropic's price, not Pi's catalog's $0.20, for
+  usage, spend limits, billing and `GET /v1/models`. Agents made before keep counting the right price too. On builder
+  workloads (about 94% cache reads) Sonnet 5.5 responses were recorded about 29% above what Anthropic bills. Bedrock's
+  entry is unchanged: Bedrock publishes no price for it yet.
+
+### Model failures say how they failed
+
+- A run that a model call failed has `errorClass` (`billing`, `rate_limit`, `server`, `refusal`, `auth`, `timeout`,
+  `other`), `providerStatus` (the provider's HTTP status, when known), `retryable` (whether the runtime retries such a
+  failure itself) and `model` (`provider/model-id`) on its `error`, beside `code` and `message`, which are unchanged.
+  The `run.failed` webhook carries them too, and the stream's events for a failed response (`message_end`) and its
+  retries (`auto_retry_start`, `auto_retry_end`) as `failure`. A fallback no longer has to parse the message for a 402
+  or a 429 ([Model failures](../reference/errors.md#model-failures)).
+- A run's result has `servedModel`, the model that made its last response; so do `run.completed` and `run.failed`.
+- The `ErrorClass` metric dimension has a `refusal` class, and a quota used up that a provider sends as a 429
+  (OpenAI's `insufficient_quota`) counts as `billing`, not `rate_limit`.
+
+### Fetched credentials for tool servers
+
+- An MCP server in a definition takes `auth: {"type": "exchange", "url", "audience"?}`: the runtime fetches the
+  server's credential from an endpoint of yours, asking with an identity token it signs (audience the endpoint's URL,
+  and an `exchange` claim naming the server), and calls the server with `Authorization: Bearer <token>`. The endpoint
+  answers `{"token", "expiresAt"}` or `{"token", "expiresIn"}`. So a GitHub App installation token, an STS token or
+  an OAuth access token can be used where only a long-lived personal token could. See
+  [Tools](../guides/tools.md#fetched-credentials-auth-exchange), with a GitHub App as the worked example.
+- A credential is kept in memory only, per agent and per node: never stored, logged, returned by an API or shown to a
+  model. It is fetched again before it expires, calls made at once share one fetch, and a server that answers 401 or
+  403 gets one request more with a new credential before the tool call fails.
+- An exchange that is down, slow or answers wrongly makes its source unavailable for that call (`source_unavailable`,
+  with what the endpoint did), and the turn goes on. Saving a definition asks for a credential as the definition, to
+  list the server's tools: an endpoint that refuses or answers wrongly is a 400, one that is down is not.
+- A `tool_credential_exchange` log line and metric (`CredentialExchanges`, `CredentialExchangeMs`, by `Outcome` and
+  `Tenant`) for each fetch. `SourceAuth` in the TypeScript SDK has the new type.
+
+### Voice sessions
+
+- camelRun can hold a Discord voice call for a tenant's bot: the tenant's app joins (OP 4 on its own gateway) and
+  forwards what Discord answers to `POST /v1/voice/sessions`; camelRun connects and listens. `PATCH` hands it new
+  credentials when Discord moves the call, `DELETE` ends it and answers the OP 4 that leaves the channel, `GET` reads
+  one or lists them. One live session per bot and server; 10 live per tenant (`AGENT_VOICE_SESSIONS_PER_TENANT`).
+- One node holds each session (actor `voice:<id>`); a retiring or draining node hands its calls to a peer, which
+  connects again with the same credentials; a fenced node's calls are taken once its heartbeat expires. At most 200 per
+  node (`AGENT_VOICE_SESSIONS_PER_NODE`).
+- Sessions end on their own after `maxMinutes` (240), `idleMinutes` without speech (30), `emptySeconds` alone in the
+  call (60), or when Discord stops taking their credentials and no new ones come within 15 s. Webhooks
+  `voice.session.started` and `voice.session.ended` (with `reason`). The credentials are sealed and dropped at the end.
+- Each speaker's audio is cut into utterances (`silenceMs`, default 800, of no packets or of quiet ones under -45 dBFS,
+  as senders that never stop send encoded silence; quiet beyond 200 ms on each side trimmed and not billed; at most 30 s
+  each; under 300 ms of speech dropped), packed as Ogg Opus (packets decoded only for their level, never re-encoded),
+  and transcribed as `POST /v1/transcriptions` is: the same model and price per second, recorded as usage of the session's `subject` (`usage.recorded`, with `context.voiceSession`). Each transcript
+  goes out as a `voice.utterance` webhook and, with `deliver.agent`, as a prompt to that agent from the speaker. A
+  tenant out of credit ends the session (`budget`). Audio is never written anywhere; a session needs a transcription key.
+- With end-user credits, a session's `subject` pays from its `bucket`: a subject with nothing left is refused at create
+  (402 `END_USER_CREDIT`), each utterance's transcription is held before it is sent and settled with its cost, and
+  running out ends the session (`budget`, `limit: "end_user"`, `endUserReason`).
+- Discord's voice connections run on @discordjs/voice 0.19.2 with @snazzah/davey 0.1.12 for DAVE (a native module,
+  prebuilt for linux arm64 and x64), loaded only when `AGENT_VOICE=true`; off by default. Endpoints must be Discord's
+  (`*.discord.media`). A dropped voice socket is resumed or rejoined with the same credentials; a kick (4014, 4022) or
+  credentials Discord no longer takes (4004, 4006, 4009, 4011) wait 15 s for new ones.
+- SDKs: `agents.voice` (`runtime.voice`): `create`, `get`, `list`, `update`, `end`, in TypeScript and Python; the
+  `voice.*` events in TypeScript's `WebhookEvent`. See [Voice calls](../guides/voice-calls.md).
+- The simulator holds voice calls for some seeds (a simulated transport), checked by I23: every open session ends up
+  held by its owner alone, on one connection, and an ended one by none.
+- `infra/voice-check.sh` runs `scripts/voice-check.ts` (in the image) as a one-off task in the service's subnets,
+  security group and public IP: two test bots in a voice channel, one listening through the runtime's transport and
+  segmenter. Run it, and see it PASS, before turning voice on.
+- Migration 070.
+
 ## 0.9.0 (runtime-v0.9.0, 2026-10-10)
 
 Background sub-agents: messages between agents (`send_message`), `interrupt_agent` and a stop that reaches
