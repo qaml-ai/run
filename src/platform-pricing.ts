@@ -22,6 +22,12 @@ function dearest(provider: string): Model<Api>["cost"] & { contextWindow: number
   };
 }
 
+/** A model's rates in USD per million tokens (micro-USD per token), from the catalog; the provider's dearest for a model it lacks. */
+export function catalogRates(provider: string, id: string): { input: number; output: number } {
+  const { input, output } = catalogModel(provider, id)?.cost ?? dearest(provider);
+  return { input, output };
+}
+
 /**
  * A response on a platform key, priced from the runtime's catalog when it is billed: never from the agent's model
  * as stored, whose prices are not the tenant's to set. A cost the provider reported itself (`providerCost`) still

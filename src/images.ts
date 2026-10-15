@@ -268,6 +268,9 @@ export class Imager {
   }
 }
 
+/** Credit held for images about to be made (an end user's, end-user-credits.ts): settled with what they cost, or released. */
+export type Hold = (usd: number) => Promise<{ settle(usd: number): Promise<void>; release(): Promise<void> } | undefined>;
+
 /** An image as given to `POST /v1/images`: its bytes, or a URL to fetch them from. */
 export type ImageSource = { bytes: Uint8Array } | { url: string };
 
@@ -282,6 +285,8 @@ export type ImageRequest = {
   volume?: { id: string; path: string };
   /** Who it is for and who asked, as an agent's identity and a run's actor say (`usage.recorded`'s subject, context and actor). */
   identity?: AgentIdentity; actor?: string;
+  /** When its end user pays for it: holds the images' estimate (USD) of their credit before they are asked for. */
+  hold?: Hold;
 };
 
 export interface ImageService {
@@ -320,7 +325,12 @@ export async function imageRequest(service: ImageService, tenant: string, reques
   if (mask && (mask.contentType === "image/jpeg" || mask.contentType !== images[0]!.contentType || mask.width !== images[0]!.width || mask.height !== images[0]!.height)) {
     throw new HttpError(400, `The mask is an image with an alpha channel (PNG or WebP) in the format and size of the first image (${images[0]!.contentType}, ${images[0]!.width}x${images[0]!.height})`);
   }
-  const { generated, usage } = await service.imager.generate({ tenant, ...(request.keyScope ? { keyScope: request.keyScope } : {}) }, { prompt: request.prompt, images, ...(mask ? { mask } : {}), options: request.options }, signal);
+  const held = await request.hold?.(service.imager.estimate(request.prompt, images.length + (mask ? 1 : 0), request.options));
+  let made: Generated;
+  try { made = await service.imager.generate({ tenant, ...(request.keyScope ? { keyScope: request.keyScope } : {}) }, { prompt: request.prompt, images, ...(mask ? { mask } : {}), options: request.options }, signal); }
+  catch (error) { await held?.release(); throw error; }
+  const { generated, usage } = made;
+  await held?.settle(usage.usage.cost.total as number);
   service.record(tenant, { ...usage, ...(request.actor ? { actor: request.actor } : {}), ...(request.identity ? { identity: request.identity } : {}), ...(request.keyScope ? { keyScope: request.keyScope } : {}) });
   const volume = request.volume;
   const stamp = `${new Date().toISOString().replace(/[-:]/g, "").slice(0, 15)}-${randomBytes(3).toString("hex")}`;
@@ -374,8 +384,9 @@ export const GENERATE_IMAGE: ToolDefinition = {
  * A generate_image call: its arguments checked, its input images read from the agent's mounts (`files`), one image made
  * within `budget` (USD, when the run or agent has a limit) and saved to the workspace. The model gets the image's file
  * reference (so it sees it). `record` takes its usage as soon as it is made, so it is billed even if it cannot be saved.
+ * `hold`, when its end user pays for it, holds the image's estimate (USD) of their credit before it is asked for.
  */
-export async function generateImage(imager: Imager, context: { tenant: string; keyScope?: string; budget?: number; files: ToolFiles; record(usage: UsageRecord): void }, args: Record<string, unknown>, signal: AbortSignal): Promise<McpResult> {
+export async function generateImage(imager: Imager, context: { tenant: string; keyScope?: string; budget?: number; files: ToolFiles; record(usage: UsageRecord): void; hold?: Hold }, args: Record<string, unknown>, signal: AbortSignal): Promise<McpResult> {
   const prompt = args.prompt;
   if (typeof prompt !== "string" || !prompt.trim()) throw new HttpError(400, "Give the prompt: what to make");
   if (prompt.length > IMAGE_LIMITS.promptChars) throw new HttpError(400, `The prompt is at most ${IMAGE_LIMITS.promptChars} characters`);
@@ -391,8 +402,13 @@ export async function generateImage(imager: Imager, context: { tenant: string; k
     if (total > IMAGE_LIMITS.inputTotalBytes) throw new HttpError(413, `The images to edit are larger than ${IMAGE_LIMITS.inputTotalBytes} bytes in all`, "IMAGE_TOO_LARGE");
     images.push(checkedImage(bytes, path));
   }
-  const { generated, usage } = await imager.generate({ tenant: context.tenant, ...(context.keyScope ? { keyScope: context.keyScope } : {}), ...(context.budget !== undefined ? { budget: context.budget } : {}) }, { prompt, images, options }, signal);
+  const held = await context.hold?.(imager.estimate(prompt, images.length, options));
+  let made: Generated;
+  try { made = await imager.generate({ tenant: context.tenant, ...(context.keyScope ? { keyScope: context.keyScope } : {}), ...(context.budget !== undefined ? { budget: context.budget } : {}) }, { prompt, images, options }, signal); }
+  catch (error) { await held?.release(); throw error; }
+  const { generated, usage } = made;
   context.record(usage);
+  await held?.settle(usage.usage.cost.total as number);
   const image = generated.images[0]!;
   const size = imageHeader(Buffer.from(image.bytes.buffer, image.bytes.byteOffset, image.bytes.byteLength));
   const saved = await context.files.save(`image.${EXTENSIONS[image.contentType] ?? "png"}`, image.bytes, image.contentType)

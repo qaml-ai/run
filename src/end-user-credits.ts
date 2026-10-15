@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { transaction, type Db, type Sql } from "./db.ts";
 import { HttpError } from "./http.ts";
 
@@ -274,6 +275,228 @@ export class EndUserCredits {
       return { entry, replayed: false };
     });
   }
+
+  // Enforcement -------------------------------------------------------------
+
+  /** Whether the tenant meters its end users. */
+  async enabled(tenant: string): Promise<boolean> {
+    return (await this.db.query("select enabled from end_user_settings where tenant = $1", [tenant])).rows[0]?.enabled === true;
+  }
+
+  /**
+   * Hold up to `want` (raw micro-USD) for a call `id` of `endUser` in `bucket`: from what is left of the bucket's
+   * allowance today, then from the balance (marked up) within the daily limit, after every other hold. At least `min`
+   * must be held, else the call is refused. Undefined: the tenant does not meter its end users.
+   */
+  async reserve(tenant: string, endUser: string, bucket: string, call: { id: string; want: number; min: number }, now = Date.now()): Promise<Reserved | undefined> {
+    if (!await this.enabled(tenant)) return undefined;
+    // A call that costs nothing (a model priced at zero) holds nothing, and is never refused.
+    if (!(call.want > 0)) return { hold: { id: call.id, raw: 0, allowance: 0, paid: 0 } };
+    return transaction(this.db, async sql => {
+      const user = await lockEndUser(sql, tenant, endUser, now);
+      // Expired holds go, and this call's own from an earlier try (a begin delivered again) is taken afresh.
+      await sql.query("delete from end_user_holds where tenant = $1 and end_user = $2 and (expires_at <= $3 or id = $4)", [tenant, endUser, now, call.id]);
+      const left = await room(sql, tenant, user, await this.settings(tenant, sql), bucket, now);
+      const taken = split(call.want, left);
+      if (taken.raw < Math.max(1, Math.min(call.min, call.want))) return { refused: refusal(endUser, bucket, left) };
+      await sql.query("insert into end_user_holds (id, tenant, end_user, bucket, day, allowance, paid, expires_at, created_at) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+        [call.id, tenant, endUser, bucket, left.day, taken.allowance, taken.paid, now + HOLD_MS, now]);
+      return { hold: { id: call.id, ...taken } };
+    });
+  }
+
+  /**
+   * Hold up to `want` more (raw) for a call already holding some (`reserve`), as its cost grows while it streams; its
+   * hold lives HOLD_MS from now. Nothing more to hold: refused, and the call stops where it is.
+   */
+  async extend(tenant: string, endUser: string, bucket: string, id: string, want: number, now = Date.now()): Promise<Reserved> {
+    return transaction(this.db, async sql => {
+      const user = await lockEndUser(sql, tenant, endUser, now);
+      const left = await room(sql, tenant, user, await this.settings(tenant, sql), bucket, now);
+      const taken = split(Math.max(0, want), left);
+      if (taken.raw <= 0) return { refused: refusal(endUser, bucket, left) };
+      const updated = await sql.query("update end_user_holds set allowance = allowance + $2, paid = paid + $3, expires_at = $4 where id = $1", [id, taken.allowance, taken.paid, now + HOLD_MS]);
+      // A hold that expired (its call went quiet for HOLD_MS) is held again from here; one its call settled already is
+      // not: the call is over.
+      if (!updated.rowCount && (await sql.query("select 1 from model_attempts where id = $1 and totals is not null", [id])).rowCount) return { hold: { id, raw: 0, allowance: 0, paid: 0 } };
+      if (!updated.rowCount) {
+        await sql.query("insert into end_user_holds (id, tenant, end_user, bucket, day, allowance, paid, expires_at, created_at) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+          [id, tenant, endUser, bucket, left.day, taken.allowance, taken.paid, now + HOLD_MS, now]);
+      }
+      return { hold: { id, ...taken } };
+    });
+  }
+
+  /**
+   * Hold `usd` of `endUser`'s credit for work that is not a model call (audio to transcribe, images), before it is sent:
+   * all of it, or a 402 END_USER_CREDIT. Settle it with what the work cost, or release it if none was done. Undefined:
+   * the tenant does not meter its end users.
+   */
+  async hold(tenant: string, endUser: string, bucket: string, usd: number, call: string, metadata: Record<string, unknown> = {}): Promise<CreditHold | undefined> {
+    const id = randomUUID(), want = Math.ceil(usd * MICROS);
+    const reserved = await this.reserve(tenant, endUser, bucket, { id, want, min: want });
+    if (!reserved) return undefined;
+    if (reserved.refused) throw creditError(reserved.refused);
+    return {
+      settle: usd => this.settleHold(tenant, endUser, bucket, id, Math.round(usd * MICROS), `${call}:${id}`, { call, ...metadata }),
+      release: () => this.release(id),
+    };
+  }
+
+  /** Give a hold back without spending it (a call that never went out). */
+  async release(id: string) {
+    await this.db.query("delete from end_user_holds where id = $1", [id]);
+  }
+
+  /**
+   * Why `endUser` may not start more work in `bucket` now: nothing left of the bucket's allowance today and no paid room
+   * (balance, daily limit), after holds. Undefined when they may, or the tenant does not meter its end users. A read,
+   * for refusing a run before it starts: the hold its first call takes is what decides.
+   */
+  async refusal(tenant: string, endUser: string, bucket: string, now = Date.now()): Promise<CreditRefusal | undefined> {
+    if (!await this.enabled(tenant)) return undefined;
+    const user = (await this.db.query("select * from end_users where tenant = $1 and id = $2", [tenant, endUser])).rows[0]
+      ?? { id: endUser, balance: 0, allowances: {}, daily_limit: null };
+    const left = await room(this.db, tenant, user, await this.settings(tenant), bucket, now);
+    return left.allowanceLeft > 0 || left.paidRoom > 0 ? undefined : refusal(endUser, bucket, left);
+  }
+
+  /**
+   * Debit what a call cost (`raw`) that held nothing beforehand (a web search, a tool search's ranking), at once, once per
+   * `key`. Its usage counts against the allowance and the balance as any call's does, and may take the balance below
+   * zero: such calls cost cents, and they are refused once the user has nothing left (`refusal`).
+   */
+  async charge(tenant: string, endUser: string, bucket: string, raw: number, key: string, metadata: Record<string, unknown> = {}, now = Date.now()) {
+    if (!(raw > 0) || !await this.enabled(tenant)) return;
+    await transaction(this.db, async sql => {
+      if ((await sql.query("select 1 from end_user_ledger where tenant = $1 and idempotency_key = $2", [tenant, key])).rowCount) return;
+      await settleUsage(sql, { tenant, endUser, bucket, day: utcDay(now), raw, key, metadata }, now);
+    });
+  }
+
+  /** Settle a hold that is not a model attempt's (a transcription, images): what the call cost (`raw`), posted once per `key`. */
+  async settleHold(tenant: string, endUser: string, bucket: string, hold: string, raw: number, key: string, metadata: Record<string, unknown> = {}, now = Date.now()) {
+    await transaction(this.db, async sql => {
+      const day = (await sql.query("select day from end_user_holds where id = $1", [hold])).rows[0]?.day;
+      if ((await sql.query("select 1 from end_user_ledger where tenant = $1 and idempotency_key = $2", [tenant, key])).rowCount) {
+        await sql.query("delete from end_user_holds where id = $1", [hold]);
+        return;
+      }
+      await settleUsage(sql, { tenant, endUser, bucket, day: day ? dayText(day) : utcDay(now), hold, raw, key, metadata }, now);
+    });
+  }
+}
+
+/** How long a call's hold lasts without a word from it: a call that streams extends it as it goes (`extend`). */
+export const HOLD_MS = 10 * 60_000;
+
+/** Credit held for work that is not a model call: settled with what it cost (USD), or released. */
+export type CreditHold = { settle(usd: number): Promise<void>; release(): Promise<void> };
+
+/** An end user's credit refusing work before it starts: 402, END_USER_CREDIT, with whose, which bucket and why. */
+export function creditError(refused: CreditRefusal) {
+  return new HttpError(402, refused.message, "END_USER_CREDIT", { endUser: refused.endUser, bucket: refused.bucket, reason: refused.reason });
+}
+
+/** Why an end user's call was refused: their balance (nothing left of the bucket's allowance and none paid), or their daily limit. */
+export type CreditRefusal = { endUser: string; bucket: string; reason: "balance" | "daily_limit"; message: string };
+/** What a call holds: raw micro-USD in all, of which `allowance` from the bucket's allowance, and `paid` (charged) from the balance. */
+export type Hold = { id: string; raw: number; allowance: number; paid: number };
+export type Reserved = { hold: Hold; refused?: undefined } | { refused: CreditRefusal; hold?: undefined };
+
+/** What an end user may still spend now in a bucket: its allowance left (raw), and room on the balance (charged). */
+type Room = { day: string; allowance: number; allowanceLeft: number; paidRoom: number; bound: "balance" | "daily_limit"; balance: number; dailyLimit: number | null; markupBps: number };
+
+const dayText = (day: unknown) => day instanceof Date ? day.toISOString().slice(0, 10) : String(day).slice(0, 10);
+const dollars = (micros: number) => `${micros < 0 ? "-" : ""}$${(Math.abs(micros) / MICROS).toFixed(2)}`;
+
+/**
+ * What `user` (their row, locked or as read) may still spend in `bucket` today: the bucket's allowance less what was
+ * spent and what holds of today take of it; and the balance less every hold, within the daily limit less what was paid
+ * and held today.
+ */
+async function room(sql: Sql, tenant: string, user: any, settings: EndUserSettings, bucket: string, now: number): Promise<Room> {
+  const day = utcDay(now);
+  const [{ rows: days }, { rows: holds }] = await Promise.all([
+    sql.query("select bucket, allowance_spent, paid_spent from end_user_days where tenant = $1 and end_user = $2 and day = $3", [tenant, user.id, day]),
+    sql.query("select bucket, day, allowance, paid from end_user_holds where tenant = $1 and end_user = $2 and expires_at > $3", [tenant, user.id, now]),
+  ]);
+  const allowance = allowanceFor(settings.allowances, user.allowances ?? {}, bucket);
+  const spent = Number(days.find(row => row.bucket === bucket)?.allowance_spent ?? 0);
+  const paidToday = days.reduce((total, row) => total + Number(row.paid_spent), 0);
+  const heldAllowance = holds.filter(row => row.bucket === bucket && dayText(row.day) === day).reduce((total, row) => total + Number(row.allowance), 0);
+  const heldPaid = holds.reduce((total, row) => total + Number(row.paid), 0);
+  const heldPaidToday = holds.filter(row => dayText(row.day) === day).reduce((total, row) => total + Number(row.paid), 0);
+  const dailyLimit = user.daily_limit !== null && user.daily_limit !== undefined ? Number(user.daily_limit) : settings.dailyLimit;
+  const balance = Number(user.balance);
+  const byBalance = balance - heldPaid;
+  const byLimit = dailyLimit === null ? Infinity : dailyLimit - paidToday - heldPaidToday;
+  return {
+    day, allowance, allowanceLeft: Math.max(0, allowance - spent - heldAllowance), paidRoom: Math.max(0, Math.min(byBalance, byLimit)),
+    bound: byLimit < byBalance ? "daily_limit" : "balance", balance, dailyLimit, markupBps: settings.markupBps,
+  };
+}
+
+/** `want` (raw) split as it is spent: from the allowance first, the rest from the balance at the markup, within `room`. */
+function split(want: number, room: Room): Omit<Hold, "id"> {
+  const allowance = Math.min(want, room.allowanceLeft);
+  const rest = want - allowance;
+  const paid = Math.min(marked(rest, room.markupBps), room.paidRoom);
+  return { raw: allowance + Math.min(rest, unmarked(paid, room.markupBps)), allowance, paid };
+}
+
+function refusal(endUser: string, bucket: string, room: Room): CreditRefusal {
+  const free = room.allowance <= 0 ? `"${bucket}" has no free allowance`
+    : room.allowanceLeft > 0 ? `${dollars(room.allowanceLeft)} is left of the free ${dollars(room.allowance)} for "${bucket}" today`
+    : `the free ${dollars(room.allowance)} for "${bucket}" today is used up`;
+  const out = room.allowanceLeft > 0 || room.paidRoom > 0 ? "has too little credit left for this call" : "is out of credit";
+  return room.bound === "daily_limit"
+    ? { endUser, bucket, reason: "daily_limit", message: `This end user reached their daily credit limit of ${dollars(room.dailyLimit ?? 0)}, and ${free}` }
+    : { endUser, bucket, reason: "balance", message: `This end user ${out}: ${free}, and their balance is ${dollars(room.balance)}` };
+}
+
+/** What a call has posted to its user's ledger: its raw cost, the part the allowance covered, and what the balance paid. */
+export type Posted = { raw: number; allowance: number; paid: number };
+export const NOTHING_POSTED: Readonly<Posted> = Object.freeze({ raw: 0, allowance: 0, paid: 0 });
+
+/**
+ * Post what a call cost its end user: `raw` in all, of which `previous` was posted before (a corrected cost posts the
+ * difference). More: from what is left of the bucket's allowance on the call's `day` (its own `hold`, released here, no
+ * longer counting against it), the rest charged to the balance at the markup. Less: the balance is refunded first, then
+ * the allowance. In the caller's transaction, which this locks the user in; returns what the call has posted now.
+ */
+export async function settleUsage(sql: Sql, call: { tenant: string; endUser: string; bucket: string; day: string; raw: number; key: string; hold?: string; previous?: Posted; metadata?: Record<string, unknown> }, now = Date.now()): Promise<Posted> {
+  const { tenant, endUser, bucket, day } = call;
+  const previous = call.previous ?? NOTHING_POSTED;
+  const user = await lockEndUser(sql, tenant, endUser, now);
+  if (call.hold) await sql.query("delete from end_user_holds where id = $1", [call.hold]);
+  const raw = Math.max(0, Math.round(call.raw));
+  if (raw === previous.raw) return previous;
+  const settings = (await sql.query("select * from end_user_settings where tenant = $1", [tenant])).rows[0];
+  const markupBps = Number(settings?.markup_bps ?? 0);
+  let allowance: number, paid: number;
+  if (raw > previous.raw) {
+    const allowed = allowanceFor(settings?.allowances ?? {}, user.allowances ?? {}, bucket);
+    const [{ rows: [spent] }, { rows: [held] }] = await Promise.all([
+      sql.query("select allowance_spent from end_user_days where tenant = $1 and end_user = $2 and day = $3 and bucket = $4", [tenant, endUser, day, bucket]),
+      sql.query("select coalesce(sum(allowance), 0)::bigint as allowance from end_user_holds where tenant = $1 and end_user = $2 and bucket = $3 and day = $4 and expires_at > $5", [tenant, endUser, bucket, day, now]),
+    ]);
+    const more = raw - previous.raw;
+    const covered = Math.min(more, Math.max(0, allowed - Number(spent?.allowance_spent ?? 0) - Number(held.allowance)));
+    allowance = previous.allowance + covered;
+    paid = previous.paid + marked(more - covered, markupBps);
+  } else {
+    allowance = Math.min(raw, previous.allowance);
+    paid = Math.min(previous.paid, marked(raw - allowance, markupBps));
+  }
+  await sql.query(`insert into end_user_days (tenant, end_user, day, bucket, allowance_spent, paid_spent) values ($1, $2, $3, $4, $5, $6)
+    on conflict (tenant, end_user, day, bucket) do update set allowance_spent = end_user_days.allowance_spent + excluded.allowance_spent, paid_spent = end_user_days.paid_spent + excluded.paid_spent`,
+  [tenant, endUser, day, bucket, allowance - previous.allowance, paid - previous.paid]);
+  await appendEntry(sql, {
+    tenant, endUser, kind: "usage", amount: previous.paid - paid, raw: raw - previous.raw, allowance: allowance - previous.allowance, bucket, key: call.key,
+    metadata: { ...call.metadata, day, ...(markupBps ? { markupBps } : {}) },
+  }, Number(user.balance), now);
+  return { raw, allowance, paid };
 }
 
 /**

@@ -5,11 +5,35 @@ import { databaseUnavailable, databaseRetryable, transaction, type Db } from "./
 import { platformUsage } from "./platform-pricing.ts";
 import { enqueueEvents } from "./webhooks.ts";
 import { clock, network } from "./node-context.ts";
-import type { ModelAttemptEvent } from "./model-attempt.ts";
+import type { AttemptAck, ModelAttemptEvent } from "./model-attempt.ts";
+import { lockEndUser, settleUsage, utcDay, type EndUserCredits } from "./end-user-credits.ts";
+import { catalogRates } from "./platform-pricing.ts";
+import { usageCost } from "./webhooks.ts";
 
 const zero: Totals = { responses: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, platformResponses: 0, platformCost: 0 };
 const hash = (key: string) => createHash("sha256").update(key).digest("hex");
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/**
+ * A metered call's hold (end-user-credits.ts) is its input and up to this much output, and grows by as much again each
+ * time its stream reaches the end of what it holds; it needs its input and at least MIN_OUTPUT_TOKENS of output to start.
+ */
+export const HOLD_OUTPUT_TOKENS = 8_192;
+export const MIN_OUTPUT_TOKENS = 256;
+/** Streamed characters per output token, as an output estimate counts them: fewer than real tokens take, so it runs ahead of cost. */
+const CHARS_PER_TOKEN = 2;
+/** A call metered for its end user while it runs on this node: who pays, its input's estimated cost and its output's per token (raw micro-USD), the most output it asked for, and what it holds. */
+type Metered = { tenant: string; endUser: string; bucket: string; input: number; perToken: number; maxOutput: number; held: number };
+/** How far ahead of the end of its hold a streaming call asks for more, so its stream never waits on the answer. */
+const ASK_AHEAD_TOKENS = 2_048;
+/**
+ * Where a metered call's estimate reaches what it holds (`stopAtChars`), and where it asks for more ahead of that
+ * (`checkAtChars`); neither when its output costs nothing.
+ */
+const lines = (metered: Metered): Pick<AttemptAck, "checkAtChars" | "stopAtChars"> => {
+  if (!(metered.perToken > 0)) return {};
+  const stop = Math.max(0, Math.floor((metered.held - metered.input) / metered.perToken * CHARS_PER_TOKEN));
+  return { stopAtChars: stop, checkAtChars: Math.max(0, stop - ASK_AHEAD_TOKENS * CHARS_PER_TOKEN) };
+};
 
 /** Durable provider attempts. Retried delivery and concurrent reconciliation change each charge only by its delta. */
 export class ModelAttempts {
@@ -20,11 +44,15 @@ export class ModelAttempts {
   readonly fetcher: typeof fetch;
   readonly retryMs: number;
   readonly scopedKey?: (tenant: string, scope: string) => Promise<string | undefined>;
-  constructor(db: Db, accounts: Accounts, fetcher: typeof fetch = network().fetch, retryMs = 0, scopedKey?: (tenant: string, scope: string) => Promise<string | undefined>) {
-    this.db = db; this.accounts = accounts; this.fetcher = fetcher; this.retryMs = retryMs; this.scopedKey = scopedKey;
+  /** End users' credit: a begin naming its end user holds its estimate, and a settlement posts what it cost them. */
+  readonly endUsers?: EndUserCredits;
+  /** Calls metered for their end users, in flight on this node, by attempt id. */
+  private readonly metered = new Map<string, Metered>();
+  constructor(db: Db, accounts: Accounts, fetcher: typeof fetch = network().fetch, retryMs = 0, scopedKey?: (tenant: string, scope: string) => Promise<string | undefined>, endUsers?: EndUserCredits) {
+    this.db = db; this.accounts = accounts; this.fetcher = fetcher; this.retryMs = retryMs; this.scopedKey = scopedKey; this.endUsers = endUsers;
   }
 
-  async event(tenant: string, agent: string, platform: boolean, catalogPriced: boolean, event: ModelAttemptEvent): Promise<boolean> {
+  async event(tenant: string, agent: string, platform: boolean, catalogPriced: boolean, event: ModelAttemptEvent): Promise<boolean | AttemptAck> {
     const deadline = Date.now() + this.retryMs;
     for (let delay = 100; ; delay = Math.min(delay * 2, 2_000)) {
       try { return await this.persistEvent(tenant, agent, platform, catalogPriced, event); }
@@ -36,32 +64,82 @@ export class ModelAttempts {
     }
   }
 
-  private async persistEvent(tenant: string, agent: string, platform: boolean, catalogPriced: boolean, event: ModelAttemptEvent): Promise<boolean> {
+  private async persistEvent(tenant: string, agent: string, platform: boolean, catalogPriced: boolean, event: ModelAttemptEvent): Promise<boolean | AttemptAck> {
     if (!uuid.test(event.id)) throw new Error("Invalid model attempt id");
     if (event.type === "begin") {
       if (!/^[a-f0-9]{64}$/.test(event.keyHash)) throw new Error("Invalid model key fingerprint");
+      // Its end user's hold comes first: a call their credit refuses is never made, and leaves no attempt.
+      const metered = event.endUser && this.endUsers ? await this.hold(tenant, platform && catalogPriced, event) : undefined;
+      if (metered && "refused" in metered) return { tracked: false, refused: metered.refused };
       const prepaid = await this.accounts.billing.mode(tenant) === "prepaid";
-      await this.db.query(`insert into model_attempts (id,tenant,agent,provider,model,kind,platform,catalog_priced,prepaid,key_hash,context,started_at,updated_at,next_check_at)
-        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12,$13) on conflict (id) do nothing`,
-        [event.id, tenant, agent, event.provider, event.model, event.kind, platform, catalogPriced, prepaid, event.keyHash, JSON.stringify(event.context ?? {}), event.at, Date.now() + 300_000]);
+      await this.db.query(`insert into model_attempts (id,tenant,agent,provider,model,kind,platform,catalog_priced,prepaid,key_hash,context,started_at,updated_at,next_check_at,end_user,end_user_bucket)
+        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12,$13,$14,$15) on conflict (id) do nothing`,
+        [event.id, tenant, agent, event.provider, event.model, event.kind, platform, catalogPriced, prepaid, event.keyHash, JSON.stringify(event.context ?? {}), event.at, Date.now() + 300_000,
+          metered ? metered.endUser : null, metered ? metered.bucket : null]);
       const row = (await this.db.query("select tenant,agent,provider,model from model_attempts where id=$1", [event.id])).rows[0];
       if (row.tenant !== tenant || row.agent !== agent || row.provider !== event.provider || row.model !== event.model) throw new Error("Model attempt identity mismatch");
-      return true;
+      if (!metered) return true;
+      this.metered.set(event.id, metered);
+      return { tracked: true, ...lines(metered) };
     }
+    if (event.type === "progress") return this.progress(event.id, event.chars);
     if (event.type === "generation") {
       if (!/^gen-[a-zA-Z0-9-]{1,200}$/.test(event.generation)) return true;
       const result = await this.db.query(`update model_attempts set generation_id=$4, updated_at=$5,next_check_at=least(next_check_at,$5::bigint+60000) where id=$1 and tenant=$2 and agent=$3 and (generation_id is null or generation_id=$4) returning id`, [event.id, tenant, agent, event.generation, Date.now()]);
       if (!result.rowCount) throw new Error("Model attempt generation mismatch");
       return true;
     }
-    await this.settle(event.id, tenant, agent, event.usage, event.chars, event.completed, false);
+    try { await this.settle(event.id, tenant, agent, event.usage, event.chars, event.completed, false); }
+    finally { this.metered.delete(event.id); }
     return true;
+  }
+
+  /**
+   * Hold a call's estimate for its end user: its input, and up to HOLD_OUTPUT_TOKENS of its output, at the catalog's
+   * rates where the tenant pays the platform for the call (its own key's call: at its model's, as the host has them).
+   * Undefined: the tenant does not meter its end users.
+   */
+  private async hold(tenant: string, catalog: boolean, event: Extract<ModelAttemptEvent, { type: "begin" }>): Promise<Metered | { refused: NonNullable<AttemptAck["refused"]> } | undefined> {
+    const { endUser, estimate } = event;
+    const rates = catalog ? catalogRates(event.provider, event.model) : estimate?.rates ?? catalogRates(event.provider, event.model);
+    // USD per million tokens is micro-USD per token.
+    const perToken = Math.max(0, Number(rates.output) || 0), input = Math.ceil(Math.max(0, estimate?.inputTokens ?? 0) * Math.max(0, Number(rates.input) || 0));
+    const maxOutput = Math.max(1, estimate?.maxOutputTokens ?? HOLD_OUTPUT_TOKENS);
+    const want = input + Math.ceil(Math.min(maxOutput, HOLD_OUTPUT_TOKENS) * perToken);
+    const reserved = await this.endUsers!.reserve(tenant, endUser!.id, endUser!.bucket, { id: event.id, want, min: input + Math.ceil(Math.min(maxOutput, MIN_OUTPUT_TOKENS) * perToken) });
+    if (!reserved) return undefined;
+    if (reserved.refused) return { refused: reserved.refused };
+    return { tenant, endUser: endUser!.id, bucket: endUser!.bucket, input, perToken, maxOutput, held: reserved.hold.raw };
+  }
+
+  /**
+   * A metered call streamed `chars`, nearing the end of its hold: it holds up to another HOLD_OUTPUT_TOKENS' worth
+   * past where it is. Its end user having nothing more, it is refused: the host cuts its stream where its hold ends.
+   */
+  private async progress(id: string, chars: number): Promise<AttemptAck> {
+    const metered = this.metered.get(id);
+    if (!metered) return { tracked: true };
+    const spent = metered.input + Math.ceil(chars / CHARS_PER_TOKEN * metered.perToken);
+    const want = spent + Math.ceil(HOLD_OUTPUT_TOKENS * metered.perToken) - metered.held;
+    if (want > 0) {
+      const more = await this.endUsers!.extend(metered.tenant, metered.endUser, metered.bucket, id, want);
+      if (!more.hold) return { tracked: true, stopAtChars: lines(metered).stopAtChars, refused: more.refused };
+      metered.held += more.hold.raw;
+    }
+    return { tracked: true, ...lines(metered) };
   }
 
   async settle(id: string, tenant: string, agent: string, usage: Record<string, any>, chars: number, completed: boolean, reconciled: boolean) {
     await transaction(this.db, async sql => {
       const row = (await sql.query("select * from model_attempts where id=$1 and tenant=$2 and agent=$3 for update", [id, tenant, agent])).rows[0];
       if (!row) throw new Error("Unknown model attempt");
+      // The host's report ends the call: its end user's hold goes, spent or not (an outcome still unknown is posted when
+      // it is known, as the tenant's charge is).
+      // The end user's row first, as everything that touches their holds locks it (end-user-credits.ts).
+      if (row.end_user && !reconciled) {
+        await lockEndUser(sql, tenant, row.end_user);
+        await sql.query("delete from end_user_holds where id=$1", [id]);
+      }
       // A provider-reconciled or completed record is final. Delayed host deliveries cannot overwrite it.
       if (row.state === "settled" || (!reconciled && !completed && row.totals)) return;
       const evidence = chars > 0 || [usage.input, usage.output, usage.cacheRead, usage.cacheWrite, usage.providerCost].some(value => typeof value === "number" && value > 0);
@@ -74,9 +152,22 @@ export class ModelAttempts {
       const delta = Object.fromEntries(Object.keys(zero).map(key => [key, quote.totals[key as keyof Totals] - (previous[key] ?? 0)])) as Totals;
       const amount = row.prepaid ? quote.amount : 0;
       const adjustment = amount - Number(row.charge);
+      // What the call cost its end user: raw cost as the tenant's usage counts it; a call cut short on a key priced as
+      // reported (the tenant's own) at the estimate of what it streamed, as a platform call would be.
+      const endUserUsage = !row.end_user || completed || reconciled || (row.platform && row.catalog_priced) ? pricing.usage
+        : platformUsage(usage, row.provider, row.model, { chars, inputTokens: usage.estimatedInputTokens }).usage;
+      const endUserRaw = row.end_user ? Math.round(usageCost(endUserUsage).usd * 1_000_000) : 0;
       if (row.totals && adjustment === 0 && Object.values(delta).every(value => value === 0)
-        && row.state === (final ? "settled" : "estimated")) return;
+        && row.state === (final ? "settled" : "estimated") && endUserRaw === Number(row.end_user_raw)) return;
       const revision = row.revision + 1;
+      if (row.end_user && endUserRaw !== Number(row.end_user_raw)) {
+        const posted = await settleUsage(sql, {
+          tenant, endUser: row.end_user, bucket: row.end_user_bucket, day: utcDay(Number(row.started_at)), raw: endUserRaw, key: `attempt:${id}:${revision}`,
+          previous: { raw: Number(row.end_user_raw), allowance: Number(row.end_user_allowance), paid: Number(row.end_user_paid) },
+          metadata: { call: row.kind === "compaction" ? "compaction" : "response", attempt: id, provider: row.provider, model: row.model, agent, ...(row.context?.requestId ? { requestId: row.context.requestId } : {}), ...(final ? {} : { estimated: true }) },
+        });
+        await sql.query("update model_attempts set end_user_raw=$2, end_user_allowance=$3, end_user_paid=$4 where id=$1", [id, posted.raw, posted.allowance, posted.paid]);
+      }
       await applyUsageRows(sql, [{ tenant, day: quote.day, model: quote.model, ...delta }]);
       if (adjustment) {
         await postLedger(sql, [{ tenant, kind: "usage", amount: -adjustment, key: `model-attempt:${id}:${revision}`, metadata: { attempt: id, revision, reconciled, estimated: !final, tokens: Math.round((quote.totals.cost-previous.cost)*1e6), funding: adjustment-Math.round((quote.totals.cost-previous.cost)*1e6) } }]);

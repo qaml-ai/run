@@ -47,6 +47,9 @@ function runOf(body: any): number | undefined {
  * Run `plan` in a fresh simulation: start its nodes, issue its steps at their virtual times as concurrent clients would,
  * then heal every fault, restart every crashed node and let the cluster settle; then check what happened (`check`).
  */
+/** The end user every agent acts for, when a plan has end-user credits (I22). */
+const END_USER = "sim-user";
+
 export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: (sim: Sim, agents: Map<number, string>) => Promise<void> } = {}): Promise<RunResult> {
   const modelRandom = prng(`${plan.seed}:model`);
   const [low, high] = plan.modelDelayMs;
@@ -67,7 +70,7 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
       }
       // A worker the app's tool prepares (a spawn directive), started as a background child too.
       if (asked.includes("tool-me")) return { tool_calls: [{ index: 0, id: "call_tool", type: "function", function: { name: "app__work", arguments: "{}" } }], delayMs };
-      return { content: `done ${runOf(body) ?? "?"}`, delayMs };
+      return { content: `done ${runOf(body) ?? "?"}`, delayMs, ...(plan.endUsers ? { usage: { prompt_tokens: 10, completion_tokens: 10, cost: plan.endUsers.cost / 1_000_000 } } : {}) };
     },
   });
   const history: Event[] = [];
@@ -113,6 +116,11 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
         if (message.method === "tools/call") return reply({ content: [{ type: "text", text: "starting" }], _meta: { "camelrun/spawn": { agent: worker, task: "worker task", name: "worker" } } });
         reply({});
       }), work => sim.asWorld(work));
+    }
+    // One end user pays for every agent's calls (I22).
+    if (plan.endUsers) {
+      await sim.call(plan.nodes[0], "/v1/end-user-settings", { method: "PUT", body: { enabled: true, allowances: { "*": plan.endUsers.allowance } } });
+      await sim.call(plan.nodes[0], `/v1/end-users/${END_USER}/entries`, { body: { kind: "grant", amount: plan.endUsers.grant, key: "sim-grant" } });
     }
     // The database refuses some statements from here on (a node that cannot start for it is restarted, as ECS would).
     if (plan.dbErrors && "errors" in sim.db) sim.db.errors = { ...plan.dbErrors, random: prng(`${plan.seed}:db-errors`) };
@@ -167,7 +175,7 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
       switch (op.op) {
         case "create": {
           const madeAt = sim.env.elapsed;
-          void client(op, op.node, "/v1/agents", { name: `agent-${op.agent}`, ...(op.ttlSeconds ? { ttlSeconds: op.ttlSeconds } : {}),
+          void client(op, op.node, "/v1/agents", { name: `agent-${op.agent}`, ...(op.ttlSeconds ? { ttlSeconds: op.ttlSeconds } : {}), ...(plan.endUsers ? { subject: END_USER } : {}),
             ...(op.spawner ? { builtins: ["agents"], delegate: { instructions: true }, mcpServers: [{ name: "app", url: "http://tools.sim/mcp", auth: { type: "runtime" } }] } : {}) }, { "Idempotency-Key": `agent-${op.agent}` })
             .then(answer => {
               if (answer?.status !== 201 && answer?.status !== 200) return;
@@ -533,7 +541,10 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
         }
         return false;
       }, `schedule ${schedule}'s request`, 30_000, 1_000).catch(() => {});
-      if (status !== 200) failures.push(`I13: schedule ${schedule} of agent-${agent} never delivered its prompt (${request}: ${status})`);
+      // Its end user out of credit (end-user credits, I22), the runtime refused its prompt (402 END_USER_CREDIT), as it
+      // refuses a client's: given up at once, which is the schedule working.
+      const refused = sim.env.logs.some(log => log.line.includes('"schedule_delivery_failed"') && log.line.includes(`"schedule":"${request.slice("schedule-".length, "schedule-".length + 36)}"`) && log.line.includes('"status":402'));
+      if (status !== 200 && !(plan.endUsers && refused)) failures.push(`I13: schedule ${schedule} of agent-${agent} never delivered its prompt (${request}: ${status})`);
     }
 
     // I14: a prompt sent again with its key is the same request: every answer that names one names the first's, no retry
@@ -619,6 +630,35 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
       if (event.status !== undefined && event.status >= 400 && event.status < 500 && typeof said === "string" && /could not serialize|deadlock detected|canceling statement due to statement timeout/.test(said)) {
         failures.push(`I19: ${event.op.op} at ${event.invoked} ms was answered ${event.status} for a database refusal (${said.slice(0, 80)})`);
       }
+    }
+
+    // I22: the end user's money adds up, whatever the faults: their ledger sums to their balance, each day's spend by
+    // bucket is the ledger's, each settled call posted its cost exactly once, no settled call still holds credit, and
+    // their paid spend passes what they were granted by at most one call per agent (the documented overspend bound).
+    if (plan.endUsers) {
+      const [user] = (await sim.db.query("select balance from end_users where id = $1", [END_USER])).rows;
+      const ledger = (await sim.db.query("select kind, amount, raw, allowance, bucket from end_user_ledger where end_user = $1", [END_USER])).rows;
+      const balance = Number(user?.balance ?? 0), sum = ledger.reduce((total, row) => total + Number(row.amount), 0);
+      if (balance !== sum) failures.push(`I22: the end user's balance is ${balance}, their ledger sums to ${sum}`);
+      const days = (await sim.db.query("select bucket, sum(allowance_spent)::bigint as allowance, sum(paid_spent)::bigint as paid from end_user_days where end_user = $1 group by bucket", [END_USER])).rows;
+      for (const day of days) {
+        const posted = ledger.filter(row => row.kind === "usage" && row.bucket === day.bucket);
+        const allowance = posted.reduce((total, row) => total + Number(row.allowance), 0), paid = posted.reduce((total, row) => total - Number(row.amount), 0);
+        if (Number(day.allowance) !== allowance || Number(day.paid) !== paid) failures.push(`I22: bucket ${day.bucket}'s days count ${day.allowance} allowance and ${day.paid} paid; its ledger ${allowance} and ${paid}`);
+      }
+      const attempts = (await sim.db.query("select id, totals, end_user_raw from model_attempts where end_user = $1 and totals is not null", [END_USER])).rows;
+      for (const attempt of attempts) {
+        const cost = Math.round(Number(attempt.totals.cost) * 1_000_000);
+        if (Number(attempt.end_user_raw) !== cost) failures.push(`I22: model attempt ${attempt.id} cost ${cost}, and posted ${attempt.end_user_raw} to its end user`);
+      }
+      const posted = ledger.filter(row => row.kind === "usage").reduce((total, row) => total + Number(row.raw), 0);
+      const charged = attempts.reduce((total, attempt) => total + Number(attempt.end_user_raw), 0);
+      if (posted !== charged) failures.push(`I22: the ledger's usage comes to ${posted}, the model attempts posted ${charged}`);
+      const kept = (await sim.db.query("select h.id from end_user_holds h join model_attempts a on a.id = h.id where a.totals is not null")).rows;
+      if (kept.length) failures.push(`I22: ${kept.length} settled model calls still hold credit (${kept.slice(0, 3).map(row => row.id).join(", ")})`);
+      const paid = ledger.filter(row => row.kind === "usage").reduce((total, row) => total - Number(row.amount), 0);
+      const bound = plan.endUsers.grant + agents.size * plan.endUsers.cost;
+      if (paid > bound) failures.push(`I22: the end user paid ${paid}, past their grant of ${plan.endUsers.grant} by more than one call per agent (${bound})`);
     }
 
     for (const violation of sim.hooks.violations) failures.push(`assertion: ${violation}`);

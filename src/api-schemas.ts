@@ -298,6 +298,7 @@ export const PromptInput = z.object({
   allowDisconnected: z.boolean().optional().openapi({ description: "Run even though the agent's tools need its application and none is connected (else 409 APPLICATION_NOT_CONNECTED): its calls then fail as not connected" }),
   whileRunning: z.enum(["queue", "steer"]).optional().openapi({ description: "What happens if the agent is working on a turn when this arrives. queue (default): it runs as the next turn. steer: the running turn takes it after its current step. The 202 says so at once (steer: \"accepted\"; \"queued\" when no turn could take it), and this request completes as soon as the turn takes the message (steeredInto names the turn, whose own request has its outcome; a steer_taken event marks it), so steered messages never wait for the turn's end, nor count against the agent's queue once taken. If the turn ends first, it runs as a turn of its own. With no turn running, both start one" }),
   spendLimit: SpendLimitInput.optional().openapi({ description: "This run's own budget in USD: it ends before its next model request once it has spent this. The agent's spendLimit is unchanged and counts the run too" }),
+  bucket: z.string().optional().openapi({ description: "With end-user credits on (/v1/end-user-settings): the bucket of the agent's subject this run spends from, instead of the agent's. Only the tenant may set it" }),
   runLimits: z.strictObject({ maxResponses: z.number().int().min(1).optional(), maxSeconds: z.number().int().min(1).optional() }).optional().openapi({ description: "This run's own limits: at most this many model responses, or seconds. They only lower the agent's runLimits and the runtime's; at one, the run ends with stopped \"turn_limit\"" }),
   output: z.strictObject({
     schema: z.record(z.string(), z.unknown()).openapi({ description: "A JSON Schema for an object (type: \"object\"; at most 64 KB)", example: { type: "object", properties: { sentiment: { type: "string", enum: ["positive", "neutral", "negative"] } }, required: ["sentiment"] } }),
@@ -389,6 +390,7 @@ export const AgentInput = z.object({
   mcpServers: z.array(InlineMcpServerInput).max(64).optional().openapi({ description: "Remote MCP servers whose tools the runtime calls for the agent, for an agent without a definition; one made from a definition has its definition's. No credentials: auth \"runtime\" or none. An upsert without mcpServers leaves the agent none" }),
   keyScope: z.string().optional().openapi({ description: "A key scope (PUT /v1/key-scopes/{scope}/providers/{provider}) whose keys the agent's model calls use first, before the tenant's own", example: "org_abc123" }),
   spendLimit: SpendLimitInput.optional(),
+  bucket: z.string().optional().openapi({ description: "With end-user credits on (/v1/end-user-settings): the bucket of its subject's credit its runs spend from (its daily allowance first, then their balance). Default \"default\"" }),
   runLimits: RunLimits.optional().openapi({ description: "The most one run may take (model responses, seconds); an agent from a definition gets the definition's unless this is given" }),
   modelHeaders: ModelHeaders.optional(),
   prompt: PromptInput.optional().openapi({ description: "A first prompt, as POST /v1/agents/{id}/prompt takes it, sent once the agent is made: it runs as soon as the agent has started, so a new conversation needs one call. Give it a requestId: a retry of the create (same Idempotency-Key) with the same requestId makes no second agent and sends no second prompt" }),
@@ -487,6 +489,7 @@ export const RunInput = z.strictObject({
   keyScope: z.string().optional(),
   modelHeaders: ModelHeaders.optional(),
   spendLimit: SpendLimitInput.optional().openapi({ description: "The run's budget in USD: it ends before its next model request once it has spent this" }),
+  bucket: z.string().optional().openapi({ description: "With end-user credits on (/v1/end-user-settings): the bucket of the subject's credit the run spends from. Default \"default\"" }),
   runLimits: RunLimits.optional(),
   subject: z.string().optional().openapi({ description: "Who the run acts for (a user id in your app): `sub` in its tool servers' identity tokens" }),
   context: z.record(z.string(), z.unknown()).optional().openapi({ description: "Claims your tool servers need, as `ctx` in its identity tokens; at most 4 KB" }),
@@ -596,6 +599,7 @@ export const AgentDetail = AgentSummary.extend({
   fileTools: z.literal(false).optional().openapi({ description: "Present when the model gets no file tools but present_file" }),
   codeMode: z.literal(false).optional().openapi({ description: "Present when the agent has no js_exec, and the model calls every tool directly" }),
   keyScope: z.string().nullable().openapi({ description: "The key scope its model calls take keys from first" }),
+  bucket: z.string().nullable().openapi({ description: "The bucket of its subject's credit its runs spend from (end-user credits); null: \"default\"" }),
   modelHeaders: ModelHeaders.nullable(),
   builtins: z.array(Builtin).openapi({ description: "The tools the runtime answers itself: its own, or its definition's" }),
   delegate: DelegateSettings.nullable().openapi({ description: "Who it may delegate to, with the delegate or agents builtin" }),
@@ -698,6 +702,7 @@ const TranscriptionFields = {
   subject: z.string().optional().openapi({ description: "Who it is for (a user id in your app): usage.recorded's subject" }),
   context: z.record(z.string(), z.unknown()).optional().openapi({ description: "Your claims (org, workspace…), carried as usage.recorded's context; at most 4 KB" }),
   actor: z.string().optional().openapi({ description: "Who asked (a user id in your app): usage.recorded's actor" }),
+  bucket: z.string().optional().openapi({ description: "With end-user credits on (/v1/end-user-settings): the subject's bucket this spends from. Default \"default\"" }),
 };
 export const TranscriptionInput = z.strictObject({
   data: z.string().optional().openapi({ description: "The audio's bytes, base64 (at most 25 MB decoded). Or send it as multipart/form-data, the audio in a part named file" }),
@@ -707,7 +712,7 @@ export const TranscriptionInput = z.strictObject({
 export const TranscriptionForm = z.object({
   file: z.any().openapi({ type: "string", format: "binary", description: "The audio: Ogg (Opus, Vorbis), WebM, MP3, M4A/MP4, WAV or FLAC; at most 25 MB and 30 minutes" }),
   language: TranscriptionFields.language, prompt: TranscriptionFields.prompt, keyScope: TranscriptionFields.keyScope,
-  subject: TranscriptionFields.subject, context: z.string().optional().openapi({ description: "JSON of your claims, as context above" }), actor: TranscriptionFields.actor,
+  subject: TranscriptionFields.subject, context: z.string().optional().openapi({ description: "JSON of your claims, as context above" }), actor: TranscriptionFields.actor, bucket: TranscriptionFields.bucket,
 }).openapi("TranscriptionForm");
 export const Transcription = z.object({
   text: z.string(),
@@ -729,7 +734,7 @@ const ImageFields = {
   keyScope: TranscriptionFields.keyScope,
   volumeId: z.string().optional().openapi({ description: "Save the images into this volume of yours (under path) and answer their paths, instead of their bytes" }),
   path: z.string().max(1_000).optional().openapi({ description: "With volumeId: the directory to save them in. Default /images" }),
-  subject: TranscriptionFields.subject, context: TranscriptionFields.context, actor: TranscriptionFields.actor,
+  subject: TranscriptionFields.subject, context: TranscriptionFields.context, actor: TranscriptionFields.actor, bucket: TranscriptionFields.bucket,
 };
 export const ImageInput = z.strictObject({
   ...ImageFields,
@@ -861,6 +866,7 @@ export const ConfigureInput = z.object({
   temperature: Temperature.nullable().optional().openapi({ description: "Replaces its model's sampling temperature; null removes it (the provider's default). Refused (400) when the agent's model or thinking level, after this change, takes none" }),
   keyScope: z.string().nullable().optional().openapi({ description: "The key scope its model calls take keys from first; null for the tenant's keys. Applying a definition keeps it" }),
   spendLimit: SpendLimitInput.nullable().optional().openapi({ description: "A new budget from now, applied at once, ahead of queued runs; null removes it" }),
+  bucket: z.string().nullable().optional().openapi({ description: "The bucket of its subject's credit its runs spend from, applied at once; null: \"default\"" }),
   runLimits: RunLimits.nullable().optional().openapi({ description: "Replaces the agent's run limits from its next run; null removes them (the runtime's apply). Set here on an agent from a definition, they stay when the definition is applied" }),
   modelHeaders: ModelHeaders.nullable().optional().openapi({ description: "Replaces the agent's model headers; null or {} removes them" }),
   builtins: z.array(Builtin).max(8).optional().openapi({ description: "Replaces the agent's builtins; [] removes them. Not for an agent made from a definition, whose builtins are its definition's" }),

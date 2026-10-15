@@ -2239,6 +2239,10 @@
           "spendLimit": {
             "$ref": "#/components/schemas/SpendLimitInput"
           },
+          "bucket": {
+            "type": "string",
+            "description": "With end-user credits on (/v1/end-user-settings): the bucket of its subject's credit its runs spend from (its daily allowance first, then their balance). Default \"default\""
+          },
           "runLimits": {
             "$ref": "#/components/schemas/RunLimits"
           },
@@ -2620,6 +2624,10 @@
               }
             ]
           },
+          "bucket": {
+            "type": "string",
+            "description": "With end-user credits on (/v1/end-user-settings): the bucket of the agent's subject this run spends from, instead of the agent's. Only the tenant may set it"
+          },
           "runLimits": {
             "type": "object",
             "properties": {
@@ -2830,6 +2838,13 @@
                 ],
                 "description": "The key scope its model calls take keys from first"
               },
+              "bucket": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The bucket of its subject's credit its runs spend from (end-user credits); null: \"default\""
+              },
               "modelHeaders": {
                 "allOf": [
                   {
@@ -2985,6 +3000,7 @@
               "mounts",
               "systemPrompt",
               "keyScope",
+              "bucket",
               "modelHeaders",
               "builtins",
               "delegate",
@@ -3752,6 +3768,13 @@
             "additionalProperties": false,
             "description": "A new budget from now, applied at once, ahead of queued runs; null removes it"
           },
+          "bucket": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The bucket of its subject's credit its runs spend from, applied at once; null: \"default\""
+          },
           "runLimits": {
             "type": [
               "object",
@@ -4518,6 +4541,10 @@
           "actor": {
             "type": "string",
             "description": "Who asked (a user id in your app): usage.recorded's actor"
+          },
+          "bucket": {
+            "type": "string",
+            "description": "With end-user credits on (/v1/end-user-settings): the subject's bucket this spends from. Default \"default\""
           }
         },
         "additionalProperties": false
@@ -4554,6 +4581,10 @@
           "actor": {
             "type": "string",
             "description": "Who asked (a user id in your app): usage.recorded's actor"
+          },
+          "bucket": {
+            "type": "string",
+            "description": "With end-user credits on (/v1/end-user-settings): the subject's bucket this spends from. Default \"default\""
           }
         }
       },
@@ -4699,6 +4730,10 @@
           "actor": {
             "type": "string",
             "description": "Who asked (a user id in your app): usage.recorded's actor"
+          },
+          "bucket": {
+            "type": "string",
+            "description": "With end-user credits on (/v1/end-user-settings): the subject's bucket this spends from. Default \"default\""
           },
           "n": {
             "type": "integer",
@@ -4846,6 +4881,10 @@
           "actor": {
             "type": "string",
             "description": "Who asked (a user id in your app): usage.recorded's actor"
+          },
+          "bucket": {
+            "type": "string",
+            "description": "With end-user credits on (/v1/end-user-settings): the subject's bucket this spends from. Default \"default\""
           },
           "n": {
             "type": "string",
@@ -7357,6 +7396,10 @@
                 "description": "The run's budget in USD: it ends before its next model request once it has spent this"
               }
             ]
+          },
+          "bucket": {
+            "type": "string",
+            "description": "With end-user credits on (/v1/end-user-settings): the bucket of the subject's credit the run spends from. Default \"default\""
           },
           "runLimits": {
             "allOf": [

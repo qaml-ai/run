@@ -96,6 +96,11 @@ export type Plan = {
   startAt?: string;
   /** Settings for every node, over the run's (a long run's slower timers, retention, billing's interval). */
   env?: Record<string, string>;
+  /**
+   * End-user credits: every agent acts for one end user, granted `grant` micro-USD with `allowance` free a day, and each
+   * model response costs `cost`; their money must add up whatever the faults (I22).
+   */
+  endUsers?: { grant: number; allowance: number; cost: number };
 };
 
 /** Which fault classes a run uses: each run enables a random subset (swarm testing). */
@@ -210,6 +215,9 @@ export function generatePlan(seed: string, options: { steps?: number; durationMs
       extra.env = { AGENT_CHILD_SWEEP_MS: "2000", AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "10.0.0.0/8" };
     }
   }
+  // One end user paying for every agent, for some seeds, from a stream of its own: concurrent calls across nodes share their credit.
+  const paying = prng(`${seed}:end-users`);
+  if (paying.float() < 0.4) extra.endUsers = { grant: [5_000, 20_000, 1_000_000][paying.int(3)], allowance: [0, 10_000][paying.int(2)], cost: 3_000 };
   // A database with a tail for some seeds, from a stream of its own, so every other draw of the plan stays as it was.
   const latency = prng(`${seed}:db-latency`);
   const tail = latency.float() < 0.3 ? { dbLatencyMs: [1, 5] as [number, number], dbSpikes: { rate: 0.01 + latency.int(2) * 0.01, ms: [200, 800] as [number, number] } } : {};
