@@ -221,6 +221,23 @@ test("a model call its end user cannot pay for is refused before it is made, and
   assert.equal((await db.query("select count(*)::int as n from model_attempts")).rows[0].n, 0);
 });
 
+test("a begin delivered again holds once, and a request for more that lands after the call settled holds nothing", async () => {
+  const { db, service, attempts } = await attemptsFixture();
+  await service.post("payg", "person", { kind: "grant", amount: USD, key: "pay" });
+  const id = randomUUID();
+  const begin = { type: "begin" as const, id, provider: "openrouter", model: MODEL, kind: "response" as const, at: Date.now(), keyHash,
+    estimate: { inputTokens: 1_000, maxOutputTokens: 4_000, rates: { input: 15, output: 75 } }, endUser: { id: "person", bucket: "builder" } };
+  await attempts.event("payg", "agent", true, true, begin);
+  await attempts.event("payg", "agent", true, true, begin);
+  assert.equal((await holds(db)).length, 1);
+  await attempts.event("payg", "agent", true, true, { type: "finish", id, usage: { input: 100, output: 10, providerCost: 0.01, providerCreditCost: 0 }, chars: 40, completed: true });
+  assert.equal((await holds(db)).length, 0);
+  // The host's last progress report, answered after the call's end was settled: it does not hold again.
+  await service.extend("payg", "person", "builder", id, 100_000);
+  assert.equal((await holds(db)).length, 0);
+  assert.equal((await service.get("payg", "person")).held, 0);
+});
+
 test("a failed call with no output releases its hold; one without an end user is the tenant's alone", async () => {
   const { db, service, attempts } = await attemptsFixture();
   await service.post("payg", "person", { kind: "grant", amount: USD, key: "pay" });

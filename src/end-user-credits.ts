@@ -294,7 +294,8 @@ export class EndUserCredits {
     if (!(call.want > 0)) return { hold: { id: call.id, raw: 0, allowance: 0, paid: 0 } };
     return transaction(this.db, async sql => {
       const user = await lockEndUser(sql, tenant, endUser, now);
-      await sql.query("delete from end_user_holds where tenant = $1 and end_user = $2 and expires_at <= $3", [tenant, endUser, now]);
+      // Expired holds go, and this call's own from an earlier try (a begin delivered again) is taken afresh.
+      await sql.query("delete from end_user_holds where tenant = $1 and end_user = $2 and (expires_at <= $3 or id = $4)", [tenant, endUser, now, call.id]);
       const left = await room(sql, tenant, user, await this.settings(tenant, sql), bucket, now);
       const taken = split(call.want, left);
       if (taken.raw < Math.max(1, Math.min(call.min, call.want))) return { refused: refusal(endUser, bucket, left) };
@@ -315,7 +316,9 @@ export class EndUserCredits {
       const taken = split(Math.max(0, want), left);
       if (taken.raw <= 0) return { refused: refusal(endUser, bucket, left) };
       const updated = await sql.query("update end_user_holds set allowance = allowance + $2, paid = paid + $3, expires_at = $4 where id = $1", [id, taken.allowance, taken.paid, now + HOLD_MS]);
-      // A hold that expired (its call went quiet for HOLD_MS) is held again from here.
+      // A hold that expired (its call went quiet for HOLD_MS) is held again from here; one its call settled already is
+      // not: the call is over.
+      if (!updated.rowCount && (await sql.query("select 1 from model_attempts where id = $1 and totals is not null", [id])).rowCount) return { hold: { id, raw: 0, allowance: 0, paid: 0 } };
       if (!updated.rowCount) {
         await sql.query("insert into end_user_holds (id, tenant, end_user, bucket, day, allowance, paid, expires_at, created_at) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
           [id, tenant, endUser, bucket, left.day, taken.allowance, taken.paid, now + HOLD_MS, now]);

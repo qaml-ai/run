@@ -74,6 +74,9 @@ export async function attemptStream(model: Model<Api>, key: string, kind: "respo
           }
         }
         if (event.type === "done" || event.type === "error") {
+          // A request for more of the hold still in flight is answered before the call's end is reported, so it never
+          // lands after its settlement.
+          await asking;
           const message = event.type === "done" ? event.message : event.error;
           if (sink.cost !== undefined) Object.assign(message.usage, { providerCost: sink.cost, providerCreditCost: sink.credits });
           // Empty envelopes do not prove a provider generated billable output.
