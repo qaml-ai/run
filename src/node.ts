@@ -88,6 +88,7 @@ import { publicOrigins } from "./origins.ts";
 import { adminSite, adminSiteFromEnvironment } from "./admin-site.ts";
 import { AccountDeletions } from "./account-deletion.ts";
 import { RateLimits, rateLimitConfig } from "./rate-limits.ts";
+import { VOICE_CHANNEL, VoiceSessions, type VoiceTransport } from "./voice-sessions.ts";
 import { buggify } from "./buggify.ts";
 import { sometimes } from "./assert.ts";
 
@@ -129,6 +130,10 @@ export type NodeDeps = {
    * simulation's in-memory store).
    */
   storage?: (tail: LogTail, meter: StorageMeter) => Storage | Promise<Storage>;
+  /** Voice connections by provider (src/voice-sessions.ts): none unless given (a test's fake). */
+  voiceTransports?: Partial<Record<"discord", VoiceTransport>>;
+  /** What a voice server's host must match, when a test serves its own. */
+  voiceEndpoints?: RegExp;
 };
 type RuntimeSecrets = Awaited<ReturnType<typeof runtimeSecrets>>;
 type ManagedDiscordSecrets = NonNullable<Awaited<ReturnType<typeof managedDiscordSecrets>>>;
@@ -765,6 +770,16 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     deleteAgent: (agent, tenant) => deleteAnywhere(agent, tenant),
     requestAnywhere: (agent, tenant, requestId, waitMs, signal) => requestAnywhere(agent, tenant, requestId, waitMs, signal),
   });
+  // Voice calls held for tenants' bots, one node each (src/voice-sessions.ts).
+  const voice = new VoiceSessions({
+    db, accounts, node, ownership, transports: deps.voiceTransports ?? {}, ...(deps.voiceEndpoints ? { endpoints: deps.voiceEndpoints } : {}),
+    admit: async tenant => {
+      const refused = await accounts.runLimit(tenant);
+      if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
+    },
+    agentOwned: (agent, tenant) => clients.owns(agent, tenant, true),
+    perTenant: () => config.voice.perTenant, perNode: config.voice.perNode,
+  });
   // An agent loaded on another node: this node's idle watchers of it end, and reconnect to that node.
   // A tenant's webhook endpoints changed on some node: read them again at its next run.
   const loads = await deps.listen({
@@ -776,7 +791,10 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     [TELEMETRY_CHANNEL]: tenant => telemetry.forget(tenant),
     // Work just left without an owner: a peer released agents with runs open, or ended a dead node's heartbeat.
     [ORPHANS_CHANNEL]: payload => { if (orphanMs && payload.split(" ")[0] !== node) void clients.resumeSoon(); },
+    // A voice session changed or was released on some node.
+    [VOICE_CHANNEL]: payload => voice.heard(payload),
   });
+  voice.start(config.schedulerIntervalMs);
   // A dead peer's agents are free: sweep for them here, and tell the other nodes to.
   ownership.onReaped(() => {
     if (!orphanMs) return;
@@ -1044,7 +1062,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     await rateLimits.run(tenant);
   };
   app.route("/", api({ accounts, endUsers, journey, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return `${chosen.provider}/${chosen.id}`; }, keyScopes, webhooks, telemetry, scheduler, accountDeletions, ...(config.idempotencyLockMs !== undefined ? { idempotencyLockMs: config.idempotencyLockMs } : {}), channels, volumes, definitions, links, fileUrls, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, historyPage: historyPageAnywhere, verifyKeys: config.verifyKeys,
-    rateLimits, clientAddress: c => requestClient(c).address, runRetentionSeconds, requestAnywhere,
+    rateLimits, clientAddress: c => requestClient(c).address, runRetentionSeconds, requestAnywhere, voice,
     transcriptions: {
       transcriber, outbound: outbound.withoutOrigins(),
       admit: admitAlone,
@@ -1198,7 +1216,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     }
     if (retiringSince !== undefined) {
       void clients.releaseIdle().then(() => volumes.releaseIdle()).catch(error => console.error(JSON.stringify({ type: "retire_release_failed", error: errorText(error) })));
-      if (!retired && !clients.inFlight() && !clients.sessions.size && !volumes.size) {
+      if (!retired && !clients.inFlight() && !clients.sessions.size && !volumes.size && !voice.size) {
         retired = true;
         console.log(JSON.stringify({ type: "retired", node, ms: Date.now() - retiringSince }));
       }
@@ -1231,6 +1249,8 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       clients.draining = true;
       clients.handOffTurns("retire");
       await ownership.drain();
+      // Calls move at once: a peer connects again within seconds.
+      await voice.release();
     }).catch(error => console.error(JSON.stringify({ type: "ecs_service_check_failed", error: errorText(error) }))), config.ecs.pollMs);
     retireTimer.unref();
   }
@@ -1253,6 +1273,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     console.log(JSON.stringify({ type: "drain_started", signal, node, inFlight: clients.inFlight(), agents: clients.sessions.size, volumes: volumes.size }));
     scheduler.stop();
     channels.stop();
+    await voice.stop();
     await managedDiscord?.stop();
     webhooks.stop();
     accountDeletions.stop();

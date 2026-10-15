@@ -1,5 +1,6 @@
 import { z } from "@hono/zod-openapi";
 import { EVENT_TYPES } from "./webhooks.ts";
+import { END_REASONS as VOICE_END_REASONS, VOICE_LIMITS } from "./voice-sessions.ts";
 import { MIN_CONTEXT_TOKENS } from "./protocol.ts";
 import { MODEL_ERROR_CLASSES } from "./model-errors.ts";
 
@@ -112,7 +113,7 @@ export const KeyScope = z.object({
   })),
 }).openapi("KeyScope");
 
-const eventTypes = z.array(z.enum(EVENT_TYPES)).openapi({ description: "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded" });
+const eventTypes = z.array(z.enum(EVENT_TYPES)).openapi({ description: "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.utterance, and the billing.* events" });
 export const WebhookEndpointInput = z.object({
   url: z.string().openapi({ description: "An HTTPS URL that receives the events, each a POST signed per Standard Webhooks", example: "https://example.com/hooks/agents" }),
   events: eventTypes,
@@ -170,6 +171,11 @@ export const ModelFailure = z.object({
 const servedModel = z.string().optional().openapi({ description: "The model that made the run's last response, as provider/model-id" });
 const runUsage = z.object({ responses: z.number(), input: z.number(), output: z.number(), cacheRead: z.number(), cacheWrite: z.number(), costUsd: z.number() }).nullable()
   .openapi({ description: "The run's model responses on the node that ended it; null when it made none there" });
+const voiceFacts = {
+  session: z.string().openapi({ description: "The voice session (vs_…)" }), provider: z.literal("discord"),
+  guildId: z.string(), channelId: z.string(), botUserId: z.string(),
+  subject: z.string().nullable().openapi({ description: "The session's end user" }), metadata: z.record(z.string(), z.unknown()).openapi({ description: "The session's metadata, as set" }),
+};
 export const WebhookEvents = {
   "run.started": envelope("run.started", z.object({ ...runFacts, resumes: z.number().optional().openapi({ description: "Set when a node resumed a turn whose node was lost" }) }), "A run began"),
   "run.completed": envelope("run.completed", z.object({
@@ -196,6 +202,22 @@ export const WebhookEvents = {
     provider: z.string(), model: z.string(), kind: z.enum(["response", "compaction", "transcription", "image"]).openapi({ description: "response: a model response of a run; compaction: a summary of older context; transcription: audio transcribed (audioSeconds of it; no tokens); image: images made (images of them; input is text and image tokens in, output image tokens out)" }), input: z.number(), output: z.number(), cacheRead: z.number(), cacheWrite: z.number(),
     reasoning: z.number().optional(), audioSeconds: z.number().optional().openapi({ description: "For a transcription: the seconds of audio billed" }), images: z.number().optional().openapi({ description: "For images made: how many" }), cost: z.object({ usd: z.number(), source: z.enum(["provider", "catalog"]) }), at: z.number(),
   }), "A model response's usage and cost, a transcription's, or images'"),
+  "voice.session.started": envelope("voice.session.started", z.object(voiceFacts), "A voice session connected and is listening (once per session)"),
+  "voice.session.ended": envelope("voice.session.ended", z.object({
+    ...voiceFacts, reason: z.enum(VOICE_END_REASONS).openapi({ description: "requested: DELETE; empty: no one else in the call for emptySeconds; idle: no speech for idleMinutes; max_duration: maxMinutes passed; budget: the account's or the end user's credit ran out (limit); kicked: the bot was disconnected from the channel and no new credentials came; credentials: Discord stopped taking the session's credentials; error: the connection failed" }),
+    limit: z.enum(["tenant", "end_user"]).optional().openapi({ description: "With reason budget: whose credit ran out" }),
+    endUserReason: z.string().optional().openapi({ description: "With limit end_user: why (balance, daily_limit)" }),
+    startedAt: z.number().nullable(), endedAt: z.number(), utterances: z.number(), speechSeconds: z.number(), costUsd: z.number(),
+  }), "A voice session ended. The bot is still in the channel until your app leaves it (OP 4 with channel_id null)"),
+  "voice.utterance": envelope("voice.utterance", z.object({
+    ...voiceFacts,
+    speakerId: z.string().openapi({ description: "The Discord user who spoke" }),
+    seq: z.number().openapi({ description: "The utterance's number in the session, from 1, in the order transcripts were made" }),
+    text: z.string(), language: z.string().nullable(), seconds: z.number().openapi({ description: "Seconds of speech in it (pauses shorter than silenceMs included)" }),
+    startedAt: z.number(), endedAt: z.number(),
+    ended: z.enum(["silence", "max", "error", "handoff", "end"]).openapi({ description: "Why it ended: silenceMs without speech; cut at 30 seconds (the speech goes on in the next); the speaker's stream broke; the session moved to another node; the session ended" }),
+    costUsd: z.number(),
+  }), "A person's utterance in a voice session, transcribed"),
 };
 
 export const Model = z.object({
@@ -1212,3 +1234,72 @@ export const TenantLookup = z.object({
   email: z.string().nullable().openapi({ description: "The address it signs in with a password, if any" }),
   createdAt: z.number(),
 }).openapi("TenantLookup");
+
+const voiceDiscord = {
+  guildId: z.string().openapi({ description: "The server (guild) id" }),
+  channelId: z.string().openapi({ description: "The voice channel the bot joined" }),
+  userId: z.string().openapi({ description: "The bot's own user id" }),
+};
+const range = (limits: { default: number; min: number; max: number }, unit: string, what: string) =>
+  z.number().int().min(limits.min).max(limits.max).optional().openapi({ description: `${what}, in ${unit}: ${limits.min} to ${limits.max}, default ${limits.default}` });
+export const VoiceSessionInput = z.strictObject({
+  provider: z.literal("discord").optional().openapi({ description: "Only discord for now (the default)" }),
+  discord: z.strictObject({
+    ...voiceDiscord,
+    sessionId: z.string().openapi({ description: "session_id from the bot's own VOICE_STATE_UPDATE" }),
+    endpoint: z.string().nullable().openapi({ description: "endpoint from the guild's VOICE_SERVER_UPDATE (host[:port], a *.discord.media host)", example: "c-ams12-1a2b3c4d.discord.media:443" }),
+    token: z.string().openapi({ description: "token from VOICE_SERVER_UPDATE. Stored encrypted, never returned, dropped when the session ends" }),
+  }).openapi({ description: "What Discord answered your app's OP 4 (voice state update) with, on its own gateway" }),
+  subject: z.string().optional().openapi({ description: "The end user the session is for: its usage is theirs (usage.recorded's subject, and their credit where you meter end users)" }),
+  bucket: z.string().optional().openapi({ description: "Which of the end user's credit buckets it spends from (end-user credits)" }),
+  context: z.record(z.string(), z.unknown()).optional().openapi({ description: "Your claims, carried in usage.recorded's context" }),
+  keyScope: z.string().optional().openapi({ description: "Transcribe with this key scope's OpenAI key" }),
+  deliver: z.strictObject({
+    agent: z.string().optional().openapi({ description: "An agent that gets each utterance as a prompt (its sender the speaker)" }),
+    webhooks: z.boolean().optional().openapi({ description: "Send voice.* events to your webhook endpoints that select them. Default true" }),
+  }).optional(),
+  language: z.string().optional().openapi({ description: "The language spoken, ISO 639-1 (en) or a locale; left out, the provider detects it per utterance" }),
+  prompt: z.string().optional().openapi({ description: "Words to expect (names, jargon), as transcription's prompt" }),
+  silenceMs: range(VOICE_LIMITS.silenceMs, "milliseconds", "How long a speaker is silent before their utterance ends"),
+  maxMinutes: range(VOICE_LIMITS.maxMinutes, "minutes", "The session's longest length"),
+  idleMinutes: range(VOICE_LIMITS.idleMinutes, "minutes", "How long without any speech before the session ends"),
+  emptySeconds: range(VOICE_LIMITS.emptySeconds, "seconds", "How long the call may have no one else in it before the session ends"),
+  ignoreUserIds: z.array(z.string()).max(VOICE_LIMITS.ignoreUserIds).optional().openapi({ description: "Users whose audio is never transcribed and who do not count as company in the call: other bots" }),
+  metadata: z.record(z.string(), z.unknown()).optional().openapi({ description: "Anything (at most 4 KB of JSON), echoed in every voice.* event" }),
+  notice: z.string().max(VOICE_LIMITS.noticeChars).optional().openapi({ description: "The listening notice your app posts (see notice in the answer); {bot} is the bot's id" }),
+}).openapi("VoiceSessionInput");
+export const VoiceSessionUpdate = z.strictObject({
+  discord: z.strictObject({
+    channelId: z.string().optional().openapi({ description: "The channel the bot moved to" }),
+    sessionId: z.string().optional(), endpoint: z.string().nullable().optional(), token: z.string().optional(),
+  }).optional().openapi({ description: "What changed in a later VOICE_STATE_UPDATE or VOICE_SERVER_UPDATE: the session reconnects with it" }),
+  ignoreUserIds: z.array(z.string()).max(VOICE_LIMITS.ignoreUserIds).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+}).openapi("VoiceSessionUpdate");
+export const VoiceSession = z.object({
+  id: z.string().openapi({ example: "vs_3f9c0a1b2c3d4e5f60718293" }), provider: z.literal("discord"),
+  discord: z.object(voiceDiscord),
+  state: z.enum(["connecting", "live", "reconnecting", "ended"]).openapi({ description: "connecting: not yet listening; live: listening; reconnecting: the connection dropped or moves (between nodes, or waiting for new credentials); ended" }),
+  endReason: z.enum(VOICE_END_REASONS).nullable(),
+  limit: z.enum(["tenant", "end_user"]).optional(), endUserReason: z.string().optional(),
+  deliver: z.object({ agent: z.string().optional(), webhooks: z.boolean() }),
+  subject: z.string().optional(), bucket: z.string().optional(), context: z.record(z.string(), z.unknown()).optional(), keyScope: z.string().optional(),
+  language: z.string().optional(), prompt: z.string().optional(),
+  silenceMs: z.number(), maxMinutes: z.number(), idleMinutes: z.number(), emptySeconds: z.number(),
+  ignoreUserIds: z.array(z.string()), metadata: z.record(z.string(), z.unknown()), notice: z.string(),
+  utterances: z.number(), speechSeconds: z.number().openapi({ description: "Seconds of speech transcribed (billed)" }), costUsd: z.number(),
+  createdAt: z.number(), startedAt: z.number().nullable(), lastSpeechAt: z.number().nullable(), endedAt: z.number().nullable(),
+}).openapi("VoiceSession");
+export const VoiceSessionCreated = VoiceSession.extend({
+  notice: z.object({
+    required: z.literal(true), channelId: z.string(),
+    text: z.string().openapi({ description: "Post this in the voice channel's chat now: people must know they are transcribed, and camelRun cannot post (it has no gateway)" }),
+  }),
+}).openapi("VoiceSessionCreated");
+export const VoiceSessionEnded = VoiceSession.extend({
+  leave: z.object({ op: z.literal(4), d: z.object({ guild_id: z.string(), channel_id: z.null(), self_mute: z.boolean(), self_deaf: z.boolean() }) })
+    .openapi({ description: "Send this on your gateway to leave the channel: ending the session stops the listening, not the bot's presence" }),
+}).openapi("VoiceSessionEnded");
+export const VoiceSessionList = z.object({
+  sessions: z.array(VoiceSession), next: z.string().nullable().openapi({ description: "Pass as after for the next page; null at the end" }),
+}).openapi("VoiceSessionList");

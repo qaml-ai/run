@@ -645,6 +645,322 @@
         ],
         "description": "A model response's usage and cost, a transcription's, or images'"
       },
+      "Event_voice_session.started": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "evt_…: the same each time the event is sent; dedupe by it",
+            "example": "evt_3f9c0a1b2c3d4e5f60718293"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "voice.session.started"
+            ]
+          },
+          "created": {
+            "type": "number",
+            "description": "When it happened, in Unix seconds"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "session": {
+                "type": "string",
+                "description": "The voice session (vs_…)"
+              },
+              "provider": {
+                "type": "string",
+                "enum": [
+                  "discord"
+                ]
+              },
+              "guildId": {
+                "type": "string"
+              },
+              "channelId": {
+                "type": "string"
+              },
+              "botUserId": {
+                "type": "string"
+              },
+              "subject": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The session's end user"
+              },
+              "metadata": {
+                "type": "object",
+                "additionalProperties": {},
+                "description": "The session's metadata, as set"
+              }
+            },
+            "required": [
+              "session",
+              "provider",
+              "guildId",
+              "channelId",
+              "botUserId",
+              "subject",
+              "metadata"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "created",
+          "data"
+        ],
+        "description": "A voice session connected and is listening (once per session)"
+      },
+      "Event_voice_session.ended": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "evt_…: the same each time the event is sent; dedupe by it",
+            "example": "evt_3f9c0a1b2c3d4e5f60718293"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "voice.session.ended"
+            ]
+          },
+          "created": {
+            "type": "number",
+            "description": "When it happened, in Unix seconds"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "session": {
+                "type": "string",
+                "description": "The voice session (vs_…)"
+              },
+              "provider": {
+                "type": "string",
+                "enum": [
+                  "discord"
+                ]
+              },
+              "guildId": {
+                "type": "string"
+              },
+              "channelId": {
+                "type": "string"
+              },
+              "botUserId": {
+                "type": "string"
+              },
+              "subject": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The session's end user"
+              },
+              "metadata": {
+                "type": "object",
+                "additionalProperties": {},
+                "description": "The session's metadata, as set"
+              },
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "requested",
+                  "empty",
+                  "idle",
+                  "max_duration",
+                  "budget",
+                  "kicked",
+                  "credentials",
+                  "error"
+                ],
+                "description": "requested: DELETE; empty: no one else in the call for emptySeconds; idle: no speech for idleMinutes; max_duration: maxMinutes passed; budget: the account's or the end user's credit ran out (limit); kicked: the bot was disconnected from the channel and no new credentials came; credentials: Discord stopped taking the session's credentials; error: the connection failed"
+              },
+              "limit": {
+                "type": "string",
+                "enum": [
+                  "tenant",
+                  "end_user"
+                ],
+                "description": "With reason budget: whose credit ran out"
+              },
+              "endUserReason": {
+                "type": "string",
+                "description": "With limit end_user: why (balance, daily_limit)"
+              },
+              "startedAt": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "endedAt": {
+                "type": "number"
+              },
+              "utterances": {
+                "type": "number"
+              },
+              "speechSeconds": {
+                "type": "number"
+              },
+              "costUsd": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "session",
+              "provider",
+              "guildId",
+              "channelId",
+              "botUserId",
+              "subject",
+              "metadata",
+              "reason",
+              "startedAt",
+              "endedAt",
+              "utterances",
+              "speechSeconds",
+              "costUsd"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "created",
+          "data"
+        ],
+        "description": "A voice session ended. The bot is still in the channel until your app leaves it (OP 4 with channel_id null)"
+      },
+      "Event_voice_utterance": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "evt_…: the same each time the event is sent; dedupe by it",
+            "example": "evt_3f9c0a1b2c3d4e5f60718293"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "voice.utterance"
+            ]
+          },
+          "created": {
+            "type": "number",
+            "description": "When it happened, in Unix seconds"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "session": {
+                "type": "string",
+                "description": "The voice session (vs_…)"
+              },
+              "provider": {
+                "type": "string",
+                "enum": [
+                  "discord"
+                ]
+              },
+              "guildId": {
+                "type": "string"
+              },
+              "channelId": {
+                "type": "string"
+              },
+              "botUserId": {
+                "type": "string"
+              },
+              "subject": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The session's end user"
+              },
+              "metadata": {
+                "type": "object",
+                "additionalProperties": {},
+                "description": "The session's metadata, as set"
+              },
+              "speakerId": {
+                "type": "string",
+                "description": "The Discord user who spoke"
+              },
+              "seq": {
+                "type": "number",
+                "description": "The utterance's number in the session, from 1, in the order transcripts were made"
+              },
+              "text": {
+                "type": "string"
+              },
+              "language": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "seconds": {
+                "type": "number",
+                "description": "Seconds of speech in it (pauses shorter than silenceMs included)"
+              },
+              "startedAt": {
+                "type": "number"
+              },
+              "endedAt": {
+                "type": "number"
+              },
+              "ended": {
+                "type": "string",
+                "enum": [
+                  "silence",
+                  "max",
+                  "error",
+                  "handoff",
+                  "end"
+                ],
+                "description": "Why it ended: silenceMs without speech; cut at 30 seconds (the speech goes on in the next); the speaker's stream broke; the session moved to another node; the session ended"
+              },
+              "costUsd": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "session",
+              "provider",
+              "guildId",
+              "channelId",
+              "botUserId",
+              "subject",
+              "metadata",
+              "speakerId",
+              "seq",
+              "text",
+              "language",
+              "seconds",
+              "startedAt",
+              "endedAt",
+              "ended",
+              "costUsd"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "created",
+          "data"
+        ],
+        "description": "A person's utterance in a voice session, transcribed"
+      },
       "Error": {
         "type": "object",
         "properties": {
@@ -1331,10 +1647,13 @@
                 "billing.topup.limit",
                 "billing.topup.reconcile",
                 "end_user.balance.low",
-                "end_user.credit.exhausted"
+                "end_user.credit.exhausted",
+                "voice.session.started",
+                "voice.session.ended",
+                "voice.utterance"
               ]
             },
-            "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded"
+            "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.utterance, and the billing.* events"
           },
           "description": {
             "type": "string"
@@ -1386,10 +1705,13 @@
                 "billing.topup.limit",
                 "billing.topup.reconcile",
                 "end_user.balance.low",
-                "end_user.credit.exhausted"
+                "end_user.credit.exhausted",
+                "voice.session.started",
+                "voice.session.ended",
+                "voice.utterance"
               ]
             },
-            "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded"
+            "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.utterance, and the billing.* events"
           },
           "description": {
             "type": "string",
@@ -1430,10 +1752,13 @@
                 "billing.topup.limit",
                 "billing.topup.reconcile",
                 "end_user.balance.low",
-                "end_user.credit.exhausted"
+                "end_user.credit.exhausted",
+                "voice.session.started",
+                "voice.session.ended",
+                "voice.utterance"
               ]
             },
-            "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded"
+            "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.utterance, and the billing.* events"
           },
           "description": {
             "type": "string",
@@ -8015,6 +8340,482 @@
           "kind",
           "amount",
           "key"
+        ]
+      },
+      "VoiceSessionCreated": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/VoiceSession"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "notice": {
+                "type": "object",
+                "properties": {
+                  "required": {
+                    "type": "boolean",
+                    "enum": [
+                      true
+                    ]
+                  },
+                  "channelId": {
+                    "type": "string"
+                  },
+                  "text": {
+                    "type": "string",
+                    "description": "Post this in the voice channel's chat now: people must know they are transcribed, and camelRun cannot post (it has no gateway)"
+                  }
+                },
+                "required": [
+                  "required",
+                  "channelId",
+                  "text"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "VoiceSession": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "vs_3f9c0a1b2c3d4e5f60718293"
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "discord"
+            ]
+          },
+          "discord": {
+            "type": "object",
+            "properties": {
+              "guildId": {
+                "type": "string",
+                "description": "The server (guild) id"
+              },
+              "channelId": {
+                "type": "string",
+                "description": "The voice channel the bot joined"
+              },
+              "userId": {
+                "type": "string",
+                "description": "The bot's own user id"
+              }
+            },
+            "required": [
+              "guildId",
+              "channelId",
+              "userId"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "connecting",
+              "live",
+              "reconnecting",
+              "ended"
+            ],
+            "description": "connecting: not yet listening; live: listening; reconnecting: the connection dropped or moves (between nodes, or waiting for new credentials); ended"
+          },
+          "endReason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "requested",
+              "empty",
+              "idle",
+              "max_duration",
+              "budget",
+              "kicked",
+              "credentials",
+              "error",
+              null
+            ]
+          },
+          "limit": {
+            "type": "string",
+            "enum": [
+              "tenant",
+              "end_user"
+            ]
+          },
+          "endUserReason": {
+            "type": "string"
+          },
+          "deliver": {
+            "type": "object",
+            "properties": {
+              "agent": {
+                "type": "string"
+              },
+              "webhooks": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "webhooks"
+            ]
+          },
+          "subject": {
+            "type": "string"
+          },
+          "bucket": {
+            "type": "string"
+          },
+          "context": {
+            "type": "object",
+            "additionalProperties": {}
+          },
+          "keyScope": {
+            "type": "string"
+          },
+          "language": {
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "silenceMs": {
+            "type": "number"
+          },
+          "maxMinutes": {
+            "type": "number"
+          },
+          "idleMinutes": {
+            "type": "number"
+          },
+          "emptySeconds": {
+            "type": "number"
+          },
+          "ignoreUserIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {}
+          },
+          "notice": {
+            "type": "string"
+          },
+          "utterances": {
+            "type": "number"
+          },
+          "speechSeconds": {
+            "type": "number",
+            "description": "Seconds of speech transcribed (billed)"
+          },
+          "costUsd": {
+            "type": "number"
+          },
+          "createdAt": {
+            "type": "number"
+          },
+          "startedAt": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "lastSpeechAt": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "endedAt": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "provider",
+          "discord",
+          "state",
+          "endReason",
+          "deliver",
+          "silenceMs",
+          "maxMinutes",
+          "idleMinutes",
+          "emptySeconds",
+          "ignoreUserIds",
+          "metadata",
+          "notice",
+          "utterances",
+          "speechSeconds",
+          "costUsd",
+          "createdAt",
+          "startedAt",
+          "lastSpeechAt",
+          "endedAt"
+        ]
+      },
+      "VoiceSessionInput": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": [
+              "discord"
+            ],
+            "description": "Only discord for now (the default)"
+          },
+          "discord": {
+            "type": "object",
+            "properties": {
+              "guildId": {
+                "type": "string",
+                "description": "The server (guild) id"
+              },
+              "channelId": {
+                "type": "string",
+                "description": "The voice channel the bot joined"
+              },
+              "userId": {
+                "type": "string",
+                "description": "The bot's own user id"
+              },
+              "sessionId": {
+                "type": "string",
+                "description": "session_id from the bot's own VOICE_STATE_UPDATE"
+              },
+              "endpoint": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "endpoint from the guild's VOICE_SERVER_UPDATE (host[:port], a *.discord.media host)",
+                "example": "c-ams12-1a2b3c4d.discord.media:443"
+              },
+              "token": {
+                "type": "string",
+                "description": "token from VOICE_SERVER_UPDATE. Stored encrypted, never returned, dropped when the session ends"
+              }
+            },
+            "required": [
+              "guildId",
+              "channelId",
+              "userId",
+              "sessionId",
+              "endpoint",
+              "token"
+            ],
+            "additionalProperties": false,
+            "description": "What Discord answered your app's OP 4 (voice state update) with, on its own gateway"
+          },
+          "subject": {
+            "type": "string",
+            "description": "The end user the session is for: its usage is theirs (usage.recorded's subject, and their credit where you meter end users)"
+          },
+          "bucket": {
+            "type": "string",
+            "description": "Which of the end user's credit buckets it spends from (end-user credits)"
+          },
+          "context": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Your claims, carried in usage.recorded's context"
+          },
+          "keyScope": {
+            "type": "string",
+            "description": "Transcribe with this key scope's OpenAI key"
+          },
+          "deliver": {
+            "type": "object",
+            "properties": {
+              "agent": {
+                "type": "string",
+                "description": "An agent that gets each utterance as a prompt (its sender the speaker)"
+              },
+              "webhooks": {
+                "type": "boolean",
+                "description": "Send voice.* events to your webhook endpoints that select them. Default true"
+              }
+            },
+            "additionalProperties": false
+          },
+          "language": {
+            "type": "string",
+            "description": "The language spoken, ISO 639-1 (en) or a locale; left out, the provider detects it per utterance"
+          },
+          "prompt": {
+            "type": "string",
+            "description": "Words to expect (names, jargon), as transcription's prompt"
+          },
+          "silenceMs": {
+            "type": "integer",
+            "minimum": 200,
+            "maximum": 5000,
+            "description": "How long a speaker is silent before their utterance ends, in milliseconds: 200 to 5000, default 800"
+          },
+          "maxMinutes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 720,
+            "description": "The session's longest length, in minutes: 1 to 720, default 240"
+          },
+          "idleMinutes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 720,
+            "description": "How long without any speech before the session ends, in minutes: 1 to 720, default 30"
+          },
+          "emptySeconds": {
+            "type": "integer",
+            "minimum": 5,
+            "maximum": 3600,
+            "description": "How long the call may have no one else in it before the session ends, in seconds: 5 to 3600, default 60"
+          },
+          "ignoreUserIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 50,
+            "description": "Users whose audio is never transcribed and who do not count as company in the call: other bots"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Anything (at most 4 KB of JSON), echoed in every voice.* event"
+          },
+          "notice": {
+            "type": "string",
+            "maxLength": 500,
+            "description": "The listening notice your app posts (see notice in the answer); {bot} is the bot's id"
+          }
+        },
+        "required": [
+          "discord"
+        ],
+        "additionalProperties": false
+      },
+      "VoiceSessionList": {
+        "type": "object",
+        "properties": {
+          "sessions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VoiceSession"
+            }
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as after for the next page; null at the end"
+          }
+        },
+        "required": [
+          "sessions",
+          "next"
+        ]
+      },
+      "VoiceSessionUpdate": {
+        "type": "object",
+        "properties": {
+          "discord": {
+            "type": "object",
+            "properties": {
+              "channelId": {
+                "type": "string",
+                "description": "The channel the bot moved to"
+              },
+              "sessionId": {
+                "type": "string"
+              },
+              "endpoint": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "token": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false,
+            "description": "What changed in a later VOICE_STATE_UPDATE or VOICE_SERVER_UPDATE: the session reconnects with it"
+          },
+          "ignoreUserIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 50
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false
+      },
+      "VoiceSessionEnded": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/VoiceSession"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "leave": {
+                "type": "object",
+                "properties": {
+                  "op": {
+                    "type": "number",
+                    "enum": [
+                      4
+                    ]
+                  },
+                  "d": {
+                    "type": "object",
+                    "properties": {
+                      "guild_id": {
+                        "type": "string"
+                      },
+                      "channel_id": {
+                        "type": "null"
+                      },
+                      "self_mute": {
+                        "type": "boolean"
+                      },
+                      "self_deaf": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "guild_id",
+                      "channel_id",
+                      "self_mute",
+                      "self_deaf"
+                    ]
+                  }
+                },
+                "required": [
+                  "op",
+                  "d"
+                ],
+                "description": "Send this on your gateway to leave the channel: ending the session stops the listening, not the bot's presence"
+              }
+            },
+            "required": [
+              "leave"
+            ]
+          }
         ]
       },
       "MountsInput": {
@@ -15586,6 +16387,227 @@
         }
       }
     },
+    "/v1/voice/sessions": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoiceSessionInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The session, connecting; and the notice your app must post in the channel",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceSessionCreated"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "live",
+                "ended"
+              ],
+              "description": "Only live (not ended) or ended sessions; all by default"
+            },
+            "required": false,
+            "description": "Only live (not ended) or ended sessions; all by default",
+            "name": "state",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "1 to 100, default 50"
+            },
+            "required": false,
+            "description": "1 to 100, default 50",
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The previous page's next"
+            },
+            "required": false,
+            "description": "The previous page's next",
+            "name": "after",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The tenant's voice sessions, newest first (ended ones for 30 days)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceSessionList"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/voice/sessions/{id}": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceSession"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoiceSessionUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The session; it reconnects with new credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceSession"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The session, ended; and the OP 4 your app sends to leave the channel",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceSessionEnded"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/agents/{id}/mounts": {
       "get": {
         "parameters": [
@@ -16875,6 +17897,63 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/Event_usage_recorded"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Any 2xx acknowledges it; anything else, or no answer within 10 seconds, is retried"
+          }
+        }
+      }
+    },
+    "voice.session.started": {
+      "post": {
+        "summary": "voice.session.started",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Event_voice_session.started"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Any 2xx acknowledges it; anything else, or no answer within 10 seconds, is retried"
+          }
+        }
+      }
+    },
+    "voice.session.ended": {
+      "post": {
+        "summary": "voice.session.ended",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Event_voice_session.ended"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Any 2xx acknowledges it; anything else, or no answer within 10 seconds, is retried"
+          }
+        }
+      }
+    },
+    "voice.utterance": {
+      "post": {
+        "summary": "voice.utterance",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Event_voice_utterance"
               }
             }
           }
