@@ -18,6 +18,12 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
  * time its stream reaches the end of what it holds; it needs its input and at least MIN_OUTPUT_TOKENS of output to start.
  */
 export const HOLD_OUTPUT_TOKENS = 8_192;
+/**
+ * What a call holds of its output to start: about what a reply takes, not the most it may write (a model's whole max
+ * output, held by each of a person's calls at once, refused their next call with credit left for it). A longer reply
+ * holds more as it streams (`progress`), HOLD_OUTPUT_TOKENS at a time.
+ */
+export const INITIAL_OUTPUT_TOKENS = 2_048;
 export const MIN_OUTPUT_TOKENS = 256;
 /** Streamed characters per output token, as an output estimate counts them: fewer than real tokens take, so it runs ahead of cost. */
 const CHARS_PER_TOKEN = 2;
@@ -32,7 +38,8 @@ const ASK_AHEAD_TOKENS = 2_048;
 const lines = (metered: Metered): Pick<AttemptAck, "checkAtChars" | "stopAtChars"> => {
   if (!(metered.perToken > 0)) return {};
   const stop = Math.max(0, Math.floor((metered.held - metered.input) / metered.perToken * CHARS_PER_TOKEN));
-  return { stopAtChars: stop, checkAtChars: Math.max(0, stop - ASK_AHEAD_TOKENS * CHARS_PER_TOKEN) };
+  // A short hold asks halfway through, so a reply that fits it never asks at all.
+  return { stopAtChars: stop, checkAtChars: Math.max(0, stop - Math.min(ASK_AHEAD_TOKENS * CHARS_PER_TOKEN, Math.floor(stop / 2))) };
 };
 
 /** Durable provider attempts. Retried delivery and concurrent reconciliation change each charge only by its delta. */
@@ -95,7 +102,7 @@ export class ModelAttempts {
   }
 
   /**
-   * Hold a call's estimate for its end user: its input, and up to HOLD_OUTPUT_TOKENS of its output, at the catalog's
+   * Hold a call's estimate for its end user: its input, and up to INITIAL_OUTPUT_TOKENS of its output, at the catalog's
    * rates where the tenant pays the platform for the call (its own key's call: at its model's, as the host has them).
    * Undefined: the tenant does not meter its end users.
    */
@@ -117,7 +124,7 @@ export class ModelAttempts {
     const inputRate = Math.max(0, Number(rates.input) || 0), cachedRate = Math.min(inputRate, Math.max(0, Number(rates.cacheRead ?? inputRate) || 0));
     const perToken = Math.max(0, Number(rates.output) || 0) * funding, input = Math.ceil(((inputTokens - cached) * inputRate + cached * cachedRate) * funding);
     const maxOutput = Math.max(1, estimate?.maxOutputTokens ?? HOLD_OUTPUT_TOKENS);
-    const want = input + Math.ceil(Math.min(maxOutput, HOLD_OUTPUT_TOKENS) * perToken);
+    const want = input + Math.ceil(Math.min(maxOutput, INITIAL_OUTPUT_TOKENS) * perToken);
     const reserved = await this.endUsers!.reserve(tenant, endUser!.id, endUser!.bucket, { id: event.id, want, min: input + Math.ceil(Math.min(maxOutput, MIN_OUTPUT_TOKENS) * perToken) });
     if (!reserved) return undefined;
     if (reserved.refused) return { refused: reserved.refused };

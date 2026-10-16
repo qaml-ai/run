@@ -147,8 +147,8 @@ test("concurrent replies for one end user share their credit: their holds never 
   const barrier = new Promise<void>(resolve => { release = resolve; });
   const r = await runtime(t, () => ({ content: "ok", wait: barrier, usage: { prompt_tokens: 10, completion_tokens: 10, cost: 0.01 } }), { ...AT_COST, AGENT_MODEL: "openai/gpt-4.1" });
   await settings(r, {});
-  // A gpt-4.1 call holds its input and 8,192 tokens of output at $8 a million: about $0.07. $0.15 holds two and a bit.
-  await grant(r, "shared", 150_000, "pay");
+  // A gpt-4.1 call holds its input and 2,048 tokens of output at $8 a million: under $0.02 to start. $0.04 holds two and a bit.
+  await grant(r, "shared", 40_000, "pay");
   const agents: string[] = [];
   for (let index = 0; index < 4; index++) {
     const made = await r.call("/v1/agents", { body: { subject: "shared" } });
@@ -162,14 +162,14 @@ test("concurrent replies for one end user share their credit: their holds never 
   await sleep(500);
   const reached = r.model.bodies.length;
   const held = Number((await r.db.query("select coalesce(sum(paid), 0)::bigint as paid from end_user_holds where end_user = 'shared'")).rows[0].paid);
-  assert.ok(held <= 150_000, `${held} held of 150000`);
+  assert.ok(held <= 40_000, `${held} held of 40000`);
   release();
   const runs = await Promise.all(agents.map((agent, index) => settled(r, `/v1/agents/${agent}/requests/${accepted[index].json.id}`)));
   const refused = runs.filter(run => run.outcome.result?.code === "end_user_credit");
   assert.ok(runs.every(run => run.outcome.result), JSON.stringify({ outcomes: runs.map(run => run.outcome), logs: r.logs.filter(line => /error|failed|refused/i.test(line)).slice(-30) }));
   assert.ok(reached < 4 && refused.length === 4 - reached, `${reached} calls made, ${refused.length} refused: ${JSON.stringify(runs.map(run => run.outcome.result))}`);
   const person = (await r.call("/v1/end-users/shared")).json;
-  assert.deepEqual([person.balance, person.held], [150_000 - reached * 10_000, 0]);
+  assert.deepEqual([person.balance, person.held], [40_000 - reached * 10_000, 0]);
 });
 
 test("the TypeScript SDK: endUsers configure, grant, get and ledger; an agent's bucket; a run out of credit fails with code end_user_credit", async t => {

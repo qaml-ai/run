@@ -5,7 +5,7 @@ import { Accounts } from "../src/accounts.ts";
 import { Tenants } from "../src/tenants.ts";
 import { transaction, type Db } from "../src/db.ts";
 import { EndUserCredits, HOLD_MS, NOTHING_POSTED as NOTHING, settleUsage, utcDay } from "../src/end-user-credits.ts";
-import { HOLD_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, ModelAttempts } from "../src/model-attempts.ts";
+import { INITIAL_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, ModelAttempts } from "../src/model-attempts.ts";
 import { attemptAck } from "../src/model-attempt.ts";
 import { catalogRates, UNPRICED_COST } from "../src/platform-pricing.ts";
 import { DEFAULT_PRICING } from "../src/pricing.ts";
@@ -246,7 +246,7 @@ test("a model call holds its estimate, holds more as it streams, is cut at the l
     estimate: { inputTokens: 10_000, maxOutputTokens: 32_000, rates: { input: 0, output: 0 } }, endUser: { id: "person", bucket: "builder" } };
   const ack = attemptAck(await attempts.event("payg", "agent", true, true, begin));
   // Priced from the catalog (the platform's key, prepaid), never the host's rates.
-  const input = Math.ceil(10_000 * rates.input), want = input + Math.ceil(HOLD_OUTPUT_TOKENS * rates.output);
+  const input = Math.ceil(10_000 * rates.input), want = input + Math.ceil(INITIAL_OUTPUT_TOKENS * rates.output);
   const held = Number((await holds(db))[0].paid);
   assert.equal(held, Math.min(USD, Math.ceil(want * 1.2)), "the hold is the estimate marked up, within the balance");
   // Its line: where the estimate (2 characters a token) reaches what it holds; it asks for more ahead of it.
