@@ -579,7 +579,7 @@ export async function appendEntry(sql: Sql, entry: { tenant: string; endUser: st
   if (!row) throw new Error(`Ledger key ${entry.key} was posted already`);
   if (entry.amount) {
     await sql.query("update end_users set balance = $3, updated_at = $4 where tenant = $1 and id = $2", [entry.tenant, entry.endUser, after, now]);
-    await balanceNotices(sql, entry.tenant, entry.endUser, balance, after, entry.bucket ?? null);
+    await balanceNotices(sql, entry.tenant, entry.endUser, balance, after, entry.bucket ?? null, entry.kind === "refund");
   }
   return entryView(row);
 }
@@ -587,9 +587,10 @@ export async function appendEntry(sql: Sql, entry: { tenant: string; endUser: st
 /**
  * The webhooks a balance's move fires, in the transaction that moves it: end_user.balance.low as it falls below the
  * tenant's `lowBalance`, end_user.credit.exhausted (reason balance) as it reaches zero. Each fires once until the balance
- * rises past it again (its flag on the user's row, which the caller holds locked).
+ * rises past it again (its flag on the user's row, which the caller holds locked). A refund (money given back, the user
+ * leaving) crosses them silently: no alert to top them up again, and none until a grant lifts the balance back past.
  */
-async function balanceNotices(sql: Sql, tenant: string, endUser: string, before: number, after: number, bucket: string | null) {
+async function balanceNotices(sql: Sql, tenant: string, endUser: string, before: number, after: number, bucket: string | null, silent = false) {
   const [{ rows: [user] }, { rows: [settings] }] = await Promise.all([
     sql.query("select low_notified, depleted_notified from end_users where tenant = $1 and id = $2", [tenant, endUser]),
     sql.query("select low_balance from end_user_settings where tenant = $1", [tenant]),
@@ -597,11 +598,11 @@ async function balanceNotices(sql: Sql, tenant: string, endUser: string, before:
   const threshold = settings?.low_balance === null || settings?.low_balance === undefined ? null : Number(settings.low_balance);
   let low: boolean = user.low_notified, depleted: boolean = user.depleted_notified;
   if (threshold !== null && after < threshold && before >= threshold && !low) {
-    await enqueueEvents(sql, [webhookEvent("end_user.balance.low", tenant, { endUser, balance: after, threshold, previousBalance: before })]);
+    if (!silent) await enqueueEvents(sql, [webhookEvent("end_user.balance.low", tenant, { endUser, balance: after, threshold, previousBalance: before })]);
     low = true;
   } else if (threshold === null || after >= threshold) low = false;
   if (after <= 0 && before > 0 && !depleted) {
-    await enqueueEvents(sql, [webhookEvent("end_user.credit.exhausted", tenant, { endUser, reason: "balance", bucket, balance: after, day: utcDay(Date.now()) })]);
+    if (!silent) await enqueueEvents(sql, [webhookEvent("end_user.credit.exhausted", tenant, { endUser, reason: "balance", bucket, balance: after, day: utcDay(Date.now()) })]);
     depleted = true;
   } else if (after > 0) depleted = false;
   if (low !== user.low_notified || depleted !== user.depleted_notified) {
