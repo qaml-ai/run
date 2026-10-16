@@ -1,0 +1,42 @@
+name: Journey collection
+# Temporary production collection setting. Keeps the running image and all other
+# settings, and uses the existing production deployment role and rollout checks.
+on:
+  workflow_dispatch:
+    inputs:
+      collect_unknown:
+        description: Record first-party visits without a consent answer (explicit refusals and GPC stay excluded)
+        required: true
+        type: choice
+        options: ['true', 'false']
+        default: 'false'
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  configure:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 infra/test-journey-collection.py
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-west-2
+      - name: Set collection on a copy of the running task definition
+        env:
+          COLLECT_UNKNOWN: ${{ inputs.collect_unknown }}
+        run: |
+          set -euo pipefail
+          definition=$(aws ecs describe-services --cluster camelai-agent-runtime --services camelai-agent-runtime --query 'services[0].taskDefinition' --output text)
+          aws ecs describe-task-definition --task-definition "$definition" --include TAGS > "$RUNNER_TEMP/current-task.json"
+          python3 infra/journey-collection-task.py "$COLLECT_UNKNOWN" < "$RUNNER_TEMP/current-task.json" > "$RUNNER_TEMP/collection-task.json"
+          image=$(python3 -c 'import json,sys; print(next(c["image"] for c in json.load(open(sys.argv[1]))["containerDefinitions"] if c["name"] == "agent-runtime"))' "$RUNNER_TEMP/collection-task.json")
+          aws ecs register-task-definition --cli-input-json "file://$RUNNER_TEMP/collection-task.json" --query taskDefinition.taskDefinitionArn --output text
+          infra/ecs-deploy.sh "${image##*:}"
+          echo "First-party collection without an answer: $COLLECT_UNKNOWN" >> "$GITHUB_STEP_SUMMARY"
+          echo 'Existing opt-outs and Global Privacy Control remain respected. No Google consent is granted.' >> "$GITHUB_STEP_SUMMARY"
