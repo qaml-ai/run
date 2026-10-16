@@ -97,7 +97,7 @@ function mergeKeys(current: Allowances, overrides: Record<string, number | null>
     if (value === null) delete merged[key];
     else merged[key] = value;
   }
-  if (Object.keys(merged).length > 100) throw new HttpError(400, `An end user may have at most 100 ${what} overrides`);
+  if (Object.keys(merged).length > 100) throw new HttpError(400, `At most 100 ${what} keys`);
   return merged;
 }
 
@@ -162,14 +162,17 @@ export class EndUserCredits {
     return settingsView((await sql.query("select * from end_user_settings where tenant = $1", [tenant])).rows[0]);
   }
 
-  /** Change the tenant's settings: fields left out keep their current values. */
-  async setSettings(tenant: string, input: Record<string, unknown>): Promise<EndUserSettings> {
+  /**
+   * Change the tenant's settings: fields left out keep their current values. `allowances` and `bucketLimits`, when given,
+   * replace the whole map (PUT); with `merge` (PATCH) they are merged into it key by key, a key set to null removed.
+   */
+  async setSettings(tenant: string, input: Record<string, unknown>, { merge = false } = {}): Promise<EndUserSettings> {
     const known = ["enabled", "allowances", "bucketLimits", "dailyLimit", "markupBps", "lowBalance"];
     const unknown = Object.keys(input).find(key => !known.includes(key));
     if (unknown) throw new HttpError(400, `Unknown setting ${unknown}: settings are ${known.join(", ")}`);
     if (input.enabled !== undefined && typeof input.enabled !== "boolean") throw new HttpError(400, "enabled must be true or false");
-    const allowances = input.allowances === undefined ? undefined : allowancesInput(input.allowances, false);
-    const bucketLimits = input.bucketLimits === undefined ? undefined : allowancesInput(input.bucketLimits, false, "bucketLimits");
+    const allowances = input.allowances === undefined ? undefined : allowancesInput(input.allowances, merge);
+    const bucketLimits = input.bucketLimits === undefined ? undefined : allowancesInput(input.bucketLimits, merge, "bucketLimits");
     const dailyLimit = input.dailyLimit === undefined ? undefined : amountInput(input.dailyLimit, "dailyLimit", { nullable: true });
     const lowBalance = input.lowBalance === undefined ? undefined : amountInput(input.lowBalance, "lowBalance", { nullable: true });
     if (input.markupBps !== undefined && (typeof input.markupBps !== "number" || !Number.isSafeInteger(input.markupBps) || input.markupBps < 0 || input.markupBps > 100_000)) {
@@ -177,7 +180,9 @@ export class EndUserCredits {
     }
     const current = await this.settings(tenant);
     const next = {
-      enabled: input.enabled as boolean | undefined ?? current.enabled, allowances: allowances ?? current.allowances, bucketLimits: bucketLimits ?? current.bucketLimits,
+      enabled: input.enabled as boolean | undefined ?? current.enabled,
+      allowances: allowances === undefined ? current.allowances : merge ? mergeKeys(current.allowances, allowances, "allowance") : allowances as Allowances,
+      bucketLimits: bucketLimits === undefined ? current.bucketLimits : merge ? mergeKeys(current.bucketLimits, bucketLimits, "bucket limit") : bucketLimits as Allowances,
       dailyLimit: dailyLimit === undefined ? current.dailyLimit : dailyLimit, markupBps: input.markupBps as number | undefined ?? current.markupBps,
       lowBalance: lowBalance === undefined ? current.lowBalance : lowBalance,
     };

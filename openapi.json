@@ -8270,7 +8270,55 @@
             ]
           }
         },
-        "description": "Fields left out keep their current values"
+        "description": "Fields left out keep their current values; allowances and bucketLimits, when sent, replace the whole map (PATCH merges them)"
+      },
+      "EndUserSettingsPatch": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "allowances": {
+            "type": "object",
+            "additionalProperties": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "description": "Merged into the allowances key by key; null removes a key"
+          },
+          "bucketLimits": {
+            "type": "object",
+            "additionalProperties": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "description": "Merged into the bucket limits key by key; null removes a key"
+          },
+          "dailyLimit": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "markupBps": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100000
+          },
+          "lowBalance": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "description": "Only what is sent changes: allowances and bucketLimits key by key"
       },
       "EndUserList": {
         "type": "object",
@@ -16549,6 +16597,39 @@
         "responses": {
           "200": {
             "description": "The settings now; a changed allowance applies to the next call and keeps what was spent today",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EndUserSettings"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EndUserSettingsPatch"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The settings now: allowances and bucket limits merged key by key",
             "content": {
               "application/json": {
                 "schema": {
