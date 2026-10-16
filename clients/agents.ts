@@ -130,7 +130,7 @@ export interface RunFailure extends Partial<ModelFailure> {
   message: string;
   /** The runtime could not tell whether the run's work took effect (a restart cut it short). */
   uncertain?: boolean;
-  /** With code end_user_credit: why its end user's credit stopped it (`balance`, `daily_limit`). */
+  /** With code end_user_credit: why its end user's credit stopped it (`balance`, `daily_limit`, `bucket_limit`). */
   reason?: string;
 }
 

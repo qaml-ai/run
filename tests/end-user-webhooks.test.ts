@@ -36,6 +36,23 @@ test("balance.low fires as the balance falls below the threshold, once until a g
   assert.equal((await events(db)).filter(event => event.type === "end_user.balance.low").length, 2, "re-armed by the grant");
 });
 
+test("a refund to zero is silent: no balance.low, no credit.exhausted (nothing to top up), until a grant re-arms them", async () => {
+  const { db, credits } = await fixture({ lowBalance: 2 * USD });
+  await credits.post("t", "u", { kind: "grant", amount: 50 * USD, key: "pay-1" });
+  await spend(credits, "default", 45 * USD);
+  const before = (await events(db)).length;
+  // Buy $50, spend $45, refund what is left: the balance is 0, never -$45, and nobody is told they ran out.
+  await assert.rejects(credits.post("t", "u", { kind: "refund", amount: 50 * USD, key: "re-1" }), (error: any) => error.code === "INSUFFICIENT_BALANCE");
+  assert.equal((await credits.post("t", "u", { kind: "refund", amount: 5 * USD, key: "re-2" })).entry.balanceAfter, 0);
+  assert.equal((await events(db)).length, before);
+  // A call refused now is not "ran out" either: the flags were set by the refund.
+  await spend(credits, "default", USD);
+  assert.equal((await events(db)).filter(event => event.type === "end_user.credit.exhausted" && event.reason === "balance").length, 0);
+  await credits.post("t", "u", { kind: "grant", amount: 3 * USD, key: "pay-2" });
+  await spend(credits, "default", 3 * USD);
+  assert.deepEqual((await events(db)).slice(before).map(event => [event.type, event.reason ?? null]), [["end_user.balance.low", null], ["end_user.credit.exhausted", "balance"]], "re-armed by the grant");
+});
+
 test("credit.exhausted says why: a bucket's allowance used up (once a day), the balance at zero (once until credited), the daily limit (once a day)", async () => {
   const { db, credits } = await fixture({ allowances: { "bot:*": 100_000 } });
   await credits.post("t", "u", { kind: "grant", amount: 300_000, key: "pay" });

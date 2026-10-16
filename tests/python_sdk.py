@@ -1166,7 +1166,8 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await agent.run("hello")).text, "seen")
         usage = [entry for entry in (await end_users.ledger("person"))["entries"] if entry["kind"] == "usage"]
         self.assertEqual([entry["bucket"] for entry in usage], ["bot:7"])
-        self.assertEqual((usage[0]["raw"], usage[0]["allowance"], usage[0]["amount"]), (10_000, 10_000, 0), "the bucket's allowance paid for it")
+        # $0.01 from the provider, and what funding the platform's OpenRouter credit costs on top (5.5%): what the tenant pays.
+        self.assertEqual((usage[0]["raw"], usage[0]["allowance"], usage[0]["amount"]), (10_550, 10_550, 0), "the bucket's allowance paid for it")
         person = await end_users.get("person", buckets=["bot:8"])
         self.assertEqual([bucket["bucket"] for bucket in person["today"]["buckets"]], ["bot:7", "bot:8"])
         # Nothing left (the bucket's allowance taken away, and no balance): the run is refused with why.

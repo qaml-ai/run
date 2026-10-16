@@ -162,10 +162,10 @@ export async function* exportAccount(options: ExportOptions, tenant: string): As
   })());
 
   // The tenant's own users' credit (end-user-credits.ts): its settings, each user's balance and overrides, and their ledger.
-  yield* zip.file("end-users/settings.json", json((await accounts.db.query("select enabled, allowances, daily_limit, markup_bps, low_balance, updated_at from end_user_settings where tenant=$1", [tenant])).rows[0] ?? null));
+  yield* zip.file("end-users/settings.json", json((await accounts.db.query("select enabled, allowances, bucket_limits, daily_limit, markup_bps, low_balance, updated_at from end_user_settings where tenant=$1", [tenant])).rows[0] ?? null));
   yield* zip.file("end-users/end-users.jsonl", (async function* () {
     for (let after = ""; ;) {
-      const { rows } = await accounts.db.query("select id, balance, allowances, daily_limit, created_at, updated_at from end_users where tenant=$1 and id>$2 order by id limit 200", [tenant, after]);
+      const { rows } = await accounts.db.query("select id, balance, allowances, bucket_limits, daily_limit, created_at, updated_at from end_users where tenant=$1 and id>$2 order by id limit 200", [tenant, after]);
       if (!rows.length) return;
       yield Buffer.from(rows.map(row => JSON.stringify(row)).join("\n") + "\n");
       after = rows.at(-1)!.id;

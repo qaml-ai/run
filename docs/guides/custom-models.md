@@ -94,7 +94,7 @@ Each model is `{id, contextWindow, maxOutputTokens?, input?, reasoning?, pricing
 | `maxOutputTokens` | the most it writes in a reply. Default 8,192, or half a smaller context window |
 | `input` | `["text", "image"]` for a model that sees images: attached and read images are shown to it. Default `["text"]`: images are described in text |
 | `reasoning` | `true` for a model that reasons, so `thinkingLevel` applies |
-| `pricing` | `{input, output, cacheRead?, cacheWrite?}` in USD per million tokens. It is what runs cost in usage, [spend limits](models-and-keys.md#spend-limits) and webhooks. Without it, the model's runs cost 0 |
+| `pricing` | `{input, output, cacheRead?, cacheWrite?}` in USD per million tokens. It is what runs cost in usage, [spend limits](models-and-keys.md#spend-limits) and webhooks. Without it, the model's runs cost 0 (to you: a call an [end user](end-user-credits.md) pays for is charged at the catalog's price for the model, else a mid-range price: $3 in, $15 out a million tokens) |
 | `compat` | switches for a server that differs from OpenAI's (below) |
 
 `GET /v1/models` lists your providers' models before the catalog's, all `available`.

@@ -42,7 +42,7 @@ const lookup = getModel as (provider: string, id: string) => AgentConfig['model'
 
 /**
  * A model a tenant declares on its own OpenAI-compatible provider (model-providers.ts): its context window, the most
- * it writes in a reply, what it takes in, whether it reasons, its pricing in USD per million tokens (none: free), and
+ * it writes in a reply, what it takes in, whether it reasons, its pricing in USD per million tokens (none: free, except to end users: `unpricedCost`), and
  * `compat`, Pi's switches for servers that differ from OpenAI's.
  */
 export type CustomModel = {

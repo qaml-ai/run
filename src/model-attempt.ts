@@ -19,7 +19,7 @@ export type AttemptEstimate = { inputTokens: number; maxOutputTokens: number; ra
  * user is out of credit): refused at begin, the call is never made; after, its stream is cut at `stopAtChars`.
  */
 export type AttemptAck = { tracked: boolean; checkAtChars?: number; stopAtChars?: number; refused?: CreditStop };
-/** An end user's credit refusing a call: what to say, why (`balance`, `daily_limit`), whose and which bucket. */
+/** An end user's credit refusing a call: what to say, why (`balance`, `daily_limit`, `bucket_limit`), whose and which bucket. */
 export type CreditStop = { message: string; reason: string; endUser: string; bucket: string };
 export type ModelAttemptHook = (event: ModelAttemptEvent) => Promise<boolean | AttemptAck>;
 /** An acknowledgment as a whole, from either form. */
