@@ -6,7 +6,8 @@ import { opusFromPcm } from "../src/voice-audio.ts";
 import { discordVoice, strictWelcome } from "../src/voice-discord.ts";
 import type { VoiceCredit } from "../src/voice-sessions.ts";
 import { fakeDiscordVoice } from "./fake-discord-voice.ts";
-import { discordGrant, fakeSynthesizer, sleep, speak, until, voiceCluster } from "./voice-fakes.ts";
+import { AGENT, discordGrant, fakeSynthesizer, sleep, speak, until, voiceCluster } from "./voice-fakes.ts";
+import { speakable, SpokenReply } from "../src/voice-speech.ts";
 
 /** A 300 Hz tone as 24 kHz mono PCM, in chunks of these many samples. */
 async function* chunks(...sizes: number[]) {
@@ -238,4 +239,60 @@ test("no speech goes out while the DAVE group holds a member the voice gateway h
   assert.equal(voice.spoken().filter(packet => packet.length > 3).length, 0, "nothing reached the voice server");
   playback.stop();
   assert.equal(await playback.done, "stopped");
+});
+
+test("an agent's reply as it may be spoken: markdown's marks, links' addresses, URLs and code left out", () => {
+  assert.equal(speakable("## Plan\n- **First**, see [the docs](https://example.com) or https://x.y/z.\n> Use `npm test` _now_."),
+    "Plan First, see the docs or Use npm test now.");
+  assert.equal(speakable("| a | b |\n|---|---|\n| 1 | 2 |"), "a, b, 1, 2");
+  assert.equal(speakable("```"), "");
+  assert.equal(speakable("snake_case_name stays readable"), "snake_case_name stays readable");
+});
+
+test("a reply streamed in pieces is spoken sentence by sentence as each is whole, code blocks skipped, at most 400 characters", () => {
+  const said: string[] = [];
+  const reply = new SpokenReply(text => said.push(text));
+  for (const delta of ["Hel", "lo there! How", " are you? Here", " is code:\n``", "`ts\nconst x = 1;\n", "```\nThat's ", "it"]) reply.push(delta);
+  assert.deepEqual(said, ["Hello there!", "How are you?", "Here is code:"], "each sentence as soon as it is whole");
+  reply.end();
+  assert.deepEqual(said, ["Hello there!", "How are you?", "Here is code:", "That's it"]);
+
+  const long: string[] = [];
+  const capped = new SpokenReply(text => long.push(text));
+  for (let i = 0; i < 30; i++) capped.push(`This is sentence number ${i} of a long answer. `);
+  capped.end();
+  assert.ok(long.join(" ").length <= 400 && long.join(" ").length > 350, "about 400 characters");
+  assert.ok(capped.full);
+  // A piece that does not fit is cut at a word, with an ellipsis, when there is room for one.
+  const cut: string[] = [];
+  const short = new SpokenReply(text => cut.push(text), 60);
+  short.push("One two three four five six seven eight nine ten eleven twelve thirteen fourteen. ");
+  short.end();
+  assert.deepEqual(cut, ["One two three four five six seven eight nine ten eleven…"]);
+
+  // A sentence that runs on is cut at a comma.
+  const runOn: string[] = [];
+  const reply2 = new SpokenReply(text => runOn.push(text));
+  reply2.push(`${"word ".repeat(30)}, ${"more ".repeat(40)}`);
+  assert.deepEqual(runOn, ["word ".repeat(30).trim()], "cut after the comma, which is not said");
+});
+
+test("barge-in stops an agent's reply mid-way: what was left of it is never said", async t => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  async function* stream() { yield "First sentence here. Second one"; await gate; yield " follows. Third sentence too."; }
+  const { fake, node, events } = await voiceCluster(t, { playEveryMs: 10, submitStreaming: () => stream() });
+  const a = await node("http://a");
+  const created = await a.voice.create("alice", { discord: discordGrant(), speak: { agentReplies: true }, deliver: { agent: AGENT }, silenceMs: 200 });
+  const connection = await until(() => fake.open()[0], "the connection");
+  connection.handlers.ready();
+  speak(connection, "400000000000000004", 0.5);
+  await until(() => connection.playing, "the first sentence to play");
+  speak(connection, "400000000000000004", 0.4);
+  await until(async () => (await events("voice.speech.ended")).some(event => event.data.by === "barge_in"), "the barge-in");
+  release();
+  await sleep(500);
+  const ended = await events("voice.speech.ended");
+  assert.equal(ended.length, 1, "the rest of the reply was never queued");
+  assert.deepEqual(ended[0].data.reply, { agent: AGENT, requestId: `voice_${created.id.slice(3)}_1` });
 });

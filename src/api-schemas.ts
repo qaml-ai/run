@@ -219,10 +219,12 @@ export const WebhookEvents = {
     costUsd: z.number(),
   }), "A person's utterance in a voice session, transcribed"),
   "voice.speech.started": envelope("voice.speech.started", z.object({
-    ...voiceFacts, speechId: z.string(), latencyMs: z.number().openapi({ description: "From the speak request to the first audio going out" }),
+    ...voiceFacts, speechId: z.string(), latencyMs: z.number().openapi({ description: "From the speak request (or the reply's sentence being whole) to the first audio going out" }),
+    reply: z.object({ agent: z.string(), requestId: z.string() }).optional().openapi({ description: "For a piece of an agent's reply the session speaks (agentReplies): the agent and its run" }),
   }), "The bot started saying a speech (POST /v1/voice/sessions/{id}/speak)"),
   "voice.speech.ended": envelope("voice.speech.ended", z.object({
     ...voiceFacts, speechId: z.string(),
+    reply: z.object({ agent: z.string(), requestId: z.string() }).optional(),
     reason: z.enum(["done", "interrupted", "error"]).openapi({ description: "done: said whole; interrupted: cut short or never started (by); error: speech could not be made or played" }),
     by: z.enum(["interrupt", "requested", "barge_in", "end", "handoff", "budget"]).optional().openapi({ description: "With interrupted: a speech asked with interrupt; DELETE …/speak; a person started talking (bargeIn); the session ended or moved; credit ran out" }),
     seconds: z.number().openapi({ description: "Seconds of speech made (and billed)" }), costUsd: z.number(),
@@ -1276,7 +1278,9 @@ export const VoiceSessionInput = z.strictObject({
   ignoreUserIds: z.array(z.string()).max(VOICE_LIMITS.ignoreUserIds).optional().openapi({ description: "Users whose audio is never transcribed and who do not count as company in the call: other bots" }),
   metadata: z.record(z.string(), z.unknown()).optional().openapi({ description: "Anything (at most 4 KB of JSON), echoed in every voice.* event" }),
   notice: z.string().max(VOICE_LIMITS.noticeChars).optional().openapi({ description: "The listening notice your app posts (see notice in the answer); {bot} is the bot's id" }),
-  speak: z.boolean().optional().openapi({ description: "The bot may speak (POST …/speak). Your app joins with self_mute false. Default false" }),
+  speak: z.union([z.boolean(), z.strictObject({
+    agentReplies: z.boolean().optional().openapi({ description: "Speak deliver.agent's reply to each utterance as it is written: sentence by sentence, markdown, links and code left out, at most 400 characters (the whole reply is still the run's)" }),
+  })]).optional().openapi({ description: "The bot may speak (POST …/speak): true, or {agentReplies: true} to also speak the agent's replies. Your app joins with self_mute false. Default false" }),
   bargeIn: z.boolean().optional().openapi({ description: "With speak: a person starting to talk stops the bot's speech and what it was going to say. Default true" }),
   voice: z.string().optional().openapi({ description: "With speak: the voice speech is made in (OpenAI's: alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, verse…). Default alloy", example: "coral" }),
 }).openapi("VoiceSessionInput");
@@ -1300,6 +1304,7 @@ export const VoiceSession = z.object({
   silenceMs: z.number(), maxMinutes: z.number(), idleMinutes: z.number(), emptySeconds: z.number(),
   ignoreUserIds: z.array(z.string()), metadata: z.record(z.string(), z.unknown()), notice: z.string(),
   speak: z.boolean(), bargeIn: z.boolean(), voice: z.string(),
+  agentReplies: z.boolean().openapi({ description: "The session speaks deliver.agent's replies (speak: {agentReplies: true})" }),
   speeches: z.number().openapi({ description: "Speeches played (each counted when it ended having made speech)" }), spokenSeconds: z.number().openapi({ description: "Seconds of speech made (billed)" }),
   utterances: z.number(), speechSeconds: z.number().openapi({ description: "Seconds of speech transcribed (billed)" }), costUsd: z.number(),
   createdAt: z.number(), startedAt: z.number().nullable(), lastSpeechAt: z.number().nullable(), endedAt: z.number().nullable(),

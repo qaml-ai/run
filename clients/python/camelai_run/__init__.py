@@ -1146,15 +1146,18 @@ class Voice:
 
     def create(self, discord, *, subject=None, bucket=None, context=None, key_scope=None, agent=None, webhooks=None, language=None,
                prompt=None, silence_ms=None, max_minutes=None, idle_minutes=None, empty_seconds=None, ignore_user_ids=None,
-               metadata=None, notice=None, speak=None, barge_in=None, voice=None, idempotency_key=None):
+               metadata=None, notice=None, speak=None, barge_in=None, voice=None, agent_replies=None, idempotency_key=None):
         """Start a session from `discord`: {"guildId", "channelId", "userId" (the bot), "sessionId" (its
         VOICE_STATE_UPDATE), "endpoint", "token" (VOICE_SERVER_UPDATE)}. `subject` pays (its `bucket` with end-user
         credits on); utterances go to your webhooks (`webhooks`, default True) and/or `agent` as prompts. `silence_ms`
         (default 800) ends an utterance; `max_minutes` (240), `idle_minutes` (30) and `empty_seconds` (60) end the
         session. `speak=True` lets the bot speak (speak()): your app joins with self_mute false; `barge_in` (default True)
-        stops its speech when a person talks; `voice` is the voice it speaks in.
+        stops its speech when a person talks; `voice` is the voice it speaks in; `agent_replies=True` (with `agent`) speaks
+        the agent's reply to each utterance as it is written (sentence by sentence, at most 400 characters).
         Returns the session with "notice": post its "text" in the voice channel's chat now. Raises 409
         VOICE_SESSION_EXISTS when the bot has one in the server."""
+        if agent_replies is not None:
+            speak = {"agentReplies": agent_replies}
         fields = {"subject": subject, "bucket": bucket, "context": context, "keyScope": key_scope, "language": language, "prompt": prompt,
                   "silenceMs": silence_ms, "maxMinutes": max_minutes, "idleMinutes": idle_minutes, "emptySeconds": empty_seconds,
                   "ignoreUserIds": ignore_user_ids, "metadata": metadata, "notice": notice, "speak": speak, "bargeIn": barge_in, "voice": voice}

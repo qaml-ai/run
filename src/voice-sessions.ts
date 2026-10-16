@@ -9,7 +9,7 @@ import { checkedAudio, languageInput, type Transcribed, type Transcriber } from 
 import { enqueueEvents, webhookEvent, type WebhookEvent } from "./webhooks.ts";
 import type { UsageRecord } from "./client-sessions.ts";
 import { oggOpus, Segmenter, type Cut } from "./voice-audio.ts";
-import { SessionSpeech, SPEECH_QUEUE, speechId, type Player, type SpeechEnding, type SpeechItem } from "./voice-speech.ts";
+import { SessionSpeech, SPEECH_QUEUE, speechId, SpokenReply, type Player, type SpeechEnding, type SpeechItem } from "./voice-speech.ts";
 import { DEFAULT_VOICE, SPEECH_LIMITS, type Synthesizer } from "./speech.ts";
 import { bucketInput, DEFAULT_BUCKET } from "./end-user-credits.ts";
 
@@ -94,6 +94,8 @@ export type VoiceOptions = {
   bargeIn: boolean;
   /** With speak: the voice its speech is made in, unless a speech asks for another. */
   voice: string;
+  /** With speak and deliver.agent: the session speaks the agent's reply to each utterance, as it is written. */
+  agentReplies: boolean;
 };
 
 export const VOICE_LIMITS = Object.freeze({
@@ -150,6 +152,8 @@ export function sessionView(row: Row) {
     state: row.state, endReason: row.end_reason,
     ...(ending?.limit ? { limit: ending.limit } : {}), ...(ending?.endUserReason ? { endUserReason: ending.endUserReason } : {}),
     ...options,
+    // Sessions from before speaking have none of its settings.
+    speak: options.speak ?? false, bargeIn: options.bargeIn ?? true, voice: options.voice ?? DEFAULT_VOICE, agentReplies: options.agentReplies ?? false,
     utterances: row.utterances, speechSeconds: row.speech_seconds, speeches: row.speeches ?? 0, spokenSeconds: Number(row.spoken_seconds ?? 0),
     costUsd: Number(row.cost) / 1_000_000,
     createdAt: num(row.created_at)!, startedAt: num(row.started_at), lastSpeechAt: num(row.last_speech_at), endedAt: num(row.ended_at),
@@ -249,6 +253,8 @@ export interface VoiceSessionsOptions {
   record(tenant: string, usage: UsageRecord): void;
   /** Submit a request to an agent wherever it is served (an utterance's prompt). */
   submit(agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }): Promise<unknown>;
+  /** As `submit`, yielding the text the run writes as it is written (agentReplies); without it, replies are not spoken. */
+  submitStreaming?(agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }, signal: AbortSignal): AsyncIterable<string>;
   transcriptionsPerNode?: number;
   /** End users' credit; without it, sessions are billed to the tenant alone. */
   credit?: VoiceCredit;
@@ -348,9 +354,14 @@ export class VoiceSessions {
     const keyScope = input.keyScope === undefined ? undefined : text(input.keyScope, "keyScope", /^.{1,100}$/s, "a key scope's name");
     const language = languageInput(input.language);
     const prompt = input.prompt === undefined ? undefined : text(input.prompt, "prompt", new RegExp(`^[\\s\\S]{1,${VOICE_LIMITS.promptChars}}$`), `at most ${VOICE_LIMITS.promptChars} characters`);
-    if (input.speak !== undefined && typeof input.speak !== "boolean") throw new HttpError(400, "speak must be true or false");
+    // speak: true, or {agentReplies} (which is speaking too).
+    const speakGiven = input.speak !== null && typeof input.speak === "object" && !Array.isArray(input.speak) ? input.speak as Record<string, unknown> : undefined;
+    if (input.speak !== undefined && typeof input.speak !== "boolean" && !speakGiven) throw new HttpError(400, "speak must be true, false or {agentReplies}");
+    if (speakGiven) only(speakGiven, "speak", ["agentReplies"]);
+    if (speakGiven?.agentReplies !== undefined && typeof speakGiven.agentReplies !== "boolean") throw new HttpError(400, "speak.agentReplies must be true or false");
     if (input.bargeIn !== undefined && typeof input.bargeIn !== "boolean") throw new HttpError(400, "bargeIn must be true or false");
-    const speak = input.speak === true;
+    const speak = input.speak === true || !!speakGiven;
+    const agentReplies = speakGiven?.agentReplies === true;
     if (!speak && (input.voice !== undefined || input.bargeIn !== undefined)) throw new HttpError(400, "voice and bargeIn are for a session that speaks (speak: true)");
     const voice = input.voice === undefined ? DEFAULT_VOICE : text(input.voice, "voice", VOICE_NAME, "a voice's name, such as alloy, coral or verse");
     const notice = input.notice === undefined ? speak ? SPEAKING_NOTICE : DEFAULT_NOTICE : text(input.notice, "notice", new RegExp(`^[\\s\\S]{1,${VOICE_LIMITS.noticeChars}}$`), `at most ${VOICE_LIMITS.noticeChars} characters`);
@@ -364,7 +375,7 @@ export class VoiceSessions {
       idleMinutes: integer(input.idleMinutes, "idleMinutes", VOICE_LIMITS.idleMinutes),
       emptySeconds: integer(input.emptySeconds, "emptySeconds", VOICE_LIMITS.emptySeconds),
       ignoreUserIds: ignored(input.ignoreUserIds), metadata: metadataInput(input.metadata), notice,
-      speak, bargeIn: input.bargeIn !== false, voice,
+      speak, bargeIn: input.bargeIn !== false, voice, agentReplies,
     };
   }
 
@@ -381,6 +392,8 @@ export class VoiceSessions {
     if (input.discord === undefined) throw new HttpError(400, "discord is required: guildId, channelId, userId, sessionId, endpoint and token");
     const credentials = discordInput(input.discord, this.endpoints()) as VoiceCredentials;
     const options = this.settings(input);
+    if (options.agentReplies && !options.deliver.agent) throw new HttpError(400, "speak.agentReplies speaks deliver.agent's replies: give deliver.agent");
+    if (options.agentReplies && !this.options.submitStreaming) throw new HttpError(404, "Speaking agents' replies is not enabled on this runtime");
     if (options.speak && (!this.options.synthesizer || !this.options.transports[provider]?.speaks)) throw new HttpError(404, "Speaking is not enabled on this runtime");
     if (options.deliver.agent && !await this.options.agentOwned(options.deliver.agent, tenant)) throw new HttpError(404, "Unknown agent in deliver.agent");
     await this.options.admit(tenant);
@@ -812,17 +825,62 @@ export class VoiceSessions {
       id: `voice_${origin.id.slice(3)}_${row.utterances}`, method: "prompt",
       params: { text: transcript.text, from: { id: cut.speaker }, metadata: { voiceSession: origin.id, utterance: String(row.utterances) }, allowDisconnected: true },
     };
+    // The agent's reply is spoken as it is written: delivered and spoken apart from this speaker's next utterance.
+    if (row.options.agentReplies && this.options.submitStreaming) {
+      const job = this.speakReply(origin, agent, request, row.utterances).catch(error => console.error(JSON.stringify({ type: "voice_reply_failed", session: origin.id, error: safeError(error) })));
+      this.pending.add(job);
+      void job.finally(() => this.pending.delete(job));
+      return;
+    }
+    await this.deliver(origin, agent, request, row.utterances);
+  }
+
+  /** An utterance's prompt to the agent, tried a few times (its node moving, a queue full). */
+  private async deliver(origin: Origin, agent: string, request: { id: string; method: string; params: Record<string, unknown> }, seq: number) {
     for (let attempt = 1; ; attempt++) {
       try { await this.options.submit(agent, origin.tenant, request); return; }
       catch (error) {
         const status = (error as HttpError).status;
         // A deleted agent takes nothing more; anything else (its node moving, a queue full) may take it soon.
         if (status === 404 || status === 410 || attempt >= VOICE_LIMITS.submitAttempts) {
-          console.error(JSON.stringify({ type: "voice_delivery_failed", session: origin.id, seq: row.utterances, status, error: safeError(error) }));
+          console.error(JSON.stringify({ type: "voice_delivery_failed", session: origin.id, seq, status, error: safeError(error) }));
           return;
         }
         await new Promise(resolve => setTimeout(resolve, 500 * 2 ** attempt));
       }
+    }
+  }
+
+  /**
+   * Submit an utterance's prompt and speak the agent's reply as it is written (agentReplies): each sentence queued as
+   * it is whole, markdown and code left out, at most REPLY_LIMITS.chars in all (the whole reply is the run's, as ever).
+   * Speaking stops adding to the queue once the queue is stopped (barge-in, interrupt, DELETE) or the session moves.
+   * If the reply cannot be streamed (the agent's node is moving), the prompt is delivered as usual, and not spoken.
+   */
+  private async speakReply(origin: Origin, agent: string, request: { id: string; method: string; params: Record<string, unknown> }, seq: number) {
+    const held = this.held.get(origin.id);
+    const speech = held?.claim === origin.claim ? held.speech : undefined;
+    if (!speech) { await this.deliver(origin, agent, request, seq); return; }
+    const generation = speech.generation;
+    const reply = { agent, requestId: request.id };
+    const abort = new AbortController();
+    const spoken = new SpokenReply(text => {
+      if (speech.generation !== generation || this.held.get(origin.id) !== held) { abort.abort(); return; }
+      speech.say({ id: speechId(), text, voice: held!.row.options.voice, queuedAt: Date.now(), reply });
+    });
+    let streamed = false;
+    try {
+      for await (const text of this.options.submitStreaming!(agent, origin.tenant, request, abort.signal)) {
+        streamed = true;
+        spoken.push(text);
+        if (abort.signal.aborted) break;
+      }
+      if (!abort.signal.aborted) spoken.end();
+    } catch (error) {
+      if (abort.signal.aborted) return;
+      console.error(JSON.stringify({ type: "voice_reply_stream_failed", session: origin.id, status: (error as HttpError).status, error: safeError(error) }));
+      // The prompt may not have reached the agent: deliver it as usual (the same id, so at most once).
+      if (!streamed) await this.deliver(origin, agent, request, seq);
     }
   }
 
@@ -892,7 +950,7 @@ export class VoiceSessions {
           ? await sql.query("update voice_sessions set speeches = speeches + 1, spoken_seconds = spoken_seconds + $2, cost = cost + $3, updated_at = $4 where id = $1 returning *", [held.id, counts.seconds, Math.round(counts.costUsd * 1_000_000), Date.now()])
           : await sql.query("select * from voice_sessions where id = $1", [held.id]);
         const row = rows[0] as Row | undefined;
-        if (row?.options.deliver.webhooks) await enqueueEvents(sql, [this.event(row, type, { speechId: item.id, ...data }, `voice:${held.id}:${type}:${item.id}`)]);
+        if (row?.options.deliver.webhooks) await enqueueEvents(sql, [this.event(row, type, { speechId: item.id, ...(item.reply ? { reply: item.reply } : {}), ...data }, `voice:${held.id}:${type}:${item.id}`)]);
       }).catch(error => console.error(JSON.stringify({ type: "voice_speech_event_failed", session: held.id, speech: item.id, error: safeError(error) })));
     return {
       player: () => held.connection?.play ? held.connection as Player : undefined,

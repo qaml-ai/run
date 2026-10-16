@@ -62,7 +62,7 @@ Discord allows one voice connection per user and server: a second `POST` for the
 | `ignoreUserIds` | users never transcribed and not counted as company: other bots |
 | `metadata` | anything, at most 4 KB of JSON, echoed in every `voice.*` event |
 | `notice` | the notice text (`{bot}` is the bot's id); by default "<@bot> is listening and transcribing speech in this channel. Audio is not stored." (with `speak`, "…listening, transcribing speech and may speak…") |
-| `speak` | the bot may [speak](#speaking) in the call (default `false`). Your app joins with `self_mute: false`: the answer's `join` says how it should have joined |
+| `speak` | the bot may [speak](#speaking) in the call: `true`, or `{agentReplies: true}` to also [speak `deliver.agent`'s replies](#speaking-an-agents-replies) (default `false`). Your app joins with `self_mute: false`: the answer's `join` says how it should have joined |
 | `bargeIn` | with `speak`: a person starting to talk stops what the bot is saying (default `true`) |
 | `voice` | with `speak`: the voice its speech is made in (default `alloy`; OpenAI's voices: `alloy`, `ash`, `ballad`, `coral`, `echo`, `fable`, `nova`, `onyx`, `sage`, `shimmer`, `verse`…) |
 
@@ -158,6 +158,16 @@ and clears the queue.
   session ignores the bot's user), and does not count as speech for `idleMinutes` or company for `emptySeconds`.
 - **Requests go where the call is.** Any node takes the request and passes it to the one holding the call; while the
   session moves between nodes, a 503 says to retry (the SDKs do).
+
+### Speaking an agent's replies
+
+With `deliver.agent` and `speak: {agentReplies: true}`, the session speaks the agent's reply to each utterance itself,
+as the agent writes it: each sentence is made into speech and played as soon as it is whole, so the bot starts
+answering while the agent is still writing. What is spoken is what a person would say aloud: markdown's marks, links'
+addresses, bare URLs and code blocks are left out, and at most 400 characters are spoken (cut at a word). The whole
+reply is still the run's (`run.completed`, the agent's history). Each sentence is a speech, with `reply: {agent,
+requestId}` in its `voice.speech.*` events. A person starting to talk (barge-in), an interrupting speech or `DELETE
+…/speak` stops the rest of the reply too.
 
 ## Cost
 

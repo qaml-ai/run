@@ -13,7 +13,11 @@ import { opusFromPcm } from "./voice-audio.ts";
  */
 
 /** Something asked to be said. */
-export type SpeechItem = { id: string; text: string; voice: string; instructions?: string; queuedAt: number };
+export type SpeechItem = {
+  id: string; text: string; voice: string; instructions?: string; queuedAt: number;
+  /** Part of an agent's reply the session speaks (agentReplies): the agent and its run. */
+  reply?: { agent: string; requestId: string };
+};
 /** How a speech ended: said whole, cut short (`by` whom), or failed. */
 export type SpeechEnding = { reason: "done" | "interrupted" | "error"; by?: StopReason; seconds: number; costUsd: number; error?: string };
 export type StopReason = "interrupt" | "requested" | "barge_in" | "end" | "handoff" | "budget";
@@ -52,6 +56,8 @@ export class SessionSpeech {
   private current?: { item: SpeechItem; abort: AbortController; playback?: Playback; stoppedBy?: StopReason };
   private running = false;
   private closed = false;
+  /** Bumped by each stop: a reply being spoken stops adding to the queue once what it was part of is stopped. */
+  generation = 0;
   private readonly synthesizer: Synthesizer;
   private readonly effects: SpeechEffects;
 
@@ -75,6 +81,7 @@ export class SessionSpeech {
 
   /** Stop the speech playing and clear the queue: each ends `interrupted`, `by`. Answers how many there were. */
   stop(by: StopReason) {
+    this.generation++;
     const cleared = this.queue.splice(0);
     for (const item of cleared) this.effects.ended(item, { reason: "interrupted", by, seconds: 0, costUsd: 0 }, undefined);
     const current = this.current;
@@ -153,4 +160,135 @@ export class SessionSpeech {
       await new Promise(resolve => setTimeout(resolve, 100));
     }
   }
+}
+
+/** The most of an agent's reply a session speaks, and the longest piece spoken at once when a sentence runs on. */
+export const REPLY_LIMITS = Object.freeze({ chars: 400, pieceChars: 250 });
+
+/**
+ * Text as it may be spoken: markdown's marks gone (emphasis, headings, list bullets, quotes, tables), a link's text
+ * without its address, images and bare URLs gone, inline code's text kept without its backticks, whitespace folded.
+ * Code blocks are left out before this (`SpokenReply`).
+ */
+export function speakable(text: string): string {
+  return text
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/<https?:\/\/[^>]+>/g, "")
+    .replace(/\bhttps?:\/\/\S+/g, "")
+    .replace(/<\/?[a-z][^>]*>/gi, "")
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/`/g, "")
+    .replace(/^\s{0,3}#{1,6}\s+/gm, "")
+    .replace(/^\s{0,3}>\s?/gm, "")
+    .replace(/^\s*(?:[-*+]|\d+[.)])\s+/gm, "")
+    .replace(/^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)*\|?\s*$/gm, "")
+    .replace(/\s*\|\s*/g, ", ")
+    .replace(/(\*\*|__)(.+?)\1/g, "$2")
+    .replace(/(^|[\s(])[*_]([^*_\s][^*_]*?)[*_](?=[\s).,!?:;]|$)/g, "$1$2")
+    .replace(/~~(.+?)~~/g, "$1")
+    .replace(/\s+/g, " ")
+    .replace(/(?:,\s*){2,}/g, ", ")
+    .replace(/^[,\s]+|[,\s]+$/g, "")
+    .trim();
+}
+
+/**
+ * An agent's reply as it streams, cut into pieces to speak as each is whole: sentences (at . ! ? or a line's end), or
+ * at a comma or space when one runs past REPLY_LIMITS.pieceChars. Code blocks are left out; each piece is made
+ * `speakable`; at most `limit` characters are spoken in all, the last piece cut at a word with an ellipsis.
+ */
+export class SpokenReply {
+  private buffer = "";
+  private fenced = false;
+  private spoken = 0;
+  private stopped = false;
+  private readonly say: (text: string) => void;
+  private readonly limit: number;
+
+  constructor(say: (text: string) => void, limit: number = REPLY_LIMITS.chars) { this.say = say; this.limit = limit; }
+
+  /** Whether it has spoken all it may. */
+  get full() { return this.stopped; }
+
+  push(delta: string) {
+    if (this.stopped) return;
+    this.buffer += delta;
+    this.drain(false);
+  }
+
+  /** The reply is whole: what is left is the last piece. */
+  end() {
+    if (this.stopped) return;
+    this.drain(true);
+    if (!this.fenced) this.piece(this.buffer);
+    this.buffer = "";
+  }
+
+  private drain(final: boolean) {
+    for (;;) {
+      if (this.stopped) return;
+      if (this.fenced) {
+        const close = this.buffer.indexOf("```");
+        if (close < 0) { this.buffer = this.buffer.slice(-2); return; }
+        const line = this.buffer.indexOf("\n", close + 3);
+        if (line < 0 && !final) { this.buffer = this.buffer.slice(close); return; }
+        this.buffer = line < 0 ? "" : this.buffer.slice(line + 1);
+        this.fenced = false;
+        continue;
+      }
+      const fence = this.buffer.indexOf("```");
+      const prose = fence < 0 ? this.buffer : this.buffer.slice(0, fence);
+      const end = sentenceEnd(prose, final || fence >= 0);
+      if (end > 0) {
+        this.piece(prose.slice(0, end));
+        this.buffer = this.buffer.slice(end);
+        continue;
+      }
+      if (fence >= 0) {
+        this.piece(prose);
+        const line = this.buffer.indexOf("\n", fence + 3);
+        if (line < 0 && !final) { this.buffer = this.buffer.slice(fence); return; }
+        this.buffer = line < 0 ? "" : this.buffer.slice(line + 1);
+        this.fenced = true;
+        continue;
+      }
+      // A sentence that runs on is cut at a comma, else a space.
+      if (prose.length > REPLY_LIMITS.pieceChars) {
+        const window = prose.slice(0, REPLY_LIMITS.pieceChars);
+        const cut = Math.max(window.lastIndexOf(", ") + 1, 0) || window.lastIndexOf(" ");
+        const at = cut > 0 ? cut : REPLY_LIMITS.pieceChars;
+        this.piece(prose.slice(0, at));
+        this.buffer = this.buffer.slice(at);
+        continue;
+      }
+      return;
+    }
+  }
+
+  private piece(raw: string) {
+    const text = speakable(raw);
+    if (!text || !/[\p{L}\p{N}]/u.test(text)) return;
+    const room = this.limit - this.spoken;
+    if (text.length <= room) {
+      this.spoken += text.length + 1;
+      this.say(text);
+      if (this.spoken >= this.limit) this.stopped = true;
+      return;
+    }
+    this.stopped = true;
+    if (room < 20) return;
+    const cut = text.slice(0, room).replace(/\s+\S*$/, "");
+    if (cut) this.say(`${cut}…`);
+  }
+}
+
+/** Where the first whole sentence of `text` ends (after its mark, or its line), or 0 when none is whole yet. */
+function sentenceEnd(text: string, final: boolean): number {
+  const pattern = /[.!?…]+["'”’)\]]*(?=\s)|\n/g;
+  for (let match; (match = pattern.exec(text));) {
+    const end = match.index + match[0].length;
+    if (end < text.length || final) return end;
+  }
+  return 0;
 }

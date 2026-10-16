@@ -4339,6 +4339,48 @@ export class ClientSessions {
   }
 
   /** Submit a request to a tenant's agent on the tenant's behalf (REST API and console); `rate` hears where a run left the tenant's rate limit. */
+  /**
+   * Submit a request (as `submit`) to an agent this node serves, and yield the text its run writes as it is written:
+   * each text delta of each assistant message, in order, until the run's response. A request already answered (sent
+   * again) yields its reply whole. Ends early when `signal` aborts, or the agent leaves this node mid-run (handed
+   * off): what was written so far is what there is.
+   */
+  async *submitStreaming(id: string, tenant: string, body: { id: string; method: string; params: Record<string, unknown> }, signal: AbortSignal): AsyncGenerator<string> {
+    if (await this.owns(id, tenant)) await this.roomFor(id);
+    const session = (await this.owns(id, tenant)) ? await this.load(id) : undefined;
+    if (!session) throw new HttpError(404, "Unknown agent");
+    if (session.fault) throw session.fault;
+    const chunks: string[] = [];
+    let done = false, wake: (() => void) | undefined;
+    const tap = (data: ClientEvent) => {
+      if (data.type === "response" && data.id === body.id) done = true;
+      else if (data.type === "event" && data.requestId === body.id && data.event?.type === "message_update") {
+        const update = data.event.assistantMessageEvent;
+        if (update?.type === "text_delta" && typeof update.delta === "string") chunks.push(update.delta);
+      } else return;
+      wake?.();
+    };
+    (session.taps ??= new Set()).add(tap);
+    const stop = () => { done = true; wake?.(); };
+    signal.addEventListener("abort", stop, { once: true });
+    try {
+      session.lastActive = Date.now();
+      const { record } = await this.accept(session, body, true);
+      const reply = (record.outcome?.result as { reply?: unknown } | undefined)?.reply;
+      if (record.state === "completed") { if (typeof reply === "string" && reply) yield reply; return; }
+      for (;;) {
+        while (chunks.length) yield chunks.shift()!;
+        if (done || this.sessions.get(id) !== session) return;
+        // Woken by the next delta or the response, or after a second to see whether the agent left this node.
+        await new Promise<void>(resolve => { wake = resolve; setTimeout(resolve, 1_000).unref(); });
+        wake = undefined;
+      }
+    } finally {
+      session.taps?.delete(tap);
+      signal.removeEventListener("abort", stop);
+    }
+  }
+
   async submit(id: string, tenant: string, body: { id: string; method: string; params: Record<string, unknown> }, rate?: (state: RateLimitState) => void) {
     if (await this.owns(id, tenant)) await this.roomFor(id);
     const session = (await this.owns(id, tenant)) ? await this.load(id) : undefined;

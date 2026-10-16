@@ -637,13 +637,15 @@ export type WebhookEvent = { id: string; created: number } & (
       startedAt: number | null; endedAt: number; utterances: number; speechSeconds: number; costUsd: number;
     } }
   | { type: "voice.utterance"; data: VoiceUtterance }
-  | { type: "voice.speech.started"; data: VoiceFacts & { speechId: string; latencyMs: number } }
+  | { type: "voice.speech.started"; data: VoiceFacts & { speechId: string; latencyMs: number; reply?: VoiceReply } }
   | { type: "voice.speech.ended"; data: VoiceFacts & {
-      speechId: string; reason: "done" | "interrupted" | "error";
+      speechId: string; reason: "done" | "interrupted" | "error"; reply?: VoiceReply;
       /** With interrupted: an interrupting speech, stopSpeaking, a person talking (bargeIn), the session ending or moving, credit running out. */
       by?: "interrupt" | "requested" | "barge_in" | "end" | "handoff" | "budget";
       seconds: number; costUsd: number;
     } });
+/** A piece of an agent's reply a session speaks (speak: {agentReplies: true}): the agent and its run. */
+export type VoiceReply = { agent: string; requestId: string };
 /** What every voice.* event says of its session. */
 type VoiceFacts = { session: string; provider: "discord"; guildId: string; channelId: string; botUserId: string; subject: string | null; metadata: Record<string, unknown> };
 /**
@@ -1199,8 +1201,12 @@ export interface VoiceSessionInput {
   metadata?: Record<string, unknown>;
   /** The notice text to post ({bot} is the bot's id). */
   notice?: string;
-  /** The bot may speak (`voice.speak`); your app joins with self_mute false. Default false. */
-  speak?: boolean;
+  /**
+   * The bot may speak (`voice.speak`); your app joins with self_mute false. `{ agentReplies: true }` also speaks
+   * deliver.agent's reply to each utterance as it is written (sentence by sentence, markdown and code left out, at most
+   * 400 characters). Default false.
+   */
+  speak?: boolean | { agentReplies?: boolean };
   /** With speak: a person starting to talk stops the bot's speech. Default true. */
   bargeIn?: boolean;
   /** With speak: the voice speech is made in (OpenAI's: alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, verse…). Default alloy. */
@@ -1217,7 +1223,7 @@ export interface VoiceSession {
   deliver: { agent?: string; webhooks: boolean };
   subject?: string; bucket?: string; context?: Record<string, unknown>; keyScope?: string; language?: string; prompt?: string;
   silenceMs: number; maxMinutes: number; idleMinutes: number; emptySeconds: number; ignoreUserIds: string[]; metadata: Record<string, unknown>;
-  speak: boolean; bargeIn: boolean; voice: string;
+  speak: boolean; bargeIn: boolean; voice: string; agentReplies: boolean;
   utterances: number; speechSeconds: number;
   /** Speeches played, and seconds of speech made. */
   speeches: number; spokenSeconds: number;

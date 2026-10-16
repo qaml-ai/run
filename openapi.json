@@ -1019,7 +1019,23 @@
               },
               "latencyMs": {
                 "type": "number",
-                "description": "From the speak request to the first audio going out"
+                "description": "From the speak request (or the reply's sentence being whole) to the first audio going out"
+              },
+              "reply": {
+                "type": "object",
+                "properties": {
+                  "agent": {
+                    "type": "string"
+                  },
+                  "requestId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent",
+                  "requestId"
+                ],
+                "description": "For a piece of an agent's reply the session speaks (agentReplies): the agent and its run"
               }
             },
             "required": [
@@ -1097,6 +1113,21 @@
               },
               "speechId": {
                 "type": "string"
+              },
+              "reply": {
+                "type": "object",
+                "properties": {
+                  "agent": {
+                    "type": "string"
+                  },
+                  "requestId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent",
+                  "requestId"
+                ]
               },
               "reason": {
                 "type": "string",
@@ -8734,6 +8765,10 @@
           "voice": {
             "type": "string"
           },
+          "agentReplies": {
+            "type": "boolean",
+            "description": "The session speaks deliver.agent's replies (speak: {agentReplies: true})"
+          },
           "speeches": {
             "type": "number",
             "description": "Speeches played (each counted when it ended having made speech)"
@@ -8791,6 +8826,7 @@
           "speak",
           "bargeIn",
           "voice",
+          "agentReplies",
           "speeches",
           "spokenSeconds",
           "utterances",
@@ -8937,8 +8973,22 @@
             "description": "The listening notice your app posts (see notice in the answer); {bot} is the bot's id"
           },
           "speak": {
-            "type": "boolean",
-            "description": "The bot may speak (POST …/speak). Your app joins with self_mute false. Default false"
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "agentReplies": {
+                    "type": "boolean",
+                    "description": "Speak deliver.agent's reply to each utterance as it is written: sentence by sentence, markdown, links and code left out, at most 400 characters (the whole reply is still the run's)"
+                  }
+                },
+                "additionalProperties": false
+              }
+            ],
+            "description": "The bot may speak (POST …/speak): true, or {agentReplies: true} to also speak the agent's replies. Your app joins with self_mute false. Default false"
           },
           "bargeIn": {
             "type": "boolean",

@@ -9,6 +9,9 @@
   `error`; `seconds`, `costUsd`). Usage `kind: "speech"` at $0.015 a minute of speech made (`AGENT_PRICE_SPEECH_USD`),
   per second; end-user credits hold and settle it as transcription; running out ends the session (`budget`).
 - Any node takes a speak request and passes it to the node holding the call.
+- `speak: {agentReplies: true}` with `deliver.agent`: the session speaks the agent's reply to each utterance as it is
+  written, sentence by sentence (streamed from the agent's node), markdown, links' addresses and code left out, at most
+  400 characters; its speech events carry `reply: {agent, requestId}`. Barge-in stops the rest of a reply.
 - DAVE's send path: a Welcome into a group with a member the voice gateway never named is refused at once (opcode 31,
   then welcomed again), around @discordjs/voice's handling, as libdave checks it; speech goes out only while the group
   is ready and every member named.

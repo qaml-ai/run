@@ -610,6 +610,34 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   }
 
   /** Delete an agent wherever it is served: here, or on the node that owns it. */
+  /**
+   * Submit a prompt to an agent wherever it is served, and yield the text its run writes as it is written (voice
+   * sessions speak an agent's reply as it comes). The agent's node streams it here as NDJSON lines ({"text"}, then
+   * {"done"}).
+   */
+  async function* submitStreamingAnywhere(agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }, signal: AbortSignal): AsyncGenerator<string> {
+    const owner = await clients.ownerElsewhere(agent);
+    if (!owner) { yield* clients.submitStreaming(agent, tenant, request, signal); return; }
+    const response = await signedPost(owner, `/internal/agents/${agent}/stream`, { tenant, request }, 15 * 60_000, signal).catch(error => { ownership.forget(agent); throw error; });
+    if (!response.ok || !response.body) {
+      const answer = await response.json().catch(() => ({})) as { error?: string };
+      throw new HttpError(response.status, answer.error ?? `The agent's node answered ${response.status}`);
+    }
+    let pending = "";
+    for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
+      pending += Buffer.from(chunk).toString("utf8");
+      for (let at; (at = pending.indexOf("\n")) >= 0;) {
+        const line = pending.slice(0, at);
+        pending = pending.slice(at + 1);
+        if (!line) continue;
+        const frame = JSON.parse(line) as { text?: string; done?: boolean; error?: string };
+        if (frame.error) throw new HttpError(502, frame.error);
+        if (frame.done) return;
+        if (frame.text) yield frame.text;
+      }
+    }
+  }
+
   async function deleteAnywhere(agent: string, tenant: string) {
     const owner = await clients.ownerElsewhere(agent);
     if (!owner) return clients.destroyAgent(agent, tenant);
@@ -797,6 +825,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     transcriber, synthesizer, canTranscribe: async (tenant, keyScope) => !!await transcriber.options.key(tenant, keyScope, transcriber.provider),
     record: (tenant, usage) => accounts.recordUsage(tenant, "", usage),
     submit: (agent, tenant, request) => submitAnywhere(agent, tenant, request),
+    submitStreaming: (agent, tenant, request, signal) => submitStreamingAnywhere(agent, tenant, request, signal),
     // A session's subject pays from its bucket, where the tenant meters its end users (end-user-credits.ts).
     credit: endUsers,
     perTenant: () => config.voice.perTenant, perNode: config.voice.perNode,
@@ -1021,6 +1050,29 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     } catch (error) {
       return c.json({ error: errorText(error), code: errorCode(error, errorStatus(error, 400)) }, errorStatus(error, 400) as ContentfulStatusCode);
     }
+  });
+  app.post("/internal/agents/:id{client_[a-f0-9]{40}}/stream", async c => {
+    let body: string | undefined;
+    try { body = await signedBody(c); } catch { return c.body(null, 413); }
+    if (body === undefined) return c.body(null, 401);
+    const { tenant, request } = JSON.parse(body);
+    // The asking node's connection closing ends the stream.
+    const closed = new AbortController();
+    c.env.outgoing.once("close", () => closed.abort());
+    const texts = clients.submitStreaming(c.req.param("id"), tenant, request, closed.signal);
+    // The first step answers errors (an unknown agent) with their status; the rest streams.
+    let first: IteratorResult<string>;
+    try { first = await texts.next(); } catch (error) { return c.json({ error: errorText(error) }, errorStatus(error, 400) as ContentfulStatusCode); }
+    const encoder = new TextEncoder();
+    return new Response(new ReadableStream({
+      async start(controller) {
+        try {
+          for (let step = first; !step.done; step = await texts.next()) controller.enqueue(encoder.encode(`${JSON.stringify({ text: step.value })}\n`));
+          controller.enqueue(encoder.encode(`${JSON.stringify({ done: true })}\n`));
+        } catch (error) { controller.enqueue(encoder.encode(`${JSON.stringify({ error: errorText(error) })}\n`)); }
+        controller.close();
+      },
+    }), { headers: { "Content-Type": "application/x-ndjson" } });
   });
   app.post("/internal/agents/:id{client_[a-f0-9]{40}}/delete", async c => {
     let body: string | undefined;
