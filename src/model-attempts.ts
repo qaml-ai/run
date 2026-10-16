@@ -69,7 +69,7 @@ export class ModelAttempts {
     if (event.type === "begin") {
       if (!/^[a-f0-9]{64}$/.test(event.keyHash)) throw new Error("Invalid model key fingerprint");
       // Its end user's hold comes first: a call their credit refuses is never made, and leaves no attempt.
-      const metered = event.endUser && this.endUsers ? await this.hold(tenant, platform && catalogPriced, event) : undefined;
+      const metered = event.endUser && this.endUsers ? await this.hold(tenant, platform, platform && catalogPriced, event) : undefined;
       if (metered && "refused" in metered) return { tracked: false, refused: metered.refused };
       const prepaid = await this.accounts.billing.mode(tenant) === "prepaid";
       await this.db.query(`insert into model_attempts (id,tenant,agent,provider,model,kind,platform,catalog_priced,prepaid,key_hash,context,started_at,updated_at,next_check_at,end_user,end_user_bucket)
@@ -99,7 +99,7 @@ export class ModelAttempts {
    * rates where the tenant pays the platform for the call (its own key's call: at its model's, as the host has them).
    * Undefined: the tenant does not meter its end users.
    */
-  private async hold(tenant: string, catalog: boolean, event: Extract<ModelAttemptEvent, { type: "begin" }>): Promise<Metered | { refused: NonNullable<AttemptAck["refused"]> } | undefined> {
+  private async hold(tenant: string, platform: boolean, catalog: boolean, event: Extract<ModelAttemptEvent, { type: "begin" }>): Promise<Metered | { refused: NonNullable<AttemptAck["refused"]> } | undefined> {
     const { endUser, estimate } = event;
     // A model the catalog lacks holds at a mid-range price, never the dearest it may be billed at: a hold that size would
     // refuse everyone on a small allowance. What it cost is what settles (`settle`).
@@ -109,8 +109,10 @@ export class ModelAttempts {
     const unpriced = !(Number(rates.input) > 0) && !(Number(rates.output) > 0) ? unpricedCost(event.provider, event.model) : undefined;
     if (unpriced) rates = unpriced;
     if (catalog && !listed || unpriced) console.error(JSON.stringify({ type: "end_user_unpriced_model", tenant, attempt: event.id, provider: event.provider, model: event.model, stage: "hold" }));
+    // On the platform's OpenRouter key, the tenant also pays for funding its credits (settled as it is charged: `settle`).
+    const funding = platform && event.provider === "openrouter" ? this.accounts.billing.pricing.openrouterCreditMultiplier : 1;
     // USD per million tokens is micro-USD per token.
-    const perToken = Math.max(0, Number(rates.output) || 0), input = Math.ceil(Math.max(0, estimate?.inputTokens ?? 0) * Math.max(0, Number(rates.input) || 0));
+    const perToken = Math.max(0, Number(rates.output) || 0) * funding, input = Math.ceil(Math.max(0, estimate?.inputTokens ?? 0) * Math.max(0, Number(rates.input) || 0) * funding);
     const maxOutput = Math.max(1, estimate?.maxOutputTokens ?? HOLD_OUTPUT_TOKENS);
     const want = input + Math.ceil(Math.min(maxOutput, HOLD_OUTPUT_TOKENS) * perToken);
     const reserved = await this.endUsers!.reserve(tenant, endUser!.id, endUser!.bucket, { id: event.id, want, min: input + Math.ceil(Math.min(maxOutput, MIN_OUTPUT_TOKENS) * perToken) });
@@ -159,11 +161,13 @@ export class ModelAttempts {
       const delta = Object.fromEntries(Object.keys(zero).map(key => [key, quote.totals[key as keyof Totals] - (previous[key] ?? 0)])) as Totals;
       const amount = row.prepaid ? quote.amount : 0;
       const adjustment = amount - Number(row.charge);
-      // What the call cost its end user: raw cost as the tenant's usage counts it; a call cut short on a key priced as
+      // What the call cost its end user: raw cost as the tenant pays for it; a call cut short on a key priced as
       // reported (the tenant's own) at the estimate of what it streamed, as a platform call would be.
       const endUserUsage = !row.end_user || completed || reconciled || (row.platform && row.catalog_priced) ? pricing.usage
         : platformUsage(usage, row.provider, row.model, { chars, inputTokens: usage.estimatedInputTokens }).usage;
-      let endUserRaw = row.end_user ? Math.round(usageCost(endUserUsage).usd * 1_000_000) : 0;
+      // On the platform's key it is what the tenant is charged for the call (the provider's price and the cost of funding
+      // it), so a markup is over the tenant's real cost, not under it.
+      let endUserRaw = !row.end_user ? 0 : row.platform && endUserUsage === pricing.usage && quote.amount > 0 ? quote.amount : Math.round(usageCost(endUserUsage).usd * 1_000_000);
       // A call on a model with no price (and no cost the provider reported) is not free to its end user: it costs what
       // the catalog says for the model, else a mid-range price (`unpricedCost`), and is said, for the tenant to price it.
       if (row.end_user && endUserRaw === 0 && typeof endUserUsage.providerCost !== "number") {

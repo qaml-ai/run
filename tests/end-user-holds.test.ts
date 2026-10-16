@@ -8,6 +8,7 @@ import { EndUserCredits, HOLD_MS, NOTHING_POSTED as NOTHING, settleUsage, utcDay
 import { HOLD_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, ModelAttempts } from "../src/model-attempts.ts";
 import { attemptAck } from "../src/model-attempt.ts";
 import { catalogRates, UNPRICED_COST } from "../src/platform-pricing.ts";
+import { DEFAULT_PRICING } from "../src/pricing.ts";
 import { testDatabase } from "./database.ts";
 
 const USD = 1_000_000;
@@ -224,13 +225,15 @@ test("a corrected cost refunds the balance first, then the allowance; holds of a
 
 const KEY = "fixture-only";
 const keyHash = createHash("sha256").update(KEY).digest("hex");
-async function attemptsFixture() {
+/** `funding`: dollars paid per dollar of OpenRouter credit; 1 unless a test is about it. */
+async function attemptsFixture(funding = 1) {
   const { db } = await testDatabase();
   const tenants = new Tenants({ read: async () => JSON.stringify({ tenants: { payg: { tokenSha256: keyHash, billing: "prepaid" } }, platformKeys: { openrouter: KEY } }) });
   await tenants.reload();
   const service = new EndUserCredits(db);
   await service.setSettings("payg", { enabled: true, markupBps: 2_000 });
-  return { db, service, attempts: new ModelAttempts(db, new Accounts({ tenants, db }), undefined, 0, undefined, service) };
+  const pricing = { ...DEFAULT_PRICING, openrouterCreditMultiplier: funding };
+  return { db, service, attempts: new ModelAttempts(db, new Accounts({ tenants, db, pricing }), undefined, 0, undefined, service) };
 }
 const MODEL = "anthropic/claude-opus-4.1";
 
@@ -365,8 +368,8 @@ test("a model with no price is never free to its end user, nor refused for it: i
   assert.equal((await service.ledger("payg", "person")).entries.filter(entry => entry.kind === "usage").length, 2);
 });
 
-test("what a call costs its end user is what usage.recorded says it cost: cache reads and writes, reasoning, the provider's own cost", async () => {
-  const { db, service, attempts } = await attemptsFixture();
+test("what a call costs its end user is what it costs the tenant: usage.recorded's cost (cache reads and writes, reasoning, the provider's own) and funding it", async () => {
+  const { db, service, attempts } = await attemptsFixture(1.055);
   await db.query("insert into webhook_endpoints (id, tenant, url, events, secret, created_at) values ('we', 'payg', 'https://hooks.example.test', '{usage.recorded}', '{}', 0)");
   await service.post("payg", "person", { kind: "grant", amount: 10 * USD, key: "pay" });
   const call = async (usage: Record<string, unknown>) => {
@@ -376,14 +379,19 @@ test("what a call costs its end user is what usage.recorded says it cost: cache 
     await attempts.event("payg", "agent", true, true, { type: "finish", id, usage, chars: 100, completed: true });
     const recorded = (await db.query("select body from webhook_deliveries where body->'data'->>'attemptId' = $1", [id])).rows[0].body.data;
     const entry = (await service.ledger("payg", "person")).entries.find(entry => entry.metadata.attempt === id)!;
-    return { recorded, entry };
+    const charged = -Number((await db.query("select amount from credit_ledger where idempotency_key = $1", [`model-attempt:${id}:1`])).rows[0].amount);
+    return { recorded, entry, charged };
   };
   // Priced from the catalog: cache reads and writes at their own rates, reasoning as the output it is billed as.
   const priced = await call({ input: 1_000, output: 2_000, reasoning: 1_500, cacheRead: 50_000, cacheWrite: 10_000 });
   const rates = catalogRates("openrouter", MODEL);
   assert.ok(priced.recorded.cost.usd > (1_000 * rates.input + 2_000 * rates.output) / USD, "cache tokens are priced");
-  assert.equal(priced.entry.raw, Math.round(priced.recorded.cost.usd * USD));
+  // The tenant pays the platform the provider's price and the cost of funding its credits: the end user's raw cost is that.
+  assert.equal(priced.entry.raw, priced.charged);
+  assert.ok(priced.charged > Math.round(priced.recorded.cost.usd * USD), "funding is on top of the provider's price");
+  assert.ok(Math.abs(priced.charged - priced.recorded.cost.usd * USD * 1.055) <= 2);
   // What the provider says it charged comes first.
   const reported = await call({ input: 1_000, output: 2_000, cacheRead: 0, cacheWrite: 0, providerCost: 0.123456 });
-  assert.deepEqual([reported.recorded.cost.usd, reported.entry.raw], [0.123456, 123_456]);
+  assert.deepEqual([reported.recorded.cost.usd, reported.entry.raw], [0.123456, reported.charged]);
+  assert.equal(reported.entry.amount, -Math.ceil(reported.charged * 1.2), "the markup is over that");
 });

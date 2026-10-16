@@ -41,8 +41,11 @@ balances are your ledger of your users, and camelRun never moves money for them.
 
 All amounts are integer **micro-USD**: 1 USD = 1,000,000.
 
-A call costs a person what it cost you: the provider's reported cost, else the catalog's
-price for its tokens (cache reads and writes included), as `usage.recorded` says. A call
+A call costs a person what it cost you: on camelRun's keys, what you are charged for it
+(the provider's price, and the cost of funding OpenRouter credit on OpenRouter calls, about
+5.5%); on your own keys, the provider's reported cost, else the catalog's price for its
+tokens (cache reads and writes included), as `usage.recorded` says. The markup is on top
+of that. A call
 on a model with no price (one of your [own models](custom-models.md) declared without
 `pricing`) is never free to them: it is charged at the catalog's price for the model,
 else a mid-range price ($3 in, $15 out a million tokens), and logged as `end_user_unpriced_model`. Declare its

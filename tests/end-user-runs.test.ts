@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { listen, runtime, sleep, toolCall, until } from "./runtime-server.ts";
 
 const USD = 1_000_000;
+/** Calls charged at the provider's price: funding OpenRouter credit (what a tenant pays on top) is end-user-holds.test.ts's. */
+const AT_COST = { AGENT_OPENROUTER_CREDIT_MULTIPLIER: "1" };
 /** Each response reports what OpenRouter charged for it: $0.10. The model keeps calling tools. */
 const looping = (_body: any, index: number) => ({ ...toolCall("js_exec", { code: `return ${index}` }, `call_${index}`), usage: { prompt_tokens: 10, completion_tokens: 10, cost: 0.1 } });
 const settings = (r: Awaited<ReturnType<typeof runtime>>, body: Record<string, unknown>) => r.call("/v1/end-user-settings", { method: "PUT", body: { enabled: true, ...body } });
@@ -16,7 +18,7 @@ const settled = (r: Awaited<ReturnType<typeof runtime>>, path: string) => until(
 }, "the run to end", 30_000);
 
 test("an end user's allowance pays first, then their balance; out of both, the turn stops and their next run is refused", async t => {
-  const r = await runtime(t, looping, { AGENT_MODEL: "openai/gpt-5.5-pro" });
+  const r = await runtime(t, looping, { ...AT_COST, AGENT_MODEL: "openai/gpt-5.5-pro" });
   assert.equal((await settings(r, { allowances: { builder: 250_000 }, markupBps: 2_500 })).status, 200);
   assert.equal((await grant(r, "person", 100_000, "pay-1")).status, 201);
   const { id, token } = (await r.call("/v1/agents", { body: { subject: "person", bucket: "builder" } })).json;
@@ -53,7 +55,7 @@ test("an end user's allowance pays first, then their balance; out of both, the t
 
 test("a run's own bucket, the agent's bucket and a stateless run's each spend their own allowance", async t => {
   // gpt-4.1: a call needs about a cent of credit to start (its input, and 256 tokens of output at $8 a million).
-  const r = await runtime(t, (_body: any) => ({ content: "done", usage: { prompt_tokens: 10, completion_tokens: 10, cost: 0.01 } }), { AGENT_MODEL: "openai/gpt-4.1" });
+  const r = await runtime(t, (_body: any) => ({ content: "done", usage: { prompt_tokens: 10, completion_tokens: 10, cost: 0.01 } }), { ...AT_COST, AGENT_MODEL: "openai/gpt-4.1" });
   await settings(r, { allowances: { "bot:*": 50_000, builder: 50_000 } });
   const { id } = (await r.call("/v1/agents", { body: { subject: "owner", bucket: "builder" } })).json;
   await r.prompt(id, "one");
@@ -79,7 +81,7 @@ test("a run's own bucket, the agent's bucket and a stateless run's each spend th
 test("a run's own bucket is what its start is checked against, and the runs after it that name none (the runtime's own too) inherit it, never \"default\"", async t => {
   // camel-bots' bot agents: no bucket of their own ("default", $0 under "*": 0), each prompt naming the bot's. The
   // queued run's start once checked the agent's bucket, and every such run failed before it began.
-  const r = await runtime(t, (_body: any) => ({ content: "done", usage: { prompt_tokens: 10, completion_tokens: 10, cost: 0.01 } }), { AGENT_MODEL: "openai/gpt-4.1" });
+  const r = await runtime(t, (_body: any) => ({ content: "done", usage: { prompt_tokens: 10, completion_tokens: 10, cost: 0.01 } }), { ...AT_COST, AGENT_MODEL: "openai/gpt-4.1" });
   await settings(r, { allowances: { "bot:*": 1_000_000, "*": 0 } });
   const { id } = (await r.call("/v1/agents", { body: { subject: "owner" } })).json;
   const accepted = await r.call(`/v1/agents/${id}/prompt`, { body: { text: "hi", requestId: "own-bucket", bucket: "bot:7", spendLimit: { usd: 0.25 } } });
@@ -117,7 +119,7 @@ test("a long reply stops at the end of its end user's credit, mid-stream, and is
     }
     if (!res.destroyed) res.end(`data: ${JSON.stringify({ id: "long", object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 100, completion_tokens: 12_500 } })}\n\ndata: [DONE]\n\n`);
   });
-  const r = await runtime(t, () => ({ content: "unused" }), { AGENT_MODEL: "openai/gpt-5.5-pro", AGENT_BASE_URL: `${url}/v1` });
+  const r = await runtime(t, () => ({ content: "unused" }), { ...AT_COST, AGENT_MODEL: "openai/gpt-5.5-pro", AGENT_BASE_URL: `${url}/v1` });
   await settings(r, {});
   await grant(r, "reader", 500_000, "pay");
   const { id } = (await r.call("/v1/agents", { body: { subject: "reader" } })).json;
@@ -143,7 +145,7 @@ test("a long reply stops at the end of its end user's credit, mid-stream, and is
 test("concurrent replies for one end user share their credit: their holds never add up to more than it", async t => {
   let release!: () => void;
   const barrier = new Promise<void>(resolve => { release = resolve; });
-  const r = await runtime(t, () => ({ content: "ok", wait: barrier, usage: { prompt_tokens: 10, completion_tokens: 10, cost: 0.01 } }), { AGENT_MODEL: "openai/gpt-4.1" });
+  const r = await runtime(t, () => ({ content: "ok", wait: barrier, usage: { prompt_tokens: 10, completion_tokens: 10, cost: 0.01 } }), { ...AT_COST, AGENT_MODEL: "openai/gpt-4.1" });
   await settings(r, {});
   // A gpt-4.1 call holds its input and 8,192 tokens of output at $8 a million: about $0.07. $0.15 holds two and a bit.
   await grant(r, "shared", 150_000, "pay");
@@ -172,7 +174,7 @@ test("concurrent replies for one end user share their credit: their holds never 
 
 test("the TypeScript SDK: endUsers configure, grant, get and ledger; an agent's bucket; a run out of credit fails with code end_user_credit", async t => {
   const { Agents } = await import("../clients/node.ts");
-  const r = await runtime(t, () => ({ content: "seen", usage: { prompt_tokens: 10, completion_tokens: 10, cost: 0.01 } }), { AGENT_MODEL: "openai/gpt-4.1" });
+  const r = await runtime(t, () => ({ content: "seen", usage: { prompt_tokens: 10, completion_tokens: 10, cost: 0.01 } }), { ...AT_COST, AGENT_MODEL: "openai/gpt-4.1" });
   const agents = new Agents({ url: r.base, apiKey: (await import("./runtime-server.ts")).OPERATOR });
   t.after(() => agents.close());
   const settings = await agents.endUsers.configure({ enabled: true, allowances: { "bot:*": 15_000 }, markupBps: 2_000 });
