@@ -165,9 +165,11 @@ test("concurrent replies for one end user share their credit: their holds never 
   assert.ok(held <= 40_000, `${held} held of 40000`);
   release();
   const runs = await Promise.all(agents.map((agent, index) => settled(r, `/v1/agents/${agent}/requests/${accepted[index].json.id}`)));
-  const refused = runs.filter(run => run.outcome.result?.code === "end_user_credit");
-  assert.ok(runs.every(run => run.outcome.result), JSON.stringify({ outcomes: runs.map(run => run.outcome), logs: r.logs.filter(line => /error|failed|refused/i.test(line)).slice(-30) }));
-  assert.ok(reached < 4 && refused.length === 4 - reached, `${reached} calls made, ${refused.length} refused: ${JSON.stringify(runs.map(run => run.outcome.result))}`);
+  // Refused at its model call (a result, code end_user_credit), or as its run started, when the others' holds already
+  // took what there was (an error, no result): either way before the provider was asked.
+  const refused = runs.filter(run => run.outcome.result?.code === "end_user_credit" || (!run.outcome.result && /out of credit|too little credit/.test(run.outcome.error ?? "")));
+  assert.ok(runs.every(run => run.outcome.result || run.outcome.error), JSON.stringify({ outcomes: runs.map(run => run.outcome), logs: r.logs.filter(line => /error|failed|refused/i.test(line)).slice(-30) }));
+  assert.ok(reached < 4 && refused.length === 4 - reached, `${reached} calls made, ${refused.length} refused: ${JSON.stringify(runs.map(run => run.outcome))}`);
   const person = (await r.call("/v1/end-users/shared")).json;
   assert.deepEqual([person.balance, person.held], [40_000 - reached * 10_000, 0]);
 });
