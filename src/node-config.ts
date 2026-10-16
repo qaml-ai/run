@@ -142,8 +142,9 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     // Voice sessions (src/voice-sessions.ts): on with AGENT_VOICE=true; live ones per tenant, and the most one node holds.
     voice: {
       enabled: env.AGENT_VOICE === "true",
-      // Transcribing as people speak (OpenAI Realtime): on unless "false"; the model, and its delay setting, when given.
-      live: env.AGENT_VOICE_LIVE_TRANSCRIPTION !== "false", liveModel: env.AGENT_VOICE_LIVE_MODEL || undefined, liveDelay: env.AGENT_VOICE_LIVE_DELAY || undefined,
+      // Transcribing as people speak (OpenAI Realtime): off unless "true" (measured: at most ~200 ms sooner, at 3.8x the
+      // price); the model, and its delay setting, when given.
+      live: env.AGENT_VOICE_LIVE_TRANSCRIPTION === "true", liveModel: env.AGENT_VOICE_LIVE_MODEL || undefined, liveDelay: env.AGENT_VOICE_LIVE_DELAY || undefined,
       perTenant: Number(env.AGENT_VOICE_SESSIONS_PER_TENANT ?? 10), perNode: Number(env.AGENT_VOICE_SESSIONS_PER_NODE ?? 200) },
     verifyKeys: env.AGENT_VERIFY_KEYS !== "false",
     billingAdmins: (env.AGENT_BILLING_ADMINS ?? "").split(",").map(value => value.trim()).filter(Boolean),

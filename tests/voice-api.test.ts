@@ -176,7 +176,7 @@ test("a session that speaks its agent's replies: the agent's run (on another nod
       AGENT_DATA_DIR: join(root, "shared"), AGENT_STORAGE: "shared-file", AGENT_HOSTING: "inline", AGENT_LEASE_TTL_MS: "1500", AGENT_SCHEDULER_INTERVAL_MS: "200",
       AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_SESSION_SECRET: "voice-api-session-secret-with-32-chars!!", AGENT_SECRETS_KEY: secretsKey,
       AGENT_PROVIDER: "openrouter", AGENT_MODEL: "openai/gpt-4o-mini", AGENT_BASE_URL: model.url,
-      AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", AGENT_SPEECH_URL: openaiUrl, AGENT_TRANSCRIPTION_URL: openaiUrl,
+      AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", AGENT_SPEECH_URL: openaiUrl, AGENT_TRANSCRIPTION_URL: openaiUrl, AGENT_VOICE_LIVE_TRANSCRIPTION: "true",
     });
     const made = await createNode(config, { ...await nodeDeps(config), voiceTransports: { discord: fake.transport } });
     try { await made.start(); } catch (error) { await made.close().catch(() => {}); throw error; }

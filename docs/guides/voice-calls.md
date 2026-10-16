@@ -117,12 +117,12 @@ With `deliver.webhooks`, each goes to your [webhook endpoints](webhooks.md) that
 session moved to another node of the runtime, which goes on from the next); `end` (the session ended). `seq` numbers
 them in the order their transcripts were made. An utterance that transcribes to nothing is billed but not sent.
 
-Utterances are transcribed as they are spoken: each person's audio streams to OpenAI's Realtime transcription
-(`gpt-live-transcribe`) while they talk, and the cut commits it, so the transcript follows the end of speech by a few
-hundred milliseconds rather than an upload and a whole transcription. If that fails (the stream breaks, a key scope
-sends OpenAI calls through its own address), the utterance is transcribed after it is cut, as before; the event is the
-same either way. Audio streamed live is billed at the [live transcription price](../pricing.md) per second sent,
-which includes the quiet up to `silenceMs` after the speech.
+A runtime may instead transcribe utterances as they are spoken (off by default; its operator turns it on with
+`AGENT_VOICE_LIVE_TRANSCRIPTION=true`): each person's audio streams to OpenAI's Realtime transcription
+(`gpt-live-transcribe`) while they talk, and the cut commits it. Measured, that brings the transcript at most about
+200 ms sooner, at the [live transcription price](../pricing.md) (3.8 times the other, per second sent, including the
+quiet up to `silenceMs` after the speech). If it fails, the utterance is transcribed after it is cut; the event is the
+same either way.
 
 With `deliver.agent`, each is a prompt to that agent, from its speaker (`from: {id: speakerId}`), with metadata
 `{voiceSession, utterance}`; the agent's runs answer as any run does (`run.completed`, its events). A deleted agent gets
