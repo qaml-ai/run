@@ -395,3 +395,16 @@ test("what a call costs its end user is what it costs the tenant: usage.recorded
   assert.deepEqual([reported.recorded.cost.usd, reported.entry.raw], [0.123456, reported.charged]);
   assert.equal(reported.entry.amount, -Math.ceil(reported.charged * 1.2), "the markup is over that");
 });
+
+test("a call's hold prices the input its provider likely reads from cache at the cache's rate: a cheap cached reply is not refused", async () => {
+  const { service, attempts } = await attemptsFixture();
+  await service.post("payg", "person", { kind: "grant", amount: 500_000, key: "pay" });
+  const begin = (cachedTokens?: number) => ({ type: "begin" as const, id: randomUUID(), provider: "openrouter", model: MODEL, kind: "response" as const, at: Date.now(), keyHash,
+    estimate: { inputTokens: 100_000, ...(cachedTokens ? { cachedTokens } : {}), maxOutputTokens: 4_000, rates: { input: 0, output: 0 } }, endUser: { id: "person", bucket: "b" } });
+  // 100,000 tokens in at $15 a million: $1.50 to start, more than the $0.50 there is.
+  assert.equal(attemptAck(await attempts.event("payg", "agent", true, true, begin())).refused?.reason, "balance");
+  // 90,000 of them read from cache at $1.50 a million: about $0.30 to start.
+  const cached = attemptAck(await attempts.event("payg", "agent", true, true, begin(90_000)));
+  assert.equal(cached.refused, undefined);
+  assert.ok(cached.tracked);
+});

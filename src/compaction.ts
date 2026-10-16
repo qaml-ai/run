@@ -327,7 +327,10 @@ export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefin
     // What the request's context comes to, as the host estimates it: its end user's hold, and the input billed for a request cut short.
     const input = () => Math.min(model.contextWindow, context.messages.reduce((sum, message) => sum + (message.role === "system"
       ? Math.ceil(JSON.stringify(message).length / 4) : estimateTokens(message)), 0));
-    const estimate = { inputTokens: input(), maxOutputTokens: options.maxTokens ?? model.maxTokens, rates: { input: model.cost.input, output: model.cost.output } };
+    // The prefix the previous response read from or wrote to the provider's cache is likely read from it now, at its rate.
+    const previous = context.messages.findLast(message => message.role === "assistant")?.usage;
+    const inputTokens = input(), cachedTokens = Math.min(inputTokens, (previous?.cacheRead ?? 0) + (previous?.cacheWrite ?? 0));
+    const estimate = { inputTokens, ...(cachedTokens > 0 ? { cachedTokens } : {}), maxOutputTokens: options.maxTokens ?? model.maxTokens, rates: { input: model.cost.input, output: model.cost.output, cacheRead: model.cost.cacheRead } };
     const call = (credentials: Credentials) => attemptStream(attemptModel(model, credentials), credentials.apiKey, "response", attempt, (sink, halt) => {
       const { signal, cut, done } = gatedSignal(gate, options.signal ? AbortSignal.any([options.signal, halt]) : halt);
       let requested = false;

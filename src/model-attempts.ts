@@ -104,7 +104,7 @@ export class ModelAttempts {
     // A model the catalog lacks holds at a mid-range price, never the dearest it may be billed at: a hold that size would
     // refuse everyone on a small allowance. What it cost is what settles (`settle`).
     const listed = catalogCost(event.provider, event.model);
-    let rates: { input: number; output: number } = catalog ? listed ?? UNPRICED_COST : estimate?.rates ?? listed ?? UNPRICED_COST;
+    let rates: { input: number; output: number; cacheRead?: number } = catalog ? listed ?? UNPRICED_COST : estimate?.rates ?? listed ?? UNPRICED_COST;
     // A model with no price is never free to its end user: it holds at the price it settles at.
     const unpriced = !(Number(rates.input) > 0) && !(Number(rates.output) > 0) ? unpricedCost(event.provider, event.model) : undefined;
     if (unpriced) rates = unpriced;
@@ -112,7 +112,10 @@ export class ModelAttempts {
     // On the platform's OpenRouter key, the tenant also pays for funding its credits (settled as it is charged: `settle`).
     const funding = platform && event.provider === "openrouter" ? this.accounts.billing.pricing.openrouterCreditMultiplier : 1;
     // USD per million tokens is micro-USD per token.
-    const perToken = Math.max(0, Number(rates.output) || 0) * funding, input = Math.ceil(Math.max(0, estimate?.inputTokens ?? 0) * Math.max(0, Number(rates.input) || 0) * funding);
+    // Its input at the input rate, but for the part the provider likely reads from its cache, at that rate.
+    const inputTokens = Math.max(0, estimate?.inputTokens ?? 0), cached = Math.min(inputTokens, Math.max(0, estimate?.cachedTokens ?? 0));
+    const inputRate = Math.max(0, Number(rates.input) || 0), cachedRate = Math.min(inputRate, Math.max(0, Number(rates.cacheRead ?? inputRate) || 0));
+    const perToken = Math.max(0, Number(rates.output) || 0) * funding, input = Math.ceil(((inputTokens - cached) * inputRate + cached * cachedRate) * funding);
     const maxOutput = Math.max(1, estimate?.maxOutputTokens ?? HOLD_OUTPUT_TOKENS);
     const want = input + Math.ceil(Math.min(maxOutput, HOLD_OUTPUT_TOKENS) * perToken);
     const reserved = await this.endUsers!.reserve(tenant, endUser!.id, endUser!.bucket, { id: event.id, want, min: input + Math.ceil(Math.min(maxOutput, MIN_OUTPUT_TOKENS) * perToken) });
