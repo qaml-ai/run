@@ -1580,7 +1580,7 @@
               "input",
               "output"
             ],
-            "description": "USD per million tokens, for usage, spend limits and webhooks; none: free"
+            "description": "USD per million tokens, for usage, spend limits and webhooks; none: free to the tenant, but a call its end user pays for (end-user credits) is then charged at the catalog's price for the model, else the provider's dearest"
           },
           "compat": {
             "type": "object",

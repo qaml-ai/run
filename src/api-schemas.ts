@@ -56,7 +56,7 @@ const CustomModel = z.object({
   maxOutputTokens: z.number().int().optional().openapi({ description: "The most it writes in a reply; default 8,192, or half a smaller context window" }),
   input: z.array(z.enum(["text", "image"])).optional().openapi({ description: "[\"text\", \"image\"] for a model that sees images; default [\"text\"]" }),
   reasoning: z.boolean().optional().openapi({ description: "Whether it reasons (thinkingLevel applies)" }),
-  pricing: z.object({ input: z.number(), output: z.number(), cacheRead: z.number().optional(), cacheWrite: z.number().optional() }).optional().openapi({ description: "USD per million tokens, for usage, spend limits and webhooks; none: free" }),
+  pricing: z.object({ input: z.number(), output: z.number(), cacheRead: z.number().optional(), cacheWrite: z.number().optional() }).optional().openapi({ description: "USD per million tokens, for usage, spend limits and webhooks; none: free to the tenant, but a call its end user pays for (end-user credits) is then charged at the catalog's price for the model, else the provider's dearest" }),
   compat: z.object({
     supportsDeveloperRole: z.boolean().optional(), supportsUsageInStreaming: z.boolean().optional(), supportsFinishReason: z.boolean().optional(), supportsReasoningEffort: z.boolean().optional(),
     maxTokensField: z.enum(["max_tokens", "max_completion_tokens"]).optional(),

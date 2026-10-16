@@ -287,3 +287,68 @@ test("a failed call with no output releases its hold; one without an end user is
   await attempts.event("payg", "agent", true, true, { type: "finish", id: plain, usage: { input: 100, output: 10, providerCost: 0.1, providerCreditCost: 0 }, chars: 40, completed: true });
   assert.equal((await db.query("select count(*)::int as n from end_user_ledger where kind = 'usage'")).rows[0].n, 0);
 });
+
+test("a model with no price is never free to its end user: it holds and settles at the catalog's or the provider's dearest, and is said", async () => {
+  const { db, service, attempts } = await attemptsFixture();
+  await service.post("payg", "person", { kind: "grant", amount: USD, key: "pay" });
+  const begin = (id: string, provider: string, model: string, endUser = "person") => ({ type: "begin" as const, id, provider, model, kind: "response" as const, at: Date.now(), keyHash,
+    estimate: { inputTokens: 1_000, maxOutputTokens: 4_000, rates: { input: 0, output: 0 } }, endUser: { id: endUser, bucket: "b" } });
+  // A tenant's own model declared without pricing, on its own key: the host prices it at zero.
+  const id = randomUUID();
+  const ack = attemptAck(await attempts.event("payg", "agent", false, false, begin(id, "mine", "llama-local")));
+  assert.ok(ack.tracked && ack.stopAtChars! > 0, "it holds, at the provider's dearest");
+  assert.ok(Number((await holds(db))[0].paid) > 0);
+  const errors: string[] = [];
+  const error = console.error;
+  console.error = (line: string) => { errors.push(line); };
+  try {
+    await attempts.event("payg", "agent", false, false, { type: "finish", id, usage: { input: 1_000, output: 100, cacheRead: 2_000, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, chars: 200, completed: true });
+  } finally { console.error = error; }
+  const [entry] = (await service.ledger("payg", "person", { limit: 1 })).entries;
+  // The dearest floors: $15 in, $75 out, $1.50 cache reads, a million tokens.
+  assert.equal(entry.raw, 1_000 * 15 + 100 * 75 + 2_000 * 1.5);
+  assert.equal(entry.amount, -Math.ceil(entry.raw * 1.2));
+  assert.ok(errors.some(line => JSON.parse(line).type === "end_user_unpriced_model"), errors.join("\n"));
+  // Nobody with nothing to pay with runs one.
+  const refused = attemptAck(await attempts.event("payg", "agent", false, false, begin(randomUUID(), "mine", "llama-local", "nobody")));
+  assert.equal(refused.refused?.reason, "balance");
+  // A tenant endpoint's call (no cost to the tenant) is priced as the catalog prices the model it names.
+  const routed = randomUUID();
+  attemptAck(await attempts.event("payg", "agent", false, false, begin(routed, "acme", `openrouter/${MODEL}`)));
+  await attempts.event("payg", "agent", false, false, { type: "finish", id: routed, usage: { input: 1_000, output: 100, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } }, chars: 200, completed: true });
+  const rates = catalogRates("openrouter", MODEL);
+  assert.equal((await service.ledger("payg", "person", { limit: 1 })).entries[0].raw, Math.round(1_000 * rates.input + 100 * rates.output));
+  // A model the catalog prices at zero is free, as is a call the provider says cost nothing.
+  const free = randomUUID();
+  const freeAck = attemptAck(await attempts.event("payg", "agent", false, false, begin(free, "openrouter", "google/gemma-4-26b-a4b-it:free", "nobody")));
+  assert.equal(freeAck.refused, undefined);
+  await attempts.event("payg", "agent", false, false, { type: "finish", id: free, usage: { input: 1_000, output: 100, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } }, chars: 200, completed: true });
+  const reported = randomUUID();
+  attemptAck(await attempts.event("payg", "agent", false, false, begin(reported, "mine", "llama-local")));
+  await attempts.event("payg", "agent", false, false, { type: "finish", id: reported, usage: { input: 1_000, output: 100, cacheRead: 0, cacheWrite: 0, providerCost: 0, cost: { total: 0 } }, chars: 200, completed: true });
+  assert.equal((await service.ledger("payg", "nobody")).entries.length, 0);
+  assert.equal((await service.ledger("payg", "person")).entries.filter(entry => entry.kind === "usage").length, 2);
+});
+
+test("what a call costs its end user is what usage.recorded says it cost: cache reads and writes, reasoning, the provider's own cost", async () => {
+  const { db, service, attempts } = await attemptsFixture();
+  await db.query("insert into webhook_endpoints (id, tenant, url, events, secret, created_at) values ('we', 'payg', 'https://hooks.example.test', '{usage.recorded}', '{}', 0)");
+  await service.post("payg", "person", { kind: "grant", amount: 10 * USD, key: "pay" });
+  const call = async (usage: Record<string, unknown>) => {
+    const id = randomUUID();
+    attemptAck(await attempts.event("payg", "agent", true, true, { type: "begin", id, provider: "openrouter", model: MODEL, kind: "response", at: Date.now(), keyHash,
+      estimate: { inputTokens: 1_000, maxOutputTokens: 4_000, rates: { input: 0, output: 0 } }, endUser: { id: "person", bucket: "b" } }));
+    await attempts.event("payg", "agent", true, true, { type: "finish", id, usage, chars: 100, completed: true });
+    const recorded = (await db.query("select body from webhook_deliveries where body->'data'->>'attemptId' = $1", [id])).rows[0].body.data;
+    const entry = (await service.ledger("payg", "person")).entries.find(entry => entry.metadata.attempt === id)!;
+    return { recorded, entry };
+  };
+  // Priced from the catalog: cache reads and writes at their own rates, reasoning as the output it is billed as.
+  const priced = await call({ input: 1_000, output: 2_000, reasoning: 1_500, cacheRead: 50_000, cacheWrite: 10_000 });
+  const rates = catalogRates("openrouter", MODEL);
+  assert.ok(priced.recorded.cost.usd > (1_000 * rates.input + 2_000 * rates.output) / USD, "cache tokens are priced");
+  assert.equal(priced.entry.raw, Math.round(priced.recorded.cost.usd * USD));
+  // What the provider says it charged comes first.
+  const reported = await call({ input: 1_000, output: 2_000, cacheRead: 0, cacheWrite: 0, providerCost: 0.123456 });
+  assert.deepEqual([reported.recorded.cost.usd, reported.entry.raw], [0.123456, 123_456]);
+});

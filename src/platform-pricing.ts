@@ -29,6 +29,24 @@ export function catalogRates(provider: string, id: string): { input: number; out
 }
 
 /**
+ * What a call its end user pays for is priced at when its model has no price (a tenant's model declared without pricing,
+ * a tenant endpoint's, at no cost to the tenant): the catalog's for the model, by its own provider or the one its id
+ * names (`openrouter/<model>` on an endpoint); else the provider's dearest. Undefined: the catalog prices it at zero (a
+ * free model), the only way such a call is free.
+ */
+export function unpricedCost(provider: string, id: string): Model<Api>["cost"] | undefined {
+  const [inner, ...rest] = id.split("/");
+  const known = catalogModel(provider, id) ?? (rest.length ? catalogModel(inner, rest.join("/")) : undefined);
+  if (!known) return dearest(provider);
+  return known.cost.input > 0 || known.cost.output > 0 ? known.cost : undefined;
+}
+
+/** `usage`'s tokens at `cost` (USD per million tokens), in USD. */
+export function costAt(cost: Model<Api>["cost"], usage: Usage): number {
+  return (count(usage.input) * cost.input + count(usage.output) * cost.output + count(usage.cacheRead) * cost.cacheRead + count(usage.cacheWrite) * cost.cacheWrite) / 1_000_000;
+}
+
+/**
  * A response on a platform key, priced from the runtime's catalog when it is billed: never from the agent's model
  * as stored, whose prices are not the tenant's to set. A cost the provider reported itself (`providerCost`) still
  * comes first. A response with no token counts and no provider cost (usage suppressed) is charged as if it filled

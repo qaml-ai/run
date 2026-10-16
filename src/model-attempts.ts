@@ -7,7 +7,7 @@ import { enqueueEvents } from "./webhooks.ts";
 import { clock, network } from "./node-context.ts";
 import type { AttemptAck, ModelAttemptEvent } from "./model-attempt.ts";
 import { lockEndUser, settleUsage, utcDay, type EndUserCredits } from "./end-user-credits.ts";
-import { catalogRates } from "./platform-pricing.ts";
+import { catalogRates, costAt, unpricedCost } from "./platform-pricing.ts";
 import { usageCost } from "./webhooks.ts";
 
 const zero: Totals = { responses: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, platformResponses: 0, platformCost: 0 };
@@ -101,7 +101,10 @@ export class ModelAttempts {
    */
   private async hold(tenant: string, catalog: boolean, event: Extract<ModelAttemptEvent, { type: "begin" }>): Promise<Metered | { refused: NonNullable<AttemptAck["refused"]> } | undefined> {
     const { endUser, estimate } = event;
-    const rates = catalog ? catalogRates(event.provider, event.model) : estimate?.rates ?? catalogRates(event.provider, event.model);
+    let rates = catalog ? catalogRates(event.provider, event.model) : estimate?.rates ?? catalogRates(event.provider, event.model);
+    // A model with no price is never free to its end user: it holds at the conservative price it settles at.
+    const unpriced = !(Number(rates.input) > 0) && !(Number(rates.output) > 0) ? unpricedCost(event.provider, event.model) : undefined;
+    if (unpriced) rates = unpriced;
     // USD per million tokens is micro-USD per token.
     const perToken = Math.max(0, Number(rates.output) || 0), input = Math.ceil(Math.max(0, estimate?.inputTokens ?? 0) * Math.max(0, Number(rates.input) || 0));
     const maxOutput = Math.max(1, estimate?.maxOutputTokens ?? HOLD_OUTPUT_TOKENS);
@@ -156,7 +159,17 @@ export class ModelAttempts {
       // reported (the tenant's own) at the estimate of what it streamed, as a platform call would be.
       const endUserUsage = !row.end_user || completed || reconciled || (row.platform && row.catalog_priced) ? pricing.usage
         : platformUsage(usage, row.provider, row.model, { chars, inputTokens: usage.estimatedInputTokens }).usage;
-      const endUserRaw = row.end_user ? Math.round(usageCost(endUserUsage).usd * 1_000_000) : 0;
+      let endUserRaw = row.end_user ? Math.round(usageCost(endUserUsage).usd * 1_000_000) : 0;
+      // A call on a model with no price (and no cost the provider reported) is not free to its end user: it costs what
+      // the catalog says for the model, else the provider's dearest (`unpricedCost`), and is said, for the tenant to price it.
+      if (row.end_user && endUserRaw === 0 && typeof endUserUsage.providerCost !== "number") {
+        const unpriced = unpricedCost(row.provider, row.model);
+        const raw = unpriced ? Math.round(costAt(unpriced, endUserUsage) * 1_000_000) : 0;
+        if (raw > 0) {
+          endUserRaw = raw;
+          console.error(JSON.stringify({ type: "end_user_unpriced_model", tenant, agent, attempt: id, provider: row.provider, model: row.model, raw }));
+        }
+      }
       if (row.totals && adjustment === 0 && Object.values(delta).every(value => value === 0)
         && row.state === (final ? "settled" : "estimated") && endUserRaw === Number(row.end_user_raw)) return;
       const revision = row.revision + 1;
