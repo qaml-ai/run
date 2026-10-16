@@ -4954,8 +4954,9 @@ export class ClientSessions {
     if (!session.defaultBucketSaid && session.header.identity?.subject !== undefined && this.options.endUsers) {
       session.defaultBucketSaid = true;
       const { tenant, id: agent } = session.header;
+      // A metered agent's run named no bucket, nor did the agent or any run of it.
       void this.options.endUsers.enabled(tenant).then(metered => {
-        if (metered) console.warn(JSON.stringify({ type: "end_user_default_bucket", tenant, agent, message: "A metered agent's run named no bucket, nor did the agent or any run of it: it spends from \"default\"" }));
+        if (metered) console.warn(JSON.stringify({ type: "end_user_default_bucket", tenant, agent }));
       }, () => {});
     }
     return DEFAULT_BUCKET;
