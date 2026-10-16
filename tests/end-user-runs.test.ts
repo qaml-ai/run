@@ -76,7 +76,7 @@ test("a run's own bucket, the agent's bucket and a stateless run's each spend th
   assert.equal((await r.call("/v1/runs?wait=30", { body: { input: "six" } })).status, 200);
 });
 
-test("a run's own bucket is what its start is checked against, not the agent's: an agent in a bucket with no allowance runs from the run's", async t => {
+test("a run's own bucket is what its start is checked against, and the runs after it that name none (the runtime's own too) inherit it, never \"default\"", async t => {
   // camel-bots' bot agents: no bucket of their own ("default", $0 under "*": 0), each prompt naming the bot's. The
   // queued run's start once checked the agent's bucket, and every such run failed before it began.
   const r = await runtime(t, (_body: any) => ({ content: "done", usage: { prompt_tokens: 10, completion_tokens: 10, cost: 0.01 } }), { AGENT_MODEL: "openai/gpt-4.1" });
@@ -88,8 +88,16 @@ test("a run's own bucket is what its start is checked against, not the agent's: 
   assert.equal(record.outcome.error, undefined, JSON.stringify(record.outcome));
   assert.equal(record.outcome.result.reply, "done");
   assert.deepEqual((await usage(r, "owner")).map((entry: any) => entry.bucket), ["bot:7"]);
-  // Without one, the agent's own ("default", no allowance) is refused at accept, as before.
-  const refused = await r.call(`/v1/agents/${id}/prompt`, { body: { text: "hi" } });
+  // A run that names none spends from the bucket the agent's runs were last given, never "default" (no allowance).
+  await r.prompt(id, "hi");
+  // So does a run the runtime starts for it: a schedule's wake-up.
+  const now = Date.now();
+  await r.db.query("insert into schedules (id, agent, tenant, text, due_at, created_at) values (gen_random_uuid(), $1, 'alice', 'wake up', $2, $2)", [id, now - 10]);
+  await until(async () => (await usage(r, "owner")).length === 3, "the schedule's run to spend");
+  assert.deepEqual((await usage(r, "owner")).map((entry: any) => entry.bucket), ["bot:7", "bot:7", "bot:7"]);
+  // An agent no run named a bucket for still has the default's (no allowance): refused at accept, saying which.
+  const other = (await r.call("/v1/agents", { body: { subject: "owner" } })).json.id;
+  const refused = await r.call(`/v1/agents/${other}/prompt`, { body: { text: "hi" } });
   assert.deepEqual([refused.status, refused.json.code, refused.json.bucket], [402, "END_USER_CREDIT", "default"], refused.text);
 });
 
