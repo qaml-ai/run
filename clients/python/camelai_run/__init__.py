@@ -1146,16 +1146,18 @@ class Voice:
 
     def create(self, discord, *, subject=None, bucket=None, context=None, key_scope=None, agent=None, webhooks=None, language=None,
                prompt=None, silence_ms=None, max_minutes=None, idle_minutes=None, empty_seconds=None, ignore_user_ids=None,
-               metadata=None, notice=None, idempotency_key=None):
+               metadata=None, notice=None, speak=None, barge_in=None, voice=None, idempotency_key=None):
         """Start a session from `discord`: {"guildId", "channelId", "userId" (the bot), "sessionId" (its
         VOICE_STATE_UPDATE), "endpoint", "token" (VOICE_SERVER_UPDATE)}. `subject` pays (its `bucket` with end-user
         credits on); utterances go to your webhooks (`webhooks`, default True) and/or `agent` as prompts. `silence_ms`
         (default 800) ends an utterance; `max_minutes` (240), `idle_minutes` (30) and `empty_seconds` (60) end the
-        session. Returns the session with "notice": post its "text" in the voice channel's chat now. Raises 409
+        session. `speak=True` lets the bot speak (speak()): your app joins with self_mute false; `barge_in` (default True)
+        stops its speech when a person talks; `voice` is the voice it speaks in.
+        Returns the session with "notice": post its "text" in the voice channel's chat now. Raises 409
         VOICE_SESSION_EXISTS when the bot has one in the server."""
         fields = {"subject": subject, "bucket": bucket, "context": context, "keyScope": key_scope, "language": language, "prompt": prompt,
                   "silenceMs": silence_ms, "maxMinutes": max_minutes, "idleMinutes": idle_minutes, "emptySeconds": empty_seconds,
-                  "ignoreUserIds": ignore_user_ids, "metadata": metadata, "notice": notice}
+                  "ignoreUserIds": ignore_user_ids, "metadata": metadata, "notice": notice, "speak": speak, "bargeIn": barge_in, "voice": voice}
         deliver = {key: value for key, value in {"agent": agent, "webhooks": webhooks}.items() if value is not None}
         body = {"provider": "discord", "discord": discord, **{key: value for key, value in fields.items() if value is not None}, **({"deliver": deliver} if deliver else {})}
         headers = {"Idempotency-Key": idempotency_key} if idempotency_key is not None else None
@@ -1174,6 +1176,17 @@ class Voice:
         session reconnects with it."""
         body = {key: value for key, value in {"discord": discord, "ignoreUserIds": ignore_user_ids, "metadata": metadata}.items() if value is not None}
         return self._runtime._rest("PATCH", f"/v1/voice/sessions/{quote(session_id, safe='')}", body)
+
+    def speak(self, session_id, text, *, voice=None, instructions=None, interrupt=None):
+        """Say `text` (1 to 4,000 characters) in the call, for a session made with speak=True: queued behind what the bot
+        is saying, or with `interrupt=True` instead of it. `instructions` says how (tone, pace). Returns {"speechId",
+        "position", ...}; voice.speech.started and voice.speech.ended follow. Not retried: each speech is billed."""
+        body = {"text": text, **{key: value for key, value in {"voice": voice, "instructions": instructions, "interrupt": interrupt}.items() if value is not None}}
+        return self._runtime._rest("POST", f"/v1/voice/sessions/{quote(session_id, safe='')}/speak", body, retry=False)
+
+    def stop_speaking(self, session_id):
+        """Stop what the bot is saying, and what it was going to: {"stopped"}."""
+        return self._runtime._rest("DELETE", f"/v1/voice/sessions/{quote(session_id, safe='')}/speak")
 
     def end(self, session_id):
         """End it. The answer's "leave" is the OP 4 your gateway sends to leave the channel."""

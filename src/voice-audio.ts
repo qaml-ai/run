@@ -128,6 +128,13 @@ type Speaking = {
   decoder: OpusScript;
 };
 
+export type SegmenterOptions = {
+  silenceMs: number; maxMs?: number; minMs?: number; quietDb?: number; padMs?: number;
+  cut(cut: Cut): void;
+  /** A speaker started talking: the first loud packet of an utterance (barge-in listens for it). */
+  speech?(speaker: string): void;
+};
+
 /**
  * One call's speakers, cut into utterances. Senders differ in how they go quiet, so an utterance ends either way:
  *
@@ -143,9 +150,9 @@ type Speaking = {
  */
 export class Segmenter {
   private readonly speaking = new Map<string, Speaking>();
-  private readonly options: { silenceMs: number; maxMs?: number; minMs?: number; quietDb?: number; padMs?: number; cut(cut: Cut): void };
+  private readonly options: SegmenterOptions;
 
-  constructor(options: { silenceMs: number; maxMs?: number; minMs?: number; quietDb?: number; padMs?: number; cut(cut: Cut): void }) { this.options = options; }
+  constructor(options: SegmenterOptions) { this.options = options; }
 
   /** Speakers with speech not yet cut. */
   get open() { return this.speaking.size; }
@@ -163,7 +170,10 @@ export class Segmenter {
     if (loud) {
       speech.speechMs += ms;
       speech.quietMs = 0;
-      speech.firstLoudAt ??= now;
+      if (speech.firstLoudAt === undefined) {
+        speech.firstLoudAt = now;
+        this.options.speech?.(speaker);
+      }
       speech.lastLoudAt = now;
     } else {
       speech.quietMs += ms;
@@ -200,4 +210,50 @@ export class Segmenter {
     const seconds = Math.round(speech.heldMs / 10) / 100;
     this.options.cut({ speaker, packets: speech.held.map(entry => entry.packet), seconds, startedAt: speech.firstLoudAt, endedAt: Math.max(speech.lastLoudAt, speech.firstLoudAt + seconds * 1000), ended });
   }
+}
+
+/** Discord's frame: 20 ms of 48 kHz stereo. */
+const FRAME_SAMPLES = 960;
+/** 20 ms of speech as a provider makes it (24 kHz mono, 16-bit): the bytes one frame is made from. */
+const SPEECH_FRAME_BYTES = 480 * 2;
+
+/** One 20 ms frame of 24 kHz mono PCM as 48 kHz stereo: each sample, then the midpoint to the next, on both channels. */
+function upsampled(mono: Buffer): Buffer {
+  const out = Buffer.alloc(FRAME_SAMPLES * 4);
+  const samples = mono.length >> 1;
+  for (let i = 0; i < samples; i++) {
+    const sample = mono.readInt16LE(i * 2);
+    const next = i + 1 < samples ? mono.readInt16LE(i * 2 + 2) : sample;
+    const between = (sample + next) >> 1;
+    out.writeInt16LE(sample, i * 8); out.writeInt16LE(sample, i * 8 + 2);
+    out.writeInt16LE(between, i * 8 + 4); out.writeInt16LE(between, i * 8 + 6);
+  }
+  return out;
+}
+
+/**
+ * Speech as Discord takes it: 24 kHz mono 16-bit PCM (as speech.ts makes it), chunk by chunk, to Opus packets of 20 ms
+ * at 48 kHz stereo, each as soon as its 20 ms have come, so playback starts with the first. The last is padded with
+ * silence. `samples` is told how many PCM samples each packet holds (for what was made, and billed).
+ */
+export async function* opusFromPcm(pcm: AsyncIterable<Uint8Array>, samples?: (count: number) => void): AsyncGenerator<Buffer> {
+  const encoder = new OpusScript(48_000, 2, OpusScript.Application.AUDIO);
+  try {
+    let pending = Buffer.alloc(0);
+    for await (const chunk of pcm) {
+      pending = pending.length ? Buffer.concat([pending, chunk]) : Buffer.from(chunk);
+      while (pending.length >= SPEECH_FRAME_BYTES) {
+        const frame = pending.subarray(0, SPEECH_FRAME_BYTES);
+        pending = pending.subarray(SPEECH_FRAME_BYTES);
+        samples?.(SPEECH_FRAME_BYTES >> 1);
+        yield Buffer.from(encoder.encode(upsampled(frame), FRAME_SAMPLES));
+      }
+    }
+    if (pending.length >= 2) {
+      samples?.(pending.length >> 1);
+      const frame = Buffer.alloc(SPEECH_FRAME_BYTES);
+      pending.copy(frame, 0, 0, pending.length & ~1);
+      yield Buffer.from(encoder.encode(upsampled(frame), FRAME_SAMPLES));
+    }
+  } finally { encoder.delete(); }
 }

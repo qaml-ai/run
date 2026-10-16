@@ -72,6 +72,7 @@ import { checkSandbox, type CodeExecutor } from "./codemode.ts";
 import { V8Exec } from "./v8-exec.ts";
 import { pricingFromEnvironment } from "./pricing.ts";
 import { openaiTranscription, Transcriber } from "./transcription.ts";
+import { openaiSpeech, Synthesizer } from "./speech.ts";
 import { Imager, openaiImages } from "./images.ts";
 import { azureChatCredentials, azureCredentials } from "./azure-openai.ts";
 import { searchProvidersFromEnvironment, WebSearch } from "./web-search.ts";
@@ -369,6 +370,12 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     key: (tenant, keyScope, provider) => providerKey(tenant, keyScope, provider, secrets.azureOpenAI?.transcriptionDeployment),
     price: () => accounts.billing.pricing.transcription,
   });
+  // Speech made, for voice sessions that speak: the tenant's OpenAI key, never the platform's Azure deployment.
+  const synthesizer = new Synthesizer({
+    provider: openaiSpeech({ outbound, ...(env.AGENT_SPEECH_URL ? { baseUrl: env.AGENT_SPEECH_URL } : {}) }),
+    key: (tenant, keyScope, provider) => providerKey(tenant, keyScope, provider),
+    price: () => accounts.billing.pricing.speech,
+  });
   // Images made, for POST /v1/images.
   const imager = new Imager({
     provider: openaiImages({ outbound, ...(env.AGENT_IMAGES_URL ? { baseUrl: env.AGENT_IMAGES_URL } : {}) }),
@@ -540,6 +547,12 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     if (actor) {
       const owner = await (agent ? clients.ownerElsewhere(agent) : volumes.ownerElsewhere(actor));
       return owner ? { node: owner, actor } : undefined;
+    }
+    // Speech plays on the node that holds the voice session's connection.
+    const spoken = /^\/v1\/voice\/sessions\/(vs_[a-f0-9]{24})\/speak(?:[/?]|$)/.exec(url)?.[1];
+    if (spoken) {
+      const owner = await ownership.route(`voice:${spoken}`);
+      return owner && owner !== node ? { node: owner, actor: `voice:${spoken}` } : undefined;
     }
     const peer = ownership.draining ? await ownership.peer() : undefined;
     return peer ? { node: peer } : undefined;
@@ -781,7 +794,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     },
     agentOwned: (agent, tenant) => clients.owns(agent, tenant, true),
     // Utterances are transcribed and billed as POST /v1/transcriptions is, and prompt agents wherever they run.
-    transcriber, canTranscribe: async (tenant, keyScope) => !!await transcriber.options.key(tenant, keyScope, transcriber.provider),
+    transcriber, synthesizer, canTranscribe: async (tenant, keyScope) => !!await transcriber.options.key(tenant, keyScope, transcriber.provider),
     record: (tenant, usage) => accounts.recordUsage(tenant, "", usage),
     submit: (agent, tenant, request) => submitAnywhere(agent, tenant, request),
     // A session's subject pays from its bucket, where the tenant meters its end users (end-user-credits.ts).

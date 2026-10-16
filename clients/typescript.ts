@@ -636,7 +636,14 @@ export type WebhookEvent = { id: string; created: number } & (
       reason: VoiceEndReason; limit?: "tenant" | "end_user"; endUserReason?: string;
       startedAt: number | null; endedAt: number; utterances: number; speechSeconds: number; costUsd: number;
     } }
-  | { type: "voice.utterance"; data: VoiceUtterance });
+  | { type: "voice.utterance"; data: VoiceUtterance }
+  | { type: "voice.speech.started"; data: VoiceFacts & { speechId: string; latencyMs: number } }
+  | { type: "voice.speech.ended"; data: VoiceFacts & {
+      speechId: string; reason: "done" | "interrupted" | "error";
+      /** With interrupted: an interrupting speech, stopSpeaking, a person talking (bargeIn), the session ending or moving, credit running out. */
+      by?: "interrupt" | "requested" | "barge_in" | "end" | "handoff" | "budget";
+      seconds: number; costUsd: number;
+    } });
 /** What every voice.* event says of its session. */
 type VoiceFacts = { session: string; provider: "discord"; guildId: string; channelId: string; botUserId: string; subject: string | null; metadata: Record<string, unknown> };
 /**
@@ -1192,6 +1199,12 @@ export interface VoiceSessionInput {
   metadata?: Record<string, unknown>;
   /** The notice text to post ({bot} is the bot's id). */
   notice?: string;
+  /** The bot may speak (`voice.speak`); your app joins with self_mute false. Default false. */
+  speak?: boolean;
+  /** With speak: a person starting to talk stops the bot's speech. Default true. */
+  bargeIn?: boolean;
+  /** With speak: the voice speech is made in (OpenAI's: alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, verse…). Default alloy. */
+  voice?: string;
   /** An Idempotency-Key: the same key answers the same session. */
   idempotencyKey?: string;
 }
@@ -1204,11 +1217,31 @@ export interface VoiceSession {
   deliver: { agent?: string; webhooks: boolean };
   subject?: string; bucket?: string; context?: Record<string, unknown>; keyScope?: string; language?: string; prompt?: string;
   silenceMs: number; maxMinutes: number; idleMinutes: number; emptySeconds: number; ignoreUserIds: string[]; metadata: Record<string, unknown>;
-  utterances: number; speechSeconds: number; costUsd: number;
+  speak: boolean; bargeIn: boolean; voice: string;
+  utterances: number; speechSeconds: number;
+  /** Speeches played, and seconds of speech made. */
+  speeches: number; spokenSeconds: number;
+  costUsd: number;
   createdAt: number; startedAt: number | null; lastSpeechAt: number | null; endedAt: number | null;
 }
 /** A new session, and the notice to post now in the voice channel's chat: people must know they are transcribed. */
-export type VoiceSessionCreated = VoiceSession & { notice: { required: true; channelId: string; text: string } };
+export type VoiceSessionCreated = VoiceSession & {
+  notice: { required: true; channelId: string; text: string };
+  /** How your app's OP 4 should have joined: un-muted for a session that speaks. */
+  join: { self_mute: boolean; self_deaf: false };
+};
+/** Something for a session's bot to say (`voice.speak`). */
+export interface VoiceSpeechInput {
+  /** 1 to 4,000 characters. */
+  text: string;
+  /** Another voice than the session's, for this speech. */
+  voice?: string;
+  /** How to say it: tone, pace, accent (at most 1,000 characters). */
+  instructions?: string;
+  /** Stop what the bot is saying, and clear what it was going to, first. Default false: queued. */
+  interrupt?: boolean;
+}
+export interface VoiceSpeech { speechId: string; session: string; state: "queued"; position: number; voice: string; characters: number }
 /** An ended session, and the OP 4 your gateway sends to leave the channel (ending stops the listening, not the bot's presence). */
 export type VoiceSessionEnded = VoiceSession & { leave: { op: 4; d: { guild_id: string; channel_id: null; self_mute: boolean; self_deaf: boolean } } };
 
@@ -1242,6 +1275,15 @@ export class Voice {
   update(id: string, input: { discord?: Partial<Pick<DiscordVoiceGrant, "channelId" | "sessionId" | "endpoint" | "token">>; ignoreUserIds?: string[]; metadata?: Record<string, unknown> }): Promise<VoiceSession> {
     return this.transport.json(this.path(id), this.key(), "PATCH", input);
   }
+  /**
+   * Say something in the call (a session made with `speak: true`): queued behind what the bot is saying, or with
+   * `interrupt`, instead. `voice.speech.started` and `voice.speech.ended` follow.
+   */
+  speak(id: string, input: VoiceSpeechInput): Promise<VoiceSpeech> {
+    return this.transport.json(`${this.path(id)}/speak`, this.key(), "POST", input, false);
+  }
+  /** Stop what the bot is saying, and what it was going to. */
+  stopSpeaking(id: string): Promise<{ stopped: number }> { return this.transport.json(`${this.path(id)}/speak`, this.key(), "DELETE"); }
   /** End it; send the answer's `leave` on your gateway to leave the channel. Ending an ended session answers it again. */
   end(id: string): Promise<VoiceSessionEnded> { return this.transport.json(this.path(id), this.key(), "DELETE"); }
 }

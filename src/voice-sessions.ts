@@ -9,6 +9,8 @@ import { checkedAudio, languageInput, type Transcribed, type Transcriber } from 
 import { enqueueEvents, webhookEvent, type WebhookEvent } from "./webhooks.ts";
 import type { UsageRecord } from "./client-sessions.ts";
 import { oggOpus, Segmenter, type Cut } from "./voice-audio.ts";
+import { SessionSpeech, SPEECH_QUEUE, speechId, type Player, type SpeechEnding, type SpeechItem } from "./voice-speech.ts";
+import { DEFAULT_VOICE, SPEECH_LIMITS, type Synthesizer } from "./speech.ts";
 import { bucketInput, DEFAULT_BUCKET } from "./end-user-credits.ts";
 
 /**
@@ -60,11 +62,15 @@ export interface VoiceConnection {
   update(credentials: VoiceCredentials): void;
   /** The other users in the call now, when the connection knows; undefined until it does. */
   others(): string[] | undefined;
+  /** Play speech (20 ms Opus packets at 48 kHz stereo); a transport that cannot speak has none. */
+  play?: Player["play"];
   close(): void;
 }
 /** A voice service's connections (src/voice-discord.ts). */
 export interface VoiceTransport {
   connect(credentials: VoiceCredentials, handlers: VoiceHandlers): VoiceConnection;
+  /** Whether its connections can play speech (`play`). */
+  speaks?: boolean;
 }
 
 export const VOICE_PROVIDERS = ["discord"] as const;
@@ -82,6 +88,12 @@ export type VoiceOptions = {
   silenceMs: number; maxMinutes: number; idleMinutes: number; emptySeconds: number;
   ignoreUserIds: string[]; metadata: Record<string, unknown>;
   notice: string;
+  /** The bot may speak (`POST …/speak`); its app joins un-muted. */
+  speak: boolean;
+  /** With speak: a person starting to talk stops the bot's speech. */
+  bargeIn: boolean;
+  /** With speak: the voice its speech is made in, unless a speech asks for another. */
+  voice: string;
 };
 
 export const VOICE_LIMITS = Object.freeze({
@@ -108,6 +120,8 @@ export const VOICE_LIMITS = Object.freeze({
   retentionDays: 30,
 });
 const DEFAULT_NOTICE = "<@{bot}> is listening and transcribing speech in this channel. Audio is not stored.";
+const SPEAKING_NOTICE = "<@{bot}> is listening, transcribing speech and may speak in this channel. Audio is not stored.";
+const VOICE_NAME = /^[a-z][a-z0-9_-]{1,31}$/;
 /** The voice notifications' channel: a session's id, changed on some node. */
 export const VOICE_CHANNEL = "voice_sessions";
 const PRUNE_EVERY_MS = 60 * 60_000;
@@ -122,7 +136,7 @@ type Secret = { sessionId: string; endpoint: string | null; token: string };
 type Row = {
   id: string; tenant: string; provider: string; guild: string; bot_user: string; channel: string; state: VoiceState;
   end_reason: string | null; sealed: Sealed | null; options: VoiceOptions & { ending?: Ending }; revision: number;
-  utterances: number; speech_seconds: number; cost: string | number;
+  utterances: number; speech_seconds: number; cost: string | number; speeches: number; spoken_seconds: string | number;
   created_at: string | number; started_at: string | number | null; last_speech_at: string | number | null; ended_at: string | number | null; updated_at: string | number;
 };
 const num = (value: string | number | null) => value === null ? null : Number(value);
@@ -136,7 +150,8 @@ export function sessionView(row: Row) {
     state: row.state, endReason: row.end_reason,
     ...(ending?.limit ? { limit: ending.limit } : {}), ...(ending?.endUserReason ? { endUserReason: ending.endUserReason } : {}),
     ...options,
-    utterances: row.utterances, speechSeconds: row.speech_seconds, costUsd: Number(row.cost) / 1_000_000,
+    utterances: row.utterances, speechSeconds: row.speech_seconds, speeches: row.speeches ?? 0, spokenSeconds: Number(row.spoken_seconds ?? 0),
+    costUsd: Number(row.cost) / 1_000_000,
     createdAt: num(row.created_at)!, startedAt: num(row.started_at), lastSpeechAt: num(row.last_speech_at), endedAt: num(row.ended_at),
   };
 }
@@ -226,6 +241,8 @@ export interface VoiceSessionsOptions {
   agentOwned(agent: string, tenant: string): Promise<boolean>;
   /** Speech to text, as `POST /v1/transcriptions` makes it. */
   transcriber: Transcriber;
+  /** Text to speech, for sessions that speak; without it, no session may. */
+  synthesizer?: Synthesizer;
   /** Whether the tenant has a key to transcribe with (in a key scope): checked before a session starts. */
   canTranscribe(tenant: string, keyScope: string | undefined): Promise<boolean>;
   /** Records a transcription's usage, as a model response's is (billing, usage.recorded). */
@@ -253,6 +270,8 @@ type Held = {
   lost?: { at: number; reason: "kicked" | "credentials" | "error"; detail?: string };
   ending?: boolean;
   segmenter: Segmenter;
+  /** What the bot was asked to say, for a session that speaks. */
+  speech?: SessionSpeech;
 };
 /** What an utterance's work needs of its session, fixed when it was cut: the session may move or end meanwhile. */
 type Origin = { id: string; tenant: string; claim: Claim; row: Row };
@@ -329,7 +348,12 @@ export class VoiceSessions {
     const keyScope = input.keyScope === undefined ? undefined : text(input.keyScope, "keyScope", /^.{1,100}$/s, "a key scope's name");
     const language = languageInput(input.language);
     const prompt = input.prompt === undefined ? undefined : text(input.prompt, "prompt", new RegExp(`^[\\s\\S]{1,${VOICE_LIMITS.promptChars}}$`), `at most ${VOICE_LIMITS.promptChars} characters`);
-    const notice = input.notice === undefined ? DEFAULT_NOTICE : text(input.notice, "notice", new RegExp(`^[\\s\\S]{1,${VOICE_LIMITS.noticeChars}}$`), `at most ${VOICE_LIMITS.noticeChars} characters`);
+    if (input.speak !== undefined && typeof input.speak !== "boolean") throw new HttpError(400, "speak must be true or false");
+    if (input.bargeIn !== undefined && typeof input.bargeIn !== "boolean") throw new HttpError(400, "bargeIn must be true or false");
+    const speak = input.speak === true;
+    if (!speak && (input.voice !== undefined || input.bargeIn !== undefined)) throw new HttpError(400, "voice and bargeIn are for a session that speaks (speak: true)");
+    const voice = input.voice === undefined ? DEFAULT_VOICE : text(input.voice, "voice", VOICE_NAME, "a voice's name, such as alloy, coral or verse");
+    const notice = input.notice === undefined ? speak ? SPEAKING_NOTICE : DEFAULT_NOTICE : text(input.notice, "notice", new RegExp(`^[\\s\\S]{1,${VOICE_LIMITS.noticeChars}}$`), `at most ${VOICE_LIMITS.noticeChars} characters`);
     return {
       deliver: { ...(agent ? { agent } : {}), webhooks },
       ...(identity?.subject !== undefined ? { subject: identity.subject } : {}), ...(bucket ? { bucket } : {}),
@@ -340,6 +364,7 @@ export class VoiceSessions {
       idleMinutes: integer(input.idleMinutes, "idleMinutes", VOICE_LIMITS.idleMinutes),
       emptySeconds: integer(input.emptySeconds, "emptySeconds", VOICE_LIMITS.emptySeconds),
       ignoreUserIds: ignored(input.ignoreUserIds), metadata: metadataInput(input.metadata), notice,
+      speak, bargeIn: input.bargeIn !== false, voice,
     };
   }
 
@@ -348,7 +373,7 @@ export class VoiceSessions {
    * when this node can, else by a peer's scan. Answers the session with the notice the app must post.
    */
   async create(tenant: string, input: Record<string, unknown>) {
-    only(input, "body", ["provider", "discord", "subject", "bucket", "context", "keyScope", "deliver", "language", "prompt", "silenceMs", "maxMinutes", "idleMinutes", "emptySeconds", "ignoreUserIds", "metadata", "notice"]);
+    only(input, "body", ["provider", "discord", "subject", "bucket", "context", "keyScope", "deliver", "language", "prompt", "silenceMs", "maxMinutes", "idleMinutes", "emptySeconds", "ignoreUserIds", "metadata", "notice", "speak", "bargeIn", "voice"]);
     const provider = input.provider ?? "discord";
     if (provider !== "discord") throw new HttpError(400, `provider must be one of: ${VOICE_PROVIDERS.join(", ")}`);
     if (!this.options.transports[provider]) throw new HttpError(404, "Voice sessions are not enabled on this runtime");
@@ -356,6 +381,7 @@ export class VoiceSessions {
     if (input.discord === undefined) throw new HttpError(400, "discord is required: guildId, channelId, userId, sessionId, endpoint and token");
     const credentials = discordInput(input.discord, this.endpoints()) as VoiceCredentials;
     const options = this.settings(input);
+    if (options.speak && (!this.options.synthesizer || !this.options.transports[provider]?.speaks)) throw new HttpError(404, "Speaking is not enabled on this runtime");
     if (options.deliver.agent && !await this.options.agentOwned(options.deliver.agent, tenant)) throw new HttpError(404, "Unknown agent in deliver.agent");
     await this.options.admit(tenant);
     const refused = options.subject !== undefined ? await this.options.credit?.refusal(tenant, options.subject, options.bucket ?? DEFAULT_BUCKET) : undefined;
@@ -382,7 +408,11 @@ export class VoiceSessions {
     });
     console.log(JSON.stringify({ type: "voice_session_created", session: id, tenant, provider, node: this.options.node }));
     if (!this.stopped) void this.take(row).catch(error => console.error(JSON.stringify({ type: "voice_take_failed", session: id, error: safeError(error) })));
-    return { ...sessionView(row), notice: { required: true, channelId: credentials.channelId, text: options.notice.replaceAll("{bot}", credentials.userId) } };
+    return {
+      ...sessionView(row), notice: { required: true, channelId: credentials.channelId, text: options.notice.replaceAll("{bot}", credentials.userId) },
+      // How the app should have joined: un-muted when the bot may speak.
+      join: { self_mute: !options.speak, self_deaf: false },
+    };
   }
 
   private async row(tenant: string, id: string, sql: Pick<Db, "query"> = this.db): Promise<Row> {
@@ -430,6 +460,40 @@ export class VoiceSessions {
     });
     await this.changed(id);
     return sessionView(row);
+  }
+
+  /**
+   * Say `text` in the call (a session that speaks): queued behind what is being said, or with `interrupt`, instead of
+   * it. Only the node that holds the session plays it (requests reach it: node.ts routes them), so elsewhere a 503 says
+   * to retry while the session moves.
+   */
+  async speak(tenant: string, id: string, input: Record<string, unknown>) {
+    only(input, "body", ["text", "voice", "instructions", "interrupt"]);
+    const textGiven = text(input.text, "text", new RegExp(`^[\\s\\S]{1,${SPEECH_LIMITS.textChars}}$`), `1 to ${SPEECH_LIMITS.textChars} characters`);
+    if (!textGiven.trim()) throw new HttpError(400, "text must say something");
+    const voice = input.voice === undefined ? undefined : text(input.voice, "voice", VOICE_NAME, "a voice's name, such as alloy, coral or verse");
+    const instructions = input.instructions === undefined ? undefined : text(input.instructions, "instructions", new RegExp(`^[\\s\\S]{1,${SPEECH_LIMITS.instructionsChars}}$`), `at most ${SPEECH_LIMITS.instructionsChars} characters`);
+    if (input.interrupt !== undefined && typeof input.interrupt !== "boolean") throw new HttpError(400, "interrupt must be true or false");
+    const row = await this.row(tenant, id);
+    if (row.state === "ended") throw new HttpError(409, `This voice session ended (${row.end_reason})`, "VOICE_SESSION_ENDED");
+    if (!row.options.speak) throw new HttpError(409, "This voice session does not speak: start one with speak: true", "VOICE_SPEAK_DISABLED");
+    const held = this.held.get(id);
+    if (!held?.speech) throw new HttpError(503, "This voice session is moving between nodes; retry");
+    if (held.speech.waiting >= SPEECH_QUEUE.max && !input.interrupt) throw new HttpError(429, `This voice session has ${SPEECH_QUEUE.max} speeches waiting; interrupt or wait`, "VOICE_SPEECH_QUEUE_FULL");
+    const item: SpeechItem = { id: speechId(), text: textGiven, voice: voice ?? row.options.voice, ...(instructions ? { instructions } : {}), queuedAt: Date.now() };
+    const position = held.speech.say(item, input.interrupt === true);
+    console.log(JSON.stringify({ type: "voice_speech_queued", session: id, speech: item.id, chars: item.text.length, position, node: this.options.node }));
+    return { speechId: item.id, session: id, state: "queued" as const, position, voice: item.voice, characters: item.text.length };
+  }
+
+  /** Stop what the bot is saying, and what it was going to: answers how many speeches that stopped. */
+  async stopSpeaking(tenant: string, id: string) {
+    const row = await this.row(tenant, id);
+    if (!row.options.speak) throw new HttpError(409, "This voice session does not speak", "VOICE_SPEAK_DISABLED");
+    if (row.state === "ended") return { stopped: 0 };
+    const held = this.held.get(id);
+    if (!held?.speech) throw new HttpError(503, "This voice session is moving between nodes; retry");
+    return { stopped: held.speech.stop("requested") };
   }
 
   /** End a session (`requested`): answers it, and the OP 4 the app sends to leave the channel. */
@@ -530,8 +594,13 @@ export class VoiceSessions {
     }
     const held: Held = {
       id: current.id, tenant: current.tenant, claim: taken.claim, revision: current.revision, row: current, credentials: this.credentials(current),
-      segmenter: new Segmenter({ silenceMs: current.options.silenceMs, cut: cut => this.cut(held, cut) }),
+      segmenter: new Segmenter({
+        silenceMs: current.options.silenceMs, cut: cut => this.cut(held, cut),
+        // Barge-in: a person starting to talk stops the bot.
+        speech: () => { if (held.row.options.bargeIn && held.speech?.speaking) held.speech.stop("barge_in"); },
+      }),
     };
+    if (current.options.speak && this.options.synthesizer) held.speech = new SessionSpeech(this.options.synthesizer, this.speechEffects(held));
     this.held.set(held.id, held);
     console.log(JSON.stringify({ type: "voice_session_acquired", session: held.id, node: this.options.node, epoch: taken.claim.epoch }));
     if (current.state === "live") await this.setState(held, "reconnecting").catch(() => {});
@@ -595,6 +664,7 @@ export class VoiceSessions {
     if (this.held.get(held.id) !== held) return;
     this.held.delete(held.id);
     held.segmenter.flush(cut);
+    held.speech?.close(cut);
     console.log(JSON.stringify({ type: "voice_session_released", session: held.id, node: this.options.node, epoch: held.claim.epoch, release }));
     held.connection?.close();
     held.connection = undefined;
@@ -812,7 +882,53 @@ export class VoiceSessions {
   }
 
   /** An event about a session, for the tenant's webhook endpoints. */
-  protected event(row: Row, type: "voice.session.started" | "voice.session.ended" | "voice.utterance", data: Record<string, unknown>, key: string): WebhookEvent {
+  /** What a held session's speech needs: its connection, money checks, events and usage (voice-speech.ts). */
+  private speechEffects(held: Held) {
+    const synthesizer = this.options.synthesizer!;
+    const options = () => held.row.options;
+    const write = (type: "voice.speech.started" | "voice.speech.ended", item: SpeechItem, data: Record<string, unknown>, counts?: { seconds: number; costUsd: number }) =>
+      transaction(this.db, async sql => {
+        const { rows } = counts
+          ? await sql.query("update voice_sessions set speeches = speeches + 1, spoken_seconds = spoken_seconds + $2, cost = cost + $3, updated_at = $4 where id = $1 returning *", [held.id, counts.seconds, Math.round(counts.costUsd * 1_000_000), Date.now()])
+          : await sql.query("select * from voice_sessions where id = $1", [held.id]);
+        const row = rows[0] as Row | undefined;
+        if (row?.options.deliver.webhooks) await enqueueEvents(sql, [this.event(row, type, { speechId: item.id, ...data }, `voice:${held.id}:${type}:${item.id}`)]);
+      }).catch(error => console.error(JSON.stringify({ type: "voice_speech_event_failed", session: held.id, speech: item.id, error: safeError(error) })));
+    return {
+      player: () => held.connection?.play ? held.connection as Player : undefined,
+      admit: () => this.options.admit(held.tenant),
+      hold: async (usd: number, speech: string) => {
+        const { subject, bucket } = options();
+        return subject !== undefined && this.options.credit ? this.options.credit.hold(held.tenant, subject, bucket ?? DEFAULT_BUCKET, usd, "voice_speech", { session: held.id, speech }) : undefined;
+      },
+      fresh: async () => { await this.options.ownership?.whenFresh(); },
+      credentials: () => synthesizer.credentials(held.tenant, options().keyScope),
+      started: (item: SpeechItem, latencyMs: number) => {
+        console.log(JSON.stringify({ type: "voice_speech_started", session: held.id, speech: item.id, latencyMs }));
+        void write("voice.speech.started", item, { latencyMs });
+      },
+      ended: (item: SpeechItem, ending: SpeechEnding, platform: boolean | undefined) => {
+        const { subject, context, keyScope } = options();
+        console.log(JSON.stringify({ type: "voice_speech_ended", session: held.id, speech: item.id, reason: ending.reason, ...(ending.by ? { by: ending.by } : {}), seconds: ending.seconds, ...(ending.error ? { error: ending.error } : {}) }));
+        if (ending.seconds > 0) {
+          this.options.record(held.tenant, {
+            provider: synthesizer.provider, model: synthesizer.model, usage: { cost: { total: ending.costUsd } }, platform: !!platform, kind: "speech",
+            speeches: 1, audioSeconds: ending.seconds, timestamp: Date.now(),
+            identity: { ...(subject !== undefined ? { subject } : {}), context: { ...context, voiceSession: held.id } }, ...(keyScope ? { keyScope } : {}),
+          });
+        }
+        void write("voice.speech.ended", item, {
+          reason: ending.reason, ...(ending.by ? { by: ending.by } : {}), seconds: ending.seconds, costUsd: ending.costUsd,
+        }, ending.seconds > 0 ? ending : undefined);
+      },
+      budget: (limit: "tenant" | "end_user", endUserReason?: string) => {
+        void this.finish(this.held.get(held.id) === held ? held : undefined, held.id, { reason: "budget", limit, ...(endUserReason ? { endUserReason } : {}) })
+          .catch(error => console.error(JSON.stringify({ type: "voice_finish_failed", session: held.id, error: safeError(error) })));
+      },
+    };
+  }
+
+  protected event(row: Row, type: "voice.session.started" | "voice.session.ended" | "voice.utterance" | "voice.speech.started" | "voice.speech.ended", data: Record<string, unknown>, key: string): WebhookEvent {
     const { options } = row;
     return webhookEvent(type, row.tenant, {
       session: row.id, provider: row.provider, guildId: row.guild, channelId: row.channel, botUserId: row.bot_user,

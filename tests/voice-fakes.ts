@@ -4,6 +4,7 @@ import { Accounts } from "../src/accounts.ts";
 import { Tenants } from "../src/tenants.ts";
 import { Ownership } from "../src/ownership.ts";
 import { Transcriber, type Transcript } from "../src/transcription.ts";
+import { Synthesizer, type SpeechInput } from "../src/speech.ts";
 import type { UsageRecord } from "../src/client-sessions.ts";
 import type { AudioHeader } from "../src/audio-header.ts";
 import { VoiceSessions, type VoiceConnection, type VoiceCredentials, type VoiceHandlers, type VoiceSessionsOptions, type VoiceTransport } from "../src/voice-sessions.ts";
@@ -29,21 +30,45 @@ export type FakeConnection = {
   credentials: VoiceCredentials; handlers: VoiceHandlers; updates: VoiceCredentials[]; closed: boolean;
   /** The other users in the call, as the connection reports them (undefined: not known yet). */
   others?: string[];
+  /** Speech it played: each playback's packets, as they went out (20 ms apart, as a player sends them). */
+  played: Uint8Array[][];
+  /** Whether a playback is going now. */
+  playing: boolean;
 };
 
-/** A voice transport for tests: connections are records; nothing goes over the network. */
-export function fakeTransport() {
+/** A voice transport for tests: connections are records; nothing goes over the network. Playback sends a packet each `playEveryMs`. */
+export function fakeTransport(playEveryMs = 2) {
   const connections: FakeConnection[] = [];
   const transport: VoiceTransport = {
     connect(credentials, handlers): VoiceConnection {
-      const connection: FakeConnection = { credentials, handlers, updates: [], closed: false };
+      const connection: FakeConnection = { credentials, handlers, updates: [], closed: false, played: [], playing: false };
       connections.push(connection);
       return {
         update: next => { connection.updates.push(next); connection.credentials = next; },
         others: () => connection.others,
         close: () => { connection.closed = true; },
+        play(packets, started) {
+          const out: Uint8Array[] = [];
+          connection.played.push(out);
+          connection.playing = true;
+          let stopped = false;
+          const done = (async () => {
+            try {
+              for await (const packet of packets) {
+                if (stopped || connection.closed) break;
+                if (!out.length) started();
+                out.push(packet);
+                await sleep(playEveryMs);
+              }
+              return stopped ? "stopped" as const : "done" as const;
+            } catch { return stopped ? "stopped" as const : "error" as const; }
+            finally { connection.playing = false; }
+          })();
+          return { done, stop: () => { stopped = true; } };
+        },
       };
     },
+    speaks: true,
   };
   return { transport, connections, open: () => connections.filter(connection => !connection.closed) };
 }
@@ -98,12 +123,41 @@ export function fakeTranscriber(respond: (call: { header: AudioHeader; bytes: Ui
   return { transcriber, calls };
 }
 
+/**
+ * Speech without a provider: each request recorded, and answered with a tone of `seconds(text)` (default a tenth of
+ * a second per character) as 24 kHz mono PCM, in 100 ms chunks every `chunkEveryMs`, as a stream would come.
+ */
+export function fakeSynthesizer(options: { seconds?: (text: string) => number; chunkEveryMs?: number; fail?: boolean } = {}) {
+  const calls: { input: SpeechInput; apiKey: string }[] = [];
+  const synthesizer = new Synthesizer({
+    provider: {
+      id: "openai", model: "gpt-4o-mini-tts",
+      async *stream(input, credentials, signal) {
+        calls.push({ input, apiKey: credentials.apiKey });
+        if (options.fail) throw new Error("provider down");
+        const total = Math.round((options.seconds?.(input.text) ?? input.text.length / 10) * 24_000);
+        for (let at = 0; at < total; at += 2_400) {
+          if (signal.aborted) throw signal.reason;
+          const chunk = Buffer.alloc(Math.min(2_400, total - at) * 2);
+          for (let i = 0; i < chunk.length / 2; i++) chunk.writeInt16LE(Math.round(8_000 * Math.sin(2 * Math.PI * 220 * (at + i) / 24_000)), i * 2);
+          yield chunk;
+          await sleep(options.chunkEveryMs ?? 1);
+        }
+      },
+    },
+    key: async () => ({ apiKey: "fixture-key", platform: true }),
+    price: () => 15_000,
+  });
+  return { synthesizer, calls };
+}
+
 /** Nodes holding voice sessions over one database, each with its own heartbeat, sharing one fake transport and transcriber. */
-export async function voiceCluster(t: T, options: Partial<VoiceSessionsOptions> & { ttlMs?: number } = {}) {
+export async function voiceCluster(t: T, options: Partial<VoiceSessionsOptions> & { ttlMs?: number; playEveryMs?: number } = {}) {
   const { db } = await testDatabase();
   const accounts = new Accounts({ tenants: new Tenants({ read: async () => JSON.stringify({ tenants: {} }) }), db, secretsKey: randomBytes(32).toString("hex") });
-  const fake = fakeTransport();
+  const fake = fakeTransport(options.playEveryMs ?? 2);
   const transcription = fakeTranscriber();
+  const speech = fakeSynthesizer({ chunkEveryMs: options.playEveryMs ?? 1 });
   const usage: { tenant: string; usage: UsageRecord }[] = [];
   const prompts: { agent: string; tenant: string; request: { id: string; method: string; params: Record<string, unknown> } }[] = [];
   const nodes: { name: string; ownership: Ownership; voice: VoiceSessions }[] = [];
@@ -114,7 +168,7 @@ export async function voiceCluster(t: T, options: Partial<VoiceSessionsOptions> 
     const voice = new VoiceSessions({
       db, accounts, node: name, ownership, transports: { discord: fake.transport },
       admit: async () => {}, agentOwned: async agent => agent === AGENT,
-      transcriber: transcription.transcriber, canTranscribe: async () => true,
+      transcriber: transcription.transcriber, synthesizer: speech.synthesizer, canTranscribe: async () => true,
       record: (tenant, record) => { usage.push({ tenant, usage: record }); },
       submit: async (agent, tenant, request) => { prompts.push({ agent, tenant, request }); return {}; },
       ...options,
@@ -124,10 +178,10 @@ export async function voiceCluster(t: T, options: Partial<VoiceSessionsOptions> 
   };
   // Webhook endpoints selecting the voice events, so they land in the outbox.
   await db.query("insert into webhook_endpoints (id, tenant, url, events, secret, created_at) values ('we_1', 'alice', 'https://example.test/hook', $1, '{}', 0)",
-    [["voice.session.started", "voice.session.ended", "voice.utterance"]]);
+    [["voice.session.started", "voice.session.ended", "voice.utterance", "voice.speech.started", "voice.speech.ended"]]);
   const events = async (type?: string) => (await db.query("select body from webhook_deliveries where tenant = 'alice' order by created_at, id")).rows
     .map(row => row.body).filter(body => type === undefined || body.type === type);
-  return { db, accounts, fake, transcription, usage, prompts, node, events };
+  return { db, accounts, fake, transcription, speech, usage, prompts, node, events };
 }
 
 let counter = 0;

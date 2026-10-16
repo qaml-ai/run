@@ -20,7 +20,7 @@ import { deliveryLine, recordEventMetrics, writeMetricLine } from "./metrics.ts"
  * body, as before: nodes of an earlier release, which send from that outbox during a deploy, never see
  * an endpoint's deliveries, and a change they make to the usage webhook is the one every node reads.
  */
-export const EVENT_TYPES = ["run.started", "run.completed", "run.failed", "input.requested", "input.resolved", "usage.recorded", "billing.balance.low", "billing.balance.depleted", "billing.topup.receipt", "billing.topup.declined", "billing.topup.action_required", "billing.topup.no_card", "billing.topup.limit", "billing.topup.reconcile", "end_user.balance.low", "end_user.credit.exhausted", "voice.session.started", "voice.session.ended", "voice.utterance"] as const;
+export const EVENT_TYPES = ["run.started", "run.completed", "run.failed", "input.requested", "input.resolved", "usage.recorded", "billing.balance.low", "billing.balance.depleted", "billing.topup.receipt", "billing.topup.declined", "billing.topup.action_required", "billing.topup.no_card", "billing.topup.limit", "billing.topup.reconcile", "end_user.balance.low", "end_user.credit.exhausted", "voice.session.started", "voice.session.ended", "voice.utterance", "voice.speech.started", "voice.speech.ended"] as const;
 export type EventType = typeof EVENT_TYPES[number];
 /** An event for the tenant's endpoints; `legacy` is a usage event's body for the usage webhook. */
 export type WebhookEvent = { id: string; type: EventType; tenant: string; created: number; data: Record<string, unknown>; legacy?: UsageEvent };
@@ -92,6 +92,7 @@ export function usageCost(usage: any): { usd: number; source: "provider" | "cata
 export function usageEvent(tenant: string, agent: string, message: UsageRecord): WebhookEvent | undefined {
   if (message.searches || message.renders || message.toolSearch) return undefined;
   const transcription = message.kind === "transcription";
+  const speech = message.kind === "speech";
   const image = message.kind === "image";
   const usage = message.usage ?? {};
   // A tenant endpoint's calls are named as its agents name the model: `chiridion` / `openai-codex/gpt-5.5`.
@@ -99,14 +100,14 @@ export function usageEvent(tenant: string, agent: string, message: UsageRecord):
   const facts = {
     requestId: message.requestId ?? null, subject: message.identity?.subject ?? (agent || null), actor: message.actor ?? null,
     context: message.identity?.context ?? {}, keyScope: message.keyScope ?? null, provider, model: [...upstream, message.model ?? "unknown"].join("/"),
-    kind: message.kind === "compaction" ? "compaction" as const : transcription ? "transcription" as const : image ? "image" as const : "response" as const,
+    kind: message.kind === "compaction" ? "compaction" as const : transcription ? "transcription" as const : speech ? "speech" as const : image ? "image" as const : "response" as const,
     input: usage.input ?? 0, output: usage.output ?? 0, cacheRead: usage.cacheRead ?? 0, cacheWrite: usage.cacheWrite ?? 0,
-    ...(typeof usage.reasoning === "number" ? { reasoning: usage.reasoning } : {}), ...(transcription ? { audioSeconds: message.audioSeconds ?? 0 } : {}), ...(image ? { images: message.images ?? 0 } : {}), cost: usageCost(usage),
+    ...(typeof usage.reasoning === "number" ? { reasoning: usage.reasoning } : {}), ...(transcription || speech ? { audioSeconds: message.audioSeconds ?? 0 } : {}), ...(image ? { images: message.images ?? 0 } : {}), cost: usageCost(usage),
   };
   const at = message.timestamp ?? Date.now();
   const event = webhookEvent("usage.recorded", tenant, { agentId: agent || null, ...facts, at });
   // The older usage webhook carries model responses only, as it always has.
-  return transcription || image ? event : { ...event, legacy: { id: randomUUID(), agent, tenant, ...facts, subject: facts.subject ?? agent, kind: facts.kind as UsageEvent["kind"], at } };
+  return transcription || speech || image ? event : { ...event, legacy: { id: randomUUID(), agent, tenant, ...facts, subject: facts.subject ?? agent, kind: facts.kind as UsageEvent["kind"], at } };
 }
 
 /** Standard Webhooks headers for `body`, signed with each secret (`whsec_<base64 key>`). */

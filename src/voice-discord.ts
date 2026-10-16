@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
+import { Readable } from "node:stream";
 import {
-  EndBehaviorType, joinVoiceChannel, VoiceConnectionStatus,
-  type DiscordGatewayAdapterCreator, type DiscordGatewayAdapterLibraryMethods, type VoiceConnection as DiscordConnection,
+  AudioPlayerStatus, createAudioPlayer, createAudioResource, EndBehaviorType, joinVoiceChannel, NoSubscriberBehavior, StreamType, VoiceConnectionStatus,
+  type AudioPlayer, type DiscordGatewayAdapterCreator, type DiscordGatewayAdapterLibraryMethods, type VoiceConnection as DiscordConnection,
 } from "@discordjs/voice";
 import type { VoiceConnection, VoiceCredentials, VoiceHandlers, VoiceTransport } from "./voice-sessions.ts";
+import type { Playback } from "./voice-speech.ts";
 import { recordDaveRoster } from "./metrics.ts";
 
 /**
@@ -20,6 +22,15 @@ import { recordDaveRoster } from "./metrics.ts";
  * not give it the members if it did. So each connection checks for itself (`RosterGuard`): after each transition of
  * the group, every member must be one the voice gateway named (Clients Connect) or the bot; one that stays a stranger
  * past a grace (the gateway's word can trail the Welcome) drops the connection, which joins again with a new group.
+ *
+ * A bot that speaks sends media its group can decrypt, so for it the check cannot wait out a grace. Two more guards:
+ * - Each Welcome is checked as it is processed (`strictWelcome`, around @discordjs/voice's DAVESession): a group with a
+ *   member the gateway has not named is refused at once, as libdave refuses it (the library then tells the voice server
+ *   the Welcome was invalid, opcode 31, and the bot is welcomed again into a group of the call's members). Proposals to
+ *   add members are already checked against the named members by davey (`processProposals`' recognized user ids).
+ * - Speech goes out only while the group is ready and every member is named (`canSend`): never while a stranger is
+ *   pending, and never unencrypted while DAVE re-forms (the library sends a packet as it is when its session is not
+ *   ready).
  *
  * No audio at the start of an utterance is lost. The library maps an SSRC to its user from Speaking (op 5), which
  * Discord sends once per SSRC over the WebSocket, and drops UDP packets from an SSRC it cannot map yet: those that
@@ -42,6 +53,33 @@ const ROSTER_GRACE_MS = 5_000;
 const MAX_ROSTER_DROPS = 3;
 const ROSTER_WINDOW_MS = 5 * 60_000;
 
+/** Frames a speech may go without a packet (synthesis stalling, or `canSend` holding it) before the player gives up: 5 s. */
+const MAX_MISSED_FRAMES = 250;
+
+/**
+ * Wrap a DAVE session's Welcome handling so a Welcome into a group with a member `named` does not hold (nor the bot,
+ * `self`) is refused as an invalid transition, as libdave refuses it. Idempotent per session object.
+ */
+const strict = new WeakSet<object>();
+export function strictWelcome(dave: any, self: string, named: () => Iterable<string> | undefined, refused: (strangers: number) => void) {
+  if (!dave || strict.has(dave) || typeof dave.processWelcome !== "function") return;
+  strict.add(dave);
+  const original = dave.processWelcome;
+  dave.processWelcome = function processWelcome(this: any, payload: Buffer) {
+    const result = original.call(this, payload);
+    if (!result?.success) return result;
+    let members: string[] = [];
+    try { members = this.session?.getUserIds() ?? []; } catch { members = []; }
+    const known = new Set(named() ?? []);
+    const strangers = members.filter(member => member !== self && !known.has(member));
+    if (!strangers.length) return result;
+    refused(strangers.length);
+    // As the library handles a Welcome davey refused: tell the voice server (opcode 31) and start over.
+    this.recoverFromInvalidTransition(result.transitionId);
+    return { transitionId: result.transitionId, success: false };
+  };
+}
+
 /** RTP payload type of Discord's Opus audio (any other, video, is not listened to). */
 const OPUS_PAYLOAD_TYPE = 120;
 /** Packets held for an SSRC that Speaking has not mapped yet: its latest this many (a second of audio)... */
@@ -62,6 +100,9 @@ export class RosterGuard {
   private timer?: ReturnType<typeof setTimeout>;
 
   constructor(options: RosterGuard["options"]) { this.options = options; }
+
+  /** Whether a member is unnamed now, inside its grace. */
+  get pending() { return this.since !== undefined; }
 
   check(now = Date.now()) {
     clearTimeout(this.timer);
@@ -89,7 +130,7 @@ export class RosterGuard {
  * and the group's members as they read (the real ones come from davey).
  */
 export function discordVoice(options: { roster?: { graceMs?: number; members?: () => string[] | undefined } } = {}): VoiceTransport {
-  return { connect: (credentials, handlers) => new DiscordVoice(credentials, handlers, options.roster ?? {}) };
+  return { speaks: true, connect: (credentials, handlers) => new DiscordVoice(credentials, handlers, options.roster ?? {}) };
 }
 
 export class DiscordVoice implements VoiceConnection {
@@ -111,6 +152,8 @@ export class DiscordVoice implements VoiceConnection {
   private readonly roster: RosterGuard;
   /** When the connection last dropped for a stranger in its DAVE group. */
   private readonly rosterDrops: number[] = [];
+  /** The player speech goes out through, made with the first speech. */
+  private player?: AudioPlayer;
 
   constructor(credentials: VoiceCredentials, handlers: VoiceHandlers, roster: { graceMs?: number; members?: () => string[] | undefined }) {
     this.credentials = credentials;
@@ -154,6 +197,13 @@ export class DiscordVoice implements VoiceConnection {
       const networking = "networking" in to ? to.networking : undefined;
       if (networking && networking !== ("networking" in from ? from.networking : undefined)) {
         networking.once("close", (code: number) => this.closedWith(code));
+        // Each DAVE session the library makes for this socket gets the strict Welcome check as it appears.
+        const guard = (state: { dave?: unknown }) => strictWelcome(state.dave, credentials.userId, () => this.named(), strangers => {
+          recordDaveRoster(strangers);
+          handlers.diagnostic("dave_welcome_refused", { strangers });
+        });
+        guard(networking.state as { dave?: unknown });
+        (networking as unknown as { on(event: "stateChange", listener: (previous: unknown, next: { dave?: unknown }) => void): void }).on("stateChange", (_previous, next) => guard(next));
       }
     });
     this.connection.on("error", error => handlers.diagnostic("error", { error: error.message.slice(0, 200) }));
@@ -283,6 +333,70 @@ export class DiscordVoice implements VoiceConnection {
     this.feed();
   }
 
+  /**
+   * Whether speech may go out now: the connection is ready, its DAVE group (if the call has one) is ready, and every
+   * member of it is one the voice gateway named.
+   */
+  canSend() {
+    const state = this.connection.state;
+    if (this.closed || state.status !== VoiceConnectionStatus.Ready) return false;
+    const dave = (state.networking.state as { dave?: { protocolVersion?: number; session?: { ready?: boolean } } }).dave;
+    if (dave && dave.protocolVersion !== 0 && !dave.session?.ready) return false;
+    return !this.roster.pending;
+  }
+
+  /**
+   * Play speech: `packets` (20 ms Opus at 48 kHz stereo) through the connection's player, each released only while
+   * `canSend`. `started` is called as the first goes out. Done when they ran out (`done`), the playback was stopped
+   * (another took its place, or `stop`), or it failed.
+   */
+  play(packets: AsyncIterable<Uint8Array>, started: () => void): Playback {
+    const player = this.player ??= createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Pause, maxMissedFrames: MAX_MISSED_FRAMES } });
+    this.connection.subscribe(player);
+    let stopped = false, failed = false, first = true;
+    const self = this;
+    async function* gated() {
+      for await (const packet of packets) {
+        while (!self.canSend()) {
+          if (stopped || self.closed) return;
+          await new Promise(resolve => setTimeout(resolve, 20));
+        }
+        if (stopped) return;
+        if (first) { first = false; started(); }
+        yield Buffer.from(packet);
+      }
+    }
+    const source = Readable.from(gated(), { objectMode: true });
+    const resource = createAudioResource(source, { inputType: StreamType.Opus });
+    const done = new Promise<"done" | "stopped" | "error">(resolve => {
+      const settle = () => {
+        player.off("stateChange", changed);
+        player.off("error", errored);
+        resolve(stopped ? "stopped" : failed ? "error" : "done");
+      };
+      const changed = (_from: { status: string }, to: { status: string; resource?: unknown }) => {
+        if (to.status === AudioPlayerStatus.Idle || (to.resource !== undefined && to.resource !== resource)) settle();
+      };
+      const errored = (error: { resource?: unknown; message: string }) => {
+        if (error.resource !== resource) return;
+        failed = true;
+        this.handlers.diagnostic("speech_error", { error: error.message.slice(0, 200) });
+      };
+      player.on("stateChange", changed);
+      player.on("error", errored);
+    });
+    player.play(resource);
+    return {
+      done,
+      stop: () => {
+        if (stopped) return;
+        stopped = true;
+        source.destroy();
+        if ((player.state as { resource?: unknown }).resource === resource) player.stop(true);
+      },
+    };
+  }
+
   update(credentials: VoiceCredentials) {
     this.credentials = credentials;
     this.lost = false;
@@ -303,6 +417,7 @@ export class DiscordVoice implements VoiceConnection {
     if (this.closed) return;
     this.closed = true;
     this.roster.close();
+    this.player?.stop(true);
     this.early.clear();
     for (const stream of this.connection.receiver.subscriptions.values()) stream.destroy();
     this.connection.destroy();

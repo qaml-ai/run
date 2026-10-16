@@ -39,6 +39,7 @@ retry.
 | 409 | `IDEMPOTENCY_CONFLICT` | The Idempotency-Key or request id was used for another request |
 | 409 | `IDEMPOTENCY_IN_PROGRESS` | The first request with this Idempotency-Key is still running; retry |
 | 409 | `VOICE_SESSION_EXISTS` | The bot already has a voice session in this server (`session` names it): update or end it |
+| 409 | `VOICE_SPEAK_DISABLED` | The voice session does not speak: start one with `speak: true` |
 | 409 | `VOICE_SESSION_ENDED` | The voice session ended; start a new one |
 | 409 | `APPLICATION_CONNECTED` | Another connection serves this agent's tools; connect with `?takeover=true` to replace it |
 | 409 | `APPLICATION_NOT_CONNECTED` | The agent's tools need its application and none is connected; connect it, or send `allowDisconnected: true` |
@@ -53,6 +54,7 @@ retry.
 | 415 | `UNSUPPORTED_AUDIO` | Audio to transcribe is in a format transcription does not take, or its container gives no length |
 | 415 | `UNSUPPORTED_IMAGE` | An image to edit is not PNG, JPEG or WebP |
 | 429 | `BUSY_AGENT_LIMIT` | The account has as many agents busy as its [usage tier](limits.md#usage-tiers) allows; `busyAgents` in the body has the limit and the next tier. Retry after `Retry-After`, or when one of its runs ends |
+| 429 | `VOICE_SPEECH_QUEUE_FULL` | The voice session has 20 speeches waiting: interrupt, or wait for them |
 | 429 | `VOICE_SESSION_LIMIT` | The account has as many live voice sessions as it may (`limit`): end one first |
 | 429 | `RATE_LIMITED` | Too many: a rate limit (the body's `limit` names it: `{name, scope, max, windowSeconds}`; see [Rate limits](limits.md#rate-limits)), or too many agents, requests or subscribers at once; retry after `Retry-After` |
 | 502 | `TRANSCRIPTION_FAILED` | The transcription provider failed or refused the key; nothing was charged |

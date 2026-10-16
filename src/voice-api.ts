@@ -52,6 +52,14 @@ export function voiceRoutes(route: Route, voice: () => VoiceSessions | undefined
     responses: { 200: reply("The session; it reconnects with new credentials", schema.VoiceSession) },
   }), async c => json(c, 200, await service().update(c.var.principal.tenant, c.req.param("id")!, await parse(schema.VoiceSessionUpdate, c))));
   route(createRoute({
+    method: "post", path: "/v1/voice/sessions/{id}/speak", request: { params: sessionId, body: body(schema.VoiceSpeechInput) },
+    responses: { 202: reply("Queued: it plays in turn (voice.speech.started and voice.speech.ended follow)", schema.VoiceSpeech) },
+  }), async c => json(c, 202, await service().speak(c.var.principal.tenant, c.req.param("id")!, await parse(schema.VoiceSpeechInput, c))));
+  route(createRoute({
+    method: "delete", path: "/v1/voice/sessions/{id}/speak", request: { params: sessionId },
+    responses: { 200: reply("What the bot was saying, and was going to, stopped", schema.VoiceSpeechStopped) },
+  }), async c => json(c, 200, await service().stopSpeaking(c.var.principal.tenant, c.req.param("id")!)));
+  route(createRoute({
     method: "delete", path: "/v1/voice/sessions/{id}", request: { params: sessionId },
     responses: { 200: reply("The session, ended; and the OP 4 your app sends to leave the channel", schema.VoiceSessionEnded) },
   }), async c => json(c, 200, await service().end(c.var.principal.tenant, c.req.param("id")!)));

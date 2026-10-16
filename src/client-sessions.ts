@@ -642,8 +642,8 @@ export type DefinitionConfig = { id: string; revision: number; config: Pick<Agen
  * images made (kind `image`: `images` of them, their tokens in `usage`), with its cost in `usage.cost.total`.
  */
 export type UsageRecord = {
-  provider?: string; model?: string; usage: any; timestamp?: number; kind?: "turn" | "compaction" | "transcription" | "image"; platform?: boolean; searches?: number; renders?: number; toolSearch?: boolean; toolSearches?: number;
-  transcriptions?: number; audioSeconds?: number; images?: number;
+  provider?: string; model?: string; usage: any; timestamp?: number; kind?: "turn" | "compaction" | "transcription" | "image" | "speech"; platform?: boolean; searches?: number; renders?: number; toolSearch?: boolean; toolSearches?: number;
+  transcriptions?: number; audioSeconds?: number; images?: number; speeches?: number;
   /** For a model response: the run it was in, who acted in it, whom the agent acts for, and its key scope (for usage webhooks). */
   requestId?: string; actor?: string; identity?: AgentIdentity; keyScope?: string;
 };

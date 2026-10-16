@@ -4,18 +4,20 @@
 # group and a public IP, as its tasks run (infra/terraform/ecs.tf: no NAT, egress open, replies come back through the
 # stateful security group; agent-launcher's seccomp filter confines js_exec and file parsing, not the runtime's node
 # process, which opens the UDP socket). Two test bots join a voice channel; one listens through the runtime's Discord
-# transport and segmenter, the other plays three bursts of tone. PASS needs the voice WebSocket, UDP both ways and DAVE.
+# transport and segmenter, the other plays three bursts of tone; then the listener speaks through the runtime's speech
+# pipeline (OpenAI's gpt-4o-mini-tts with OPENAI_API_KEY, else a tone) and the other bot hears it (and with the key,
+# has it transcribed). PASS needs the voice WebSocket, UDP both ways and DAVE, both ways.
 #
 # It touches no service: its own task definition family (<name>-voice-check, no task role, no secrets, none of the
 # runtime's environment) and its own log group (/ecs/<name>-voice-check, 1-day retention). The image is the one the
 # service runs now (it must contain scripts/voice-check.ts: a release from this change on), or IMAGE=<uri>.
 #
-#   VOICE_BOT_TOKEN=… SPEAKER_TOKEN=… GUILD=… CHANNEL=… infra/voice-check.sh     # run it and print its log
+#   VOICE_BOT_TOKEN=… SPEAKER_TOKEN=… GUILD=… CHANNEL=… [OPENAI_API_KEY=…] infra/voice-check.sh     # run it, print its log
 #   infra/voice-check.sh cleanup                                                # delete the task definitions and log group
 #
 # Use two test applications (never a production bot): a second gateway session on a token in use would see its
-# traffic. The tokens go in as environment overrides, which anyone who can describe the task sees; reset them after if
-# that matters. Needs: aws (the runtime's account), jq.
+# traffic. The tokens (and OPENAI_API_KEY, if given) go in as environment overrides, which anyone who can describe the
+# task sees: use a key made for the check, and revoke it after. Needs: aws (the runtime's account), jq.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 source "$here/config.sh"
@@ -62,9 +64,10 @@ revision=$(aws ecs register-task-definition --family "$family" --requires-compat
   --cpu 512 --memory 1024 --runtime-platform cpuArchitecture=ARM64,operatingSystemFamily=LINUX --execution-role-arn "$execution_role" \
   --container-definitions "$container" --query 'taskDefinition.taskDefinitionArn' --output text)
 
-overrides=$(jq -n --arg a "$VOICE_BOT_TOKEN" --arg b "$SPEAKER_TOKEN" --arg g "$GUILD" --arg c "$CHANNEL" \
-  '{ containerOverrides: [{ name: "voice-check", environment: [
-    { name: "VOICE_BOT_TOKEN", value: $a }, { name: "SPEAKER_TOKEN", value: $b }, { name: "GUILD", value: $g }, { name: "CHANNEL", value: $c } ] }] }')
+overrides=$(jq -n --arg a "$VOICE_BOT_TOKEN" --arg b "$SPEAKER_TOKEN" --arg g "$GUILD" --arg c "$CHANNEL" --arg o "${OPENAI_API_KEY:-}" \
+  '{ containerOverrides: [{ name: "voice-check", environment: ([
+    { name: "VOICE_BOT_TOKEN", value: $a }, { name: "SPEAKER_TOKEN", value: $b }, { name: "GUILD", value: $g }, { name: "CHANNEL", value: $c } ]
+    + (if $o == "" then [] else [{ name: "OPENAI_API_KEY", value: $o }] end)) }] }')
 task=$(aws ecs run-task --cluster "$cluster" --launch-type FARGATE --task-definition "$revision" \
   --network-configuration "awsvpcConfiguration={subnets=[$subnets],securityGroups=[$security_groups],assignPublicIp=$public_ip}" \
   --overrides "$overrides" --query 'tasks[0].taskArn' --output text)

@@ -61,7 +61,10 @@ Discord allows one voice connection per user and server: a second `POST` for the
 | `maxMinutes`, `idleMinutes`, `emptySeconds` | the session ends after `maxMinutes` (default 240, at most 720), after `idleMinutes` without speech (default 30), or with no one else in the call for `emptySeconds` (default 60) |
 | `ignoreUserIds` | users never transcribed and not counted as company: other bots |
 | `metadata` | anything, at most 4 KB of JSON, echoed in every `voice.*` event |
-| `notice` | the notice text (`{bot}` is the bot's id); by default "<@bot> is listening and transcribing speech in this channel. Audio is not stored." |
+| `notice` | the notice text (`{bot}` is the bot's id); by default "<@bot> is listening and transcribing speech in this channel. Audio is not stored." (with `speak`, "…listening, transcribing speech and may speak…") |
+| `speak` | the bot may [speak](#speaking) in the call (default `false`). Your app joins with `self_mute: false`: the answer's `join` says how it should have joined |
+| `bargeIn` | with `speak`: a person starting to talk stops what the bot is saying (default `true`) |
+| `voice` | with `speak`: the voice its speech is made in (default `alloy`; OpenAI's voices: `alloy`, `ash`, `ballad`, `coral`, `echo`, `fable`, `nova`, `onyx`, `sage`, `shimmer`, `verse`…) |
 
 ## Keep it connected, and end it
 
@@ -122,12 +125,51 @@ nothing more.
 (`requested`, `empty`, `idle`, `max_duration`, `budget`, `kicked`, `credentials`, `error`), `limit` and
 `endUserReason` with `budget`, and the session's totals.
 
+## Speaking
+
+A session started with `speak: true` can talk: what you send it is made into speech with OpenAI's `gpt-4o-mini-tts` and
+played in the call by the bot. Join un-muted (OP 4 with `self_mute: false`).
+
+```ts
+const { speechId } = await agents.voice.speak(session.id, { text: "Hi! I'm taking notes for this call.", instructions: "Warm and brief." });
+await agents.voice.stopSpeaking(session.id);   // stop what it is saying, and what it was going to
+```
+
+```python
+speech = await agents.voice.speak(session["id"], "Hi! I'm taking notes for this call.", instructions="Warm and brief.")
+await agents.voice.stop_speaking(session["id"])
+```
+
+`POST /v1/voice/sessions/{id}/speak` takes `text` (1 to 4,000 characters), `voice` (another than the session's, for
+this speech), `instructions` (how to say it: tone, pace, accent; at most 1,000 characters) and `interrupt` (stop what
+is playing and clear the queue first). It answers 202 with `speechId` and `position` (speeches ahead of it): speeches
+play one at a time, in order, at most 20 waiting. `DELETE /v1/voice/sessions/{id}/speak` stops what the bot is saying
+and clears the queue.
+
+- **Events.** `voice.speech.started` (`speechId`, `latencyMs` from the request to the first audio) and
+  `voice.speech.ended` (`speechId`, `reason`: `done`, `interrupted` or `error`; `by` with interrupted: `interrupt`,
+  `requested`, `barge_in`, `end`, `handoff` or `budget`; `seconds` made and `costUsd`). A speech that never started
+  ends `interrupted` with 0 seconds.
+- **Barge-in.** With `bargeIn` (the default), a person starting to talk (not the bot, not `ignoreUserIds`) stops the
+  speech playing and clears the queue (`by: "barge_in"`), so the bot does not talk over people.
+- **Latency.** Speech plays as it is made: OpenAI streams it, and each 20 ms is encoded and sent as it comes, so the
+  first audio goes out well before the whole is made (`latencyMs` measures it per speech).
+- **Its own voice.** What the bot says is never transcribed (Discord does not send a bot its own audio, and the
+  session ignores the bot's user), and does not count as speech for `idleMinutes` or company for `emptySeconds`.
+- **Requests go where the call is.** Any node takes the request and passes it to the one holding the call; while the
+  session moves between nodes, a 503 says to retry (the SDKs do).
+
 ## Cost
 
 Only speech is paid for: Discord sends no audio while people are silent, quiet audio is trimmed from each utterance, and
 each utterance is transcribed at the
 [transcription price](../pricing.md), per second, as `usage.recorded` with `kind: "transcription"`, the session's
 `subject`, and `context.voiceSession`. Holding the call itself costs nothing.
+
+Speech the bot says is billed per second of speech made, at the [speech price](../pricing.md) ($0.015 a minute on the
+platform's OpenAI key), as `usage.recorded` with `kind: "speech"` and `audioSeconds`; a speech cut short pays for what
+was made. With end-user credits, each speech holds its estimate of the subject's credit before it is made and settles
+at what it cost; running out ends the session (`budget`).
 
 A session starts only when the account may spend (402 `SPEND_LIMIT` otherwise) and has an OpenAI key to transcribe with
 (400 `TRANSCRIPTION_UNAVAILABLE`). An account that runs out during a call ends it: `reason: "budget"`, `limit: "tenant"`.
@@ -147,6 +189,12 @@ holds its cost of the subject's credit before it is transcribed, and running out
   Once its transcript is written, it is delivered at least once: dedupe webhook events by `id`.
 - Discord's end-to-end encryption (DAVE) is checked: a member of the call's encryption group that Discord's voice
   server never named drops the connection, which joins again with a new group.
+- Text a session speaks goes to OpenAI to be made into speech, under its API data policy (not used for training); the
+  speech is played and dropped, never stored. Logs carry its length and timings, never the text.
+- A bot that speaks sends audio its call's encryption group can decrypt, so its group is checked strictly: a Welcome
+  into a group with a member Discord's voice server never named is refused at once (and the bot is welcomed again into
+  one of the call's members), and speech goes out only while every member of the group is named and the group is
+  ready (never unencrypted while it re-forms).
 - Discord does not document receiving audio for bots, though every recording bot does it; it may change without notice.
 
 ## Limits

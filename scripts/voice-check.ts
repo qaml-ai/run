@@ -3,20 +3,27 @@
 // runtime's own Discord transport (src/voice-discord.ts) and segmenter (src/voice-audio.ts), the other plays three
 // bursts of tone separated by encoded silence, as a bot playing a file does. PASS needs the listener to connect (the
 // voice WebSocket, UDP IP discovery and DAVE), hear the speaker's packets (UDP in), and cut them into three utterances.
-// Nothing is transcribed and nothing is stored.
 //
-//   VOICE_BOT_TOKEN=… SPEAKER_TOKEN=… GUILD=… CHANNEL=… node --experimental-strip-types scripts/voice-check.ts
+// With OPENAI_API_KEY, the other way too: the listener speaks a sentence through the runtime's own speech pipeline
+// (speech.ts streaming OpenAI's gpt-4o-mini-tts, voice-audio.ts encoding, the transport's player), and the speaker bot
+// hears it, segments it and has it transcribed. PASS then also needs the sentence heard (UDP out, DAVE encryption) and
+// recognized; it reports the speech's latency (asked → first audio out) and what it cost. Nothing is stored.
+//
+//   VOICE_BOT_TOKEN=… SPEAKER_TOKEN=… GUILD=… CHANNEL=… [OPENAI_API_KEY=…] node --experimental-strip-types scripts/voice-check.ts
 //
 // Use two test applications made for this (never a production bot's token): a second gateway session on a token in use
 // would see its traffic. Both need Connect, Speak and View Channel in the channel. Exit code 0 on PASS, 1 on FAIL.
 import { Readable } from "node:stream";
 import OpusScript from "opusscript";
 import {
-  createAudioPlayer, createAudioResource, entersState, joinVoiceChannel, NoSubscriberBehavior, StreamType, VoiceConnectionStatus,
+  createAudioPlayer, createAudioResource, EndBehaviorType, entersState, joinVoiceChannel, NoSubscriberBehavior, StreamType, VoiceConnectionStatus,
   type DiscordGatewayAdapterCreator, type DiscordGatewayAdapterLibraryMethods,
 } from "@discordjs/voice";
 import { discordVoice } from "../src/voice-discord.ts";
-import { Segmenter, type Cut } from "../src/voice-audio.ts";
+import { oggOpus, opusFromPcm, Segmenter, type Cut } from "../src/voice-audio.ts";
+import { Outbound } from "../src/outbound.ts";
+import { openaiSpeech, Synthesizer } from "../src/speech.ts";
+import { checkedAudio, openaiTranscription } from "../src/transcription.ts";
 import type { VoiceCredentials } from "../src/voice-sessions.ts";
 
 const required = (name: string) => process.env[name] || (console.error(`${name} is not set`), process.exit(2));
@@ -127,7 +134,8 @@ async function main() {
   // The listener joins as an app would for a voice session: OP 4 on its own gateway, then the two answers.
   const state = listener.next(({ t, d }) => t === "VOICE_STATE_UPDATE" && d.user_id === listener.userId && d.channel_id === channelId ? d : undefined, 15_000, "VOICE_STATE_UPDATE");
   const server = listener.next(({ t, d }) => t === "VOICE_SERVER_UPDATE" && d.guild_id === guildId ? d : undefined, 15_000, "VOICE_SERVER_UPDATE");
-  listener.send({ op: 4, d: { guild_id: guildId, channel_id: channelId, self_mute: true, self_deaf: false } });
+  // Un-muted: it speaks in the second part.
+  listener.send({ op: 4, d: { guild_id: guildId, channel_id: channelId, self_mute: false, self_deaf: false } });
   const [voiceState, voiceServer] = await Promise.all([state, server]);
   const credentials: VoiceCredentials = { guildId, channelId, userId: listener.userId, sessionId: voiceState.session_id, endpoint: voiceServer.endpoint, token: voiceServer.token };
 
@@ -148,7 +156,8 @@ async function main() {
   log({ type: "listener_ready", ms: Date.now() - started, dave: stats.dave });
 
   // The speaker joins with @discordjs/voice on its own gateway and plays the bursts.
-  const voice = joinVoiceChannel({ guildId, channelId, adapterCreator: speaker.adapterCreator(), selfDeaf: true, selfMute: false, group: "speaker" });
+  // Not deafened: it listens in the second part.
+  const voice = joinVoiceChannel({ guildId, channelId, adapterCreator: speaker.adapterCreator(), selfDeaf: false, selfMute: false, group: "speaker" });
   await entersState(voice, VoiceConnectionStatus.Ready, 30_000);
   const sent = packets();
   const player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Play } });
@@ -159,11 +168,13 @@ async function main() {
   segmenter.flush("end");
 
   const failures: string[] = [];
+  const spoken = await speakAndHear(connection, voice, listener.userId, failures);
   if (stats.packets < sent.length * 0.8) failures.push(`heard ${stats.packets} of ${sent.length} packets (UDP in, or DAVE)`);
   if (stats.broken) failures.push(`${stats.broken} receive streams broke (DAVE decryption)`);
   if (stats.lost.length) failures.push(`connection lost: ${stats.lost.join(", ")}`);
   if (stats.cuts.length !== 3) failures.push(`${stats.cuts.length} utterances, not 3`);
-  log({ type: "summary", result: failures.length ? "FAIL" : "PASS", failures, sent: sent.length, heard: stats.packets, utterances: stats.cuts.map(cut => cut.seconds), dave: stats.dave });
+  log({ type: "summary", result: failures.length ? "FAIL" : "PASS", failures, sent: sent.length, heard: stats.packets, utterances: stats.cuts.map(cut => cut.seconds), dave: stats.dave,
+    spoken });
 
   voice.destroy();
   connection.close();
@@ -172,6 +183,64 @@ async function main() {
   listener.close();
   speaker.close();
   process.exit(failures.length ? 1 : 0);
+}
+
+/** What the listener says, and the speaker bot must hear. */
+const SENTENCE = "The quick brown fox jumps over the lazy dog near the riverbank.";
+const words = (text: string) => text.toLowerCase().replace(/[^a-z ]/g, " ").split(/\s+/).filter(Boolean);
+
+/** Two seconds of a 330 Hz tone as speech.ts makes speech (24 kHz mono PCM, in 100 ms chunks): without an OpenAI key. */
+async function* tone() {
+  for (let at = 0; at < 48_000; at += 2_400) {
+    const chunk = Buffer.alloc(4_800);
+    for (let i = 0; i < 2_400; i++) chunk.writeInt16LE(Math.round(9_000 * Math.sin(2 * Math.PI * 330 * (at + i) / 24_000)), i * 2);
+    yield chunk;
+  }
+}
+
+/**
+ * The listener speaks through the runtime's speech pipeline: SENTENCE made by OpenAI with OPENAI_API_KEY, else a tone.
+ * The speaker bot (its own @discordjs/voice connection, not deafened) hears it and cuts it with the runtime's segmenter;
+ * with the key, it has it transcribed too. Adds to `failures`.
+ */
+async function speakAndHear(listening: ReturnType<ReturnType<typeof discordVoice>["connect"]>, voice: ReturnType<typeof joinVoiceChannel>, botUser: string, failures: string[]) {
+  const outbound = new Outbound();
+  const apiKey = process.env.OPENAI_API_KEY;
+  const synthesizer = new Synthesizer({ provider: openaiSpeech({ outbound }), key: async () => apiKey ? { apiKey, platform: false } : undefined, price: () => 15_000 });
+  const heard: Buffer[] = [];
+  const cuts: Cut[] = [];
+  const segmenter = new Segmenter({ silenceMs: 800, cut: cut => cuts.push(cut) });
+  const stream = voice.receiver.subscribe(botUser, { end: { behavior: EndBehaviorType.Manual } });
+  stream.on("data", (packet: Buffer) => { heard.push(packet); segmenter.packet(botUser, packet); });
+  let made = 0, sent = 0, firstAudioMs = -1;
+  const asked = Date.now();
+  async function* counted(packets: AsyncIterable<Uint8Array>) { for await (const packet of packets) { sent++; yield packet; } }
+  const pcm = apiKey ? synthesizer.stream({ text: SENTENCE, voice: "alloy" }, { apiKey }, AbortSignal.timeout(60_000)) : tone();
+  const playback = listening.play!(counted(opusFromPcm(pcm, count => { made += count; })), () => { firstAudioMs = Date.now() - asked; });
+  const result = await playback.done;
+  const playedMs = Date.now() - asked;
+  await new Promise(resolve => setTimeout(resolve, 2_000));
+  segmenter.flush("end");
+  stream.destroy();
+  const seconds = Math.round(made / 24_000 * 100) / 100;
+  let transcript = "";
+  if (cuts.length && apiKey) {
+    const packets = cuts.flatMap(cut => cut.packets);
+    const bytes = oggOpus(packets);
+    const transcribed = await openaiTranscription({ outbound }).transcribe({ bytes, header: checkedAudio(bytes) }, { language: "en" }, { apiKey }, AbortSignal.timeout(60_000));
+    transcript = transcribed.text;
+  }
+  const expected = words(SENTENCE), got = new Set(words(transcript));
+  const recall = expected.filter(word => got.has(word)).length / expected.length;
+  if (result !== "done") failures.push(`the speech ended ${result}`);
+  if (heard.length < sent * 0.8) failures.push(`the speaker heard ${heard.length} of the ${sent} packets spoken (UDP out, or DAVE)`);
+  if (apiKey && recall < 0.8) failures.push(`the speech was heard as ${JSON.stringify(transcript)}`);
+  if (!apiKey && cuts.length !== 1) failures.push(`the tone was heard as ${cuts.length} utterances, not 1`);
+  const report = apiKey
+    ? { speech: "openai", sent, heard: heard.length, utterances: cuts.length, seconds, firstAudioMs, playedMs, costUsd: synthesizer.cost(seconds), transcript, recall: Math.round(recall * 100) / 100 }
+    : { speech: "tone (no OPENAI_API_KEY)", sent, heard: heard.length, utterances: cuts.length, seconds, firstAudioMs, playedMs };
+  log({ type: "spoken", ...report });
+  return report;
 }
 
 main().catch(error => { log({ type: "summary", result: "FAIL", failures: [String(error?.message ?? error)] }); process.exit(1); });

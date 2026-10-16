@@ -2,6 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -76,4 +78,66 @@ test("/v1/voice/sessions: create, read, list, update and end a session over HTTP
   assert.equal(ended.json.leave.d.channel_id, null);
   await until(() => !fake.open().length, "the connection to close");
   assert.equal((await call("GET", "/v1/voice/sessions/vs_000000000000000000000000")).status, 404);
+});
+
+test("speak over HTTP: a request to any node plays on the node holding the call, made by OpenAI's speech API as streamed PCM", async t => {
+  const root = await mkdtemp(join(tmpdir(), "agent-voice-speak-"));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
+  writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(token), apiKeys: { openrouter: "fixture-key", openai: "tenant-openai-key" } } } }));
+  // OpenAI's /v1/audio/speech: 0.5 s of PCM, sent in two halves.
+  const asked: { body: any; authorization?: string }[] = [];
+  const openai = createServer(async (req, res) => {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    asked.push({ body: JSON.parse(body), authorization: req.headers.authorization });
+    res.writeHead(200, { "Content-Type": "audio/pcm" });
+    res.write(Buffer.alloc(12_000 * 2 / 2, 0x11));
+    await new Promise(resolve => setTimeout(resolve, 50));
+    res.end(Buffer.alloc(12_000 * 2 / 2, 0x22));
+  }).listen(0, "127.0.0.1");
+  await once(openai, "listening");
+  t.after(() => new Promise<void>(resolve => openai.close(() => resolve())));
+  const { url: databaseUrl } = await testDatabase();
+  const fake = fakeTransport();
+  const nodes: RuntimeNode[] = [];
+  t.after(async () => { for (const node of nodes) await node.close().catch(() => {}); });
+  const secretsKey = randomBytes(32).toString("hex");
+  const bases: string[] = [];
+  for (let index = 0; index < 2; index++) bases.push(await onFreePort(async port => {
+    const config = nodeConfig({
+      PORT: String(port), HOST: "127.0.0.1", AGENT_NODE_URL: `http://127.0.0.1:${port}`, AGENT_DATABASE_URL: databaseUrl,
+      AGENT_DATA_DIR: join(root, "shared"), AGENT_STORAGE: "shared-file", AGENT_HOSTING: "inline", AGENT_LEASE_TTL_MS: "1500", AGENT_SCHEDULER_INTERVAL_MS: "200",
+      AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_SESSION_SECRET: "voice-api-session-secret-with-32-chars!!", AGENT_SECRETS_KEY: secretsKey,
+      AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", AGENT_SPEECH_URL: `http://127.0.0.1:${(openai.address() as { port: number }).port}/v1`,
+    });
+    const made = await createNode(config, { ...await nodeDeps(config), voiceTransports: { discord: fake.transport } });
+    try { await made.start(); } catch (error) { await made.close().catch(() => {}); throw error; }
+    nodes.push(made);
+    return `http://127.0.0.1:${port}`;
+  }));
+  const call = async (base: string, method: string, path: string, body?: unknown) => {
+    const response = await fetch(base + path, {
+      method, body: body === undefined ? undefined : JSON.stringify(body),
+      headers: { Authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
+    });
+    return { status: response.status, json: await response.json() as any };
+  };
+  const created = await call(bases[0], "POST", "/v1/voice/sessions", { discord: discordGrant(), speak: true, voice: "verse" });
+  assert.equal(created.status, 201, JSON.stringify(created.json));
+  assert.deepEqual(created.json.join, { self_mute: false, self_deaf: false });
+  const connection = await until(() => fake.open()[0], "the connection");
+  connection.handlers.ready();
+  // Node b does not hold the call: the request goes to the node that does.
+  const spoken = await call(bases[1], "POST", `/v1/voice/sessions/${created.json.id}/speak`, { text: "Hello from camelRun.", instructions: "Calm." });
+  assert.equal(spoken.status, 202, JSON.stringify(spoken.json));
+  assert.equal(spoken.json.voice, "verse");
+  await until(() => connection.played.length === 1 && !connection.playing, "the speech to play");
+  assert.equal(connection.played[0].length, 25, "0.5 s: 25 packets of 20 ms");
+  assert.deepEqual(asked[0].body, { model: "gpt-4o-mini-tts", input: "Hello from camelRun.", voice: "verse", response_format: "pcm", instructions: "Calm." });
+  assert.equal(asked[0].authorization, "Bearer tenant-openai-key");
+  await until(async () => (await call(bases[1], "GET", `/v1/voice/sessions/${created.json.id}`)).json.speeches === 1, "the speech counted");
+  const stopped = await call(bases[1], "DELETE", `/v1/voice/sessions/${created.json.id}/speak`);
+  assert.deepEqual([stopped.status, stopped.json], [200, { stopped: 0 }]);
+  const refused = await call(bases[0], "POST", `/v1/voice/sessions/${created.json.id}/speak`, { text: "" });
+  assert.equal(refused.status, 400);
 });
