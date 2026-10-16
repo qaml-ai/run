@@ -345,7 +345,11 @@ export class EndUserCredits {
   async extend(tenant: string, endUser: string, bucket: string, id: string, want: number, now = Date.now()): Promise<Reserved> {
     return transaction(this.db, async sql => {
       const user = await lockEndUser(sql, tenant, endUser, now);
-      const left = await room(sql, tenant, user, await this.settings(tenant, sql), bucket, now);
+      // More of a call's hold comes from the day it began (the day its cost is posted to), even after midnight: never from
+      // the next day's allowance, which would then be granted again to the calls of that day.
+      const began = (await sql.query("select h.day, a.started_at from (select $1::uuid as id) i left join end_user_holds h on h.id = i.id left join model_attempts a on a.id = i.id", [id])).rows[0];
+      const day = began?.day ? dayText(began.day) : began?.started_at ? utcDay(Number(began.started_at)) : utcDay(now);
+      const left = await room(sql, tenant, user, await this.settings(tenant, sql), bucket, now, day);
       const taken = split(Math.max(0, want), left);
       if (taken.raw <= 0) return { refused: await refused(sql, tenant, user, bucket, left, now) };
       const updated = await sql.query("update end_user_holds set allowance = allowance + $2, paid = paid + $3, expires_at = $4 where id = $1", [id, taken.allowance, taken.paid, now + HOLD_MS]);
@@ -456,11 +460,10 @@ const dollars = (micros: number) => `${micros < 0 ? "-" : ""}$${(Math.abs(micros
 
 /**
  * What `user` (their row, locked or as read) may still spend in `bucket` today: the bucket's allowance less what was
- * spent and what holds of today take of it; and the balance less every hold, within the daily limit less what was paid
+ * spent and what holds of that day (`day`: today, unless a call that began before midnight asks) take of it; and the balance less every hold, within the daily limit less what was paid
  * and held today, and within the bucket's own limit less what it paid and holds today.
  */
-async function room(sql: Sql, tenant: string, user: any, settings: EndUserSettings, bucket: string, now: number): Promise<Room> {
-  const day = utcDay(now);
+async function room(sql: Sql, tenant: string, user: any, settings: EndUserSettings, bucket: string, now: number, day = utcDay(now)): Promise<Room> {
   const [{ rows: days }, { rows: holds }] = await Promise.all([
     sql.query("select bucket, allowance_spent, paid_spent from end_user_days where tenant = $1 and end_user = $2 and day = $3", [tenant, user.id, day]),
     sql.query("select bucket, day, allowance, paid from end_user_holds where tenant = $1 and end_user = $2 and expires_at > $3", [tenant, user.id, now]),

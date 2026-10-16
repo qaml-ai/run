@@ -426,3 +426,20 @@ test("a slow call that needs no more of its hold yet keeps it from lapsing as it
   await service.renew("payg", "person", id);
   assert.ok(Number((await holds(db))[0].expires_at) >= Date.now() + HOLD_MS - 5_000);
 });
+
+test("a call begun before midnight holds more from its own day's allowance, never the next day's", async () => {
+  const { db, service } = await credits({ allowances: { b: 300_000 } });
+  const midnight = Date.parse(`${today()}T00:00:00Z`) + 86_400_000;
+  const id = randomUUID();
+  // At 23:59 it holds 0.20 of the day's 0.30.
+  const first = await service.reserve("t", "u", "b", { id, want: 200_000, min: 1 }, midnight - 60_000);
+  assert.equal(first!.hold!.allowance, 200_000);
+  // At 00:01 it wants 0.50 more: only yesterday's 0.10 left is its to take, not today's fresh 0.30.
+  const more = await service.extend("t", "u", "b", id, 500_000, midnight + 60_000);
+  assert.equal(more.hold!.allowance, 100_000);
+  const [hold] = await holds(db);
+  assert.deepEqual([Number(hold.allowance), String(hold.day instanceof Date ? hold.day.toISOString().slice(0, 10) : hold.day).slice(0, 10)], [300_000, today()]);
+  // Today's allowance is all there for today's calls.
+  const fresh = await service.reserve("t", "u", "b", { id: randomUUID(), want: 300_000, min: 1 }, midnight + 120_000);
+  assert.equal(fresh!.hold!.allowance, 300_000);
+});
