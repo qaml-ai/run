@@ -18,9 +18,12 @@ balances are your ledger of your users, and camelRun never moves money for them.
   (delegate, spawn) act for its subject too. Work with no subject is not metered:
   you pay for it, as today.
 - **Bucket**: the part of your product that spends, such as `builder` or `bot:42`. An
-  agent spends from its `bucket` (default `default`); a stateless run or call names
-  its own. A run sent with your API key (`POST /v1/agents/{id}/prompt`) may name
-  another; an agent's own token cannot.
+  agent spends from its `bucket`; a stateless run or call names its own. A run sent
+  with your API key (`POST /v1/agents/{id}/prompt`) may name another; an agent's own
+  token cannot. A run that names none (one you send without, a schedule's, a
+  sub-agent's notice, a channel's or a voice session's message) spends from the
+  agent's bucket, else the one your latest run of the agent named, and only with
+  neither from `default` (logged as `end_user_default_bucket`).
 - **Daily allowance**: free spend per bucket per UTC day, spent first. Set by bucket
   name, by prefix (`"bot:*"`) or for every bucket (`"*"`); a bucket takes its own
   name, else the longest prefix it starts with, else `*`. You can override them per
@@ -31,8 +34,19 @@ balances are your ledger of your users, and camelRun never moves money for them.
   2500 is +25%). The ledger records both.
 - **Daily limit**: the most a person's paid spend may be per UTC day, for everyone
   or per person.
+- **Bucket limits**: the most one bucket may charge a person's balance per UTC day,
+  keyed as allowances are (`"bot:*"`), for everyone or per person. A bot at
+  `"bot:*": 2_000_000` spends its allowance, then at most $2 of the balance a day,
+  however much the person holds; at `0` it spends its allowance only.
 
 All amounts are integer **micro-USD**: 1 USD = 1,000,000.
+
+A call costs a person what it cost you: the provider's reported cost, else the catalog's
+price for its tokens (cache reads and writes included), as `usage.recorded` says. A call
+on a model with no price (one of your [own models](custom-models.md) declared without
+`pricing`) is never free to them: it is charged at the catalog's price for the model,
+else the provider's dearest, and logged as `end_user_unpriced_model`. Declare its
+pricing to charge your own.
 
 Changing an allowance or a limit never resets what was spent today: spend is kept
 per day and bucket, and the allowance is only the cap. Raise a bucket from $40 to $60
@@ -49,16 +63,20 @@ await agents.endUsers.configure({
   allowances: { builder: 50_000_000, "bot:*": 1_000_000 }, // $50 a day for the builder, $1 a day per bot
   markupBps: 2_500,                                          // paid spend at cost +25%
   dailyLimit: 20_000_000,                                    // at most $20 of paid spend a day
+  bucketLimits: { "bot:*": 2_000_000 },                      // and at most $2 of it per bot
   lowBalance: 2_000_000,                                     // end_user.balance.low below $2
 });
 ```
 
 ```python
 await agents.end_users.configure(enabled=True, allowances={"builder": 50_000_000, "bot:*": 1_000_000},
-                                  markup_bps=2_500, daily_limit=20_000_000, low_balance=2_000_000)
+                                  markup_bps=2_500, daily_limit=20_000_000, bucket_limits={"bot:*": 2_000_000},
+                                  low_balance=2_000_000)
 ```
 
-REST: `PUT /v1/end-user-settings`. Fields left out keep their values.
+REST: `PUT /v1/end-user-settings`. Fields left out keep their values; `allowances` and
+`bucketLimits`, when sent, replace the whole map (a person's own overrides merge key by
+key instead: `endUsers.update`).
 
 ## Pay as you go: an example
 
@@ -94,7 +112,8 @@ person = await agents.end_users.get(user_id, buckets=["builder"])
 ```
 
 A refund you make in Stripe: `endUsers.refund(id, { amount, key })` takes the credit
-back. Anything else: `endUsers.adjust(id, { amount, key })` with a signed amount.
+back: at most the balance that calls in flight do not hold, else a 409
+`INSUFFICIENT_BALANCE` (with `refundable`). Anything else: `endUsers.adjust(id, { amount, key })` with a signed amount.
 Grants, refunds and adjustments are idempotent by `key`: the same key and entry again
 returns the first; the same key for another entry is a 409.
 
@@ -115,6 +134,8 @@ When nothing more can be held:
   "spend_limit"`, `limit: "end_user"` and a `reason`. It is never retried.
   - `reason: "balance"`: no allowance left in the bucket today, and no balance.
   - `reason: "daily_limit"`: the person's paid spend reached the daily limit.
+  - `reason: "bucket_limit"`: the bucket's paid spend reached its own limit (the person
+    may still have a balance, for their other buckets).
 - Transcriptions and images are refused before they are made, with the same 402.
 
 ```ts
@@ -145,7 +166,7 @@ Subscribe an endpoint (`POST /v1/webhooks`) to:
 | Type | When |
 | --- | --- |
 | `end_user.balance.low` | a balance falls below `lowBalance`; again only after a grant lifts it back above |
-| `end_user.credit.exhausted` | `reason: "allowance"`: a bucket's allowance for the day is used up (the balance may still pay; once per person, bucket and day); `"balance"`: the balance reached zero, or a call was refused for it (once until the next grant); `"daily_limit"`: the daily limit was reached (once a day) |
+| `end_user.credit.exhausted` | `reason: "allowance"`: a bucket's allowance for the day is used up (the balance may still pay; once per person, bucket and day); `"balance"`: the balance reached zero, or a call was refused for it (once until the next grant); `"daily_limit"`: the daily limit was reached (once a day); `"bucket_limit"`: a bucket's own limit was reached (once per person, bucket and day) |
 
 They are signed and retried like every [webhook](webhooks.md), and written in the
 same transaction as the change that caused them.
@@ -169,7 +190,7 @@ entry for the difference. `balanceAfter` is the balance after each entry.
 | `GET`, `PUT /v1/end-user-settings` | `endUsers.settings()`, `endUsers.configure({...})` / `end_users.settings()`, `end_users.configure(...)` |
 | `GET /v1/end-users` | `endUsers.list({ after, limit })` |
 | `GET /v1/end-users/{id}?buckets=` | `endUsers.get(id, { buckets })` |
-| `PATCH /v1/end-users/{id}` | `endUsers.update(id, { allowances, dailyLimit })`: a person's own allowances (merged; `null` removes one) and limit |
+| `PATCH /v1/end-users/{id}` | `endUsers.update(id, { allowances, bucketLimits, dailyLimit })`: a person's own allowances and bucket limits (merged; `null` removes one) and limit |
 | `GET /v1/end-users/{id}/ledger` | `endUsers.ledger(id, { before, limit })` |
 | `POST /v1/end-users/{id}/entries` | `endUsers.grant`, `refund`, `adjust` |
 

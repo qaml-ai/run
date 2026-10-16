@@ -72,6 +72,34 @@ test("a call is refused when it cannot hold its minimum: for the balance, or for
   assert.deepEqual((await service.reserve("t", "nobody", "builder", { id: randomUUID(), want: 0, min: 0 }))?.hold?.raw, 0, "a free call is never refused");
 });
 
+test("a bucket's own daily limit caps what it charges the balance, whatever the balance: a bot cannot spend past it", async () => {
+  const { service } = await credits({ allowances: { "bot:*": 100_000 }, bucketLimits: { "bot:*": 300_000 } });
+  await service.post("t", "u", { kind: "grant", amount: 10 * USD, key: "pay" });
+  // The allowance, then up to $0.30 of the balance: $10 there or not.
+  const first = await service.reserve("t", "u", "bot:1", { id: randomUUID(), want: USD, min: 1 });
+  assert.deepEqual([first!.hold!.allowance, first!.hold!.paid], [100_000, 300_000]);
+  const capped = await service.reserve("t", "u", "bot:1", { id: randomUUID(), want: USD, min: 1 });
+  assert.equal(capped?.refused?.reason, "bucket_limit");
+  assert.match(capped!.refused!.message, /daily limit of \$0\.30 of paid credit for "bot:1"/);
+  assert.equal((await service.refusal("t", "u", "bot:1"))?.reason, "bucket_limit", "a run is refused before it starts");
+  // Another bot's bucket has its own; a bucket with no key only the balance (and the daily limit).
+  assert.equal((await service.reserve("t", "u", "bot:2", { id: randomUUID(), want: USD, min: 1 }))!.hold!.paid, 300_000);
+  assert.equal((await service.reserve("t", "u", "builder", { id: randomUUID(), want: USD, min: 1 }))!.hold!.paid, USD);
+  // Settled, what it paid counts against its limit as its holds did.
+  await service.settleHold("t", "u", "bot:1", first!.hold!.id, 250_000, "call-1");
+  assert.equal((await service.get("t", "u")).today.buckets.find(bucket => bucket.bucket === "bot:1")!.paidLimit, 300_000);
+  const rest = await service.reserve("t", "u", "bot:1", { id: randomUUID(), want: USD, min: 1 });
+  assert.equal(rest!.hold!.paid, 300_000 - 150_000, "$0.15 was paid of its $0.30");
+  // A user's own: 0 keeps a bot to its allowance alone, and says so.
+  await service.update("t", "u", { bucketLimits: { "bot:3": 0 } });
+  const free = await service.reserve("t", "u", "bot:3", { id: randomUUID(), want: USD, min: 1 });
+  assert.deepEqual([free!.hold!.allowance, free!.hold!.paid], [100_000, 0]);
+  const none = await service.reserve("t", "u", "bot:3", { id: randomUUID(), want: USD, min: 1 });
+  assert.equal(none?.refused?.reason, "bucket_limit");
+  assert.match(none!.refused!.message, /"bot:3" spends no paid credit/);
+  assert.deepEqual((await service.update("t", "u", { bucketLimits: { "bot:3": null } })).overrides.bucketLimits, {});
+});
+
 test("changing an allowance mid-day keeps what was spent: only the cap moves", async () => {
   const { db, service } = await credits({ allowances: { builder: 50 * USD } });
   const spent = await service.reserve("t", "u", "builder", { id: randomUUID(), want: 30 * USD, min: 1 });

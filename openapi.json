@@ -794,7 +794,7 @@
               },
               "endUserReason": {
                 "type": "string",
-                "description": "With limit end_user: why (balance, daily_limit)"
+                "description": "With limit end_user: why (balance, daily_limit, bucket_limit)"
               },
               "startedAt": {
                 "type": [
@@ -7805,9 +7805,10 @@
             "type": "string",
             "enum": [
               "balance",
-              "daily_limit"
+              "daily_limit",
+              "bucket_limit"
             ],
-            "description": "With end_user_credit: the subject had no credit left (balance), or reached its daily limit (daily_limit)"
+            "description": "With end_user_credit: the subject had no credit left (balance), reached its daily limit (daily_limit), or the run's bucket reached its own daily limit on paid spend (bucket_limit)"
           },
           "errorClass": {
             "type": "string",
@@ -8176,6 +8177,17 @@
               "bot:*": 1000000
             }
           },
+          "bucketLimits": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "description": "The most each bucket may charge an end user's balance per UTC day: micro-USD charged (with the markup), keyed as allowances are; 0 lets a bucket spend its allowance and never the balance. A bucket with no key is held only to dailyLimit",
+            "example": {
+              "bot:*": 2000000
+            }
+          },
           "dailyLimit": {
             "type": [
               "integer",
@@ -8204,6 +8216,7 @@
         "required": [
           "enabled",
           "allowances",
+          "bucketLimits",
           "dailyLimit",
           "markupBps",
           "lowBalance",
@@ -8226,6 +8239,17 @@
             "example": {
               "builder": 50000000,
               "bot:*": 1000000
+            }
+          },
+          "bucketLimits": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "description": "The most each bucket may charge an end user's balance per UTC day (replaces the current map): micro-USD charged (with the markup), keyed as allowances are; 0 lets a bucket spend its allowance and never the balance. A bucket with no key is held only to dailyLimit",
+            "example": {
+              "bot:*": 2000000
             }
           },
           "dailyLimit": {
@@ -8329,6 +8353,12 @@
                   "type": "integer"
                 }
               },
+              "bucketLimits": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "integer"
+                }
+              },
               "dailyLimit": {
                 "type": [
                   "integer",
@@ -8338,9 +8368,10 @@
             },
             "required": [
               "allowances",
+              "bucketLimits",
               "dailyLimit"
             ],
-            "description": "The user's own allowances and daily limit, over the tenant's"
+            "description": "The user's own allowances, bucket limits and daily limit, over the tenant's"
           },
           "today": {
             "type": "object",
@@ -8379,6 +8410,13 @@
                     "allowanceLeft": {
                       "type": "integer",
                       "description": "Left of the allowance today, after holds, in micro-USD (1 USD = 1000000)"
+                    },
+                    "paidLimit": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "description": "The bucket's own daily limit on paid spend (charged); null: none, in micro-USD (1 USD = 1000000)"
                     }
                   },
                   "required": [
@@ -8387,7 +8425,8 @@
                     "allowanceSpent",
                     "paidSpent",
                     "held",
-                    "allowanceLeft"
+                    "allowanceLeft",
+                    "paidLimit"
                   ]
                 }
               }
@@ -8439,6 +8478,17 @@
               "minimum": 0
             },
             "description": "Merged into the user's own allowances key by key; null removes a key"
+          },
+          "bucketLimits": {
+            "type": "object",
+            "additionalProperties": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "description": "Merged into the user's own bucket limits key by key; null removes a key"
           },
           "dailyLimit": {
             "type": [

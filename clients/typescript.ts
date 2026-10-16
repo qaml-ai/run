@@ -616,8 +616,8 @@ export type WebhookEvent = { id: string; created: number } & (
     } }
   | { type: "end_user.balance.low"; data: { endUser: string; balance: number; previousBalance: number; threshold: number } }
   | { type: "end_user.credit.exhausted"; data: {
-      /** allowance: a bucket's free allowance for the day is used up (the balance may still pay); balance: no credit left; daily_limit: the day's paid spend reached its limit. */
-      endUser: string; reason: "allowance" | "balance" | "daily_limit"; bucket: string | null; balance: number; day: string; allowance?: number; dailyLimit?: number | null;
+      /** allowance: a bucket's free allowance for the day is used up (the balance may still pay); balance: no credit left; daily_limit: the day's paid spend reached its limit; bucket_limit: the bucket's paid spend reached its own. */
+      endUser: string; reason: "allowance" | "balance" | "daily_limit" | "bucket_limit"; bucket: string | null; balance: number; day: string; allowance?: number; dailyLimit?: number | null; bucketLimit?: number | null;
     } }
   | { type: "run.started"; data: RunFacts & { resumes?: number } }
   | { type: "run.completed"; data: RunFacts & { usage: RunUsage | null; servedModel?: string; stopped?: "input_required" | "spend_limit" | "turn_limit"; inputIds?: string[]; replyIndex?: number; messageCount?: number; steeredInto?: string } }
@@ -754,8 +754,8 @@ export interface RunResult {
   stopped?: "input_required" | "spend_limit" | "turn_limit";
   /** With stopped "spend_limit": which limit stopped it (the run's own, its agent's, the tenant's monthly cap, prepaid credit, or its end user's credit: code `end_user_credit`). */
   limit?: "run" | "agent" | "tenant" | "credit" | "end_user";
-  /** With limit "end_user": why its end user's credit stopped it (`balance`: none left; `daily_limit`: the day's limit reached). */
-  reason?: "balance" | "daily_limit";
+  /** With limit "end_user": why its end user's credit stopped it (`balance`: none left; `daily_limit`: the day's limit reached; `bucket_limit`: the bucket's own). */
+  reason?: "balance" | "daily_limit" | "bucket_limit";
   inputs?: AgentInput[];
   replyIndex?: number;
   /** Messages in the agent's history after it. */
@@ -1097,14 +1097,17 @@ export class Images {
 
 /** Integer micro-USD: 1 USD = 1,000,000. */
 export type Micros = number;
-/** How the tenant meters its end users (`endUsers.settings`). Allowances are raw cost per UTC day, by bucket, prefix ("bot:*") or "*". */
-export interface EndUserSettings { enabled: boolean; allowances: Record<string, Micros>; dailyLimit: Micros | null; markupBps: number; lowBalance: Micros | null; updatedAt: number | null }
-/** One bucket's day for an end user: its allowance, spent from it (raw) and from the balance (charged), held, and left. */
-export interface EndUserBucketDay { bucket: string; allowance: Micros; allowanceSpent: Micros; paidSpent: Micros; held: Micros; allowanceLeft: Micros }
+/**
+ * How the tenant meters its end users (`endUsers.settings`). Allowances are raw cost per UTC day, by bucket, prefix
+ * ("bot:*") or "*"; bucket limits, keyed the same way, are the most a bucket may charge the balance per UTC day.
+ */
+export interface EndUserSettings { enabled: boolean; allowances: Record<string, Micros>; bucketLimits: Record<string, Micros>; dailyLimit: Micros | null; markupBps: number; lowBalance: Micros | null; updatedAt: number | null }
+/** One bucket's day for an end user: its allowance, spent from it (raw) and from the balance (charged), held, left, and its own limit on paid spend (null: none). */
+export interface EndUserBucketDay { bucket: string; allowance: Micros; allowanceSpent: Micros; paidSpent: Micros; held: Micros; allowanceLeft: Micros; paidLimit: Micros | null }
 /** An end user as they stand: balance, what calls in flight hold, what paid spend may still take today, and today by bucket. */
 export interface EndUser {
   id: string; enabled: boolean; balance: Micros; held: Micros; available: Micros; dailyLimit: Micros | null; markupBps: number;
-  overrides: { allowances: Record<string, Micros>; dailyLimit: Micros | null };
+  overrides: { allowances: Record<string, Micros>; bucketLimits: Record<string, Micros>; dailyLimit: Micros | null };
   today: { day: string; paidSpent: Micros; buckets: EndUserBucketDay[] };
   createdAt: number | null; updatedAt: number | null;
 }
@@ -1142,8 +1145,8 @@ export class EndUsers {
     const query = new URLSearchParams(Object.entries(options).filter(([, value]) => value !== undefined).map(([name, value]) => [name, String(value)]));
     return this.transport.json(`/v1/end-users${query.size ? `?${query}` : ""}`, this.key());
   }
-  /** A person's own allowances (merged key by key; null removes one) and daily limit (null: the tenant's). */
-  update(id: string, overrides: { allowances?: Record<string, Micros | null>; dailyLimit?: Micros | null }): Promise<EndUser> { return this.transport.json(this.path(id), this.key(), "PATCH", overrides); }
+  /** A person's own allowances and bucket limits (merged key by key; null removes one) and daily limit (null: the tenant's). */
+  update(id: string, overrides: { allowances?: Record<string, Micros | null>; bucketLimits?: Record<string, Micros | null>; dailyLimit?: Micros | null }): Promise<EndUser> { return this.transport.json(this.path(id), this.key(), "PATCH", overrides); }
   /** Their ledger, newest first, a page at a time: pass `next` as `before`. */
   ledger(id: string, options: { before?: number; limit?: number } = {}): Promise<{ entries: EndUserLedgerEntry[]; next?: number }> {
     const query = new URLSearchParams(Object.entries(options).filter(([, value]) => value !== undefined).map(([name, value]) => [name, String(value)]));

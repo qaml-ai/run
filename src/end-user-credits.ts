@@ -8,7 +8,7 @@ import { enqueueEvents, webhookEvent } from "./webhooks.ts";
  * acts for, in the tenant's app). A tenant that enables them has each of its users' model, audio and image spend
  * metered and enforced here: first from the daily free allowance of the bucket a run spends from (`builder`, `bot:42`),
  * then from the user's paid balance, which the tenant credits (after its own payment flow) and which usage debits, with
- * the tenant's markup, within the user's daily credit limit.
+ * the tenant's markup, within the user's daily credit limit and the bucket's own daily limit on paid spend, if it has one.
  *
  * Amounts are integer micro-USD. Allowances count raw cost (what a call costs the tenant); the balance, its ledger
  * amounts and the daily limit count what the user is charged (raw cost with the markup). Every change to a user's money
@@ -37,19 +37,27 @@ export type EndUserSettings = {
   enabled: boolean; allowances: Allowances;
   /** The most each user's paid spend may be per UTC day (charged micro-USD); null: none. */
   dailyLimit: number | null;
+  /**
+   * The most each bucket may charge a user's balance per UTC day (charged micro-USD), keyed as allowances are: a bot's
+   * (`bot:*`) at 0 spends its allowance and never the balance. A bucket with no key: only `dailyLimit`.
+   */
+  bucketLimits: Allowances;
   /** Added to the raw cost of paid spend, in basis points. */
   markupBps: number;
   /** end_user.balance.low fires when a balance falls below this; null: never. */
   lowBalance: number | null;
   updatedAt: number | null;
 };
-export const DEFAULT_SETTINGS: Readonly<EndUserSettings> = Object.freeze({ enabled: false, allowances: {}, dailyLimit: null, markupBps: 0, lowBalance: null, updatedAt: null });
+export const DEFAULT_SETTINGS: Readonly<EndUserSettings> = Object.freeze({ enabled: false, allowances: {}, bucketLimits: {}, dailyLimit: null, markupBps: 0, lowBalance: null, updatedAt: null });
 export type LedgerEntry = {
   id: number; kind: LedgerKind; amount: number; raw: number; allowance: number; bucket: string | null; key: string;
   reference: string | null; metadata: Record<string, unknown>; balanceAfter: number; createdAt: number;
 };
-/** One bucket's day: its allowance, what was spent from it and from the balance, what calls in flight hold, and what is left. */
-export type BucketDay = { bucket: string; allowance: number; allowanceSpent: number; paidSpent: number; held: number; allowanceLeft: number };
+/**
+ * One bucket's day: its allowance, what was spent from it and from the balance, what calls in flight hold, what is left
+ * of the allowance, and its own limit on paid spend (null: none).
+ */
+export type BucketDay = { bucket: string; allowance: number; allowanceSpent: number; paidSpent: number; held: number; allowanceLeft: number; paidLimit: number | null };
 
 /** A bucket's name as a run or call gives it. */
 export function bucketInput(value: unknown, what = "bucket"): string {
@@ -71,15 +79,26 @@ const amountInput = (value: unknown, what: string, { min = 0, nullable = false }
   return value;
 };
 
-/** Allowances as given: `{bucket | "prefix*" | "*": micro-USD}`; `removable` allows null to remove a key. */
-function allowancesInput(value: unknown, removable: boolean): Record<string, number | null> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new HttpError(400, "allowances must be an object of bucket (or \"prefix*\", or \"*\") to micro-USD per day");
+/** Allowances (or bucket limits, `what`) as given: `{bucket | "prefix*" | "*": micro-USD}`; `removable` allows null to remove a key. */
+function allowancesInput(value: unknown, removable: boolean, what = "allowances"): Record<string, number | null> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new HttpError(400, `${what} must be an object of bucket (or "prefix*", or "*") to micro-USD per day`);
   const entries = Object.entries(value);
-  if (entries.length > 100) throw new HttpError(400, "allowances may have at most 100 keys");
+  if (entries.length > 100) throw new HttpError(400, `${what} may have at most 100 keys`);
   return Object.fromEntries(entries.map(([key, amount]) => {
-    if (!ALLOWANCE_KEY.test(key)) throw new HttpError(400, `allowances: "${key}" is not a bucket, a "prefix*" or "*"`);
-    return [key, amountInput(amount, `allowances["${key}"]`, { nullable: removable })];
+    if (!ALLOWANCE_KEY.test(key)) throw new HttpError(400, `${what}: "${key}" is not a bucket, a "prefix*" or "*"`);
+    return [key, amountInput(amount, `${what}["${key}"]`, { nullable: removable })];
   }));
+}
+
+/** `overrides` merged into `current` key by key, a null removing a key; at most 100 keys. */
+function mergeKeys(current: Allowances, overrides: Record<string, number | null> | undefined, what: string): Allowances {
+  const merged: Allowances = { ...current };
+  for (const [key, value] of Object.entries(overrides ?? {})) {
+    if (value === null) delete merged[key];
+    else merged[key] = value;
+  }
+  if (Object.keys(merged).length > 100) throw new HttpError(400, `An end user may have at most 100 ${what} overrides`);
+  return merged;
 }
 
 /**
@@ -87,14 +106,22 @@ function allowancesInput(value: unknown, removable: boolean): Record<string, num
  * the longest prefix (`bot:*`) it starts with, else `*`, else none.
  */
 export function allowanceFor(tenant: Allowances, own: Allowances, bucket: string): number {
-  const merged = { ...tenant, ...own };
+  return keyedFor({ ...tenant, ...own }, bucket) ?? 0;
+}
+
+/** A bucket's own daily limit on paid spend (charged), found as its allowance is; null: it has none. */
+export function bucketLimitFor(tenant: Allowances, own: Allowances, bucket: string): number | null {
+  return keyedFor({ ...tenant, ...own }, bucket) ?? null;
+}
+
+function keyedFor(merged: Allowances, bucket: string): number | undefined {
   if (Object.hasOwn(merged, bucket)) return merged[bucket];
   let best: string | undefined;
   for (const key of Object.keys(merged)) {
     if (key === "*" || !key.endsWith("*") || !bucket.startsWith(key.slice(0, -1))) continue;
     if (!best || key.length > best.length) best = key;
   }
-  return best ? merged[best] : merged["*"] ?? 0;
+  return best ? merged[best] : merged["*"];
 }
 
 /** Raw cost with the markup: what the user is charged for `raw`, rounded up. */
@@ -110,9 +137,9 @@ export function unmarked(charged: number, markupBps: number): number {
 export const utcDay = (at: number) => new Date(at).toISOString().slice(0, 10);
 
 const settingsView = (row: any): EndUserSettings => row ? {
-  enabled: row.enabled, allowances: row.allowances ?? {}, dailyLimit: row.daily_limit === null ? null : Number(row.daily_limit),
+  enabled: row.enabled, allowances: row.allowances ?? {}, bucketLimits: row.bucket_limits ?? {}, dailyLimit: row.daily_limit === null ? null : Number(row.daily_limit),
   markupBps: row.markup_bps, lowBalance: row.low_balance === null ? null : Number(row.low_balance), updatedAt: Number(row.updated_at),
-} : { ...DEFAULT_SETTINGS, allowances: {} };
+} : { ...DEFAULT_SETTINGS, allowances: {}, bucketLimits: {} };
 
 const entryView = (row: any): LedgerEntry => ({
   id: Number(row.id), kind: row.kind, amount: Number(row.amount), raw: Number(row.raw), allowance: Number(row.allowance), bucket: row.bucket,
@@ -137,11 +164,12 @@ export class EndUserCredits {
 
   /** Change the tenant's settings: fields left out keep their current values. */
   async setSettings(tenant: string, input: Record<string, unknown>): Promise<EndUserSettings> {
-    const known = ["enabled", "allowances", "dailyLimit", "markupBps", "lowBalance"];
+    const known = ["enabled", "allowances", "bucketLimits", "dailyLimit", "markupBps", "lowBalance"];
     const unknown = Object.keys(input).find(key => !known.includes(key));
     if (unknown) throw new HttpError(400, `Unknown setting ${unknown}: settings are ${known.join(", ")}`);
     if (input.enabled !== undefined && typeof input.enabled !== "boolean") throw new HttpError(400, "enabled must be true or false");
     const allowances = input.allowances === undefined ? undefined : allowancesInput(input.allowances, false);
+    const bucketLimits = input.bucketLimits === undefined ? undefined : allowancesInput(input.bucketLimits, false, "bucketLimits");
     const dailyLimit = input.dailyLimit === undefined ? undefined : amountInput(input.dailyLimit, "dailyLimit", { nullable: true });
     const lowBalance = input.lowBalance === undefined ? undefined : amountInput(input.lowBalance, "lowBalance", { nullable: true });
     if (input.markupBps !== undefined && (typeof input.markupBps !== "number" || !Number.isSafeInteger(input.markupBps) || input.markupBps < 0 || input.markupBps > 100_000)) {
@@ -149,15 +177,15 @@ export class EndUserCredits {
     }
     const current = await this.settings(tenant);
     const next = {
-      enabled: input.enabled as boolean | undefined ?? current.enabled, allowances: allowances ?? current.allowances,
+      enabled: input.enabled as boolean | undefined ?? current.enabled, allowances: allowances ?? current.allowances, bucketLimits: bucketLimits ?? current.bucketLimits,
       dailyLimit: dailyLimit === undefined ? current.dailyLimit : dailyLimit, markupBps: input.markupBps as number | undefined ?? current.markupBps,
       lowBalance: lowBalance === undefined ? current.lowBalance : lowBalance,
     };
     const row = (await this.db.query(`
-      insert into end_user_settings (tenant, enabled, allowances, daily_limit, markup_bps, low_balance, updated_at) values ($1, $2, $3, $4, $5, $6, $7)
-      on conflict (tenant) do update set enabled = excluded.enabled, allowances = excluded.allowances, daily_limit = excluded.daily_limit,
+      insert into end_user_settings (tenant, enabled, allowances, bucket_limits, daily_limit, markup_bps, low_balance, updated_at) values ($1, $2, $3, $4, $5, $6, $7, $8)
+      on conflict (tenant) do update set enabled = excluded.enabled, allowances = excluded.allowances, bucket_limits = excluded.bucket_limits, daily_limit = excluded.daily_limit,
         markup_bps = excluded.markup_bps, low_balance = excluded.low_balance, updated_at = excluded.updated_at
-      returning *`, [tenant, next.enabled, JSON.stringify(next.allowances), next.dailyLimit, next.markupBps, next.lowBalance, Date.now()])).rows[0];
+      returning *`, [tenant, next.enabled, JSON.stringify(next.allowances), JSON.stringify(next.bucketLimits), next.dailyLimit, next.markupBps, next.lowBalance, Date.now()])).rows[0];
     return settingsView(row);
   }
 
@@ -184,15 +212,15 @@ export class EndUserCredits {
       this.db.query("select bucket, allowance_spent, paid_spent from end_user_days where tenant = $1 and end_user = $2 and day = $3", [tenant, id, day]).then(result => result.rows),
       this.db.query("select bucket, sum(allowance)::bigint as allowance, sum(paid)::bigint as paid from end_user_holds where tenant = $1 and end_user = $2 and expires_at > $3 group by bucket", [tenant, id, now]).then(result => result.rows),
     ]);
-    const own: Allowances = user?.allowances ?? {};
+    const own: Allowances = user?.allowances ?? {}, ownLimits: Allowances = user?.bucket_limits ?? {};
     const names = new Set<string>([...days.map(row => row.bucket), ...holds.map(row => row.bucket), ...buckets.map(bucket => bucketInput(bucket)),
-      ...[...Object.keys(settings.allowances), ...Object.keys(own)].filter(key => !key.endsWith("*"))]);
+      ...[...Object.keys(settings.allowances), ...Object.keys(own), ...Object.keys(settings.bucketLimits), ...Object.keys(ownLimits)].filter(key => !key.endsWith("*"))]);
     const today: BucketDay[] = [...names].sort().map(bucket => {
       const spent = days.find(row => row.bucket === bucket), held = holds.find(row => row.bucket === bucket);
       const allowance = allowanceFor(settings.allowances, own, bucket);
       const allowanceSpent = Number(spent?.allowance_spent ?? 0), paidSpent = Number(spent?.paid_spent ?? 0);
       const heldAllowance = Number(held?.allowance ?? 0), heldPaid = Number(held?.paid ?? 0);
-      return { bucket, allowance, allowanceSpent, paidSpent, held: heldAllowance + heldPaid, allowanceLeft: Math.max(0, allowance - allowanceSpent - heldAllowance) };
+      return { bucket, allowance, allowanceSpent, paidSpent, held: heldAllowance + heldPaid, allowanceLeft: Math.max(0, allowance - allowanceSpent - heldAllowance), paidLimit: bucketLimitFor(settings.bucketLimits, ownLimits, bucket) };
     });
     const ownLimit = user && user.daily_limit !== null ? Number(user.daily_limit) : null;
     const dailyLimit = ownLimit ?? settings.dailyLimit;
@@ -203,32 +231,28 @@ export class EndUserCredits {
       id, enabled: settings.enabled, balance, held: heldPaid,
       /** What paid spend may still take today: the balance less holds, within the daily limit. */
       available: Math.max(0, Math.min(balance - heldPaid, dailyLimit === null ? Infinity : dailyLimit - paidSpent - heldPaid)),
-      dailyLimit, markupBps: settings.markupBps, overrides: { allowances: own, dailyLimit: ownLimit },
+      dailyLimit, markupBps: settings.markupBps, overrides: { allowances: own, bucketLimits: ownLimits, dailyLimit: ownLimit },
       today: { day, paidSpent, buckets: today },
       createdAt: user ? Number(user.created_at) : null, updatedAt: user ? Number(user.updated_at) : null,
     };
   }
 
   /**
-   * Set a user's own overrides: `allowances` merged key by key into theirs (a key set to null is removed), and their
-   * `dailyLimit` (null: the tenant's). Makes the user if they are new. Never touches what they spent.
+   * Set a user's own overrides: `allowances` and `bucketLimits` merged key by key into theirs (a key set to null is
+   * removed), and their `dailyLimit` (null: the tenant's). Makes the user if they are new. Never touches what they spent.
    */
   async update(tenant: string, id: string, input: Record<string, unknown>) {
     endUserInput(id);
-    const unknown = Object.keys(input).find(key => key !== "allowances" && key !== "dailyLimit");
-    if (unknown) throw new HttpError(400, `Unknown field ${unknown}: an end user's overrides are allowances and dailyLimit`);
+    const unknown = Object.keys(input).find(key => !["allowances", "bucketLimits", "dailyLimit"].includes(key));
+    if (unknown) throw new HttpError(400, `Unknown field ${unknown}: an end user's overrides are allowances, bucketLimits and dailyLimit`);
     const allowances = input.allowances === undefined ? undefined : allowancesInput(input.allowances, true);
+    const bucketLimits = input.bucketLimits === undefined ? undefined : allowancesInput(input.bucketLimits, true, "bucketLimits");
     const dailyLimit = input.dailyLimit === undefined ? undefined : amountInput(input.dailyLimit, "dailyLimit", { nullable: true });
     await transaction(this.db, async sql => {
       const user = await lockEndUser(sql, tenant, id);
-      const merged: Allowances = { ...user.allowances };
-      for (const [key, value] of Object.entries(allowances ?? {})) {
-        if (value === null) delete merged[key];
-        else merged[key] = value;
-      }
-      if (Object.keys(merged).length > 100) throw new HttpError(400, "An end user may have at most 100 allowance overrides");
-      await sql.query("update end_users set allowances = $3, daily_limit = $4, updated_at = $5 where tenant = $1 and id = $2",
-        [tenant, id, JSON.stringify(merged), dailyLimit === undefined ? user.daily_limit : dailyLimit, Date.now()]);
+      await sql.query("update end_users set allowances = $3, bucket_limits = $4, daily_limit = $5, updated_at = $6 where tenant = $1 and id = $2",
+        [tenant, id, JSON.stringify(mergeKeys(user.allowances, allowances, "allowance")), JSON.stringify(mergeKeys(user.bucket_limits, bucketLimits, "bucket limit")),
+          dailyLimit === undefined ? user.daily_limit : dailyLimit, Date.now()]);
     });
     return this.get(tenant, id);
   }
@@ -365,7 +389,7 @@ export class EndUserCredits {
   async refusal(tenant: string, endUser: string, bucket: string, now = Date.now()): Promise<CreditRefusal | undefined> {
     if (!await this.enabled(tenant)) return undefined;
     const user = (await this.db.query("select * from end_users where tenant = $1 and id = $2", [tenant, endUser])).rows[0]
-      ?? { id: endUser, balance: 0, allowances: {}, daily_limit: null };
+      ?? { id: endUser, balance: 0, allowances: {}, bucket_limits: {}, daily_limit: null };
     const left = await room(this.db, tenant, user, await this.settings(tenant), bucket, now);
     return left.allowanceLeft > 0 || left.paidRoom > 0 ? undefined : refusal(endUser, bucket, left);
   }
@@ -407,14 +431,17 @@ export function creditError(refused: CreditRefusal) {
   return new HttpError(402, refused.message, "END_USER_CREDIT", { endUser: refused.endUser, bucket: refused.bucket, reason: refused.reason });
 }
 
-/** Why an end user's call was refused: their balance (nothing left of the bucket's allowance and none paid), or their daily limit. */
-export type CreditRefusal = { endUser: string; bucket: string; reason: "balance" | "daily_limit"; message: string };
+/**
+ * Why an end user's call was refused: their balance (nothing left of the bucket's allowance and none paid), their daily
+ * limit, or the bucket's own daily limit on paid spend.
+ */
+export type CreditRefusal = { endUser: string; bucket: string; reason: "balance" | "daily_limit" | "bucket_limit"; message: string };
 /** What a call holds: raw micro-USD in all, of which `allowance` from the bucket's allowance, and `paid` (charged) from the balance. */
 export type Hold = { id: string; raw: number; allowance: number; paid: number };
 export type Reserved = { hold: Hold; refused?: undefined } | { refused: CreditRefusal; hold?: undefined };
 
 /** What an end user may still spend now in a bucket: its allowance left (raw), and room on the balance (charged). */
-type Room = { day: string; allowance: number; allowanceLeft: number; paidRoom: number; bound: "balance" | "daily_limit"; balance: number; dailyLimit: number | null; markupBps: number };
+type Room = { day: string; allowance: number; allowanceLeft: number; paidRoom: number; bound: CreditRefusal["reason"]; balance: number; dailyLimit: number | null; bucketLimit: number | null; markupBps: number };
 
 const dayText = (day: unknown) => day instanceof Date ? day.toISOString().slice(0, 10) : String(day).slice(0, 10);
 const dollars = (micros: number) => `${micros < 0 ? "-" : ""}$${(Math.abs(micros) / MICROS).toFixed(2)}`;
@@ -422,7 +449,7 @@ const dollars = (micros: number) => `${micros < 0 ? "-" : ""}$${(Math.abs(micros
 /**
  * What `user` (their row, locked or as read) may still spend in `bucket` today: the bucket's allowance less what was
  * spent and what holds of today take of it; and the balance less every hold, within the daily limit less what was paid
- * and held today.
+ * and held today, and within the bucket's own limit less what it paid and holds today.
  */
 async function room(sql: Sql, tenant: string, user: any, settings: EndUserSettings, bucket: string, now: number): Promise<Room> {
   const day = utcDay(now);
@@ -437,12 +464,17 @@ async function room(sql: Sql, tenant: string, user: any, settings: EndUserSettin
   const heldPaid = holds.reduce((total, row) => total + Number(row.paid), 0);
   const heldPaidToday = holds.filter(row => dayText(row.day) === day).reduce((total, row) => total + Number(row.paid), 0);
   const dailyLimit = user.daily_limit !== null && user.daily_limit !== undefined ? Number(user.daily_limit) : settings.dailyLimit;
+  const bucketLimit = bucketLimitFor(settings.bucketLimits, user.bucket_limits ?? {}, bucket);
+  const bucketPaid = Number(days.find(row => row.bucket === bucket)?.paid_spent ?? 0)
+    + holds.filter(row => row.bucket === bucket && dayText(row.day) === day).reduce((total, row) => total + Number(row.paid), 0);
   const balance = Number(user.balance);
   const byBalance = balance - heldPaid;
   const byLimit = dailyLimit === null ? Infinity : dailyLimit - paidToday - heldPaidToday;
+  const byBucket = bucketLimit === null ? Infinity : bucketLimit - bucketPaid;
+  const least = Math.min(byBalance, byLimit, byBucket);
   return {
-    day, allowance, allowanceLeft: Math.max(0, allowance - spent - heldAllowance), paidRoom: Math.max(0, Math.min(byBalance, byLimit)),
-    bound: byLimit < byBalance ? "daily_limit" : "balance", balance, dailyLimit, markupBps: settings.markupBps,
+    day, allowance, allowanceLeft: Math.max(0, allowance - spent - heldAllowance), paidRoom: Math.max(0, least),
+    bound: least === byBucket ? "bucket_limit" : least === byBalance ? "balance" : "daily_limit", balance, dailyLimit, bucketLimit, markupBps: settings.markupBps,
   };
 }
 
@@ -461,7 +493,9 @@ function refusal(endUser: string, bucket: string, room: Room): CreditRefusal {
   const out = room.allowanceLeft > 0 || room.paidRoom > 0 ? "has too little credit left for this call" : "is out of credit";
   return room.bound === "daily_limit"
     ? { endUser, bucket, reason: "daily_limit", message: `This end user reached their daily credit limit of ${dollars(room.dailyLimit ?? 0)}, and ${free}` }
-    : { endUser, bucket, reason: "balance", message: `This end user ${out}: ${free}, and their balance is ${dollars(room.balance)}` };
+    : room.bound === "bucket_limit"
+      ? { endUser, bucket, reason: "bucket_limit", message: room.bucketLimit ? `This end user reached the daily limit of ${dollars(room.bucketLimit)} of paid credit for "${bucket}", and ${free}` : `"${bucket}" spends no paid credit, and ${free}` }
+      : { endUser, bucket, reason: "balance", message: `This end user ${out}: ${free}, and their balance is ${dollars(room.balance)}` };
 }
 
 /** What a call has posted to its user's ledger: its raw cost, the part the allowance covered, and what the balance paid. */
@@ -498,6 +532,14 @@ export async function settleUsage(sql: Sql, call: { tenant: string; endUser: str
     // The bucket's allowance for the day is used up with this call: said once per user, bucket and day.
     if (allowed > 0 && before < allowed && before + covered >= allowed) {
       await exhausted(sql, tenant, endUser, { bucket, reason: "allowance", day, allowance: allowed, balance: Number(user.balance) - (paid - previous.paid) }, `allowance:${tenant}:${endUser}:${bucket}:${day}`);
+    }
+    // So is the bucket's own limit on paid spend: once per user, bucket and day.
+    const bucketLimit = bucketLimitFor(settings?.bucket_limits ?? {}, user.bucket_limits ?? {}, bucket);
+    if (bucketLimit !== null && paid > previous.paid) {
+      const before = Number((await sql.query("select paid_spent from end_user_days where tenant = $1 and end_user = $2 and day = $3 and bucket = $4", [tenant, endUser, day, bucket])).rows[0]?.paid_spent ?? 0);
+      if (before < bucketLimit && before + paid - previous.paid >= bucketLimit) {
+        await exhausted(sql, tenant, endUser, { bucket, reason: "bucket_limit", day, bucketLimit, balance: Number(user.balance) - (paid - previous.paid) }, `bucket_limit:${tenant}:${endUser}:${bucket}:${day}`);
+      }
     }
     // So is the daily limit on paid spend: once per user and day.
     const limit = user.daily_limit !== null && user.daily_limit !== undefined ? Number(user.daily_limit) : settings?.daily_limit !== null && settings?.daily_limit !== undefined ? Number(settings.daily_limit) : null;
@@ -581,6 +623,8 @@ async function refused(sql: Sql, tenant: string, user: any, bucket: string, room
   const said = refusal(user.id, bucket, room);
   if (said.reason === "daily_limit") {
     await exhausted(sql, tenant, user.id, { bucket, reason: "daily_limit", day: room.day, dailyLimit: room.dailyLimit, balance: room.balance }, `daily_limit:${tenant}:${user.id}:${room.day}`);
+  } else if (said.reason === "bucket_limit") {
+    await exhausted(sql, tenant, user.id, { bucket, reason: "bucket_limit", day: room.day, bucketLimit: room.bucketLimit, balance: room.balance }, `bucket_limit:${tenant}:${user.id}:${bucket}:${room.day}`);
   } else if (!user.depleted_notified && room.balance <= 0) {
     await enqueueEvents(sql, [webhookEvent("end_user.credit.exhausted", tenant, { endUser: user.id, reason: "balance", bucket, balance: room.balance, day: room.day })]);
     await sql.query("update end_users set depleted_notified = true, updated_at = $3 where tenant = $1 and id = $2", [tenant, user.id, now]);

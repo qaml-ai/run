@@ -31,14 +31,18 @@ test("markup rounds what the user is charged up and what it pays for down", () =
 test("settings default to off, change field by field, and refuse what is not an amount", async () => {
   const { db } = await testDatabase();
   const credits = new EndUserCredits(db);
-  assert.deepEqual(await credits.settings("a"), { enabled: false, allowances: {}, dailyLimit: null, markupBps: 0, lowBalance: null, updatedAt: null });
+  assert.deepEqual(await credits.settings("a"), { enabled: false, allowances: {}, bucketLimits: {}, dailyLimit: null, markupBps: 0, lowBalance: null, updatedAt: null });
   const set = await credits.setSettings("a", { enabled: true, allowances: { builder: 50 * USD, "bot:*": USD }, markupBps: 2_500 });
   assert.equal(set.enabled, true);
   assert.deepEqual(set.allowances, { builder: 50 * USD, "bot:*": USD });
   const again = await credits.setSettings("a", { dailyLimit: 20 * USD });
   assert.deepEqual([again.enabled, again.markupBps, again.dailyLimit, again.allowances.builder], [true, 2_500, 20 * USD, 50 * USD], "fields left out keep their values");
   assert.equal((await credits.setSettings("a", { dailyLimit: null })).dailyLimit, null);
-  for (const bad of [{ allowances: { builder: 1.5 } }, { allowances: { "bad key!": 1 } }, { allowances: { "*x": 1 } }, { markupBps: -1 }, { dailyLimit: -5 }, { lowBalance: "1" }, { enabled: "yes" }, { surprise: 1 }]) {
+  // What camel-bots sends as each node starts (enabled and the allowances): the markup, limits and low balance stay.
+  await credits.setSettings("a", { dailyLimit: 20 * USD, lowBalance: USD, bucketLimits: { "bot:*": 2 * USD } });
+  const restarted = await credits.setSettings("a", { enabled: true, allowances: { builder: 50 * USD, "bot:*": USD } });
+  assert.deepEqual([restarted.markupBps, restarted.dailyLimit, restarted.lowBalance, restarted.bucketLimits], [2_500, 20 * USD, USD, { "bot:*": 2 * USD }]);
+  for (const bad of [{ allowances: { builder: 1.5 } }, { allowances: { "bad key!": 1 } }, { allowances: { "*x": 1 } }, { markupBps: -1 }, { dailyLimit: -5 }, { lowBalance: "1" }, { enabled: "yes" }, { surprise: 1 }, { bucketLimits: { "bot:*": -1 } }, { bucketLimits: [] }]) {
     await assert.rejects(credits.setSettings("a", bad), (error: any) => error.status === 400, JSON.stringify(bad));
   }
   assert.equal((await credits.settings("b")).enabled, false, "another tenant's are its own");
