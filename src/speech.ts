@@ -35,6 +35,8 @@ export interface SpeechProvider {
   model: string;
   /** The speech's PCM (SPEECH_RATE, mono, signed 16-bit little-endian), chunk by chunk as the provider makes it. */
   stream(input: SpeechInput, credentials: SpeechCredentials, signal: AbortSignal): AsyncIterable<Uint8Array>;
+  /** Open a connection to the provider ahead of a speech (someone started talking), so the speech skips connecting. */
+  warm?(): Promise<void>;
 }
 
 /** Why speech was not made: 502 when the provider failed, 400 when it refused the input. */
@@ -45,9 +47,18 @@ export class SpeechFailed extends HttpError {
 /** OpenAI's speech API (`/v1/audio/speech`), streaming raw PCM. */
 export function openaiSpeech(options: { outbound: Outbound; baseUrl?: string }): SpeechProvider {
   const { outbound, baseUrl = "https://api.openai.com/v1" } = options;
+  let warmedAt = 0;
   return {
     id: "openai",
     model: SPEECH_MODEL,
+    // A request without a key (401, nothing spent) leaves a connection in the outbound pool, which keeps it 30 s. At
+    // most every 10 s: one connection warm is what the next speech needs.
+    async warm() {
+      if (Date.now() - warmedAt < 10_000) return;
+      warmedAt = Date.now();
+      const response = await outbound.fetch(`${baseUrl.replace(/\/+$/, "")}/models`, { method: "GET", timeoutMs: 10_000, maxBytes: 64 * 1024 }).catch(() => undefined);
+      await response?.arrayBuffer().catch(() => {});
+    },
     async *stream(input, credentials, signal) {
       const url = `${(credentials.baseUrl ?? baseUrl).replace(/\/+$/, "")}/audio/speech`;
       let response: Response;
@@ -111,4 +122,7 @@ export class Synthesizer {
   stream(input: SpeechInput, credentials: SpeechCredentials, signal: AbortSignal) {
     return this.options.provider.stream(input, credentials, signal);
   }
+
+  /** Have a connection to the provider ready for the next speech (see `SpeechProvider.warm`). */
+  warm() { void this.options.provider.warm?.().catch(() => {}); }
 }

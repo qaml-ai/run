@@ -2,10 +2,12 @@ import { randomBytes } from "node:crypto";
 import type { Accounts, Sealed } from "./accounts.ts";
 import { transaction, type Db, type Sql } from "./db.ts";
 import { HttpError } from "./http.ts";
+import { clock } from "./node-context.ts";
 import { identityInput } from "./identity.ts";
 import { safeError } from "./metrics.ts";
 import { underClaim, type Claim, type Ownership } from "./ownership.ts";
-import { checkedAudio, languageInput, type Transcribed, type Transcriber } from "./transcription.ts";
+import { checkedAudio, languageInput, type Transcribed, type Transcriber, type Transcript } from "./transcription.ts";
+import { LIVE_LIMITS, type LiveTranscription } from "./transcription-live.ts";
 import { enqueueEvents, webhookEvent, type WebhookEvent } from "./webhooks.ts";
 import type { UsageRecord } from "./client-sessions.ts";
 import { oggOpus, Segmenter, type Cut } from "./voice-audio.ts";
@@ -282,7 +284,12 @@ type Held = {
   speech?: SessionSpeech;
   /** The runs whose replies it speaks (a prompt's speak), by agent and request: each spoken once. */
   replies?: Set<string>;
+  /** Each speaker's live transcription (Transcriber.live), while they keep talking now and then. */
+  live?: Map<string, LiveSpeaker>;
 };
+type LiveSpeaker = { stream: LiveTranscription; platform: Promise<boolean>; idle?: ReturnType<typeof setTimeout> };
+/** An utterance's transcript from its speaker's live stream, committed as it was cut. */
+type Committed = { transcript: Promise<Transcript>; platform: Promise<boolean> };
 /** A prompt's `speak`: the voice session its run's reply is spoken in, and how. */
 export type VoiceReplyTarget = { session: string; voice?: string; interrupt?: boolean };
 /** What an utterance's work needs of its session, fixed when it was cut: the session may move or end meanwhile. */
@@ -662,8 +669,14 @@ export class VoiceSessions {
       id: current.id, tenant: current.tenant, claim: taken.claim, revision: current.revision, row: current, credentials: this.credentials(current),
       segmenter: new Segmenter({
         silenceMs: current.options.silenceMs, cut: cut => this.cut(held, cut),
+        // Transcribed as they speak, when this runtime can: each utterance committed as it is cut.
+        ...(this.options.transcriber.options.live ? { live: { audio: (speaker: string, pcm: Buffer) => this.liveAudio(held, speaker, pcm), drop: (speaker: string) => held.live?.get(speaker)?.stream.clear() } } : {}),
         // Barge-in: a person starting to talk stops the bot.
-        speech: () => { if (held.row.options.bargeIn && held.speech?.speaking) held.speech.stop("barge_in"); },
+        speech: () => {
+          if (held.row.options.bargeIn && held.speech?.speaking) held.speech.stop("barge_in");
+          // A reply may follow what they say: the speech provider's connection is made now, not when it is asked.
+          if (held.speech) this.options.synthesizer?.warm();
+        },
       }),
     };
     if (current.options.speak && this.options.synthesizer) held.speech = new SessionSpeech(this.options.synthesizer, this.speechEffects(held));
@@ -730,6 +743,9 @@ export class VoiceSessions {
     if (this.held.get(held.id) !== held) return;
     this.held.delete(held.id);
     held.segmenter.flush(cut);
+    // Their live streams close once the cuts just committed have their transcripts.
+    for (const live of held.live?.values() ?? []) { clearTimeout(live.idle); live.stream.close(true); }
+    held.live?.clear();
     held.speech?.close(cut);
     console.log(JSON.stringify({ type: "voice_session_released", session: held.id, node: this.options.node, epoch: held.claim.epoch, release }));
     held.connection?.close();
@@ -762,11 +778,44 @@ export class VoiceSessions {
   }
   private broken(held: Held, speaker: string) { held.segmenter.broken(speaker); }
 
+  /**
+   * A speaker's audio as they speak, to their live stream (opened at their first utterance, closed after a minute
+   * without one). A stream that broke stays broken until the utterance is cut: its commit fails, and the utterance is
+   * transcribed after, whole.
+   */
+  private liveAudio(held: Held, speaker: string, pcm: Buffer) {
+    let live = held.live?.get(speaker);
+    if (!live) {
+      const { options } = held.row;
+      const opened = this.options.transcriber.live({ tenant: held.tenant, ...(options.keyScope ? { keyScope: options.keyScope } : {}) }, { ...(options.language ? { language: options.language } : {}), ...(options.prompt ? { prompt: options.prompt } : {}) });
+      if (!opened) return;
+      (held.live ??= new Map()).set(speaker, live = opened);
+    }
+    live.stream.append(pcm);
+    clearTimeout(live.idle);
+    const current = live;
+    live.idle = setTimeout(() => {
+      if (held.live?.get(speaker) !== current) return;
+      held.live.delete(speaker);
+      current.stream.close(true);
+    }, LIVE_LIMITS.idleMs);
+    live.idle.unref?.();
+  }
+
   /** An utterance was cut: transcribed and delivered after the speaker's previous one. */
   private cut(held: Held, cut: Cut) {
     const origin: Origin = { id: held.id, tenant: held.tenant, claim: held.claim, row: held.row };
     const key = `${held.id}:${cut.speaker}`;
-    const job = (this.speakers.get(key) ?? Promise.resolve()).then(() => this.utterance(origin, cut)).catch(error =>
+    // Committed now, before the speaker's next words reach the stream.
+    const live = cut.live ? held.live?.get(cut.speaker) : undefined;
+    let committed: Committed | undefined;
+    if (live) {
+      committed = { transcript: live.stream.commit(), platform: live.platform };
+      committed.transcript.catch(() => {});
+      // A broken stream is replaced at the speaker's next utterance.
+      if (live.stream.closed) { clearTimeout(live.idle); held.live!.delete(cut.speaker); }
+    }
+    const job = (this.speakers.get(key) ?? Promise.resolve()).then(() => this.utterance(origin, cut, committed)).catch(error =>
       console.error(JSON.stringify({ type: "voice_utterance_failed", session: held.id, error: safeError(error) })));
     this.speakers.set(key, job);
     this.pending.add(job);
@@ -803,7 +852,7 @@ export class VoiceSessions {
    * fresh lease, then the provider; its usage recorded as the session's subject's; its transcript counted and sent
    * (the webhook event in the same transaction as the count, the agent's prompt after).
    */
-  private async utterance(origin: Origin, cut: Cut) {
+  private async utterance(origin: Origin, cut: Cut, committed?: Committed) {
     const free = await this.slot(VOICE_LIMITS.queueMs);
     if (!free) {
       console.error(JSON.stringify({ type: "voice_utterance_dropped", session: origin.id, reason: "queue", seconds: cut.seconds }));
@@ -824,7 +873,7 @@ export class VoiceSessions {
       const { credit } = this.options;
       try {
         hold = options.subject !== undefined && credit
-          ? await credit.hold(origin.tenant, options.subject, options.bucket ?? DEFAULT_BUCKET, this.options.transcriber.cost(cut.seconds), "voice", { session: origin.id })
+          ? await credit.hold(origin.tenant, options.subject, options.bucket ?? DEFAULT_BUCKET, this.options.transcriber.cost(cut.seconds, !!committed), "voice", { session: origin.id })
           : undefined;
       } catch (error) {
         if ((error as HttpError).code !== "END_USER_CREDIT") throw error;
@@ -835,7 +884,8 @@ export class VoiceSessions {
       const bytes = oggOpus(cut.packets);
       try {
         await this.options.ownership?.whenFresh();
-        done = await this.options.transcriber.transcribe({ tenant: origin.tenant, ...(options.keyScope ? { keyScope: options.keyScope } : {}) }, { bytes, header: checkedAudio(bytes) },
+        const live = committed && await this.liveTranscript(origin, cut, committed);
+        done = live ?? await this.options.transcriber.transcribe({ tenant: origin.tenant, ...(options.keyScope ? { keyScope: options.keyScope } : {}) }, { bytes, header: checkedAudio(bytes) },
           { ...(options.language ? { language: options.language } : {}), ...(options.prompt ? { prompt: options.prompt } : {}) }, AbortSignal.timeout(5 * 60_000));
       } catch (error) {
         await hold?.release().catch(() => {});
@@ -868,7 +918,7 @@ export class VoiceSessions {
       }
       return current;
     });
-    console.log(JSON.stringify({ type: "voice_utterance", session: origin.id, seq: row?.utterances, seconds: cut.seconds, billedSeconds: transcript.seconds, ended: cut.ended, empty: !transcript.text, ms: Date.now() - started }));
+    console.log(JSON.stringify({ type: "voice_utterance", session: origin.id, seq: row?.utterances, seconds: cut.seconds, billedSeconds: transcript.seconds, ended: cut.ended, empty: !transcript.text, ms: Date.now() - started, live: this.liveModel(transcript), speechEndToTextMs: clock().now() - cut.endedAt }));
     if (!row) return;
     const local = this.held.get(origin.id);
     if (local) local.row = { ...local.row, last_speech_at: row.last_speech_at, utterances: row.utterances };
@@ -887,6 +937,19 @@ export class VoiceSessions {
     }
     await this.deliver(origin, agent, request, row.utterances);
   }
+
+  /** An utterance's live transcript and its usage, or undefined when its stream failed (it is then transcribed after). */
+  private async liveTranscript(origin: Origin, cut: Cut, committed: Committed): Promise<Transcribed | undefined> {
+    try {
+      const transcript = await committed.transcript;
+      return { transcript, usage: this.options.transcriber.liveUsage(transcript, await committed.platform) };
+    } catch (error) {
+      console.error(JSON.stringify({ type: "voice_live_transcription_failed", session: origin.id, seconds: cut.seconds, error: safeError(error) }));
+      return undefined;
+    }
+  }
+
+  private liveModel(transcript: Transcript) { return transcript.model === this.options.transcriber.options.live?.provider.model; }
 
   /** An utterance's prompt to the agent, tried a few times (its node moving, a queue full). */
   private async deliver(origin: Origin, agent: string, request: { id: string; method: string; params: Record<string, unknown> }, seq: number) {

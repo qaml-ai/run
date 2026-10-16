@@ -7,7 +7,11 @@
 // With OPENAI_API_KEY, the other way too: the listener speaks a sentence through the runtime's own speech pipeline
 // (speech.ts streaming OpenAI's gpt-4o-mini-tts, voice-audio.ts encoding, the transport's player), and the speaker bot
 // hears it, segments it and has it transcribed. PASS then also needs the sentence heard (UDP out, DAVE encryption) and
-// recognized; it reports the speech's latency (asked → first audio out) and what it cost. Nothing is stored.
+// recognized; it reports the speech's latency (asked → first audio out) and what it cost. It also measures how soon the
+// text follows the end of speech (`speechEndToTextMs`): transcribed after the cut (POST /audio/transcriptions), and as
+// it is spoken (OpenAI's Realtime transcription, each model in VOICE_CHECK_LIVE_MODELS, default gpt-live-transcribe and
+// gpt-realtime-whisper; VOICE_CHECK_LIVE_DELAY sets their delay), and how many utterances the sentence (which has
+// pauses) is cut into at silenceMs 500, 600 and 800. Nothing is stored.
 //
 //   VOICE_BOT_TOKEN=… SPEAKER_TOKEN=… GUILD=… CHANNEL=… [OPENAI_API_KEY=…] node --experimental-strip-types scripts/voice-check.ts
 //
@@ -24,6 +28,7 @@ import { oggOpus, opusFromPcm, Segmenter, type Cut } from "../src/voice-audio.ts
 import { Outbound } from "../src/outbound.ts";
 import { openaiSpeech, Synthesizer } from "../src/speech.ts";
 import { checkedAudio, openaiTranscription } from "../src/transcription.ts";
+import { LIVE_TRANSCRIPTION_MODEL, openaiLiveTranscription, type LiveTranscription } from "../src/transcription-live.ts";
 import type { VoiceCredentials } from "../src/voice-sessions.ts";
 
 const required = (name: string) => process.env[name] || (console.error(`${name} is not set`), process.exit(2));
@@ -186,7 +191,7 @@ async function main() {
 }
 
 /** What the listener says, and the speaker bot must hear. */
-const SENTENCE = "The quick brown fox jumps over the lazy dog near the riverbank.";
+const SENTENCE = "The quick brown fox jumps over the lazy dog, near the riverbank. Then, after a short rest, it runs home.";
 const words = (text: string) => text.toLowerCase().replace(/[^a-z ]/g, " ").split(/\s+/).filter(Boolean);
 
 /**
@@ -238,10 +243,39 @@ async function speakAndHear(listening: ReturnType<ReturnType<typeof discordVoice
   const synthesizer = new Synthesizer({ provider: openaiSpeech({ outbound }), key: async () => apiKey ? { apiKey, platform: false } : undefined, price: () => 15_000 });
   const heard: Buffer[] = [];
   const cuts: Cut[] = [];
-  const segmenter = new Segmenter({ silenceMs: 800, cut: cut => cuts.push(cut) });
+  // Each cut's text: transcribed after the cut, and by each live model as it was spoken; timed from the end of speech.
+  const models = apiKey ? (process.env.VOICE_CHECK_LIVE_MODELS ?? `${LIVE_TRANSCRIPTION_MODEL},gpt-realtime-whisper`).split(",").map(model => model.trim()).filter(Boolean) : [];
+  const delay = process.env.VOICE_CHECK_LIVE_DELAY;
+  const live = new Map<string, LiveTranscription>(models.map(model => [model, openaiLiveTranscription({ model, ...(delay ? { delay } : {}) }).connect({ apiKey: apiKey! }, { language: "en" })!]));
+  type Timed = { text: string; ms: number; speechEndToTextMs: number } | { error: string };
+  const texts: { seconds: number; cutAfterMs: number; batch?: Promise<Timed>; live: Record<string, Promise<Timed>> }[] = [];
+  const timedText = (endedAt: number, started: number, work: Promise<{ text: string }>): Promise<Timed> =>
+    work.then(({ text }) => ({ text, ms: Date.now() - started, speechEndToTextMs: Date.now() - endedAt }), error => ({ error: String(error?.message ?? error) }));
+  const segmenter = new Segmenter({
+    silenceMs: 800,
+    cut: cut => {
+      cuts.push(cut);
+      if (!apiKey) return;
+      const now = Date.now();
+      const bytes = oggOpus(cut.packets);
+      texts.push({
+        seconds: cut.seconds, cutAfterMs: now - cut.endedAt,
+        batch: timedText(cut.endedAt, now, openaiTranscription({ outbound }).transcribe({ bytes, header: checkedAudio(bytes) }, { language: "en" }, { apiKey }, AbortSignal.timeout(60_000))),
+        live: Object.fromEntries([...live].map(([model, stream]) => [model, timedText(cut.endedAt, now, stream.commit())])),
+      });
+    },
+    ...(apiKey ? { live: { audio: (_speaker: string, pcm: Buffer) => { for (const stream of live.values()) stream.append(pcm); }, drop: () => { for (const stream of live.values()) stream.clear(); } } } : {}),
+  });
+  // The same audio cut at shorter silences: how many utterances the sentence's pauses make.
+  const shorter = [500, 600].map(silenceMs => ({ silenceMs, cuts: 0, segmenter: undefined as unknown as Segmenter }));
+  for (const entry of shorter) entry.segmenter = new Segmenter({ silenceMs: entry.silenceMs, cut: () => { entry.cuts++; } });
   const stream = voice.receiver.subscribe(botUser, { end: { behavior: EndBehaviorType.Manual } });
-  stream.on("data", (packet: Buffer) => { heard.push(packet); segmenter.packet(botUser, packet); });
+  stream.on("data", (packet: Buffer) => { heard.push(packet); segmenter.packet(botUser, packet); for (const entry of shorter) entry.segmenter.packet(botUser, packet); });
   let made = 0, sent = 0, firstAudioMs = -1;
+  // A voice session warms the speech connection when someone starts talking; VOICE_CHECK_COLD=1 measures without.
+  const warming = Date.now();
+  if (apiKey && process.env.VOICE_CHECK_COLD !== "1") await synthesizer.options.provider.warm?.();
+  const warmMs = apiKey && process.env.VOICE_CHECK_COLD !== "1" ? Date.now() - warming : null;
   const asked = Date.now();
   async function* counted(packets: AsyncIterable<Uint8Array>) { for await (const packet of packets) { sent++; yield packet; } }
   const source = timed(apiKey ? synthesizer.stream({ text: SENTENCE, voice: "alloy" }, { apiKey }, AbortSignal.timeout(60_000)) : tone(), asked);
@@ -250,17 +284,31 @@ async function speakAndHear(listening: ReturnType<ReturnType<typeof discordVoice
   const playedMs = Date.now() - asked;
   await new Promise(resolve => setTimeout(resolve, 2_000));
   segmenter.flush("end");
+  for (const entry of shorter) entry.segmenter.flush("end");
   stream.destroy();
   const seconds = Math.round(made / 24_000 * 100) / 100;
-  let transcript = "";
-  if (cuts.length && apiKey) {
-    const packets = cuts.flatMap(cut => cut.packets);
-    const bytes = oggOpus(packets);
-    const transcribed = await openaiTranscription({ outbound }).transcribe({ bytes, header: checkedAudio(bytes) }, { language: "en" }, { apiKey }, AbortSignal.timeout(60_000));
-    transcript = transcribed.text;
-  }
-  const expected = words(SENTENCE), got = new Set(words(transcript));
-  const recall = expected.filter(word => got.has(word)).length / expected.length;
+  const settled = await Promise.all(texts.map(async entry => ({
+    seconds: entry.seconds, cutAfterMs: entry.cutAfterMs, batch: await entry.batch!,
+    live: Object.fromEntries(await Promise.all(Object.entries(entry.live).map(async ([model, timed]) => [model, await timed] as const))),
+  })));
+  for (const stream of live.values()) stream.close();
+  const joined = (pick: (entry: typeof settled[number]) => Timed | undefined) => settled.map(entry => { const timed = pick(entry); return timed && "text" in timed ? timed.text : ""; }).join(" ").trim();
+  const recallOf = (text: string) => { const got = new Set(words(text)); return Math.round(expected.filter(word => got.has(word)).length / expected.length * 100) / 100; };
+  const expected = words(SENTENCE);
+  const transcript = joined(entry => entry.batch);
+  const recall = recallOf(transcript);
+  // speechEndToTextMs of the last utterance (what a reply waits for), after and as spoken.
+  const last = settled.at(-1);
+  const latency = last && {
+    batch: "speechEndToTextMs" in last.batch ? { speechEndToTextMs: last.batch.speechEndToTextMs, transcribeMs: last.batch.ms } : last.batch,
+    ...Object.fromEntries(models.map(model => {
+      const timed = last.live[model];
+      return [model, "speechEndToTextMs" in timed ? { speechEndToTextMs: timed.speechEndToTextMs, commitToTextMs: timed.ms, recall: recallOf(joined(entry => entry.live[model])) } : timed];
+    })),
+  };
+  const defaultLive = last?.live[LIVE_TRANSCRIPTION_MODEL];
+  if (defaultLive && "error" in defaultLive) failures.push(`live transcription (${LIVE_TRANSCRIPTION_MODEL}) failed: ${defaultLive.error}`);
+  else if (defaultLive && recallOf(joined(entry => entry.live[LIVE_TRANSCRIPTION_MODEL])) < 0.8) failures.push(`live transcription heard ${JSON.stringify(joined(entry => entry.live[LIVE_TRANSCRIPTION_MODEL]))}`);
   if (result !== "done") failures.push(`the speech ended ${result}`);
   if (heard.filter(packet => packet.length > 3).length < sent * 0.8) failures.push(`the speaker heard ${heard.filter(packet => packet.length > 3).length} of the ${sent} packets spoken (UDP out, or DAVE)`);
   if (made < (apiKey ? 2 : 3) * 24_000) failures.push(`only ${seconds} s of speech was made`);
@@ -272,9 +320,13 @@ async function speakAndHear(listening: ReturnType<ReturnType<typeof discordVoice
   const stats = playback.stats?.();
   const gapMs = stats?.gapMs ?? Math.max(0, playedMs - firstAudioMs - sent * 20);
   if (gapMs > 300) failures.push(`the speech had ${gapMs} ms of gaps (its making was slower or burstier than the start buffer covered)`);
-  const facts = { sent, heard: heard.length, audible, utterances: cuts.length, seconds, firstAudioMs, playedMs, gapMs, pcm: source.timing, playback: stats };
+  const facts = { sent, heard: heard.length, audible, utterances: cuts.length, seconds, firstAudioMs, warmMs, playedMs, gapMs, pcm: source.timing, playback: stats };
   const report = apiKey
-    ? { speech: "openai", ...facts, costUsd: synthesizer.cost(seconds), transcript, recall: Math.round(recall * 100) / 100 }
+    ? {
+      speech: "openai", ...facts, costUsd: synthesizer.cost(seconds), transcript, recall,
+      // Per utterance: how long after the end of speech the cut came (silenceMs), and each way's text and timing.
+      utteranceTexts: settled, speechEndToText: latency, cutsAtSilenceMs: { ...Object.fromEntries(shorter.map(entry => [entry.silenceMs, entry.cuts])), 800: cuts.length },
+    }
     : { speech: "tone, timed as OpenAI streams (no OPENAI_API_KEY)", ...facts };
   log({ type: "spoken", ...report });
   return report;

@@ -65,7 +65,9 @@ A **prepaid tenant** pays for:
 - **Transcription** on the platform's OpenAI key (`platformKeys.openai`), $0.0045 per minute of audio
   (`gpt-transcribe`'s list price; `AGENT_PRICE_TRANSCRIPTION_USD`), per second as OpenAI bills it. The hour's usage
   entry counts them apart (`transcription`, `transcriptions`, `audioSeconds`), and `/v1/usage` has a row with
-  `kind: "transcription"`. See [Voice and audio](../guides/voice.md).
+  `kind: "transcription"`. See [Voice and audio](../guides/voice.md). Voice sessions transcribe as people speak
+  (OpenAI's Realtime `gpt-live-transcribe`), at $0.017 per minute (`AGENT_PRICE_LIVE_TRANSCRIPTION_USD`), counted
+  the same way; an utterance whose live stream failed is transcribed after, at the transcription price.
 - **Speech** a voice session's bot says, on the platform's OpenAI key, $0.015 per minute of speech made (OpenAI's
   estimate for `gpt-4o-mini-tts`; `AGENT_PRICE_SPEECH_USD`), per second. The hour's usage entry counts it apart
   (`speech`, `speeches`, `speechSeconds`), and `/v1/usage` has a row with `kind: "speech"`. Always on OpenAI, never

@@ -18,6 +18,8 @@ export interface Pricing {
   webRender: number;
   /** Per minute of audio transcribed on the platform's key (OpenAI's gpt-transcribe), billed per second as the provider bills it. */
   transcription: number;
+  /** Per minute of audio a voice session transcribes as it is spoken (OpenAI's gpt-live-transcribe, Realtime), billed per second. */
+  liveTranscription: number;
   /** Per minute of speech synthesized on the platform's key (OpenAI's gpt-4o-mini-tts), billed per second of audio made. */
   speech: number;
   /** Per million tokens of an image made on the platform's key (OpenAI's gpt-image-2.5-flare): text and image tokens in, image tokens out. */
@@ -55,6 +57,8 @@ export const DEFAULT_PRICING: Pricing = Object.freeze({
   webRender: micros(0.00083),
   // OpenAI's list price for gpt-transcribe.
   transcription: micros(0.0045),
+  // OpenAI's list price for gpt-live-transcribe (Realtime transcription).
+  liveTranscription: micros(0.017),
   // OpenAI's estimate for gpt-4o-mini-tts ($0.60 per million text tokens in, $12 per million audio tokens out).
   speech: micros(0.015),
   // OpenAI's list prices for gpt-image-2.5-flare, per million tokens.
@@ -76,7 +80,7 @@ export const DEFAULT_PRICING: Pricing = Object.freeze({
 
 /**
  * Rates from the environment, in USD (AGENT_PRICE_AGENT_HOUR_USD, AGENT_PRICE_STORAGE_GB_MONTH_USD,
- * AGENT_PRICE_WEB_SEARCH_<EXA|BRAVE|PARALLEL>_USD (or AGENT_PRICE_WEB_SEARCH_USD for all three), AGENT_PRICE_WEB_RENDER_USD, AGENT_PRICE_TRANSCRIPTION_USD (per minute of audio), AGENT_PRICE_SPEECH_USD (per minute of speech made),
+ * AGENT_PRICE_WEB_SEARCH_<EXA|BRAVE|PARALLEL>_USD (or AGENT_PRICE_WEB_SEARCH_USD for all three), AGENT_PRICE_WEB_RENDER_USD, AGENT_PRICE_TRANSCRIPTION_USD (per minute of audio), AGENT_PRICE_LIVE_TRANSCRIPTION_USD (per minute of audio transcribed as spoken), AGENT_PRICE_SPEECH_USD (per minute of speech made),
  * AGENT_PRICE_IMAGE_TEXT_INPUT_USD, AGENT_PRICE_IMAGE_INPUT_USD and AGENT_PRICE_IMAGE_OUTPUT_USD (per million tokens), AGENT_CREDIT_FEE_PERCENT, AGENT_CREDIT_MIN_PURCHASE_USD, AGENT_CREDIT_MAX_PURCHASE_USD,
  * AGENT_CREDIT_GRANT_USD, AGENT_FREE_HOURLY_SPEND_USD, AGENT_USAGE_TIERS) and storage limits in GB (AGENT_MAX_STORAGE_GB,
  * AGENT_FREE_MAX_STORAGE_GB); unset ones keep the defaults.
@@ -112,6 +116,7 @@ export function pricingFromEnvironment(env = process.env): Pricing {
     },
     webRender: usd("AGENT_PRICE_WEB_RENDER_USD", DEFAULT_PRICING.webRender),
     transcription: usd("AGENT_PRICE_TRANSCRIPTION_USD", DEFAULT_PRICING.transcription),
+    liveTranscription: usd("AGENT_PRICE_LIVE_TRANSCRIPTION_USD", DEFAULT_PRICING.liveTranscription),
     speech: usd("AGENT_PRICE_SPEECH_USD", DEFAULT_PRICING.speech),
     image: {
       textInput: usd("AGENT_PRICE_IMAGE_TEXT_INPUT_USD", DEFAULT_PRICING.image.textInput),

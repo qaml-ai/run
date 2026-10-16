@@ -6,6 +6,7 @@ import type { AgentIdentity } from "./identity.ts";
 import { AUDIO_LIMITS, FILE_LIMITS } from "./limits.ts";
 import { MICROS } from "./pricing.ts";
 import { safeError } from "./metrics.ts";
+import { deferredLive, type LiveTranscription, type LiveTranscriptionProvider } from "./transcription-live.ts";
 
 /**
  * Speech to text: audio in, its transcript out, for `POST /v1/transcriptions` and for audio attached to
@@ -118,6 +119,8 @@ export interface TranscriberOptions {
   key(tenant: string, keyScope: string | undefined, provider: string): Promise<(TranscriptionCredentials & { platform: boolean }) | undefined>;
   /** Micro-USD per minute of audio. */
   price(): number;
+  /** Transcribing as people speak (voice sessions), and its price per minute (micro-USD); without it, only after. */
+  live?: { provider: LiveTranscriptionProvider; price(): number };
 }
 
 /** A finished transcription and what it cost, for usage records. */
@@ -130,8 +133,28 @@ export class Transcriber {
   get provider() { return this.options.provider.id; }
 
   /** What `seconds` of audio cost (USD): billed per second, as the provider bills. */
-  cost(seconds: number) {
-    return Math.ceil(seconds) * this.options.price() / 60 / MICROS;
+  cost(seconds: number, live = false) {
+    return Math.ceil(seconds) * (live && this.options.live ? this.options.live.price() : this.options.price()) / 60 / MICROS;
+  }
+
+  /**
+   * A stream that transcribes a speaker as they speak (`LiveTranscription`), on the tenant's key as `transcribe` finds
+   * it; undefined without a live provider. Its commits reject when no key can stream: the caller transcribes after.
+   */
+  live(context: { tenant: string; keyScope?: string }, options: TranscriptionOptions): { stream: LiveTranscription; platform: Promise<boolean> } | undefined {
+    const live = this.options.live;
+    if (!live) return undefined;
+    const key = this.options.key(context.tenant, context.keyScope, this.options.provider.id);
+    return {
+      stream: deferredLive(key.then(found => found ? live.provider.connect(found, options) : undefined)),
+      platform: key.then(found => !!found?.platform, () => false),
+    };
+  }
+
+  /** A live transcript's usage record, as `transcribe` makes one. */
+  liveUsage(transcript: Transcript, platform: boolean): UsageRecord {
+    const usd = this.cost(transcript.seconds, true);
+    return { provider: this.options.provider.id, model: transcript.model, usage: { cost: { total: usd } }, platform, kind: "transcription", transcriptions: 1, audioSeconds: transcript.seconds, timestamp: Date.now() };
   }
 
   /**

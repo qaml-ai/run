@@ -91,6 +91,8 @@ export type Cut = {
    * on in the next); error: the speaker's stream broke; handoff: the session moved to another node; end: the session ended.
    */
   ended: "silence" | "max" | "error" | "handoff" | "end";
+  /** Its audio already went to the segmenter's `live` stream as it was spoken (trailing quiet too): commit it there. */
+  live?: boolean;
 };
 
 /** Discord's silence frame, sent a few times as a speaker stops: not speech. */
@@ -110,15 +112,21 @@ export const UTTERANCE_LIMITS = Object.freeze({
 
 /** A packet's level (dBFS, the RMS of its decoded samples); -Infinity for digital silence or a packet that does not decode. */
 export function packetLevel(decoder: OpusScript, packet: Uint8Array): number {
-  let pcm: Buffer;
-  try { pcm = decoder.decode(Buffer.from(packet.buffer, packet.byteOffset, packet.byteLength)); } catch { return -Infinity; }
+  const pcm = decoded(decoder, packet);
+  return pcm ? pcmLevel(pcm) : -Infinity;
+}
+/** A packet decoded (16-bit PCM at the decoder's rate), or undefined when it does not decode. */
+function decoded(decoder: OpusScript, packet: Uint8Array): Buffer | undefined {
+  try { return Buffer.from(decoder.decode(Buffer.from(packet.buffer, packet.byteOffset, packet.byteLength))); } catch { return undefined; }
+}
+function pcmLevel(pcm: Buffer) {
   const samples = pcm.length >> 1;
   let sum = 0;
   for (let i = 0; i < samples; i++) { const sample = pcm.readInt16LE(i * 2); sum += sample * sample; }
   return samples && sum ? 20 * Math.log10(Math.sqrt(sum / samples) / 32_768) : -Infinity;
 }
 
-type Held = { packet: Uint8Array; ms: number; loud: boolean };
+type Held = { packet: Uint8Array; ms: number; loud: boolean; pcm?: Buffer };
 type Speaking = {
   held: Held[]; heldMs: number; speechMs: number; quietMs: number;
   /** When its first and last loud packets came. */
@@ -126,6 +134,8 @@ type Speaking = {
   timer?: Timer;
   /** Its own decoder: an Opus stream's packets decode in order, with the state of those before. */
   decoder: OpusScript;
+  /** Its audio is going to `live` (from its first loud packet, with the quiet kept before it). */
+  streaming?: boolean;
 };
 
 export type SegmenterOptions = {
@@ -133,6 +143,11 @@ export type SegmenterOptions = {
   cut(cut: Cut): void;
   /** A speaker started talking: the first loud packet of an utterance (barge-in listens for it). */
   speech?(speaker: string): void;
+  /**
+   * Transcribing as people speak: each utterance's audio (24 kHz mono 16-bit PCM) as it comes, from its first loud
+   * packet; `drop` when it is too short to keep. Its cuts say `live`.
+   */
+  live?: { audio(speaker: string, pcm: Buffer): void; drop(speaker: string): void };
 };
 
 /**
@@ -161,10 +176,18 @@ export class Segmenter {
     if (silent(packet) || !packet.length) return;
     const now = clock().now();
     let speech = this.speaking.get(speaker);
-    if (!speech) this.speaking.set(speaker, speech = { held: [], heldMs: 0, speechMs: 0, quietMs: 0, lastLoudAt: now, decoder: new OpusScript(16_000, 1, OpusScript.Application.VOIP) });
+    if (!speech) this.speaking.set(speaker, speech = { held: [], heldMs: 0, speechMs: 0, quietMs: 0, lastLoudAt: now, decoder: new OpusScript(this.options.live ? 24_000 : 16_000, 1, OpusScript.Application.VOIP) });
     const ms = packetSamples(packet) / 48;
-    const loud = packetLevel(speech.decoder, packet) > (this.options.quietDb ?? UTTERANCE_LIMITS.quietDb);
-    speech.held.push({ packet, ms, loud });
+    const pcm = decoded(speech.decoder, packet);
+    const loud = (pcm ? pcmLevel(pcm) : -Infinity) > (this.options.quietDb ?? UTTERANCE_LIMITS.quietDb);
+    const live = this.options.live;
+    speech.held.push({ packet, ms, loud, ...(live && pcm && !speech.streaming ? { pcm } : {}) });
+    if (speech.streaming && pcm) live!.audio(speaker, pcm);
+    else if (live && loud) {
+      // Speech began: what was kept before it goes too.
+      speech.streaming = true;
+      for (const entry of speech.held) if (entry.pcm) live.audio(speaker, entry.pcm);
+    }
     speech.heldMs += ms;
     clock().clearTimeout(speech.timer);
     if (loud) {
@@ -206,9 +229,12 @@ export class Segmenter {
       trailing -= dropped.ms;
       speech.heldMs -= dropped.ms;
     }
-    if (speech.speechMs < (this.options.minMs ?? UTTERANCE_LIMITS.minMs) || speech.firstLoudAt === undefined) return;
+    if (speech.speechMs < (this.options.minMs ?? UTTERANCE_LIMITS.minMs) || speech.firstLoudAt === undefined) {
+      if (speech.streaming) this.options.live?.drop(speaker);
+      return;
+    }
     const seconds = Math.round(speech.heldMs / 10) / 100;
-    this.options.cut({ speaker, packets: speech.held.map(entry => entry.packet), seconds, startedAt: speech.firstLoudAt, endedAt: Math.max(speech.lastLoudAt, speech.firstLoudAt + seconds * 1000), ended });
+    this.options.cut({ speaker, packets: speech.held.map(entry => entry.packet), seconds, startedAt: speech.firstLoudAt, endedAt: Math.max(speech.lastLoudAt, speech.firstLoudAt + seconds * 1000), ended, ...(speech.streaming ? { live: true } : {}) });
   }
 }
 
