@@ -20,6 +20,13 @@ import { recordDaveRoster } from "./metrics.ts";
  * not give it the members if it did. So each connection checks for itself (`RosterGuard`): after each transition of
  * the group, every member must be one the voice gateway named (Clients Connect) or the bot; one that stays a stranger
  * past a grace (the gateway's word can trail the Welcome) drops the connection, which joins again with a new group.
+ *
+ * No audio at the start of an utterance is lost. The library maps an SSRC to its user from Speaking (op 5), which
+ * Discord sends once per SSRC over the WebSocket, and drops UDP packets from an SSRC it cannot map yet: those that
+ * outrun it, the first of each speaker's first utterance. So each connection sees the UDP packets before the library
+ * does: one from an SSRC not yet mapped is held (a few per SSRC, a few SSRCs, briefly) and handed to the library once
+ * Speaking maps it; one from a mapped SSRC first opens its speaker's stream, so it is the stream's first packet. A
+ * speaker's stream stays open for the session (the segmenter cuts utterances), and closes when they leave the call.
  */
 
 /** Voice gateway close codes after which these credentials will not work again: new ones must come (PATCH). */
@@ -34,6 +41,15 @@ const ROSTER_GRACE_MS = 5_000;
 /** Drops for strangers within ROSTER_WINDOW_MS after which the connection gives up (`lost`, `error`). */
 const MAX_ROSTER_DROPS = 3;
 const ROSTER_WINDOW_MS = 5 * 60_000;
+
+/** RTP payload type of Discord's Opus audio (any other, video, is not listened to). */
+const OPUS_PAYLOAD_TYPE = 120;
+/** Packets held for an SSRC that Speaking has not mapped yet: its latest this many (a second of audio)... */
+export const EARLY_PACKETS = 50;
+/** ...for at most this many SSRCs (the oldest is dropped for a new one)... */
+export const EARLY_SSRCS = 8;
+/** ...and no older than this when Speaking comes. */
+const EARLY_MS = 2_000;
 
 /**
  * The DAVE group's members, checked against the call's (`RosterGuard`'s doc on the module). `members` reads the group
@@ -76,12 +92,16 @@ export function discordVoice(options: { roster?: { graceMs?: number; members?: (
   return { connect: (credentials, handlers) => new DiscordVoice(credentials, handlers, options.roster ?? {}) };
 }
 
-class DiscordVoice implements VoiceConnection {
+export class DiscordVoice implements VoiceConnection {
   private credentials: VoiceCredentials;
   private readonly handlers: VoiceHandlers;
   private methods?: DiscordGatewayAdapterLibraryMethods;
   private readonly connection: DiscordConnection;
   private readonly listening = new Set<string>();
+  /** UDP packets from SSRCs that Speaking has not mapped yet, oldest first, by SSRC. */
+  private readonly early = new Map<number, { at: number; message: Buffer }[]>();
+  /** The library's own handling of a UDP packet. */
+  private readonly receive: (message: Buffer) => void;
   /** Reconnects since the connection was last ready. */
   private rejoins = 0;
   /** Whether the voice server has told of the call's members yet: until it has, they are unknown, not none. */
@@ -139,8 +159,13 @@ class DiscordVoice implements VoiceConnection {
     this.connection.on("error", error => handlers.diagnostic("error", { error: error.message.slice(0, 200) }));
     // Each transition of the DAVE group (a Welcome, a commit) may have changed its members.
     this.connection.on("transitioned", () => this.roster.check());
+    // Each UDP socket the library opens is bound to `receiver.onUdpMessage` as it is then (none is open yet: it opens
+    // once `feed` answers, a microtask from now), so every one comes here first.
     const receiver = this.connection.receiver;
-    receiver.speaking.on("start", userId => this.listen(userId));
+    this.receive = receiver.onUdpMessage;
+    receiver.onUdpMessage = message => this.udp(message);
+    receiver.ssrcMap.on("create", ({ audioSSRC }) => this.mapped(audioSSRC));
+    receiver.ssrcMap.on("delete", ({ userId, audioSSRC }) => this.left(userId, audioSSRC));
   }
 
   /** The two dispatches the app forwarded, as the library's adapter would have them from a gateway. */
@@ -169,7 +194,55 @@ class DiscordVoice implements VoiceConnection {
     this.handlers.lost(reason, detail);
   }
 
-  /** Each speaker's packets as they arrive; a stream that breaks (a packet that would not decrypt) is reopened on their next. */
+  /**
+   * A UDP packet, before the library has it. Audio from an SSRC Speaking has mapped opens its speaker's stream first
+   * (the library hands a packet only to a stream already open); audio from one not mapped yet is held for when it is.
+   */
+  private udp(message: Buffer) {
+    if (this.closed) return;
+    if (message.length > 12 && message[0] >> 6 === 2 && (message[1] & 0x7f) === OPUS_PAYLOAD_TYPE) {
+      const ssrc = message.readUInt32BE(8);
+      const user = this.connection.receiver.ssrcMap.get(ssrc);
+      if (!user) { this.hold(ssrc, message); return; }
+      this.listen(user.userId);
+    }
+    this.receive(message);
+  }
+
+  private hold(ssrc: number, message: Buffer) {
+    let held = this.early.get(ssrc);
+    if (!held) {
+      if (this.early.size >= EARLY_SSRCS) this.early.delete(this.early.keys().next().value!);
+      this.early.set(ssrc, held = []);
+    }
+    held.push({ at: Date.now(), message });
+    if (held.length > EARLY_PACKETS) held.shift();
+  }
+
+  /** Speaking mapped an SSRC to its user: what was held of it goes to the library now, in order, ahead of what follows. */
+  private mapped(ssrc: number) {
+    const held = this.early.get(ssrc);
+    if (!held) return;
+    this.early.delete(ssrc);
+    const since = Date.now() - EARLY_MS;
+    for (const { at, message } of held) if (at >= since) this.udp(message);
+  }
+
+  /** A speaker left the call (Client Disconnect): their stream closes, and anything held of their SSRC goes. */
+  private left(userId: string, ssrc: number) {
+    this.early.delete(ssrc);
+    this.connection.receiver.subscriptions.get(userId)?.destroy();
+  }
+
+  /** For tests: the speakers with a stream open, and the packets held for SSRCs not mapped yet. */
+  audio() {
+    return { streams: [...this.listening].sort(), held: [...this.early.values()].reduce((sum, held) => sum + held.length, 0), heldSsrcs: this.early.size };
+  }
+
+  /**
+   * A speaker's stream, open for the session: their packets as they arrive, cut into utterances by the segmenter. One
+   * that breaks (a packet that would not decrypt) is reopened by their next packet.
+   */
   private listen(userId: string) {
     if (this.listening.has(userId) || this.closed) return;
     this.listening.add(userId);
@@ -230,6 +303,7 @@ class DiscordVoice implements VoiceConnection {
     if (this.closed) return;
     this.closed = true;
     this.roster.close();
+    this.early.clear();
     for (const stream of this.connection.receiver.subscriptions.values()) stream.destroy();
     this.connection.destroy();
   }

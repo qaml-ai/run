@@ -23,6 +23,8 @@ function certificate() {
 type Call = {
   ws: WebSocket; identify: { server_id: string; user_id: string; session_id: string; token: string; max_dave_protocol_version: number };
   ssrc: number; key: Buffer; client?: RemoteInfo; nonce: number; sequence: number; timestamp: number;
+  /** SSRCs whose Speaking (op 5) this call was sent. */
+  announced: Set<number>;
 };
 
 /**
@@ -52,7 +54,7 @@ export async function fakeDiscordVoice(t: T) {
       if (op === 0) {
         identifies.push(d);
         if (refused.has(d.token)) { ws.close(4004, "Authentication failed"); return; }
-        const call: Call = { ws, identify: d, ssrc: nextSsrc++, key: randomBytes(32), nonce: 0, sequence: 0, timestamp: 0 };
+        const call: Call = { ws, identify: d, ssrc: nextSsrc++, key: randomBytes(32), nonce: 0, sequence: 0, timestamp: 0, announced: new Set() };
         calls.push(call);
         send(ws, 2, { ssrc: call.ssrc, ip: "127.0.0.1", port: (udp.address()).port, modes: ["aead_aes256_gcm_rtpsize"] });
       } else if (op === 1) {
@@ -113,12 +115,27 @@ export async function fakeDiscordVoice(t: T) {
       members = members.filter(id => id !== userId);
       send(live().ws, 13, { user_id: userId });
     },
-    /** `userId` speaks these Opus packets, from SSRC `ssrc`, one every `everyMs`. */
-    async speak(userId: string, ssrc: number, packets: Uint8Array[], everyMs = 2) {
+    /**
+     * `userId` speaks these Opus packets, from SSRC `ssrc`, one every `everyMs`. Speaking (op 5) tells which user an
+     * SSRC is; Discord sends it once per SSRC and call, over the WebSocket, so it can trail the first packets on UDP:
+     * `speakingAfter` sends it after that many (by default before any, the first time the SSRC speaks on this call).
+     * `garbled` sends the packet at that index with a tag that does not authenticate (a packet that will not decrypt).
+     */
+    async speak(userId: string, ssrc: number, packets: Uint8Array[], everyMs = 2, options: { speakingAfter?: number; garbled?: number } = {}) {
       const call = live();
-      send(call.ws, 5, { user_id: userId, ssrc, speaking: 1 });
-      await new Promise(resolve => setTimeout(resolve, 20));
-      for (const packet of packets) {
+      const announce = !call.announced.has(ssrc);
+      call.announced.add(ssrc);
+      const speaking = () => send(call.ws, 5, { user_id: userId, ssrc, speaking: 1 });
+      if (announce && !options.speakingAfter) {
+        speaking();
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      for (const [index, packet] of packets.entries()) {
+        if (announce && options.speakingAfter && index === options.speakingAfter) {
+          // Far enough behind the packets before it that they arrive first.
+          await new Promise(resolve => setTimeout(resolve, 20));
+          speaking();
+        }
         const header = Buffer.alloc(12);
         header[0] = 0x80;
         header[1] = 0x78;
@@ -130,7 +147,9 @@ export async function fakeDiscordVoice(t: T) {
         const cipher = createCipheriv("aes-256-gcm", call.key, nonce);
         cipher.setAAD(header);
         const encrypted = Buffer.concat([cipher.update(packet), cipher.final()]);
-        udp.send(Buffer.concat([header, encrypted, cipher.getAuthTag(), nonce.subarray(0, 4)]), call.client!.port, call.client!.address);
+        const tag = cipher.getAuthTag();
+        if (index === options.garbled) tag[0] ^= 0xff;
+        udp.send(Buffer.concat([header, encrypted, tag, nonce.subarray(0, 4)]), call.client!.port, call.client!.address);
         await new Promise(resolve => setTimeout(resolve, everyMs));
       }
     },
