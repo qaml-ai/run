@@ -376,6 +376,14 @@ export class EndUserCredits {
     };
   }
 
+  /** Keep a call's hold another HOLD_MS from now: a call still streaming, slowly, that needs no more of it yet. */
+  async renew(tenant: string, endUser: string, id: string, now = Date.now()) {
+    await transaction(this.db, async sql => {
+      await lockEndUser(sql, tenant, endUser, now);
+      await sql.query("update end_user_holds set expires_at = $2 where id = $1 and expires_at > $3", [id, now + HOLD_MS, now]);
+    });
+  }
+
   /** Give a hold back without spending it (a call that never went out). */
   async release(id: string) {
     await this.db.query("delete from end_user_holds where id = $1", [id]);

@@ -126,7 +126,8 @@ export class ModelAttempts {
 
   /**
    * A metered call streamed `chars`, nearing the end of its hold: it holds up to another HOLD_OUTPUT_TOKENS' worth
-   * past where it is. Its end user having nothing more, it is refused: the host cuts its stream where its hold ends.
+   * past where it is. Its end user having nothing more, it is refused: the host cuts its stream where its hold ends. One
+   * that needs no more yet (a slow reply, reporting as time passes: `RENEW_MS`) keeps its hold from lapsing.
    */
   private async progress(id: string, chars: number): Promise<AttemptAck> {
     const metered = this.metered.get(id);
@@ -137,7 +138,7 @@ export class ModelAttempts {
       const more = await this.endUsers!.extend(metered.tenant, metered.endUser, metered.bucket, id, want);
       if (!more.hold) return { tracked: true, stopAtChars: lines(metered).stopAtChars, refused: more.refused };
       metered.held += more.hold.raw;
-    }
+    } else await this.endUsers!.renew(metered.tenant, metered.endUser, id);
     return { tracked: true, ...lines(metered) };
   }
 

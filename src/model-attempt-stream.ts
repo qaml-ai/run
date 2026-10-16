@@ -3,6 +3,9 @@ import { createAssistantMessageEventStream, type Api, type AssistantMessage, typ
 import { attemptAck, type AttemptAck, type AttemptEstimate, type CreditStop, type ModelAttemptHook } from "./model-attempt.ts";
 import { PERSISTENCE_FAILED } from "./protocol.ts";
 
+/** How often a metered call that is still streaming reports, at least: well inside the hold's life (HOLD_MS, ten minutes). */
+export const RENEW_MS = 3 * 60_000;
+
 export type UsageSink = { cost?: number; credits?: number; generation?: (id: string) => Promise<void> };
 const zeroUsage = () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } });
 
@@ -42,9 +45,14 @@ export async function attemptStream(model: Model<Api>, key: string, kind: "respo
    * Characters streamed so far; where the hold ends (`stopAt`) and where to ask for more ahead of it (`checkAt`); the
    * request for more in flight; why no more will come (`refusal`); and why the call was cut, once it is.
    */
-  let streamed = 0, checkAt = ack.checkAtChars, stopAt = ack.stopAtChars, asking: Promise<void> | undefined, refusal: CreditStop | string | undefined, cut: string | undefined;
+  let streamed = 0, checkAt = ack.checkAtChars, stopAt = ack.stopAtChars, asking: Promise<void> | undefined, refusal: CreditStop | string | undefined, cut: string | undefined, asked = Date.now();
+  // A metered call that streams slowly (or thinks a long while before it writes) reports as time passes too, so its hold
+  // never lapses while it is still running.
+  const renewing = stopAt === undefined ? undefined : setInterval(() => { if (Date.now() - asked >= RENEW_MS && refusal === undefined && cut === undefined) void ask(); }, RENEW_MS / 4);
+  renewing?.unref?.();
   /** Ask for more of the hold, without holding up the stream: only the line itself waits for the answer. */
   const ask = () => asking ??= hook!({ type: "progress", id, chars: streamed }).then(answer => {
+    asked = Date.now();
     const next = attemptAck(answer);
     if (next.stopAtChars !== undefined) stopAt = next.stopAtChars;
     checkAt = next.refused ? undefined : next.checkAtChars;
@@ -100,7 +108,7 @@ export async function attemptStream(model: Model<Api>, key: string, kind: "respo
     } catch (error) {
       out.push({ type: "error", reason: "error", error: { role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id,
         usage: zeroUsage(), timestamp: at, stopReason: "error", errorMessage: `${PERSISTENCE_FAILED}: ${error instanceof Error ? error.message : "attempt interrupted"}` } });
-    } finally { out.end(); }
+    } finally { clearInterval(renewing); out.end(); }
   })();
   return out;
 }

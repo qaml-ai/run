@@ -408,3 +408,21 @@ test("a call's hold prices the input its provider likely reads from cache at the
   assert.equal(cached.refused, undefined);
   assert.ok(cached.tracked);
 });
+
+test("a slow call that needs no more of its hold yet keeps it from lapsing as it reports", async () => {
+  const { db, service, attempts } = await attemptsFixture();
+  await service.post("payg", "person", { kind: "grant", amount: 10 * USD, key: "pay" });
+  const id = randomUUID();
+  attemptAck(await attempts.event("payg", "agent", true, true, { type: "begin", id, provider: "openrouter", model: MODEL, kind: "response", at: Date.now(), keyHash,
+    estimate: { inputTokens: 1_000, maxOutputTokens: 4_000, rates: { input: 0, output: 0 } }, endUser: { id: "person", bucket: "b" } }));
+  // Nine minutes on, nearly lapsed, it reports having written nothing more.
+  await db.query("update end_user_holds set expires_at = $2 where id = $1", [id, Date.now() + 60_000]);
+  const ack = attemptAck(await attempts.event("payg", "agent", true, true, { type: "progress", id, chars: 0 }));
+  assert.equal(ack.refused, undefined);
+  const [after] = await holds(db);
+  assert.ok(Number(after.expires_at) >= Date.now() + HOLD_MS - 5_000, "held another HOLD_MS from now");
+  // So with nothing more to hold at all: renewed as it is.
+  await db.query("update end_user_holds set expires_at = $2 where id = $1", [id, Date.now() + 60_000]);
+  await service.renew("payg", "person", id);
+  assert.ok(Number((await holds(db))[0].expires_at) >= Date.now() + HOLD_MS - 5_000);
+});
