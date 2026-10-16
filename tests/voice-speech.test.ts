@@ -150,7 +150,9 @@ test("speech is paid for: a tenant or end user out of credit ends the session; a
   const session = await a.voice.get("alice", created.id);
   assert.deepEqual([session.endReason, session.limit, session.endUserReason], ["budget", "end_user", "balance"]);
   assert.equal(connection.played.length, 1, "the second never played");
-  assert.equal((await events("voice.speech.ended")).at(-1)!.data.by, "budget");
+  // Its speech's end is written apart from the session's: waited for, not read at once.
+  const ended = await until(async () => { const found = await events("voice.speech.ended"); return found.length === 2 && found; }, "the second speech's end");
+  assert.deepEqual(ended.map(event => event.data.by ?? null).sort(), ["budget", null]);
 });
 
 test("speech that cannot be made ends as an error, and costs nothing", async t => {
