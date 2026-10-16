@@ -7,7 +7,7 @@ import { transaction, type Db } from "../src/db.ts";
 import { EndUserCredits, HOLD_MS, NOTHING_POSTED as NOTHING, settleUsage, utcDay } from "../src/end-user-credits.ts";
 import { HOLD_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, ModelAttempts } from "../src/model-attempts.ts";
 import { attemptAck } from "../src/model-attempt.ts";
-import { catalogRates } from "../src/platform-pricing.ts";
+import { catalogRates, UNPRICED_COST } from "../src/platform-pricing.ts";
 import { testDatabase } from "./database.ts";
 
 const USD = 1_000_000;
@@ -316,7 +316,7 @@ test("a failed call with no output releases its hold; one without an end user is
   assert.equal((await db.query("select count(*)::int as n from end_user_ledger where kind = 'usage'")).rows[0].n, 0);
 });
 
-test("a model with no price is never free to its end user: it holds and settles at the catalog's or the provider's dearest, and is said", async () => {
+test("a model with no price is never free to its end user, nor refused for it: it holds and settles at the catalog's or a mid-range price, and is said", async () => {
   const { db, service, attempts } = await attemptsFixture();
   await service.post("payg", "person", { kind: "grant", amount: USD, key: "pay" });
   const begin = (id: string, provider: string, model: string, endUser = "person") => ({ type: "begin" as const, id, provider, model, kind: "response" as const, at: Date.now(), keyHash,
@@ -324,7 +324,7 @@ test("a model with no price is never free to its end user: it holds and settles 
   // A tenant's own model declared without pricing, on its own key: the host prices it at zero.
   const id = randomUUID();
   const ack = attemptAck(await attempts.event("payg", "agent", false, false, begin(id, "mine", "llama-local")));
-  assert.ok(ack.tracked && ack.stopAtChars! > 0, "it holds, at the provider's dearest");
+  assert.ok(ack.tracked && ack.stopAtChars! > 0, "it holds, at a mid-range price");
   assert.ok(Number((await holds(db))[0].paid) > 0);
   const errors: string[] = [];
   const error = console.error;
@@ -333,10 +333,17 @@ test("a model with no price is never free to its end user: it holds and settles 
     await attempts.event("payg", "agent", false, false, { type: "finish", id, usage: { input: 1_000, output: 100, cacheRead: 2_000, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, chars: 200, completed: true });
   } finally { console.error = error; }
   const [entry] = (await service.ledger("payg", "person", { limit: 1 })).entries;
-  // The dearest floors: $15 in, $75 out, $1.50 cache reads, a million tokens.
-  assert.equal(entry.raw, 1_000 * 15 + 100 * 75 + 2_000 * 1.5);
+  // $3 in, $15 out, $0.30 cache reads, a million tokens.
+  assert.equal(entry.raw, 1_000 * UNPRICED_COST.input + 100 * UNPRICED_COST.output + 2_000 * UNPRICED_COST.cacheRead);
   assert.equal(entry.amount, -Math.ceil(entry.raw * 1.2));
   assert.ok(errors.some(line => JSON.parse(line).type === "end_user_unpriced_model"), errors.join("\n"));
+  // Someone on a small free allowance still runs one: its hold is sized as a mid-range model's, not the dearest.
+  for (const user of ["small", "small-2"]) await service.update("payg", user, { allowances: { b: 30_000 } });
+  const small = attemptAck(await attempts.event("payg", "agent", false, false, begin(randomUUID(), "mine", "llama-local", "small")));
+  assert.equal(small.refused, undefined);
+  // So on the platform's key, a model the catalog lacks (billed at the provider's dearest when it settles).
+  const unlisted = attemptAck(await attempts.event("payg", "agent", true, true, begin(randomUUID(), "openrouter", "newlab/brand-new-model", "small-2")));
+  assert.equal(unlisted.refused, undefined);
   // Nobody with nothing to pay with runs one.
   const refused = attemptAck(await attempts.event("payg", "agent", false, false, begin(randomUUID(), "mine", "llama-local", "nobody")));
   assert.equal(refused.refused?.reason, "balance");

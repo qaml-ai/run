@@ -45,7 +45,7 @@ A call costs a person what it cost you: the provider's reported cost, else the c
 price for its tokens (cache reads and writes included), as `usage.recorded` says. A call
 on a model with no price (one of your [own models](custom-models.md) declared without
 `pricing`) is never free to them: it is charged at the catalog's price for the model,
-else the provider's dearest, and logged as `end_user_unpriced_model`. Declare its
+else a mid-range price ($3 in, $15 out a million tokens), and logged as `end_user_unpriced_model`. Declare its
 pricing to charge your own.
 
 Changing an allowance or a limit never resets what was spent today: spend is kept

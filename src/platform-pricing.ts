@@ -29,16 +29,28 @@ export function catalogRates(provider: string, id: string): { input: number; out
 }
 
 /**
+ * USD per million tokens a call its end user pays for is priced at when neither its model nor the catalog has a price:
+ * a mid-range model's (Sonnet-class). Never the dearest: a hold at the dearest rates would refuse every call of people
+ * on a small allowance, an outage from one model declared without pricing.
+ */
+export const UNPRICED_COST: Readonly<Model<Api>["cost"]> = Object.freeze({ input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 });
+
+/**
  * What a call its end user pays for is priced at when its model has no price (a tenant's model declared without pricing,
  * a tenant endpoint's, at no cost to the tenant): the catalog's for the model, by its own provider or the one its id
- * names (`openrouter/<model>` on an endpoint); else the provider's dearest. Undefined: the catalog prices it at zero (a
- * free model), the only way such a call is free.
+ * names (`openrouter/<model>` on an endpoint); else UNPRICED_COST. Undefined: the catalog prices it at zero (a free
+ * model), the only way such a call is free.
  */
 export function unpricedCost(provider: string, id: string): Model<Api>["cost"] | undefined {
   const [inner, ...rest] = id.split("/");
   const known = catalogModel(provider, id) ?? (rest.length ? catalogModel(inner, rest.join("/")) : undefined);
-  if (!known) return dearest(provider);
+  if (!known) return UNPRICED_COST;
   return known.cost.input > 0 || known.cost.output > 0 ? known.cost : undefined;
+}
+
+/** A model's rates in USD per million tokens as the catalog lists them; undefined for a model it lacks. */
+export function catalogCost(provider: string, id: string): Model<Api>["cost"] | undefined {
+  return catalogModel(provider, id)?.cost;
 }
 
 /** `usage`'s tokens at `cost` (USD per million tokens), in USD. */
