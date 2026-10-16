@@ -692,7 +692,8 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
       }
       const attempts = (await sim.db.query("select id, totals, end_user_raw from model_attempts where end_user = $1 and totals is not null", [END_USER])).rows;
       for (const attempt of attempts) {
-        const cost = Math.round(Number(attempt.totals.cost) * 1_000_000);
+        // What it cost the tenant: on the platform's key, the provider's price and funding its credit (platformCost).
+        const cost = Math.round(Number(attempt.totals.platformResponses ? attempt.totals.platformCost : attempt.totals.cost) * 1_000_000);
         if (Number(attempt.end_user_raw) !== cost) failures.push(`I22: model attempt ${attempt.id} cost ${cost}, and posted ${attempt.end_user_raw} to its end user`);
       }
       const posted = ledger.filter(row => row.kind === "usage").reduce((total, row) => total + Number(row.raw), 0);
@@ -701,7 +702,8 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
       const kept = (await sim.db.query("select h.id from end_user_holds h join model_attempts a on a.id = h.id where a.totals is not null")).rows;
       if (kept.length) failures.push(`I22: ${kept.length} settled model calls still hold credit (${kept.slice(0, 3).map(row => row.id).join(", ")})`);
       const paid = ledger.filter(row => row.kind === "usage").reduce((total, row) => total - Number(row.amount), 0);
-      const bound = plan.endUsers.grant + agents.size * plan.endUsers.cost;
+      const perCall = Math.max(plan.endUsers.cost, ...attempts.map(attempt => Number(attempt.end_user_raw)));
+      const bound = plan.endUsers.grant + agents.size * perCall;
       if (paid > bound) failures.push(`I22: the end user paid ${paid}, past their grant of ${plan.endUsers.grant} by more than one call per agent (${bound})`);
     }
 
