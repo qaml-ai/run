@@ -262,9 +262,11 @@ export async function* opusFromPcm(pcm: AsyncIterable<Uint8Array>, samples?: (co
  * A jitter buffer for speech packets made as they play: `packets` are read as fast as they come (so the provider's
  * stream is never held up), and given on only once `startPackets` are waiting or the speech is whole; if they run out
  * mid-way (the provider stalls), again once `resumePackets` are waiting. Speech made slower than it plays then pauses
- * between phrases rather than between packets. Ends early (stops reading) when its reader stops.
+ * between phrases rather than between packets. It starts at 0.2 s (OpenAI's speech comes far faster than it plays, so
+ * that is first audio sooner) and resumes at 0.5 s (a provider that stalled once may again). Ends early (stops
+ * reading) when its reader stops.
  */
-export async function* buffered<T>(packets: AsyncIterable<T>, startPackets = 25, resumePackets = 25): AsyncGenerator<T> {
+export async function* buffered<T>(packets: AsyncIterable<T>, startPackets = 10, resumePackets = 25): AsyncGenerator<T> {
   const queue: T[] = [];
   let done = false, failure: unknown, wake: (() => void) | undefined, stopped = false;
   const pump = (async () => {
