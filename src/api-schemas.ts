@@ -220,7 +220,7 @@ export const WebhookEvents = {
   }), "A person's utterance in a voice session, transcribed"),
   "voice.speech.started": envelope("voice.speech.started", z.object({
     ...voiceFacts, speechId: z.string(), latencyMs: z.number().openapi({ description: "From the speak request (or the reply's sentence being whole) to the first audio going out" }),
-    reply: z.object({ agent: z.string(), requestId: z.string() }).optional().openapi({ description: "For a piece of an agent's reply the session speaks (agentReplies): the agent and its run" }),
+    reply: z.object({ agent: z.string(), requestId: z.string() }).optional().openapi({ description: "For a piece of an agent's reply the session speaks (agentReplies, or a prompt's speak): the agent and its run" }),
   }), "The bot started saying a speech (POST /v1/voice/sessions/{id}/speak)"),
   "voice.speech.ended": envelope("voice.speech.ended", z.object({
     ...voiceFacts, speechId: z.string(),
@@ -337,6 +337,11 @@ export const PromptInput = z.object({
     schema: z.record(z.string(), z.unknown()).openapi({ description: "A JSON Schema for an object (type: \"object\"; at most 64 KB)", example: { type: "object", properties: { sentiment: { type: "string", enum: ["positive", "neutral", "negative"] } }, required: ["sentiment"] } }),
   }).optional().openapi({ description: "Structured output: the agent ends this run by calling a final_output tool whose arguments are the schema, checked against it (a call that does not fit goes back to the model with what is wrong). The run's outcome.result.output is that object. A model that answers in text instead is asked once more, with a reminder; a run that still ends without an output fails with code output_missing. The tool stays declared until a prompt without output. Not with whileRunning: steer" }),
   history: z.enum(["full", "none"]).optional().openapi({ description: "What the model sees of the agent's history in this run. full (default): all of it. none: only the system prompt (instructions, tools) and this message, as a new conversation would, without making an agent. The run is still recorded in the history (its user message carries history: \"none\"), and later runs that do not say none see it. Not with whileRunning: steer" }),
+  speak: z.strictObject({
+    session: z.string().openapi({ description: "A voice session of yours that speaks (created with speak: true), not ended", example: "vs_0123456789abcdef01234567" }),
+    voice: z.string().optional().openapi({ description: "The voice for this reply; default the session's" }),
+    interrupt: z.boolean().optional().openapi({ description: "Its first sentence stops what the session is saying (and what was queued), instead of waiting behind it" }),
+  }).optional().openapi({ description: "Speak this run's reply in a voice session as it is written, as speak.agentReplies does for an utterance: sentence by sentence, markdown, links and code left out, at most 400 characters, each a voice.speech.* event carrying reply {agent, requestId}; someone talking over it stops it. Billed as POST /v1/voice/sessions/{id}/speak. Not with whileRunning: steer" }),
   metadata: z.record(z.string(), z.string({ error: "metadata values must be strings" }), { error: "metadata must be an object of string values" }).optional().openapi({ description: "Your own key-value data about this message (its source, a client-side id): at most 16 keys of 1–64 characters, values of at most 512. Kept on the user message (history, events, snapshots) and the request, and sent with its run's webhook events; never shown to the model", example: { source: "web", clientMessageId: "m_123" } }),
   files: z.array(z.union([
     z.strictObject({ path: z.string().openapi({ description: "A file in the agent's mounts, e.g. one uploaded with PUT /v1/agents/{id}/uploads/{requestId}/{name}" }), transcribe: TRANSCRIBE }),

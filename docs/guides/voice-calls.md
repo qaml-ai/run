@@ -169,6 +169,24 @@ reply is still the run's (`run.completed`, the agent's history). Each sentence i
 requestId}` in its `voice.speech.*` events. A person starting to talk (barge-in), an interrupting speech or `DELETE
 …/speak` stops the rest of the reply too.
 
+### Speaking a prompt's reply
+
+To choose per utterance whether and which agent answers (a wake word, a different agent per channel), leave out
+`deliver.agent`, read the transcripts from `voice.utterance` webhooks, and prompt the agent yourself with `speak`:
+
+```http
+POST /v1/agents/{agent}/prompt
+{"text": "What's on the calendar today?", "speak": {"session": "vs_…", "voice": "verse", "interrupt": true}}
+```
+
+The run's reply is spoken in that session as `agentReplies` speaks one: sentence by sentence as it is written, with the
+same cleanup, 400-character cap and barge-in, each speech's events carrying `reply: {agent, requestId}`. The session
+must be one of yours that speaks and has not ended (404, or 409 `VOICE_SPEAK_DISABLED` / `VOICE_SESSION_ENDED`, before
+the prompt is taken); the agent and the session may be on different nodes. `voice` overrides the session's for this
+reply; `interrupt` has its first sentence stop what the session is saying. Not with `whileRunning: "steer"`. A prompt
+sent again with its request id is not spoken again. SDKs: `prompt(text, { speak })`, `submit(text, { speak })` (Python
+`speak={...}`).
+
 ## Cost
 
 Only speech is paid for: Discord sends no audio while people are silent, quiet audio is trimmed from each utterance, and

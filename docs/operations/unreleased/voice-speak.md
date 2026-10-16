@@ -12,6 +12,11 @@
 - `speak: {agentReplies: true}` with `deliver.agent`: the session speaks the agent's reply to each utterance as it is
   written, sentence by sentence (streamed from the agent's node), markdown, links' addresses and code left out, at most
   400 characters; its speech events carry `reply: {agent, requestId}`. Barge-in stops the rest of a reply.
+- A prompt's `speak: {session, voice?, interrupt?}` (`POST /v1/agents/{id}/prompt`, and agent clients' `prompt`/`submit`):
+  its run's reply is spoken in one of the tenant's sessions that speak, as `agentReplies` speaks one, without
+  `deliver.agent`, so an app can choose per utterance whether and which agent answers. Checked before the prompt is
+  taken (404 unknown session, 409 `VOICE_SPEAK_DISABLED` or `VOICE_SESSION_ENDED`); the session's node follows the run
+  on the agent's node (`/internal/agents/{id}/follow`, `/internal/voice/sessions/{id}/reply`).
 - DAVE's send path: a Welcome into a group with a member the voice gateway never named is refused at once (opcode 31,
   then welcomed again), around @discordjs/voice's handling, as libdave checks it; speech goes out only while the group
   is ready and every member named.

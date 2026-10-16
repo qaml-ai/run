@@ -1440,8 +1440,8 @@ def _message_params(text, attached, extra, from_, metadata):
     return {"text": text, **({"files": attached} if attached else {}), **(extra or {}), **({"from": from_} if from_ else {}), **({"metadata": metadata} if metadata else {})}
 
 
-def _prompt_extra(actor=None, while_running=None, allow_disconnected=False, spend_limit=None, output=None, history=None, run_limits=None):
-    return {**({"actor": actor} if actor else {}), **({"whileRunning": "steer"} if while_running == "steer" else {}),
+def _prompt_extra(actor=None, while_running=None, allow_disconnected=False, spend_limit=None, output=None, history=None, run_limits=None, speak=None):
+    return {**({"speak": speak} if speak is not None else {}), **({"actor": actor} if actor else {}), **({"whileRunning": "steer"} if while_running == "steer" else {}),
             **({"allowDisconnected": True} if allow_disconnected else {}), **({"spendLimit": spend_limit} if spend_limit is not None else {}),
             **({"runLimits": run_limits} if run_limits is not None else {}),
             **({"output": output} if output is not None else {}), **({"history": "none"} if history == "none" else {})}
@@ -1992,7 +1992,7 @@ class AgentClient(_AgentCalls):
         return await self.request(method, _message_params(text, attached, extra, from_, metadata), idempotency_key=request_id, **options)
 
     async def prompt(self, text, *, actor=None, from_=None, files=None, metadata=None, while_running=None, idempotency_key=None, allow_disconnected=False,
-                     spend_limit=None, output=None, history=None, run_limits=None, **options):
+                     spend_limit=None, output=None, history=None, run_limits=None, speak=None, **options):
         """`from_` ({"id", "name"?, "username"?}) says who sent the message: the model sees it in a block only
         the runtime can write, and its id is the turn's actor. `actor` names someone else acting (`act` in
         identity tokens) without telling the model. `files` are attached: bytes, a local path (str or Path),
@@ -2005,9 +2005,11 @@ class AgentClient(_AgentCalls):
         ({"schema": a JSON Schema for an object}) asks for structured output: the run ends with an answer that fits it, as "output".
         history="none" shows the model only the instructions (and tools) and this message, not the agent's history before it.
         `run_limits` ({"maxResponses"?, "maxSeconds"?}) are this run's own limits, lowering the agent's.
+        `speak` ({"session", "voice"?, "interrupt"?}) speaks the run's reply in one of the tenant's voice sessions that speak,
+        sentence by sentence as it is written (voice.speech.* events carry reply {"agent", "requestId"}).
         `traceparent` (a W3C trace context) makes the run continue the caller's trace when the tenant exports telemetry."""
         result = await self._message("prompt", text, from_=from_, files=files, metadata=metadata, idempotency_key=idempotency_key,
-                                     extra=_prompt_extra(actor, while_running, allow_disconnected, spend_limit, output, history, run_limits),
+                                     extra=_prompt_extra(actor, while_running, allow_disconnected, spend_limit, output, history, run_limits, speak),
                                      **options)
         # A steered message's request completes as the running turn takes it, naming the turn: its outcome is the turn's.
         if while_running == "steer" and isinstance(result, dict) and isinstance(result.get("steeredInto"), str) and "reply" not in result:
@@ -2033,7 +2035,7 @@ class AgentClient(_AgentCalls):
         return _steer_receipt(record)
 
     async def submit(self, text, *, actor=None, from_=None, files=None, metadata=None, idempotency_key=None, allow_disconnected=False,
-                     spend_limit=None, output=None, history=None, traceparent=None, run_limits=None):
+                     spend_limit=None, output=None, history=None, traceparent=None, run_limits=None, speak=None):
         """Send a message and return as soon as the runtime has it (202), without waiting for its run: {"id", "state"},
         the request's id and whether it runs or is queued. Follow it with wait_for_request(id), the stream or a webhook."""
         if self.closed or self.closing or self.fatal:
@@ -2041,7 +2043,7 @@ class AgentClient(_AgentCalls):
         request_id = idempotency_key or str(uuid.uuid4())
         _check_request_id(request_id)
         attached = await self._attach(request_id, files) if files else None
-        params = _message_params(text, attached, _prompt_extra(actor, None, allow_disconnected, spend_limit, output, history, run_limits), from_, metadata)
+        params = _message_params(text, attached, _prompt_extra(actor, None, allow_disconnected, spend_limit, output, history, run_limits, speak), from_, metadata)
         record = await _http(self.http, self.base, self.path + "/requests", self.session["token"], "POST",
                              {"id": request_id, "method": "prompt", "params": params}, headers=_trace_header(traceparent))
         if "outcome" in record:

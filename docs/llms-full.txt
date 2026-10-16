@@ -3008,6 +3008,24 @@ reply is still the run's (`run.completed`, the agent's history). Each sentence i
 requestId}` in its `voice.speech.*` events. A person starting to talk (barge-in), an interrupting speech or `DELETE
 …/speak` stops the rest of the reply too.
 
+### Speaking a prompt's reply
+
+To choose per utterance whether and which agent answers (a wake word, a different agent per channel), leave out
+`deliver.agent`, read the transcripts from `voice.utterance` webhooks, and prompt the agent yourself with `speak`:
+
+```http
+POST /v1/agents/{agent}/prompt
+{"text": "What's on the calendar today?", "speak": {"session": "vs_…", "voice": "verse", "interrupt": true}}
+```
+
+The run's reply is spoken in that session as `agentReplies` speaks one: sentence by sentence as it is written, with the
+same cleanup, 400-character cap and barge-in, each speech's events carrying `reply: {agent, requestId}`. The session
+must be one of yours that speaks and has not ended (404, or 409 `VOICE_SPEAK_DISABLED` / `VOICE_SESSION_ENDED`, before
+the prompt is taken); the agent and the session may be on different nodes. `voice` overrides the session's for this
+reply; `interrupt` has its first sentence stop what the session is saying. Not with `whileRunning: "steer"`. A prompt
+sent again with its request id is not spoken again. SDKs: `prompt(text, { speak })`, `submit(text, { speak })` (Python
+`speak={...}`).
+
 ## Cost
 
 Only speech is paid for: Discord sends no audio while people are silent, quiet audio is trimmed from each utterance, and
@@ -6173,7 +6191,9 @@ Discord answered your gateway's OP 4), `get`, `list({ state, limit, after })`, `
 `end` (its answer's `leave` is the OP 4 that takes the bot out of the channel). A session made with `speak: true` also
 takes `speak(id, { text, voice?, instructions?, interrupt? })` and `stopSpeaking(id)` (Python: `speak(id, text, ...)`,
 `stop_speaking(id)`). With `deliver.agent`, `speak: { agentReplies: true }` (Python `agent_replies=True`) speaks the
-agent's replies as they are written. See [Voice calls](https://run.camelai.com/docs/guides/voice-calls.md).
+agent's replies as they are written; to choose per utterance instead, prompt any agent with
+`prompt(text, { speak: { session, voice?, interrupt? } })` (Python `speak={"session": ...}`), which speaks that run's reply in
+the session. See [Voice calls](https://run.camelai.com/docs/guides/voice-calls.md).
 
 ```ts
 const session = await agents.voice.create({ discord: { guildId, channelId, userId, sessionId, endpoint, token }, subject: ownerId });

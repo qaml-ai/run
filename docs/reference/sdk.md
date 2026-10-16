@@ -462,7 +462,9 @@ Discord answered your gateway's OP 4), `get`, `list({ state, limit, after })`, `
 `end` (its answer's `leave` is the OP 4 that takes the bot out of the channel). A session made with `speak: true` also
 takes `speak(id, { text, voice?, instructions?, interrupt? })` and `stopSpeaking(id)` (Python: `speak(id, text, ...)`,
 `stop_speaking(id)`). With `deliver.agent`, `speak: { agentReplies: true }` (Python `agent_replies=True`) speaks the
-agent's replies as they are written. See [Voice calls](../guides/voice-calls.md).
+agent's replies as they are written; to choose per utterance instead, prompt any agent with
+`prompt(text, { speak: { session, voice?, interrupt? } })` (Python `speak={"session": ...}`), which speaks that run's reply in
+the session. See [Voice calls](../guides/voice-calls.md).
 
 ```ts
 const session = await agents.voice.create({ discord: { guildId, channelId, userId, sessionId, endpoint, token }, subject: ownerId });

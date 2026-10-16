@@ -1035,7 +1035,7 @@
                   "agent",
                   "requestId"
                 ],
-                "description": "For a piece of an agent's reply the session speaks (agentReplies): the agent and its run"
+                "description": "For a piece of an agent's reply the session speaks (agentReplies, or a prompt's speak): the agent and its run"
               }
             },
             "required": [
@@ -3238,6 +3238,29 @@
               "none"
             ],
             "description": "What the model sees of the agent's history in this run. full (default): all of it. none: only the system prompt (instructions, tools) and this message, as a new conversation would, without making an agent. The run is still recorded in the history (its user message carries history: \"none\"), and later runs that do not say none see it. Not with whileRunning: steer"
+          },
+          "speak": {
+            "type": "object",
+            "properties": {
+              "session": {
+                "type": "string",
+                "description": "A voice session of yours that speaks (created with speak: true), not ended",
+                "example": "vs_0123456789abcdef01234567"
+              },
+              "voice": {
+                "type": "string",
+                "description": "The voice for this reply; default the session's"
+              },
+              "interrupt": {
+                "type": "boolean",
+                "description": "Its first sentence stops what the session is saying (and what was queued), instead of waiting behind it"
+              }
+            },
+            "required": [
+              "session"
+            ],
+            "additionalProperties": false,
+            "description": "Speak this run's reply in a voice session as it is written, as speak.agentReplies does for an utterance: sentence by sentence, markdown, links and code left out, at most 400 characters, each a voice.speech.* event carrying reply {agent, requestId}; someone talking over it stops it. Billed as POST /v1/voice/sessions/{id}/speak. Not with whileRunning: steer"
           },
           "metadata": {
             "type": "object",

@@ -202,3 +202,83 @@ test("a session that speaks its agent's replies: the agent's run (on another nod
   assert.equal(run.json.state, "completed");
   assert.match(run.json.outcome.result.reply, /console\.log/, "the whole reply is the run's");
 });
+
+test("a prompt's speak: its run (on another node) is spoken in a session of the tenant's, sentence by sentence, without deliver.agent", async t => {
+  const root = await mkdtemp(join(tmpdir(), "agent-voice-prompt-speak-"));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
+  writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: {
+    alice: { tokenSha256: sha(token), apiKeys: { openrouter: "fixture-key", openai: "tenant-openai-key" } },
+    bob: { tokenSha256: sha("bob-token-0123456789"), apiKeys: { openrouter: "fixture-key", openai: "tenant-openai-key" } },
+  } }));
+  const model = await fakeModel(t, () => ({ content: "On it. The **build** passed!\n```sh\nnpm test\n```\nAnything else?" }));
+  const spoken: { input: string; voice: string }[] = [];
+  const openai = createServer(async (req, res) => {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    const { input, voice } = JSON.parse(body);
+    spoken.push({ input, voice });
+    res.writeHead(200, { "Content-Type": "audio/pcm" }).end(Buffer.alloc(4_800 * 2));
+  }).listen(0, "127.0.0.1");
+  await once(openai, "listening");
+  t.after(() => new Promise<void>(resolve => openai.close(() => resolve())));
+  const openaiUrl = `http://127.0.0.1:${(openai.address() as { port: number }).port}/v1`;
+  const { url: databaseUrl } = await testDatabase();
+  const fake = fakeTransport();
+  const nodes: RuntimeNode[] = [];
+  t.after(async () => { for (const node of nodes) await node.close().catch(() => {}); });
+  const secretsKey = randomBytes(32).toString("hex");
+  const bases: string[] = [];
+  for (let index = 0; index < 2; index++) bases.push(await onFreePort(async port => {
+    const config = nodeConfig({
+      PORT: String(port), HOST: "127.0.0.1", AGENT_NODE_URL: `http://127.0.0.1:${port}`, AGENT_DATABASE_URL: databaseUrl,
+      AGENT_DATA_DIR: join(root, "shared"), AGENT_STORAGE: "shared-file", AGENT_HOSTING: "inline", AGENT_LEASE_TTL_MS: "1500", AGENT_SCHEDULER_INTERVAL_MS: "200",
+      AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_SESSION_SECRET: "voice-api-session-secret-with-32-chars!!", AGENT_SECRETS_KEY: secretsKey,
+      AGENT_PROVIDER: "openrouter", AGENT_MODEL: "openai/gpt-4o-mini", AGENT_BASE_URL: model.url,
+      AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", AGENT_SPEECH_URL: openaiUrl, AGENT_TRANSCRIPTION_URL: openaiUrl,
+    });
+    const made = await createNode(config, { ...await nodeDeps(config), voiceTransports: { discord: fake.transport } });
+    try { await made.start(); } catch (error) { await made.close().catch(() => {}); throw error; }
+    nodes.push(made);
+    return `http://127.0.0.1:${port}`;
+  }));
+  const call = async (base: string, method: string, path: string, body?: unknown, bearer = token) => {
+    const response = await fetch(base + path, {
+      method, body: body === undefined ? undefined : JSON.stringify(body),
+      headers: { Authorization: `Bearer ${bearer}`, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
+    });
+    return { status: response.status, json: await response.json() as any };
+  };
+  // The agent lives on node b; the call is held on node a, and speaks without delivering utterances anywhere.
+  const agent = await call(bases[1], "POST", "/v1/agents", { name: "voice-agent" });
+  assert.equal(agent.status, 201, JSON.stringify(agent.json));
+  const created = await call(bases[0], "POST", "/v1/voice/sessions", { discord: discordGrant(), speak: true, voice: "coral" });
+  assert.equal(created.status, 201, JSON.stringify(created.json));
+  const quiet = await call(bases[0], "POST", "/v1/voice/sessions", { discord: discordGrant({ guildId: "100000000000000072" }) });
+  assert.equal(quiet.status, 201, JSON.stringify(quiet.json));
+  const connection = await until(() => fake.open().find(open => open.credentials.guildId === "100000000000000001"), "the connection");
+  connection.handlers.ready();
+
+  const prompt = (body: Record<string, unknown>, base = bases[0], bearer = token) => call(base, "POST", `/v1/agents/${agent.json.id}/prompt`, body, bearer);
+  assert.equal((await prompt({ text: "x", speak: { session: quiet.json.id } })).json.code, "VOICE_SPEAK_DISABLED", "a session that does not speak");
+  assert.equal((await prompt({ text: "x", speak: { session: "vs_000000000000000000000000" } })).status, 404, "an unknown session");
+  assert.equal((await prompt({ text: "x", speak: { session: created.json.id }, whileRunning: "steer" })).status, 400, "a steer joins another's turn");
+  assert.equal((await prompt({ text: "x", speak: { session: created.json.id, voice: "Not A Voice" } })).status, 400, "a voice's name");
+  assert.equal((await prompt({ text: "x", speak: { session: created.json.id, extra: 1 } })).status, 400, "only session, voice, interrupt");
+  // Another tenant's agent cannot speak in alice's session.
+  const bobs = await call(bases[1], "POST", "/v1/agents", { name: "bobs" }, "bob-token-0123456789");
+  assert.equal((await call(bases[1], "POST", `/v1/agents/${bobs.json.id}/prompt`, { text: "x", speak: { session: created.json.id } }, "bob-token-0123456789")).status, 404, "another tenant's session is unknown");
+  assert.equal(spoken.length, 0, "nothing refused was spoken");
+
+  const accepted = await prompt({ text: "Did the build pass?", requestId: "speak-1", speak: { session: created.json.id, voice: "verse", interrupt: true } });
+  assert.equal(accepted.status, 202, JSON.stringify(accepted.json));
+  await until(() => spoken.length === 3 && connection.played.length === 3 && !connection.playing, "the reply to be spoken");
+  assert.deepEqual(spoken.map(item => item.input), ["On it.", "The build passed!", "Anything else?"], "markdown and code left out");
+  assert.deepEqual([...new Set(spoken.map(item => item.voice))], ["verse"], "the prompt's voice");
+  const run = await call(bases[1], "GET", `/v1/agents/${agent.json.id}/requests/speak-1?wait=5`);
+  assert.equal(run.json.state, "completed");
+  assert.match(run.json.outcome.result.reply, /npm test/, "the whole reply is the run's");
+  // Sent again with its id, the request is the same one: not spoken twice.
+  assert.equal((await prompt({ text: "Did the build pass?", requestId: "speak-1", speak: { session: created.json.id, voice: "verse", interrupt: true } })).status, 202);
+  await new Promise(resolve => setTimeout(resolve, 500));
+  assert.equal(spoken.length, 3, "a retry is not spoken again");
+});

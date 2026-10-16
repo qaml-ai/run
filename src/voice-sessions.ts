@@ -255,6 +255,8 @@ export interface VoiceSessionsOptions {
   submit(agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }): Promise<unknown>;
   /** As `submit`, yielding the text the run writes as it is written (agentReplies); without it, replies are not spoken. */
   submitStreaming?(agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }, signal: AbortSignal): AsyncIterable<string>;
+  /** The text a submitted run writes, so far and as it is written (a prompt's speak); without it, prompts cannot speak. */
+  followStreaming?(agent: string, tenant: string, requestId: string, signal: AbortSignal): AsyncIterable<string>;
   transcriptionsPerNode?: number;
   /** End users' credit; without it, sessions are billed to the tenant alone. */
   credit?: VoiceCredit;
@@ -278,7 +280,11 @@ type Held = {
   segmenter: Segmenter;
   /** What the bot was asked to say, for a session that speaks. */
   speech?: SessionSpeech;
+  /** The runs whose replies it speaks (a prompt's speak), by agent and request: each spoken once. */
+  replies?: Set<string>;
 };
+/** A prompt's `speak`: the voice session its run's reply is spoken in, and how. */
+export type VoiceReplyTarget = { session: string; voice?: string; interrupt?: boolean };
 /** What an utterance's work needs of its session, fixed when it was cut: the session may move or end meanwhile. */
 type Origin = { id: string; tenant: string; claim: Claim; row: Row };
 
@@ -497,6 +503,47 @@ export class VoiceSessions {
     const position = held.speech.say(item, input.interrupt === true);
     console.log(JSON.stringify({ type: "voice_speech_queued", session: id, speech: item.id, chars: item.text.length, position, node: this.options.node }));
     return { speechId: item.id, session: id, state: "queued" as const, position, voice: item.voice, characters: item.text.length };
+  }
+
+  /**
+   * A prompt's `speak` ({session, voice?, interrupt?}), checked before the prompt is taken: one of the tenant's sessions
+   * that speaks and has not ended.
+   */
+  async replyTarget(tenant: string, input: unknown): Promise<VoiceReplyTarget> {
+    if (!input || typeof input !== "object" || Array.isArray(input)) throw new HttpError(400, "speak is {session, voice?, interrupt?}");
+    const given = input as Record<string, unknown>;
+    only(given, "speak", ["session", "voice", "interrupt"]);
+    const session = text(given.session, "speak.session", /^vs_[a-f0-9]{24}$/, "a voice session's id (vs_…)");
+    const voice = given.voice === undefined ? undefined : text(given.voice, "speak.voice", VOICE_NAME, "a voice's name, such as alloy, coral or verse");
+    if (given.interrupt !== undefined && typeof given.interrupt !== "boolean") throw new HttpError(400, "speak.interrupt must be true or false");
+    if (!this.options.followStreaming) throw new HttpError(404, "Speaking a prompt's reply is not enabled on this runtime");
+    const row = await this.row(tenant, session);
+    if (row.state === "ended") throw new HttpError(409, `This voice session ended (${row.end_reason})`, "VOICE_SESSION_ENDED");
+    if (!row.options.speak) throw new HttpError(409, "This voice session does not speak: start one with speak: true", "VOICE_SPEAK_DISABLED");
+    return { session, ...(voice ? { voice } : {}), ...(given.interrupt === true ? { interrupt: true } : {}) };
+  }
+
+  /**
+   * Speak a run's reply in a session (a prompt's speak), as it is written: as `agentReplies` does an utterance's, on the
+   * node that holds the session (elsewhere, 503: node.ts sends it there). A run already being spoken is not again.
+   */
+  async speakRun(tenant: string, target: VoiceReplyTarget, run: { agent: string; requestId: string }) {
+    const row = await this.row(tenant, target.session);
+    if (row.state === "ended") return { speaking: false };
+    const held = this.held.get(target.session);
+    if (!held?.speech) throw new HttpError(503, "This voice session is moving between nodes; retry");
+    const key = `${run.agent}:${run.requestId}`;
+    const replies = held.replies ??= new Set();
+    if (replies.has(key)) return { speaking: true };
+    replies.add(key);
+    if (replies.size > 100) replies.delete(replies.values().next().value!);
+    const speech = held.speech;
+    console.log(JSON.stringify({ type: "voice_reply_followed", session: held.id, agent: run.agent, request: run.requestId, node: this.options.node }));
+    const job = this.sayAsWritten(held, speech, run, target, signal => this.options.followStreaming!(run.agent, tenant, run.requestId, signal))
+      .catch(error => console.error(JSON.stringify({ type: "voice_reply_stream_failed", session: held.id, request: run.requestId, status: (error as HttpError).status, error: safeError(error) })));
+    this.pending.add(job);
+    void job.finally(() => this.pending.delete(job));
+    return { speaking: true };
   }
 
   /** Stop what the bot is saying, and what it was going to: answers how many speeches that stopped. */
@@ -860,27 +907,41 @@ export class VoiceSessions {
   private async speakReply(origin: Origin, agent: string, request: { id: string; method: string; params: Record<string, unknown> }, seq: number) {
     const held = this.held.get(origin.id);
     const speech = held?.claim === origin.claim ? held.speech : undefined;
-    if (!speech) { await this.deliver(origin, agent, request, seq); return; }
-    const generation = speech.generation;
-    const reply = { agent, requestId: request.id };
-    const abort = new AbortController();
-    const spoken = new SpokenReply(text => {
-      if (speech.generation !== generation || this.held.get(origin.id) !== held) { abort.abort(); return; }
-      speech.say({ id: speechId(), text, voice: held!.row.options.voice, queuedAt: Date.now(), reply });
-    });
+    if (!held || !speech) { await this.deliver(origin, agent, request, seq); return; }
     let streamed = false;
     try {
-      for await (const text of this.options.submitStreaming!(agent, origin.tenant, request, abort.signal)) {
-        streamed = true;
+      await this.sayAsWritten(held, speech, { agent, requestId: request.id }, {}, signal => this.options.submitStreaming!(agent, origin.tenant, request, signal), () => { streamed = true; });
+    } catch (error) {
+      console.error(JSON.stringify({ type: "voice_reply_stream_failed", session: origin.id, status: (error as HttpError).status, error: safeError(error) }));
+      // The prompt may not have reached the agent: deliver it as usual (the same id, so at most once).
+      if (!streamed) await this.deliver(origin, agent, request, seq);
+    }
+  }
+
+  /**
+   * Say a run's text as it is written: each sentence queued as it is whole, markdown and code left out, at most
+   * REPLY_LIMITS.chars in all. It stops adding to the queue once the queue is stopped (barge-in, interrupt, DELETE) or
+   * the session moves. With `interrupt`, its first sentence stops what was being said. Throws what the stream throws.
+   */
+  private async sayAsWritten(held: Held, speech: SessionSpeech, reply: { agent: string; requestId: string }, how: { voice?: string; interrupt?: boolean },
+    texts: (signal: AbortSignal) => AsyncIterable<string>, heard?: () => void) {
+    let generation = speech.generation, interrupt = how.interrupt === true;
+    const abort = new AbortController();
+    const spoken = new SpokenReply(text => {
+      if (speech.generation !== generation || this.held.get(held.id) !== held) { abort.abort(); return; }
+      speech.say({ id: speechId(), text, voice: how.voice ?? held.row.options.voice, queuedAt: Date.now(), reply }, interrupt);
+      // Its own interruption bumped the generation: the sentences after it follow it.
+      if (interrupt) { interrupt = false; generation = speech.generation; }
+    });
+    try {
+      for await (const text of texts(abort.signal)) {
+        heard?.();
         spoken.push(text);
         if (abort.signal.aborted) break;
       }
       if (!abort.signal.aborted) spoken.end();
     } catch (error) {
-      if (abort.signal.aborted) return;
-      console.error(JSON.stringify({ type: "voice_reply_stream_failed", session: origin.id, status: (error as HttpError).status, error: safeError(error) }));
-      // The prompt may not have reached the agent: deliver it as usual (the same id, so at most once).
-      if (!streamed) await this.deliver(origin, agent, request, seq);
+      if (!abort.signal.aborted) throw error;
     }
   }
 
