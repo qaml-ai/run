@@ -3654,7 +3654,10 @@ balances are your ledger of your users, and camelRun never moves money for them.
 - **Bucket limits**: the most one bucket may charge a person's balance per UTC day,
   keyed as allowances are (`"bot:*"`), for everyone or per person. A bot at
   `"bot:*": 2_000_000` spends its allowance, then at most $2 of the balance a day,
-  however much the person holds; at `0` it spends its allowance only.
+  however much the person holds; at `0` it spends its allowance only. To list the
+  buckets that may spend paid credit at all, give `"*": 0` and a limit for each of
+  them: `{ "*": 0, builder: 20_000_000, "bot:*": 2_000_000 }`. Then no other bucket,
+  `default` included, ever charges anyone's balance.
 
 All amounts are integer **micro-USD**: 1 USD = 1,000,000.
 
