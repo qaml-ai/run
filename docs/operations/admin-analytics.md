@@ -20,6 +20,23 @@ The Run pages and User journeys tabs, and first-run counts in Product signals, n
 
 After the roll, verify healthy new tasks and check that the log no longer says `journey_not_configured`. Confirm the Run pages tab answers. Reconcile a known new signup and first execution against the store to verify delivery; configuration alone is not proof of live collection. First-run counts cover accounts created from that moment; earlier accounts are not backfilled.
 
+## Temporary collection setting
+
+The **Journey collection** GitHub Actions workflow changes only
+`AGENT_JOURNEY_COLLECT_UNKNOWN` on a copy of the running production task definition
+and rolls out the same image using the existing production deployment role.
+`true` records first-party visits without an answer; `false` restores the
+requirement for an explicit grant. Explicit refusals and Global Privacy Control
+remain excluded in both modes. No event is relabeled as granted, and Google
+Analytics still requires its own explicit grant.
+
+Keep the sales site's `JOURNEY_COLLECT_UNKNOWN` and automatic-prompt setting in
+step. The workflow preserves all unrelated runtime settings, secrets and roles.
+It is a temporary runtime override: before the next Terraform apply, set
+`journey_collect_unknown` to the chosen value in the production `prod.auto.tfvars`
+downloaded from S3 and upload the updated file as described in the infrastructure
+runbook. Otherwise that apply can restore the previous setting.
+
 ## Metric definitions
 
 - Sign-ups are self-serve tenant creations (GitHub, Google or email). Operator-created accounts are excluded from sign-up counts.
