@@ -4055,7 +4055,7 @@ export class ClientSessions {
         catch (error) {
           const status = (error as HttpError).status;
           if (status !== 503 && status !== 502 || attempt >= 4) {
-            console.error(JSON.stringify({ type: "voice_reply_follow_failed", agent: run.agent, request: requestId, session: target.session, status, error: errorText(error) }));
+            console.error(JSON.stringify({ type: "voice_reply_follow_failed", agent: run.agent, request: requestId, session: target.session, status, error: safeError(error) }));
             return;
           }
           await new Promise(resolve => setTimeout(resolve, 250 * 2 ** attempt));
