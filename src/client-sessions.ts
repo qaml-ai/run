@@ -89,6 +89,11 @@ interface SessionHeader {
   keyScope?: string;
   /** The bucket of its end user's credit its runs spend from, unless a run names its own (end-user-credits.ts); set by the tenant, never by the agent. */
   bucket?: string;
+  /**
+   * The bucket the tenant's latest run of it named (a prompt's `bucket`): the one its runs that name none (a schedule's,
+   * a sub-agent's notice, a channel's or a voice session's message) spend from, where it has no `bucket` of its own.
+   */
+  runBucket?: string;
   /** The key it was made with (an upsert's, or a create's Idempotency-Key), shown in listings; none for one made without. */
   key?: string;
   /** sha256 of the application's tools as it last declared them (its tools/list as JSON): its ready event tells it, so it reconfigures only on a change. */
@@ -235,6 +240,8 @@ type Session = {
   platformKey?: boolean;
   /** Whether the tenant pays for responses on the platform's keys (prepaid): they are priced from the catalog (`billable`). */
   catalogPriced?: boolean;
+  /** Whether a run of it falling back to the default bucket was said (`bucketOf`), since it was loaded. */
+  defaultBucketSaid?: boolean;
   /** Its spend limit and what it has spent since it was set (`agent_spend_limits`); null when it has none, undefined until read. */
   spend?: SpendLimit | null;
   /** Spend counted that no transcript record has carried yet (`spent`), for the next to write. */
@@ -2016,7 +2023,7 @@ export class ClientSessions {
       ...header.identity?.subject !== undefined ? { subject: header.identity.subject } : {}, ...header.identity?.context ? { context: header.identity.context } : {},
       ...header.keyScope ? { keyScope: header.keyScope } : {},
       // Its parent's end user pays for it, from the bucket the parent's run spends.
-      ...run.bucket ?? header.bucket ? { bucket: run.bucket ?? header.bucket } : {},
+      bucket: this.bucketOf(session, run),
     }, key, { agentId: header.id, runId: run.id, toolCallId, depth })).id;
   }
 
@@ -3961,6 +3968,11 @@ export class ClientSessions {
     const rate = isRun && body.method !== "resume" && !notice ? await this.options.runRate?.(session.header.tenant) ?? undefined : undefined;
     const limited = body.method === "resume" || notice ? undefined : await this.runLimit(session, body.method, bucket);
     if (limited) throw limited;
+    // The bucket the tenant names for a run is the one the runs the runtime starts for the agent after it spend from.
+    if (bucket && body.method !== "resume" && session.header.runBucket !== bucket) {
+      session.header.runBucket = bucket;
+      await this.writeHeader(session);
+    }
     const trace = isRun ? await this.traceFor(session, traceparent, body.method === "resume" ? session.requests.get(params.suspension)?.trace : undefined) : undefined;
     // A run makes its agent busy: it takes one of the tenant's busy slots across the fleet (429 at the limit), held
     // until the agent has no run open. A resume continues a turn already accepted. Until the request is taken, the
@@ -4928,7 +4940,25 @@ export class ClientSessions {
    */
   private payer(session: Session, run: RequestRecord | undefined): { id: string; bucket: string } | undefined {
     const id = session.header.identity?.subject;
-    return id === undefined || !this.options.endUsers ? undefined : { id, bucket: run?.bucket ?? session.header.bucket ?? DEFAULT_BUCKET };
+    return id === undefined || !this.options.endUsers ? undefined : { id, bucket: this.bucketOf(session, run) };
+  }
+
+  /**
+   * The bucket a run of the agent spends from: its own, else the agent's, else the one the tenant's latest run of it named
+   * (`runBucket`), so a run the runtime starts (a schedule's, a sub-agent's notice, a channel's or a voice session's
+   * message) spends where the agent's do. Only with none of them the default, said once per load for a tenant that meters.
+   */
+  private bucketOf(session: Session, run: Pick<RequestRecord, "bucket"> | undefined): string {
+    const bucket = run?.bucket ?? session.header.bucket ?? session.header.runBucket;
+    if (bucket !== undefined) return bucket;
+    if (!session.defaultBucketSaid && session.header.identity?.subject !== undefined && this.options.endUsers) {
+      session.defaultBucketSaid = true;
+      const { tenant, id: agent } = session.header;
+      void this.options.endUsers.enabled(tenant).then(metered => {
+        if (metered) console.warn(JSON.stringify({ type: "end_user_default_bucket", tenant, agent, message: "A metered agent's run named no bucket, nor did the agent or any run of it: it spends from \"default\"" }));
+      }, () => {});
+    }
+    return DEFAULT_BUCKET;
   }
 
   /**
