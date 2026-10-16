@@ -765,7 +765,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     runEvents: tenant => subscribers.runs(tenant),
     // A prompt's speak: its reply spoken in one of the tenant's voice sessions, wherever that is held.
     voiceReplies: {
-      check: (tenant, input) => { if (!voice) throw new HttpError(404, "Voice sessions are not enabled on this runtime"); return voice.replyTarget(tenant, input); },
+      check: (tenant, input, agentToken) => { if (!voice) throw new HttpError(404, "Voice sessions are not enabled on this runtime"); return voice.replyTarget(tenant, input, agentToken); },
       follow: (tenant, target, run) => speakRunAnywhere(tenant, target, run),
     },
     tracing: telemetry,

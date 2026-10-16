@@ -3260,7 +3260,7 @@
               "session"
             ],
             "additionalProperties": false,
-            "description": "Speak this run's reply in a voice session as it is written, as speak.agentReplies does for an utterance: sentence by sentence, markdown, links and code left out, at most 400 characters, each a voice.speech.* event carrying reply {agent, requestId}; someone talking over it stops it. Billed as POST /v1/voice/sessions/{id}/speak. Not with whileRunning: steer"
+            "description": "Speak this run's reply in a voice session as it is written, as speak.agentReplies does for an utterance: sentence by sentence, markdown, links and code left out, at most 400 characters, each a voice.speech.* event carrying reply {agent, requestId}; someone talking over it stops it. Billed as POST /v1/voice/sessions/{id}/speak. Not with whileRunning: steer. An agent's own token (POST /clients/{id}/requests) may name only sessions whose subject is the agent's (403 VOICE_SPEAK_FORBIDDEN)"
           },
           "metadata": {
             "type": "object",

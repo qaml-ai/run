@@ -507,9 +507,10 @@ export class VoiceSessions {
 
   /**
    * A prompt's `speak` ({session, voice?, interrupt?}), checked before the prompt is taken: one of the tenant's sessions
-   * that speaks and has not ended.
+   * that speaks and has not ended. The tenant may name any; an agent's own token (`agentToken`, which may be in an end
+   * user's browser) only a session of its agent's subject, so one user cannot make another's bot talk.
    */
-  async replyTarget(tenant: string, input: unknown): Promise<VoiceReplyTarget> {
+  async replyTarget(tenant: string, input: unknown, agentToken?: { subject?: string }): Promise<VoiceReplyTarget> {
     if (!input || typeof input !== "object" || Array.isArray(input)) throw new HttpError(400, "speak is {session, voice?, interrupt?}");
     const given = input as Record<string, unknown>;
     only(given, "speak", ["session", "voice", "interrupt"]);
@@ -519,6 +520,11 @@ export class VoiceSessions {
     if (!this.options.followStreaming) throw new HttpError(404, "Speaking a prompt's reply is not enabled on this runtime");
     const row = await this.row(tenant, session);
     if (row.state === "ended") throw new HttpError(409, `This voice session ended (${row.end_reason})`, "VOICE_SESSION_ENDED");
+    if (agentToken && (agentToken.subject === undefined || row.options.subject !== agentToken.subject)) {
+      throw new HttpError(403, agentToken.subject === undefined
+        ? "An agent's token may speak only in voice sessions of its agent's subject, and this agent has none: prompt with the tenant's API key"
+        : "An agent's token may speak only in voice sessions whose subject is its agent's: prompt with the tenant's API key", "VOICE_SPEAK_FORBIDDEN");
+    }
     if (!row.options.speak) throw new HttpError(409, "This voice session does not speak: start one with speak: true", "VOICE_SPEAK_DISABLED");
     return { session, ...(voice ? { voice } : {}), ...(given.interrupt === true ? { interrupt: true } : {}) };
   }

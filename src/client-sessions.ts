@@ -592,7 +592,7 @@ export interface ClientSessionOptions {
    * the target, or throws, before the prompt is taken; `follow` starts speaking once it is, wherever the session is held.
    */
   voiceReplies?: {
-    check(tenant: string, input: unknown): Promise<VoiceReplyTarget>;
+    check(tenant: string, input: unknown, agentToken?: { subject?: string }): Promise<VoiceReplyTarget>;
     follow(tenant: string, target: VoiceReplyTarget, run: { agent: string; requestId: string }): Promise<unknown>;
   };
   /** Durable accounting acknowledgment before each provider dispatch and terminal response (and its end user's hold, as it streams). */
@@ -3930,7 +3930,8 @@ export class ClientSessions {
     if (params.speak !== undefined) {
       if (body.method !== "prompt" || params.whileRunning === "steer") throw new HttpError(400, "speak is for a prompt that starts its own turn (not whileRunning: steer)");
       if (!this.options.voiceReplies) throw new HttpError(404, "Voice sessions are not enabled on this runtime");
-      speak = await this.options.voiceReplies.check(session.header.tenant, params.speak);
+      // The tenant may name any of its sessions; the agent's own token only its subject's.
+      speak = await this.options.voiceReplies.check(session.header.tenant, params.speak, trusted ? undefined : { subject: session.header.identity?.subject });
       delete params.speak;
     }
     if (params.whileRunning === "queue") delete params.whileRunning;

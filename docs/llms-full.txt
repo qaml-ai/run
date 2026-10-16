@@ -3026,6 +3026,10 @@ reply; `interrupt` has its first sentence stop what the session is saying. Not w
 sent again with its request id is not spoken again. SDKs: `prompt(text, { speak })`, `submit(text, { speak })` (Python
 `speak={...}`).
 
+Prompted with your API key, any of your sessions may speak. Prompted with an agent's own token (which may be in an end
+user's browser), only a session whose `subject` is the agent's: an agent without a subject, or a session of another
+subject, is a 403 `VOICE_SPEAK_FORBIDDEN`, so one user cannot make another's bot talk.
+
 ## Cost
 
 Only speech is paid for: Discord sends no audio while people are silent, quiet audio is trimmed from each utterance, and
@@ -7615,6 +7619,7 @@ retry.
 | 409 | `IDEMPOTENCY_CONFLICT` | The Idempotency-Key or request id was used for another request |
 | 409 | `IDEMPOTENCY_IN_PROGRESS` | The first request with this Idempotency-Key is still running; retry |
 | 409 | `VOICE_SESSION_EXISTS` | The bot already has a voice session in this server (`session` names it): update or end it |
+| 403 | `VOICE_SPEAK_FORBIDDEN` | A prompt's `speak` named a voice session its credential may not speak in: an agent's own token speaks only in sessions of its agent's `subject` (prompt with an API key for any) |
 | 409 | `VOICE_SPEAK_DISABLED` | The voice session does not speak: start one with `speak: true` |
 | 409 | `VOICE_SESSION_ENDED` | The voice session ended; start a new one |
 | 409 | `APPLICATION_CONNECTED` | Another connection serves this agent's tools; connect with `?takeover=true` to replace it |

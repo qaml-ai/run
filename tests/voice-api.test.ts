@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { once } from "node:events";
@@ -267,7 +267,27 @@ test("a prompt's speak: its run (on another node) is spoken in a session of the 
   // Another tenant's agent cannot speak in alice's session.
   const bobs = await call(bases[1], "POST", "/v1/agents", { name: "bobs" }, "bob-token-0123456789");
   assert.equal((await call(bases[1], "POST", `/v1/agents/${bobs.json.id}/prompt`, { text: "x", speak: { session: created.json.id } }, "bob-token-0123456789")).status, 404, "another tenant's session is unknown");
-  assert.equal(spoken.length, 0, "nothing refused was spoken");
+  // An agent's own token (which may be in an end user's browser) speaks only in its subject's sessions.
+  const asToken = (id: string, agentToken: string, session: string) => fetch(`${bases[0]}/clients/${id}/requests`, {
+    method: "POST", headers: { Authorization: `Bearer ${agentToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ id: `tok-${randomBytes(4).toString("hex")}`, method: "prompt", params: { text: "x", speak: { session } } }),
+  }).then(async response => ({ status: response.status, json: await response.json() as any }));
+  const userA = await call(bases[0], "POST", "/v1/voice/sessions", { discord: discordGrant({ guildId: "100000000000000073" }), speak: true, subject: "user_a" });
+  const userB = await call(bases[0], "POST", "/v1/voice/sessions", { discord: discordGrant({ guildId: "100000000000000074" }), speak: true, subject: "user_b" });
+  assert.equal(userB.status, 201, JSON.stringify(userB.json));
+  const forA = await call(bases[1], "POST", "/v1/agents", { name: "for-a", subject: "user_a" });
+  assert.equal(forA.status, 201, JSON.stringify(forA.json));
+  const noSubject = await asToken(agent.json.id, agent.json.token, created.json.id);
+  assert.deepEqual([noSubject.status, noSubject.json.code], [403, "VOICE_SPEAK_FORBIDDEN"], "an agent without a subject");
+  const otherUser = await asToken(forA.json.id, forA.json.token, userB.json.id);
+  assert.deepEqual([otherUser.status, otherUser.json.code], [403, "VOICE_SPEAK_FORBIDDEN"], "another user's session");
+  assert.equal((await asToken(forA.json.id, forA.json.token, userA.json.id)).status, 202, "its own subject's session");
+  // The tenant's key may name any of its sessions, whatever their subject.
+  assert.equal((await prompt({ text: "x", speak: { session: userB.json.id } })).status, 202);
+  for (const open of fake.open()) open.handlers.ready();
+  // Both replies spoken whole (three sentences each), in their own sessions, before the next part.
+  await until(() => spoken.length === 6 && fake.open().every(open => !open.playing), "the tenant's and user A's prompts to be spoken");
+  spoken.length = 0;
 
   const accepted = await prompt({ text: "Did the build pass?", requestId: "speak-1", speak: { session: created.json.id, voice: "verse", interrupt: true } });
   assert.equal(accepted.status, 202, JSON.stringify(accepted.json));
@@ -281,4 +301,72 @@ test("a prompt's speak: its run (on another node) is spoken in a session of the 
   assert.equal((await prompt({ text: "Did the build pass?", requestId: "speak-1", speak: { session: created.json.id, voice: "verse", interrupt: true } })).status, 202);
   await new Promise(resolve => setTimeout(resolve, 500));
   assert.equal(spoken.length, 3, "a retry is not spoken again");
+});
+
+test("following a reply already partly written: the node a session is on reads what was written, then the rest as it comes", async t => {
+  const root = await mkdtemp(join(tmpdir(), "agent-voice-follow-"));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
+  writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(token), apiKeys: { openrouter: "fixture-key" } } } }));
+  // The model writes two deltas, then waits to be let go before the rest.
+  const firstWritten = Promise.withResolvers<void>(), rest = Promise.withResolvers<void>();
+  const model = createServer(async (req, res) => {
+    for await (const _ of req) { /* the request */ }
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    const chunk = (delta: object, finish_reason: string | null = null) => res.write(`data: ${JSON.stringify({ id: "fixture", object: "chat.completion.chunk", choices: [{ index: 0, delta, finish_reason }] })}\n\n`);
+    chunk({ role: "assistant", content: "The deploy " });
+    chunk({ content: "finished. Two" });
+    firstWritten.resolve();
+    await rest.promise;
+    chunk({ content: " checks failed." });
+    chunk({}, "stop");
+    res.end("data: [DONE]\n\n");
+  }).listen(0, "127.0.0.1");
+  await once(model, "listening");
+  t.after(() => { rest.resolve(); return new Promise<void>(resolve => model.close(() => resolve())); });
+  const { url: databaseUrl } = await testDatabase();
+  const nodes: RuntimeNode[] = [];
+  t.after(async () => { for (const node of nodes) await node.close().catch(() => {}); });
+  const secret = "voice-api-session-secret-with-32-chars!!";
+  const base = await onFreePort(async port => {
+    const config = nodeConfig({
+      PORT: String(port), HOST: "127.0.0.1", AGENT_NODE_URL: `http://127.0.0.1:${port}`, AGENT_DATABASE_URL: databaseUrl,
+      AGENT_DATA_DIR: join(root, "shared"), AGENT_STORAGE: "shared-file", AGENT_HOSTING: "inline", AGENT_LEASE_TTL_MS: "1500", AGENT_SCHEDULER_INTERVAL_MS: "200",
+      AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_SESSION_SECRET: secret, AGENT_SECRETS_KEY: randomBytes(32).toString("hex"),
+      AGENT_PROVIDER: "openrouter", AGENT_MODEL: "openai/gpt-4o-mini", AGENT_BASE_URL: `http://127.0.0.1:${(model.address() as { port: number }).port}/v1`,
+      AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32",
+    });
+    const made = await createNode(config, await nodeDeps(config));
+    try { await made.start(); } catch (error) { await made.close().catch(() => {}); throw error; }
+    nodes.push(made);
+    return `http://127.0.0.1:${port}`;
+  });
+  const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+  const agent = await (await fetch(`${base}/v1/agents`, { method: "POST", headers, body: JSON.stringify({ name: "follow" }) })).json() as any;
+  assert.equal((await fetch(`${base}/v1/agents/${agent.id}/prompt`, { method: "POST", headers, body: JSON.stringify({ text: "How did the deploy go?", requestId: "run-1" }) })).status, 202);
+  await firstWritten.promise;
+  await new Promise(resolve => setTimeout(resolve, 300));
+  // What a session's node asks the agent's (as followStreamingAnywhere does), signed as nodes sign.
+  const path = `/internal/agents/${agent.id}/follow`;
+  const body = JSON.stringify({ tenant: "alice", requestId: "run-1" });
+  const timestamp = String(Date.now());
+  const signature = createHmac("sha256", secret).update(`internal:${timestamp}:${path}:${createHash("sha256").update(body).digest("hex")}`).digest("hex");
+  const response = await fetch(base + path, { method: "POST", body, headers: { "Content-Type": "application/json", "x-agent-runtime-internal": `${timestamp}.${signature}` } });
+  assert.equal(response.status, 200);
+  const lines: any[] = [];
+  let pending = "";
+  const reader = (response.body as unknown as AsyncIterable<Uint8Array>)[Symbol.asyncIterator]();
+  const next = async () => {
+    for (;;) {
+      const at = pending.indexOf("\n");
+      if (at >= 0) { const line = JSON.parse(pending.slice(0, at)); pending = pending.slice(at + 1); lines.push(line); return line; }
+      const step = await reader.next();
+      if (step.done) return undefined;
+      pending += Buffer.from(step.value).toString("utf8");
+    }
+  };
+  // What was written before the follow began comes first, whole.
+  assert.deepEqual(await next(), { text: "The deploy finished. Two" });
+  rest.resolve();
+  while (!lines.at(-1)?.done) assert.ok(await next(), "the stream ended without done");
+  assert.equal(lines.filter(line => line.text).map(line => line.text).join(""), "The deploy finished. Two checks failed.", "nothing missed, nothing twice");
 });

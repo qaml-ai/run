@@ -39,6 +39,7 @@ retry.
 | 409 | `IDEMPOTENCY_CONFLICT` | The Idempotency-Key or request id was used for another request |
 | 409 | `IDEMPOTENCY_IN_PROGRESS` | The first request with this Idempotency-Key is still running; retry |
 | 409 | `VOICE_SESSION_EXISTS` | The bot already has a voice session in this server (`session` names it): update or end it |
+| 403 | `VOICE_SPEAK_FORBIDDEN` | A prompt's `speak` named a voice session its credential may not speak in: an agent's own token speaks only in sessions of its agent's `subject` (prompt with an API key for any) |
 | 409 | `VOICE_SPEAK_DISABLED` | The voice session does not speak: start one with `speak: true` |
 | 409 | `VOICE_SESSION_ENDED` | The voice session ended; start a new one |
 | 409 | `APPLICATION_CONNECTED` | Another connection serves this agent's tools; connect with `?takeover=true` to replace it |

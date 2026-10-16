@@ -187,6 +187,10 @@ reply; `interrupt` has its first sentence stop what the session is saying. Not w
 sent again with its request id is not spoken again. SDKs: `prompt(text, { speak })`, `submit(text, { speak })` (Python
 `speak={...}`).
 
+Prompted with your API key, any of your sessions may speak. Prompted with an agent's own token (which may be in an end
+user's browser), only a session whose `subject` is the agent's: an agent without a subject, or a session of another
+subject, is a 403 `VOICE_SPEAK_FORBIDDEN`, so one user cannot make another's bot talk.
+
 ## Cost
 
 Only speech is paid for: Discord sends no audio while people are silent, quiet audio is trimmed from each utterance, and
