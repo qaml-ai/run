@@ -26,7 +26,7 @@ export type StopReason = "interrupt" | "requested" | "barge_in" | "end" | "hando
 export interface Playback {
   done: Promise<"done" | "stopped" | "error">; stop(): void;
   /** Packets sent, the time spent waiting for the next packet (speech still being made), and time held back by why. */
-  stats?(): { packets: number; waitedMs: number; heldMs: Record<string, number> };
+  stats?(): { packets: number; startMs: number; waitedMs: number; gapMs: number; heldMs: Record<string, number> };
 }
 /** A connection that can play: `packets` are 20 ms Opus packets at 48 kHz stereo; `started` is called with the first. */
 export interface Player { play(packets: AsyncIterable<Uint8Array>, started: () => void): Playback }

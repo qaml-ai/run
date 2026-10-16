@@ -318,3 +318,58 @@ test("speech whose making stalls (a first chunk, then nothing for seconds, as Op
   assert.equal(speech.length, 100, "every packet went out");
   assert.equal(playback.stats!().packets, 100);
 });
+
+test("speech made only 1.7 times faster than it plays, in uneven bursts (as OpenAI streamed it in a live check), plays without gaps", async t => {
+  const voice = await fakeDiscordVoice(t);
+  const grant = discordGrant({ endpoint: voice.endpoint });
+  let ready = 0;
+  const connection = discordVoice().connect(grant, { ready: () => { ready++; }, packet: () => {}, broken: () => {}, lost: () => {}, diagnostic: () => {} });
+  t.after(() => connection.close());
+  await until(() => ready === 1, "ready");
+  // 3 s of speech in chunks of about 65 ms of audio, one every 22 to 54 ms (38 on average: 1.7x), after a first byte at 0.5 s.
+  async function* bursty() {
+    await sleep(500);
+    for (let at = 0, index = 0; at < 72_000; index++) {
+      const size = Math.min(1_565, 72_000 - at);
+      at += size;
+      yield* chunks(size);
+      await sleep([22, 54, 30, 46, 38][index % 5]);
+    }
+  }
+  const asked = Date.now();
+  let firstAudioMs = 0;
+  const playback = connection.play!(opusFromPcm(bursty()), () => { firstAudioMs = Date.now() - asked; });
+  assert.equal(await playback.done, "done");
+  const stats = playback.stats!();
+  assert.equal(stats.packets, 150);
+  // As the listener heard it: the speech packets' arrival span, less their length (Discord's silence frames are 3 bytes).
+  const heard = voice.spokenTimes().filter(packet => packet.bytes > 3);
+  const heardGapMs = Math.round(heard.at(-1)!.at - heard[0].at - (heard.length - 1) * 20);
+  assert.ok(heardGapMs <= 100, `the listener heard ${heardGapMs} ms of gaps (${JSON.stringify(stats)})`);
+  assert.ok(stats.gapMs <= 100, `${stats.gapMs} ms of gaps (${JSON.stringify(stats)})`);
+  assert.ok(firstAudioMs < 800, `first audio ${firstAudioMs} ms after asking: 0.5 s to the first byte, then about 0.1 s`);
+});
+
+test("speech made slower than it plays at first, then all at once, waits for a longer lead instead of stuttering", async t => {
+  const voice = await fakeDiscordVoice(t);
+  const grant = discordGrant({ endpoint: voice.endpoint });
+  let ready = 0;
+  const connection = discordVoice().connect(grant, { ready: () => { ready++; }, packet: () => {}, broken: () => {}, lost: () => {}, diagnostic: () => {} });
+  t.after(() => connection.close());
+  await until(() => ready === 1, "ready");
+  // 3 s of speech: its first 1.6 s at 0.8x (65 ms of audio every 81 ms), then the rest at once.
+  async function* backLoaded() {
+    let at = 0;
+    for (; at < 38_400; at += 1_565) {
+      yield* chunks(Math.min(1_565, 38_400 - at));
+      await sleep(81);
+    }
+    yield* chunks(72_000 - 38_400);
+  }
+  const playback = connection.play!(opusFromPcm(backLoaded()), () => {});
+  assert.equal(await playback.done, "done");
+  const heard = voice.spokenTimes().filter(packet => packet.bytes > 3);
+  assert.equal(heard.length, 150);
+  const heardGapMs = Math.round(heard.at(-1)!.at - heard[0].at - (heard.length - 1) * 20);
+  assert.ok(heardGapMs <= 100, `the listener heard ${heardGapMs} ms of gaps (${JSON.stringify(playback.stats!())})`);
+});

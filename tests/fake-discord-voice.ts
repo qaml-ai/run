@@ -42,6 +42,7 @@ export async function fakeDiscordVoice(t: T) {
   const wss = new WebSocketServer({ server });
   const udp = createSocket("udp4");
   const calls: Call[] = [];
+  const heardAt: { at: number; bytes: number }[] = [];
   const identifies: Call["identify"][] = [];
   const resumes: unknown[] = [];
   const refused = new Set<string>();
@@ -86,6 +87,7 @@ export async function fakeDiscordVoice(t: T) {
         decipher.setAAD(header);
         decipher.setAuthTag(message.subarray(message.length - 20, message.length - 4));
         call.heard.push(Buffer.concat([decipher.update(message.subarray(12, message.length - 20)), decipher.final()]));
+        heardAt.push({ at: performance.now(), bytes: message.length - 32 });
       } catch { /* not ours */ }
       return;
     }
@@ -119,6 +121,8 @@ export async function fakeDiscordVoice(t: T) {
     identifies, resumes, calls,
     /** The client's own audio, decrypted, across its calls. */
     spoken: () => calls.flatMap(call => call.heard),
+    /** When each of the client's packets arrived (ms, performance.now) and its size: speech's timing as a listener hears it. */
+    spokenTimes: () => heardAt,
     /** Tokens the server refuses (close 4004). */
     refuse: (token: string) => refused.add(token),
     /** Whether a call is connected (its client found its UDP address). */

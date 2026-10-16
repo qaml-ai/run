@@ -206,12 +206,18 @@ async function* tone() {
   }
 }
 
-/** PCM as it arrives, timed: when its first byte came (ms after `asked`), how many bytes, and when the last came. */
+/**
+ * PCM as it arrives, timed: when its first byte came (ms after `asked`), how many bytes, and when the last came; each
+ * chunk's arrival ([ms, bytes]); and `zeroGapStartMs`, the earliest playback could have started and never run dry
+ * (each chunk must arrive before the audio before it has played).
+ */
 function timed(pcm: AsyncIterable<Uint8Array>, asked: number) {
-  const timing = { firstByteMs: -1, bytes: 0, lastByteMs: -1, chunks: 0 };
+  const timing = { firstByteMs: -1, bytes: 0, lastByteMs: -1, chunks: 0, zeroGapStartMs: 0, arrivals: [] as [number, number][] };
   async function* tap() {
     for await (const chunk of pcm) {
       if (timing.firstByteMs < 0) timing.firstByteMs = Date.now() - asked;
+      timing.zeroGapStartMs = Math.max(timing.zeroGapStartMs, Date.now() - asked - Math.floor(timing.bytes / 48));
+      timing.arrivals.push([Date.now() - asked, chunk.byteLength]);
       timing.bytes += chunk.byteLength;
       timing.chunks++;
       timing.lastByteMs = Date.now() - asked;
@@ -262,7 +268,11 @@ async function speakAndHear(listening: ReturnType<ReturnType<typeof discordVoice
   if (!apiKey && cuts.length !== 1) failures.push(`the tone was heard as ${cuts.length} utterances, not 1`);
   // What the speaker heard that was speech (Discord's 3-byte silence frames are not).
   const audible = heard.filter(packet => packet.length > 3).length;
-  const facts = { sent, heard: heard.length, audible, utterances: cuts.length, seconds, firstAudioMs, playedMs, pcm: source.timing, playback: playback.stats?.() };
+  // Silence the listener heard inside the speech: the playback's gaps (the jitter buffer running dry).
+  const stats = playback.stats?.();
+  const gapMs = stats?.gapMs ?? Math.max(0, playedMs - firstAudioMs - sent * 20);
+  if (gapMs > 300) failures.push(`the speech had ${gapMs} ms of gaps (its making was slower or burstier than the start buffer covered)`);
+  const facts = { sent, heard: heard.length, audible, utterances: cuts.length, seconds, firstAudioMs, playedMs, gapMs, pcm: source.timing, playback: stats };
   const report = apiKey
     ? { speech: "openai", ...facts, costUsd: synthesizer.cost(seconds), transcript, recall: Math.round(recall * 100) / 100 }
     : { speech: "tone, timed as OpenAI streams (no OPENAI_API_KEY)", ...facts };

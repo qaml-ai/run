@@ -258,32 +258,61 @@ export async function* opusFromPcm(pcm: AsyncIterable<Uint8Array>, samples?: (co
   } finally { encoder.delete(); }
 }
 
+export const PLAYBACK_BUFFER = Object.freeze({
+  /** Audio buffered before speech starts, when it comes fast enough (`startRate`). */
+  startMs: 200,
+  /** How fast (audio per wall-clock time, since its first packet, over at least `rateWindowMs`) it must come to start at `startMs`. */
+  startRate: 1.5,
+  rateWindowMs: 100,
+  /** Otherwise it starts with this much buffered; and after running dry, resumes with this much, doubled at each stall. */
+  slowStartMs: 1_000,
+  maxResumeMs: 4_000,
+});
+
 /**
- * A jitter buffer for speech packets made as they play: `packets` are read as fast as they come (so the provider's
- * stream is never held up), and given on only once `startPackets` are waiting or the speech is whole; if they run out
- * mid-way (the provider stalls), again once `resumePackets` are waiting. Speech made slower than it plays then pauses
- * between phrases rather than between packets. It starts at 0.2 s (OpenAI's speech comes far faster than it plays, so
- * that is first audio sooner) and resumes at 0.5 s (a provider that stalled once may again). Ends early (stops
- * reading) when its reader stops.
+ * A jitter buffer for speech packets (20 ms each) made as they play: `packets` are read as fast as they come (so the
+ * provider's stream is never held up), and given on once enough wait that playing them should not run dry:
+ *
+ * - At first, `startMs` (0.2 s) once they come at least `startRate` times faster than they play (measured since the
+ *   first, over at least `rateWindowMs`): speech made that fast stays ahead. Slower, `slowStartMs` (1 s).
+ * - If they run out mid-way (the provider stalled or bursts), again once `slowStartMs` wait, doubled at each further
+ *   stall (to `maxResumeMs`): a provider that stalled once may again, so each gap buys a longer lead.
+ *
+ * The speech whole (or failed) is given on at once. A speech made faster than it plays never pauses; a bursty one
+ * pauses at most at its first stall. Ends early (stops reading) when its reader stops.
  */
-export async function* buffered<T>(packets: AsyncIterable<T>, startPackets = 10, resumePackets = 25): AsyncGenerator<T> {
+export async function* buffered<T>(packets: AsyncIterable<T>, options: Partial<typeof PLAYBACK_BUFFER> = {}): AsyncGenerator<T> {
+  const limits = { ...PLAYBACK_BUFFER, ...options };
   const queue: T[] = [];
-  let done = false, failure: unknown, wake: (() => void) | undefined, stopped = false;
+  let done = false, failure: unknown, wake: (() => void) | undefined, stopped = false, arrived = 0, firstAt = 0;
   const pump = (async () => {
-    try { for await (const packet of packets) { if (stopped) return; queue.push(packet); wake?.(); } }
-    catch (error) { failure = error; }
+    try {
+      for await (const packet of packets) {
+        if (stopped) return;
+        if (!arrived++) firstAt = performance.now();
+        queue.push(packet);
+        wake?.();
+      }
+    } catch (error) { failure = error; }
     finally { done = true; wake?.(); }
   })();
+  const ms = (count: number) => count * 20;
+  const startable = () => {
+    if (ms(queue.length) >= limits.slowStartMs) return true;
+    const elapsed = performance.now() - firstAt;
+    return ms(queue.length) >= limits.startMs && elapsed >= limits.rateWindowMs && ms(arrived) / elapsed >= limits.startRate;
+  };
   try {
-    for (let threshold = startPackets; ;) {
-      while (!done && queue.length < threshold) await new Promise<void>(resolve => { wake = resolve; });
+    for (let started = false, resumeMs: number = limits.slowStartMs; ;) {
+      while (!done && !(started ? ms(queue.length) >= resumeMs : startable())) await new Promise<void>(resolve => { wake = resolve; });
       wake = undefined;
       if (!queue.length) {
         if (failure) throw failure;
         return;
       }
+      if (started) resumeMs = Math.min(resumeMs * 2, limits.maxResumeMs);
+      started = true;
       while (queue.length) yield queue.shift()!;
-      threshold = resumePackets;
     }
   } finally {
     stopped = true;

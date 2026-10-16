@@ -8,6 +8,10 @@
 - Events `voice.speech.started` (`latencyMs`) and `voice.speech.ended` (`reason`: `done`, `interrupted` with `by`, or
   `error`; `seconds`, `costUsd`). Usage `kind: "speech"` at $0.015 a minute of speech made (`AGENT_PRICE_SPEECH_USD`),
   per second; end-user credits hold and settle it as transcription; running out ends the session (`budget`).
+- Speech plays through a jitter buffer: it starts after 0.2 s of audio when OpenAI's stream comes at least 1.5x faster
+  than it plays (measured over its first 100 ms), else after 1 s; after running dry it resumes with 1 s buffered,
+  doubling at each further stall (to 4 s). The `speech_played` diagnostic has `startMs` (asked to first packet),
+  `waitedMs` (refilling after stalls) and `gapMs` (silence inside the speech).
 - Any node takes a speak request and passes it to the node holding the call.
 - `speak: {agentReplies: true}` with `deliver.agent`: the session speaks the agent's reply to each utterance as it is
   written, sentence by sentence (streamed from the agent's node), markdown, links' addresses and code left out, at most

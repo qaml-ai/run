@@ -362,13 +362,20 @@ export class DiscordVoice implements VoiceConnection {
     this.connection.subscribe(player);
     let stopped = false, failed = false, first = true;
     const self = this;
-    // What happened to the speech, for its diagnostic: packets sent, and how long each reason held them back.
-    const stats = { packets: 0, heldMs: { connection: 0, dave: 0, roster: 0 }, waitedMs: 0 };
+    // What happened to the speech, for its diagnostic: packets sent; how long each reason held them back; how long from
+    // play to its first packet ready (the provider's first bytes and the start buffer: `startMs`); how long it waited
+    // for packets after that (`waitedMs`, the jitter buffer refilling after a stall); and the silence the listener heard
+    // between its first packet and its last (`gapMs`: the time between them, less the audio's length; the player takes
+    // one packet a frame, and holds one at most, so a packet handed over late is a frame of silence).
+    const stats = { packets: 0, heldMs: { connection: 0, dave: 0, roster: 0 }, startMs: 0, waitedMs: 0, gapMs: 0 };
+    const asked = Date.now();
+    let firstAt = 0, lastAt = 0;
     async function* gated() {
       // Through a jitter buffer: a provider that stalls mid-speech pauses it between phrases, not packet by packet.
       for (let waited = Date.now(), iterator = buffered(packets)[Symbol.asyncIterator](); ;) {
         const next = await iterator.next();
-        stats.waitedMs += Date.now() - waited;
+        if (firstAt) stats.waitedMs += Date.now() - waited;
+        else stats.startMs = Date.now() - asked;
         if (next.done) return;
         for (let reason; (reason = self.holding());) {
           if (stopped || self.closed) return;
@@ -377,19 +384,22 @@ export class DiscordVoice implements VoiceConnection {
           stats.heldMs[reason] += Date.now() - since;
         }
         if (stopped) return;
-        if (first) { first = false; started(); }
+        if (first) { first = false; firstAt = Date.now(); started(); }
         stats.packets++;
+        lastAt = Date.now();
         yield Buffer.from(next.value);
         waited = Date.now();
       }
     }
-    const source = Readable.from(gated(), { objectMode: true });
+    // One packet ahead of the player: the jitter buffer is the only buffer, so it sees a stall when the player would.
+    const source = Readable.from(gated(), { objectMode: true, highWaterMark: 1 });
     const resource = createAudioResource(source, { inputType: StreamType.Opus });
     const done = new Promise<"done" | "stopped" | "error">(resolve => {
       const settle = () => {
         player.off("stateChange", changed);
         player.off("error", errored);
         const result = stopped ? "stopped" : failed ? "error" : "done";
+        if (firstAt) stats.gapMs = Math.max(0, lastAt - firstAt - (stats.packets - 1) * 20);
         this.handlers.diagnostic("speech_played", { result, ...stats });
         resolve(result);
       };
