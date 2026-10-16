@@ -81,8 +81,11 @@ await agents.end_users.configure(enabled=True, allowances={"builder": 50_000_000
 ```
 
 REST: `PUT /v1/end-user-settings`. Fields left out keep their values; `allowances` and
-`bucketLimits`, when sent, replace the whole map (a person's own overrides merge key by
-key instead: `endUsers.update`).
+`bucketLimits`, when sent, replace the whole map, so a key someone added by hand is gone
+after the next `configure` that sends the map. To change some keys and keep the rest, use
+`PATCH /v1/end-user-settings` (`endUsers.amend` / `end_users.amend`): only what is sent
+changes, maps merge key by key, and `null` removes a key. A person's own overrides merge
+the same way (`endUsers.update`).
 
 ## Pay as you go: an example
 
@@ -126,7 +129,7 @@ returns the first; the same key for another entry is a 409.
 ## When a person runs out
 
 camelRun holds credit for each model call before it is made: its input, and up to
-8,192 tokens of output, from the bucket's allowance first, then the balance. While
+2,048 tokens of output (a longer reply holds more as it streams), from the bucket's allowance first, then the balance. While
 the reply streams, it asks for more ahead of the end of what it holds. Holds are
 taken one at a time per person, on any node, so calls in parallel (sub-agents, several
 of their agents at once) never each see the whole balance.
@@ -193,7 +196,7 @@ entry for the difference. `balanceAfter` is the balance after each entry.
 
 | Call | SDK (TypeScript / Python) |
 | --- | --- |
-| `GET`, `PUT /v1/end-user-settings` | `endUsers.settings()`, `endUsers.configure({...})` / `end_users.settings()`, `end_users.configure(...)` |
+| `GET`, `PUT`, `PATCH /v1/end-user-settings` | `endUsers.settings()`, `endUsers.configure({...})`, `endUsers.amend({...})` / `end_users.settings()`, `end_users.configure(...)`, `end_users.amend(...)` |
 | `GET /v1/end-users` | `endUsers.list({ after, limit })` |
 | `GET /v1/end-users/{id}?buckets=` | `endUsers.get(id, { buckets })` |
 | `PATCH /v1/end-users/{id}` | `endUsers.update(id, { allowances, bucketLimits, dailyLimit })`: a person's own allowances and bucket limits (merged; `null` removes one) and limit |

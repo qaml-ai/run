@@ -1109,7 +1109,13 @@ export const EndUserSettingsInput = z.object({
   enabled: z.boolean().optional(), allowances: allowanceMap("Free allowances (replaces the current map)").optional(),
   bucketLimits: bucketLimitMap("The most each bucket may charge an end user's balance per UTC day (replaces the current map)").optional(),
   dailyLimit: z.number().int().nullable().optional(), markupBps: z.number().int().min(0).max(100_000).optional(), lowBalance: z.number().int().nullable().optional(),
-}).openapi("EndUserSettingsInput", { description: "Fields left out keep their current values" });
+}).openapi("EndUserSettingsInput", { description: "Fields left out keep their current values; allowances and bucketLimits, when sent, replace the whole map (PATCH merges them)" });
+export const EndUserSettingsPatch = z.object({
+  enabled: z.boolean().optional(),
+  allowances: z.record(z.string(), z.number().int().nonnegative().nullable()).optional().openapi({ description: "Merged into the allowances key by key; null removes a key" }),
+  bucketLimits: z.record(z.string(), z.number().int().nonnegative().nullable()).optional().openapi({ description: "Merged into the bucket limits key by key; null removes a key" }),
+  dailyLimit: z.number().int().nullable().optional(), markupBps: z.number().int().min(0).max(100_000).optional(), lowBalance: z.number().int().nullable().optional(),
+}).openapi("EndUserSettingsPatch", { description: "Only what is sent changes: allowances and bucketLimits key by key" });
 export const EndUserBucketDay = z.object({
   bucket: z.string(), allowance: micros("The bucket's allowance today (raw cost)"), allowanceSpent: micros("Spent from it today (raw cost)"),
   paidSpent: micros("Charged to the balance today for this bucket"), held: micros("Held for calls in flight (allowance and balance)"),

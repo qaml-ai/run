@@ -1091,6 +1091,14 @@ class EndUsers:
                 **({"lowBalance": low_balance} if low_balance is not _DEFAULT else {})}
         return self._runtime._rest("PUT", "/v1/end-user-settings", body)
 
+    def amend(self, *, enabled=None, allowances=None, bucket_limits=None, daily_limit=_DEFAULT, markup_bps=None, low_balance=_DEFAULT):
+        """Change only what is sent: `allowances` and `bucket_limits` are merged key by key (a key set to None is removed),
+        unlike configure, which replaces a map it is sent."""
+        body = {**({"enabled": enabled} if enabled is not None else {}), **({"allowances": allowances} if allowances is not None else {}),
+                **({"bucketLimits": bucket_limits} if bucket_limits is not None else {}), **({"dailyLimit": daily_limit} if daily_limit is not _DEFAULT else {}),
+                **({"markupBps": markup_bps} if markup_bps is not None else {}), **({"lowBalance": low_balance} if low_balance is not _DEFAULT else {})}
+        return self._runtime._rest("PATCH", "/v1/end-user-settings", body)
+
     def get(self, end_user, *, buckets=None):
         """A person's balance, holds, what paid spend may still take today ("available"), limits and today's spend by bucket
         (`buckets` adds ones unused today). One never seen is shown at zero."""

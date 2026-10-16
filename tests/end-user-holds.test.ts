@@ -5,7 +5,7 @@ import { Accounts } from "../src/accounts.ts";
 import { Tenants } from "../src/tenants.ts";
 import { transaction, type Db } from "../src/db.ts";
 import { EndUserCredits, HOLD_MS, NOTHING_POSTED as NOTHING, settleUsage, utcDay } from "../src/end-user-credits.ts";
-import { HOLD_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, ModelAttempts } from "../src/model-attempts.ts";
+import { INITIAL_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, ModelAttempts } from "../src/model-attempts.ts";
 import { attemptAck } from "../src/model-attempt.ts";
 import { catalogRates, UNPRICED_COST } from "../src/platform-pricing.ts";
 import { DEFAULT_PRICING } from "../src/pricing.ts";
@@ -246,7 +246,7 @@ test("a model call holds its estimate, holds more as it streams, is cut at the l
     estimate: { inputTokens: 10_000, maxOutputTokens: 32_000, rates: { input: 0, output: 0 } }, endUser: { id: "person", bucket: "builder" } };
   const ack = attemptAck(await attempts.event("payg", "agent", true, true, begin));
   // Priced from the catalog (the platform's key, prepaid), never the host's rates.
-  const input = Math.ceil(10_000 * rates.input), want = input + Math.ceil(HOLD_OUTPUT_TOKENS * rates.output);
+  const input = Math.ceil(10_000 * rates.input), want = input + Math.ceil(INITIAL_OUTPUT_TOKENS * rates.output);
   const held = Number((await holds(db))[0].paid);
   assert.equal(held, Math.min(USD, Math.ceil(want * 1.2)), "the hold is the estimate marked up, within the balance");
   // Its line: where the estimate (2 characters a token) reaches what it holds; it asks for more ahead of it.
@@ -394,4 +394,52 @@ test("what a call costs its end user is what it costs the tenant: usage.recorded
   const reported = await call({ input: 1_000, output: 2_000, cacheRead: 0, cacheWrite: 0, providerCost: 0.123456 });
   assert.deepEqual([reported.recorded.cost.usd, reported.entry.raw], [0.123456, reported.charged]);
   assert.equal(reported.entry.amount, -Math.ceil(reported.charged * 1.2), "the markup is over that");
+});
+
+test("a call's hold prices the input its provider likely reads from cache at the cache's rate: a cheap cached reply is not refused", async () => {
+  const { service, attempts } = await attemptsFixture();
+  await service.post("payg", "person", { kind: "grant", amount: 500_000, key: "pay" });
+  const begin = (cachedTokens?: number) => ({ type: "begin" as const, id: randomUUID(), provider: "openrouter", model: MODEL, kind: "response" as const, at: Date.now(), keyHash,
+    estimate: { inputTokens: 100_000, ...(cachedTokens ? { cachedTokens } : {}), maxOutputTokens: 4_000, rates: { input: 0, output: 0 } }, endUser: { id: "person", bucket: "b" } });
+  // 100,000 tokens in at $15 a million: $1.50 to start, more than the $0.50 there is.
+  assert.equal(attemptAck(await attempts.event("payg", "agent", true, true, begin())).refused?.reason, "balance");
+  // 90,000 of them read from cache at $1.50 a million: about $0.30 to start.
+  const cached = attemptAck(await attempts.event("payg", "agent", true, true, begin(90_000)));
+  assert.equal(cached.refused, undefined);
+  assert.ok(cached.tracked);
+});
+
+test("a slow call that needs no more of its hold yet keeps it from lapsing as it reports", async () => {
+  const { db, service, attempts } = await attemptsFixture();
+  await service.post("payg", "person", { kind: "grant", amount: 10 * USD, key: "pay" });
+  const id = randomUUID();
+  attemptAck(await attempts.event("payg", "agent", true, true, { type: "begin", id, provider: "openrouter", model: MODEL, kind: "response", at: Date.now(), keyHash,
+    estimate: { inputTokens: 1_000, maxOutputTokens: 4_000, rates: { input: 0, output: 0 } }, endUser: { id: "person", bucket: "b" } }));
+  // Nine minutes on, nearly lapsed, it reports having written nothing more.
+  await db.query("update end_user_holds set expires_at = $2 where id = $1", [id, Date.now() + 60_000]);
+  const ack = attemptAck(await attempts.event("payg", "agent", true, true, { type: "progress", id, chars: 0 }));
+  assert.equal(ack.refused, undefined);
+  const [after] = await holds(db);
+  assert.ok(Number(after.expires_at) >= Date.now() + HOLD_MS - 5_000, "held another HOLD_MS from now");
+  // So with nothing more to hold at all: renewed as it is.
+  await db.query("update end_user_holds set expires_at = $2 where id = $1", [id, Date.now() + 60_000]);
+  await service.renew("payg", "person", id);
+  assert.ok(Number((await holds(db))[0].expires_at) >= Date.now() + HOLD_MS - 5_000);
+});
+
+test("a call begun before midnight holds more from its own day's allowance, never the next day's", async () => {
+  const { db, service } = await credits({ allowances: { b: 300_000 } });
+  const midnight = Date.parse(`${today()}T00:00:00Z`) + 86_400_000;
+  const id = randomUUID();
+  // At 23:59 it holds 0.20 of the day's 0.30.
+  const first = await service.reserve("t", "u", "b", { id, want: 200_000, min: 1 }, midnight - 60_000);
+  assert.equal(first!.hold!.allowance, 200_000);
+  // At 00:01 it wants 0.50 more: only yesterday's 0.10 left is its to take, not today's fresh 0.30.
+  const more = await service.extend("t", "u", "b", id, 500_000, midnight + 60_000);
+  assert.equal(more.hold!.allowance, 100_000);
+  const [hold] = await holds(db);
+  assert.deepEqual([Number(hold.allowance), String(hold.day instanceof Date ? hold.day.toISOString().slice(0, 10) : hold.day).slice(0, 10)], [300_000, today()]);
+  // Today's allowance is all there for today's calls.
+  const fresh = await service.reserve("t", "u", "b", { id: randomUUID(), want: 300_000, min: 1 }, midnight + 120_000);
+  assert.equal(fresh!.hold!.allowance, 300_000);
 });

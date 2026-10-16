@@ -42,6 +42,13 @@ test("settings default to off, change field by field, and refuse what is not an 
   await credits.setSettings("a", { dailyLimit: 20 * USD, lowBalance: USD, bucketLimits: { "bot:*": 2 * USD } });
   const restarted = await credits.setSettings("a", { enabled: true, allowances: { builder: 50 * USD, "bot:*": USD } });
   assert.deepEqual([restarted.markupBps, restarted.dailyLimit, restarted.lowBalance, restarted.bucketLimits], [2_500, 20 * USD, USD, { "bot:*": 2 * USD }]);
+  // A PUT's map replaces the map: a bucket added by hand is gone after the next. A PATCH merges key by key.
+  await credits.setSettings("a", { allowances: { triage: USD } }, { merge: true });
+  assert.deepEqual((await credits.settings("a")).allowances, { builder: 50 * USD, "bot:*": USD, triage: USD });
+  const patched = await credits.setSettings("a", { allowances: { builder: null, "bot:*": 2 * USD }, bucketLimits: { builder: 0 } }, { merge: true });
+  assert.deepEqual([patched.allowances, patched.bucketLimits, patched.markupBps], [{ "bot:*": 2 * USD, triage: USD }, { "bot:*": 2 * USD, builder: 0 }, 2_500]);
+  assert.deepEqual((await credits.setSettings("a", { allowances: { builder: 50 * USD } })).allowances, { builder: 50 * USD });
+  await assert.rejects(credits.setSettings("a", { allowances: { builder: null } }), (error: any) => error.status === 400, "null is for a PATCH");
   for (const bad of [{ allowances: { builder: 1.5 } }, { allowances: { "bad key!": 1 } }, { allowances: { "*x": 1 } }, { markupBps: -1 }, { dailyLimit: -5 }, { lowBalance: "1" }, { enabled: "yes" }, { surprise: 1 }, { bucketLimits: { "bot:*": -1 } }, { bucketLimits: [] }]) {
     await assert.rejects(credits.setSettings("a", bad), (error: any) => error.status === 400, JSON.stringify(bad));
   }
@@ -114,6 +121,8 @@ test("the end-user API: settings, entries, an end user and their ledger, for the
   assert.equal((await r.call("/v1/end-user-settings", { method: "PUT", body: { enabled: true, allowances: { builder: 50 * USD }, markupBps: 2_500 } })).status, 200);
   assert.equal((await r.call("/v1/end-user-settings")).json.markupBps, 2_500);
   assert.equal((await r.call("/v1/end-user-settings", { method: "PUT", body: { markupBps: "lots" } })).status, 400);
+  const merged = await r.call("/v1/end-user-settings", { method: "PATCH", body: { allowances: { "bot:*": USD } } });
+  assert.deepEqual([merged.status, merged.json.allowances, merged.json.markupBps], [200, { builder: 50 * USD, "bot:*": USD }, 2_500], merged.text);
 
   const id = encodeURIComponent("discord:1234/abc");
   const posted = await r.call(`/v1/end-users/${id}/entries`, { body: { kind: "grant", amount: 10 * USD, key: "cs_1", reference: "Checkout cs_1" } });

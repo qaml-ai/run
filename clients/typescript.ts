@@ -1136,6 +1136,8 @@ export class EndUsers {
   settings(): Promise<EndUserSettings> { return this.transport.json("/v1/end-user-settings", this.key()); }
   /** Change the settings; fields left out keep their values. A changed allowance keeps what was spent today. */
   configure(input: Partial<Omit<EndUserSettings, "updatedAt">>): Promise<EndUserSettings> { return this.transport.json("/v1/end-user-settings", this.key(), "PUT", input); }
+  /** Change only what is sent: `allowances` and `bucketLimits` merged key by key (null removes a key), unlike `configure`, which replaces a map it is sent. */
+  amend(input: Partial<Omit<EndUserSettings, "updatedAt" | "allowances" | "bucketLimits">> & { allowances?: Record<string, Micros | null>; bucketLimits?: Record<string, Micros | null> }): Promise<EndUserSettings> { return this.transport.json("/v1/end-user-settings", this.key(), "PATCH", input); }
   /** An end user: balance, limits and today's spend by bucket (`buckets` adds ones unused today). One never seen is at zero. */
   get(id: string, options: { buckets?: string[] } = {}): Promise<EndUser> {
     return this.transport.json(`${this.path(id)}${options.buckets?.length ? `?buckets=${options.buckets.map(encodeURIComponent).join(",")}` : ""}`, this.key());

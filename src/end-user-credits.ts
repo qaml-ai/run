@@ -97,7 +97,7 @@ function mergeKeys(current: Allowances, overrides: Record<string, number | null>
     if (value === null) delete merged[key];
     else merged[key] = value;
   }
-  if (Object.keys(merged).length > 100) throw new HttpError(400, `An end user may have at most 100 ${what} overrides`);
+  if (Object.keys(merged).length > 100) throw new HttpError(400, `At most 100 ${what} keys`);
   return merged;
 }
 
@@ -162,14 +162,17 @@ export class EndUserCredits {
     return settingsView((await sql.query("select * from end_user_settings where tenant = $1", [tenant])).rows[0]);
   }
 
-  /** Change the tenant's settings: fields left out keep their current values. */
-  async setSettings(tenant: string, input: Record<string, unknown>): Promise<EndUserSettings> {
+  /**
+   * Change the tenant's settings: fields left out keep their current values. `allowances` and `bucketLimits`, when given,
+   * replace the whole map (PUT); with `merge` (PATCH) they are merged into it key by key, a key set to null removed.
+   */
+  async setSettings(tenant: string, input: Record<string, unknown>, { merge = false } = {}): Promise<EndUserSettings> {
     const known = ["enabled", "allowances", "bucketLimits", "dailyLimit", "markupBps", "lowBalance"];
     const unknown = Object.keys(input).find(key => !known.includes(key));
     if (unknown) throw new HttpError(400, `Unknown setting ${unknown}: settings are ${known.join(", ")}`);
     if (input.enabled !== undefined && typeof input.enabled !== "boolean") throw new HttpError(400, "enabled must be true or false");
-    const allowances = input.allowances === undefined ? undefined : allowancesInput(input.allowances, false);
-    const bucketLimits = input.bucketLimits === undefined ? undefined : allowancesInput(input.bucketLimits, false, "bucketLimits");
+    const allowances = input.allowances === undefined ? undefined : allowancesInput(input.allowances, merge);
+    const bucketLimits = input.bucketLimits === undefined ? undefined : allowancesInput(input.bucketLimits, merge, "bucketLimits");
     const dailyLimit = input.dailyLimit === undefined ? undefined : amountInput(input.dailyLimit, "dailyLimit", { nullable: true });
     const lowBalance = input.lowBalance === undefined ? undefined : amountInput(input.lowBalance, "lowBalance", { nullable: true });
     if (input.markupBps !== undefined && (typeof input.markupBps !== "number" || !Number.isSafeInteger(input.markupBps) || input.markupBps < 0 || input.markupBps > 100_000)) {
@@ -177,7 +180,9 @@ export class EndUserCredits {
     }
     const current = await this.settings(tenant);
     const next = {
-      enabled: input.enabled as boolean | undefined ?? current.enabled, allowances: allowances ?? current.allowances, bucketLimits: bucketLimits ?? current.bucketLimits,
+      enabled: input.enabled as boolean | undefined ?? current.enabled,
+      allowances: allowances === undefined ? current.allowances : merge ? mergeKeys(current.allowances, allowances, "allowance") : allowances as Allowances,
+      bucketLimits: bucketLimits === undefined ? current.bucketLimits : merge ? mergeKeys(current.bucketLimits, bucketLimits, "bucket limit") : bucketLimits as Allowances,
       dailyLimit: dailyLimit === undefined ? current.dailyLimit : dailyLimit, markupBps: input.markupBps as number | undefined ?? current.markupBps,
       lowBalance: lowBalance === undefined ? current.lowBalance : lowBalance,
     };
@@ -345,7 +350,11 @@ export class EndUserCredits {
   async extend(tenant: string, endUser: string, bucket: string, id: string, want: number, now = Date.now()): Promise<Reserved> {
     return transaction(this.db, async sql => {
       const user = await lockEndUser(sql, tenant, endUser, now);
-      const left = await room(sql, tenant, user, await this.settings(tenant, sql), bucket, now);
+      // More of a call's hold comes from the day it began (the day its cost is posted to), even after midnight: never from
+      // the next day's allowance, which would then be granted again to the calls of that day.
+      const began = (await sql.query("select h.day, a.started_at from (select $1::uuid as id) i left join end_user_holds h on h.id = i.id left join model_attempts a on a.id = i.id", [id])).rows[0];
+      const day = began?.day ? dayText(began.day) : began?.started_at ? utcDay(Number(began.started_at)) : utcDay(now);
+      const left = await room(sql, tenant, user, await this.settings(tenant, sql), bucket, now, day);
       const taken = split(Math.max(0, want), left);
       if (taken.raw <= 0) return { refused: await refused(sql, tenant, user, bucket, left, now) };
       const updated = await sql.query("update end_user_holds set allowance = allowance + $2, paid = paid + $3, expires_at = $4 where id = $1", [id, taken.allowance, taken.paid, now + HOLD_MS]);
@@ -374,6 +383,14 @@ export class EndUserCredits {
       settle: usd => this.settleHold(tenant, endUser, bucket, id, Math.round(usd * MICROS), `${call}:${id}`, { call, ...metadata }),
       release: () => this.release(id),
     };
+  }
+
+  /** Keep a call's hold another HOLD_MS from now: a call still streaming, slowly, that needs no more of it yet. */
+  async renew(tenant: string, endUser: string, id: string, now = Date.now()) {
+    await transaction(this.db, async sql => {
+      await lockEndUser(sql, tenant, endUser, now);
+      await sql.query("update end_user_holds set expires_at = $2 where id = $1 and expires_at > $3", [id, now + HOLD_MS, now]);
+    });
   }
 
   /** Give a hold back without spending it (a call that never went out). */
@@ -448,11 +465,10 @@ const dollars = (micros: number) => `${micros < 0 ? "-" : ""}$${(Math.abs(micros
 
 /**
  * What `user` (their row, locked or as read) may still spend in `bucket` today: the bucket's allowance less what was
- * spent and what holds of today take of it; and the balance less every hold, within the daily limit less what was paid
+ * spent and what holds of that day (`day`: today, unless a call that began before midnight asks) take of it; and the balance less every hold, within the daily limit less what was paid
  * and held today, and within the bucket's own limit less what it paid and holds today.
  */
-async function room(sql: Sql, tenant: string, user: any, settings: EndUserSettings, bucket: string, now: number): Promise<Room> {
-  const day = utcDay(now);
+async function room(sql: Sql, tenant: string, user: any, settings: EndUserSettings, bucket: string, now: number, day = utcDay(now)): Promise<Room> {
   const [{ rows: days }, { rows: holds }] = await Promise.all([
     sql.query("select bucket, allowance_spent, paid_spent from end_user_days where tenant = $1 and end_user = $2 and day = $3", [tenant, user.id, day]),
     sql.query("select bucket, day, allowance, paid from end_user_holds where tenant = $1 and end_user = $2 and expires_at > $3", [tenant, user.id, now]),

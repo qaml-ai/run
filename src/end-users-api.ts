@@ -30,6 +30,8 @@ export function endUserRoutes(route: Route, context: () => EndUserCredits | unde
     async c => json(c, 200, await service().settings(c.var.principal.tenant)));
   route(createRoute({ method: "put", path: "/v1/end-user-settings", request: { body: body(schema.EndUserSettingsInput) }, responses: { 200: reply("The settings now; a changed allowance applies to the next call and keeps what was spent today", schema.EndUserSettings) } }),
     async c => json(c, 200, await service().setSettings(c.var.principal.tenant, await read(c))));
+  route(createRoute({ method: "patch", path: "/v1/end-user-settings", request: { body: body(schema.EndUserSettingsPatch) }, responses: { 200: reply("The settings now: allowances and bucket limits merged key by key", schema.EndUserSettings) } }),
+    async c => json(c, 200, await service().setSettings(c.var.principal.tenant, await read(c), { merge: true })));
 
   route(createRoute({
     method: "get", path: "/v1/end-users",
