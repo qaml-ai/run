@@ -1128,7 +1128,7 @@ export const EndUserUpdate = z.object({
   dailyLimit: z.number().int().nonnegative().nullable().optional().openapi({ description: "The user's own daily limit on paid spend; null: the tenant's" }),
 }).openapi("EndUserUpdate");
 export const EndUserEntryInput = z.object({
-  kind: z.enum(["grant", "refund", "adjustment"]).openapi({ description: "grant: adds amount (a payment, a gift); refund: takes amount back (money returned to the user); adjustment: moves the balance by a signed amount" }),
+  kind: z.enum(["grant", "refund", "adjustment"]).openapi({ description: "grant: adds amount (a payment, a gift); refund: takes amount back (money returned to the user), at most the balance calls in flight do not hold (else 409 INSUFFICIENT_BALANCE); adjustment: moves the balance by a signed amount" }),
   amount: z.number().int().openapi({ description: "micro-USD: positive for a grant or refund, signed for an adjustment" }),
   key: z.string().min(1).max(255).openapi({ description: "Idempotency key, e.g. the payment's id: the same key and entry again returns the first; with another entry it is a 409" }),
   reference: z.string().max(500).optional().openapi({ description: "Your reference, shown in the ledger" }),

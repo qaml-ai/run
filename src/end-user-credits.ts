@@ -272,6 +272,14 @@ export class EndUserCredits {
         if (!same) throw new HttpError(409, "This key was used for another entry", "IDEMPOTENCY_CONFLICT");
         return { entry: entryView(existing), replayed: true };
       }
+      // A refund returns credit the user has: at most their balance, less what calls in flight hold of it.
+      if (kind === "refund") {
+        const held = Number((await sql.query("select coalesce(sum(paid), 0)::bigint as paid from end_user_holds where tenant = $1 and end_user = $2 and expires_at > $3", [tenant, id, Date.now()])).rows[0].paid);
+        const refundable = Math.max(0, Number(user.balance) - held);
+        if (amount > refundable) {
+          throw new HttpError(409, `A refund may return at most the balance not held by calls in flight: ${dollars(refundable)} (balance ${dollars(Number(user.balance))}); post an adjustment to correct a balance`, "INSUFFICIENT_BALANCE", { refundable });
+        }
+      }
       const entry = await appendEntry(sql, { tenant, endUser: id, kind, amount: moved, key, reference: (input.reference as string | undefined) ?? null, metadata: (input.metadata as Record<string, unknown> | undefined) ?? {} }, Number(user.balance));
       return { entry, replayed: false };
     });
@@ -500,8 +508,11 @@ export async function settleUsage(sql: Sql, call: { tenant: string; endUser: str
       }
     }
   } else {
+    // Less: what the balance paid is refunded first, at the rate it was paid at (the markup may have changed since), and
+    // never more than it paid; then the allowance.
     allowance = Math.min(raw, previous.allowance);
-    paid = Math.min(previous.paid, marked(raw - allowance, markupBps));
+    const paidRaw = previous.raw - previous.allowance;
+    paid = paidRaw > 0 ? Math.min(previous.paid, Math.ceil((raw - allowance) * previous.paid / paidRaw)) : 0;
   }
   await sql.query(`insert into end_user_days (tenant, end_user, day, bucket, allowance_spent, paid_spent) values ($1, $2, $3, $4, $5, $6)
     on conflict (tenant, end_user, day, bucket) do update set allowance_spent = end_user_days.allowance_spent + excluded.allowance_spent, paid_spent = end_user_days.paid_spent + excluded.paid_spent`,

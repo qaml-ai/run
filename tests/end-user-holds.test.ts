@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Accounts } from "../src/accounts.ts";
 import { Tenants } from "../src/tenants.ts";
 import { transaction, type Db } from "../src/db.ts";
-import { EndUserCredits, HOLD_MS, settleUsage, utcDay } from "../src/end-user-credits.ts";
+import { EndUserCredits, HOLD_MS, NOTHING_POSTED as NOTHING, settleUsage, utcDay } from "../src/end-user-credits.ts";
 import { HOLD_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, ModelAttempts } from "../src/model-attempts.ts";
 import { attemptAck } from "../src/model-attempt.ts";
 import { catalogRates } from "../src/platform-pricing.ts";
@@ -137,6 +137,39 @@ test("a concurrent workload of holds, extensions and settlements keeps every inv
   assert.ok(paid <= 2 * USD + slack, `paid ${paid} within the daily limit and the overruns`);
   assert.ok(finalBalance >= -slack, `balance ${finalBalance} never below the overruns`);
   for (const row of days) assert.ok(Number(row.allowance_spent) <= (row.bucket === "a" ? 300_000 : 100_000) + overrun, `allowance ${row.bucket} within its cap and the overruns`);
+});
+
+test("a lowered cost refunds at the rate it was paid at, never more than was paid, whatever the markup is now", async () => {
+  const { db, service } = await credits({ markupBps: 2_500 });
+  await service.post("t", "u", { kind: "grant", amount: 2 * USD, key: "pay" });
+  const posted = await transaction(db, sql => settleUsage(sql, { tenant: "t", endUser: "u", bucket: "b", day: today(), raw: 500_000, key: "attempt:m:1" }));
+  assert.deepEqual(posted, { raw: 500_000, allowance: 0, paid: 625_000 });
+  // The markup dropped to 0 since: the 100,000 the cost came down by refunds what it was paid at (+25%), not 225,000.
+  await service.setSettings("t", { markupBps: 0 });
+  const lower = await transaction(db, sql => settleUsage(sql, { tenant: "t", endUser: "u", bucket: "b", day: today(), raw: 400_000, key: "attempt:m:2", previous: posted }));
+  assert.deepEqual(lower, { raw: 400_000, allowance: 0, paid: 500_000 });
+  // Raised to +100%: down to nothing refunds what was paid, no more.
+  await service.setSettings("t", { markupBps: 10_000 });
+  const none = await transaction(db, sql => settleUsage(sql, { tenant: "t", endUser: "u", bucket: "b", day: today(), raw: 0, key: "attempt:m:3", previous: lower }));
+  assert.deepEqual(none, NOTHING);
+  assert.equal(await balance(db), 2 * USD, "every refund together returns exactly what was charged");
+  assert.equal(await ledgerSum(db), 2 * USD);
+  const [day] = (await db.query("select allowance_spent, paid_spent from end_user_days")).rows;
+  assert.deepEqual([Number(day.allowance_spent), Number(day.paid_spent)], [0, 0]);
+});
+
+test("a refund returns at most the balance not held by calls in flight; an adjustment still corrects it", async () => {
+  const { db, service } = await credits();
+  await service.post("t", "u", { kind: "grant", amount: USD, key: "pay" });
+  await assert.rejects(service.post("t", "u", { kind: "refund", amount: USD + 1, key: "re-1" }), (error: any) => error.status === 409 && error.code === "INSUFFICIENT_BALANCE");
+  await service.reserve("t", "u", "b", { id: randomUUID(), want: 400_000, min: 1 });
+  await assert.rejects(service.post("t", "u", { kind: "refund", amount: 600_001, key: "re-2" }), (error: any) => error.status === 409 && error.details.refundable === 600_000);
+  assert.equal((await service.post("t", "u", { kind: "refund", amount: 600_000, key: "re-3" })).entry.balanceAfter, 400_000);
+  assert.equal(await balance(db), 400_000);
+  // A balance already below zero (a call's overspend) is never refunded from; an adjustment moves it either way.
+  await transaction(db, sql => settleUsage(sql, { tenant: "t", endUser: "u", bucket: "b", day: today(), raw: 500_000, key: "attempt:o:1" }));
+  await assert.rejects(service.post("t", "u", { kind: "refund", amount: 1, key: "re-4" }), (error: any) => error.code === "INSUFFICIENT_BALANCE");
+  assert.equal((await service.post("t", "u", { kind: "adjustment", amount: 100_000, key: "adj" })).entry.balanceAfter, 0);
 });
 
 test("a corrected cost refunds the balance first, then the allowance; holds of a dead call expire", async () => {

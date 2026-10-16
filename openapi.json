@@ -8564,7 +8564,7 @@
               "refund",
               "adjustment"
             ],
-            "description": "grant: adds amount (a payment, a gift); refund: takes amount back (money returned to the user); adjustment: moves the balance by a signed amount"
+            "description": "grant: adds amount (a payment, a gift); refund: takes amount back (money returned to the user), at most the balance calls in flight do not hold (else 409 INSUFFICIENT_BALANCE); adjustment: moves the balance by a signed amount"
           },
           "amount": {
             "type": "integer",
