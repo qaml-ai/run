@@ -568,9 +568,10 @@
                   "response",
                   "compaction",
                   "transcription",
-                  "image"
+                  "image",
+                  "speech"
                 ],
-                "description": "response: a model response of a run; compaction: a summary of older context; transcription: audio transcribed (audioSeconds of it; no tokens); image: images made (images of them; input is text and image tokens in, output image tokens out)"
+                "description": "speech: speech made for a voice session (audioSeconds of it; no tokens); response: a model response of a run; compaction: a summary of older context; transcription: audio transcribed (audioSeconds of it; no tokens); image: images made (images of them; input is text and image tokens in, output image tokens out)"
               },
               "input": {
                 "type": "number"
@@ -589,7 +590,7 @@
               },
               "audioSeconds": {
                 "type": "number",
-                "description": "For a transcription: the seconds of audio billed"
+                "description": "For a transcription: the seconds of audio billed; for speech: the seconds of speech made"
               },
               "images": {
                 "type": "number",
@@ -960,6 +961,225 @@
           "data"
         ],
         "description": "A person's utterance in a voice session, transcribed"
+      },
+      "Event_voice_speech.started": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "evt_…: the same each time the event is sent; dedupe by it",
+            "example": "evt_3f9c0a1b2c3d4e5f60718293"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "voice.speech.started"
+            ]
+          },
+          "created": {
+            "type": "number",
+            "description": "When it happened, in Unix seconds"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "session": {
+                "type": "string",
+                "description": "The voice session (vs_…)"
+              },
+              "provider": {
+                "type": "string",
+                "enum": [
+                  "discord"
+                ]
+              },
+              "guildId": {
+                "type": "string"
+              },
+              "channelId": {
+                "type": "string"
+              },
+              "botUserId": {
+                "type": "string"
+              },
+              "subject": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The session's end user"
+              },
+              "metadata": {
+                "type": "object",
+                "additionalProperties": {},
+                "description": "The session's metadata, as set"
+              },
+              "speechId": {
+                "type": "string"
+              },
+              "latencyMs": {
+                "type": "number",
+                "description": "From the speak request (or the reply's sentence being whole) to the first audio going out"
+              },
+              "reply": {
+                "type": "object",
+                "properties": {
+                  "agent": {
+                    "type": "string"
+                  },
+                  "requestId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent",
+                  "requestId"
+                ],
+                "description": "For a piece of an agent's reply the session speaks (agentReplies, or a prompt's speak): the agent and its run"
+              }
+            },
+            "required": [
+              "session",
+              "provider",
+              "guildId",
+              "channelId",
+              "botUserId",
+              "subject",
+              "metadata",
+              "speechId",
+              "latencyMs"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "created",
+          "data"
+        ],
+        "description": "The bot started saying a speech (POST /v1/voice/sessions/{id}/speak)"
+      },
+      "Event_voice_speech.ended": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "evt_…: the same each time the event is sent; dedupe by it",
+            "example": "evt_3f9c0a1b2c3d4e5f60718293"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "voice.speech.ended"
+            ]
+          },
+          "created": {
+            "type": "number",
+            "description": "When it happened, in Unix seconds"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "session": {
+                "type": "string",
+                "description": "The voice session (vs_…)"
+              },
+              "provider": {
+                "type": "string",
+                "enum": [
+                  "discord"
+                ]
+              },
+              "guildId": {
+                "type": "string"
+              },
+              "channelId": {
+                "type": "string"
+              },
+              "botUserId": {
+                "type": "string"
+              },
+              "subject": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The session's end user"
+              },
+              "metadata": {
+                "type": "object",
+                "additionalProperties": {},
+                "description": "The session's metadata, as set"
+              },
+              "speechId": {
+                "type": "string"
+              },
+              "reply": {
+                "type": "object",
+                "properties": {
+                  "agent": {
+                    "type": "string"
+                  },
+                  "requestId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent",
+                  "requestId"
+                ]
+              },
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "done",
+                  "interrupted",
+                  "error"
+                ],
+                "description": "done: said whole; interrupted: cut short or never started (by); error: speech could not be made or played"
+              },
+              "by": {
+                "type": "string",
+                "enum": [
+                  "interrupt",
+                  "requested",
+                  "barge_in",
+                  "end",
+                  "handoff",
+                  "budget"
+                ],
+                "description": "With interrupted: a speech asked with interrupt; DELETE …/speak; a person started talking (bargeIn); the session ended or moved; credit ran out"
+              },
+              "seconds": {
+                "type": "number",
+                "description": "Seconds of speech made (and billed)"
+              },
+              "costUsd": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "session",
+              "provider",
+              "guildId",
+              "channelId",
+              "botUserId",
+              "subject",
+              "metadata",
+              "speechId",
+              "reason",
+              "seconds",
+              "costUsd"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "created",
+          "data"
+        ],
+        "description": "A speech ended"
       },
       "Error": {
         "type": "object",
@@ -1650,7 +1870,9 @@
                 "end_user.credit.exhausted",
                 "voice.session.started",
                 "voice.session.ended",
-                "voice.utterance"
+                "voice.utterance",
+                "voice.speech.started",
+                "voice.speech.ended"
               ]
             },
             "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.utterance, and the billing.* events"
@@ -1708,7 +1930,9 @@
                 "end_user.credit.exhausted",
                 "voice.session.started",
                 "voice.session.ended",
-                "voice.utterance"
+                "voice.utterance",
+                "voice.speech.started",
+                "voice.speech.ended"
               ]
             },
             "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.utterance, and the billing.* events"
@@ -1755,7 +1979,9 @@
                 "end_user.credit.exhausted",
                 "voice.session.started",
                 "voice.session.ended",
-                "voice.utterance"
+                "voice.utterance",
+                "voice.speech.started",
+                "voice.speech.ended"
               ]
             },
             "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.utterance, and the billing.* events"
@@ -3012,6 +3238,29 @@
               "none"
             ],
             "description": "What the model sees of the agent's history in this run. full (default): all of it. none: only the system prompt (instructions, tools) and this message, as a new conversation would, without making an agent. The run is still recorded in the history (its user message carries history: \"none\"), and later runs that do not say none see it. Not with whileRunning: steer"
+          },
+          "speak": {
+            "type": "object",
+            "properties": {
+              "session": {
+                "type": "string",
+                "description": "A voice session of yours that speaks (created with speak: true), not ended",
+                "example": "vs_0123456789abcdef01234567"
+              },
+              "voice": {
+                "type": "string",
+                "description": "The voice for this reply; default the session's"
+              },
+              "interrupt": {
+                "type": "boolean",
+                "description": "Its first sentence stops what the session is saying (and what was queued), instead of waiting behind it"
+              }
+            },
+            "required": [
+              "session"
+            ],
+            "additionalProperties": false,
+            "description": "Speak this run's reply in a voice session as it is written, as speak.agentReplies does for an utterance: sentence by sentence, markdown, links and code left out, at most 400 characters, each a voice.speech.* event carrying reply {agent, requestId}; someone talking over it stops it. Billed as POST /v1/voice/sessions/{id}/speak. Not with whileRunning: steer. An agent's own token (POST /clients/{id}/requests) may name only sessions whose subject is the agent's (403 VOICE_SPEAK_FORBIDDEN)"
           },
           "metadata": {
             "type": "object",
@@ -4775,9 +5024,10 @@
                     "turn",
                     "compaction",
                     "transcription",
-                    "image"
+                    "image",
+                    "speech"
                   ],
-                  "description": "turn: the agent's own responses; compaction: summaries of older context; transcription: audio transcribed (responses counts transcriptions); image: images made (responses counts images)"
+                  "description": "turn: the agent's own responses; compaction: summaries of older context; transcription: audio transcribed (responses counts transcriptions); image: images made (responses counts images); speech: voice sessions' speech made (responses counts speeches)"
                 }
               },
               "required": [
@@ -8372,8 +8622,30 @@
                   "channelId",
                   "text"
                 ]
+              },
+              "join": {
+                "type": "object",
+                "properties": {
+                  "self_mute": {
+                    "type": "boolean"
+                  },
+                  "self_deaf": {
+                    "type": "boolean",
+                    "enum": [
+                      false
+                    ]
+                  }
+                },
+                "required": [
+                  "self_mute",
+                  "self_deaf"
+                ],
+                "description": "How your app's OP 4 should have joined: self_mute false for a session that speaks"
               }
-            }
+            },
+            "required": [
+              "join"
+            ]
           }
         ]
       },
@@ -8507,6 +8779,27 @@
           "notice": {
             "type": "string"
           },
+          "speak": {
+            "type": "boolean"
+          },
+          "bargeIn": {
+            "type": "boolean"
+          },
+          "voice": {
+            "type": "string"
+          },
+          "agentReplies": {
+            "type": "boolean",
+            "description": "The session speaks deliver.agent's replies (speak: {agentReplies: true})"
+          },
+          "speeches": {
+            "type": "number",
+            "description": "Speeches played (each counted when it ended having made speech)"
+          },
+          "spokenSeconds": {
+            "type": "number",
+            "description": "Seconds of speech made (billed)"
+          },
           "utterances": {
             "type": "number"
           },
@@ -8553,6 +8846,12 @@
           "ignoreUserIds",
           "metadata",
           "notice",
+          "speak",
+          "bargeIn",
+          "voice",
+          "agentReplies",
+          "speeches",
+          "spokenSeconds",
           "utterances",
           "speechSeconds",
           "costUsd",
@@ -8695,6 +8994,33 @@
             "type": "string",
             "maxLength": 500,
             "description": "The listening notice your app posts (see notice in the answer); {bot} is the bot's id"
+          },
+          "speak": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "agentReplies": {
+                    "type": "boolean",
+                    "description": "Speak deliver.agent's reply to each utterance as it is written: sentence by sentence, markdown, links and code left out, at most 400 characters (the whole reply is still the run's)"
+                  }
+                },
+                "additionalProperties": false
+              }
+            ],
+            "description": "The bot may speak (POST …/speak): true, or {agentReplies: true} to also speak the agent's replies. Your app joins with self_mute false. Default false"
+          },
+          "bargeIn": {
+            "type": "boolean",
+            "description": "With speak: a person starting to talk stops the bot's speech and what it was going to say. Default true"
+          },
+          "voice": {
+            "type": "string",
+            "description": "With speak: the voice speech is made in (OpenAI's: alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, verse…). Default alloy",
+            "example": "coral"
           }
         },
         "required": [
@@ -8763,6 +9089,80 @@
           }
         },
         "additionalProperties": false
+      },
+      "VoiceSpeech": {
+        "type": "object",
+        "properties": {
+          "speechId": {
+            "type": "string",
+            "example": "sp_3f9c0a1b2c3d4e5f60718293"
+          },
+          "session": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "queued"
+            ]
+          },
+          "position": {
+            "type": "number",
+            "description": "Speeches ahead of it: 0 plays next (or now)"
+          },
+          "voice": {
+            "type": "string"
+          },
+          "characters": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "speechId",
+          "session",
+          "state",
+          "position",
+          "voice",
+          "characters"
+        ]
+      },
+      "VoiceSpeechInput": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "What to say: 1 to 4,000 characters"
+          },
+          "voice": {
+            "type": "string",
+            "description": "Another voice than the session's, for this speech"
+          },
+          "instructions": {
+            "type": "string",
+            "description": "How to say it (tone, pace, accent), as OpenAI's instructions: at most 1,000 characters",
+            "example": "Warm and unhurried."
+          },
+          "interrupt": {
+            "type": "boolean",
+            "description": "Stop what the bot is saying, and clear what it was going to, first. Default false: queued"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "VoiceSpeechStopped": {
+        "type": "object",
+        "properties": {
+          "stopped": {
+            "type": "number",
+            "description": "Speeches stopped: the one playing and those queued"
+          }
+        },
+        "required": [
+          "stopped"
+        ]
       },
       "VoiceSessionEnded": {
         "allOf": [
@@ -16608,6 +17008,96 @@
         }
       }
     },
+    "/v1/voice/sessions/{id}/speak": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoiceSpeechInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Queued: it plays in turn (voice.speech.started and voice.speech.ended follow)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceSpeech"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "What the bot was saying, and was going to, stopped",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceSpeechStopped"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/agents/{id}/mounts": {
       "get": {
         "parameters": [
@@ -17954,6 +18444,44 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/Event_voice_utterance"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Any 2xx acknowledges it; anything else, or no answer within 10 seconds, is retried"
+          }
+        }
+      }
+    },
+    "voice.speech.started": {
+      "post": {
+        "summary": "voice.speech.started",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Event_voice_speech.started"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Any 2xx acknowledges it; anything else, or no answer within 10 seconds, is retried"
+          }
+        }
+      }
+    },
+    "voice.speech.ended": {
+      "post": {
+        "summary": "voice.speech.ended",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Event_voice_speech.ended"
               }
             }
           }

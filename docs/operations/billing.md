@@ -66,6 +66,10 @@ A **prepaid tenant** pays for:
   (`gpt-transcribe`'s list price; `AGENT_PRICE_TRANSCRIPTION_USD`), per second as OpenAI bills it. The hour's usage
   entry counts them apart (`transcription`, `transcriptions`, `audioSeconds`), and `/v1/usage` has a row with
   `kind: "transcription"`. See [Voice and audio](../guides/voice.md).
+- **Speech** a voice session's bot says, on the platform's OpenAI key, $0.015 per minute of speech made (OpenAI's
+  estimate for `gpt-4o-mini-tts`; `AGENT_PRICE_SPEECH_USD`), per second. The hour's usage entry counts it apart
+  (`speech`, `speeches`, `speechSeconds`), and `/v1/usage` has a row with `kind: "speech"`. Always on OpenAI, never
+  the Azure deployment. See [Voice calls](../guides/voice-calls.md#speaking).
 - **Images** on the platform's OpenAI key, per token at `gpt-image-2.5-flare`'s list prices: $5 per million text
   tokens in, $8 per million image tokens in and $30 per million image tokens out (`AGENT_PRICE_IMAGE_TEXT_INPUT_USD`,
   `AGENT_PRICE_IMAGE_INPUT_USD`, `AGENT_PRICE_IMAGE_OUTPUT_USD`), as OpenAI reports them. The hour's usage entry counts

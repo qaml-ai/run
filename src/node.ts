@@ -72,6 +72,7 @@ import { checkSandbox, type CodeExecutor } from "./codemode.ts";
 import { V8Exec } from "./v8-exec.ts";
 import { pricingFromEnvironment } from "./pricing.ts";
 import { openaiTranscription, Transcriber } from "./transcription.ts";
+import { openaiSpeech, Synthesizer } from "./speech.ts";
 import { Imager, openaiImages } from "./images.ts";
 import { azureChatCredentials, azureCredentials } from "./azure-openai.ts";
 import { searchProvidersFromEnvironment, WebSearch } from "./web-search.ts";
@@ -88,7 +89,7 @@ import { publicOrigins } from "./origins.ts";
 import { adminSite, adminSiteFromEnvironment } from "./admin-site.ts";
 import { AccountDeletions } from "./account-deletion.ts";
 import { RateLimits, rateLimitConfig } from "./rate-limits.ts";
-import { VOICE_CHANNEL, VoiceSessions, type VoiceTransport } from "./voice-sessions.ts";
+import { VOICE_CHANNEL, VoiceSessions, type VoiceReplyTarget, type VoiceTransport } from "./voice-sessions.ts";
 import { buggify } from "./buggify.ts";
 import { sometimes } from "./assert.ts";
 
@@ -369,6 +370,12 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     key: (tenant, keyScope, provider) => providerKey(tenant, keyScope, provider, secrets.azureOpenAI?.transcriptionDeployment),
     price: () => accounts.billing.pricing.transcription,
   });
+  // Speech made, for voice sessions that speak: the tenant's OpenAI key, never the platform's Azure deployment.
+  const synthesizer = new Synthesizer({
+    provider: openaiSpeech({ outbound, ...(env.AGENT_SPEECH_URL ? { baseUrl: env.AGENT_SPEECH_URL } : {}) }),
+    key: (tenant, keyScope, provider) => providerKey(tenant, keyScope, provider),
+    price: () => accounts.billing.pricing.speech,
+  });
   // Images made, for POST /v1/images.
   const imager = new Imager({
     provider: openaiImages({ outbound, ...(env.AGENT_IMAGES_URL ? { baseUrl: env.AGENT_IMAGES_URL } : {}) }),
@@ -541,6 +548,12 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       const owner = await (agent ? clients.ownerElsewhere(agent) : volumes.ownerElsewhere(actor));
       return owner ? { node: owner, actor } : undefined;
     }
+    // Speech plays on the node that holds the voice session's connection.
+    const spoken = /^\/v1\/voice\/sessions\/(vs_[a-f0-9]{24})\/speak(?:[/?]|$)/.exec(url)?.[1];
+    if (spoken) {
+      const owner = await ownership.route(`voice:${spoken}`);
+      return owner && owner !== node ? { node: owner, actor: `voice:${spoken}` } : undefined;
+    }
     const peer = ownership.draining ? await ownership.peer() : undefined;
     return peer ? { node: peer } : undefined;
   }
@@ -597,6 +610,60 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   }
 
   /** Delete an agent wherever it is served: here, or on the node that owns it. */
+  /**
+   * Submit a prompt to an agent wherever it is served, and yield the text its run writes as it is written (voice
+   * sessions speak an agent's reply as it comes). The agent's node streams it here as NDJSON lines ({"text"}, then
+   * {"done"}).
+   */
+  async function* submitStreamingAnywhere(agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }, signal: AbortSignal): AsyncGenerator<string> {
+    const owner = await clients.ownerElsewhere(agent);
+    if (!owner) { yield* clients.submitStreaming(agent, tenant, request, signal); return; }
+    yield* streamedText(agent, await signedPost(owner, `/internal/agents/${agent}/stream`, { tenant, request }, 15 * 60_000, signal).catch(error => { ownership.forget(agent); throw error; }));
+  }
+
+  /** As `submitStreamingAnywhere`, for a run already submitted (a prompt's speak): what it wrote so far, then as it writes. */
+  async function* followStreamingAnywhere(agent: string, tenant: string, requestId: string, signal: AbortSignal): AsyncGenerator<string> {
+    const owner = await clients.ownerElsewhere(agent);
+    if (!owner) { yield* clients.followStreaming(agent, tenant, requestId, signal); return; }
+    yield* streamedText(agent, await signedPost(owner, `/internal/agents/${agent}/follow`, { tenant, requestId }, 15 * 60_000, signal).catch(error => { ownership.forget(agent); throw error; }));
+  }
+
+  /** The text an agent's node streams as NDJSON lines ({"text"}, then {"done"}, or {"error"}). */
+  async function* streamedText(agent: string, response: Response): AsyncGenerator<string> {
+    if (!response.ok || !response.body) {
+      const answer = await response.json().catch(() => ({})) as { error?: string };
+      if (response.status === 404 || response.status === 409) ownership.forget(agent);
+      throw new HttpError(response.status, answer.error ?? `The agent's node answered ${response.status}`);
+    }
+    let pending = "";
+    for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
+      pending += Buffer.from(chunk).toString("utf8");
+      for (let at; (at = pending.indexOf("\n")) >= 0;) {
+        const line = pending.slice(0, at);
+        pending = pending.slice(at + 1);
+        if (!line) continue;
+        const frame = JSON.parse(line) as { text?: string; done?: boolean; error?: string };
+        if (frame.error) throw new HttpError(502, frame.error);
+        if (frame.done) return;
+        if (frame.text) yield frame.text;
+      }
+    }
+  }
+
+  /** Speak a run's reply in a voice session (a prompt's speak) on the node that holds the session. */
+  async function speakRunAnywhere(tenant: string, target: VoiceReplyTarget, run: { agent: string; requestId: string }) {
+    if (!voice) throw new HttpError(404, "Voice sessions are not enabled on this runtime");
+    const owner = await ownership.route(`voice:${target.session}`);
+    if (!owner || owner === node) return voice.speakRun(tenant, target, run);
+    const response = await signedPost(owner, `/internal/voice/sessions/${target.session}/reply`, { tenant, target, run }).catch(error => { ownership.forget(`voice:${target.session}`); throw new HttpError(503, errorText(error)); });
+    if (!response.ok) {
+      const { error, code } = await response.json().catch(() => ({})) as { error?: string; code?: string };
+      if (response.status === 503) ownership.forget(`voice:${target.session}`);
+      throw new HttpError(response.status, error ?? `The voice session's node answered ${response.status}`, code);
+    }
+    return response.json();
+  }
+
   async function deleteAnywhere(agent: string, tenant: string) {
     const owner = await clients.ownerElsewhere(agent);
     if (!owner) return clients.destroyAgent(agent, tenant);
@@ -696,6 +763,11 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   }, endUsers);
   const clients = new ClientSessions(supervisor, {
     runEvents: tenant => subscribers.runs(tenant),
+    // A prompt's speak: its reply spoken in one of the tenant's voice sessions, wherever that is held.
+    voiceReplies: {
+      check: (tenant, input, agentToken) => { if (!voice) throw new HttpError(404, "Voice sessions are not enabled on this runtime"); return voice.replyTarget(tenant, input, agentToken); },
+      follow: (tenant, target, run) => speakRunAnywhere(tenant, target, run),
+    },
     tracing: telemetry,
     // A self-hosted runtime configured by its environment takes keys there too.
     ...(config.selfHostedTenant ? { modelKeyHint: "On this self-hosted runtime, AGENT_TENANT_API_KEYS in its environment sets keys too ({\"anthropic\": \"sk-ant-...\"}; restart it after)." } : {}),
@@ -781,9 +853,11 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     },
     agentOwned: (agent, tenant) => clients.owns(agent, tenant, true),
     // Utterances are transcribed and billed as POST /v1/transcriptions is, and prompt agents wherever they run.
-    transcriber, canTranscribe: async (tenant, keyScope) => !!await transcriber.options.key(tenant, keyScope, transcriber.provider),
+    transcriber, synthesizer, canTranscribe: async (tenant, keyScope) => !!await transcriber.options.key(tenant, keyScope, transcriber.provider),
     record: (tenant, usage) => accounts.recordUsage(tenant, "", usage),
     submit: (agent, tenant, request) => submitAnywhere(agent, tenant, request),
+    submitStreaming: (agent, tenant, request, signal) => submitStreamingAnywhere(agent, tenant, request, signal),
+    followStreaming: (agent, tenant, requestId, signal) => followStreamingAnywhere(agent, tenant, requestId, signal),
     // A session's subject pays from its bucket, where the tenant meters its end users (end-user-credits.ts).
     credit: endUsers,
     perTenant: () => config.voice.perTenant, perNode: config.voice.perNode,
@@ -1008,6 +1082,49 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     } catch (error) {
       return c.json({ error: errorText(error), code: errorCode(error, errorStatus(error, 400)) }, errorStatus(error, 400) as ContentfulStatusCode);
     }
+  });
+  /** A run's text as NDJSON lines, for the node that asked (see `streamedText`): the first step answers errors with their status. */
+  async function streamText(texts: AsyncGenerator<string>, c: Context) {
+    let first: IteratorResult<string>;
+    try { first = await texts.next(); } catch (error) { return c.json({ error: errorText(error) }, errorStatus(error, 400) as ContentfulStatusCode); }
+    const encoder = new TextEncoder();
+    return new Response(new ReadableStream({
+      async start(controller) {
+        try {
+          for (let step = first; !step.done; step = await texts.next()) controller.enqueue(encoder.encode(`${JSON.stringify({ text: step.value })}\n`));
+          controller.enqueue(encoder.encode(`${JSON.stringify({ done: true })}\n`));
+        } catch (error) { controller.enqueue(encoder.encode(`${JSON.stringify({ error: errorText(error) })}\n`)); }
+        controller.close();
+      },
+    }), { headers: { "Content-Type": "application/x-ndjson" } });
+  }
+  app.post("/internal/agents/:id{client_[a-f0-9]{40}}/stream", async c => {
+    let body: string | undefined;
+    try { body = await signedBody(c); } catch { return c.body(null, 413); }
+    if (body === undefined) return c.body(null, 401);
+    const { tenant, request } = JSON.parse(body);
+    // The asking node's connection closing ends the stream.
+    const closed = new AbortController();
+    c.env.outgoing.once("close", () => closed.abort());
+    return streamText(clients.submitStreaming(c.req.param("id"), tenant, request, closed.signal), c);
+  });
+  app.post("/internal/agents/:id{client_[a-f0-9]{40}}/follow", async c => {
+    let body: string | undefined;
+    try { body = await signedBody(c); } catch { return c.body(null, 413); }
+    if (body === undefined) return c.body(null, 401);
+    const { tenant, requestId } = JSON.parse(body);
+    const closed = new AbortController();
+    c.env.outgoing.once("close", () => closed.abort());
+    return streamText(clients.followStreaming(c.req.param("id"), tenant, requestId, closed.signal), c);
+  });
+  app.post("/internal/voice/sessions/:id{vs_[a-f0-9]{24}}/reply", async c => {
+    let body: string | undefined;
+    try { body = await signedBody(c); } catch { return c.body(null, 413); }
+    if (body === undefined) return c.body(null, 401);
+    if (!voice) return c.json({ error: "Voice sessions are not enabled on this runtime" }, 404);
+    const { tenant, target, run } = JSON.parse(body);
+    try { return c.json(await voice.speakRun(tenant, { ...target, session: c.req.param("id") }, run)); }
+    catch (error) { return c.json({ error: errorText(error), code: errorCode(error, errorStatus(error, 400)) }, errorStatus(error, 400) as ContentfulStatusCode); }
   });
   app.post("/internal/agents/:id{client_[a-f0-9]{40}}/delete", async c => {
     let body: string | undefined;

@@ -1,4 +1,5 @@
 import { END_USER_CREDIT, type AttemptAck, type ModelAttemptHook } from "./model-attempt.ts";
+import type { VoiceReplyTarget } from "./voice-sessions.ts";
 import { bucketInput, creditError, DEFAULT_BUCKET, MICROS, type CreditHold, type EndUserCredits } from "./end-user-credits.ts";
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import type { ServerResponse } from "node:http";
@@ -421,6 +422,11 @@ const TURN_SNAPSHOT_BYTES = 1_000_000;
  * message_end carries next). A client folds the message from its message_start and the deltas since;
  * a toolcall_start names its call (`id`, `name`), which only the message did.
  */
+/** A finished run's reply text, if it has one. */
+function replyText(record: RequestRecord) {
+  const reply = (record.outcome?.result as { reply?: unknown } | undefined)?.reply;
+  return typeof reply === "string" ? reply : "";
+}
 function deltaOf(event: any) {
   const { partial, message: _done, error: _error, ...delta } = event.assistantMessageEvent ?? {};
   // A tool call's id and name are only in the message at its start: they come along, as fields of their own.
@@ -581,6 +587,14 @@ export interface ClientSessionOptions {
    * retries. Where the tenant then stands (X-RateLimit-* on the answer), when a limit applies.
    */
   runRate?: (tenant: string) => Promise<RateLimitState | undefined | void>;
+  /**
+   * A prompt's `speak`: its run's reply spoken in one of the tenant's voice sessions (voice-sessions.ts). `check` answers
+   * the target, or throws, before the prompt is taken; `follow` starts speaking once it is, wherever the session is held.
+   */
+  voiceReplies?: {
+    check(tenant: string, input: unknown, agentToken?: { subject?: string }): Promise<VoiceReplyTarget>;
+    follow(tenant: string, target: VoiceReplyTarget, run: { agent: string; requestId: string }): Promise<unknown>;
+  };
   /** Durable accounting acknowledgment before each provider dispatch and terminal response (and its end user's hold, as it streams). */
   modelAttempt?: (tenant: string, agent: string, platform: boolean, catalogPriced: boolean, event: Parameters<ModelAttemptHook>[0]) => Promise<boolean | AttemptAck>;
   /**
@@ -642,8 +656,8 @@ export type DefinitionConfig = { id: string; revision: number; config: Pick<Agen
  * images made (kind `image`: `images` of them, their tokens in `usage`), with its cost in `usage.cost.total`.
  */
 export type UsageRecord = {
-  provider?: string; model?: string; usage: any; timestamp?: number; kind?: "turn" | "compaction" | "transcription" | "image"; platform?: boolean; searches?: number; renders?: number; toolSearch?: boolean; toolSearches?: number;
-  transcriptions?: number; audioSeconds?: number; images?: number;
+  provider?: string; model?: string; usage: any; timestamp?: number; kind?: "turn" | "compaction" | "transcription" | "image" | "speech"; platform?: boolean; searches?: number; renders?: number; toolSearch?: boolean; toolSearches?: number;
+  transcriptions?: number; audioSeconds?: number; images?: number; speeches?: number;
   /** For a model response: the run it was in, who acted in it, whom the agent acts for, and its key scope (for usage webhooks). */
   requestId?: string; actor?: string; identity?: AgentIdentity; keyScope?: string;
 };
@@ -3911,6 +3925,15 @@ export class ClientSessions {
     // So is what the model sees of the history before it: all of it (full), or none (the system prompt and this message alone).
     if (params.history !== undefined && (body.method !== "prompt" || params.whileRunning === "steer" || !["full", "none"].includes(params.history))) throw new HttpError(400, 'history is "full" or "none", for a prompt that starts its own turn (not whileRunning: steer)');
     if (params.history === "full") delete params.history;
+    // Its reply spoken in a voice session: the session checked now, and followed once the run is taken.
+    let speak: VoiceReplyTarget | undefined;
+    if (params.speak !== undefined) {
+      if (body.method !== "prompt" || params.whileRunning === "steer") throw new HttpError(400, "speak is for a prompt that starts its own turn (not whileRunning: steer)");
+      if (!this.options.voiceReplies) throw new HttpError(404, "Voice sessions are not enabled on this runtime");
+      // The tenant may name any of its sessions; the agent's own token only its subject's.
+      speak = await this.options.voiceReplies.check(session.header.tenant, params.speak, trusted ? undefined : { subject: session.header.identity?.subject });
+      delete params.speak;
+    }
     if (params.whileRunning === "queue") delete params.whileRunning;
     if (body.method === "abort" && (Object.keys(params).some(key => key !== "queued" && key !== "children") || ![undefined, "cancel", "keep"].includes(params.queued) || ![undefined, "abort", "keep"].includes(params.children))) {
       throw new HttpError(400, "An abort takes { queued?: \"cancel\" | \"keep\", children?: \"abort\" | \"keep\" }: whether the runs queued behind the running one are cancelled too (the default) or kept, and whether its running background sub-agents are aborted too (the default) or kept");
@@ -4009,6 +4032,7 @@ export class ClientSessions {
       finally { session.accepting.delete(record.id); }
       if (queued) this.enqueue(session, record, params);
       else void this.run(session, record, params);
+      if (speak) this.speakReply(session, speak, record.id);
       // A steer is answered at once: the running turn has it (accepted), or it runs as a turn of its own (queued).
       if (params.whileRunning === "steer") {
         const steer = await this.steerTurn(session, params) ? "accepted" : "queued";
@@ -4021,6 +4045,24 @@ export class ClientSessions {
     } finally {
       if (admitting) { session.admitting!--; this.releaseBusy(session); }
     }
+  }
+
+  /** Speak a run's reply in a voice session (a prompt's speak): tried a few times while the session moves between nodes. */
+  private speakReply(session: Session, target: VoiceReplyTarget, requestId: string) {
+    const run = { agent: session.header.id, requestId };
+    void (async () => {
+      for (let attempt = 1; ; attempt++) {
+        try { await this.options.voiceReplies!.follow(session.header.tenant, target, run); return; }
+        catch (error) {
+          const status = (error as HttpError).status;
+          if (status !== 503 && status !== 502 || attempt >= 4) {
+            console.error(JSON.stringify({ type: "voice_reply_follow_failed", agent: run.agent, request: requestId, session: target.session, status, error: safeError(error) }));
+            return;
+          }
+          await new Promise(resolve => setTimeout(resolve, 250 * 2 ** attempt));
+        }
+      }
+    })();
   }
 
   /**
@@ -4336,6 +4378,84 @@ export class ClientSessions {
   private async fileData(session: Session, ref: unknown) {
     if (!validFileRef(ref) || ref.size > Math.max(FILE_LIMITS.imageBytes, FILE_LIMITS.documentBytes) || !this.options.volumes) throw new Error("Invalid file reference");
     return (await this.options.volumes.readRange(session.header.tenant, ref, 0, ref.size)).toString("base64");
+  }
+
+  /**
+   * Submit a request (as `submit`) to an agent this node serves, and yield the text its run writes as it is written:
+   * each text delta of each assistant message, in order, until the run's response. A request already answered (sent
+   * again) yields its reply whole. Ends early when `signal` aborts, or the agent leaves this node mid-run (handed
+   * off): what was written so far is what there is.
+   */
+  async *submitStreaming(id: string, tenant: string, body: { id: string; method: string; params: Record<string, unknown> }, signal: AbortSignal): AsyncGenerator<string> {
+    if (await this.owns(id, tenant)) await this.roomFor(id);
+    const session = (await this.owns(id, tenant)) ? await this.load(id) : undefined;
+    if (!session) throw new HttpError(404, "Unknown agent");
+    if (session.fault) throw session.fault;
+    const text = this.runText(session, body.id, signal);
+    session.lastActive = Date.now();
+    let record: RequestRecord;
+    try { ({ record } = await this.accept(session, body, true)); } catch (error) { text.close(); throw error; }
+    if (record.state === "completed") { text.close(); const reply = replyText(record); if (reply) yield reply; return; }
+    yield* text.chunks();
+  }
+
+  /**
+   * The text a run of an agent this node serves writes, from what it has written so far (its turn's finished messages
+   * and the one being written) and then as it writes it, until its response; a run that ended yields its reply whole.
+   * As `submitStreaming`, for a request already submitted.
+   */
+  async *followStreaming(id: string, tenant: string, requestId: string, signal: AbortSignal): AsyncGenerator<string> {
+    const session = (await this.owns(id, tenant)) ? await this.load(id) : undefined;
+    if (!session) throw new HttpError(404, "Unknown agent");
+    const record = session.requests.get(requestId);
+    if (!record) throw new HttpError(404, "Unknown request");
+    if (record.state === "completed") { const reply = replyText(record); if (reply) yield reply; return; }
+    // What was written so far, and the tap for what comes, at once: nothing between them.
+    const sofar: string[] = [];
+    if (session.turn?.requestId === requestId) {
+      for (const message of [...session.turn.messages, session.partial]) {
+        if ((message as { role?: string } | undefined)?.role !== "assistant") continue;
+        for (const part of (message as { content?: unknown[] }).content ?? []) {
+          if ((part as { type?: string }).type === "text" && typeof (part as { text?: unknown }).text === "string") sofar.push((part as { text: string }).text);
+        }
+      }
+    }
+    const text = this.runText(session, requestId, signal);
+    for (const chunk of sofar) if (chunk) yield chunk;
+    yield* text.chunks();
+  }
+
+  /** A tap on a run's text deltas from now on: `chunks` yields them until the response (or the agent leaves, or `signal`). */
+  private runText(session: Session, requestId: string, signal: AbortSignal) {
+    const queue: string[] = [];
+    let done = false, wake: (() => void) | undefined;
+    const tap = (data: ClientEvent) => {
+      if (data.type === "response" && data.id === requestId) done = true;
+      else if (data.type === "event" && data.requestId === requestId && data.event?.type === "message_update") {
+        const update = data.event.assistantMessageEvent;
+        if (update?.type === "text_delta" && typeof update.delta === "string") queue.push(update.delta);
+      } else return;
+      wake?.();
+    };
+    (session.taps ??= new Set()).add(tap);
+    const stop = () => { done = true; wake?.(); };
+    signal.addEventListener("abort", stop, { once: true });
+    const close = () => { session.taps?.delete(tap); signal.removeEventListener("abort", stop); };
+    const self = this;
+    return {
+      close,
+      async *chunks() {
+        try {
+          for (;;) {
+            while (queue.length) yield queue.shift()!;
+            if (done || self.sessions.get(session.header.id) !== session) return;
+            // Woken by the next delta or the response, or after a second to see whether the agent left this node.
+            await new Promise<void>(resolve => { wake = resolve; setTimeout(resolve, 1_000).unref(); });
+            wake = undefined;
+          }
+        } finally { close(); }
+      },
+    };
   }
 
   /** Submit a request to a tenant's agent on the tenant's behalf (REST API and console); `rate` hears where a run left the tenant's rate limit. */

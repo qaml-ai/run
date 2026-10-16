@@ -1,4 +1,4 @@
-import { createCipheriv, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { createSocket, type RemoteInfo } from "node:dgram";
 import { once } from "node:events";
@@ -25,6 +25,8 @@ type Call = {
   ssrc: number; key: Buffer; client?: RemoteInfo; nonce: number; sequence: number; timestamp: number;
   /** SSRCs whose Speaking (op 5) this call was sent. */
   announced: Set<number>;
+  /** Audio the client sent (its speech), decrypted: Opus packets, in order. */
+  heard: Buffer[];
 };
 
 /**
@@ -40,6 +42,7 @@ export async function fakeDiscordVoice(t: T) {
   const wss = new WebSocketServer({ server });
   const udp = createSocket("udp4");
   const calls: Call[] = [];
+  const heardAt: { at: number; bytes: number }[] = [];
   const identifies: Call["identify"][] = [];
   const resumes: unknown[] = [];
   const refused = new Set<string>();
@@ -54,7 +57,7 @@ export async function fakeDiscordVoice(t: T) {
       if (op === 0) {
         identifies.push(d);
         if (refused.has(d.token)) { ws.close(4004, "Authentication failed"); return; }
-        const call: Call = { ws, identify: d, ssrc: nextSsrc++, key: randomBytes(32), nonce: 0, sequence: 0, timestamp: 0, announced: new Set() };
+        const call: Call = { ws, identify: d, ssrc: nextSsrc++, key: randomBytes(32), nonce: 0, sequence: 0, timestamp: 0, announced: new Set(), heard: [] };
         calls.push(call);
         send(ws, 2, { ssrc: call.ssrc, ip: "127.0.0.1", port: (udp.address()).port, modes: ["aead_aes256_gcm_rtpsize"] });
       } else if (op === 1) {
@@ -73,6 +76,21 @@ export async function fakeDiscordVoice(t: T) {
     });
   });
   udp.on("message", (message, from) => {
+    // The client's own audio: an RTP packet, aead_aes256_gcm_rtpsize as it receives them (nonce counter last).
+    if (message.length > 12 + 16 + 4 && message[0] >> 6 === 2) {
+      const call = calls.find(entry => entry.client?.port === from.port && entry.client.address === from.address);
+      if (!call) return;
+      const header = message.subarray(0, 12), nonce = Buffer.alloc(12);
+      message.copy(nonce, 0, message.length - 4);
+      try {
+        const decipher = createDecipheriv("aes-256-gcm", call.key, nonce);
+        decipher.setAAD(header);
+        decipher.setAuthTag(message.subarray(message.length - 20, message.length - 4));
+        call.heard.push(Buffer.concat([decipher.update(message.subarray(12, message.length - 20)), decipher.final()]));
+        heardAt.push({ at: performance.now(), bytes: message.length - 32 });
+      } catch { /* not ours */ }
+      return;
+    }
     if (message.length !== 74 || message.readUInt16BE(0) !== 1) return;
     const call = calls.find(entry => entry.ssrc === message.readUInt32BE(4));
     if (call) call.client = from;
@@ -101,6 +119,10 @@ export async function fakeDiscordVoice(t: T) {
   return {
     endpoint: `127.0.0.1:${(server.address() as { port: number }).port}`,
     identifies, resumes, calls,
+    /** The client's own audio, decrypted, across its calls. */
+    spoken: () => calls.flatMap(call => call.heard),
+    /** When each of the client's packets arrived (ms, performance.now) and its size: speech's timing as a listener hears it. */
+    spokenTimes: () => heardAt,
     /** Tokens the server refuses (close 4004). */
     refuse: (token: string) => refused.add(token),
     /** Whether a call is connected (its client found its UDP address). */

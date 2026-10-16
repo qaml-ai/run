@@ -199,8 +199,8 @@ export const WebhookEvents = {
   }), "An input settled"),
   "usage.recorded": envelope("usage.recorded", z.object({
     agentId: z.string().nullable().openapi({ description: "null for a transcription made with POST /v1/transcriptions, or images made with POST /v1/images, which no agent made" }), requestId: z.string().nullable(), subject: z.string().nullable(), actor: z.string().nullable(), context: z.record(z.string(), z.unknown()), keyScope: z.string().nullable(),
-    provider: z.string(), model: z.string(), kind: z.enum(["response", "compaction", "transcription", "image"]).openapi({ description: "response: a model response of a run; compaction: a summary of older context; transcription: audio transcribed (audioSeconds of it; no tokens); image: images made (images of them; input is text and image tokens in, output image tokens out)" }), input: z.number(), output: z.number(), cacheRead: z.number(), cacheWrite: z.number(),
-    reasoning: z.number().optional(), audioSeconds: z.number().optional().openapi({ description: "For a transcription: the seconds of audio billed" }), images: z.number().optional().openapi({ description: "For images made: how many" }), cost: z.object({ usd: z.number(), source: z.enum(["provider", "catalog"]) }), at: z.number(),
+    provider: z.string(), model: z.string(), kind: z.enum(["response", "compaction", "transcription", "image", "speech"]).openapi({ description: "speech: speech made for a voice session (audioSeconds of it; no tokens); response: a model response of a run; compaction: a summary of older context; transcription: audio transcribed (audioSeconds of it; no tokens); image: images made (images of them; input is text and image tokens in, output image tokens out)" }), input: z.number(), output: z.number(), cacheRead: z.number(), cacheWrite: z.number(),
+    reasoning: z.number().optional(), audioSeconds: z.number().optional().openapi({ description: "For a transcription: the seconds of audio billed; for speech: the seconds of speech made" }), images: z.number().optional().openapi({ description: "For images made: how many" }), cost: z.object({ usd: z.number(), source: z.enum(["provider", "catalog"]) }), at: z.number(),
   }), "A model response's usage and cost, a transcription's, or images'"),
   "voice.session.started": envelope("voice.session.started", z.object(voiceFacts), "A voice session connected and is listening (once per session)"),
   "voice.session.ended": envelope("voice.session.ended", z.object({
@@ -218,6 +218,17 @@ export const WebhookEvents = {
     ended: z.enum(["silence", "max", "error", "handoff", "end"]).openapi({ description: "Why it ended: silenceMs without speech; cut at 30 seconds (the speech goes on in the next); the speaker's stream broke; the session moved to another node; the session ended" }),
     costUsd: z.number(),
   }), "A person's utterance in a voice session, transcribed"),
+  "voice.speech.started": envelope("voice.speech.started", z.object({
+    ...voiceFacts, speechId: z.string(), latencyMs: z.number().openapi({ description: "From the speak request (or the reply's sentence being whole) to the first audio going out" }),
+    reply: z.object({ agent: z.string(), requestId: z.string() }).optional().openapi({ description: "For a piece of an agent's reply the session speaks (agentReplies, or a prompt's speak): the agent and its run" }),
+  }), "The bot started saying a speech (POST /v1/voice/sessions/{id}/speak)"),
+  "voice.speech.ended": envelope("voice.speech.ended", z.object({
+    ...voiceFacts, speechId: z.string(),
+    reply: z.object({ agent: z.string(), requestId: z.string() }).optional(),
+    reason: z.enum(["done", "interrupted", "error"]).openapi({ description: "done: said whole; interrupted: cut short or never started (by); error: speech could not be made or played" }),
+    by: z.enum(["interrupt", "requested", "barge_in", "end", "handoff", "budget"]).optional().openapi({ description: "With interrupted: a speech asked with interrupt; DELETE …/speak; a person started talking (bargeIn); the session ended or moved; credit ran out" }),
+    seconds: z.number().openapi({ description: "Seconds of speech made (and billed)" }), costUsd: z.number(),
+  }), "A speech ended"),
 };
 
 export const Model = z.object({
@@ -326,6 +337,11 @@ export const PromptInput = z.object({
     schema: z.record(z.string(), z.unknown()).openapi({ description: "A JSON Schema for an object (type: \"object\"; at most 64 KB)", example: { type: "object", properties: { sentiment: { type: "string", enum: ["positive", "neutral", "negative"] } }, required: ["sentiment"] } }),
   }).optional().openapi({ description: "Structured output: the agent ends this run by calling a final_output tool whose arguments are the schema, checked against it (a call that does not fit goes back to the model with what is wrong). The run's outcome.result.output is that object. A model that answers in text instead is asked once more, with a reminder; a run that still ends without an output fails with code output_missing. The tool stays declared until a prompt without output. Not with whileRunning: steer" }),
   history: z.enum(["full", "none"]).optional().openapi({ description: "What the model sees of the agent's history in this run. full (default): all of it. none: only the system prompt (instructions, tools) and this message, as a new conversation would, without making an agent. The run is still recorded in the history (its user message carries history: \"none\"), and later runs that do not say none see it. Not with whileRunning: steer" }),
+  speak: z.strictObject({
+    session: z.string().openapi({ description: "A voice session of yours that speaks (created with speak: true), not ended", example: "vs_0123456789abcdef01234567" }),
+    voice: z.string().optional().openapi({ description: "The voice for this reply; default the session's" }),
+    interrupt: z.boolean().optional().openapi({ description: "Its first sentence stops what the session is saying (and what was queued), instead of waiting behind it" }),
+  }).optional().openapi({ description: "Speak this run's reply in a voice session as it is written, as speak.agentReplies does for an utterance: sentence by sentence, markdown, links and code left out, at most 400 characters, each a voice.speech.* event carrying reply {agent, requestId}; someone talking over it stops it. Billed as POST /v1/voice/sessions/{id}/speak. Not with whileRunning: steer. An agent's own token (POST /clients/{id}/requests) may name only sessions whose subject is the agent's (403 VOICE_SPEAK_FORBIDDEN)" }),
   metadata: z.record(z.string(), z.string({ error: "metadata values must be strings" }), { error: "metadata must be an object of string values" }).optional().openapi({ description: "Your own key-value data about this message (its source, a client-side id): at most 16 keys of 1–64 characters, values of at most 512. Kept on the user message (history, events, snapshots) and the request, and sent with its run's webhook events; never shown to the model", example: { source: "web", clientMessageId: "m_123" } }),
   files: z.array(z.union([
     z.strictObject({ path: z.string().openapi({ description: "A file in the agent's mounts, e.g. one uploaded with PUT /v1/agents/{id}/uploads/{requestId}/{name}" }), transcribe: TRANSCRIBE }),
@@ -787,7 +803,7 @@ export const Images = z.object({
 export const Usage = z.object({
   since: z.number(),
   totals: Totals,
-  days: z.array(Totals.extend({ day: z.string(), model: z.string(), kind: z.enum(["turn", "compaction", "transcription", "image"]).openapi({ description: "turn: the agent's own responses; compaction: summaries of older context; transcription: audio transcribed (responses counts transcriptions); image: images made (responses counts images)" }) })),
+  days: z.array(Totals.extend({ day: z.string(), model: z.string(), kind: z.enum(["turn", "compaction", "transcription", "image", "speech"]).openapi({ description: "turn: the agent's own responses; compaction: summaries of older context; transcription: audio transcribed (responses counts transcriptions); image: images made (responses counts images); speech: voice sessions' speech made (responses counts speeches)" }) })),
 }).openapi("Usage");
 
 const ThinkingLevel = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
@@ -1267,6 +1283,11 @@ export const VoiceSessionInput = z.strictObject({
   ignoreUserIds: z.array(z.string()).max(VOICE_LIMITS.ignoreUserIds).optional().openapi({ description: "Users whose audio is never transcribed and who do not count as company in the call: other bots" }),
   metadata: z.record(z.string(), z.unknown()).optional().openapi({ description: "Anything (at most 4 KB of JSON), echoed in every voice.* event" }),
   notice: z.string().max(VOICE_LIMITS.noticeChars).optional().openapi({ description: "The listening notice your app posts (see notice in the answer); {bot} is the bot's id" }),
+  speak: z.union([z.boolean(), z.strictObject({
+    agentReplies: z.boolean().optional().openapi({ description: "Speak deliver.agent's reply to each utterance as it is written: sentence by sentence, markdown, links and code left out, at most 400 characters (the whole reply is still the run's)" }),
+  })]).optional().openapi({ description: "The bot may speak (POST …/speak): true, or {agentReplies: true} to also speak the agent's replies. Your app joins with self_mute false. Default false" }),
+  bargeIn: z.boolean().optional().openapi({ description: "With speak: a person starting to talk stops the bot's speech and what it was going to say. Default true" }),
+  voice: z.string().optional().openapi({ description: "With speak: the voice speech is made in (OpenAI's: alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, verse…). Default alloy", example: "coral" }),
 }).openapi("VoiceSessionInput");
 export const VoiceSessionUpdate = z.strictObject({
   discord: z.strictObject({
@@ -1287,6 +1308,9 @@ export const VoiceSession = z.object({
   language: z.string().optional(), prompt: z.string().optional(),
   silenceMs: z.number(), maxMinutes: z.number(), idleMinutes: z.number(), emptySeconds: z.number(),
   ignoreUserIds: z.array(z.string()), metadata: z.record(z.string(), z.unknown()), notice: z.string(),
+  speak: z.boolean(), bargeIn: z.boolean(), voice: z.string(),
+  agentReplies: z.boolean().openapi({ description: "The session speaks deliver.agent's replies (speak: {agentReplies: true})" }),
+  speeches: z.number().openapi({ description: "Speeches played (each counted when it ended having made speech)" }), spokenSeconds: z.number().openapi({ description: "Seconds of speech made (billed)" }),
   utterances: z.number(), speechSeconds: z.number().openapi({ description: "Seconds of speech transcribed (billed)" }), costUsd: z.number(),
   createdAt: z.number(), startedAt: z.number().nullable(), lastSpeechAt: z.number().nullable(), endedAt: z.number().nullable(),
 }).openapi("VoiceSession");
@@ -1295,7 +1319,19 @@ export const VoiceSessionCreated = VoiceSession.extend({
     required: z.literal(true), channelId: z.string(),
     text: z.string().openapi({ description: "Post this in the voice channel's chat now: people must know they are transcribed, and camelRun cannot post (it has no gateway)" }),
   }),
+  join: z.object({ self_mute: z.boolean(), self_deaf: z.literal(false) }).openapi({ description: "How your app's OP 4 should have joined: self_mute false for a session that speaks" }),
 }).openapi("VoiceSessionCreated");
+export const VoiceSpeechInput = z.strictObject({
+  text: z.string().openapi({ description: "What to say: 1 to 4,000 characters" }),
+  voice: z.string().optional().openapi({ description: "Another voice than the session's, for this speech" }),
+  instructions: z.string().optional().openapi({ description: "How to say it (tone, pace, accent), as OpenAI's instructions: at most 1,000 characters", example: "Warm and unhurried." }),
+  interrupt: z.boolean().optional().openapi({ description: "Stop what the bot is saying, and clear what it was going to, first. Default false: queued" }),
+}).openapi("VoiceSpeechInput");
+export const VoiceSpeech = z.object({
+  speechId: z.string().openapi({ example: "sp_3f9c0a1b2c3d4e5f60718293" }), session: z.string(), state: z.literal("queued"),
+  position: z.number().openapi({ description: "Speeches ahead of it: 0 plays next (or now)" }), voice: z.string(), characters: z.number(),
+}).openapi("VoiceSpeech");
+export const VoiceSpeechStopped = z.object({ stopped: z.number().openapi({ description: "Speeches stopped: the one playing and those queued" }) }).openapi("VoiceSpeechStopped");
 export const VoiceSessionEnded = VoiceSession.extend({
   leave: z.object({ op: z.literal(4), d: z.object({ guild_id: z.string(), channel_id: z.null(), self_mute: z.boolean(), self_deaf: z.boolean() }) })
     .openapi({ description: "Send this on your gateway to leave the channel: ending the session stops the listening, not the bot's presence" }),

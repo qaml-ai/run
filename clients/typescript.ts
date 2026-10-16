@@ -636,7 +636,16 @@ export type WebhookEvent = { id: string; created: number } & (
       reason: VoiceEndReason; limit?: "tenant" | "end_user"; endUserReason?: string;
       startedAt: number | null; endedAt: number; utterances: number; speechSeconds: number; costUsd: number;
     } }
-  | { type: "voice.utterance"; data: VoiceUtterance });
+  | { type: "voice.utterance"; data: VoiceUtterance }
+  | { type: "voice.speech.started"; data: VoiceFacts & { speechId: string; latencyMs: number; reply?: VoiceReply } }
+  | { type: "voice.speech.ended"; data: VoiceFacts & {
+      speechId: string; reason: "done" | "interrupted" | "error"; reply?: VoiceReply;
+      /** With interrupted: an interrupting speech, stopSpeaking, a person talking (bargeIn), the session ending or moving, credit running out. */
+      by?: "interrupt" | "requested" | "barge_in" | "end" | "handoff" | "budget";
+      seconds: number; costUsd: number;
+    } });
+/** A piece of an agent's reply a session speaks (speak: {agentReplies: true}): the agent and its run. */
+export type VoiceReply = { agent: string; requestId: string };
 /** What every voice.* event says of its session. */
 type VoiceFacts = { session: string; provider: "discord"; guildId: string; channelId: string; botUserId: string; subject: string | null; metadata: Record<string, unknown> };
 /**
@@ -1192,6 +1201,16 @@ export interface VoiceSessionInput {
   metadata?: Record<string, unknown>;
   /** The notice text to post ({bot} is the bot's id). */
   notice?: string;
+  /**
+   * The bot may speak (`voice.speak`); your app joins with self_mute false. `{ agentReplies: true }` also speaks
+   * deliver.agent's reply to each utterance as it is written (sentence by sentence, markdown and code left out, at most
+   * 400 characters). Default false.
+   */
+  speak?: boolean | { agentReplies?: boolean };
+  /** With speak: a person starting to talk stops the bot's speech. Default true. */
+  bargeIn?: boolean;
+  /** With speak: the voice speech is made in (OpenAI's: alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, verse…). Default alloy. */
+  voice?: string;
   /** An Idempotency-Key: the same key answers the same session. */
   idempotencyKey?: string;
 }
@@ -1204,11 +1223,31 @@ export interface VoiceSession {
   deliver: { agent?: string; webhooks: boolean };
   subject?: string; bucket?: string; context?: Record<string, unknown>; keyScope?: string; language?: string; prompt?: string;
   silenceMs: number; maxMinutes: number; idleMinutes: number; emptySeconds: number; ignoreUserIds: string[]; metadata: Record<string, unknown>;
-  utterances: number; speechSeconds: number; costUsd: number;
+  speak: boolean; bargeIn: boolean; voice: string; agentReplies: boolean;
+  utterances: number; speechSeconds: number;
+  /** Speeches played, and seconds of speech made. */
+  speeches: number; spokenSeconds: number;
+  costUsd: number;
   createdAt: number; startedAt: number | null; lastSpeechAt: number | null; endedAt: number | null;
 }
 /** A new session, and the notice to post now in the voice channel's chat: people must know they are transcribed. */
-export type VoiceSessionCreated = VoiceSession & { notice: { required: true; channelId: string; text: string } };
+export type VoiceSessionCreated = VoiceSession & {
+  notice: { required: true; channelId: string; text: string };
+  /** How your app's OP 4 should have joined: un-muted for a session that speaks. */
+  join: { self_mute: boolean; self_deaf: false };
+};
+/** Something for a session's bot to say (`voice.speak`). */
+export interface VoiceSpeechInput {
+  /** 1 to 4,000 characters. */
+  text: string;
+  /** Another voice than the session's, for this speech. */
+  voice?: string;
+  /** How to say it: tone, pace, accent (at most 1,000 characters). */
+  instructions?: string;
+  /** Stop what the bot is saying, and clear what it was going to, first. Default false: queued. */
+  interrupt?: boolean;
+}
+export interface VoiceSpeech { speechId: string; session: string; state: "queued"; position: number; voice: string; characters: number }
 /** An ended session, and the OP 4 your gateway sends to leave the channel (ending stops the listening, not the bot's presence). */
 export type VoiceSessionEnded = VoiceSession & { leave: { op: 4; d: { guild_id: string; channel_id: null; self_mute: boolean; self_deaf: boolean } } };
 
@@ -1242,6 +1281,15 @@ export class Voice {
   update(id: string, input: { discord?: Partial<Pick<DiscordVoiceGrant, "channelId" | "sessionId" | "endpoint" | "token">>; ignoreUserIds?: string[]; metadata?: Record<string, unknown> }): Promise<VoiceSession> {
     return this.transport.json(this.path(id), this.key(), "PATCH", input);
   }
+  /**
+   * Say something in the call (a session made with `speak: true`): queued behind what the bot is saying, or with
+   * `interrupt`, instead. `voice.speech.started` and `voice.speech.ended` follow.
+   */
+  speak(id: string, input: VoiceSpeechInput): Promise<VoiceSpeech> {
+    return this.transport.json(`${this.path(id)}/speak`, this.key(), "POST", input, false);
+  }
+  /** Stop what the bot is saying, and what it was going to. */
+  stopSpeaking(id: string): Promise<{ stopped: number }> { return this.transport.json(`${this.path(id)}/speak`, this.key(), "DELETE"); }
   /** End it; send the answer's `leave` on your gateway to leave the channel. Ending an ended session answers it again. */
   end(id: string): Promise<VoiceSessionEnded> { return this.transport.json(this.path(id), this.key(), "DELETE"); }
 }
@@ -2086,9 +2134,11 @@ export class AgentClient {
    * soon as the turn has it instead). `spendLimit` is this run's own
    * budget: it ends before its next model request once it has spent that; the agent's spendLimit is unchanged.
    * `output: { schema }` (a JSON Schema for an object) asks for structured output: the run ends with an answer that fits it, as `output`.
+   * `speak: { session, voice?, interrupt? }` speaks the run's reply in one of the tenant's voice sessions that speak, sentence by
+   * sentence as it is written (voice.speech.* events carry `reply: { agent, requestId }`).
    */
-  async prompt(text: string, options?: RunRequestOptions & { files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; whileRunning?: "queue" | "steer"; spendLimit?: { usd: number }; runLimits?: { maxResponses?: number; maxSeconds?: number }; output?: { schema: Record<string, unknown> }; history?: "full" | "none" }) {
-    const result = await this.message("prompt", text, options, { ...(options?.actor ? { actor: options.actor } : {}), ...(options?.whileRunning === "steer" ? { whileRunning: "steer" } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}), ...(options?.spendLimit ? { spendLimit: options.spendLimit } : {}), ...(options?.runLimits ? { runLimits: options.runLimits } : {}), ...(options?.output ? { output: options.output } : {}), ...(options?.history === "none" ? { history: "none" } : {}) });
+  async prompt(text: string, options?: RunRequestOptions & { files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; whileRunning?: "queue" | "steer"; spendLimit?: { usd: number }; runLimits?: { maxResponses?: number; maxSeconds?: number }; output?: { schema: Record<string, unknown> }; history?: "full" | "none"; speak?: { session: string; voice?: string; interrupt?: boolean } }) {
+    const result = await this.message("prompt", text, options, { ...(options?.speak ? { speak: options.speak } : {}), ...(options?.actor ? { actor: options.actor } : {}), ...(options?.whileRunning === "steer" ? { whileRunning: "steer" } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}), ...(options?.spendLimit ? { spendLimit: options.spendLimit } : {}), ...(options?.runLimits ? { runLimits: options.runLimits } : {}), ...(options?.output ? { output: options.output } : {}), ...(options?.history === "none" ? { history: "none" } : {}) });
     // A steered message's request completes as the running turn takes it, naming the turn: its outcome is the turn's.
     const into = options?.whileRunning === "steer" && isRecord(result) && typeof result.steeredInto === "string" && !("reply" in result) ? result.steeredInto : undefined;
     return into ? this.waitForRequest(into, { ...(options?.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}), ...(options?.signal ? { signal: options.signal } : {}) }) : result;
@@ -2119,7 +2169,7 @@ export class AgentClient {
    * Send a message and return as soon as the runtime has it (202), without waiting for its run: `{ id, state }`, the
    * request's id and whether it runs or is queued. Follow it with `waitForRequest(id)`, the stream, or a webhook.
    */
-  async submit(text: string, options?: RequestOptions & { files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; spendLimit?: { usd: number }; runLimits?: { maxResponses?: number; maxSeconds?: number }; output?: { schema: Record<string, unknown> }; history?: "full" | "none"; allowDisconnected?: boolean }): Promise<{ id: string; state: string }> {
+  async submit(text: string, options?: RequestOptions & { files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; spendLimit?: { usd: number }; runLimits?: { maxResponses?: number; maxSeconds?: number }; output?: { schema: Record<string, unknown> }; history?: "full" | "none"; allowDisconnected?: boolean; speak?: { session: string; voice?: string; interrupt?: boolean } }): Promise<{ id: string; state: string }> {
     if (this.closed || this.closing || this.fatal) throw this.fatal ?? new AgentError("Client closed");
     const id = options?.idempotencyKey ?? globalThis.crypto.randomUUID();
     if (!REQUEST_ID.test(id)) throw new AgentError(`An idempotency key is 1 to 80 letters, digits, _ and -: ${JSON.stringify(id.slice(0, 100))} is not`, 400);
@@ -2127,7 +2177,7 @@ export class AgentClient {
     const params = {
       text, ...(files ? { files } : {}), ...(options?.actor ? { actor: options.actor } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}),
       ...(options?.spendLimit ? { spendLimit: options.spendLimit } : {}), ...(options?.runLimits ? { runLimits: options.runLimits } : {}), ...(options?.output ? { output: options.output } : {}), ...(options?.history === "none" ? { history: "none" } : {}),
-      ...(options?.from ? { from: options.from } : {}), ...(options?.metadata ? { metadata: options.metadata } : {}),
+      ...(options?.from ? { from: options.from } : {}), ...(options?.metadata ? { metadata: options.metadata } : {}), ...(options?.speak ? { speak: options.speak } : {}),
     };
     const record = await this.transport.json(this.path("/requests"), this.session.token, "POST", { id, method: "prompt", params }, true, traceHeader(options?.traceparent)) as RequestRecord;
     if (record.outcome) this.settle(id, record.outcome);

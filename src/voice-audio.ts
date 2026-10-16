@@ -128,6 +128,13 @@ type Speaking = {
   decoder: OpusScript;
 };
 
+export type SegmenterOptions = {
+  silenceMs: number; maxMs?: number; minMs?: number; quietDb?: number; padMs?: number;
+  cut(cut: Cut): void;
+  /** A speaker started talking: the first loud packet of an utterance (barge-in listens for it). */
+  speech?(speaker: string): void;
+};
+
 /**
  * One call's speakers, cut into utterances. Senders differ in how they go quiet, so an utterance ends either way:
  *
@@ -143,9 +150,9 @@ type Speaking = {
  */
 export class Segmenter {
   private readonly speaking = new Map<string, Speaking>();
-  private readonly options: { silenceMs: number; maxMs?: number; minMs?: number; quietDb?: number; padMs?: number; cut(cut: Cut): void };
+  private readonly options: SegmenterOptions;
 
-  constructor(options: { silenceMs: number; maxMs?: number; minMs?: number; quietDb?: number; padMs?: number; cut(cut: Cut): void }) { this.options = options; }
+  constructor(options: SegmenterOptions) { this.options = options; }
 
   /** Speakers with speech not yet cut. */
   get open() { return this.speaking.size; }
@@ -163,7 +170,10 @@ export class Segmenter {
     if (loud) {
       speech.speechMs += ms;
       speech.quietMs = 0;
-      speech.firstLoudAt ??= now;
+      if (speech.firstLoudAt === undefined) {
+        speech.firstLoudAt = now;
+        this.options.speech?.(speaker);
+      }
       speech.lastLoudAt = now;
     } else {
       speech.quietMs += ms;
@@ -199,5 +209,113 @@ export class Segmenter {
     if (speech.speechMs < (this.options.minMs ?? UTTERANCE_LIMITS.minMs) || speech.firstLoudAt === undefined) return;
     const seconds = Math.round(speech.heldMs / 10) / 100;
     this.options.cut({ speaker, packets: speech.held.map(entry => entry.packet), seconds, startedAt: speech.firstLoudAt, endedAt: Math.max(speech.lastLoudAt, speech.firstLoudAt + seconds * 1000), ended });
+  }
+}
+
+/** Discord's frame: 20 ms of 48 kHz stereo. */
+const FRAME_SAMPLES = 960;
+/** 20 ms of speech as a provider makes it (24 kHz mono, 16-bit): the bytes one frame is made from. */
+const SPEECH_FRAME_BYTES = 480 * 2;
+
+/** One 20 ms frame of 24 kHz mono PCM as 48 kHz stereo: each sample, then the midpoint to the next, on both channels. */
+function upsampled(mono: Buffer): Buffer {
+  const out = Buffer.alloc(FRAME_SAMPLES * 4);
+  const samples = mono.length >> 1;
+  for (let i = 0; i < samples; i++) {
+    const sample = mono.readInt16LE(i * 2);
+    const next = i + 1 < samples ? mono.readInt16LE(i * 2 + 2) : sample;
+    const between = (sample + next) >> 1;
+    out.writeInt16LE(sample, i * 8); out.writeInt16LE(sample, i * 8 + 2);
+    out.writeInt16LE(between, i * 8 + 4); out.writeInt16LE(between, i * 8 + 6);
+  }
+  return out;
+}
+
+/**
+ * Speech as Discord takes it: 24 kHz mono 16-bit PCM (as speech.ts makes it), chunk by chunk, to Opus packets of 20 ms
+ * at 48 kHz stereo, each as soon as its 20 ms have come, so playback starts with the first. The last is padded with
+ * silence. `samples` is told how many PCM samples each packet holds (for what was made, and billed).
+ */
+export async function* opusFromPcm(pcm: AsyncIterable<Uint8Array>, samples?: (count: number) => void): AsyncGenerator<Buffer> {
+  const encoder = new OpusScript(48_000, 2, OpusScript.Application.AUDIO);
+  try {
+    let pending = Buffer.alloc(0);
+    for await (const chunk of pcm) {
+      pending = pending.length ? Buffer.concat([pending, chunk]) : Buffer.from(chunk);
+      while (pending.length >= SPEECH_FRAME_BYTES) {
+        const frame = pending.subarray(0, SPEECH_FRAME_BYTES);
+        pending = pending.subarray(SPEECH_FRAME_BYTES);
+        samples?.(SPEECH_FRAME_BYTES >> 1);
+        yield Buffer.from(encoder.encode(upsampled(frame), FRAME_SAMPLES));
+      }
+    }
+    if (pending.length >= 2) {
+      samples?.(pending.length >> 1);
+      const frame = Buffer.alloc(SPEECH_FRAME_BYTES);
+      pending.copy(frame, 0, 0, pending.length & ~1);
+      yield Buffer.from(encoder.encode(upsampled(frame), FRAME_SAMPLES));
+    }
+  } finally { encoder.delete(); }
+}
+
+export const PLAYBACK_BUFFER = Object.freeze({
+  /** Audio buffered before speech starts, when it comes fast enough (`startRate`). */
+  startMs: 200,
+  /** How fast (audio per wall-clock time, since its first packet, over at least `rateWindowMs`) it must come to start at `startMs`. */
+  startRate: 1.5,
+  rateWindowMs: 100,
+  /** Otherwise it starts with this much buffered; and after running dry, resumes with this much, doubled at each stall. */
+  slowStartMs: 1_000,
+  maxResumeMs: 4_000,
+});
+
+/**
+ * A jitter buffer for speech packets (20 ms each) made as they play: `packets` are read as fast as they come (so the
+ * provider's stream is never held up), and given on once enough wait that playing them should not run dry:
+ *
+ * - At first, `startMs` (0.2 s) once they come at least `startRate` times faster than they play (measured since the
+ *   first, over at least `rateWindowMs`): speech made that fast stays ahead. Slower, `slowStartMs` (1 s).
+ * - If they run out mid-way (the provider stalled or bursts), again once `slowStartMs` wait, doubled at each further
+ *   stall (to `maxResumeMs`): a provider that stalled once may again, so each gap buys a longer lead.
+ *
+ * The speech whole (or failed) is given on at once. A speech made faster than it plays never pauses; a bursty one
+ * pauses at most at its first stall. Ends early (stops reading) when its reader stops.
+ */
+export async function* buffered<T>(packets: AsyncIterable<T>, options: Partial<typeof PLAYBACK_BUFFER> = {}): AsyncGenerator<T> {
+  const limits = { ...PLAYBACK_BUFFER, ...options };
+  const queue: T[] = [];
+  let done = false, failure: unknown, wake: (() => void) | undefined, stopped = false, arrived = 0, firstAt = 0;
+  const pump = (async () => {
+    try {
+      for await (const packet of packets) {
+        if (stopped) return;
+        if (!arrived++) firstAt = performance.now();
+        queue.push(packet);
+        wake?.();
+      }
+    } catch (error) { failure = error; }
+    finally { done = true; wake?.(); }
+  })();
+  const ms = (count: number) => count * 20;
+  const startable = () => {
+    if (ms(queue.length) >= limits.slowStartMs) return true;
+    const elapsed = performance.now() - firstAt;
+    return ms(queue.length) >= limits.startMs && elapsed >= limits.rateWindowMs && ms(arrived) / elapsed >= limits.startRate;
+  };
+  try {
+    for (let started = false, resumeMs: number = limits.slowStartMs; ;) {
+      while (!done && !(started ? ms(queue.length) >= resumeMs : startable())) await new Promise<void>(resolve => { wake = resolve; });
+      wake = undefined;
+      if (!queue.length) {
+        if (failure) throw failure;
+        return;
+      }
+      if (started) resumeMs = Math.min(resumeMs * 2, limits.maxResumeMs);
+      started = true;
+      while (queue.length) yield queue.shift()!;
+    }
+  } finally {
+    stopped = true;
+    void pump;
   }
 }
