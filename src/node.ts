@@ -89,6 +89,7 @@ import { publicOrigins } from "./origins.ts";
 import { adminSite, adminSiteFromEnvironment } from "./admin-site.ts";
 import { AccountDeletions } from "./account-deletion.ts";
 import { RateLimits, rateLimitConfig } from "./rate-limits.ts";
+import { openaiLiveTranscription } from "./transcription-live.ts";
 import { VOICE_CHANNEL, VoiceSessions, type VoiceReplyTarget, type VoiceTransport } from "./voice-sessions.ts";
 import { buggify } from "./buggify.ts";
 import { sometimes } from "./assert.ts";
@@ -369,6 +370,13 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     provider: openaiTranscription({ outbound, ...(env.AGENT_TRANSCRIPTION_URL ? { baseUrl: env.AGENT_TRANSCRIPTION_URL } : {}) }),
     key: (tenant, keyScope, provider) => providerKey(tenant, keyScope, provider, secrets.azureOpenAI?.transcriptionDeployment),
     price: () => accounts.billing.pricing.transcription,
+    // Voice sessions transcribe as people speak, on OpenAI's Realtime transcription (the same key; batch when it fails).
+    ...(config.voice.live ? {
+      live: {
+        provider: openaiLiveTranscription({ ...(env.AGENT_TRANSCRIPTION_URL ? { baseUrl: env.AGENT_TRANSCRIPTION_URL } : {}), ...(config.voice.liveModel ? { model: config.voice.liveModel } : {}), ...(config.voice.liveDelay ? { delay: config.voice.liveDelay } : {}) }),
+        price: () => accounts.billing.pricing.liveTranscription,
+      },
+    } : {}),
   });
   // Speech made, for voice sessions that speak: the tenant's OpenAI key, never the platform's Azure deployment.
   const synthesizer = new Synthesizer({

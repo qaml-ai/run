@@ -1,4 +1,6 @@
 import { randomBytes } from "node:crypto";
+import type { Server } from "node:http";
+import { WebSocketServer } from "ws";
 import OpusScript from "opusscript";
 import { Accounts } from "../src/accounts.ts";
 import { Tenants } from "../src/tenants.ts";
@@ -192,4 +194,35 @@ export function discordGrant(overrides: Partial<VoiceCredentials> = {}) {
     guildId: "100000000000000001", channelId: "200000000000000002", userId: "300000000000000003",
     sessionId: `session${counter}`, endpoint: "c-test-1.discord.media:443", token: `token-${counter}`, ...overrides,
   };
+}
+
+/**
+ * OpenAI's Realtime transcription, faked on `server` (wss://…/realtime?intent=transcription): each commit answers
+ * `transcript()` after `delayMs`. Records the session it was configured with and the audio bytes of each commit.
+ */
+export function fakeRealtime(server: Server, transcript: () => string, delayMs = 0) {
+  const sockets = new WebSocketServer({ noServer: true });
+  const seen = { urls: [] as string[], auth: [] as string[], sessions: [] as any[], commits: [] as number[], clears: 0 };
+  server.on("upgrade", (req, socket, head) => {
+    seen.urls.push(req.url ?? "");
+    seen.auth.push(String(req.headers.authorization ?? ""));
+    sockets.handleUpgrade(req, socket, head, ws => {
+      let bytes = 0, item = 0;
+      ws.on("message", data => {
+        const event = JSON.parse(String(data));
+        if (event.type === "session.update") seen.sessions.push(event.session);
+        else if (event.type === "input_audio_buffer.append") bytes += Buffer.from(event.audio, "base64").length;
+        else if (event.type === "input_audio_buffer.clear") { bytes = 0; seen.clears++; }
+        else if (event.type === "input_audio_buffer.commit") {
+          const id = `item_${++item}`;
+          seen.commits.push(bytes);
+          const seconds = bytes / 48_000;
+          bytes = 0;
+          ws.send(JSON.stringify({ type: "input_audio_buffer.committed", item_id: id }));
+          setTimeout(() => ws.send(JSON.stringify({ type: "conversation.item.input_audio_transcription.completed", item_id: id, content_index: 0, transcript: transcript(), usage: { type: "duration", seconds } })), delayMs);
+        }
+      });
+    });
+  });
+  return seen;
 }
