@@ -257,3 +257,34 @@ export async function* opusFromPcm(pcm: AsyncIterable<Uint8Array>, samples?: (co
     }
   } finally { encoder.delete(); }
 }
+
+/**
+ * A jitter buffer for speech packets made as they play: `packets` are read as fast as they come (so the provider's
+ * stream is never held up), and given on only once `startPackets` are waiting or the speech is whole; if they run out
+ * mid-way (the provider stalls), again once `resumePackets` are waiting. Speech made slower than it plays then pauses
+ * between phrases rather than between packets. Ends early (stops reading) when its reader stops.
+ */
+export async function* buffered<T>(packets: AsyncIterable<T>, startPackets = 25, resumePackets = 25): AsyncGenerator<T> {
+  const queue: T[] = [];
+  let done = false, failure: unknown, wake: (() => void) | undefined, stopped = false;
+  const pump = (async () => {
+    try { for await (const packet of packets) { if (stopped) return; queue.push(packet); wake?.(); } }
+    catch (error) { failure = error; }
+    finally { done = true; wake?.(); }
+  })();
+  try {
+    for (let threshold = startPackets; ;) {
+      while (!done && queue.length < threshold) await new Promise<void>(resolve => { wake = resolve; });
+      wake = undefined;
+      if (!queue.length) {
+        if (failure) throw failure;
+        return;
+      }
+      while (queue.length) yield queue.shift()!;
+      threshold = resumePackets;
+    }
+  } finally {
+    stopped = true;
+    void pump;
+  }
+}

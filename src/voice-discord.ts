@@ -6,6 +6,7 @@ import {
 } from "@discordjs/voice";
 import type { VoiceConnection, VoiceCredentials, VoiceHandlers, VoiceTransport } from "./voice-sessions.ts";
 import type { Playback } from "./voice-speech.ts";
+import { buffered } from "./voice-audio.ts";
 import { recordDaveRoster } from "./metrics.ts";
 
 /**
@@ -53,8 +54,11 @@ const ROSTER_GRACE_MS = 5_000;
 const MAX_ROSTER_DROPS = 3;
 const ROSTER_WINDOW_MS = 5 * 60_000;
 
-/** Frames a speech may go without a packet (synthesis stalling, or `canSend` holding it) before the player gives up: 5 s. */
-const MAX_MISSED_FRAMES = 250;
+/**
+ * Frames a speech may go without a packet (synthesis stalling, `canSend` holding it) before the player gives up: 30 s.
+ * The player sends Discord's silence frame for each meanwhile.
+ */
+const MAX_MISSED_FRAMES = 1_500;
 
 /**
  * Wrap a DAVE session's Welcome handling so a Welcome into a group with a member `named` does not hold (nor the bot,
@@ -337,12 +341,15 @@ export class DiscordVoice implements VoiceConnection {
    * Whether speech may go out now: the connection is ready, its DAVE group (if the call has one) is ready, and every
    * member of it is one the voice gateway named.
    */
-  canSend() {
+  canSend() { return this.holding() === undefined; }
+
+  /** Why speech is held back now (`canSend`): the connection, its DAVE group, or a member not named; undefined when it may go. */
+  holding(): "connection" | "dave" | "roster" | undefined {
     const state = this.connection.state;
-    if (this.closed || state.status !== VoiceConnectionStatus.Ready) return false;
+    if (this.closed || state.status !== VoiceConnectionStatus.Ready) return "connection";
     const dave = (state.networking.state as { dave?: { protocolVersion?: number; session?: { ready?: boolean } } }).dave;
-    if (dave && dave.protocolVersion !== 0 && !dave.session?.ready) return false;
-    return !this.roster.pending;
+    if (dave && dave.protocolVersion !== 0 && !dave.session?.ready) return "dave";
+    return this.roster.pending ? "roster" : undefined;
   }
 
   /**
@@ -355,15 +362,25 @@ export class DiscordVoice implements VoiceConnection {
     this.connection.subscribe(player);
     let stopped = false, failed = false, first = true;
     const self = this;
+    // What happened to the speech, for its diagnostic: packets sent, and how long each reason held them back.
+    const stats = { packets: 0, heldMs: { connection: 0, dave: 0, roster: 0 }, waitedMs: 0 };
     async function* gated() {
-      for await (const packet of packets) {
-        while (!self.canSend()) {
+      // Through a jitter buffer: a provider that stalls mid-speech pauses it between phrases, not packet by packet.
+      for (let waited = Date.now(), iterator = buffered(packets)[Symbol.asyncIterator](); ;) {
+        const next = await iterator.next();
+        stats.waitedMs += Date.now() - waited;
+        if (next.done) return;
+        for (let reason; (reason = self.holding());) {
           if (stopped || self.closed) return;
+          const since = Date.now();
           await new Promise(resolve => setTimeout(resolve, 20));
+          stats.heldMs[reason] += Date.now() - since;
         }
         if (stopped) return;
         if (first) { first = false; started(); }
-        yield Buffer.from(packet);
+        stats.packets++;
+        yield Buffer.from(next.value);
+        waited = Date.now();
       }
     }
     const source = Readable.from(gated(), { objectMode: true });
@@ -372,7 +389,9 @@ export class DiscordVoice implements VoiceConnection {
       const settle = () => {
         player.off("stateChange", changed);
         player.off("error", errored);
-        resolve(stopped ? "stopped" : failed ? "error" : "done");
+        const result = stopped ? "stopped" : failed ? "error" : "done";
+        this.handlers.diagnostic("speech_played", { result, ...stats });
+        resolve(result);
       };
       const changed = (_from: { status: string }, to: { status: string; resource?: unknown }) => {
         if (to.status === AudioPlayerStatus.Idle || (to.resource !== undefined && to.resource !== resource)) settle();
@@ -387,7 +406,7 @@ export class DiscordVoice implements VoiceConnection {
     });
     player.play(resource);
     return {
-      done,
+      done, stats: () => ({ ...stats, heldMs: { ...stats.heldMs } }),
       stop: () => {
         if (stopped) return;
         stopped = true;

@@ -296,3 +296,25 @@ test("barge-in stops an agent's reply mid-way: what was left of it is never said
   assert.equal(ended.length, 1, "the rest of the reply was never queued");
   assert.deepEqual(ended[0].data.reply, { agent: AGENT, requestId: `voice_${created.id.slice(3)}_1` });
 });
+
+test("speech whose making stalls (a first chunk, then nothing for seconds, as OpenAI may stream) still plays whole", async t => {
+  const voice = await fakeDiscordVoice(t);
+  const grant = discordGrant({ endpoint: voice.endpoint });
+  let ready = 0;
+  const connection = discordVoice().connect(grant, { ready: () => { ready++; }, packet: () => {}, broken: () => {}, lost: () => {}, diagnostic: () => {} });
+  t.after(() => connection.close());
+  await until(() => ready === 1, "ready");
+  // 0.2 s of speech at once, then a 6 s wait, then the other 1.8 s.
+  async function* stalling() {
+    yield* chunks(4_800);
+    await sleep(6_000);
+    yield* chunks(43_200);
+  }
+  let made = 0;
+  const playback = connection.play!(opusFromPcm(stalling(), count => { made += count; }), () => {});
+  assert.equal(await playback.done, "done");
+  assert.equal(made, 48_000);
+  const speech = voice.spoken().filter(packet => packet.length > 3);
+  assert.equal(speech.length, 100, "every packet went out");
+  assert.equal(playback.stats!().packets, 100);
+});

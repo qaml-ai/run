@@ -133,7 +133,7 @@ test("speak over HTTP: a request to any node plays on the node holding the call,
   assert.equal(spoken.json.voice, "verse");
   await until(() => connection.played.length === 1 && !connection.playing, "the speech to play");
   assert.equal(connection.played[0].length, 25, "0.5 s: 25 packets of 20 ms");
-  assert.deepEqual(asked[0].body, { model: "gpt-4o-mini-tts", input: "Hello from camelRun.", voice: "verse", response_format: "pcm", instructions: "Calm." });
+  assert.deepEqual(asked[0].body, { model: "gpt-4o-mini-tts", input: "Hello from camelRun.", voice: "verse", response_format: "pcm", stream_format: "audio", instructions: "Calm." });
   assert.equal(asked[0].authorization, "Bearer tenant-openai-key");
   await until(async () => (await call(bases[1], "GET", `/v1/voice/sessions/${created.json.id}`)).json.speeches === 1, "the speech counted");
   const stopped = await call(bases[1], "DELETE", `/v1/voice/sessions/${created.json.id}/speak`);

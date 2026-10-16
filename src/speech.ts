@@ -56,7 +56,7 @@ export function openaiSpeech(options: { outbound: Outbound; baseUrl?: string }):
           method: "POST", stream: true, maxBytes: SPEECH_LIMITS.maxBytes, timeoutMs: SPEECH_LIMITS.timeoutMs, signal,
           headers: { "Content-Type": "application/json", ...credentials.headers },
           secrets: credentials.apiKey ? { Authorization: `Bearer ${credentials.apiKey}` } : {},
-          body: JSON.stringify({ model: SPEECH_MODEL, input: input.text, voice: input.voice, response_format: "pcm", ...(input.instructions ? { instructions: input.instructions } : {}) }),
+          body: JSON.stringify({ model: SPEECH_MODEL, input: input.text, voice: input.voice, response_format: "pcm", stream_format: "audio", ...(input.instructions ? { instructions: input.instructions } : {}) }),
         });
       } catch (error) {
         if (signal.aborted) throw error;

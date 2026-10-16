@@ -23,7 +23,11 @@ export type SpeechEnding = { reason: "done" | "interrupted" | "error"; by?: Stop
 export type StopReason = "interrupt" | "requested" | "barge_in" | "end" | "handoff" | "budget";
 
 /** A playback on a connection: done when its packets ran out (`done`), it was stopped, or it failed. */
-export interface Playback { done: Promise<"done" | "stopped" | "error">; stop(): void }
+export interface Playback {
+  done: Promise<"done" | "stopped" | "error">; stop(): void;
+  /** Packets sent, the time spent waiting for the next packet (speech still being made), and time held back by why. */
+  stats?(): { packets: number; waitedMs: number; heldMs: Record<string, number> };
+}
 /** A connection that can play: `packets` are 20 ms Opus packets at 48 kHz stereo; `started` is called with the first. */
 export interface Player { play(packets: AsyncIterable<Uint8Array>, started: () => void): Playback }
 

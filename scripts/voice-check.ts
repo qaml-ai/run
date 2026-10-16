@@ -189,13 +189,36 @@ async function main() {
 const SENTENCE = "The quick brown fox jumps over the lazy dog near the riverbank.";
 const words = (text: string) => text.toLowerCase().replace(/[^a-z ]/g, " ").split(/\s+/).filter(Boolean);
 
-/** Two seconds of a 330 Hz tone as speech.ts makes speech (24 kHz mono PCM, in 100 ms chunks): without an OpenAI key. */
+/**
+ * Without an OpenAI key: three seconds of a 330 Hz tone as OpenAI streams speech (24 kHz mono PCM), with its timing:
+ * the first bytes after a second, then chunks of uneven sizes (odd ones too) in bursts.
+ */
 async function* tone() {
-  for (let at = 0; at < 48_000; at += 2_400) {
-    const chunk = Buffer.alloc(4_800);
-    for (let i = 0; i < 2_400; i++) chunk.writeInt16LE(Math.round(9_000 * Math.sin(2 * Math.PI * 330 * (at + i) / 24_000)), i * 2);
+  await new Promise(resolve => setTimeout(resolve, 1_000));
+  const total = 3 * 24_000 * 2;
+  for (let at = 0, index = 0; at < total; index++) {
+    const size = Math.min(total - at, [4_096, 1_999, 8_191, 333, 16_384][index % 5]);
+    const chunk = Buffer.alloc(size);
+    for (let byte = 0; byte + 1 < size; byte += 2) chunk.writeInt16LE(Math.round(9_000 * Math.sin(2 * Math.PI * 330 * ((at + byte) >> 1) / 24_000)), byte);
+    at += size;
     yield chunk;
+    if (index % 7 === 6) await new Promise(resolve => setTimeout(resolve, 150));
   }
+}
+
+/** PCM as it arrives, timed: when its first byte came (ms after `asked`), how many bytes, and when the last came. */
+function timed(pcm: AsyncIterable<Uint8Array>, asked: number) {
+  const timing = { firstByteMs: -1, bytes: 0, lastByteMs: -1, chunks: 0 };
+  async function* tap() {
+    for await (const chunk of pcm) {
+      if (timing.firstByteMs < 0) timing.firstByteMs = Date.now() - asked;
+      timing.bytes += chunk.byteLength;
+      timing.chunks++;
+      timing.lastByteMs = Date.now() - asked;
+      yield chunk;
+    }
+  }
+  return { pcm: tap(), timing };
 }
 
 /**
@@ -215,8 +238,8 @@ async function speakAndHear(listening: ReturnType<ReturnType<typeof discordVoice
   let made = 0, sent = 0, firstAudioMs = -1;
   const asked = Date.now();
   async function* counted(packets: AsyncIterable<Uint8Array>) { for await (const packet of packets) { sent++; yield packet; } }
-  const pcm = apiKey ? synthesizer.stream({ text: SENTENCE, voice: "alloy" }, { apiKey }, AbortSignal.timeout(60_000)) : tone();
-  const playback = listening.play!(counted(opusFromPcm(pcm, count => { made += count; })), () => { firstAudioMs = Date.now() - asked; });
+  const source = timed(apiKey ? synthesizer.stream({ text: SENTENCE, voice: "alloy" }, { apiKey }, AbortSignal.timeout(60_000)) : tone(), asked);
+  const playback = listening.play!(counted(opusFromPcm(source.pcm, count => { made += count; })), () => { firstAudioMs = Date.now() - asked; });
   const result = await playback.done;
   const playedMs = Date.now() - asked;
   await new Promise(resolve => setTimeout(resolve, 2_000));
@@ -233,12 +256,16 @@ async function speakAndHear(listening: ReturnType<ReturnType<typeof discordVoice
   const expected = words(SENTENCE), got = new Set(words(transcript));
   const recall = expected.filter(word => got.has(word)).length / expected.length;
   if (result !== "done") failures.push(`the speech ended ${result}`);
-  if (heard.length < sent * 0.8) failures.push(`the speaker heard ${heard.length} of the ${sent} packets spoken (UDP out, or DAVE)`);
+  if (heard.filter(packet => packet.length > 3).length < sent * 0.8) failures.push(`the speaker heard ${heard.filter(packet => packet.length > 3).length} of the ${sent} packets spoken (UDP out, or DAVE)`);
+  if (made < (apiKey ? 2 : 3) * 24_000) failures.push(`only ${seconds} s of speech was made`);
   if (apiKey && recall < 0.8) failures.push(`the speech was heard as ${JSON.stringify(transcript)}`);
   if (!apiKey && cuts.length !== 1) failures.push(`the tone was heard as ${cuts.length} utterances, not 1`);
+  // What the speaker heard that was speech (Discord's 3-byte silence frames are not).
+  const audible = heard.filter(packet => packet.length > 3).length;
+  const facts = { sent, heard: heard.length, audible, utterances: cuts.length, seconds, firstAudioMs, playedMs, pcm: source.timing, playback: playback.stats?.() };
   const report = apiKey
-    ? { speech: "openai", sent, heard: heard.length, utterances: cuts.length, seconds, firstAudioMs, playedMs, costUsd: synthesizer.cost(seconds), transcript, recall: Math.round(recall * 100) / 100 }
-    : { speech: "tone (no OPENAI_API_KEY)", sent, heard: heard.length, utterances: cuts.length, seconds, firstAudioMs, playedMs };
+    ? { speech: "openai", ...facts, costUsd: synthesizer.cost(seconds), transcript, recall: Math.round(recall * 100) / 100 }
+    : { speech: "tone, timed as OpenAI streams (no OPENAI_API_KEY)", ...facts };
   log({ type: "spoken", ...report });
   return report;
 }
