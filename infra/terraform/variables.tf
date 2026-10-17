@@ -86,7 +86,7 @@ variable "noncurrent_version_days" {
 variable "database_instance_class" {
   description = "RDS instance class for the control-plane Postgres."
   type        = string
-  default     = "db.t4g.small"
+  default     = "db.t4g.large"
 }
 
 variable "database_engine_version" {
