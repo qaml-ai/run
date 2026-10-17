@@ -202,6 +202,9 @@ In Python, `await agents.runtime.set_scope_key("org_abc123", "openrouter", api_k
   OpenRouter's models are called through its Responses API (stateless, reasoning
   carried back as it came), whatever key they use, except Anthropic's, which keep
   its Messages API for prompt caching: the same rule as on a tenant's endpoint.
+  DeepSeek's keep its Chat Completions API (not on a tenant's endpoint), where every
+  earlier turn's reasoning goes back as `reasoning_content`, which DeepSeek's own
+  API requires while it reasons.
 - Each model call, compaction summaries included, takes the key of the agent's
   scope for the model's provider, else the tenant's own key, else the
   platform's (see above). It is read at the call, so a changed key applies
