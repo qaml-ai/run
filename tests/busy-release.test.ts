@@ -6,6 +6,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import type { AgentClient } from "../clients/node.ts";
 import { echo, fixture, sleep } from "./client-fixture.ts";
 import { check, fc } from "./prop-helpers.ts";
+import { until } from "./runtime-server.ts";
 
 /**
  * A run's busy slot is free before the run is seen to end: a client that starts the next run as soon as it sees one end
@@ -123,9 +124,9 @@ test("a run an abort cancels while it is still being accepted gives its slot bac
   const held = Promise.withResolvers<void>();
   session.log.flush = async (durable?: boolean) => { if (durable) await held.promise; return flush(durable); };
   const accepting = f.post(idle, "/requests", { id: "cancelled", method: "execute", params: { code: "return 1" } });
-  for (let tries = 0; !session.requests.has("cancelled"); tries++) { assert.ok(tries < 1000, "the run was taken"); await sleep(5); }
+  await until(() => session.requests.has("cancelled"), "the run was taken", 30_000);
   const aborting = f.sessions.abortAgent(idle.session.id, "default");
-  for (let tries = 0; session.requests.get("cancelled")?.state !== "completed"; tries++) { assert.ok(tries < 1000, "the abort cancelled the run"); await sleep(5); }
+  await until(() => session.requests.get("cancelled")?.state === "completed", "the abort cancelled the run", 30_000);
   session.log.flush = flush;
   held.resolve();
   assert.deepEqual(await aborting, { cancelled: ["cancelled"] });
@@ -158,7 +159,7 @@ test("property: at a busy limit, runs that succeed, fail or are aborted across a
       });
       // Every call let go however the step ends, so the next case starts with none running.
       try {
-        for (let tries = 0; running < held.length; tries++) { assert.ok(tries < 1000, "the held runs began"); await sleep(5); }
+        await until(() => running >= held.length, "the held runs began", 30_000);
         if (step.held === limit) {
           const refused = await f.post(agents[limit], "/requests", { id: `refused-${++seq}`, method: "execute", params: { code: "return 0" } });
           assert.equal(refused.status, 429, "at the limit, another agent's run is refused");
@@ -175,7 +176,7 @@ test("property: at a busy limit, runs that succeed, fail or are aborted across a
       } finally {
         for (const run of held) gates.get(run.value)!.resolve();
         await Promise.all(held.map(run => run.done));
-        for (let tries = 0; running; tries++) { assert.ok(tries < 1000, "the step's calls settled"); await sleep(5); }
+        await until(() => !running, "the step's calls settled", 30_000);
       }
     }
     assert.ok(peak <= limit, `${peak} runs ran at once`);

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { AgentRuntime, schema, tool } from "../clients/typescript.ts";
-import { balancer, cluster, sleep, token } from "./cluster-helpers.ts";
+import { balancer, cluster, sleep, token, until } from "./cluster-helpers.ts";
 
 test("a draining node finishes the turn in flight, leaves queued runs for the next owner, releases, and exits 0", { timeout: 90_000 }, async t => {
   const c = await cluster(t);
@@ -25,7 +25,7 @@ test("a draining node finishes the turn in flight, leaves queued runs for the ne
 
   const exited = once(a.child, "exit");
   a.child.kill("SIGTERM");
-  for (let tries = 0; (await fetch(`${a.url}/healthz`)).status !== 503; tries++) { assert.ok(tries < 50, "/healthz fails while draining"); await sleep(50); }
+  await until(async () => (await fetch(`${a.url}/healthz`)).status === 503, "/healthz fails while draining", 30_000);
   assert.ok(a.logs.some(entry => entry.type === "drain_started"));
   // Accepted by A while it drains, but never begun there.
   const second = client.execute('return "after the move"', { timeoutMs: 60_000 });
@@ -62,7 +62,7 @@ test("a draining node sends requests for actors it does not hold to a live peer"
   const running = busy.execute("return await tools.slow({})", { timeoutMs: 60_000 });
   await entered.promise;
   a.child.kill("SIGTERM");
-  for (let tries = 0; (await fetch(`${a.url}/healthz`)).status !== 503; tries++) { assert.ok(tries < 50); await sleep(50); }
+  await until(async () => (await fetch(`${a.url}/healthz`)).status === 503, "/healthz fails while draining", 30_000);
 
   // A new agent and a new volume asked of A while it drains are made on B.
   const agent = await viaA.createAgent({ tools: {}, idempotencyKey: "made-during-drain" });
@@ -90,9 +90,9 @@ test("with no live peer, a draining node answers 503 with Retry-After for anythi
   const running = busy.execute("return await tools.slow({})", { timeoutMs: 60_000 });
   await entered.promise;
   // The idle agent unloads, so A no longer holds it.
-  for (let tries = 0; await c.owner(idle.session.id); tries++) { assert.ok(tries < 100, "the idle agent was released"); await sleep(100); }
+  await until(async () => !await c.owner(idle.session.id), "the idle agent was released", 30_000);
   a.child.kill("SIGTERM");
-  for (let tries = 0; (await fetch(`${a.url}/healthz`)).status !== 503; tries++) { assert.ok(tries < 50); await sleep(50); }
+  await until(async () => (await fetch(`${a.url}/healthz`)).status === 503, "/healthz fails while draining", 30_000);
 
   const created = await fetch(`${a.url}/v1/agents`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "Idempotency-Key": "during-drain" }, body: "{}" });
   assert.equal(created.status, 503, await created.clone().text());

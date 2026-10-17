@@ -18,6 +18,7 @@ import { VolumeService } from "../src/volumes.ts";
 import { AgentRuntime, schema, tool } from "../clients/node.ts";
 import { testDatabase } from "./database.ts";
 import { applicationTools } from "../src/mcp-results.ts";
+import { until } from "./runtime-server.ts";
 
 type Context = { after(fn: () => Promise<void> | void): void };
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -302,7 +303,7 @@ function writer(url: string, root: string, records: number) {
   const child = spawn(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", "--input-type=module", "-e", script], { stdio: ["pipe", "pipe", "inherit"] });
   const lines: string[] = [];
   child.stdout.setEncoding("utf8").on("data", chunk => lines.push(...String(chunk).split("\n").filter(Boolean)));
-  const line = async (text: RegExp) => { for (let tries = 0; !lines.some(entry => text.test(entry)); tries++) { assert.ok(tries < 300, `writer printed ${text}`); await sleep(50); } return lines.find(entry => text.test(entry))!; };
+  const line = (text: RegExp) => until(() => lines.find(entry => text.test(entry)), `writer printed ${text}`, 30_000);
   return { child, line };
 }
 
@@ -439,10 +440,7 @@ test("an agent woken thirty times, one execute each, keeps a bounded number of S
   const logs = [`client-sessions/${id}.journal`, AgentSupervisor.transcriptKey(id)];
   for (let n = 0; n < 30; n++) {
     await sessions.submit(id, "default", { id: `wake-${n}`, method: "execute", params: { code: `return ${n}` } });
-    for (let tries = 0; sessions.sessions.get(id)?.requests.get(`wake-${n}`)?.state !== "completed" || sessions.inFlight(); tries++) {
-      assert.ok(tries < 1000, `execute ${n} finished`);
-      await sleep(5);
-    }
+    await until(() => sessions.sessions.get(id)?.requests.get(`wake-${n}`)?.state === "completed" && !sessions.inFlight(), `execute ${n} finished`, 30_000);
     // Unloading compacts the tail into Storage: once per wake.
     await sessions.releaseIdle();
     assert.equal(sessions.sessions.has(id), false);

@@ -51,10 +51,7 @@ test("any node serves any agent: requests are forwarded to the owner, and a surv
   // A wake-up scheduled through B is delivered to the agent on A, by whichever node claims it.
   const schedule = await viaB.schedule({ code: 'return await tools.lookup({ key: "timer" })', inSeconds: 0 });
   const wakeId = `schedule-${schedule.id}-${schedule.dueAt}`;
-  for (let tries = 0; !(await state()).requests.some((request: any) => request.id === wakeId); tries++) {
-    assert.ok(tries < 100, "the wake-up was delivered");
-    await sleep(100);
-  }
+  await until(async () => (await state()).requests.some((request: any) => request.id === wakeId), "the wake-up was delivered", 30_000);
   const woken = await viaB.waitForRequest(wakeId, { timeoutMs: 20_000 });
   assert.equal(woken.output[0], "value-of-timer");
   // The claiming node drops a one-shot wake-up once its delivery returns, which can be just after the run it started ends.

@@ -187,10 +187,7 @@ test("a transcript written by pi 0.87.1 loads on pi 1.0, replays its summary, to
   assert.match(text(sent), /"name":"inspect"/, "stored tool calls replay");
   assert.match(text(sent), /"role":"tool"/, "stored tool results replay");
   for (let index = 0; index < 3; index++) assert.equal((await supervisor.request("legacy", "prompt", { text: turn(index) }, event => events.push(event))).error, null);
-  for (let tries = 0; !events.some(event => event.type === "compaction_end" && event.summarizedMessages > 0); tries++) {
-    assert.ok(tries < 200, "a compaction ran");
-    await new Promise(resolve => setTimeout(resolve, 25));
-  }
+  await until(() => events.some(event => event.type === "compaction_end" && event.summarizedMessages > 0), "a compaction ran");
   assert.match(text(fake.summarizations()[0]), /SUMMARY-087-2/, "the stored summary seeds the next one");
   assert.deepEqual((await supervisor.request("legacy", "history")).messages.slice(0, 26), before);
 });
@@ -244,10 +241,7 @@ test("compaction summaries bill their tokens and cost to the tenant, apart from 
   const { id } = await sessions.create([], { model: fake.model(8000, "turns") }, "billed", {}, "acme");
   for (let index = 0; index < 4; index++) {
     await sessions.submit(id, "acme", { id: `turn-${index}`, method: "prompt", params: { text: turn(index) } });
-    for (let tries = 0; sessions.sessions.get(id)!.requests.get(`turn-${index}`)!.state !== "completed"; tries++) {
-      assert.ok(tries < 400, "the turn finishes");
-      await new Promise(resolve => setTimeout(resolve, 25));
-    }
+    await until(() => sessions.sessions.get(id)!.requests.get(`turn-${index}`)!.state === "completed", "the turn finishes");
     assert.equal((sessions.sessions.get(id)!.requests.get(`turn-${index}`)!.outcome as any).result.error, null);
   }
   // A summary may still be made in the background after the last turn.
@@ -375,11 +369,10 @@ test("model and summarization requests carry only the tenant's key, whatever pro
 
 // Background compaction ---------------------------------------------------------------------------------------
 
-/** Wait until `done()` holds, polling; fails after about 5 s. */
+/** Wait until `done()` holds, polling; fails after 30 s (a deadline, not a count of polls: a busy runner is slow). */
 async function until(done: () => boolean | Promise<boolean>, what: string) {
-  for (let tries = 0; !await done(); tries++) {
-    assert.ok(tries < 200, `timed out waiting until ${what}`);
-    await new Promise(resolve => setTimeout(resolve, 25));
+  for (const deadline = Date.now() + 30_000; !await done(); await new Promise(resolve => setTimeout(resolve, 25))) {
+    assert.ok(Date.now() < deadline, `timed out waiting until ${what}`);
   }
 }
 const small = (index: number) => `TURN-${index} ${"y".repeat(3000)}`;

@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
+import { until } from "./runtime-server.ts";
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -45,12 +46,12 @@ test("a stale lease cuts the model request in flight, the next waits for a fresh
   await supervisor.start("gated", { model: fake.model, apiKey: "fixture", retry: { maxAttempts: 0, baseDelayMs: 10 } }, { definitions: [], async call() { return null; }, lease });
   const events: any[] = [];
   const turn = supervisor.request("gated", "prompt", { text: "hello" }, event => events.push(event));
-  for (let tries = 0; fake.calls.length < 1 || Date.now() - fake.calls[0].started < 300; tries++) { assert.ok(tries < 200, "the model call began"); await sleep(10); }
+  await until(() => fake.calls.length >= 1 && Date.now() - fake.calls[0].started >= 300, "the model call began", 30_000);
   assert.equal(leases, 1, "the model request waited for the lease");
 
   fresh = Promise.withResolvers<void>();
   supervisor.interrupt();
-  for (let tries = 0; fake.calls[0].ended === undefined; tries++) { assert.ok(tries < 200, "the stream was cut"); await sleep(10); }
+  await until(() => fake.calls[0].ended !== undefined, "the stream was cut", 30_000);
   assert.equal(fake.calls[0].cut, true);
   // The retry waits for the lease: no model call while it is stale.
   await sleep(300);
