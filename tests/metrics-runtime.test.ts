@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { listen, runtime, toolCall, until } from "./runtime-server.ts";
+import { createHash } from "node:crypto";
+import { listen, OPERATOR, OTHER_OPERATOR, runtime, toolCall, until } from "./runtime-server.ts";
 
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", AGENT_USAGE_WEBHOOK_RETRY_MS: "100", AGENT_SERVICE_NAME: "agent-runtime-test", AGENT_HOSTING: "inline" };
 
@@ -39,4 +40,23 @@ test("a running runtime (inline hosting, as on ECS) writes metric lines: each tu
   status = 204;
   const delivered = await until(() => lines().find(line => line.type === "webhook_delivered" && line.WebhookAttempts >= 2), "a retried delivery");
   assert.ok(delivered.WebhookDeliveryLagMs >= 0);
+});
+
+test("a run its provider refused for credit (402) is counted by whose key: the platform's account, or a tenant's own", async t => {
+  const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+  const tenantsFile = {
+    tenants: { alice: { tokenSha256: sha(OPERATOR), apiKeys: {} }, bob: { tokenSha256: sha(OTHER_OPERATOR), apiKeys: {} } },
+    platformKeys: { openrouter: "fixture-platform-key" },
+  };
+  const r = await runtime(t, () => ({ httpStatus: 402, message: "This request requires more credits, or fewer max_tokens" }), LOCAL, tenantsFile);
+  const lines = () => r.logs.map(line => { try { return JSON.parse(line); } catch { return {}; } }).filter(line => line.type === "model_billing_failed");
+  // alice brings her own OpenRouter key; bob runs on the platform's.
+  assert.equal((await r.call("/v1/providers/openrouter/key", { method: "PUT", body: { apiKey: "sk-or-alice-own-key" } })).status, 200);
+  for (const token of [OPERATOR, OTHER_OPERATOR]) {
+    const agent = (await r.call("/v1/agents", { body: {}, token })).json.id as string;
+    const accepted = await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "Go" }, token });
+    assert.equal(accepted.status, 202, accepted.text);
+  }
+  const counted = await until(() => lines().length >= 2 && lines(), "two billing failures");
+  assert.deepEqual(counted.map(line => [line.tenant, line.KeyOwner, line.ModelBillingFailures]).sort(), [["alice", "tenant", 1], ["bob", "platform", 1]]);
 });
