@@ -7,10 +7,11 @@ at most one tenant binding, with explicit allowed channels and the existing
 channel conversation pipeline. The customer-owned
 `discord` provider continues to use a separate bot token and Gateway connection.
 
-This integration is disabled by default. The initial release is a pilot with one
-Gateway shard. It refuses to connect if Discord recommends more than one shard
-or its session-start allowance is exhausted. Multi-shard identify coordination
-and an aggregate server dollar budget remain follow-up work. The existing tenant
+This integration is disabled by default. The Gateway runs in as many shards as
+Discord recommends (`/gateway/bot`: one per about 1,000 servers; required from
+2,500), split between nodes (see below). A shard is not connected while the
+session-start allowance is exhausted. An aggregate server dollar budget remains
+follow-up work. The existing tenant
 credit and spending controls still apply, as do the managed server's daily turn
 limit and per-sender rate limit. Until the budget exists, interim caps hold: an
 account connects at most 10 servers (1 on free credit; `AGENT_DISCORD_MANAGED_SERVERS`,
@@ -28,9 +29,15 @@ responses (`channel_send_failed` with `HTTP 429`).
 
 ### Gateway ownership and failover
 
-One node holds the Gateway, under the ownership claim
-`discord-managed:<applicationId>:shard:0`; every other node retries the claim
-every 10 seconds. A draining node releases it, so a deploy hands over within
+Each shard is held by one node, under the ownership claim
+`discord-managed:<applicationId>:shard:<index>`; every node retries the claims
+it does not hold every 10 seconds, connecting at most one shard per try, so a
+node's identifies are 10 seconds apart. A node holding shards asks Discord for
+the recommended count every 10 minutes; when it changes, the node closes its
+shards and they are identified again with the new count (until every node has
+noticed, a server can be on two shards: inbound messages are deduplicated). A
+shard's READY marks removed only that shard's servers it no longer lists.
+`discord_managed_gateway_retry_failed` logs why a try failed. A draining node releases it, so a deploy hands over within
 about 10 seconds. A node that dies holds it until a peer finds it dead (about
 10 s, see [Dead nodes](architecture.md)) or, when that cannot be told, until its
 lease lapses (`AGENT_LEASE_TTL_MS`, 90 s in production), so a crash usually
