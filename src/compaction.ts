@@ -16,6 +16,7 @@ import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { streamTimeouts, watchedStream, type Stall, type StreamTimeouts } from "./model-stream.ts";
 import { network } from "./node-context.ts";
 import { MODEL_INTERRUPTED } from "./model-errors.ts";
+import { deepseekPayload } from "./deepseek-replay.ts";
 
 /**
  * Context compaction on top of Pi's compaction functions (vendored from pi-agent-core 0.87.1 in
@@ -240,7 +241,11 @@ export function callFetch(sink: UsageSink, plan: { rebase?: { from: string[]; to
 function authorize(model: Model<Api>, asked: any, credentials: Credentials, sink: UsageSink, modelHeaders: Record<string, string> | null | undefined, outbound: Outbound): [Model<Api>, any] {
   // A model that always reasons refuses a call that turns reasoning off: a call asking for none asks for its least.
   const floor = asked?.reasoning ? undefined : reasoningFloor(model);
-  const options = floor ? { ...asked, reasoning: floor } : asked;
+  const { avoidDeepseekHost, ...rest } = (floor ? { ...asked, reasoning: floor } : asked) ?? {};
+  // An OpenRouter call to a DeepSeek model stays off DeepSeek's own endpoint where it would refuse it (deepseek-replay.ts).
+  const options = model.provider === "openrouter"
+    ? { ...rest, onPayload: async (payload: unknown, at: Model<Api>) => deepseekPayload(at, (await rest.onPayload?.(payload, at)) ?? payload, avoidDeepseekHost === true) }
+    : rest;
   if (credentials.identity) {
     const target = upstream(model);
     const callOptions = identityOptions(model, { ...options, headers: { ...options?.headers, ...modelHeaders } }, credentials.apiKey);
