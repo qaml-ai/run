@@ -82,7 +82,7 @@ the old one.
 An admin tenant's other limits are fields of its entry in the tenants file. They're listed under `AGENT_TENANTS_FILE`
 in [Configuration](configuration.md), with their defaults in [Limits](../reference/limits.md):
 
-- `maxWatchers`, `maxDiscordServers` and `maxStorageGb`;
+- `maxWatchers`, `maxDiscordServers`, `maxVoiceSessions` and `maxStorageGb`;
 - `maxAgentCreatesPerMinute` and `maxRunsPerMinute`;
 - `maxRunResponses` and `maxRunSeconds`;
 - `codeCpuMs`, `codeMaxTimeoutMs` and `codeConcurrency`.

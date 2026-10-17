@@ -3080,7 +3080,7 @@ holds its cost of the subject's credit before it is transcribed, and running out
 
 | | |
 | --- | --- |
-| Live sessions per account | 10 (`AGENT_VOICE_SESSIONS_PER_TENANT`) |
+| Live sessions per account | 10 (`AGENT_VOICE_SESSIONS_PER_TENANT`; an operator can set an account's own, `maxVoiceSessions`) |
 | Sessions per bot and server | 1 |
 | Session length | `maxMinutes`, at most 720 |
 | Utterance | 300 ms to 30 s |

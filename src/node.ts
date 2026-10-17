@@ -870,7 +870,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     followStreaming: (agent, tenant, requestId, signal) => followStreamingAnywhere(agent, tenant, requestId, signal),
     // A session's subject pays from its bucket, where the tenant meters its end users (end-user-credits.ts).
     credit: endUsers,
-    perTenant: () => config.voice.perTenant, perNode: config.voice.perNode,
+    perTenant: tenant => tenants.maxVoiceSessions(tenant) ?? config.voice.perTenant, perNode: config.voice.perNode,
   });
   // An agent loaded on another node: this node's idle watchers of it end, and reconnect to that node.
   // A tenant's webhook endpoints changed on some node: read them again at its next run.
