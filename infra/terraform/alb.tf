@@ -114,12 +114,14 @@ resource "aws_lb_target_group" "runtime" {
     # finishing turns: scale-in protection does not stop ECS replacing a task
     # that fails ALB health checks). 503 only during the SIGTERM drain, after
     # deregistration.
+    # A new task serves after two passes 5 s apart (10 s, was 20 s at 10 s intervals), which is what a deploy waits
+    # for; a task is taken out after three failures (15 s), so one slow answer under load does not do it.
     path                = "/healthz"
     matcher             = "200"
-    interval            = 10
-    timeout             = 5
+    interval            = 5
+    timeout             = 4
     healthy_threshold   = 2
-    unhealthy_threshold = 2
+    unhealthy_threshold = 3
   }
 
   tags = { Name = var.name }

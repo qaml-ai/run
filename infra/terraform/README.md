@@ -30,6 +30,10 @@ else is here.
 
 ## Plan and apply
 
+`infra/apply.sh` does all of this with guards (it fetches prod.tfvars, lists every change and the task
+definition's environment changes, refuses deletes and replacements not named in `ALLOW_DESTROY`, and applies
+only after you type `apply`; `PLAN_ONLY=1` stops at the plan). By hand:
+
 ```sh
 cd infra/terraform
 tofu init
@@ -134,7 +138,7 @@ and the RDS instance also have deletion protection in AWS.
   `ecs:DescribeServices` on this service, and ECS Exec. To get a shell:
   `aws ecs execute-command --region us-west-2 --cluster camelai-agent-runtime --task <id> --container agent-runtime --interactive --command sh`.
 - **Scaling**. Target tracking holds average CPU at 60% and average memory at 70%,
-  within `service_min_count`..`service_max_count` (2..10). Scale-in has a
+  within `service_min_count`..`service_max_count` (3..20; three so that losing a task or an AZ leaves two). Scale-in has a
   5-minute cooldown. `ecs.tf` has a commented example of scaling on an
   `AgentRuntime` EMF metric instead: `hostedAgents` (agents started per task,
   what `AGENT_MAX_AGENTS` caps), Average, dimension `ServiceName` (the task
@@ -190,7 +194,10 @@ and the RDS instance also have deletion protection in AWS.
 - **Deployments** are rolling: `minimumHealthyPercent` 100 and `maximumPercent`
   200. The circuit breaker rolls back automatically if new tasks never pass
   `/healthz`. It counts failed task launches, not time, so old tasks that stay
-  protected for hours never trip it. A deployment's `rolloutState` stays
+  protected for hours never trip it. Deployment alarms cover a release that passes `/healthz` but fails
+  requests: `-target-5xx` or `-unhealthy-hosts` going off while a deployment is in progress rolls it back
+  too (`ecs.tf`, `alarms`). The target group checks `/healthz` every 5 s: a new task serves after two
+  passes, a task is taken out after three failures. A deployment's `rolloutState` stays
   `IN_PROGRESS` until its last old task is gone: up to `AGENT_RETIRE_MAX_MS`
   (20 min) + 15 s + 120 s, usually the longest step in flight. The runtime notices a newer deployment and retires
   itself once idle. Don't make CI wait on `services-stable` or on
@@ -339,11 +346,11 @@ history.
 
 | Item | Estimate |
 |---|---|
-| Fargate ARM64, 2 tasks × 1 vCPU / 2 GB (730 h) | ~$58 (each extra task ~$29) |
-| Public IPv4: 2 tasks + 4 ALB addresses ($3.65 each) | ~$22 |
+| Fargate ARM64, 3 tasks × 1 vCPU / 2 GB (730 h) | ~$87 (each extra task ~$29) |
+| Public IPv4: 3 tasks + 4 ALB addresses ($3.65 each) | ~$26 |
 | ALB hour + LCUs (light traffic) | ~$22 |
 | CloudWatch Logs, Container Insights, 4 alarms | ~$10 |
-| **ECS runtime total at minimum** | **~$112** |
+| **ECS runtime total at minimum** | **~$145** |
 
 ## Secrets
 

@@ -114,9 +114,9 @@ variable "task_memory" {
 }
 
 variable "service_min_count" {
-  description = "Minimum (and initial) number of runtime tasks. Two, one per AZ; CPU and memory autoscaling add tasks up to service_max_count under load."
+  description = "Minimum (and initial) number of runtime tasks. Three, one per AZ (ECS spreads and rebalances them), so losing a task or an AZ leaves two; CPU and memory autoscaling add tasks up to service_max_count under load."
   type        = number
-  default     = 2
+  default     = 3
 }
 
 variable "service_max_count" {
