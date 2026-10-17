@@ -307,7 +307,7 @@ test("a call whose end never arrived lapses after a day into a charge for its es
   const old = Date.now() - 25 * 60 * 60_000;
   const lost = randomUUID(), errored = randomUUID(), fresh = randomUUID();
   for (const [id, at] of [[lost, old], [errored, old], [fresh, Date.now()]] as const)
-    await attempts.event("payg", "agent", true, true, { type: "begin", id, provider: "openrouter", model: "anthropic/claude-opus-4.1", kind: "response", at, keyHash, estimate: { inputTokens: 10_000, maxOutputTokens: 1000 } });
+    await attempts.event("payg", "agent", true, true, { type: "begin", id, provider: "openrouter", model: "anthropic/claude-opus-4.1", kind: "response", at, keyHash, estimate: { inputTokens: 10_000, maxOutputTokens: 1000, rates: { input: 15, output: 75 } } });
   // A provider error before any output: the host reports the end, with nothing billed.
   await attempts.event("payg", "agent", true, true, { type: "finish", id: errored, usage: { input: 0, output: 0 }, chars: 0, completed: false });
   await db.query("update model_attempts set next_check_at=0");
