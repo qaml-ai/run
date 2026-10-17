@@ -1,13 +1,40 @@
 # alarms for the load-balanced service. CloudWatch alarms can only notify
 # an SNS topic in their own region, so these use a us-west-2 twin of the
 # us-east-1 alerts topic (monitoring.tf). Subscribe to both.
+#
+# Two kinds, each with its topic in each region: critical (users are failing now:
+# `-alerts-critical`, meant to page) and warning (worth a look today: `-alerts`).
+# Email subscriptions are made by hand (README.md, "Alarms"); alerts_pager_url
+# subscribes a pager to the critical topics.
 
 resource "aws_sns_topic" "alerts_regional" {
   name = "${var.name}-alerts"
 }
 
+resource "aws_sns_topic" "alerts_critical_regional" {
+  name = "${var.name}-alerts-critical"
+}
+
+variable "alerts_pager_url" {
+  description = "HTTPS endpoint the critical alerts topics post to (a PagerDuty CloudWatch integration URL, which confirms itself), or null for none."
+  type        = string
+  default     = null
+  sensitive   = true
+}
+
+resource "aws_sns_topic_subscription" "alerts_pager_regional" {
+  count                  = var.alerts_pager_url != null ? 1 : 0
+  topic_arn              = aws_sns_topic.alerts_critical_regional.arn
+  protocol               = "https"
+  endpoint               = var.alerts_pager_url
+  endpoint_auto_confirms = true
+}
+
 locals {
+  # Warning: worth a look today.
   alarm_topics = [aws_sns_topic.alerts_regional.arn]
+  # Critical: users are failing now.
+  critical_topics = [aws_sns_topic.alerts_critical_regional.arn]
   alb_dimensions = {
     LoadBalancer = aws_lb.runtime.arn_suffix
     TargetGroup  = aws_lb_target_group.runtime.arn_suffix
@@ -26,8 +53,8 @@ resource "aws_cloudwatch_metric_alarm" "alb_unhealthy_hosts" {
   threshold           = 0
   comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
-  alarm_actions       = local.alarm_topics
-  ok_actions          = local.alarm_topics
+  alarm_actions       = local.critical_topics
+  ok_actions          = local.critical_topics
 }
 
 # 5xx the ALB generates itself (no healthy target, target reset or timeout).
@@ -47,22 +74,7 @@ resource "aws_cloudwatch_metric_alarm" "alb_5xx" {
   ok_actions          = local.alarm_topics
 }
 
-resource "aws_cloudwatch_metric_alarm" "target_5xx" {
-  alarm_name          = "${var.name}-target-5xx"
-  alarm_description   = "Runtime tasks returned 5xx"
-  namespace           = "AWS/ApplicationELB"
-  metric_name         = "HTTPCode_Target_5XX_Count"
-  dimensions          = local.alb_dimensions
-  statistic           = "Sum"
-  period              = 300
-  evaluation_periods  = 1
-  threshold           = 25
-  comparison_operator = "GreaterThanThreshold"
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = local.alarm_topics
-  ok_actions          = local.alarm_topics
-}
-
+# Task 5xx: the API availability SLO's burn-rate alarms (slo.tf) count them, with the ALB's own.
 # Container Insights metric (var.container_insights must stay enabled).
 resource "aws_cloudwatch_metric_alarm" "running_tasks" {
   alarm_name          = "${var.name}-running-tasks"
@@ -76,8 +88,8 @@ resource "aws_cloudwatch_metric_alarm" "running_tasks" {
   threshold           = var.service_min_count
   comparison_operator = "LessThanThreshold"
   treat_missing_data  = "breaching"
-  alarm_actions       = local.alarm_topics
-  ok_actions          = local.alarm_topics
+  alarm_actions       = local.critical_topics
+  ok_actions          = local.critical_topics
 }
 
 # The runtime logs {"type": ...} JSON lines when it cannot protect its task or

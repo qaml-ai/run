@@ -10,6 +10,11 @@ terraform {
       source  = "cloudflare/cloudflare"
       version = "~> 5.0"
     }
+    # The synthetic check's Lambda package (synthetic.tf).
+    archive = {
+      source  = "hashicorp/archive"
+      version = "~> 2.7"
+    }
   }
 
   # Shared state; OpenTofu locks it with a lock object next to the state (no DynamoDB).

@@ -19,48 +19,7 @@ variable "tenant_spend_alarm_usd_per_hour" {
   default     = 50
 }
 
-# Over 40% of turns failed in each of two 15-minute windows (with at least 5 turns in each). A normal day fails
-# 10-20% of turns, and at a few turns a minute two or three failures move a 5-minute share past 20%; the
-# 5-minute, 20% version of this alarm flapped for a minute at a time most days. The 30-minute share peaked at 29%
-# in the week to 2026-10-12, and 15-minute windows with 5 turns cover most hours where 5-minute windows with
-# 10 covered few. A full outage raises it in about 20 minutes.
-resource "aws_cloudwatch_metric_alarm" "turn_failures" {
-  alarm_name          = "${var.name}-turn-failures"
-  alarm_description   = "Over 40% of turns failed in each of two 15-minute windows (turn_metrics Outcome=failed, at least 5 turns; see the dashboard's error classes)"
-  evaluation_periods  = 2
-  threshold           = 0.4
-  comparison_operator = "GreaterThanThreshold"
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = local.alarm_topics
-  ok_actions          = local.alarm_topics
-
-  metric_query {
-    id          = "rate"
-    expression  = "IF(total >= 5, failed / total, 0)"
-    label       = "Failed turn share"
-    return_data = true
-  }
-  metric_query {
-    id = "failed"
-    metric {
-      namespace   = "AgentRuntime"
-      metric_name = "Turns"
-      dimensions  = merge(local.runtime_metric, { Outcome = "failed" })
-      stat        = "Sum"
-      period      = 900
-    }
-  }
-  metric_query {
-    id = "total"
-    metric {
-      namespace   = "AgentRuntime"
-      metric_name = "Turns"
-      dimensions  = local.runtime_metric
-      stat        = "Sum"
-      period      = 900
-    }
-  }
-}
+# Failed turns: the turn success SLO (slo.tf) alarms on the share the platform caused, by burn rate.
 
 # Providers refusing for rate or load: the free tier has no fallback model.
 resource "aws_cloudwatch_metric_alarm" "model_rate_limited" {
@@ -113,26 +72,11 @@ resource "aws_cloudwatch_metric_alarm" "runs_uncertain" {
   threshold           = 1
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
-  alarm_actions       = local.alarm_topics
-  ok_actions          = local.alarm_topics
+  alarm_actions       = local.critical_topics
+  ok_actions          = local.critical_topics
 }
 
-# Slow first tokens: the provider is slow, or turns queue for the node.
-resource "aws_cloudwatch_metric_alarm" "first_token_slow" {
-  alarm_name          = "${var.name}-first-token-slow"
-  alarm_description   = "p90 time to first token over 60 s for 15 minutes"
-  namespace           = "AgentRuntime"
-  metric_name         = "TimeToFirstTokenMs"
-  dimensions          = local.runtime_metric
-  extended_statistic  = "p90"
-  period              = 300
-  evaluation_periods  = 3
-  threshold           = 60000
-  comparison_operator = "GreaterThanThreshold"
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = local.alarm_topics
-  ok_actions          = local.alarm_topics
-}
+# Slow first tokens: the time-to-first-token SLO (slo.tf) alarms on the share over 30 s, by burn rate.
 
 # Webhook deliveries waiting: receivers down or slow. Run events settle threads and
 # usage events bill them, so ten minutes behind is worth a look.
@@ -207,8 +151,8 @@ resource "aws_cloudwatch_metric_alarm" "model_billing_errors" {
   threshold           = 2
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
-  alarm_actions       = local.alarm_topics
-  ok_actions          = local.alarm_topics
+  alarm_actions       = local.critical_topics
+  ok_actions          = local.critical_topics
 }
 
 # A task near its memory: inline hosting keeps every agent of the task in one process.

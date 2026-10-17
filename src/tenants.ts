@@ -162,6 +162,8 @@ export class Tenants {
   }
 
   has(id: string) { return this.byId.has(id); }
+  /** Every tenant of the file, by id. */
+  ids() { return [...this.byId.keys()]; }
 
   /** The GitHub login an admin linked to `tenant`, if any. */
   github(tenant: string) { return this.byId.get(tenant)?.github; }

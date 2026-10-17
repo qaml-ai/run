@@ -49,6 +49,11 @@ output "ecs" {
   }
 }
 
+output "alerts_critical_topic_arns" {
+  description = "Critical alerts topics (us-west-2: the runtime's alarms; us-east-1: the health check's). Subscribe a pager (alerts_pager_url) or an email to both."
+  value       = { "us-west-2" = aws_sns_topic.alerts_critical_regional.arn, "us-east-1" = aws_sns_topic.alerts_critical.arn }
+}
+
 output "alerts_topic_arn_regional" {
   description = "us-west-2 alerts topic for the ALB/ECS alarms; subscribe like alerts_topic_arn (with --region us-west-2)."
   value       = aws_sns_topic.alerts_regional.arn

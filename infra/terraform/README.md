@@ -229,15 +229,27 @@ tofu import aws_cloudwatch_log_group.database_proxy /aws/rds/proxy/camelai-agent
 
 ## Alarms
 
+Alarms are **critical** (users are failing now: meant to page) or **warning** (worth a look today). Each kind has a
+topic in each region: `camelai-agent-runtime-alerts-critical` and `camelai-agent-runtime-alerts` (us-west-2 for the
+runtime's alarms, us-east-1 for the health check's; outputs `alerts_critical_topic_arns`, `alerts_topic_arn_regional`,
+`alerts_topic_arn`).
+
+- **Routing.** Email subscriptions are made by hand (`aws sns subscribe ... --protocol email`). `alerts_pager_url` (a
+  PagerDuty CloudWatch integration URL, kept in prod.tfvars) subscribes a pager to both critical topics; PagerDuty
+  confirms the subscription itself. `alerts_slack_team_id` and `alerts_slack_channel_id` (chatbot.tf) post all four
+  topics to a Slack channel; the workspace is authorized in AWS Chatbot already (the billing channel uses it).
+- **Critical:** `-healthz`, `-unhealthy-hosts`, `-running-tasks`, `-runs-uncertain`, `-model-billing-errors`, the SLOs'
+  `-slo-*-critical`, `-limits-<tenant>-critical`, `-limits-<tenant>-end-user-credit`, `-tenant-limits-critical` and
+  `-synthetic`. Everything else is a warning.
+
 - **Route 53** (`monitoring.tf`, us-east-1): an HTTPS health check on
   `agents.camelai.dev/healthz` (by hostname, so it checks through Cloudflare and the ALB). The
-  `-healthz` alarm notifies the us-east-1 topic `camelai-agent-runtime-alerts`
-  (output `alerts_topic_arn`). Route 53 health check metrics exist only in
-  us-east-1, so the alarm and topic live there.
+  `-healthz` alarm notifies the us-east-1 topic `camelai-agent-runtime-alerts-critical`.
+  Route 53 health check metrics exist only in us-east-1, so the alarm and topic live there.
 - **ALB and ECS** (`alarms.tf`, us-west-2):
   - `-unhealthy-hosts`: `UnHealthyHostCount > 0` for 3 minutes;
-  - `-alb-5xx`: more than 10 ALB-generated 5xx in 5 minutes;
-  - `-target-5xx`: more than 25 task 5xx in 5 minutes;
+  - `-alb-5xx`: more than 10 ALB-generated 5xx in 5 minutes. Task 5xx have no alarm of their own: the API
+    availability SLO counts both;
   - `-running-tasks`: `RunningTaskCount` below the minimum for 5 minutes. This
     needs Container Insights.
   - `-ecs-control-errors`: at least 3 runtime log lines of type
@@ -270,10 +282,6 @@ tofu import aws_cloudwatch_log_group.database_proxy /aws/rds/proxy/camelai-agent
     `tenant_spend_alarm_usd_per_hour` ($50) in an hour. A Metrics Insights query
     (`SELECT SUM(ModelCostUsd) … GROUP BY Tenant ORDER BY SUM() DESC LIMIT 1`)
     takes the top tenant each hour; the dashboard's cost by tenant says which;
-  - `-turn-failures`: over 40% of turns failed in each of two 15-minute
-    windows, each with at least 5 turns (`Turns`, `Outcome=failed`). A normal
-    day fails 10-20% of turns; the dashboard's failed turns by error class says
-    which kind rose;
   - `-model-billing-errors`: 2 or more runs on the platform's keys failed for
     credit in 15 minutes (`ModelBillingFailures`, `KeyOwner=platform`:
     provider 402s such as OpenRouter's "requires more credits, or fewer
@@ -291,6 +299,38 @@ tofu import aws_cloudwatch_log_group.database_proxy /aws/rds/proxy/camelai-agent
   CloudWatch alarms can only notify a topic in their own region, so these use
   the us-west-2 topic `camelai-agent-runtime-alerts` (output
   `alerts_topic_arn_regional`). Subscribe to both topics.
+
+- **SLOs** (`slo.tf`, dashboard `camelai-agent-runtime-slo`). Each is a good share over a 30-day error budget; its
+  burn rate is the bad share divided by the budget (1 spends it in exactly 30 days). `-slo-<slo>-critical` is a
+  composite of burn over 14.4 in the hour so far and in 5 minutes; `-slo-<slo>-warning`, of burn over 6 in 6 hours
+  and in 30 minutes. Windows are clock-aligned periods; a window with too few events burns nothing. The
+  `-slo-<slo>-burn-<window>` alarms are their parts and notify no one.
+  - `api` (99.9%): task and ALB 5xx of all requests. Critical at 1.44% for an hour. Look at the launch dashboard's
+    load balancer widget and the runtime's errors table.
+  - `turns` (97%): turns failed for a cause of ours (`Turns`, `Fault=platform`) of all turns. Critical at 43% for an
+    hour. `filter type = "turn_metrics" and Fault = "platform" | stats count() by ErrorClass, Provider, Model,
+    stopCode` says which. A provider's 402 on the platform's keys is `-model-billing-errors`, not this.
+  - `first_token` (97%): turns whose first token took over 30 s (`SlowFirstTokens` of `FirstTokens`). A slow
+    provider (by `Provider, Model`) or turns queued for busy nodes (the saturation widget).
+- **Limits** (`limits.tf`). `limit_refused` counts every request the API refuses at a limit, by `Limit` and `Tenant`;
+  `tenant_limits` reports, every 5 minutes, each tenants-file tenant's definitions, busy agents and monthly spend as
+  a percent of its limits. For each of `operator_tenants` (camel-bots, chiridion-prod):
+  - `-limits-<tenant>-warning`: any refusal at a limit other than its end users' credit in 5 minutes;
+    `-limits-<tenant>-critical`: 5 or more in each of two 5-minute periods. The SLO dashboard's operator refusals
+    say which limit. Raise it in the tenants file (`infra/tenant.sh`), or remove what fills it (unused definitions:
+    `GET /v1/definitions?unused=true`).
+  - `-limits-<tenant>-end-user-credit`: over half of its runs refused for its end users' credit in each of two
+    15-minute windows: a rollout or bucket gone wrong, not people out of credit. `filter type = "limit_refused" and
+    Limit = "endUserCredit" | stats count() by reason`.
+  - `-tenant-limits-warning` / `-critical`: some tenants-file tenant uses 70% / 85% of a limit, two readings in a
+    row. The dashboard's limits widget says which limit; `filter type = "tenant_limits" and TenantLimitUsedPct >= 70`
+    says which tenant.
+- **Synthetic check** (`synthetic.tf`, off until `synthetic_enabled`): every 5 minutes a Lambda outside the VPC
+  calls `run.camelai.com` as a customer (GET `/healthz`, then one stateless run of a short model turn on
+  `synthetic_model`) as the tenants-file tenant `synthetic_tenant`. `-synthetic` (critical) fires when two checks
+  in a row fail or none ran. Its log group `/aws/lambda/camelai-agent-runtime-synthetic` has one `synthetic_check`
+  line per check with the failed step and the API's status and code. To turn it on: `infra/tenant.sh add synthetic`
+  (it stores the operator token the Lambda reads), then `synthetic_enabled = true`.
 
 ## Deploying
 
@@ -373,9 +413,8 @@ resource IDs and ARNs but no secret values.
 
 ## Known gaps
 
-- Both `camelai-agent-runtime-alerts` topics have one email subscription that
-  is still pending confirmation (checked 2026-09-24), so alarms reach no one
-  until it is confirmed.
+- Both `camelai-agent-runtime-alerts` topics have one confirmed email subscription (checked 2026-10-17); the
+  `-alerts-critical` topics have none until `alerts_pager_url` is set or an email is subscribed.
 
 ## Hostnames
 

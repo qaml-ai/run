@@ -1,7 +1,9 @@
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
-import { deliveryLine, errorClass, metricLine, observeTurns, recordEventMetrics, recordWatchRefused, setMetricService, setMetricSink, webhookBacklogLine } from "../src/metrics.ts";
+import { deliveryLine, errorClass, limitOf, metricLine, observeTurns, recordEventMetrics, recordLimitRefused, recordTenantLimits, recordWatchRefused, setMetricService, setMetricSink, turnFault, webhookBacklogLine } from "../src/metrics.ts";
+import { HttpError } from "../src/http.ts";
+import { RateLimited } from "../src/rate-limits.ts";
 import { webhookEvent } from "../src/webhooks.ts";
 
 /** Capture the metric lines written while `fn` runs. */
@@ -104,7 +106,59 @@ test("a turn's line: its outcome, duration, time to first token, model responses
   assert.equal(turn.ToolCalls, 2);
   assert.equal(turn.ToolErrors, 1);
   assert.deepEqual(directive(turn).Dimensions.map((set: string[]) => set.filter(name => name !== "ServiceName")),
-    [[], ["Outcome"], ["ErrorClass"], ["Provider", "Model"]]);
+    [[], ["Outcome"], ["ErrorClass"], ["Provider", "Model"], ["Fault"]]);
+  assert.equal(turn.Fault, "none");
+  assert.deepEqual([turn.FirstTokens, turn.SlowFirstTokens], [1, 0], "a first token within 30 s");
+});
+
+test("a failed turn's fault: the caller's for an abort, a refusal, a context too long, the tenant's key or credit; else ours", () => {
+  assert.equal(turnFault("completed", "none"), "none");
+  assert.equal(turnFault("spend_limit", "none"), "none");
+  for (const error of ["refusal", "context_overflow", "auth", "billing"]) assert.equal(turnFault("failed", error), "caller", error);
+  assert.equal(turnFault("failed", "other", "aborted"), "caller");
+  assert.equal(turnFault("failed", "other", "output_missing"), "caller");
+  for (const error of ["other", "exception", "stream_stalled", "network", "timeout", "provider_5xx", "overloaded", "rate_limit", "runtime_restart"]) assert.equal(turnFault("failed", error), "platform", error);
+});
+
+test("a slow first token counts against the SLO; an aborted turn is the caller's, with its code", async () => {
+  let now = 0;
+  const turns = observeTurns(() => ({ provider: "anthropic", id: "claude-sonnet-5" }), () => now);
+  const lines = await captured(async () => {
+    await turns.wrap(async () => {
+      now += 31_000;
+      turns.event({ type: "message_update", message: { role: "assistant" } });
+      return { messages: 1, error: "The run was aborted", code: "aborted" };
+    })("prompt", {});
+  });
+  const turn = lines.find(line => line.type === "turn_metrics");
+  assert.deepEqual([turn.Outcome, turn.Fault, turn.stopCode, turn.FirstTokens, turn.SlowFirstTokens], ["failed", "caller", "aborted", 1, 1]);
+});
+
+test("limits: the errors that are a limit's refusal, by name; a run's own spend limit is none", () => {
+  assert.equal(limitOf(new HttpError(409, "A tenant can have at most 200 definitions", "DEFINITIONS_LIMIT")), "definitions");
+  assert.equal(limitOf(new HttpError(429, "busy", "BUSY_AGENT_LIMIT")), "busyAgents");
+  assert.equal(limitOf(new HttpError(402, "out", "END_USER_CREDIT")), "endUserCredit");
+  assert.equal(limitOf(Object.assign(new HttpError(503, "Agent capacity reached"), { refusedLimit: "agentsPerNode" })), "agentsPerNode");
+  assert.equal(limitOf(new HttpError(402, "This tenant has reached its monthly spend limit of $10.00 ($10.20 spent this UTC month)", "SPEND_LIMIT")), "monthlySpend");
+  assert.equal(limitOf(new HttpError(402, "This account is out of credit (balance $0.00), so runs cannot start")), "credit");
+  assert.equal(limitOf(new HttpError(429, "This account has reached its spending limit on free credit: $1 in the last hour")), "freeCredit");
+  assert.equal(limitOf(new RateLimited({ name: "runs", scope: "tenant", max: 600, windowSeconds: 60 }, 5, "slow down")), "rateLimit:runs");
+  assert.equal(limitOf(new RateLimited({ name: "api_requests", scope: "ip", max: 600, windowSeconds: 60 }, 5, "slow down")), undefined, "a per-address limit is no tenant's");
+  assert.equal(limitOf(new HttpError(402, "Making this image costs about $0.04, more than the $0.01 left of this run's spend limit", "SPEND_LIMIT")), undefined);
+  assert.equal(limitOf(new HttpError(404, "Unknown agent")), undefined);
+  assert.equal(limitOf(undefined), undefined);
+});
+
+test("limit refusals by limit and tenant; tenants' use of their limits in percent", async () => {
+  const lines = await captured(() => {
+    recordLimitRefused({ tenant: "camel-bots", limit: "definitions", status: 409 });
+    recordTenantLimits("camel-bots", { definitions: { used: 150, limit: 200 }, busyAgents: { used: 1, limit: 3 }, monthlySpend: undefined, none: { used: 1, limit: 0 } });
+  });
+  const refused = lines.find(line => line.type === "limit_refused");
+  assert.deepEqual([refused.Limit, refused.Tenant, refused.LimitRefusals, refused.status], ["definitions", "camel-bots", 1, 409]);
+  assert.deepEqual(directive(refused).Dimensions, [["Limit"], ["Tenant", "Limit"]]);
+  const used = lines.filter(line => line.type === "tenant_limits").map(line => [line.Limit, line.TenantLimitUsedPct]);
+  assert.deepEqual(used, [["definitions", 75], ["busyAgents", 33.3]], "a limit not set, or of 0, is left out");
 });
 
 test("turn outcomes: a model error, input required, the spend limit, a thrown error; other methods are not turns", async () => {
@@ -216,10 +270,30 @@ test("the spend, provider-credit and turn-failure alarms read metrics as the run
   const alarm = (name: string) => terraform.slice(terraform.indexOf(`resource "aws_cloudwatch_metric_alarm" "${name}"`)).split("\n}\n")[0];
   // The billing-errors alarm counts runs on the platform's keys refused for credit (model_billing_failed, KeyOwner platform), never a tenant's own.
   for (const setting of [/metric_name\s+= "ModelBillingFailures"/, /KeyOwner = "platform"/, /period\s+= 900\n/, /threshold\s+= 2\n/, /comparison_operator = "GreaterThanOrEqualToThreshold"/]) assert.match(alarm("model_billing_errors"), setting);
-  // The turn-failures alarm divides the {ServiceName, Outcome} set's failed turns by the {ServiceName} set's turns.
-  assert.ok(directive(turn).Dimensions.some((set: string[]) => set.join() === "ServiceName,Outcome"));
+  // The turn success SLO (slo.tf) divides the {ServiceName, Fault} set's platform failures by the {ServiceName} set's
+  // turns; the time-to-first-token SLO, SlowFirstTokens by FirstTokens in the {ServiceName} set.
+  assert.ok(directive(turn).Dimensions.some((set: string[]) => set.join() === "ServiceName,Fault"));
   assert.ok(directive(turn).Dimensions.some((set: string[]) => set.join() === "ServiceName"));
-  const failures = alarm("turn_failures");
-  for (const setting of [/IF\(total >= 5, failed \/ total, 0\)/, /evaluation_periods\s+= 2\n/, /threshold\s+= 0\.4\n/, /Outcome = "failed"/]) assert.match(failures, setting);
-  assert.equal(failures.match(/period\s+= 900\n/g)?.length, 2);
+  assert.equal(turn.Fault, "caller", "a 402 on a key is billing: the turn alarm leaves it to the billing-errors alarm");
+  const slo = readFileSync(new URL("../infra/terraform/slo.tf", import.meta.url), "utf8");
+  assert.match(slo, /name = "Turns", dimensions = merge\(local\.runtime_metric, \{ Fault = "platform" \}\)/);
+  assert.match(slo, /name = "SlowFirstTokens", dimensions = local\.runtime_metric/);
+  assert.match(slo, /name = "FirstTokens", dimensions = local\.runtime_metric/);
+  const slow = (await captured(() => {
+    const timed = observeTurns(() => ({ provider: "openrouter", id: "m" }));
+    return timed.wrap(async () => { timed.event({ type: "message_update", message: { role: "assistant" } }); return { messages: 1, error: null }; })("prompt", {});
+  })).find(line => line.type === "turn_metrics");
+  assert.deepEqual(directive(slow).Metrics.filter((metric: any) => /FirstTokens$/.test(metric.Name)).map((metric: any) => metric.Name), ["FirstTokens", "SlowFirstTokens"]);
+  // The limits alarms (limits.tf) read LimitRefusals and TenantLimitUsedPct in the {ServiceName, Tenant, Limit} set.
+  const limits = readFileSync(new URL("../infra/terraform/limits.tf", import.meta.url), "utf8");
+  setMetricService("camelai-agent-runtime");
+  const limitLines = await captured(() => {
+    recordLimitRefused({ tenant: "camel-bots", limit: "definitions", status: 409 });
+    recordTenantLimits("camel-bots", { definitions: { used: 1, limit: 2 } });
+  }).finally(() => setMetricService(undefined));
+  for (const line of limitLines) assert.ok(directive(line).Dimensions.some((set: string[]) => set.join() === "ServiceName,Tenant,Limit"), line.type);
+  assert.match(limits, /SELECT SUM\(LimitRefusals\) FROM SCHEMA\(AgentRuntime, ServiceName, Tenant, Limit\)/);
+  assert.match(limits, /SELECT MAX\(TenantLimitUsedPct\) FROM SCHEMA\(AgentRuntime, ServiceName, Tenant, Limit\)/);
+  assert.match(limits, /Limit = "endUserCredit"/);
+  assert.equal(limitOf(new HttpError(402, "out", "END_USER_CREDIT")), "endUserCredit", "the name limits.tf's end-user credit alarm reads");
 });
