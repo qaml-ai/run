@@ -309,6 +309,16 @@ resource "aws_ecs_service" "runtime" {
     rollback = true
   }
 
+  # The breaker catches tasks that never get healthy; these catch a release whose tasks pass /healthz but fail
+  # requests. Either alarm going off while a deployment is in progress rolls it back to the revision before (the
+  # alarms still notify). They are watched until the deployment completes, which includes waiting on protected
+  # old tasks, so a regression that shows within those minutes is caught.
+  alarms {
+    enable      = true
+    rollback    = true
+    alarm_names = [aws_cloudwatch_metric_alarm.target_5xx.alarm_name, aws_cloudwatch_metric_alarm.alb_unhealthy_hosts.alarm_name]
+  }
+
   network_configuration {
     subnets = data.aws_subnets.default.ids
     # No NAT: tasks reach model providers through the internet gateway.

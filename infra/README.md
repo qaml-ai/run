@@ -48,6 +48,8 @@ history has the cutover runbook.
 ## Scripts
 
 - `infra/ecs-deploy.sh`: build, push and deploy (see "Deploying changes").
+- `infra/apply.sh`: the guarded Terraform apply: production's prod.tfvars, a saved plan listing every change, no delete
+  or replacement unless named in `ALLOW_DESTROY`, applied only after you type `apply` (`PLAN_ONLY=1` stops at the plan).
 - `infra/tenant.sh`: tenants, operator tokens and provider keys in Secrets Manager.
 - `infra/github-oauth.sh`: stores the GitHub OAuth secret, then force-rolls the ECS service.
 - `infra/google-oauth.sh`: stores the Google OAuth client, then force-rolls the ECS service.
