@@ -32,8 +32,11 @@ export function definitionRoutes(route: Route, context: () => { definitions?: De
     if (!value) throw new HttpError(404, "Definitions are not enabled on this runtime");
     return value;
   };
-  route(createRoute({ method: "get", path: "/v1/definitions", responses: { 200: reply("The tenant's definitions", z.array(schema.Definition)) } }),
-    async c => json(c, 200, await service().list(c.var.principal.tenant)));
+  route(createRoute({
+    method: "get", path: "/v1/definitions",
+    request: { query: z.object({ unused: z.enum(["true", "false"]).optional().openapi({ description: "true: only definitions no live agent and no channel is made from (safe to delete)" }) }) },
+    responses: { 200: reply("The tenant's definitions", z.array(schema.Definition)) },
+  }), async c => json(c, 200, await service().list(c.var.principal.tenant, { unused: c.req.query("unused") === "true" })));
   route(createRoute({
     method: "post", path: "/v1/definitions",
     request: { headers: z.object({ "idempotency-key": z.string().optional().openapi({ description: "The definition's key: the same key is the same definition, set to this body (a new revision if it changes anything)" }) }), body: body(schema.DefinitionInput) },
