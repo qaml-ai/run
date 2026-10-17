@@ -68,6 +68,9 @@ locals {
     AGENT_ECS_SERVICE = local.service_name
     # ServiceName dimension on the AgentRuntime EMF metrics.
     AGENT_SERVICE_NAME = local.service_name
+    # Inline agents share the task's memory: past about two thirds of it a task starts no more of them and hands new
+    # work to a peer, below the -task-memory alarm (1.5 GB of 2) and well below the OOM kill.
+    AGENT_MEMORY_HIGH_BYTES = tostring(floor(var.task_memory * 0.65) * 1048576)
     # Tool sources (MCP servers, HTTP tools, web_fetch) never reach the VPC, on top of the private ranges the runtime always refuses.
     AGENT_OUTBOUND_BLOCK_CIDRS = data.aws_vpc.default.cidr_block
   })

@@ -67,7 +67,11 @@ without activity; the agent's process stops at the same point. When all
 the tenant's busy-agent limit per tenant), the least recently active idle
 agent is stopped to make room. If none is idle, creating or waking an agent is
 refused with 429 (the tenant's limit) or 503 (the node's), with `Retry-After`;
-the SDKs retry both.
+the SDKs retry both. With `AGENT_MEMORY_HIGH_BYTES` set, a node whose resident
+memory is above it starts no agent (one idle agent is stopped, and the start gets
+503) and takes no orphaned work. A run refused by the node's own limits (count or
+memory) while a live peer exists is handed back: the agent unloads and a node with
+room resumes it, instead of the run retrying where there is none.
 
 **Busy agents per tenant, across the fleet.** An agent is busy while it has a run
 open (running or queued). Each tenant may have a number of agents busy at once on

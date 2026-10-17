@@ -34,6 +34,8 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
   // Agents hosted per node (processes with AGENT_HOSTING=process, in-process hosts with inline), and busy per tenant across
   // the fleet for a tenant with no maxAgents of its own and no usage tier (one not prepaid).
   const maxAgents = positiveSetting("AGENT_MAX_AGENTS", 8);
+  // Resident memory past which a node starts no more agents (supervisor.ts, memoryHighBytes); unset, only the count limits it.
+  const memoryHighBytes = env.AGENT_MEMORY_HIGH_BYTES ? positiveSetting("AGENT_MEMORY_HIGH_BYTES", 1) : undefined;
   const maxAgentsPerTenant = positiveSetting("AGENT_MAX_AGENTS_PER_TENANT", Math.max(1, Math.ceil(maxAgents / 2)));
   // Definitions a tenant of the tenants file may have, unless its entry sets maxDefinitions.
   const maxDefinitionsPerTenant = positiveSetting("AGENT_MAX_DEFINITIONS_PER_TENANT", 5_000);
@@ -99,7 +101,7 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     publicUrlSet: !!env.AGENT_PUBLIC_URL,
     // Where browsers reach the runtime, as browser tokens say: AGENT_PUBLIC_URL unless set; empty for none.
     browserUrl: env.AGENT_BROWSER_URL?.replace(/\/+$/, ""),
-    maxAgents, maxAgentsPerTenant, maxDefinitionsPerTenant, drainMs, retireMaxMs, orphanMs, childSweepMs, wakesPerHour, hosting, toolTimeoutMs, runLimits, streamTimeouts, runRetentionSeconds, idleMs,
+    maxAgents, memoryHighBytes, maxAgentsPerTenant, maxDefinitionsPerTenant, drainMs, retireMaxMs, orphanMs, childSweepMs, wakesPerHour, hosting, toolTimeoutMs, runLimits, streamTimeouts, runRetentionSeconds, idleMs,
     leaseTtlMs: Number(env.AGENT_LEASE_TTL_MS ?? 90_000),
     runtime: env.AGENT_RUNTIME,
     serviceName: env.AGENT_SERVICE_NAME,

@@ -1529,7 +1529,7 @@ export class ClientSessions {
   private async canReserve(tenant: string) {
     const { quota } = await this.quota(tenant);
     if (quota && this.tenantAgents(tenant) >= quota && !this.idleAgent(session => session.header.tenant === tenant)) return false;
-    return !this.supervisor.full || !!this.idleAgent(() => true);
+    return !this.supervisor.memoryHigh && (!this.supervisor.full || !!this.idleAgent(() => true));
   }
 
   /**
@@ -1546,10 +1546,17 @@ export class ClientSessions {
     const evict = async (idle: Session | undefined) => { if (idle) await this.supervisor.stop(idle.header.id); return !!idle; };
     const reject = (status: 429 | 503, limit: string, value: number, message: string) => {
       console.log(JSON.stringify({ type: "quota_rejected", level: "info", tenant, agent: id, limit, value, source: limit === "agentsPerTenant" ? source : "node", status }));
-      return new HttpError(status, message);
+      // The node's own limits (its count, its memory), which a peer with room does not share (see `run`).
+      return Object.assign(new HttpError(status, message), status === 503 ? { nodeFull: true } : {});
     };
     for (;;) {
       if (this.supervisor.reserved.has(id) || this.supervisor.agents.has(id) || this.supervisor.starting.has(id)) return;
+      // Short of memory: one idle agent goes, which frees some once collected, and this start is refused (or handed to a
+      // peer, `run`). Stopping every idle agent for one start would not free memory any sooner.
+      if (this.supervisor.memoryHigh) {
+        await evict(this.idleAgent(() => true, id));
+        throw reject(503, "memory", Math.round(process.memoryUsage.rss() / 1_048_576), "This node is short of memory; retry");
+      }
       if (quota && this.tenantAgents(tenant, id) >= quota) {
         if (!await evict(this.idleAgent(session => session.header.tenant === tenant, id))) throw reject(429, "agentsPerTenant", quota, `This tenant already has ${quota} agents running; retry when one finishes`);
         continue;
@@ -3544,7 +3551,7 @@ export class ClientSessions {
    * even when no one acts on them. Every node sweeps; taking ownership decides which loads each.
    */
   async resumeOrphans(limit = 10) {
-    if (this.closed || this.draining || this.supervisor.full) return 0;
+    if (this.closed || this.draining || this.supervisor.full || this.supervisor.memoryHigh) return 0;
     const { rows } = await this.db.query(`
       select a.id, a.tenant from agents a
       where a.pending_runs and not a.revoked and a.purged_at is null and (a.expires_at is null or a.expires_at > $1)
@@ -4760,8 +4767,10 @@ export class ClientSessions {
           if (session.hosted && canonical(session.hosted) !== canonical(session.header.mounts ?? []) && this.supervisor.agents.has(session.header.id) && !session.starting) await this.supervisor.stop(session.header.id);
           await this.ensureStarted(session);
         } catch (error) {
-          // No room here for a run this node took over: another node with room takes it (see `handBack`).
+          // No room here for a run this node took over, or for any run while a live peer may have room the node lacks
+          // (its count or memory): another node with room takes it (see `handBack`), rather than the run retrying here.
           if (this.options.ownership && session.inherited?.has(record.id) && [429, 503].includes((error as { status?: number }).status ?? 0)) { await this.handBack(session); return false; }
+          if (this.options.ownership && (error as { nodeFull?: boolean }).nodeFull && await this.options.ownership.peer()) { await this.handBack(session); return false; }
           throw error;
         }
         return true;
