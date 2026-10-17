@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import type { Api, Context, Model } from "@earendil-works/pi-ai";
 import { openRouterApi } from "../src/catalog.ts";
 import { explicitKeyStream } from "../src/compaction.ts";
-import { deepseekContext, deepseekPayload, deepseekTarget, refusedReasoningReplay } from "../src/deepseek-replay.ts";
+import { deepseekContext, deepseekTarget, openRouterPayload, refusedReasoningReplay } from "../src/deepseek-replay.ts";
 import { errorClass } from "../src/metrics.ts";
 import { retriesModelError } from "../src/model-errors.ts";
-import { getModel } from "../src/pi-catalog.ts";
+import { getModel, openRouterRouting } from "../src/pi-catalog.ts";
 import { fakeModel, runtime, toolCall } from "./runtime-server.ts";
 
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
@@ -99,7 +99,8 @@ test("if DeepSeek's endpoint refuses anyway, the call is retried off it, and the
   const agent = (await r.call("/v1/agents", { body: { model: `openrouter/${FLASH.id}`, keyScope: "hosted", thinkingLevel: "high" } })).json.id;
   assert.equal((await r.prompt(agent, "Hi")).outcome.result.reply, "Retried.");
   assert.equal((await r.prompt(agent, "Hi again")).outcome.result.reply, "Later.");
-  assert.deepEqual(host.bodies.map(body => body.provider), [undefined, { ignore: ["deepseek"] }, { ignore: ["deepseek"] }]);
+  const preferred = { order: ["deepseek"], allow_fallbacks: true }, avoided = { allow_fallbacks: true, ignore: ["deepseek"] };
+  assert.deepEqual(host.bodies.map(body => body.provider), [preferred, avoided, avoided]);
 });
 
 test("the refusal is its own error class (alarmed), retried on OpenRouter, not from a tenant's endpoint", () => {
@@ -109,10 +110,26 @@ test("the refusal is its own error class (alarmed), retried on OpenRouter, not f
   assert.equal(retriesModelError(failed, { ownEndpoint: false }), true);
   assert.equal(retriesModelError(failed, { ownEndpoint: true }), false);
   assert.equal(retriesModelError({ ...failed, errorMessage: "400 invalid_prompt: something else" }, { ownEndpoint: false }), false);
-  // Kept off DeepSeek's endpoint only after a refusal, and only while reasoning.
+  // Kept off DeepSeek's endpoint only after a refusal, and only while reasoning: its ignore wins over the preference.
   const request = { model: FLASH.id, reasoning: { effort: "high" }, messages: [] };
-  assert.equal(deepseekPayload(FLASH, request, false), request);
-  assert.deepEqual((deepseekPayload(FLASH, { ...request, provider: { ignore: ["parasail"] } }, true) as any).provider, { ignore: ["parasail", "deepseek"] });
+  assert.deepEqual((openRouterPayload(FLASH, request, false) as any).provider, { order: ["deepseek"], allow_fallbacks: true });
+  assert.deepEqual((openRouterPayload(FLASH, { ...request, provider: { ignore: ["parasail"] } }, true) as any).provider, { allow_fallbacks: true, ignore: ["parasail", "deepseek"] });
   const off = { ...request, reasoning: { effort: "none" } };
-  assert.equal(deepseekPayload(FLASH, off, true), off);
+  assert.deepEqual((openRouterPayload(FLASH, off, true) as any).provider, { order: ["deepseek"], allow_fallbacks: true });
+});
+
+test("the platform's OpenRouter routing table: DeepSeek's endpoint first for DeepSeek's models, on Responses requests too", () => {
+  for (const id of ["deepseek/deepseek-v4.1-flash", "deepseek/deepseek-v4.1-flash-1017", "deepseek/deepseek-v4.1-flash:nitro", "~deepseek/deepseek-flash-latest"]) {
+    assert.deepEqual(openRouterRouting(id), { order: ["deepseek"], allow_fallbacks: true }, id);
+  }
+  assert.equal(openRouterRouting("moonshotai/kimi-k3"), undefined);
+  // A Responses request (input, not messages) gets it as a Chat Completions one does; a request's own routing wins
+  // where it says the same thing, and a model with no entry is as it was.
+  const responses = { model: OLD.id, input: [{ role: "user", content: [{ type: "input_text", text: "Hi" }] }], reasoning: { effort: "high" } };
+  assert.deepEqual((openRouterPayload({ ...OLD, api: "openai-responses" as Api }, responses, false) as any).provider, { order: ["deepseek"], allow_fallbacks: true });
+  assert.deepEqual((openRouterPayload(OLD, { ...responses, provider: { allow_fallbacks: false } }, false) as any).provider, { order: ["deepseek"], allow_fallbacks: false });
+  const kimi = getModel("openrouter", "moonshotai/kimi-k3")!;
+  assert.equal(openRouterPayload(kimi, responses, false), responses);
+  // Not the platform's catalog (a tenant's endpoint): as it was.
+  assert.equal(openRouterPayload({ ...OLD, provider: "chiridion" }, responses, false), responses);
 });

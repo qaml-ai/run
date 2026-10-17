@@ -204,7 +204,8 @@ In Python, `await agents.runtime.set_scope_key("org_abc123", "openrouter", api_k
   its Messages API for prompt caching: the same rule as on a tenant's endpoint.
   DeepSeek's keep its Chat Completions API (not on a tenant's endpoint), where every
   earlier turn's reasoning goes back as `reasoning_content`, which DeepSeek's own
-  API requires while it reasons.
+  API requires while it reasons, and ask OpenRouter for DeepSeek's own endpoint
+  first (`provider.order`, other hosts when it can't serve).
 - Each model call, compaction summaries included, takes the key of the agent's
   scope for the model's provider, else the tenant's own key, else the
   platform's (see above). It is read at the call, so a changed key applies
