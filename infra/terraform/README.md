@@ -304,7 +304,8 @@ runtime's alarms, us-east-1 for the health check's; outputs `alerts_critical_top
   burn rate is the bad share divided by the budget (1 spends it in exactly 30 days). `-slo-<slo>-critical` is a
   composite of burn over 14.4 in the hour so far and in 5 minutes; `-slo-<slo>-warning`, of burn over 6 in 6 hours
   and in 30 minutes. Windows are clock-aligned periods; a window with too few events burns nothing. The
-  `-slo-<slo>-burn-<window>` alarms are their parts and notify no one.
+  `slo-window-camelai-agent-runtime-<slo>-<window>` alarms are their parts and notify no one (named so camel-bots'
+  triage, which reads `camelai-agent-runtime-…`, skips them).
   - `api` (99.9%): task and ALB 5xx of all requests. Critical at 1.44% for an hour. Look at the launch dashboard's
     load balancer widget and the runtime's errors table.
   - `turns` (97%): turns failed for a cause of ours (`Turns`, `Fault=platform`) of all turns. Critical at 43% for an

@@ -76,10 +76,12 @@ locals {
   slo_children = merge([for slo, spec in local.slos : { for window, w in local.slo_windows : "${slo}-${window}" => merge(w, { slo = slo, window = window, spec = spec }) }]...)
 }
 
-# One alarm per SLO and window, with no actions: the composites below carry them.
+# One alarm per SLO and window, with no actions: the composites below carry them. Named slo-window-…, not after
+# var.name: camel-bots' triage files issues from alarms named camelai-agent-runtime-… (its TRIAGE_ALARM_PREFIXES), and
+# one window alone is not a problem.
 resource "aws_cloudwatch_metric_alarm" "slo_window" {
   for_each            = local.slo_children
-  alarm_name          = "${var.name}-slo-${each.value.slo}-burn-${each.value.window}"
+  alarm_name          = "slo-window-${var.name}-${each.value.slo}-${each.value.window}"
   alarm_description   = "${each.value.spec.title}: burn rate over ${each.value.burn} in the last ${each.value.window} (objective ${each.value.spec.objective * 100}%). One window of the ${each.value.severity} composite ${var.name}-slo-${each.value.slo}-${each.value.severity}."
   evaluation_periods  = 1
   threshold           = each.value.burn
