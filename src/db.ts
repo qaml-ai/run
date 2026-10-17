@@ -114,6 +114,9 @@ export async function databaseFromEnvironment(env = process.env): Promise<pg.Poo
   });
 }
 
+/** How often the listen connection is asked whether it is alive, and how long it has to answer. */
+const LIVENESS_MS = 30_000, LIVENESS_TIMEOUT_MS = 10_000;
+
 /**
  * Listen for notifications on each channel of `handlers` over one connection of its own, reconnecting
  * (with backoff) whenever it drops; each channel's handler gets its payloads. Configured as the pool is, except that
@@ -130,25 +133,32 @@ export async function listenFromEnvironment(handlers: Record<string, (payload: s
     if (env.AGENT_DATABASE_URL) {
       const url = new URL(env.AGENT_DATABASE_URL);
       if (ssl) for (const name of ["ssl", "sslmode", "sslrootcert", "sslcert", "sslkey", "uselibpqcompat"]) url.searchParams.delete(name);
-      return { connectionString: url.toString(), ...(ssl ? { ssl } : {}), keepAlive: true };
+      return { connectionString: url.toString(), ...(ssl ? { ssl } : {}), keepAlive: true, keepAliveInitialDelayMillis: 10_000 };
     }
     const login = JSON.parse(await secret!() || "{}");
     return { host: env.AGENT_DATABASE_LISTEN_HOST || env.AGENT_DATABASE_HOST, port: Number(env.AGENT_DATABASE_PORT ?? 5432), database: env.AGENT_DATABASE_NAME ?? "agent_runtime",
-      user: login.username, password: login.password, ...(ssl ? { ssl } : {}), keepAlive: true, connectionTimeoutMillis: 10_000 };
+      user: login.username, password: login.password, ...(ssl ? { ssl } : {}), keepAlive: true, keepAliveInitialDelayMillis: 10_000, connectionTimeoutMillis: 10_000 };
   };
-  let client: pg.Client | undefined, closed = false, backoff = 1_000, timer: ReturnType<typeof setTimeout> | undefined;
-  const connect = async () => {
+  let client: pg.Client | undefined, closed = false, backoff = 1_000, timer: ReturnType<typeof setTimeout> | undefined, alive: ReturnType<typeof setInterval> | undefined;
+  const schedule = (error?: Error) => {
     if (closed) return;
-    const next = new pg.Client(await config());
+    if (error) console.error(JSON.stringify({ type: "database_listen_failed", channels, error: error.message }));
+    timer = setTimeout(() => void connect(), backoff);
+    timer.unref();
+    backoff = Math.min(backoff * 2, 30_000);
+  };
+  // Every failure, the login's (a Secrets Manager read) included, comes back here and tries again: nothing ends the loop but close().
+  const connect = async (first = false) => {
+    if (closed) return;
+    let next: pg.Client;
+    try { next = new pg.Client(await config()); }
+    catch (error) { if (first) throw error; schedule(error as Error); return; }
     const retry = (error?: Error) => {
       if (client !== next) return;
       client = undefined;
+      clearInterval(alive);
       void next.end().catch(() => {});
-      if (closed) return;
-      if (error) console.error(JSON.stringify({ type: "database_listen_failed", channels, error: error.message }));
-      timer = setTimeout(() => void connect().catch(retry), backoff);
-      timer.unref();
-      backoff = Math.min(backoff * 2, 30_000);
+      schedule(error);
     };
     client = next;
     next.on("error", retry);
@@ -158,11 +168,21 @@ export async function listenFromEnvironment(handlers: Record<string, (payload: s
       await next.connect();
       for (const channel of channels) await next.query(`listen "${channel.replaceAll("\"", "")}"`);
       backoff = 1_000;
+      // A connection that went dark without a close (a failover's old address, a dropped NAT entry) sends no error until
+      // TCP gives up, which takes hours: ask it something every LIVENESS_MS, and start over when it does not answer.
+      clearInterval(alive);
+      alive = setInterval(() => {
+        if (client !== next) return;
+        const late = setTimeout(() => retry(new Error("liveness check timed out")), LIVENESS_TIMEOUT_MS);
+        late.unref();
+        next.query("select 1").then(() => clearTimeout(late), error => { clearTimeout(late); retry(error as Error); });
+      }, LIVENESS_MS);
+      alive.unref();
     } catch (error) { retry(error as Error); }
   };
-  await connect();
+  await connect(true);
   return {
-    async close() { closed = true; clearTimeout(timer); const current = client; client = undefined; await current?.end().catch(() => {}); },
+    async close() { closed = true; clearTimeout(timer); clearInterval(alive); const current = client; client = undefined; await current?.end().catch(() => {}); },
   };
 }
 
