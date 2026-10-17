@@ -89,8 +89,8 @@ and the RDS instance also have deletion protection in AWS.
   and `s3:ListBucket` limited to the `agents/` prefix. Conditional writes
   (`PutObject` with `If-None-Match: *` or `If-Match: <etag>`, used by
   `shared/s3-storage.ts`) need only `s3:PutObject`, so nothing more is granted.
-- **Postgres** (`rds.tf`): Postgres 17, `db.t4g.small`, Multi-AZ, not public,
-  7-day backups. RDS generates and rotates the master password in Secrets
+- **Postgres** (`rds.tf`): Postgres 17, `db.t4g.large` (`database_instance_class`), Multi-AZ, not public,
+  14-day backups (point in time; restore drill and runbook: docs/operations/backup-restore.md). RDS generates and rotates the master password in Secrets
   Manager (`manage_master_user_password`), so it never appears in state; the
   runtime reads it from that secret.
 - **RDS Proxy** (`rds-proxy.tf`): the tasks connect through it, so a Multi-AZ

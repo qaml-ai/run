@@ -55,6 +55,8 @@ history has the cutover runbook.
 - `infra/google-oauth.sh`: stores the Google OAuth client, then force-rolls the ECS service.
 - `infra/voice-check.sh`: a one-off task in the service's network proving Discord voice works from there (two test
   bots, before `AGENT_VOICE` is turned on); `cleanup` removes what it made.
+- `infra/restore-drill.sh`: restores the control database's backup to a throwaway instance and checks it (dry run
+  unless `EXECUTE=1`), and undeletes state-bucket objects after a real restore (docs/operations/backup-restore.md).
 - `infra/config.sh`: settings shared by the scripts above.
 
 ## Adding a person
