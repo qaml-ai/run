@@ -63,6 +63,26 @@ npm run openapi                  # regenerate openapi.json after changing /v1 ro
 The storage tests also run against S3 with `AGENT_TEST_S3_BUCKET=<bucket>`.
 `npm run studio` and `npm run demo:clients` need `AGENT_DATABASE_URL`.
 
+### CI and deploys
+
+Every main commit's CI (`.github/workflows/ci.yml`) is its deploy gate: Deploy (`deploy.yml`) rolls the commit out
+once all of CI passes, from the image CI's `publish` job already pushed. The gate is typecheck, builds and UI tests
+(`checks`), the Python SDK (`python`), the whole suite in both hosting modes (`test`, eight shards each), the
+simulator's fixed seeds (`sim`) and the ARM64 image (`image`). Fifty fresh simulator seeds run beside it on every main
+commit (`sim-seeds.yml`): a seed that finds something new turns that run red without holding the deploy back.
+
+The shards are balanced by `tests/timings.json`. Each shard records its files' times as a `test-timings-*`
+artifact; when shards drift apart, rebalance from a green run:
+
+```sh
+gh run download <run id> -R qaml-ai/run -p 'test-timings-*' -D /tmp/timings && npm run test:shard -- --update /tmp/timings
+npm run test:shard -- --plan 8   # what each shard runs, and its expected seconds
+```
+
+To deploy without waiting for CI (an emergency fix, or a rollback to an earlier commit), run Deploy by hand:
+`gh workflow run deploy.yml -R qaml-ai/run --ref <branch or tag>` deploys that ref's commit, building its image if
+CI has not pushed it. A hand-run deploy skips the "production already runs a newer commit" check, so it can roll back.
+
 ### Shared Azure CI
 
 Main-branch CI and Nightly use the `azure-ci` organization runners when `CI_RUNNER_LABELS` is set to
@@ -74,5 +94,5 @@ only to run, camel-bots and camelAI. This trusts commits pushed to main; it does
 The pool on camel-devbox has four slots shared across the repositories, an aggregate limit of 8 vCPUs and 24 GiB,
 and higher CPU scheduling weight than the continuously running DST jobs. It reserves no cores. Every test job uses
 its own Postgres container and allocated port; Docker commands target the exact service container ID. Test shards
-run two files at a time on Azure (`TEST_CONCURRENCY`), one on hosted runners. The nightly run uses two file workers.
+run two files at a time (`TEST_CONCURRENCY`). The nightly run uses two file workers.
 Python dependencies live in a checkout-local virtual environment. Manual CI dispatch does not trigger deployment.

@@ -13,7 +13,20 @@ concurrency:
 jobs:
   checks:
     timeout-minutes: 30
-    # The Python SDK tests start a real runtime, whose js_exec runs on the v8-exec job's binary.
+    # The organization runner group admits only this workflow on main; PRs use hosted runners.
+    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run test:ui
+      - run: npm run build:console && npm run build
+  python:
+    timeout-minutes: 30
+    # The Python SDK tests start a real runtime, whose js_exec runs on the v8-exec job's binary. Their own job, beside
+    # checks: they take three minutes, the rest of checks one.
     needs: v8-exec
     # The organization runner group admits only this workflow on main; PRs use hosted runners.
     runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
@@ -39,18 +52,16 @@ jobs:
           python -m venv .venv
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       - run: pip install -r clients/python/requirements.txt
-      - run: npm run typecheck
       - run: npm run test:python
         env:
           AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/postgres
-      - run: npm run test:ui
-      - run: npm run build:console && npm run build
   test:
     timeout-minutes: 30
-    # Both hosting modes run the full suite side by side, each split over eight shards balanced by
-    # tests/timings.json (scripts/test-shard.ts). Public hosted runners have 4 vCPUs/16 GiB;
-    # run two files at once, retaining the existing two-file limit on self-hosted runners.
-    # js_exec runs on v8-exec, built once by the v8-exec job.
+    # Both hosting modes run the full suite side by side (the simulator's files, inline whatever the mode, in the
+    # inline shards alone), each split over eight shards balanced by tests/timings.json (scripts/test-shard.ts).
+    # Public hosted runners have 4 vCPUs/16 GiB; run two files at once, retaining the existing two-file limit on
+    # self-hosted runners. Each shard keeps its files' times as an artifact, to rebalance from
+    # (`npm run test:shard -- --update`). js_exec runs on v8-exec, built once by the v8-exec job.
     name: test (${{ matrix.hosting }} ${{ matrix.shard }}/8)
     needs: v8-exec
     strategy:
@@ -92,10 +103,13 @@ jobs:
         env:
           TEST_CONCURRENCY: '2'
           AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:${{ steps.postgres.outputs.port }}/postgres
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with: { name: "test-timings-${{ matrix.hosting }}-${{ matrix.shard }}", path: test-timings/, retention-days: 14, if-no-files-found: ignore }
   sim:
     # The deterministic simulator (tests/sim, npm run sim): ten fixed seeds, each run twice and required to replay to the
-    # same trace on every PR. Main and manual runs also check 50 fresh seeds drawn from the run's id.
-    # A failing seed prints the commands that reproduce it, and
+    # same trace. Fresh seeds explore beyond them after the deploy (sim-seeds.yml), so finding a new one never holds a
+    # deploy back. Seeds are CPU-bound, one process per vCPU. A failing seed prints the commands that reproduce it, and
     # its plan, history and logs are kept as the sim-failures artifact (npm run sim -- --replay <file>).
     # The organization runner group admits only this workflow on main; PRs use hosted runners.
     runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
@@ -106,13 +120,7 @@ jobs:
         with: { node-version: 22, cache: npm }
       - run: npm ci
       - name: fixed seeds, twice each
-        run: npm run -s sim -- --seeds 1-10 --twice --jobs 2
-      - name: fresh seeds
-        if: ${{ !cancelled() && github.event_name != 'pull_request' }}
-        run: |
-          from=$(( 100000 + (GITHUB_RUN_ID % 1000000) * 50 ))
-          echo "seeds $from-$((from + 49)) (rerun one: npm run sim -- --seed <n>)"
-          npm run -s sim -- --seeds $from-$((from + 49)) --jobs 2
+        run: npm run -s sim -- --seeds 1-10 --twice --jobs 4
       - uses: actions/upload-artifact@v4
         if: ${{ failure() }}
         with: { name: sim-failures, path: sim-failures/, if-no-files-found: ignore }

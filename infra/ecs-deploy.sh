@@ -108,7 +108,7 @@ while :; do
   echo "new tasks healthy: $ready/$desired (rollout $rollout)"
   ((ready >= desired && desired > 0)) && break
   ((SECONDS < deadline)) || { echo "new tasks not healthy after 30 minutes" >&2; exit 1; }
-  sleep 15
+  sleep 5
 done
 echo "deployed: $image"
 echo "old tasks retire in the background; follow with:"
