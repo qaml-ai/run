@@ -58,19 +58,16 @@ jobs:
   test:
     timeout-minutes: 30
     # Both hosting modes run the full suite side by side (the simulator's files, inline whatever the mode, in the
-    # inline shards alone), process over twelve shards and inline over ten (each about three minutes), balanced by
-    # tests/timings.json (scripts/test-shard.ts).
+    # inline shards alone), each split over twelve shards (about three minutes each) balanced by tests/timings.json
+    # (scripts/test-shard.ts).
     # Public hosted runners have 4 vCPUs/16 GiB; run two files at once, retaining the existing two-file limit on
     # self-hosted runners. Each shard keeps its files' times as an artifact, to rebalance from
     # (`npm run test:shard -- --update`). js_exec runs on v8-exec, built once by the v8-exec job.
-    name: test (${{ matrix.hosting }} ${{ matrix.shard }}/${{ matrix.hosting == 'process' && 12 || 10 }})
+    name: test (${{ matrix.hosting }} ${{ matrix.shard }}/12)
     needs: v8-exec
     strategy:
       fail-fast: false
-      matrix:
-        hosting: [process, inline]
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
-        exclude: [{ hosting: inline, shard: 11 }, { hosting: inline, shard: 12 }]
+      matrix: { hosting: [process, inline], shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] }
     # The organization runner group admits only this workflow on main; PRs use hosted runners.
     runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
     services:
@@ -103,7 +100,7 @@ jobs:
           # Docker can allocate a new host port after restarting a dynamically published service.
           address=$(docker port "$id" 5432/tcp | head -n 1)
           echo "port=${address##*:}" >> "$GITHUB_OUTPUT"
-      - run: npm run test:shard -- ${{ matrix.shard }}/${{ matrix.hosting == 'process' && 12 || 10 }}
+      - run: npm run test:shard -- ${{ matrix.shard }}/12
         env:
           TEST_CONCURRENCY: '2'
           AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:${{ steps.postgres.outputs.port }}/postgres

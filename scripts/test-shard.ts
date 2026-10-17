@@ -8,13 +8,14 @@ import { fileURLToPath } from "node:url";
  * under the job's AGENT_HOSTING. Files are dealt longest first to the shard with the least
  * time so far, by their seconds in tests/timings.json, so every shard gets the same files on
  * every runner and together they run each file once. A file the table does not know counts
- * as DEFAULT_SECONDS. `test-shard.ts --plan 12 10` prints every shard, for twelve process shards
- * and ten inline (CI's counts, the default).
+ * as DEFAULT_SECONDS. `test-shard.ts --plan 12` prints every shard, for twelve shards a mode (CI's
+ * count, the default; `--plan 12 10` for ten inline).
  *
  * Every shard also records each file's wall time as CI runs it (TEST_CONCURRENCY files at once) in
  * test-timings/<hosting>-<index>of<count>.json (scripts/test-timings-reporter.ts), kept as the run's
- * test-timings-* artifacts. To rebalance from a green run:
- *   gh run download <run id> -p 'test-timings-*' -D /tmp/timings && npm run test:shard -- --update /tmp/timings
+ * test-timings-* artifacts. To rebalance from green runs (a file's time is its mean over them):
+ *   gh run download <run id> -p 'test-timings-*' -D /tmp/timings/<run id>   (for each run)
+ *   npm run test:shard -- --update /tmp/timings/*
  * which rewrites the table with those times and drops files that no longer exist.
  */
 const DEFAULT_SECONDS = 5;
@@ -56,18 +57,24 @@ function shard(index: number, count: number, hosting: string, seconds: Record<st
 }
 
 if (process.argv[2] === "--update") {
-  const dir = process.argv[3];
-  if (!dir) throw new Error("Usage: test-shard.ts --update <dir of test-timings JSON>");
+  const dirs = process.argv.slice(3);
+  if (!dirs.length) throw new Error("Usage: test-shard.ts --update <dir of test-timings JSON>...");
   const table = JSON.parse(readFileSync(timingsFile, "utf8")) as Record<string, Record<string, number>>;
-  for (const path of jsonFiles(dir)) {
+  // A file's time is its mean over the runs given: a runner's speed and a shard's neighbours vary.
+  const recorded: Record<string, Record<string, number[]>> = {};
+  for (const path of dirs.flatMap(dir => [...jsonFiles(dir)])) {
     const hosting = path.match(/(process|inline)-\d+of\d+\.json$/)?.[1];
-    if (hosting) Object.assign(table[hosting] ??= {}, JSON.parse(readFileSync(path, "utf8")));
+    if (!hosting) continue;
+    for (const [file, seconds] of Object.entries(JSON.parse(readFileSync(path, "utf8")) as Record<string, number>)) ((recorded[hosting] ??= {})[file] ??= []).push(seconds);
+  }
+  for (const [hosting, files] of Object.entries(recorded)) for (const [file, times] of Object.entries(files)) {
+    (table[hosting] ??= {})[file] = Math.round(times.reduce((sum, time) => sum + time, 0) / times.length * 10) / 10;
   }
   const sorted = Object.fromEntries(Object.entries(table).map(([hosting, seconds]) => [hosting,
     Object.fromEntries(Object.entries(seconds).filter(([file]) => filesFor(hosting).includes(file)).sort(([a], [b]) => a.localeCompare(b)))]));
   writeFileSync(timingsFile, `${JSON.stringify(sorted, null, 2)}\n`);
 } else if (process.argv[2] === "--plan") {
-  const counts: Record<string, number> = { process: Number(process.argv[3] ?? 12), inline: Number(process.argv[4] ?? process.argv[3] ?? 10) };
+  const counts: Record<string, number> = { process: Number(process.argv[3] ?? 12), inline: Number(process.argv[4] ?? process.argv[3] ?? 12) };
   for (const [hosting, seconds] of Object.entries(JSON.parse(readFileSync(timingsFile, "utf8")) as Record<string, Record<string, number>>)) {
     const count = counts[hosting];
     for (let index = 1; index <= count; index++) {
