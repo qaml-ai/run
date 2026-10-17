@@ -16015,6 +16015,22 @@
     },
     "/v1/definitions": {
       "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ],
+              "description": "true: only definitions no live agent and no channel is made from (safe to delete)"
+            },
+            "required": false,
+            "description": "true: only definitions no live agent and no channel is made from (safe to delete)",
+            "name": "unused",
+            "in": "query"
+          }
+        ],
         "responses": {
           "200": {
             "description": "The tenant's definitions",

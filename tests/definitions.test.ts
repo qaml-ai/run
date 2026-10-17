@@ -379,3 +379,35 @@ test("apply reports each agent as updated, queued or failed", async t => {
     { agent: agents[3], requestId, status: "failed", error: "Unreachable" },
   ].sort((a, b) => a.agent.localeCompare(b.agent)));
 });
+
+test("a tenant's definitions are capped by its limit (409 DEFINITIONS_LIMIT), and the ones no agent uses can be listed to delete", async t => {
+  // alice (of the tenants file) at AGENT_MAX_DEFINITIONS_PER_TENANT=3.
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }), { AGENT_MAX_DEFINITIONS_PER_TENANT: "3" });
+  const ids: string[] = [];
+  for (const name of ["a", "b", "c"]) ids.push((await r.call("/v1/definitions", { body: { name } })).json.id);
+  const refused = await r.call("/v1/definitions", { body: { name: "d" } });
+  assert.deepEqual([refused.status, refused.json.code, refused.json.limit], [409, "DEFINITIONS_LIMIT", 3], refused.text);
+  assert.match(refused.json.error, /at most 3 definitions/);
+  // An agent made from the first; the other two are unused, and deleting one makes room.
+  assert.equal((await r.call("/v1/agents", { body: { definition: ids[0] } })).status, 201);
+  assert.deepEqual((await r.call("/v1/definitions?unused=true")).json.map((definition: any) => definition.id), ids.slice(1));
+  assert.equal((await r.call("/v1/definitions")).json.length, 3);
+  assert.equal((await r.call(`/v1/definitions/${ids[1]}`, { method: "DELETE" })).status, 200);
+  assert.equal((await r.call("/v1/definitions", { body: { name: "d" } })).status, 201);
+});
+
+test("a tenant's own maxDefinitions in the tenants file overrides the default; a self-serve tenant keeps 200", async () => {
+  const { db } = await testDatabase();
+  const limits: Record<string, number> = { big: 2 };
+  const definitions = new Definitions({ db, maxDefinitions: tenant => limits[tenant] ?? 200 });
+  await definitions.create("big", { name: "one" } as any);
+  await definitions.create("big", { name: "two" } as any);
+  await assert.rejects(definitions.create("big", { name: "three" } as any), (error: any) => error.status === 409 && error.code === "DEFINITIONS_LIMIT" && error.details.limit === 2);
+  assert.equal(new Definitions({ db }).maxDefinitions("anyone"), 200);
+  const { Tenants } = await import("../src/tenants.ts");
+  const tenants = new Tenants({ read: async () => JSON.stringify({ tenants: { bots: { tokenSha256: "a".repeat(64), maxDefinitions: 20_000 } } }) });
+  await tenants.reload();
+  assert.equal(tenants.maxDefinitions("bots"), 20_000);
+  const bad = new Tenants({ read: async () => JSON.stringify({ tenants: { bots: { tokenSha256: "a".repeat(64), maxDefinitions: 0 } } }) });
+  await assert.rejects(bad.reload(), /invalid maxDefinitions/);
+});

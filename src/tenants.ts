@@ -28,6 +28,8 @@ export interface Tenant {
   maxAgents?: number;
   /** Read-only event-stream subscribers (browser tabs) its agents may have at once on a node; default 1024. */
   maxWatchers?: number;
+  /** Definitions this tenant may have; overrides AGENT_MAX_DEFINITIONS_PER_TENANT (default 5,000 for a tenant of this file). */
+  maxDefinitions?: number;
   /** Discord servers this tenant may connect to the managed Camel bot; overrides the plan's default. */
   maxDiscordServers?: number;
   /** Agents this tenant may create a minute; overrides AGENT_RATE_LIMIT_AGENT_CREATES (src/rate-limits.ts). */
@@ -114,6 +116,7 @@ export class Tenants {
       if (tenant.githubId !== undefined && tenants.some(other => other !== tenant && other.githubId === tenant.githubId)) throw new Error(`Tenant ${tenant.id} has another tenant's githubId`);
       if (tenant.maxAgents !== undefined && (!Number.isSafeInteger(tenant.maxAgents) || tenant.maxAgents < 1)) throw new Error(`Tenant ${tenant.id} has an invalid maxAgents: a positive integer, or absent for the default`);
       if (tenant.maxWatchers !== undefined && (!Number.isSafeInteger(tenant.maxWatchers) || tenant.maxWatchers < 1)) throw new Error(`Tenant ${tenant.id} has an invalid maxWatchers: a positive integer, or absent for the default`);
+      if (tenant.maxDefinitions !== undefined && (!Number.isSafeInteger(tenant.maxDefinitions) || tenant.maxDefinitions < 1)) throw new Error(`Tenant ${tenant.id} has an invalid maxDefinitions: a positive integer, or absent for the default`);
       if (tenant.maxDiscordServers !== undefined && (!Number.isSafeInteger(tenant.maxDiscordServers) || tenant.maxDiscordServers < 0)) throw new Error(`Tenant ${tenant.id} has an invalid maxDiscordServers: a non-negative integer, or absent for the default`);
       for (const field of ["maxRunResponses", "maxRunSeconds"] as const) {
         if (tenant[field] !== undefined && (!Number.isSafeInteger(tenant[field]) || tenant[field]! < 1)) throw new Error(`Tenant ${tenant.id} has an invalid ${field}: a positive integer, or absent for no limit`);
@@ -133,7 +136,7 @@ export class Tenants {
       if (tenant.modelEndpoints !== undefined) validEndpoints(tenant.id, tenant.modelEndpoints);
       next.set(tenant.id, {
         id: tenant.id, tokenSha256: tenant.tokenSha256, apiKeys: { ...(tenant.apiKeys ?? {}) }, ...(tenant.github ? { github: tenant.github } : {}), ...(tenant.githubId !== undefined ? { githubId: tenant.githubId } : {}),
-        ...(tenant.maxAgents !== undefined ? { maxAgents: tenant.maxAgents } : {}), ...(tenant.maxWatchers !== undefined ? { maxWatchers: tenant.maxWatchers } : {}), ...(tenant.maxMonthlyCost !== undefined ? { maxMonthlyCost: tenant.maxMonthlyCost } : {}),
+        ...(tenant.maxAgents !== undefined ? { maxAgents: tenant.maxAgents } : {}), ...(tenant.maxWatchers !== undefined ? { maxWatchers: tenant.maxWatchers } : {}), ...(tenant.maxDefinitions !== undefined ? { maxDefinitions: tenant.maxDefinitions } : {}), ...(tenant.maxMonthlyCost !== undefined ? { maxMonthlyCost: tenant.maxMonthlyCost } : {}),
         ...(tenant.maxDiscordServers !== undefined ? { maxDiscordServers: tenant.maxDiscordServers } : {}), ...(tenant.maxStorageGb !== undefined ? { maxStorageGb: tenant.maxStorageGb } : {}),
         ...(tenant.maxAgentCreatesPerMinute !== undefined ? { maxAgentCreatesPerMinute: tenant.maxAgentCreatesPerMinute } : {}),
         ...(tenant.maxRunsPerMinute !== undefined ? { maxRunsPerMinute: tenant.maxRunsPerMinute } : {}),
@@ -180,6 +183,7 @@ export class Tenants {
   /** The tenant's own busy-agent limit across the fleet (busy-agents.ts), if its entry sets one. */
   maxAgents(id: string) { return this.byId.get(id)?.maxAgents; }
   maxWatchers(id: string) { return this.byId.get(id)?.maxWatchers; }
+  maxDefinitions(id: string) { return this.byId.get(id)?.maxDefinitions; }
   maxDiscordServers(id: string) { return this.byId.get(id)?.maxDiscordServers; }
   /** The tenant's own rate limit (a minute) for agent creates or runs, if its entry sets one. */
   /** The most one run of an admin tenant's agents may take, as its entry sets it (absent: no limit). */

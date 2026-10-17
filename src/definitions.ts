@@ -75,7 +75,8 @@ const FIELDS = ["description", "model", "systemPrompt", "thinkingLevel", "maxOut
 /** Configuration an agent made from a definition may set as its own, which applying the definition leaves. */
 export const OVERRIDES = ["model", "thinkingLevel", "maxOutputTokens", "temperature", "fileTools", "codeMode", "runLimits"] as const;
 const PROVISION_FIELDS = ["name", "type", "ttlSeconds", "idleTtlSeconds", "mounts", "tools", "initialMessages", "systemPromptAppend"];
-const MAX_DEFINITIONS = 200;
+/** Definitions a self-serve tenant may have; a tenant of the tenants file has its own limit (`maxDefinitions` option). */
+export const MAX_DEFINITIONS = 200;
 const validId = (id: string) => /^def_[a-f0-9]{20}$/.test(id);
 /** The server-side tool sources an agent takes from a definition, if it has any. */
 export function sources(spec: DefinitionSpec): Sources | undefined {
@@ -101,8 +102,11 @@ export class Definitions {
   listMcp?: (tenant: string, definition: string, servers: McpServerSpec[]) => Promise<ToolSourceView[]>;
   /** Builtins of a saved spec the tenant cannot use (no key for them), as warnings for the save's answer. */
   builtinWarnings?: (tenant: string, spec: DefinitionSpec) => Promise<string[]>;
-  constructor(options: { db: Db; accounts?: Accounts; outbound?: Outbound; customProviders?: (tenant: string) => Promise<CustomProviders> }) {
+  /** How many definitions a tenant may have (MAX_DEFINITIONS unless given). */
+  readonly maxDefinitions: (tenant: string) => number;
+  constructor(options: { db: Db; accounts?: Accounts; outbound?: Outbound; customProviders?: (tenant: string) => Promise<CustomProviders>; maxDefinitions?: (tenant: string) => number }) {
     this.db = options.db;
+    this.maxDefinitions = options.maxDefinitions ?? (() => MAX_DEFINITIONS);
     this.accounts = options.accounts;
     this.outbound = options.outbound;
     this.customProviders = options.customProviders;
@@ -129,8 +133,12 @@ export class Definitions {
     return { ...this.view(definition), ...(warnings.length ? { warnings } : {}) };
   }
 
-  async list(tenant: string) {
-    const { rows } = await this.db.query("select * from definitions where tenant = $1 order by created_at, id", [tenant]);
+  /** The tenant's definitions; `unused`: only those no live agent and no channel is made from, which deleting changes nothing for. */
+  async list(tenant: string, { unused = false } = {}) {
+    const { rows } = await this.db.query(`select * from definitions d where tenant = $1 ${unused ? `
+      and not exists (select 1 from agents a where a.tenant = d.tenant and a.header->'definition'->>'id' = d.id and not a.revoked and a.purged_at is null and (a.expires_at is null or a.expires_at > $2))
+      and not exists (select 1 from channels c where c.tenant = d.tenant and c.channel->>'definition' = d.id)` : "and $2::bigint is not null"}
+      order by created_at, id`, [tenant, Date.now()]);
     return rows.map(row => this.view(this.row(row)));
   }
   async get(tenant: string, id: string) { return this.view(await this.read(tenant, id)); }
@@ -162,7 +170,10 @@ export class Definitions {
   async create(tenant: string, input: DefinitionInput, internal: Pick<DefinitionSpec, "channel"> = {}, id = `def_${randomBytes(10).toString("hex")}`): Promise<Definition> {
     const name = this.name(input.name);
     if (!name) throw new HttpError(400, "A definition needs a name");
-    if ((await this.db.query("select count(*) as count from definitions where tenant = $1", [tenant])).rows[0].count >= MAX_DEFINITIONS) throw new HttpError(400, `A tenant can have at most ${MAX_DEFINITIONS} definitions`);
+    const limit = this.maxDefinitions(tenant);
+    if (Number((await this.db.query("select count(*) as count from definitions where tenant = $1", [tenant])).rows[0].count) >= limit) {
+      throw new HttpError(409, `A tenant can have at most ${limit} definitions: delete ones no agent uses (GET /v1/definitions?unused=true lists them), or ask for a higher limit`, "DEFINITIONS_LIMIT", { limit });
+    }
     const spec: DefinitionSpec = { ...await this.merge(tenant, id, {}, input), ...internal };
     const toolSources = await this.listing(tenant, id, spec, input);
     const now = Date.now();

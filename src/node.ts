@@ -41,7 +41,7 @@ import { agentMcp } from "./agent-mcp.ts";
 import { api } from "./api.ts";
 import { Scheduler } from "./scheduler.ts";
 import { Channels } from "./channels.ts";
-import { Definitions, sources, validTtl } from "./definitions.ts";
+import { Definitions, MAX_DEFINITIONS, sources, validTtl } from "./definitions.ts";
 import { ModelProviders } from "./model-providers.ts";
 import { providerInfo } from "./catalog.ts";
 import { outboundFromEnvironment } from "./outbound.ts";
@@ -395,7 +395,9 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   const toolSources = new ToolSources({ accounts, mcp, outbound, signer, search, render, get scheduler() { return scheduler; }, get volumes() { return volumes; }, fileUrls });
   // Tenants' own OpenAI-compatible model providers.
   const modelProviders = new ModelProviders({ db, accounts, outbound });
-  const definitions = new Definitions({ db, accounts, outbound, customProviders: tenant => modelProviders.resolvable(tenant) });
+  // A tenant of the tenants file may have its entry's maxDefinitions, else AGENT_MAX_DEFINITIONS_PER_TENANT; a self-serve one MAX_DEFINITIONS.
+  const definitions = new Definitions({ db, accounts, outbound, customProviders: tenant => modelProviders.resolvable(tenant),
+    maxDefinitions: tenant => tenants.maxDefinitions(tenant) ?? (tenants.has(tenant) ? config.maxDefinitionsPerTenant : MAX_DEFINITIONS) });
   // Saving a definition lists its MCP servers, as its agents would.
   definitions.listMcp = (tenant, id, servers) => toolSources.listed(tenant, id, servers);
   // Saving a definition, an agent or a managed Discord server warns of builtins the tenant has no key for.
