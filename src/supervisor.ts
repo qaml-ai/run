@@ -33,7 +33,13 @@ type ProcessHandle = Common & { kind: "process"; child: ChildProcess; rpc: Rpc; 
 type InlineHandle = Common & { kind: "inline"; host: ReturnType<typeof createAgentHost>; stop: (error: Error) => void; stopped: Promise<never> };
 type Handle = ProcessHandle | InlineHandle;
 export type SupervisorOptions = {
-  runtime?: string; maxAgents?: number; storage?: Storage; hosting?: Hosting; /** How long stopping agents wait, all together, to index their settled turns (default 5 s). */ historyFlushMs?: number;
+  runtime?: string; maxAgents?: number;
+  /**
+   * The node takes no more agents while this process's resident memory is above this (AGENT_MEMORY_HIGH_BYTES): with
+   * inline hosting every agent is in it, so this, not the count, is what a node runs out of first. Unset: no such check.
+   */
+  memoryHighBytes?: number;
+  storage?: Storage; hosting?: Hosting; /** How long stopping agents wait, all together, to index their settled turns (default 5 s). */ historyFlushMs?: number;
   /** An agent process is pinged this often, and killed once a ping has gone this long unanswered (default 5 s and 30 s). */
   pingMs?: number; unresponsiveMs?: number;
   /** Where inline agents run js_exec (src/codemode.ts): this process's v8-exec runner unless given. Agent processes always use their own. */
@@ -373,6 +379,8 @@ export class AgentSupervisor {
 
   /** No capacity for another agent; callers may stop an idle agent first. */
   get full() { return this.agents.size + this.starting.size + this.reserved.size >= (this.options.maxAgents ?? 8); }
+  /** Over `memoryHighBytes`: the node starts no agent (ClientSessions.makeRoom), and takes no orphaned work, until it falls. */
+  get memoryHigh() { return !!this.options.memoryHighBytes && process.memoryUsage.rss() > this.options.memoryHighBytes; }
 
   /**
    * Hold a slot for `id` until `start` takes it or `unreserve` gives it back, so
