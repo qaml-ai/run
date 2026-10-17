@@ -203,6 +203,13 @@ export function discordGrant(overrides: Partial<VoiceCredentials> = {}) {
 export function fakeRealtime(server: Server, transcript: () => string, delayMs = 0) {
   const sockets = new WebSocketServer({ noServer: true });
   const seen = { urls: [] as string[], auth: [] as string[], sessions: [] as any[], commits: [] as number[], clears: 0 };
+  // Closing the server ends its sockets too: an upgraded one is not the server's to wait for, and a runtime still
+  // holding it open would keep server.close() waiting a minute.
+  const close = server.close.bind(server);
+  server.close = (callback?: (error?: Error) => void) => {
+    for (const ws of sockets.clients) ws.terminate();
+    return close(callback);
+  };
   server.on("upgrade", (req, socket, head) => {
     seen.urls.push(req.url ?? "");
     seen.auth.push(String(req.headers.authorization ?? ""));
