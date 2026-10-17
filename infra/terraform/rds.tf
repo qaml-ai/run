@@ -44,15 +44,16 @@ resource "aws_db_instance" "control" {
   vpc_security_group_ids = [aws_security_group.database.id]
   publicly_accessible    = false
 
-  backup_retention_period      = 7
-  backup_window                = "09:00-09:30"
-  maintenance_window           = "sun:10:00-sun:10:30"
-  auto_minor_version_upgrade   = true
-  copy_tags_to_snapshot        = true
-  deletion_protection          = true
-  skip_final_snapshot          = false
-  final_snapshot_identifier    = "${var.name}-control-final"
-  performance_insights_enabled = false
+  backup_retention_period               = 7
+  backup_window                         = "09:00-09:30"
+  maintenance_window                    = "sun:10:00-sun:10:30"
+  auto_minor_version_upgrade            = true
+  copy_tags_to_snapshot                 = true
+  deletion_protection                   = true
+  skip_final_snapshot                   = false
+  final_snapshot_identifier             = "${var.name}-control-final"
+  performance_insights_enabled          = true
+  performance_insights_retention_period = 7
 
   lifecycle {
     prevent_destroy = true
