@@ -244,6 +244,9 @@ tofu import aws_cloudwatch_log_group.database_proxy /aws/rds/proxy/camelai-agent
     drains: it is one `task_protection_blocked` line, not counted. The `retiring` and `retired`
     lines can be found with a Logs Insights query:
     `filter type in ["retiring", "retired"]`.
+  - `-database-cpu-credits`: the control database's CPU credits under 30 for 15 minutes;
+  - `-database-memory`: its freeable memory under 256 MB for 15 minutes (it is about to swap: move to a larger
+    `db_instance_class`).
 
 - **Mail** (`ses-mail.tf`, us-west-2, on the regional alerts topic):
   - `-ses-bounce-rate`: SES's account reputation bounce rate over 5% (SES reviews an account from 5% and pauses
