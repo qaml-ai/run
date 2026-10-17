@@ -51,7 +51,7 @@ import { fileRef } from "./inspect.ts";
 import { resolve as resolveMount, type ToolContext, type WrittenFile } from "./volume-tools.ts";
 import { HistoryIndex, type HistoryPage } from "./history-pages.ts";
 import { answerInput, argumentsHash, expiresAt, INPUT_LIMITS, inputRequests, inputView, mayAnswer, resolution, type Answer, type Input, type Inputs, type InputRow, type Responder, type RetryPlan } from "./inputs.ts";
-import { recordHandoff, recordStart, recordWatchRefused, safeError, Steps } from "./metrics.ts";
+import { recordBillingFailure, recordHandoff, recordStart, recordWatchRefused, safeError, Steps } from "./metrics.ts";
 import { BackgroundSpans, inputSpans, RunSpans, type ToolSource, type Tracing } from "./telemetry.ts";
 import { newSpanId, newTraceId, parseTraceparent, sampledAt } from "./otlp.ts";
 import { agentMessage, agentsTools, childNotice, childStatus, definitionId, delegateSettings, limitsOnly, delegateTool, MULTI_AGENT_LIMITS, PARENT_KEYS, SEND_MESSAGE, startsChildren, SUBAGENT_EVENTS, type AgentTarget, type ChildNotice, type DelegateSettings } from "./multi-agent.ts";
@@ -922,6 +922,19 @@ export class ClientSessions {
       ...ended, ...(result.stopped ? { stopped: result.stopped } : {}), ...(result.inputs?.length ? { inputIds: result.inputs.map(input => input.id) } : {}),
       ...(typeof result.replyIndex === "number" ? { replyIndex: result.replyIndex } : {}), ...(typeof result.messages === "number" ? { messageCount: result.messages } : {}),
     }, key);
+  }
+
+  /**
+   * A run its model's provider refused for credit (a 402, a quota used up), counted by whose key: the platform's account
+   * (or a key the operator set for the tenant) running dry is ours to top up; a tenant's own key, or its endpoint (a
+   * gateway answering for its own users' credit), is the tenant's. Not a run its end user's own credit stopped
+   * (stopped: spend_limit), which never reached the provider.
+   */
+  private countBilling(session: Session, record: RequestRecord) {
+    const failure = record.outcome?.result as { error?: unknown; stopped?: string; modelError?: { errorClass?: string } } | undefined;
+    if (failure?.modelError?.errorClass !== "billing" || !failure.error || failure.stopped) return;
+    const keyOwner = this.endpoint(session) ? "endpoint" : session.platformKey ? "platform" : "tenant";
+    recordBillingFailure({ tenant: session.header.tenant, keyOwner, provider: session.header.config.model.provider });
   }
 
   /** Write ended runs' webhook events, then journal that they are written; a failure leaves them for the agent's next run or load. */
@@ -4857,6 +4870,7 @@ export class ClientSessions {
       const run = RUN_METHODS.includes(record.method);
       const announcing = run && !!session.announcing;
       const completed = this.upsertRequest(session, { ...finished, state: "completed", outcome: value, endedAt: Date.now(), ...(announcing ? { announce: true as const } : {}) });
+      if (run) this.countBilling(session, completed);
       session.runLimits?.delete(record.id);
       session.runCaps?.delete(record.id);
       session.childSpend?.delete(record.id);

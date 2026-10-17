@@ -242,6 +242,18 @@ export function observeTurns(model: () => { provider: string; id: string } | und
 }
 
 /**
+ * A run failed for credit at its model's provider (a 402, a quota used up), by whose key (`keyOwner`): the platform's,
+ * or one the operator set for the tenant (its provider account running dry: ours to top up); the tenant's own; or the
+ * tenant's endpoint (its gateway, often answering for its own users' credit). Alarms watch the platform's alone.
+ */
+export function recordBillingFailure(failure: { tenant: string; keyOwner: "platform" | "tenant" | "endpoint"; provider: string }) {
+  emit("model_billing_failed", {
+    dimensions: { KeyOwner: failure.keyOwner }, rollups: [["KeyOwner"]],
+    metrics: { ModelBillingFailures: 1 }, properties: { tenant: failure.tenant, provider: failure.provider },
+  });
+}
+
+/**
  * Count run and usage events as they are written to the outboxes: runs started,
  * resumed after a lost node, completed, stopped for input, failed (by error class, and
  * those a restart cut short); model spend by tenant, provider and model. A write that
