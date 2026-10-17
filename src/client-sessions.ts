@@ -681,6 +681,8 @@ export function spendInput(value: unknown): number | null {
   }
   return usd;
 }
+/** How long an end user's charge for a tool call (`endUserCharge`) is retried through a database outage. */
+const END_USER_CHARGE_RETRY_MS = 5 * 60_000;
 const dollars = (usd: number) => `$${Number(usd.toFixed(6))}`;
 /** The runtime's default maximums for one run, which an agent's own `runLimits` may lower (ClientSessionsOptions.runLimitsFor). */
 export const RUN_LIMITS: Readonly<Required<Pick<RunLimits, "maxResponses" | "maxSeconds">>> = Object.freeze({ maxResponses: 1_000, maxSeconds: 2 * 3_600 });
@@ -4988,7 +4990,8 @@ export class ClientSessions {
 
   /**
    * Charge the agent's end user for a call it made that held nothing beforehand (a web search, a page rendered, a tool
-   * search's ranking), as the call is recorded. Never throws: a charge that fails is logged.
+   * search's ranking), as the call is recorded. Never throws. A charge the database refuses (a failover) is retried
+   * under the same key, which posts it once, for up to END_USER_CHARGE_RETRY_MS; one that still fails is logged.
    */
   endUserCharge(agent: string, usage: UsageRecord) {
     const session = this.sessions.get(agent), endUsers = this.options.endUsers;
@@ -4996,8 +4999,17 @@ export class ClientSessions {
     const usd = Number(usage.usage?.cost?.total ?? 0);
     if (!session || !payer || !endUsers || !(usd > 0)) return;
     const call = usage.searches ? "web_search" : usage.renders ? "web_fetch" : usage.toolSearch ? "tool_search" : "tool";
-    void endUsers.charge(session.header.tenant, payer.id, payer.bucket, Math.round(usd * MICROS), `charge:${randomUUID()}`, { call, agent, ...(usage.provider ? { provider: usage.provider } : {}) })
-      .catch(error => console.error(JSON.stringify({ type: "end_user_charge_failed", tenant: session.header.tenant, agent, error: safeError(error) })));
+    const tenant = session.header.tenant, raw = Math.round(usd * MICROS), key = `charge:${randomUUID()}`;
+    const metadata = { call, agent, ...(usage.provider ? { provider: usage.provider } : {}) };
+    void (async () => {
+      for (let delay = 1000, until = Date.now() + END_USER_CHARGE_RETRY_MS; ; delay = Math.min(delay * 2, 30_000)) {
+        try { return await endUsers.charge(tenant, payer.id, payer.bucket, raw, key, metadata); }
+        catch (error) {
+          if (Date.now() + delay > until) { console.error(JSON.stringify({ type: "end_user_charge_failed", tenant, agent, raw, error: safeError(error) })); return; }
+          await new Promise(resolve => setTimeout(resolve, delay).unref?.());
+        }
+      }
+    })();
   }
 
   /** The agent's spend limit, read once per load; its owner keeps it current. */
