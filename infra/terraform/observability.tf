@@ -117,6 +117,23 @@ resource "aws_cloudwatch_metric_alarm" "runs_uncertain" {
   ok_actions          = local.alarm_topics
 }
 
+# DeepSeek's own API refusing a history without reasoning (src/deepseek-replay.ts replays it): never expected, so one is a bug.
+resource "aws_cloudwatch_metric_alarm" "model_reasoning_replay" {
+  alarm_name          = "${var.name}-model-reasoning-replay"
+  alarm_description   = "DeepSeek refused a call's history for missing reasoning_content (model_error ErrorClass reasoning_replay): src/deepseek-replay.ts should make this impossible"
+  namespace           = "AgentRuntime"
+  metric_name         = "ModelErrors"
+  dimensions          = merge(local.runtime_metric, { ErrorClass = "reasoning_replay" })
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_topics
+  ok_actions          = local.alarm_topics
+}
+
 # Slow first tokens: the provider is slow, or turns queue for the node.
 resource "aws_cloudwatch_metric_alarm" "first_token_slow" {
   alarm_name          = "${var.name}-first-token-slow"
