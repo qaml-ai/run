@@ -23,7 +23,7 @@ async function fixture(t: { after(fn: () => Promise<void> | void): void }, extra
   const received: { channel: string; message: Inbound }[] = [];
   const sent: { channel: string; content: string }[] = [];
   const left: string[] = [];
-  const state = { present: true, noGuild: false, scope: "bot", memberRoles: [] as string[] | undefined, shards: 1, gatewayCalls: 0, limited: false, gatewayWait: undefined as Promise<void> | undefined, identified: 0, limitedGet: false, routeLimited: false, guildChannels: undefined as unknown[] | undefined, systemChannel: undefined as string | undefined };
+  const state = { present: true, noGuild: false, scope: "bot", memberRoles: [] as string[] | undefined, shards: 1, gatewayCalls: 0, limited: false, gatewayWait: undefined as Promise<void> | undefined, identified: 0, identifiedShards: [] as unknown[], limitedGet: false, routeLimited: false, guildChannels: undefined as unknown[] | undefined, systemChannel: undefined as string | undefined };
   let gatewayUrl = "";
   const discord = createServer(async (req, res) => {
     let raw = ""; for await (const chunk of req) raw += chunk;
@@ -68,7 +68,7 @@ async function fixture(t: { after(fn: () => Promise<void> | void): void }, extra
       const payload = JSON.parse(String(raw));
       if (payload.op === 1) socket.send(JSON.stringify({ op: 11 }));
       if (payload.op === 2) {
-        state.identified++;
+        state.identified++; state.identifiedShards.push(payload.d.shard);
         socket.send(JSON.stringify({ op: 0, t: "READY", s: 1, d: { user: { id: APP }, session_id: "test", resume_gateway_url: gatewayUrl, guilds: [{ id: guildA }, { id: guildB }] } }));
       }
     });
@@ -332,10 +332,25 @@ test("there is no interactions endpoint", async t => {
   assert.equal((await f.managed.app.request("https://camel.test/channels/discord-managed/interactions", { method: "POST", body: "{}" })).status, 404);
 });
 
-test("startup shard refusal is recoverable and does not break the runtime", async t => {
-  const f = await fixture(t); f.state.shards = 2;
-  await f.managed.start(); assert.equal(f.state.gatewayCalls, 1);
-  await f.managed.stop();
+test("past one recommended shard, nodes split the shards: each identifies with its own, one per pass", async t => {
+  const f = await fixture(t, { owned: true }); f.state.shards = 2;
+  const peerOwnership = new Ownership(f.db, { node: "second", ttlMs: 60_000 }); await peerOwnership.start(); t.after(() => peerOwnership.close());
+  const peer = new ManagedDiscord({ ...f.options, node: "second", ownership: peerOwnership }); t.after(() => peer.stop());
+  await f.managed.start();
+  await peer.start();
+  for (const deadline = Date.now() + 5000; f.state.identified < 2 && Date.now() < deadline;) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.deepEqual(f.state.identifiedShards.map(String).sort(), ["0,2", "1,2"]);
+  const owners = (await f.db.query("select actor from actor_owners where actor like 'discord-managed:%' order by actor")).rows.map(row => row.actor);
+  assert.deepEqual(owners, [`discord-managed:${APP}:shard:0`, `discord-managed:${APP}:shard:1`]);
+});
+
+test("a shard's READY removes only its own guilds that it no longer lists", async t => {
+  const f = await fixture(t); await f.bind(guildA); await f.bind(guildB, channelB);
+  // Both test guilds are on shard 0 of 2 ((id >> 22) % 2): shard 1's empty READY leaves them alone.
+  await f.managed.dispatch("READY", { user: { id: APP }, guilds: [] }, { index: 1, count: 2 });
+  assert.deepEqual((await f.db.query("select guild_id, state from discord_installations order by guild_id")).rows.map(row => row.state), ["present", "present"]);
+  await f.managed.dispatch("READY", { user: { id: APP }, guilds: [{ id: guildA }] }, { index: 0, count: 2 });
+  assert.deepEqual((await f.db.query("select guild_id, state from discord_installations order by guild_id")).rows.map(row => row.state), ["present", "removed"]);
 });
 
 test("definition switches apply to existing conversations and show exact outcomes", async t => {

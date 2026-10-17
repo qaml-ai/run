@@ -97,15 +97,23 @@ class DiscordRestQueue {
   }
 }
 
-/** The platform credential lives here, never in a channel. One application Gateway routes verified guilds. */
+/** A Gateway shard this node holds: guilds whose (id >> 22) % count is index, under the claim `discord-managed:<app>:shard:<index>`. */
+interface Shard { index: number; count: number; claim?: Claim; gateway?: Gateway }
+/** How often a node holding shards asks Discord whether the recommended count changed (it grows about every 1,000 servers). */
+const SHARD_COUNT_CHECK_MS = 10 * 60_000;
+const errorField = (error: unknown) => error instanceof HttpError ? `${error.code ?? `HTTP_${error.status}`}: ${error.message}` : error instanceof Error ? error.message : String(error);
+
+/** The platform credential lives here, never in a channel. One application Gateway, in Discord's recommended shards, routes verified guilds. */
 export class ManagedDiscord {
   readonly app: Hono;
   readonly provider: ChannelProvider;
   private readonly base: string;
   private readonly transport: ChannelProvider;
   private readonly queue = new DiscordRestQueue();
-  private gateway?: Gateway;
-  private claim?: Claim;
+  private readonly shards = new Map<number, Shard>();
+  /** The shard count the held shards identified with: Discord's recommendation when last read. */
+  private shardCount = 0;
+  private shardCountAt = 0;
   private timer?: ReturnType<typeof setInterval>;
   private stopped = true;
   private reconciling = false;
@@ -117,21 +125,7 @@ export class ManagedDiscord {
   constructor(options: ManagedDiscordOptions) {
     this.options = options;
     this.base = (options.apiUrl ?? "https://discord.com/api/v10").replace(/\/+$/, "");
-    this.transport = discord({ apiUrl: this.base, gateway: {
-      // GUILDS and GUILD_MESSAGES: Camel answers only in servers, when mentioned.
-      intents: (1 << 0) | (1 << 9),
-      dispatch: (event, data) => {
-        // GUILD_MESSAGES delivers every message in every server: only mentions are queued, and the queue is bounded.
-        if (event === "READY") this.botId = String(data?.user?.id ?? "");
-        else if (event === "MESSAGE_CREATE" && (!data?.guild_id || !data.mentions?.some((user: any) => user?.id === this.botId))) return;
-        else if (!["MESSAGE_CREATE", "GUILD_CREATE", "GUILD_UPDATE", "GUILD_DELETE"].includes(event)) return;
-        if (this.dispatchBacklog >= 1000) { this.log("dispatch_dropped", { event }); return; }
-        this.dispatchBacklog++;
-        this.dispatchTail = this.dispatchTail.then(() => this.dispatch(event, data)).catch(error => this.log("dispatch_failed", { error: error instanceof HttpError ? error.code ?? `HTTP_${error.status}` : "processing_failed" }))
-          .finally(() => { this.dispatchBacklog--; });
-        return this.dispatchTail;
-      },
-    } });
+    this.transport = discord({ apiUrl: this.base });
     const credentials = { botToken: options.botToken };
     const delivery = async <T>(given: Record<string, string>, conversation: string, work: () => Promise<T>) => {
       const binding = await this.byId(given.bindingId);
@@ -163,7 +157,27 @@ export class ManagedDiscord {
       typing: async (given, conversation) => { if (!this.queue.size) await delivery(given, conversation, () => this.transport.typing!(credentials, conversation)); },
     };
     this.app = this.routes();
-    options.ownership?.onFence(() => { this.gateway?.close(); this.gateway = undefined; this.claim = undefined; });
+    options.ownership?.onFence(() => { for (const shard of this.shards.values()) shard.gateway?.close(); this.shards.clear(); });
+  }
+
+  /** One shard's Gateway connection; its events are routed with its claim. */
+  private shardTransport(shard: Shard) {
+    return discord({ apiUrl: this.base, gateway: {
+      // GUILDS and GUILD_MESSAGES: Camel answers only in servers, when mentioned.
+      intents: (1 << 0) | (1 << 9),
+      ...(shard.count > 1 ? { shard: [shard.index, shard.count] as [number, number] } : {}),
+      dispatch: (event, data) => {
+        // GUILD_MESSAGES delivers every message in every server: only mentions are queued, and the queue is bounded.
+        if (event === "READY") this.botId = String(data?.user?.id ?? "");
+        else if (event === "MESSAGE_CREATE" && (!data?.guild_id || !data.mentions?.some((user: any) => user?.id === this.botId))) return;
+        else if (!["MESSAGE_CREATE", "GUILD_CREATE", "GUILD_UPDATE", "GUILD_DELETE"].includes(event)) return;
+        if (this.dispatchBacklog >= 1000) { this.log("dispatch_dropped", { event, shard: shard.index }); return; }
+        this.dispatchBacklog++;
+        this.dispatchTail = this.dispatchTail.then(() => this.dispatch(event, data, shard)).catch(error => this.log("dispatch_failed", { error: error instanceof HttpError ? error.code ?? `HTTP_${error.status}` : "processing_failed" }))
+          .finally(() => { this.dispatchBacklog--; });
+        return this.dispatchTail;
+      },
+    } });
   }
 
   private log(event: string, fields: Record<string, unknown> = {}) {
@@ -227,19 +241,20 @@ export class ManagedDiscord {
     return !!binding && binding.state === "active" && !!binding.channel_id && binding.installation_state === "present" && binding.allowed_channel_ids.some(id => id === channelId || (id === channel.parent_id && [10, 11, 12].includes(channel.type)));
   }
 
-  /** Operators enable this only for an application Discord permits to use a single shard. */
   async start() {
     if (!this.stopped) return;
     this.stopped = false;
-    await this.maintain().catch(() => this.log("gateway_retry_failed"));
+    const retry = () => this.maintain().catch(error => this.log("gateway_retry_failed", { error: errorField(error) }));
+    await retry();
     if (this.stopped) return;
-    this.timer = setInterval(() => void this.maintain().catch(() => this.log("gateway_retry_failed")), 10_000);
+    this.timer = setInterval(() => void retry(), 10_000);
     this.timer.unref();
   }
   async stop() {
-    this.stopped = true; clearInterval(this.timer); this.gateway?.close(); this.gateway = undefined;
-    const claim = this.claim; this.claim = undefined;
-    if (claim) await this.options.ownership?.release(claim);
+    this.stopped = true; clearInterval(this.timer);
+    const shards = [...this.shards.values()]; this.shards.clear();
+    for (const shard of shards) shard.gateway?.close();
+    for (const shard of shards) if (shard.claim) await this.options.ownership?.release(shard.claim);
   }
   private async maintain() {
     if (this.stopped) return;
@@ -248,53 +263,92 @@ export class ManagedDiscord {
     await this.options.db.query("delete from discord_setup_cooldowns where until_at<$1", [now - 24 * 60 * 60_000]);
     await this.reconcileGateway();
   }
+  private holds(shard: Shard) { return !this.options.ownership || (!!shard.claim && this.options.ownership.holds(shard.claim)); }
+  private async dropShard(shard: Shard) {
+    shard.gateway?.close(); shard.gateway = undefined;
+    if (this.shards.get(shard.index) === shard) this.shards.delete(shard.index);
+    const claim = shard.claim; shard.claim = undefined;
+    if (claim) await this.options.ownership?.release(claim);
+  }
+  /** Discord's recommended shard count and session-start allowance. A changed count re-identifies every held shard with it. */
+  private async gatewayInfo() {
+    const info = await this.bot("/gateway/bot");
+    const count = Math.max(1, Math.floor(Number(info.shards ?? 1)) || 1);
+    this.shardCountAt = Date.now();
+    if (count !== this.shardCount) {
+      if (this.shardCount) this.log("shard_count_changed", { from: this.shardCount, to: count });
+      for (const shard of [...this.shards.values()]) await this.dropShard(shard);
+      this.shardCount = count;
+    }
+    return info;
+  }
+  /**
+   * Each pass connects at most one shard, so this node's identifies are at least a pass (10 s) apart, past Discord's
+   * 5 s per rate-limit bucket. Every node tries every shard it does not hold; whoever claims one first connects it.
+   */
   private async reconcileGateway() {
-    if (this.stopped || this.reconciling || this.gateway) return;
+    if (this.stopped || this.reconciling) return;
     this.reconciling = true;
     try {
-      if (this.options.ownership) {
-        const acquired = await this.options.ownership.acquire(`discord-managed:${this.options.applicationId}:shard:0`);
-        if (!("claim" in acquired)) return;
-        if (this.stopped) { await this.options.ownership.release(acquired.claim); return; }
-        this.claim = acquired.claim;
+      // A shard fenced or failed (its connection closed for good) gives its claim back, for any node to take.
+      for (const shard of [...this.shards.values()]) if (!shard.gateway || !this.holds(shard)) await this.dropShard(shard);
+      if (!this.shardCount || Date.now() - this.shardCountAt >= SHARD_COUNT_CHECK_MS) await this.gatewayInfo();
+      for (let index = 0; index < this.shardCount; index++) {
+        if (this.stopped || this.shards.has(index)) continue;
+        const shard: Shard = { index, count: this.shardCount };
+        if (this.options.ownership) {
+          const acquired = await this.options.ownership.acquire(`discord-managed:${this.options.applicationId}:shard:${index}`);
+          if (!("claim" in acquired)) continue;
+          shard.claim = acquired.claim;
+        }
+        try {
+          if (this.stopped) throw new HttpError(503, "Stopped");
+          // Read again just before identifying: the allowance is spent per identify, and the count may have moved.
+          const info = await this.gatewayInfo();
+          if (this.stopped || !this.holds(shard)) throw new HttpError(503, "Stopped");
+          if (shard.count !== this.shardCount) throw new HttpError(503, "Discord changed the recommended shard count");
+          if (info.session_start_limit?.remaining === 0) throw new HttpError(503, "Discord Gateway session-start allowance is exhausted");
+          this.shards.set(index, shard);
+          shard.gateway = this.shardTransport(shard).connect!({ botToken: this.options.botToken }, {
+            message: async () => {}, failed: () => { shard.gateway = undefined; this.log("gateway_failed", { shard: index }); },
+            diagnostic: (event, fields) => this.log(`gateway_${event}`, { ...fields, shard: index }),
+          });
+          this.log("shard_connected", { shard: index, shards: shard.count });
+        } catch (error) {
+          await this.dropShard(shard);
+          if (this.stopped) return;
+          throw error;
+        }
+        return;
       }
-      const gateway = await this.bot("/gateway/bot");
-      if (this.stopped || !this.current()) return;
-      if (Number(gateway.shards ?? 1) !== 1) throw new HttpError(503, "Managed Discord pilot requires one shard; implement multi-shard coordination before enabling this application");
-      if (gateway.session_start_limit?.remaining === 0) throw new HttpError(503, "Discord Gateway session-start allowance is exhausted");
-      this.gateway = this.transport.connect!({ botToken: this.options.botToken }, {
-        message: async () => {}, failed: () => { this.gateway = undefined; this.log("gateway_failed"); },
-        diagnostic: (event, fields) => this.log(`gateway_${event}`, fields),
-      });
-    } catch (error) {
-      const claim = this.claim; this.claim = undefined;
-      if (claim) await this.options.ownership?.release(claim);
-      throw error;
     } finally { this.reconciling = false; }
   }
 
-  private current() { return !this.options.ownership || (!!this.claim && this.options.ownership.holds(this.claim)); }
+  /** Whether `shard`'s claim (or, with no shard, as in direct calls, any) still stands. */
+  private current(shard?: Shard) { return !this.options.ownership || (!!shard && this.holds(shard)); }
   /** Exported as an instance method to exercise real routing against a fake Gateway in integration tests. */
-  async dispatch(event: string, data: any) {
-    if (!this.current()) return;
+  async dispatch(event: string, data: any, shard?: Shard) {
+    if (!this.current(shard)) return;
     if (event === "READY") {
       this.botId = String(data.user?.id ?? "");
       const ids = (Array.isArray(data.guilds) ? data.guilds : []).filter((guild: any) => ID.test(guild?.id)).map((guild: any) => guild.id);
-      await underClaim(this.options.db, this.claim, async sql => {
-        await sql.query(`update discord_installations set state='removed',updated_at=$3 where application_id=$1 and guild_id<>all($2::text[])`, [this.options.applicationId, ids, Date.now()]);
+      // READY lists this shard's guilds only: a guild of another shard is not gone.
+      const count = shard?.count ?? 1;
+      await underClaim(this.options.db, shard?.claim, async sql => {
+        await sql.query(`update discord_installations set state='removed',updated_at=$3 where application_id=$1 and guild_id<>all($2::text[]) and ($4::int = 1 or (guild_id::bigint >> 22) % $4 = $5)`, [this.options.applicationId, ids, Date.now(), count, shard?.index ?? 0]);
         await sql.query(`update discord_server_bindings b set state='disconnected',updated_at=$2 from discord_installations i where b.application_id=i.application_id and b.guild_id=i.guild_id and i.application_id=$1 and i.state='removed' and b.state<>'disconnected'`, [this.options.applicationId, Date.now()]);
         await sql.query(`delete from channel_items where item->>'channel' in (select b.channel_id from discord_server_bindings b join discord_installations i using(application_id,guild_id) where b.application_id=$1 and i.state='removed')`, [this.options.applicationId]);
       });
       // READY lists every guild as unavailable until its GUILD_CREATE: that is not an outage, so a present server stays present.
-      for (const guild of data.guilds ?? []) if (ID.test(guild?.id)) await this.installation(guild.id, guild.name ?? "", guild.unavailable ? "unavailable" : "present", true);
+      for (const guild of data.guilds ?? []) if (ID.test(guild?.id)) await this.installation(guild.id, guild.name ?? "", guild.unavailable ? "unavailable" : "present", true, shard);
       return;
     }
     if (event === "GUILD_CREATE" || event === "GUILD_UPDATE") {
-      if (ID.test(data?.id)) await this.installation(data.id, data.name ?? "", data.unavailable ? "unavailable" : "present");
+      if (ID.test(data?.id)) await this.installation(data.id, data.name ?? "", data.unavailable ? "unavailable" : "present", false, shard);
       return;
     }
     if (event === "GUILD_DELETE") {
-      if (ID.test(data?.id)) await this.installation(data.id, "", data.unavailable ? "unavailable" : "removed");
+      if (ID.test(data?.id)) await this.installation(data.id, "", data.unavailable ? "unavailable" : "removed", false, shard);
       return;
     }
     if (event !== "MESSAGE_CREATE" || !this.botId || !data?.author || data.author.bot || data.webhook_id || !ID.test(data.channel_id) || !ID.test(data.id) || ![0, 19].includes(data.type)) return;
@@ -314,14 +368,14 @@ export class ManagedDiscord {
     if (!channel || !this.channels().allowed(channel, inbound.sender)) return;
     if (!await this.destination(binding.id, data.channel_id)) return;
     if (await this.options.canStart?.(binding.tenant)) {
-      await this.status(data.channel_id, data.guild_id, "Camel cannot start work for this server right now. A server admin can check the account's balance and spending limits in the console.");
+      await this.status(data.channel_id, data.guild_id, shard, "Camel cannot start work for this server right now. A server admin can check the account's balance and spending limits in the console.");
       return;
     }
-    if (this.current()) await this.channels().inbound(binding.channel_id!, inbound);
+    if (this.current(shard)) await this.channels().inbound(binding.channel_id!, inbound);
   }
-  private async installation(guild: string, name: string, state: "present" | "unavailable" | "removed", ready = false) {
-    if (!this.current()) return;
-    await underClaim(this.options.db, this.claim, async sql => {
+  private async installation(guild: string, name: string, state: "present" | "unavailable" | "removed", ready = false, shard?: Shard) {
+    if (!this.current(shard)) return;
+    await underClaim(this.options.db, shard?.claim, async sql => {
       await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`discord-binding:${this.options.applicationId}:${guild}`]);
       const prior = (await sql.query(`select state from discord_installations where application_id=$1 and guild_id=$2 for update`, [this.options.applicationId, guild])).rows[0];
       await sql.query(`insert into discord_installations (application_id,guild_id,name,state,updated_at) values ($1,$2,$3,$4,$5) on conflict (application_id,guild_id) do update set name=case when excluded.name='' then discord_installations.name else excluded.name end,state=case when $6 and discord_installations.state='present' then 'present' else excluded.state end,updated_at=excluded.updated_at`, [this.options.applicationId, guild, name, state, Date.now(), ready]);
@@ -333,15 +387,15 @@ export class ManagedDiscord {
     });
   }
   /** At most one status reply a minute in a channel, for a configured server only. */
-  private async status(channel: string, guild: string, content: string) {
-    if (!this.current()) return;
-    const allowed = await underClaim(this.options.db, this.claim, async sql => {
+  private async status(channel: string, guild: string, shard: Shard | undefined, content: string) {
+    if (!this.current(shard)) return;
+    const allowed = await underClaim(this.options.db, shard?.claim, async sql => {
       const now = Date.now();
       const local = await sql.query(`insert into discord_setup_cooldowns (key,until_at) values ($1,$2) on conflict (key) do update set until_at=excluded.until_at,count=1 where discord_setup_cooldowns.until_at<=$3 returning key`, [`${this.options.applicationId}:${guild}:${channel}`, now + 60_000, now]);
       return !!local.rowCount;
     });
     if (allowed) void this.scheduled(guild, async () => {
-      if (this.current()) await this.transport.send({ botToken: this.options.botToken }, channel, content);
+      if (this.current(shard)) await this.transport.send({ botToken: this.options.botToken }, channel, content);
     }).catch(() => this.log("status_failed"));
   }
 
