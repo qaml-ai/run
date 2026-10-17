@@ -1,7 +1,27 @@
 import { getModel as piGetModel, getModels as piGetModels } from "@earendil-works/pi-ai/compat";
 import type { Api, Model, ThinkingLevel } from "@earendil-works/pi-ai";
 
-const piModel = piGetModel as (provider: string, id: string) => Model<Api> | undefined;
+const piCatalog = piGetModel as (provider: string, id: string) => Model<Api> | undefined;
+
+/**
+ * Models Pi's catalog does not have yet, by provider and id: each is the Pi entry it is a release of (`from`), with
+ * what differs, checked against the provider's own model list. Drop each once Pi ships it (pi-ai 1.3.0 has none):
+ * - OpenRouter's DeepSeek V4.1 Flash 1017 (deepseek/deepseek-v4.1-flash-20261017), the 2026-10-17 snapshot, which the
+ *   unversioned id does not point at. Same context (1,048,576), longest reply, images, reasoning and thinking levels as
+ *   V4.1 Flash. Priced at OpenRouter's list price: $0.15 in, $0.60 out, $0.003 cache reads per million (it charges
+ *   twice that on weekdays 01:00-04:00 and 06:00-10:00 UTC, and reports what it charged, which billing takes first).
+ */
+const ADDED: Record<string, Record<string, { from: string; name: string; cost: Model<Api>["cost"] }>> = {
+  openrouter: {
+    "deepseek/deepseek-v4.1-flash-1017": { from: "deepseek/deepseek-v4.1-flash", name: "DeepSeek: DeepSeek V4.1 Flash 1017", cost: { input: 0.15, output: 0.6, cacheRead: 0.003, cacheWrite: 0 } },
+  },
+};
+const added = (provider: string, id: string): Model<Api> | undefined => {
+  const entry = ADDED[provider]?.[id];
+  const base = entry && !piCatalog(provider, id) ? piCatalog(provider, entry.from) : undefined;
+  return base && { ...base, id, name: entry!.name, cost: entry!.cost };
+};
+const piModel = (provider: string, id: string): Model<Api> | undefined => piCatalog(provider, id) ?? added(provider, id);
 
 /**
  * Where Pi's catalog says more about Bedrock than Bedrock serves, read from the catalog itself:
@@ -82,9 +102,9 @@ export function withCatalogPrices<T extends Model<Api>>(model: T): T {
   return known && known.baseUrl === model.baseUrl && JSON.stringify(known.cost) !== JSON.stringify(model.cost) ? { ...model, cost: known.cost } : model;
 }
 
-/** Pi's models for a provider, as this runtime corrects them: no Bedrock base id that has inference profiles. */
+/** Pi's models for a provider and those ADDED, as this runtime corrects them: no Bedrock base id that has inference profiles. */
 export function getModels(provider: string): Model<Api>[] {
-  const models = piGetModels(provider as never) as Model<Api>[];
+  const models = [...piGetModels(provider as never) as Model<Api>[], ...Object.keys(ADDED[provider] ?? {}).flatMap(id => added(provider, id) ?? [])];
   return models.flatMap(model => provider === BEDROCK && PROFILES.has(model.id) ? [] : [corrected(model)!]);
 }
 
