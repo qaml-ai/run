@@ -223,3 +223,21 @@ resource "aws_cloudwatch_metric_alarm" "database_cpu_credits" {
   alarm_actions       = local.alarm_topics
   ok_actions          = local.alarm_topics
 }
+
+# Postgres keeps its working set in memory: as the data outgrows the instance it
+# swaps, and every durable write and history read slows with it.
+resource "aws_cloudwatch_metric_alarm" "database_memory" {
+  alarm_name          = "${var.name}-database-memory"
+  alarm_description   = "The control database has under 256 MB of freeable memory for 15 minutes; move to a larger class"
+  namespace           = "AWS/RDS"
+  metric_name         = "FreeableMemory"
+  dimensions          = { DBInstanceIdentifier = aws_db_instance.control.identifier }
+  statistic           = "Minimum"
+  period              = 300
+  evaluation_periods  = 3
+  threshold           = 256 * 1024 * 1024
+  comparison_operator = "LessThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_topics
+  ok_actions          = local.alarm_topics
+}
