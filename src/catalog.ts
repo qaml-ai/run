@@ -3,6 +3,7 @@ import { getProviders } from "@earendil-works/pi-ai/compat";
 import { getModels } from "./pi-catalog.ts";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { SEARCH_PROVIDERS } from "./web-search.ts";
+import { deepseekOnOpenRouter } from "./deepseek-replay.ts";
 
 /** Page renderers web_fetch can use, by the provider key they take. */
 export const FETCH_PROVIDERS = ["firecrawl"] as const;
@@ -83,14 +84,16 @@ export function providerInfo(id: string): ProviderInfo | undefined {
 /**
  * The API Pi speaks to OpenRouter for a model: its Responses API (stateless, reasoning carried back
  * as it came), except for Anthropic's models, which keep its Messages API, since Responses gets
- * them no prompt caching.
+ * them no prompt caching, and DeepSeek's (`model`, of the catalog), which keep Chat Completions, where
+ * every turn's reasoning goes back as DeepSeek's own API asks (deepseek-replay.ts).
  */
-export function openRouterApi(api: string): Api {
+export function openRouterApi(api: string, model?: Pick<Model<Api>, "id" | "compat">): Api {
+  if (model && api === "openai-completions" && deepseekOnOpenRouter({ ...model, provider: "openrouter" })) return api as Api;
   return (api === "anthropic-messages" ? api : "openai-responses") as Api;
 }
 
 export const modelInfo = (model: Model<Api>): ModelInfo => ({
-  id: `${model.provider}/${model.id}`, provider: model.provider, modelId: model.id, name: model.name, api: model.provider === "openrouter" ? openRouterApi(model.api) : model.api,
+  id: `${model.provider}/${model.id}`, provider: model.provider, modelId: model.id, name: model.name, api: model.provider === "openrouter" ? openRouterApi(model.api, model) : model.api,
   reasoning: model.reasoning, input: model.input, contextWindow: model.contextWindow, maxTokens: model.maxTokens,
   cost: { input: model.cost.input, output: model.cost.output, cacheRead: model.cost.cacheRead, cacheWrite: model.cost.cacheWrite },
   toolCallStreaming: toolCallStreaming(`${model.provider}/${model.id}`),
