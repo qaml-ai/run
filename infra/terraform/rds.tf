@@ -44,7 +44,7 @@ resource "aws_db_instance" "control" {
   vpc_security_group_ids = [aws_security_group.database.id]
   publicly_accessible    = false
 
-  backup_retention_period               = 7
+  backup_retention_period               = 14
   backup_window                         = "09:00-09:30"
   maintenance_window                    = "sun:10:00-sun:10:30"
   auto_minor_version_upgrade            = true

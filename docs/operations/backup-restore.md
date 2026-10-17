@@ -16,7 +16,7 @@ places, restored differently:
 
 | | How | Window |
 |---|---|---|
-| Database, point in time | RDS automated backups (daily snapshot at 09:00 UTC plus transaction logs) | 7 days (`backup_retention_period`), to within about 5 minutes of now (`LatestRestorableTime`) |
+| Database, point in time | RDS automated backups (daily snapshot at 09:00 UTC plus transaction logs) | 14 days (`backup_retention_period`), to within about 5 minutes of now (`LatestRestorableTime`) |
 | Database, on deletion | final snapshot `camelai-agent-runtime-control-final`; deletion protection and `prevent_destroy` | until deleted by hand |
 | Bucket objects | versioning; an overwritten or deleted object's last version is kept | 30 days (`expire-noncurrent-versions`), then gone |
 | Performance Insights | not a backup | 7 days |
@@ -40,6 +40,9 @@ The check runs as a one-off Fargate task in the service's network (the drill ins
 one), with its own task definition and no task role. It prints the latest migration, row counts of the tables that
 hold money and identity, and the newest ledger and model-attempt rows, which show how far behind the restore point
 the copy is. `PASS` means the backup restores and answers; the elapsed time is the database half of the recovery time.
+
+Last run, 2026-10-17 (db.t4g.large, 72 migrations, 16k agents, 91k model attempts): the latest point (5 minutes
+behind) restored in 16 minutes and checked in 19; the newest rows were 13 seconds before the restore point. PASS.
 
 ## Restoring production
 
@@ -90,5 +93,5 @@ does. Pick the latest point before the damage.
 
 - No cross-region or cross-account copy. RDS automated backup replication to another region (Postgres supports it)
   and S3 replication with a separate account's bucket would cover a region outage or a compromised account.
-- Backups are kept 7 days, objects 30: a mistake noticed after a week cannot be undone from the database.
+- Backups are kept 14 days, objects 30: a mistake noticed after two weeks cannot be undone from the database.
 - Step 3 has not been rehearsed against a staging stack; the drill covers steps 2 and 4's dry run.
