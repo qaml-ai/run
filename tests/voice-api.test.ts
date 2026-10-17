@@ -80,6 +80,42 @@ test("/v1/voice/sessions: create, read, list, update and end a session over HTTP
   assert.equal((await call("GET", "/v1/voice/sessions/vs_000000000000000000000000")).status, 404);
 });
 
+test("a tenant's maxVoiceSessions in the tenants file overrides AGENT_VOICE_SESSIONS_PER_TENANT", async t => {
+  const root = await mkdtemp(join(tmpdir(), "agent-voice-limit-"));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
+  writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(token), apiKeys: { openrouter: "fixture-key", openai: "fixture-key" }, maxVoiceSessions: 2 } } }));
+  const { url: databaseUrl } = await testDatabase();
+  const fake = fakeTransport();
+  let node: RuntimeNode | undefined;
+  t.after(async () => { await node?.close().catch(() => {}); });
+  const base = await onFreePort(async port => {
+    const config = nodeConfig({
+      PORT: String(port), HOST: "127.0.0.1", AGENT_NODE_URL: `http://127.0.0.1:${port}`, AGENT_DATABASE_URL: databaseUrl,
+      AGENT_DATA_DIR: join(root, "shared"), AGENT_STORAGE: "shared-file", AGENT_HOSTING: "inline", AGENT_LEASE_TTL_MS: "1500", AGENT_SCHEDULER_INTERVAL_MS: "200",
+      AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_SESSION_SECRET: "voice-api-session-secret-with-32-chars!!", AGENT_SECRETS_KEY: randomBytes(32).toString("hex"),
+      AGENT_VOICE_SESSIONS_PER_TENANT: "1",
+    });
+    const made = await createNode(config, { ...await nodeDeps(config), voiceTransports: { discord: fake.transport } });
+    try { await made.start(); } catch (error) { await made.close().catch(() => {}); throw error; }
+    node = made;
+    return `http://127.0.0.1:${port}`;
+  });
+  const create = async (guildId: string) => {
+    const response = await fetch(`${base}/v1/voice/sessions`, {
+      method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ discord: discordGrant({ guildId }) }),
+    });
+    return { status: response.status, json: await response.json() as any };
+  };
+  assert.equal((await create("100000000000000061")).status, 201);
+  const second = await create("100000000000000062");
+  assert.equal(second.status, 201, `the tenant's 2, not the runtime's 1: ${JSON.stringify(second.json)}`);
+  const third = await create("100000000000000063");
+  assert.equal(third.status, 429);
+  assert.equal(third.json.code, "VOICE_SESSION_LIMIT");
+  assert.equal(third.json.limit, 2);
+});
+
 test("speak over HTTP: a request to any node plays on the node holding the call, made by OpenAI's speech API as streamed PCM", async t => {
   const root = await mkdtemp(join(tmpdir(), "agent-voice-speak-"));
   t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
