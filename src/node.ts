@@ -1444,13 +1444,22 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     const unfinished = clients.inFlight();
     sometimes(unfinished > 0, "a drain released turns still running");
     await step("agents", () => clients.close());
+    // Usage is in memory until flushed: write what the turns recorded now, before the slower close steps eat into the
+    // time left before SIGKILL (stopTimeout). What later steps record goes in the flush after them.
+    await step("usage", () => accounts.flushUsage());
     // The spans of the runs this node served or handed off, sent within a few seconds.
     await step("telemetry", () => telemetry.close());
     await step("supervisor", () => supervisor.close());
     await step("volumes", () => volumes.close());
     await step("mcp", () => mcp.close());
     await step("model attempts", () => modelAttempts.drain());
-    await step("usage", () => accounts.flushUsage());
+    // The last chance to write it: retried for a few seconds, through a database failover's first stall, before giving up.
+    await step("final usage", async () => {
+      for (const until = Date.now() + 10_000; ;) {
+        try { return await accounts.flushUsage(); }
+        catch (error) { if (Date.now() >= until) throw error; await new Promise(resolve => setTimeout(resolve, 1000)); }
+      }
+    });
     await step("auto top-up", async () => { await accounts.billing.autoTopup?.stop(); });
     await step("billing email", async () => { await billingMailer?.stop(); supportMail?.destroy(); await accountMail?.stop(); });
     await step("storage usage", () => storageUsage.flush());
