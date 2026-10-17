@@ -206,19 +206,23 @@ resource "aws_cloudwatch_metric_alarm" "end_user_fallback" {
   ok_actions          = local.alarm_topics
 }
 
-# The control database is a burstable instance: when its CPU credits run out it
-# is held to its baseline, and every durable write slows with it.
+# The control database is a burstable instance (db.t4g), and RDS runs T-class instances in Unlimited
+# mode only: when its CPU credit balance runs out it is not held to its baseline, it bursts on surplus
+# credits, billed when not earned back within 24 hours. So an empty balance is not the signal (a class
+# change also starts the new instance at 0, which used to fire this); a surplus credit balance that
+# stays up is: the database has needed more than its baseline CPU for an hour and pays for it, time
+# for a fixed-performance class (db.m7g).
 resource "aws_cloudwatch_metric_alarm" "database_cpu_credits" {
   alarm_name          = "${var.name}-database-cpu-credits"
-  alarm_description   = "The control database is running out of CPU credits; move to a larger class"
+  alarm_description   = "The control database has burst past its CPU credits for an hour (Unlimited mode: billed, not throttled); move to a larger or db.m7g class"
   namespace           = "AWS/RDS"
-  metric_name         = "CPUCreditBalance"
+  metric_name         = "CPUSurplusCreditBalance"
   dimensions          = { DBInstanceIdentifier = aws_db_instance.control.identifier }
   statistic           = "Minimum"
   period              = 300
-  evaluation_periods  = 3
-  threshold           = 30
-  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = 12
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = local.alarm_topics
   ok_actions          = local.alarm_topics

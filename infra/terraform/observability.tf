@@ -346,6 +346,7 @@ resource "aws_cloudwatch_dashboard" "launch" {
           ["AWS/RDS", "CPUUtilization", "DBInstanceIdentifier", aws_db_instance.control.identifier, { stat = "Maximum", label = "CPU %" }],
           ["AWS/RDS", "DatabaseConnections", "DBInstanceIdentifier", aws_db_instance.control.identifier, { stat = "Maximum", label = "connections", yAxis = "right" }],
           ["AWS/RDS", "CPUCreditBalance", "DBInstanceIdentifier", aws_db_instance.control.identifier, { stat = "Minimum", label = "CPU credits", yAxis = "right" }],
+          ["AWS/RDS", "CPUSurplusCreditBalance", "DBInstanceIdentifier", aws_db_instance.control.identifier, { stat = "Maximum", label = "surplus CPU credits (billed)", yAxis = "right" }],
           [local.ns, "dbWaiting", "ServiceName", local.svc, { stat = "Maximum", label = "pool waiting (max node)", yAxis = "right" }],
       ], period = 300 } },
       { type = "log", x = 8, y = 32, width = 16, height = 6, properties = { title = "Runtime errors and refusals (last 3 h)", region = var.region, view = "table",
