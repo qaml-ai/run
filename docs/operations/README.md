@@ -80,6 +80,10 @@ npm run test:shard -- --update /tmp/timings/*
 npm run test:shard -- --plan 12   # what each shard runs, and its expected seconds
 ```
 
+A shard whose failures are in at most three files runs those files once more, alone; if they pass, the shard passes
+and the run carries a "Flaky test file" warning naming each one. Treat that warning as a bug to fix (a fixed wait or a
+short deadline that a busy runner misses is the usual cause), not as green. More failing files fail the shard at once.
+
 To deploy without waiting for CI (an emergency fix, or a rollback to an earlier commit), run Deploy by hand:
 `gh workflow run deploy.yml -R qaml-ai/run --ref <branch or tag>` deploys that ref's commit, building its image if
 CI has not pushed it. A hand-run deploy skips the "production already runs a newer commit" check, so it can roll back.

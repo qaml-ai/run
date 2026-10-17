@@ -212,11 +212,11 @@ test("models are chosen by name over REST, at creation and mid-conversation", as
   // Switch models with the agent's scoped token; a provider without a key is refused.
   const configure = (model: string, requestId: string) => call(`/clients/${id}/requests`, { token: created.json.token, body: { id: requestId, method: "configure", params: { model } } });
   assert.equal((await configure("anthropic/claude-haiku-4-5", "to-haiku")).status, 202);
+  // Up to 30 s: a busy runner can take seconds, and a request still running then is returned as it is.
   const settle = async (requestId: string) => {
-    for (let i = 0; i < 100; i++) {
+    for (const deadline = Date.now() + 30_000; ; await new Promise(resolve => setTimeout(resolve, 20))) {
       const record = (await call(`/clients/${id}/requests/${requestId}`, { token: created.json.token })).json;
-      if (record.state !== "running") return record;
-      await new Promise(resolve => setTimeout(resolve, 20));
+      if (record.state !== "running" || Date.now() > deadline) return record;
     }
   };
   assert.equal((await settle("to-haiku")).outcome.error, undefined);
@@ -590,9 +590,8 @@ test("a tenant at its agent quota gets 429 with Retry-After and nothing half-cre
   const app = await attachSilently(t, base, busy.json.id, busy.json.token);
   const run = await call(`/clients/${busy.json.id}/requests`, { token: busy.json.token, body: { id: "hold-1", method: "execute", params: { code: "return await tools.hold({})" } } });
   assert.equal(run.status, 202);
-  for (let tries = 0; !app.calls.length; tries++) {
-    assert.ok(tries < 100, "the call was sent");
-    await new Promise(resolve => setTimeout(resolve, 50));
+  for (const deadline = Date.now() + 30_000; !app.calls.length; await new Promise(resolve => setTimeout(resolve, 50))) {
+    assert.ok(Date.now() < deadline, "the call was sent");
   }
   const agents = async () => Number((await db.query("select count(*) as count from agents where tenant = 'bob'")).rows[0].count);
   for (const key of ["second", "third"]) {
@@ -637,9 +636,8 @@ test("a tenant's own maxAgents replaces the default limit, and a change applies 
   for (const agent of bobs.filter(result => result.status === 201).map(result => result.json)) {
     const app = await attachSilently(t, base, agent.id, agent.token);
     assert.equal((await call(`/clients/${agent.id}/requests`, { token: agent.token, body: { id: "hold", method: "execute", params: { code: "return await tools.hold({})" } } })).status, 202);
-    for (let tries = 0; !app.calls.length; tries++) {
-      assert.ok(tries < 100, "the call was sent");
-      await new Promise(resolve => setTimeout(resolve, 50));
+    for (const deadline = Date.now() + 30_000; !app.calls.length; await new Promise(resolve => setTimeout(resolve, 50))) {
+      assert.ok(Date.now() < deadline, "the call was sent");
     }
   }
   assert.equal((await create(bob, refused)).status, 429);

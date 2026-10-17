@@ -12,7 +12,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   checks:
-    timeout-minutes: 30
+    # Fail fast: each job here takes 1-4 minutes, so anything near this limit is hung.
+    timeout-minutes: 15
     # The organization runner group admits only this workflow on main; PRs use hosted runners.
     runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
     steps:
@@ -24,7 +25,7 @@ jobs:
       - run: npm run test:ui
       - run: npm run build:console && npm run build
   python:
-    timeout-minutes: 30
+    timeout-minutes: 15
     # The Python SDK tests start a real runtime, whose js_exec runs on the v8-exec job's binary. Their own job, beside
     # checks: they take three minutes, the rest of checks one.
     needs: v8-exec
@@ -56,7 +57,8 @@ jobs:
         env:
           AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/postgres
   test:
-    timeout-minutes: 30
+    # A shard takes 3-4 minutes, and a flaky file's rerun a few more (scripts/test-shard.ts).
+    timeout-minutes: 15
     # Both hosting modes run the full suite side by side (the simulator's files, inline whatever the mode, in the
     # inline shards alone), each split over twelve shards (about three minutes each) balanced by tests/timings.json
     # (scripts/test-shard.ts).
@@ -159,6 +161,7 @@ jobs:
     # The deployed image installs only runtime dependencies; prove it migrates its database, starts and serves,
     # with js_exec and file parsing confined by agent-launcher. Built natively for production's ARM64 (Graviton).
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
     services:
       postgres:
         # Hosted runners have a Docker Hub pull-limit exemption; ECR Public can throttle them.
@@ -210,6 +213,7 @@ jobs:
     # environment. Tags are immutable: a re-run finds its image already pushed.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
     environment: production
     permissions:
       contents: read
