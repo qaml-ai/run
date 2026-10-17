@@ -8,8 +8,8 @@ import { fileURLToPath } from "node:url";
  * under the job's AGENT_HOSTING. Files are dealt longest first to the shard with the least
  * time so far, by their seconds in tests/timings.json, so every shard gets the same files on
  * every runner and together they run each file once. A file the table does not know counts
- * as DEFAULT_SECONDS. `test-shard.ts --plan 8` prints every shard (`--plan 10 8`: ten process
- * shards and eight inline).
+ * as DEFAULT_SECONDS. `test-shard.ts --plan 12 10` prints every shard, for twelve process shards
+ * and ten inline (CI's counts, the default).
  *
  * Every shard also records each file's wall time as CI runs it (TEST_CONCURRENCY files at once) in
  * test-timings/<hosting>-<index>of<count>.json (scripts/test-timings-reporter.ts), kept as the run's
@@ -67,7 +67,7 @@ if (process.argv[2] === "--update") {
     Object.fromEntries(Object.entries(seconds).filter(([file]) => filesFor(hosting).includes(file)).sort(([a], [b]) => a.localeCompare(b)))]));
   writeFileSync(timingsFile, `${JSON.stringify(sorted, null, 2)}\n`);
 } else if (process.argv[2] === "--plan") {
-  const counts: Record<string, number> = { process: Number(process.argv[3] ?? 8), inline: Number(process.argv[4] ?? process.argv[3] ?? 8) };
+  const counts: Record<string, number> = { process: Number(process.argv[3] ?? 12), inline: Number(process.argv[4] ?? process.argv[3] ?? 10) };
   for (const [hosting, seconds] of Object.entries(JSON.parse(readFileSync(timingsFile, "utf8")) as Record<string, Record<string, number>>)) {
     const count = counts[hosting];
     for (let index = 1; index <= count; index++) {

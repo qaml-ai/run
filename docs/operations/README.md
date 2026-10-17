@@ -67,16 +67,17 @@ The storage tests also run against S3 with `AGENT_TEST_S3_BUCKET=<bucket>`.
 
 Every main commit's CI (`.github/workflows/ci.yml`) is its deploy gate: Deploy (`deploy.yml`) rolls the commit out
 once all of CI passes, from the image CI's `publish` job already pushed. The gate is typecheck, builds and UI tests
-(`checks`), the Python SDK (`python`), the whole suite in both hosting modes (`test`, eight shards each), the
-simulator's fixed seeds (`sim`) and the ARM64 image (`image`). Fifty fresh simulator seeds run beside it on every main
-commit (`sim-seeds.yml`): a seed that finds something new turns that run red without holding the deploy back.
+(`checks`), the Python SDK (`python`), the whole suite in both hosting modes (`test`: twelve process shards, ten
+inline), the simulator's fixed seeds (`sim`) and the ARM64 image (`image`). Fifty fresh simulator seeds run beside
+it on every main commit (`sim-seeds.yml`): a seed that finds something new turns that run red without holding the
+deploy back.
 
 The shards are balanced by `tests/timings.json`. Each shard records its files' times as a `test-timings-*`
 artifact; when shards drift apart, rebalance from a green run:
 
 ```sh
 gh run download <run id> -R qaml-ai/run -p 'test-timings-*' -D /tmp/timings && npm run test:shard -- --update /tmp/timings
-npm run test:shard -- --plan 8   # what each shard runs, and its expected seconds
+npm run test:shard -- --plan 12 10   # what each shard runs, and its expected seconds
 ```
 
 To deploy without waiting for CI (an emergency fix, or a rollback to an earlier commit), run Deploy by hand:
