@@ -1548,8 +1548,9 @@ export class ClientSessions {
     const evict = async (idle: Session | undefined) => { if (idle) await this.supervisor.stop(idle.header.id); return !!idle; };
     const reject = (status: 429 | 503, limit: string, value: number, message: string) => {
       console.log(JSON.stringify({ type: "quota_rejected", level: "info", tenant, agent: id, limit, value, source: limit === "agentsPerTenant" ? source : "node", status }));
-      // The node's own limits (its count, its memory), which a peer with room does not share (see `run`).
-      return Object.assign(new HttpError(status, message), status === 503 ? { nodeFull: true } : {});
+      // The node's own limits (its count, its memory), which a peer with room does not share (see `run`). The limit
+      // rides on the error for the API's limit_refused line (metrics.ts limitOf), not in its body.
+      return Object.assign(new HttpError(status, message), { refusedLimit: limit }, status === 503 ? { nodeFull: true } : {});
     };
     for (;;) {
       if (this.supervisor.reserved.has(id) || this.supervisor.agents.has(id) || this.supervisor.starting.has(id)) return;

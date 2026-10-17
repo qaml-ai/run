@@ -161,6 +161,28 @@ export function recordV8Exec(event: { event: "spawn_failed" | "killed"; code?: s
   });
 }
 
+/**
+ * Who a failed turn's failure belongs to, for the turn-success SLO (infra/terraform/slo.tf): `caller` when the caller or
+ * the tenant's own setup ended it (an abort, a refusal, a context too long, the tenant's key or credit, an output the
+ * model never gave), else `platform` (the runtime, its sandbox, the providers it reaches: what we answer for, an
+ * unknown error included). `none` for a turn that did not fail.
+ */
+export function turnFault(outcome: string, error: string, code?: unknown): "none" | "platform" | "caller" {
+  if (outcome !== "failed") return "none";
+  if (code === "aborted" || code === "output_missing") return "caller";
+  return CALLER_CLASSES.has(error) ? "caller" : "platform";
+}
+const CALLER_CLASSES = new Set(["refusal", "context_overflow", "auth", "billing"]);
+
+/** A turn result's machine code (`aborted`, `output_missing`, a limit's), an identifier: never its error's text. */
+function turnCode(value: unknown) {
+  const own = (value as { code?: unknown } | undefined)?.code;
+  return typeof own === "string" && /^[\w.-]{1,40}$/.test(own) ? own : undefined;
+}
+
+/** A first token later than this counts against the time-to-first-token SLO (SlowFirstTokens). */
+export const SLOW_FIRST_TOKEN_MS = 30_000;
+
 /** The methods that are a turn of the model (not code executions, configuration or loads). */
 const TURN_METHODS = new Set(["prompt", "continue", "resume"]);
 
@@ -210,17 +232,22 @@ export function observeTurns(model: () => { provider: string; id: string } | und
     // A turn handed off at a step boundary ends here and goes on on another node: its part here is a turn of its own.
     const outcome = error !== "none" ? "failed" : result?.handedOff ? "handed_off" : result?.stopped === "input_required" ? "input_required" : limited ?? "completed";
     const { provider = "unknown", id = "unknown" } = model() ?? {};
+    const why = turnCode(result);
+    const firstTokenMs = current.firstToken === undefined ? undefined : current.firstToken - current.started;
     emit("turn_metrics", {
-      dimensions: { Outcome: outcome, ErrorClass: error, Provider: provider, Model: id },
-      rollups: [[], ["Outcome"], ["ErrorClass"], ["Provider", "Model"]],
+      dimensions: { Outcome: outcome, ErrorClass: error, Provider: provider, Model: id, Fault: turnFault(outcome, error, why) },
+      rollups: [[], ["Outcome"], ["ErrorClass"], ["Provider", "Model"], ["Fault"]],
       metrics: {
         Turns: 1, TurnDurationMs: [clock() - current.started, "Milliseconds"],
-        TimeToFirstTokenMs: current.firstToken === undefined ? undefined : [current.firstToken - current.started, "Milliseconds"],
+        TimeToFirstTokenMs: firstTokenMs === undefined ? undefined : [firstTokenMs, "Milliseconds"],
+        // The ratio of the time-to-first-token SLO: turns that had a first token, and those whose came late.
+        FirstTokens: firstTokenMs === undefined ? undefined : 1,
+        SlowFirstTokens: firstTokenMs === undefined ? undefined : firstTokenMs > SLOW_FIRST_TOKEN_MS ? 1 : 0,
         // Failed responses are counted by their own lines (model_error), under the same dimensions.
         ModelResponses: current.responses, ModelRetries: current.retries,
         ToolCalls: current.tools, ToolErrors: current.toolErrors,
       },
-      properties: { method, modelErrors: current.errors },
+      properties: { method, modelErrors: current.errors, ...(why ? { stopCode: why } : {}) },
     });
   }
 
@@ -393,6 +420,59 @@ export function recordStart(steps: Steps, start: { tenant: string; agent: string
     dimensions: { Outcome: start.error === undefined ? "started" : "failed" }, rollups: [[], ["Outcome"]],
     metrics: stepMetrics("Start", steps), properties: { tenant: start.tenant, agent: start.agent, ...(start.error !== undefined ? { error: start.error } : {}) },
   });
+}
+
+/** The error codes of a tenant's or node's limit, by the name a `limit_refused` line gives the limit. */
+const LIMIT_CODES: Record<string, string> = {
+  DEFINITIONS_LIMIT: "definitions", BUSY_AGENT_LIMIT: "busyAgents", END_USER_CREDIT: "endUserCredit",
+  VOICE_SESSION_LIMIT: "voiceSessions", STORAGE_LIMIT: "storage",
+};
+
+/**
+ * The limit an error says a request was refused at, or undefined when it is no limit's: a limit's own code
+ * (LIMIT_CODES), a refusal that names its limit (`refusedLimit`: an agent cap, see client-sessions.ts), the tenant's
+ * monthly spend cap or prepaid credit (402s that name no code of their own), or a tenant's rate limit. A run's own
+ * spend limit (SPEND_LIMIT without the monthly cap's words) is the caller's setting, not a limit of the tenant's.
+ */
+export function limitOf(error: unknown): string | undefined {
+  const { status, code, refusedLimit, limit, message } = (error ?? {}) as { status?: unknown; code?: unknown; refusedLimit?: unknown; limit?: { scope?: unknown; name?: unknown }; message?: unknown };
+  if (typeof refusedLimit === "string") return refusedLimit;
+  if (typeof code === "string" && LIMIT_CODES[code]) return LIMIT_CODES[code];
+  const text = typeof message === "string" ? message : "";
+  if (code === "SPEND_LIMIT" || status === 402) {
+    if (/monthly spend limit/.test(text)) return "monthlySpend";
+    if (/out of credit|is disputed/.test(text)) return "credit";
+  }
+  if (status === 429 && /spending limit on free credit/.test(text)) return "freeCredit";
+  if (code === "RATE_LIMITED" && limit?.scope === "tenant" && typeof limit.name === "string") return `rateLimit:${limit.name}`;
+  return undefined;
+}
+
+/**
+ * A request refused at one of a tenant's or a node's limits (`limitOf`): the agent cap, definitions, end users' credit,
+ * the monthly spend cap. Counted by limit and by tenant, so an operator tenant's refusals alarm (limits.tf) whichever
+ * limit it was: a cap reached shows up here before its callers' own logs say why their work failed.
+ */
+export function recordLimitRefused(refusal: { tenant?: string; limit: string; status: number; reason?: string }) {
+  emit("limit_refused", {
+    dimensions: { Limit: refusal.limit, Tenant: refusal.tenant ?? "unknown" }, rollups: [["Limit"], ["Tenant", "Limit"]],
+    metrics: { LimitRefusals: 1 }, properties: { status: refusal.status, ...(refusal.reason && /^\w{1,40}$/.test(refusal.reason) ? { reason: refusal.reason } : {}) },
+  });
+}
+
+/**
+ * How much of each of its limits a tenant of the tenants file uses, in percent (`tenant_limits`): its definitions of
+ * maxDefinitions, its busy agents of its busy-agent limit, its spend this UTC month of maxMonthlyCost. Alarms read the
+ * largest across tenants (limits.tf).
+ */
+export function recordTenantLimits(tenant: string, used: Record<string, { used: number; limit: number } | undefined>) {
+  for (const [limit, value] of Object.entries(used)) {
+    if (!value || !(value.limit > 0)) continue;
+    emit("tenant_limits", {
+      dimensions: { Tenant: tenant, Limit: limit }, rollups: [["Limit"], ["Tenant", "Limit"]],
+      metrics: { TenantLimitUsedPct: [Math.round(1000 * value.used / value.limit) / 10, "None"] }, properties: { used: value.used, limit: value.limit },
+    });
+  }
 }
 
 /** Write a line through the sink (for callers outside this module). */

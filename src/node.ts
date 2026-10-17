@@ -23,7 +23,7 @@ import { postgresTail, sweepTails } from "./log-tail.ts";
 import { databaseFromEnvironment, listenFromEnvironment, migrate, type Db } from "./db.ts";
 import { network, REAL_CLOCK, REAL_NETWORK, REAL_RANDOM, runFor, type Clock, type Network, type Random } from "./node-context.ts";
 import { Ownership, probeNode } from "./ownership.ts";
-import { BusyAgents } from "./busy-agents.ts";
+import { BusyAgents, busyCount } from "./busy-agents.ts";
 import { tenantsFromEnvironment, type Tenants } from "./tenants.ts";
 import { Accounts } from "./accounts.ts";
 import { BillingAlerts } from "./billing-alerts.ts";
@@ -66,7 +66,7 @@ import type { HistoryPage } from "./history-pages.ts";
 import { VersionConflict, VolumeService } from "./volumes.ts";
 import { FILE_LIMITS, FileLinks } from "./files.ts";
 import { nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from "./ecs.ts";
-import { recordCreate, safeError, Steps, webhookBacklogLine } from "./metrics.ts";
+import { recordCreate, recordTenantLimits, safeError, Steps, webhookBacklogLine } from "./metrics.ts";
 import { runtimeSecrets, managedDiscordSecrets } from "./secrets.ts";
 import { checkSandbox, type CodeExecutor } from "./codemode.ts";
 import { V8Exec } from "./v8-exec.ts";
@@ -1295,6 +1295,24 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       .catch(error => console.error(JSON.stringify({ type: "webhook_backlog_failed", error: errorText(error) })));
   }, 60_000);
   loadTimer.unref();
+  // How much of their limits the tenants of the file use (metrics.ts recordTenantLimits), every 5 minutes on every node:
+  // read with Maximum. Self-serve tenants are left out: their limits are the plan's, and they are many.
+  const limitsTimer = setInterval(() => void tenantLimits().catch(error => console.error(JSON.stringify({ type: "tenant_limits_failed", error: safeError(error) }))), 5 * 60_000);
+  limitsTimer.unref();
+  async function tenantLimits() {
+    for (const tenant of tenants.ids()) {
+      const [count, busy, busyLimit, spent] = await Promise.all([
+        db.query("select count(*) as count from definitions where tenant = $1", [tenant]).then(({ rows }) => Number(rows[0].count)),
+        busyCount(db, tenant), accounts.billing.busyLimit(tenant, db), accounts.monthSpend(tenant),
+      ]);
+      const cap = tenants.maxMonthlyCost(tenant);
+      recordTenantLimits(tenant, {
+        definitions: { used: count, limit: definitions.maxDefinitions(tenant) },
+        busyAgents: { used: busy, limit: busyLimit.limit },
+        monthlySpend: cap === undefined ? undefined : { used: spent, limit: cap },
+      });
+    }
+  }
   // Tail rows a dead node left for agents and volumes that are gone since.
   const sweepTimer = setInterval(() => void sweepTails(db).catch(error => console.error(JSON.stringify({ type: "tail_sweep_failed", error: errorText(error) }))), 60 * 60_000);
   sweepTimer.unref();
@@ -1417,6 +1435,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     clearInterval(nodesTimer);
     clearInterval(tenantsTimer);
     clearInterval(loadTimer);
+    clearInterval(limitsTimer);
     clearInterval(sweepTimer);
     clearInterval(purgeTimer);
     clearInterval(orphanTimer);

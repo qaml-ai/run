@@ -388,6 +388,9 @@ test("a tenant's definitions are capped by its limit (409 DEFINITIONS_LIMIT), an
   const refused = await r.call("/v1/definitions", { body: { name: "d" } });
   assert.deepEqual([refused.status, refused.json.code, refused.json.limit], [409, "DEFINITIONS_LIMIT", 3], refused.text);
   assert.match(refused.json.error, /at most 3 definitions/);
+  // Counted as a refusal at a limit, by tenant: what the operator tenants' limit alarm reads (infra/terraform/slo.tf).
+  const counted = await until(() => r.logs.map(line => { try { return JSON.parse(line); } catch { return {}; } }).find(line => line.type === "limit_refused"), "a limit_refused line");
+  assert.deepEqual([counted.Limit, counted.Tenant, counted.LimitRefusals, counted.status], ["definitions", "alice", 1, 409]);
   // An agent made from the first; the other two are unused, and deleting one makes room.
   assert.equal((await r.call("/v1/agents", { body: { definition: ids[0] } })).status, 201);
   assert.deepEqual((await r.call("/v1/definitions?unused=true")).json.map((definition: any) => definition.id), ids.slice(1));

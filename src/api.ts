@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { HistoryFormatError, toPiMessages } from "../clients/history-formats.ts";
-import { safeError } from "./metrics.ts";
+import { limitOf, recordLimitRefused, safeError } from "./metrics.ts";
 import { OpenAPIHono, createRoute, z, type RouteConfig } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
@@ -157,6 +157,13 @@ const DOCUMENT = {
 /** On GET /v1/models?available=true when the list is empty. */
 export const MODELS_HINT_HEADER = "X-Camelrun-Hint";
 const NO_MODELS_HINT = "No model is usable yet: no provider key is set for this account. Set one with PUT /v1/providers/<provider>/key (GET /v1/providers lists them), or on a self-hosted runtime in AGENT_TENANT_API_KEYS";
+/** A request refused at a limit (metrics.ts limitOf) is counted once, as the API answers it: limit_refused. */
+function countLimit(c: Context, error: unknown, status: number) {
+  const limit = limitOf(error);
+  // End users' credit says why (balance, daily_limit, bucket_limit) in its details.
+  const reason = (error as { details?: { reason?: unknown } } | undefined)?.details?.reason;
+  if (limit) recordLimitRefused({ tenant: (c.get("principal") as Caller | undefined)?.tenant, limit, status, ...(typeof reason === "string" ? { reason } : {}) });
+}
 const json = (c: Context, status: number, value: unknown) => c.json(value, status as ContentfulStatusCode, { "Cache-Control": "no-store" });
 const content = (value: z.ZodType) => ({ content: { "application/json": { schema: value } } });
 const reply = (description: string, value: z.ZodType) => ({ description, ...content(value) });
@@ -571,6 +578,7 @@ export function api(context: ApiContext) {
     // A prompt refused leaves the agent made: the caller learns why, and may send it again.
     const sent = await submit(created.id, tenant, first).catch(error => {
       const status = errorStatus(error, 400);
+      countLimit(c, error, status);
       return { error: { status, code: errorCode(error, status), message: errorText(error) } };
     });
     return json(c, 201, withoutToken(c, { ...created, prompt: sent }));
@@ -1387,6 +1395,7 @@ export function api(context: ApiContext) {
   // A conflicting answer says what the input settled as.
   app.onError((error, c) => {
     const status = errorStatus(error, 400);
+    countLimit(c, error, status);
     for (const [name, value] of Object.entries(errorHeaders(error))) c.header(name, value);
     return json(c, status, { error: errorText(error), code: errorCode(error, status), ...errorFields(error) });
   });

@@ -1,4 +1,4 @@
-# Optional: the alerts topics (alarms.tf in this region, monitoring.tf in us-east-1)
+# Optional: the alerts topics, warning and critical (alarms.tf in this region, monitoring.tf in us-east-1),
 # posted to a Slack channel by AWS Chatbot (Amazon Q Developer in chat applications).
 # Off until both ids are set. Authorize the Slack workspace once in the Chatbot
 # console (it shows the workspace id), invite @Amazon Q to the channel, then set
@@ -50,7 +50,7 @@ resource "aws_chatbot_slack_channel_configuration" "alerts" {
   iam_role_arn          = aws_iam_role.chatbot[0].arn
   slack_team_id         = var.alerts_slack_team_id
   slack_channel_id      = var.alerts_slack_channel_id
-  sns_topic_arns        = [aws_sns_topic.alerts_regional.arn, aws_sns_topic.alerts.arn]
+  sns_topic_arns        = [aws_sns_topic.alerts_regional.arn, aws_sns_topic.alerts.arn, aws_sns_topic.alerts_critical_regional.arn, aws_sns_topic.alerts_critical.arn]
   guardrail_policy_arns = ["arn:aws:iam::aws:policy/ReadOnlyAccess"]
   logging_level         = "ERROR"
 }
