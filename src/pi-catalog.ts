@@ -45,10 +45,20 @@ for (const { id } of piGetModels(BEDROCK as never) as Model<Api>[]) {
  * ships the fix (pi-ai 1.1.0 still has them):
  * - Claude Sonnet 5.5 cache reads are $0.10 per million tokens (0.05x input, platform.claude.com/docs pricing), not
  *   $0.20. Cloudflare's AI Gateway passes Anthropic's prices through. Bedrock's price for it is not published: left.
+ * - OpenRouter models the platform's apps run on, at OpenRouter's list price (GET /api/v1/models, 2026-10-17): Pi's
+ *   are another moment's, or a rate OpenRouter charges only some hours (DeepSeek V4.1 Flash's $0.30/$1.20 is its
+ *   weekday-peak rate, twice the list price). A call is billed what OpenRouter reports it charged; these price
+ *   estimates and holds, and a call that reports nothing.
  */
 const PRICES: Record<string, Record<string, Partial<Model<Api>["cost"]>>> = {
   anthropic: { "claude-sonnet-5-5": { cacheRead: 0.1 } },
   "cloudflare-ai-gateway": { "claude-sonnet-5-5": { cacheRead: 0.1 } },
+  openrouter: {
+    "deepseek/deepseek-v4.1-flash": { input: 0.15, output: 0.6, cacheRead: 0.003 },
+    "moonshotai/kimi-k3": { input: 0.304, output: 11.936, cacheRead: 0.21 },
+    "google/gemini-3.8-flash": { input: 0.825, output: 4.125, cacheRead: 0.0825 },
+    "z-ai/glm-5.3": { input: 0.079, output: 4.8, cacheRead: 0.078 },
+  },
 };
 /**
  * Azure OpenAI's Global Standard prices are OpenAI's, long context included (Microsoft's GPT-6 launch post lists
