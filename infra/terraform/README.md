@@ -264,20 +264,19 @@ tofu import aws_cloudwatch_log_group.database_proxy /aws/rds/proxy/camelai-agent
     windows, each with at least 5 turns (`Turns`, `Outcome=failed`). A normal
     day fails 10-20% of turns; the dashboard's failed turns by error class says
     which kind rose;
-  - `-model-billing-errors`: 2 or more turns failed for credit in 15 minutes
-    (`Turns`, `ErrorClass=billing`: provider 402s such as OpenRouter's "requires
-    more credits, or fewer max_tokens"). A turn retries a refused response
-    three times, so the alarm counts turns, not responses. To tell a platform
-    key from a tenant's:
-    - query the log group for `filter type in ["model_error", "run_failed"] and
-      ErrorClass = "billing"`: `model_error` names the provider and model,
-      `run_failed` the tenant;
-    - compare with `filter type = "model_cost" and Provider = "<provider>"`
-      over the same minutes. If other turns on that provider are still
-      billed, one key ran dry: a tenant's own, or a chiridion org's BYOK key
-      (they run under `chiridion-prod`), and nothing on the platform needs
-      doing. If they stopped, the platform balance cannot cover a full
-      `max_tokens` request: top up the OpenRouter or Anthropic account.
+  - `-model-billing-errors`: 2 or more runs on the platform's keys failed for
+    credit in 15 minutes (`ModelBillingFailures`, `KeyOwner=platform`:
+    provider 402s such as OpenRouter's "requires more credits, or fewer
+    max_tokens"). Each failed run writes `model_billing_failed` with its
+    `tenant`, `provider` and `KeyOwner`: `platform` (the platform's key, or one
+    the operator set for the tenant), `tenant` (its own key) or `endpoint` (its
+    own gateway, often its users out of their credit); only `platform` alarms.
+    When it fires the platform balance cannot cover a full `max_tokens`
+    request: top up the OpenRouter or Anthropic account. To check, query
+    `filter type = "model_billing_failed"` for the tenants and providers, and
+    `filter type = "model_cost" and Provider = "<provider>"` over the same
+    minutes: if the platform's other turns on that provider stopped being
+    billed, its account is empty.
 
   CloudWatch alarms can only notify a topic in their own region, so these use
   the us-west-2 topic `camelai-agent-runtime-alerts` (output

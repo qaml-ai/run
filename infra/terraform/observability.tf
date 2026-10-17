@@ -189,17 +189,18 @@ resource "aws_cloudwatch_metric_alarm" "tenant_model_spend" {
   }
 }
 
-# Turns failed for credit (402, "requires more credits, or fewer max_tokens"), counted once per turn: a turn retries
-# its refused response three times, so a single failed turn made four ModelErrors and raised the alarm on its own
-# (2026-10-12, while other turns on the same provider were billed). On the platform's OpenRouter or Anthropic account a refusal means its balance cannot cover a full
-# max_tokens request, the first sign it is running low, and every turn on it fails (5 in 15 minutes on 2026-09-29).
-# A tenant's own key running dry (chiridion's BYOK orgs run under its tenant) counts too.
+# Runs the platform's provider account refused for credit (402, "requires more credits, or fewer max_tokens"): on the
+# platform's OpenRouter or Anthropic account a refusal means its balance cannot cover a full max_tokens request, the first
+# sign it is running low, and every turn on it fails (5 in 15 minutes on 2026-09-29). Counted by whose key
+# (model_billing_failed, KeyOwner): a tenant's own key or its endpoint running dry is the tenant's, not ours. Counting
+# every turn that failed for credit raised this on 2026-10-16 from ~11 scattered 402s of chiridion-prod's gateway, its
+# own users out of their credit.
 resource "aws_cloudwatch_metric_alarm" "model_billing_errors" {
   alarm_name          = "${var.name}-model-billing-errors"
-  alarm_description   = "2+ turns failed for credit in 15 minutes (turn_metrics ErrorClass billing: provider 402, requires more credits / fewer max_tokens). If other turns on the same provider still succeed it is one key (often a tenant's own); if they all fail, top up the platform OpenRouter or Anthropic account. Runbook: infra/terraform/README.md, model-billing-errors"
+  alarm_description   = "2+ runs on the platform's keys failed for credit in 15 minutes (model_billing_failed KeyOwner platform: provider 402, requires more credits / fewer max_tokens). Top up the platform OpenRouter or Anthropic account. Runbook: infra/terraform/README.md, model-billing-errors"
   namespace           = "AgentRuntime"
-  metric_name         = "Turns"
-  dimensions          = merge(local.runtime_metric, { ErrorClass = "billing" })
+  metric_name         = "ModelBillingFailures"
+  dimensions          = merge(local.runtime_metric, { KeyOwner = "platform" })
   statistic           = "Sum"
   period              = 900
   evaluation_periods  = 1
