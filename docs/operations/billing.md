@@ -125,8 +125,13 @@ calls with a captured generation ID use the [generation usage API](https://openr
 including upstream BYOK inference cost. Missing IDs, changed credentials, unavailable
 provider records and unsupported providers remain pending or estimated with
 `last_error` and retry backoff, and emit `model_attempt_unresolved` logs. They are
-never silently finalized as free. A crash before the generation ID is captured
-still requires investigation; this does not promise exactly-once provider execution.
+never silently finalized as free. A day after it began, a call with no provider record
+to reconcile it (not OpenRouter, or no generation ID) lapses (`model_attempt_lapsed`):
+one charged at an estimate is settled at it; one whose end never reached the runtime (its
+host crashed mid-stream, or the database was away past the retries) is charged the input
+estimated at its begin (`estimated_input_tokens`), with ledger metadata `lapsed` and
+`estimated`. One whose host reported an end with no evidence of cost (a provider error
+before any output) stays pending. This does not promise exactly-once provider execution.
 Existing historical requests are not backfilled. To inspect the outstanding queue:
 
 ```sql
