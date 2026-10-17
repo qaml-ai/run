@@ -301,3 +301,40 @@ test("Messages API native message IDs preserve the header generation through can
   const settled=(await f.db.query("select state,totals from model_attempts where id=$1",[row.id])).rows[0];
   assert.equal(settled.state,"settled");assert.equal(settled.totals.cost,0.01);
 });
+
+test("a call whose end never arrived lapses after a day into a charge for its estimated input; one that ended with no evidence stays pending", async () => {
+  const { db, account, attempts } = await setup();
+  const old = Date.now() - 25 * 60 * 60_000;
+  const lost = randomUUID(), errored = randomUUID(), fresh = randomUUID();
+  for (const [id, at] of [[lost, old], [errored, old], [fresh, Date.now()]] as const)
+    await attempts.event("payg", "agent", true, true, { type: "begin", id, provider: "openrouter", model: "anthropic/claude-opus-4.1", kind: "response", at, keyHash, estimate: { inputTokens: 10_000, maxOutputTokens: 1000, rates: { input: 15, output: 75 } } });
+  // A provider error before any output: the host reports the end, with nothing billed.
+  await attempts.event("payg", "agent", true, true, { type: "finish", id: errored, usage: { input: 0, output: 0 }, chars: 0, completed: false });
+  await db.query("update model_attempts set next_check_at=0");
+  const reconciler = new ModelAttempts(db, account, async () => { throw new Error("no provider record is looked up"); });
+  await reconciler.reconcile();
+  const states = Object.fromEntries((await db.query("select id, state from model_attempts")).rows.map(row => [row.id, row.state]));
+  assert.deepEqual([states[lost], states[errored], states[fresh]], ["settled", "pending", "pending"]);
+  const charged = await total(db);
+  assert.ok(charged < 0, "the lost call's input is charged");
+  const ledger = (await db.query("select metadata from credit_ledger where kind='usage'")).rows;
+  assert.equal(ledger.length, 1); assert.equal(ledger[0].metadata.lapsed, true); assert.equal(ledger[0].metadata.estimated, true);
+  // Settled is final: another pass, or a late delivery, charges nothing more.
+  await db.query("update model_attempts set next_check_at=0");
+  await reconciler.reconcile();
+  await attempts.event("payg", "agent", true, true, { type: "finish", id: lost, usage: { input: 10_000, output: 0 }, chars: 0, completed: false });
+  assert.equal(await total(db), charged);
+});
+
+test("an estimate no provider record reconciles is settled at it after a day, with no second charge", async () => {
+  const { db, account, attempts } = await setup();
+  const id = randomUUID();
+  await attempts.event("payg", "agent", true, true, { type: "begin", id, provider: "openrouter", model: "anthropic/claude-opus-4.1", kind: "response", at: Date.now() - 25 * 60 * 60_000, keyHash });
+  await attempts.event("payg", "agent", true, true, { ...finish(id, 0.2), completed: false });
+  const charged = await total(db);
+  assert.equal((await db.query("select state from model_attempts")).rows[0].state, "estimated");
+  await db.query("update model_attempts set next_check_at=0");
+  await new ModelAttempts(db, account, async () => { throw new Error("no provider record is looked up"); }).reconcile();
+  assert.equal((await db.query("select state from model_attempts")).rows[0].state, "settled");
+  assert.equal(await total(db), charged);
+});

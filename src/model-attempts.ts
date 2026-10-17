@@ -27,6 +27,12 @@ export const INITIAL_OUTPUT_TOKENS = 2_048;
 export const MIN_OUTPUT_TOKENS = 256;
 /** Streamed characters per output token, as an output estimate counts them: fewer than real tokens take, so it runs ahead of cost. */
 const CHARS_PER_TOKEN = 2;
+/**
+ * After this long, a call whose end never reached the runtime and that no provider record can reconcile (not OpenRouter,
+ * or no generation ID) is settled at the input estimated at its begin: its output is unknown, its input was sent. One
+ * already charged at an estimate is settled at it. Neither is left pending, rechecked every day for ever.
+ */
+export const LAPSE_MS = 24 * 60 * 60_000;
 /** A call metered for its end user while it runs on this node: who pays, its input's estimated cost and its output's per token (raw micro-USD), the most output it asked for, and what it holds. */
 type Metered = { tenant: string; endUser: string; bucket: string; input: number; perToken: number; maxOutput: number; held: number };
 /** How far ahead of the end of its hold a streaming call asks for more, so its stream never waits on the answer. */
@@ -79,10 +85,11 @@ export class ModelAttempts {
       const metered = event.endUser && this.endUsers ? await this.hold(tenant, platform, platform && catalogPriced, event) : undefined;
       if (metered && "refused" in metered) return { tracked: false, refused: metered.refused };
       const prepaid = await this.accounts.billing.mode(tenant) === "prepaid";
-      await this.db.query(`insert into model_attempts (id,tenant,agent,provider,model,kind,platform,catalog_priced,prepaid,key_hash,context,started_at,updated_at,next_check_at,end_user,end_user_bucket)
-        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12,$13,$14,$15) on conflict (id) do nothing`,
+      const estimatedInput = Number.isFinite(event.estimate?.inputTokens) && event.estimate!.inputTokens > 0 ? Math.min(2 ** 31 - 1, Math.ceil(event.estimate!.inputTokens)) : null;
+      await this.db.query(`insert into model_attempts (id,tenant,agent,provider,model,kind,platform,catalog_priced,prepaid,key_hash,context,started_at,updated_at,next_check_at,end_user,end_user_bucket,estimated_input_tokens)
+        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12,$13,$14,$15,$16) on conflict (id) do nothing`,
         [event.id, tenant, agent, event.provider, event.model, event.kind, platform, catalogPriced, prepaid, event.keyHash, JSON.stringify(event.context ?? {}), event.at, Date.now() + 300_000,
-          metered ? metered.endUser : null, metered ? metered.bucket : null]);
+          metered ? metered.endUser : null, metered ? metered.bucket : null, estimatedInput]);
       const row = (await this.db.query("select tenant,agent,provider,model from model_attempts where id=$1", [event.id])).rows[0];
       if (row.tenant !== tenant || row.agent !== agent || row.provider !== event.provider || row.model !== event.model) throw new Error("Model attempt identity mismatch");
       if (!metered) return true;
@@ -149,10 +156,13 @@ export class ModelAttempts {
     return { tracked: true, ...lines(metered) };
   }
 
-  async settle(id: string, tenant: string, agent: string, usage: Record<string, any>, chars: number, completed: boolean, reconciled: boolean) {
+  /** `lapsed`: settled at its begin's input estimate (`LAPSE_MS`), final, and said to be estimated. */
+  async settle(id: string, tenant: string, agent: string, usage: Record<string, any>, chars: number, completed: boolean, reconciled: boolean, lapsed = false) {
     await transaction(this.db, async sql => {
       const row = (await sql.query("select * from model_attempts where id=$1 and tenant=$2 and agent=$3 for update", [id, tenant, agent])).rows[0];
       if (!row) throw new Error("Unknown model attempt");
+      // The host reported the call's end, whatever it says: such a call never lapses into an estimate.
+      if (!reconciled && !lapsed && row.finished_at == null) await sql.query("update model_attempts set finished_at=$2 where id=$1", [id, Date.now()]);
       // The host's report ends the call: its end user's hold goes, spent or not (an outcome still unknown is posted when
       // it is known, as the tenant's charge is).
       // The end user's row first, as everything that touches their holds locks it (end-user-credits.ts).
@@ -196,13 +206,13 @@ export class ModelAttempts {
         const posted = await settleUsage(sql, {
           tenant, endUser: row.end_user, bucket: row.end_user_bucket, day: utcDay(Number(row.started_at)), raw: endUserRaw, key: `attempt:${id}:${revision}`,
           previous: { raw: Number(row.end_user_raw), allowance: Number(row.end_user_allowance), paid: Number(row.end_user_paid) },
-          metadata: { call: row.kind === "compaction" ? "compaction" : "response", attempt: id, provider: row.provider, model: row.model, agent, ...(row.context?.requestId ? { requestId: row.context.requestId } : {}), ...(final ? {} : { estimated: true }) },
+          metadata: { call: row.kind === "compaction" ? "compaction" : "response", attempt: id, provider: row.provider, model: row.model, agent, ...(row.context?.requestId ? { requestId: row.context.requestId } : {}), ...(final && !lapsed ? {} : { estimated: true }) },
         });
         await sql.query("update model_attempts set end_user_raw=$2, end_user_allowance=$3, end_user_paid=$4 where id=$1", [id, posted.raw, posted.allowance, posted.paid]);
       }
       await applyUsageRows(sql, [{ tenant, day: quote.day, model: quote.model, ...delta }]);
       if (adjustment) {
-        await postLedger(sql, [{ tenant, kind: "usage", amount: -adjustment, key: `model-attempt:${id}:${revision}`, metadata: { attempt: id, revision, reconciled, estimated: !final, tokens: Math.round((quote.totals.cost-previous.cost)*1e6), funding: adjustment-Math.round((quote.totals.cost-previous.cost)*1e6) } }]);
+        await postLedger(sql, [{ tenant, kind: "usage", amount: -adjustment, key: `model-attempt:${id}:${revision}`, metadata: { attempt: id, revision, reconciled, estimated: !final || lapsed, ...(lapsed ? { lapsed: true } : {}), tokens: Math.round((quote.totals.cost-previous.cost)*1e6), funding: adjustment-Math.round((quote.totals.cost-previous.cost)*1e6) } }]);
         // Correct the original minute, not the recovery worker's current hour. Old minutes cannot affect a current cap.
         const minute = Math.floor(Number(row.started_at) / 60_000);
         if (minute >= Math.floor((Date.now() - 3_600_000) / 60_000)) await sql.query(`insert into credit_spend_minutes (tenant,minute,amount) values ($1,$2,greatest(0,$3::bigint))
@@ -227,6 +237,23 @@ export class ModelAttempts {
     });
   }
 
+  /**
+   * Settle a call no provider record will reconcile, a day on: one charged at an estimate stays at it, one whose end never
+   * reached the runtime is charged its begin's input estimate. One whose host reported an end with no evidence of cost
+   * (a provider error before any output), or that has no estimate, stays pending: unknown is not free, nor guessed at.
+   */
+  private async lapse(row: any): Promise<boolean> {
+    if (row.state === "estimated") {
+      await this.db.query("update model_attempts set state='settled',updated_at=$2,last_error=$3 where id=$1 and state='estimated'", [row.id, Date.now(), "Settled at its estimate: no provider record reconciles it"]);
+      console.log(JSON.stringify({ type: "model_attempt_lapsed", attempt: row.id, tenant: row.tenant, provider: row.provider, at: "estimate" }));
+      return true;
+    }
+    if (row.finished_at != null || !(Number(row.estimated_input_tokens) > 0)) return false;
+    await this.settle(row.id, row.tenant, row.agent, { input: Number(row.estimated_input_tokens), output: 0, cacheRead: 0, cacheWrite: 0 }, 0, true, false, true);
+    console.log(JSON.stringify({ type: "model_attempt_lapsed", attempt: row.id, tenant: row.tenant, provider: row.provider, at: "input estimate", inputTokens: Number(row.estimated_input_tokens) }));
+    return true;
+  }
+
   /** Shutdown waits for existing work only; it never starts a new round of provider requests. */
   async drain() { this.stopping.abort(); await this.checking; }
 
@@ -242,6 +269,7 @@ export class ModelAttempts {
     for (const row of rows) {
       if (this.stopping.signal.aborted) break;
       try {
+        if ((row.provider !== "openrouter" || !row.generation_id) && Date.now() - Number(row.started_at) >= LAPSE_MS && await this.lapse(row)) continue;
         if (row.provider !== "openrouter") throw new Error("Awaiting provider evidence; provider has no per-request reconciliation adapter");
         if (!row.generation_id) throw new Error("Awaiting provider evidence; missing OpenRouter generation ID");
         // Resolve tenant-owned keys too, but never send a key unless its fingerprint matches dispatch.
