@@ -174,6 +174,38 @@ resource "aws_cloudwatch_metric_alarm" "webhook_failed" {
   ok_actions          = local.alarm_topics
 }
 
+# End users' credit priced or bucketed by a fallback: a call on a model with no
+# price, charged at the catalog's or the provider's dearest (end_user_unpriced_model),
+# or a metered agent's run that named no bucket anywhere (end_user_default_bucket).
+# Either means a tenant's configuration needs a price or a bucket.
+resource "aws_cloudwatch_log_metric_filter" "end_user_fallback" {
+  name           = "${var.name}-end-user-fallback"
+  log_group_name = aws_cloudwatch_log_group.runtime.name
+  pattern        = "{ ($.type = \"end_user_unpriced_model\") || ($.type = \"end_user_default_bucket\") }"
+
+  metric_transformation {
+    namespace     = "AgentRuntime/Logs"
+    name          = "EndUserFallback"
+    value         = "1"
+    default_value = "0"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "end_user_fallback" {
+  alarm_name          = "${var.name}-end-user-fallback"
+  alarm_description   = "End users' calls priced at a fallback (end_user_unpriced_model: a model with no price) or spent from \"default\" (end_user_default_bucket) in /ecs/${var.name}; the tenant should price the model or name a bucket"
+  namespace           = "AgentRuntime/Logs"
+  metric_name         = "EndUserFallback"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_topics
+  ok_actions          = local.alarm_topics
+}
+
 # The control database is a burstable instance: when its CPU credits run out it
 # is held to its baseline, and every durable write slows with it.
 resource "aws_cloudwatch_metric_alarm" "database_cpu_credits" {
