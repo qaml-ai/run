@@ -207,14 +207,15 @@ test("the spend, provider-credit and turn-failure alarms read metrics as the run
   assert.ok(cost.Metrics.some((metric: any) => metric.Name === "ModelCostUsd"));
   assert.match(terraform, /SELECT SUM\(ModelCostUsd\) FROM SCHEMA\(AgentRuntime, ServiceName, Tenant\) WHERE ServiceName = '\$\{local\.service_name\}' GROUP BY Tenant ORDER BY SUM\(\) DESC LIMIT 1/);
   assert.match(terraform, /variable "tenant_spend_alarm_usd_per_hour" \{[^}]*default\s+= 50/);
-  // The billing-errors alarm counts failed turns (not their retried responses) in the {ServiceName, ErrorClass} set, class billing.
+  // Failed turns are counted (not their retried responses) in the {ServiceName, ErrorClass} set, class billing.
   const turn = lines.find(line => line.type === "turn_metrics");
   assert.equal(turn.Outcome, "failed");
   assert.equal(turn.ErrorClass, "billing");
   assert.ok(directive(turn).Dimensions.some((set: string[]) => set.join() === "ServiceName,ErrorClass"));
   assert.ok(directive(turn).Metrics.some((metric: any) => metric.Name === "Turns"));
   const alarm = (name: string) => terraform.slice(terraform.indexOf(`resource "aws_cloudwatch_metric_alarm" "${name}"`)).split("\n}\n")[0];
-  for (const setting of [/metric_name\s+= "Turns"/, /ErrorClass = "billing"/, /period\s+= 900\n/, /threshold\s+= 2\n/, /comparison_operator = "GreaterThanOrEqualToThreshold"/]) assert.match(alarm("model_billing_errors"), setting);
+  // The billing-errors alarm counts runs on the platform's keys refused for credit (model_billing_failed, KeyOwner platform), never a tenant's own.
+  for (const setting of [/metric_name\s+= "ModelBillingFailures"/, /KeyOwner = "platform"/, /period\s+= 900\n/, /threshold\s+= 2\n/, /comparison_operator = "GreaterThanOrEqualToThreshold"/]) assert.match(alarm("model_billing_errors"), setting);
   // The turn-failures alarm divides the {ServiceName, Outcome} set's failed turns by the {ServiceName} set's turns.
   assert.ok(directive(turn).Dimensions.some((set: string[]) => set.join() === "ServiceName,Outcome"));
   assert.ok(directive(turn).Dimensions.some((set: string[]) => set.join() === "ServiceName"));
