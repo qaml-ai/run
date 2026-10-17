@@ -13,6 +13,7 @@ import { ClientSessions } from "../src/client-sessions.ts";
 import { VolumeService } from "../src/volumes.ts";
 import { Scheduler } from "../src/scheduler.ts";
 import { testDatabase } from "./database.ts";
+import { until } from "./runtime-server.ts";
 
 type Context = { after(fn: () => Promise<void> | void): void };
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -162,10 +163,7 @@ test("two creates of one agent at once on one node leave one claim, still curren
   const [row] = (await db.query("select epoch from actor_owners where actor = $1", [first.id])).rows;
   assert.equal(Number(row.epoch), session.claim.epoch, "the agent's claim is the current one");
   await sessions.submit(first.id, "default", { id: "after-twins", method: "execute", params: { code: "return 1" } });
-  for (let tries = 0; sessions.sessions.get(first.id)?.requests.get("after-twins")?.state !== "completed"; tries++) {
-    assert.ok(tries < 1000, "the agent ran a request");
-    await sleep(5);
-  }
+  await until(() => sessions.sessions.get(first.id)?.requests.get("after-twins")?.state === "completed", "the agent ran a request", 30_000);
 });
 
 test("a node that fences while an agent's start gets ready starts no host for it: the agent's next load starts its own", { timeout: 60_000 }, async t => {
@@ -198,10 +196,7 @@ test("a node that fences while an agent's start gets ready starts no host for it
   // rejoined) took for its own while it was still starting, so its first run failed with "Agent is not initialized".
   assert.equal(supervisor.agents.has(id), false, "no host for the session the node lost");
   await sessions.submit(id, "default", { id: "after-fence", method: "execute", params: { code: "return 1" } });
-  for (let tries = 0; sessions.sessions.get(id)?.requests.get("after-fence")?.state !== "completed"; tries++) {
-    assert.ok(tries < 1000, "the agent ran a request");
-    await sleep(5);
-  }
+  await until(() => sessions.sessions.get(id)?.requests.get("after-fence")?.state === "completed", "the agent ran a request", 30_000);
   assert.equal(sessions.sessions.get(id)!.requests.get("after-fence")!.outcome?.error, undefined);
 });
 

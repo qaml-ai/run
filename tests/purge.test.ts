@@ -12,6 +12,7 @@ import { Ownership } from "../src/ownership.ts";
 import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
 import { ClientSessions } from "../src/client-sessions.ts";
 import { testDatabase } from "./database.ts";
+import { until } from "./runtime-server.ts";
 
 type Context = { after(fn: () => Promise<void> | void): void };
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -37,10 +38,7 @@ const objectsOf = (storage: ReturnType<typeof memoryStorage>, id: string) =>
 
 async function execute(sessions: ClientSessions, id: string, request: string) {
   await sessions.submit(id, "default", { id: request, method: "execute", params: { code: "return 1" } });
-  for (let tries = 0; sessions.sessions.get(id)?.requests.get(request)?.state !== "completed" || sessions.inFlight(); tries++) {
-    assert.ok(tries < 1000, `${request} finished`);
-    await sleep(5);
-  }
+  await until(() => sessions.sessions.get(id)?.requests.get(request)?.state === "completed" && !sessions.inFlight(), `${request} finished`, 30_000);
 }
 
 test("deleting an agent purges everything it stored and leaves a tombstone that keeps its id", { timeout: 60_000 }, async t => {

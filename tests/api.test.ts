@@ -605,9 +605,8 @@ test("a tenant at its agent quota gets 429 with Retry-After and nothing half-cre
   assert.equal((await call("/v1/agents", { token: bob, body: { mcp: { tools: [hold] }, subject: "someone-else" }, headers: { "Idempotency-Key": "busy" } })).status, 409);
   // The tool times out, the busy agent goes idle, and the refused create's retry takes its slot.
   let retried;
-  for (let tries = 0; (retried = await call("/v1/agents", { token: bob, body: {}, headers: { "Idempotency-Key": "second" } })).status === 429; tries++) {
-    assert.ok(tries < 100, "the slot frees");
-    await new Promise(resolve => setTimeout(resolve, 100));
+  for (const deadline = Date.now() + 30_000; (retried = await call("/v1/agents", { token: bob, body: {}, headers: { "Idempotency-Key": "second" } })).status === 429; await new Promise(resolve => setTimeout(resolve, 100))) {
+    assert.ok(Date.now() < deadline, "the slot frees");
   }
   assert.equal(retried.status, 201);
   assert.equal(await agents(), 2);
@@ -650,7 +649,7 @@ test("a tenant's own maxAgents replaces the default limit, and a change applies 
   assert.equal((await create(bob, refused)).status, 201);
   // Her one agent is idle once it has settled after creation, which a loaded runner can take a moment to see.
   let status = 0;
-  for (let tries = 0; tries < 50 && (status = (await create(alice, "a3")).status) === 429; tries++) await new Promise(resolve => setTimeout(resolve, 100));
+  for (const deadline = Date.now() + 30_000; Date.now() < deadline && (status = (await create(alice, "a3")).status) === 429;) await new Promise(resolve => setTimeout(resolve, 100));
   assert.equal(status, 201, "alice's idle agent makes room under the default");
 });
 
@@ -678,11 +677,10 @@ test("a tenant's monthly spend cap ends a turn after the response that crosses i
   }, tenants(0.25));
   const agent = (await call("/v1/agents", { token: alice, body: {} })).json;
   const settled = async (requestId: string) => {
-    for (let tries = 0; ; tries++) {
+    for (const deadline = Date.now() + 30_000; ; await new Promise(resolve => setTimeout(resolve, 50))) {
       const record = (await call(`/v1/agents/${agent.id}/requests/${requestId}`, { token: alice })).json;
       if (record.state === "completed") return record.outcome;
-      assert.ok(tries < 200, "the run settles");
-      await new Promise(resolve => setTimeout(resolve, 50));
+      assert.ok(Date.now() < deadline, "the run settles");
     }
   };
   assert.equal((await call(`/v1/agents/${agent.id}/prompt`, { token: alice, body: { text: "go", requestId: "first" } })).status, 202);

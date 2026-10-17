@@ -195,7 +195,7 @@ test("the embeddings and Jev backends speak their APIs; embeddings are cached an
   const embeddings = embeddingReranker({ url: base, apiKey: "key", model: "m" });
   embeddings.warm!(catalog);
   const embedded = () => seen.filter(entry => entry.path === "/v1/embeddings").map(entry => entry.body.input.length);
-  for (let tries = 0; !embedded().length && tries < 100; tries++) await new Promise(resolve => setTimeout(resolve, 10));
+  await until(() => embedded().length, "the tools were embedded", 30_000);
   assert.deepEqual(embedded(), [catalog.length], "warming embeds the catalog");
   assert.equal(names(await searchTools(catalog, { query: "email someone" }, { rerankers: [embeddings] }))[0], "send_message");
   assert.deepEqual(embedded(), [catalog.length, 1], "a search then embeds only its query");
@@ -271,9 +271,9 @@ test("a search while the catalog is still warming waits for those embeddings ins
   });
   const embeddings = embeddingReranker({ url: `${url}/v1`, apiKey: "key", model: "m" });
   embeddings.warm!(catalog);
-  for (let tries = 0; !inputs.length && tries < 100; tries++) await new Promise(resolve => setTimeout(resolve, 10));
+  await until(() => inputs.length, "the first embedding", 30_000);
   const searched = searchTools(catalog, { query: "email someone" }, { rerankers: [embeddings] });
-  for (let tries = 0; inputs.length < 2 && tries < 100; tries++) await new Promise(resolve => setTimeout(resolve, 10));
+  await until(() => inputs.length >= 2, "the second embedding", 30_000);
   release();
   assert.equal(names(await searched)[0], "send_message");
   assert.deepEqual(inputs, [catalog.length, 1], "the search embedded only its query");

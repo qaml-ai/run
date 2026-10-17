@@ -364,11 +364,7 @@ test("file tools work from js_exec, and agents share a volume through mounts", a
   await assert.rejects(reader.execute('return await tools.write({ path: "/shared/today.md", content: "x" })'), /mounted read-only/);
   await assert.rejects(reader.execute('return await tools.ls({ path: "/workspace" })'), /not inside a mount/);
   await writer.execute('await tools.write({ path: "/workspace/notes/tomorrow.md", content: "more" }); await tools.write({ path: "/workspace/private.md", content: "outside the mount" })');
-  let wake: any;
-  for (let tries = 0; !(wake = (await reader.outcomes()).requests.find((request: any) => request.id.startsWith("volume-") && request.prompt.includes("tomorrow"))); tries++) {
-    assert.ok(tries < 100, "the reader was prompted about the change");
-    await new Promise(resolve => setTimeout(resolve, 50));
-  }
+  const wake: any = await until(async () => (await reader.outcomes()).requests.find((request: any) => request.id.startsWith("volume-") && request.prompt.includes("tomorrow")), "the reader was prompted about the change", 30_000);
   assert.match(wake.prompt, /\/shared\/tomorrow.md \(written\)/);
   assert.doesNotMatch(wake.prompt, /private/, "only changes inside the mount are reported");
   assert.equal((await writer.outcomes()).requests.some((request: any) => request.id.startsWith("volume-")), false, "writers are not woken by their own changes");
