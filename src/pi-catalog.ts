@@ -67,20 +67,6 @@ const PRICES: Record<string, Record<string, Partial<Model<Api>["cost"]>>> = {
  * deployments cost 10% (US) to 20% (EU) more: the platform's are Global Standard (docs/operations/configuration.md).
  */
 const AZURE = "azure";
-/**
- * Longest replies Pi's catalog has too long, by provider and id. Pi takes a model's on OpenRouter from its longest
- * endpoint; a call that names no maximum asks for that much (Pi sends the model's maxTokens), and OpenRouter routes it
- * only to the endpoints that serve it. DeepSeek V4.1 Flash's 943,718 leaves 3 of 1017's 9 endpoints (Parasail, Morph,
- * Cloudflare: 2026-10-17, rate-limited, Parasail at twice the list price) and none of DeepSeek's own. Each is
- * OpenRouter's `top_provider.max_completion_tokens` (GET /api/v1/models): DeepSeek's own endpoint and most others.
- */
-const MAX_TOKENS: Record<string, Record<string, number>> = {
-  openrouter: { "deepseek/deepseek-v4.1-flash": 393_216, "deepseek/deepseek-v4.1-flash-1017": 393_216 },
-};
-const limited = (model: Model<Api>): Model<Api> => {
-  const most = MAX_TOKENS[model.provider]?.[model.id];
-  return most ? { ...model, maxTokens: most } : model;
-};
 const priced = (model: Model<Api>): Model<Api> => {
   const openai = model.provider === AZURE ? piModel("openai", model.id) : undefined;
   if (openai) return { ...model, cost: priced(openai).cost };
@@ -93,7 +79,7 @@ const priced = (model: Model<Api>): Model<Api> => {
  */
 const AZURE_PLACEHOLDER_URL = "https://azure-openai.invalid/openai/v1";
 const corrected = (found: Model<Api> | undefined): Model<Api> | undefined => {
-  const model = found && limited(found.provider === AZURE && !found.baseUrl ? priced({ ...found, baseUrl: AZURE_PLACEHOLDER_URL }) : priced(found));
+  const model = found && (found.provider === AZURE && !found.baseUrl ? priced({ ...found, baseUrl: AZURE_PLACEHOLDER_URL }) : priced(found));
   const claude = model?.provider === BEDROCK ? ANTHROPIC_ID.exec(model.id)?.[1] : undefined;
   if (!model || !claude) return model;
   return piModel("anthropic", claude)?.thinkingLevelMap?.off === null ? { ...model, thinkingLevelMap: { ...model.thinkingLevelMap, off: null } } : model;
@@ -117,16 +103,13 @@ export function reasoningFloor(model: Model<Api>): ThinkingLevel | undefined {
 }
 
 /**
- * An agent's model with the catalog's prices and longest reply now: an agent keeps the model it was given, so one made
- * before a price changed (PRICES) would go on counting the old one, and one made before a longest reply was corrected
- * (MAX_TOKENS) would go on asking for it. A model the catalog doesn't have at the same endpoint (a tenant's endpoint or
- * provider, priced by the tenant) is as it was.
+ * An agent's model with the catalog's prices now: an agent keeps the model it was given, prices included, so one made
+ * before a price changed (PRICES) would go on counting the old one. A model the catalog doesn't have at the same
+ * endpoint (a tenant's endpoint or provider, priced by the tenant) is as it was.
  */
 export function withCatalogPrices<T extends Model<Api>>(model: T): T {
   const known = getModel(model.provider, model.id);
-  if (!known || known.baseUrl !== model.baseUrl) return model;
-  const cost = JSON.stringify(known.cost) !== JSON.stringify(model.cost), most = known.maxTokens !== model.maxTokens;
-  return cost || most ? { ...model, ...(cost ? { cost: known.cost } : {}), ...(most ? { maxTokens: known.maxTokens } : {}) } : model;
+  return known && known.baseUrl === model.baseUrl && JSON.stringify(known.cost) !== JSON.stringify(model.cost) ? { ...model, cost: known.cost } : model;
 }
 
 /** Pi's models for a provider and those ADDED, as this runtime corrects them: no Bedrock base id that has inference profiles. */
