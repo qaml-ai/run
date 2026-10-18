@@ -63,7 +63,25 @@ export type BakeoffOptions = {
 };
 
 export type SttSample = { provider: string; clip: string; category: string; language: string; finalMs?: number; endToEndMs?: number; firstPartialMs?: number; text?: string; wer?: number; errors?: number; tokens?: number; error?: string; skipped?: string };
-export type TtsSample = { provider: string; prompt: string; warm: boolean; ttfbMs?: number; totalMs?: number; audioSeconds?: number; costUsd?: number; roundTripWer?: number; error?: string };
+/**
+ * `ttfbMs` is the first byte; `firstSoundMs` the first audible audio (above -45 dBFS), what a listener waits for, and
+ * `leadingSilenceMs` the silence before it in the audio. `heard` is the speech transcribed back.
+ */
+export type TtsSample = {
+  provider: string; prompt: string; warm: boolean; ttfbMs?: number; firstSoundMs?: number; leadingSilenceMs?: number; totalMs?: number; audioSeconds?: number; costUsd?: number;
+  heard?: string; roundTripWer?: number; roundTripErrors?: number; roundTripTokens?: number; error?: string;
+};
+
+/** Where audible audio (a 20 ms frame above -45 dBFS) first is in `pcm`, from the frame holding byte `from` on (ms), else undefined. */
+function audibleFrom(pcm: Buffer, from: number): number | undefined {
+  const frame = 20 * BYTES_PER_MS, threshold = 32768 * 10 ** (-45 / 20);
+  for (let at = Math.floor(from / frame) * frame; at + frame <= pcm.length; at += frame) {
+    let sum = 0;
+    for (let i = at; i < at + frame; i += 2) sum += pcm.readInt16LE(i) ** 2;
+    if (Math.sqrt(sum / (frame / 2)) > threshold) return at / BYTES_PER_MS;
+  }
+  return undefined;
+}
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, Math.max(0, ms)));
 const FRAME_MS = 20;
@@ -185,26 +203,33 @@ export async function runTts(options: BakeoffOptions): Promise<TtsSample[]> {
         const sample: TtsSample = { provider: reference, prompt: prompt.id, warm };
         try {
           const started = performance.now();
-          let first: number | undefined;
+          let first: number | undefined, sound: number | undefined;
           const chunks: Buffer[] = [];
+          let received = 0;
           for await (const chunk of provider.stream({ text: prompt.text, voice, language: prompt.language }, { apiKey }, AbortSignal.timeout(60_000))) {
             if (first === undefined && chunk.byteLength) first = performance.now();
             chunks.push(Buffer.from(chunk));
+            received += chunk.byteLength;
+            // The first audible audio, not just the first byte: a provider may lead with silence.
+            if (sound === undefined && audibleFrom(Buffer.concat(chunks), received - chunk.byteLength) !== undefined) sound = performance.now();
           }
           const pcm = Buffer.concat(chunks);
           sample.ttfbMs = first === undefined ? undefined : Math.round(first - started);
+          sample.firstSoundMs = sound === undefined ? undefined : Math.round(sound - started);
+          sample.leadingSilenceMs = audibleFrom(pcm, 0);
           sample.totalMs = Math.round(performance.now() - started);
           sample.audioSeconds = Math.round(pcm.length / (BYTES_PER_MS * 1000) * 100) / 100;
           sample.costUsd = reference.startsWith("openai/") ? Math.ceil(sample.audioSeconds) * DEFAULT_PRICING.speech / 60 / MICROS : ttsCost(prices, reference, { characters: prompt.text.length, seconds: sample.audioSeconds });
-          // Round trip on the first warm pass: is the speech what it was asked to say?
-          if (checker && round === 1 && pcm.length > 4_800) {
-            const bytes = wavFile(pcm.subarray(0, pcm.length & ~1));
-            const heard = await checker.transcribe({ bytes, header: checkedAudio(bytes) }, { language: prompt.language }, { apiKey: options.keys.openai! }, AbortSignal.timeout(60_000));
-            sample.roundTripWer = errorRate(prompt.text, heard.text, prompt.language).rate;
+          // Round trip on every warm pass: is the speech what it was asked to say? Speech with no sound in it scores as
+          // what it is (nothing heard), and is counted apart (`silent`).
+          if (checker && warm) {
+            const heard = sound === undefined ? { text: "" } : await checker.transcribe((() => { const bytes = wavFile(pcm.subarray(0, pcm.length & ~1)); return { bytes, header: checkedAudio(bytes) }; })(), { language: prompt.language }, { apiKey: options.keys.openai! }, AbortSignal.timeout(60_000));
+            const score = errorRate(prompt.text, heard.text, prompt.language);
+            Object.assign(sample, { heard: heard.text, roundTripWer: score.rate, roundTripErrors: score.errors, roundTripTokens: score.tokens });
           }
         } catch (error) { sample.error = (error as Error).message.slice(0, 200); }
         samples.push(sample);
-        log(`tts ${reference} ${prompt.id}${warm ? "" : " (cold)"}: ${sample.error ? `error ${sample.error}` : `first audio ${sample.ttfbMs} ms, ${sample.audioSeconds} s`}`);
+        log(`tts ${reference} ${prompt.id}${warm ? "" : " (cold)"}: ${sample.error ? `error ${sample.error}` : `first byte ${sample.ttfbMs} ms, first sound ${sample.firstSoundMs ?? "never"} ms, ${sample.audioSeconds} s${sample.heard !== undefined ? ` "${sample.heard}"` : ""}`}`);
       }
     }
   }
@@ -236,13 +261,21 @@ export function ttsSummary(samples: TtsSample[]) {
     const ok = rows.filter(row => row.ttfbMs !== undefined);
     const warm = ok.filter(row => row.warm), cold = ok.filter(row => !row.warm);
     const seconds = ok.reduce((sum, row) => sum + (row.audioSeconds ?? 0), 0), usd = ok.reduce((sum, row) => sum + (row.costUsd ?? 0), 0);
-    const roundTrips = ok.flatMap(row => row.roundTripWer === undefined ? [] : [row.roundTripWer]);
+    // Weighted by words, as STT's WER is: a three-word prompt weighs what three words do. Silent speech (no audible audio)
+    // is counted apart, and the WER of the audible rest says how well a provider speaks when it does.
+    const checked = ok.filter(row => row.roundTripTokens !== undefined);
+    const audible = checked.filter(row => row.firstSoundMs !== undefined);
+    const weighted = (subset: TtsSample[]) => { const tokens = subset.reduce((sum, row) => sum + row.roundTripTokens!, 0); return tokens ? subset.reduce((sum, row) => sum + row.roundTripErrors!, 0) / tokens : undefined; };
+    const sounds = warm.flatMap(row => row.firstSoundMs === undefined ? [] : [row.firstSoundMs]);
     return {
       provider, samples: rows.length, failures: rows.filter(row => row.error).length,
+      silent: ok.filter(row => row.firstSoundMs === undefined).length,
       coldP50: percentile(cold.map(row => row.ttfbMs!), 50), warmP50: percentile(warm.map(row => row.ttfbMs!), 50), warmP95: percentile(warm.map(row => row.ttfbMs!), 95),
+      soundWarmP50: percentile(sounds, 50), soundWarmP95: percentile(sounds, 95),
+      leadingSilenceP50: percentile(ok.flatMap(row => row.leadingSilenceMs === undefined ? [] : [row.leadingSilenceMs]), 50),
       realTimeFactor: seconds ? ok.reduce((sum, row) => sum + (row.totalMs ?? 0), 0) / 1000 / seconds : undefined,
       usdPerMinute: seconds ? usd / seconds * 60 : undefined,
-      roundTripWer: roundTrips.length ? roundTrips.reduce((a, b) => a + b, 0) / roundTrips.length : undefined,
+      roundTripWer: weighted(checked), roundTripWerAudible: weighted(audible),
     };
   });
 }
@@ -265,9 +298,10 @@ export function markdown(stt: ReturnType<typeof sttSummary>, tts: ReturnType<typ
     `| --- |${[...new Set(stt.flatMap(row => Object.keys(row.categories)))].map(() => " --- |").join("")}`,
     ...stt.map(row => `| ${row.provider} | ${[...new Set(stt.flatMap(each => Object.keys(each.categories)))].map(category => pct(row.categories[category])).join(" | ")} |`),
     "", "## Text to speech", "",
-    "| Provider | first audio cold p50 | first audio warm p50 | warm p95 | real-time factor | $/min of speech | round-trip WER | failures |",
-    "| --- | --- | --- | --- | --- | --- | --- | --- |",
-    ...tts.map(row => `| ${row.provider} | ${ms(row.coldP50)} | ${ms(row.warmP50)} | ${ms(row.warmP95)} | ${row.realTimeFactor === undefined ? "–" : row.realTimeFactor.toFixed(2)} | ${usd(row.usdPerMinute)} | ${pct(row.roundTripWer)} | ${row.failures}/${row.samples} |`),
+    "First byte is when audio starts arriving; first sound is when it is audible (leading silence skipped), what a listener waits for. Silent: speeches with no audible audio at all. Round-trip WER is the speech transcribed back with gpt-transcribe, weighted by words; \"audible\" leaves out the silent ones.", "",
+    "| Provider | first byte cold p50 | first byte warm p50 | warm p95 | first sound warm p50 | first sound warm p95 | leading silence p50 | real-time factor | $/min of speech | round-trip WER | audible | silent | failures |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    ...tts.map(row => `| ${row.provider} | ${ms(row.coldP50)} | ${ms(row.warmP50)} | ${ms(row.warmP95)} | ${ms(row.soundWarmP50)} | ${ms(row.soundWarmP95)} | ${ms(row.leadingSilenceP50)} | ${row.realTimeFactor === undefined ? "–" : row.realTimeFactor.toFixed(2)} | ${usd(row.usdPerMinute)} | ${pct(row.roundTripWer)} | ${pct(row.roundTripWerAudible)} | ${row.silent}/${row.samples} | ${row.failures}/${row.samples} |`),
     "",
   ];
   return lines.join("\n");

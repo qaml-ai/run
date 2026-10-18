@@ -23,6 +23,8 @@ test("bake-off dry run: every provider's fake, through the real adapters, into o
     assert.equal(row.failures, 0, row.provider);
     assert.ok(row.warmP50 !== undefined && row.coldP50 !== undefined);
     assert.equal(row.roundTripWer, 0, `${row.provider}: transcribed back as said`);
+    assert.equal(row.silent, 0);
+    assert.ok(row.soundWarmP50 !== undefined && row.soundWarmP50 >= row.warmP50!, "first sound comes with or after the first byte");
   }
   assert.match(md, /## Speech to text/);
   assert.match(md, /\| deepgram\/flux-general-en \|/);
