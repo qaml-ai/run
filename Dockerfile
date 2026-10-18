@@ -35,8 +35,13 @@ FROM public.ecr.aws/docker/library/node:22-bookworm-slim
 
 WORKDIR /app
 # Runtime dependencies only, exactly as locked; UI build tooling is in devDependencies.
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
+# .npmrc: onnxruntime-node (voice turn-taking's models, src/voice/turns) installs for the CPU, without CUDA libraries;
+# and only this platform's binaries are kept (the package has every OS's: ~290 MB).
+COPY package.json package-lock.json .npmrc ./
+RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force \
+  && arch="$(node -p process.arch)" \
+  && find node_modules/onnxruntime-node/bin/napi-v6 -mindepth 1 -maxdepth 1 ! -name linux -exec rm -rf {} + \
+  && find node_modules/onnxruntime-node/bin/napi-v6/linux -mindepth 1 -maxdepth 1 ! -name "$arch" -exec rm -rf {} +
 
 COPY src ./src
 COPY shared ./shared
