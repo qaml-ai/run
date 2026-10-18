@@ -94,6 +94,9 @@ export function startTurnModels(options: { eotWorkers?: number; models?: { vad?:
   const firstRestartMs = options.restartMs ?? 1_000;
   let worker: Worker | undefined, stopped = false, restartMs = firstRestartMs, restart: ReturnType<typeof setTimeout> | undefined;
   let ready!: Promise<void>;
+  // onnxruntime (1.30, Linux) uploads usage telemetry to Microsoft unless told not to; it reads the process's
+  // environment, which the worker threads share, so this is set before the first of them loads it.
+  process.env.ORT_DISABLE_TELEMETRY ??= "1";
   const start = () => {
     const current = worker = new Worker(new URL("./inference-worker.ts", import.meta.url), { workerData: { role: "host", eotWorkers: options.eotWorkers, models: options.models }, resourceLimits: WORKER_LIMITS });
     current.unref();

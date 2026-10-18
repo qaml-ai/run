@@ -16,7 +16,7 @@ export type ClientMessage =
 export type HostMessage =
   | { type: "vad"; id: number; probability: number; state: Float32Array }
   | { type: "eot"; id: number; probability: number; ms: number; featuresMs: number }
-  | { type: "stats"; id: number; vadBatches: number; vadChunks: number; eotBusy: number[]; eotRefused: number; rssBytes: number }
+  | { type: "stats"; id: number; vadBatches: number; vadChunks: number; eotBusy: number[]; eotRefused: number; vadRefused: number; rssBytes: number }
   | { type: "error"; id: number; message: string; busy?: boolean };
 
 /** Between the host and an end-of-turn worker. */

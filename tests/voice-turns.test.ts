@@ -149,6 +149,7 @@ test("the models: Smart Turn agrees with the reference on recorded turns, Silero
   assert.ok(await speechShare(noise) < 0.05, "noise is not speech");
   const stats = await models.stats();
   assert.ok(stats.vadChunks > 0);
+  assert.equal(process.env.ORT_DISABLE_TELEMETRY, "1", "onnxruntime's telemetry is off");
   models.close();
 });
 

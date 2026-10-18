@@ -1,5 +1,4 @@
 import { createRequire } from "node:module";
-import { availableParallelism } from "node:os";
 import { isMainThread, parentPort, Worker, workerData, type MessagePort } from "node:worker_threads";
 import { logMel, WHISPER } from "./features.ts";
 import { MODELS, WORKER_LIMITS, type HostMessage, type ClientMessage, type EotJob, type EotDone } from "./protocol.ts";
@@ -20,6 +19,9 @@ type Ort = typeof import("onnxruntime-node");
 const ort = (): Ort => createRequire(import.meta.url)("onnxruntime-node");
 /** End-of-turn jobs one worker holds at most (one running, the rest waiting). */
 const EOT_QUEUE = 3;
+/** VAD chunks older than this when their batch runs are refused; a batch is at most VAD_BATCH chunks. */
+const VAD_STALE_MS = 250;
+const VAD_BATCH = 256;
 const SESSION_OPTIONS = { intraOpNumThreads: 1, interOpNumThreads: 1, executionMode: "sequential", graphOptimizationLevel: "all", enableCpuMemArena: false, enableMemPattern: false } as const;
 
 export type Data = { role: "host"; eotWorkers?: number; models?: { vad?: string; eot?: string } } | { role: "eot"; model: string };
@@ -32,12 +34,16 @@ async function host(options: Extract<Data, { role: "host" }>) {
   const runtime = ort();
   const vad = await runtime.InferenceSession.create(options.models?.vad ?? MODELS.vad, SESSION_OPTIONS);
   const sr = new runtime.Tensor("int64", BigInt64Array.from([16_000n]), []);
-  type Pending = { port: MessagePort; id: number; input: Float32Array; state: Float32Array };
+  type Pending = { port: MessagePort; id: number; input: Float32Array; state: Float32Array; at: number };
   let queue: Pending[] = [];
   let scheduled = false;
   const flush = async () => {
     scheduled = false;
-    const batch = queue;
+    // Chunks that waited past VAD_STALE_MS are refused, not run: their callers judge them by level by now, and this
+    // thread does no more than it keeps up with (at most one core, however many speak).
+    const now = performance.now();
+    const batch = queue.filter(item => now - item.at <= VAD_STALE_MS).slice(0, VAD_BATCH);
+    for (const item of queue) if (!batch.includes(item)) { vadRefused++; item.port.postMessage({ type: "error", id: item.id, message: "VAD behind", busy: true } satisfies HostMessage); }
     queue = [];
     if (!batch.length) return;
     const size = batch.length;
@@ -61,10 +67,12 @@ async function host(options: Extract<Data, { role: "host" }>) {
     }
     vadBatches++; vadChunks += size;
   };
-  let vadBatches = 0, vadChunks = 0, eotRefused = 0;
+  let vadBatches = 0, vadChunks = 0, vadRefused = 0, eotRefused = 0;
 
   // End-of-turn workers, each with its own Smart Turn session.
-  const count = Math.max(1, options.eotWorkers ?? Math.min(2, Math.max(1, availableParallelism() - 1)));
+  // One by default: with the VAD thread, the models use at most two threads however busy calls get (past its queue a
+  // check is refused and the turn ends on silence), so they never take a small node's CPU from its agents.
+  const count = Math.max(1, options.eotWorkers ?? 1);
   type Eot = { worker: Worker; busy: number };
   const workers: Eot[] = [];
   const waiting = new Map<number, { port: MessagePort; id: number; worker: Eot }>();
@@ -90,7 +98,7 @@ async function host(options: Extract<Data, { role: "host" }>) {
   const attach = (port: MessagePort) => {
     port.on("message", (message: ClientMessage) => {
       if (message.type === "vad") {
-        queue.push({ port, id: message.id, input: message.input, state: message.state });
+        queue.push({ port, id: message.id, input: message.input, state: message.state, at: performance.now() });
         if (!scheduled) { scheduled = true; setImmediate(() => void flush()); }
       } else if (message.type === "eot") {
         const worker = workers.reduce((a, b) => b.busy < a.busy ? b : a);
@@ -105,7 +113,7 @@ async function host(options: Extract<Data, { role: "host" }>) {
         waiting.set(job, { port, id: message.id, worker });
         worker.worker.postMessage({ job, audio: message.audio } satisfies EotJob, [message.audio.buffer as ArrayBuffer]);
       } else if (message.type === "stats") {
-        port.postMessage({ type: "stats", id: message.id, vadBatches, vadChunks, eotBusy: workers.map(w => w.busy), eotRefused, rssBytes: process.memoryUsage().rss } satisfies HostMessage);
+        port.postMessage({ type: "stats", id: message.id, vadBatches, vadChunks, eotBusy: workers.map(w => w.busy), eotRefused, vadRefused, rssBytes: process.memoryUsage().rss } satisfies HostMessage);
       }
     });
     port.on("close", () => { queue = queue.filter(item => item.port !== port); });
