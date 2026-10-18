@@ -7,6 +7,8 @@ import { deepseekOnOpenRouter } from "./deepseek-replay.ts";
 
 /** Page renderers web_fetch can use, by the provider key they take. */
 export const FETCH_PROVIDERS = ["firecrawl"] as const;
+/** Speech providers (voice-providers/), by the key they take: speech to text, text to speech, or both. */
+export const SPEECH_PROVIDERS = ["assemblyai", "cartesia", "deepgram", "elevenlabs", "soniox"] as const;
 
 /** Providers that authenticate with something other than a single API key. */
 const NOT_API_KEY: Record<string, string> = {
@@ -21,8 +23,8 @@ const NOT_API_KEY: Record<string, string> = {
 
 export interface ProviderInfo {
   id: string;
-  /** model: an LLM provider; search: a web search API, for the web_search built-in; fetch: a page renderer for web_fetch. */
-  kind: "model" | "search" | "fetch";
+  /** model: an LLM provider; search: a web search API, for the web_search built-in; fetch: a page renderer for web_fetch; speech: speech to text or text to speech, for voice sessions. */
+  kind: "model" | "search" | "fetch" | "speech";
   models: number;
   /** Whether a tenant can use this provider by setting one API key. */
   apiKey: boolean;
@@ -69,6 +71,7 @@ export function listProviders(): ProviderInfo[] {
   const search = [
     ...SEARCH_PROVIDERS.map((id): ProviderInfo => ({ id, kind: "search", models: 0, apiKey: true })),
     ...FETCH_PROVIDERS.map((id): ProviderInfo => ({ id, kind: "fetch", models: 0, apiKey: true })),
+    ...SPEECH_PROVIDERS.map((id): ProviderInfo => ({ id, kind: "speech", models: 0, apiKey: true })),
   ];
   return [...getProviders().map((id): ProviderInfo => {
     const all = models(id);

@@ -396,7 +396,7 @@ export function api(context: ApiContext) {
     if (!bedrock && region !== undefined) throw new HttpError(400, "region is only for amazon-bedrock");
     const check = verify === false || context.verifyKeys === false ? { status: "unverified" as const, detail: "Verification skipped" }
       // Checking a search or render key would cost a call: the first one checks it.
-      : info.kind !== "model" ? { status: "unverified" as const, detail: `${id} has no free way to check a key; the first ${info.kind === "search" ? "web_search" : "rendered web_fetch"} will` } : await checkProviderKey(id, apiKey);
+      : info.kind !== "model" ? { status: "unverified" as const, detail: `${id} has no free way to check a key; the first ${info.kind === "search" ? "web_search" : info.kind === "speech" ? "voice session using it" : "rendered web_fetch"} will` } : await checkProviderKey(id, apiKey);
     if (check.status === "invalid") throw new HttpError(422, check.detail);
     await accounts.setKey(tenant, id, apiKey, region);
     await clients.providerKeyChanged(tenant, id);

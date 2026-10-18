@@ -89,7 +89,10 @@ import { publicOrigins } from "./origins.ts";
 import { adminSite, adminSiteFromEnvironment } from "./admin-site.ts";
 import { AccountDeletions } from "./account-deletion.ts";
 import { RateLimits, rateLimitConfig } from "./rate-limits.ts";
-import { openaiLiveTranscription } from "./transcription-live.ts";
+import { LIVE_TRANSCRIPTION_MODEL } from "./transcription-live.ts";
+import { liveProvider, sttReference } from "./voice-providers/stt.ts";
+import { DEFAULT_VOICES, speechProvider, ttsReference } from "./voice-providers/tts.ts";
+import { speechPrices, ttsCost } from "./voice-providers/prices.ts";
 import { VOICE_CHANNEL, VoiceSessions, type VoiceReplyTarget, type VoiceTransport } from "./voice-sessions.ts";
 import { buggify } from "./buggify.ts";
 import { sometimes } from "./assert.ts";
@@ -375,24 +378,42 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     if (resolved.source === "platform" && provider === "openai" && azure && azureDeployment) return { ...azureCredentials(azure, azureDeployment, { apiKey: resolved.key }), platform };
     return { apiKey: resolved.key, platform };
   };
+  // What speech providers other than OpenAI cost on the platform's keys (AGENT_SPEECH_PRICES overrides list prices).
+  const speechPriceTable = speechPrices(env);
   // Speech to text, for audio attached to messages and POST /v1/transcriptions.
   const transcriber = new Transcriber({
     provider: openaiTranscription({ outbound, ...(env.AGENT_TRANSCRIPTION_URL ? { baseUrl: env.AGENT_TRANSCRIPTION_URL } : {}) }),
     key: (tenant, keyScope, provider) => providerKey(tenant, keyScope, provider, secrets.azureOpenAI?.transcriptionDeployment),
     price: () => accounts.billing.pricing.transcription,
-    // Voice sessions transcribe as people speak, on OpenAI's Realtime transcription (the same key; batch when it fails).
-    ...(config.voice.live ? {
-      live: {
-        provider: openaiLiveTranscription({ ...(env.AGENT_TRANSCRIPTION_URL ? { baseUrl: env.AGENT_TRANSCRIPTION_URL } : {}), ...(config.voice.liveModel ? { model: config.voice.liveModel } : {}), ...(config.voice.liveDelay ? { delay: config.voice.liveDelay } : {}) }),
-        price: () => accounts.billing.pricing.liveTranscription,
-      },
-    } : {}),
+    // Voice sessions transcribe as people speak through a chain of streaming providers (voice-providers/stt.ts), each on
+    // the tenant's key for it; batch (OpenAI, then the platform's Azure deployment) when all fail. The runtime's chain is
+    // AGENT_VOICE_STT, else OpenAI's Realtime with AGENT_VOICE_LIVE_TRANSCRIPTION=true, else none (a session may name one).
+    live: {
+      order: config.voice.stt.length ? config.voice.stt.map(sttReference) : config.voice.live ? [sttReference(`openai/${config.voice.liveModel ?? LIVE_TRANSCRIPTION_MODEL}`)] : [],
+      provider: reference => liveProvider(reference, {
+        ...(env.AGENT_TRANSCRIPTION_URL ? { openai: env.AGENT_TRANSCRIPTION_URL } : {}), ...(config.voice.liveDelay ? { openaiDelay: config.voice.liveDelay } : {}),
+        ...(config.voice.endpoints.deepgram ? { deepgram: config.voice.endpoints.deepgram } : {}), ...(config.voice.endpoints.soniox ? { soniox: config.voice.endpoints.soniox } : {}),
+        ...(config.voice.endpoints.assemblyai ? { assemblyai: config.voice.endpoints.assemblyai } : {}),
+      }),
+      // OpenAI's at its configured rate; the others at their list prices (voice-providers/prices.ts); one unpriced at OpenAI's.
+      price: reference => reference.startsWith("openai/") ? accounts.billing.pricing.liveTranscription : speechPriceTable.stt[reference]?.perMinute ?? accounts.billing.pricing.liveTranscription,
+    },
   });
-  // Speech made, for voice sessions that speak: the tenant's OpenAI key, never the platform's Azure deployment.
+  // Speech made, for voice sessions that speak: OpenAI on the tenant's key (never the platform's Azure deployment), or
+  // a chain of providers (voice-providers/tts.ts), the runtime's AGENT_VOICE_TTS or the session's own.
   const synthesizer = new Synthesizer({
     provider: openaiSpeech({ outbound, ...(env.AGENT_SPEECH_URL ? { baseUrl: env.AGENT_SPEECH_URL } : {}) }),
     key: (tenant, keyScope, provider) => providerKey(tenant, keyScope, provider),
     price: () => accounts.billing.pricing.speech,
+    chain: {
+      order: config.voice.tts.map(ttsReference),
+      provider: reference => speechProvider(reference, outbound, {
+        ...(env.AGENT_SPEECH_URL ? { openai: env.AGENT_SPEECH_URL } : {}), ...(config.voice.endpoints.elevenlabs ? { elevenlabs: config.voice.endpoints.elevenlabs } : {}),
+        ...(config.voice.endpoints.cartesia ? { cartesia: config.voice.endpoints.cartesia } : {}), ...(config.voice.endpoints.deepgram ? { deepgram: config.voice.endpoints.deepgram } : {}),
+      }),
+      defaultVoice: provider => DEFAULT_VOICES[provider],
+      price: (reference, made) => ttsCost(speechPriceTable, reference, made),
+    },
   });
   // Images made, for POST /v1/images.
   const imager = new Imager({
@@ -873,7 +894,12 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     },
     agentOwned: (agent, tenant) => clients.owns(agent, tenant, true),
     // Utterances are transcribed and billed as POST /v1/transcriptions is, and prompt agents wherever they run.
-    transcriber, synthesizer, canTranscribe: async (tenant, keyScope) => !!await transcriber.options.key(tenant, keyScope, transcriber.provider),
+    transcriber, synthesizer,
+    // OpenAI's key (batch transcription), or a key for one of the streaming chain's providers.
+    canTranscribe: async (tenant, keyScope, streaming = []) => {
+      for (const provider of new Set([transcriber.provider, ...streaming.map(reference => reference.split("/")[0])])) if (await transcriber.options.key(tenant, keyScope, provider)) return true;
+      return false;
+    },
     record: (tenant, usage) => accounts.recordUsage(tenant, "", usage),
     submit: (agent, tenant, request) => submitAnywhere(agent, tenant, request),
     submitStreaming: (agent, tenant, request, signal) => submitStreamingAnywhere(agent, tenant, request, signal),

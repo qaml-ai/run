@@ -42,6 +42,8 @@ function KeyDialog({ provider, onClose, onSaved }: { provider: Provider; onClose
                 ? <>The key is stored encrypted and never shown again. Agents whose definition enables web_search search with it (web_search tries exa, brave, then parallel, using the first with a key that answers), and {provider.id} bills the searches to it.</>
                 : provider.kind === "fetch"
                 ? <>The key is stored encrypted and never shown again. When web_fetch reads a page that is only a JavaScript shell, {provider.id} renders it with this key and bills the render to it.</>
+                : provider.kind === "speech"
+                ? <>The key is stored encrypted and never shown again. Voice sessions that name {provider.id} (or a runtime chain that includes it) transcribe or speak with it, and {provider.id} bills the audio to it.</>
                 : bedrock
                 ? <>A Bedrock API key (not AWS access keys), sent as a bearer token to Bedrock in the region you name. It is stored encrypted and never shown again; your agents use it for amazon-bedrock models and usage bills to your AWS account.</>
                 : <>The key is checked with {provider.id}, then stored encrypted. It is never shown again; your agents use it for {provider.id} models and usage bills to it.</>}
@@ -108,7 +110,8 @@ export function ModelsPage({ me }: { me: Me }) {
                       {provider.key?.source === "tenant" && (
                         <span className="ml-2 inline-block"><ConfirmButton size="xs" variant="ghost" label="Remove" title={`Remove your ${provider.id} key?`}
                           description={provider.kind === "search" ? `web_search uses the platform's ${provider.id} key if you have one, otherwise the next provider with a key.`
-                            : provider.kind === "fetch" ? "web_fetch renders pages with the platform's key if you have one, otherwise returns them unrendered." : `Agents using ${provider.id} models stop working until a key is added again.`} confirm="Remove key"
+                            : provider.kind === "fetch" ? "web_fetch renders pages with the platform's key if you have one, otherwise returns them unrendered."
+                            : provider.kind === "speech" ? `Voice sessions skip ${provider.id} (to the next provider in their chain) until a key is added again, unless the platform has one.` : `Agents using ${provider.id} models stop working until a key is added again.`} confirm="Remove key"
                           onConfirm={async () => { try { await api(`/v1/providers/${provider.id}/key`, { method: "DELETE" }); await providers.reload(); } catch (caught) { setError((caught as Error).message); } }} /></span>
                       )}
                     </TableCell>

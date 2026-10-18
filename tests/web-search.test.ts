@@ -299,7 +299,7 @@ test("a definition pins web_search's providers; a platform search is charged at 
   const rates = (await r.call("/v1/billing", { token: PAYG })).json.rates;
   assert.deepEqual([rates.webSearch, rates.webRender], [{ exa: 7_000, brave: 5_000, parallel: 20_000 }, 830]);
   const providers = (await r.call("/v1/providers", { token: PAYG })).json.filter((provider: any) => provider.kind !== "model").map((provider: any) => [provider.id, provider.kind]);
-  assert.deepEqual(providers, [["brave", "search"], ["exa", "search"], ["firecrawl", "fetch"], ["parallel", "search"]]);
+  assert.deepEqual(providers, [["assemblyai", "speech"], ["brave", "search"], ["cartesia", "speech"], ["deepgram", "speech"], ["elevenlabs", "speech"], ["exa", "search"], ["firecrawl", "fetch"], ["parallel", "search"], ["soniox", "speech"]]);
 });
 
 test("a search key the operator set for a tenant (its apiKeys) is used, and is not counted as the platform's", async t => {

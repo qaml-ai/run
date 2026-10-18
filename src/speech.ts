@@ -2,6 +2,7 @@ import type { Outbound } from "./outbound.ts";
 import { HttpError } from "./http.ts";
 import { MICROS } from "./pricing.ts";
 import { safeError } from "./metrics.ts";
+import { chainedSpeech, type Served, type SpeechMember } from "./voice-providers/tts-chain.ts";
 
 /**
  * Text to speech, for voice sessions that speak (voice-sessions.ts): text in, 24 kHz mono 16-bit PCM out, as it is made,
@@ -93,7 +94,21 @@ export interface SynthesizerOptions {
   key(tenant: string, keyScope: string | undefined, provider: string): Promise<(SpeechCredentials & { platform: boolean }) | undefined>;
   /** Micro-USD per minute of speech made. */
   price(): number;
+  /**
+   * Other providers a session may speak through, in a chain (voice-providers/tts.ts): each by reference
+   * (`elevenlabs/eleven_flash_v2_5`), the chain a session uses when it names none (`order`; empty: `provider` alone),
+   * each provider's default voice, and what a speech by a reference cost (USD), when it has a price.
+   */
+  chain?: {
+    order: string[];
+    provider(reference: string): SpeechProvider;
+    defaultVoice(provider: string): string | undefined;
+    price(reference: string, made: { characters: number; seconds: number }): number | undefined;
+  };
 }
+
+/** How a session speaks: the chain it names (else the runtime's), and its voice for each provider. */
+export type SpeechChoice = { providers?: string[]; voices?: Record<string, string> };
 
 export class Synthesizer {
   readonly options: SynthesizerOptions;
@@ -101,10 +116,57 @@ export class Synthesizer {
 
   get provider() { return this.options.provider.id; }
   get model() { return this.options.provider.model; }
+  /** The built-in provider's reference, `openai/gpt-4o-mini-tts`. */
+  get reference() { return `${this.provider}/${this.model}`; }
 
   /** What `seconds` of speech cost (USD), billed per second as it is made. */
   cost(seconds: number) {
     return Math.ceil(seconds) * this.options.price() / 60 / MICROS;
+  }
+
+  /** The chain a session speaks through: the one it names, else the runtime's, else the built-in provider alone. */
+  order(asked?: string[]): string[] {
+    if (asked?.length) return asked;
+    return this.options.chain?.order.length ? this.options.chain.order : [this.reference];
+  }
+
+  /**
+   * What a speech by `reference` cost (USD): `characters` or `seconds`, as its provider bills. One without a price is
+   * charged as the built-in provider would charge it, per second.
+   */
+  costOf(reference: string, made: { characters: number; seconds: number }) {
+    if (reference === this.reference || !this.options.chain) return this.cost(made.seconds);
+    return this.options.chain.price(reference, made) ?? this.cost(made.seconds);
+  }
+
+  /** At most what saying `text` costs through a chain (its dearest provider), to hold before it is made. */
+  estimate(text: string, order?: string[]) {
+    const made = { characters: text.length, seconds: this.estimateSeconds(text) };
+    return Math.max(...this.order(order).map(reference => this.costOf(reference, made)));
+  }
+
+  /**
+   * A speech made through the session's chain (`choice`), on the tenant's key for each provider: the first that can
+   * makes it (tts-chain.ts), and `served` says which, with its voice and whose key, before the first audio. The
+   * session's `voice` is OpenAI's; another provider speaks in the session's voice for it, else its default.
+   */
+  speak(context: { tenant: string; keyScope?: string }, choice: SpeechChoice, input: SpeechInput, signal: AbortSignal, served: (who: Served) => void) {
+    const members: SpeechMember[] = this.order(choice.providers).map(reference => {
+      const provider = reference === this.reference || !this.options.chain ? this.options.provider : this.options.chain.provider(reference);
+      const voice = choice.voices?.[provider.id] ?? (provider.id === this.provider ? input.voice : this.options.chain?.defaultVoice(provider.id) ?? "");
+      return { provider, voice, key: () => this.options.key(context.tenant, context.keyScope, provider.id) };
+    });
+    const { voice: _voice, ...rest } = input;
+    return chainedSpeech(members, rest, signal, served, { log: { tenant: context.tenant } });
+  }
+
+  /** Whether the tenant has a key for any of a chain's providers. */
+  async canSpeak(tenant: string, keyScope: string | undefined, order?: string[]) {
+    for (const reference of this.order(order)) {
+      const provider = reference === this.reference || !this.options.chain ? this.options.provider : this.options.chain.provider(reference);
+      if (await this.options.key(tenant, keyScope, provider.id).catch(() => undefined)) return true;
+    }
+    return false;
   }
 
   /** About how long `text` takes to say: speech runs about 14 characters a second. */
@@ -124,6 +186,10 @@ export class Synthesizer {
     return this.options.provider.stream(input, credentials, signal);
   }
 
-  /** Have a connection to the provider ready for the next speech (see `SpeechProvider.warm`). */
-  warm() { void this.options.provider.warm?.().catch(() => {}); }
+  /** Have a connection to the provider ready for the next speech (see `SpeechProvider.warm`): the chain's first. */
+  warm(order?: string[]) {
+    const first = this.order(order)[0];
+    const provider = first === this.reference || !this.options.chain ? this.options.provider : this.options.chain.provider(first);
+    void provider.warm?.().catch(() => {});
+  }
 }

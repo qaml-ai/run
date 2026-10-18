@@ -1,7 +1,8 @@
 import { randomBytes } from "node:crypto";
 import type { HttpError } from "./http.ts";
 import { safeError } from "./metrics.ts";
-import { SPEECH_RATE, type SpeechCredentials, type Synthesizer } from "./speech.ts";
+import { SPEECH_RATE, type SpeechCredentials, type SpeechInput, type Synthesizer } from "./speech.ts";
+import type { Served } from "./voice-providers/tts-chain.ts";
 import { opusFromPcm } from "./voice-audio.ts";
 import type { TurnClock } from "./voice/latency.ts";
 
@@ -45,10 +46,18 @@ export interface SpeechEffects {
   /** Waits for a fresh lease: a node cut off from the cluster makes no effects. */
   fresh(): Promise<void>;
   credentials(): Promise<SpeechCredentials & { platform: boolean }>;
+  /**
+   * Speech through the session's chain of providers (Synthesizer.speak), which calls `served` before its first audio;
+   * without it, the built-in provider on `credentials`. `estimate` and `cost` then price it (USD): before, at most what
+   * its text costs; after, what the provider that served billed for it.
+   */
+  speak?(input: SpeechInput, signal: AbortSignal, served: (who: Served) => void): AsyncIterable<Uint8Array>;
+  estimate?(text: string): number;
+  cost?(who: Served, made: { characters: number; seconds: number }): number;
   /** The speech started playing, `latencyMs` after it was asked for. */
   started(item: SpeechItem, latencyMs: number): void;
-  /** It ended; `platform` says whose key made it (usage). */
-  ended(item: SpeechItem, ending: SpeechEnding, platform: boolean | undefined): void;
+  /** It ended; `platform` says whose key made it (usage), `served` which provider (when a chain made it). */
+  ended(item: SpeechItem, ending: SpeechEnding, platform: boolean | undefined, served?: Served): void;
   /** The money ran out: the session ends (`budget`). */
   budget(limit: "tenant" | "end_user", endUserReason?: string): void;
 }
@@ -122,11 +131,12 @@ export class SessionSpeech {
     const current: NonNullable<SessionSpeech["current"]> = { item, abort };
     this.current = current;
     let samples = 0, platform: boolean | undefined, error: string | undefined, result: "done" | "stopped" | "error" = "error";
+    let served: Served | undefined;
     let held: Awaited<ReturnType<SpeechEffects["hold"]>>;
     try {
       try {
         await this.effects.admit();
-        held = await this.effects.hold(this.synthesizer.cost(this.synthesizer.estimateSeconds(item.text)), item.id);
+        held = await this.effects.hold(this.effects.estimate?.(item.text) ?? this.synthesizer.cost(this.synthesizer.estimateSeconds(item.text)), item.id);
       } catch (refused) {
         const status = (refused as HttpError).status;
         if (status !== 402) throw refused;
@@ -138,12 +148,16 @@ export class SessionSpeech {
       }
       if (current.stoppedBy) return;
       await this.effects.fresh();
-      const credentials = await this.effects.credentials();
-      platform = credentials.platform;
+      const input = { text: item.text, voice: item.voice, ...(item.instructions ? { instructions: item.instructions } : {}) };
+      // Through the session's chain of providers, which says who served; else the built-in provider on its key.
+      const chain = this.effects.speak;
+      const credentials = chain ? undefined : await this.effects.credentials();
+      platform = credentials?.platform;
       const player = await this.connected(abort.signal);
       if (current.stoppedBy) return;
       if (!player) throw new Error("No connection to speak on");
-      const pcm = timed(this.synthesizer.stream({ text: item.text, voice: item.voice, ...(item.instructions ? { instructions: item.instructions } : {}) }, credentials, abort.signal), () => item.turn?.mark("ttsFirstAudio"));
+      const made = chain ? chain(input, abort.signal, who => { served = who; platform = who.platform; }) : this.synthesizer.stream(input, credentials!, abort.signal);
+      const pcm = timed(made, () => item.turn?.mark("ttsFirstAudio"));
       current.playback = player.play(opusFromPcm(pcm, count => { samples += count; }), () => {
         item.turn?.mark("firstPacket").end("spoken");
         this.effects.started(item, Date.now() - item.queuedAt);
@@ -154,14 +168,14 @@ export class SessionSpeech {
       if (!current.stoppedBy) error = safeError(failure);
     } finally {
       const seconds = Math.round(samples / SPEECH_RATE * 100) / 100;
-      const costUsd = samples ? this.synthesizer.cost(seconds) : 0;
+      const costUsd = !samples ? 0 : served && this.effects.cost ? this.effects.cost(served, { characters: item.text.length, seconds }) : this.synthesizer.cost(seconds);
       if (held) await (samples ? held.settle(costUsd) : held.release()).catch(failure => console.error(JSON.stringify({ type: "voice_speech_credit_failed", speech: item.id, error: safeError(failure) })));
       const ending: SpeechEnding = current.stoppedBy
         ? { reason: "interrupted", by: current.stoppedBy, seconds, costUsd }
         : result === "done" && !error ? { reason: "done", seconds, costUsd } : { reason: "error", seconds, costUsd, ...(error ? { error } : {}) };
       if (this.current === current) this.current = undefined;
       item.turn?.end(ending.reason === "done" ? "no_reply" : ending.reason);
-      this.effects.ended(item, ending, platform);
+      this.effects.ended(item, ending, platform, served);
     }
   }
 

@@ -558,6 +558,8 @@ rates below as your account is charged them.
 | [Transcription](https://run.camelai.com/docs/guides/voice.md) on the platform's OpenAI key | $0.0045 per minute of audio (`gpt-transcribe`), billed per second |
 | [Live transcription](https://run.camelai.com/docs/guides/voice-calls.md#utterances) a voice session makes as people speak (when the runtime turns it on), on the platform's OpenAI key | $0.017 per minute of audio (`gpt-live-transcribe`), billed per second |
 | [Speech](https://run.camelai.com/docs/guides/voice-calls.md#speaking) a voice session says, on the platform's OpenAI key | $0.015 per minute of speech made (`gpt-4o-mini-tts`), billed per second |
+| [Live transcription through other providers](https://run.camelai.com/docs/guides/voice-calls.md#speech-providers), on the platform's key for each | Their list prices, per minute of audio streamed, billed per second: Deepgram `nova-3` $0.0077 (multilingual $0.0092), Deepgram `flux-general-en` $0.0077, Soniox `stt-rt-v3` $0.002, AssemblyAI Universal Streaming $0.0025 |
+| [Speech through other providers](https://run.camelai.com/docs/guides/voice-calls.md#speech-providers), on the platform's key for each | Their list prices, per 1,000 characters spoken: ElevenLabs Flash/Turbo v2.5 $0.05, Cartesia `sonic-3` $0.05, Deepgram `aura-2` $0.03 |
 | [Images](https://run.camelai.com/docs/guides/images.md) on the platform's OpenAI key | Per token as OpenAI bills `gpt-image-2.5-flare`: $5 per million text tokens in, $8 per million image tokens in, $30 per million image tokens out. A 1024x1024 image is $0.0059 at `low`, $0.0132 at `medium`, $0.0527 at `high` |
 
 ## Credit
@@ -3038,6 +3040,58 @@ Prompted with your API key, any of your sessions may speak. Prompted with an age
 user's browser), only a session whose `subject` is the agent's: an agent without a subject, or a session of another
 subject, is a 403 `VOICE_SPEAK_FORBIDDEN`, so one user cannot make another's bot talk.
 
+## Speech providers
+
+A session picks who transcribes and who speaks, each as providers to try in order. Each provider uses your key for it
+(`PUT /v1/providers/<provider>/key`, or a key scope's), else the platform's where your account
+may use the platform's keys. A provider with no key is skipped.
+
+```http
+POST /v1/voice/sessions
+{"discord": {…}, "language": "en", "speak": true,
+ "transcription": {"providers": ["deepgram/flux", "soniox", "openai"], "keyterms": ["camelRun", "Miguel"]},
+ "speech": {"providers": ["elevenlabs", "cartesia", "openai"],
+            "voices": {"elevenlabs": "21m00Tcm4TlvDq8ikWAM", "cartesia": "<a Cartesia voice id>", "openai": "coral"}}}
+```
+
+**Transcription** (`transcription.providers`) streams each person's audio to the first provider as they talk. The cut
+commits the utterance, so its transcript follows the end of speech by the provider's last step. Each name is
+`<provider>` (its default model) or `<provider>/<model>`:
+
+| Provider | Default model | Notes |
+| --- | --- | --- |
+| `deepgram` | `nova-3` | Interim words as they are heard. Without `language` it hears many languages (`nova-3-multilingual`, priced so) |
+| `deepgram/flux` | `flux-general-en` | Built for conversation: it says where turns end itself, early and for sure. English only |
+| `soniox` | `stt-rt-v3` | 60 languages, switching mid-stream; `language` is a hint, `prompt` and `keyterms` its context |
+| `assemblyai` | `universal-streaming-english` | Any of its streaming models by name: `assemblyai/<speech_model>` |
+| `openai` | `gpt-live-transcribe` | OpenAI's Realtime transcription. What was just said prompts the next utterance, so names carry over |
+
+- **Failover mid-utterance.** The utterance's audio is kept until its transcript comes. If the serving provider fails
+  (its connection drops, it errs, or it has not answered 3 s after the cut), the next provider gets the utterance whole.
+- **Last resort.** If every provider fails, the utterance is transcribed after it is cut, with OpenAI's
+  `gpt-transcribe`.
+- **`keyterms`.** Names and jargon to listen for, at most 100 terms. They go to each provider in the form it takes them.
+- **Default.** Without `transcription.providers`, the session uses the runtime's chain (`AGENT_VOICE_STT`). With no
+  chain set on the runtime, each utterance is transcribed after it ends.
+
+**Speech** (`speech.providers`) is made by the first provider that can. Each streams 24 kHz audio as it is made, and the
+bot plays it as it comes:
+
+| Provider | Default model | Voice (`speech.voices.<provider>`) |
+| --- | --- | --- |
+| `elevenlabs` | `eleven_flash_v2_5` (its fastest) | An ElevenLabs voice id. Default: the premade "Rachel" |
+| `cartesia` | `sonic-3` | A Cartesia voice id. Required: Cartesia is skipped without one |
+| `deepgram` | `aura-2` | An Aura voice. Default: `aura-2-thalia-en` |
+| `openai` | `gpt-4o-mini-tts` | `voice` (alloy, coral, verse…). Takes `instructions` |
+
+A provider that fails, or that sends no audio within 3 s, is passed over for the next one. Once the bot has started
+speaking, a failure ends that speech (`voice.speech.ended` with `reason: "error"`): another voice cannot carry on
+mid-sentence. Without `speech.providers`, a session uses the runtime's chain (`AGENT_VOICE_TTS`), else OpenAI. The
+session's `language` tells providers that speak many languages which one to pronounce.
+
+Usage records name the provider and model that served, `deepgram/nova-3` or `elevenlabs/eleven_flash_v2_5` for
+example, as `usage.recorded`'s `provider` and `model`.
+
 ## Cost
 
 Only speech is paid for: Discord sends no audio while people are silent, quiet audio is trimmed from each utterance, and
@@ -3045,12 +3099,15 @@ each utterance is transcribed at the
 [transcription price](https://run.camelai.com/docs/pricing.md), per second, as `usage.recorded` with `kind: "transcription"`, the session's
 `subject`, and `context.voiceSession`. Holding the call itself costs nothing.
 
-Speech the bot says is billed per second of speech made, at the [speech price](https://run.camelai.com/docs/pricing.md) ($0.015 a minute on the
-platform's OpenAI key), as `usage.recorded` with `kind: "speech"` and `audioSeconds`; a speech cut short pays for what
-was made. With end-user credits, each speech holds its estimate of the subject's credit before it is made and settles
+Speech the bot says is billed as its provider bills it, at the [speech price](https://run.camelai.com/docs/pricing.md). OpenAI's is $0.015 a
+minute on the platform's key, per second of speech made. ElevenLabs, Cartesia and Deepgram Aura bill per character of
+the text. Each speech is a `usage.recorded` with `kind: "speech"` and `audioSeconds`. A speech cut short pays for what
+was made: its seconds made with OpenAI, and its whole text with a provider that bills per character. Transcription
+through another provider is billed at that provider's price, per second of audio streamed. On your own key the
+provider bills you directly; the usage record still carries the cost. With end-user credits, each speech holds its estimate of the subject's credit before it is made and settles
 at what it cost; running out ends the session (`budget`).
 
-A session starts only when the account may spend (402 `SPEND_LIMIT` otherwise) and has an OpenAI key to transcribe with
+A session starts only when the account may spend (402 `SPEND_LIMIT` otherwise) and has a key to transcribe with: OpenAI's, or one of its transcription providers'
 (400 `TRANSCRIPTION_UNAVAILABLE`). An account that runs out during a call ends it: `reason: "budget"`, `limit: "tenant"`.
 With end-user credits on, a subject with nothing left is refused at the start (402 `END_USER_CREDIT`), each utterance
 holds its cost of the subject's credit before it is transcribed, and running out ends the session (`limit:
