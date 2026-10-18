@@ -18,7 +18,7 @@
 // Use two test applications made for this (never a production bot's token): a second gateway session on a token in use
 // would see its traffic. Both need Connect, Speak and View Channel in the channel. Exit code 0 on PASS, 1 on FAIL.
 import { Readable } from "node:stream";
-import OpusScript from "opusscript";
+import { Opus } from "../src/opus.ts";
 import {
   createAudioPlayer, createAudioResource, EndBehaviorType, entersState, joinVoiceChannel, NoSubscriberBehavior, StreamType, VoiceConnectionStatus,
   type DiscordGatewayAdapterCreator, type DiscordGatewayAdapterLibraryMethods,
@@ -107,7 +107,7 @@ class Gateway {
 
 /** Opus packets (48 kHz stereo, 20 ms): a 440 Hz tone, or encoded digital silence. */
 function packets() {
-  const encoder = new OpusScript(48_000, 2, OpusScript.Application.AUDIO);
+  const encoder = new Opus(48_000, 2, "audio");
   const frame = (amplitude: number) => {
     const pcm = Buffer.alloc(960 * 4);
     for (let i = 0; i < 960; i++) {

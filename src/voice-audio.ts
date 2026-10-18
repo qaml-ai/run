@@ -1,6 +1,7 @@
 import { randomInt } from "node:crypto";
-import OpusScript from "opusscript";
+import { Opus } from "./opus.ts";
 import { clock } from "./node-context.ts";
+import { safeError } from "./metrics.ts";
 
 type Timer = ReturnType<typeof setTimeout>;
 
@@ -111,13 +112,13 @@ export const UTTERANCE_LIMITS = Object.freeze({
 });
 
 /** A packet's level (dBFS, the RMS of its decoded samples); -Infinity for digital silence or a packet that does not decode. */
-export function packetLevel(decoder: OpusScript, packet: Uint8Array): number {
+export function packetLevel(decoder: Opus, packet: Uint8Array): number {
   const pcm = decoded(decoder, packet);
   return pcm ? pcmLevel(pcm) : -Infinity;
 }
 /** A packet decoded (16-bit PCM at the decoder's rate), or undefined when it does not decode. */
-function decoded(decoder: OpusScript, packet: Uint8Array): Buffer | undefined {
-  try { return Buffer.from(decoder.decode(Buffer.from(packet.buffer, packet.byteOffset, packet.byteLength))); } catch { return undefined; }
+function decoded(decoder: Opus, packet: Uint8Array): Buffer | undefined {
+  try { return decoder.decode(packet); } catch { return undefined; }
 }
 function pcmLevel(pcm: Buffer) {
   const samples = pcm.length >> 1;
@@ -133,7 +134,7 @@ type Speaking = {
   firstLoudAt?: number; lastLoudAt: number;
   timer?: Timer;
   /** Its own decoder: an Opus stream's packets decode in order, with the state of those before. */
-  decoder: OpusScript;
+  decoder: Opus;
   /** Its audio is going to `live` (from its first loud packet, with the quiet kept before it). */
   streaming?: boolean;
 };
@@ -176,9 +177,11 @@ export class Segmenter {
     if (silent(packet) || !packet.length) return;
     const now = clock().now();
     let speech = this.speaking.get(speaker);
-    if (!speech) this.speaking.set(speaker, speech = { held: [], heldMs: 0, speechMs: 0, quietMs: 0, lastLoudAt: now, decoder: new OpusScript(this.options.live ? 24_000 : 16_000, 1, OpusScript.Application.VOIP) });
+    if (!speech) this.speaking.set(speaker, speech = { held: [], heldMs: 0, speechMs: 0, quietMs: 0, lastLoudAt: now, decoder: new Opus(this.options.live ? 24_000 : 16_000, 1, "voip") });
     const ms = packetSamples(packet) / 48;
     const pcm = decoded(speech.decoder, packet);
+    // A decoder that trapped is done: what was said so far is an utterance, and the next packet gets a new decoder.
+    if (speech.decoder.broken) { this.end(speaker, "error"); return; }
     const loud = (pcm ? pcmLevel(pcm) : -Infinity) > (this.options.quietDb ?? UTTERANCE_LIMITS.quietDb);
     const live = this.options.live;
     speech.held.push({ packet, ms, loud, ...(live && pcm && !speech.streaming ? { pcm } : {}) });
@@ -206,7 +209,7 @@ export class Segmenter {
       else if (speech.quietMs >= this.options.silenceMs) { this.end(speaker, "silence"); return; }
     }
     if (speech.heldMs >= (this.options.maxMs ?? UTTERANCE_LIMITS.maxMs)) { this.end(speaker, "max"); return; }
-    speech.timer = clock().setTimeout(() => this.end(speaker, "silence"), this.options.silenceMs);
+    speech.timer = clock().setTimeout(() => this.ended(speaker, "silence"), this.options.silenceMs);
     speech.timer.unref();
   }
 
@@ -215,6 +218,12 @@ export class Segmenter {
 
   /** Cut every speaker's speech now (`handoff`, `end`). */
   flush(ended: "handoff" | "end") { for (const speaker of [...this.speaking.keys()]) this.end(speaker, ended); }
+
+  /** `end` from a timer: nothing it meets may escape to the process (it would end every session on the node). */
+  private ended(speaker: string, ended: Cut["ended"]) {
+    try { this.end(speaker, ended); }
+    catch (error) { console.error(JSON.stringify({ type: "voice_segment_failed", speaker, error: safeError(error) })); }
+  }
 
   private end(speaker: string, ended: Cut["ended"]) {
     const speech = this.speaking.get(speaker);
@@ -263,7 +272,7 @@ function upsampled(mono: Buffer): Buffer {
  * silence. `samples` is told how many PCM samples each packet holds (for what was made, and billed).
  */
 export async function* opusFromPcm(pcm: AsyncIterable<Uint8Array>, samples?: (count: number) => void): AsyncGenerator<Buffer> {
-  const encoder = new OpusScript(48_000, 2, OpusScript.Application.AUDIO);
+  const encoder = new Opus(48_000, 2, "audio");
   try {
     let pending = Buffer.alloc(0);
     for await (const chunk of pcm) {
@@ -272,14 +281,14 @@ export async function* opusFromPcm(pcm: AsyncIterable<Uint8Array>, samples?: (co
         const frame = pending.subarray(0, SPEECH_FRAME_BYTES);
         pending = pending.subarray(SPEECH_FRAME_BYTES);
         samples?.(SPEECH_FRAME_BYTES >> 1);
-        yield Buffer.from(encoder.encode(upsampled(frame), FRAME_SAMPLES));
+        yield encoder.encode(upsampled(frame), FRAME_SAMPLES);
       }
     }
     if (pending.length >= 2) {
       samples?.(pending.length >> 1);
       const frame = Buffer.alloc(SPEECH_FRAME_BYTES);
       pending.copy(frame, 0, 0, pending.length & ~1);
-      yield Buffer.from(encoder.encode(upsampled(frame), FRAME_SAMPLES));
+      yield encoder.encode(upsampled(frame), FRAME_SAMPLES);
     }
   } finally { encoder.delete(); }
 }
