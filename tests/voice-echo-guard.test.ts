@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import type { Clock } from "../src/node-context.ts";
 import { BargeInGuard, DEFAULT_BARGE_IN, echoVerdict, type BargeInOutcome } from "../src/voice/echo-guard.ts";
 import { MediaSession, type MediaEvents } from "../src/voice/media.ts";
-import { discordGrant, fakeTranscriber, fakeTransport, sleep, speak, speechPacket, until, voiceCluster, type FakeConnection } from "./voice-fakes.ts";
+import { AGENT, discordGrant, fakeTranscriber, fakeTransport, sleep, speak, speechPacket, until, voiceCluster, type FakeConnection } from "./voice-fakes.ts";
 
 const BOT = "The forecast for tomorrow is sunny with a light breeze from the west, and highs near seventy degrees.";
 
@@ -229,4 +229,40 @@ test("bargeIn takes its timing: shown as interruption; out of range or unknown i
   for (const bargeIn of [{ minMs: -1 }, { resumeMs: 100 }, { confirmMs: 1.5 }, { other: 1 }, "yes"]) {
     await assert.rejects(a.voice.create("alice", { discord: discordGrant({ guildId: "100000000000000093" }), speak: true, bargeIn }), (error: { status?: number }) => error.status === 400, JSON.stringify(bargeIn));
   }
+});
+
+test("the guard: an utterance its partials showed to be echo is echo when its final transcript comes; the next utterance is not", () => {
+  const { guard, outcomes, clock } = guarded();
+  const startedAt = clock.now();
+  guard.candidate("u1", 300, startedAt);
+  assert.equal(guard.heard("u1", "sunny with a light breeze", false), "echo");
+  assert.deepEqual(outcomes.map(outcome => outcome.type), ["echo_rejected"]);
+  assert.equal(guard.heard("u1", "sunny with a light breeze from the west", true, startedAt - 20), "echo", "its final transcript");
+  assert.equal(guard.heard("u1", "sunny with a light breeze", true, startedAt + 5_000), undefined, "no candidate, nothing judged: delivered as theirs");
+});
+
+test("an echoed utterance never reaches the agent (no reply); its webhook says echo: true; the person's own words do reach it", { timeout: 60_000 }, async t => {
+  const said = ["what will the weather be tomorrow", "the forecast for tomorrow is sunny with a light breeze"];
+  const { transcriber } = fakeTranscriber(({ index }) => said[index] ?? "");
+  const asked: string[] = [];
+  async function* reply(text: string) { asked.push(text); yield BOT; }
+  const { fake, node, events } = await voiceCluster(t, {
+    playEveryMs: 10, transcriber, submitStreaming: (_agent, _tenant, request) => reply(String(request.params.text)),
+  });
+  const a = await node("http://a");
+  await a.voice.create("alice", { discord: discordGrant(), speak: { agentReplies: true }, deliver: { agent: AGENT }, silenceMs: 200 });
+  const connection = await until(() => fake.open()[0], "the connection");
+  connection.handlers.ready();
+  // The person asks; the agent's reply plays.
+  speak(connection, "400000000000000004", 0.6);
+  await until(() => connection.played[0]?.length >= 20, "the reply to play");
+  // Their speakers send the reply back into the call.
+  speak(connection, "400000000000000004", 0.6);
+  const [ended] = await until(async () => { const found = await events("voice.speech.ended"); return found.length ? found : undefined; }, "the reply to end", 30_000);
+  assert.deepEqual([ended.data.reason, ended.data.by], ["done", undefined], "the echo did not stop it");
+  const utterances = await until(async () => { const found = await events("voice.utterance"); return found.length === 2 ? found : undefined; }, "both utterances");
+  assert.deepEqual(utterances.map(event => [event.data.text, event.data.echo]), [[said[0], undefined], [said[1], true]]);
+  await sleep(300);
+  assert.deepEqual(asked, [said[0]], "only the person's own words were sent to the agent");
+  assert.equal((await events("voice.speech.ended")).length, 1, "nothing was said in reply to the echo");
 });

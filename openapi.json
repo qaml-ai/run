@@ -1031,6 +1031,13 @@
               },
               "costUsd": {
                 "type": "number"
+              },
+              "echo": {
+                "type": "boolean",
+                "enum": [
+                  true
+                ],
+                "description": "Present when barge-in judged it the bot's own speech coming back through the speaker's speakers (its words are the bot's, in order). It is not sent to deliver.agent and nothing replies to it; drop it unless you want it"
               }
             },
             "required": [

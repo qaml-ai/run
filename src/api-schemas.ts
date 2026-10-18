@@ -224,6 +224,7 @@ export const WebhookEvents = {
     startedAt: z.number(), endedAt: z.number(),
     ended: z.enum(["silence", "max", "error", "handoff", "end"]).openapi({ description: "Why it ended: silenceMs without speech; cut at 30 seconds (the speech goes on in the next); the speaker's stream broke; the session moved to another node; the session ended" }),
     costUsd: z.number(),
+    echo: z.literal(true).optional().openapi({ description: "Present when barge-in judged it the bot's own speech coming back through the speaker's speakers (its words are the bot's, in order). It is not sent to deliver.agent and nothing replies to it; drop it unless you want it" }),
   }), "A person's utterance in a voice session, transcribed"),
   "voice.speech.started": envelope("voice.speech.started", z.object({
     ...voiceFacts, speechId: z.string(), latencyMs: z.number().openapi({ description: "From the speak request (or the reply's sentence being whole) to the first audio going out" }),

@@ -10,6 +10,8 @@
     `resumeMs` (3000) is the longest pause: it then stops if they are still talking, else resumes.
 - `bargeIn` takes `true | false | {minMs, confirmMs, resumeMs}`; `confirmMs: 0` is the old behaviour (stop at
   `minMs`, no pause). Sessions show `interruption`. Existing sessions get the defaults.
+- An utterance judged echo is not delivered to `deliver.agent` (no agent reply, no turn waits on it). Its
+  `voice.utterance` webhook (and a browser page's `utterance`) is still sent, with `echo: true`.
 - Sounds under `minMs` (a click, a cough) no longer stop the bot.
 - Logs `voice_barge_in_candidate`, `voice_barge_in_confirmed` and `voice_barge_in_echo_rejected` (`why`, `pausedMs`,
   `speechMs`, `score`; never the words); metric `voice_barge_in` (`VoiceBargeIns`, `VoiceBargeInPausedMs` by `Outcome`

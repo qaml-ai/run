@@ -173,6 +173,8 @@ and clears the queue.
 
   Pass `bargeIn: {minMs, confirmMs, resumeMs}` to change the timing; `confirmMs: 0` stops at `minMs` with no pause
   and no echo check. With live transcription the words come as they are said, so the decision is usually quicker.
+  An utterance judged echo is the bot's voice, not the person's: it never reaches `deliver.agent` (no reply), and its
+  `voice.utterance` webhook carries `echo: true` so your app can drop it too.
   Sessions show the timing in use as `interruption`. Logs: `voice_barge_in_candidate` (paused),
   `voice_barge_in_confirmed` and `voice_barge_in_echo_rejected` (`why`, `pausedMs`).
 - **Latency.** Speech plays as it is made: OpenAI streams it, and each 20 ms is encoded and sent as it comes, so the

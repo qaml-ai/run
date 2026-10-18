@@ -1152,8 +1152,10 @@ export class VoiceSessions {
         console.error(JSON.stringify({ type: "voice_credit_settle_failed", session: origin.id, error: safeError(error) })));
     } finally { free(); }
     const { transcript, usage } = done;
-    // The words decide a barge-in pause this utterance made, if one is still open.
-    this.held.get(origin.id)?.guard?.heard(cut.speaker, transcript.text, true, cut.startedAt);
+    // The words decide a barge-in pause this utterance made, if one is still open. An utterance that is the bot's own
+    // speech coming back (echo) is still billed and sent to webhooks (marked echo, for apps to drop), but no agent hears
+    // it, and no reply waits on it.
+    const echo = this.held.get(origin.id)?.guard?.heard(cut.speaker, transcript.text, true, cut.startedAt) === "echo";
     if (turn) {
       turn.mark("transcript");
       Object.assign(turn.info, { live: this.liveModel(transcript), sttModel: transcript.model });
@@ -1171,7 +1173,7 @@ export class VoiceSessions {
       if (current && transcript.text && current.options.deliver.webhooks) {
         await enqueueEvents(sql, [this.event(current, "voice.utterance", {
           speakerId: cut.speaker, seq: current.utterances, text: transcript.text, language: transcript.language ?? options.language ?? null,
-          seconds: cut.seconds, startedAt: cut.startedAt, endedAt: cut.endedAt, ended: cut.ended, costUsd: usd,
+          seconds: cut.seconds, startedAt: cut.startedAt, endedAt: cut.endedAt, ended: cut.ended, costUsd: usd, ...(echo ? { echo: true } : {}),
         }, `voice:${origin.id}:utterance:${current.utterances}`)]);
       }
       return current;
@@ -1181,15 +1183,15 @@ export class VoiceSessions {
     if (turn && row) turn.info.seq = row.utterances;
     // A browser call's page sees each utterance as it is transcribed (it needs no webhook).
     if (row && transcript.text) this.held.get(origin.id)?.media?.notify?.({
-      type: "utterance", speakerId: cut.speaker, seq: row.utterances, text: transcript.text, startedAt: cut.startedAt, endedAt: cut.endedAt, ended: cut.ended,
+      type: "utterance", speakerId: cut.speaker, seq: row.utterances, text: transcript.text, startedAt: cut.startedAt, endedAt: cut.endedAt, ended: cut.ended, ...(echo ? { echo: true } : {}),
       ...(turn ? { turnCommitMs: turn.stages().turnCommit } : {}), transcriptMs: Math.max(0, Math.round(clock().now() - cut.endedAt)),
     });
-    console.log(JSON.stringify({ type: "voice_utterance", session: origin.id, seq: row?.utterances, seconds: cut.seconds, billedSeconds: transcript.seconds, ended: cut.ended, empty: !transcript.text, ms: Date.now() - started, live: this.liveModel(transcript), speechEndToTextMs: clock().now() - cut.endedAt }));
+    console.log(JSON.stringify({ type: "voice_utterance", session: origin.id, seq: row?.utterances, seconds: cut.seconds, billedSeconds: transcript.seconds, ended: cut.ended, empty: !transcript.text, ...(echo ? { echo: true } : {}), ms: Date.now() - started, live: this.liveModel(transcript), speechEndToTextMs: clock().now() - cut.endedAt }));
     if (!row) return;
     const local = this.held.get(origin.id);
     if (local) local.row = { ...local.row, last_speech_at: row.last_speech_at, utterances: row.utterances };
     const agent = row.options.deliver.agent;
-    if (!transcript.text) return;
+    if (!transcript.text || echo) return;
     // A reply the session does not speak itself is the app's (POST …/speak) or a prompt's (speak): the turn waits for it.
     if (turn && !(agent && row.options.agentReplies && this.options.submitStreaming) && this.held.get(origin.id)?.claim === origin.claim) this.waitingTurns.wait(origin.id, turn);
     if (!agent) return;

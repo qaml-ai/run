@@ -151,6 +151,11 @@ export class BargeInGuard {
   private readonly candidates = new Map<string, Candidate>();
   /** The longest of the pauses still open began then. */
   private pausedAt?: number;
+  /**
+   * Utterances judged echo before their final transcript (from partials): when each began, by speaker. Their final
+   * transcript is echo too, so it is not delivered as theirs (`heard` answers echo for it).
+   */
+  private readonly echoed = new Map<string, number>();
 
   constructor(policy: Partial<BargeInPolicy>, hooks: GuardHooks, clock: Clock = nodeClock()) {
     this.policy = { ...DEFAULT_BARGE_IN, ...policy };
@@ -195,13 +200,25 @@ export class BargeInGuard {
    */
   heard(speaker: string, text: string, final: boolean, startedAt?: number): EchoVerdict["verdict"] | undefined {
     const candidate = this.candidates.get(speaker);
-    if (!candidate) return undefined;
+    if (!candidate) {
+      const echoedAt = this.echoed.get(speaker);
+      if (!final || echoedAt === undefined) return undefined;
+      // The final transcript of an utterance its partials already showed to be echo, not an earlier one's.
+      if (startedAt !== undefined && startedAt < echoedAt - 250) return undefined;
+      this.echoed.delete(speaker);
+      return "echo";
+    }
+    if (final) this.echoed.delete(speaker);
     // An utterance cut before this one began.
     if (startedAt !== undefined && startedAt < candidate.startedAt - 250) return undefined;
     const verdict = echoVerdict(text, this.hooks.spoken());
     // A partial transcript's first words may be a first guess, or the start of someone quoting the bot: it takes two
     // words or more to stop the bot, and three to resume it. The whole transcript decides at once.
-    if (verdict.verdict === "echo" && (final || verdict.heard >= 3)) { this.release(candidate, "echo", verdict.score); return "echo"; }
+    if (verdict.verdict === "echo" && (final || verdict.heard >= 3)) {
+      if (!final) this.echoed.set(speaker, candidate.startedAt);
+      this.release(candidate, "echo", verdict.score);
+      return "echo";
+    }
     if (verdict.verdict === "speech" && (final || verdict.heard >= 2)) { this.confirm(candidate, "words"); return "speech"; }
     if (final) {
       // One word the bot said, or nothing at all: not someone taking the turn.
@@ -218,7 +235,7 @@ export class BargeInGuard {
     this.pausedAt = undefined;
   }
 
-  close() { this.clear(); }
+  close() { this.clear(); this.echoed.clear(); }
 
   private timeout(candidate: Candidate) {
     if (this.candidates.get(candidate.speaker) !== candidate) return;
