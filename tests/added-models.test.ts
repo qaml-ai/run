@@ -4,8 +4,7 @@ import { listModels } from "../src/catalog.ts";
 import { getModel, getModels, reasoningFloor } from "../src/pi-catalog.ts";
 import { platformUsage } from "../src/platform-pricing.ts";
 import { resolveModel } from "../src/session-config.ts";
-import { gateway, responses } from "./provider-fixtures.ts";
-import { runtime } from "./runtime-server.ts";
+import { fakeModel, runtime } from "./runtime-server.ts";
 
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
 const FLASH_1017 = "deepseek/deepseek-v4.1-flash-1017";
@@ -30,25 +29,27 @@ test("DeepSeek V4.1 Flash 1017 is OpenRouter's V4.1 Flash entry at its own id, n
 
 test("GET /v1/models lists it, unmeasured for tool-call streaming, and a response on it costs its list price", () => {
   const info = listModels("openrouter").find(model => model.id === `openrouter/${FLASH_1017}`)!;
-  assert.deepEqual([info.api, info.contextWindow, info.cost.input, info.cost.output, info.toolCallStreaming], ["openai-responses", 1_048_576, 0.15, 0.6, "unknown"]);
+  assert.deepEqual([info.api, info.contextWindow, info.cost.input, info.cost.output, info.toolCallStreaming], ["openai-completions", 1_048_576, 0.15, 0.6, "unknown"]);
   const { usage, known } = platformUsage({ input: 1_000_000, output: 1_000_000, cacheRead: 1_000_000, cacheWrite: 0 } as never, "openrouter", FLASH_1017);
   assert.equal(known, true);
   assert.ok(Math.abs((usage as { cost: { total: number } }).cost.total - 0.753) < 1e-12);
   const resolved = resolveModel(`openrouter/${FLASH_1017}`);
-  assert.deepEqual([resolved.id, resolved.api], [FLASH_1017, "openai-responses"]);
+  assert.deepEqual([resolved.id, resolved.api], [FLASH_1017, "openai-completions"]);
 });
 
-test("an agent on it calls OpenRouter with the 1017 id and the reasoning it asks for", async t => {
-  const provider = await gateway(t, () => responses([{ type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text: "Snapshot.", annotations: [] }] }]));
+test("an agent on it calls OpenRouter's Chat Completions with the 1017 id and the reasoning it asks for", async t => {
+  const model = await fakeModel(t, () => ({ role: "assistant", content: "Snapshot." }));
   const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), LOCAL);
-  await r.call("/v1/key-scopes/hosted/providers/openrouter", { method: "PUT", body: { apiKey: "sk-or", baseUrl: `${provider.url}/openrouter` } });
+  await r.call("/v1/key-scopes/hosted/providers/openrouter", { method: "PUT", body: { apiKey: "sk-or", baseUrl: model.url } });
   const agent = (await r.call("/v1/agents", { body: { model: `openrouter/${FLASH_1017}`, keyScope: "hosted", thinkingLevel: "high" } })).json.id;
   const done = await r.prompt(agent, "Hi");
   assert.equal(done.outcome.result.reply, "Snapshot.");
-  const sent = provider.requests.at(-1)!;
-  assert.match(sent.path, /\/responses$/);
-  assert.equal(sent.body.model, FLASH_1017);
-  assert.equal(sent.body.reasoning?.effort, "high");
+  const sent = model.bodies.at(-1)!;
+  assert.ok(Array.isArray(sent.messages), "Chat Completions (deepseek-replay.ts)");
+  assert.equal(sent.model, FLASH_1017);
+  assert.equal(sent.reasoning?.effort, "high");
+  assert.deepEqual(sent.provider, { order: ["deepseek"], allow_fallbacks: true }, "DeepSeek's own endpoint first");
   // No more than DeepSeek's own endpoint serves, so OpenRouter can route it there.
-  assert.ok(sent.body.max_output_tokens <= 393_216, String(sent.body.max_output_tokens));
+  const most = sent.max_completion_tokens ?? sent.max_tokens;
+  assert.ok(most <= 393_216, String(most));
 });
