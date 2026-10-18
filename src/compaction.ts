@@ -16,7 +16,7 @@ import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { streamTimeouts, watchedStream, type Stall, type StreamTimeouts } from "./model-stream.ts";
 import { network } from "./node-context.ts";
 import { MODEL_INTERRUPTED } from "./model-errors.ts";
-import { deepseekContext, deepseekTarget, openRouterPayload } from "./deepseek-replay.ts";
+import { deepseekContext, deepseekTarget } from "./deepseek-replay.ts";
 
 /**
  * Context compaction on top of Pi's compaction functions (vendored from pi-agent-core 0.87.1 in
@@ -243,11 +243,7 @@ function authorize(model: Model<Api>, asked: any, credentials: Credentials, sink
   model = deepseekTarget(model);
   // A model that always reasons refuses a call that turns reasoning off: a call asking for none asks for its least.
   const floor = asked?.reasoning ? undefined : reasoningFloor(model);
-  const { avoidDeepseekHost, ...rest } = (floor ? { ...asked, reasoning: floor } : asked) ?? {};
-  // After DeepSeek's own endpoint refused an agent's history anyway, its calls keep off that endpoint (deepseek-replay.ts).
-  const options = model.provider === "openrouter"
-    ? { ...rest, onPayload: async (payload: unknown, at: Model<Api>) => openRouterPayload(at, (await rest.onPayload?.(payload, at)) ?? payload, avoidDeepseekHost === true) }
-    : rest;
+  const options = floor ? { ...asked, reasoning: floor } : asked;
   if (credentials.identity) {
     const target = upstream(model);
     const callOptions = identityOptions(model, { ...options, headers: { ...options?.headers, ...modelHeaders } }, credentials.apiKey);

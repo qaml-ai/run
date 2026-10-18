@@ -3,10 +3,11 @@ import assert from "node:assert/strict";
 import type { Api, Context, Model } from "@earendil-works/pi-ai";
 import { openRouterApi } from "../src/catalog.ts";
 import { explicitKeyStream } from "../src/compaction.ts";
-import { deepseekContext, deepseekTarget, openRouterPayload, refusedReasoningReplay } from "../src/deepseek-replay.ts";
+import { deepseekContext, deepseekTarget, refusedReasoningReplay } from "../src/deepseek-replay.ts";
 import { errorClass } from "../src/metrics.ts";
 import { retriesModelError } from "../src/model-errors.ts";
 import { getModel } from "../src/pi-catalog.ts";
+import { gateway, responses } from "./provider-fixtures.ts";
 import { fakeModel, runtime, toolCall } from "./runtime-server.ts";
 
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
@@ -31,6 +32,8 @@ function deepseekRefusal(body: any): { httpStatus: number; message: string } | u
   }
   return undefined;
 }
+/** OpenRouter's routing is its own: no request of ours has a `provider` field (an order or sort turns off its load balancing). */
+const unrouted = (bodies: any[]) => assert.ok(bodies.every(body => !("provider" in body)), JSON.stringify(bodies.map(body => body.provider)));
 const assistants = (body: any) => body.messages.filter((message: any) => message.role === "assistant");
 
 test("DeepSeek's models on OpenRouter are called on Chat Completions, agents made on Responses included; others keep Responses", () => {
@@ -73,6 +76,7 @@ test("a Responses-era DeepSeek history replays as DeepSeek's own API takes it: e
   const [sent] = host.bodies;
   assert.deepEqual(assistants(sent).map((message: any) => message.reasoning_content), ["First sum.", ""], "the reasoning text, and an empty one where there was none");
   assert.deepEqual(assistants(sent).map((message: any) => message.content ?? null), [null, null], "no reasoning leaks into the reply text");
+  unrouted(host.bodies);
 });
 
 test("a multi-turn tool conversation, then a turn on DeepSeek's own endpoint: never refused", async t => {
@@ -90,16 +94,19 @@ test("a multi-turn tool conversation, then a turn on DeepSeek's own endpoint: ne
   assert.equal((await r.prompt(agent, "And again?")).outcome.result.reply, "Again.");
   assert.equal(host.bodies.length, 4, "no refusal, no retry");
   assert.deepEqual(assistants(host.bodies[3]).map((message: any) => message.reasoning_content), ["", "Now the second.", ""]);
+  unrouted(host.bodies);
 });
 
-test("if DeepSeek's endpoint refuses anyway, the call is retried off it, and the agent's calls keep off it after", async t => {
+test("if DeepSeek's endpoint refuses anyway, the same request is asked again, routed by OpenRouter alone", async t => {
   const host = await fakeModel(t, (_body, index) => index === 0 ? { httpStatus: 400, message: REFUSAL } : { role: "assistant", content: index === 1 ? "Retried." : "Later." });
   const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), LOCAL);
   await r.call("/v1/key-scopes/hosted/providers/openrouter", { method: "PUT", body: { apiKey: "sk-or", baseUrl: host.url } });
   const agent = (await r.call("/v1/agents", { body: { model: `openrouter/${FLASH.id}`, keyScope: "hosted", thinkingLevel: "high" } })).json.id;
   assert.equal((await r.prompt(agent, "Hi")).outcome.result.reply, "Retried.");
   assert.equal((await r.prompt(agent, "Hi again")).outcome.result.reply, "Later.");
-  assert.deepEqual(host.bodies.map(body => body.provider), [undefined, { ignore: ["deepseek"] }, { ignore: ["deepseek"] }]);
+  assert.equal(host.bodies.length, 3, "one retry");
+  assert.deepEqual(host.bodies[1], host.bodies[0], "the retry is the refused request as it was");
+  unrouted(host.bodies);
 });
 
 test("the refusal is its own error class (alarmed), retried on OpenRouter, not from a tenant's endpoint", () => {
@@ -109,24 +116,14 @@ test("the refusal is its own error class (alarmed), retried on OpenRouter, not f
   assert.equal(retriesModelError(failed, { ownEndpoint: false }), true);
   assert.equal(retriesModelError(failed, { ownEndpoint: true }), false);
   assert.equal(retriesModelError({ ...failed, errorMessage: "400 invalid_prompt: something else" }, { ownEndpoint: false }), false);
-  // Kept off DeepSeek's endpoint only after a refusal, and only while reasoning: its ignore wins over the preference.
-  const request = { model: FLASH.id, reasoning: { effort: "high" }, messages: [] };
-  assert.equal(openRouterPayload(FLASH, request, false), request);
-  assert.deepEqual((openRouterPayload(FLASH, { ...request, provider: { ignore: ["parasail"] } }, true) as any).provider, { ignore: ["parasail", "deepseek"] });
-  const off = { ...request, reasoning: { effort: "none" } };
-  assert.equal(openRouterPayload(FLASH, off, true), off);
 });
 
-test("no provider order or sort is sent: OpenRouter's load balancing stays on, on Responses requests too", () => {
-  // An order (or sort) turns OpenRouter's load balancing off, which keeps calls off slow and failing hosts.
-  const responses = { model: OLD.id, input: [{ role: "user", content: [{ type: "input_text", text: "Hi" }] }], reasoning: { effort: "high" } };
-  assert.equal(openRouterPayload({ ...OLD, api: "openai-responses" as Api }, responses, false), responses);
-  const avoided = openRouterPayload(OLD, responses, true) as any;
-  assert.deepEqual(avoided.provider, { ignore: ["deepseek"] });
-  assert.equal(avoided.provider.order, undefined);
-  assert.equal(avoided.provider.sort, undefined);
+test("a Responses request to OpenRouter carries no provider field either", async t => {
+  const provider = await gateway(t, () => responses([{ type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text: "Hi.", annotations: [] }] }]));
   const kimi = getModel("openrouter", "moonshotai/kimi-k3")!;
-  assert.equal(openRouterPayload(kimi, responses, true), responses);
-  // Not the platform's catalog (a tenant's endpoint): as it was.
-  assert.equal(openRouterPayload({ ...OLD, provider: "chiridion" }, responses, true), responses);
+  const context = { systemPrompt: "Greet.", messages: [{ role: "user" as const, content: "Hi", timestamp: 1 }] };
+  const answer = await (await explicitKeyStream()({ ...kimi, api: "openai-responses" as Api, baseUrl: provider.url }, context as never, { apiKey: "sk-or", reasoning: "high" } as never)).result();
+  assert.equal(answer.stopReason, "stop", answer.errorMessage);
+  assert.match(provider.requests[0].path, /\/responses$/);
+  unrouted(provider.requests.map(request => request.body));
 });

@@ -60,8 +60,8 @@ export type FailureContext = { ownEndpoint: boolean; contextWindow?: number };
 
 /**
  * Whether the host retries a failed response (agent-host.ts `recoverFailedResponses`): a request cut by this node's
- * stale lease always; DeepSeek's own endpoint refusing history without reasoning, on OpenRouter (another host takes the
- * retry); otherwise what pi-ai deems transient (`isRetryableAssistantError`). A tenant's own endpoint has
+ * stale lease always; DeepSeek's own endpoint refusing history without reasoning, on OpenRouter (the same request, which
+ * OpenRouter's load balancing may give another host); otherwise what pi-ai deems transient (`isRetryableAssistantError`). A tenant's own endpoint has
  * retried already, so its errors end the turn, except a stream that went quiet: the runtime's own timeout, which no
  * endpoint could have retried. A context overflow is never retried as it is (the host compacts and continues instead,
  * before it asks this).
@@ -69,7 +69,8 @@ export type FailureContext = { ownEndpoint: boolean; contextWindow?: number };
 export function retriesModelError(message: Failed, { ownEndpoint, contextWindow }: FailureContext): boolean {
   if (message.errorMessage === MODEL_INTERRUPTED) return true;
   if (isContextOverflow(message as AssistantMessage, contextWindow)) return false;
-  // DeepSeek's own endpoint refusing history without reasoning: asked again, kept off that endpoint (deepseek-replay.ts).
+  // DeepSeek's own endpoint refusing history without reasoning (deepseek-replay.ts): asked again as it was, on whichever
+  // host OpenRouter's load balancing picks.
   if (!ownEndpoint && message.provider === "openrouter" && refusedReasoningReplay(message.errorMessage)) return true;
   return isRetryableAssistantError(message as AssistantMessage) && (!ownEndpoint || isStalled(message.errorMessage));
 }

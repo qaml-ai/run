@@ -11,11 +11,11 @@ import type { Api, Context, Model } from "@earendil-works/pi-ai";
  * them, where Pi gives every assistant message its `reasoning_content`: its reasoning text, or an empty one when it had
  * none (compat `requiresReasoningContentOnAssistantMessages`, on these models' catalog entries). `deepseekContext`
  * makes the history so: every earlier DeepSeek turn on OpenRouter (whichever API, model id or host made it) replays its
- * reasoning text.
+ * reasoning text. Routing is OpenRouter's own (no `provider` field): an `order` or `sort` turns off its load balancing,
+ * which keeps calls off slow and failing hosts (on 2026-10-17 an `order` sent every DeepSeek V4.1 Flash call to one slow
+ * fp4 host), and DeepSeek's refusal, should it come, is retried as it was (model-errors.ts).
  */
 export const REASONING_REPLAY_REFUSAL = "`reasoning_content` in the thinking mode must be passed back";
-/** OpenRouter's name for DeepSeek's own endpoint, in a request's `provider.ignore`. */
-const DEEPSEEK_HOST = "deepseek";
 const DEEPSEEK_ID = /^~?deepseek\//;
 const COMPLETIONS = "openai-completions" as Api;
 
@@ -69,19 +69,4 @@ export function deepseekContext(model: Model<Api>, context: Context): Context {
     return { ...message, api: model.api, model: model.id, content };
   });
   return { ...context, messages };
-}
-
-/**
- * A request to OpenRouter for a DeepSeek model kept off DeepSeek's own endpoint (`provider.ignore`) when `avoid`: that
- * endpoint refused the agent's history once anyway, so its retry and later calls go to another host. Only `ignore`
- * is added: `order` or `sort` would turn off OpenRouter's load balancing, which keeps calls off slow or failing hosts
- * (on 2026-10-17 an `order` sent every DeepSeek V4.1 Flash call to one slow fp4 host). Reasoning off, there is nothing
- * to refuse; any other request is as it was.
- */
-export function openRouterPayload(model: Model<Api>, payload: unknown, avoid: boolean): unknown {
-  if (!avoid || !deepseekOnOpenRouter(model) || !payload || typeof payload !== "object") return payload;
-  const request = payload as { reasoning?: { effort?: string }; provider?: { ignore?: string[] } };
-  if (!request.reasoning?.effort || request.reasoning.effort === "none") return payload;
-  const ignore = [...new Set([...(request.provider?.ignore ?? []), DEEPSEEK_HOST])];
-  return { ...request, provider: { ...request.provider, ignore } };
 }
