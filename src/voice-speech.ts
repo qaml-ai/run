@@ -69,9 +69,28 @@ export const SPEECH_QUEUE = Object.freeze({ max: 20, connectionWaitMs: 15_000 })
 
 export const speechId = () => `sp_${randomBytes(12).toString("hex")}`;
 
+/**
+ * A speech being made: admitted, its credit held, and its provider's PCM read as fast as it comes (`pcm` replays it to
+ * the player at the player's pace). `made` settles once the provider is done (or failed, or was stopped).
+ */
+type Making = {
+  item: SpeechItem; abort: AbortController;
+  ready: Promise<{ held: Awaited<ReturnType<SpeechEffects["hold"]>>; pcm: AsyncIterable<Uint8Array> } | { budget: { limit: "tenant" | "end_user"; endUserReason?: string } }>;
+  made: Promise<void>;
+  /** PCM samples made so far: what is billed. */
+  samples: number;
+  /** Whose key made it, and (through a chain of providers) which provider: known once it began. */
+  platform?: boolean; served?: Served;
+};
+
 export class SessionSpeech {
   private readonly queue: SpeechItem[] = [];
   private current?: { item: SpeechItem; abort: AbortController; playback?: Playback; stoppedBy?: StopReason };
+  /**
+   * The next speech, made while the current one plays: begun once the current one's speech is all made, so a reply's
+   * next sentence is ready when the one before it ends, and no provider round trip falls between them.
+   */
+  private ahead?: Making;
   private running = false;
   private closed = false;
   /** Bumped by each stop: a reply being spoken stops adding to the queue once what it was part of is stopped. */
@@ -101,9 +120,13 @@ export class SessionSpeech {
   stop(by: StopReason) {
     this.generation++;
     const cleared = this.queue.splice(0);
+    const ahead = this.ahead;
+    this.ahead = undefined;
     for (const item of cleared) {
       item.turn?.end("interrupted");
-      this.effects.ended(item, { reason: "interrupted", by, seconds: 0, costUsd: 0 }, undefined);
+      // One being made ahead ends once its making stops: what it made is billed, as for one cut short playing.
+      if (ahead?.item === item) void this.abandon(ahead, by);
+      else this.effects.ended(item, { reason: "interrupted", by, seconds: 0, costUsd: 0 }, undefined);
     }
     const current = this.current;
     if (current && !current.stoppedBy) {
@@ -124,44 +147,107 @@ export class SessionSpeech {
     if (this.running) return;
     this.running = true;
     try {
-      for (let item; !this.closed && (item = this.queue.shift());) await this.speak(item);
+      for (let item; !this.closed && (item = this.queue.shift());) {
+        const ahead = this.ahead?.item === item ? this.ahead : undefined;
+        if (ahead) this.ahead = undefined;
+        await this.speak(item, ahead);
+      }
     } finally { this.running = false; }
   }
 
-  private async speak(item: SpeechItem) {
+  /**
+   * Begin making a speech: the tenant admitted and the end user's credit held for it (a 402 is `budget`), a fresh
+   * lease, then its audio: through the session's chain of providers (which says who served), else the built-in
+   * provider on its key; read as fast as it comes into a buffer the player drains.
+   */
+  private make(item: SpeechItem): Making {
     const abort = new AbortController();
-    const current: NonNullable<SessionSpeech["current"]> = { item, abort };
-    this.current = current;
-    let samples = 0, platform: boolean | undefined, error: string | undefined, result: "done" | "stopped" | "error" = "error";
-    let served: Served | undefined;
-    let held: Awaited<ReturnType<SpeechEffects["hold"]>>;
-    try {
+    let made!: () => void;
+    const making: Making = { item, abort, samples: 0, made: new Promise<void>(resolve => { made = resolve; }), ready: undefined as never };
+    making.ready = (async () => {
+      let held: Awaited<ReturnType<SpeechEffects["hold"]>>;
       try {
         await this.effects.admit();
         held = await this.effects.hold(this.effects.estimate?.(item.text) ?? this.synthesizer.cost(this.synthesizer.estimateSeconds(item.text)), item.id);
       } catch (refused) {
-        const status = (refused as HttpError).status;
-        if (status !== 402) throw refused;
+        if ((refused as HttpError).status !== 402) throw refused;
         const endUser = (refused as HttpError).code === "END_USER_CREDIT";
         const reason = (refused as HttpError).details?.reason;
+        return { budget: { limit: endUser ? "end_user" as const : "tenant" as const, ...(endUser && typeof reason === "string" ? { endUserReason: reason } : {}) } };
+      }
+      try {
+        await this.effects.fresh();
+        const input = { text: item.text, voice: item.voice, ...(item.instructions ? { instructions: item.instructions } : {}) };
+        const chain = this.effects.speak;
+        let source: AsyncIterable<Uint8Array>;
+        if (chain) source = chain(input, abort.signal, who => { making.served = who; making.platform = who.platform; });
+        else {
+          const credentials = await this.effects.credentials();
+          making.platform = credentials.platform;
+          source = this.synthesizer.stream(input, credentials, abort.signal);
+        }
+        // What was made is what is billed: counted as it comes from the provider.
+        const pcm = counted(source, () => item.turn?.mark("ttsFirstAudio"), bytes => { making.samples += bytes >> 1; });
+        return { held, pcm: eager(pcm, made) };
+      } catch (error) {
+        await held?.release().catch(() => {});
+        throw error;
+      }
+    })();
+    making.ready.then(ready => { if ("budget" in ready) made(); }, () => made());
+    return making;
+  }
+
+  /** What a speech made so far cost (USD): at what the provider that served bills, else the built-in provider's price. */
+  private costOf(making: Making, seconds: number) {
+    if (!making.samples) return 0;
+    return making.served && this.effects.cost ? this.effects.cost(making.served, { characters: making.item.text.length, seconds }) : this.synthesizer.cost(seconds);
+  }
+
+  /** The next speech in the queue begins being made, if none is yet. */
+  private lookAhead() {
+    const next = this.queue[0];
+    if (this.closed || this.ahead || !next) return;
+    this.ahead = this.make(next);
+  }
+
+  /** A speech made ahead that will not play (the queue was stopped): it ends with what it made, and that is billed. */
+  private async abandon(making: Making, by: StopReason) {
+    making.abort.abort();
+    let held: Awaited<ReturnType<SpeechEffects["hold"]>>;
+    try {
+      const ready = await making.ready;
+      if (!("budget" in ready)) held = ready.held;
+    } catch { /* it failed before making anything */ }
+    await making.made;
+    const seconds = Math.round(making.samples / SPEECH_RATE * 100) / 100;
+    const costUsd = this.costOf(making, seconds);
+    if (held) await (making.samples ? held.settle(costUsd) : held.release()).catch(failure => console.error(JSON.stringify({ type: "voice_speech_credit_failed", speech: making.item.id, error: safeError(failure) })));
+    this.effects.ended(making.item, { reason: "interrupted", by, seconds, costUsd }, making.platform, making.served);
+  }
+
+  private async speak(item: SpeechItem, ahead?: Making) {
+    const making = ahead ?? this.make(item);
+    const { abort } = making;
+    const current: NonNullable<SessionSpeech["current"]> = { item, abort };
+    this.current = current;
+    let error: string | undefined, result: "done" | "stopped" | "error" = "error";
+    let held: Awaited<ReturnType<SpeechEffects["hold"]>>;
+    try {
+      const ready = await making.ready;
+      if ("budget" in ready) {
         current.stoppedBy = "budget";
-        this.effects.budget(endUser ? "end_user" : "tenant", endUser && typeof reason === "string" ? reason : undefined);
+        this.effects.budget(ready.budget.limit, ready.budget.endUserReason);
         return;
       }
+      held = ready.held;
       if (current.stoppedBy) return;
-      await this.effects.fresh();
-      const input = { text: item.text, voice: item.voice, ...(item.instructions ? { instructions: item.instructions } : {}) };
-      // Through the session's chain of providers, which says who served; else the built-in provider on its key.
-      const chain = this.effects.speak;
-      const credentials = chain ? undefined : await this.effects.credentials();
-      platform = credentials?.platform;
       const player = await this.connected(abort.signal);
       if (current.stoppedBy) return;
       if (!player) throw new Error("No connection to speak on");
-      const made = chain ? chain(input, abort.signal, who => { served = who; platform = who.platform; }) : this.synthesizer.stream(input, credentials!, abort.signal);
-      // What was made is what is billed: counted as it passes to the media, which plays all of it.
-      const pcm = counted(made, () => item.turn?.mark("ttsFirstAudio"), bytes => { samples += bytes >> 1; });
-      current.playback = player.play(pcm, () => {
+      // Once this speech is all made, the next one's making begins, while this one plays.
+      void making.made.then(() => { if (this.current === current && !current.stoppedBy) this.lookAhead(); });
+      current.playback = player.play(ready.pcm, () => {
         item.turn?.mark("firstPacket").end("spoken");
         this.effects.started(item, Date.now() - item.queuedAt);
       });
@@ -170,15 +256,17 @@ export class SessionSpeech {
     } catch (failure) {
       if (!current.stoppedBy) error = safeError(failure);
     } finally {
-      const seconds = Math.round(samples / SPEECH_RATE * 100) / 100;
-      const costUsd = !samples ? 0 : served && this.effects.cost ? this.effects.cost(served, { characters: item.text.length, seconds }) : this.synthesizer.cost(seconds);
-      if (held) await (samples ? held.settle(costUsd) : held.release()).catch(failure => console.error(JSON.stringify({ type: "voice_speech_credit_failed", speech: item.id, error: safeError(failure) })));
+      abort.abort();
+      await making.made;
+      const seconds = Math.round(making.samples / SPEECH_RATE * 100) / 100;
+      const costUsd = this.costOf(making, seconds);
+      if (held) await (making.samples ? held.settle(costUsd) : held.release()).catch(failure => console.error(JSON.stringify({ type: "voice_speech_credit_failed", speech: item.id, error: safeError(failure) })));
       const ending: SpeechEnding = current.stoppedBy
         ? { reason: "interrupted", by: current.stoppedBy, seconds, costUsd }
         : result === "done" && !error ? { reason: "done", seconds, costUsd } : { reason: "error", seconds, costUsd, ...(error ? { error } : {}) };
       if (this.current === current) this.current = undefined;
       item.turn?.end(ending.reason === "done" ? "no_reply" : ending.reason);
-      this.effects.ended(item, ending, platform, served);
+      this.effects.ended(item, ending, making.platform, making.served);
     }
   }
 
@@ -193,6 +281,31 @@ export class SessionSpeech {
   }
 }
 
+/**
+ * `source` read as fast as it comes, into a buffer its reader drains at its own pace: the provider's stream is never
+ * held up by playback, so its speech is all made (and `made` called) as soon as the provider can make it. The reader
+ * gets what was buffered, then what follows, then the source's error if it failed.
+ */
+function eager(source: AsyncIterable<Uint8Array>, made: () => void): AsyncIterable<Uint8Array> {
+  const chunks: Uint8Array[] = [];
+  let done = false, failure: unknown, wake: (() => void) | undefined;
+  void (async () => {
+    try { for await (const chunk of source) { chunks.push(chunk); wake?.(); } }
+    catch (error) { failure = error; }
+    finally { done = true; made(); wake?.(); }
+  })();
+  return {
+    async *[Symbol.asyncIterator]() {
+      for (;;) {
+        if (chunks.length) { yield chunks.shift()!; continue; }
+        if (done) { if (failure) throw failure; return; }
+        await new Promise<void>(resolve => { wake = resolve; });
+        wake = undefined;
+      }
+    },
+  };
+}
+
 /** `chunks` as they come: `first` called as the first arrives, `bytes` with each one's length. */
 async function* counted(chunks: AsyncIterable<Uint8Array>, first: () => void, bytes: (count: number) => void): AsyncGenerator<Uint8Array> {
   let seen = false;
@@ -205,7 +318,14 @@ async function* counted(chunks: AsyncIterable<Uint8Array>, first: () => void, by
 }
 
 /** The most of an agent's reply a session speaks, and the longest piece spoken at once when a sentence runs on. */
-export const REPLY_LIMITS = Object.freeze({ chars: 400, pieceChars: 250 });
+export const REPLY_LIMITS = Object.freeze({
+  chars: 400, pieceChars: 250,
+  /**
+   * A reply's first piece may end at a clause (a comma, semicolon, colon or dash) once it has this many characters, so
+   * its first audio waits for a clause, not a whole sentence; the pieces after it are whole sentences.
+   */
+  firstClauseChars: 24,
+});
 
 /**
  * Text as it may be spoken: markdown's marks gone (emphasis, headings, list bullets, quotes, tables), a link's text
@@ -281,7 +401,8 @@ export class SpokenReply {
       }
       const fence = this.buffer.indexOf("```");
       const prose = fence < 0 ? this.buffer : this.buffer.slice(0, fence);
-      const end = sentenceEnd(prose, final || fence >= 0);
+      // The first piece goes as soon as a clause of it is whole.
+      const end = sentenceEnd(prose, final || fence >= 0) || (this.spoken === 0 ? clauseEnd(prose) : 0);
       if (end > 0) {
         this.piece(prose.slice(0, end));
         this.buffer = this.buffer.slice(end);
@@ -323,6 +444,16 @@ export class SpokenReply {
     const cut = text.slice(0, room).replace(/\s+\S*$/, "");
     if (cut) this.say(`${cut}…`);
   }
+}
+
+/** Where the first clause of `text` at least REPLY_LIMITS.firstClauseChars long ends (after its mark, with more after it), or 0. */
+function clauseEnd(text: string): number {
+  const pattern = /[,;:\u2014\u2013](?=\s+\S)|\s[-\u2013\u2014](?=\s+\S)/g;
+  for (let match; (match = pattern.exec(text));) {
+    const end = match.index + match[0].length;
+    if (end >= REPLY_LIMITS.firstClauseChars) return end;
+  }
+  return 0;
 }
 
 /** Where the first whole sentence of `text` ends (after its mark, or its line), or 0 when none is whole yet. */
