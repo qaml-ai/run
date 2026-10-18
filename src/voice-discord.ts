@@ -7,6 +7,7 @@ import {
 import type { VoiceConnection, VoiceCredentials, VoiceHandlers, VoiceTransport } from "./voice-sessions.ts";
 import type { Playback } from "./voice-speech.ts";
 import { buffered } from "./voice-audio.ts";
+import { JitterBuffer } from "./voice/jitter.ts";
 import { recordDaveRoster, safeError } from "./metrics.ts";
 
 /**
@@ -84,6 +85,10 @@ export function strictWelcome(dave: any, self: string, named: () => Iterable<str
   };
 }
 
+/** Discord's silence frame, and how many end each speech (Discord: "five frames of silence" when a sender stops). */
+const SILENCE = Buffer.from([0xf8, 0xff, 0xfe]);
+const SILENCE_FRAMES = 5;
+
 /** RTP payload type of Discord's Opus audio (any other, video, is not listened to). */
 const OPUS_PAYLOAD_TYPE = 120;
 /** Packets held for an SSRC that Speaking has not mapped yet: its latest this many (a second of audio)... */
@@ -147,6 +152,10 @@ export class DiscordVoice implements VoiceConnection {
   private readonly early = new Map<number, { at: number; message: Buffer }[]>();
   /** The library's own handling of a UDP packet. */
   private readonly receive: (message: Buffer) => void;
+  /** Each SSRC's packets in order (src/voice/jitter.ts), before the library decrypts them. */
+  private readonly jitter: JitterBuffer<Buffer>;
+  /** Packets lost before a speaker's next one, for its handler (the jitter buffer gave up on them). */
+  private readonly lostBefore = new Map<string, number>();
   /** Reconnects since the connection was last ready. */
   private rejoins = 0;
   /** Whether the voice server has told of the call's members yet: until it has, they are unknown, not none. */
@@ -217,6 +226,12 @@ export class DiscordVoice implements VoiceConnection {
     // once `feed` answers, a microtask from now), so every one comes here first.
     const receiver = this.connection.receiver;
     this.receive = receiver.onUdpMessage;
+    this.jitter = new JitterBuffer<Buffer>((ssrc, message, lost) => {
+      if (this.closed) return;
+      const user = this.connection.receiver.ssrcMap.get(ssrc);
+      if (lost && user) this.lostBefore.set(user.userId, (this.lostBefore.get(user.userId) ?? 0) + lost);
+      this.receive(message);
+    });
     receiver.onUdpMessage = message => this.udp(message);
     receiver.ssrcMap.on("create", ({ audioSSRC }) => this.mapped(audioSSRC));
     receiver.ssrcMap.on("delete", ({ userId, audioSSRC }) => this.left(userId, audioSSRC));
@@ -259,6 +274,9 @@ export class DiscordVoice implements VoiceConnection {
       const user = this.connection.receiver.ssrcMap.get(ssrc);
       if (!user) { this.hold(ssrc, message); return; }
       this.listen(user.userId);
+      // In order, by its RTP sequence number: a packet in order goes on at once.
+      this.jitter.push(ssrc, message.readUInt16BE(2), message);
+      return;
     }
     this.receive(message);
   }
@@ -285,6 +303,8 @@ export class DiscordVoice implements VoiceConnection {
   /** A speaker left the call (Client Disconnect): their stream closes, and anything held of their SSRC goes. */
   private left(userId: string, ssrc: number) {
     this.early.delete(ssrc);
+    this.jitter.forget(ssrc);
+    this.lostBefore.delete(userId);
     this.connection.receiver.subscriptions.get(userId)?.destroy();
   }
 
@@ -307,7 +327,11 @@ export class DiscordVoice implements VoiceConnection {
       try { work(); }
       catch (error) { this.handlers.diagnostic("audio_failed", { error: safeError(error) }); }
     };
-    stream.on("data", (packet: Buffer) => guarded(() => this.handlers.packet(userId, packet)));
+    stream.on("data", (packet: Buffer) => guarded(() => {
+      const lost = this.lostBefore.get(userId) ?? 0;
+      if (lost) this.lostBefore.delete(userId);
+      this.handlers.packet(userId, packet, lost);
+    }));
     stream.once("error", error => {
       this.handlers.diagnostic("stream_error", { error: error.message.slice(0, 200) });
       guarded(() => this.handlers.broken(userId));
@@ -376,20 +400,30 @@ export class DiscordVoice implements VoiceConnection {
     const stats = { packets: 0, heldMs: { connection: 0, dave: 0, roster: 0 }, startMs: 0, waitedMs: 0, gapMs: 0 };
     const asked = Date.now();
     let firstAt = 0, lastAt = 0;
+    // A stop ends the speech at the next frame, even while it waits for the provider.
+    let stopNow!: () => void;
+    const stopping = new Promise<"stop">(resolve => { stopNow = () => resolve("stop"); });
     async function* gated() {
       // Through a jitter buffer: a provider that stalls mid-speech pauses it between phrases, not packet by packet.
-      for (let waited = Date.now(), iterator = buffered(packets)[Symbol.asyncIterator](); ;) {
-        const next = await iterator.next();
+      const iterator = buffered(packets)[Symbol.asyncIterator]();
+      for (let waited = Date.now(); ;) {
+        const next = await Promise.race([iterator.next(), stopping]);
+        if (next === "stop" || next.done) {
+          void iterator.return?.(undefined);
+          // However it ends, five frames of Discord's silence follow the last of it (as Discord asks of a sender that
+          // stops: the listener's decoder does not interpolate from a frame cut off mid-word), when any went out.
+          if (firstAt && !self.closed) for (let frame = 0; frame < SILENCE_FRAMES; frame++) yield SILENCE;
+          return;
+        }
         if (firstAt) stats.waitedMs += Date.now() - waited;
         else stats.startMs = Date.now() - asked;
-        if (next.done) return;
         for (let reason; (reason = self.holding());) {
           if (stopped || self.closed) return;
           const since = Date.now();
           await new Promise(resolve => setTimeout(resolve, 20));
           stats.heldMs[reason] += Date.now() - since;
         }
-        if (stopped) return;
+        if (stopped) continue;
         if (first) { first = false; firstAt = Date.now(); started(); }
         stats.packets++;
         lastAt = Date.now();
@@ -426,8 +460,8 @@ export class DiscordVoice implements VoiceConnection {
       stop: () => {
         if (stopped) return;
         stopped = true;
-        source.destroy();
-        if ((player.state as { resource?: unknown }).resource === resource) player.stop(true);
+        // The speech ends at its next frame, with its silence frames, and the player goes idle after them.
+        stopNow();
       },
     };
   }
@@ -454,6 +488,7 @@ export class DiscordVoice implements VoiceConnection {
     this.roster.close();
     this.player?.stop(true);
     this.early.clear();
+    this.jitter.close();
     for (const stream of this.connection.receiver.subscriptions.values()) stream.destroy();
     this.connection.destroy();
   }

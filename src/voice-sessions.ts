@@ -53,8 +53,11 @@ export type VoiceCredentials = {
 export interface VoiceHandlers {
   /** Connected and receiving (again, after a reconnect). */
   ready(): void;
-  /** One Opus packet of `speaker`'s audio, as it arrived. */
-  packet(speaker: string, packet: Uint8Array): void;
+  /**
+   * One Opus packet of `speaker`'s audio, in order. `lost`: packets missing just before it (the transport's jitter
+   * buffer gave up on them), which the segmenter conceals.
+   */
+  packet(speaker: string, packet: Uint8Array, lost?: number): void;
   /** `speaker`'s audio stream broke (a packet that would not decrypt): what came of it so far ends there. */
   broken(speaker: string): void;
   /**

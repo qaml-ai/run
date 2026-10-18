@@ -38,6 +38,7 @@ export function opusStats() { return { live, heapBytes: current?.HEAPU8.length ?
 
 export class Opus {
   readonly channels: number;
+  readonly rate: number;
   private readonly module: Native;
   private handler?: Handler;
   /** One byte per 16-bit element: twice the PCM's bytes, so at least 2-aligned (malloc aligns to 8). */
@@ -47,6 +48,7 @@ export class Opus {
 
   constructor(rate: 8_000 | 12_000 | 16_000 | 24_000 | 48_000, channels: 1 | 2, application: keyof typeof APPLICATIONS) {
     this.channels = channels;
+    this.rate = rate;
     this.module = native();
     try {
       this.handler = new this.module.OpusScriptHandler(rate, channels, APPLICATIONS[application]);
@@ -83,6 +85,22 @@ export class Opus {
       const start = this.pcm >> 1;
       // Buffer.from of a Uint16Array takes each element's low byte: the PCM's bytes, as the handler spread them.
       return Buffer.from(this.module.HEAPU16.subarray(start, start + samples * this.channels * 2));
+    } catch (error) { throw this.failed(error); }
+  }
+
+  /**
+   * `ms` of audio where packets were lost, concealed by libopus (PLC: a decode without a packet), as 16-bit PCM. The
+   * handler always conceals its longest frame (5,760 samples a channel), so only the first `ms` of it is kept: the
+   * decoder's state runs on past the gap, which the next packet's decode picks up from (a concealment fades to silence).
+   */
+  conceal(ms: number): Buffer {
+    const handler = this.ready();
+    const samples = Math.min(MAX_FRAME_SAMPLES, Math.round(this.rate * ms / 1000));
+    try {
+      const made = handler._decode(0, 0, this.pcm);
+      if (made < 0) throw new OpusError(`Opus concealment error ${made}`);
+      const start = this.pcm >> 1;
+      return Buffer.from(this.module.HEAPU16.subarray(start, start + Math.min(made, samples) * this.channels * 2));
     } catch (error) { throw this.failed(error); }
   }
 

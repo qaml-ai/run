@@ -96,6 +96,9 @@ export type Cut = {
   live?: boolean;
 };
 
+/** Lost packets in a row that are concealed (libopus PLC); a longer gap is a pause, not loss. */
+export const CONCEALED_MAX = 3;
+
 /** Discord's silence frame, sent a few times as a speaker stops: not speech. */
 const SILENCE_FRAME = [0xf8, 0xff, 0xfe];
 const silent = (packet: Uint8Array) => packet.length === 3 && packet[0] === SILENCE_FRAME[0] && packet[1] === SILENCE_FRAME[1] && packet[2] === SILENCE_FRAME[2];
@@ -173,10 +176,17 @@ export class Segmenter {
   /** Speakers with speech not yet cut. */
   get open() { return this.speaking.size; }
 
-  packet(speaker: string, packet: Uint8Array) {
+  packet(speaker: string, packet: Uint8Array, lost = 0) {
     if (silent(packet) || !packet.length) return;
     const now = clock().now();
     let speech = this.speaking.get(speaker);
+    // Packets lost just before this one: what is streamed live is concealed over the gap, so it keeps its timing and
+    // its decoder does not jump (what is transcribed after the cut is the packets as they came).
+    if (speech?.streaming && lost > 0 && lost <= CONCEALED_MAX && this.options.live) {
+      let pcm: Buffer | undefined;
+      try { pcm = speech.decoder.conceal(lost * 20); } catch { pcm = undefined; }
+      if (pcm?.length) this.options.live.audio(speaker, pcm);
+    }
     if (!speech) this.speaking.set(speaker, speech = { held: [], heldMs: 0, speechMs: 0, quietMs: 0, lastLoudAt: now, decoder: new Opus(this.options.live ? 24_000 : 16_000, 1, "voip") });
     const ms = packetSamples(packet) / 48;
     const pcm = decoded(speech.decoder, packet);

@@ -104,9 +104,9 @@ export class MediaSession implements Media {
     });
     this.connection = transport.connect(credentials, {
       ready: () => { if (!this.closed) events.ready(); },
-      packet: (speaker, packet) => {
+      packet: (speaker, packet, lost) => {
         if (this.closed || speaker === this.self || this.options.ignoreUserIds.includes(speaker)) return;
-        this.segmenter.packet(speaker, packet);
+        this.segmenter.packet(speaker, packet, lost);
       },
       broken: speaker => { if (!this.closed) this.segmenter.broken(speaker); },
       lost: (reason, detail) => { if (!this.closed) events.lost(reason, detail); },

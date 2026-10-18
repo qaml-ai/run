@@ -45,6 +45,8 @@ export async function fakeDiscordVoice(t: T) {
   const heardAt: { at: number; bytes: number }[] = [];
   const identifies: Call["identify"][] = [];
   const resumes: unknown[] = [];
+  /** The client's Speaking (op 5) flags, in order: 1 as it starts sending audio, 0 as it stops. */
+  const speakingStates: number[] = [];
   const refused = new Set<string>();
   let members: string[] = [];
   let nextSsrc = 1000;
@@ -66,6 +68,7 @@ export async function fakeDiscordVoice(t: T) {
         send(ws, 4, { mode: d.data.mode, secret_key: [...call.key], dave_protocol_version: 0 });
         if (members.length) send(ws, 11, { user_ids: members });
       } else if (op === 3) send(ws, 6, { t: d.t });
+      else if (op === 5) speakingStates.push(d.speaking);
       else if (op === 7) {
         // The call goes on over the new socket.
         resumes.push(d);
@@ -118,7 +121,7 @@ export async function fakeDiscordVoice(t: T) {
   };
   return {
     endpoint: `127.0.0.1:${(server.address() as { port: number }).port}`,
-    identifies, resumes, calls,
+    identifies, resumes, calls, speakingStates,
     /** The client's own audio, decrypted, across its calls. */
     spoken: () => calls.flatMap(call => call.heard),
     /** When each of the client's packets arrived (ms, performance.now) and its size: speech's timing as a listener hears it. */
@@ -142,8 +145,10 @@ export async function fakeDiscordVoice(t: T) {
      * SSRC is; Discord sends it once per SSRC and call, over the WebSocket, so it can trail the first packets on UDP:
      * `speakingAfter` sends it after that many (by default before any, the first time the SSRC speaks on this call).
      * `garbled` sends the packet at that index with a tag that does not authenticate (a packet that will not decrypt).
+     * `order` sends the packets (numbered in sequence as given) in that order instead, as a network reorders them, and
+     * `drop` never sends those, as a network loses them.
      */
-    async speak(userId: string, ssrc: number, packets: Uint8Array[], everyMs = 2, options: { speakingAfter?: number; garbled?: number } = {}) {
+    async speak(userId: string, ssrc: number, packets: Uint8Array[], everyMs = 2, options: { speakingAfter?: number; garbled?: number; order?: number[]; drop?: number[] } = {}) {
       const call = live();
       const announce = !call.announced.has(ssrc);
       call.announced.add(ssrc);
@@ -152,12 +157,7 @@ export async function fakeDiscordVoice(t: T) {
         speaking();
         await new Promise(resolve => setTimeout(resolve, 20));
       }
-      for (const [index, packet] of packets.entries()) {
-        if (announce && options.speakingAfter && index === options.speakingAfter) {
-          // Far enough behind the packets before it that they arrive first.
-          await new Promise(resolve => setTimeout(resolve, 20));
-          speaking();
-        }
+      const messages = packets.map((packet, index) => {
         const header = Buffer.alloc(12);
         header[0] = 0x80;
         header[1] = 0x78;
@@ -171,7 +171,16 @@ export async function fakeDiscordVoice(t: T) {
         const encrypted = Buffer.concat([cipher.update(packet), cipher.final()]);
         const tag = cipher.getAuthTag();
         if (index === options.garbled) tag[0] ^= 0xff;
-        udp.send(Buffer.concat([header, encrypted, tag, nonce.subarray(0, 4)]), call.client!.port, call.client!.address);
+        return Buffer.concat([header, encrypted, tag, nonce.subarray(0, 4)]);
+      });
+      const order = (options.order ?? packets.map((_, index) => index)).filter(index => !options.drop?.includes(index));
+      for (const [sent, index] of order.entries()) {
+        if (announce && options.speakingAfter && sent === options.speakingAfter) {
+          // Far enough behind the packets before it that they arrive first.
+          await new Promise(resolve => setTimeout(resolve, 20));
+          speaking();
+        }
+        udp.send(messages[index], call.client!.port, call.client!.address);
         await new Promise(resolve => setTimeout(resolve, everyMs));
       }
     },
