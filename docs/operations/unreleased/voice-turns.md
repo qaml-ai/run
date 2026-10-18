@@ -15,3 +15,8 @@
   its own words echoed back (or 700 ms of speech without live transcripts); otherwise it resumes where it paused.
   `bargeIn: {minMs, minWords, noTranscriptMs, resumeMs, backchannels}` tunes it; sessions show `interruption`. Logs:
   `voice_duck`, `voice_unduck` (`why`), `voice_barge_in`, `voice_backchannel`.
+- Floor control: `addressing: {names, mode, conversationMs}` answers only the bot's turns in a group call (named,
+  in a conversation with it, or alone with it); the rest reach webhooks (`voice.utterance`'s new `addressed` and
+  `addressedBy`) and go to the agent as context with the next turn that is the bot's. With `agentReplies`, one reply at
+  a time: a reply not yet heard when a newer turn comes is superseded (`by: "superseded"`). Logs:
+  `voice_reply_superseded`.

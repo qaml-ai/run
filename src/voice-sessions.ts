@@ -23,6 +23,7 @@ import type { TurnModels } from "./voice/turns/inference.ts";
 import { TurnSegmenter, type TurnSegmenterOptions } from "./voice/turns/segmenter.ts";
 import { BargeIn, DEFAULT_BARGE_IN, type BargeInPolicy } from "./voice/turns/barge-in.ts";
 import type { TurnClock as TurnTimers } from "./voice/turns/turn-taker.ts";
+import { DEFAULT_ADDRESSING, Floor, withContext, type Addressed, type AddressingPolicy } from "./voice/turns/floor.ts";
 
 /**
  * Voice sessions: calls camelRun holds for a tenant's bot. Joining a voice channel is the one step that needs the bot's
@@ -109,6 +110,12 @@ export type VoiceOptions = {
    * backchannel or nothing within resumeMs. Sessions from before it have none: the defaults.
    */
   interruption?: BargeInPolicy;
+  /**
+   * Which turns are the bot's (floor.ts): every one (always), or those that name it, come from someone it is talking
+   * with, or are said with no one else in the call (addressed). Others are delivered as events, and go to the agent as
+   * context with the next turn that is the bot's. Sessions from before it have none: always.
+   */
+  addressing?: AddressingPolicy;
   /** With speak: the voice its speech is made in, unless a speech asks for another. */
   voice: string;
   /** With speak and deliver.agent: the session speaks the agent's reply to each utterance, as it is written. */
@@ -139,6 +146,8 @@ export const VOICE_LIMITS = Object.freeze({
   bargeInMinWords: { default: DEFAULT_BARGE_IN.minWords, min: 0, max: 10 },
   bargeInNoTranscriptMs: { default: DEFAULT_BARGE_IN.noTranscriptMs, min: 0, max: 5_000 },
   bargeInResumeMs: { default: DEFAULT_BARGE_IN.resumeMs, min: 200, max: 10_000 },
+  /** addressing: how long after the bot answers someone (or they name it) their turns are still the bot's. */
+  conversationMs: { default: DEFAULT_ADDRESSING.conversationMs, min: 0, max: 600_000 },
   maxMinutes: { default: 240, min: 1, max: 720 },
   idleMinutes: { default: 30, min: 1, max: 720 },
   emptySeconds: { default: 60, min: 5, max: 3_600 },
@@ -198,6 +207,7 @@ export function sessionView(row: Row) {
     speak: options.speak ?? false, bargeIn: options.bargeIn ?? true, voice: options.voice ?? DEFAULT_VOICE, agentReplies: options.agentReplies ?? false,
     endOfTurn: options.endOfTurn ?? { mode: "silence" as const, ...SMART_DEFAULTS },
     interruption: options.interruption ?? { ...DEFAULT_BARGE_IN },
+    addressing: options.addressing ?? { ...DEFAULT_ADDRESSING },
     utterances: row.utterances, speechSeconds: row.speech_seconds, speeches: row.speeches ?? 0, spokenSeconds: Number(row.spoken_seconds ?? 0),
     costUsd: Number(row.cost) / 1_000_000,
     createdAt: num(row.created_at)!, startedAt: num(row.started_at), lastSpeechAt: num(row.last_speech_at), endedAt: num(row.ended_at),
@@ -284,6 +294,24 @@ function endOfTurnInput(value: unknown, mode: EndOfTurn["mode"]): EndOfTurn {
 function turnTimers(): TurnTimers {
   const c = clock();
   return { now: () => c.now(), setTimeout: (fn, ms) => { const timer = c.setTimeout(fn, ms); timer.unref?.(); return timer; }, clearTimeout: timer => c.clearTimeout(timer as ReturnType<typeof setTimeout>) };
+}
+/** addressing as given: {mode, names, conversationMs}. */
+function addressingInput(value: unknown): AddressingPolicy {
+  if (value === undefined) return { ...DEFAULT_ADDRESSING };
+  const given = object(value, "addressing");
+  only(given, "addressing", ["mode", "names", "conversationMs"]);
+  if (given.mode !== undefined && given.mode !== "always" && given.mode !== "addressed") throw new HttpError(400, "addressing.mode must be always or addressed");
+  const names = given.names;
+  if (names !== undefined && (!Array.isArray(names) || names.length > 20 || names.some(name => typeof name !== "string" || !name.trim() || name.length > 60))) {
+    throw new HttpError(400, "addressing.names must be at most 20 names (wake words), each 1 to 60 characters");
+  }
+  const out: AddressingPolicy = {
+    ...DEFAULT_ADDRESSING,
+    mode: (given.mode as AddressingPolicy["mode"] | undefined) ?? (names?.length ? "addressed" : "always"),
+    names: ((names as string[] | undefined) ?? []).map(name => name.trim()),
+    conversationMs: integer(given.conversationMs, "addressing.conversationMs", VOICE_LIMITS.conversationMs),
+  };
+  return out;
 }
 /** bargeIn's object form: how sure barge-in must be (barge-in.ts). */
 function interruptionInput(value: unknown): BargeInPolicy {
@@ -410,6 +438,10 @@ type Held = {
   live?: Map<string, LiveSpeaker>;
   /** Barge-in's decisions, for a session that speaks with bargeIn on and smart turns: pause, stop or resume the speech. */
   bargeIn?: BargeIn;
+  /** Which turns are the bot's, and what was said around them (addressing). */
+  floor: Floor;
+  /** The reply being made to the last turn (agentReplies), until it is heard: a newer turn supersedes it before then. */
+  reply?: { requestId: string; speaker: string; abort: AbortController; heard: boolean };
 };
 type LiveSpeaker = { stream: LiveTranscription; platform: Promise<boolean>; idle?: ReturnType<typeof setTimeout> };
 /** An utterance's transcript from its speaker's live stream, committed as it was cut. */
@@ -517,7 +549,7 @@ export class VoiceSessions {
       idleMinutes: integer(input.idleMinutes, "idleMinutes", VOICE_LIMITS.idleMinutes),
       emptySeconds: integer(input.emptySeconds, "emptySeconds", VOICE_LIMITS.emptySeconds),
       ignoreUserIds: ignored(input.ignoreUserIds), metadata: metadataInput(input.metadata), notice,
-      speak, bargeIn: input.bargeIn !== false, voice, agentReplies, interruption: interruptionInput(input.bargeIn),
+      speak, bargeIn: input.bargeIn !== false, voice, agentReplies, interruption: interruptionInput(input.bargeIn), addressing: addressingInput(input.addressing),
       ...(transcription ? { transcription } : {}), ...(speech ? { speech } : {}),
       endOfTurn: endOfTurnInput(input.endOfTurn, this.options.turnModels ? "smart" : "silence"),
     };
@@ -528,7 +560,7 @@ export class VoiceSessions {
    * when this node can, else by a peer's scan. Answers the session with the notice the app must post.
    */
   async create(tenant: string, input: Record<string, unknown>) {
-    only(input, "body", ["provider", "discord", "subject", "bucket", "context", "keyScope", "deliver", "language", "prompt", "silenceMs", "maxMinutes", "idleMinutes", "emptySeconds", "ignoreUserIds", "metadata", "notice", "speak", "bargeIn", "voice", "transcription", "speech", "endOfTurn"]);
+    only(input, "body", ["provider", "discord", "subject", "bucket", "context", "keyScope", "deliver", "language", "prompt", "silenceMs", "maxMinutes", "idleMinutes", "emptySeconds", "ignoreUserIds", "metadata", "notice", "speak", "bargeIn", "voice", "transcription", "speech", "endOfTurn", "addressing"]);
     const provider = input.provider ?? "discord";
     if (provider !== "discord") throw new HttpError(400, `provider must be one of: ${VOICE_PROVIDERS.join(", ")}`);
     if (!this.options.transports[provider]) throw new HttpError(404, "Voice sessions are not enabled on this runtime");
@@ -808,6 +840,7 @@ export class VoiceSessions {
     const held: Held = {
       id: current.id, tenant: current.tenant, claim: taken.claim, revision: current.revision, row: current, credentials: this.credentials(current),
       ...(bargeIn ? { bargeIn } : {}),
+      floor: new Floor(current.options.addressing ?? {}, () => clock().now()),
       segmenter: this.segmenter({
         silenceMs: current.options.silenceMs, cut: cut => this.cut(held, cut),
         // Transcribed as they speak, when this runtime can: each utterance committed as it is cut.
@@ -1080,6 +1113,8 @@ export class VoiceSessions {
       Object.assign(turn.info, { live: this.liveModel(transcript), sttModel: transcript.model });
       if (!transcript.text) turn.end("empty");
     }
+    const floor = this.held.get(origin.id)?.claim === origin.claim ? this.held.get(origin.id)!.floor : undefined;
+    const addressed: Addressed = floor && transcript.text ? floor.decide(cut.speaker, transcript.text, this.humans(origin.id)) : { addressed: true, reason: "always" };
     const identity = { ...(options.subject !== undefined ? { subject: options.subject } : {}), context: { ...options.context, voiceSession: origin.id } };
     this.options.record(origin.tenant, { ...usage, identity, ...(options.keyScope ? { keyScope: options.keyScope } : {}) });
     const usd = usage.usage.cost.total as number;
@@ -1093,6 +1128,7 @@ export class VoiceSessions {
         await enqueueEvents(sql, [this.event(current, "voice.utterance", {
           speakerId: cut.speaker, seq: current.utterances, text: transcript.text, language: transcript.language ?? options.language ?? null,
           seconds: cut.seconds, startedAt: cut.startedAt, endedAt: cut.endedAt, ended: cut.ended, costUsd: usd,
+          addressed: addressed.addressed, addressedBy: addressed.reason,
         }, `voice:${origin.id}:utterance:${current.utterances}`)]);
       }
       return current;
@@ -1106,12 +1142,18 @@ export class VoiceSessions {
     if (local) local.row = { ...local.row, last_speech_at: row.last_speech_at, utterances: row.utterances };
     const agent = row.options.deliver.agent;
     if (!transcript.text) return;
+    // Not the bot's turn: kept as context for the next one that is, and no reply is waited for.
+    if (agent && !addressed.addressed) { floor?.overheard(cut.speaker, transcript.text); turn?.end("no_reply"); return; }
+    const context = row.options.addressing?.mode === "addressed" ? floor?.takeContext() ?? [] : [];
     // A reply the session does not speak itself is the app's (POST …/speak) or a prompt's (speak): the turn waits for it.
     if (turn && !(agent && row.options.agentReplies && this.options.submitStreaming) && this.held.get(origin.id)?.claim === origin.claim) this.waitingTurns.wait(origin.id, turn);
     if (!agent) return;
     const request = {
       id: `voice_${origin.id.slice(3)}_${row.utterances}`, method: "prompt",
-      params: { text: transcript.text, from: { id: cut.speaker }, metadata: { voiceSession: origin.id, utterance: String(row.utterances) }, allowDisconnected: true },
+      params: {
+        text: withContext(transcript.text, context), from: { id: cut.speaker },
+        metadata: { voiceSession: origin.id, utterance: String(row.utterances), ...(addressed.reason !== "always" ? { addressedBy: addressed.reason } : {}) }, allowDisconnected: true,
+      },
     };
     // The agent's reply is spoken as it is written: delivered and spoken apart from this speaker's next utterance.
     if (row.options.agentReplies && this.options.submitStreaming) {
@@ -1163,9 +1205,21 @@ export class VoiceSessions {
     const held = this.held.get(origin.id);
     const speech = held?.claim === origin.claim ? held.speech : undefined;
     if (!held || !speech) { turn?.end("error"); await this.deliver(origin, agent, request, seq); return; }
+    // One reply at a time: a reply to an earlier turn that is not yet heard is not said (this turn's reply follows it,
+    // and the agent has both turns). One being heard goes on (barge-in decides about talking over it).
+    const before = held.reply;
+    if (before && !before.heard) {
+      before.abort.abort();
+      speech.cancel(item => item.reply?.requestId === before.requestId, "superseded");
+      console.log(JSON.stringify({ type: "voice_reply_superseded", session: origin.id, by: request.id }));
+    }
+    const reply = { requestId: request.id, speaker: String((request.params.from as { id?: string } | undefined)?.id ?? ""), abort: new AbortController(), heard: false };
+    held.reply = reply;
     let streamed = false;
     try {
-      await this.sayAsWritten(held, speech, { agent, requestId: request.id }, {}, signal => this.options.submitStreaming!(agent, origin.tenant, request, signal), () => { streamed = true; }, turn);
+      await this.sayAsWritten(held, speech, { agent, requestId: request.id }, {}, signal => this.options.submitStreaming!(agent, origin.tenant, request, signal), () => { streamed = true; }, turn, reply.abort.signal);
+      // Answered: the conversation with its speaker goes on from now.
+      if (!reply.abort.signal.aborted && reply.speaker) held.floor.answered(reply.speaker);
     } catch (error) {
       console.error(JSON.stringify({ type: "voice_reply_stream_failed", session: origin.id, status: (error as HttpError).status, error: safeError(error) }));
       turn?.end("error");
@@ -1180,9 +1234,10 @@ export class VoiceSessions {
    * the session moves. With `interrupt`, its first sentence stops what was being said. Throws what the stream throws.
    */
   private async sayAsWritten(held: Held, speech: SessionSpeech, reply: { agent: string; requestId: string }, how: { voice?: string; interrupt?: boolean },
-    texts: (signal: AbortSignal) => AsyncIterable<string>, heard?: () => void, turn?: TurnClock) {
+    texts: (signal: AbortSignal) => AsyncIterable<string>, heard?: () => void, turn?: TurnClock, cancelled?: AbortSignal) {
     let generation = speech.generation, interrupt = how.interrupt === true, failed = false;
     const abort = new AbortController();
+    cancelled?.addEventListener("abort", () => abort.abort(), { once: true });
     const spoken = new SpokenReply(text => {
       if (speech.generation !== generation || this.held.get(held.id) !== held) { abort.abort(); return; }
       // Every piece carries the turn: the first that plays (or the first that cannot) ends it.
@@ -1205,6 +1260,12 @@ export class VoiceSessions {
       // Nothing was said: the reply failed, had nothing to speak, or what it was part of was stopped first.
       if (turn && turn.marks.firstPiece === undefined) turn.end(failed ? "error" : abort.signal.aborted ? "interrupted" : "no_reply");
     }
+  }
+
+  /** People in a session's call now (not the bot, not ignored users), when its connection knows. */
+  private humans(id: string) {
+    const held = this.held.get(id);
+    return held?.connection?.others()?.filter(user => user !== held.credentials.userId && !held.row.options.ignoreUserIds.includes(user)).length;
   }
 
   /** End a session from an utterance's work: under the claim if this node still holds it as it did, else as anyone. */
@@ -1295,6 +1356,7 @@ export class VoiceSessions {
       } : {}),
       started: (item: SpeechItem, latencyMs: number) => {
         held.bargeIn?.botSpeaking(item.text);
+        if (item.reply && held.reply?.requestId === item.reply.requestId) held.reply.heard = true;
         console.log(JSON.stringify({ type: "voice_speech_started", session: held.id, speech: item.id, latencyMs }));
         void write("voice.speech.started", item, { latencyMs });
       },

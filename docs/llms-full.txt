@@ -2899,6 +2899,7 @@ Discord allows one voice connection per user and server: a second `POST` for the
 | `bucket` | with end-user credits on: which of the subject's buckets pays |
 | `deliver` | `webhooks` (default `true`): `voice.*` events to your endpoints; `agent`: each utterance as a prompt to that agent |
 | `language`, `prompt` | the language spoken (`en`, `pt-BR`; detected per utterance when left out), and words to expect (names, jargon) |
+| `addressing` | which turns are the bot's in a group call: `{names, mode, conversationMs}`; see [who it answers](https://run.camelai.com/docs/guides/voice-calls.md#who-it-answers) (default: every turn) |
 | `endOfTurn` | how a speaker's turn (an utterance) ends: `smart` (the default where the runtime has the models) or `silence`, or `{mode, commitMs, threshold, maxSilenceMs}`; see [turns](https://run.camelai.com/docs/guides/voice-calls.md#turns) |
 | `silenceMs` | with `endOfTurn: silence`: silence that ends an utterance: 200 to 5000, default 800 |
 | `maxMinutes`, `idleMinutes`, `emptySeconds` | the session ends after `maxMinutes` (default 240, at most 720), after `idleMinutes` without speech (default 30), or with no one else in the call for `emptySeconds` (default 60) |
@@ -2953,6 +2954,33 @@ Measured on 920 labelled turns in 23 languages (pipecat's smart-turn test set): 
 ends 580 ms after the last word (median; `silence` at 800 ms: 816 ms), and a speaker who pauses mid-thought is held
 for them 87% of the time (`silence` cuts 99% of such pauses of 800 ms or more). A runtime without the models (its
 operator set `AGENT_VOICE_TURN_MODELS=false`, or they could not load) ends turns on `silence`, and refuses `smart`.
+
+## Who it answers
+
+By default every turn goes to `deliver.agent`. In a group call that makes a bot answer everything said near it.
+`addressing` makes it answer only the turns that are its own:
+
+```ts
+await agents.voice.create({ discord, deliver: { agent: agent.id }, speak: { agentReplies: true },
+  addressing: { names: ["camel", "hey camel"] } });
+```
+
+With `names` (its wake words; `mode: "addressed"` is then the default), a turn is the bot's when:
+
+- it says one of `names`, anywhere in it, as a word or phrase. A near miss of a name of five letters or more counts too
+  ("jarvys" for "jarvis"), as speech recognition spells names;
+- its speaker is in a conversation with the bot: the bot answered them, or they named it, within `conversationMs`
+  (default 20 s), and no one else has named it since;
+- or no one else is in the call.
+
+The other turns still reach your webhooks (`voice.utterance` with `addressed: false`). The agent gets them as context
+with the next turn that is the bot's: the prompt starts with `[Said in the call before this, not to you]` and those
+turns (`<@speaker>: text`), then `[To you]` and the turn. Every `voice.utterance` says `addressed` and `addressedBy`
+(`always`, `alone`, `named`, `conversation` or `not_addressed`).
+
+With `speak: {agentReplies: true}` the bot says one reply at a time. A reply that has not started playing when a newer
+turn of the bot's comes is not said (`voice.speech.ended` with `by: "superseded"`); the newer one's reply is, and the
+agent has both turns.
 
 ## Utterances
 

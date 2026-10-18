@@ -919,6 +919,21 @@
               "endedAt": {
                 "type": "number"
               },
+              "addressed": {
+                "type": "boolean",
+                "description": "Whether the turn was the bot's (addressing); always true with addressing mode always"
+              },
+              "addressedBy": {
+                "type": "string",
+                "enum": [
+                  "always",
+                  "alone",
+                  "named",
+                  "conversation",
+                  "not_addressed"
+                ],
+                "description": "Why: always (mode); alone (no one else in the call); named (it said one of names); conversation (the bot was talking with its speaker); not_addressed"
+              },
               "ended": {
                 "type": "string",
                 "enum": [
@@ -949,6 +964,8 @@
               "seconds",
               "startedAt",
               "endedAt",
+              "addressed",
+              "addressedBy",
               "ended",
               "costUsd"
             ]
@@ -1146,9 +1163,10 @@
                   "barge_in",
                   "end",
                   "handoff",
-                  "budget"
+                  "budget",
+                  "superseded"
                 ],
-                "description": "With interrupted: a speech asked with interrupt; DELETE …/speak; a person started talking (bargeIn); the session ended or moved; credit ran out"
+                "description": "With interrupted: a speech asked with interrupt; DELETE …/speak; a person started talking (bargeIn); the session ended or moved; credit ran out; a newer turn's reply took the place of this one, not yet heard (agentReplies)"
               },
               "seconds": {
                 "type": "number",
@@ -9018,6 +9036,40 @@
           "speech": {
             "$ref": "#/components/schemas/VoiceSpeechProviders"
           },
+          "addressing": {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "always",
+                  "addressed"
+                ]
+              },
+              "names": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "conversationMs": {
+                "type": "number"
+              },
+              "contextTurns": {
+                "type": "number"
+              },
+              "contextMs": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "mode",
+              "names",
+              "conversationMs",
+              "contextTurns",
+              "contextMs"
+            ]
+          },
           "interruption": {
             "type": "object",
             "properties": {
@@ -9135,6 +9187,7 @@
           "bargeIn",
           "voice",
           "agentReplies",
+          "addressing",
           "interruption",
           "endOfTurn",
           "speeches",
@@ -9356,6 +9409,39 @@
           },
           "speech": {
             "$ref": "#/components/schemas/VoiceSpeechProviders"
+          },
+          "addressing": {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "always",
+                  "addressed"
+                ],
+                "description": "always: every turn goes to deliver.agent (and is answered); addressed: only turns that name the bot (names), come from someone it is talking with (conversationMs), or are said with no one else in the call. Default addressed when names are given, else always"
+              },
+              "names": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "description": "The bot's names (wake words), matched as words anywhere in a turn, near misses of long names included",
+                "example": [
+                  "camel",
+                  "hey camel"
+                ]
+              },
+              "conversationMs": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 600000,
+                "description": "How long after the bot answers someone (or they name it) their turns are still its (default 20000), in milliseconds: 0 to 600000, default 20000"
+              }
+            },
+            "additionalProperties": false,
+            "description": "Which turns are the bot's in a group call. Others still go to webhooks (voice.utterance's addressed: false), and to the agent as context with the next turn that is the bot's"
           },
           "endOfTurn": {
             "anyOf": [

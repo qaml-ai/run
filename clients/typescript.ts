@@ -645,7 +645,7 @@ export type WebhookEvent = { id: string; created: number } & (
   | { type: "voice.speech.ended"; data: VoiceFacts & {
       speechId: string; reason: "done" | "interrupted" | "error"; reply?: VoiceReply;
       /** With interrupted: an interrupting speech, stopSpeaking, a person talking (bargeIn), the session ending or moving, credit running out. */
-      by?: "interrupt" | "requested" | "barge_in" | "end" | "handoff" | "budget";
+      by?: "interrupt" | "requested" | "barge_in" | "end" | "handoff" | "budget" | "superseded";
       seconds: number; costUsd: number;
     } });
 /** A piece of an agent's reply a session speaks (speak: {agentReplies: true}): the agent and its run. */
@@ -670,6 +670,8 @@ export type VoiceUtterance = VoiceFacts & {
   /** silence; max (cut at 30 s, the speech goes on in the next); error (the speaker's stream broke); handoff (the session moved nodes); end. */
   ended: "silence" | "max" | "error" | "handoff" | "end";
   costUsd: number;
+  /** Whether it was the bot's turn (`addressing`), and why: always (mode), alone, named, conversation, or not_addressed. */
+  addressed: boolean; addressedBy: "always" | "alone" | "named" | "conversation" | "not_addressed";
 };
 
 /**
@@ -1223,6 +1225,12 @@ export interface VoiceSessionInput {
    * languages, plus `backchannels`) or nothing real within `resumeMs` (default 2000) and it goes on.
    */
   bargeIn?: boolean | Partial<VoiceInterruption>;
+  /**
+   * Which turns are the bot's in a group call (default every one): with `names` (its wake words) or `mode: "addressed"`,
+   * turns that name it, come from someone it is talking with (within `conversationMs`, default 20 s), or are said with
+   * no one else in the call. Others still reach webhooks (`addressed: false`), and the agent as context with the next.
+   */
+  addressing?: { mode?: "always" | "addressed"; names?: string[]; conversationMs?: number };
   /** With speak: the voice speech is made in (OpenAI's: alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, verse…). Default alloy. */
   voice?: string;
   /**
@@ -1262,6 +1270,7 @@ export interface VoiceSession {
   speak: boolean; bargeIn: boolean; voice: string; agentReplies: boolean;
   transcription?: { providers?: string[]; keyterms?: string[] }; speech?: { providers?: string[]; voices?: Record<string, string> };
   endOfTurn: VoiceEndOfTurn; interruption: VoiceInterruption;
+  addressing: { mode: "always" | "addressed"; names: string[]; conversationMs: number; contextTurns: number; contextMs: number };
   utterances: number; speechSeconds: number;
   /** Speeches played, and seconds of speech made. */
   speeches: number; spokenSeconds: number;
