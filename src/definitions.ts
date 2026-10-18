@@ -32,6 +32,8 @@ export interface DefinitionSpec {
   maxOutputTokens?: number;
   /** Its agents' sampling temperature, for a model and thinking level that take one (session-config.ts `modelSettingsRefusal`). */
   temperature?: number;
+  /** Its agents' OpenRouter data policy: "deny" for hosts that do not collect their data (`provider.data_collection`). */
+  dataCollection?: "deny";
   limits?: { ttlSeconds?: number | null; idleTtlSeconds?: number | null };
   /** The most one run of its agents may take (model responses, seconds), within the runtime's maximums. */
   runLimits?: RunLimits;
@@ -71,9 +73,9 @@ export interface ApplyResult { agent: string; requestId: string; status: "update
 /** Agent parameters from a definition, as `createAgent` takes them. */
 export type AgentParams = Record<string, unknown> & { tools?: ToolDefinition[] };
 
-const FIELDS = ["description", "model", "systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "fileTools", "codeMode", "limits", "runLimits", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "applyOnUpdate"] as const;
+const FIELDS = ["description", "model", "systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "fileTools", "codeMode", "limits", "runLimits", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "applyOnUpdate"] as const;
 /** Configuration an agent made from a definition may set as its own, which applying the definition leaves. */
-export const OVERRIDES = ["model", "thinkingLevel", "maxOutputTokens", "temperature", "fileTools", "codeMode", "runLimits"] as const;
+export const OVERRIDES = ["model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "fileTools", "codeMode", "runLimits"] as const;
 const PROVISION_FIELDS = ["name", "type", "ttlSeconds", "idleTtlSeconds", "mounts", "tools", "initialMessages", "systemPromptAppend"];
 /** Definitions a self-serve tenant may have; a tenant of the tenants file has its own limit (`maxDefinitions` option). */
 export const MAX_DEFINITIONS = 200;
@@ -305,7 +307,7 @@ export class Definitions {
     }
     try {
       const model = spec.model !== undefined ? resolveModel(spec.model, this.accounts?.tenants.modelEndpoints(tenant), await this.customProviders?.(tenant)) : undefined;
-      const settings = configurationUpdate(Object.fromEntries((["systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature"] as const).filter(key => spec[key] !== undefined).map(key => [key, spec[key]])));
+      const settings = configurationUpdate(Object.fromEntries((["systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection"] as const).filter(key => spec[key] !== undefined).map(key => [key, spec[key]])));
       // Without a model of its own, its agents' model (the runtime's default, or their own) is checked as each is made.
       const refusal = model && modelSettingsRefusal(model, settings);
       if (refusal) throw new Error(refusal);

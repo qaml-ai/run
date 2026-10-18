@@ -379,7 +379,7 @@ export function createAgentHost(hostIO: HostIO) {
       const keepRecentTokens = reason === "overflow" ? Math.max(1_000, Math.floor(contextTokens([...summaryView(), ...context]) * 0.2)) : compactionSettings(compactionModel()).keepRecentTokens;
       const outcome = await runCompaction({
         // The summarizer reads messages as the model does, senders included; rendering keeps their count, so the cut still indexes the context.
-        context: renderMessages(context), offset, previous, model: config.model, apiKey: perCall() ? () => io.modelAuth() : apiKey, signal, keepRecentTokens, modelHeaders: config.modelHeaders, gate, outbound: io.modelOutbound, attempt: io.modelAttempt,
+        context: renderMessages(context), offset, previous, model: config.model, apiKey: perCall() ? () => io.modelAuth() : apiKey, signal, keepRecentTokens, modelHeaders: config.modelHeaders, dataCollection: config.dataCollection, gate, outbound: io.modelOutbound, attempt: io.modelAttempt,
         onResponse: message => io.emit({ type: "compaction_usage", provider: message.provider, model: message.model, usage: message.usage, timestamp: message.timestamp, ...flag }),
       });
       if ("skipped" in outcome) {
@@ -917,7 +917,7 @@ export function createAgentHost(hostIO: HostIO) {
         streamFn: (model, context, options) => {
           const toolChoice = outputChoice(model);
           const settings = callSettings(model, config, options?.reasoning);
-          return stream(model, context, { ...options, ...settings, ...(toolChoice === undefined ? {} : { toolChoice }) } as typeof options);
+          return stream(model, context, { ...options, ...settings, ...(toolChoice === undefined ? {} : { toolChoice }), ...(config.dataCollection ? { dataCollection: config.dataCollection } : {}) } as typeof options);
         },
         // Renders compaction summaries for the model (the default drops non-chat roles), and each message's sender.
         convertToLlm: messages => hydrate(convertToLlm(renderMessages(messages))),
@@ -999,6 +999,7 @@ export function createAgentHost(hostIO: HostIO) {
       if (params.runLimits !== undefined) config.runLimits = params.runLimits;
       if (params.maxOutputTokens !== undefined) config.maxOutputTokens = params.maxOutputTokens;
       if (params.temperature !== undefined) config.temperature = params.temperature;
+      if (params.dataCollection !== undefined) config.dataCollection = params.dataCollection;
       if (params.tools !== undefined) config.tools = params.tools;
       if (params.tools !== undefined || params.codeMode !== undefined) agent.state.tools = [...config.codeMode === false ? [] : [jsExec!], ...directAgentTools(config.tools)];
       if (params.systemPrompt !== undefined || params.systemPromptAppend !== undefined || params.tools !== undefined || params.codeMode !== undefined || params.model !== undefined) await declareConfiguration();

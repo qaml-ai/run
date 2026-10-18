@@ -246,10 +246,11 @@ function authorize(model: Model<Api>, asked: any, credentials: Credentials, sink
   model = deepseekTarget(model);
   // A model that always reasons refuses a call that turns reasoning off: a call asking for none asks for its least.
   const floor = asked?.reasoning ? undefined : reasoningFloor(model);
-  const rest = floor ? { ...asked, reasoning: floor } : asked;
-  // An OpenRouter call takes its model's hosts (pi-catalog.ts OPENROUTER_HOSTS), nothing else of routing.
+  const { dataCollection, ...rest } = (floor ? { ...asked, reasoning: floor } : asked) ?? {};
+  // An OpenRouter call takes its model's hosts (pi-catalog.ts OPENROUTER_HOSTS) and its agent's data policy
+  // (`dataCollection`), nothing else of routing.
   const options = model.provider === "openrouter"
-    ? { ...rest, onPayload: async (payload: unknown, at: Model<Api>) => withOpenRouterHosts(at, (await rest?.onPayload?.(payload, at)) ?? payload) }
+    ? { ...rest, onPayload: async (payload: unknown, at: Model<Api>) => withOpenRouterHosts(at, (await rest.onPayload?.(payload, at)) ?? payload, dataCollection) }
     : rest;
   if (credentials.identity) {
     const target = upstream(model);
@@ -383,7 +384,7 @@ export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefin
  * Every completed request is reported, so chunks and a run that fails after some are billed too.
  */
 type ApiKey = string | (() => Promise<Credentials>);
-function summarizer(apiKey: ApiKey, onResponse: ((message: AssistantMessage) => void) | undefined, modelHeaders: Record<string, string> | null | undefined, gate: ModelGate | undefined, outbound: Outbound, attempt?: ModelAttemptHook): Complete {
+function summarizer(apiKey: ApiKey, onResponse: ((message: AssistantMessage) => void) | undefined, modelHeaders: Record<string, string> | null | undefined, gate: ModelGate | undefined, outbound: Outbound, attempt?: ModelAttemptHook, dataCollection?: "deny" | null): Complete {
   return async (model, context, options) => {
     await gate?.wait(options?.signal);
     const { signal, done } = gatedSignal(gate, options?.signal);
@@ -393,7 +394,7 @@ function summarizer(apiKey: ApiKey, onResponse: ((message: AssistantMessage) => 
       const inputTokens = Math.min(model.contextWindow, context.messages.reduce((sum, message) => sum + estimateTokens(message as AgentMessage), 0) + Math.ceil((context.systemPrompt?.length ?? 0) / 4));
       const estimate = { inputTokens, maxOutputTokens: options?.maxTokens ?? model.maxTokens, rates: { input: model.cost.input, output: model.cost.output } };
       const tracked = await attemptStream(attemptModel(model, credentials), credentials.apiKey, "compaction", attempt, (sink, halt) => {
-      const [target, callOptions] = authorize(model, options, credentials, sink, modelHeaders, outbound);
+      const [target, callOptions] = authorize(model, dataCollection ? { ...options, dataCollection } : options, credentials, sink, modelHeaders, outbound);
       // Watched like a turn's requests: a summary whose stream goes quiet fails (the context is left as it is) rather than hold the turn.
       return watchedStream(model, (watched, activity) => streamSimple(target, deepseekContext(target, context), { ...callOptions, signal: watched, onProviderStreamEvent: (event: unknown) => activity(event) }),
         streamTimeouts(model, callOptions?.reasoning), signal ? AbortSignal.any([signal, halt]) : halt, undefined, event => {
@@ -445,6 +446,8 @@ export async function runCompaction(options: {
   onResponse?: (message: AssistantMessage) => void;
   /** The agent's own headers for its model calls. */
   modelHeaders?: Record<string, string> | null;
+  /** The agent's OpenRouter data policy, on summaries as on its turns. */
+  dataCollection?: "deny" | null;
   /** Its node's lease, which each summarization request waits for and is cut by (`ModelGate`). */
   gate?: ModelGate;
   /** The policy calls to endpoints tenants give go through: this process's unless given (its node's). */
@@ -458,7 +461,7 @@ export async function runCompaction(options: {
   const preparation = prepared.value;
   // A cut that keeps everything would only add a summary of nothing, and change the cached prefix for it.
   if (!preparation || (!preparation.messagesToSummarize.length && !preparation.turnPrefixMessages.length)) return { skipped: "Nothing before the recent context to summarize" };
-  const complete = summarizer(apiKey, options.onResponse, options.modelHeaders, options.gate, options.outbound ?? outboundOfProcess(), options.attempt);
+  const complete = summarizer(apiKey, options.onResponse, options.modelHeaders, options.gate, options.outbound ?? outboundOfProcess(), options.attempt, options.dataCollection);
   // Leave room for the summarization prompt and the summary itself.
   const chunkBudget = Math.max(4_000, Math.floor((model.contextWindow - settings.reserveTokens) * 0.6));
   let tokens = 0;

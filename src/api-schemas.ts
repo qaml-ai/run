@@ -290,6 +290,10 @@ export const Temperature = z.number().min(0).max(2).openapi("Temperature", {
   description: "Sampling temperature, 0 to 2; default the provider's. Lower is more deterministic. 400 for a model that takes none: Claude Opus 4.7 and later, Sonnet 5.5 and Fable models, models that always reason (o-series, GPT-5), and any reasoning model at a thinkingLevel other than off. Compaction summaries keep the runtime's own",
 });
 
+export const DataCollection = z.enum(["deny"]).openapi("DataCollection", {
+  description: "\"deny\": the agent's OpenRouter model calls (turns and compaction summaries) go only to hosts that do not collect their data: OpenRouter's provider.data_collection, which skips providers whose data policy says they may train on it. A filter, so OpenRouter still balances load among the rest. Default: none (OpenRouter's default). Other providers ignore it",
+});
+
 export const ModelHeaders = z.record(z.string(), z.string()).openapi("ModelHeaders", {
   description: "Non-secret headers sent on each of the agent's model calls, after a key scope entry's, e.g. cf-aig-metadata. At most 20 and 8 KB; never authorization, x-api-key, x-goog-api-key, cf-aig-authorization, chatgpt-account-id, x-agent-runtime-identity, x-amz-* or transport headers",
 });
@@ -409,6 +413,7 @@ export const AgentInput = z.object({
   thinkingLevel: z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]).optional(),
   maxOutputTokens: MaxOutputTokens.optional(),
   temperature: Temperature.optional(),
+  dataCollection: DataCollection.optional(),
   initialMessages: z.array(z.unknown()).optional().openapi({ description: "History to begin with (a conversation from elsewhere): Pi user, assistant and toolResult messages, and compactionSummary messages, the last of which stands in for everything before it. Only when the agent is made; at most 16 MB of JSON. See the multi-user guide" }),
   importMessages: z.object({
     format: z.enum(["anthropic", "openai-responses", "openai-chat"]).openapi({ description: "anthropic: Messages API messages; openai-responses: Responses API input items; openai-chat: Chat Completions messages" }),
@@ -517,6 +522,7 @@ export const RunInput = z.strictObject({
   thinkingLevel: z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]).optional(),
   maxOutputTokens: MaxOutputTokens.optional(),
   temperature: Temperature.optional(),
+  dataCollection: DataCollection.optional(),
   builtins: z.array(z.enum(["web_fetch", "web_search", "delegate", "generate_image"])).max(8).optional().openapi({ description: "Tools the runtime answers itself (generate_image gives the run a workspace for its images). Not schedule or ask_user: a run has no later and no one to ask" }),
   delegate: DelegateSettings.optional(),
   mcpServers: z.array(InlineMcpServerInput).max(64).optional().openapi({ description: "Remote MCP servers whose tools the run may call, as an agent's own: no credentials (auth \"runtime\" or none). A server that cannot be listed shows in sourceErrors" }),
@@ -648,6 +654,7 @@ export const AgentDetail = AgentSummary.extend({
   runLimits: RunLimits.nullable().openapi({ description: "Its own run limits, as set; null: the runtime's" }),
   maxOutputTokens: MaxOutputTokens.nullable().openapi({ description: "The most its model writes in one response, as set; null: the model's maximum" }),
   temperature: Temperature.nullable().openapi({ description: "Its model's sampling temperature, as set; null: the provider's default" }),
+  dataCollection: DataCollection.nullable().openapi({ description: "Its OpenRouter calls' data policy, as set; null: OpenRouter's default" }),
   forkedFrom: ForkedFrom.optional().openapi({ description: "For a fork (POST /v1/agents/{id}/fork): the agent and message it was forked from" }),
   ...Activity.shape,
   cursor: z.number(),
@@ -845,6 +852,7 @@ const definitionFields = {
   thinkingLevel: ThinkingLevel,
   maxOutputTokens: MaxOutputTokens,
   temperature: Temperature,
+  dataCollection: DataCollection,
   fileTools: z.boolean().openapi({ description: "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; the mounts stay open to fs in js_exec, attachments and tool outputs. For applications with file tools of their own" }),
   codeMode: z.boolean().openapi({ description: "false: its agents get no js_exec and call every tool directly (AgentInput.codeMode)" }),
   limits: DefinitionLimits,
@@ -903,6 +911,7 @@ export const ConfigureInput = z.object({
   thinkingLevel: ThinkingLevel.optional(),
   maxOutputTokens: MaxOutputTokens.nullable().optional().openapi({ description: "Replaces the most its model writes in one response; null removes it (the model's maximum)" }),
   temperature: Temperature.nullable().optional().openapi({ description: "Replaces its model's sampling temperature; null removes it (the provider's default). Refused (400) when the agent's model or thinking level, after this change, takes none" }),
+  dataCollection: DataCollection.nullable().optional().openapi({ description: "Replaces its OpenRouter calls' data policy; null removes it (OpenRouter's default)" }),
   keyScope: z.string().nullable().optional().openapi({ description: "The key scope its model calls take keys from first; null for the tenant's keys. Applying a definition keeps it" }),
   spendLimit: SpendLimitInput.nullable().optional().openapi({ description: "A new budget from now, applied at once, ahead of queued runs; null removes it" }),
   bucket: z.string().nullable().optional().openapi({ description: "The bucket of its subject's credit its runs spend from, applied at once; null: \"default\"" }),

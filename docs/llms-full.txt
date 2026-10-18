@@ -4176,7 +4176,13 @@ In Python, `await agents.runtime.set_scope_key("org_abc123", "openrouter", api_k
   Some models are served only by the OpenRouter hosts the platform lists for them
   (`provider.only`; DeepSeek V4.1 Flash: Fireworks, Together, Parasail,
   CoreWeave and Nebius; 1017: Baseten, Parasail, Relace and DeepSeek; 1017:nitro: Parasail, Baseten and DeepSeek), and OpenRouter
-  balances load among those. DeepSeek's models keep its Chat Completions API (not
+  balances load among those. An agent, definition or run with `dataCollection: "deny"`
+  also asks OpenRouter for hosts that do not collect its data
+  (`provider.data_collection: "deny"`): OpenRouter skips the providers whose data
+  policy says they may train on it (for DeepSeek V4.1 Flash 1017, DeepSeek's own
+  endpoint). It applies to the agent's turns and compaction summaries; nothing is
+  sent by default, and only the tenant can change it (`PATCH .../configuration`,
+  null removes it). DeepSeek's models keep its Chat Completions API (not
   on a tenant's endpoint), where every earlier turn's reasoning goes back as
   `reasoning_content`, which DeepSeek's own API requires while it reasons.
 - Each model call, compaction summaries included, takes the key of the agent's

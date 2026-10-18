@@ -182,6 +182,13 @@ export function temperatureInput(value: unknown): number | null {
   return value;
 }
 
+/** An agent's `dataCollection`: "deny" (OpenRouter hosts that do not collect its data), or null for OpenRouter's default. */
+export function dataCollectionInput(value: unknown): "deny" | null {
+  if (value === null) return null;
+  if (value !== 'deny') throw new HttpError(400, 'dataCollection must be "deny", or null');
+  return value;
+}
+
 /**
  * Why `model` cannot take an agent's `maxOutputTokens` or `temperature` at its thinking level (a 400's message), or
  * undefined when it can: more output than the model writes in a response, or a temperature it would refuse (`temperatureRefusal`).
@@ -226,6 +233,7 @@ export function sessionConfig(input: any, defaultModel: AgentConfig['model'], de
     ...(input.runLimits !== undefined ? { runLimits: input.runLimits } : {}),
     ...(input.maxOutputTokens !== undefined ? { maxOutputTokens: input.maxOutputTokens } : {}),
     ...(input.temperature !== undefined ? { temperature: input.temperature } : {}),
+    ...(input.dataCollection !== undefined ? { dataCollection: input.dataCollection } : {}),
   });
   const refusal = modelSettingsRefusal(model, updates);
   if (refusal) throw new HttpError(400, refusal);
@@ -239,9 +247,9 @@ export function sessionConfig(input: any, defaultModel: AgentConfig['model'], de
  * Scoped credentials can change behavior, tools and the model, but never a model
  * endpoint or credentials: a model can only be named from Pi's catalog.
  */
-export function configurationUpdate(input: any, endpoints?: ModelEndpoints, custom?: CustomProviders): Pick<AgentConfig, 'systemPrompt' | 'systemPromptAppend' | 'thinkingLevel' | 'modelHeaders' | 'runLimits' | 'maxOutputTokens' | 'temperature'> & { tools?: AgentConfig['tools']; model?: AgentConfig['model']; keyScope?: string | null } {
+export function configurationUpdate(input: any, endpoints?: ModelEndpoints, custom?: CustomProviders): Pick<AgentConfig, 'systemPrompt' | 'systemPromptAppend' | 'thinkingLevel' | 'modelHeaders' | 'runLimits' | 'maxOutputTokens' | 'temperature' | 'dataCollection'> & { tools?: AgentConfig['tools']; model?: AgentConfig['model']; keyScope?: string | null } {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid configuration');
-  for (const key of Object.keys(input)) if (!['systemPrompt', 'systemPromptAppend', 'thinkingLevel', 'mcp', 'model', 'keyScope', 'modelHeaders', 'tools', 'fileTools', 'codeMode', 'runLimits', 'maxOutputTokens', 'temperature'].includes(key)) throw new Error(`Unsupported scoped configuration field: ${key}`);
+  for (const key of Object.keys(input)) if (!['systemPrompt', 'systemPromptAppend', 'thinkingLevel', 'mcp', 'model', 'keyScope', 'modelHeaders', 'tools', 'fileTools', 'codeMode', 'runLimits', 'maxOutputTokens', 'temperature', 'dataCollection'].includes(key)) throw new Error(`Unsupported scoped configuration field: ${key}`);
   if (input.fileTools !== undefined && typeof input.fileTools !== 'boolean') throw new Error('fileTools must be true or false');
   if (input.codeMode !== undefined && typeof input.codeMode !== 'boolean') throw new Error('codeMode must be true or false');
   if (input.keyScope !== undefined && input.keyScope !== null) checkScope(input.keyScope);
@@ -250,6 +258,7 @@ export function configurationUpdate(input: any, endpoints?: ModelEndpoints, cust
   if (input.runLimits !== undefined) input = { ...input, runLimits: runLimitsInput(input.runLimits) };
   if (input.maxOutputTokens !== undefined) input = { ...input, maxOutputTokens: maxOutputTokensInput(input.maxOutputTokens) };
   if (input.temperature !== undefined) input = { ...input, temperature: temperatureInput(input.temperature) };
+  if (input.dataCollection !== undefined) input = { ...input, dataCollection: dataCollectionInput(input.dataCollection) };
   // The application's attached MCP server's tools/list replaces its tools.
   if (input.mcp !== undefined) {
     const { mcp, ...rest } = input;

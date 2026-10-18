@@ -420,6 +420,8 @@ export interface CreateAgentOptions extends AgentOptions {
   maxOutputTokens?: number;
   /** Sampling temperature, 0 to 2. Refused (400) for a model that takes none (Claude Opus 4.7 and later, Sonnet 5.5, Fable; o-series, GPT-5) or a reasoning model at a thinkingLevel other than off. */
   temperature?: number;
+  /** "deny": its OpenRouter calls go only to hosts that do not collect their data (OpenRouter's provider.data_collection; skips providers that may train on it). Default: OpenRouter's. */
+  dataCollection?: "deny";
   initialMessages?: Message[];
   /** History in another API's format (Anthropic Messages, OpenAI Responses or Chat Completions), converted to Pi messages by the runtime (`toPiMessages`); not with initialMessages. */
   importMessages?: ImportMessages;
@@ -495,6 +497,8 @@ export interface DefinitionInput {
   maxOutputTokens?: number;
   /** Its agents' sampling temperature (0 to 2), for a model and thinking level that take one. */
   temperature?: number;
+  /** "deny": its OpenRouter calls go only to hosts that do not collect their data (OpenRouter's provider.data_collection; skips providers that may train on it). Default: OpenRouter's. */
+  dataCollection?: "deny";
   /** false: its agents get no file tools but present_file. */
   fileTools?: boolean;
   /** false: its agents get no js_exec, and call every tool directly. */
@@ -916,7 +920,7 @@ const AGENT_KEY = /^[A-Za-z0-9_-]{1,80}$/;
 const REQUEST_ID = AGENT_KEY;
 /** A create request's fields, from the options given. */
 function provisioning(options: CreateAgentOptions) {
-  const fields = ["subject", "context", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "definition", "mounts", "remount", "model", "thinkingLevel", "maxOutputTokens", "temperature", "initialMessages", "importMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "delegate", "mcpServers", "prompt"] as const;
+  const fields = ["subject", "context", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "definition", "mounts", "remount", "model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "initialMessages", "importMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "delegate", "mcpServers", "prompt"] as const;
   return withMultiAgent(Object.fromEntries(fields.filter(field => options[field] !== undefined).map(field => [field, options[field]])));
 }
 /** `delegate` settings bring their builtin: given the settings without delegate or agents, delegate is added. */
@@ -1555,6 +1559,8 @@ export interface RunRequest {
   maxOutputTokens?: number;
   /** Sampling temperature, 0 to 2. Refused (400) for a model that takes none (Claude Opus 4.7 and later, Sonnet 5.5, Fable; o-series, GPT-5) or a reasoning model at a thinkingLevel other than off. */
   temperature?: number;
+  /** "deny": its OpenRouter calls go only to hosts that do not collect their data (OpenRouter's provider.data_collection; skips providers that may train on it). Default: OpenRouter's. */
+  dataCollection?: "deny";
   builtins?: ("web_fetch" | "web_search" | "delegate")[]; delegate?: DelegateSettings;
   /** Remote MCP servers the run may call, without credentials (auth `{ type: "runtime" }` or none). */
   mcpServers?: InlineMcpServer[];
@@ -2244,8 +2250,8 @@ export class AgentClient {
   continue(options?: RunRequestOptions & { actor?: string }) { return this.request("continue", { ...(options?.actor ? { actor: options.actor } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}) }, options); }
   /** The legacy steer request: a message held for the running turn. New code: `prompt(text, { whileRunning: "steer" })`. */
   steer(text: string, options?: { from?: Sender; files?: Attachment[]; metadata?: Record<string, string> }) { return this.message("steer", text, options); }
-  /** Change the prompt, thinking level, tools, model ("provider/model-id"), maxOutputTokens or temperature (null removes either) between runs. */
-  async configure(options: { systemPrompt?: string; thinkingLevel?: ThinkingLevel; tools?: Tools; mcp?: ToolServer; model?: string; maxOutputTokens?: number | null; temperature?: number | null }) {
+  /** Change the prompt, thinking level, tools, model ("provider/model-id"), maxOutputTokens, temperature or dataCollection (null removes any of the three) between runs. */
+  async configure(options: { systemPrompt?: string; thinkingLevel?: ThinkingLevel; tools?: Tools; mcp?: ToolServer; model?: string; maxOutputTokens?: number | null; temperature?: number | null; dataCollection?: "deny" | null }) {
     const { tools, mcp, ...rest } = options;
     const server = mcp ?? (tools ? toolServer(tools) : undefined);
     const result = await this.request("configure", { ...rest, ...(server ? { mcp: { tools: await server.listTools() } } : {}) });
