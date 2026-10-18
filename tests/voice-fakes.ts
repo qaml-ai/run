@@ -180,7 +180,7 @@ export async function voiceCluster(t: T, options: Partial<VoiceSessionsOptions> 
   };
   // Webhook endpoints selecting the voice events, so they land in the outbox.
   await db.query("insert into webhook_endpoints (id, tenant, url, events, secret, created_at) values ('we_1', 'alice', 'https://example.test/hook', $1, '{}', 0)",
-    [["voice.session.started", "voice.session.ended", "voice.utterance", "voice.speech.started", "voice.speech.ended"]]);
+    [["voice.session.started", "voice.session.ended", "voice.session.error", "voice.utterance", "voice.speech.started", "voice.speech.ended"]]);
   const events = async (type?: string) => (await db.query("select body from webhook_deliveries where tenant = 'alice' order by created_at, id")).rows
     .map(row => row.body).filter(body => type === undefined || body.type === type);
   return { db, accounts, fake, transcription, speech, usage, prompts, node, events };

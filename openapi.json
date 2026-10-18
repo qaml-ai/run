@@ -840,6 +840,101 @@
         ],
         "description": "A voice session ended. The bot is still in the channel until your app leaves it (OP 4 with channel_id null)"
       },
+      "Event_voice_session.error": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "evt_…: the same each time the event is sent; dedupe by it",
+            "example": "evt_3f9c0a1b2c3d4e5f60718293"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "voice.session.error"
+            ]
+          },
+          "created": {
+            "type": "number",
+            "description": "When it happened, in Unix seconds"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "session": {
+                "type": "string",
+                "description": "The voice session (vs_…)"
+              },
+              "provider": {
+                "type": "string",
+                "enum": [
+                  "discord"
+                ]
+              },
+              "guildId": {
+                "type": "string"
+              },
+              "channelId": {
+                "type": "string"
+              },
+              "botUserId": {
+                "type": "string"
+              },
+              "subject": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The session's end user"
+              },
+              "metadata": {
+                "type": "object",
+                "additionalProperties": {},
+                "description": "The session's metadata, as set"
+              },
+              "code": {
+                "type": "string",
+                "enum": [
+                  "media_crashed"
+                ],
+                "description": "media_crashed: the session's audio processing failed (its worker crashed, ran out of memory or stopped answering); speech it was saying ended, and what people were saying but had not finished may be lost"
+              },
+              "detail": {
+                "type": "string",
+                "description": "What failed, briefly: no audio, text or credentials"
+              },
+              "restarting": {
+                "type": "boolean",
+                "description": "true: the session reconnects at once and goes on. false: it failed too often (3 times in 5 minutes) and ends (voice.session.ended, reason error, follows)"
+              },
+              "attempt": {
+                "type": "number",
+                "description": "Failures in the last 5 minutes, this one included"
+              }
+            },
+            "required": [
+              "session",
+              "provider",
+              "guildId",
+              "channelId",
+              "botUserId",
+              "subject",
+              "metadata",
+              "code",
+              "detail",
+              "restarting",
+              "attempt"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "created",
+          "data"
+        ],
+        "description": "A voice session's audio failed: it reconnects, or (failing again and again) ends"
+      },
       "Event_voice_utterance": {
         "type": "object",
         "properties": {
@@ -1871,12 +1966,13 @@
                 "end_user.credit.exhausted",
                 "voice.session.started",
                 "voice.session.ended",
+                "voice.session.error",
                 "voice.utterance",
                 "voice.speech.started",
                 "voice.speech.ended"
               ]
             },
-            "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.utterance, and the billing.* events"
+            "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.session.error, voice.utterance, voice.speech.started, voice.speech.ended, and the billing.* events"
           },
           "description": {
             "type": "string"
@@ -1931,12 +2027,13 @@
                 "end_user.credit.exhausted",
                 "voice.session.started",
                 "voice.session.ended",
+                "voice.session.error",
                 "voice.utterance",
                 "voice.speech.started",
                 "voice.speech.ended"
               ]
             },
-            "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.utterance, and the billing.* events"
+            "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.session.error, voice.utterance, voice.speech.started, voice.speech.ended, and the billing.* events"
           },
           "description": {
             "type": "string",
@@ -1980,12 +2077,13 @@
                 "end_user.credit.exhausted",
                 "voice.session.started",
                 "voice.session.ended",
+                "voice.session.error",
                 "voice.utterance",
                 "voice.speech.started",
                 "voice.speech.ended"
               ]
             },
-            "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.utterance, and the billing.* events"
+            "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.session.error, voice.utterance, voice.speech.started, voice.speech.ended, and the billing.* events"
           },
           "description": {
             "type": "string",
@@ -18706,6 +18804,25 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/Event_voice_session.ended"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Any 2xx acknowledges it; anything else, or no answer within 10 seconds, is retried"
+          }
+        }
+      }
+    },
+    "voice.session.error": {
+      "post": {
+        "summary": "voice.session.error",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Event_voice_session.error"
               }
             }
           }

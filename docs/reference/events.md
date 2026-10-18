@@ -316,6 +316,7 @@ dedupe by `id`. See [Webhooks](../guides/webhooks.md).
 | `input.resolved` | `agentId`, `requestId`, `inputId`, `state` |
 | `voice.session.started` | `session`, `provider`, `guildId`, `channelId`, `botUserId`, `subject`, `metadata`: a [voice session](../guides/voice-calls.md) connected (once) |
 | `voice.session.ended` | the above, `reason` (`requested`, `empty`, `idle`, `max_duration`, `budget`, `kicked`, `credentials`, `error`), `limit?` (`tenant`, `end_user`), `endUserReason?`, `startedAt`, `endedAt`, `utterances`, `speechSeconds`, `costUsd` |
+| `voice.session.error` | the voice facts, `code` (`media_crashed`), `detail`, `restarting`, `attempt`: the session's audio failed; it reconnects, or after 3 failures in 5 minutes ends (`voice.session.ended`, `error`) |
 | `voice.utterance` | the above facts, `speakerId`, `seq`, `text`, `language`, `seconds`, `startedAt`, `endedAt`, `ended` (`silence`, `max`, `error`, `handoff`, `end`), `costUsd` |
 | `voice.speech.started` | the voice facts, `speechId`, `latencyMs` (from the speak request to the first audio) |
 | `voice.speech.ended` | the voice facts, `speechId`, `reason` (`done`, `interrupted`, `error`), `by?` (`interrupt`, `requested`, `barge_in`, `end`, `handoff`, `budget`), `seconds`, `costUsd` |

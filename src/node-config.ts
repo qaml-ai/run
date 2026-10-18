@@ -158,7 +158,11 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
       stt: list(env.AGENT_VOICE_STT), tts: list(env.AGENT_VOICE_TTS),
       // Where each speech provider is dialled, when not its own address (a proxy, a test's fake).
       endpoints: { deepgram: env.AGENT_DEEPGRAM_URL, soniox: env.AGENT_SONIOX_URL, assemblyai: env.AGENT_ASSEMBLYAI_URL, elevenlabs: env.AGENT_ELEVENLABS_URL, cartesia: env.AGENT_CARTESIA_URL },
-      perTenant: Number(env.AGENT_VOICE_SESSIONS_PER_TENANT ?? 10), perNode: Number(env.AGENT_VOICE_SESSIONS_PER_NODE ?? 200) },
+      perTenant: Number(env.AGENT_VOICE_SESSIONS_PER_TENANT ?? 10), perNode: Number(env.AGENT_VOICE_SESSIONS_PER_NODE ?? 200),
+      // Where each session's audio is handled (src/voice/media-host.ts): in media workers (the default; a crash there ends
+      // only that session's audio, which restarts), or "inline" on the node's own thread.
+      isolation: env.AGENT_VOICE_ISOLATION === "inline" ? "inline" as const : "worker" as const,
+      sessionsPerWorker: Number(env.AGENT_VOICE_SESSIONS_PER_WORKER ?? 1), workers: Number(env.AGENT_VOICE_WORKERS ?? 16), workerMaxMb: Number(env.AGENT_VOICE_WORKER_MAX_MB ?? 256) },
     verifyKeys: env.AGENT_VERIFY_KEYS !== "false",
     billingAdmins: (env.AGENT_BILLING_ADMINS ?? "").split(",").map(value => value.trim()).filter(Boolean),
     purgeMs, billingMs, reconcileDays,

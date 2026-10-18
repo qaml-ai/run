@@ -132,6 +132,11 @@ nothing more.
 (`requested`, `empty`, `idle`, `max_duration`, `budget`, `kicked`, `credentials`, `error`), `limit` and
 `endUserReason` with `budget`, and the session's totals.
 
+`voice.session.error` tells that the session's audio failed (`code: "media_crashed"`). Each session's audio is handled
+apart from every other's, so a failure is its own. With `restarting: true` it reconnects at once, and the call goes on:
+what the bot was saying ends (`voice.speech.ended`, `error`), and what someone was halfway through saying may be lost.
+After 3 failures in 5 minutes it stops trying (`restarting: false`), and `voice.session.ended` (`error`) follows.
+
 ## Speaking
 
 A session started with `speak: true` can talk: what you send it is made into speech with OpenAI's `gpt-4o-mini-tts` and

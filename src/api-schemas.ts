@@ -113,7 +113,7 @@ export const KeyScope = z.object({
   })),
 }).openapi("KeyScope");
 
-const eventTypes = z.array(z.enum(EVENT_TYPES)).openapi({ description: "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.utterance, and the billing.* events" });
+const eventTypes = z.array(z.enum(EVENT_TYPES)).openapi({ description: "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.session.error, voice.utterance, voice.speech.started, voice.speech.ended, and the billing.* events" });
 export const WebhookEndpointInput = z.object({
   url: z.string().openapi({ description: "An HTTPS URL that receives the events, each a POST signed per Standard Webhooks", example: "https://example.com/hooks/agents" }),
   events: eventTypes,
@@ -209,6 +209,13 @@ export const WebhookEvents = {
     endUserReason: z.string().optional().openapi({ description: "With limit end_user: why (balance, daily_limit, bucket_limit)" }),
     startedAt: z.number().nullable(), endedAt: z.number(), utterances: z.number(), speechSeconds: z.number(), costUsd: z.number(),
   }), "A voice session ended. The bot is still in the channel until your app leaves it (OP 4 with channel_id null)"),
+  "voice.session.error": envelope("voice.session.error", z.object({
+    ...voiceFacts,
+    code: z.enum(["media_crashed"]).openapi({ description: "media_crashed: the session's audio processing failed (its worker crashed, ran out of memory or stopped answering); speech it was saying ended, and what people were saying but had not finished may be lost" }),
+    detail: z.string().openapi({ description: "What failed, briefly: no audio, text or credentials" }),
+    restarting: z.boolean().openapi({ description: "true: the session reconnects at once and goes on. false: it failed too often (3 times in 5 minutes) and ends (voice.session.ended, reason error, follows)" }),
+    attempt: z.number().openapi({ description: "Failures in the last 5 minutes, this one included" }),
+  }), "A voice session's audio failed: it reconnects, or (failing again and again) ends"),
   "voice.utterance": envelope("voice.utterance", z.object({
     ...voiceFacts,
     speakerId: z.string().openapi({ description: "The Discord user who spoke" }),

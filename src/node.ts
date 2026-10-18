@@ -94,6 +94,8 @@ import { liveProvider, sttReference } from "./voice-providers/stt.ts";
 import { DEFAULT_VOICES, speechProvider, ttsReference } from "./voice-providers/tts.ts";
 import { speechPrices, ttsCost } from "./voice-providers/prices.ts";
 import { VOICE_CHANNEL, VoiceSessions, type VoiceReplyTarget, type VoiceTransport } from "./voice-sessions.ts";
+import { MediaHost } from "./voice/media-host.ts";
+import type { MediaFactory } from "./voice/media.ts";
 import { buggify } from "./buggify.ts";
 import { sometimes } from "./assert.ts";
 
@@ -144,6 +146,8 @@ export type NodeDeps = {
   voiceTransports?: Partial<Record<"discord", VoiceTransport>>;
   /** What a voice server's host must match, when a test serves its own. */
   voiceEndpoints?: RegExp;
+  /** Where voice sessions' media runs, when a test chooses (inline on the node's thread, or a media host of its own). */
+  voiceMedia?: (transport: VoiceTransport) => MediaFactory;
 };
 type RuntimeSecrets = Awaited<ReturnType<typeof runtimeSecrets>>;
 type ManagedDiscordSecrets = NonNullable<Awaited<ReturnType<typeof managedDiscordSecrets>>>;
@@ -885,7 +889,13 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   });
   // Voice calls held for tenants' bots, one node each (src/voice-sessions.ts), when voice is on. Discord's voice library
   // is loaded only then: it brings a native module (DAVE's).
-  const voiceTransports = deps.voiceTransports ?? (config.voice.enabled ? { discord: (await import("./voice-discord.ts")).discordVoice() } : undefined);
+  // Each session's audio (its connection, DAVE, Opus, cutting utterances, playing speech) runs in a media worker unless
+  // AGENT_VOICE_ISOLATION=inline: a crash there ends that session's audio alone, which restarts (src/voice/media-host.ts).
+  const voiceHost = !deps.voiceTransports && config.voice.enabled && config.voice.isolation === "worker" ? new MediaHost({
+    transport: { module: new URL("./voice-discord.ts", import.meta.url).href, export: "discordVoice" }, speaks: true,
+    sessionsPerWorker: config.voice.sessionsPerWorker, maxWorkers: config.voice.workers, maxMb: config.voice.workerMaxMb,
+  }) : undefined;
+  const voiceTransports = deps.voiceTransports ?? (config.voice.enabled ? { discord: voiceHost ? voiceHost.transport() : (await import("./voice-discord.ts")).discordVoice() } : undefined);
   const voice = voiceTransports && new VoiceSessions({
     db, accounts, node, ownership, transports: voiceTransports, ...(deps.voiceEndpoints ? { endpoints: deps.voiceEndpoints } : {}),
     admit: async tenant => {
@@ -909,6 +919,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     perTenant: tenant => tenants.maxVoiceSessions(tenant) ?? config.voice.perTenant, perNode: config.voice.perNode,
     // A voice.utterance goes out at once: a bot that answers aloud waits on it (the outbox's scan is every 5 s).
     kickWebhooks: () => webhooks.kick(),
+    ...(deps.voiceMedia ? { media: deps.voiceMedia } : voiceHost ? { media: () => voiceHost.factory() } : {}),
   });
   // An agent loaded on another node: this node's idle watchers of it end, and reconnect to that node.
   // A tenant's webhook endpoints changed on some node: read them again at its next run.
@@ -1460,6 +1471,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     scheduler.stop();
     channels.stop();
     await voice?.stop();
+    await voiceHost?.close();
     await managedDiscord?.stop();
     webhooks.stop();
     accountDeletions.stop();
