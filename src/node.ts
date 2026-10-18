@@ -1310,7 +1310,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   server.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     socket.on("error", () => {});
     void upgradeVoice(req, socket, head).catch(error => {
-      console.error(JSON.stringify({ type: "voice_socket_failed", error: errorText(error) }));
+      console.error(JSON.stringify({ type: "voice_socket_failed", error: safeError(error) }));
       refuseUpgrade(socket, 500);
     });
   });
