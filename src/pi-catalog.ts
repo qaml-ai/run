@@ -100,7 +100,8 @@ const corrected = (found: Model<Api> | undefined): Model<Api> | undefined => {
 
 /**
  * The OpenRouter hosts a model of the platform's catalog may be served by (its requests' `provider.only`), by id; a
- * routing variant (`:nitro`) is its base model's. Any other model is OpenRouter's to route. Only `only` is set: it
+ * routing variant (`:nitro`) has its own entry where it has one, else its base model's. Any other model is
+ * OpenRouter's to route. Only `only` is set: it
  * narrows the hosts and leaves OpenRouter's load balancing on, where `order` or `sort` turns it off (2026-10-17: an
  * `order` sent every DeepSeek V4.1 Flash call to one slow fp4 host). Each name is an OpenRouter provider slug
  * (GET /api/v1/providers), all of the provider's endpoints for the model.
@@ -108,15 +109,18 @@ const corrected = (found: Model<Api> | undefined): Model<Api> | undefined => {
  * - DeepSeek V4.1 Flash 1017 (Miguel, 2026-10-18, from OpenRouter's live provider stats): Baseten, Morph, Parasail,
  *   Relace and DeepSeek's own endpoint; not Cloudflare (whose fallback to the platform's own Cloudflare key refuses
  *   1017), DeepInfra or InferenceNet (131,072 longest replies) or Fireworks.
+ * - DeepSeek V4.1 Flash 1017:nitro, camel-builder's (Miguel, 2026-10-18): 1017's without Relace, the slowest of them on
+ *   the builder's long answers (128 tokens/s median, 43 at p10, against Parasail's 212 and DeepSeek's 207).
  */
 const OPENROUTER_HOSTS: Record<string, string[]> = {
   "deepseek/deepseek-v4.1-flash": ["fireworks", "together", "parasail", "coreweave", "nebius"],
   "deepseek/deepseek-v4.1-flash-1017": ["baseten", "parasail", "relace", "deepseek"],
+  "deepseek/deepseek-v4.1-flash-1017:nitro": ["parasail", "baseten", "deepseek"],
 };
 
 /** The OpenRouter hosts a model may be served by (OPENROUTER_HOSTS), or undefined: OpenRouter's choice. */
 export function openRouterHosts(id: string): string[] | undefined {
-  return OPENROUTER_HOSTS[id.replace(/:[a-z]+$/, "")];
+  return OPENROUTER_HOSTS[id] ?? OPENROUTER_HOSTS[id.replace(/:[a-z]+$/, "")];
 }
 
 /**
