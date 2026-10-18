@@ -2974,6 +2974,11 @@ nothing more.
 (`requested`, `empty`, `idle`, `max_duration`, `budget`, `kicked`, `credentials`, `error`), `limit` and
 `endUserReason` with `budget`, and the session's totals.
 
+`voice.session.error` tells that the session's audio failed (`code: "media_crashed"`). Each session's audio is handled
+apart from every other's, so a failure is its own. With `restarting: true` it reconnects at once, and the call goes on:
+what the bot was saying ends (`voice.speech.ended`, `error`), and what someone was halfway through saying may be lost.
+After 3 failures in 5 minutes it stops trying (`restarting: false`), and `voice.session.ended` (`error`) follows.
+
 ## Speaking
 
 A session started with `speak: true` can talk: what you send it is made into speech with OpenAI's `gpt-4o-mini-tts` and
@@ -3932,6 +3937,7 @@ Every event is an envelope:
 | `usage.recorded` | A model response's usage was counted, a transcription's, or images' | `agentId`, `requestId`, `subject`, `actor`, `context`, `keyScope`, `provider`, `model`, `kind` (`response`, `compaction`, `transcription`, `image` or `speech`), tokens, `audioSeconds` (a transcription's, with no tokens), `images` (how many images were made), `cost: {usd, source}`, `at`. A [transcription](https://run.camelai.com/docs/guides/voice.md) made with `POST /v1/transcriptions`, or [images](https://run.camelai.com/docs/guides/images.md) made with `POST /v1/images`, has `agentId: null`, and the `subject`, `context` and `actor` it was sent with. Treat a `kind` you do not know as other usage: kinds may be added |
 | `voice.session.started` | A [voice session](https://run.camelai.com/docs/guides/voice-calls.md) connected and is listening (once) | `session`, `provider`, `guildId`, `channelId`, `botUserId`, `subject`, `metadata` |
 | `voice.session.ended` | A voice session ended; your app leaves the channel | as above, and `reason`, `limit` and `endUserReason` with `budget`, `startedAt`, `endedAt`, `utterances`, `speechSeconds`, `costUsd` |
+| `voice.session.error` | A voice session's audio failed: it reconnects at once (`restarting`), or after 3 failures in 5 minutes ends | the voice facts, `code` (`media_crashed`), `detail`, `restarting`, `attempt` |
 | `voice.utterance` | A person's utterance in a voice session, transcribed | as above, and `speakerId`, `seq`, `text`, `language`, `seconds`, `startedAt`, `endedAt`, `ended`, `costUsd` |
 | `voice.speech.started` | A voice session's bot started saying a [speech](https://run.camelai.com/docs/guides/voice-calls.md#speaking) | the voice facts, `speechId`, `latencyMs` |
 | `voice.speech.ended` | It ended | the voice facts, `speechId`, `reason`, `by`, `seconds`, `costUsd` |
@@ -7386,6 +7392,7 @@ dedupe by `id`. See [Webhooks](https://run.camelai.com/docs/guides/webhooks.md).
 | `input.resolved` | `agentId`, `requestId`, `inputId`, `state` |
 | `voice.session.started` | `session`, `provider`, `guildId`, `channelId`, `botUserId`, `subject`, `metadata`: a [voice session](https://run.camelai.com/docs/guides/voice-calls.md) connected (once) |
 | `voice.session.ended` | the above, `reason` (`requested`, `empty`, `idle`, `max_duration`, `budget`, `kicked`, `credentials`, `error`), `limit?` (`tenant`, `end_user`), `endUserReason?`, `startedAt`, `endedAt`, `utterances`, `speechSeconds`, `costUsd` |
+| `voice.session.error` | the voice facts, `code` (`media_crashed`), `detail`, `restarting`, `attempt`: the session's audio failed; it reconnects, or after 3 failures in 5 minutes ends (`voice.session.ended`, `error`) |
 | `voice.utterance` | the above facts, `speakerId`, `seq`, `text`, `language`, `seconds`, `startedAt`, `endedAt`, `ended` (`silence`, `max`, `error`, `handoff`, `end`), `costUsd` |
 | `voice.speech.started` | the voice facts, `speechId`, `latencyMs` (from the speak request to the first audio) |
 | `voice.speech.ended` | the voice facts, `speechId`, `reason` (`done`, `interrupted`, `error`), `by?` (`interrupt`, `requested`, `barge_in`, `end`, `handoff`, `budget`), `seconds`, `costUsd` |

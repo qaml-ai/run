@@ -41,9 +41,9 @@ export interface MediaEvents {
   cut(cut: Cut): void;
   /**
    * The media died (its worker crashed, ran out of memory or stopped answering): no event follows, and its playbacks
-   * ended `error`. Only media in a worker can.
+   * ended `error`. Only media in a worker can. `kind`: crashed, out_of_memory, unresponsive or memory_limit.
    */
-  crashed?(reason: string): void;
+  crashed?(kind: string): void;
 }
 
 /** A session's media. */

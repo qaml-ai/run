@@ -640,6 +640,8 @@ export type WebhookEvent = { id: string; created: number } & (
       reason: VoiceEndReason; limit?: "tenant" | "end_user"; endUserReason?: string;
       startedAt: number | null; endedAt: number; utterances: number; speechSeconds: number; costUsd: number;
     } }
+  /** The session's audio failed: it reconnects (`restarting`), or, failing 3 times in 5 minutes, ends (voice.session.ended follows). */
+  | { type: "voice.session.error"; data: VoiceFacts & { code: "media_crashed"; detail: string; restarting: boolean; attempt: number } }
   | { type: "voice.utterance"; data: VoiceUtterance }
   | { type: "voice.speech.started"; data: VoiceFacts & { speechId: string; latencyMs: number; reply?: VoiceReply } }
   | { type: "voice.speech.ended"; data: VoiceFacts & {

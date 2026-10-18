@@ -139,6 +139,8 @@ export const VOICE_LIMITS = Object.freeze({
   /** Ended sessions are listed this long, then deleted. */
   retentionDays: 30,
 });
+/** A session whose media crashes this many times within `windowMs` ends (`error`, `media_crashed`). */
+export const MEDIA_CRASHES = Object.freeze({ max: 3, windowMs: 5 * 60_000 });
 const DEFAULT_NOTICE = "<@{bot}> is listening and transcribing speech in this channel. Audio is not stored.";
 const SPEAKING_NOTICE = "<@{bot}> is listening, transcribing speech and may speak in this channel. Audio is not stored.";
 const VOICE_NAME = /^[a-z][a-z0-9_-]{1,31}$/;
@@ -338,6 +340,8 @@ type Held = {
   speech?: SessionSpeech;
   /** The runs whose replies it speaks (a prompt's speak), by agent and request: each spoken once. */
   replies?: Set<string>;
+  /** When its media crashed lately (MEDIA_CRASHES): too many end the session. */
+  crashes?: number[];
   /** Each speaker's live transcription (Transcriber.live), while they keep talking now and then. */
   live?: Map<string, LiveSpeaker>;
 };
@@ -788,8 +792,35 @@ export class VoiceSessions {
       pcm: (speaker, pcm) => { if (current()) this.liveAudio(held, speaker, pcm); },
       drop: speaker => held.live?.get(speaker)?.stream.clear(),
       cut: cut => this.cut(held, cut),
+      crashed: reason => { if (current()) this.crashed(held, transport, reason); },
     });
     held.media = media;
+  }
+
+  /**
+   * The session's media died (src/voice/media-host.ts): its worker crashed, ran out of memory or stopped answering.
+   * Nothing else on the node is touched. The session says so (`voice.session.error`) and reconnects in a fresh worker
+   * with the same credentials, unless that is the MEDIA_CRASHES.max-th time in its window: then it ends (`error`).
+   */
+  private crashed(held: Held, transport: VoiceTransport, reason: string) {
+    held.media = undefined;
+    const now = Date.now();
+    held.crashes = [...(held.crashes ?? []).filter(at => now - at < MEDIA_CRASHES.windowMs), now];
+    const attempt = held.crashes.length, restarting = attempt < MEDIA_CRASHES.max;
+    console.error(JSON.stringify({ type: "voice_media_crashed", session: held.id, node: this.options.node, reason: reason.slice(0, 300), attempt, restarting }));
+    // What each speaker's live stream had of an utterance the media will never cut is forgotten.
+    for (const live of held.live?.values() ?? []) live.stream.clear();
+    void transaction(this.db, async sql => {
+      const row = (await sql.query("select * from voice_sessions where id = $1", [held.id])).rows[0] as Row | undefined;
+      if (row?.options.deliver.webhooks && row.state !== "ended") {
+        await enqueueEvents(sql, [this.event(row, "voice.session.error", { code: "media_crashed", detail: reason.slice(0, 200), restarting, attempt }, `voice:${held.id}:error:${now}`)]);
+      }
+    }).then(() => this.options.kickWebhooks?.(), error => console.error(JSON.stringify({ type: "voice_event_failed", session: held.id, error: safeError(error) })));
+    if (!restarting) {
+      void this.finish(held, held.id, { reason: "error", detail: "media_crashed" }).catch(error => console.error(JSON.stringify({ type: "voice_finish_failed", session: held.id, error: safeError(error) })));
+      return;
+    }
+    this.connect(held, transport);
   }
 
   /** Apply a row changed elsewhere: new credentials reconnect, other changes are read as they are. */
@@ -1226,7 +1257,7 @@ export class VoiceSessions {
     };
   }
 
-  protected event(row: Row, type: "voice.session.started" | "voice.session.ended" | "voice.utterance" | "voice.speech.started" | "voice.speech.ended", data: Record<string, unknown>, key: string): WebhookEvent {
+  protected event(row: Row, type: "voice.session.started" | "voice.session.ended" | "voice.session.error" | "voice.utterance" | "voice.speech.started" | "voice.speech.ended", data: Record<string, unknown>, key: string): WebhookEvent {
     const { options } = row;
     return webhookEvent(type, row.tenant, {
       session: row.id, provider: row.provider, guildId: row.guild, channelId: row.channel, botUserId: row.bot_user,
