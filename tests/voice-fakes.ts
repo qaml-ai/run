@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import type { Server } from "node:http";
 import { WebSocketServer } from "ws";
-import OpusScript from "opusscript";
+import { Opus } from "../src/opus.ts";
 import { Accounts } from "../src/accounts.ts";
 import { Tenants } from "../src/tenants.ts";
 import { Ownership } from "../src/ownership.ts";
@@ -80,7 +80,7 @@ export const opusPacket = (fill = 1) => Uint8Array.from([0x78, ...Array.from({ l
 
 /** Real Opus packets (48 kHz stereo, 20 ms): `loud` a 440 Hz tone at about -13 dBFS, else digital silence (encoded). */
 const encoded = (() => {
-  const encoder = new OpusScript(48_000, 2, OpusScript.Application.AUDIO);
+  const encoder = new Opus(48_000, 2, "audio");
   const frame = (amplitude: number) => {
     const pcm = Buffer.alloc(960 * 2 * 2);
     for (let i = 0; i < 960; i++) {

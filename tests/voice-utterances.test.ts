@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { HttpError } from "../src/http.ts";
 import { checkedAudio } from "../src/transcription.ts";
-import OpusScript from "opusscript";
+import { Opus } from "../src/opus.ts";
 import { oggOpus, packetLevel, packetSamples, Segmenter, type Cut } from "../src/voice-audio.ts";
 import { AGENT, discordGrant, fakeTranscriber, opusPacket, quietPacket, sleep, speak, speechPacket, until, voiceCluster } from "./voice-fakes.ts";
 
@@ -70,7 +70,7 @@ test("each speaker's packets are cut into utterances: at a silence, at the longe
 test("a sender that never stops is cut at its quiet packets, and quiet past the padding is neither sent nor billed", () => {
   const cuts: Cut[] = [];
   const segmenter = new Segmenter({ silenceMs: 400, minMs: 300, padMs: 200, cut: cut => cuts.push(cut) });
-  assert.ok(packetLevel(new OpusScript(16_000, 1, OpusScript.Application.VOIP), speechPacket()) > -20, "the tone is loud");
+  assert.ok(packetLevel(new Opus(16_000, 1, "voip"), speechPacket()) > -20, "the tone is loud");
   const send = (count: number, packet: (index: number) => Uint8Array) => { for (let index = 0; index < count; index++) segmenter.packet("bot", packet(index)); };
   // A bot playing a file: 1 s of encoded silence, 0.6 s of speech, 1 s of silence, 0.4 s of speech, 1 s of silence, with no gap.
   send(50, quietPacket);

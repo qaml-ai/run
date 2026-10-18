@@ -301,10 +301,16 @@ export class DiscordVoice implements VoiceConnection {
     if (this.listening.has(userId) || this.closed) return;
     this.listening.add(userId);
     const stream = this.connection.receiver.subscribe(userId, { end: { behavior: EndBehaviorType.Manual } });
-    stream.on("data", (packet: Buffer) => this.handlers.packet(userId, packet));
+    // Thrown from a stream's listener, an error would reach the process (uncaught) and end every session on the node:
+    // a speaker's audio that cannot be handled is that speaker's alone.
+    const guarded = (work: () => void) => {
+      try { work(); }
+      catch (error) { this.handlers.diagnostic("audio_failed", { error: (error instanceof Error ? error.message : String(error)).slice(0, 200) }); }
+    };
+    stream.on("data", (packet: Buffer) => guarded(() => this.handlers.packet(userId, packet)));
     stream.once("error", error => {
       this.handlers.diagnostic("stream_error", { error: error.message.slice(0, 200) });
-      this.handlers.broken(userId);
+      guarded(() => this.handlers.broken(userId));
     });
     stream.once("close", () => this.listening.delete(userId));
   }

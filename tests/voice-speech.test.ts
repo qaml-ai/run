@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import OpusScript from "opusscript";
+import { Opus } from "../src/opus.ts";
 import { HttpError } from "../src/http.ts";
 import { opusFromPcm } from "../src/voice-audio.ts";
 import { discordVoice, strictWelcome } from "../src/voice-discord.ts";
@@ -26,7 +26,7 @@ test("speech PCM (24 kHz mono) becomes 20 ms Opus packets at 48 kHz stereo, one 
   for await (const packet of opusFromPcm(chunks(1_000, 7_001, 15_999, 240), count => { samples += count; })) packets.push(packet);
   assert.equal(packets.length, 51);
   assert.equal(samples, 24_240);
-  const decoder = new OpusScript(48_000, 2, OpusScript.Application.AUDIO);
+  const decoder = new Opus(48_000, 2, "audio");
   assert.equal(decoder.decode(packets[0]).length, 960 * 2 * 2, "20 ms of 48 kHz stereo");
   decoder.delete();
 });
