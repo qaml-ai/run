@@ -16,7 +16,7 @@ test("DeepSeek V4.1 Flash 1017 is OpenRouter's V4.1 Flash entry at its own id, n
   assert.equal(model.name, "DeepSeek: DeepSeek V4.1 Flash 1017");
   assert.deepEqual(model.cost, { input: 0.15, output: 0.6, cacheRead: 0.003, cacheWrite: 0 });
   assert.equal(model.contextWindow, 1_048_576);
-  assert.deepEqual([model.api, model.baseUrl, model.reasoning, model.input, model.maxTokens], [base.api, base.baseUrl, true, ["text", "image"], 393_216]);
+  assert.deepEqual([model.api, model.baseUrl, model.reasoning, model.input, model.maxTokens], [base.api, base.baseUrl, true, ["text", "image"], 262_144]);
   assert.deepEqual(model.thinkingLevelMap, base.thinkingLevelMap);
   assert.deepEqual(model.compat, base.compat);
   assert.equal((model.compat as { thinkingFormat?: string }).thinkingFormat, "openrouter");
@@ -48,8 +48,8 @@ test("an agent on it calls OpenRouter's Chat Completions with the 1017 id and th
   assert.ok(Array.isArray(sent.messages), "Chat Completions (deepseek-replay.ts)");
   assert.equal(sent.model, FLASH_1017);
   assert.equal(sent.reasoning?.effort, "high");
-  assert.deepEqual(sent.provider, { only: ["deepseek", "morph", "parasail"] }, "its hosts, and nothing else of routing");
+  assert.deepEqual(sent.provider, { only: ["baseten", "morph", "parasail", "relace", "deepseek"] }, "its hosts, and nothing else of routing");
   // No more than DeepSeek's own endpoint serves, so OpenRouter can route it there.
   const most = sent.max_completion_tokens ?? sent.max_tokens;
-  assert.ok(most <= 393_216, String(most));
+  assert.ok(most <= 262_144, String(most));
 });

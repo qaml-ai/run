@@ -70,11 +70,11 @@ const AZURE = "azure";
 /**
  * Longest replies Pi's catalog has too long, by provider and id. A call that names no maximum asks for the model's
  * maxTokens, and OpenRouter routes it only to the hosts that serve that much: 1017's 943,718 (V4.1 Flash's longest
- * endpoint, which ADDED copies) leaves out DeepSeek's own endpoint, which serves 393,216 (OpenRouter's
- * `top_provider.max_completion_tokens`). V4.1 Flash keeps Pi's: its hosts (OPENROUTER_HOSTS) serve that much.
+ * endpoint, which ADDED copies) leaves out DeepSeek's own endpoint (393,216) and Baseten's (262,144), so 1017 asks for
+ * 262,144, which all of its hosts (OPENROUTER_HOSTS) serve. V4.1 Flash keeps Pi's: its hosts serve that much.
  */
 const MAX_TOKENS: Record<string, Record<string, number>> = {
-  openrouter: { "deepseek/deepseek-v4.1-flash-1017": 393_216 },
+  openrouter: { "deepseek/deepseek-v4.1-flash-1017": 262_144 },
 };
 const limited = (model: Model<Api>): Model<Api> => {
   const most = MAX_TOKENS[model.provider]?.[model.id];
@@ -105,12 +105,13 @@ const corrected = (found: Model<Api> | undefined): Model<Api> | undefined => {
  * `order` sent every DeepSeek V4.1 Flash call to one slow fp4 host). Each name is an OpenRouter provider slug
  * (GET /api/v1/providers), all of the provider's endpoints for the model.
  * - DeepSeek V4.1 Flash (Miguel, 2026-10-18): fp8 or full-precision hosts of the full context; none of the fp4 ones.
- * - DeepSeek V4.1 Flash 1017 (Miguel, 2026-10-18): DeepSeek's own endpoint, Morph and Parasail; not Cloudflare (whose
- *   fallback to the platform's own Cloudflare key refuses 1017) or the others.
+ * - DeepSeek V4.1 Flash 1017 (Miguel, 2026-10-18, from OpenRouter's live provider stats): Baseten, Morph, Parasail,
+ *   Relace and DeepSeek's own endpoint; not Cloudflare (whose fallback to the platform's own Cloudflare key refuses
+ *   1017), DeepInfra or InferenceNet (131,072 longest replies) or Fireworks.
  */
 const OPENROUTER_HOSTS: Record<string, string[]> = {
   "deepseek/deepseek-v4.1-flash": ["morph", "fireworks", "together", "parasail", "coreweave", "nebius"],
-  "deepseek/deepseek-v4.1-flash-1017": ["deepseek", "morph", "parasail"],
+  "deepseek/deepseek-v4.1-flash-1017": ["baseten", "morph", "parasail", "relace", "deepseek"],
 };
 
 /** The OpenRouter hosts a model may be served by (OPENROUTER_HOSTS), or undefined: OpenRouter's choice. */

@@ -57,11 +57,11 @@ test("OpenRouter models the platform's apps run on are at OpenRouter's list pric
   assert.equal(withCatalogPrices(stored).cost.output, 0.6);
 });
 
-test("DeepSeek V4.1 Flash 1017 asks for at most what DeepSeek's own endpoint serves, agents made before included; V4.1 Flash keeps Pi's", () => {
+test("DeepSeek V4.1 Flash 1017 asks for at most what all its hosts serve (Baseten 262,144), agents made before included; V4.1 Flash keeps Pi's", () => {
   const id = "deepseek/deepseek-v4.1-flash-1017";
-  assert.equal(getModel("openrouter", id)!.maxTokens, 393_216);
-  assert.equal(getModels("openrouter").find(entry => entry.id === id)!.maxTokens, 393_216);
-  assert.equal(withCatalogPrices({ ...getModel("openrouter", id)!, maxTokens: 943_718 }).maxTokens, 393_216);
+  assert.equal(getModel("openrouter", id)!.maxTokens, 262_144);
+  assert.equal(getModels("openrouter").find(entry => entry.id === id)!.maxTokens, 262_144);
+  assert.equal(withCatalogPrices({ ...getModel("openrouter", id)!, maxTokens: 943_718 }).maxTokens, 262_144);
   assert.equal(getModel("openrouter", "deepseek/deepseek-v4.1-flash")!.maxTokens, 943_718);
   // A tenant's endpoint keeps its own.
   const elsewhere = { ...getModel("openrouter", id)!, maxTokens: 943_718, baseUrl: "https://llm.example.com" };
