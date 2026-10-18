@@ -8,6 +8,8 @@ import { fakeModel, runtime, toolCall } from "./runtime-server.ts";
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
 const HOSTS = ["fireworks", "together", "parasail", "coreweave", "nebius"];
 const HOSTS_1017 = ["baseten", "parasail", "relace", "deepseek"];
+/** camel-builder's 1017:nitro: 1017's hosts without Relace. */
+const HOSTS_NITRO = ["parasail", "baseten", "deepseek"];
 const FLASH = getModel("openrouter", "deepseek/deepseek-v4.1-flash")!;
 const FLASH_1017 = getModel("openrouter", "deepseek/deepseek-v4.1-flash-1017")!;
 /** Never an order or sort: either turns off OpenRouter's load balancing. Nor an ignore, a quantization or anything else. */
@@ -17,7 +19,9 @@ const onlyOnly = (bodies: any[]) => {
 
 test("DeepSeek V4.1 Flash and 1017 on OpenRouter may be served only by their listed hosts; other models by any", () => {
   assert.deepEqual(openRouterHosts("deepseek/deepseek-v4.1-flash"), HOSTS);
-  assert.deepEqual(openRouterHosts("deepseek/deepseek-v4.1-flash:nitro"), HOSTS, "a routing variant is its base model's");
+  assert.deepEqual(openRouterHosts("deepseek/deepseek-v4.1-flash:nitro"), HOSTS, "a routing variant with no entry of its own is its base model's");
+  assert.deepEqual(openRouterHosts("deepseek/deepseek-v4.1-flash-1017:nitro"), HOSTS_NITRO);
+  assert.deepEqual(openRouterHosts("deepseek/deepseek-v4.1-flash-1017:floor"), HOSTS_1017, "another variant of 1017: 1017's");
   assert.deepEqual(openRouterHosts("deepseek/deepseek-v4.1-flash-1017"), HOSTS_1017);
   for (const id of ["deepseek/deepseek-v4-flash", "moonshotai/kimi-k3", "z-ai/glm-5.3-flash"]) assert.equal(openRouterHosts(id), undefined, id);
 
@@ -51,12 +55,13 @@ test("an agent's calls send their model's hosts: V4.1 Flash five, 1017 four with
   onlyOnly(host.bodies);
 });
 
-test("1017:nitro resolves as 1017 does (catalog, price, 262,144, its hosts, Chat Completions) and is sent with its variant", async t => {
+test("1017:nitro resolves as 1017 does (catalog, price, 262,144, Chat Completions), has its own hosts without Relace, and is sent with its variant", async t => {
   const nitro = resolveModel(`openrouter/${FLASH_1017.id}:nitro`);
   assert.deepEqual([nitro.id, nitro.api, nitro.maxTokens, nitro.contextWindow], [`${FLASH_1017.id}:nitro`, "openai-completions", 262_144, 1_048_576]);
   assert.deepEqual(nitro.cost, FLASH_1017.cost);
   assert.equal(platformUsage({ input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 } as never, "openrouter", nitro.id).known, true);
-  assert.deepEqual(openRouterHosts(nitro.id), HOSTS_1017);
+  assert.deepEqual(openRouterHosts(nitro.id), HOSTS_NITRO, "its own entry: no Relace");
+  assert.ok(!HOSTS_NITRO.includes("relace") && HOSTS_1017.includes("relace"), "plain 1017 keeps Relace");
 
   const host = await fakeModel(t, () => ({ role: "assistant", content: "Fast." }));
   const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), LOCAL);
@@ -65,7 +70,7 @@ test("1017:nitro resolves as 1017 does (catalog, price, 262,144, its hosts, Chat
   assert.equal((await r.prompt(agent, "Hi")).outcome.result.reply, "Fast.");
   const [sent] = host.bodies;
   assert.equal(sent.model, `${FLASH_1017.id}:nitro`, "the variant goes to OpenRouter as given: its throughput sort");
-  assert.deepEqual(sent.provider, { only: HOSTS_1017 }, "and nothing of ours beyond its hosts");
+  assert.deepEqual(sent.provider, { only: HOSTS_NITRO }, "and nothing of ours beyond its hosts");
   assert.equal(sent.reasoning?.effort, "high");
   assert.ok((sent.max_completion_tokens ?? sent.max_tokens) <= 262_144);
 });
