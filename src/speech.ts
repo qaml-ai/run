@@ -26,7 +26,8 @@ export const SPEECH_LIMITS = Object.freeze({
 /** The voice a speech is made in when none is asked for. */
 export const DEFAULT_VOICE = "alloy";
 
-export type SpeechInput = { text: string; voice: string; instructions?: string };
+/** `language` (ISO 639-1 or a locale) helps providers that speak many to pick its pronunciation. */
+export type SpeechInput = { text: string; voice: string; instructions?: string; language?: string };
 export type SpeechCredentials = { apiKey: string; baseUrl?: string; headers?: Record<string, string> };
 
 export interface SpeechProvider {
