@@ -203,8 +203,8 @@ In Python, `await agents.runtime.set_scope_key("org_abc123", "openrouter", api_k
   carried back as it came), whatever key they use, except Anthropic's, which keep
   its Messages API for prompt caching: the same rule as on a tenant's endpoint.
   Some models are served only by the OpenRouter hosts the platform lists for them
-  (`provider.only`; DeepSeek V4.1 Flash: Morph, Fireworks, Together, Parasail,
-  CoreWeave and Nebius; 1017: Baseten, Morph, Parasail, Relace and DeepSeek), and OpenRouter
+  (`provider.only`; DeepSeek V4.1 Flash: Fireworks, Together, Parasail,
+  CoreWeave and Nebius; 1017: Baseten, Parasail, Relace and DeepSeek), and OpenRouter
   balances load among those. DeepSeek's models keep its Chat Completions API (not
   on a tenant's endpoint), where every earlier turn's reasoning goes back as
   `reasoning_content`, which DeepSeek's own API requires while it reasons.
