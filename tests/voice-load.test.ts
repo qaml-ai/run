@@ -34,6 +34,7 @@ test(`voice under load: ${SESSIONS} sessions x ${SPEAKERS} speakers with speech 
 
   const { fake, node, events, transcription, usage } = await voiceCluster(t, { playEveryMs: 20, perTenant: () => SESSIONS });
   const a = await node("http://a");
+  const beforeSessionsRss = Math.round(process.memoryUsage().rss / 1_048_576);
   const sessions: { id: string; connection: FakeConnection }[] = [];
   for (let index = 0; index < SESSIONS; index++) {
     const grant = discordGrant({ guildId: `1000000000000001${String(index).padStart(2, "0")}` });
@@ -49,6 +50,8 @@ test(`voice under load: ${SESSIONS} sessions x ${SPEAKERS} speakers with speech 
   // The node's own thread, where agents' turns run: how long it was held up while voice ran on it.
   const delay = monitorEventLoopDelay({ resolution: 10 });
   delay.enable();
+  // CPU of the whole process (its worker threads too), as a share of one core.
+  const cpuStart = process.cpuUsage(), cpuAt = performance.now();
   const deadline = Date.now() + SECONDS * 1_000;
   let packets = 0, spoken = 0, transcribed = 0, refused = 0;
   // The fakes keep each call's audio: counted and let go, so memory is the node's, not the test's.
@@ -96,11 +99,13 @@ test(`voice under load: ${SESSIONS} sessions x ${SPEAKERS} speakers with speech 
   const ended = await events("voice.speech.ended");
   const endRss = rss();
   delay.disable();
+  const cpu = process.cpuUsage(cpuStart);
+  const cpuPercent = Math.round((cpu.user + cpu.system) / 1_000 / (performance.now() - cpuAt) * 100);
   const codecs = opusStats();
   const firstAudio = turns.filter(turn => turn.outcome === "spoken").map(turn => turn.stagesMs.firstPacket).sort((x, y) => x - y);
   const percentile = (p: number) => firstAudio[Math.min(firstAudio.length - 1, Math.floor(firstAudio.length * p))];
   console.log(JSON.stringify({ type: "voice_load", seconds: SECONDS, sessions: SESSIONS, speakers: SPEAKERS, packets, utterances, transcriptions: transcribed,
-    speeches: spoken, queueFull: refused, speechEnded: ended.length, reasons: ended.reduce((counts: Record<string, number>, event: any) => ({ ...counts, [event.data.reason]: (counts[event.data.reason] ?? 0) + 1 }), {}), rssMb: { start: startRss, end: endRss }, codecs,
+    speeches: spoken, queueFull: refused, speechEnded: ended.length, reasons: ended.reduce((counts: Record<string, number>, event: any) => ({ ...counts, [event.data.reason]: (counts[event.data.reason] ?? 0) + 1 }), {}), rssMb: { beforeSessions: beforeSessionsRss, start: startRss, end: endRss, perSession: Math.round((endRss - beforeSessionsRss) / SESSIONS * 10) / 10 }, cpuPercent, codecs,
     turns: { timed: turns.length, spoken: firstAudio.length, firstPacketMs: { p50: percentile(0.5), p95: percentile(0.95) } },
     eventLoopDelayMs: { p50: Math.round(delay.percentile(50) / 1e6), p99: Math.round(delay.percentile(99) / 1e6), max: Math.round(delay.max / 1e6) } }));
 
@@ -140,6 +145,7 @@ test(`voice under load in media workers: ${SESSIONS} sessions x ${SPEAKERS} spea
   t.after(() => { fakes.close(); return host.close(); });
   const { node, events } = await voiceCluster(t, { transports: { discord: host.transport() }, media: () => host.factory(), perTenant: () => SESSIONS });
   const a = await node("http://a");
+  const beforeSessionsRss = Math.round(process.memoryUsage().rss / 1_048_576);
   const sessions: { id: string; guild: string }[] = [];
   for (let index = 0; index < SESSIONS; index++) {
     const guild = `1000000000000002${String(index).padStart(2, "0")}`;
@@ -152,6 +158,7 @@ test(`voice under load in media workers: ${SESSIONS} sessions x ${SPEAKERS} spea
   const startRss = Math.round(process.memoryUsage().rss / 1_048_576);
   const delay = monitorEventLoopDelay({ resolution: 10 });
   delay.enable();
+  const cpuStart = process.cpuUsage(), cpuAt = performance.now();
   const deadline = Date.now() + SECONDS * 1_000;
   // An agent's turn streaming on the node's thread: a token every 20 ms; the longest wait between two is how long the
   // thread was held.
@@ -193,12 +200,14 @@ test(`voice under load in media workers: ${SESSIONS} sessions x ${SPEAKERS} spea
   await Promise.all([turn, crash, ...sessions.flatMap(session => [bot(session), ...Array.from({ length: SPEAKERS }, (_, index) => speaker(session, `4000000000000001${String(index).padStart(2, "0")}`))])]);
   await sleep(2_000);
   delay.disable();
+  const cpu = process.cpuUsage(cpuStart);
+  const cpuPercent = Math.round((cpu.user + cpu.system) / 1_000 / (performance.now() - cpuAt) * 100);
   const after = await Promise.all(sessions.map(session => utterancesOf(session.id)));
   const errors = await events("voice.session.error");
   const ended = await events("voice.speech.ended");
   const workerRss = Math.round(process.memoryUsage().rss / 1_048_576);
   console.log(JSON.stringify({ type: "voice_load_workers", seconds: SECONDS, sessions: SESSIONS, speakers: SPEAKERS, utterances: after, atCrash, speeches: spoken, speechEnded: ended.length,
-    errors: errors.map((event: any) => event.data.session === victim.id ? "victim" : "other"), host: host.stats(), rssMb: { start: startRss, end: workerRss },
+    errors: errors.map((event: any) => event.data.session === victim.id ? "victim" : "other"), host: host.stats(), rssMb: { beforeSessions: beforeSessionsRss, start: startRss, end: workerRss, perSession: Math.round((workerRss - beforeSessionsRss) / SESSIONS * 10) / 10 }, cpuPercent,
     agentTurn: { tokens, longestGapMs: Math.round(longestGapMs) },
     eventLoopDelayMs: { p50: Math.round(delay.percentile(50) / 1e6), p99: Math.round(delay.percentile(99) / 1e6), max: Math.round(delay.max / 1e6) } }));
 
