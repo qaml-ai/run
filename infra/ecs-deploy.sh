@@ -115,5 +115,12 @@ echo "old tasks retire in the background; follow with:"
 echo "  aws ecs describe-services --region $REGION --cluster $cluster --services $service --query 'services[0].deployments[].[status,rolloutState,runningCount,taskDefinition]'"
 
 # Through Cloudflare to the ALB: the ALB admits only Cloudflare's addresses (infra/terraform/alb.tf).
+# Retried: right after a rollout, old tasks are still deregistering, and one request may meet a connection the ALB had
+# to an old task as it closed (a 502). Only a check that keeps failing fails the deploy.
 echo "==> https://$HOSTNAME/healthz"
-curl -fsS "https://$HOSTNAME/healthz" && echo
+for attempt in 1 2 3 4 5; do
+  curl -fsS --max-time 10 "https://$HOSTNAME/healthz" && { echo; break; }
+  ((attempt < 5)) || { echo "!! /healthz failed 5 times" >&2; exit 1; }
+  echo " (attempt $attempt failed; retrying in 5 s)" >&2
+  sleep 5
+done

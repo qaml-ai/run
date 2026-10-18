@@ -157,7 +157,14 @@ is dropped when its node answers 503 or cannot be reached.
 4. stops its agents and hands off what is still running mid-step (its next owner
    resumes those turns; see [Turn handoff](#turn-handoff)), releases every agent and
    volume, then closes event streams so clients reconnect to the next owner,
-   deletes its heartbeat, and exits 0.
+   deletes its heartbeat, closes idle connections and gives requests still under way
+   (a long poll, a forwarded call) up to 10 s to be answered before cutting them, and
+   exits 0. From the signal on, every response says `Connection: close`, so a client
+   or load balancer opens its next request on a fresh connection, to another node.
+
+Idle keep-alive connections stay open 365 s, past the load balancer's idle timeout
+(360 s), so the load balancer, not the node, closes an idle one: a node closing it
+first could do so as a request was sent down it, which the load balancer answers 502.
 
 A second signal stops the wait. Every 503 carries `Retry-After`. Give the
 container a stop timeout longer than the drain (ECS `stopTimeout` 120 with the
