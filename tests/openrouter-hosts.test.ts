@@ -6,8 +6,8 @@ import { resolveModel } from "../src/session-config.ts";
 import { fakeModel, runtime, toolCall } from "./runtime-server.ts";
 
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
-const HOSTS = ["morph", "fireworks", "together", "parasail", "coreweave", "nebius"];
-const HOSTS_1017 = ["baseten", "morph", "parasail", "relace", "deepseek"];
+const HOSTS = ["fireworks", "together", "parasail", "coreweave", "nebius"];
+const HOSTS_1017 = ["baseten", "parasail", "relace", "deepseek"];
 const FLASH = getModel("openrouter", "deepseek/deepseek-v4.1-flash")!;
 const FLASH_1017 = getModel("openrouter", "deepseek/deepseek-v4.1-flash-1017")!;
 /** Never an order or sort: either turns off OpenRouter's load balancing. Nor an ignore, a quantization or anything else. */
@@ -30,7 +30,7 @@ test("DeepSeek V4.1 Flash and 1017 on OpenRouter may be served only by their lis
   assert.equal(withOpenRouterHosts({ ...FLASH_1017, provider: "chiridion" }, request), request);
 });
 
-test("an agent's calls send their model's hosts: V4.1 Flash six, 1017 five with at most 262,144 tokens; nothing else", async t => {
+test("an agent's calls send their model's hosts: V4.1 Flash five, 1017 four with at most 262,144 tokens; nothing else", async t => {
   const host = await fakeModel(t, (_body, index) => index % 2 === 0 ? toolCall("js_exec", { code: "return 1 + 1;" }, `call_${index}`) : { role: "assistant", content: "2." });
   const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), LOCAL);
   await r.call("/v1/key-scopes/hosted/providers/openrouter", { method: "PUT", body: { apiKey: "sk-or", baseUrl: host.url } });

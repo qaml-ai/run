@@ -110,8 +110,8 @@ const corrected = (found: Model<Api> | undefined): Model<Api> | undefined => {
  *   1017), DeepInfra or InferenceNet (131,072 longest replies) or Fireworks.
  */
 const OPENROUTER_HOSTS: Record<string, string[]> = {
-  "deepseek/deepseek-v4.1-flash": ["morph", "fireworks", "together", "parasail", "coreweave", "nebius"],
-  "deepseek/deepseek-v4.1-flash-1017": ["baseten", "morph", "parasail", "relace", "deepseek"],
+  "deepseek/deepseek-v4.1-flash": ["fireworks", "together", "parasail", "coreweave", "nebius"],
+  "deepseek/deepseek-v4.1-flash-1017": ["baseten", "parasail", "relace", "deepseek"],
 };
 
 /** The OpenRouter hosts a model may be served by (OPENROUTER_HOSTS), or undefined: OpenRouter's choice. */
