@@ -21,3 +21,5 @@ sim-corpus/
 sim-corpus-*/
 sim-mcp/
 test-timings/
+# The voice eval's speakers, made with a speech provider (VOICE_EVAL_PROVIDERS=openai)
+tests/voice-eval/.cache/
