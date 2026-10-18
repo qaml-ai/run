@@ -135,12 +135,19 @@ class BrowserVoice implements VoiceConnection {
 
   /** Speech to the browser, a frame each 20 ms as a player would send it (so a stop takes effect at once). */
   play(packets: AsyncIterable<Uint8Array>, started: () => void): Playback {
-    let stopped = false, sent = 0;
+    let stopped = false, sent = 0, paused = false, pausedMs = 0;
     const self = this;
     const done = (async (): Promise<"done" | "stopped" | "error"> => {
       try {
-        const begun = performance.now();
+        let begun = performance.now();
         for await (const packet of packets) {
+          // Paused (barge-in deciding): nothing goes out, and the pacing starts again from where it resumes.
+          if (paused) {
+            const since = performance.now();
+            while (paused && !stopped && !self.closed) await new Promise(resolve => setTimeout(resolve, 20));
+            pausedMs += performance.now() - since;
+            begun += performance.now() - since;
+          }
           if (stopped || self.closed) break;
           if (!sent) started();
           self.out(packet);
@@ -155,7 +162,10 @@ class BrowserVoice implements VoiceConnection {
         return stopped ? "stopped" : "error";
       }
     })();
-    return { done, stop: () => { stopped = true; }, stats: () => ({ packets: sent, startMs: 0, waitedMs: 0, gapMs: 0, heldMs: {} }) };
+    return {
+      done, stop: () => { stopped = true; }, pause: () => { paused = true; }, resume: () => { paused = false; },
+      stats: () => ({ packets: sent, startMs: 0, waitedMs: 0, gapMs: 0, heldMs: { paused: Math.round(pausedMs) } }),
+    };
   }
 
   private out(packet: Uint8Array) {

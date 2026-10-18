@@ -1345,7 +1345,11 @@ export const VoiceSessionInput = z.strictObject({
   speak: z.union([z.boolean(), z.strictObject({
     agentReplies: z.boolean().optional().openapi({ description: "Speak deliver.agent's reply to each utterance as it is written: sentence by sentence, markdown, links and code left out, at most 400 characters (the whole reply is still the run's)" }),
   })]).optional().openapi({ description: "The bot may speak (POST …/speak): true, or {agentReplies: true} to also speak the agent's replies. Your app joins with self_mute false. Default false" }),
-  bargeIn: z.boolean().optional().openapi({ description: "With speak: a person starting to talk stops the bot's speech and what it was going to say. Default true" }),
+  bargeIn: z.union([z.boolean(), z.strictObject({
+    minMs: z.number().int().min(0).max(2_000).optional().openapi({ description: "Speech over the bot (ms) before it pauses. Default 300" }),
+    confirmMs: z.number().int().min(0).max(5_000).optional().openapi({ description: "Speech going on this long (ms) after the pause stops the bot without waiting for its words; 0 stops it at minMs, with no pause or echo check. Default 1000" }),
+    resumeMs: z.number().int().min(500).max(10_000).optional().openapi({ description: "The longest pause (ms): then it stops if they are still talking, else goes on. Default 3000" }),
+  })]).optional().openapi({ description: "With speak: a person talking over the bot stops its speech and what it was going to say. It pauses first, and goes on if what it heard was its own words coming back through someone's speakers (echo). true, false, or the timing. Default true" }),
   voice: z.string().optional().openapi({ description: "With speak: the voice speech is made in (OpenAI's: alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, verse…). Default alloy", example: "coral" }),
   transcription: VoiceTranscription.optional(),
   speech: VoiceSpeechProviders.optional(),
@@ -1370,6 +1374,7 @@ export const VoiceSession = z.object({
   silenceMs: z.number(), maxMinutes: z.number(), idleMinutes: z.number(), emptySeconds: z.number(),
   ignoreUserIds: z.array(z.string()), metadata: z.record(z.string(), z.unknown()), notice: z.string(),
   speak: z.boolean(), bargeIn: z.boolean(), voice: z.string(),
+  interruption: z.object({ minMs: z.number(), confirmMs: z.number(), resumeMs: z.number() }).optional().openapi({ description: "With speak and bargeIn: the barge-in timing in use" }),
   agentReplies: z.boolean().openapi({ description: "The session speaks deliver.agent's replies (speak: {agentReplies: true})" }),
   transcription: VoiceTranscription.optional(), speech: VoiceSpeechProviders.optional(),
   speeches: z.number().openapi({ description: "Speeches played (each counted when it ended having made speech)" }), spokenSeconds: z.number().openapi({ description: "Seconds of speech made (billed)" }),

@@ -1162,7 +1162,8 @@ class Voice:
         credits on); utterances go to your webhooks (`webhooks`, default True) and/or `agent` as prompts. `silence_ms`
         (default 800) ends an utterance; `max_minutes` (240), `idle_minutes` (30) and `empty_seconds` (60) end the
         session. `speak=True` lets the bot speak (speak()): your app joins with self_mute false; `barge_in` (default True)
-        stops its speech when a person talks; `voice` is the voice it speaks in; `agent_replies=True` (with `agent`) speaks
+        stops its speech when a person talks over it (it pauses first, and goes on if it hears its own words come back:
+        echo; or {"minMs", "confirmMs", "resumeMs"} for the timing); `voice` is the voice it speaks in; `agent_replies=True` (with `agent`) speaks
         the agent's reply to each utterance as it is written (sentence by sentence, at most 400 characters).
         `transcription` ({"providers": ["deepgram/flux", "soniox", "openai"], "keyterms": [...]}) streams speech to text
         through those providers in order; `speech` ({"providers": ["elevenlabs", "openai"], "voices": {"elevenlabs": id}})

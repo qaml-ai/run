@@ -28,6 +28,8 @@ export type StopReason = "interrupt" | "requested" | "barge_in" | "end" | "hando
 /** A playback on a connection: done when its packets ran out (`done`), it was stopped, or it failed. */
 export interface Playback {
   done: Promise<"done" | "stopped" | "error">; stop(): void;
+  /** Hold the packets (the listener hears silence) until `resume`, where it left off: a player that cannot, has none. */
+  pause?(): void; resume?(): void;
   /** Packets sent, the time spent waiting for the next packet (speech still being made), and time held back by why. */
   stats?(): { packets: number; startMs: number; waitedMs: number; gapMs: number; heldMs: Record<string, number> };
 }
@@ -105,6 +107,15 @@ export class SessionSpeech {
 
   /** Whether a speech is being made or played now. */
   get speaking() { return !!this.current; }
+  /** Speeches said lately (barge-in's echo guard): text, and when each ended. */
+  private readonly said: { text: string; at: number }[] = [];
+  /** What the bot is saying, and what it said in the last `withinMs`, oldest first: what its echo would repeat. */
+  recentlySaid(withinMs = 5_000): string[] {
+    const since = Date.now() - withinMs;
+    const texts = this.said.filter(entry => entry.at >= since).map(entry => entry.text);
+    if (this.current && !this.current.stoppedBy) texts.push(this.current.item.text);
+    return texts;
+  }
   /** Speeches waiting behind the current one. */
   get waiting() { return this.queue.length; }
 
@@ -268,6 +279,10 @@ export class SessionSpeech {
         ? { reason: "interrupted", by: current.stoppedBy, seconds, costUsd }
         : result === "done" && !error ? { reason: "done", seconds, costUsd } : { reason: "error", seconds, costUsd, ...(error ? { error } : {}) };
       if (this.current === current) this.current = undefined;
+      if (seconds > 0) {
+        this.said.push({ text: item.text, at: Date.now() });
+        if (this.said.length > 3) this.said.shift();
+      }
       item.turn?.end(ending.reason === "done" ? "no_reply" : ending.reason);
       this.effects.ended(item, ending, making.platform, making.served);
     }

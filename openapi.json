@@ -9237,6 +9237,26 @@
           "voice": {
             "type": "string"
           },
+          "interruption": {
+            "type": "object",
+            "properties": {
+              "minMs": {
+                "type": "number"
+              },
+              "confirmMs": {
+                "type": "number"
+              },
+              "resumeMs": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "minMs",
+              "confirmMs",
+              "resumeMs"
+            ],
+            "description": "With speak and bargeIn: the barge-in timing in use"
+          },
           "agentReplies": {
             "type": "boolean",
             "description": "The session speaks deliver.agent's replies (speak: {agentReplies: true})"
@@ -9470,8 +9490,36 @@
             "description": "The bot may speak (POST …/speak): true, or {agentReplies: true} to also speak the agent's replies. Your app joins with self_mute false. Default false"
           },
           "bargeIn": {
-            "type": "boolean",
-            "description": "With speak: a person starting to talk stops the bot's speech and what it was going to say. Default true"
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "minMs": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 2000,
+                    "description": "Speech over the bot (ms) before it pauses. Default 300"
+                  },
+                  "confirmMs": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 5000,
+                    "description": "Speech going on this long (ms) after the pause stops the bot without waiting for its words; 0 stops it at minMs, with no pause or echo check. Default 1000"
+                  },
+                  "resumeMs": {
+                    "type": "integer",
+                    "minimum": 500,
+                    "maximum": 10000,
+                    "description": "The longest pause (ms): then it stops if they are still talking, else goes on. Default 3000"
+                  }
+                },
+                "additionalProperties": false
+              }
+            ],
+            "description": "With speak: a person talking over the bot stops its speech and what it was going to say. It pauses first, and goes on if what it heard was its own words coming back through someone's speakers (echo). true, false, or the timing. Default true"
           },
           "voice": {
             "type": "string",

@@ -29,6 +29,8 @@ export type ToMedia =
   | { t: "pcm"; session: string; id: number; pcm: ArrayBuffer }
   | { t: "pcm_end"; session: string; id: number; error?: string }
   | { t: "stop"; session: string; id: number }
+  /** End a barge-in pause (Media.resume). */
+  | { t: "resume"; session: string }
   | { t: "close"; session: string; flush: "handoff" | "end" | "error" };
 
 /** Media → control. */
@@ -37,6 +39,8 @@ export type FromMedia =
   | { t: "lost"; session: string; reason: "kicked" | "credentials" | "error"; detail?: string }
   | { t: "diagnostic"; session: string; event: string; fields: Record<string, unknown> }
   | { t: "speech_start"; session: string; speaker: string }
+  | { t: "barge_in"; session: string; speaker: string; speechMs: number }
+  | { t: "speech_progress"; session: string; speaker: string; speechMs: number }
   | { t: "pcm"; session: string; speaker: string; pcm: ArrayBuffer }
   | { t: "drop"; session: string; speaker: string }
   | { t: "cut"; session: string; cut: WireCut }

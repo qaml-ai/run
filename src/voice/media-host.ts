@@ -213,6 +213,7 @@ class WorkerMedia implements Media {
   update(credentials: VoiceCredentials) { this.shard.post({ t: "update", session: this.session, credentials }); }
   configure(options: Partial<MediaOptions>) { this.shard.post({ t: "configure", session: this.session, options }); }
   others() { return this.users; }
+  resume() { if (!this.gone) this.shard.post({ t: "resume", session: this.session }); }
 
   play(pcm: AsyncIterable<Uint8Array>, started: () => void, expectedMs?: number): Playback {
     const id = ++this.nextId;
@@ -265,6 +266,8 @@ class WorkerMedia implements Media {
       case "lost": events.lost(message.reason, message.detail); return;
       case "diagnostic": events.diagnostic(message.event, message.fields); return;
       case "speech_start": events.speechStart(message.speaker); return;
+      case "barge_in": events.bargeIn?.(message.speaker, message.speechMs); return;
+      case "speech_progress": events.speechProgress?.(message.speaker, message.speechMs); return;
       case "pcm": events.pcm(message.speaker, new Uint8Array(message.pcm)); return;
       case "drop": events.drop(message.speaker); return;
       case "cut": events.cut(fromWireCut(message.cut)); return;

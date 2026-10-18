@@ -71,6 +71,8 @@ function handle(transport: VoiceTransport, message: ToMedia) {
       lost: (reason, detail) => post({ t: "lost", session, reason, ...(detail ? { detail } : {}) }),
       diagnostic: (event, fields) => post({ t: "diagnostic", session, event, fields }),
       speechStart: speaker => post({ t: "speech_start", session, speaker }),
+      bargeIn: (speaker, speechMs) => post({ t: "barge_in", session, speaker, speechMs }),
+      speechProgress: (speaker, speechMs) => post({ t: "speech_progress", session, speaker, speechMs }),
       pcm: (speaker, pcm) => { const buffer = own(pcm); post({ t: "pcm", session, speaker, pcm: buffer }, [buffer]); },
       drop: speaker => post({ t: "drop", session, speaker }),
       cut: cut => { const wire = wireCut(cut); post({ t: "cut", session, cut: wire.cut }, wire.transfer); },
@@ -94,6 +96,7 @@ function handle(transport: VoiceTransport, message: ToMedia) {
       });
       return;
     }
+    case "resume": held.media.resume(); return;
     case "pcm": held.playing.get(message.id)?.pcm.push(new Uint8Array(message.pcm)); return;
     case "pcm_end": held.playing.get(message.id)?.pcm.end(message.error); return;
     case "stop": {

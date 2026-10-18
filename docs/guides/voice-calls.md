@@ -63,7 +63,7 @@ Discord allows one voice connection per user and server: a second `POST` for the
 | `metadata` | anything, at most 4 KB of JSON, echoed in every `voice.*` event |
 | `notice` | the notice text (`{bot}` is the bot's id); by default "<@bot> is listening and transcribing speech in this channel. Audio is not stored." (with `speak`, "…listening, transcribing speech and may speak…") |
 | `speak` | the bot may [speak](#speaking) in the call: `true`, or `{agentReplies: true}` to also [speak `deliver.agent`'s replies](#speaking-an-agents-replies) (default `false`). Your app joins with `self_mute: false`: the answer's `join` says how it should have joined |
-| `bargeIn` | with `speak`: a person starting to talk stops what the bot is saying (default `true`) |
+| `bargeIn` | with `speak`: a person talking over the bot stops what it is saying, unless it is the bot's own voice coming back (default `true`; or `{minMs, confirmMs, resumeMs}`, see Barge-in) |
 | `voice` | with `speak`: the voice its speech is made in (default `alloy`; OpenAI's voices: `alloy`, `ash`, `ballad`, `coral`, `echo`, `fable`, `nova`, `onyx`, `sage`, `shimmer`, `verse`…) |
 
 ## Keep it connected, and end it
@@ -162,8 +162,19 @@ and clears the queue.
   `voice.speech.ended` (`speechId`, `reason`: `done`, `interrupted` or `error`; `by` with interrupted: `interrupt`,
   `requested`, `barge_in`, `end`, `handoff` or `budget`; `seconds` made and `costUsd`). A speech that never started
   ends `interrupted` with 0 seconds.
-- **Barge-in.** With `bargeIn` (the default), a person starting to talk (not the bot, not `ignoreUserIds`) stops the
-  speech playing and clears the queue (`by: "barge_in"`), so the bot does not talk over people.
+- **Barge-in.** With `bargeIn` (the default), a person talking over the bot (not the bot, not `ignoreUserIds`) stops
+  the speech playing and clears the queue (`by: "barge_in"`), so the bot does not talk over people. Someone on laptop
+  speakers without headphones can send the bot's own voice back into the call, so the bot checks first:
+  - After `minMs` (300) of their speech, it **pauses**. It keeps what it was saying.
+  - If their words are the bot's own, in its order (echo), or they said nothing, it **resumes** where it paused.
+  - If their words are anyone else's, it **stops**. If they keep talking for `confirmMs` (1000) after the pause, it
+    stops without waiting for the words, since echo stops when the bot does.
+  - The pause lasts at most `resumeMs` (3000). Then it stops if they are still talking, and resumes if not.
+
+  Pass `bargeIn: {minMs, confirmMs, resumeMs}` to change the timing; `confirmMs: 0` stops at `minMs` with no pause
+  and no echo check. With live transcription the words come as they are said, so the decision is usually quicker.
+  Sessions show the timing in use as `interruption`. Logs: `voice_barge_in_candidate` (paused),
+  `voice_barge_in_confirmed` and `voice_barge_in_echo_rejected` (`why`, `pausedMs`).
 - **Latency.** Speech plays as it is made: OpenAI streams it, and each 20 ms is encoded and sent as it comes, so the
   first audio goes out well before the whole is made (`latencyMs` measures it per speech).
 - **Its own voice.** What the bot says is never transcribed (Discord does not send a bot its own audio, and the

@@ -34,8 +34,9 @@ export type FakeConnection = {
   others?: string[];
   /** Speech it played: each playback's packets, as they went out (20 ms apart, as a player sends them). */
   played: Uint8Array[][];
-  /** Whether a playback is going now. */
+  /** Whether a playback is going now, and whether it is paused (barge-in deciding). */
   playing: boolean;
+  paused: boolean;
 };
 
 /** A voice transport for tests: connections are records; nothing goes over the network. Playback sends a packet each `playEveryMs`. */
@@ -43,7 +44,7 @@ export function fakeTransport(playEveryMs = 2) {
   const connections: FakeConnection[] = [];
   const transport: VoiceTransport = {
     connect(credentials, handlers): VoiceConnection {
-      const connection: FakeConnection = { credentials, handlers, updates: [], closed: false, played: [], playing: false };
+      const connection: FakeConnection = { credentials, handlers, updates: [], closed: false, played: [], playing: false, paused: false };
       connections.push(connection);
       return {
         update: next => { connection.updates.push(next); connection.credentials = next; },
@@ -53,10 +54,11 @@ export function fakeTransport(playEveryMs = 2) {
           const out: Uint8Array[] = [];
           connection.played.push(out);
           connection.playing = true;
-          let stopped = false;
+          let stopped = false, paused = false;
           const done = (async () => {
             try {
               for await (const packet of packets) {
+                while (paused && !stopped && !connection.closed) await sleep(playEveryMs);
                 if (stopped || connection.closed) break;
                 if (!out.length) started();
                 out.push(packet);
@@ -64,9 +66,12 @@ export function fakeTransport(playEveryMs = 2) {
               }
               return stopped ? "stopped" as const : "done" as const;
             } catch { return stopped ? "stopped" as const : "error" as const; }
-            finally { connection.playing = false; }
+            finally { connection.playing = false; connection.paused = false; }
           })();
-          return { done, stop: () => { stopped = true; } };
+          return {
+            done, stop: () => { stopped = true; },
+            pause: () => { paused = true; connection.paused = true; }, resume: () => { paused = false; connection.paused = false; },
+          };
         },
       };
     },

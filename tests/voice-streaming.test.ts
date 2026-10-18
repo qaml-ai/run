@@ -83,7 +83,10 @@ test("a speech made ahead and then stopped (barge-in) ends interrupted, billed f
   const { synthesizer } = slowStartSynthesizer(50);
   const { transport, fake, plays } = timedTransport();
   async function* reply() { yield "This is the first sentence of it, long enough to take a while to say out loud. Then a second sentence."; }
-  const { node, events, usage } = await voiceCluster(t, { transports: { discord: transport }, synthesizer, submitStreaming: () => reply() });
+  // The barge-in is an utterance too: the agent says nothing to it.
+  async function* nothing() {}
+  let replies = 0;
+  const { node, events, usage } = await voiceCluster(t, { transports: { discord: transport }, synthesizer, submitStreaming: () => replies++ ? nothing() : reply() });
   const a = await node("http://a");
   await a.voice.create("alice", { discord: discordGrant(), speak: { agentReplies: true }, deliver: { agent: AGENT }, silenceMs: 200, bargeIn: true });
   const connection = await until(() => fake.open()[0], "the connection");
@@ -91,7 +94,8 @@ test("a speech made ahead and then stopped (barge-in) ends interrupted, billed f
   await talk(connection, "400000000000000004", 0.4);
   await until(() => plays[0]?.first, "the first sentence playing");
   await sleep(1_500);
-  await talk(connection, "400000000000000004", 0.2);
+  // Long enough to pause the bot (bargeIn's minMs, 300 ms), and words that are not its own: it stops.
+  await talk(connection, "400000000000000004", 0.5);
   await until(async () => (await events("voice.speech.ended")).length === 2, "both ended", 30_000);
   const ended = await events("voice.speech.ended");
   assert.deepEqual(ended.map((event: any) => [event.data.reason, event.data.by]), [["interrupted", "barge_in"], ["interrupted", "barge_in"]]);
