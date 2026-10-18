@@ -16,6 +16,8 @@ import type { TurnClock } from "./voice/latency.ts";
 /** Something asked to be said. */
 export type SpeechItem = {
   id: string; text: string; voice: string; instructions?: string; queuedAt: number;
+  /** Its voice for each text-to-speech provider (POST …/speak's `voices`), over the session's speech.voices. */
+  voices?: Record<string, string>;
   /** Part of an agent's reply the session speaks (agentReplies): the agent and its run. */
   reply?: { agent: string; requestId: string };
   /** The turn it answers (src/voice/latency.ts): its first audio, or how it ended without, ends the turn. */
@@ -177,7 +179,7 @@ export class SessionSpeech {
       }
       try {
         await this.effects.fresh();
-        const input = { text: item.text, voice: item.voice, ...(item.instructions ? { instructions: item.instructions } : {}) };
+        const input = { text: item.text, voice: item.voice, ...(item.voices ? { voices: item.voices } : {}), ...(item.instructions ? { instructions: item.instructions } : {}) };
         const chain = this.effects.speak;
         let source: AsyncIterable<Uint8Array>;
         if (chain) source = chain(input, abort.signal, who => { making.served = who; making.platform = who.platform; });

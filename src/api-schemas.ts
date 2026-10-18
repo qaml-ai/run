@@ -1385,6 +1385,7 @@ export const VoiceBrowserToken = z.object({
 export const VoiceSpeechInput = z.strictObject({
   text: z.string().openapi({ description: "What to say: 1 to 4,000 characters" }),
   voice: z.string().optional().openapi({ description: "Another voice than the session's, for this speech" }),
+  voices: z.record(z.string(), z.string()).optional().openapi({ description: "This speech's voice for each text-to-speech provider, by provider, over the session's speech.voices: an ElevenLabs voice id, a Cartesia voice id, an Aura voice, an OpenAI voice", example: { elevenlabs: "JBFqnCBsd6RMkjVDRZzb", openai: "fable" } }),
   instructions: z.string().optional().openapi({ description: "How to say it (tone, pace, accent), as OpenAI's instructions: at most 1,000 characters", example: "Warm and unhurried." }),
   interrupt: z.boolean().optional().openapi({ description: "Stop what the bot is saying, and clear what it was going to, first. Default false: queued" }),
 }).openapi("VoiceSpeechInput");

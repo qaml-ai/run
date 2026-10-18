@@ -99,6 +99,19 @@ test("a session names its speech providers: Deepgram transcribes as people speak
   assert.equal(spoken[0].key, "tenant-xi-key");
   assert.deepEqual(spoken[0].body, { text: "Booked for three.", model_id: "eleven_flash_v2_5", language_code: "en" });
 
+  // A speech's own voices win over the session's, for that speech alone; a provider it doesn't know is refused.
+  const unknownVoice = await call("POST", `/v1/voice/sessions/${id}/speak`, { text: "Hi.", voices: { polly: "Joanna" } });
+  assert.equal(unknownVoice.status, 400);
+  assert.match(unknownVoice.json.error, /voices\.polly: voices are by provider/);
+  const other = await call("POST", `/v1/voice/sessions/${id}/speak`, { text: "In another voice.", voices: { elevenlabs: "voice-y", openai: "fable" } });
+  assert.equal(other.status, 202, JSON.stringify(other.json));
+  await until(() => spoken.length === 2 && !connection.playing, "the speech in its own voice");
+  assert.equal(spoken[1].url, "/v1/text-to-speech/voice-y/stream?output_format=pcm_24000");
+  const again = await call("POST", `/v1/voice/sessions/${id}/speak`, { text: "Back to mine." });
+  assert.equal(again.status, 202);
+  await until(() => spoken.length === 3 && !connection.playing, "the session's voice again");
+  assert.equal(spoken[2].url, "/v1/text-to-speech/voice-x/stream?output_format=pcm_24000");
+
   // Usage names who served: Deepgram's transcription, ElevenLabs' speech.
   const usage = await until(async () => {
     const days = (await call("GET", "/v1/usage")).json.days as { model: string; kind: string }[];

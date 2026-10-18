@@ -238,12 +238,18 @@ function speechInput(value: unknown): VoiceOptions["speech"] {
   const given = object(value, "speech");
   only(given, "speech", ["providers", "voices"]);
   const providers = given.providers === undefined ? undefined : providersInput(given.providers, "speech.providers", ttsReference);
-  const voices = given.voices === undefined ? undefined : object(given.voices, "speech.voices");
-  for (const [provider, voice] of Object.entries(voices ?? {})) {
-    if (!(TTS_PROVIDERS as readonly string[]).includes(provider)) throw new HttpError(400, `speech.voices.${provider}: voices are by provider, one of ${TTS_PROVIDERS.join(", ")}`);
-    if (typeof voice !== "string" || !/^[A-Za-z0-9._-]{1,64}$/.test(voice)) throw new HttpError(400, `speech.voices.${provider} must be that provider's voice id or name`);
+  const voices = voicesInput(given.voices, "speech.voices");
+  return { ...(providers ? { providers } : {}), ...(voices ? { voices } : {}) };
+}
+/** Voices by text-to-speech provider (`{elevenlabs: "<voice id>", openai: "coral"}`): a session's `speech.voices`, or a speech's `voices`. */
+function voicesInput(value: unknown, name: string): Record<string, string> | undefined {
+  if (value === undefined) return undefined;
+  const voices = object(value, name);
+  for (const [provider, voice] of Object.entries(voices)) {
+    if (!(TTS_PROVIDERS as readonly string[]).includes(provider)) throw new HttpError(400, `${name}.${provider}: voices are by provider, one of ${TTS_PROVIDERS.join(", ")}`);
+    if (typeof voice !== "string" || !/^[A-Za-z0-9._-]{1,64}$/.test(voice)) throw new HttpError(400, `${name}.${provider} must be that provider's voice id or name`);
   }
-  return { ...(providers ? { providers } : {}), ...(voices && Object.keys(voices).length ? { voices: voices as Record<string, string> } : {}) };
+  return Object.keys(voices).length ? voices as Record<string, string> : undefined;
 }
 function metadataInput(value: unknown) {
   if (value === undefined) return {};
@@ -610,10 +616,12 @@ export class VoiceSessions {
    * to retry while the session moves.
    */
   async speak(tenant: string, id: string, input: Record<string, unknown>) {
-    only(input, "body", ["text", "voice", "instructions", "interrupt"]);
+    only(input, "body", ["text", "voice", "voices", "instructions", "interrupt"]);
     const textGiven = text(input.text, "text", new RegExp(`^[\\s\\S]{1,${SPEECH_LIMITS.textChars}}$`), `1 to ${SPEECH_LIMITS.textChars} characters`);
     if (!textGiven.trim()) throw new HttpError(400, "text must say something");
     const voice = input.voice === undefined ? undefined : text(input.voice, "voice", VOICE_NAME, "a voice's name, such as alloy, coral or verse");
+    // This speech's voice for each provider of the session's chain, over the session's own (speech.voices).
+    const voices = voicesInput(input.voices, "voices");
     const instructions = input.instructions === undefined ? undefined : text(input.instructions, "instructions", new RegExp(`^[\\s\\S]{1,${SPEECH_LIMITS.instructionsChars}}$`), `at most ${SPEECH_LIMITS.instructionsChars} characters`);
     if (input.interrupt !== undefined && typeof input.interrupt !== "boolean") throw new HttpError(400, "interrupt must be true or false");
     const row = await this.row(tenant, id);
@@ -623,7 +631,7 @@ export class VoiceSessions {
     if (!held?.speech) throw new HttpError(503, "This voice session is moving between nodes; retry");
     if (held.speech.waiting >= SPEECH_QUEUE.max && !input.interrupt) throw new HttpError(429, `This voice session has ${SPEECH_QUEUE.max} speeches waiting; interrupt or wait`, "VOICE_SPEECH_QUEUE_FULL");
     const turn = this.waitingTurns.take(id)?.via("speak").mark("firstPiece");
-    const item: SpeechItem = { id: speechId(), text: textGiven, voice: voice ?? row.options.voice, ...(instructions ? { instructions } : {}), queuedAt: Date.now(), ...(turn ? { turn } : {}) };
+    const item: SpeechItem = { id: speechId(), text: textGiven, voice: voice ?? row.options.voice, ...(voices ? { voices } : {}), ...(instructions ? { instructions } : {}), queuedAt: Date.now(), ...(turn ? { turn } : {}) };
     const position = held.speech.say(item, input.interrupt === true);
     console.log(JSON.stringify({ type: "voice_speech_queued", session: id, speech: item.id, chars: item.text.length, position, node: this.options.node }));
     return { speechId: item.id, session: id, state: "queued" as const, position, voice: item.voice, characters: item.text.length };
