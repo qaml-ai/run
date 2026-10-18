@@ -164,6 +164,9 @@ variable "runtime_env" {
     AGENT_IDLE_MS               = "300000"
     AGENT_TOOL_TIMEOUT_MS       = "60000"
     AGENT_VOICE                 = "true"
+    # Voice sessions speak with ElevenLabs Flash first (bake-off 2026-10-18: ~135 ms to first audio vs ~550 ms), OpenAI as fallback.
+    # Needs platformKeys.elevenlabs in the tenants secret; without it the chain skips to OpenAI.
+    AGENT_VOICE_TTS             = "elevenlabs,openai"
     GITHUB_ORG                  = "qaml-ai"
     # Anyone with a GitHub account may sign in to the console. Their tenant is prepaid: platform keys only
     # against its credit, with the free limits (the Free usage tier, AGENT_FREE_HOURLY_SPEND_USD) until it buys some.
