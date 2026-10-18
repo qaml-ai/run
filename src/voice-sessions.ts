@@ -10,7 +10,8 @@ import { checkedAudio, languageInput, type Transcribed, type Transcriber, type T
 import { LIVE_LIMITS, type LiveTranscription } from "./transcription-live.ts";
 import { enqueueEvents, webhookEvent, type WebhookEvent } from "./webhooks.ts";
 import type { UsageRecord } from "./client-sessions.ts";
-import { oggOpus, Segmenter, type Cut } from "./voice-audio.ts";
+import { oggOpus, type Cut } from "./voice-audio.ts";
+import { inlineMedia, type Media, type MediaFactory, type MediaOptions } from "./voice/media.ts";
 import { SessionSpeech, SPEECH_QUEUE, speechId, SpokenReply, type Player, type SpeechEnding, type SpeechItem } from "./voice-speech.ts";
 import { DEFAULT_VOICE, SPEECH_LIMITS, type SpeechInput, type Synthesizer } from "./speech.ts";
 import type { Served } from "./voice-providers/tts-chain.ts";
@@ -317,18 +318,22 @@ export interface VoiceSessionsOptions {
   endpoints?: RegExp;
   /** Send the webhook outbox now (Webhooks.kick): a voice event is waited on, by a bot that answers aloud. */
   kickWebhooks?(): void;
+  /**
+   * Where each session's media runs (src/voice/media.ts): given a provider's transport, its factory. By default on this
+   * thread (`inlineMedia`).
+   */
+  media?(transport: VoiceTransport, provider: typeof VOICE_PROVIDERS[number]): MediaFactory;
 }
 
-/** A session this node holds: its claim, its connection, and what its limits are measured from. */
+/** A session this node holds: its claim, its media (its connection, its speakers' audio), and what its limits are measured from. */
 type Held = {
   id: string; tenant: string; claim: Claim; revision: number; row: Row;
-  credentials: VoiceCredentials; connection?: VoiceConnection;
+  credentials: VoiceCredentials; media?: Media;
   /** Since when the call has had no one else in it. */
   emptySince?: number;
   /** The connection lost its credentials (`lost`): when, and why, until new ones come. */
   lost?: { at: number; reason: "kicked" | "credentials" | "error"; detail?: string };
   ending?: boolean;
-  segmenter: Segmenter;
   /** What the bot was asked to say, for a session that speaks. */
   speech?: SessionSpeech;
   /** The runs whose replies it speaks (a prompt's speak), by agent and request: each spoken once. */
@@ -728,17 +733,6 @@ export class VoiceSessions {
     }
     const held: Held = {
       id: current.id, tenant: current.tenant, claim: taken.claim, revision: current.revision, row: current, credentials: this.credentials(current),
-      segmenter: new Segmenter({
-        silenceMs: current.options.silenceMs, cut: cut => this.cut(held, cut),
-        // Transcribed as they speak, when this runtime can: each utterance committed as it is cut.
-        ...(this.options.transcriber.liveOrder(current.options.transcription?.providers).length ? { live: { audio: (speaker: string, pcm: Buffer) => this.liveAudio(held, speaker, pcm), drop: (speaker: string) => held.live?.get(speaker)?.stream.clear() } } : {}),
-        // Barge-in: a person starting to talk stops the bot.
-        speech: () => {
-          if (held.row.options.bargeIn && held.speech?.speaking) held.speech.stop("barge_in");
-          // A reply may follow what they say: the speech provider's connection is made now, not when it is asked.
-          if (held.speech) this.options.synthesizer?.warm(held.row.options.speech?.providers);
-        },
-      }),
     };
     if (current.options.speak && this.options.synthesizer) held.speech = new SessionSpeech(this.options.synthesizer, this.speechEffects(held));
     this.held.set(held.id, held);
@@ -752,29 +746,50 @@ export class VoiceSessions {
     return { guildId: row.guild, channelId: row.channel, userId: row.bot_user, ...secret };
   }
 
+  /** What a session's media needs of its settings. */
+  private mediaOptions(held: Held): MediaOptions {
+    const { options } = held.row;
+    // Transcribed as they speak, when this runtime can: each utterance committed as it is cut.
+    return { silenceMs: options.silenceMs, ignoreUserIds: options.ignoreUserIds, bargeIn: !!held.speech && options.bargeIn !== false, live: this.options.transcriber.liveOrder(options.transcription?.providers).length > 0 };
+  }
+
+  /** Open the session's media: its connection, and its speakers' audio cut into utterances. */
   private connect(held: Held, transport: VoiceTransport) {
     if (held.credentials.endpoint === null) return;
-    const current = () => this.held.get(held.id) === held;
     const log = (type: string, fields: Record<string, unknown> = {}) => console.log(JSON.stringify({ type, session: held.id, node: this.options.node, epoch: held.claim.epoch, ...fields }));
-    held.connection = transport.connect(held.credentials, {
+    const factory = this.options.media?.(transport, held.row.provider as typeof VOICE_PROVIDERS[number]) ?? inlineMedia(transport);
+    // Events of a media replaced (lost, crashed) or of a session let go are not the session's, but its cuts are: what
+    // was said is still transcribed.
+    let media: Media | undefined;
+    const current = () => this.held.get(held.id) === held && held.media === media;
+    media = factory(held.id, held.credentials, this.mediaOptions(held), {
       ready: () => {
         if (!current()) return;
         held.lost = undefined;
         log("voice_session_ready");
         void this.ready(held).catch(error => console.error(JSON.stringify({ type: "voice_ready_failed", session: held.id, error: safeError(error) })));
       },
-      packet: (speaker, packet) => { if (current()) this.packet(held, speaker, packet); },
-      broken: speaker => { if (current()) this.broken(held, speaker); },
       lost: (reason, detail) => {
         if (!current()) return;
         log("voice_session_lost", { reason, ...(detail ? { detail } : {}) });
         held.lost = { at: Date.now(), reason, ...(detail ? { detail } : {}) };
-        held.connection?.close();
-        held.connection = undefined;
+        held.media = undefined;
+        void media!.close("error");
         void this.setState(held, "reconnecting").catch(() => {});
       },
       diagnostic: (event, fields) => log(`voice_${event}`, fields),
+      // Barge-in: a person starting to talk stops the bot (the media already stopped what it plays).
+      speechStart: () => {
+        if (!current()) return;
+        if (held.row.options.bargeIn && held.speech?.speaking) held.speech.stop("barge_in");
+        // A reply may follow what they say: the speech provider's connection is made now, not when it is asked.
+        if (held.speech) this.options.synthesizer?.warm(held.row.options.speech?.providers);
+      },
+      pcm: (speaker, pcm) => { if (current()) this.liveAudio(held, speaker, pcm); },
+      drop: speaker => held.live?.get(speaker)?.stream.clear(),
+      cut: cut => this.cut(held, cut),
     });
+    held.media = media;
   }
 
   /** Apply a row changed elsewhere: new credentials reconnect, other changes are read as they are. */
@@ -785,12 +800,13 @@ export class VoiceSessions {
     const credentials = this.credentials(row);
     const moved = JSON.stringify(credentials) !== JSON.stringify(held.credentials);
     held.credentials = credentials;
+    held.media?.configure({ ignoreUserIds: row.options.ignoreUserIds });
     if (!moved) return;
     held.lost = undefined;
-    if (held.connection && credentials.endpoint !== null) held.connection.update(credentials);
+    if (held.media && credentials.endpoint !== null) held.media.update(credentials);
     else {
-      held.connection?.close();
-      held.connection = undefined;
+      void held.media?.close("error");
+      held.media = undefined;
       const transport = this.options.transports[row.provider as typeof VOICE_PROVIDERS[number]];
       if (transport) this.connect(held, transport);
     }
@@ -803,15 +819,16 @@ export class VoiceSessions {
   private async drop(held: Held, release: boolean, cut: "handoff" | "end" = "handoff") {
     if (this.held.get(held.id) !== held) return;
     this.held.delete(held.id);
-    held.segmenter.flush(cut);
+    // Speech stops first (why: the session ended or moved), then the media cuts what its speakers said so far.
+    held.speech?.close(cut);
+    this.waitingTurns.forget(held.id);
+    const media = held.media;
+    held.media = undefined;
+    await media?.close(cut).catch(error => console.error(JSON.stringify({ type: "voice_media_close_failed", session: held.id, error: safeError(error) })));
     // Their live streams close once the cuts just committed have their transcripts.
     for (const live of held.live?.values() ?? []) { clearTimeout(live.idle); live.stream.close(true); }
     held.live?.clear();
-    held.speech?.close(cut);
-    this.waitingTurns.forget(held.id);
     console.log(JSON.stringify({ type: "voice_session_released", session: held.id, node: this.options.node, epoch: held.claim.epoch, release }));
-    held.connection?.close();
-    held.connection = undefined;
     if (release) await this.options.ownership?.release(held.claim).catch(() => {});
   }
 
@@ -833,19 +850,12 @@ export class VoiceSessions {
     await underClaim(this.db, held.claim, sql => sql.query("update voice_sessions set state = $2, updated_at = $3 where id = $1 and state <> 'ended'", [held.id, state, Date.now()]));
   }
 
-  /** Audio from a speaker: what utterances are made of. The bot's own, and ignored users', is not listened to. */
-  private packet(held: Held, speaker: string, packet: Uint8Array) {
-    if (speaker === held.credentials.userId || held.row.options.ignoreUserIds.includes(speaker)) return;
-    held.segmenter.packet(speaker, packet);
-  }
-  private broken(held: Held, speaker: string) { held.segmenter.broken(speaker); }
-
   /**
    * A speaker's audio as they speak, to their live stream (opened at their first utterance, closed after a minute
    * without one). A stream that broke stays broken until the utterance is cut: its commit fails, and the utterance is
    * transcribed after, whole.
    */
-  private liveAudio(held: Held, speaker: string, pcm: Buffer) {
+  private liveAudio(held: Held, speaker: string, pcm: Uint8Array) {
     let live = held.live?.get(speaker);
     if (!live) {
       const { options } = held.row;
@@ -1116,7 +1126,7 @@ export class VoiceSessions {
   private async limits(held: Held, now: number) {
     const { options } = held.row;
     const started = num(held.row.started_at) ?? num(held.row.created_at)!;
-    const others = held.connection?.others()?.filter(user => user !== held.credentials.userId && !options.ignoreUserIds.includes(user));
+    const others = held.media?.others()?.filter(user => user !== held.credentials.userId && !options.ignoreUserIds.includes(user));
     if (others === undefined || others.length) held.emptySince = undefined;
     else held.emptySince ??= now;
     const ending: Ending | undefined =
@@ -1174,7 +1184,7 @@ export class VoiceSessions {
         if (row?.options.deliver.webhooks) await enqueueEvents(sql, [this.event(row, type, { speechId: item.id, ...(item.reply ? { reply: item.reply } : {}), ...data }, `voice:${held.id}:${type}:${item.id}`)]);
       }).catch(error => console.error(JSON.stringify({ type: "voice_speech_event_failed", session: held.id, speech: item.id, error: safeError(error) })));
     return {
-      player: () => held.connection?.play ? held.connection as Player : undefined,
+      player: (): Player | undefined => held.media?.speaks ? held.media : undefined,
       admit: () => this.options.admit(held.tenant),
       hold: async (usd: number, speech: string) => {
         const { subject, bucket } = options();
