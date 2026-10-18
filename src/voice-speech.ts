@@ -2,7 +2,6 @@ import { randomBytes } from "node:crypto";
 import type { HttpError } from "./http.ts";
 import { safeError } from "./metrics.ts";
 import { SPEECH_RATE, type SpeechCredentials, type Synthesizer } from "./speech.ts";
-import { opusFromPcm } from "./voice-audio.ts";
 import type { TurnClock } from "./voice/latency.ts";
 
 /**
@@ -31,8 +30,11 @@ export interface Playback {
   /** Packets sent, the time spent waiting for the next packet (speech still being made), and time held back by why. */
   stats?(): { packets: number; startMs: number; waitedMs: number; gapMs: number; heldMs: Record<string, number> };
 }
-/** A connection that can play: `packets` are 20 ms Opus packets at 48 kHz stereo; `started` is called with the first. */
-export interface Player { play(packets: AsyncIterable<Uint8Array>, started: () => void): Playback }
+/**
+ * Where speech plays: a session's media (src/voice/media.ts). `pcm` is the speech as it is made (24 kHz mono 16-bit,
+ * as speech.ts makes it), which the media encodes; `started` is called as its first packet goes out.
+ */
+export interface Player { play(pcm: AsyncIterable<Uint8Array>, started: () => void): Playback }
 
 /** What a session's speech needs of it: the connection, the money checks, and where its events and usage go. */
 export interface SpeechEffects {
@@ -143,8 +145,9 @@ export class SessionSpeech {
       const player = await this.connected(abort.signal);
       if (current.stoppedBy) return;
       if (!player) throw new Error("No connection to speak on");
-      const pcm = timed(this.synthesizer.stream({ text: item.text, voice: item.voice, ...(item.instructions ? { instructions: item.instructions } : {}) }, credentials, abort.signal), () => item.turn?.mark("ttsFirstAudio"));
-      current.playback = player.play(opusFromPcm(pcm, count => { samples += count; }), () => {
+      // What was made is what is billed: counted as it passes to the media, which plays all of it.
+      const pcm = counted(this.synthesizer.stream({ text: item.text, voice: item.voice, ...(item.instructions ? { instructions: item.instructions } : {}) }, credentials, abort.signal), () => item.turn?.mark("ttsFirstAudio"), bytes => { samples += bytes >> 1; });
+      current.playback = player.play(pcm, () => {
         item.turn?.mark("firstPacket").end("spoken");
         this.effects.started(item, Date.now() - item.queuedAt);
       });
@@ -176,11 +179,13 @@ export class SessionSpeech {
   }
 }
 
-/** `chunks` as they come, `first` called as the first arrives. */
-async function* timed(chunks: AsyncIterable<Uint8Array>, first: () => void): AsyncGenerator<Uint8Array> {
+/** `chunks` as they come: `first` called as the first arrives, `bytes` with each one's length. */
+async function* counted(chunks: AsyncIterable<Uint8Array>, first: () => void, bytes: (count: number) => void): AsyncGenerator<Uint8Array> {
   let seen = false;
   for await (const chunk of chunks) {
-    if (!seen && chunk.byteLength) { seen = true; first(); }
+    if (!chunk.byteLength) continue;
+    if (!seen) { seen = true; first(); }
+    bytes(chunk.byteLength);
     yield chunk;
   }
 }
