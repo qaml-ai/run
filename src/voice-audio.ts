@@ -1,6 +1,7 @@
 import { randomInt } from "node:crypto";
 import { Opus } from "./opus.ts";
 import { clock } from "./node-context.ts";
+import { safeError } from "./metrics.ts";
 
 type Timer = ReturnType<typeof setTimeout>;
 
@@ -221,7 +222,7 @@ export class Segmenter {
   /** `end` from a timer: nothing it meets may escape to the process (it would end every session on the node). */
   private ended(speaker: string, ended: Cut["ended"]) {
     try { this.end(speaker, ended); }
-    catch (error) { console.error(JSON.stringify({ type: "voice_segment_failed", speaker, error: error instanceof Error ? error.message : String(error) })); }
+    catch (error) { console.error(JSON.stringify({ type: "voice_segment_failed", speaker, error: safeError(error) })); }
   }
 
   private end(speaker: string, ended: Cut["ended"]) {

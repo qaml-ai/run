@@ -7,7 +7,7 @@ import {
 import type { VoiceConnection, VoiceCredentials, VoiceHandlers, VoiceTransport } from "./voice-sessions.ts";
 import type { Playback } from "./voice-speech.ts";
 import { buffered } from "./voice-audio.ts";
-import { recordDaveRoster } from "./metrics.ts";
+import { recordDaveRoster, safeError } from "./metrics.ts";
 
 /**
  * Discord voice connections from forwarded credentials, on @discordjs/voice (and @snazzah/davey for DAVE, Discord's
@@ -305,7 +305,7 @@ export class DiscordVoice implements VoiceConnection {
     // a speaker's audio that cannot be handled is that speaker's alone.
     const guarded = (work: () => void) => {
       try { work(); }
-      catch (error) { this.handlers.diagnostic("audio_failed", { error: (error instanceof Error ? error.message : String(error)).slice(0, 200) }); }
+      catch (error) { this.handlers.diagnostic("audio_failed", { error: safeError(error) }); }
     };
     stream.on("data", (packet: Buffer) => guarded(() => this.handlers.packet(userId, packet)));
     stream.once("error", error => {
