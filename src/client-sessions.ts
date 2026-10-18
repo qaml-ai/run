@@ -4637,7 +4637,7 @@ export class ClientSessions {
     // hand-off or a lost node too. One no longer known runs on the agent's.
     if (record.model && (MODEL_RUNS.includes(method) || method === "resume")) {
       try { params = { ...params, model: await this.runModel(session, record.model) }; }
-      catch (error) { console.error(JSON.stringify({ type: "run_model_unresolved", agent: id, request: record.id, model: record.model, error: errorText(error) })); }
+      catch (error) { console.error(JSON.stringify({ type: "run_model_unresolved", agent: id, request: record.id, model: record.model, error: safeError(error) })); }
     }
     try {
       return await this.supervisor.request(id, method, params, RUN_METHODS.includes(record.method)

@@ -5,4 +5,4 @@ tools and settings; the agent's model (and compaction's) is unchanged. It is the
 request record (`model`) for the turn's resume after human input and its continuation on another node, and is refused
 (400) for another provider, an unknown model, settings the model takes none of, or `whileRunning: "steer"`. The
 TypeScript SDK takes it on `agent.run`/`stream`/`send`, `client.prompt`/`submit`, and from an agent handler's
-`onSend` (`{ model }`). See [Concepts](../../concepts.md#a-run-on-another-model).
+`onSend` (`{ model }`). See [Concepts](../concepts.md#a-run-on-another-model).
