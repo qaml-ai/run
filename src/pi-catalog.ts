@@ -70,9 +70,9 @@ const AZURE = "azure";
 /**
  * Longest replies Pi's catalog has too long, by provider and id. A call that names no maximum asks for the model's
  * maxTokens, and OpenRouter routes it only to the hosts that serve that much: 1017's 943,718 (V4.1 Flash's longest
- * endpoint, which ADDED copies) leaves out DeepSeek's own endpoint (393,216), Baseten's (262,144), DeepInfra's and
- * Prime Intellect's (131,072), so 1017 asks for 131,072, which all of its hosts (OPENROUTER_HOSTS) serve. V4.1 Flash
- * keeps Pi's: its hosts serve that much.
+ * endpoint, which ADDED copies) leaves out DeepSeek's own endpoint (393,216), Baseten's (262,144), DeepInfra's,
+ * Prime Intellect's and InferenceNet's (131,072), so 1017 asks for 131,072, which all of its hosts (OPENROUTER_HOSTS)
+ * serve. V4.1 Flash keeps Pi's: its hosts serve that much.
  */
 const MAX_TOKENS: Record<string, Record<string, number>> = {
   openrouter: { "deepseek/deepseek-v4.1-flash-1017": 131_072 },
@@ -110,18 +110,20 @@ const corrected = (found: Model<Api> | undefined): Model<Api> | undefined => {
  * - DeepSeek V4.1 Flash 1017 (Miguel, 2026-10-18, from OpenRouter's live provider stats): Baseten, Parasail, Relace and
  *   DeepSeek's own endpoint, then (Miguel, 2026-10-18 evening, after 21 camel-builder turns failed when Parasail and
  *   Baseten, the only hosts left by data_collection "deny", both rate-limited for ten minutes) Fireworks, DeepInfra,
- *   Prime Intellect and Crusoe: zero retention and no training by OpenRouter's provider-logging table, so a "deny"
- *   agent keeps them. Each new host, and Relace, matched Parasail on one host at a time under "deny" (2026-10-18, high
- *   reasoning): a two-part agentic fix with replayed reasoning 3/3, no malformed tool call in 41-50, 62-63/63 fixed
- *   code, math and format prompts, 3,000-word answers without repetition, a 30k-token context 6/6 and cached on
- *   repeat. DeepInfra's slug bills its standard tier ($0.294/M out), not flex or priority. Not Morph, Cloudflare (whose
- *   fallback to the platform's own Cloudflare key refuses 1017), Wafer (mxfp4) or InferenceNet (262,144 context).
+ *   Prime Intellect, Crusoe and InferenceNet: zero retention and no training by OpenRouter's provider-logging table, so
+ *   a "deny" agent keeps them. Each new host, and Relace, matched Parasail on one host at a time under "deny"
+ *   (2026-10-18, high reasoning): a two-part agentic fix with replayed reasoning 3/3, no malformed tool call in 41-50,
+ *   62-63/63 fixed code, math and format prompts, 3,000-word answers without repetition, a 30k-token context 6/6 and
+ *   cached on repeat. DeepInfra's slug bills its standard tier ($0.294/M out), not flex or priority. InferenceNet's
+ *   context is 262,144: OpenRouter leaves it out of a longer request before routing (no attempt, no error), and the
+ *   other hosts serve it. Not Morph, Cloudflare (whose fallback to the platform's own Cloudflare key refuses 1017) or
+ *   Wafer (mxfp4).
  * - DeepSeek V4.1 Flash 1017:nitro, camel-builder's: the same hosts. `:nitro` tries the fastest first, so the slower
  *   ones serve only when the faster ones refuse, as fallbacks.
  */
 const OPENROUTER_HOSTS: Record<string, string[]> = {
   "deepseek/deepseek-v4.1-flash": ["fireworks", "together", "parasail", "coreweave", "nebius"],
-  "deepseek/deepseek-v4.1-flash-1017": ["baseten", "parasail", "relace", "deepseek", "fireworks", "deepinfra", "primeintellect", "crusoe"],
+  "deepseek/deepseek-v4.1-flash-1017": ["baseten", "parasail", "relace", "deepseek", "fireworks", "deepinfra", "primeintellect", "crusoe", "inference-net"],
 };
 
 /** The OpenRouter hosts a model may be served by (OPENROUTER_HOSTS), or undefined: OpenRouter's choice. */

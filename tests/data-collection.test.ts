@@ -8,7 +8,7 @@ import { fakeModel, runtime, until } from "./runtime-server.ts";
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
 const NITRO = "deepseek/deepseek-v4.1-flash-1017:nitro";
 /** 1017's hosts, its :nitro variant's too (pi-catalog.ts OPENROUTER_HOSTS). */
-const HOSTS_1017 = ["baseten", "parasail", "relace", "deepseek", "fireworks", "deepinfra", "primeintellect", "crusoe"];
+const HOSTS_1017 = ["baseten", "parasail", "relace", "deepseek", "fireworks", "deepinfra", "primeintellect", "crusoe", "inference-net"];
 const FLASH_1017 = getModel("openrouter", "deepseek/deepseek-v4.1-flash-1017")!;
 const KIMI = getModel("openrouter", "moonshotai/kimi-k3")!;
 const message = (text: string) => ({ type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text, annotations: [] }] });
