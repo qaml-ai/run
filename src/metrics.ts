@@ -60,6 +60,8 @@ function emit(type: string, line: Parameters<typeof metricLine>[1]) {
 
 const CLASSES: [string, RegExp][] = [
   ["runtime_restart", /runtime restarted/i],
+  // DeepSeek's own API refusing history without reasoning (deepseek-replay.ts): a bug of ours if it ever recurs, alarmed.
+  ["reasoning_replay", /`reasoning_content` in the thinking mode must be passed back/],
   // The runtime's own timeout on a model stream that went quiet (model-stream.ts), ahead of the timeouts providers report.
   ["stream_stalled", /^Model stream stalled/],
   // The model declined, or the provider's safety filter stopped it (pi-ai's words for each provider's stop reason).

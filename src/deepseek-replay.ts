@@ -1,56 +1,72 @@
-import type { Api, Model } from "@earendil-works/pi-ai";
+import type { Api, Context, Model } from "@earendil-works/pi-ai";
 
 /**
- * DeepSeek's own API, reasoning on, refuses a conversation with an assistant turn that carries no reasoning: "The
- * `reasoning_content` in the thinking mode must be passed back to the API" (a 400, `invalid_prompt`). OpenRouter serves
- * DeepSeek's models from several hosts, and only DeepSeek's own asks this: a turn another host answered without
- * reasoning (or one made with reasoning off) is history it then refuses, on every later call routed there.
+ * DeepSeek's own API, reasoning on, refuses a conversation in which an assistant message has no `reasoning_content`:
+ * "The `reasoning_content` in the thinking mode must be passed back to the API" (a 400, `invalid_prompt`). OpenRouter
+ * serves DeepSeek's models from several hosts and only DeepSeek's own asks this, so the history must carry it whichever
+ * host answered before.
+ *
+ * OpenRouter's Responses API gives a host no `reasoning_content` for a turn without a reasoning item (a host that sent
+ * none, a turn made with reasoning off), so DeepSeek's models are called on its Chat Completions API, Pi's own API for
+ * them, where Pi gives every assistant message its `reasoning_content`: its reasoning text, or an empty one when it had
+ * none (compat `requiresReasoningContentOnAssistantMessages`, on these models' catalog entries). `deepseekContext`
+ * makes the history so: every earlier DeepSeek turn on OpenRouter (whichever API, model id or host made it) replays its
+ * reasoning text. Routing is OpenRouter's own (no `provider` field): an `order` or `sort` turns off its load balancing,
+ * which keeps calls off slow and failing hosts (on 2026-10-17 an `order` sent every DeepSeek V4.1 Flash call to one slow
+ * fp4 host), and DeepSeek's refusal, should it come, is retried as it was (model-errors.ts).
  */
 export const REASONING_REPLAY_REFUSAL = "`reasoning_content` in the thinking mode must be passed back";
-/** OpenRouter's name for DeepSeek's own endpoint, in a request's `provider.ignore`. */
-const DEEPSEEK_HOST = "deepseek";
+const DEEPSEEK_ID = /^~?deepseek\//;
+const COMPLETIONS = "openai-completions" as Api;
 
 /** Whether a failed response is DeepSeek's own API refusing history without reasoning. */
 export function refusedReasoningReplay(errorMessage: string | undefined): boolean {
   return !!errorMessage?.includes(REASONING_REPLAY_REFUSAL);
 }
 
-/** Whether an OpenRouter call is to a DeepSeek model whose own API asks every assistant turn's reasoning back. */
-function deepseekOnOpenRouter(model: Model<Api>): boolean {
-  return model.provider === "openrouter" && /^~?deepseek\//.test(model.id)
+/** Whether a model is a DeepSeek model of the OpenRouter catalog whose own API asks every assistant turn's reasoning back. */
+export function deepseekOnOpenRouter(model: Pick<Model<Api>, "provider" | "id" | "compat">): boolean {
+  return model.provider === "openrouter" && DEEPSEEK_ID.test(model.id)
     && (model.compat as { requiresReasoningContentOnAssistantMessages?: boolean } | undefined)?.requiresReasoningContentOnAssistantMessages === true;
 }
 
-/** Items of a Responses API input the assistant made: its reasoning, tool calls and messages. */
-const assistantItem = (item: any) => item?.type === "reasoning" || item?.type === "function_call" || item?.type === "custom_tool_call"
-  || (item?.type === "message" && item.role === "assistant");
+/** The model a call is made with: a DeepSeek model on OpenRouter on its Chat Completions API (an agent made earlier holds Responses). */
+export function deepseekTarget<T extends Model<Api>>(model: T): T {
+  return deepseekOnOpenRouter(model) && model.api !== COMPLETIONS ? { ...model, api: COMPLETIONS } : model;
+}
 
-/** Whether some assistant turn in a Responses API input has no reasoning item. */
-export function turnWithoutReasoning(input: unknown): boolean {
-  if (!Array.isArray(input)) return false;
-  let inTurn = false, reasoned = false;
-  for (const item of input) {
-    if (!assistantItem(item)) {
-      if (inTurn && !reasoned) return true;
-      inTurn = reasoned = false;
-      continue;
-    }
-    inTurn = true;
-    if (item.type === "reasoning") reasoned = true;
-  }
-  return inTurn && !reasoned;
+/** A tool call id as Chat Completions takes it: a Responses `call_id|item_id` pair is its call id, kept unique in its turn. */
+function callId(id: string, taken: Set<string>): string {
+  if (!id.includes("|")) return id;
+  const base = id.slice(0, id.indexOf("|")).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 36) || "call";
+  let candidate = base;
+  for (let n = 2; taken.has(candidate); n++) candidate = `${base}_${n}`;
+  return candidate;
 }
 
 /**
- * A Responses API request to OpenRouter as DeepSeek's own endpoint takes it: kept from that endpoint (`provider.ignore`)
- * when it reasons and some assistant turn has no reasoning to give back (which that endpoint refuses), or when `avoid`
- * (the agent's last call there was refused anyway). Any other request is as it was.
+ * A call's history as DeepSeek's own API takes it, for a DeepSeek model on OpenRouter's Chat Completions API (`model`,
+ * from deepseekTarget): each earlier assistant turn of a DeepSeek model on OpenRouter counts as this model's on this
+ * API, so Pi gives its reasoning back as `reasoning_content` (a Responses reasoning item's text; an empty one for a turn
+ * with none), and Responses tool call ids become Chat Completions' (their results' too). Any other history is as it was.
  */
-export function deepseekPayload(model: Model<Api>, payload: unknown, avoid = false): unknown {
-  if (!deepseekOnOpenRouter(model) || !payload || typeof payload !== "object") return payload;
-  const request = payload as { reasoning?: { effort?: string }; input?: unknown; provider?: { ignore?: string[] } };
-  const reasons = !!request.reasoning?.effort && request.reasoning.effort !== "none";
-  if (!reasons || !(avoid || turnWithoutReasoning(request.input))) return payload;
-  const ignore = [...new Set([...(request.provider?.ignore ?? []), DEEPSEEK_HOST])];
-  return { ...request, provider: { ...request.provider, ignore } };
+export function deepseekContext(model: Model<Api>, context: Context): Context {
+  if (!deepseekOnOpenRouter(model) || model.api !== COMPLETIONS) return context;
+  const ids = new Map<string, string>();
+  const messages = context.messages.map(message => {
+    if (message.role === "toolResult") return ids.has(message.toolCallId) ? { ...message, toolCallId: ids.get(message.toolCallId)! } : message;
+    if (message.role !== "assistant" || message.provider !== "openrouter" || !DEEPSEEK_ID.test(message.model)) return message;
+    const taken = new Set<string>();
+    const content = message.content.map(block => {
+      if (block.type === "thinking") return block.redacted ? block : { ...block, thinkingSignature: "reasoning_content" };
+      if (block.type !== "toolCall") return block;
+      const id = callId(block.id, taken);
+      taken.add(id);
+      if (id === block.id) return block;
+      ids.set(block.id, id);
+      return { ...block, id };
+    });
+    return { ...message, api: model.api, model: model.id, content };
+  });
+  return { ...context, messages };
 }

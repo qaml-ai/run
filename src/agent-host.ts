@@ -20,7 +20,6 @@ import { backgroundTokens, compactionNeed, compactionSettings, contextTokens, ex
 import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
 import { isStalled, streamTimeouts } from "./model-stream.ts";
 import { MODEL_INTERRUPTED, modelFailure, retriesModelError } from "./model-errors.ts";
-import { refusedReasoningReplay } from "./deepseek-replay.ts";
 import { forcedToolChoice } from "./tool-choice.ts";
 import { filesRefused, schemaAccepts } from "./tool-policy.ts";
 import { callSettings } from "./pi-catalog.ts";
@@ -108,8 +107,6 @@ export function openCalls(messages: AgentMessage[]): ToolCall[] {
 export function createAgentHost(hostIO: HostIO) {
   let agent: Agent | undefined;
   let config: AgentConfig;
-  // Set once DeepSeek's own endpoint refused this agent's history (deepseek-replay.ts): its calls keep off it after.
-  let avoidDeepseekHost = false;
   // Each turn's outcome, timing and model and tool counts, as metrics (metrics.ts), from what the host emits.
   const turns = observeTurns(() => config?.model && { provider: config.model.provider, id: config.model.id }, Date.now, () => config?.tenant);
   const io: HostIO = { ...hostIO, emit: event => { turns.event(event); hostIO.emit(event); } };
@@ -801,8 +798,6 @@ export function createAgentHost(hostIO: HostIO) {
       // What the API reports as `retryable` (model-errors.ts): a tenant's own endpoint has retried already, so its errors
       // (a credit gate's 402, say) end the turn; a stream that went quiet is retried like any.
       if (!retriesModelError(last, failureContext())) return;
-      // Refused by DeepSeek's own endpoint for history without reasoning: this agent's calls keep off it from now on.
-      if (refusedReasoningReplay(last.errorMessage)) avoidDeepseekHost = true;
       if (!interrupted && attempt > policy.maxAttempts) {
         io.emit({ type: "auto_retry_end", success: false, attempt: attempt - 1, finalError: last.errorMessage, failure: modelFailure(last, failureContext()) });
         return;
@@ -922,7 +917,7 @@ export function createAgentHost(hostIO: HostIO) {
         streamFn: (model, context, options) => {
           const toolChoice = outputChoice(model);
           const settings = callSettings(model, config, options?.reasoning);
-          return stream(model, context, { ...options, ...settings, ...(toolChoice === undefined ? {} : { toolChoice }), ...(avoidDeepseekHost ? { avoidDeepseekHost } : {}) } as typeof options);
+          return stream(model, context, { ...options, ...settings, ...(toolChoice === undefined ? {} : { toolChoice }) } as typeof options);
         },
         // Renders compaction summaries for the model (the default drops non-chat roles), and each message's sender.
         convertToLlm: messages => hydrate(convertToLlm(renderMessages(messages))),
