@@ -48,7 +48,7 @@ test("an agent on it calls OpenRouter's Chat Completions with the 1017 id and th
   assert.ok(Array.isArray(sent.messages), "Chat Completions (deepseek-replay.ts)");
   assert.equal(sent.model, FLASH_1017);
   assert.equal(sent.reasoning?.effort, "high");
-  assert.deepEqual(sent.provider, { only: ["baseten", "morph", "parasail", "relace", "deepseek"] }, "its hosts, and nothing else of routing");
+  assert.deepEqual(sent.provider, { only: ["baseten", "parasail", "relace", "deepseek"] }, "its hosts, and nothing else of routing");
   // No more than DeepSeek's own endpoint serves, so OpenRouter can route it there.
   const most = sent.max_completion_tokens ?? sent.max_tokens;
   assert.ok(most <= 262_144, String(most));
