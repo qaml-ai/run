@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { once } from "node:events";
 import { Outbound } from "../src/outbound.ts";
-import { cartesiaSpeech, chainedSpeech, deepgramSpeech, elevenlabsSpeech, speechProvider, ttsReference, type Served, type SpeechMember } from "../src/voice-providers/tts.ts";
+import { cartesiaSpeech, deepgramSpeech, DEFAULT_VOICES, elevenlabsSpeech, speechProvider, ttsReference } from "../src/voice-providers/tts.ts";
+import { chainedSpeech, type Served, type SpeechMember } from "../src/voice-providers/tts-chain.ts";
 import { openaiSpeech } from "../src/speech.ts";
 
 type Seen = { method: string; url: string; headers: IncomingMessage["headers"]; body: any };
@@ -84,7 +85,7 @@ test("references and providers by name", () => {
   assert.equal(speechProvider("elevenlabs/eleven_turbo_v2_5", outbound).model, "eleven_turbo_v2_5");
 });
 
-const member = (provider: SpeechMember["provider"], apiKey: string | undefined, voice?: string, platform = false): SpeechMember => ({ provider, ...(voice ? { voice } : {}), key: async () => apiKey ? { apiKey, platform } : undefined });
+const member = (provider: SpeechMember["provider"], apiKey: string | undefined, voice?: string, platform = false): SpeechMember => ({ provider, voice: voice ?? DEFAULT_VOICES[provider.id] ?? "", key: async () => apiKey ? { apiKey, platform } : undefined });
 
 test("chain: a member without a key is skipped, one that fails before its first audio is passed over; who served is said first", async t => {
   const { seen, base } = await fakeSpeech(t, async (entry, res) => {
