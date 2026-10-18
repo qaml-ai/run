@@ -304,7 +304,7 @@ test("(e) a watcher following the agent across a deploy and a drain sees every e
   // What the watcher folded is the turn as history has it: every message once, in order.
   const start = events.find(event => event.type === "turn_opened").index;
   const ended = events.filter(event => event.type === "message_end").map(event => event.message);
-  const history = (await api(nodes.find(node => node.child.exitCode === null && node !== a)!.url, `/v1/agents/${agent}/history`)).json.messages.slice(start);
+  const history = (await api(nodes.find(node => node !== a && node !== second)!.url, `/v1/agents/${agent}/history`)).json.messages.slice(start);
   const shape = (message: any) => `${message.role}:${message.toolCallId ?? (message.content?.find?.((part: any) => part.type === "toolCall")?.id ?? "")}`;
   assert.deepEqual(ended.map(shape), history.map(shape));
   assert.equal(new Set(ended.map(shape)).size, ended.length, "no message twice");

@@ -94,6 +94,11 @@ import { VOICE_CHANNEL, VoiceSessions, type VoiceReplyTarget, type VoiceTranspor
 import { buggify } from "./buggify.ts";
 import { sometimes } from "./assert.ts";
 
+/** Idle keep-alive sockets stay open this long: past the ALB's idle timeout (infra/terraform alb_idle_timeout, 360 s). */
+const HTTP_KEEP_ALIVE_MS = 365_000;
+/** How long a drain lets requests under way finish before it cuts their sockets. */
+const HTTP_DRAIN_MS = 10_000;
+
 /**
  * What a node is given rather than finds for itself: its operators' tenants, its secrets, the control-plane database and
  * how to listen on it, the sandbox it checked, and on ECS its task's address, whether a newer deployment replaced it, and
@@ -1252,8 +1257,19 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   // A request has 30 s to arrive whole, except an upload, which streams to storage a chunk at a time
   // and may take FILE_LIMITS.uploadMs. Node's requestTimeout is one value for every request, so it is off.
   server.requestTimeout = 0;
+  // Idle keep-alive sockets outlive the load balancer's (alb_idle_timeout, 360 s): it closes them, never this node under a
+  // request it has just sent (an ALB 502). Node requires the headers' timeout past it.
+  server.keepAliveTimeout = HTTP_KEEP_ALIVE_MS;
+  server.headersTimeout = HTTP_KEEP_ALIVE_MS + 1_000;
+  // Draining, each response ends its socket (Connection: close), so the load balancer or peer opens a fresh one elsewhere
+  // rather than sending its next request down a socket this node is about to close.
+  let closing = false;
+  const answering = new Set<ServerResponse>();
+  const endSocket = (res: ServerResponse) => { if (!res.headersSent) res.setHeader("Connection", "close"); res.shouldKeepAlive = false; };
   const UPLOAD = /^\/(?:v1\/volumes\/vol_[a-f0-9]{24}\/files\/|v1\/links\/|v1\/agents\/client_[a-f0-9]{40}\/uploads\/|clients\/client_[a-f0-9]{40}\/(?:files|uploads)\/)/;
-  server.on("request", (req: IncomingMessage) => {
+  server.on("request", (req: IncomingMessage, res: ServerResponse) => {
+    if (closing) endSocket(res);
+    else { answering.add(res); res.once("close", () => answering.delete(res)); }
     const timer = setTimeout(() => { if (!req.complete) req.socket.destroy(); }, req.method === "PUT" && UPLOAD.test(req.url ?? "") ? FILE_LIMITS.uploadMs : 30_000);
     timer.unref();
     req.once("close", () => clearTimeout(timer));
@@ -1406,6 +1422,8 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   async function drain(signal: string) {
     const started = Date.now();
     console.log(JSON.stringify({ type: "drain_started", signal, node, inFlight: clients.inFlight(), agents: clients.sessions.size, volumes: volumes.size }));
+    closing = true;
+    for (const res of answering) endSocket(res);
     scheduler.stop();
     channels.stop();
     await voice?.stop();
@@ -1465,8 +1483,14 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     await step("storage usage", () => storageUsage.flush());
     await step("listen", () => loads.close());
     await step("heartbeat", () => ownership.close());
-    server.close();
-    server.closeAllConnections();
+    // Idle sockets close now; requests under way (a long poll, a forwarded call) are answered in full for up to
+    // HTTP_DRAIN_MS, then whatever is left is cut. A second signal, or close(), cuts at once.
+    await new Promise<void>(resolve => {
+      const cut = setTimeout(() => server.closeAllConnections(), drainDeadline === 0 ? 0 : HTTP_DRAIN_MS);
+      cut.unref();
+      server.close(() => { clearTimeout(cut); resolve(); });
+      server.closeIdleConnections();
+    });
     // What else the node started, which a process that exits now would end anyway.
     journey?.stop();
     clearInterval(idempotencyTimer);
