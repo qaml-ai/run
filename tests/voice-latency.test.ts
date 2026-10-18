@@ -67,7 +67,7 @@ test("a turn waiting for the app's speech: the next one taken; a newer one repla
 test("an agent's reply spoken: one line per turn, every stage from commit to first packet, in order", async t => {
   const lines = turnLines(t);
   async function* reply() { await sleep(30); yield "Sure, I can help with that. "; await sleep(30); yield "Here is more."; }
-  const { fake, node } = await voiceCluster(t, { playEveryMs: 5, submitStreaming: () => reply() });
+  const { fake, node, events } = await voiceCluster(t, { playEveryMs: 5, submitStreaming: () => reply() });
   const a = await node("http://a");
   await a.voice.create("alice", { discord: discordGrant(), speak: { agentReplies: true }, deliver: { agent: AGENT }, silenceMs: 200 });
   const connection = await until(() => fake.open()[0], "the connection");
@@ -87,6 +87,13 @@ test("an agent's reply spoken: one line per turn, every stage from commit to fir
   assert.ok(line.stagesMs.llmFirstToken - line.stagesMs.transcript >= 25, "the agent's 30 ms before its first text");
   await sleep(300);
   assert.equal(lines.length, 1, "the reply's second piece ends no other turn");
+  // The webhook says it too: the first speech carries the turn's stages, the second does not; both say when they started.
+  const started = await until(async () => { const list = await events("voice.speech.started"); return list.length === 2 && list; }, "both speeches started");
+  assert.deepEqual(started[0].data.turn.stagesMs, line.stagesMs);
+  assert.equal(started[0].data.turn.path, "agent_reply");
+  assert.equal(started[0].data.turn.seq, 1);
+  assert.equal(started[1].data.turn, undefined);
+  assert.ok(started.every((event: any) => event.data.startedAt > 0));
 });
 
 test("the app speaks after the transcript (POST …/speak): Path speak; an unanswered turn ends no_reply; a quiet session times nothing", async t => {

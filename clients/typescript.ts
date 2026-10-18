@@ -643,7 +643,13 @@ export type WebhookEvent = { id: string; created: number } & (
   /** The session's audio failed: it reconnects (`restarting`), or, failing 3 times in 5 minutes, ends (voice.session.ended follows). */
   | { type: "voice.session.error"; data: VoiceFacts & { code: "media_crashed"; detail: string; restarting: boolean; attempt: number } }
   | { type: "voice.utterance"; data: VoiceUtterance }
-  | { type: "voice.speech.started"; data: VoiceFacts & { speechId: string; latencyMs: number; reply?: VoiceReply } }
+  | { type: "voice.speech.started"; data: VoiceFacts & {
+      speechId: string; latencyMs: number; reply?: VoiceReply;
+      /** When its first audio went out (ms). */
+      startedAt?: number;
+      /** For the first speech of a reply to an utterance: each stage, in ms since the end of the person's speech. */
+      turn?: { seq?: number; path: "agent_reply" | "prompt_speak" | "speak" | null; stagesMs: Record<string, number> };
+    } }
   | { type: "voice.speech.ended"; data: VoiceFacts & {
       speechId: string; reason: "done" | "interrupted" | "error"; reply?: VoiceReply;
       /** With interrupted: an interrupting speech, stopSpeaking, a person talking (bargeIn), the session ending or moving, credit running out. */

@@ -57,7 +57,7 @@ export interface SpeechEffects {
   estimate?(text: string): number;
   cost?(who: Served, made: { characters: number; seconds: number }): number;
   /** The speech started playing, `latencyMs` after it was asked for. */
-  started(item: SpeechItem, latencyMs: number): void;
+  started(item: SpeechItem, latencyMs: number, turn?: TurnClock): void;
   /** It ended; `platform` says whose key made it (usage), `served` which provider (when a chain made it). */
   ended(item: SpeechItem, ending: SpeechEnding, platform: boolean | undefined, served?: Served): void;
   /** The money ran out: the session ends (`budget`). */
@@ -248,8 +248,10 @@ export class SessionSpeech {
       // Once this speech is all made, the next one's making begins, while this one plays.
       void making.made.then(() => { if (this.current === current && !current.stoppedBy) this.lookAhead(); });
       current.playback = player.play(ready.pcm, () => {
-        item.turn?.mark("firstPacket").end("spoken");
-        this.effects.started(item, Date.now() - item.queuedAt);
+        // The first speech of a turn ends it, and tells its stages; a turn's later pieces do not.
+        const turn = item.turn && !item.turn.ended ? item.turn : undefined;
+        turn?.mark("firstPacket").end("spoken");
+        this.effects.started(item, Date.now() - item.queuedAt, turn);
       });
       if (current.stoppedBy) current.playback.stop();
       result = await current.playback.done;

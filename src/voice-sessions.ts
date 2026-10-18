@@ -1285,10 +1285,13 @@ export class VoiceSessions {
         estimate: (text: string) => synthesizer.estimate(text, options().speech?.providers),
         cost: (who: Served, made: { characters: number; seconds: number }) => synthesizer.costOf(`${who.provider}/${who.model}`, made),
       } : {}),
-      started: (item: SpeechItem, latencyMs: number) => {
+      started: (item: SpeechItem, latencyMs: number, turn?: TurnClock) => {
+        const startedAt = Date.now();
+        // The turn this speech answers, when it is that turn's first audio: its stages (ms since the end of speech).
+        const answers = turn ? { turn: { ...(turn.info.seq !== undefined ? { seq: turn.info.seq } : {}), path: turn.path ?? null, stagesMs: turn.stages() } } : {};
         console.log(JSON.stringify({ type: "voice_speech_started", session: held.id, speech: item.id, latencyMs }));
-        held.media?.notify?.({ type: "speech", state: "started", speechId: item.id, latencyMs, startedAt: Date.now(), ...(item.reply ? { reply: item.reply } : {}) });
-        void write("voice.speech.started", item, { latencyMs });
+        held.media?.notify?.({ type: "speech", state: "started", speechId: item.id, latencyMs, startedAt, ...(item.reply ? { reply: item.reply } : {}), ...answers });
+        void write("voice.speech.started", item, { latencyMs, startedAt, ...answers });
       },
       ended: (item: SpeechItem, ending: SpeechEnding, platform: boolean | undefined, served?: Served) => {
         const { subject, context, keyScope } = options();
