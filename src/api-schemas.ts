@@ -773,6 +773,15 @@ export const TranscriptionForm = z.object({
   language: TranscriptionFields.language, prompt: TranscriptionFields.prompt, keyScope: TranscriptionFields.keyScope,
   subject: TranscriptionFields.subject, context: z.string().optional().openapi({ description: "JSON of your claims, as context above" }), actor: TranscriptionFields.actor, bucket: TranscriptionFields.bucket,
 }).openapi("TranscriptionForm");
+export const SpeechInput = z.strictObject({
+  text: z.string().min(1).max(4_000).openapi({ description: "What to say: at most 4,000 characters" }),
+  voice: z.string().optional().openapi({ description: "The voice: alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer or verse. Default alloy", example: "coral" }),
+  instructions: z.string().max(1_000).optional().openapi({ description: "How to say it (tone, pace, accent): at most 1,000 characters" }),
+  format: z.enum(["pcm", "wav"]).optional().openapi({ description: "pcm (default): raw 16-bit little-endian mono at 24 kHz, as a voice session plays it. wav: the same in a streamed WAV container, which an <audio> element plays" }),
+  language: z.string().optional().openapi({ description: "The language it is in, for providers that take it (ISO 639-1)" }),
+  speech: z.lazy(() => VoiceSpeechProviders).optional().openapi({ description: "Providers to try in order, and their voices, as a voice session's speech: the same voice the session would speak in" }),
+  keyScope: TranscriptionFields.keyScope, subject: TranscriptionFields.subject, context: TranscriptionFields.context, actor: TranscriptionFields.actor, bucket: TranscriptionFields.bucket,
+}).openapi("SpeechInput");
 export const Transcription = z.object({
   text: z.string(),
   language: z.string().nullable().openapi({ description: "The language the provider heard (or was told), when it says" }),

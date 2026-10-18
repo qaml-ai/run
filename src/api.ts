@@ -35,6 +35,9 @@ import * as schema from "./api-schemas.ts";
 import { normalizePath, snapshotContents, VOLUME_LIMITS, type FileEntry, type VolumeService } from "./volumes.ts";
 import { actorInput, identityInput } from "./identity.ts";
 import { languageInput, transcribeRequest, type TranscriptionService } from "./transcription.ts";
+import { speechInput, speechRequest, type SpeechService } from "./speech-api.ts";
+import { speechChoiceInput } from "./voice-sessions.ts";
+import { DEFAULT_VOICE } from "./speech.ts";
 import { imageOptions, imageRequest, type Hold, type ImageService, type ImageSource } from "./images.ts";
 import { AUDIO_LIMITS, IMAGE_LIMITS } from "./limits.ts";
 import { declaredType, downloadHeaders, fileResponse, type FileLinks } from "./files.ts";
@@ -111,6 +114,8 @@ export interface ApiContext {
   rateLimits?: Pick<RateLimits, "agentCreate" | "tenantLimit">;
   /** `POST /v1/transcriptions`; without it, transcription is not enabled. */
   transcriptions?: TranscriptionService;
+  /** `POST /v1/speech`; without it, speech is not made alone. */
+  speech?: SpeechService;
   /** `POST /v1/images`; without it, image generation is not enabled. */
   images?: ImageService;
   /** The tenant's own users' credit (`/v1/end-users`, end-user-credits.ts); without it, end users are not metered. */
@@ -135,7 +140,7 @@ const OAUTH_ROUTES = [
   /^(?:GET|DELETE) \/v1\/agents\/[^/]+$/,
   /^(?:GET|POST|PUT|PATCH|DELETE) \/v1\/agents\/[^/]+\/(?:abort|configuration|events|fork|history|inputs|inputs\/[^/]+|mounts|prompt|requests\/[^/]+|schedules|schedules\/[^/]+|state|uploads\/[^/]+\/[^/]+)$/,
   /^(?:GET|POST|PATCH|DELETE) \/v1\/definitions(?:\/[^/]+(?:\/agents)?)?$/,
-  /^POST \/v1\/(?:transcriptions|images)$/,
+  /^POST \/v1\/(?:transcriptions|images|speech)$/,
   /^(?:POST \/v1\/runs|(?:GET|DELETE) \/v1\/runs\/[^/]+|GET \/v1\/runs\/[^/]+\/(?:events|messages)|POST \/v1\/runs\/[^/]+\/abort)$/,
 ];
 /** An agent's token is for the application that serves it, which an OAuth grant is not: its answers leave it out. */
@@ -325,7 +330,7 @@ export function api(context: ApiContext) {
   // Idempotency-Key on every POST: an agent's is its own key (create or upsert), and a prompt's its request's id.
   app.use("/v1/*", idempotency({
     db: () => clients.db, tenant: c => c.var.principal.tenant, lockMs: context.idempotencyLockMs,
-    skip: path => path === "/v1/agents" || path === "/v1/definitions" || path === "/v1/runs" || path === "/v1/transcriptions" || path === "/v1/images" || /^\/v1\/agents\/[^/]+\/(?:prompt|fork)$/.test(path),
+    skip: path => path === "/v1/agents" || path === "/v1/definitions" || path === "/v1/runs" || path === "/v1/transcriptions" || path === "/v1/images" || path === "/v1/speech" || /^\/v1\/agents\/[^/]+\/(?:prompt|fork)$/.test(path),
     // Answers with a secret shown once: API tokens (a new tenant's too), signing secrets, browser tokens, signed links.
     secret: path => /^\/v1\/(?:tokens|tenants|webhooks|webhooks\/[^/]+\/secret|usage-webhook\/secret|agents\/[^/]+\/(?:browser-tokens|links|credentials\/rotate)|volumes\/[^/]+\/links)$/.test(path),
   }));
@@ -873,6 +878,26 @@ export function api(context: ApiContext) {
       audio: bytes ? { bytes } : { url: input.url! }, ...(language ? { language } : {}), ...(input.prompt ? { prompt: input.prompt } : {}),
       ...(input.keyScope ? { keyScope: input.keyScope } : {}), ...(identity ? { identity } : {}), ...(actor ? { actor } : {}), ...(hold ? { hold } : {}),
     }, c.req.raw.signal));
+  });
+
+  route(createRoute({
+    method: "post", path: "/v1/speech",
+    request: { body: { content: { "application/json": { schema: schema.SpeechInput } } } },
+    responses: { 200: { description: "The speech, streamed as it is made: audio/pcm (24 kHz mono 16-bit) or audio/wav. X-Speech-Model names who made it", content: { "audio/pcm": { schema: z.any().openapi({ type: "string", format: "binary" }) }, "audio/wav": { schema: z.any().openapi({ type: "string", format: "binary" }) } } } },
+  }), async c => {
+    const service = context.speech;
+    if (!service) throw new HttpError(404, "Speech is not enabled on this runtime");
+    const input = parse(schema.SpeechInput, await readJson(c.req.raw.body, 64 * 1024));
+    const checked = speechInput(input, DEFAULT_VOICE);
+    const identity = identityInput({ subject: input.subject, context: input.context });
+    const actor = actorInput(input.actor);
+    const hold = endUserHold(c.var.principal.tenant, identity?.subject, input.bucket, "speech");
+    const language = languageInput(input.language);
+    const choice = input.speech === undefined ? undefined : speechChoiceInput(input.speech);
+    const made = await speechRequest(service, c.var.principal.tenant, {
+      ...checked, ...(input.keyScope ? { keyScope: input.keyScope } : {}), ...(language ? { language } : {}), ...(choice ? { choice } : {}), ...(identity ? { identity } : {}), ...(actor ? { actor } : {}), ...(hold ? { hold } : {}),
+    }, c.req.raw.signal);
+    return new Response(made.body, { status: 200, headers: { "Content-Type": made.contentType, "Cache-Control": "no-store", "X-Speech-Model": made.model } });
   });
 
   route(createRoute({
