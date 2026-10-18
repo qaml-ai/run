@@ -387,7 +387,7 @@ export class DiscordVoice implements VoiceConnection {
    * `canSend`. `started` is called as the first goes out. Done when they ran out (`done`), the playback was stopped
    * (another took its place, or `stop`), or it failed.
    */
-  play(packets: AsyncIterable<Uint8Array>, started: () => void): Playback {
+  play(packets: AsyncIterable<Uint8Array>, started: () => void, expectedMs?: number): Playback {
     const player = this.player ??= createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Pause, maxMissedFrames: MAX_MISSED_FRAMES } });
     this.connection.subscribe(player);
     let stopped = false, failed = false, first = true;
@@ -405,7 +405,7 @@ export class DiscordVoice implements VoiceConnection {
     const stopping = new Promise<"stop">(resolve => { stopNow = () => resolve("stop"); });
     async function* gated() {
       // Through a jitter buffer: a provider that stalls mid-speech pauses it between phrases, not packet by packet.
-      const iterator = buffered(packets)[Symbol.asyncIterator]();
+      const iterator = buffered(packets, expectedMs !== undefined ? { expectedMs } : {})[Symbol.asyncIterator]();
       for (let waited = Date.now(); ;) {
         const next = await Promise.race([iterator.next(), stopping]);
         if (next === "stop" || next.done) {

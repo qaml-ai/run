@@ -35,7 +35,7 @@ export interface Playback {
  * Where speech plays: a session's media (src/voice/media.ts). `pcm` is the speech as it is made (24 kHz mono 16-bit,
  * as speech.ts makes it), which the media encodes; `started` is called as its first packet goes out.
  */
-export interface Player { play(pcm: AsyncIterable<Uint8Array>, started: () => void): Playback }
+export interface Player { play(pcm: AsyncIterable<Uint8Array>, started: () => void, expectedMs?: number): Playback }
 
 /** What a session's speech needs of it: the connection, the money checks, and where its events and usage go. */
 export interface SpeechEffects {
@@ -247,12 +247,13 @@ export class SessionSpeech {
       if (!player) throw new Error("No connection to speak on");
       // Once this speech is all made, the next one's making begins, while this one plays.
       void making.made.then(() => { if (this.current === current && !current.stoppedBy) this.lookAhead(); });
+      // About how long it is, from its text: playback starts as soon as what is made will last (voice-audio.ts, buffered).
       current.playback = player.play(ready.pcm, () => {
         // The first speech of a turn ends it, and tells its stages; a turn's later pieces do not.
         const turn = item.turn && !item.turn.ended ? item.turn : undefined;
         turn?.mark("firstPacket").end("spoken");
         this.effects.started(item, Date.now() - item.queuedAt, turn);
-      });
+      }, this.synthesizer.estimateSeconds(item.text) * 1_000);
       if (current.stoppedBy) current.playback.stop();
       result = await current.playback.done;
     } catch (failure) {

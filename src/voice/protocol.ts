@@ -25,7 +25,7 @@ export type ToMedia =
   | { t: "open"; session: string; credentials: VoiceCredentials; options: MediaOptions }
   | { t: "update"; session: string; credentials: VoiceCredentials }
   | { t: "configure"; session: string; options: Partial<MediaOptions> }
-  | { t: "play"; session: string; id: number }
+  | { t: "play"; session: string; id: number; expectedMs?: number }
   | { t: "pcm"; session: string; id: number; pcm: ArrayBuffer }
   | { t: "pcm_end"; session: string; id: number; error?: string }
   | { t: "stop"; session: string; id: number }
