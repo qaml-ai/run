@@ -219,7 +219,10 @@ export class Segmenter {
       else if (speech.quietMs >= this.options.silenceMs) { this.end(speaker, "silence"); return; }
     }
     if (speech.heldMs >= (this.options.maxMs ?? UTTERANCE_LIMITS.maxMs)) { this.end(speaker, "max"); return; }
-    speech.timer = clock().setTimeout(() => this.ended(speaker, "silence"), this.options.silenceMs);
+    // Silence is counted from the last loud packet, not the last packet: a client sends a few hundred ms of quiet ones
+    // as it stops (its voice activity's hangover), which would otherwise each put the cut silenceMs further off.
+    const wait = speech.speechMs ? Math.max(1, speech.lastLoudAt + this.options.silenceMs - now) : this.options.silenceMs;
+    speech.timer = clock().setTimeout(() => this.ended(speaker, "silence"), wait);
     speech.timer.unref();
   }
 
@@ -312,6 +315,13 @@ export const PLAYBACK_BUFFER = Object.freeze({
   /** Otherwise it starts with this much buffered; and after running dry, resumes with this much, doubled at each stall. */
   slowStartMs: 1_000,
   maxResumeMs: 4_000,
+  /**
+   * With the speech's length known ahead (`expectedMs`, from its text): it starts once `knownStartMs` wait and what
+   * waits covers the rest at the rate it comes (less a margin), rather than waiting for `startRate` or `slowStartMs`.
+   */
+  knownStartMs: 60,
+  knownWindowMs: 50,
+  rateMargin: 0.85,
 });
 
 /**
@@ -326,15 +336,24 @@ export const PLAYBACK_BUFFER = Object.freeze({
  * The speech whole (or failed) is given on at once. A speech made faster than it plays never pauses; a bursty one
  * pauses at most at its first stall. Ends early (stops reading) when its reader stops.
  */
-export async function* buffered<T>(packets: AsyncIterable<T>, options: Partial<typeof PLAYBACK_BUFFER> = {}): AsyncGenerator<T> {
+export async function* buffered<T>(packets: AsyncIterable<T>, options: Partial<Record<keyof typeof PLAYBACK_BUFFER, number>> & { expectedMs?: number } = {}): AsyncGenerator<T> {
   const limits = { ...PLAYBACK_BUFFER, ...options };
   const queue: T[] = [];
   let done = false, failure: unknown, wake: (() => void) | undefined, stopped = false, arrived = 0, firstAt = 0;
+  // A start that waits on time (rateWindowMs) as well as packets is looked at again as the window passes.
+  let windowTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Packets that came with the first (within a few ms): a burst a provider sends at once says nothing of its rate. */
+  let opening = 0;
   const pump = (async () => {
     try {
       for await (const packet of packets) {
         if (stopped) return;
-        if (!arrived++) firstAt = performance.now();
+        if (arrived === 0 || performance.now() - firstAt < 5) opening++;
+        if (!arrived++) {
+          firstAt = performance.now();
+          windowTimer = setTimeout(() => wake?.(), (limits.expectedMs !== undefined ? limits.knownWindowMs : limits.rateWindowMs) + 5);
+          windowTimer.unref?.();
+        }
         queue.push(packet);
         wake?.();
       }
@@ -345,7 +364,17 @@ export async function* buffered<T>(packets: AsyncIterable<T>, options: Partial<t
   const startable = () => {
     if (ms(queue.length) >= limits.slowStartMs) return true;
     const elapsed = performance.now() - firstAt;
-    return ms(queue.length) >= limits.startMs && elapsed >= limits.rateWindowMs && ms(arrived) / elapsed >= limits.startRate;
+    const rate = ms(arrived) / elapsed;
+    if (limits.expectedMs !== undefined) {
+      // Known length: play once what waits covers what is left to make at the rate it comes (taken a margin slower).
+      // A provider faster than real time needs no lead past knownStartMs; a slower one, the shortfall it would leave.
+      if (ms(queue.length) < limits.knownStartMs || elapsed < limits.knownWindowMs) return false;
+      // The rate since the first, not counting what came with it.
+      const effective = ms(arrived - opening) / elapsed * limits.rateMargin;
+      const left = Math.max(0, limits.expectedMs - ms(arrived));
+      return effective >= 1 || ms(queue.length) >= left * (1 - effective) / effective;
+    }
+    return ms(queue.length) >= limits.startMs && elapsed >= limits.rateWindowMs && rate >= limits.startRate;
   };
   try {
     for (let started = false, resumeMs: number = limits.slowStartMs; ;) {
@@ -361,6 +390,7 @@ export async function* buffered<T>(packets: AsyncIterable<T>, options: Partial<t
     }
   } finally {
     stopped = true;
+    clearTimeout(windowTimer);
     void pump;
   }
 }

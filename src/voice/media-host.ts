@@ -214,14 +214,14 @@ class WorkerMedia implements Media {
   configure(options: Partial<MediaOptions>) { this.shard.post({ t: "configure", session: this.session, options }); }
   others() { return this.users; }
 
-  play(pcm: AsyncIterable<Uint8Array>, started: () => void): Playback {
+  play(pcm: AsyncIterable<Uint8Array>, started: () => void, expectedMs?: number): Playback {
     const id = ++this.nextId;
     let stopped = false, stats: Record<string, unknown> | undefined;
     const done = new Promise<"done" | "stopped" | "error">(resolve => {
       this.playing.set(id, { started, settle: (result, given) => { stats = given; this.playing.delete(id); resolve(result); } });
     });
     if (this.gone) this.playing.get(id)!.settle("error");
-    else this.shard.post({ t: "play", session: this.session, id });
+    else this.shard.post({ t: "play", session: this.session, id, ...(expectedMs !== undefined ? { expectedMs } : {}) });
     // The speech goes to the worker as it is made; a playback stopped (or a worker gone) stops reading it.
     void (async () => {
       try {

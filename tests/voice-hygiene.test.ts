@@ -6,7 +6,7 @@ import { opusFromPcm, Segmenter, type Cut } from "../src/voice-audio.ts";
 import { discordVoice } from "../src/voice-discord.ts";
 import type { VoiceHandlers } from "../src/voice-sessions.ts";
 import { fakeDiscordVoice } from "./fake-discord-voice.ts";
-import { discordGrant, sleep, speechPacket, until } from "./voice-fakes.ts";
+import { discordGrant, quietPacket, sleep, speechPacket, until } from "./voice-fakes.ts";
 
 const packet = (n: number) => Uint8Array.of(n & 0xff);
 
@@ -143,3 +143,16 @@ test("a resumed voice socket keeps each speaker's stream: what they say after it
   assert.ok(seen.packets.every(entry => entry.lost === 0));
   assert.equal(voice.identifies.length, 1, "resumed, not identified again");
 });
+test("silence is counted from the last loud packet: a client's trailing quiet packets do not put the cut off", async () => {
+  const cuts: { cut: Cut; at: number }[] = [];
+  const segmenter = new Segmenter({ silenceMs: 400, cut: cut => cuts.push({ cut, at: performance.now() }) });
+  for (let index = 0; index < 25; index++) { segmenter.packet("4", speechPacket(index)); await sleep(20); }
+  const lastLoud = performance.now();
+  // 300 ms of quiet packets as a client's voice activity lets go, then nothing.
+  for (let index = 0; index < 15; index++) { segmenter.packet("4", quietPacket(index)); await sleep(20); }
+  await until(() => cuts.length === 1, "the cut", 3_000);
+  const after = Math.round(cuts[0].at - lastLoud);
+  assert.ok(after < 600, `cut ${after} ms after the last loud packet (silenceMs 400; it was 700 when timed from the last packet)`);
+  assert.equal(cuts[0].cut.ended, "silence");
+});
+

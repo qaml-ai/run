@@ -74,8 +74,11 @@ export interface VoiceConnection {
   update(credentials: VoiceCredentials): void;
   /** The other users in the call now, when the connection knows; undefined until it does. */
   others(): string[] | undefined;
-  /** Play speech (20 ms Opus packets at 48 kHz stereo); a transport that cannot speak has none. */
-  play?(packets: AsyncIterable<Uint8Array>, started: () => void): import("./voice-speech.ts").Playback;
+  /**
+   * Play speech (20 ms Opus packets at 48 kHz stereo); a transport that cannot speak has none. `expectedMs`: about how
+   * long it is (from its text), so playback can start as soon as what is buffered will last.
+   */
+  play?(packets: AsyncIterable<Uint8Array>, started: () => void, expectedMs?: number): import("./voice-speech.ts").Playback;
   /** A session's event, for a transport whose far end shows them (a browser call's page). */
   notify?(event: Record<string, unknown>): void;
   close(): void;

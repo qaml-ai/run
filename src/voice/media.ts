@@ -60,7 +60,7 @@ export interface Media {
    * Play speech: 24 kHz mono 16-bit PCM as it is made. The media frames and encodes it, and plays it on the call;
    * `started` is called as its first packet goes out.
    */
-  play(pcm: AsyncIterable<Uint8Array>, started: () => void): Playback;
+  play(pcm: AsyncIterable<Uint8Array>, started: () => void, expectedMs?: number): Playback;
   /** A session's event for the far end, when the transport shows them (a browser call's page). */
   notify?(event: Record<string, unknown>): void;
   /** Close: each speaker's speech so far is cut (`flush`) and reported before it resolves, then the connection closes. */
@@ -131,10 +131,10 @@ export class MediaSession implements Media {
 
   notify(event: Record<string, unknown>) { this.connection.notify?.(event); }
 
-  play(pcm: AsyncIterable<Uint8Array>, started: () => void): Playback {
+  play(pcm: AsyncIterable<Uint8Array>, started: () => void, expectedMs?: number): Playback {
     const play = this.connection.play;
     if (!play || this.closed) return { done: Promise.resolve("error"), stop: () => {} };
-    const playback = play.call(this.connection, opusFromPcm(pcm), started);
+    const playback = play.call(this.connection, opusFromPcm(pcm), started, expectedMs);
     this.playing.add(playback);
     void playback.done.finally(() => this.playing.delete(playback));
     return playback;

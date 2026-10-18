@@ -278,7 +278,7 @@ class EvalTransport {
         update: () => {},
         others: () => call.others,
         close: () => { closed = true; },
-        play: (packets: AsyncIterable<Uint8Array>, started: () => void): Playback => {
+        play: (packets: AsyncIterable<Uint8Array>, started: () => void, expectedMs?: number): Playback => {
           const run: PlaybackRun = { tag: this.lastTag, scenario: call.scenario, askedAt: Date.now(), packets: 0, stopped: false };
           this.lastTag = undefined;
           call.playbacks.push(run);
@@ -286,7 +286,7 @@ class EvalTransport {
           const done = (async () => {
             let next = 0;
             try {
-              for await (const packet of buffered(packets)) {
+              for await (const packet of buffered(packets, expectedMs !== undefined ? { expectedMs } : {})) {
                 void packet;
                 if (stopped || closed) break;
                 const now = performance.now();
