@@ -60,6 +60,8 @@ function emit(type: string, line: Parameters<typeof metricLine>[1]) {
 
 const CLASSES: [string, RegExp][] = [
   ["runtime_restart", /runtime restarted/i],
+  // A run its caller stopped (agent-host.ts: "The run was aborted"; Pi's "Request was aborted"): not a failure of the model's.
+  ["aborted", /^The run was aborted|^Request was aborted/],
   // DeepSeek's own API refusing history without reasoning (deepseek-replay.ts): a bug of ours if it ever recurs, alarmed.
   ["reasoning_replay", /`reasoning_content` in the thinking mode must be passed back/],
   // The runtime's own timeout on a model stream that went quiet (model-stream.ts), ahead of the timeouts providers report.
@@ -230,9 +232,12 @@ export function observeTurns(model: () => { provider: string; id: string } | und
   function finish(current: NonNullable<typeof turn>, method: string, result: any, thrown: unknown) {
     // A limit's stop carries its reason as the error, but the turn did not fail.
     const limited = thrown === undefined && (result?.stopped === "spend_limit" || result?.stopped === "turn_limit") ? result.stopped as string : undefined;
-    const error = thrown !== undefined ? "exception" : !limited && typeof result?.error === "string" && result.error ? errorClass(result.error) : "none";
+    // A turn its caller stopped (code "aborted": a person's Stop, a new message) ended as asked: an outcome of its own, not
+    // a failure, so the failed-turns alarm and dashboards count only turns that failed.
+    const aborted = thrown === undefined && (result?.code === "aborted" || (typeof result?.error === "string" && errorClass(result.error) === "aborted"));
+    const error = thrown !== undefined ? "exception" : aborted ? "aborted" : !limited && typeof result?.error === "string" && result.error ? errorClass(result.error) : "none";
     // A turn handed off at a step boundary ends here and goes on on another node: its part here is a turn of its own.
-    const outcome = error !== "none" ? "failed" : result?.handedOff ? "handed_off" : result?.stopped === "input_required" ? "input_required" : limited ?? "completed";
+    const outcome = aborted ? "aborted" : error !== "none" ? "failed" : result?.handedOff ? "handed_off" : result?.stopped === "input_required" ? "input_required" : limited ?? "completed";
     const { provider = "unknown", id = "unknown" } = model() ?? {};
     emit("turn_metrics", {
       dimensions: { Outcome: outcome, ErrorClass: error, Provider: provider, Model: id },

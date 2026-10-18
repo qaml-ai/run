@@ -107,7 +107,7 @@ test("a turn's line: its outcome, duration, time to first token, model responses
     [[], ["Outcome"], ["ErrorClass"], ["Provider", "Model"]]);
 });
 
-test("turn outcomes: a model error, input required, the spend limit, a thrown error; other methods are not turns", async () => {
+test("turn outcomes: a model error, input required, the spend limit, a thrown error, a caller's abort; other methods are not turns", async () => {
   const turns = observeTurns(() => ({ provider: "anthropic", id: "claude-sonnet-5" }));
   const lines = await captured(async () => {
     await turns.wrap(async () => ({ messages: 2, error: "503 Service Unavailable" }))("continue", {});
@@ -116,6 +116,9 @@ test("turn outcomes: a model error, input required, the spend limit, a thrown er
     // As the host returns them: a limit's stop carries its reason as the error.
     await turns.wrap(async () => ({ messages: 2, error: "This run stopped at its limit of 3 model responses", code: "turn_limit", stopped: "turn_limit" }))("prompt", {});
     await assert.rejects(turns.wrap(async () => { throw new Error("Session closed"); })("prompt", {}), /Session closed/);
+    // Stopped by its caller, as the host returns it (code aborted), and as Pi words an abort without the code.
+    await turns.wrap(async () => ({ messages: 2, error: "The run was aborted", code: "aborted" }))("prompt", {});
+    await turns.wrap(async () => ({ messages: 2, error: "Request was aborted" }))("prompt", {});
     await turns.wrap(async () => ({ ok: true }))("init", {});
     await turns.wrap(async () => ({ value: 1 }))("execute", {});
     // A second turn sent while one runs is refused by the host: it is no turn, and the running one is untouched.
@@ -128,7 +131,7 @@ test("turn outcomes: a model error, input required, the spend limit, a thrown er
     await first;
   });
   const outcomes = lines.filter(line => line.type === "turn_metrics").map(line => [line.Outcome, line.ErrorClass]);
-  assert.deepEqual(outcomes, [["failed", "provider_5xx"], ["input_required", "none"], ["spend_limit", "none"], ["turn_limit", "none"], ["failed", "exception"], ["completed", "none"]]);
+  assert.deepEqual(outcomes, [["failed", "provider_5xx"], ["input_required", "none"], ["spend_limit", "none"], ["turn_limit", "none"], ["failed", "exception"], ["aborted", "aborted"], ["aborted", "aborted"], ["completed", "none"]]);
   const noFirstToken = lines.find(line => line.type === "turn_metrics");
   assert.equal(noFirstToken.TimeToFirstTokenMs, undefined, "no token, no time to first token");
 });
