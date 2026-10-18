@@ -61,6 +61,8 @@ export interface Media {
    * `started` is called as its first packet goes out.
    */
   play(pcm: AsyncIterable<Uint8Array>, started: () => void): Playback;
+  /** A session's event for the far end, when the transport shows them (a browser call's page). */
+  notify?(event: Record<string, unknown>): void;
   /** Close: each speaker's speech so far is cut (`flush`) and reported before it resolves, then the connection closes. */
   close(flush: "handoff" | "end" | "error"): Promise<void>;
 }
@@ -126,6 +128,8 @@ export class MediaSession implements Media {
   }
 
   others() { return this.connection.others(); }
+
+  notify(event: Record<string, unknown>) { this.connection.notify?.(event); }
 
   play(pcm: AsyncIterable<Uint8Array>, started: () => void): Playback {
     const play = this.connection.play;

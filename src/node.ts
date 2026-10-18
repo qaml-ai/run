@@ -95,7 +95,10 @@ import { DEFAULT_VOICES, speechProvider, ttsReference } from "./voice-providers/
 import { speechPrices, ttsCost } from "./voice-providers/prices.ts";
 import { VOICE_CHANNEL, VoiceSessions, type VoiceReplyTarget, type VoiceTransport } from "./voice-sessions.ts";
 import { MediaHost } from "./voice/media-host.ts";
-import type { MediaFactory } from "./voice/media.ts";
+import { inlineMedia, type MediaFactory } from "./voice/media.ts";
+import { browserVoice, type BrowserTransport } from "./voice-browser.ts";
+import { WebSocket, WebSocketServer } from "ws";
+import type { Duplex } from "node:stream";
 import { buggify } from "./buggify.ts";
 import { sometimes } from "./assert.ts";
 
@@ -143,7 +146,7 @@ export type NodeDeps = {
    */
   storage?: (tail: LogTail, meter: StorageMeter) => Storage | Promise<Storage>;
   /** Voice connections by provider (src/voice-sessions.ts): Discord's (src/voice-discord.ts) with AGENT_VOICE=true, unless given (a test's fake). */
-  voiceTransports?: Partial<Record<"discord", VoiceTransport>>;
+  voiceTransports?: Partial<Record<"discord", VoiceTransport> & { browser: BrowserTransport }>;
   /** What a voice server's host must match, when a test serves its own. */
   voiceEndpoints?: RegExp;
   /** Where voice sessions' media runs, when a test chooses (inline on the node's thread, or a media host of its own). */
@@ -895,7 +898,9 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     transport: { module: new URL("./voice-discord.ts", import.meta.url).href, export: "discordVoice" }, speaks: true,
     sessionsPerWorker: config.voice.sessionsPerWorker, maxWorkers: config.voice.workers, maxMb: config.voice.workerMaxMb,
   }) : undefined;
-  const voiceTransports = deps.voiceTransports ?? (config.voice.enabled ? { discord: voiceHost ? voiceHost.transport() : (await import("./voice-discord.ts")).discordVoice() } : undefined);
+  // Calls from a web page (provider browser, src/voice-browser.ts): their sockets come to whichever node holds the session.
+  const browserTransport = deps.voiceTransports ? deps.voiceTransports.browser : config.voice.enabled ? browserVoice() : undefined;
+  const voiceTransports = deps.voiceTransports ?? (config.voice.enabled ? { discord: voiceHost ? voiceHost.transport() : (await import("./voice-discord.ts")).discordVoice(), ...(browserTransport ? { browser: browserTransport } : {}) } : undefined);
   const voice = voiceTransports && new VoiceSessions({
     db, accounts, node, ownership, transports: voiceTransports, ...(deps.voiceEndpoints ? { endpoints: deps.voiceEndpoints } : {}),
     admit: async tenant => {
@@ -919,7 +924,9 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     perTenant: tenant => tenants.maxVoiceSessions(tenant) ?? config.voice.perTenant, perNode: config.voice.perNode,
     // A voice.utterance goes out at once: a bot that answers aloud waits on it (the outbox's scan is every 5 s).
     kickWebhooks: () => webhooks.kick(),
-    ...(deps.voiceMedia ? { media: deps.voiceMedia } : voiceHost ? { media: () => voiceHost.factory() } : {}),
+    // A browser call's socket is on this thread, so its media is too; Discord's runs in media workers.
+    media: (transport, provider) => provider === "browser" ? inlineMedia(transport) : deps.voiceMedia ? deps.voiceMedia(transport) : voiceHost ? voiceHost.factory() : inlineMedia(transport),
+    ...(browserTransport ? { browser: { secret: sessionSecret!, url: (id: string) => `${(browserUrl || links.publicUrl).replace(/^http/, "ws")}/v1/voice/sessions/${id}/socket` } } : {}),
   });
   // An agent loaded on another node: this node's idle watchers of it end, and reconnect to that node.
   // A tenant's webhook endpoints changed on some node: read them again at its next run.
@@ -1298,6 +1305,52 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   });
 
   const server = createAdaptorServer({ fetch: app.fetch }) as Server;
+  // Browser voice calls' sockets (src/voice-browser.ts): served by the node holding the session, relayed there from any other.
+  const voiceSockets = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
+  server.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+    socket.on("error", () => {});
+    void upgradeVoice(req, socket, head).catch(error => {
+      console.error(JSON.stringify({ type: "voice_socket_failed", error: errorText(error) }));
+      refuseUpgrade(socket, 500);
+    });
+  });
+  function refuseUpgrade(socket: Duplex, status: number) {
+    if (!socket.writable) return;
+    socket.end(`HTTP/1.1 ${status} ${status === 401 ? "Unauthorized" : status === 404 ? "Not Found" : status === 409 ? "Conflict" : status === 503 ? "Service Unavailable" : "Error"}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+  }
+  async function upgradeVoice(req: IncomingMessage, socket: Duplex, head: Buffer) {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const outside = /^\/v1\/voice\/sessions\/(vs_[a-f0-9]{24})\/socket$/.exec(url.pathname)?.[1];
+    const relayed = /^\/internal\/voice\/sessions\/(vs_[a-f0-9]{24})\/socket$/.exec(url.pathname)?.[1];
+    const id = outside ?? relayed;
+    if (!id || !voice || !browserTransport) { refuseUpgrade(socket, 404); return; }
+    if (outside && !voice.verifyBrowserToken(id, url.searchParams.get("token") ?? "")) { refuseUpgrade(socket, 401); return; }
+    if (relayed) {
+      const [timestamp, signature] = String(req.headers["x-agent-runtime-internal"] ?? "").split(".");
+      const expected = Buffer.from(internalSignature(timestamp ?? "", url.pathname, "")), given = Buffer.from(signature ?? "");
+      if (!timestamp || Math.abs(Date.now() - Number(timestamp)) > 60_000 || expected.length !== given.length || !timingSafeEqual(expected, given)) { refuseUpgrade(socket, 401); return; }
+    }
+    if (browserTransport.holds(id)) {
+      voiceSockets.handleUpgrade(req, socket, head, ws => { if (!browserTransport.attach(id, ws)) ws.close(4009, "This session has a socket open already"); });
+      return;
+    }
+    // Held elsewhere (or not yet anywhere): relayed to its node, which a relayed socket never is twice.
+    const owner = relayed ? undefined : await ownership.route(`voice:${id}`);
+    if (!owner || owner === node) { refuseUpgrade(socket, 503); return; }
+    const path = `/internal/voice/sessions/${id}/socket`, timestamp = String(Date.now());
+    const upstream = new WebSocket(new URL(path, owner.replace(/^http/, "ws")), { headers: { "x-agent-runtime-internal": `${timestamp}.${internalSignature(timestamp, path, "")}` }, maxPayload: 1024 * 1024 });
+    upstream.once("unexpected-response", (_request, response) => { refuseUpgrade(socket, response.statusCode === 409 ? 409 : 503); upstream.terminate(); });
+    upstream.once("error", () => refuseUpgrade(socket, 503));
+    upstream.once("open", () => voiceSockets.handleUpgrade(req, socket, head, ws => {
+      ws.on("message", (data, binary) => { if (upstream.readyState === WebSocket.OPEN) upstream.send(data, { binary }); });
+      upstream.on("message", (data, binary) => { if (ws.readyState === WebSocket.OPEN) ws.send(data, { binary }); });
+      const end = (code?: number) => { for (const side of [ws, upstream]) if (side.readyState <= WebSocket.OPEN) side.close(code && code >= 1000 && code < 5000 && code !== 1005 && code !== 1006 ? code : 1000); };
+      ws.once("close", code => end(code));
+      upstream.once("close", code => end(code));
+      ws.on("error", () => end());
+      upstream.on("error", () => end());
+    }));
+  }
   // A request has 30 s to arrive whole, except an upload, which streams to storage a chunk at a time
   // and may take FILE_LIMITS.uploadMs. Node's requestTimeout is one value for every request, so it is off.
   server.requestTimeout = 0;

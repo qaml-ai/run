@@ -674,7 +674,8 @@
               "provider": {
                 "type": "string",
                 "enum": [
-                  "discord"
+                  "discord",
+                  "browser"
                 ]
               },
               "guildId": {
@@ -746,7 +747,8 @@
               "provider": {
                 "type": "string",
                 "enum": [
-                  "discord"
+                  "discord",
+                  "browser"
                 ]
               },
               "guildId": {
@@ -868,7 +870,8 @@
               "provider": {
                 "type": "string",
                 "enum": [
-                  "discord"
+                  "discord",
+                  "browser"
                 ]
               },
               "guildId": {
@@ -963,7 +966,8 @@
               "provider": {
                 "type": "string",
                 "enum": [
-                  "discord"
+                  "discord",
+                  "browser"
                 ]
               },
               "guildId": {
@@ -1085,7 +1089,8 @@
               "provider": {
                 "type": "string",
                 "enum": [
-                  "discord"
+                  "discord",
+                  "browser"
                 ]
               },
               "guildId": {
@@ -1182,7 +1187,8 @@
               "provider": {
                 "type": "string",
                 "enum": [
-                  "discord"
+                  "discord",
+                  "browser"
                 ]
               },
               "guildId": {
@@ -8896,6 +8902,29 @@
                   "self_deaf"
                 ],
                 "description": "How your app's OP 4 should have joined: self_mute false for a session that speaks"
+              },
+              "browser": {
+                "type": "object",
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "description": "The session's WebSocket (wss://…/v1/voice/sessions/{id}/socket)"
+                  },
+                  "token": {
+                    "type": "string",
+                    "description": "Opens it once: pass it as ?token=. Give the page only url and token, never your API key"
+                  },
+                  "expiresAt": {
+                    "type": "number",
+                    "description": "When the token stops opening the socket (ms); POST …/browser-token makes another"
+                  }
+                },
+                "required": [
+                  "url",
+                  "token",
+                  "expiresAt"
+                ],
+                "description": "For provider browser: where the page connects"
               }
             },
             "required": [
@@ -8977,7 +9006,8 @@
           "provider": {
             "type": "string",
             "enum": [
-              "discord"
+              "discord",
+              "browser"
             ]
           },
           "discord": {
@@ -9000,7 +9030,8 @@
               "guildId",
               "channelId",
               "userId"
-            ]
+            ],
+            "description": "For a browser session: its own ids (guildId the session's), not Discord's"
           },
           "state": {
             "type": "string",
@@ -9191,9 +9222,10 @@
           "provider": {
             "type": "string",
             "enum": [
-              "discord"
+              "discord",
+              "browser"
             ],
-            "description": "Only discord for now (the default)"
+            "description": "discord (the default): a Discord voice call your bot joined. browser: a call from a web page, no Discord, for trying a voice bot out: the answer's browser.url and token open its WebSocket (see Voice calls, From a browser)"
           },
           "discord": {
             "type": "object",
@@ -9236,7 +9268,7 @@
               "token"
             ],
             "additionalProperties": false,
-            "description": "What Discord answered your app's OP 4 (voice state update) with, on its own gateway"
+            "description": "What Discord answered your app's OP 4 (voice state update) with, on its own gateway. Required for provider discord; none for browser"
           },
           "subject": {
             "type": "string",
@@ -9264,7 +9296,7 @@
               },
               "webhooks": {
                 "type": "boolean",
-                "description": "Send voice.* events to your webhook endpoints that select them. Default true"
+                "description": "Send voice.* events to your webhook endpoints that select them. Default true. A browser session may deliver to neither: its socket gets every utterance"
               }
             },
             "additionalProperties": false
@@ -9353,9 +9385,6 @@
             "$ref": "#/components/schemas/VoiceSpeechProviders"
           }
         },
-        "required": [
-          "discord"
-        ],
         "additionalProperties": false
       },
       "VoiceSessionList": {
@@ -9481,6 +9510,27 @@
           "text"
         ],
         "additionalProperties": false
+      },
+      "VoiceBrowserToken": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "The session's WebSocket"
+          },
+          "token": {
+            "type": "string",
+            "description": "Opens it once, as ?token="
+          },
+          "expiresAt": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "url",
+          "token",
+          "expiresAt"
+        ]
       },
       "VoiceSpeechStopped": {
         "type": "object",
@@ -17460,6 +17510,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/VoiceSpeechStopped"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/voice/sessions/{id}/browser-token": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Another token for a browser session's socket (the first one expired, or the page reloaded)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceBrowserToken"
                 }
               }
             }

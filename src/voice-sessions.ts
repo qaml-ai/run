@@ -1,4 +1,5 @@
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { BROWSER_BOT } from "./voice-browser.ts";
 import type { Accounts, Sealed } from "./accounts.ts";
 import { transaction, type Db, type Sql } from "./db.ts";
 import { HttpError } from "./http.ts";
@@ -74,7 +75,9 @@ export interface VoiceConnection {
   /** The other users in the call now, when the connection knows; undefined until it does. */
   others(): string[] | undefined;
   /** Play speech (20 ms Opus packets at 48 kHz stereo); a transport that cannot speak has none. */
-  play?: Player["play"];
+  play?(packets: AsyncIterable<Uint8Array>, started: () => void): import("./voice-speech.ts").Playback;
+  /** A session's event, for a transport whose far end shows them (a browser call's page). */
+  notify?(event: Record<string, unknown>): void;
   close(): void;
 }
 /** A voice service's connections (src/voice-discord.ts). */
@@ -84,7 +87,7 @@ export interface VoiceTransport {
   speaks?: boolean;
 }
 
-export const VOICE_PROVIDERS = ["discord"] as const;
+export const VOICE_PROVIDERS = ["discord", "browser"] as const;
 export type VoiceState = "connecting" | "live" | "reconnecting" | "ended";
 export const END_REASONS = ["requested", "empty", "idle", "max_duration", "budget", "kicked", "credentials", "error"] as const;
 export type EndReason = typeof END_REASONS[number];
@@ -153,6 +156,8 @@ const PRUNE_EVERY_MS = 60 * 60_000;
 
 const SNOWFLAKE = /^\d{1,20}$/;
 const ID = /^vs_[a-f0-9]{24}$/;
+/** How long a browser session's socket token opens it. */
+export const BROWSER_TOKEN_MS = 10 * 60_000;
 const actor = (id: string) => `voice:${id}`;
 const aad = (id: string) => `voice:${id}`;
 type Secret = { sessionId: string; endpoint: string | null; token: string };
@@ -323,6 +328,8 @@ export interface VoiceSessionsOptions {
   endpoints?: RegExp;
   /** Send the webhook outbox now (Webhooks.kick): a voice event is waited on, by a bot that answers aloud. */
   kickWebhooks?(): void;
+  /** Browser sessions' sockets: the secret their tokens are signed with, and where pages reach them. */
+  browser?: { secret: string; url(session: string): string };
   /**
    * Where each session's media runs (src/voice/media.ts): given a provider's transport, its factory. By default on this
    * thread (`inlineMedia`).
@@ -418,13 +425,14 @@ export class VoiceSessions {
   private endpoints() { return this.options.endpoints ?? /^[a-z0-9-]+(\.[a-z0-9-]+)*\.discord\.media$/i; }
 
   /** Validate a create request's settings. */
-  private settings(input: Record<string, unknown>): VoiceOptions {
+  private settings(input: Record<string, unknown>, socket = false): VoiceOptions {
     const deliverGiven = input.deliver === undefined ? {} : object(input.deliver, "deliver");
     only(deliverGiven, "deliver", ["agent", "webhooks"]);
     const agent = deliverGiven.agent === undefined ? undefined : text(deliverGiven.agent, "deliver.agent", /^client_[a-f0-9]{40}$/, "an agent id");
     if (deliverGiven.webhooks !== undefined && typeof deliverGiven.webhooks !== "boolean") throw new HttpError(400, "deliver.webhooks must be true or false");
     const webhooks = deliverGiven.webhooks !== false;
-    if (!agent && !webhooks) throw new HttpError(400, "deliver must send utterances somewhere: an agent, webhooks, or both");
+    // A browser session's socket gets every utterance itself.
+    if (!agent && !webhooks && !socket) throw new HttpError(400, "deliver must send utterances somewhere: an agent, webhooks, or both");
     const identity = identityInput({ subject: input.subject, context: input.context });
     const bucket = input.bucket === undefined ? undefined : bucketInput(input.bucket);
     const keyScope = input.keyScope === undefined ? undefined : text(input.keyScope, "keyScope", /^.{1,100}$/s, "a key scope's name");
@@ -466,12 +474,20 @@ export class VoiceSessions {
   async create(tenant: string, input: Record<string, unknown>) {
     only(input, "body", ["provider", "discord", "subject", "bucket", "context", "keyScope", "deliver", "language", "prompt", "silenceMs", "maxMinutes", "idleMinutes", "emptySeconds", "ignoreUserIds", "metadata", "notice", "speak", "bargeIn", "voice", "transcription", "speech"]);
     const provider = input.provider ?? "discord";
-    if (provider !== "discord") throw new HttpError(400, `provider must be one of: ${VOICE_PROVIDERS.join(", ")}`);
-    if (!this.options.transports[provider]) throw new HttpError(404, "Voice sessions are not enabled on this runtime");
+    if (provider !== "discord" && provider !== "browser") throw new HttpError(400, `provider must be one of: ${VOICE_PROVIDERS.join(", ")}`);
+    if (!this.options.transports[provider] || (provider === "browser" && !this.options.browser)) throw new HttpError(404, provider === "browser" ? "Browser voice sessions are not enabled on this runtime" : "Voice sessions are not enabled on this runtime");
     if (!this.options.accounts.canStoreKeys) throw new HttpError(503, "This runtime has no AGENT_SECRETS_KEY, so it cannot hold voice credentials");
-    if (input.discord === undefined) throw new HttpError(400, "discord is required: guildId, channelId, userId, sessionId, endpoint and token");
-    const credentials = discordInput(input.discord, this.endpoints()) as VoiceCredentials;
-    const options = this.settings(input);
+    const id = `vs_${randomBytes(12).toString("hex")}`;
+    let credentials: VoiceCredentials;
+    if (provider === "browser") {
+      if (input.discord !== undefined) throw new HttpError(400, "A browser session has no discord: leave it out");
+      // Its own ids: the session's (unique, so any number of browser calls), and a bot that is never a speaker.
+      credentials = { guildId: id, channelId: id, userId: BROWSER_BOT, sessionId: id, endpoint: "browser", token: randomBytes(16).toString("hex") };
+    } else {
+      if (input.discord === undefined) throw new HttpError(400, "discord is required: guildId, channelId, userId, sessionId, endpoint and token");
+      credentials = discordInput(input.discord, this.endpoints()) as VoiceCredentials;
+    }
+    const options = this.settings(input, provider === "browser");
     if (options.agentReplies && !options.deliver.agent) throw new HttpError(400, "speak.agentReplies speaks deliver.agent's replies: give deliver.agent");
     if (options.agentReplies && !this.options.submitStreaming) throw new HttpError(404, "Speaking agents' replies is not enabled on this runtime");
     if (options.speak && (!this.options.synthesizer || !this.options.transports[provider]?.speaks)) throw new HttpError(404, "Speaking is not enabled on this runtime");
@@ -486,7 +502,6 @@ export class VoiceSessions {
       const names = [...new Set(["openai", ...streaming.map(reference => reference.split("/")[0])])];
       throw new HttpError(400, `Voice sessions transcribe with a key for ${names.join(" or ")}: add one under Models & keys (PUT /v1/providers/<provider>/key)${options.keyScope ? `, or to key scope ${options.keyScope}` : ""}`, "TRANSCRIPTION_UNAVAILABLE");
     }
-    const id = `vs_${randomBytes(12).toString("hex")}`;
     const now = Date.now();
     const limit = this.options.perTenant?.(tenant) ?? VOICE_LIMITS.perTenant;
     const secret: Secret = { sessionId: credentials.sessionId, endpoint: credentials.endpoint, token: credentials.token };
@@ -509,8 +524,37 @@ export class VoiceSessions {
       ...sessionView(row), notice: { required: true, channelId: credentials.channelId, text: options.notice.replaceAll("{bot}", credentials.userId) },
       // How the app should have joined: un-muted when the bot may speak.
       join: { self_mute: !options.speak, self_deaf: false },
+      ...(provider === "browser" ? { browser: this.browserToken(id) } : {}),
     };
   }
+
+  /** A browser session's socket: its URL, and a token that opens it (BROWSER_TOKEN_MS). */
+  browserToken(id: string, now = Date.now()) {
+    const browser = this.options.browser!;
+    const expiresAt = now + BROWSER_TOKEN_MS;
+    return { url: browser.url(id), token: `${expiresAt}.${createHmac("sha256", browser.secret).update(`voice-socket:${id}:${expiresAt}`).digest("base64url")}`, expiresAt };
+  }
+
+  /** Another token for a browser session's socket (the page reconnects after its first expired). */
+  async newBrowserToken(tenant: string, id: string) {
+    const row = await this.row(tenant, id);
+    if (row.provider !== "browser") throw new HttpError(409, "Only a browser session has a socket", "VOICE_NOT_BROWSER");
+    if (row.state === "ended") throw new HttpError(409, `This voice session ended (${row.end_reason})`, "VOICE_SESSION_ENDED");
+    return this.browserToken(id);
+  }
+
+  /** Whether `token` opens session `id`'s socket now. */
+  verifyBrowserToken(id: string, token: string, now = Date.now()) {
+    const browser = this.options.browser;
+    const [expires, signature] = token.split(".");
+    if (!browser || !ID.test(id) || !expires || !signature || !(Number(expires) > now)) return false;
+    const expected = createHmac("sha256", browser.secret).update(`voice-socket:${id}:${expires}`).digest();
+    const given = Buffer.from(signature, "base64url");
+    return given.length === expected.length && timingSafeEqual(given, expected);
+  }
+
+  /** Whether this node holds session `id` now (its browser socket is served here). */
+  holds(id: string) { return this.held.has(id); }
 
   private async row(tenant: string, id: string, sql: Pick<Db, "query"> = this.db): Promise<Row> {
     const row = ID.test(id) ? (await sql.query("select * from voice_sessions where id = $1 and tenant = $2", [id, tenant])).rows[0] as Row | undefined : undefined;
@@ -541,6 +585,7 @@ export class VoiceSessions {
    */
   async update(tenant: string, id: string, input: Record<string, unknown>) {
     only(input, "body", ["discord", "ignoreUserIds", "metadata"]);
+    if (input.discord !== undefined && (await this.row(tenant, id)).provider === "browser") throw new HttpError(400, "A browser session has no discord to change");
     const changes = input.discord === undefined ? {} : discordInput(input.discord, this.endpoints(), true);
     const ignore = input.ignoreUserIds === undefined ? undefined : ignored(input.ignoreUserIds);
     const metadata = input.metadata === undefined ? undefined : metadataInput(input.metadata);
@@ -1042,6 +1087,11 @@ export class VoiceSessions {
     // The webhook goes now, not at the outbox's next scan: an app answering aloud waits on it.
     if (row && transcript.text && row.options.deliver.webhooks) this.options.kickWebhooks?.();
     if (turn && row) turn.info.seq = row.utterances;
+    // A browser call's page sees each utterance as it is transcribed (it needs no webhook).
+    if (row && transcript.text) this.held.get(origin.id)?.media?.notify?.({
+      type: "utterance", speakerId: cut.speaker, seq: row.utterances, text: transcript.text, startedAt: cut.startedAt, endedAt: cut.endedAt, ended: cut.ended,
+      ...(turn ? { turnCommitMs: turn.stages().turnCommit } : {}), transcriptMs: Math.max(0, Math.round(clock().now() - cut.endedAt)),
+    });
     console.log(JSON.stringify({ type: "voice_utterance", session: origin.id, seq: row?.utterances, seconds: cut.seconds, billedSeconds: transcript.seconds, ended: cut.ended, empty: !transcript.text, ms: Date.now() - started, live: this.liveModel(transcript), speechEndToTextMs: clock().now() - cut.endedAt }));
     if (!row) return;
     const local = this.held.get(origin.id);
@@ -1237,10 +1287,12 @@ export class VoiceSessions {
       } : {}),
       started: (item: SpeechItem, latencyMs: number) => {
         console.log(JSON.stringify({ type: "voice_speech_started", session: held.id, speech: item.id, latencyMs }));
+        held.media?.notify?.({ type: "speech", state: "started", speechId: item.id, latencyMs, startedAt: Date.now(), ...(item.reply ? { reply: item.reply } : {}) });
         void write("voice.speech.started", item, { latencyMs });
       },
       ended: (item: SpeechItem, ending: SpeechEnding, platform: boolean | undefined, served?: Served) => {
         const { subject, context, keyScope } = options();
+        held.media?.notify?.({ type: "speech", state: "ended", speechId: item.id, reason: ending.reason, ...(ending.by ? { by: ending.by } : {}), seconds: ending.seconds });
         console.log(JSON.stringify({ type: "voice_speech_ended", session: held.id, speech: item.id, reason: ending.reason, ...(ending.by ? { by: ending.by } : {}), seconds: ending.seconds, ...(ending.error ? { error: ending.error } : {}) }));
         if (ending.seconds > 0) {
           this.options.record(held.tenant, {

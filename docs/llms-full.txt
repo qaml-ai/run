@@ -3097,6 +3097,43 @@ session's `language` tells providers that speak many languages which one to pron
 
 Usage records name the provider and model that served, `deepgram/nova-3` or `elevenlabs/eleven_flash_v2_5` for
 example, as `usage.recorded`'s `provider` and `model`.
+## From a browser
+
+A session with `provider: "browser"` is a call from a web page, with no Discord in it: for trying a voice bot out
+(a test panel, a preview) through the same pipeline a Discord call takes: cutting utterances, barge-in,
+transcription, `speak`, agent replies. Create it from your server, and give the page only the answer's `browser.url`
+and `browser.token`, never your API key:
+
+```ts
+const session = await fetch("https://run.camelai.com/v1/voice/sessions", {
+  method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+  body: JSON.stringify({ provider: "browser", speak: true, deliver: { webhooks: false }, metadata: { preview: true } }),
+}).then(response => response.json());
+// In the page:
+const socket = new WebSocket(`${session.browser.url}?token=${encodeURIComponent(session.browser.token)}`);
+socket.binaryType = "arraybuffer";
+```
+
+A browser session needs no `discord`, and may deliver to neither webhooks nor an agent: its socket gets every
+utterance itself. The token opens the socket for 10 minutes; `POST /v1/voice/sessions/{id}/browser-token` makes
+another (a page that reloads). One socket is open at a time, and closing it hangs up: the call is then empty, and
+`emptySeconds` ends the session.
+
+The socket carries:
+
+| Direction | Frame | What |
+| --- | --- | --- |
+| page → camelRun | binary, first byte `1` | An Opus packet, 20 ms at 48 kHz (mono or stereo, as WebCodecs' `AudioEncoder` makes it) |
+| page → camelRun | binary, first byte `2` | 20 ms of 16-bit little-endian PCM, 48 kHz mono (1,920 bytes), which camelRun encodes |
+| page → camelRun | `{"type":"speaker","id":"…"}` | Whose the frames that follow are (`browser` by default; letters, digits, `_` and `-`) |
+| page → camelRun | `{"type":"others","users":[…]}` | Who else is "in the call" (an empty list lets `emptySeconds` end it) |
+| page → camelRun | `{"type":"config","audio":"pcm"}` | The bot's speech as PCM rather than Opus |
+| camelRun → page | binary, first byte `1` or `2` | The bot's speech, a frame every 20 ms as it plays: Opus (48 kHz stereo), or PCM (48 kHz mono) |
+| camelRun → page | `{"type":"ready"}` | Connected |
+| camelRun → page | `{"type":"utterance",…}` | Each utterance transcribed: `speakerId`, `seq`, `text`, `startedAt`, `endedAt`, `ended`, `transcriptMs`, and `turnCommitMs` in a session that speaks |
+| camelRun → page | `{"type":"speech",…}` | `state: "started"` (`speechId`, `latencyMs`, `startedAt`) and `state: "ended"` (`reason`, `by`, `seconds`) |
+
+The socket may reach any node: one that does not hold the session relays it to the one that does.
 
 ## Cost
 

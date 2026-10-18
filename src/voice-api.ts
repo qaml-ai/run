@@ -56,6 +56,10 @@ export function voiceRoutes(route: Route, voice: () => VoiceSessions | undefined
     responses: { 202: reply("Queued: it plays in turn (voice.speech.started and voice.speech.ended follow)", schema.VoiceSpeech) },
   }), async c => json(c, 202, await service().speak(c.var.principal.tenant, c.req.param("id")!, await parse(schema.VoiceSpeechInput, c))));
   route(createRoute({
+    method: "post", path: "/v1/voice/sessions/{id}/browser-token", request: { params: sessionId },
+    responses: { 200: reply("Another token for a browser session's socket (the first one expired, or the page reloaded)", schema.VoiceBrowserToken) },
+  }), async c => json(c, 200, await service().newBrowserToken(c.var.principal.tenant, c.req.param("id")!)));
+  route(createRoute({
     method: "delete", path: "/v1/voice/sessions/{id}/speak", request: { params: sessionId },
     responses: { 200: reply("What the bot was saying, and was going to, stopped", schema.VoiceSpeechStopped) },
   }), async c => json(c, 200, await service().stopSpeaking(c.var.principal.tenant, c.req.param("id")!)));

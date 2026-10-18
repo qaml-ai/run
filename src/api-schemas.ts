@@ -172,7 +172,7 @@ const servedModel = z.string().optional().openapi({ description: "The model that
 const runUsage = z.object({ responses: z.number(), input: z.number(), output: z.number(), cacheRead: z.number(), cacheWrite: z.number(), costUsd: z.number() }).nullable()
   .openapi({ description: "The run's model responses on the node that ended it; null when it made none there" });
 const voiceFacts = {
-  session: z.string().openapi({ description: "The voice session (vs_…)" }), provider: z.literal("discord"),
+  session: z.string().openapi({ description: "The voice session (vs_…)" }), provider: z.enum(["discord", "browser"]),
   guildId: z.string(), channelId: z.string(), botUserId: z.string(),
   subject: z.string().nullable().openapi({ description: "The session's end user" }), metadata: z.record(z.string(), z.unknown()).openapi({ description: "The session's metadata, as set" }),
 };
@@ -1303,20 +1303,20 @@ const VoiceSpeechProviders = z.strictObject({
   voices: z.record(z.string(), z.string()).optional().openapi({ description: "The voice for each provider, by provider: an ElevenLabs voice id, a Cartesia voice id (required for cartesia), an Aura voice (aura-2-thalia-en), an OpenAI voice (else `voice`)", example: { elevenlabs: "21m00Tcm4TlvDq8ikWAM", openai: "coral" } }),
 }).openapi("VoiceSpeechProviders");
 export const VoiceSessionInput = z.strictObject({
-  provider: z.literal("discord").optional().openapi({ description: "Only discord for now (the default)" }),
+  provider: z.enum(["discord", "browser"]).optional().openapi({ description: "discord (the default): a Discord voice call your bot joined. browser: a call from a web page, no Discord, for trying a voice bot out: the answer's browser.url and token open its WebSocket (see Voice calls, From a browser)" }),
   discord: z.strictObject({
     ...voiceDiscord,
     sessionId: z.string().openapi({ description: "session_id from the bot's own VOICE_STATE_UPDATE" }),
     endpoint: z.string().nullable().openapi({ description: "endpoint from the guild's VOICE_SERVER_UPDATE (host[:port], a *.discord.media host)", example: "c-ams12-1a2b3c4d.discord.media:443" }),
     token: z.string().openapi({ description: "token from VOICE_SERVER_UPDATE. Stored encrypted, never returned, dropped when the session ends" }),
-  }).openapi({ description: "What Discord answered your app's OP 4 (voice state update) with, on its own gateway" }),
+  }).optional().openapi({ description: "What Discord answered your app's OP 4 (voice state update) with, on its own gateway. Required for provider discord; none for browser" }),
   subject: z.string().optional().openapi({ description: "The end user the session is for: its usage is theirs (usage.recorded's subject, and their credit where you meter end users)" }),
   bucket: z.string().optional().openapi({ description: "Which of the end user's credit buckets it spends from (end-user credits)" }),
   context: z.record(z.string(), z.unknown()).optional().openapi({ description: "Your claims, carried in usage.recorded's context" }),
   keyScope: z.string().optional().openapi({ description: "Transcribe with this key scope's OpenAI key" }),
   deliver: z.strictObject({
     agent: z.string().optional().openapi({ description: "An agent that gets each utterance as a prompt (its sender the speaker)" }),
-    webhooks: z.boolean().optional().openapi({ description: "Send voice.* events to your webhook endpoints that select them. Default true" }),
+    webhooks: z.boolean().optional().openapi({ description: "Send voice.* events to your webhook endpoints that select them. Default true. A browser session may deliver to neither: its socket gets every utterance" }),
   }).optional(),
   language: z.string().optional().openapi({ description: "The language spoken, ISO 639-1 (en) or a locale; left out, the provider detects it per utterance" }),
   prompt: z.string().optional().openapi({ description: "Words to expect (names, jargon), as transcription's prompt" }),
@@ -1344,8 +1344,8 @@ export const VoiceSessionUpdate = z.strictObject({
   metadata: z.record(z.string(), z.unknown()).optional(),
 }).openapi("VoiceSessionUpdate");
 export const VoiceSession = z.object({
-  id: z.string().openapi({ example: "vs_3f9c0a1b2c3d4e5f60718293" }), provider: z.literal("discord"),
-  discord: z.object(voiceDiscord),
+  id: z.string().openapi({ example: "vs_3f9c0a1b2c3d4e5f60718293" }), provider: z.enum(["discord", "browser"]),
+  discord: z.object(voiceDiscord).openapi({ description: "For a browser session: its own ids (guildId the session's), not Discord's" }),
   state: z.enum(["connecting", "live", "reconnecting", "ended"]).openapi({ description: "connecting: not yet listening; live: listening; reconnecting: the connection dropped or moves (between nodes, or waiting for new credentials); ended" }),
   endReason: z.enum(VOICE_END_REASONS).nullable(),
   limit: z.enum(["tenant", "end_user"]).optional(), endUserReason: z.string().optional(),
@@ -1367,7 +1367,15 @@ export const VoiceSessionCreated = VoiceSession.extend({
     text: z.string().openapi({ description: "Post this in the voice channel's chat now: people must know they are transcribed, and camelRun cannot post (it has no gateway)" }),
   }),
   join: z.object({ self_mute: z.boolean(), self_deaf: z.literal(false) }).openapi({ description: "How your app's OP 4 should have joined: self_mute false for a session that speaks" }),
+  browser: z.object({
+    url: z.string().openapi({ description: "The session's WebSocket (wss://…/v1/voice/sessions/{id}/socket)" }),
+    token: z.string().openapi({ description: "Opens it once: pass it as ?token=. Give the page only url and token, never your API key" }),
+    expiresAt: z.number().openapi({ description: "When the token stops opening the socket (ms); POST …/browser-token makes another" }),
+  }).optional().openapi({ description: "For provider browser: where the page connects" }),
 }).openapi("VoiceSessionCreated");
+export const VoiceBrowserToken = z.object({
+  url: z.string().openapi({ description: "The session's WebSocket" }), token: z.string().openapi({ description: "Opens it once, as ?token=" }), expiresAt: z.number(),
+}).openapi("VoiceBrowserToken");
 export const VoiceSpeechInput = z.strictObject({
   text: z.string().openapi({ description: "What to say: 1 to 4,000 characters" }),
   voice: z.string().optional().openapi({ description: "Another voice than the session's, for this speech" }),
