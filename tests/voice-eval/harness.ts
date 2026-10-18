@@ -16,6 +16,7 @@ import { Webhooks } from "../../src/webhooks.ts";
 import { testDatabase } from "../database.ts";
 import { FRAME_MS, framesOf, oggPackets, Origins, seeded, SILENCE_FRAME, SpeakerAudio } from "./audio.ts";
 import { BOT, type Scenario, type Speaker, type Turn } from "./scenarios.ts";
+import { clipFor, loadClips, type Clip } from "./clips.ts";
 
 /**
  * The voice eval: scripted calls (scenarios.ts) played in real time into camelRun's voice sessions, as Discord would
@@ -151,6 +152,8 @@ function countLogs(logs: Record<string, number>, sessions: () => string[]) {
 
 /** Audio for every turn, made once a process (it is the same for each pipeline). */
 const audioCache = new Map<string, TurnAudio>();
+/** Real people's clips the speakers say their turns with (VOICE_EVAL_SPEAKERS=clips), when the eval runs with them. */
+let clipSet: Clip[] | undefined;
 export const origins = new Origins();
 let nextTurnId = 1;
 const turnIds = new Map<string, number>();
@@ -181,7 +184,7 @@ async function spokenPcm(text: string, voice: string, apiKey: string): Promise<U
 
 /** A turn's audio: speech frames (made up, or a speech provider's), its pauses, then the client's hangover and silence. */
 async function turnAudio(scenario: Scenario, index: number, real?: { apiKey: string }): Promise<TurnAudio> {
-  const key = `${real ? "real" : "fake"}:${scenario.name}:${index}`;
+  const key = `${clipSet ? "clips" : real ? "real" : "fake"}:${scenario.name}:${index}`;
   const cached = audioCache.get(key);
   if (cached) return cached;
   const turn = scenario.turns[index]!;
@@ -195,12 +198,18 @@ async function turnAudio(scenario: Scenario, index: number, real?: { apiKey: str
   for (const [p, piece] of pieces.entries()) {
     const pieceWords = words(piece);
     let pcmFrames: Int16Array[] | undefined;
-    if (real) {
-      pcmFrames = framesOf(await spokenPcm(piece, speaker.voice ?? "alloy", real.apiKey));
+    if (clipSet || real) {
+      // A real person's clip (complete for the turn's last piece), or the line spoken by a speech provider.
+      pcmFrames = framesOf(clipSet
+        ? clipFor(clipSet, { ...(turn.language ? { language: turn.language } : {}), complete: p === pieces.length - 1, seed: id * 31 + p })
+        : await spokenPcm(piece, speaker.voice ?? "alloy", real!.apiKey));
       // The provider's own quiet before and after the words is not the turn's speech.
       const level = (pcm: Int16Array) => { let sum = 0; for (const s of pcm) sum += s * s; return 20 * Math.log10(Math.sqrt(sum / pcm.length) / 32_768 || 1e-9); };
       while (pcmFrames.length && level(pcmFrames[0]!) < -45) pcmFrames.shift();
       while (pcmFrames.length && level(pcmFrames.at(-1)!) < -45) pcmFrames.pop();
+      // A clip is someone's whole turn: a backchannel is its first quarter second, an interruption its first 1.5 s.
+      if (clipSet && turn.kind === "backchannel") pcmFrames = pcmFrames.slice(0, 13);
+      if (clipSet && turn.kind === "interruption") pcmFrames = pcmFrames.slice(0, 75);
     }
     const count = pcmFrames?.length ?? Math.max(20, Math.round(pieceWords.length * WORD_MS / FRAME_MS));
     const first = frame;
@@ -325,6 +334,9 @@ export type EvalOptions = {
   pipeline: Pipeline; scenarios: Scenario[]; profile: Profile;
   /** Real providers (OpenAI) for transcription and speech; the model writing answers stays a profile. */
   providers?: "fake" | "openai";
+  /** What the speakers sound like: made-up voiced tones (the default), or real people's clips from `clips` (clips.ts). */
+  speakers?: "tones" | "clips";
+  clips?: string;
   seed?: number;
 };
 
@@ -335,6 +347,7 @@ export async function runPipeline(options: EvalOptions): Promise<PipelineRun> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (providers === "openai" && !apiKey) throw new Error("VOICE_EVAL_PROVIDERS=openai needs OPENAI_API_KEY");
   const random = seeded(options.seed ?? 42);
+  clipSet = options.speakers === "clips" ? loadClips(options.clips ?? join(import.meta.dirname, "..", "fixtures", "voice-turns")) : undefined;
   const vary = (ms: number) => ms * (1 + profile.jitter * (random() * 2 - 1));
   for (const scenario of options.scenarios) for (const index of scenario.turns.keys()) await turnAudio(scenario, index, providers === "openai" ? { apiKey: apiKey! } : undefined);
 

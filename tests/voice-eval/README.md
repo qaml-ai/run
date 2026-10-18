@@ -9,6 +9,7 @@ VOICE_EVAL_PIPELINES=run-agent VOICE_EVAL_SCENARIOS=barge-in,backchannel npm run
 VOICE_EVAL_PROFILE=instant npm run eval:voice              # providers that take no time: the pipeline's own latency
 VOICE_EVAL_PROVIDERS=openai OPENAI_API_KEY=… npm run eval:voice   # real transcription and speech (costs a few cents)
 VOICE_EVAL_OUT=/tmp/voice-eval npm run eval:voice          # also writes /tmp/voice-eval.md and .json
+VOICE_EVAL_SPEAKERS=clips npm run eval:voice              # speakers are real people's clips (tests/fixtures/voice-turns, or VOICE_EVAL_CLIPS=<dir>)
 ```
 
 CI runs `tests/voice-eval.test.ts` with fake providers (all pipelines at once, about a minute). It checks the harness
