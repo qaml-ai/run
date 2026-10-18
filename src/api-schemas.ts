@@ -227,6 +227,12 @@ export const WebhookEvents = {
   }), "A person's utterance in a voice session, transcribed"),
   "voice.speech.started": envelope("voice.speech.started", z.object({
     ...voiceFacts, speechId: z.string(), latencyMs: z.number().openapi({ description: "From the speak request (or the reply's sentence being whole) to the first audio going out" }),
+    startedAt: z.number().openapi({ description: "When its first audio went out (ms)" }),
+    turn: z.object({
+      seq: z.number().optional().openapi({ description: "The utterance it answers (voice.utterance's seq)" }),
+      path: z.enum(["agent_reply", "prompt_speak", "speak"]).nullable(),
+      stagesMs: z.record(z.string(), z.number()).openapi({ description: "Each stage of the turn, in ms since the end of the person's speech: turnCommit, transcript, delivered, llmFirstToken, firstPiece, ttsFirstAudio, firstPacket (the reply's first audio)" }),
+    }).optional().openapi({ description: "For the first speech of a reply to an utterance: how long each stage took" }),
     reply: z.object({ agent: z.string(), requestId: z.string() }).optional().openapi({ description: "For a piece of an agent's reply the session speaks (agentReplies, or a prompt's speak): the agent and its run" }),
   }), "The bot started saying a speech (POST /v1/voice/sessions/{id}/speak)"),
   "voice.speech.ended": envelope("voice.speech.ended", z.object({
