@@ -35,7 +35,7 @@ function deepseekRefusal(body: any): { httpStatus: number; message: string } | u
 /** OpenRouter's routing is its own: no request of ours has a `provider` field (an order or sort turns off its load balancing). */
 const unrouted = (bodies: any[]) => assert.ok(bodies.every(body => !("provider" in body)), JSON.stringify(bodies.map(body => body.provider)));
 /** 1017's requests name its hosts (`provider.only`, pi-catalog.ts OPENROUTER_HOSTS), and nothing else of routing. */
-const HOSTS_1017 = ["baseten", "parasail", "relace", "deepseek"];
+const HOSTS_1017 = ["baseten", "parasail", "relace", "deepseek", "fireworks", "deepinfra", "primeintellect", "crusoe"];
 const onlyHosts = (bodies: any[]) => { for (const body of bodies) assert.deepEqual(body.provider, { only: HOSTS_1017 }); };
 const assistants = (body: any) => body.messages.filter((message: any) => message.role === "assistant");
 

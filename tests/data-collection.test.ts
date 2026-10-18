@@ -7,7 +7,8 @@ import { fakeModel, runtime, until } from "./runtime-server.ts";
 
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
 const NITRO = "deepseek/deepseek-v4.1-flash-1017:nitro";
-const HOSTS_NITRO = ["parasail", "baseten", "deepseek"];
+/** 1017's hosts, its :nitro variant's too (pi-catalog.ts OPENROUTER_HOSTS). */
+const HOSTS_1017 = ["baseten", "parasail", "relace", "deepseek", "fireworks", "deepinfra", "primeintellect", "crusoe"];
 const FLASH_1017 = getModel("openrouter", "deepseek/deepseek-v4.1-flash-1017")!;
 const KIMI = getModel("openrouter", "moonshotai/kimi-k3")!;
 const message = (text: string) => ({ type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text, annotations: [] }] });
@@ -15,10 +16,10 @@ const message = (text: string) => ({ type: "message", id: "msg_1", role: "assist
 test("an OpenRouter request asks for hosts that do not collect its data only when its agent says so, merged with its hosts", () => {
   const request = { model: FLASH_1017.id, messages: [] };
   // Default: nothing of data collection.
-  assert.deepEqual((withOpenRouterHosts(FLASH_1017, request) as any).provider, { only: ["baseten", "parasail", "relace", "deepseek"] });
+  assert.deepEqual((withOpenRouterHosts(FLASH_1017, request) as any).provider, { only: HOSTS_1017 });
   assert.equal(withOpenRouterHosts(KIMI, request), request, "a model with no hosts listed: as it was");
   // "deny": merged with the model's only, or alone.
-  assert.deepEqual((withOpenRouterHosts(FLASH_1017, request, "deny") as any).provider, { only: ["baseten", "parasail", "relace", "deepseek"], data_collection: "deny" });
+  assert.deepEqual((withOpenRouterHosts(FLASH_1017, request, "deny") as any).provider, { only: HOSTS_1017, data_collection: "deny" });
   assert.deepEqual((withOpenRouterHosts(KIMI, request, "deny") as any).provider, { data_collection: "deny" });
   // The agent's setting wins over a request's own; never an order or sort.
   assert.deepEqual((withOpenRouterHosts(KIMI, { ...request, provider: { data_collection: "allow", zdr: true } }, "deny") as any).provider, { zdr: true, data_collection: "deny" });
@@ -42,10 +43,10 @@ test("agents, runs, definitions and configure: data_collection deny sent when se
   const plain = await make({ model: `openrouter/${NITRO}`, keyScope: "chat", thinkingLevel: "high" });
   assert.equal(plain.dataCollection ?? null, null);
   await r.prompt(plain.id, "Hi");
-  assert.deepEqual(chat.bodies.at(-1).provider, { only: HOSTS_NITRO }, "default: its hosts alone");
+  assert.deepEqual(chat.bodies.at(-1).provider, { only: HOSTS_1017 }, "default: its hosts alone");
   const denied = await make({ model: `openrouter/${NITRO}`, keyScope: "chat", thinkingLevel: "high", dataCollection: "deny" });
   await r.prompt(denied.id, "Hi");
-  assert.deepEqual(chat.bodies.at(-1).provider, { only: HOSTS_NITRO, data_collection: "deny" });
+  assert.deepEqual(chat.bodies.at(-1).provider, { only: HOSTS_1017, data_collection: "deny" });
 
   // Responses (Kimi, no hosts listed), default and denied.
   const kimi = await make({ model: "openrouter/moonshotai/kimi-k3", keyScope: "responses" });
@@ -64,25 +65,25 @@ test("agents, runs, definitions and configure: data_collection deny sent when se
   };
   await configure(plain.id, { dataCollection: "deny" });
   await r.prompt(plain.id, "Again");
-  assert.deepEqual(chat.bodies.at(-1).provider, { only: HOSTS_NITRO, data_collection: "deny" });
+  assert.deepEqual(chat.bodies.at(-1).provider, { only: HOSTS_1017, data_collection: "deny" });
   assert.equal((await r.call(`/v1/agents/${plain.id}`)).json.dataCollection, "deny");
   await configure(plain.id, { dataCollection: null });
   await r.prompt(plain.id, "Once more");
-  assert.deepEqual(chat.bodies.at(-1).provider, { only: HOSTS_NITRO });
+  assert.deepEqual(chat.bodies.at(-1).provider, { only: HOSTS_1017 });
 
   // A stateless run, and an agent made from a definition.
   const beforeRun = chat.bodies.length;
   const run = await r.call("/v1/runs", { body: { model: `openrouter/${NITRO}`, keyScope: "chat", input: "Hi", wait: true, dataCollection: "deny" } });
   assert.deepEqual([run.status, run.json.status, run.json.text], [200, "completed", "Chat."], JSON.stringify(run.json));
   assert.equal(chat.bodies.length, beforeRun + 1);
-  assert.deepEqual(chat.bodies.at(-1).provider, { only: HOSTS_NITRO, data_collection: "deny" }, "the run's call");
+  assert.deepEqual(chat.bodies.at(-1).provider, { only: HOSTS_1017, data_collection: "deny" }, "the run's call");
   const definition = (await r.call("/v1/definitions", { body: { name: "Private", model: `openrouter/${NITRO}`, systemPrompt: "Be brief.", dataCollection: "deny" } })).json;
   assert.equal(definition.dataCollection, "deny", JSON.stringify(definition));
   const fromDefinition = await make({ definition: definition.id, keyScope: "chat" });
   const before = chat.bodies.length;
   await r.prompt(fromDefinition.id, "Hi");
   assert.ok(chat.bodies.length > before);
-  assert.deepEqual(chat.bodies.at(-1).provider, { only: HOSTS_NITRO, data_collection: "deny" });
+  assert.deepEqual(chat.bodies.at(-1).provider, { only: HOSTS_1017, data_collection: "deny" });
 
   // Refused: anything but "deny" or null.
   assert.equal((await r.call("/v1/agents", { body: { model: `openrouter/${NITRO}`, dataCollection: "allow" } })).status, 400);
@@ -104,6 +105,6 @@ test("compaction summaries carry the agent's data policy too", async t => {
     const before = host.bodies.length;
     await runCompaction({ context: context as never, offset: 0, model, apiKey: "sk-or", keepRecentTokens: 1, ...(dataCollection ? { dataCollection } : {}) });
     assert.ok(host.bodies.length > before, "a summary was asked for");
-    for (const body of host.bodies.slice(before)) assert.deepEqual(body.provider, { only: ["baseten", "parasail", "relace", "deepseek"], ...(dataCollection ? { data_collection: "deny" } : {}) });
+    for (const body of host.bodies.slice(before)) assert.deepEqual(body.provider, { only: HOSTS_1017, ...(dataCollection ? { data_collection: "deny" } : {}) });
   }
 });
