@@ -1216,8 +1216,13 @@ export interface VoiceSessionInput {
    * 400 characters). Default false.
    */
   speak?: boolean | { agentReplies?: boolean };
-  /** With speak: a person starting to talk stops the bot's speech. Default true. */
-  bargeIn?: boolean;
+  /**
+   * With speak: someone taking the turn stops the bot's speech. Default true. With endOfTurn smart, the bot pauses at
+   * their first sound and stops once they have talked over it for `minMs` (default 400) and said `minWords` (default 1;
+   * with live transcripts; else `noTranscriptMs`, default 700, of speech); a backchannel ("mm-hm", "yeah", in many
+   * languages, plus `backchannels`) or nothing real within `resumeMs` (default 2000) and it goes on.
+   */
+  bargeIn?: boolean | Partial<VoiceInterruption>;
   /** With speak: the voice speech is made in (OpenAI's: alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, verse…). Default alloy. */
   voice?: string;
   /**
@@ -1242,6 +1247,8 @@ export interface VoiceSessionInput {
   idempotencyKey?: string;
 }
 /** How a voice session ends each speaker's turn (`endOfTurn`). */
+/** How barge-in decides that someone is taking the turn (`bargeIn`'s object form). */
+export type VoiceInterruption = { minMs: number; minWords: number; noTranscriptMs: number; resumeMs: number; backchannels: string[] };
 export type VoiceEndOfTurn = { mode: "smart" | "silence"; commitMs: number; threshold: number; maxSilenceMs: number };
 export interface VoiceSession {
   id: string; provider: "discord";
@@ -1254,7 +1261,7 @@ export interface VoiceSession {
   silenceMs: number; maxMinutes: number; idleMinutes: number; emptySeconds: number; ignoreUserIds: string[]; metadata: Record<string, unknown>;
   speak: boolean; bargeIn: boolean; voice: string; agentReplies: boolean;
   transcription?: { providers?: string[]; keyterms?: string[] }; speech?: { providers?: string[]; voices?: Record<string, string> };
-  endOfTurn: VoiceEndOfTurn;
+  endOfTurn: VoiceEndOfTurn; interruption: VoiceInterruption;
   utterances: number; speechSeconds: number;
   /** Speeches played, and seconds of speech made. */
   speeches: number; spokenSeconds: number;

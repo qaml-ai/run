@@ -29,6 +29,8 @@ export type StopReason = "interrupt" | "requested" | "barge_in" | "end" | "hando
 /** A playback on a connection: done when its packets ran out (`done`), it was stopped, or it failed. */
 export interface Playback {
   done: Promise<"done" | "stopped" | "error">; stop(): void;
+  /** Hold the packets (the listener hears silence) until `resume`, where it left off: a player that cannot, has none. */
+  pause?(): void; resume?(): void;
   /** Packets sent, the time spent waiting for the next packet (speech still being made), and time held back by why. */
   stats?(): { packets: number; startMs: number; waitedMs: number; gapMs: number; heldMs: Record<string, number> };
 }
@@ -84,6 +86,19 @@ export class SessionSpeech {
 
   /** Whether a speech is being made or played now. */
   get speaking() { return !!this.current; }
+  /** What is being said now (barge-in's echo guard), if anything. */
+  get saying(): string | undefined { return this.current && !this.current.stoppedBy ? this.current.item.text : undefined; }
+  private paused = false;
+
+  /**
+   * Pause what is playing (barge-in deciding whether someone is taking the turn), or resume it where it was. A speech
+   * that starts while paused starts paused. Stopping or closing ends the pause.
+   */
+  pause(paused: boolean) {
+    this.paused = paused;
+    const playback = this.current?.playback;
+    if (paused) playback?.pause?.(); else playback?.resume?.();
+  }
   /** Speeches waiting behind the current one. */
   get waiting() { return this.queue.length; }
 
@@ -98,6 +113,7 @@ export class SessionSpeech {
   /** Stop the speech playing and clear the queue: each ends `interrupted`, `by`. Answers how many there were. */
   stop(by: StopReason) {
     this.generation++;
+    this.paused = false;
     const cleared = this.queue.splice(0);
     for (const item of cleared) {
       item.turn?.end("interrupted");
@@ -163,6 +179,7 @@ export class SessionSpeech {
         this.effects.started(item, Date.now() - item.queuedAt);
       });
       if (current.stoppedBy) current.playback.stop();
+      else if (this.paused) current.playback.pause?.();
       result = await current.playback.done;
     } catch (failure) {
       if (!current.stoppedBy) error = safeError(failure);
@@ -174,6 +191,8 @@ export class SessionSpeech {
         ? { reason: "interrupted", by: current.stoppedBy, seconds, costUsd }
         : result === "done" && !error ? { reason: "done", seconds, costUsd } : { reason: "error", seconds, costUsd, ...(error ? { error } : {}) };
       if (this.current === current) this.current = undefined;
+      // A pause is the speech's: the next starts playing.
+      this.paused = false;
       item.turn?.end(ending.reason === "done" ? "no_reply" : ending.reason);
       this.effects.ended(item, ending, platform, served);
     }

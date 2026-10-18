@@ -31,6 +31,8 @@ export type TurnSegmenterOptions = SegmenterOptions & {
   models?: TurnModels;
   /** Every turn event (likely_end and resume too, for speculative replies), after the segmenter acted on it. */
   event?(event: TurnEvent): void;
+  /** Each speech chunk of an open turn, with its speech so far (barge-in). */
+  progress?(speaker: string, speechMs: number): void;
 };
 
 /** A speaker silent this long gives back their decoder; their next packet makes another. */
@@ -46,6 +48,7 @@ export class TurnSegmenter {
     const c = clock();
     this.turns = new TurnTaker({ maxTurnMs: options.maxMs ?? UTTERANCE_LIMITS.maxMs, ...options.policy }, {
       ...(options.models ? { models: options.models } : {}),
+      ...(options.progress ? { speech: options.progress } : {}),
       clock: { now: () => c.now(), setTimeout: (fn, ms) => { const timer = c.setTimeout(fn, ms); timer.unref?.(); return timer; }, clearTimeout: timer => c.clearTimeout(timer as ReturnType<typeof setTimeout>) },
     });
     this.turns.on(event => this.turn(event));

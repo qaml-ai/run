@@ -2906,7 +2906,7 @@ Discord allows one voice connection per user and server: a second `POST` for the
 | `metadata` | anything, at most 4 KB of JSON, echoed in every `voice.*` event |
 | `notice` | the notice text (`{bot}` is the bot's id); by default "<@bot> is listening and transcribing speech in this channel. Audio is not stored." (with `speak`, "…listening, transcribing speech and may speak…") |
 | `speak` | the bot may [speak](https://run.camelai.com/docs/guides/voice-calls.md#speaking) in the call: `true`, or `{agentReplies: true}` to also [speak `deliver.agent`'s replies](https://run.camelai.com/docs/guides/voice-calls.md#speaking-an-agents-replies) (default `false`). Your app joins with `self_mute: false`: the answer's `join` says how it should have joined |
-| `bargeIn` | with `speak`: a person starting to talk stops what the bot is saying (default `true`) |
+| `bargeIn` | with `speak`: someone taking the turn stops what the bot is saying (default `true`); with `endOfTurn: smart`, `{minMs, minWords, noTranscriptMs, resumeMs, backchannels}` tunes how sure it must be (see barge-in under [speaking](https://run.camelai.com/docs/guides/voice-calls.md#speaking)) |
 | `voice` | with `speak`: the voice its speech is made in (default `alloy`; OpenAI's voices: `alloy`, `ash`, `ballad`, `coral`, `echo`, `fable`, `nova`, `onyx`, `sage`, `shimmer`, `verse`…) |
 
 ## Keep it connected, and end it
@@ -3017,8 +3017,14 @@ and clears the queue.
   `voice.speech.ended` (`speechId`, `reason`: `done`, `interrupted` or `error`; `by` with interrupted: `interrupt`,
   `requested`, `barge_in`, `end`, `handoff` or `budget`; `seconds` made and `costUsd`). A speech that never started
   ends `interrupted` with 0 seconds.
-- **Barge-in.** With `bargeIn` (the default), a person starting to talk (not the bot, not `ignoreUserIds`) stops the
-  speech playing and clears the queue (`by: "barge_in"`), so the bot does not talk over people.
+- **Barge-in.** With `bargeIn` (the default), someone taking the turn (not the bot, not `ignoreUserIds`) stops the
+  speech playing and clears the queue (`by: "barge_in"`), so the bot does not talk over people. With `endOfTurn: smart`
+  a group call's murmurs do not stop it: the bot pauses at their first speech (so it does not talk over them while it
+  finds out), and stops once they have talked over it for `minMs` (default 400) and said `minWords` (default 1) beyond
+  backchannels ("mm-hm", "yeah", "ok", "sí", "ja", "嗯", "はい"… and your `backchannels`) and beyond its own words
+  coming back through their speakers; without live transcripts, once they have talked for `noTranscriptMs` (default
+  700). A backchannel, a cough, or nothing real within `resumeMs` (default 2000), and it goes on where it paused. With
+  `endOfTurn: silence`, any speech stops it at once.
 - **Latency.** Speech plays as it is made: OpenAI streams it, and each 20 ms is encoded and sent as it comes, so the
   first audio goes out well before the whole is made (`latencyMs` measures it per speech).
 - **Its own voice.** What the bot says is never transcribed (Discord does not send a bot its own audio, and the

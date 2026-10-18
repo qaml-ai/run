@@ -20,7 +20,9 @@ import type { LiveTranscript } from "./transcription-live.ts";
 import { bucketInput, DEFAULT_BUCKET } from "./end-user-credits.ts";
 import { TurnClock, WaitingTurns } from "./voice/latency.ts";
 import type { TurnModels } from "./voice/turns/inference.ts";
-import { TurnSegmenter } from "./voice/turns/segmenter.ts";
+import { TurnSegmenter, type TurnSegmenterOptions } from "./voice/turns/segmenter.ts";
+import { BargeIn, DEFAULT_BARGE_IN, type BargeInPolicy } from "./voice/turns/barge-in.ts";
+import type { TurnClock as TurnTimers } from "./voice/turns/turn-taker.ts";
 
 /**
  * Voice sessions: calls camelRun holds for a tenant's bot. Joining a voice channel is the one step that needs the bot's
@@ -101,6 +103,12 @@ export type VoiceOptions = {
   speak: boolean;
   /** With speak: a person starting to talk stops the bot's speech. */
   bargeIn: boolean;
+  /**
+   * With bargeIn and endOfTurn smart: how sure it must be that they are taking the turn (barge-in.ts). The bot pauses at
+   * their first speech, stops after minMs of it (and minWords, when their words are known), and resumes if it was a
+   * backchannel or nothing within resumeMs. Sessions from before it have none: the defaults.
+   */
+  interruption?: BargeInPolicy;
   /** With speak: the voice its speech is made in, unless a speech asks for another. */
   voice: string;
   /** With speak and deliver.agent: the session speaks the agent's reply to each utterance, as it is written. */
@@ -126,6 +134,11 @@ export const VOICE_LIMITS = Object.freeze({
   /** endOfTurn (smart): silence after which a turn Smart Turn calls complete ends, and after which any does. */
   commitMs: { default: 500, min: 200, max: 3_000 },
   maxSilenceMs: { default: 1_400, min: 500, max: 5_000 },
+  /** bargeIn (with endOfTurn smart): talking over the bot before it stops, words it takes, speech without words, the wait to resume. */
+  bargeInMinMs: { default: DEFAULT_BARGE_IN.minMs, min: 0, max: 3_000 },
+  bargeInMinWords: { default: DEFAULT_BARGE_IN.minWords, min: 0, max: 10 },
+  bargeInNoTranscriptMs: { default: DEFAULT_BARGE_IN.noTranscriptMs, min: 0, max: 5_000 },
+  bargeInResumeMs: { default: DEFAULT_BARGE_IN.resumeMs, min: 200, max: 10_000 },
   maxMinutes: { default: 240, min: 1, max: 720 },
   idleMinutes: { default: 30, min: 1, max: 720 },
   emptySeconds: { default: 60, min: 5, max: 3_600 },
@@ -184,6 +197,7 @@ export function sessionView(row: Row) {
     // Sessions from before speaking have none of its settings.
     speak: options.speak ?? false, bargeIn: options.bargeIn ?? true, voice: options.voice ?? DEFAULT_VOICE, agentReplies: options.agentReplies ?? false,
     endOfTurn: options.endOfTurn ?? { mode: "silence" as const, ...SMART_DEFAULTS },
+    interruption: options.interruption ?? { ...DEFAULT_BARGE_IN },
     utterances: row.utterances, speechSeconds: row.speech_seconds, speeches: row.speeches ?? 0, spokenSeconds: Number(row.spoken_seconds ?? 0),
     costUsd: Number(row.cost) / 1_000_000,
     createdAt: num(row.created_at)!, startedAt: num(row.started_at), lastSpeechAt: num(row.last_speech_at), endedAt: num(row.ended_at),
@@ -265,6 +279,28 @@ function endOfTurnInput(value: unknown, mode: EndOfTurn["mode"]): EndOfTurn {
   };
   if (out.maxSilenceMs < out.commitMs) throw new HttpError(400, "endOfTurn.maxSilenceMs must be at least its commitMs");
   return out;
+}
+/** The node's clock, as turn-taking takes one (its timers unref'd: a session's timers never hold the process). */
+function turnTimers(): TurnTimers {
+  const c = clock();
+  return { now: () => c.now(), setTimeout: (fn, ms) => { const timer = c.setTimeout(fn, ms); timer.unref?.(); return timer; }, clearTimeout: timer => c.clearTimeout(timer as ReturnType<typeof setTimeout>) };
+}
+/** bargeIn's object form: how sure barge-in must be (barge-in.ts). */
+function interruptionInput(value: unknown): BargeInPolicy {
+  if (value === undefined || typeof value === "boolean") return { ...DEFAULT_BARGE_IN };
+  const given = object(value, "bargeIn");
+  only(given, "bargeIn", ["minMs", "minWords", "noTranscriptMs", "resumeMs", "backchannels"]);
+  const words = given.backchannels;
+  if (words !== undefined && (!Array.isArray(words) || words.length > 50 || words.some(word => typeof word !== "string" || !word.trim() || word.length > 40))) {
+    throw new HttpError(400, "bargeIn.backchannels must be at most 50 words or short phrases");
+  }
+  return {
+    minMs: integer(given.minMs, "bargeIn.minMs", VOICE_LIMITS.bargeInMinMs),
+    minWords: integer(given.minWords, "bargeIn.minWords", VOICE_LIMITS.bargeInMinWords),
+    noTranscriptMs: integer(given.noTranscriptMs, "bargeIn.noTranscriptMs", VOICE_LIMITS.bargeInNoTranscriptMs),
+    resumeMs: integer(given.resumeMs, "bargeIn.resumeMs", VOICE_LIMITS.bargeInResumeMs),
+    backchannels: ((words as string[] | undefined) ?? []).map(word => word.trim().toLowerCase()),
+  };
 }
 function metadataInput(value: unknown) {
   if (value === undefined) return {};
@@ -372,6 +408,8 @@ type Held = {
   replies?: Set<string>;
   /** Each speaker's live transcription (Transcriber.live), while they keep talking now and then. */
   live?: Map<string, LiveSpeaker>;
+  /** Barge-in's decisions, for a session that speaks with bargeIn on and smart turns: pause, stop or resume the speech. */
+  bargeIn?: BargeIn;
 };
 type LiveSpeaker = { stream: LiveTranscription; platform: Promise<boolean>; idle?: ReturnType<typeof setTimeout> };
 /** An utterance's transcript from its speaker's live stream, committed as it was cut. */
@@ -460,7 +498,7 @@ export class VoiceSessions {
     if (input.speak !== undefined && typeof input.speak !== "boolean" && !speakGiven) throw new HttpError(400, "speak must be true, false or {agentReplies}");
     if (speakGiven) only(speakGiven, "speak", ["agentReplies"]);
     if (speakGiven?.agentReplies !== undefined && typeof speakGiven.agentReplies !== "boolean") throw new HttpError(400, "speak.agentReplies must be true or false");
-    if (input.bargeIn !== undefined && typeof input.bargeIn !== "boolean") throw new HttpError(400, "bargeIn must be true or false");
+    if (input.bargeIn !== undefined && typeof input.bargeIn !== "boolean" && (input.bargeIn === null || typeof input.bargeIn !== "object" || Array.isArray(input.bargeIn))) throw new HttpError(400, "bargeIn must be true, false or {minMs, minWords, resumeMs, backchannels}");
     const speak = input.speak === true || !!speakGiven;
     const agentReplies = speakGiven?.agentReplies === true;
     if (!speak && (input.voice !== undefined || input.bargeIn !== undefined)) throw new HttpError(400, "voice and bargeIn are for a session that speaks (speak: true)");
@@ -479,7 +517,7 @@ export class VoiceSessions {
       idleMinutes: integer(input.idleMinutes, "idleMinutes", VOICE_LIMITS.idleMinutes),
       emptySeconds: integer(input.emptySeconds, "emptySeconds", VOICE_LIMITS.emptySeconds),
       ignoreUserIds: ignored(input.ignoreUserIds), metadata: metadataInput(input.metadata), notice,
-      speak, bargeIn: input.bargeIn !== false, voice, agentReplies,
+      speak, bargeIn: input.bargeIn !== false, voice, agentReplies, interruption: interruptionInput(input.bargeIn),
       ...(transcription ? { transcription } : {}), ...(speech ? { speech } : {}),
       endOfTurn: endOfTurnInput(input.endOfTurn, this.options.turnModels ? "smart" : "silence"),
     };
@@ -765,20 +803,34 @@ export class VoiceSessions {
       if (!this.held.has(row.id)) await ownership.release(taken.claim).catch(() => {});
       return;
     }
+    const smart = current.options.endOfTurn?.mode === "smart" && !!this.options.turnModels;
+    const bargeIn = smart && current.options.speak && current.options.bargeIn ? new BargeIn(current.options.interruption ?? {}, turnTimers()) : undefined;
     const held: Held = {
       id: current.id, tenant: current.tenant, claim: taken.claim, revision: current.revision, row: current, credentials: this.credentials(current),
+      ...(bargeIn ? { bargeIn } : {}),
       segmenter: this.segmenter({
         silenceMs: current.options.silenceMs, cut: cut => this.cut(held, cut),
         // Transcribed as they speak, when this runtime can: each utterance committed as it is cut.
         ...(this.options.transcriber.liveOrder(current.options.transcription?.providers).length ? { live: { audio: (speaker: string, pcm: Buffer) => this.liveAudio(held, speaker, pcm), drop: (speaker: string) => held.live?.get(speaker)?.stream.clear() } } : {}),
         // Barge-in: a person starting to talk stops the bot.
         speech: () => {
-          if (held.row.options.bargeIn && held.speech?.speaking) held.speech.stop("barge_in");
+          // With smart turns, barge-in decides (held.bargeIn); else a person starting to talk stops the bot.
+          if (!held.bargeIn && held.row.options.bargeIn && held.speech?.speaking) held.speech.stop("barge_in");
           // A reply may follow what they say: the speech provider's connection is made now, not when it is asked.
           if (held.speech) this.options.synthesizer?.warm(held.row.options.speech?.providers);
         },
+        // Barge-in hears every turn event and how long each speaker has talked.
+        event: event => held.bargeIn?.turn(event),
+        progress: (speaker, speechMs) => held.bargeIn?.progress(speaker, speechMs),
       }, current.options.endOfTurn),
     };
+    bargeIn?.on(event => {
+      if (this.held.get(held.id) !== held) return;
+      console.log(JSON.stringify({ type: `voice_${event.type}`, session: held.id, ...("why" in event ? { why: event.why } : {}), ...("speechMs" in event ? { speechMs: event.speechMs } : {}) }));
+      if (event.type === "duck") held.speech?.pause(true);
+      else if (event.type === "unduck") held.speech?.pause(false);
+      else if (event.type === "barge_in") held.speech?.stop("barge_in");
+    });
     if (current.options.speak && this.options.synthesizer) held.speech = new SessionSpeech(this.options.synthesizer, this.speechEffects(held));
     this.held.set(held.id, held);
     console.log(JSON.stringify({ type: "voice_session_acquired", session: held.id, node: this.options.node, epoch: taken.claim.epoch }));
@@ -787,7 +839,7 @@ export class VoiceSessions {
   }
 
   /** A session's segmenter: turn-taking's (smart), when the session asks for it and this node has the models; else by level and silence. */
-  private segmenter(options: ConstructorParameters<typeof Segmenter>[0], endOfTurn: EndOfTurn | undefined): Segmenter | TurnSegmenter {
+  private segmenter(options: Omit<TurnSegmenterOptions, "models" | "policy">, endOfTurn: EndOfTurn | undefined): Segmenter | TurnSegmenter {
     const models = this.options.turnModels;
     if (endOfTurn?.mode !== "smart" || !models) return new Segmenter(options);
     return new TurnSegmenter({
@@ -858,6 +910,7 @@ export class VoiceSessions {
     held.live?.clear();
     held.speech?.close(cut);
     this.waitingTurns.forget(held.id);
+    held.bargeIn?.close();
     console.log(JSON.stringify({ type: "voice_session_released", session: held.id, node: this.options.node, epoch: held.claim.epoch, release }));
     held.connection?.close();
     held.connection = undefined;
@@ -1241,10 +1294,12 @@ export class VoiceSessions {
         cost: (who: Served, made: { characters: number; seconds: number }) => synthesizer.costOf(`${who.provider}/${who.model}`, made),
       } : {}),
       started: (item: SpeechItem, latencyMs: number) => {
+        held.bargeIn?.botSpeaking(item.text);
         console.log(JSON.stringify({ type: "voice_speech_started", session: held.id, speech: item.id, latencyMs }));
         void write("voice.speech.started", item, { latencyMs });
       },
       ended: (item: SpeechItem, ending: SpeechEnding, platform: boolean | undefined, served?: Served) => {
+        held.bargeIn?.botSpeaking(held.speech?.saying ?? null);
         const { subject, context, keyScope } = options();
         console.log(JSON.stringify({ type: "voice_speech_ended", session: held.id, speech: item.id, reason: ending.reason, ...(ending.by ? { by: ending.by } : {}), seconds: ending.seconds, ...(ending.error ? { error: ending.error } : {}) }));
         if (ending.seconds > 0) {

@@ -1323,7 +1323,13 @@ export const VoiceSessionInput = z.strictObject({
   speak: z.union([z.boolean(), z.strictObject({
     agentReplies: z.boolean().optional().openapi({ description: "Speak deliver.agent's reply to each utterance as it is written: sentence by sentence, markdown, links and code left out, at most 400 characters (the whole reply is still the run's)" }),
   })]).optional().openapi({ description: "The bot may speak (POST …/speak): true, or {agentReplies: true} to also speak the agent's replies. Your app joins with self_mute false. Default false" }),
-  bargeIn: z.boolean().optional().openapi({ description: "With speak: a person starting to talk stops the bot's speech and what it was going to say. Default true" }),
+  bargeIn: z.union([z.boolean(), z.strictObject({
+    minMs: range(VOICE_LIMITS.bargeInMinMs, "milliseconds", "Speech over the bot before it stops (default 400)"),
+    minWords: range(VOICE_LIMITS.bargeInMinWords, "words", "With live transcripts: words beyond backchannels and the bot's own (echo) that stop it (default 1)"),
+    noTranscriptMs: range(VOICE_LIMITS.bargeInNoTranscriptMs, "milliseconds", "Without transcripts: speech over the bot that stops it (default 700)"),
+    resumeMs: range(VOICE_LIMITS.bargeInResumeMs, "milliseconds", "Paused this long for nothing real, the bot goes on (default 2000)"),
+    backchannels: z.array(z.string()).max(50).optional().openapi({ description: "More words that only show someone listens (mm-hm, yeah, ok… in many languages are built in)" }),
+  })]).optional().openapi({ description: "With speak: someone taking the turn stops the bot's speech and what it was going to say. Default true. With endOfTurn smart, the bot pauses at their first sound and stops only once it is a real interruption ({minMs, minWords, noTranscriptMs, resumeMs, backchannels} tune it); a backchannel or cough resumes it" }),
   voice: z.string().optional().openapi({ description: "With speak: the voice speech is made in (OpenAI's: alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, verse…). Default alloy", example: "coral" }),
   transcription: VoiceTranscription.optional(),
   speech: VoiceSpeechProviders.optional(),
@@ -1356,6 +1362,7 @@ export const VoiceSession = z.object({
   speak: z.boolean(), bargeIn: z.boolean(), voice: z.string(),
   agentReplies: z.boolean().openapi({ description: "The session speaks deliver.agent's replies (speak: {agentReplies: true})" }),
   transcription: VoiceTranscription.optional(), speech: VoiceSpeechProviders.optional(),
+  interruption: z.object({ minMs: z.number(), minWords: z.number(), noTranscriptMs: z.number(), resumeMs: z.number(), backchannels: z.array(z.string()) }).openapi({ description: "How barge-in decides, with endOfTurn smart (bargeIn's object form)" }),
   endOfTurn: z.object({ mode: z.enum(["smart", "silence"]), commitMs: z.number(), threshold: z.number(), maxSilenceMs: z.number() }).openapi({ description: "How a speaker's turn ends (smart: a turn-detection model at pauses; silence: silenceMs of quiet)" }),
   speeches: z.number().openapi({ description: "Speeches played (each counted when it ended having made speech)" }), spokenSeconds: z.number().openapi({ description: "Seconds of speech made (billed)" }),
   utterances: z.number(), speechSeconds: z.number().openapi({ description: "Seconds of speech transcribed (billed)" }), costUsd: z.number(),

@@ -9018,6 +9018,37 @@
           "speech": {
             "$ref": "#/components/schemas/VoiceSpeechProviders"
           },
+          "interruption": {
+            "type": "object",
+            "properties": {
+              "minMs": {
+                "type": "number"
+              },
+              "minWords": {
+                "type": "number"
+              },
+              "noTranscriptMs": {
+                "type": "number"
+              },
+              "resumeMs": {
+                "type": "number"
+              },
+              "backchannels": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "minMs",
+              "minWords",
+              "noTranscriptMs",
+              "resumeMs",
+              "backchannels"
+            ],
+            "description": "How barge-in decides, with endOfTurn smart (bargeIn's object form)"
+          },
           "endOfTurn": {
             "type": "object",
             "properties": {
@@ -9104,6 +9135,7 @@
           "bargeIn",
           "voice",
           "agentReplies",
+          "interruption",
           "endOfTurn",
           "speeches",
           "spokenSeconds",
@@ -9269,8 +9301,50 @@
             "description": "The bot may speak (POST …/speak): true, or {agentReplies: true} to also speak the agent's replies. Your app joins with self_mute false. Default false"
           },
           "bargeIn": {
-            "type": "boolean",
-            "description": "With speak: a person starting to talk stops the bot's speech and what it was going to say. Default true"
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "minMs": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 3000,
+                    "description": "Speech over the bot before it stops (default 400), in milliseconds: 0 to 3000, default 400"
+                  },
+                  "minWords": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 10,
+                    "description": "With live transcripts: words beyond backchannels and the bot's own (echo) that stop it (default 1), in words: 0 to 10, default 1"
+                  },
+                  "noTranscriptMs": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 5000,
+                    "description": "Without transcripts: speech over the bot that stops it (default 700), in milliseconds: 0 to 5000, default 700"
+                  },
+                  "resumeMs": {
+                    "type": "integer",
+                    "minimum": 200,
+                    "maximum": 10000,
+                    "description": "Paused this long for nothing real, the bot goes on (default 2000), in milliseconds: 200 to 10000, default 2000"
+                  },
+                  "backchannels": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "description": "More words that only show someone listens (mm-hm, yeah, ok… in many languages are built in)"
+                  }
+                },
+                "additionalProperties": false
+              }
+            ],
+            "description": "With speak: someone taking the turn stops the bot's speech and what it was going to say. Default true. With endOfTurn smart, the bot pauses at their first sound and stops only once it is a real interruption ({minMs, minWords, noTranscriptMs, resumeMs, backchannels} tune it); a backchannel or cough resumes it"
           },
           "voice": {
             "type": "string",

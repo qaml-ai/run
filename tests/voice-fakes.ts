@@ -34,8 +34,8 @@ export type FakeConnection = {
   others?: string[];
   /** Speech it played: each playback's packets, as they went out (20 ms apart, as a player sends them). */
   played: Uint8Array[][];
-  /** Whether a playback is going now. */
-  playing: boolean;
+  /** Whether a playback is going now, and whether it is paused. */
+  playing: boolean; paused?: boolean;
 };
 
 /** A voice transport for tests: connections are records; nothing goes over the network. Playback sends a packet each `playEveryMs`. */
@@ -57,6 +57,7 @@ export function fakeTransport(playEveryMs = 2) {
           const done = (async () => {
             try {
               for await (const packet of packets) {
+                while (connection.paused && !stopped && !connection.closed) await sleep(5);
                 if (stopped || connection.closed) break;
                 if (!out.length) started();
                 out.push(packet);
@@ -66,7 +67,7 @@ export function fakeTransport(playEveryMs = 2) {
             } catch { return stopped ? "stopped" as const : "error" as const; }
             finally { connection.playing = false; }
           })();
-          return { done, stop: () => { stopped = true; } };
+          return { done, stop: () => { stopped = true; connection.paused = false; }, pause: () => { connection.paused = true; }, resume: () => { connection.paused = false; } };
         },
       };
     },

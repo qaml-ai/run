@@ -103,7 +103,11 @@ export class TurnTaker {
   /** What happened, for metrics: VAD chunks by the model and by level, Smart Turn checks, fallbacks. */
   readonly stats = { vadChunks: 0, levelChunks: 0, checks: 0, checkFailures: 0, likelyEnds: 0, resumes: 0, turns: 0 };
 
-  constructor(policy: Partial<TurnPolicy> = {}, options: { models?: TurnModels; clock?: TurnClock } = {}) {
+  /** Called with each speech chunk of an open turn: its speech so far (barge-in measures talking over the bot by it). */
+  private readonly onSpeech?: (speaker: string, speechMs: number) => void;
+
+  constructor(policy: Partial<TurnPolicy> = {}, options: { models?: TurnModels; clock?: TurnClock; speech?(speaker: string, speechMs: number): void } = {}) {
+    this.onSpeech = options.speech;
     this.policy = { ...DEFAULT_TURN_POLICY, ...policy, vad: { ...DEFAULT_TURN_POLICY.vad, ...policy.vad }, endOfTurn: { ...DEFAULT_TURN_POLICY.endOfTurn, ...policy.endOfTurn } };
     this.models = options.models;
     this.clock = options.clock ?? REAL_CLOCK;
@@ -279,6 +283,7 @@ export class TurnTaker {
         // Talking again in a pause: the turn goes on.
         if (s.turn.silentSince !== undefined && s.speechRunMs >= minSpeechMs) this.resumed(s, at);
         if (at - s.turn.startedAt >= this.policy.maxTurnMs) { this.end(s, "max"); }
+        else this.onSpeech?.(s.id, s.turn.speechMs);
       } else if (s.speechRunMs >= minSpeechMs) {
         const startedAt = at - s.speechRunMs;
         s.turn = { startedAt, speechMs: s.speechRunMs, lastSpeechAt: at, timers: [] };

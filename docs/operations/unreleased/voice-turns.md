@@ -10,3 +10,8 @@
   0.1 core of VAD for 80 people talking at once. `AGENT_VOICE_TURN_MODELS=false` turns them off (every session then
   ends turns on silence); `AGENT_VOICE_TURN_WORKERS` sets the Smart Turn threads (default 2). Logs:
   `voice_turn_models_failed` (they did not load), `voice_turn_models_exited` (a thread died; it restarts).
+- Barge-in in group calls (with `endOfTurn: smart`): the bot pauses at a person's first speech and stops only once
+  they have talked over it for 400 ms with a word that is not a backchannel ("mm-hm", "yeah"... in ~20 languages) nor
+  its own words echoed back (or 700 ms of speech without live transcripts); otherwise it resumes where it paused.
+  `bargeIn: {minMs, minWords, noTranscriptMs, resumeMs, backchannels}` tunes it; sessions show `interruption`. Logs:
+  `voice_duck`, `voice_unduck` (`why`), `voice_barge_in`, `voice_backchannel`.
