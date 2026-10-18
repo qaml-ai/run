@@ -17,8 +17,11 @@ const SPEAKERS = Number(process.env.VOICE_LOAD_SPEAKERS ?? 8);
 test(`voice under load: ${SESSIONS} sessions x ${SPEAKERS} speakers with speech playing, ${SECONDS} s`, { timeout: (SECONDS + 120) * 1_000 }, async t => {
   // What the node logs, for failures it reports rather than throws.
   const failures: string[] = [];
+  // Each turn's latency line (src/voice/latency.ts): the app's speech after an utterance is that turn's reply.
+  const turns: { outcome: string; stagesMs: Record<string, number> }[] = [];
   const watch = (line: unknown) => {
     const text = String(line);
+    if (text.includes('"type":"voice_turn_latency"')) turns.push(JSON.parse(text));
     if (/voice_(segment_failed|audio_failed|speech_error|utterance_failed|utterance_dropped)|Opus|process_fatal/.test(text)) failures.push(text.slice(0, 300));
   };
   const { log, error } = console;
@@ -87,13 +90,19 @@ test(`voice under load: ${SESSIONS} sessions x ${SPEAKERS} speakers with speech 
   const ended = await events("voice.speech.ended");
   const endRss = rss();
   const codecs = opusStats();
+  const firstAudio = turns.filter(turn => turn.outcome === "spoken").map(turn => turn.stagesMs.firstPacket).sort((x, y) => x - y);
+  const percentile = (p: number) => firstAudio[Math.min(firstAudio.length - 1, Math.floor(firstAudio.length * p))];
   console.log(JSON.stringify({ type: "voice_load", seconds: SECONDS, sessions: SESSIONS, speakers: SPEAKERS, packets, utterances, transcriptions: transcribed,
-    speeches: spoken, queueFull: refused, speechEnded: ended.length, reasons: ended.reduce((counts: Record<string, number>, event: any) => ({ ...counts, [event.data.reason]: (counts[event.data.reason] ?? 0) + 1 }), {}), rssMb: { start: startRss, end: endRss }, codecs }));
+    speeches: spoken, queueFull: refused, speechEnded: ended.length, reasons: ended.reduce((counts: Record<string, number>, event: any) => ({ ...counts, [event.data.reason]: (counts[event.data.reason] ?? 0) + 1 }), {}), rssMb: { start: startRss, end: endRss }, codecs,
+    turns: { timed: turns.length, spoken: firstAudio.length, firstPacketMs: { p50: percentile(0.5), p95: percentile(0.95) } } }));
 
   assert.deepEqual(failures, [], "no codec, utterance or speech failure");
   assert.ok(utterances >= SESSIONS * SPEAKERS, `utterances were cut and delivered (${utterances})`);
   assert.ok(ended.length >= SESSIONS, `speech played (${ended.length} ended)`);
   assert.ok(!ended.some((event: any) => event.data.reason === "error"), "no speech ended in error");
+  // Turns are timed under load, and every spoken one has each stage up to its first packet.
+  assert.ok(firstAudio.length >= SESSIONS, `spoken turns were timed (${firstAudio.length})`);
+  assert.ok(turns.filter(turn => turn.outcome === "spoken").every(turn => ["turnCommit", "transcript", "firstPiece", "ttsFirstAudio", "firstPacket"].every(stage => stage in turn.stagesMs)), "spoken turns have every stage");
   // Every utterance's decoder and every speech's encoder is freed: what is left is what is open now, at most one each.
   assert.ok(codecs.live <= SESSIONS * (SPEAKERS + 1), `codecs freed (${codecs.live} alive)`);
   assert.ok(endRss - startRss < 150, `memory stayed bounded (${startRss} -> ${endRss} MB)`);
