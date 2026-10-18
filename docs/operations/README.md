@@ -18,6 +18,7 @@ with the [Quickstart](../quickstart.md) and [Concepts](../concepts.md) instead.
 - [Account email](account-email.md): sign-up, password reset and adding a password by email; SES setup
 - [Tenant isolation](isolation.md)
 - [Sandbox](sandbox.md): the codemode sandbox's layers and limits
+- [Voice pipeline](voice-pipeline.md): media workers, the control/media protocol, streaming, audio hygiene, turn latency
 - [Integration seam](integration.md)
 
 ## Pending removals
