@@ -41,7 +41,7 @@ test(`voice under load: ${SESSIONS} sessions x ${SPEAKERS} speakers with speech 
   const rss = () => Math.round(process.memoryUsage().rss / 1_048_576);
   const startRss = rss();
   const deadline = Date.now() + SECONDS * 1_000;
-  let packets = 0, spoken = 0, transcribed = 0;
+  let packets = 0, spoken = 0, transcribed = 0, refused = 0;
   // The fakes keep each call's audio: counted and let go, so memory is the node's, not the test's.
   const letGo = setInterval(() => { transcribed += transcription.calls.length; transcription.calls.length = 0; usage.length = 0; for (const { connection } of sessions) connection.played.length = 0; }, 1_000);
   t.after(() => clearInterval(letGo));
@@ -63,8 +63,15 @@ test(`voice under load: ${SESSIONS} sessions x ${SPEAKERS} speakers with speech 
   // Each session's bot: something to say every second or so, sometimes interrupting what it says.
   const bot = async (session: { id: string }) => {
     while (Date.now() < deadline) {
-      await a.voice.speak("alice", session.id, { text: "x".repeat(10 + Math.floor(Math.random() * 30)), interrupt: Math.random() < 0.2 });
-      spoken++;
+      // Faster than a session that does not barge in can say it: past its queue's limit the speech is refused (a 429 to
+      // wait on, as an app would), and the next is asked for later.
+      try {
+        await a.voice.speak("alice", session.id, { text: "x".repeat(10 + Math.floor(Math.random() * 30)), interrupt: Math.random() < 0.2 });
+        spoken++;
+      } catch (error) {
+        if ((error as { code?: string }).code !== "VOICE_SPEECH_QUEUE_FULL") throw error;
+        refused++;
+      }
       await sleep(700 + Math.floor(Math.random() * 800));
     }
   };
@@ -81,7 +88,7 @@ test(`voice under load: ${SESSIONS} sessions x ${SPEAKERS} speakers with speech 
   const endRss = rss();
   const codecs = opusStats();
   console.log(JSON.stringify({ type: "voice_load", seconds: SECONDS, sessions: SESSIONS, speakers: SPEAKERS, packets, utterances, transcriptions: transcribed,
-    speeches: spoken, speechEnded: ended.length, reasons: ended.reduce((counts: Record<string, number>, event: any) => ({ ...counts, [event.data.reason]: (counts[event.data.reason] ?? 0) + 1 }), {}), rssMb: { start: startRss, end: endRss }, codecs }));
+    speeches: spoken, queueFull: refused, speechEnded: ended.length, reasons: ended.reduce((counts: Record<string, number>, event: any) => ({ ...counts, [event.data.reason]: (counts[event.data.reason] ?? 0) + 1 }), {}), rssMb: { start: startRss, end: endRss }, codecs }));
 
   assert.deepEqual(failures, [], "no codec, utterance or speech failure");
   assert.ok(utterances >= SESSIONS * SPEAKERS, `utterances were cut and delivered (${utterances})`);
