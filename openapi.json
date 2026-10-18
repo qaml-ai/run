@@ -9651,6 +9651,17 @@
             "type": "string",
             "description": "Another voice than the session's, for this speech"
           },
+          "voices": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "This speech's voice for each text-to-speech provider, by provider, over the session's speech.voices: an ElevenLabs voice id, a Cartesia voice id, an Aura voice, an OpenAI voice",
+            "example": {
+              "elevenlabs": "JBFqnCBsd6RMkjVDRZzb",
+              "openai": "fable"
+            }
+          },
           "instructions": {
             "type": "string",
             "description": "How to say it (tone, pace, accent), as OpenAI's instructions: at most 1,000 characters",

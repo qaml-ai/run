@@ -1195,11 +1195,12 @@ class Voice:
         body = {key: value for key, value in {"discord": discord, "ignoreUserIds": ignore_user_ids, "metadata": metadata}.items() if value is not None}
         return self._runtime._rest("PATCH", f"/v1/voice/sessions/{quote(session_id, safe='')}", body)
 
-    def speak(self, session_id, text, *, voice=None, instructions=None, interrupt=None):
+    def speak(self, session_id, text, *, voice=None, voices=None, instructions=None, interrupt=None):
         """Say `text` (1 to 4,000 characters) in the call, for a session made with speak=True: queued behind what the bot
-        is saying, or with `interrupt=True` instead of it. `instructions` says how (tone, pace). Returns {"speechId",
+        is saying, or with `interrupt=True` instead of it. `instructions` says how (tone, pace); `voices` this speech's
+        voice for each speech provider ({"elevenlabs": "<voice id>", "openai": "fable"}). Returns {"speechId",
         "position", ...}; voice.speech.started and voice.speech.ended follow. Not retried: each speech is billed."""
-        body = {"text": text, **{key: value for key, value in {"voice": voice, "instructions": instructions, "interrupt": interrupt}.items() if value is not None}}
+        body = {"text": text, **{key: value for key, value in {"voice": voice, "voices": voices, "instructions": instructions, "interrupt": interrupt}.items() if value is not None}}
         return self._runtime._rest("POST", f"/v1/voice/sessions/{quote(session_id, safe='')}/speak", body, retry=False)
 
     def stop_speaking(self, session_id):

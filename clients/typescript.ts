@@ -1278,6 +1278,8 @@ export interface VoiceSpeechInput {
   text: string;
   /** Another voice than the session's, for this speech. */
   voice?: string;
+  /** This speech's voice for each speech provider, by provider (`{ elevenlabs: "<voice id>", openai: "fable" }`), over the session's speech.voices. */
+  voices?: Record<string, string>;
   /** How to say it: tone, pace, accent (at most 1,000 characters). */
   instructions?: string;
   /** Stop what the bot is saying, and clear what it was going to, first. Default false: queued. */

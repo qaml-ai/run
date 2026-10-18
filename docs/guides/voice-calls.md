@@ -153,7 +153,9 @@ await agents.voice.stop_speaking(session["id"])
 ```
 
 `POST /v1/voice/sessions/{id}/speak` takes `text` (1 to 4,000 characters), `voice` (another than the session's, for
-this speech), `instructions` (how to say it: tone, pace, accent; at most 1,000 characters) and `interrupt` (stop what
+this speech: OpenAI's), `voices` (this speech's voice for each [speech provider](#speech-providers), by provider, over
+the session's `speech.voices`: `{"elevenlabs": "<voice id>", "openai": "fable"}`), `instructions` (how to say it: tone,
+pace, accent; at most 1,000 characters) and `interrupt` (stop what
 is playing and clear the queue first). It answers 202 with `speechId` and `position` (speeches ahead of it): speeches
 play one at a time, in order, at most 20 waiting. `DELETE /v1/voice/sessions/{id}/speak` stops what the bot is saying
 and clears the queue.

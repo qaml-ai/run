@@ -28,7 +28,11 @@ export const SPEECH_LIMITS = Object.freeze({
 export const DEFAULT_VOICE = "alloy";
 
 /** `language` (ISO 639-1 or a locale) helps providers that speak many to pick its pronunciation. */
-export type SpeechInput = { text: string; voice: string; instructions?: string; language?: string };
+export type SpeechInput = {
+  text: string; voice: string; instructions?: string; language?: string;
+  /** Through a chain (Synthesizer.speak): this speech's voice for each provider, over the session's (SpeechChoice.voices). */
+  voices?: Record<string, string>;
+};
 export type SpeechCredentials = { apiKey: string; baseUrl?: string; headers?: Record<string, string> };
 
 export interface SpeechProvider {
@@ -148,15 +152,16 @@ export class Synthesizer {
   /**
    * A speech made through the session's chain (`choice`), on the tenant's key for each provider: the first that can
    * makes it (tts-chain.ts), and `served` says which, with its voice and whose key, before the first audio. The
-   * session's `voice` is OpenAI's; another provider speaks in the session's voice for it, else its default.
+   * session's `voice` is OpenAI's; another provider speaks in the speech's voice for it (`input.voices`), else the
+   * session's, else its default.
    */
   speak(context: { tenant: string; keyScope?: string }, choice: SpeechChoice, input: SpeechInput, signal: AbortSignal, served: (who: Served) => void) {
     const members: SpeechMember[] = this.order(choice.providers).map(reference => {
       const provider = reference === this.reference || !this.options.chain ? this.options.provider : this.options.chain.provider(reference);
-      const voice = choice.voices?.[provider.id] ?? (provider.id === this.provider ? input.voice : this.options.chain?.defaultVoice(provider.id) ?? "");
+      const voice = input.voices?.[provider.id] ?? choice.voices?.[provider.id] ?? (provider.id === this.provider ? input.voice : this.options.chain?.defaultVoice(provider.id) ?? "");
       return { provider, voice, key: () => this.options.key(context.tenant, context.keyScope, provider.id) };
     });
-    const { voice: _voice, ...rest } = input;
+    const { voice: _voice, voices: _voices, ...rest } = input;
     return chainedSpeech(members, rest, signal, served, { log: { tenant: context.tenant } });
   }
 
