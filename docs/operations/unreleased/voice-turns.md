@@ -20,3 +20,8 @@
   `addressedBy`) and go to the agent as context with the next turn that is the bot's. With `agentReplies`, one reply at
   a time: a reply not yet heard when a newer turn comes is superseded (`by: "superseded"`). Logs:
   `voice_reply_superseded`.
+- Preemptive transcription (smart turns, with live transcription): when Smart Turn calls a turn complete (likely_end,
+  about 250 ms after the last word), its speaker's stream is committed then, so the transcript is made while the turn
+  waits to be sure (`commitMs`); a speaker who goes on is committed again at the cut and the parts joined. Measured with
+  a 400 ms commit: the transcript ~235 ms sooner. `voice_turn_stats` (at a session's end) logs likely ends, resumes and
+  `discardRate` (speculation thrown away), barge-in and floor counts.

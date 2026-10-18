@@ -2955,6 +2955,9 @@ ends 580 ms after the last word (median; `silence` at 800 ms: 816 ms), and a spe
 for them 87% of the time (`silence` cuts 99% of such pauses of 800 ms or more). A runtime without the models (its
 operator set `AGENT_VOICE_TURN_MODELS=false`, or they could not load) ends turns on `silence`, and refuses `smart`.
 
+With live transcription on, a `smart` turn the model calls complete is transcribed from that moment, while the turn
+waits out `commitMs`: its transcript comes that much sooner (if the speaker goes on, the rest is added to it).
+
 ## Who it answers
 
 By default every turn goes to `deliver.agent`. In a group call that makes a bot answer everything said near it.
