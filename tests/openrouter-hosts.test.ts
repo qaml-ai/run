@@ -1,11 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { getModel, openRouterHosts, withOpenRouterHosts } from "../src/pi-catalog.ts";
+import { platformUsage } from "../src/platform-pricing.ts";
+import { resolveModel } from "../src/session-config.ts";
 import { fakeModel, runtime, toolCall } from "./runtime-server.ts";
 
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
 const HOSTS = ["morph", "fireworks", "together", "parasail", "coreweave", "nebius"];
-const HOSTS_1017 = ["deepseek", "morph", "parasail"];
+const HOSTS_1017 = ["baseten", "morph", "parasail", "relace", "deepseek"];
 const FLASH = getModel("openrouter", "deepseek/deepseek-v4.1-flash")!;
 const FLASH_1017 = getModel("openrouter", "deepseek/deepseek-v4.1-flash-1017")!;
 /** Never an order or sort: either turns off OpenRouter's load balancing. Nor an ignore, a quantization or anything else. */
@@ -28,7 +30,7 @@ test("DeepSeek V4.1 Flash and 1017 on OpenRouter may be served only by their lis
   assert.equal(withOpenRouterHosts({ ...FLASH_1017, provider: "chiridion" }, request), request);
 });
 
-test("an agent's calls send their model's hosts: V4.1 Flash six, 1017 three with at most 393,216 tokens; nothing else", async t => {
+test("an agent's calls send their model's hosts: V4.1 Flash six, 1017 five with at most 262,144 tokens; nothing else", async t => {
   const host = await fakeModel(t, (_body, index) => index % 2 === 0 ? toolCall("js_exec", { code: "return 1 + 1;" }, `call_${index}`) : { role: "assistant", content: "2." });
   const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), LOCAL);
   await r.call("/v1/key-scopes/hosted/providers/openrouter", { method: "PUT", body: { apiKey: "sk-or", baseUrl: host.url } });
@@ -43,8 +45,27 @@ test("an agent's calls send their model's hosts: V4.1 Flash six, 1017 three with
       assert.ok(Array.isArray(body.messages), "Chat Completions (deepseek-replay.ts)");
     }
     const most = sent[0].max_completion_tokens ?? sent[0].max_tokens;
-    if (model === FLASH_1017.id) assert.ok(most <= 393_216, String(most));
+    if (model === FLASH_1017.id) assert.ok(most <= 262_144, String(most));
     else assert.ok(most > 393_216, `V4.1 Flash keeps Pi's longest reply: ${most}`);
   }
   onlyOnly(host.bodies);
+});
+
+test("1017:nitro resolves as 1017 does (catalog, price, 262,144, its hosts, Chat Completions) and is sent with its variant", async t => {
+  const nitro = resolveModel(`openrouter/${FLASH_1017.id}:nitro`);
+  assert.deepEqual([nitro.id, nitro.api, nitro.maxTokens, nitro.contextWindow], [`${FLASH_1017.id}:nitro`, "openai-completions", 262_144, 1_048_576]);
+  assert.deepEqual(nitro.cost, FLASH_1017.cost);
+  assert.equal(platformUsage({ input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 } as never, "openrouter", nitro.id).known, true);
+  assert.deepEqual(openRouterHosts(nitro.id), HOSTS_1017);
+
+  const host = await fakeModel(t, () => ({ role: "assistant", content: "Fast." }));
+  const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), LOCAL);
+  await r.call("/v1/key-scopes/hosted/providers/openrouter", { method: "PUT", body: { apiKey: "sk-or", baseUrl: host.url } });
+  const agent = (await r.call("/v1/agents", { body: { model: `openrouter/${FLASH_1017.id}:nitro`, keyScope: "hosted", thinkingLevel: "high" } })).json.id;
+  assert.equal((await r.prompt(agent, "Hi")).outcome.result.reply, "Fast.");
+  const [sent] = host.bodies;
+  assert.equal(sent.model, `${FLASH_1017.id}:nitro`, "the variant goes to OpenRouter as given: its throughput sort");
+  assert.deepEqual(sent.provider, { only: HOSTS_1017 }, "and nothing of ours beyond its hosts");
+  assert.equal(sent.reasoning?.effort, "high");
+  assert.ok((sent.max_completion_tokens ?? sent.max_tokens) <= 262_144);
 });
