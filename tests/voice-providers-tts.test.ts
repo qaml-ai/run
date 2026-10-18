@@ -108,7 +108,7 @@ test("chain: a member without a key is skipped, one that fails before its first 
 test("chain: one slower than firstAudioMs to start is passed over; a failure after audio is out ends the speech", async t => {
   const { base } = await fakeSpeech(t, async (entry, res) => {
     if (entry.url.startsWith("/v1/speak")) { await new Promise(resolve => setTimeout(resolve, 500)); await pcm(res, [960]); return; }
-    if (entry.url.startsWith("/v1/text-to-speech")) { res.writeHead(200); res.write(Buffer.alloc(960)); setTimeout(() => res.destroy(), 20); return; }
+    if (entry.url.startsWith("/v1/text-to-speech")) { res.writeHead(200); res.write(Buffer.alloc(960, 7)); setTimeout(() => res.destroy(), 20); return; }
     await pcm(res, [480, 480]);
   });
   const slow = [member(deepgramSpeech({ outbound, baseUrl: base }), "dg"), member(openaiSpeech({ outbound, baseUrl: `${base}/v1` }), "sk")];
@@ -125,4 +125,29 @@ test("chain: one slower than firstAudioMs to start is passed over; a failure aft
   assert.equal(bytes, 960, "what was made before the failure was played; no other voice carried on");
 
   await assert.rejects(collect(chainedSpeech([member(elevenlabsSpeech({ outbound, baseUrl: base }), undefined)], { text: "Hi" }, signal(), () => {})), /No speech provider has a key/);
+});
+
+test("chain: silence is not audio. A provider that streams silence then stalls, or only silence, is passed over; leading silence is kept", async t => {
+  const { base } = await fakeSpeech(t, async (entry, res) => {
+    // Deepgram: 0.3 s of silence, then nothing (a stalled stream, as OpenAI was seen to do).
+    if (entry.url.startsWith("/v1/speak")) { res.writeHead(200); res.write(Buffer.alloc(14_400)); return; }
+    // Cartesia: only silence, then the end.
+    if (entry.url.startsWith("/tts/bytes")) { res.writeHead(200).end(Buffer.alloc(14_400)); return; }
+    // ElevenLabs: 100 ms of silence, then speech, split mid-frame.
+    res.writeHead(200);
+    res.write(Buffer.alloc(4_800 + 100));
+    res.write(Buffer.alloc(3_000, 7));
+    res.end(Buffer.alloc(2_000, 7));
+  });
+  const stalled = [member(deepgramSpeech({ outbound, baseUrl: base }), "dg"), member(cartesiaSpeech({ outbound, baseUrl: base }), "car", "c-voice"), member(elevenlabsSpeech({ outbound, baseUrl: base }), "xi")];
+  let who: Served | undefined;
+  const started = Date.now();
+  const made = await collect(chainedSpeech(stalled, { text: "Sure, one moment." }, signal(), served => { who = served; }, { firstAudioMs: 300 }));
+  assert.equal(who?.provider, "elevenlabs", "the stalled one and the silent one were passed over");
+  assert.equal(made.bytes, 4_900 + 5_000, "the chosen provider's leading silence is played too");
+  assert.ok(Date.now() - started < 1_500, `passed over in time (${Date.now() - started} ms)`);
+
+  // The last member is waited for, silent or not: there is no one else to turn to.
+  const last = await collect(chainedSpeech([member(cartesiaSpeech({ outbound, baseUrl: base }), "car", "c-voice")], { text: "Hi" }, signal(), () => {}, { firstAudioMs: 300 }));
+  assert.equal(last.bytes, 14_400);
 });
