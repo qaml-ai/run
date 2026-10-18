@@ -1182,8 +1182,9 @@ export class VoiceSessions {
       },
       fresh: async () => { await this.options.ownership?.whenFresh(); },
       credentials: () => synthesizer.credentials(held.tenant, options().keyScope),
-      // Through the session's chain (its speech.providers, else the runtime's), when the runtime has one.
-      ...(synthesizer.options.chain ? {
+      // Through a chain of providers when the session names one (speech.providers) or the runtime does (AGENT_VOICE_TTS);
+      // otherwise OpenAI on the session's key, exactly as before chains existed.
+      ...(synthesizer.options.chain && (options().speech?.providers?.length || synthesizer.options.chain.order.length) ? {
         speak: (input: SpeechInput, signal: AbortSignal, served: (who: Served) => void) => synthesizer.speak(
           { tenant: held.tenant, ...(options().keyScope ? { keyScope: options().keyScope } : {}) }, options().speech ?? {},
           { ...input, ...(options().language ? { language: options().language } : {}) }, signal, served),
