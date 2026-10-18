@@ -1,5 +1,4 @@
 import type { Api, Context, Model } from "@earendil-works/pi-ai";
-import { openRouterRouting, type OpenRouterRouting } from "./pi-catalog.ts";
 
 /**
  * DeepSeek's own API, reasoning on, refuses a conversation in which an assistant message has no `reasoning_content`:
@@ -73,21 +72,16 @@ export function deepseekContext(model: Model<Api>, context: Context): Context {
 }
 
 /**
- * A request to OpenRouter with the platform's provider routing for its model (OPENROUTER_ROUTING), under any the request
- * already has, and, when `avoid` (DeepSeek's own endpoint refused the agent's history once anyway), kept off that
- * endpoint for a DeepSeek model that reasons: `provider.ignore` gets it and `order` loses it, so the retry and later
- * calls go to another host. Any other request is as it was.
+ * A request to OpenRouter for a DeepSeek model kept off DeepSeek's own endpoint (`provider.ignore`) when `avoid`: that
+ * endpoint refused the agent's history once anyway, so its retry and later calls go to another host. Only `ignore`
+ * is added: `order` or `sort` would turn off OpenRouter's load balancing, which keeps calls off slow or failing hosts
+ * (on 2026-10-17 an `order` sent every DeepSeek V4.1 Flash call to one slow fp4 host). Reasoning off, there is nothing
+ * to refuse; any other request is as it was.
  */
 export function openRouterPayload(model: Model<Api>, payload: unknown, avoid: boolean): unknown {
-  if (model.provider !== "openrouter" || !payload || typeof payload !== "object") return payload;
-  const request = payload as { reasoning?: { effort?: string }; provider?: OpenRouterRouting };
-  const routing = openRouterRouting(model.id);
-  let provider: OpenRouterRouting | undefined = routing || request.provider ? { ...routing, ...request.provider } : undefined;
-  const reasons = !!request.reasoning?.effort && request.reasoning.effort !== "none";
-  if (avoid && reasons && deepseekOnOpenRouter(model)) {
-    const order = provider?.order?.filter(name => name !== DEEPSEEK_HOST);
-    provider = { ...provider, ignore: [...new Set([...(provider?.ignore ?? []), DEEPSEEK_HOST])], ...(order ? { order } : {}) };
-    if (!provider.order?.length) delete provider.order;
-  }
-  return provider ? { ...request, provider } : payload;
+  if (!avoid || !deepseekOnOpenRouter(model) || !payload || typeof payload !== "object") return payload;
+  const request = payload as { reasoning?: { effort?: string }; provider?: { ignore?: string[] } };
+  if (!request.reasoning?.effort || request.reasoning.effort === "none") return payload;
+  const ignore = [...new Set([...(request.provider?.ignore ?? []), DEEPSEEK_HOST])];
+  return { ...request, provider: { ...request.provider, ignore } };
 }

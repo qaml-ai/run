@@ -99,25 +99,6 @@ const corrected = (found: Model<Api> | undefined): Model<Api> | undefined => {
   return piModel("anthropic", claude)?.thinkingLevelMap?.off === null ? { ...model, thinkingLevelMap: { ...model.thinkingLevelMap, off: null } } : model;
 };
 
-/** OpenRouter's provider routing for a request (its `provider` field), as far as the platform sets it. */
-export type OpenRouterRouting = { order?: string[]; allow_fallbacks?: boolean; ignore?: string[] };
-/**
- * The provider routing the platform asks OpenRouter for, by model id (a routing variant like `:nitro` is its base
- * model's), first match wins; any other model is routed by OpenRouter alone. Every tenant's calls on the platform's
- * OpenRouter catalog get it, its own keys included:
- * - DeepSeek's models: DeepSeek's own endpoint first, others when it can't serve (Miguel, 2026-10-17: better, faster
- *   and at the list price, where OpenRouter's load balancing charged 1.3-1.7x it).
- */
-const OPENROUTER_ROUTING: [RegExp, OpenRouterRouting][] = [
-  [/^~?deepseek\//, { order: ["deepseek"], allow_fallbacks: true }],
-];
-
-/** The provider routing the platform asks OpenRouter for on a model (OPENROUTER_ROUTING), or undefined. */
-export function openRouterRouting(id: string): OpenRouterRouting | undefined {
-  const base = id.replace(/:[a-z]+$/, "");
-  return OPENROUTER_ROUTING.find(([pattern]) => pattern.test(base))?.[1];
-}
-
 /** Pi's model, as this runtime corrects it: a Bedrock base id that has inference profiles is its profile's. */
 export function getModel(provider: string, id: string): Model<Api> | undefined {
   return corrected(piModel(provider, (provider === BEDROCK && PROFILES.get(id)) || id));
