@@ -57,7 +57,7 @@ test("OpenRouter models the platform's apps run on are at OpenRouter's list pric
   assert.equal(withCatalogPrices(stored).cost.output, 0.6);
 });
 
-test("DeepSeek V4.1 Flash 1017 asks for at most what all its hosts serve (DeepInfra and Prime Intellect 131,072), agents made before included; V4.1 Flash keeps Pi's", () => {
+test("DeepSeek V4.1 Flash 1017 asks for at most what all its hosts serve (DeepInfra, Prime Intellect and InferenceNet 131,072), agents made before included; V4.1 Flash keeps Pi's", () => {
   const id = "deepseek/deepseek-v4.1-flash-1017";
   assert.equal(getModel("openrouter", id)!.maxTokens, 131_072);
   assert.equal(getModels("openrouter").find(entry => entry.id === id)!.maxTokens, 131_072);

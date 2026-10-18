@@ -48,8 +48,8 @@ test("an agent on it calls OpenRouter's Chat Completions with the 1017 id and th
   assert.ok(Array.isArray(sent.messages), "Chat Completions (deepseek-replay.ts)");
   assert.equal(sent.model, FLASH_1017);
   assert.equal(sent.reasoning?.effort, "high");
-  assert.deepEqual(sent.provider, { only: ["baseten", "parasail", "relace", "deepseek", "fireworks", "deepinfra", "primeintellect", "crusoe"] }, "its hosts, and nothing else of routing");
-  // No more than all its hosts serve (DeepInfra's and Prime Intellect's 131,072), so OpenRouter can route it to any.
+  assert.deepEqual(sent.provider, { only: ["baseten", "parasail", "relace", "deepseek", "fireworks", "deepinfra", "primeintellect", "crusoe", "inference-net"] }, "its hosts, and nothing else of routing");
+  // No more than all its hosts serve (DeepInfra's, Prime Intellect's and InferenceNet's 131,072), so OpenRouter can route it to any.
   const most = sent.max_completion_tokens ?? sent.max_tokens;
   assert.ok(most <= 131_072, String(most));
 });
