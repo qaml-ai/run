@@ -6,7 +6,8 @@ import { PERSISTENCE_FAILED } from "./protocol.ts";
 /** How often a metered call that is still streaming reports, at least: well inside the hold's life (HOLD_MS, ten minutes). */
 export const RENEW_MS = 3 * 60_000;
 
-export type UsageSink = { cost?: number; credits?: number; generation?: (id: string) => Promise<void> };
+/** What a call's response says beyond Pi's message: the provider's cost (and credits), its generation id, and the host it was served by (`host`, OpenRouter's). */
+export type UsageSink = { cost?: number; credits?: number; host?: string; generation?: (id: string) => Promise<void> };
 const zeroUsage = () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } });
 
 /**
@@ -87,6 +88,7 @@ export async function attemptStream(model: Model<Api>, key: string, kind: "respo
           await asking;
           const message = event.type === "done" ? event.message : event.error;
           if (sink.cost !== undefined) Object.assign(message.usage, { providerCost: sink.cost, providerCreditCost: sink.credits });
+          if (sink.host) Object.assign(message.usage, { providerHost: sink.host });
           // Empty envelopes do not prove a provider generated billable output.
           const billed = message.content.length ? JSON.stringify(message.content).length : 0;
           try {

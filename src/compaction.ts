@@ -183,6 +183,9 @@ export function callFetch(sink: UsageSink, plan: { rebase?: { from: string[]; to
     {
       const generation = data?.id ?? data?.response?.id ?? data?.message?.id;
       if (typeof generation === "string") await sink.generation?.(generation);
+      // The host OpenRouter routed the call to: its chunks' `provider`, or an error's `metadata.provider_name`.
+      const host = data?.provider ?? data?.response?.provider ?? data?.error?.metadata?.provider_name;
+      if (typeof host === "string" && /^[\w .()/-]{1,60}$/.test(host)) sink.host = host;
       const usage = data?.usage ?? data?.response?.usage ?? data?.message?.usage;
       if (typeof usage?.cost !== "number" || !Number.isFinite(usage.cost) || usage.cost < 0) return;
       const upstream = usage.is_byok ? Number(usage.cost_details?.upstream_inference_cost) : 0;
@@ -350,6 +353,7 @@ export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefin
         const push = stream.push.bind(stream);
         stream.push = event => {
           if (event.type === "done" && sink.cost !== undefined) Object.assign(event.message.usage, { providerCost: sink.cost, providerCreditCost: sink.credits });
+          if ((event.type === "done" || event.type === "error") && sink.host) Object.assign((event.type === "done" ? event.message : event.error).usage, { providerHost: sink.host });
           push(event);
         };
         return stream;
@@ -394,6 +398,7 @@ function summarizer(apiKey: ApiKey, onResponse: ((message: AssistantMessage) => 
       return watchedStream(model, (watched, activity) => streamSimple(target, deepseekContext(target, context), { ...callOptions, signal: watched, onProviderStreamEvent: (event: unknown) => activity(event) }),
         streamTimeouts(model, callOptions?.reasoning), signal ? AbortSignal.any([signal, halt]) : halt, undefined, event => {
           if (sink.cost !== undefined) Object.assign(event.type === "done" ? event.message.usage : event.error.usage, { providerCost: sink.cost, providerCreditCost: sink.credits });
+          if (sink.host) Object.assign(event.type === "done" ? event.message.usage : event.error.usage, { providerHost: sink.host });
           return event;
         });
       }, estimate);

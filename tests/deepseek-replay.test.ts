@@ -4,11 +4,11 @@ import type { Api, Context, Model } from "@earendil-works/pi-ai";
 import { openRouterApi } from "../src/catalog.ts";
 import { explicitKeyStream } from "../src/compaction.ts";
 import { deepseekContext, deepseekTarget, refusedReasoningReplay } from "../src/deepseek-replay.ts";
-import { errorClass } from "../src/metrics.ts";
+import { errorClass, observeTurns, setMetricSink } from "../src/metrics.ts";
 import { retriesModelError } from "../src/model-errors.ts";
 import { getModel } from "../src/pi-catalog.ts";
 import { gateway, responses } from "./provider-fixtures.ts";
-import { fakeModel, runtime, toolCall } from "./runtime-server.ts";
+import { fakeModel, listen, runtime, toolCall } from "./runtime-server.ts";
 
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
 const FLASH = getModel("openrouter", "deepseek/deepseek-v4.1-flash-1017")!;
@@ -129,4 +129,59 @@ test("a request for a model with no hosts listed (Kimi, on Responses) carries no
   assert.equal(answer.stopReason, "stop", answer.errorMessage);
   assert.match(provider.requests[0].path, /\/responses$/);
   unrouted(provider.requests.map(request => request.body));
+});
+
+// As OpenRouter's Chat Completions API gives DeepSeek's refusal (2026-10-18 08:16 UTC, 1017:nitro): DeepSeek's words
+// without its `invalid_prompt:` prefix (127 characters), the host in the error's metadata.
+const REFUSAL_CHAT = "The `reasoning_content` in the thinking mode must be passed back to the API. (request_id: 5b23edce-9ac2-410b-9257-e11eb8b8ea61)";
+
+test("DeepSeek's refusal as OpenRouter's Chat Completions gives it (127 characters) is classed and retried as it was; the answer names its host", async t => {
+  assert.equal(REFUSAL_CHAT.length, 127);
+  assert.equal(errorClass(REFUSAL_CHAT), "reasoning_replay");
+  assert.equal(retriesModelError({ stopReason: "error", errorMessage: REFUSAL_CHAT, provider: "openrouter", model: `${FLASH.id}:nitro` }, { ownEndpoint: false }), true);
+
+  const bodies: any[] = [];
+  const url = await listen(t, async (req, res) => {
+    let text = "";
+    for await (const chunk of req) text += chunk;
+    bodies.push(JSON.parse(text));
+    if (bodies.length === 1) {
+      res.writeHead(400, { "Content-Type": "application/json" }).end(JSON.stringify({ error: { message: REFUSAL_CHAT, code: 400, metadata: { provider_name: "DeepSeek", raw: REFUSAL_CHAT } } }));
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    const chunk = (delta: object, finish: string | null) => `data: ${JSON.stringify({ id: "gen-2", provider: "Parasail", object: "chat.completion.chunk", choices: [{ index: 0, delta, finish_reason: finish }], ...(finish ? { usage: { prompt_tokens: 10, completion_tokens: 2, cost: 0.00001 } } : {}) })}\n\n`;
+    res.write(chunk({ role: "assistant", content: "Retried." }, null));
+    res.write(chunk({}, "stop"));
+    res.end("data: [DONE]\n\n");
+  });
+  const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), LOCAL);
+  await r.call("/v1/key-scopes/hosted/providers/openrouter", { method: "PUT", body: { apiKey: "sk-or", baseUrl: `${url}/v1` } });
+  const agent = (await r.call("/v1/agents", { body: { model: `openrouter/${FLASH.id}:nitro`, keyScope: "hosted", thinkingLevel: "high" } })).json.id;
+  assert.equal((await r.prompt(agent, "Hi")).outcome.result.reply, "Retried.");
+  assert.equal(bodies.length, 2, "one retry");
+  assert.deepEqual(bodies[1], bodies[0], "the same request");
+  // The answer says who served it (Parasail); the refused call, retracted for the retry, said DeepSeek (below).
+  const history = (await r.call(`/v1/agents/${agent}/history`)).json;
+  const answer = (Array.isArray(history) ? history : history.messages).findLast((message: any) => message.role === "assistant");
+  assert.equal(answer.usage.providerHost, "Parasail");
+});
+
+test("a refused call carries the host OpenRouter named, and its model_error line logs it (a name, never the text)", async t => {
+  const url = await listen(t, async (req, res) => {
+    for await (const _ of req) { /* drain */ }
+    res.writeHead(400, { "Content-Type": "application/json" }).end(JSON.stringify({ error: { message: REFUSAL_CHAT, code: 400, metadata: { provider_name: "DeepSeek" } } }));
+  });
+  const model: Model<Api> = { ...FLASH, id: `${FLASH.id}:nitro`, baseUrl: `${url}/v1` };
+  const context = { systemPrompt: "Greet.", messages: [{ role: "user" as const, content: "Hi", timestamp: 1 }] };
+  const failed = await (await explicitKeyStream()(model, context as never, { apiKey: "sk-or", reasoning: "high" } as never)).result();
+  assert.equal(failed.stopReason, "error");
+  assert.equal(errorClass(failed.errorMessage), "reasoning_replay", failed.errorMessage);
+  assert.equal((failed.usage as { providerHost?: string }).providerHost, "DeepSeek");
+
+  const lines: any[] = [];
+  setMetricSink(line => lines.push(JSON.parse(line)));
+  try { observeTurns(() => ({ provider: "openrouter", id: model.id })).event({ type: "message_end", message: failed } as never); } finally { setMetricSink(); }
+  const line = lines.find(entry => entry.type === "model_error");
+  assert.deepEqual([line.ErrorClass, line.host, line.error], ["reasoning_replay", "DeepSeek", `reasoning_replay (${failed.errorMessage!.length} chars)`]);
 });

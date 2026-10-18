@@ -185,11 +185,13 @@ export function observeTurns(model: () => { provider: string; id: string } | und
         const id = String(event.message.model ?? model()?.id ?? "unknown");
         const errorMessage = String(event.message.errorMessage ?? "");
         const stopReason = event.message.rawStopReason;
+        // The host OpenRouter routed the failed call to, when it said (compaction.ts callFetch): a provider's name, never text.
+        const host = event.message.usage?.providerHost;
         emit("model_error", {
           dimensions: { Provider: provider, Model: id, ErrorClass: errorClass(errorMessage || "error", stopReason) },
           rollups: [[], ["Provider", "Model"], ["ErrorClass"]],
           metrics: { ModelErrors: 1 },
-          properties: { error: safeError(errorMessage) },
+          properties: { error: safeError(errorMessage), ...(typeof host === "string" ? { host } : {}) },
         });
       }
     } else if (event.type === "auto_retry_start") {
