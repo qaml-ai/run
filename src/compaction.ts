@@ -16,7 +16,7 @@ import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { streamTimeouts, watchedStream, type Stall, type StreamTimeouts } from "./model-stream.ts";
 import { network } from "./node-context.ts";
 import { MODEL_INTERRUPTED } from "./model-errors.ts";
-import { deepseekPayload } from "./deepseek-replay.ts";
+import { deepseekContext, deepseekTarget } from "./deepseek-replay.ts";
 
 /**
  * Context compaction on top of Pi's compaction functions (vendored from pi-agent-core 0.87.1 in
@@ -239,13 +239,14 @@ export function callFetch(sink: UsageSink, plan: { rebase?: { from: string[]; to
  * an API that takes no fetch (Bedrock, Google), the model's base URL. An entry without a key sends none.
  */
 function authorize(model: Model<Api>, asked: any, credentials: Credentials, sink: UsageSink, modelHeaders: Record<string, string> | null | undefined, outbound: Outbound): [Model<Api>, any] {
+  // A DeepSeek model on OpenRouter is called on Chat Completions, where its history's reasoning goes back (deepseek-replay.ts).
+  model = deepseekTarget(model);
   // A model that always reasons refuses a call that turns reasoning off: a call asking for none asks for its least.
   const floor = asked?.reasoning ? undefined : reasoningFloor(model);
-  const { avoidDeepseekHost, ...rest } = (floor ? { ...asked, reasoning: floor } : asked) ?? {};
-  // An OpenRouter call takes its model's hosts (pi-catalog.ts OPENROUTER_HOSTS), and one to a DeepSeek model stays off
-  // DeepSeek's own endpoint where it would refuse it (deepseek-replay.ts).
+  const rest = floor ? { ...asked, reasoning: floor } : asked;
+  // An OpenRouter call takes its model's hosts (pi-catalog.ts OPENROUTER_HOSTS), nothing else of routing.
   const options = model.provider === "openrouter"
-    ? { ...rest, onPayload: async (payload: unknown, at: Model<Api>) => deepseekPayload(at, withOpenRouterHosts(at, (await rest.onPayload?.(payload, at)) ?? payload), avoidDeepseekHost === true) }
+    ? { ...rest, onPayload: async (payload: unknown, at: Model<Api>) => withOpenRouterHosts(at, (await rest?.onPayload?.(payload, at)) ?? payload) }
     : rest;
   if (credentials.identity) {
     const target = upstream(model);
@@ -344,7 +345,7 @@ export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefin
         const [target, callOptions] = authorize(model, options, credentials, sink, modelHeaders?.(), outbound);
         const observe = callOptions.onProviderStreamEvent;
         requested = true;
-        const stream = streamSimple(target, context, { ...callOptions, signal: watched, onProviderStreamEvent: (event: unknown, at: Model<Api>) => { activity(event); return observe?.(event, at); } });
+        const stream = streamSimple(target, deepseekContext(target, context), { ...callOptions, signal: watched, onProviderStreamEvent: (event: unknown, at: Model<Api>) => { activity(event); return observe?.(event, at); } });
         // The finished message carries the provider's own cost, when it reported one, as `usage.providerCost`.
         const push = stream.push.bind(stream);
         stream.push = event => {
@@ -390,7 +391,7 @@ function summarizer(apiKey: ApiKey, onResponse: ((message: AssistantMessage) => 
       const tracked = await attemptStream(attemptModel(model, credentials), credentials.apiKey, "compaction", attempt, (sink, halt) => {
       const [target, callOptions] = authorize(model, options, credentials, sink, modelHeaders, outbound);
       // Watched like a turn's requests: a summary whose stream goes quiet fails (the context is left as it is) rather than hold the turn.
-      return watchedStream(model, (watched, activity) => streamSimple(target, context, { ...callOptions, signal: watched, onProviderStreamEvent: (event: unknown) => activity(event) }),
+      return watchedStream(model, (watched, activity) => streamSimple(target, deepseekContext(target, context), { ...callOptions, signal: watched, onProviderStreamEvent: (event: unknown) => activity(event) }),
         streamTimeouts(model, callOptions?.reasoning), signal ? AbortSignal.any([signal, halt]) : halt, undefined, event => {
           if (sink.cost !== undefined) Object.assign(event.type === "done" ? event.message.usage : event.error.usage, { providerCost: sink.cost, providerCreditCost: sink.credits });
           return event;

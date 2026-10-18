@@ -1,56 +1,50 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { getModel, openRouterHosts, withOpenRouterHosts } from "../src/pi-catalog.ts";
-import { gateway, responses } from "./provider-fixtures.ts";
-import { runtime } from "./runtime-server.ts";
+import { fakeModel, runtime, toolCall } from "./runtime-server.ts";
 
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
 const HOSTS = ["morph", "fireworks", "together", "parasail", "coreweave", "nebius"];
+const HOSTS_1017 = ["deepseek", "morph", "parasail"];
 const FLASH = getModel("openrouter", "deepseek/deepseek-v4.1-flash")!;
-const message = (text: string) => ({ type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text, annotations: [] }] });
-/** Never an order or sort: either turns off OpenRouter's load balancing. */
-const balanced = (bodies: any[]) => {
-  for (const body of bodies) assert.ok(!body.provider || (!("order" in body.provider) && !("sort" in body.provider)), JSON.stringify(body.provider));
+const FLASH_1017 = getModel("openrouter", "deepseek/deepseek-v4.1-flash-1017")!;
+/** Never an order or sort: either turns off OpenRouter's load balancing. Nor an ignore, a quantization or anything else. */
+const onlyOnly = (bodies: any[]) => {
+  for (const body of bodies) assert.ok(!body.provider || JSON.stringify(Object.keys(body.provider)) === '["only"]', JSON.stringify(body.provider));
 };
 
-test("DeepSeek V4.1 Flash on OpenRouter may be served only by its listed hosts; other models by any", () => {
+test("DeepSeek V4.1 Flash and 1017 on OpenRouter may be served only by their listed hosts; other models by any", () => {
   assert.deepEqual(openRouterHosts("deepseek/deepseek-v4.1-flash"), HOSTS);
   assert.deepEqual(openRouterHosts("deepseek/deepseek-v4.1-flash:nitro"), HOSTS, "a routing variant is its base model's");
-  for (const id of ["deepseek/deepseek-v4.1-flash-1017", "deepseek/deepseek-v4.1-flash:batch-x", "moonshotai/kimi-k3", "z-ai/glm-5.3-flash"]) assert.equal(openRouterHosts(id), undefined, id);
+  assert.deepEqual(openRouterHosts("deepseek/deepseek-v4.1-flash-1017"), HOSTS_1017);
+  for (const id of ["deepseek/deepseek-v4-flash", "moonshotai/kimi-k3", "z-ai/glm-5.3-flash"]) assert.equal(openRouterHosts(id), undefined, id);
 
-  const request = { model: FLASH.id, input: [] };
+  const request = { model: FLASH.id, messages: [] };
   assert.deepEqual((withOpenRouterHosts(FLASH, request) as any).provider, { only: HOSTS });
-  // A request's own routing is kept.
-  assert.deepEqual((withOpenRouterHosts(FLASH, { ...request, provider: { ignore: ["deepseek"] } }) as any).provider, { only: HOSTS, ignore: ["deepseek"] });
+  assert.deepEqual((withOpenRouterHosts(FLASH_1017, request) as any).provider, { only: HOSTS_1017 });
   // Other models, and the same id on a tenant's own endpoint (its provider is the endpoint's name): as they were.
   const kimi = getModel("openrouter", "moonshotai/kimi-k3")!;
   assert.equal(withOpenRouterHosts(kimi, request), request);
-  assert.equal(withOpenRouterHosts({ ...FLASH, provider: "chiridion" }, request), request);
+  assert.equal(withOpenRouterHosts({ ...FLASH_1017, provider: "chiridion" }, request), request);
 });
 
-test("an agent's calls on DeepSeek V4.1 Flash send provider.only, on 1017 no provider field, never an order or sort", async t => {
-  const provider = await gateway(t, () => responses([message("Done.")]));
+test("an agent's calls send their model's hosts: V4.1 Flash six, 1017 three with at most 393,216 tokens; nothing else", async t => {
+  const host = await fakeModel(t, (_body, index) => index % 2 === 0 ? toolCall("js_exec", { code: "return 1 + 1;" }, `call_${index}`) : { role: "assistant", content: "2." });
   const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), LOCAL);
-  await r.call("/v1/key-scopes/hosted/providers/openrouter", { method: "PUT", body: { apiKey: "sk-or", baseUrl: `${provider.url}/openrouter` } });
-  for (const [model, expected] of [["deepseek/deepseek-v4.1-flash", { only: HOSTS }], ["deepseek/deepseek-v4.1-flash-1017", undefined]] as const) {
+  await r.call("/v1/key-scopes/hosted/providers/openrouter", { method: "PUT", body: { apiKey: "sk-or", baseUrl: host.url } });
+  for (const [model, only] of [[FLASH.id, HOSTS], [FLASH_1017.id, HOSTS_1017]] as const) {
+    const from = host.bodies.length;
     const agent = (await r.call("/v1/agents", { body: { model: `openrouter/${model}`, keyScope: "hosted", thinkingLevel: "high" } })).json.id;
-    assert.equal((await r.prompt(agent, "Hi")).outcome.result.reply, "Done.");
-    const sent = provider.requests.at(-1)!;
-    assert.match(sent.path, /\/responses$/, "OpenRouter's Responses API");
-    assert.deepEqual(sent.body.provider, expected, model);
+    assert.equal((await r.prompt(agent, "1 + 1?")).outcome.result.reply, "2.");
+    const sent = host.bodies.slice(from);
+    assert.equal(sent.length, 2, "a tool call and the answer");
+    for (const body of sent) {
+      assert.deepEqual(body.provider, { only }, model);
+      assert.ok(Array.isArray(body.messages), "Chat Completions (deepseek-replay.ts)");
+    }
+    const most = sent[0].max_completion_tokens ?? sent[0].max_tokens;
+    if (model === FLASH_1017.id) assert.ok(most <= 393_216, String(most));
+    else assert.ok(most > 393_216, `V4.1 Flash keeps Pi's longest reply: ${most}`);
   }
-  balanced(provider.requests.map(request => request.body));
-});
-
-test("with a turn that had no reasoning, V4.1 Flash's call keeps its hosts and stays off DeepSeek's endpoint too", async t => {
-  const provider = await gateway(t, (_body, index) => [
-    responses([{ type: "function_call", id: "fc_1", call_id: "call_1", name: "js_exec", arguments: JSON.stringify({ code: "return 1 + 1;" }), status: "completed" }]),
-    responses([message("2.")]),
-  ][index] ?? responses([message("Again.")]));
-  const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), LOCAL);
-  await r.call("/v1/key-scopes/hosted/providers/openrouter", { method: "PUT", body: { apiKey: "sk-or", baseUrl: `${provider.url}/openrouter` } });
-  const agent = (await r.call("/v1/agents", { body: { model: `openrouter/${FLASH.id}`, keyScope: "hosted", thinkingLevel: "high" } })).json.id;
-  assert.equal((await r.prompt(agent, "1 + 1?")).outcome.result.reply, "2.");
-  assert.deepEqual(provider.requests.map(request => request.body.provider), [{ only: HOSTS }, { only: HOSTS, ignore: ["deepseek"] }]);
-  balanced(provider.requests.map(request => request.body));
+  onlyOnly(host.bodies);
 });
