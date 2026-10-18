@@ -223,3 +223,32 @@ test("the spend, provider-credit and turn-failure alarms read metrics as the run
   for (const setting of [/IF\(total >= 5, failed \/ total, 0\)/, /evaluation_periods\s+= 2\n/, /threshold\s+= 0\.4\n/, /Outcome = "failed"/]) assert.match(failures, setting);
   assert.equal(failures.match(/period\s+= 900\n/g)?.length, 2);
 });
+
+test("each model response logs its time, first token and the host that served it, never its text", async () => {
+  let now = 1_000;
+  const lines = await captured(() => {
+    const turns = observeTurns(() => ({ provider: "openrouter", id: "deepseek/deepseek-v4.1-flash-1017:nitro" }), () => now, () => "camel-bots");
+    turns.event({ type: "message_start", message: { role: "assistant" } });
+    now += 900;
+    turns.event({ type: "message_update", message: { role: "assistant" }, assistantMessageEvent: { type: "thinking_delta", delta: "a secret plan" } });
+    now += 4_100;
+    turns.event({ type: "message_end", message: { role: "assistant", provider: "openrouter", model: "deepseek/deepseek-v4.1-flash-1017:nitro", stopReason: "toolUse", content: [{ type: "text", text: "my secret memo" }], usage: { output: 321, providerHost: "Parasail" } } });
+    // A response with no host said (another provider, an older runtime): "unknown"; an error's response too.
+    turns.event({ type: "message_start", message: { role: "assistant" } });
+    now += 2_000;
+    turns.event({ type: "message_end", message: { role: "assistant", provider: "anthropic", model: "claude-sonnet-5-5", stopReason: "error", errorMessage: "529 overloaded", usage: {} } });
+    // A message_end with no start (a resumed stream): no line.
+    turns.event({ type: "message_end", message: { role: "assistant", provider: "openrouter", model: "x", stopReason: "stop", usage: {} } });
+  });
+  const responses = lines.filter(line => line.type === "model_response");
+  assert.equal(responses.length, 2);
+  const [first, second] = responses;
+  assert.deepEqual([first.Provider, first.Model, first.Host, first.ResponseMs, first.ResponseFirstTokenMs, first.stopReason, first.outputTokens, first.tenant],
+    ["openrouter", "deepseek/deepseek-v4.1-flash-1017:nitro", "Parasail", 5_000, 900, "toolUse", 321, "camel-bots"]);
+  // One metric set, by model and host: ResponseMs by Model and Host on the dashboard.
+  assert.equal(first._aws.CloudWatchMetrics[0].Dimensions.length, 1);
+  assert.deepEqual(first._aws.CloudWatchMetrics[0].Dimensions[0].filter((name: string) => name !== "ServiceName"), ["Provider", "Model", "Host"]);
+  assert.deepEqual([second.Host, second.ResponseMs, second.ResponseFirstTokenMs, second.stopReason], ["unknown", 2_000, undefined, "error"]);
+  const text = JSON.stringify(responses);
+  assert.ok(!text.includes("secret"), "no text of a response, its reasoning or its error");
+});
