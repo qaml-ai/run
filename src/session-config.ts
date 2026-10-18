@@ -129,7 +129,7 @@ export function resolveModel(reference: string, endpoints?: ModelEndpoints, cust
   const base = known ?? lookup(provider, id.replace(/:[a-z]+$/, ''));
   if (!base) throw new Error(`Unknown model "${reference}"; see GET /v1/models`);
   const model = known ? base : { ...base, id } as AgentConfig['model'];
-  return provider === 'openrouter' ? { ...model, api: openRouterApi(model.api, model) } as AgentConfig['model'] : model;
+  return provider === 'openrouter' ? { ...model, api: openRouterApi(model.api) } as AgentConfig['model'] : model;
 }
 
 /** Headers only the runtime sets on a model call: credentials, identity, and AWS signing. */
