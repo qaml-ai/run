@@ -217,7 +217,7 @@ export class Segmenter {
   broken(speaker: string) { this.end(speaker, "error"); }
 
   /** Cut every speaker's speech now (`handoff`, `end`). */
-  flush(ended: "handoff" | "end") { for (const speaker of [...this.speaking.keys()]) this.end(speaker, ended); }
+  flush(ended: "handoff" | "end" | "error") { for (const speaker of [...this.speaking.keys()]) this.end(speaker, ended); }
 
   /** `end` from a timer: nothing it meets may escape to the process (it would end every session on the node). */
   private ended(speaker: string, ended: Cut["ended"]) {
