@@ -185,6 +185,11 @@ export type RuntimeNode = {
    * drain timeout, then everything is released and closed. Called again while draining, it stops waiting for turns.
    */
   drain(reason?: string): Promise<void>;
+  /**
+   * Drain waiting at most `waitMs` for running turns (an uncaught error: the process is not trusted for long). Called
+   * while draining, it shortens the wait to that, rather than ending it.
+   */
+  drainWithin(reason: string, waitMs: number): Promise<void>;
   /** Drain without waiting for running turns: they are released at once, their calls in flight of unknown outcome. */
   close(): Promise<void>;
   /** Read the tenants again (SIGHUP): a bad file or secret is rejected whole, and the tenants loaded before stay. */
@@ -204,7 +209,7 @@ export async function createNode(config: NodeConfig, deps: NodeDeps): Promise<Ru
   const context = { network: deps.network ?? REAL_NETWORK, clock: deps.clock ?? REAL_CLOCK, random: deps.random ?? REAL_RANDOM };
   const node = await runFor(context, () => buildNode(config, deps));
   return {
-    ...node, start: () => runFor(context, node.start), drain: signal => runFor(context, () => node.drain(signal)),
+    ...node, start: () => runFor(context, node.start), drain: signal => runFor(context, () => node.drain(signal)), drainWithin: (signal, waitMs) => runFor(context, () => node.drainWithin(signal, waitMs)),
     close: () => runFor(context, node.close), reloadTenants: () => runFor(context, node.reloadTenants), run: work => runFor(context, work),
   };
 }
@@ -1511,6 +1516,11 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     reloadTenants: () => reloadTenants(true),
     run: work => work(),
     drain: (signal = "drain") => leave(signal, config.drainMs),
+    drainWithin: (signal, waitMs) => {
+      if (!draining) return leave(signal, Math.min(waitMs, config.drainMs));
+      drainDeadline = Math.min(drainDeadline, Date.now() + waitMs);
+      return draining;
+    },
     close: () => leave("close", 0),
   };
 }

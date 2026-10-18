@@ -166,6 +166,9 @@ Idle keep-alive connections stay open 365 s, past the load balancer's idle timeo
 (360 s), so the load balancer, not the node, closes an idle one: a node closing it
 first could do so as a request was sent down it, which the load balancer answers 502.
 
+An uncaught exception or unhandled rejection is logged (`process_fatal`, with its stack) and starts the same drain,
+waiting at most 15 s for running turns; the process then exits 1, and after 45 s exits whatever the drain is doing.
+
 A second signal stops the wait. Every 503 carries `Retry-After`. Give the
 container a stop timeout longer than the drain (ECS `stopTimeout` 120 with the
 default 100 s).

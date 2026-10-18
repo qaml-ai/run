@@ -93,7 +93,7 @@ export const toolResults = (body: any) => body.messages.filter((message: any) =>
 
 /** `tenantsFile` replaces the tenants file (alice and bob, with admin keys). */
 /** `databaseUrl` shares another runtime's database, e.g. to start again after one stopped. */
-export async function runtime(t: T, respond: (body: any, index: number) => object, env: Record<string, string> = {}, tenantsFile?: object, options: { databaseUrl?: string } = {}) {
+export async function runtime(t: T, respond: (body: any, index: number) => object, env: Record<string, string> = {}, tenantsFile?: object, options: { databaseUrl?: string; execArgv?: string[] } = {}) {
   const root = await mkdtemp(join(tmpdir(), "agent-runtime-server-"));
   writeFileSync(join(root, "tenants.json"), JSON.stringify(tenantsFile ?? { tenants: {
     alice: { tokenSha256: sha(OPERATOR), apiKeys: { openrouter: "fixture-model-key" } },
@@ -101,7 +101,7 @@ export async function runtime(t: T, respond: (body: any, index: number) => objec
   } }));
   const model = await fakeModel(t, respond);
   const { db, url: databaseUrl } = options.databaseUrl ? { db: undefined, url: options.databaseUrl } : await testDatabase();
-  const child = spawn(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", fileURLToPath(new URL("../src/server.ts", import.meta.url))], {
+  const child = spawn(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", ...(options.execArgv ?? []), fileURLToPath(new URL("../src/server.ts", import.meta.url))], {
     env: {
       PATH: process.env.PATH, HOME: root, AGENT_DATA_DIR: root, AGENT_DATABASE_URL: databaseUrl, PORT: "0", HOST: "127.0.0.1",
       ...(process.env.AGENT_HOSTING ? { AGENT_HOSTING: process.env.AGENT_HOSTING } : {}),
