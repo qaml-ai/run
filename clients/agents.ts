@@ -235,6 +235,12 @@ export interface RunOptions {
    */
   history?: "full" | "none";
   /**
+   * This turn's model (`GET /v1/models`), of the agent's provider, instead of the agent's own: on the same history,
+   * tools and settings, kept if the turn waits on a person or moves to another node. The agent's model is unchanged.
+   * Only with the tenant's key. Not with whileRunning: "steer".
+   */
+  model?: string;
+  /**
    * A W3C trace context (`00-<trace-id>-<span-id>-<flags>`) to continue: when the tenant exports telemetry
    * (`agents.runtime.telemetry.set`), the run's spans join this trace under that span. Not part of the run's idempotency.
    */
@@ -745,6 +751,7 @@ function promptOptions(id: string, options: RunOptions) {
     ...(options.runLimits ? { runLimits: options.runLimits } : {}),
     ...(options.output ? { output: outputRequest(options.output) } : {}), ...(options.traceparent ? { traceparent: options.traceparent } : {}),
     ...(options.history === "none" ? { history: "none" as const } : {}),
+    ...(options.model ? { model: options.model } : {}),
   };
 }
 

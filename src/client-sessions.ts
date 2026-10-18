@@ -13,7 +13,7 @@ import { enqueueEvents, usageCost, webhookEvent, type WebhookEvent } from "./web
 import { AgentSupervisor } from "./supervisor.ts";
 import { platformUsage } from "./platform-pricing.ts";
 import { withCatalogPrices } from "./pi-catalog.ts";
-import { configurationRefusal, configurationUpdate, runLimitsInput, type CustomProviders, type ModelEndpoints } from "./session-config.ts";
+import { configurationRefusal, configurationUpdate, resolveModel, runLimitsInput, type CustomProviders, type ModelEndpoints } from "./session-config.ts";
 import { outputInput, validateDefinitions } from "./tool-policy.ts";
 import { importedHistory, validateUserMessages } from "./history.ts";
 import { forkCut, recordedMessages, type Backlog, type TranscriptRecord } from "./transcript.ts";
@@ -1571,6 +1571,27 @@ export class ClientSessions {
   private async apiKey(session: Session, provider: string, keyScope: string | undefined): Promise<{ key?: string; platform: boolean }> {
     const resolved = await this.options.apiKeyFor?.(session.header.tenant, provider, keyScope);
     return typeof resolved === "object" ? resolved : { key: resolved, platform: false };
+  }
+
+  /**
+   * A run's own model (a prompt's `model`) as its agent's calls take it: one the tenant's agents may name, of the agent's
+   * provider (the run calls it with the agent's key), that takes the agent's thinking level and settings.
+   */
+  private async runModel(session: Session, reference: unknown): Promise<AgentConfig["model"]> {
+    if (typeof reference !== "string") throw new Error('model must be a "provider/model-id" string; see GET /v1/models');
+    const { tenant, keyScope, config } = session.header;
+    const model = resolveModel(reference, this.options.modelEndpoints?.(tenant), await this.options.customProviders?.(tenant, keyScope));
+    if (model.provider !== config.model.provider) throw new Error(`A run's model is of its agent's provider (${config.model.provider}); "${reference}" is not`);
+    const refusal = configurationRefusal(config, { model });
+    if (refusal) throw new Error(refusal);
+    return withCatalogPrices(model);
+  }
+
+  /** A prompt's `model`, checked as it is accepted: the reference, kept on its record for each part of its turn. */
+  private async runModelInput(session: Session, reference: unknown): Promise<string> {
+    try { await this.runModel(session, reference); }
+    catch (error) { throw new HttpError(400, errorText(error)); }
+    return reference as string;
   }
 
   private ensureStarted(session: Session) {
@@ -3937,6 +3958,9 @@ export class ClientSessions {
     // Who is acting in a run is recorded apart from what the agent is asked to do.
     let actor: string | undefined;
     let { actor: rawActor, bucket: rawBucket, ...params } = body.params;
+    // A configuration's model is the agent's own; any other request's is the run's (below).
+    const rawModel = body.method === "configure" ? undefined : params.model;
+    if (body.method !== "configure") delete params.model;
     if (spendLimit !== undefined) delete params.spendLimit;
     let bucket = body.method === "configure" || rawBucket === undefined ? undefined : bucketInput(rawBucket);
     if (rawActor !== undefined && !isRun) throw new HttpError(400, "actor is only for runs (prompt, continue, execute)");
@@ -3954,6 +3978,14 @@ export class ClientSessions {
     // So is what the model sees of the history before it: all of it (full), or none (the system prompt and this message alone).
     if (params.history !== undefined && (body.method !== "prompt" || params.whileRunning === "steer" || !["full", "none"].includes(params.history))) throw new HttpError(400, 'history is "full" or "none", for a prompt that starts its own turn (not whileRunning: steer)');
     if (params.history === "full") delete params.history;
+    // A run's own model, the tenant's alone (it chooses what the run costs): for the turn a prompt starts, on the agent's
+    // history and settings. Its provider is the agent's, whose key the run calls with.
+    let model: string | undefined;
+    if (rawModel !== undefined) {
+      if (!trusted) throw new HttpError(403, "Only the tenant can choose a run's model");
+      if (body.method !== "prompt" || params.whileRunning === "steer") throw new HttpError(400, "model is for a prompt that starts its own turn (not whileRunning: steer)");
+      model = await this.runModelInput(session, rawModel);
+    }
     // Its reply spoken in a voice session: the session checked now, and followed once the run is taken.
     let speak: VoiceReplyTarget | undefined;
     if (params.speak !== undefined) {
@@ -3975,10 +4007,11 @@ export class ClientSessions {
       if (params.metadata !== undefined) params.metadata = metadataInput(params.metadata);
       // The sender acts, unless the application names someone else.
       actor = actorInput(rawActor) ?? (isRun ? params.from?.id : undefined);
-      // A resumed turn acts for whoever the suspended one did, and spends from the same bucket.
+      // A resumed turn acts for whoever the suspended one did, and spends from the same bucket, on the same model.
       if (body.method === "resume") {
         actor = session.requests.get(params.suspension)?.actor;
         bucket = session.requests.get(params.suspension)?.bucket;
+        model = session.requests.get(params.suspension)?.model;
       }
     } catch (error) { throw new HttpError(400, errorText(error)); }
     // A child's notification (`notice`) is the runtime's alone. Its child's run was counted and checked already, and it is
@@ -4054,7 +4087,7 @@ export class ClientSessions {
       const record = this.upsertRequest(session, {
         startedAt: Date.now(), ...(body.method === "prompt" && typeof body.params.text === "string" ? { prompt: body.params.text } : {}),
         ...(body.method === "execute" && typeof body.params.code === "string" ? { code: body.params.code } : {}),
-        id: body.id, method: body.method, fingerprint, state: "running", ...(queued ? { params } : {}), ...(actor ? { actor } : {}), ...(bucket ? { bucket } : {}), ...(params.metadata ? { metadata: params.metadata } : {}),
+        id: body.id, method: body.method, fingerprint, state: "running", ...(queued ? { params } : {}), ...(actor ? { actor } : {}), ...(bucket ? { bucket } : {}), ...(model ? { model } : {}), ...(params.metadata ? { metadata: params.metadata } : {}),
         ...(body.method === "resume" ? { suspension: params.suspension } : {}), ...(trace ? { trace } : {}),
       });
       // Taken: its running record now keeps the agent busy, so it is no longer being admitted. An abort that cancels it
@@ -4599,6 +4632,12 @@ export class ClientSessions {
       // Ended as an abort, as the agent ends one it has (code aborted), not as a runtime failure.
       else if (method !== "continue") return { error: "The run was aborted", code: "aborted" };
       else params = { ...params, aborted: true };
+    }
+    // The run's own model (its prompt's, or the suspended turn's it resumes), each time its turn runs: continued after a
+    // hand-off or a lost node too. One no longer known runs on the agent's.
+    if (record.model && (MODEL_RUNS.includes(method) || method === "resume")) {
+      try { params = { ...params, model: await this.runModel(session, record.model) }; }
+      catch (error) { console.error(JSON.stringify({ type: "run_model_unresolved", agent: id, request: record.id, model: record.model, error: errorText(error) })); }
     }
     try {
       return await this.supervisor.request(id, method, params, RUN_METHODS.includes(record.method)

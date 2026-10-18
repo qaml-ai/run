@@ -45,6 +45,9 @@ export interface AgentAuth {
 export type AgentSetup = Pick<AgentConfig,
   "model" | "instructions" | "tools" | "mcp" | "definition" | "builtins" | "thinkingLevel" | "maxOutputTokens" | "temperature" | "context" | "keyScope" | "spendLimit" | "runLimits" | "modelHeaders" | "mounts" | "name">;
 
+/** What `onSend` may change about a message: its text, its metadata, and the model its turn runs on (a prompt's `model`). */
+export interface SendChange { text?: string; metadata?: Record<string, string>; model?: string }
+
 export interface SendEvent<A extends AgentAuth = AgentAuth> {
   auth: A;
   thread: string | null;
@@ -71,10 +74,11 @@ export interface AgentHandlerOptions<A extends AgentAuth = AgentAuth> {
    */
   agent?: AgentSetup | ((auth: A, context: { thread: string | null }) => AgentSetup | Promise<AgentSetup>);
   /**
-   * Before each message is sent: return `{ text?, metadata? }` to change it or label it (metadata is yours,
-   * never shown to the model), or throw a Response to refuse it (a quota, moderation).
+   * Before each message is sent: return `{ text?, metadata?, model? }` to change it or label it (metadata is yours,
+   * never shown to the model), or send its turn to another model of the agent's provider (`model`: a faster one for
+   * someone's first messages), or throw a Response to refuse it (a quota, moderation).
    */
-  onSend?(event: SendEvent<A>): void | { text?: string; metadata?: Record<string, string> } | Promise<void | { text?: string; metadata?: Record<string, string> }>;
+  onSend?(event: SendEvent<A>): void | SendChange | Promise<void | SendChange>;
   /** The browser tokens it mints. Default: 15 minutes, every event, no provider cost (`redact: ["usage.cost"]`). */
   browserToken?: {
     ttlSeconds?: number;
@@ -435,8 +439,10 @@ export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: Age
         const changed = await options.onSend?.({ auth, thread, text: text as string, data: body.data, request });
         if (changed?.text !== undefined) text = changed.text;
         if (changed?.metadata) metadata = changed.metadata;
+        // A steer joins the running turn, on its model.
+        const model = whileRunning !== "steer" ? changed?.model : undefined;
         const accepted = await call(`${path}/prompt`, {
-          text, requestId: clientId, from, ...(metadata ? { metadata } : {}), ...(whileRunning ? { whileRunning } : {}),
+          text, requestId: clientId, from, ...(metadata ? { metadata } : {}), ...(model ? { model } : {}), ...(whileRunning ? { whileRunning } : {}),
         });
         // Waiting, it is answered once its run ends (a steered message's, once the turn it joined does: its own request
         // completes as that turn reads it, naming the turn, whose request has the answer).

@@ -46,6 +46,8 @@ export type RequestRecord = {
   actor?: string;
   /** The bucket of its end user's credit this run spends from, when the tenant named one for it (end-user credits). */
   bucket?: string;
+  /** The model this run's calls go to instead of its agent's, when the tenant named one for it (a prompt's `model`; a `resume`, its suspended turn's). */
+  model?: string;
   /** A `resume` run's suspension: the run whose turn waited on human input, which this one continues. */
   suspension?: string;
   /** The application's key-value data sent with a message (prompt, steer), also kept on the message. */

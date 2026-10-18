@@ -107,8 +107,10 @@ export function openCalls(messages: AgentMessage[]): ToolCall[] {
 export function createAgentHost(hostIO: HostIO) {
   let agent: Agent | undefined;
   let config: AgentConfig;
+  /** The model calls go to now: the running run's own (a prompt's `model`), else the agent's. */
+  const callModel = () => agent?.state.model ?? config?.model;
   // Each turn's outcome, timing and model and tool counts, as metrics (metrics.ts), from what the host emits.
-  const turns = observeTurns(() => config?.model && { provider: config.model.provider, id: config.model.id }, Date.now, () => config?.tenant);
+  const turns = observeTurns(() => callModel() && { provider: callModel()!.provider, id: callModel()!.id }, Date.now, () => config?.tenant);
   const io: HostIO = { ...hostIO, emit: event => { turns.event(event); hostIO.emit(event); } };
   let transcript: Transcript;
   let busy = false;
@@ -902,7 +904,7 @@ export function createAgentHost(hostIO: HostIO) {
       // A request whose stream goes quiet ends as a retryable error (model-stream.ts), said on the run's stream as it happens.
       const stream = explicitKeyStream(() => perCall() ? io.modelAuth() : undefined, () => config.modelHeaders, gate,
         (model, reasoning) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts),
-        stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: config.model.provider, model: config.model.id }), io.modelOutbound, io.modelAttempt, creditStop);
+        stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: callModel()!.provider, model: callModel()!.id }), io.modelOutbound, io.modelAttempt, creditStop);
       agent = new Agent({
         initialState: {
           model: config.model,
@@ -1053,6 +1055,8 @@ export function createAgentHost(hostIO: HostIO) {
     }
     const promptMessages = method === "prompt" ? userMessages(params) : undefined;
     busy = true;
+    // The run's own model (the runtime resolved it, of the agent's provider) for this run's calls; compaction keeps the agent's.
+    if (method !== "execute" && params?.model) agent.state.model = params.model;
     stopped = undefined;
     output = undefined;
     forcing = { left: FORCED_OUTPUT_REQUESTS, reminding: false, last: false };
@@ -1146,7 +1150,7 @@ export function createAgentHost(hostIO: HostIO) {
       const missing = !given && !error && !stopped && agent.state.tools.some(tool => tool.name === OUTPUT_TOOL);
       // Why it failed, when the remedy is the caller's (a key) or worth telling apart: a model whose stream went quiet past
       // every retry, or a run aborted (stopped by its caller).
-      const failure = error ? modelKeyFailure(error, config.model) ?? (isStalled(error) ? { code: "model_stream_stalled" } : active.signal.aborted || last?.stopReason === "aborted" ? { code: "aborted" } : {}) : {};
+      const failure = error ? modelKeyFailure(error, agent.state.model) ?? (isStalled(error) ? { code: "model_stream_stalled" } : active.signal.aborted || last?.stopReason === "aborted" ? { code: "aborted" } : {}) : {};
       return {
         messages: transcript.total, ...answered, error, ...failure, ...(stopped ?? {}), ...(given ? { output: given.value } : {}),
         ...(missing ? { error: `The model ended its turn without calling ${OUTPUT_TOOL}, so the run has no output in its schema`, code: "output_missing" } : {}),
@@ -1167,6 +1171,7 @@ export function createAgentHost(hostIO: HostIO) {
         dropped = new WeakSet();
       }
       await io.cancelTools();
+      agent.state.model = config.model;
       active = undefined;
       busy = false;
       if (method !== "execute") {

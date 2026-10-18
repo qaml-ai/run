@@ -2141,9 +2141,10 @@ export class AgentClient {
    * `output: { schema }` (a JSON Schema for an object) asks for structured output: the run ends with an answer that fits it, as `output`.
    * `speak: { session, voice?, interrupt? }` speaks the run's reply in one of the tenant's voice sessions that speak, sentence by
    * sentence as it is written (voice.speech.* events carry `reply: { agent, requestId }`).
+   * `model` runs this turn on another model of the agent's provider (GET /v1/models), on the same history; the agent's own is unchanged.
    */
-  async prompt(text: string, options?: RunRequestOptions & { files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; whileRunning?: "queue" | "steer"; spendLimit?: { usd: number }; runLimits?: { maxResponses?: number; maxSeconds?: number }; output?: { schema: Record<string, unknown> }; history?: "full" | "none"; speak?: { session: string; voice?: string; interrupt?: boolean } }) {
-    const result = await this.message("prompt", text, options, { ...(options?.speak ? { speak: options.speak } : {}), ...(options?.actor ? { actor: options.actor } : {}), ...(options?.whileRunning === "steer" ? { whileRunning: "steer" } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}), ...(options?.spendLimit ? { spendLimit: options.spendLimit } : {}), ...(options?.runLimits ? { runLimits: options.runLimits } : {}), ...(options?.output ? { output: options.output } : {}), ...(options?.history === "none" ? { history: "none" } : {}) });
+  async prompt(text: string, options?: RunRequestOptions & { files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; whileRunning?: "queue" | "steer"; spendLimit?: { usd: number }; runLimits?: { maxResponses?: number; maxSeconds?: number }; output?: { schema: Record<string, unknown> }; history?: "full" | "none"; model?: string; speak?: { session: string; voice?: string; interrupt?: boolean } }) {
+    const result = await this.message("prompt", text, options, { ...(options?.speak ? { speak: options.speak } : {}), ...(options?.model ? { model: options.model } : {}), ...(options?.actor ? { actor: options.actor } : {}), ...(options?.whileRunning === "steer" ? { whileRunning: "steer" } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}), ...(options?.spendLimit ? { spendLimit: options.spendLimit } : {}), ...(options?.runLimits ? { runLimits: options.runLimits } : {}), ...(options?.output ? { output: options.output } : {}), ...(options?.history === "none" ? { history: "none" } : {}) });
     // A steered message's request completes as the running turn takes it, naming the turn: its outcome is the turn's.
     const into = options?.whileRunning === "steer" && isRecord(result) && typeof result.steeredInto === "string" && !("reply" in result) ? result.steeredInto : undefined;
     return into ? this.waitForRequest(into, { ...(options?.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}), ...(options?.signal ? { signal: options.signal } : {}) }) : result;
@@ -2174,14 +2175,14 @@ export class AgentClient {
    * Send a message and return as soon as the runtime has it (202), without waiting for its run: `{ id, state }`, the
    * request's id and whether it runs or is queued. Follow it with `waitForRequest(id)`, the stream, or a webhook.
    */
-  async submit(text: string, options?: RequestOptions & { files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; spendLimit?: { usd: number }; runLimits?: { maxResponses?: number; maxSeconds?: number }; output?: { schema: Record<string, unknown> }; history?: "full" | "none"; allowDisconnected?: boolean; speak?: { session: string; voice?: string; interrupt?: boolean } }): Promise<{ id: string; state: string }> {
+  async submit(text: string, options?: RequestOptions & { files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; spendLimit?: { usd: number }; runLimits?: { maxResponses?: number; maxSeconds?: number }; output?: { schema: Record<string, unknown> }; history?: "full" | "none"; model?: string; allowDisconnected?: boolean; speak?: { session: string; voice?: string; interrupt?: boolean } }): Promise<{ id: string; state: string }> {
     if (this.closed || this.closing || this.fatal) throw this.fatal ?? new AgentError("Client closed");
     const id = options?.idempotencyKey ?? globalThis.crypto.randomUUID();
     if (!REQUEST_ID.test(id)) throw new AgentError(`An idempotency key is 1 to 80 letters, digits, _ and -: ${JSON.stringify(id.slice(0, 100))} is not`, 400);
     const files = options?.files?.length ? await this.attach(id, options.files) : undefined;
     const params = {
       text, ...(files ? { files } : {}), ...(options?.actor ? { actor: options.actor } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}),
-      ...(options?.spendLimit ? { spendLimit: options.spendLimit } : {}), ...(options?.runLimits ? { runLimits: options.runLimits } : {}), ...(options?.output ? { output: options.output } : {}), ...(options?.history === "none" ? { history: "none" } : {}),
+      ...(options?.spendLimit ? { spendLimit: options.spendLimit } : {}), ...(options?.runLimits ? { runLimits: options.runLimits } : {}), ...(options?.output ? { output: options.output } : {}), ...(options?.history === "none" ? { history: "none" } : {}), ...(options?.model ? { model: options.model } : {}),
       ...(options?.from ? { from: options.from } : {}), ...(options?.metadata ? { metadata: options.metadata } : {}), ...(options?.speak ? { speak: options.speak } : {}),
     };
     const record = await this.transport.json(this.path("/requests"), this.session.token, "POST", { id, method: "prompt", params }, true, traceHeader(options?.traceparent)) as RequestRecord;

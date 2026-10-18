@@ -2520,6 +2520,10 @@
             },
             "description": "The metadata sent with the message"
           },
+          "model": {
+            "type": "string",
+            "description": "The run's own model, when its prompt named one (a resume: its suspended turn's)"
+          },
           "resumes": {
             "type": "number",
             "description": "Times a node resumed this run's turn after the node running it was lost (its calls in flight closed as of unknown outcome); at most 2"
@@ -3184,6 +3188,11 @@
           "bucket": {
             "type": "string",
             "description": "With end-user credits on (/v1/end-user-settings): the bucket of the agent's subject this run spends from, instead of the agent's. Only the tenant may set it"
+          },
+          "model": {
+            "type": "string",
+            "description": "This run's model (GET /v1/models) instead of the agent's, for its whole turn: a resume after human input and a turn continued on another node keep it. The agent's history, tools and settings are the same, its own model unchanged, and compaction uses that. Of the agent's provider (the run calls it with the agent's key); refused (400) when it takes none of the agent's thinking level, maxOutputTokens or temperature. Only the tenant may set it. Not with whileRunning: steer",
+            "example": "openrouter/deepseek/deepseek-v4.1-flash-1017:nitro"
           },
           "runLimits": {
             "type": "object",

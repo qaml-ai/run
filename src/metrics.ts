@@ -171,10 +171,12 @@ const TURN_METHODS = new Set(["prompt", "continue", "resume"]);
  * the host emits, `wrap` times each turn and writes its line when it ends.
  */
 export function observeTurns(model: () => { provider: string; id: string } | undefined, clock = Date.now, tenant: () => string | undefined = () => undefined) {
-  let turn: { started: number; firstToken?: number; responses: number; errors: number; retries: number; tools: number; toolErrors: number } | undefined;
+  let turn: { started: number; firstToken?: number; responses: number; errors: number; retries: number; tools: number; toolErrors: number; model?: { provider: string; id: string } } | undefined;
 
   function event(value: unknown) {
     const event = value as { type?: string; message?: any; toolName?: string; isError?: boolean; result?: any };
+    // The model as the turn runs: a run's own (a prompt's model) is the agent's again once it ends.
+    if (turn && !turn.model) turn.model = model();
     if (event.type === "message_update" && event.message?.role === "assistant") {
       if (turn && turn.firstToken === undefined) turn.firstToken = clock();
     } else if (event.type === "message_end" && event.message?.role === "assistant") {
@@ -211,7 +213,7 @@ export function observeTurns(model: () => { provider: string; id: string } | und
     const error = thrown !== undefined ? "exception" : !limited && typeof result?.error === "string" && result.error ? errorClass(result.error) : "none";
     // A turn handed off at a step boundary ends here and goes on on another node: its part here is a turn of its own.
     const outcome = error !== "none" ? "failed" : result?.handedOff ? "handed_off" : result?.stopped === "input_required" ? "input_required" : limited ?? "completed";
-    const { provider = "unknown", id = "unknown" } = model() ?? {};
+    const { provider = "unknown", id = "unknown" } = current.model ?? model() ?? {};
     emit("turn_metrics", {
       dimensions: { Outcome: outcome, ErrorClass: error, Provider: provider, Model: id },
       rollups: [[], ["Outcome"], ["ErrorClass"], ["Provider", "Model"]],

@@ -118,6 +118,8 @@ test("onSend sees the client's data, may rewrite the message or add metadata, an
     onSend: ({ auth, text, data }) => {
       seen.push({ user: auth.userId, text, data });
       if (text === "blocked") throw new Response(JSON.stringify({ error: { code: "quota", message: "Out of messages" } }), { status: 429 });
+      // The turn's model goes with the prompt: one of another provider than the agent's is refused there.
+      if (text === "elsewhere") return { model: "anthropic/claude-sonnet-5" };
       return { text: `${text}!`, metadata: { page: String((data as { page?: string })?.page) } };
     },
   });
@@ -131,6 +133,9 @@ test("onSend sees the client's data, may rewrite the message or add metadata, an
   const refused = await post(handler, { action: "send", text: "blocked", clientId: "cm_00000011" });
   assert.equal(refused.status, 429);
   assert.equal(refused.json.error.code, "quota");
+  const elsewhere = await post(handler, { action: "send", text: "elsewhere", clientId: "cm_00000012" });
+  assert.equal(elsewhere.status, 400, JSON.stringify(elsewhere.json));
+  assert.match(JSON.stringify(elsewhere.json), /of its agent's provider \(openrouter\)/);
 });
 
 test("answers go to the user's own agent as the user; another user's input is not theirs to answer", async t => {

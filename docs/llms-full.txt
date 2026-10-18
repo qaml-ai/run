@@ -318,6 +318,22 @@ it must. It is for a prompt that starts its own turn, not `whileRunning: "steer"
 Resumed after a person answers it, or continued on another node, the run stays
 without the history.
 
+### A run on another model
+
+`model` on a prompt (`agent.run(text, { model })`, `client.prompt`, or an agent
+handler's `onSend` returning `{ model }`) runs that turn on another model of the
+agent's provider, on the same history, tools and settings: a faster routing
+variant for someone's first messages, say. The agent's own model is unchanged,
+and so is compaction's. Resumed after a person answers it, or continued on
+another node, the turn keeps it. Only the tenant's key may set it (not an
+agent's own token); a model of another provider, or one that takes none of the
+agent's thinking level, `maxOutputTokens` or `temperature`, is refused (400).
+Its request record says which (`model`).
+
+```ts
+await agent.run("Make me a dice bot", { model: "openrouter/deepseek/deepseek-v4.1-flash-1017:nitro" });
+```
+
 `run()` has no timeout: runs can take minutes, and a run waiting on a person can
 wait for days. Pass an `AbortSignal` (Python: `timeout=`) to stop waiting; the
 run itself goes on, and `agent.abort()` stops it: the running turn ends, and the
