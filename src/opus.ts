@@ -32,6 +32,10 @@ const APPLICATIONS = { voip: 2048, audio: 2049 } as const;
 
 export class OpusError extends Error {}
 
+let live = 0;
+/** Codecs not yet deleted, and the current module's memory (it grows, and never shrinks): for tests and metrics. */
+export function opusStats() { return { live, heapBytes: current?.HEAPU8.length ?? 0 }; }
+
 export class Opus {
   readonly channels: number;
   private readonly module: Native;
@@ -49,7 +53,8 @@ export class Opus {
       this.pcm = this.module._malloc(MAX_FRAME_SAMPLES * channels * 2 * 2);
       this.packet = this.module._malloc(MAX_PACKET_BYTES);
       if (!this.pcm || !this.packet) throw new OpusError("Opus: out of memory");
-    } catch (error) { this.failed(error); }
+      live++;
+    } catch (error) { this.failed(error); this.handler = undefined; }
   }
 
   /** Broken by a trap, or deleted: every call throws. */
@@ -85,7 +90,9 @@ export class Opus {
   delete() {
     const handler = this.handler;
     this.handler = undefined;
-    if (!handler || this.fault !== undefined) return;
+    if (!handler) return;
+    live--;
+    if (this.fault !== undefined) return;
     try {
       this.module.OpusScriptHandler.destroy_handler(handler);
       this.module._free(this.pcm);
