@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { Opus } from "../src/opus.ts";
 import { opusStats } from "../src/opus.ts";
 import { hostClient, startTurnModels, type TurnModels } from "../src/voice/turns/inference.ts";
+import { nodeConfig } from "../src/node-config.ts";
 import { discordGrant, sleep, until, voiceCluster } from "./voice-fakes.ts";
 
 /**
@@ -64,6 +65,13 @@ async function liveSession(t: TestContext, options: Record<string, unknown> = {}
   const play = async (speaker: string, list: Uint8Array[]) => { for (const packet of list) { connection.handlers.packet(speaker, packet); await sleep(20); } };
   return { ...cluster, a, created, connection, play };
 }
+
+test("the turn models are the operator's to turn on: off unless AGENT_VOICE_TURN_MODELS=true, one Smart Turn thread", () => {
+  assert.equal(nodeConfig({ AGENT_VOICE: "true" }).voice.turnModels, false);
+  assert.equal(nodeConfig({ AGENT_VOICE: "true", AGENT_VOICE_TURN_MODELS: "false" }).voice.turnModels, false);
+  assert.equal(nodeConfig({ AGENT_VOICE: "true", AGENT_VOICE_TURN_MODELS: "true" }).voice.turnModels, true);
+  assert.equal(nodeConfig({ AGENT_VOICE: "true", AGENT_VOICE_TURN_MODELS: "true" }).voice.turnWorkers, undefined);
+});
 
 test("endOfTurn: smart by default where the runtime has turn models, silence otherwise; validated", { timeout: 60_000 }, async t => {
   const models = await turnModels(t);

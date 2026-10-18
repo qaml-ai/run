@@ -163,9 +163,10 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
       // only that session's audio, which restarts), or "inline" on the node's own thread.
       isolation: env.AGENT_VOICE_ISOLATION === "inline" ? "inline" as const : "worker" as const,
       sessionsPerWorker: Number(env.AGENT_VOICE_SESSIONS_PER_WORKER ?? 1), workers: Number(env.AGENT_VOICE_WORKERS ?? 16), workerMaxMb: Number(env.AGENT_VOICE_WORKER_MAX_MB ?? 256),
-      // Turn-taking's models (src/voice/turns: Silero VAD, Smart Turn, in worker threads): on with voice unless "false",
-      // when every session ends turns on silence; how many Smart Turn threads (default: 2, or 1 on one CPU).
-      turnModels: env.AGENT_VOICE_TURN_MODELS !== "false", turnWorkers: env.AGENT_VOICE_TURN_WORKERS ? Number(env.AGENT_VOICE_TURN_WORKERS) : undefined },
+      // Turn-taking's models (src/voice/turns: Silero VAD, Smart Turn, in worker threads): loaded only with voice and
+      // AGENT_VOICE_TURN_MODELS=true (until canaried: they share the node's CPU with agent turns); without them every
+      // session ends turns on silence and smart is refused. How many Smart Turn threads (default 1).
+      turnModels: env.AGENT_VOICE_TURN_MODELS === "true", turnWorkers: env.AGENT_VOICE_TURN_WORKERS ? Number(env.AGENT_VOICE_TURN_WORKERS) : undefined },
     verifyKeys: env.AGENT_VERIFY_KEYS !== "false",
     billingAdmins: (env.AGENT_BILLING_ADMINS ?? "").split(",").map(value => value.trim()).filter(Boolean),
     purgeMs, billingMs, reconcileDays,

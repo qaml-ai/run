@@ -2961,7 +2961,7 @@ sessions are listed for 30 days.
 
 An utterance is one speaker's turn. How it ends is `endOfTurn`:
 
-- `smart` (the default where the runtime runs the turn models): speech is found by a voice activity model (Silero VAD),
+- `smart` (the default where the runtime runs the turn models, which its operator turns on): speech is found by a voice activity model (Silero VAD),
   not by loudness, so room noise or an open mic is not speech. At each pause, after 200 ms of silence, a turn-detection
   model (Pipecat's Smart Turn, 23 languages) listens to the speaker's last 8 seconds and judges whether they are done.
   If they are, the turn ends at `commitMs` of silence (default 500; 200 to 3000). If they are mid-thought, they get up to
@@ -2972,7 +2972,8 @@ An utterance is one speaker's turn. How it ends is `endOfTurn`:
 Measured on 920 labelled turns in 23 languages (pipecat's smart-turn test set): with `smart` at its defaults, a turn
 ends 580 ms after the last word (median; `silence` at 800 ms: 816 ms), and a speaker who pauses mid-thought is held
 for them 87% of the time (`silence` cuts 99% of such pauses of 800 ms or more). A runtime without the models (its
-operator set `AGENT_VOICE_TURN_MODELS=false`, or they could not load) ends turns on `silence`, and refuses `smart`.
+operator has not set `AGENT_VOICE_TURN_MODELS=true`, or they could not load) ends turns on `silence`, and refuses
+`smart`.
 
 ## Utterances
 
