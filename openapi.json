@@ -2692,6 +2692,9 @@
           "temperature": {
             "$ref": "#/components/schemas/Temperature"
           },
+          "dataCollection": {
+            "$ref": "#/components/schemas/DataCollection"
+          },
           "initialMessages": {
             "type": "array",
             "items": {},
@@ -2822,6 +2825,13 @@
         "minimum": 0,
         "maximum": 2,
         "description": "Sampling temperature, 0 to 2; default the provider's. Lower is more deterministic. 400 for a model that takes none: Claude Opus 4.7 and later, Sonnet 5.5 and Fable models, models that always reason (o-series, GPT-5), and any reasoning model at a thinkingLevel other than off. Compaction summaries keep the runtime's own"
+      },
+      "DataCollection": {
+        "type": "string",
+        "enum": [
+          "deny"
+        ],
+        "description": "\"deny\": the agent's OpenRouter model calls (turns and compaction summaries) go only to hosts that do not collect their data: OpenRouter's provider.data_collection, which skips providers whose data policy says they may train on it. A filter, so OpenRouter still balances load among the rest. Default: none (OpenRouter's default). Other providers ignore it"
       },
       "MountInput": {
         "anyOf": [
@@ -3531,6 +3541,20 @@
                   }
                 ]
               },
+              "dataCollection": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/DataCollection"
+                  },
+                  {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "Its OpenRouter calls' data policy, as set; null: OpenRouter's default"
+                  }
+                ]
+              },
               "forkedFrom": {
                 "$ref": "#/components/schemas/ForkedFrom"
               },
@@ -3589,6 +3613,7 @@
               "runLimits",
               "maxOutputTokens",
               "temperature",
+              "dataCollection",
               "busy",
               "activeRun",
               "queuedRuns",
@@ -4322,6 +4347,17 @@
             "minimum": 0,
             "maximum": 2,
             "description": "Replaces its model's sampling temperature; null removes it (the provider's default). Refused (400) when the agent's model or thinking level, after this change, takes none"
+          },
+          "dataCollection": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "deny",
+              null
+            ],
+            "description": "Replaces its OpenRouter calls' data policy; null removes it (OpenRouter's default)"
           },
           "keyScope": {
             "type": [
@@ -6596,6 +6632,9 @@
           "temperature": {
             "$ref": "#/components/schemas/Temperature"
           },
+          "dataCollection": {
+            "$ref": "#/components/schemas/DataCollection"
+          },
           "fileTools": {
             "type": "boolean",
             "description": "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; the mounts stay open to fs in js_exec, attachments and tool outputs. For applications with file tools of their own"
@@ -6969,6 +7008,9 @@
           },
           "temperature": {
             "$ref": "#/components/schemas/Temperature"
+          },
+          "dataCollection": {
+            "$ref": "#/components/schemas/DataCollection"
           },
           "fileTools": {
             "type": "boolean",
@@ -7456,6 +7498,19 @@
               }
             ]
           },
+          "dataCollection": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DataCollection"
+              },
+              {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            ]
+          },
           "fileTools": {
             "type": [
               "boolean",
@@ -7892,6 +7947,9 @@
           },
           "temperature": {
             "$ref": "#/components/schemas/Temperature"
+          },
+          "dataCollection": {
+            "$ref": "#/components/schemas/DataCollection"
           },
           "builtins": {
             "type": "array",

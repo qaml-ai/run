@@ -124,14 +124,17 @@ export function openRouterHosts(id: string): string[] | undefined {
 }
 
 /**
- * An OpenRouter request of the platform's catalog with its model's hosts (`provider.only`), any `provider` routing it
- * already has kept. Any other request is as it was.
+ * An OpenRouter request of the platform's catalog with its model's hosts (`provider.only`) and, when its agent asks
+ * (`dataCollection: "deny"`), only hosts that do not collect its data (`provider.data_collection`): OpenRouter skips the
+ * providers whose data policy says they may train on it. Both are filters, so load balancing stays on; any other
+ * `provider` routing the request has is kept. Nothing is added by default. Any other request is as it was.
  */
-export function withOpenRouterHosts(model: Model<Api>, payload: unknown): unknown {
-  const only = model.provider === "openrouter" ? openRouterHosts(model.id) : undefined;
-  if (!only || !payload || typeof payload !== "object") return payload;
+export function withOpenRouterHosts(model: Model<Api>, payload: unknown, dataCollection?: "deny" | null): unknown {
+  if (model.provider !== "openrouter" || !payload || typeof payload !== "object") return payload;
+  const only = openRouterHosts(model.id);
+  if (!only && !dataCollection) return payload;
   const request = payload as { provider?: Record<string, unknown> };
-  return { ...request, provider: { only, ...request.provider } };
+  return { ...request, provider: { ...(only ? { only } : {}), ...request.provider, ...(dataCollection ? { data_collection: dataCollection } : {}) } };
 }
 
 /** Pi's model, as this runtime corrects it: a Bedrock base id that has inference profiles is its profile's. */

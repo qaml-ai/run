@@ -93,6 +93,8 @@ export interface AgentConfig {
   maxOutputTokens?: number | null;
   /** The model's sampling temperature (0 to 2), sent only on calls without reasoning (session-config.ts `callSettings`); null or absent: the provider's default. */
   temperature?: number | null;
+  /** "deny": its OpenRouter calls go only to hosts that do not collect their data (`provider.data_collection`); null or absent: OpenRouter's default. */
+  dataCollection?: "deny" | null;
   /** The most one run may take, set by the tenant: model responses and seconds. The runtime's maximums apply over them (client-sessions.ts). */
   runLimits?: RunLimits | null;
   /** Headers the tenant set for every model call of this agent (non-secret, never auth headers). */
