@@ -6,7 +6,8 @@ import type { AgentIdentity } from "./identity.ts";
 import { AUDIO_LIMITS, FILE_LIMITS } from "./limits.ts";
 import { MICROS } from "./pricing.ts";
 import { safeError } from "./metrics.ts";
-import { deferredLive, type LiveTranscription, type LiveTranscriptionProvider } from "./transcription-live.ts";
+import type { LiveOptions, LiveTranscript, LiveTranscription, LiveTranscriptionProvider } from "./transcription-live.ts";
+import { chainedLive } from "./voice-providers/stt.ts";
 
 /**
  * Speech to text: audio in, its transcript out, for `POST /v1/transcriptions` and for audio attached to
@@ -119,8 +120,12 @@ export interface TranscriberOptions {
   key(tenant: string, keyScope: string | undefined, provider: string): Promise<(TranscriptionCredentials & { platform: boolean }) | undefined>;
   /** Micro-USD per minute of audio. */
   price(): number;
-  /** Transcribing as people speak (voice sessions), and its price per minute (micro-USD); without it, only after. */
-  live?: { provider: LiveTranscriptionProvider; price(): number };
+  /**
+   * Transcribing as people speak (voice sessions); without it, only after. Streaming providers by reference
+   * (`deepgram/nova-3`, voice-providers/stt.ts), the chain a session uses when it names none (`order`; empty: sessions
+   * stream only when they name providers), and each reference's price per minute (micro-USD).
+   */
+  live?: { order: string[]; provider(reference: string): LiveTranscriptionProvider; price(reference: string): number };
 }
 
 /** A finished transcription and what it cost, for usage records. */
@@ -132,29 +137,49 @@ export class Transcriber {
 
   get provider() { return this.options.provider.id; }
 
-  /** What `seconds` of audio cost (USD): billed per second, as the provider bills. */
-  cost(seconds: number, live = false) {
-    return Math.ceil(seconds) * (live && this.options.live ? this.options.live.price() : this.options.price()) / 60 / MICROS;
+  /**
+   * What `seconds` of audio cost (USD): billed per second, as the provider bills. Live (`live`, through the chain
+   * `order` or the runtime's): the dearest of the chain's providers, since any of them may serve.
+   */
+  cost(seconds: number, live = false, order?: string[]) {
+    const chain = live ? this.liveOrder(order) : [];
+    const price = chain.length ? Math.max(...chain.map(reference => this.options.live!.price(reference))) : this.options.price();
+    return Math.ceil(seconds) * price / 60 / MICROS;
+  }
+
+  /** The streaming chain for a session that names `asked` (or none: the runtime's); empty when nothing streams. */
+  liveOrder(asked?: string[]): string[] {
+    if (!this.options.live) return [];
+    return asked?.length ? asked : this.options.live.order;
   }
 
   /**
-   * A stream that transcribes a speaker as they speak (`LiveTranscription`), on the tenant's key as `transcribe` finds
-   * it; undefined without a live provider. Its commits reject when no key can stream: the caller transcribes after.
+   * A stream that transcribes a speaker as they speak (`LiveTranscription`) through the chain `order` (or the runtime's),
+   * each provider on the tenant's key for it as `transcribe` finds one; undefined when nothing streams. Its commits
+   * reject when no provider can stream: the caller transcribes after.
    */
-  live(context: { tenant: string; keyScope?: string }, options: TranscriptionOptions): { stream: LiveTranscription; platform: Promise<boolean> } | undefined {
+  live(context: { tenant: string; keyScope?: string }, options: LiveOptions, order?: string[]): { stream: LiveTranscription; platform: Promise<boolean> } | undefined {
     const live = this.options.live;
-    if (!live) return undefined;
-    const key = this.options.key(context.tenant, context.keyScope, this.options.provider.id);
+    const chain = this.liveOrder(order);
+    if (!live || !chain.length) return undefined;
+    const members = chain.map(reference => {
+      const provider = live.provider(reference);
+      return { provider, key: () => this.options.key(context.tenant, context.keyScope, provider.id) };
+    });
+    // Whose key the first serves on: each transcript says for itself which served (`provider`, `platform`).
+    const first = members[0].key();
     return {
-      stream: deferredLive(key.then(found => found ? live.provider.connect(found, options) : undefined)),
-      platform: key.then(found => !!found?.platform, () => false),
+      stream: chainedLive(members, { ...options, log: { tenant: context.tenant } }),
+      platform: first.then(found => !!found?.platform, () => false),
     };
   }
 
-  /** A live transcript's usage record, as `transcribe` makes one. */
-  liveUsage(transcript: Transcript, platform: boolean): UsageRecord {
-    const usd = this.cost(transcript.seconds, true);
-    return { provider: this.options.provider.id, model: transcript.model, usage: { cost: { total: usd } }, platform, kind: "transcription", transcriptions: 1, audioSeconds: transcript.seconds, timestamp: Date.now() };
+  /** A live transcript's usage record, as `transcribe` makes one: priced by the provider and model that served it. */
+  liveUsage(transcript: LiveTranscript, platform: boolean): UsageRecord {
+    const provider = transcript.provider ?? this.liveOrder()[0]?.split("/")[0] ?? this.options.provider.id;
+    const price = this.options.live ? this.options.live.price(`${provider}/${transcript.model}`) : this.options.price();
+    const usd = Math.ceil(transcript.seconds) * price / 60 / MICROS;
+    return { provider, model: transcript.model, usage: { cost: { total: usd } }, platform: transcript.platform ?? platform, kind: "transcription", transcriptions: 1, audioSeconds: transcript.seconds, timestamp: Date.now() };
   }
 
   /**

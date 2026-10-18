@@ -75,7 +75,7 @@ export const CustomProviderInput = z.object({
 
 export const Provider = z.object({
   id: z.string(),
-  kind: z.enum(["model", "search", "fetch"]).openapi({ description: "model: an LLM provider; search: a web search API, whose key the web_search built-in uses; fetch: a page renderer web_fetch uses for JavaScript-only pages" }),
+  kind: z.enum(["model", "search", "fetch", "speech"]).openapi({ description: "model: an LLM provider; search: a web search API, whose key the web_search built-in uses; fetch: a page renderer web_fetch uses for JavaScript-only pages; speech: speech to text or text to speech for voice sessions (deepgram, soniox, assemblyai, elevenlabs, cartesia)" }),
   models: z.number().int(),
   apiKey: z.boolean().openapi({ description: "Whether one API key is enough to use this provider" }),
   requires: z.string().optional().openapi({ description: "What the provider needs instead of an API key" }),
@@ -1281,6 +1281,20 @@ const voiceDiscord = {
 };
 const range = (limits: { default: number; min: number; max: number }, unit: string, what: string) =>
   z.number().int().min(limits.min).max(limits.max).optional().openapi({ description: `${what}, in ${unit}: ${limits.min} to ${limits.max}, default ${limits.default}` });
+const VoiceTranscription = z.strictObject({
+  providers: z.array(z.string()).min(1).max(5).optional().openapi({
+    description: "Streaming speech-to-text providers to try in order, each <provider> or <provider>/<model>: deepgram (nova-3), deepgram/flux (flux-general-en, which detects turns itself; English), soniox (stt-rt-v3), assemblyai (universal-streaming-english), openai (gpt-live-transcribe). Each uses your key for that provider (PUT /v1/providers/<provider>/key), else the platform's; one without a key is skipped, one that fails mid-utterance hands the utterance to the next. Default: the runtime's chain (AGENT_VOICE_STT), else transcription after each utterance",
+    example: ["deepgram/flux", "soniox", "openai"],
+  }),
+  keyterms: z.array(z.string().max(50)).max(100).optional().openapi({ description: "Terms to listen for (names, jargon): Deepgram keyterms, AssemblyAI keyterms_prompt, Soniox context, OpenAI's prompt", example: ["camelRun", "Miguel"] }),
+}).openapi("VoiceTranscription");
+const VoiceSpeechProviders = z.strictObject({
+  providers: z.array(z.string()).min(1).max(5).optional().openapi({
+    description: "Text-to-speech providers to try in order, each <provider> or <provider>/<model>: elevenlabs (eleven_flash_v2_5), cartesia (sonic-3), deepgram (aura-2), openai (gpt-4o-mini-tts). One without a key is skipped; one that fails before its first audio is passed over. Default: the runtime's chain (AGENT_VOICE_TTS), else OpenAI",
+    example: ["elevenlabs", "openai"],
+  }),
+  voices: z.record(z.string(), z.string()).optional().openapi({ description: "The voice for each provider, by provider: an ElevenLabs voice id, a Cartesia voice id (required for cartesia), an Aura voice (aura-2-thalia-en), an OpenAI voice (else `voice`)", example: { elevenlabs: "21m00Tcm4TlvDq8ikWAM", openai: "coral" } }),
+}).openapi("VoiceSpeechProviders");
 export const VoiceSessionInput = z.strictObject({
   provider: z.literal("discord").optional().openapi({ description: "Only discord for now (the default)" }),
   discord: z.strictObject({
@@ -1311,6 +1325,8 @@ export const VoiceSessionInput = z.strictObject({
   })]).optional().openapi({ description: "The bot may speak (POST …/speak): true, or {agentReplies: true} to also speak the agent's replies. Your app joins with self_mute false. Default false" }),
   bargeIn: z.boolean().optional().openapi({ description: "With speak: a person starting to talk stops the bot's speech and what it was going to say. Default true" }),
   voice: z.string().optional().openapi({ description: "With speak: the voice speech is made in (OpenAI's: alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, verse…). Default alloy", example: "coral" }),
+  transcription: VoiceTranscription.optional(),
+  speech: VoiceSpeechProviders.optional(),
 }).openapi("VoiceSessionInput");
 export const VoiceSessionUpdate = z.strictObject({
   discord: z.strictObject({
@@ -1333,6 +1349,7 @@ export const VoiceSession = z.object({
   ignoreUserIds: z.array(z.string()), metadata: z.record(z.string(), z.unknown()), notice: z.string(),
   speak: z.boolean(), bargeIn: z.boolean(), voice: z.string(),
   agentReplies: z.boolean().openapi({ description: "The session speaks deliver.agent's replies (speak: {agentReplies: true})" }),
+  transcription: VoiceTranscription.optional(), speech: VoiceSpeechProviders.optional(),
   speeches: z.number().openapi({ description: "Speeches played (each counted when it ended having made speech)" }), spokenSeconds: z.number().openapi({ description: "Seconds of speech made (billed)" }),
   utterances: z.number(), speechSeconds: z.number().openapi({ description: "Seconds of speech transcribed (billed)" }), costUsd: z.number(),
   createdAt: z.number(), startedAt: z.number().nullable(), lastSpeechAt: z.number().nullable(), endedAt: z.number().nullable(),

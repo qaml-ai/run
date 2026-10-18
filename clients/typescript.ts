@@ -548,7 +548,7 @@ export type CustomProviderType = "openai-completions" | "openai-responses" | "an
 export interface CustomProviderInput { type: CustomProviderType; baseUrl: string; apiKey?: string | null; headers?: Record<string, string> | null; /** anthropic-messages: "bearer" sends the key as Authorization: Bearer, not x-api-key. */ auth?: "x-api-key" | "bearer"; models: CustomModel[] }
 /** A provider as GET /v1/providers lists it; never a key or header value. */
 export interface ProviderSummary {
-  id: string; kind: "model" | "search" | "fetch"; models: number; apiKey: boolean; requires?: string;
+  id: string; kind: "model" | "search" | "fetch" | "speech"; models: number; apiKey: boolean; requires?: string;
   key: { provider: string; source: "tenant" | "admin" | "platform"; last4?: string; setAt?: number } | null;
   custom?: { type: CustomProviderType; baseUrl: string; auth: "x-api-key" | "bearer"; headers?: string[]; models: CustomModel[] };
 }
@@ -1220,6 +1220,17 @@ export interface VoiceSessionInput {
   bargeIn?: boolean;
   /** With speak: the voice speech is made in (OpenAI's: alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, verse…). Default alloy. */
   voice?: string;
+  /**
+   * Speech to text as people speak: streaming providers to try in order (`deepgram`, `deepgram/flux`, `soniox`,
+   * `assemblyai`, `openai`; each on your key for it, else the platform's; one that fails mid-utterance hands it to the
+   * next), and terms to listen for. Default: the runtime's chain.
+   */
+  transcription?: { providers?: string[]; keyterms?: string[] };
+  /**
+   * With speak: text-to-speech providers to try in order (`elevenlabs`, `cartesia`, `deepgram`, `openai`), and the voice
+   * for each (`{ elevenlabs: "<voice id>", cartesia: "<voice id>" }`; OpenAI's is `voice`). Default: the runtime's chain.
+   */
+  speech?: { providers?: string[]; voices?: Record<string, string> };
   /** An Idempotency-Key: the same key answers the same session. */
   idempotencyKey?: string;
 }
@@ -1233,6 +1244,7 @@ export interface VoiceSession {
   subject?: string; bucket?: string; context?: Record<string, unknown>; keyScope?: string; language?: string; prompt?: string;
   silenceMs: number; maxMinutes: number; idleMinutes: number; emptySeconds: number; ignoreUserIds: string[]; metadata: Record<string, unknown>;
   speak: boolean; bargeIn: boolean; voice: string; agentReplies: boolean;
+  transcription?: { providers?: string[]; keyterms?: string[] }; speech?: { providers?: string[]; voices?: Record<string, string> };
   utterances: number; speechSeconds: number;
   /** Speeches played, and seconds of speech made. */
   speeches: number; spokenSeconds: number;

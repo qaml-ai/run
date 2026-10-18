@@ -12,7 +12,11 @@ import { enqueueEvents, webhookEvent, type WebhookEvent } from "./webhooks.ts";
 import type { UsageRecord } from "./client-sessions.ts";
 import { oggOpus, Segmenter, type Cut } from "./voice-audio.ts";
 import { SessionSpeech, SPEECH_QUEUE, speechId, SpokenReply, type Player, type SpeechEnding, type SpeechItem } from "./voice-speech.ts";
-import { DEFAULT_VOICE, SPEECH_LIMITS, type Synthesizer } from "./speech.ts";
+import { DEFAULT_VOICE, SPEECH_LIMITS, type SpeechInput, type Synthesizer } from "./speech.ts";
+import type { Served } from "./voice-providers/tts-chain.ts";
+import { sttReference } from "./voice-providers/stt.ts";
+import { TTS_PROVIDERS, ttsReference } from "./voice-providers/tts.ts";
+import type { LiveTranscript } from "./transcription-live.ts";
 import { bucketInput, DEFAULT_BUCKET } from "./end-user-credits.ts";
 import { TurnClock, WaitingTurns } from "./voice/latency.ts";
 
@@ -99,6 +103,13 @@ export type VoiceOptions = {
   voice: string;
   /** With speak and deliver.agent: the session speaks the agent's reply to each utterance, as it is written. */
   agentReplies: boolean;
+  /**
+   * Speech to text as people speak: the streaming providers to try, in order (`deepgram/flux-general-en`, `soniox`,
+   * …; else the runtime's), and terms to listen for (names, jargon).
+   */
+  transcription?: { providers?: string[]; keyterms?: string[] };
+  /** With speak: the text-to-speech providers to try, in order (else the runtime's), and its voice for each provider. */
+  speech?: { providers?: string[]; voices?: Record<string, string> };
 };
 
 export const VOICE_LIMITS = Object.freeze({
@@ -121,6 +132,9 @@ export const VOICE_LIMITS = Object.freeze({
   metadataBytes: 4_096,
   noticeChars: 500,
   promptChars: 1_000,
+  /** Providers a session's transcription or speech chain names at most, and terms it listens for. */
+  providers: 5,
+  keyterms: 100,
   /** Ended sessions are listed this long, then deleted. */
   retentionDays: 30,
 });
@@ -188,6 +202,38 @@ function ignored(value: unknown) {
   }
   return [...new Set(value as string[])];
 }
+/** A list of providers to try in order, each `<provider>` or `<provider>/<model>` as `reference` reads it. */
+function providersInput(value: unknown, name: string, reference: (given: string) => string) {
+  if (!Array.isArray(value) || !value.length || value.length > VOICE_LIMITS.providers) throw new HttpError(400, `${name} must list 1 to ${VOICE_LIMITS.providers} providers, in the order to try them`);
+  const references = value.map(given => {
+    if (typeof given !== "string") throw new HttpError(400, `${name} must list providers by name, such as deepgram or elevenlabs/eleven_flash_v2_5`);
+    try { return reference(given); } catch (error) { throw new HttpError(400, `${name}: ${(error as Error).message}`); }
+  });
+  return [...new Set(references)];
+}
+function transcriptionInput(value: unknown): VoiceOptions["transcription"] {
+  if (value === undefined) return undefined;
+  const given = object(value, "transcription");
+  only(given, "transcription", ["providers", "keyterms"]);
+  const providers = given.providers === undefined ? undefined : providersInput(given.providers, "transcription.providers", sttReference);
+  if (given.keyterms !== undefined && (!Array.isArray(given.keyterms) || given.keyterms.length > VOICE_LIMITS.keyterms || given.keyterms.some(term => typeof term !== "string" || !term.trim() || term.length > 50))) {
+    throw new HttpError(400, `transcription.keyterms must be at most ${VOICE_LIMITS.keyterms} terms of 1 to 50 characters`);
+  }
+  const keyterms = given.keyterms === undefined ? undefined : [...new Set((given.keyterms as string[]).map(term => term.trim()))];
+  return { ...(providers ? { providers } : {}), ...(keyterms?.length ? { keyterms } : {}) };
+}
+function speechInput(value: unknown): VoiceOptions["speech"] {
+  if (value === undefined) return undefined;
+  const given = object(value, "speech");
+  only(given, "speech", ["providers", "voices"]);
+  const providers = given.providers === undefined ? undefined : providersInput(given.providers, "speech.providers", ttsReference);
+  const voices = given.voices === undefined ? undefined : object(given.voices, "speech.voices");
+  for (const [provider, voice] of Object.entries(voices ?? {})) {
+    if (!(TTS_PROVIDERS as readonly string[]).includes(provider)) throw new HttpError(400, `speech.voices.${provider}: voices are by provider, one of ${TTS_PROVIDERS.join(", ")}`);
+    if (typeof voice !== "string" || !/^[A-Za-z0-9._-]{1,64}$/.test(voice)) throw new HttpError(400, `speech.voices.${provider} must be that provider's voice id or name`);
+  }
+  return { ...(providers ? { providers } : {}), ...(voices && Object.keys(voices).length ? { voices: voices as Record<string, string> } : {}) };
+}
 function metadataInput(value: unknown) {
   if (value === undefined) return {};
   const metadata = object(value, "metadata");
@@ -250,8 +296,8 @@ export interface VoiceSessionsOptions {
   transcriber: Transcriber;
   /** Text to speech, for sessions that speak; without it, no session may. */
   synthesizer?: Synthesizer;
-  /** Whether the tenant has a key to transcribe with (in a key scope): checked before a session starts. */
-  canTranscribe(tenant: string, keyScope: string | undefined): Promise<boolean>;
+  /** Whether the tenant has a key to transcribe with (in a key scope): OpenAI's, or one of the streaming chain's providers. */
+  canTranscribe(tenant: string, keyScope: string | undefined, streaming?: string[]): Promise<boolean>;
   /** Records a transcription's usage, as a model response's is (billing, usage.recorded). */
   record(tenant: string, usage: UsageRecord): void;
   /** Submit a request to an agent wherever it is served (an utterance's prompt). */
@@ -383,6 +429,9 @@ export class VoiceSessions {
     if (!speak && (input.voice !== undefined || input.bargeIn !== undefined)) throw new HttpError(400, "voice and bargeIn are for a session that speaks (speak: true)");
     const voice = input.voice === undefined ? DEFAULT_VOICE : text(input.voice, "voice", VOICE_NAME, "a voice's name, such as alloy, coral or verse");
     const notice = input.notice === undefined ? speak ? SPEAKING_NOTICE : DEFAULT_NOTICE : text(input.notice, "notice", new RegExp(`^[\\s\\S]{1,${VOICE_LIMITS.noticeChars}}$`), `at most ${VOICE_LIMITS.noticeChars} characters`);
+    const transcription = transcriptionInput(input.transcription);
+    if (input.speech !== undefined && !speak) throw new HttpError(400, "speech is for a session that speaks (speak: true)");
+    const speech = speechInput(input.speech);
     return {
       deliver: { ...(agent ? { agent } : {}), webhooks },
       ...(identity?.subject !== undefined ? { subject: identity.subject } : {}), ...(bucket ? { bucket } : {}),
@@ -394,6 +443,7 @@ export class VoiceSessions {
       emptySeconds: integer(input.emptySeconds, "emptySeconds", VOICE_LIMITS.emptySeconds),
       ignoreUserIds: ignored(input.ignoreUserIds), metadata: metadataInput(input.metadata), notice,
       speak, bargeIn: input.bargeIn !== false, voice, agentReplies,
+      ...(transcription ? { transcription } : {}), ...(speech ? { speech } : {}),
     };
   }
 
@@ -402,7 +452,7 @@ export class VoiceSessions {
    * when this node can, else by a peer's scan. Answers the session with the notice the app must post.
    */
   async create(tenant: string, input: Record<string, unknown>) {
-    only(input, "body", ["provider", "discord", "subject", "bucket", "context", "keyScope", "deliver", "language", "prompt", "silenceMs", "maxMinutes", "idleMinutes", "emptySeconds", "ignoreUserIds", "metadata", "notice", "speak", "bargeIn", "voice"]);
+    only(input, "body", ["provider", "discord", "subject", "bucket", "context", "keyScope", "deliver", "language", "prompt", "silenceMs", "maxMinutes", "idleMinutes", "emptySeconds", "ignoreUserIds", "metadata", "notice", "speak", "bargeIn", "voice", "transcription", "speech"]);
     const provider = input.provider ?? "discord";
     if (provider !== "discord") throw new HttpError(400, `provider must be one of: ${VOICE_PROVIDERS.join(", ")}`);
     if (!this.options.transports[provider]) throw new HttpError(404, "Voice sessions are not enabled on this runtime");
@@ -417,8 +467,12 @@ export class VoiceSessions {
     await this.options.admit(tenant);
     const refused = options.subject !== undefined ? await this.options.credit?.refusal(tenant, options.subject, options.bucket ?? DEFAULT_BUCKET) : undefined;
     if (refused) throw new HttpError(402, refused.message, "END_USER_CREDIT", { endUser: options.subject, bucket: options.bucket ?? DEFAULT_BUCKET, reason: refused.reason });
-    if (!await this.options.canTranscribe(tenant, options.keyScope)) {
-      throw new HttpError(400, `Voice sessions transcribe with an OpenAI key: add one under Models & keys (PUT /v1/providers/openai/key)${options.keyScope ? `, or to key scope ${options.keyScope}` : ""}`, "TRANSCRIPTION_UNAVAILABLE");
+    if (options.transcription?.providers && !this.options.transcriber.options.live) throw new HttpError(404, "Streaming transcription is not enabled on this runtime");
+    if (options.speech?.providers && !this.options.synthesizer?.options.chain) throw new HttpError(404, "Speech providers other than OpenAI are not enabled on this runtime");
+    const streaming = this.options.transcriber.liveOrder(options.transcription?.providers);
+    if (!await this.options.canTranscribe(tenant, options.keyScope, streaming)) {
+      const names = [...new Set(["openai", ...streaming.map(reference => reference.split("/")[0])])];
+      throw new HttpError(400, `Voice sessions transcribe with a key for ${names.join(" or ")}: add one under Models & keys (PUT /v1/providers/<provider>/key)${options.keyScope ? `, or to key scope ${options.keyScope}` : ""}`, "TRANSCRIPTION_UNAVAILABLE");
     }
     const id = `vs_${randomBytes(12).toString("hex")}`;
     const now = Date.now();
@@ -677,12 +731,12 @@ export class VoiceSessions {
       segmenter: new Segmenter({
         silenceMs: current.options.silenceMs, cut: cut => this.cut(held, cut),
         // Transcribed as they speak, when this runtime can: each utterance committed as it is cut.
-        ...(this.options.transcriber.options.live ? { live: { audio: (speaker: string, pcm: Buffer) => this.liveAudio(held, speaker, pcm), drop: (speaker: string) => held.live?.get(speaker)?.stream.clear() } } : {}),
+        ...(this.options.transcriber.liveOrder(current.options.transcription?.providers).length ? { live: { audio: (speaker: string, pcm: Buffer) => this.liveAudio(held, speaker, pcm), drop: (speaker: string) => held.live?.get(speaker)?.stream.clear() } } : {}),
         // Barge-in: a person starting to talk stops the bot.
         speech: () => {
           if (held.row.options.bargeIn && held.speech?.speaking) held.speech.stop("barge_in");
           // A reply may follow what they say: the speech provider's connection is made now, not when it is asked.
-          if (held.speech) this.options.synthesizer?.warm();
+          if (held.speech) this.options.synthesizer?.warm(held.row.options.speech?.providers);
         },
       }),
     };
@@ -795,7 +849,7 @@ export class VoiceSessions {
     let live = held.live?.get(speaker);
     if (!live) {
       const { options } = held.row;
-      const opened = this.options.transcriber.live({ tenant: held.tenant, ...(options.keyScope ? { keyScope: options.keyScope } : {}) }, { ...(options.language ? { language: options.language } : {}), ...(options.prompt ? { prompt: options.prompt } : {}) });
+      const opened = this.options.transcriber.live({ tenant: held.tenant, ...(options.keyScope ? { keyScope: options.keyScope } : {}) }, { ...(options.language ? { language: options.language } : {}), ...(options.prompt ? { prompt: options.prompt } : {}), ...(options.transcription?.keyterms ? { keyterms: options.transcription.keyterms } : {}) }, options.transcription?.providers);
       if (!opened) return;
       (held.live ??= new Map()).set(speaker, live = opened);
     }
@@ -891,7 +945,7 @@ export class VoiceSessions {
       const { credit } = this.options;
       try {
         hold = options.subject !== undefined && credit
-          ? await credit.hold(origin.tenant, options.subject, options.bucket ?? DEFAULT_BUCKET, this.options.transcriber.cost(cut.seconds, !!committed), "voice", { session: origin.id })
+          ? await credit.hold(origin.tenant, options.subject, options.bucket ?? DEFAULT_BUCKET, this.options.transcriber.cost(cut.seconds, !!committed, options.transcription?.providers), "voice", { session: origin.id })
           : undefined;
       } catch (error) {
         if ((error as HttpError).code !== "END_USER_CREDIT") throw error;
@@ -978,7 +1032,8 @@ export class VoiceSessions {
     }
   }
 
-  private liveModel(transcript: Transcript) { return transcript.model === this.options.transcriber.options.live?.provider.model; }
+  /** Whether a transcript came from a live stream (which names the provider that served it). */
+  private liveModel(transcript: Transcript) { return (transcript as LiveTranscript).provider !== undefined; }
 
   /** An utterance's prompt to the agent, tried a few times (its node moving, a queue full). */
   private async deliver(origin: Origin, agent: string, request: { id: string; method: string; params: Record<string, unknown> }, seq: number) {
@@ -1127,16 +1182,24 @@ export class VoiceSessions {
       },
       fresh: async () => { await this.options.ownership?.whenFresh(); },
       credentials: () => synthesizer.credentials(held.tenant, options().keyScope),
+      // Through the session's chain (its speech.providers, else the runtime's), when the runtime has one.
+      ...(synthesizer.options.chain ? {
+        speak: (input: SpeechInput, signal: AbortSignal, served: (who: Served) => void) => synthesizer.speak(
+          { tenant: held.tenant, ...(options().keyScope ? { keyScope: options().keyScope } : {}) }, options().speech ?? {},
+          { ...input, ...(options().language ? { language: options().language } : {}) }, signal, served),
+        estimate: (text: string) => synthesizer.estimate(text, options().speech?.providers),
+        cost: (who: Served, made: { characters: number; seconds: number }) => synthesizer.costOf(`${who.provider}/${who.model}`, made),
+      } : {}),
       started: (item: SpeechItem, latencyMs: number) => {
         console.log(JSON.stringify({ type: "voice_speech_started", session: held.id, speech: item.id, latencyMs }));
         void write("voice.speech.started", item, { latencyMs });
       },
-      ended: (item: SpeechItem, ending: SpeechEnding, platform: boolean | undefined) => {
+      ended: (item: SpeechItem, ending: SpeechEnding, platform: boolean | undefined, served?: Served) => {
         const { subject, context, keyScope } = options();
         console.log(JSON.stringify({ type: "voice_speech_ended", session: held.id, speech: item.id, reason: ending.reason, ...(ending.by ? { by: ending.by } : {}), seconds: ending.seconds, ...(ending.error ? { error: ending.error } : {}) }));
         if (ending.seconds > 0) {
           this.options.record(held.tenant, {
-            provider: synthesizer.provider, model: synthesizer.model, usage: { cost: { total: ending.costUsd } }, platform: !!platform, kind: "speech",
+            provider: served?.provider ?? synthesizer.provider, model: served?.model ?? synthesizer.model, usage: { cost: { total: ending.costUsd } }, platform: !!platform, kind: "speech",
             speeches: 1, audioSeconds: ending.seconds, timestamp: Date.now(),
             identity: { ...(subject !== undefined ? { subject } : {}), context: { ...context, voiceSession: held.id } }, ...(keyScope ? { keyScope } : {}),
           });

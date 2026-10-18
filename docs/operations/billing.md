@@ -71,8 +71,13 @@ A **prepaid tenant** pays for:
   the same way; an utterance whose live stream failed is transcribed after, at the transcription price.
 - **Speech** a voice session's bot says, on the platform's OpenAI key, $0.015 per minute of speech made (OpenAI's
   estimate for `gpt-4o-mini-tts`; `AGENT_PRICE_SPEECH_USD`), per second. The hour's usage entry counts it apart
-  (`speech`, `speeches`, `speechSeconds`), and `/v1/usage` has a row with `kind: "speech"`. Always on OpenAI, never
-  the Azure deployment. See [Voice calls](../guides/voice-calls.md#speaking).
+  (`speech`, `speeches`, `speechSeconds`), and `/v1/usage` has a row with `kind: "speech"`. On OpenAI (never
+  the Azure deployment) unless a session or `AGENT_VOICE_TTS` names other providers. See [Voice calls](../guides/voice-calls.md#speaking).
+- **Other speech providers** (Deepgram, Soniox, AssemblyAI, ElevenLabs, Cartesia) on the platform's key for each
+  (`platformKeys.<provider>`), at their list prices passed through (`src/voice-providers/prices.ts`,
+  `AGENT_SPEECH_PRICES`): speech to text per second of audio streamed, text to speech per character (OpenAI's per
+  second). Counted with transcription and speech as above; each usage record names the provider and model that served
+  (a chain that fails over bills the one that answered). Holds take the dearest provider of the session's chain.
 - **Images** on the platform's OpenAI key, per token at `gpt-image-2.5-flare`'s list prices: $5 per million text
   tokens in, $8 per million image tokens in and $30 per million image tokens out (`AGENT_PRICE_IMAGE_TEXT_INPUT_USD`,
   `AGENT_PRICE_IMAGE_INPUT_USD`, `AGENT_PRICE_IMAGE_OUTPUT_USD`), as OpenAI reports them. The hour's usage entry counts
