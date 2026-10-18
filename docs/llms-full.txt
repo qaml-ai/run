@@ -2789,6 +2789,26 @@ Nothing is kept: the audio goes to the provider and the transcript comes back to
 bills) again; it takes no `Idempotency-Key`. API tokens and OAuth tokens may transcribe; browser tokens may not.
 Runs-per-minute limits count each transcription as a run.
 
+## Speech on its own
+
+`POST /v1/speech` turns text into speech in the voice a [voice session](https://run.camelai.com/docs/guides/voice-calls.md#speaking) would speak it
+in, and streams the audio back as it is made. Use it to preview what a bot sounds like:
+
+```sh
+curl -sS https://run.camelai.com/v1/speech -H "Authorization: Bearer $CAMELRUN_API_KEY" -H "Content-Type: application/json" \
+  -d '{"text": "Hi, I am your bot.", "voice": "coral", "format": "wav"}' -o hello.wav
+```
+
+`format` is `pcm` (the default: raw 16-bit little-endian mono at 24 kHz, as a session plays it) or `wav` (the same
+in a WAV container, which an `<audio>` element plays as it downloads). `speech` (`{providers, voices}`) and `language` choose providers and voices exactly as a voice session's [speech providers](https://run.camelai.com/docs/guides/voice-calls.md#speech-providers) do; `voice`, `instructions`, `keyScope`, and
+`subject`, `context`, `actor` and `bucket` mean what they do for a session's speech and for a transcription. The text
+is at most 4,000 characters. By default speech is made with OpenAI's `gpt-4o-mini-tts` (`X-Speech-Model` names whichever provider served) on the OpenAI
+key a session's speech would use: without one it is a 400 (`SPEECH_UNAVAILABLE`), and text OpenAI refuses is a 400 too.
+
+It is billed as a session's speech is: `kind: "speech"` usage per second made, against an end user's credit
+when you name a `subject` (held before it is made). A caller that hangs up stops it; what was made is billed.
+Nothing is kept: neither the text nor the audio.
+
 ## Formats and limits
 
 | | |
@@ -2831,9 +2851,9 @@ for training). See [Account data](https://run.camelai.com/docs/operations/privac
 - **Audio to the model itself.** Every model reads the transcript today; models that hear audio natively may be
   given the sound later, beside it.
 - **Timestamps or speaker labels.** Transcripts are text only, from the one model.
-- **Live voice.** Transcription of streaming audio as it is spoken (OpenAI's realtime transcription sessions),
-  and speech out (text to speech), are not offered yet. Discord voice calls are: camelRun listens in a call for your
-  bot and sends each person's utterances, transcribed, to your webhooks or an agent. See [Voice calls](https://run.camelai.com/docs/guides/voice-calls.md).
+- **Live voice outside calls.** Transcription of streaming audio as it is spoken is offered in Discord voice calls:
+  camelRun listens in a call for your bot and sends each person's utterances, transcribed, to your webhooks or an
+  agent. See [Voice calls](https://run.camelai.com/docs/guides/voice-calls.md). Speech out is `POST /v1/speech` (above) or a session's `speak`.
 - **Audio in `initialMessages`.** Transcribe it first with `POST /v1/transcriptions` and import the text.
 
 ---

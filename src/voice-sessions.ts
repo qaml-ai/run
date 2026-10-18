@@ -222,6 +222,8 @@ function transcriptionInput(value: unknown): VoiceOptions["transcription"] {
   const keyterms = given.keyterms === undefined ? undefined : [...new Set((given.keyterms as string[]).map(term => term.trim()))];
   return { ...(providers ? { providers } : {}), ...(keyterms?.length ? { keyterms } : {}) };
 }
+/** A session's `speech` (providers in order, their voices), as given; POST /v1/speech takes the same. */
+export function speechChoiceInput(value: unknown) { return speechInput(value); }
 function speechInput(value: unknown): VoiceOptions["speech"] {
   if (value === undefined) return undefined;
   const given = object(value, "speech");

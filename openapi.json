@@ -5206,6 +5206,98 @@
           }
         }
       },
+      "SpeechInput": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000,
+            "description": "What to say: at most 4,000 characters"
+          },
+          "voice": {
+            "type": "string",
+            "description": "The voice: alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer or verse. Default alloy",
+            "example": "coral"
+          },
+          "instructions": {
+            "type": "string",
+            "maxLength": 1000,
+            "description": "How to say it (tone, pace, accent): at most 1,000 characters"
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "pcm",
+              "wav"
+            ],
+            "description": "pcm (default): raw 16-bit little-endian mono at 24 kHz, as a voice session plays it. wav: the same in a streamed WAV container, which an <audio> element plays"
+          },
+          "language": {
+            "type": "string",
+            "description": "The language it is in, for providers that take it (ISO 639-1)"
+          },
+          "speech": {
+            "$ref": "#/components/schemas/VoiceSpeechProviders",
+            "description": "Providers to try in order, and their voices, as a voice session's speech: the same voice the session would speak in"
+          },
+          "keyScope": {
+            "type": "string",
+            "description": "A key scope whose OpenAI key is used first, before the tenant's own"
+          },
+          "subject": {
+            "type": "string",
+            "description": "Who it is for (a user id in your app): usage.recorded's subject"
+          },
+          "context": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Your claims (org, workspace…), carried as usage.recorded's context; at most 4 KB"
+          },
+          "actor": {
+            "type": "string",
+            "description": "Who asked (a user id in your app): usage.recorded's actor"
+          },
+          "bucket": {
+            "type": "string",
+            "description": "With end-user credits on (/v1/end-user-settings): the subject's bucket this spends from. Default \"default\""
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "VoiceSpeechProviders": {
+        "type": "object",
+        "properties": {
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "maxItems": 5,
+            "description": "Text-to-speech providers to try in order, each <provider> or <provider>/<model>: elevenlabs (eleven_flash_v2_5), cartesia (sonic-3), deepgram (aura-2), openai (gpt-4o-mini-tts). One without a key is skipped; one that fails before its first audio is passed over. Default: the runtime's chain (AGENT_VOICE_TTS), else OpenAI",
+            "example": [
+              "elevenlabs",
+              "openai"
+            ]
+          },
+          "voices": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The voice for each provider, by provider: an ElevenLabs voice id, a Cartesia voice id (required for cartesia), an Aura voice (aura-2-thalia-en), an OpenAI voice (else `voice`)",
+            "example": {
+              "elevenlabs": "21m00Tcm4TlvDq8ikWAM",
+              "openai": "coral"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
       "Images": {
         "type": "object",
         "properties": {
@@ -8835,36 +8927,6 @@
               "camelRun",
               "Miguel"
             ]
-          }
-        },
-        "additionalProperties": false
-      },
-      "VoiceSpeechProviders": {
-        "type": "object",
-        "properties": {
-          "providers": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "minItems": 1,
-            "maxItems": 5,
-            "description": "Text-to-speech providers to try in order, each <provider> or <provider>/<model>: elevenlabs (eleven_flash_v2_5), cartesia (sonic-3), deepgram (aura-2), openai (gpt-4o-mini-tts). One without a key is skipped; one that fails before its first audio is passed over. Default: the runtime's chain (AGENT_VOICE_TTS), else OpenAI",
-            "example": [
-              "elevenlabs",
-              "openai"
-            ]
-          },
-          "voices": {
-            "type": "object",
-            "additionalProperties": {
-              "type": "string"
-            },
-            "description": "The voice for each provider, by provider: an ElevenLabs voice id, a Cartesia voice id (required for cartesia), an Aura voice (aura-2-thalia-en), an OpenAI voice (else `voice`)",
-            "example": {
-              "elevenlabs": "21m00Tcm4TlvDq8ikWAM",
-              "openai": "coral"
-            }
           }
         },
         "additionalProperties": false
@@ -13364,6 +13426,61 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Transcription"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/speech": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpeechInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The speech, streamed as it is made: audio/pcm (24 kHz mono 16-bit) or audio/wav. X-Speech-Model names who made it",
+            "content": {
+              "audio/pcm": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/wav": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
                 }
               }
             }
