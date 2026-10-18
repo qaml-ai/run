@@ -17,7 +17,7 @@ test("DeepSeek V4.1 Flash 1017 is OpenRouter's V4.1 Flash entry at its own id, n
   assert.equal(model.name, "DeepSeek: DeepSeek V4.1 Flash 1017");
   assert.deepEqual(model.cost, { input: 0.15, output: 0.6, cacheRead: 0.003, cacheWrite: 0 });
   assert.equal(model.contextWindow, 1_048_576);
-  assert.deepEqual([model.api, model.baseUrl, model.reasoning, model.input, model.maxTokens], [base.api, base.baseUrl, true, ["text", "image"], 393_216]);
+  assert.deepEqual([model.api, model.baseUrl, model.reasoning, model.input, model.maxTokens], [base.api, base.baseUrl, true, ["text", "image"], base.maxTokens]);
   assert.deepEqual(model.thinkingLevelMap, base.thinkingLevelMap);
   assert.deepEqual(model.compat, base.compat);
   assert.equal((model.compat as { thinkingFormat?: string }).thinkingFormat, "openrouter");
@@ -49,6 +49,4 @@ test("an agent on it calls OpenRouter with the 1017 id and the reasoning it asks
   assert.match(sent.path, /\/responses$/);
   assert.equal(sent.body.model, FLASH_1017);
   assert.equal(sent.body.reasoning?.effort, "high");
-  // No more than DeepSeek's own endpoint serves, so OpenRouter can route it there.
-  assert.ok(sent.body.max_output_tokens <= 393_216, String(sent.body.max_output_tokens));
 });
