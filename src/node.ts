@@ -99,6 +99,7 @@ import { inlineMedia, type MediaFactory } from "./voice/media.ts";
 import { browserVoice, type BrowserTransport } from "./voice-browser.ts";
 import { WebSocket, WebSocketServer } from "ws";
 import type { Duplex } from "node:stream";
+import { hostClient, startTurnModels, type TurnModels, type TurnModelsHost } from "./voice/turns/inference.ts";
 import { buggify } from "./buggify.ts";
 import { sometimes } from "./assert.ts";
 
@@ -151,11 +152,26 @@ export type NodeDeps = {
   voiceEndpoints?: RegExp;
   /** Where voice sessions' media runs, when a test chooses (inline on the node's thread, or a media host of its own). */
   voiceMedia?: (transport: VoiceTransport) => MediaFactory;
+  /** Turn-taking's models for voice sessions: the node's own with AGENT_VOICE=true (src/voice/turns), unless given. */
+  voiceTurnModels?: TurnModels;
 };
 type RuntimeSecrets = Awaited<ReturnType<typeof runtimeSecrets>>;
 type ManagedDiscordSecrets = NonNullable<Awaited<ReturnType<typeof managedDiscordSecrets>>>;
 
 /** Derives client session tokens. It must stay stable, or re-provisioning returns tokens that no longer verify. */
+/** The node's turn-taking models, loaded; undefined (and logged) when they cannot be: sessions then end turns on silence. */
+async function startNodeTurnModels(eotWorkers: number | undefined): Promise<TurnModelsHost | undefined> {
+  const host = startTurnModels({ ...(eotWorkers ? { eotWorkers } : {}), onExit: code => console.error(JSON.stringify({ type: "voice_turn_models_exited", exitCode: code })) });
+  try {
+    await host.ready;
+    return host;
+  } catch (error) {
+    console.error(JSON.stringify({ type: "voice_turn_models_failed", error: safeError(error) }));
+    await host.close().catch(() => {});
+    return undefined;
+  }
+}
+
 function sessionSecretOf(secrets: RuntimeSecrets) {
   const secret = secrets.sessionSecret;
   if (!secret || secret.length < 32) throw new Error("Set AGENT_SESSION_SECRET (or AGENT_SESSION_SECRET_ARN) to at least 32 random characters");
@@ -892,11 +908,16 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   });
   // Voice calls held for tenants' bots, one node each (src/voice-sessions.ts), when voice is on. Discord's voice library
   // is loaded only then: it brings a native module (DAVE's).
+  // Turn-taking's models, in worker threads; a node that cannot load them ends turns on silence.
+  const turnHost = !deps.voiceTurnModels && config.voice.enabled && config.voice.turnModels ? await startNodeTurnModels(config.voice.turnWorkers) : undefined;
+  const turnModels = deps.voiceTurnModels ?? (turnHost && hostClient(turnHost));
   // Each session's audio (its connection, DAVE, Opus, cutting utterances, playing speech) runs in a media worker unless
   // AGENT_VOICE_ISOLATION=inline: a crash there ends that session's audio alone, which restarts (src/voice/media-host.ts).
   const voiceHost = !deps.voiceTransports && config.voice.enabled && config.voice.isolation === "worker" ? new MediaHost({
     transport: { module: new URL("./voice-discord.ts", import.meta.url).href, export: "discordVoice" }, speaks: true,
     sessionsPerWorker: config.voice.sessionsPerWorker, maxWorkers: config.voice.workers, maxMb: config.voice.workerMaxMb,
+    // Each media worker reaches the node's turn models over a port of its own.
+    ...(turnHost ? { turnModels: turnHost } : {}),
   }) : undefined;
   // Calls from a web page (provider browser, src/voice-browser.ts): their sockets come to whichever node holds the session.
   const browserTransport = deps.voiceTransports ? deps.voiceTransports.browser : config.voice.enabled ? browserVoice() : undefined;
@@ -925,8 +946,9 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     // A voice.utterance goes out at once: a bot that answers aloud waits on it (the outbox's scan is every 5 s).
     kickWebhooks: () => webhooks.kick(),
     // A browser call's socket is on this thread, so its media is too; Discord's runs in media workers.
-    media: (transport, provider) => provider === "browser" ? inlineMedia(transport) : deps.voiceMedia ? deps.voiceMedia(transport) : voiceHost ? voiceHost.factory() : inlineMedia(transport),
+    media: (transport, provider) => provider === "browser" ? inlineMedia(transport, turnModels) : deps.voiceMedia ? deps.voiceMedia(transport) : voiceHost ? voiceHost.factory() : inlineMedia(transport, turnModels),
     ...(browserTransport ? { browser: { secret: sessionSecret!, url: (id: string) => `${(browserUrl || links.publicUrl).replace(/^http/, "ws")}/v1/voice/sessions/${id}/socket` } } : {}),
+    ...(turnModels ? { turnModels } : {}),
   });
   // An agent loaded on another node: this node's idle watchers of it end, and reconnect to that node.
   // A tenant's webhook endpoints changed on some node: read them again at its next run.
@@ -1527,6 +1549,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     channels.stop();
     await voice?.stop();
     await voiceHost?.close();
+    await turnHost?.close();
     await managedDiscord?.stop();
     webhooks.stop();
     accountDeletions.stop();

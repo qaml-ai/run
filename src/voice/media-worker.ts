@@ -4,6 +4,7 @@ import type { Playback } from "../voice-speech.ts";
 import { safeError } from "../metrics.ts";
 import { MediaSession } from "./media.ts";
 import { MEDIA_PROTOCOL, own, wireCut, type FromMedia, type MediaWorkerInit, type ToMedia } from "./protocol.ts";
+import { clientFrom, TurnModelsUnavailable, type TurnModels } from "./turns/inference.ts";
 
 /**
  * A media worker (src/voice/media-host.ts starts it): the media of one session, or a few, off the node's control
@@ -34,6 +35,24 @@ class Pushed implements AsyncIterable<Uint8Array> {
   }
 }
 
+/**
+ * The node's turn models, over this worker's port to them: shared by its sessions. When the port closes (the models
+ * restarted), calls fail at once (each session's turn-taking falls back as it does when the models are busy) and the
+ * worker asks the host for a fresh port.
+ */
+let modelsClient = init.models ? clientFrom(init.models) : undefined;
+let asked = false;
+const models: TurnModels | undefined = init.models ? {
+  vad: (input, state) => current().vad(input, state),
+  endOfTurn: audio => current().endOfTurn(audio),
+  close() { modelsClient?.close(); },
+} : undefined;
+function current() {
+  if (modelsClient && !modelsClient.closed) return modelsClient;
+  if (!asked) { asked = true; post({ t: "models_lost" }); }
+  return { vad: () => Promise.reject(new TurnModelsUnavailable("The turn models are restarting")), endOfTurn: () => Promise.reject(new TurnModelsUnavailable("The turn models are restarting")) } as unknown as TurnModels;
+}
+
 type Held = { media: MediaSession; playing: Map<number, { pcm: Pushed; playback: Playback }>; others?: string };
 const sessions = new Map<string, Held>();
 
@@ -46,7 +65,7 @@ async function start() {
   } catch (error) { post({ t: "refused", error: `transport did not load: ${safeError(error)}` }); return; }
   port.on("message", (message: ToMedia) => {
     try { handle(transport, message); }
-    catch (error) { post({ t: "diagnostic", session: message.session, event: "audio_failed", fields: { error: safeError(error), message: message.t } }); }
+    catch (error) { post({ t: "diagnostic", session: message.session ?? "", event: "audio_failed", fields: { error: safeError(error), message: message.t } }); }
   });
   const tick = () => {
     const memory = process.memoryUsage();
@@ -63,6 +82,7 @@ async function start() {
 }
 
 function handle(transport: VoiceTransport, message: ToMedia) {
+  if (message.t === "models") { modelsClient = clientFrom(message.port); asked = false; return; }
   const { session } = message;
   if (message.t === "open") {
     if (sessions.has(session)) return;
@@ -76,7 +96,8 @@ function handle(transport: VoiceTransport, message: ToMedia) {
       pcm: (speaker, pcm) => { const buffer = own(pcm); post({ t: "pcm", session, speaker, pcm: buffer }, [buffer]); },
       drop: speaker => post({ t: "drop", session, speaker }),
       cut: cut => { const wire = wireCut(cut); post({ t: "cut", session, cut: wire.cut }, wire.transfer); },
-    });
+      turn: event => post({ t: "turn", session, event }),
+    }, models);
     sessions.set(session, { media, playing: new Map() });
     return;
   }

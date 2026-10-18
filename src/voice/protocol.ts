@@ -1,6 +1,8 @@
 import type { VoiceCredentials } from "../voice-sessions.ts";
 import type { Cut } from "../voice-audio.ts";
+import type { MessagePort } from "node:worker_threads";
 import type { MediaOptions } from "./media.ts";
+import type { TurnEvent } from "./turns/turn-taker.ts";
 
 /**
  * Messages between a node's control thread and its media workers (docs/operations/voice-pipeline.md, "Protocol").
@@ -15,7 +17,7 @@ export const MEDIA_PROTOCOL = 1;
 export type TransportSpec = { module: string; export: string; options?: unknown };
 
 /** What a worker is started with (workerData). */
-export type MediaWorkerInit = { protocol: number; transport: TransportSpec; tickMs: number };
+export type MediaWorkerInit = { protocol: number; transport: TransportSpec; tickMs: number; /** A port to the node's turn models (src/voice/turns), transferred. */ models?: MessagePort };
 
 /** A cut, as it crosses: its packets in one buffer, by length. */
 export type WireCut = Omit<Cut, "packets"> & { packets: ArrayBuffer; lengths: number[] };
@@ -31,7 +33,9 @@ export type ToMedia =
   | { t: "stop"; session: string; id: number }
   /** End a barge-in pause (Media.resume). */
   | { t: "resume"; session: string }
-  | { t: "close"; session: string; flush: "handoff" | "end" | "error" };
+  | { t: "close"; session: string; flush: "handoff" | "end" | "error" }
+  /** A fresh port to the node's turn models, for the worker (its last one closed: the models restarted). */
+  | { t: "models"; session?: undefined; port: MessagePort };
 
 /** Media → control. */
 export type FromMedia =
@@ -48,6 +52,10 @@ export type FromMedia =
   | { t: "started"; session: string; id: number }
   | { t: "played"; session: string; id: number; result: "done" | "stopped" | "error"; stats?: Record<string, unknown> }
   | { t: "closed"; session: string }
+  /** Turn-taking's event for a session with smart end of turn. */
+  | { t: "turn"; session: string; event: TurnEvent }
+  /** The worker's port to the turn models closed: it asks for another (`models`). */
+  | { t: "models_lost" }
   /** The worker's heartbeat: its isolate's heap, its other memory (ArrayBuffers, WebAssembly), the sessions it holds. */
   | { t: "tick"; heapMb: number; externalMb: number; sessions: number }
   /** The worker cannot serve (a protocol mismatch, a transport that does not load). */
