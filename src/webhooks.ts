@@ -169,6 +169,8 @@ export class Webhooks {
   private readonly subscribers?: Subscribers;
   private timer?: ReturnType<typeof setInterval>;
   private sending = false;
+  /** A kick came while a send was under way: another follows it. */
+  private again = false;
 
   constructor(options: { db: Db; accounts: Accounts; outbound: Outbound; retryBaseMs?: number; subscribers?: Subscribers }) {
     this.db = options.db;
@@ -301,7 +303,20 @@ export class Webhooks {
     try {
       await this.sendFrom("usage_webhook_outbox", now, row => this.usageReceiver(row.tenant));
       await this.sendFrom("webhook_deliveries", now, row => this.endpointReceiver(row.tenant, row.endpoint));
-    } finally { this.sending = false; }
+    } finally {
+      this.sending = false;
+      if (this.again) { this.again = false; this.kick(); }
+    }
+  }
+
+  /**
+   * Send now, rather than at the next scan: events someone waits on (a voice session's utterance, which a bot answers
+   * aloud), just committed to the outbox. A kick during a send makes another follow it, so what was just enqueued is
+   * not left to the scan.
+   */
+  kick() {
+    if (this.sending) { this.again = true; return; }
+    void this.send().catch(error => console.error(JSON.stringify({ type: "webhook_scan_failed", error: errorText(error) })));
   }
 
   private async sendFrom(table: "usage_webhook_outbox" | "webhook_deliveries", now: number, receiver: (row: any) => Promise<Receiver | undefined>) {

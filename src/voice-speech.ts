@@ -3,6 +3,7 @@ import type { HttpError } from "./http.ts";
 import { safeError } from "./metrics.ts";
 import { SPEECH_RATE, type SpeechCredentials, type Synthesizer } from "./speech.ts";
 import { opusFromPcm } from "./voice-audio.ts";
+import type { TurnClock } from "./voice/latency.ts";
 
 /**
  * A voice session's speech (voice-sessions.ts): what its bot was asked to say, said one at a time on the session's
@@ -17,6 +18,8 @@ export type SpeechItem = {
   id: string; text: string; voice: string; instructions?: string; queuedAt: number;
   /** Part of an agent's reply the session speaks (agentReplies): the agent and its run. */
   reply?: { agent: string; requestId: string };
+  /** The turn it answers (src/voice/latency.ts): its first audio, or how it ended without, ends the turn. */
+  turn?: TurnClock;
 };
 /** How a speech ended: said whole, cut short (`by` whom), or failed. */
 export type SpeechEnding = { reason: "done" | "interrupted" | "error"; by?: StopReason; seconds: number; costUsd: number; error?: string };
@@ -87,7 +90,10 @@ export class SessionSpeech {
   stop(by: StopReason) {
     this.generation++;
     const cleared = this.queue.splice(0);
-    for (const item of cleared) this.effects.ended(item, { reason: "interrupted", by, seconds: 0, costUsd: 0 }, undefined);
+    for (const item of cleared) {
+      item.turn?.end("interrupted");
+      this.effects.ended(item, { reason: "interrupted", by, seconds: 0, costUsd: 0 }, undefined);
+    }
     const current = this.current;
     if (current && !current.stoppedBy) {
       current.stoppedBy = by;
@@ -137,8 +143,11 @@ export class SessionSpeech {
       const player = await this.connected(abort.signal);
       if (current.stoppedBy) return;
       if (!player) throw new Error("No connection to speak on");
-      const pcm = this.synthesizer.stream({ text: item.text, voice: item.voice, ...(item.instructions ? { instructions: item.instructions } : {}) }, credentials, abort.signal);
-      current.playback = player.play(opusFromPcm(pcm, count => { samples += count; }), () => this.effects.started(item, Date.now() - item.queuedAt));
+      const pcm = timed(this.synthesizer.stream({ text: item.text, voice: item.voice, ...(item.instructions ? { instructions: item.instructions } : {}) }, credentials, abort.signal), () => item.turn?.mark("ttsFirstAudio"));
+      current.playback = player.play(opusFromPcm(pcm, count => { samples += count; }), () => {
+        item.turn?.mark("firstPacket").end("spoken");
+        this.effects.started(item, Date.now() - item.queuedAt);
+      });
       if (current.stoppedBy) current.playback.stop();
       result = await current.playback.done;
     } catch (failure) {
@@ -151,6 +160,7 @@ export class SessionSpeech {
         ? { reason: "interrupted", by: current.stoppedBy, seconds, costUsd }
         : result === "done" && !error ? { reason: "done", seconds, costUsd } : { reason: "error", seconds, costUsd, ...(error ? { error } : {}) };
       if (this.current === current) this.current = undefined;
+      item.turn?.end(ending.reason === "done" ? "no_reply" : ending.reason);
       this.effects.ended(item, ending, platform);
     }
   }
@@ -163,6 +173,15 @@ export class SessionSpeech {
       if (player || signal.aborted || Date.now() >= deadline) return player;
       await new Promise(resolve => setTimeout(resolve, 100));
     }
+  }
+}
+
+/** `chunks` as they come, `first` called as the first arrives. */
+async function* timed(chunks: AsyncIterable<Uint8Array>, first: () => void): AsyncGenerator<Uint8Array> {
+  let seen = false;
+  for await (const chunk of chunks) {
+    if (!seen && chunk.byteLength) { seen = true; first(); }
+    yield chunk;
   }
 }
 

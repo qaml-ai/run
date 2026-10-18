@@ -14,6 +14,7 @@ import { oggOpus, Segmenter, type Cut } from "./voice-audio.ts";
 import { SessionSpeech, SPEECH_QUEUE, speechId, SpokenReply, type Player, type SpeechEnding, type SpeechItem } from "./voice-speech.ts";
 import { DEFAULT_VOICE, SPEECH_LIMITS, type Synthesizer } from "./speech.ts";
 import { bucketInput, DEFAULT_BUCKET } from "./end-user-credits.ts";
+import { TurnClock, WaitingTurns } from "./voice/latency.ts";
 
 /**
  * Voice sessions: calls camelRun holds for a tenant's bot. Joining a voice channel is the one step that needs the bot's
@@ -268,6 +269,8 @@ export interface VoiceSessionsOptions {
   reconnectGraceMs?: number;
   /** What a voice server's host must match: Discord's (*.discord.media) unless a test serves its own. */
   endpoints?: RegExp;
+  /** Send the webhook outbox now (Webhooks.kick): a voice event is waited on, by a bot that answers aloud. */
+  kickWebhooks?(): void;
 }
 
 /** A session this node holds: its claim, its connection, and what its limits are measured from. */
@@ -311,6 +314,8 @@ export class VoiceSessions {
   private readonly speakers = new Map<string, Promise<void>>();
   private transcribing = 0;
   private readonly slots: (() => void)[] = [];
+  /** Each speaking session's latest turn, waiting for the app to speak its reply (src/voice/latency.ts). */
+  private readonly waitingTurns = new WaitingTurns();
 
   constructor(options: VoiceSessionsOptions) {
     this.options = options;
@@ -506,7 +511,8 @@ export class VoiceSessions {
     const held = this.held.get(id);
     if (!held?.speech) throw new HttpError(503, "This voice session is moving between nodes; retry");
     if (held.speech.waiting >= SPEECH_QUEUE.max && !input.interrupt) throw new HttpError(429, `This voice session has ${SPEECH_QUEUE.max} speeches waiting; interrupt or wait`, "VOICE_SPEECH_QUEUE_FULL");
-    const item: SpeechItem = { id: speechId(), text: textGiven, voice: voice ?? row.options.voice, ...(instructions ? { instructions } : {}), queuedAt: Date.now() };
+    const turn = this.waitingTurns.take(id)?.via("speak").mark("firstPiece");
+    const item: SpeechItem = { id: speechId(), text: textGiven, voice: voice ?? row.options.voice, ...(instructions ? { instructions } : {}), queuedAt: Date.now(), ...(turn ? { turn } : {}) };
     const position = held.speech.say(item, input.interrupt === true);
     console.log(JSON.stringify({ type: "voice_speech_queued", session: id, speech: item.id, chars: item.text.length, position, node: this.options.node }));
     return { speechId: item.id, session: id, state: "queued" as const, position, voice: item.voice, characters: item.text.length };
@@ -552,7 +558,8 @@ export class VoiceSessions {
     if (replies.size > 100) replies.delete(replies.values().next().value!);
     const speech = held.speech;
     console.log(JSON.stringify({ type: "voice_reply_followed", session: held.id, agent: run.agent, request: run.requestId, node: this.options.node }));
-    const job = this.sayAsWritten(held, speech, run, target, signal => this.options.followStreaming!(run.agent, tenant, run.requestId, signal))
+    const turn = this.waitingTurns.take(held.id)?.via("prompt_speak");
+    const job = this.sayAsWritten(held, speech, run, target, signal => this.options.followStreaming!(run.agent, tenant, run.requestId, signal), undefined, turn)
       .catch(error => console.error(JSON.stringify({ type: "voice_reply_stream_failed", session: held.id, request: run.requestId, status: (error as HttpError).status, error: safeError(error) })));
     this.pending.add(job);
     void job.finally(() => this.pending.delete(job));
@@ -747,6 +754,7 @@ export class VoiceSessions {
     for (const live of held.live?.values() ?? []) { clearTimeout(live.idle); live.stream.close(true); }
     held.live?.clear();
     held.speech?.close(cut);
+    this.waitingTurns.forget(held.id);
     console.log(JSON.stringify({ type: "voice_session_released", session: held.id, node: this.options.node, epoch: held.claim.epoch, release }));
     held.connection?.close();
     held.connection = undefined;
@@ -815,7 +823,9 @@ export class VoiceSessions {
       // A broken stream is replaced at the speaker's next utterance.
       if (live.stream.closed) { clearTimeout(live.idle); held.live!.delete(cut.speaker); }
     }
-    const job = (this.speakers.get(key) ?? Promise.resolve()).then(() => this.utterance(origin, cut, committed)).catch(error =>
+    // A session that speaks times the turn, from the end of speech to its reply's first audio.
+    const turn = held.speech ? new TurnClock(cut.endedAt, { session: held.id, tenant: held.tenant, ...(this.options.synthesizer ? { ttsModel: this.options.synthesizer.model } : {}) }).mark("turnCommit") : undefined;
+    const job = (this.speakers.get(key) ?? Promise.resolve()).then(() => this.utterance(origin, cut, committed, turn)).catch(error =>
       console.error(JSON.stringify({ type: "voice_utterance_failed", session: held.id, error: safeError(error) })));
     this.speakers.set(key, job);
     this.pending.add(job);
@@ -852,7 +862,15 @@ export class VoiceSessions {
    * fresh lease, then the provider; its usage recorded as the session's subject's; its transcript counted and sent
    * (the webhook event in the same transaction as the count, the agent's prompt after).
    */
-  private async utterance(origin: Origin, cut: Cut, committed?: Committed) {
+  private async utterance(origin: Origin, cut: Cut, committed?: Committed, turn?: TurnClock) {
+    try { await this.transcribeAndDeliver(origin, cut, committed, turn); }
+    finally {
+      // A turn nothing took on (no transcript, a session gone, nothing that replies) ends here.
+      if (turn && !turn.ended && !turn.path && !this.waitingTurns.holds(turn)) turn.end(turn.marks.transcript === undefined ? "error" : "no_reply");
+    }
+  }
+
+  private async transcribeAndDeliver(origin: Origin, cut: Cut, committed?: Committed, turn?: TurnClock) {
     const free = await this.slot(VOICE_LIMITS.queueMs);
     if (!free) {
       console.error(JSON.stringify({ type: "voice_utterance_dropped", session: origin.id, reason: "queue", seconds: cut.seconds }));
@@ -901,6 +919,11 @@ export class VoiceSessions {
         console.error(JSON.stringify({ type: "voice_credit_settle_failed", session: origin.id, error: safeError(error) })));
     } finally { free(); }
     const { transcript, usage } = done;
+    if (turn) {
+      turn.mark("transcript");
+      Object.assign(turn.info, { live: this.liveModel(transcript), sttModel: transcript.model });
+      if (!transcript.text) turn.end("empty");
+    }
     const identity = { ...(options.subject !== undefined ? { subject: options.subject } : {}), context: { ...options.context, voiceSession: origin.id } };
     this.options.record(origin.tenant, { ...usage, identity, ...(options.keyScope ? { keyScope: options.keyScope } : {}) });
     const usd = usage.usage.cost.total as number;
@@ -918,24 +941,30 @@ export class VoiceSessions {
       }
       return current;
     });
+    // The webhook goes now, not at the outbox's next scan: an app answering aloud waits on it.
+    if (row && transcript.text && row.options.deliver.webhooks) this.options.kickWebhooks?.();
+    if (turn && row) turn.info.seq = row.utterances;
     console.log(JSON.stringify({ type: "voice_utterance", session: origin.id, seq: row?.utterances, seconds: cut.seconds, billedSeconds: transcript.seconds, ended: cut.ended, empty: !transcript.text, ms: Date.now() - started, live: this.liveModel(transcript), speechEndToTextMs: clock().now() - cut.endedAt }));
     if (!row) return;
     const local = this.held.get(origin.id);
     if (local) local.row = { ...local.row, last_speech_at: row.last_speech_at, utterances: row.utterances };
     const agent = row.options.deliver.agent;
-    if (!agent || !transcript.text) return;
+    if (!transcript.text) return;
+    // A reply the session does not speak itself is the app's (POST …/speak) or a prompt's (speak): the turn waits for it.
+    if (turn && !(agent && row.options.agentReplies && this.options.submitStreaming) && this.held.get(origin.id)?.claim === origin.claim) this.waitingTurns.wait(origin.id, turn);
+    if (!agent) return;
     const request = {
       id: `voice_${origin.id.slice(3)}_${row.utterances}`, method: "prompt",
       params: { text: transcript.text, from: { id: cut.speaker }, metadata: { voiceSession: origin.id, utterance: String(row.utterances) }, allowDisconnected: true },
     };
     // The agent's reply is spoken as it is written: delivered and spoken apart from this speaker's next utterance.
     if (row.options.agentReplies && this.options.submitStreaming) {
-      const job = this.speakReply(origin, agent, request, row.utterances).catch(error => console.error(JSON.stringify({ type: "voice_reply_failed", session: origin.id, error: safeError(error) })));
+      const job = this.speakReply(origin, agent, request, row.utterances, turn?.via("agent_reply")).catch(error => console.error(JSON.stringify({ type: "voice_reply_failed", session: origin.id, error: safeError(error) })));
       this.pending.add(job);
       void job.finally(() => this.pending.delete(job));
       return;
     }
-    await this.deliver(origin, agent, request, row.utterances);
+    if (await this.deliver(origin, agent, request, row.utterances)) turn?.mark("delivered");
   }
 
   /** An utterance's live transcript and its usage, or undefined when its stream failed (it is then transcribed after). */
@@ -954,13 +983,13 @@ export class VoiceSessions {
   /** An utterance's prompt to the agent, tried a few times (its node moving, a queue full). */
   private async deliver(origin: Origin, agent: string, request: { id: string; method: string; params: Record<string, unknown> }, seq: number) {
     for (let attempt = 1; ; attempt++) {
-      try { await this.options.submit(agent, origin.tenant, request); return; }
+      try { await this.options.submit(agent, origin.tenant, request); return true; }
       catch (error) {
         const status = (error as HttpError).status;
         // A deleted agent takes nothing more; anything else (its node moving, a queue full) may take it soon.
         if (status === 404 || status === 410 || attempt >= VOICE_LIMITS.submitAttempts) {
           console.error(JSON.stringify({ type: "voice_delivery_failed", session: origin.id, seq, status, error: safeError(error) }));
-          return;
+          return false;
         }
         await new Promise(resolve => setTimeout(resolve, 500 * 2 ** attempt));
       }
@@ -973,15 +1002,16 @@ export class VoiceSessions {
    * Speaking stops adding to the queue once the queue is stopped (barge-in, interrupt, DELETE) or the session moves.
    * If the reply cannot be streamed (the agent's node is moving), the prompt is delivered as usual, and not spoken.
    */
-  private async speakReply(origin: Origin, agent: string, request: { id: string; method: string; params: Record<string, unknown> }, seq: number) {
+  private async speakReply(origin: Origin, agent: string, request: { id: string; method: string; params: Record<string, unknown> }, seq: number, turn?: TurnClock) {
     const held = this.held.get(origin.id);
     const speech = held?.claim === origin.claim ? held.speech : undefined;
-    if (!held || !speech) { await this.deliver(origin, agent, request, seq); return; }
+    if (!held || !speech) { turn?.end("error"); await this.deliver(origin, agent, request, seq); return; }
     let streamed = false;
     try {
-      await this.sayAsWritten(held, speech, { agent, requestId: request.id }, {}, signal => this.options.submitStreaming!(agent, origin.tenant, request, signal), () => { streamed = true; });
+      await this.sayAsWritten(held, speech, { agent, requestId: request.id }, {}, signal => this.options.submitStreaming!(agent, origin.tenant, request, signal), () => { streamed = true; }, turn);
     } catch (error) {
       console.error(JSON.stringify({ type: "voice_reply_stream_failed", session: origin.id, status: (error as HttpError).status, error: safeError(error) }));
+      turn?.end("error");
       // The prompt may not have reached the agent: deliver it as usual (the same id, so at most once).
       if (!streamed) await this.deliver(origin, agent, request, seq);
     }
@@ -993,24 +1023,30 @@ export class VoiceSessions {
    * the session moves. With `interrupt`, its first sentence stops what was being said. Throws what the stream throws.
    */
   private async sayAsWritten(held: Held, speech: SessionSpeech, reply: { agent: string; requestId: string }, how: { voice?: string; interrupt?: boolean },
-    texts: (signal: AbortSignal) => AsyncIterable<string>, heard?: () => void) {
-    let generation = speech.generation, interrupt = how.interrupt === true;
+    texts: (signal: AbortSignal) => AsyncIterable<string>, heard?: () => void, turn?: TurnClock) {
+    let generation = speech.generation, interrupt = how.interrupt === true, failed = false;
     const abort = new AbortController();
     const spoken = new SpokenReply(text => {
       if (speech.generation !== generation || this.held.get(held.id) !== held) { abort.abort(); return; }
-      speech.say({ id: speechId(), text, voice: how.voice ?? held.row.options.voice, queuedAt: Date.now(), reply }, interrupt);
+      // Every piece carries the turn: the first that plays (or the first that cannot) ends it.
+      turn?.mark("firstPiece");
+      speech.say({ id: speechId(), text, voice: how.voice ?? held.row.options.voice, queuedAt: Date.now(), reply, ...(turn ? { turn } : {}) }, interrupt);
       // Its own interruption bumped the generation: the sentences after it follow it.
       if (interrupt) { interrupt = false; generation = speech.generation; }
     });
     try {
       for await (const text of texts(abort.signal)) {
         heard?.();
+        if (text) turn?.mark("llmFirstToken");
         spoken.push(text);
         if (abort.signal.aborted) break;
       }
       if (!abort.signal.aborted) spoken.end();
     } catch (error) {
-      if (!abort.signal.aborted) throw error;
+      if (!abort.signal.aborted) { failed = true; throw error; }
+    } finally {
+      // Nothing was said: the reply failed, had nothing to speak, or what it was part of was stopped first.
+      if (turn && turn.marks.firstPiece === undefined) turn.end(failed ? "error" : abort.signal.aborted ? "interrupted" : "no_reply");
     }
   }
 
