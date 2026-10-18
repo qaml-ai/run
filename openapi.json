@@ -9018,6 +9018,34 @@
           "speech": {
             "$ref": "#/components/schemas/VoiceSpeechProviders"
           },
+          "endOfTurn": {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "smart",
+                  "silence"
+                ]
+              },
+              "commitMs": {
+                "type": "number"
+              },
+              "threshold": {
+                "type": "number"
+              },
+              "maxSilenceMs": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "mode",
+              "commitMs",
+              "threshold",
+              "maxSilenceMs"
+            ],
+            "description": "How a speaker's turn ends (smart: a turn-detection model at pauses; silence: silenceMs of quiet)"
+          },
           "speeches": {
             "type": "number",
             "description": "Speeches played (each counted when it ended having made speech)"
@@ -9076,6 +9104,7 @@
           "bargeIn",
           "voice",
           "agentReplies",
+          "endOfTurn",
           "speeches",
           "spokenSeconds",
           "utterances",
@@ -9253,6 +9282,50 @@
           },
           "speech": {
             "$ref": "#/components/schemas/VoiceSpeechProviders"
+          },
+          "endOfTurn": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "smart",
+                  "silence"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "smart",
+                      "silence"
+                    ],
+                    "description": "smart: a speaker's turn ends when a turn-detection model (Smart Turn, on their audio) judges them done at a pause, with speech found by a VAD (Silero), not by loudness; silence: after silenceMs of quiet. Default smart where the runtime has the models"
+                  },
+                  "commitMs": {
+                    "type": "integer",
+                    "minimum": 200,
+                    "maximum": 3000,
+                    "description": "smart: silence after which a turn the model calls complete ends, in milliseconds: 200 to 3000, default 500"
+                  },
+                  "threshold": {
+                    "type": "number",
+                    "minimum": 0.05,
+                    "maximum": 0.95,
+                    "description": "smart: how sure the model must be that the speaker is done (0.05-0.95, default 0.5): higher waits more often"
+                  },
+                  "maxSilenceMs": {
+                    "type": "integer",
+                    "minimum": 500,
+                    "maximum": 5000,
+                    "description": "smart: silence after which any turn ends (a speaker the model expects to go on, who does not), in milliseconds: 500 to 5000, default 1400"
+                  }
+                },
+                "additionalProperties": false
+              }
+            ],
+            "description": "How a speaker's turn (an utterance) ends: smart or silence, or {mode, commitMs, threshold, maxSilenceMs}"
           }
         },
         "required": [

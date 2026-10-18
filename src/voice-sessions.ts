@@ -19,6 +19,8 @@ import { TTS_PROVIDERS, ttsReference } from "./voice-providers/tts.ts";
 import type { LiveTranscript } from "./transcription-live.ts";
 import { bucketInput, DEFAULT_BUCKET } from "./end-user-credits.ts";
 import { TurnClock, WaitingTurns } from "./voice/latency.ts";
+import type { TurnModels } from "./voice/turns/inference.ts";
+import { TurnSegmenter } from "./voice/turns/segmenter.ts";
 
 /**
  * Voice sessions: calls camelRun holds for a tenant's bot. Joining a voice channel is the one step that needs the bot's
@@ -110,10 +112,20 @@ export type VoiceOptions = {
   transcription?: { providers?: string[]; keyterms?: string[] };
   /** With speak: the text-to-speech providers to try, in order (else the runtime's), and its voice for each provider. */
   speech?: { providers?: string[]; voices?: Record<string, string> };
+  /**
+   * How a speaker's turn ends: smart, when Smart Turn judges them done at a pause (commitMs of silence) or after
+   * maxSilenceMs regardless (src/voice/turns), with Silero VAD for speech; silence, after silenceMs of quiet (the
+   * energy segmenter). Sessions from before it have none: silence.
+   */
+  endOfTurn?: EndOfTurn;
 };
+export type EndOfTurn = { mode: "smart" | "silence"; commitMs: number; threshold: number; maxSilenceMs: number };
 
 export const VOICE_LIMITS = Object.freeze({
   silenceMs: { default: 800, min: 200, max: 5_000 },
+  /** endOfTurn (smart): silence after which a turn Smart Turn calls complete ends, and after which any does. */
+  commitMs: { default: 500, min: 200, max: 3_000 },
+  maxSilenceMs: { default: 1_400, min: 500, max: 5_000 },
   maxMinutes: { default: 240, min: 1, max: 720 },
   idleMinutes: { default: 30, min: 1, max: 720 },
   emptySeconds: { default: 60, min: 5, max: 3_600 },
@@ -171,6 +183,7 @@ export function sessionView(row: Row) {
     ...options,
     // Sessions from before speaking have none of its settings.
     speak: options.speak ?? false, bargeIn: options.bargeIn ?? true, voice: options.voice ?? DEFAULT_VOICE, agentReplies: options.agentReplies ?? false,
+    endOfTurn: options.endOfTurn ?? { mode: "silence" as const, ...SMART_DEFAULTS },
     utterances: row.utterances, speechSeconds: row.speech_seconds, speeches: row.speeches ?? 0, spokenSeconds: Number(row.spoken_seconds ?? 0),
     costUsd: Number(row.cost) / 1_000_000,
     createdAt: num(row.created_at)!, startedAt: num(row.started_at), lastSpeechAt: num(row.last_speech_at), endedAt: num(row.ended_at),
@@ -233,6 +246,25 @@ function speechInput(value: unknown): VoiceOptions["speech"] {
     if (typeof voice !== "string" || !/^[A-Za-z0-9._-]{1,64}$/.test(voice)) throw new HttpError(400, `speech.voices.${provider} must be that provider's voice id or name`);
   }
   return { ...(providers ? { providers } : {}), ...(voices && Object.keys(voices).length ? { voices: voices as Record<string, string> } : {}) };
+}
+const SMART_DEFAULTS = Object.freeze({ commitMs: VOICE_LIMITS.commitMs.default, threshold: 0.5, maxSilenceMs: VOICE_LIMITS.maxSilenceMs.default });
+/** endOfTurn as given: a mode ("smart" or "silence") or {mode?, commitMs?, threshold?, maxSilenceMs?}; `mode` defaults to the runtime's. */
+function endOfTurnInput(value: unknown, mode: EndOfTurn["mode"]): EndOfTurn {
+  if (value === undefined) return { mode, ...SMART_DEFAULTS };
+  if (value === "smart" || value === "silence") return { mode: value, ...SMART_DEFAULTS };
+  const given = object(value, "endOfTurn");
+  only(given, "endOfTurn", ["mode", "commitMs", "threshold", "maxSilenceMs"]);
+  if (given.mode !== undefined && given.mode !== "smart" && given.mode !== "silence") throw new HttpError(400, "endOfTurn.mode must be smart or silence");
+  const threshold = given.threshold ?? SMART_DEFAULTS.threshold;
+  if (typeof threshold !== "number" || !(threshold >= 0.05 && threshold <= 0.95)) throw new HttpError(400, "endOfTurn.threshold must be a number from 0.05 to 0.95");
+  const out: EndOfTurn = {
+    mode: (given.mode as EndOfTurn["mode"] | undefined) ?? mode,
+    commitMs: integer(given.commitMs, "endOfTurn.commitMs", VOICE_LIMITS.commitMs),
+    threshold,
+    maxSilenceMs: integer(given.maxSilenceMs, "endOfTurn.maxSilenceMs", VOICE_LIMITS.maxSilenceMs),
+  };
+  if (out.maxSilenceMs < out.commitMs) throw new HttpError(400, "endOfTurn.maxSilenceMs must be at least its commitMs");
+  return out;
 }
 function metadataInput(value: unknown) {
   if (value === undefined) return {};
@@ -307,6 +339,11 @@ export interface VoiceSessionsOptions {
   /** The text a submitted run writes, so far and as it is written (a prompt's speak); without it, prompts cannot speak. */
   followStreaming?(agent: string, tenant: string, requestId: string, signal: AbortSignal): AsyncIterable<string>;
   transcriptionsPerNode?: number;
+  /**
+   * The node's turn-taking models (src/voice/turns: Silero VAD, Smart Turn), for sessions whose endOfTurn is smart (the
+   * default when given); without them, sessions end turns on silence.
+   */
+  turnModels?: TurnModels;
   /** End users' credit; without it, sessions are billed to the tenant alone. */
   credit?: VoiceCredit;
   /** Live sessions per tenant (VOICE_LIMITS.perTenant). */
@@ -328,7 +365,7 @@ type Held = {
   /** The connection lost its credentials (`lost`): when, and why, until new ones come. */
   lost?: { at: number; reason: "kicked" | "credentials" | "error"; detail?: string };
   ending?: boolean;
-  segmenter: Segmenter;
+  segmenter: Segmenter | TurnSegmenter;
   /** What the bot was asked to say, for a session that speaks. */
   speech?: SessionSpeech;
   /** The runs whose replies it speaks (a prompt's speak), by agent and request: each spoken once. */
@@ -444,6 +481,7 @@ export class VoiceSessions {
       ignoreUserIds: ignored(input.ignoreUserIds), metadata: metadataInput(input.metadata), notice,
       speak, bargeIn: input.bargeIn !== false, voice, agentReplies,
       ...(transcription ? { transcription } : {}), ...(speech ? { speech } : {}),
+      endOfTurn: endOfTurnInput(input.endOfTurn, this.options.turnModels ? "smart" : "silence"),
     };
   }
 
@@ -452,7 +490,7 @@ export class VoiceSessions {
    * when this node can, else by a peer's scan. Answers the session with the notice the app must post.
    */
   async create(tenant: string, input: Record<string, unknown>) {
-    only(input, "body", ["provider", "discord", "subject", "bucket", "context", "keyScope", "deliver", "language", "prompt", "silenceMs", "maxMinutes", "idleMinutes", "emptySeconds", "ignoreUserIds", "metadata", "notice", "speak", "bargeIn", "voice", "transcription", "speech"]);
+    only(input, "body", ["provider", "discord", "subject", "bucket", "context", "keyScope", "deliver", "language", "prompt", "silenceMs", "maxMinutes", "idleMinutes", "emptySeconds", "ignoreUserIds", "metadata", "notice", "speak", "bargeIn", "voice", "transcription", "speech", "endOfTurn"]);
     const provider = input.provider ?? "discord";
     if (provider !== "discord") throw new HttpError(400, `provider must be one of: ${VOICE_PROVIDERS.join(", ")}`);
     if (!this.options.transports[provider]) throw new HttpError(404, "Voice sessions are not enabled on this runtime");
@@ -463,6 +501,7 @@ export class VoiceSessions {
     if (options.agentReplies && !options.deliver.agent) throw new HttpError(400, "speak.agentReplies speaks deliver.agent's replies: give deliver.agent");
     if (options.agentReplies && !this.options.submitStreaming) throw new HttpError(404, "Speaking agents' replies is not enabled on this runtime");
     if (options.speak && (!this.options.synthesizer || !this.options.transports[provider]?.speaks)) throw new HttpError(404, "Speaking is not enabled on this runtime");
+    if (options.endOfTurn?.mode === "smart" && !this.options.turnModels) throw new HttpError(404, "Smart end of turn is not enabled on this runtime: use endOfTurn silence");
     if (options.deliver.agent && !await this.options.agentOwned(options.deliver.agent, tenant)) throw new HttpError(404, "Unknown agent in deliver.agent");
     await this.options.admit(tenant);
     const refused = options.subject !== undefined ? await this.options.credit?.refusal(tenant, options.subject, options.bucket ?? DEFAULT_BUCKET) : undefined;
@@ -728,7 +767,7 @@ export class VoiceSessions {
     }
     const held: Held = {
       id: current.id, tenant: current.tenant, claim: taken.claim, revision: current.revision, row: current, credentials: this.credentials(current),
-      segmenter: new Segmenter({
+      segmenter: this.segmenter({
         silenceMs: current.options.silenceMs, cut: cut => this.cut(held, cut),
         // Transcribed as they speak, when this runtime can: each utterance committed as it is cut.
         ...(this.options.transcriber.liveOrder(current.options.transcription?.providers).length ? { live: { audio: (speaker: string, pcm: Buffer) => this.liveAudio(held, speaker, pcm), drop: (speaker: string) => held.live?.get(speaker)?.stream.clear() } } : {}),
@@ -738,13 +777,23 @@ export class VoiceSessions {
           // A reply may follow what they say: the speech provider's connection is made now, not when it is asked.
           if (held.speech) this.options.synthesizer?.warm(held.row.options.speech?.providers);
         },
-      }),
+      }, current.options.endOfTurn),
     };
     if (current.options.speak && this.options.synthesizer) held.speech = new SessionSpeech(this.options.synthesizer, this.speechEffects(held));
     this.held.set(held.id, held);
     console.log(JSON.stringify({ type: "voice_session_acquired", session: held.id, node: this.options.node, epoch: taken.claim.epoch }));
     if (current.state === "live") await this.setState(held, "reconnecting").catch(() => {});
     this.connect(held, transport);
+  }
+
+  /** A session's segmenter: turn-taking's (smart), when the session asks for it and this node has the models; else by level and silence. */
+  private segmenter(options: ConstructorParameters<typeof Segmenter>[0], endOfTurn: EndOfTurn | undefined): Segmenter | TurnSegmenter {
+    const models = this.options.turnModels;
+    if (endOfTurn?.mode !== "smart" || !models) return new Segmenter(options);
+    return new TurnSegmenter({
+      ...options, models,
+      policy: { endOfTurn: { mode: "smart", checkMs: 200, commitMs: endOfTurn.commitMs, threshold: endOfTurn.threshold, maxSilenceMs: endOfTurn.maxSilenceMs, silenceMs: options.silenceMs } },
+    });
   }
 
   private credentials(row: Row): VoiceCredentials {

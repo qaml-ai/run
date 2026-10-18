@@ -1231,9 +1231,18 @@ export interface VoiceSessionInput {
    * for each (`{ elevenlabs: "<voice id>", cartesia: "<voice id>" }`; OpenAI's is `voice`). Default: the runtime's chain.
    */
   speech?: { providers?: string[]; voices?: Record<string, string> };
+  /**
+   * How a speaker's turn ends. `smart` (the default where the runtime has the models): a turn-detection model judges, at
+   * each pause, whether they are done; done, the turn ends at `commitMs` of silence (default 500), else they get up to
+   * `maxSilenceMs` (default 1400); `threshold` (0.05-0.95, default 0.5) is how sure it must be. `silence`: after
+   * `silenceMs` of quiet.
+   */
+  endOfTurn?: VoiceEndOfTurn["mode"] | Partial<VoiceEndOfTurn>;
   /** An Idempotency-Key: the same key answers the same session. */
   idempotencyKey?: string;
 }
+/** How a voice session ends each speaker's turn (`endOfTurn`). */
+export type VoiceEndOfTurn = { mode: "smart" | "silence"; commitMs: number; threshold: number; maxSilenceMs: number };
 export interface VoiceSession {
   id: string; provider: "discord";
   discord: { guildId: string; channelId: string; userId: string };
@@ -1245,6 +1254,7 @@ export interface VoiceSession {
   silenceMs: number; maxMinutes: number; idleMinutes: number; emptySeconds: number; ignoreUserIds: string[]; metadata: Record<string, unknown>;
   speak: boolean; bargeIn: boolean; voice: string; agentReplies: boolean;
   transcription?: { providers?: string[]; keyterms?: string[] }; speech?: { providers?: string[]; voices?: Record<string, string> };
+  endOfTurn: VoiceEndOfTurn;
   utterances: number; speechSeconds: number;
   /** Speeches played, and seconds of speech made. */
   speeches: number; spokenSeconds: number;

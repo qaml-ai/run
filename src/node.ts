@@ -94,6 +94,7 @@ import { liveProvider, sttReference } from "./voice-providers/stt.ts";
 import { DEFAULT_VOICES, speechProvider, ttsReference } from "./voice-providers/tts.ts";
 import { speechPrices, ttsCost } from "./voice-providers/prices.ts";
 import { VOICE_CHANNEL, VoiceSessions, type VoiceReplyTarget, type VoiceTransport } from "./voice-sessions.ts";
+import { hostClient, startTurnModels, type TurnModels, type TurnModelsHost } from "./voice/turns/inference.ts";
 import { buggify } from "./buggify.ts";
 import { sometimes } from "./assert.ts";
 
@@ -144,11 +145,26 @@ export type NodeDeps = {
   voiceTransports?: Partial<Record<"discord", VoiceTransport>>;
   /** What a voice server's host must match, when a test serves its own. */
   voiceEndpoints?: RegExp;
+  /** Turn-taking's models for voice sessions: the node's own with AGENT_VOICE=true (src/voice/turns), unless given. */
+  voiceTurnModels?: TurnModels;
 };
 type RuntimeSecrets = Awaited<ReturnType<typeof runtimeSecrets>>;
 type ManagedDiscordSecrets = NonNullable<Awaited<ReturnType<typeof managedDiscordSecrets>>>;
 
 /** Derives client session tokens. It must stay stable, or re-provisioning returns tokens that no longer verify. */
+/** The node's turn-taking models, loaded; undefined (and logged) when they cannot be: sessions then end turns on silence. */
+async function startNodeTurnModels(eotWorkers: number | undefined): Promise<TurnModelsHost | undefined> {
+  const host = startTurnModels({ ...(eotWorkers ? { eotWorkers } : {}), onExit: code => console.error(JSON.stringify({ type: "voice_turn_models_exited", exitCode: code })) });
+  try {
+    await host.ready;
+    return host;
+  } catch (error) {
+    console.error(JSON.stringify({ type: "voice_turn_models_failed", error: safeError(error) }));
+    await host.close().catch(() => {});
+    return undefined;
+  }
+}
+
 function sessionSecretOf(secrets: RuntimeSecrets) {
   const secret = secrets.sessionSecret;
   if (!secret || secret.length < 32) throw new Error("Set AGENT_SESSION_SECRET (or AGENT_SESSION_SECRET_ARN) to at least 32 random characters");
@@ -886,6 +902,9 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   // Voice calls held for tenants' bots, one node each (src/voice-sessions.ts), when voice is on. Discord's voice library
   // is loaded only then: it brings a native module (DAVE's).
   const voiceTransports = deps.voiceTransports ?? (config.voice.enabled ? { discord: (await import("./voice-discord.ts")).discordVoice() } : undefined);
+  // Turn-taking's models, in worker threads; a node that cannot load them ends turns on silence.
+  const turnHost = !deps.voiceTurnModels && config.voice.enabled && config.voice.turnModels ? await startNodeTurnModels(config.voice.turnWorkers) : undefined;
+  const turnModels = deps.voiceTurnModels ?? (turnHost && hostClient(turnHost));
   const voice = voiceTransports && new VoiceSessions({
     db, accounts, node, ownership, transports: voiceTransports, ...(deps.voiceEndpoints ? { endpoints: deps.voiceEndpoints } : {}),
     admit: async tenant => {
@@ -909,6 +928,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     perTenant: tenant => tenants.maxVoiceSessions(tenant) ?? config.voice.perTenant, perNode: config.voice.perNode,
     // A voice.utterance goes out at once: a bot that answers aloud waits on it (the outbox's scan is every 5 s).
     kickWebhooks: () => webhooks.kick(),
+    ...(turnModels ? { turnModels } : {}),
   });
   // An agent loaded on another node: this node's idle watchers of it end, and reconnect to that node.
   // A tenant's webhook endpoints changed on some node: read them again at its next run.
@@ -1460,6 +1480,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     scheduler.stop();
     channels.stop();
     await voice?.stop();
+    await turnHost?.close();
     await managedDiscord?.stop();
     webhooks.stop();
     accountDeletions.stop();

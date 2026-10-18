@@ -158,7 +158,10 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
       stt: list(env.AGENT_VOICE_STT), tts: list(env.AGENT_VOICE_TTS),
       // Where each speech provider is dialled, when not its own address (a proxy, a test's fake).
       endpoints: { deepgram: env.AGENT_DEEPGRAM_URL, soniox: env.AGENT_SONIOX_URL, assemblyai: env.AGENT_ASSEMBLYAI_URL, elevenlabs: env.AGENT_ELEVENLABS_URL, cartesia: env.AGENT_CARTESIA_URL },
-      perTenant: Number(env.AGENT_VOICE_SESSIONS_PER_TENANT ?? 10), perNode: Number(env.AGENT_VOICE_SESSIONS_PER_NODE ?? 200) },
+      perTenant: Number(env.AGENT_VOICE_SESSIONS_PER_TENANT ?? 10), perNode: Number(env.AGENT_VOICE_SESSIONS_PER_NODE ?? 200),
+      // Turn-taking's models (src/voice/turns: Silero VAD, Smart Turn, in worker threads): on with voice unless "false",
+      // when every session ends turns on silence; how many Smart Turn threads (default: 2, or 1 on one CPU).
+      turnModels: env.AGENT_VOICE_TURN_MODELS !== "false", turnWorkers: env.AGENT_VOICE_TURN_WORKERS ? Number(env.AGENT_VOICE_TURN_WORKERS) : undefined },
     verifyKeys: env.AGENT_VERIFY_KEYS !== "false",
     billingAdmins: (env.AGENT_BILLING_ADMINS ?? "").split(",").map(value => value.trim()).filter(Boolean),
     purgeMs, billingMs, reconcileDays,
