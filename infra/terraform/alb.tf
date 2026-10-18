@@ -104,10 +104,11 @@ resource "aws_lb_target_group" "runtime" {
   protocol    = "HTTP"
   port        = local.runtime_port
   vpc_id      = data.aws_vpc.default.id
-  # SIGTERM (after which the task has stopTimeout, 120 s, to drain) only
-  # arrives once this delay ends; open SSE streams stay up through it and
-  # clients reconnect to another task. A long delay would only postpone SIGTERM.
-  deregistration_delay = 15
+  # Past the longest request a client holds open on purpose: a run's ?wait (at most 60 s; long polls of events and
+  # requests wait 25). The ALB lets requests under way finish for up to this long, then cuts them (a 502 for a long
+  # poll); SIGTERM (after which the task has stopTimeout, 120 s, to drain) only arrives once it ends. SSE streams stay
+  # up through it, then clients reconnect to another task: with any open, each old task takes the whole delay.
+  deregistration_delay = 65
 
   health_check {
     # 200 healthy, including while retiring (a superseded, protected task

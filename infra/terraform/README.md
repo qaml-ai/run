@@ -64,7 +64,7 @@ and the RDS instance also have deletion protection in AWS.
    ALB camelai-agent-runtime   (default public subnets, 4 AZs; ingress from Cloudflare's IPv4 ranges only)
      :443  ACM certs (one per name, by SNI), TLS 1.2/1.3, idle timeout 360 s
      :80   301 to https
-                   │ target group (ip) :8790, GET /healthz, deregistration 15 s
+                   │ target group (ip) :8790, GET /healthz, deregistration 65 s
                    ▼
    ECS Fargate service camelai-agent-runtime  (ARM64, 1 vCPU / 2 GB, 2..10 tasks)
      tasks in the default subnets with public IPs (egress to model providers, no NAT)
@@ -179,8 +179,8 @@ and the RDS instance also have deletion protection in AWS.
      (its turns have finished or been handed off at a step boundary, or
      `AGENT_RETIRE_MAX_MS`, default 20 min, passed).
   1. ECS deregisters the task. The ALB sends it no new requests, and its open
-     connections, including SSE streams, stay up for the 15 s deregistration
-     delay. After that, clients reconnect to another task. A longer delay would
+     connections, including SSE streams, stay up for the 65 s deregistration
+     delay (past a run's 60 s `?wait`, so no long poll is cut). After that, clients reconnect to another task. A longer delay would
      only postpone SIGTERM.
   2. ECS sends SIGTERM. The runtime drains its agents: running turns are
      handed off at their next step boundary, for up to 100 s
@@ -199,7 +199,7 @@ and the RDS instance also have deletion protection in AWS.
   too (`ecs.tf`, `alarms`). The target group checks `/healthz` every 5 s: a new task serves after two
   passes, a task is taken out after three failures. A deployment's `rolloutState` stays
   `IN_PROGRESS` until its last old task is gone: up to `AGENT_RETIRE_MAX_MS`
-  (20 min) + 15 s + 120 s, usually the longest step in flight. The runtime notices a newer deployment and retires
+  (20 min) + 65 s + 120 s, usually the longest step in flight. The runtime notices a newer deployment and retires
   itself once idle. Don't make CI wait on `services-stable` or on
   `rolloutState = COMPLETED`; wait as `ecs-deploy.sh` does.
 
