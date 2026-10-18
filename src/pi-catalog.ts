@@ -85,34 +85,6 @@ const corrected = (found: Model<Api> | undefined): Model<Api> | undefined => {
   return piModel("anthropic", claude)?.thinkingLevelMap?.off === null ? { ...model, thinkingLevelMap: { ...model.thinkingLevelMap, off: null } } : model;
 };
 
-/**
- * The OpenRouter hosts a model of the platform's catalog may be served by (its requests' `provider.only`), by id; a
- * routing variant (`:nitro`) is its base model's. Any other model is OpenRouter's to route. Only `only` is set: it
- * narrows the hosts and leaves OpenRouter's load balancing on, where `order` or `sort` turns it off (2026-10-17: an
- * `order` sent every DeepSeek V4.1 Flash call to one slow fp4 host). Each name is an OpenRouter provider slug
- * (GET /api/v1/providers), all of the provider's endpoints for the model.
- * - DeepSeek V4.1 Flash (Miguel, 2026-10-18): fp8 or full-precision hosts of the full context; none of the fp4 ones.
- */
-const OPENROUTER_HOSTS: Record<string, string[]> = {
-  "deepseek/deepseek-v4.1-flash": ["morph", "fireworks", "together", "parasail", "coreweave", "nebius"],
-};
-
-/** The OpenRouter hosts a model may be served by (OPENROUTER_HOSTS), or undefined: OpenRouter's choice. */
-export function openRouterHosts(id: string): string[] | undefined {
-  return OPENROUTER_HOSTS[id.replace(/:[a-z]+$/, "")];
-}
-
-/**
- * An OpenRouter request of the platform's catalog with its model's hosts (`provider.only`), any `provider` routing it
- * already has kept. Any other request is as it was.
- */
-export function withOpenRouterHosts(model: Model<Api>, payload: unknown): unknown {
-  const only = model.provider === "openrouter" ? openRouterHosts(model.id) : undefined;
-  if (!only || !payload || typeof payload !== "object") return payload;
-  const request = payload as { provider?: Record<string, unknown> };
-  return { ...request, provider: { only, ...request.provider } };
-}
-
 /** Pi's model, as this runtime corrects it: a Bedrock base id that has inference profiles is its profile's. */
 export function getModel(provider: string, id: string): Model<Api> | undefined {
   return corrected(piModel(provider, (provider === BEDROCK && PROFILES.get(id)) || id));
