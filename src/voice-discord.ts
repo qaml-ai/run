@@ -390,14 +390,14 @@ export class DiscordVoice implements VoiceConnection {
   play(packets: AsyncIterable<Uint8Array>, started: () => void, expectedMs?: number): Playback {
     const player = this.player ??= createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Pause, maxMissedFrames: MAX_MISSED_FRAMES } });
     this.connection.subscribe(player);
-    let stopped = false, failed = false, first = true;
+    let stopped = false, failed = false, first = true, paused = false;
     const self = this;
     // What happened to the speech, for its diagnostic: packets sent; how long each reason held them back; how long from
     // play to its first packet ready (the provider's first bytes and the start buffer: `startMs`); how long it waited
     // for packets after that (`waitedMs`, the jitter buffer refilling after a stall); and the silence the listener heard
     // between its first packet and its last (`gapMs`: the time between them, less the audio's length; the player takes
     // one packet a frame, and holds one at most, so a packet handed over late is a frame of silence).
-    const stats = { packets: 0, heldMs: { connection: 0, dave: 0, roster: 0 }, startMs: 0, waitedMs: 0, gapMs: 0 };
+    const stats = { packets: 0, heldMs: { connection: 0, dave: 0, roster: 0, paused: 0 }, startMs: 0, waitedMs: 0, gapMs: 0 };
     const asked = Date.now();
     let firstAt = 0, lastAt = 0;
     // A stop ends the speech at the next frame, even while it waits for the provider.
@@ -417,7 +417,8 @@ export class DiscordVoice implements VoiceConnection {
         }
         if (firstAt) stats.waitedMs += Date.now() - waited;
         else stats.startMs = Date.now() - asked;
-        for (let reason; (reason = self.holding());) {
+        // Held while the connection cannot send, or while paused (barge-in deciding): packets wait, in order.
+        for (let reason; (reason = paused ? "paused" as const : self.holding());) {
           if (stopped || self.closed) return;
           const since = Date.now();
           await new Promise(resolve => setTimeout(resolve, 20));
@@ -439,7 +440,7 @@ export class DiscordVoice implements VoiceConnection {
         player.off("stateChange", changed);
         player.off("error", errored);
         const result = stopped ? "stopped" : failed ? "error" : "done";
-        if (firstAt) stats.gapMs = Math.max(0, lastAt - firstAt - (stats.packets - 1) * 20);
+        if (firstAt) stats.gapMs = Math.max(0, lastAt - firstAt - (stats.packets - 1) * 20 - stats.heldMs.paused);
         this.handlers.diagnostic("speech_played", { result, ...stats });
         resolve(result);
       };
@@ -457,6 +458,8 @@ export class DiscordVoice implements VoiceConnection {
     player.play(resource);
     return {
       done, stats: () => ({ ...stats, heldMs: { ...stats.heldMs } }),
+      pause: () => { paused = true; },
+      resume: () => { paused = false; },
       stop: () => {
         if (stopped) return;
         stopped = true;

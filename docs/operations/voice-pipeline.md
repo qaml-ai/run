@@ -90,13 +90,14 @@ Control → media:
 
 | `t` | Fields | Meaning |
 | --- | --- | --- |
-| `open` | `session, credentials, options: MediaOptions, models?: MessagePort` | Connect and start listening. `MediaOptions`: `silenceMs, ignoreUserIds, bargeIn, live (send PCM up), turns?: TurnPolicy` |
+| `open` | `session, credentials, options: MediaOptions, models?: MessagePort` | Connect and start listening. `MediaOptions`: `silenceMs, ignoreUserIds, bargeIn, bargeInMinMs, bargeInPause, live (send PCM up), turns?: TurnPolicy` |
 | `update` | `credentials` | Discord moved the call: reconnect |
 | `options` | `Partial<MediaOptions>` | `ignoreUserIds`, `bargeIn` changed |
 | `play` | `id` | A speech begins: PCM follows |
 | `pcm` | `id, pcm: ArrayBuffer` | 24 kHz mono s16le TTS audio, as the provider made it |
 | `pcm_end` | `id, error?` | The speech's audio is whole (or failed) |
 | `stop` | `id` | Stop this speech now (5 silence frames follow) |
+| `resume` | | End a barge-in pause (`bargeInPause`): what still plays goes on where it paused |
 | `interim` | `speaker, text` | An STT partial, for the turn model (`TurnTaker.interim`) |
 | `close` | | Flush every speaker (`ended: "end" \| "handoff"`), then exit |
 
@@ -106,7 +107,9 @@ Media → control:
 | --- | --- | --- |
 | `ready` / `lost` / `diagnostic` | as `VoiceHandlers` today | The connection's state |
 | `others` | `users: string[] \| null` | Who else is in the call, sent on change (for `emptySeconds`) |
-| `speech_start` | `speaker, at` | The first loud frame of an utterance. With `bargeIn`, playback has already been stopped locally |
+| `speech_start` | `speaker, at` | The first loud frame of an utterance |
+| `barge_in` | `speaker, speechMs` | The utterance has `bargeInMinMs` of speech over the bot. Playback has already been stopped locally, or with `bargeInPause` paused until `resume` (src/voice/echo-guard.ts) |
+| `speech_progress` | `speaker, speechMs` | While paused: each further loud frame of that speaker's utterance, so the echo guard sees speech go on |
 | `pcm` | `speaker, pcm: ArrayBuffer, at` | 24 kHz mono s16le, 40–60 ms at a time, from the first loud frame (only with `live`) |
 | `drop` | `speaker` | The utterance was too short: clear its live STT buffer |
 | `cut` | `Cut` (packets as ArrayBuffers) | An utterance ended. Its Ogg Opus is built on main, for batch STT |

@@ -17,8 +17,15 @@ export type MediaOptions = {
   silenceMs: number;
   /** Speakers not listened to (the bot itself never is). */
   ignoreUserIds: string[];
-  /** A person starting to talk stops the speech playing (`speechStart` follows). */
+  /** A person talking over the bot stops (or pauses) the speech playing (`bargeIn` follows). */
   bargeIn: boolean;
+  /** Speech (ms) over the bot before barge-in acts: 0 (the default) at the first loud packet. */
+  bargeInMinMs?: number;
+  /**
+   * Barge-in pauses playback instead of stopping it, and the session decides (src/voice/echo-guard.ts): `resume`, or it
+   * stops the speech. While paused, each of that speaker's loud packets is reported (`speechProgress`).
+   */
+  bargeInPause?: boolean;
   /** Each utterance's audio goes to `pcm` as it is spoken (live transcription). */
   live: boolean;
 };
@@ -31,8 +38,15 @@ export interface MediaEvents {
   lost(reason: "kicked" | "credentials" | "error", detail?: string): void;
   /** Structured diagnostics: never audio, tokens or session ids. */
   diagnostic(event: string, fields: Record<string, unknown>): void;
-  /** A speaker started talking: an utterance's first loud packet. With `bargeIn`, the media already stopped playing. */
+  /** A speaker started talking: an utterance's first loud packet. */
   speechStart(speaker: string): void;
+  /**
+   * With `bargeIn`: a speaker talked over the bot for `bargeInMinMs` (`speechMs` so far). The media already stopped
+   * what it plays, or with `bargeInPause` paused it (until `resume`).
+   */
+  bargeIn?(speaker: string, speechMs: number): void;
+  /** With `bargeInPause`, while paused: more speech from a speaker who paused it (their utterance's speech so far, ms). */
+  speechProgress?(speaker: string, speechMs: number): void;
   /** `live`: a speaker's utterance audio as it comes, 24 kHz mono 16-bit PCM, from the quiet kept before its speech. */
   pcm(speaker: string, pcm: Uint8Array): void;
   /** `live`: the speaker's utterance was too short to keep: forget the audio sent of it. */
@@ -56,6 +70,8 @@ export interface Media {
   configure(options: Partial<MediaOptions>): void;
   /** The other users in the call, when known. */
   others(): string[] | undefined;
+  /** End a barge-in pause (`bargeInPause`): what still plays goes on where it paused. Stopping it is the playback's. */
+  resume(): void;
   /**
    * Play speech: 24 kHz mono 16-bit PCM as it is made. The media frames and encodes it, and plays it on the call;
    * `started` is called as its first packet goes out.
@@ -87,6 +103,9 @@ export class MediaSession implements Media {
   private readonly events: MediaEvents;
   /** Speech playing now, to stop on barge-in. */
   private readonly playing = new Set<Playback>();
+  /** Speakers whose utterance has acted on barge-in (once each), and whether playback is paused for barge-in. */
+  private readonly barged = new Set<string>();
+  private paused = false;
   private closed = false;
 
   constructor(transport: VoiceTransport, credentials: VoiceCredentials, options: MediaOptions, events: MediaEvents) {
@@ -98,11 +117,10 @@ export class MediaSession implements Media {
       cut: cut => events.cut(cut),
       ...(options.live ? { live: { audio: (speaker: string, pcm: Buffer) => events.pcm(speaker, pcm), drop: (speaker: string) => events.drop(speaker) } } : {}),
       speech: speaker => {
-        // The session hears first (it stops its speech, and says why), then barge-in stops what plays here: a
-        // worker's media stops its speech without waiting for the session's round trip.
+        this.barged.delete(speaker);
         events.speechStart(speaker);
-        if (this.options.bargeIn) for (const playback of [...this.playing]) playback.stop();
       },
+      loud: (speaker, speechMs) => this.loud(speaker, speechMs),
     });
     this.connection = transport.connect(credentials, {
       ready: () => { if (!this.closed) events.ready(); },
@@ -117,6 +135,34 @@ export class MediaSession implements Media {
   }
 
   get speaks() { return !!this.connection.play; }
+
+  /**
+   * A loud packet: barge-in once its utterance has `bargeInMinMs` of speech. The session hears first (it stops its
+   * speech and says why, or starts deciding), then what plays here stops or pauses: a worker's media acts without
+   * waiting for the session's round trip.
+   */
+  private loud(speaker: string, speechMs: number) {
+    if (!this.options.bargeIn) return;
+    if (this.barged.has(speaker)) {
+      if (this.paused) this.events.speechProgress?.(speaker, speechMs);
+      return;
+    }
+    if (speechMs < (this.options.bargeInMinMs ?? 0)) return;
+    this.barged.add(speaker);
+    const pause = !!this.options.bargeInPause;
+    if (pause) this.paused = true;
+    this.events.bargeIn?.(speaker, speechMs);
+    for (const playback of [...this.playing]) {
+      if (pause) playback.pause?.();
+      else playback.stop();
+    }
+  }
+
+  resume() {
+    if (!this.paused) return;
+    this.paused = false;
+    for (const playback of this.playing) playback.resume?.();
+  }
 
   update(credentials: VoiceCredentials) {
     this.self = credentials.userId;
@@ -136,6 +182,8 @@ export class MediaSession implements Media {
     if (!play || this.closed) return { done: Promise.resolve("error"), stop: () => {} };
     const playback = play.call(this.connection, opusFromPcm(pcm), started, expectedMs);
     this.playing.add(playback);
+    // Speech that starts during a barge-in pause starts paused.
+    if (this.paused) playback.pause?.();
     void playback.done.finally(() => this.playing.delete(playback));
     return playback;
   }

@@ -1224,8 +1224,13 @@ export interface VoiceSessionInput {
    * 400 characters). Default false.
    */
   speak?: boolean | { agentReplies?: boolean };
-  /** With speak: a person starting to talk stops the bot's speech. Default true. */
-  bargeIn?: boolean;
+  /**
+   * With speak: a person talking over the bot stops its speech. It pauses after `minMs` (300) of their speech, and goes
+   * on if what it heard was its own words coming back through their speakers (echo). Speech going on for `confirmMs`
+   * (1000) after the pause stops it without waiting for the words; `resumeMs` (3000) is the longest pause. `confirmMs: 0`
+   * stops it at `minMs` without the check. Default true.
+   */
+  bargeIn?: boolean | { minMs?: number; confirmMs?: number; resumeMs?: number };
   /** With speak: the voice speech is made in (OpenAI's: alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, verse…). Default alloy. */
   voice?: string;
   /**
@@ -1252,6 +1257,8 @@ export interface VoiceSession {
   subject?: string; bucket?: string; context?: Record<string, unknown>; keyScope?: string; language?: string; prompt?: string;
   silenceMs: number; maxMinutes: number; idleMinutes: number; emptySeconds: number; ignoreUserIds: string[]; metadata: Record<string, unknown>;
   speak: boolean; bargeIn: boolean; voice: string; agentReplies: boolean;
+  /** With speak and bargeIn: the barge-in timing in use. */
+  interruption?: { minMs: number; confirmMs: number; resumeMs: number };
   transcription?: { providers?: string[]; keyterms?: string[] }; speech?: { providers?: string[]; voices?: Record<string, string> };
   utterances: number; speechSeconds: number;
   /** Speeches played, and seconds of speech made. */

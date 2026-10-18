@@ -147,6 +147,8 @@ export type SegmenterOptions = {
   cut(cut: Cut): void;
   /** A speaker started talking: the first loud packet of an utterance (barge-in listens for it). */
   speech?(speaker: string): void;
+  /** Each loud packet of an utterance, with its speech so far (ms): barge-in's minimum, and its pause, measure it. */
+  loud?(speaker: string, speechMs: number): void;
   /**
    * Transcribing as people speak: each utterance's audio (24 kHz mono 16-bit PCM) as it comes, from its first loud
    * packet; `drop` when it is too short to keep. Its cuts say `live`.
@@ -211,6 +213,7 @@ export class Segmenter {
         this.options.speech?.(speaker);
       }
       speech.lastLoudAt = now;
+      this.options.loud?.(speaker, speech.speechMs);
     } else {
       speech.quietMs += ms;
       // Before any speech, only the last padMs of quiet is kept.
