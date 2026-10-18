@@ -336,7 +336,7 @@ export const PLAYBACK_BUFFER = Object.freeze({
  * The speech whole (or failed) is given on at once. A speech made faster than it plays never pauses; a bursty one
  * pauses at most at its first stall. Ends early (stops reading) when its reader stops.
  */
-export async function* buffered<T>(packets: AsyncIterable<T>, options: Partial<typeof PLAYBACK_BUFFER> & { expectedMs?: number } = {}): AsyncGenerator<T> {
+export async function* buffered<T>(packets: AsyncIterable<T>, options: Partial<Record<keyof typeof PLAYBACK_BUFFER, number>> & { expectedMs?: number } = {}): AsyncGenerator<T> {
   const limits = { ...PLAYBACK_BUFFER, ...options };
   const queue: T[] = [];
   let done = false, failure: unknown, wake: (() => void) | undefined, stopped = false, arrived = 0, firstAt = 0;
