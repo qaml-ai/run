@@ -26,8 +26,8 @@ test("live transcription: audio streams as it comes, each commit answers its own
   stream.clear();
   stream.append(Buffer.alloc(96_000));
   const second = stream.commit();
-  assert.deepEqual(await first, { text: "utterance 1", seconds: 1, model: "gpt-live-transcribe" });
-  assert.deepEqual(await second, { text: "utterance 2", seconds: 2, model: "gpt-live-transcribe" });
+  assert.deepEqual(await first, { text: "utterance 1", seconds: 1, model: "gpt-live-transcribe", provider: "openai" });
+  assert.deepEqual(await second, { text: "utterance 2", seconds: 2, model: "gpt-live-transcribe", provider: "openai" });
   assert.deepEqual(seen.commits, [48_000, 96_000]);
   assert.equal(seen.clears, 1);
   assert.deepEqual(seen.sessions[0].audio.input.transcription, { model: "gpt-live-transcribe", language: "en", prompt: "names: Miguel", delay: "low" });
@@ -75,4 +75,26 @@ test("live transcription: credentials that cannot stream, and a stream still fin
   none.append(Buffer.alloc(960));
   await assert.rejects(none.commit(), /No key/);
   assert.equal(none.closed, true);
+});
+
+test("live transcription: what was said prompts the next commit (prior-turn context)", async t => {
+  const { server, url } = await listening(t);
+  let n = 0;
+  const seen = fakeRealtime(server, () => `utterance ${++n}`);
+  const stream = openaiLiveTranscription({ baseUrl: url }).connect({ apiKey: "sk-test" }, { prompt: "A call about camelRun", keyterms: ["Miguel"] })!;
+  stream.append(Buffer.alloc(4_800));
+  assert.equal((await stream.commit()).text, "utterance 1");
+  stream.append(Buffer.alloc(4_800));
+  assert.equal((await stream.commit()).text, "utterance 2");
+  // The update after the second commit is sent as it answers.
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(seen.sessions[0].audio.input.transcription.prompt, "A call about camelRun\nTerms: Miguel");
+  assert.equal(seen.sessions[1].audio.input.transcription.prompt, "A call about camelRun\nTerms: Miguel\nutterance 1");
+  assert.equal(seen.sessions[2].audio.input.transcription.prompt, "A call about camelRun\nTerms: Miguel\nutterance 1 utterance 2");
+  stream.close();
+  const plain = openaiLiveTranscription({ baseUrl: url, context: false }).connect({ apiKey: "sk-test" }, {})!;
+  plain.append(Buffer.alloc(4_800));
+  await plain.commit();
+  assert.equal(seen.sessions.length, 4, "context off: no update after a commit");
+  plain.close();
 });
