@@ -22,6 +22,7 @@ import type { LiveTranscript } from "./transcription-live.ts";
 import { bucketInput, DEFAULT_BUCKET } from "./end-user-credits.ts";
 import { TurnClock, WaitingTurns } from "./voice/latency.ts";
 import { BARGE_IN_LIMITS, BargeInGuard, DEFAULT_BARGE_IN, type BargeInOutcome, type BargeInPolicy } from "./voice/echo-guard.ts";
+import type { TurnModels } from "./voice/turns/inference.ts";
 
 /**
  * Voice sessions: calls camelRun holds for a tenant's bot. Joining a voice channel is the one step that needs the bot's
@@ -123,10 +124,20 @@ export type VoiceOptions = {
   transcription?: { providers?: string[]; keyterms?: string[] };
   /** With speak: the text-to-speech providers to try, in order (else the runtime's), and its voice for each provider. */
   speech?: { providers?: string[]; voices?: Record<string, string> };
+  /**
+   * How a speaker's turn ends: smart, when Smart Turn judges them done at a pause (commitMs of silence) or after
+   * maxSilenceMs regardless (src/voice/turns), with Silero VAD for speech; silence, after silenceMs of quiet (the
+   * energy segmenter). Sessions from before it have none: silence.
+   */
+  endOfTurn?: EndOfTurn;
 };
+export type EndOfTurn = { mode: "smart" | "silence"; commitMs: number; threshold: number; maxSilenceMs: number };
 
 export const VOICE_LIMITS = Object.freeze({
   silenceMs: { default: 800, min: 200, max: 5_000 },
+  /** endOfTurn (smart): silence after which a turn Smart Turn calls complete ends, and after which any does. */
+  commitMs: { default: 500, min: 200, max: 3_000 },
+  maxSilenceMs: { default: 1_400, min: 500, max: 5_000 },
   maxMinutes: { default: 240, min: 1, max: 720 },
   idleMinutes: { default: 30, min: 1, max: 720 },
   emptySeconds: { default: 60, min: 5, max: 3_600 },
@@ -189,6 +200,7 @@ export function sessionView(row: Row) {
     // Sessions from before speaking have none of its settings.
     speak: options.speak ?? false, bargeIn: options.bargeIn ?? true, voice: options.voice ?? DEFAULT_VOICE, agentReplies: options.agentReplies ?? false,
     ...(options.speak && (options.bargeIn ?? true) ? { interruption: interruption(options) } : {}),
+    endOfTurn: options.endOfTurn ?? { mode: "silence" as const, ...SMART_DEFAULTS },
     utterances: row.utterances, speechSeconds: row.speech_seconds, speeches: row.speeches ?? 0, spokenSeconds: Number(row.spoken_seconds ?? 0),
     costUsd: Number(row.cost) / 1_000_000,
     createdAt: num(row.created_at)!, startedAt: num(row.started_at), lastSpeechAt: num(row.last_speech_at), endedAt: num(row.ended_at),
@@ -276,6 +288,25 @@ function voicesInput(value: unknown, name: string): Record<string, string> | und
   }
   return Object.keys(voices).length ? voices as Record<string, string> : undefined;
 }
+const SMART_DEFAULTS = Object.freeze({ commitMs: VOICE_LIMITS.commitMs.default, threshold: 0.5, maxSilenceMs: VOICE_LIMITS.maxSilenceMs.default });
+/** endOfTurn as given: a mode ("smart" or "silence") or {mode?, commitMs?, threshold?, maxSilenceMs?}; `mode` defaults to the runtime's. */
+function endOfTurnInput(value: unknown, mode: EndOfTurn["mode"]): EndOfTurn {
+  if (value === undefined) return { mode, ...SMART_DEFAULTS };
+  if (value === "smart" || value === "silence") return { mode: value, ...SMART_DEFAULTS };
+  const given = object(value, "endOfTurn");
+  only(given, "endOfTurn", ["mode", "commitMs", "threshold", "maxSilenceMs"]);
+  if (given.mode !== undefined && given.mode !== "smart" && given.mode !== "silence") throw new HttpError(400, "endOfTurn.mode must be smart or silence");
+  const threshold = given.threshold ?? SMART_DEFAULTS.threshold;
+  if (typeof threshold !== "number" || !(threshold >= 0.05 && threshold <= 0.95)) throw new HttpError(400, "endOfTurn.threshold must be a number from 0.05 to 0.95");
+  const out: EndOfTurn = {
+    mode: (given.mode as EndOfTurn["mode"] | undefined) ?? mode,
+    commitMs: integer(given.commitMs, "endOfTurn.commitMs", VOICE_LIMITS.commitMs),
+    threshold,
+    maxSilenceMs: integer(given.maxSilenceMs, "endOfTurn.maxSilenceMs", VOICE_LIMITS.maxSilenceMs),
+  };
+  if (out.maxSilenceMs < out.commitMs) throw new HttpError(400, "endOfTurn.maxSilenceMs must be at least its commitMs");
+  return out;
+}
 function metadataInput(value: unknown) {
   if (value === undefined) return {};
   const metadata = object(value, "metadata");
@@ -349,6 +380,11 @@ export interface VoiceSessionsOptions {
   /** The text a submitted run writes, so far and as it is written (a prompt's speak); without it, prompts cannot speak. */
   followStreaming?(agent: string, tenant: string, requestId: string, signal: AbortSignal): AsyncIterable<string>;
   transcriptionsPerNode?: number;
+  /**
+   * The node's turn-taking models (src/voice/turns: Silero VAD, Smart Turn), for sessions whose endOfTurn is smart (the
+   * default when given); without them, sessions end turns on silence.
+   */
+  turnModels?: TurnModels;
   /** End users' credit; without it, sessions are billed to the tenant alone. */
   credit?: VoiceCredit;
   /** Live sessions per tenant (VOICE_LIMITS.perTenant). */
@@ -499,6 +535,7 @@ export class VoiceSessions {
       ignoreUserIds: ignored(input.ignoreUserIds), metadata: metadataInput(input.metadata), notice,
       speak, bargeIn: bargeIn.on, ...(bargeIn.policy ? { interruption: bargeIn.policy } : {}), voice, agentReplies,
       ...(transcription ? { transcription } : {}), ...(speech ? { speech } : {}),
+      endOfTurn: endOfTurnInput(input.endOfTurn, this.options.turnModels ? "smart" : "silence"),
     };
   }
 
@@ -507,7 +544,7 @@ export class VoiceSessions {
    * when this node can, else by a peer's scan. Answers the session with the notice the app must post.
    */
   async create(tenant: string, input: Record<string, unknown>) {
-    only(input, "body", ["provider", "discord", "subject", "bucket", "context", "keyScope", "deliver", "language", "prompt", "silenceMs", "maxMinutes", "idleMinutes", "emptySeconds", "ignoreUserIds", "metadata", "notice", "speak", "bargeIn", "voice", "transcription", "speech"]);
+    only(input, "body", ["provider", "discord", "subject", "bucket", "context", "keyScope", "deliver", "language", "prompt", "silenceMs", "maxMinutes", "idleMinutes", "emptySeconds", "ignoreUserIds", "metadata", "notice", "speak", "bargeIn", "voice", "transcription", "speech", "endOfTurn"]);
     const provider = input.provider ?? "discord";
     if (provider !== "discord" && provider !== "browser") throw new HttpError(400, `provider must be one of: ${VOICE_PROVIDERS.join(", ")}`);
     if (!this.options.transports[provider] || (provider === "browser" && !this.options.browser)) throw new HttpError(404, provider === "browser" ? "Browser voice sessions are not enabled on this runtime" : "Voice sessions are not enabled on this runtime");
@@ -526,6 +563,7 @@ export class VoiceSessions {
     if (options.agentReplies && !options.deliver.agent) throw new HttpError(400, "speak.agentReplies speaks deliver.agent's replies: give deliver.agent");
     if (options.agentReplies && !this.options.submitStreaming) throw new HttpError(404, "Speaking agents' replies is not enabled on this runtime");
     if (options.speak && (!this.options.synthesizer || !this.options.transports[provider]?.speaks)) throw new HttpError(404, "Speaking is not enabled on this runtime");
+    if (options.endOfTurn?.mode === "smart" && !this.options.turnModels) throw new HttpError(404, "Smart end of turn is not enabled on this runtime: use endOfTurn silence");
     if (options.deliver.agent && !await this.options.agentOwned(options.deliver.agent, tenant)) throw new HttpError(404, "Unknown agent in deliver.agent");
     await this.options.admit(tenant);
     const refused = options.subject !== undefined ? await this.options.credit?.refusal(tenant, options.subject, options.bucket ?? DEFAULT_BUCKET) : undefined;
@@ -830,6 +868,7 @@ export class VoiceSessions {
     this.connect(held, transport);
   }
 
+  /** A session's segmenter: turn-taking's (smart), when the session asks for it and this node has the models; else by level and silence. */
   private credentials(row: Row): VoiceCredentials {
     const secret: Secret = JSON.parse(this.options.accounts.unseal(aad(row.id), row.sealed!));
     return { guildId: row.guild, channelId: row.channel, userId: row.bot_user, ...secret };
@@ -844,6 +883,7 @@ export class VoiceSessions {
       silenceMs: options.silenceMs, ignoreUserIds: options.ignoreUserIds, bargeIn: !!held.speech && options.bargeIn !== false,
       bargeInMinMs: policy.minMs, bargeInPause: policy.confirmMs > 0,
       live: this.options.transcriber.liveOrder(options.transcription?.providers).length > 0,
+      ...(options.endOfTurn ? { endOfTurn: options.endOfTurn } : {}),
     };
   }
 
@@ -886,7 +926,7 @@ export class VoiceSessions {
   private connect(held: Held, transport: VoiceTransport) {
     if (held.credentials.endpoint === null) return;
     const log = (type: string, fields: Record<string, unknown> = {}) => console.log(JSON.stringify({ type, session: held.id, node: this.options.node, epoch: held.claim.epoch, ...fields }));
-    const factory = this.options.media?.(transport, held.row.provider as typeof VOICE_PROVIDERS[number]) ?? inlineMedia(transport);
+    const factory = this.options.media?.(transport, held.row.provider as typeof VOICE_PROVIDERS[number]) ?? inlineMedia(transport, this.options.turnModels);
     // Events of a media replaced (lost, crashed) or of a session let go are not the session's, but its cuts are: what
     // was said is still transcribed.
     let media: Media | undefined;

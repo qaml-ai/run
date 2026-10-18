@@ -1,4 +1,5 @@
 import { Worker } from "node:worker_threads";
+import type { TurnModelsHost } from "./turns/inference.ts";
 import type { VoiceCredentials, VoiceTransport } from "../voice-sessions.ts";
 import type { Playback } from "../voice-speech.ts";
 import { metricLine, safeError, writeMetricLine } from "../metrics.ts";
@@ -35,6 +36,8 @@ export type MediaHostOptions = {
   closeMs?: number;
   /** Workers kept started and empty, so a session's media does not wait for one to load (1 by default). */
   spare?: number;
+  /** The node's turn models (src/voice/turns): each worker gets a port to them, and another when one closes. */
+  turnModels?: TurnModelsHost;
 };
 
 export const MEDIA_HOST_DEFAULTS = Object.freeze({ sessionsPerWorker: 1, maxWorkers: 16, maxMb: 256, heapMb: 128, tickMs: 1_000, stallMs: 5_000, closeMs: 2_000, spare: 1 });
@@ -42,6 +45,8 @@ export const MEDIA_HOST_DEFAULTS = Object.freeze({ sessionsPerWorker: 1, maxWork
 const WORKER = new URL("./media-worker.ts", import.meta.url);
 
 /** One worker and the sessions it holds. */
+type ShardOptions = Required<Omit<MediaHostOptions, "transport" | "speaks" | "turnModels">> & { transport: TransportSpec; turnModels?: TurnModelsHost };
+
 class Shard {
   readonly worker: Worker;
   readonly sessions = new Map<string, WorkerMedia>();
@@ -51,10 +56,16 @@ class Shard {
   dead?: string;
   private readonly onDead: (shard: Shard, reason: string) => void;
 
-  constructor(options: Required<Omit<MediaHostOptions, "transport" | "speaks">> & { transport: TransportSpec }, onDead: (shard: Shard, reason: string) => void) {
+  private readonly turnModels?: TurnModelsHost;
+  private readonly onModels: () => void;
+
+  constructor(options: ShardOptions, onDead: (shard: Shard, reason: string) => void, onModels: () => void = () => {}) {
     this.onDead = onDead;
-    const init: MediaWorkerInit = { protocol: MEDIA_PROTOCOL, transport: options.transport, tickMs: options.tickMs };
-    this.worker = new Worker(WORKER, { workerData: init, resourceLimits: { maxOldGenerationSizeMb: options.heapMb, maxYoungGenerationSizeMb: 16 }, stdout: false, stderr: false });
+    this.onModels = onModels;
+    this.turnModels = options.turnModels;
+    const models = options.turnModels?.port();
+    const init: MediaWorkerInit = { protocol: MEDIA_PROTOCOL, transport: options.transport, tickMs: options.tickMs, ...(models ? { models } : {}) };
+    this.worker = new Worker(WORKER, { workerData: init, transferList: models ? [models as never] : [], resourceLimits: { maxOldGenerationSizeMb: options.heapMb, maxYoungGenerationSizeMb: 16 }, stdout: false, stderr: false });
     this.worker.unref();
     this.worker.on("message", (message: FromMedia) => {
       try { this.message(message, options.maxMb); }
@@ -76,6 +87,16 @@ class Shard {
       return;
     }
     if (message.t === "refused") { this.kill(`refused: ${message.error}`); return; }
+    if (message.t === "models_lost") {
+      // The models restarted: a fresh port, once they are ready again.
+      void this.turnModels?.ready.then(() => {
+        if (this.dead) return;
+        const port = this.turnModels!.port();
+        this.worker.postMessage({ t: "models", port }, [port as never]);
+        this.onModels();
+      }, () => {});
+      return;
+    }
     this.sessions.get(message.session)?.message(message);
   }
 
@@ -95,13 +116,15 @@ class Shard {
 }
 
 export class MediaHost {
-  private readonly options: Required<Omit<MediaHostOptions, "transport" | "speaks">> & { transport: TransportSpec; speaks: boolean };
+  private readonly options: ShardOptions & { speaks: boolean };
   private readonly shards = new Set<Shard>();
   private readonly spares: Shard[] = [];
   private readonly timer: ReturnType<typeof setInterval>;
   private closed = false;
   /** Workers that died with sessions (crashes), since the host started: for tests and the node's stats. */
   crashes = 0;
+  /** Fresh ports to the turn models handed to workers whose port closed (the models restarted). */
+  modelPorts = 0;
 
   constructor(options: MediaHostOptions) {
     this.options = { ...MEDIA_HOST_DEFAULTS, ...options };
@@ -129,7 +152,7 @@ export class MediaHost {
   }
 
   /** Workers running now, and the sessions in them. */
-  stats() { return { workers: this.shards.size, sessions: [...this.shards].reduce((sum, shard) => sum + shard.sessions.size, 0), crashes: this.crashes }; }
+  stats() { return { workers: this.shards.size, sessions: [...this.shards].reduce((sum, shard) => sum + shard.sessions.size, 0), crashes: this.crashes, modelPorts: this.modelPorts }; }
 
   /** End every worker (the node is stopping: its sessions were released first). */
   async close() {
@@ -158,7 +181,7 @@ export class MediaHost {
   }
 
   private start(): Shard {
-    const shard = new Shard(this.options, (dead, reason) => this.dead(dead, reason));
+    const shard = new Shard(this.options, (dead, reason) => this.dead(dead, reason), () => { this.modelPorts++; });
     this.shards.add(shard);
     return shard;
   }
@@ -275,6 +298,7 @@ class WorkerMedia implements Media {
       case "started": this.playing.get(message.id)?.started(); return;
       case "played": this.playing.get(message.id)?.settle(message.result, message.stats); return;
       case "closed": this.closing?.(); return;
+      case "turn": events.turn?.(message.event); return;
     }
   }
 

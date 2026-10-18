@@ -1,6 +1,9 @@
-import type { VoiceConnection, VoiceCredentials, VoiceTransport } from "../voice-sessions.ts";
+import type { EndOfTurn, VoiceConnection, VoiceCredentials, VoiceTransport } from "../voice-sessions.ts";
+import type { TurnModels } from "./turns/inference.ts";
+import type { TurnEvent } from "./turns/turn-taker.ts";
+import { TurnSegmenter } from "./turns/segmenter.ts";
 import type { Playback } from "../voice-speech.ts";
-import { opusFromPcm, Segmenter, type Cut } from "../voice-audio.ts";
+import { opusFromPcm, Segmenter, type Cut, type SegmenterOptions } from "../voice-audio.ts";
 import { safeError } from "../metrics.ts";
 
 /**
@@ -28,6 +31,11 @@ export type MediaOptions = {
   bargeInPause?: boolean;
   /** Each utterance's audio goes to `pcm` as it is spoken (live transcription). */
   live: boolean;
+  /**
+   * How a turn ends (src/voice/turns): smart, by Silero VAD and Smart Turn (TurnSegmenter), when the media has the
+   * node's turn models; else on silence (Segmenter).
+   */
+  endOfTurn?: EndOfTurn;
 };
 
 /** What the media reports to its session. Each is called on the session's thread. */
@@ -53,6 +61,8 @@ export interface MediaEvents {
   drop(speaker: string): void;
   /** An utterance was cut. */
   cut(cut: Cut): void;
+  /** Turn-taking's events, with smart end of turn (likely_end, resume, turn_end…), after the segmenter acted on each. */
+  turn?(event: TurnEvent): void;
   /**
    * The media died (its worker crashed, ran out of memory or stopped answering): no event follows, and its playbacks
    * ended `error`. Only media in a worker can. `kind`: crashed, out_of_memory, unresponsive or memory_limit.
@@ -87,9 +97,12 @@ export interface Media {
 export type MediaFactory = (session: string, credentials: VoiceCredentials, options: MediaOptions, events: MediaEvents) => Media;
 
 /** Media on the calling thread, on a transport's connections. */
-export function inlineMedia(transport: VoiceTransport): MediaFactory {
-  return (_session, credentials, options, events) => new MediaSession(transport, credentials, options, events);
+export function inlineMedia(transport: VoiceTransport, models?: TurnModels): MediaFactory {
+  return (_session, credentials, options, events) => new MediaSession(transport, credentials, options, events, models);
 }
+
+/** What cuts a session's speakers into utterances: the energy Segmenter, or turn-taking's TurnSegmenter. */
+type Cutter = { packet(speaker: string, packet: Uint8Array, lost?: number): void; broken(speaker: string): void; flush(ended: "handoff" | "end" | "error"): void };
 
 /**
  * One session's media: its connection, a segmenter over its speakers, and playback. The same class runs inline and
@@ -97,7 +110,7 @@ export function inlineMedia(transport: VoiceTransport): MediaFactory {
  */
 export class MediaSession implements Media {
   private readonly connection: VoiceConnection;
-  private readonly segmenter: Segmenter;
+  private readonly segmenter: Cutter;
   private options: MediaOptions;
   private self: string;
   private readonly events: MediaEvents;
@@ -108,11 +121,11 @@ export class MediaSession implements Media {
   private paused = false;
   private closed = false;
 
-  constructor(transport: VoiceTransport, credentials: VoiceCredentials, options: MediaOptions, events: MediaEvents) {
+  constructor(transport: VoiceTransport, credentials: VoiceCredentials, options: MediaOptions, events: MediaEvents, models?: TurnModels) {
     this.options = { ...options, ignoreUserIds: [...options.ignoreUserIds] };
     this.self = credentials.userId;
     this.events = events;
-    this.segmenter = new Segmenter({
+    const cutting: SegmenterOptions = {
       silenceMs: options.silenceMs,
       cut: cut => events.cut(cut),
       ...(options.live ? { live: { audio: (speaker: string, pcm: Buffer) => events.pcm(speaker, pcm), drop: (speaker: string) => events.drop(speaker) } } : {}),
@@ -121,7 +134,14 @@ export class MediaSession implements Media {
         events.speechStart(speaker);
       },
       loud: (speaker, speechMs) => this.loud(speaker, speechMs),
-    });
+    };
+    const turn = options.endOfTurn;
+    this.segmenter = turn?.mode === "smart" && models
+      ? new TurnSegmenter({
+        ...cutting, models, event: event => events.turn?.(event),
+        policy: { endOfTurn: { mode: "smart", checkMs: 200, commitMs: turn.commitMs, threshold: turn.threshold, maxSilenceMs: turn.maxSilenceMs, silenceMs: options.silenceMs } },
+      }) as unknown as Cutter
+      : new Segmenter(cutting);
     this.connection = transport.connect(credentials, {
       ready: () => { if (!this.closed) events.ready(); },
       packet: (speaker, packet, lost) => {

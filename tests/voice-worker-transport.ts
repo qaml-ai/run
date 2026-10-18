@@ -14,6 +14,7 @@ export const CHANNEL = "camelrun-voice-test";
 export type Command =
   | { guild: string; cmd: "ready" }
   | { guild: string; cmd: "talk"; speaker: string; seconds: number }
+  | { guild: string; cmd: "send"; speaker: string; packets: Uint8Array[] }
   | { guild: string; cmd: "others"; users: string[] }
   | { guild: string; cmd: "crash" | "oom" | "hang" };
 export type Report =
@@ -45,6 +46,14 @@ export function workerFakeTransport(options: { playEveryMs?: number } = {}): Voi
         const timer = setInterval(() => {
           if (connection.closed || sent >= total) { clearInterval(timer); return; }
           connection.handlers.packet(command.speaker, loud[sent++ % loud.length]);
+        }, 20);
+        return;
+      }
+      case "send": {
+        let sent = 0;
+        const timer = setInterval(() => {
+          if (connection.closed || sent >= command.packets.length) { clearInterval(timer); return; }
+          connection.handlers.packet(command.speaker, command.packets[sent++]);
         }, 20);
         return;
       }

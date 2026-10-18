@@ -28,7 +28,7 @@ export const INFERENCE_LIMITS = Object.freeze({
 });
 
 /** A client of the turn models over `port` (from `startTurnModels().port()`, possibly sent to another thread). */
-export function clientFrom(port: MessagePort): TurnModels & { stats(): Promise<Extract<HostMessage, { type: "stats" }>> } {
+export function clientFrom(port: MessagePort): TurnModels & { stats(): Promise<Extract<HostMessage, { type: "stats" }>>; readonly closed: boolean } {
   let next = 0, closed = false;
   type Waiter = { resolve(message: HostMessage): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> };
   const waiting = new Map<number, Waiter>();
@@ -72,6 +72,24 @@ export function clientFrom(port: MessagePort): TurnModels & { stats(): Promise<E
     },
     stats: () => call<"stats">({ type: "stats", id: ++next }, [], 5_000),
     close() { port.close(); failAll("turn models closed"); },
+    get closed() { return closed; },
+  };
+}
+
+/**
+ * A client of `host` that outlives its restarts: a call made after its port closed (the host ended) takes a new port.
+ * What was pending when it ended still fails, fast.
+ */
+export function hostClient(host: TurnModelsHost): TurnModels {
+  let client: ReturnType<typeof clientFrom> | undefined;
+  const current = () => {
+    if (!client || client.closed) client = clientFrom(host.port());
+    return client;
+  };
+  return {
+    vad: (input, state) => current().vad(input, state),
+    endOfTurn: audio => current().endOfTurn(audio),
+    close() { client?.close(); },
   };
 }
 

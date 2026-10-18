@@ -1354,6 +1354,12 @@ export const VoiceSessionInput = z.strictObject({
   voice: z.string().optional().openapi({ description: "With speak: the voice speech is made in (OpenAI's: alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, verse…). Default alloy", example: "coral" }),
   transcription: VoiceTranscription.optional(),
   speech: VoiceSpeechProviders.optional(),
+  endOfTurn: z.union([z.enum(["smart", "silence"]), z.strictObject({
+    mode: z.enum(["smart", "silence"]).optional().openapi({ description: "smart: a speaker's turn ends when a turn-detection model (Smart Turn, on their audio) judges them done at a pause, with speech found by a VAD (Silero), not by loudness; silence: after silenceMs of quiet. Default smart where the runtime has the models" }),
+    commitMs: range(VOICE_LIMITS.commitMs, "milliseconds", "smart: silence after which a turn the model calls complete ends"),
+    threshold: z.number().min(0.05).max(0.95).optional().openapi({ description: "smart: how sure the model must be that the speaker is done (0.05-0.95, default 0.5): higher waits more often" }),
+    maxSilenceMs: range(VOICE_LIMITS.maxSilenceMs, "milliseconds", "smart: silence after which any turn ends (a speaker the model expects to go on, who does not)"),
+  })]).optional().openapi({ description: "How a speaker's turn (an utterance) ends: smart or silence, or {mode, commitMs, threshold, maxSilenceMs}" }),
 }).openapi("VoiceSessionInput");
 export const VoiceSessionUpdate = z.strictObject({
   discord: z.strictObject({
@@ -1378,6 +1384,7 @@ export const VoiceSession = z.object({
   interruption: z.object({ minMs: z.number(), confirmMs: z.number(), resumeMs: z.number() }).optional().openapi({ description: "With speak and bargeIn: the barge-in timing in use" }),
   agentReplies: z.boolean().openapi({ description: "The session speaks deliver.agent's replies (speak: {agentReplies: true})" }),
   transcription: VoiceTranscription.optional(), speech: VoiceSpeechProviders.optional(),
+  endOfTurn: z.object({ mode: z.enum(["smart", "silence"]), commitMs: z.number(), threshold: z.number(), maxSilenceMs: z.number() }).openapi({ description: "How a speaker's turn ends (smart: a turn-detection model at pauses; silence: silenceMs of quiet)" }),
   speeches: z.number().openapi({ description: "Speeches played (each counted when it ended having made speech)" }), spokenSeconds: z.number().openapi({ description: "Seconds of speech made (billed)" }),
   utterances: z.number(), speechSeconds: z.number().openapi({ description: "Seconds of speech transcribed (billed)" }), costUsd: z.number(),
   createdAt: z.number(), startedAt: z.number().nullable(), lastSpeechAt: z.number().nullable(), endedAt: z.number().nullable(),

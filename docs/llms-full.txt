@@ -2919,7 +2919,8 @@ Discord allows one voice connection per user and server: a second `POST` for the
 | `bucket` | with end-user credits on: which of the subject's buckets pays |
 | `deliver` | `webhooks` (default `true`): `voice.*` events to your endpoints; `agent`: each utterance as a prompt to that agent |
 | `language`, `prompt` | the language spoken (`en`, `pt-BR`; detected per utterance when left out), and words to expect (names, jargon) |
-| `silenceMs` | silence that ends an utterance: 200 to 5000, default 800 |
+| `endOfTurn` | how a speaker's turn (an utterance) ends: `smart` (the default where the runtime has the models) or `silence`, or `{mode, commitMs, threshold, maxSilenceMs}`; see [turns](https://run.camelai.com/docs/guides/voice-calls.md#turns) |
+| `silenceMs` | with `endOfTurn: silence`: silence that ends an utterance: 200 to 5000, default 800 |
 | `maxMinutes`, `idleMinutes`, `emptySeconds` | the session ends after `maxMinutes` (default 240, at most 720), after `idleMinutes` without speech (default 30), or with no one else in the call for `emptySeconds` (default 60) |
 | `ignoreUserIds` | users never transcribed and not counted as company: other bots |
 | `metadata` | anything, at most 4 KB of JSON, echoed in every `voice.*` event |
@@ -2956,9 +2957,27 @@ to leave. When your gateway sees the bot's own `VOICE_STATE_UPDATE` with `channe
 `speechSeconds`, `costUsd`); `GET /v1/voice/sessions?state=live` lists them, newest first, a page at a time. Ended
 sessions are listed for 30 days.
 
+## Turns
+
+An utterance is one speaker's turn. How it ends is `endOfTurn`:
+
+- `smart` (the default where the runtime runs the turn models, which its operator turns on): speech is found by a voice activity model (Silero VAD),
+  not by loudness, so room noise or an open mic is not speech. At each pause, after 200 ms of silence, a turn-detection
+  model (Pipecat's Smart Turn, 23 languages) listens to the speaker's last 8 seconds and judges whether they are done.
+  If they are, the turn ends at `commitMs` of silence (default 500; 200 to 3000). If they are mid-thought, they get up to
+  `maxSilenceMs` (default 1400; 500 to 5000) before it ends anyway. `threshold` (0.05 to 0.95, default 0.5) is how
+  sure it must be that they are done: higher waits more often.
+- `silence`: the turn ends after `silenceMs` without speech, speech being audio over -45 dBFS.
+
+Measured on 920 labelled turns in 23 languages (pipecat's smart-turn test set): with `smart` at its defaults, a turn
+ends 580 ms after the last word (median; `silence` at 800 ms: 816 ms), and a speaker who pauses mid-thought is held
+for them 87% of the time (`silence` cuts 99% of such pauses of 800 ms or more). A runtime without the models (its
+operator has not set `AGENT_VOICE_TURN_MODELS=true`, or they could not load) ends turns on `silence`, and refuses
+`smart`.
+
 ## Utterances
 
-Each person's audio is cut into utterances: their speech until `silenceMs` passes without any, at most 30 seconds each
+Each person's audio is cut into utterances: their speech until their turn ends (see [turns](https://run.camelai.com/docs/guides/voice-calls.md#turns)), at most 30 seconds each
 (a longer monologue goes on in the next), and none with less than 300 ms of speech. Silence is either no audio (a
 person's client stops sending when they stop talking) or quiet audio, under -45 dBFS: a sender that never stops (a bot
 playing a file, a client set to transmit always) sends encoded silence in its pauses. Quiet beyond 200 ms before and
