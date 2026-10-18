@@ -3084,7 +3084,8 @@ bot plays it as it comes:
 | `deepgram` | `aura-2` | An Aura voice. Default: `aura-2-thalia-en` |
 | `openai` | `gpt-4o-mini-tts` | `voice` (alloy, coral, verse…). Takes `instructions` |
 
-A provider that fails, or that sends no audio within 3 s, is passed over for the next one. Once the bot has started
+A provider that fails, or that sends no audible audio within 3 s (silence does not count, so a provider that streams
+silence and stalls is caught), is passed over for the next one. Once the bot has started
 speaking, a failure ends that speech (`voice.speech.ended` with `reason: "error"`): another voice cannot carry on
 mid-sentence. Without `speech.providers`, a session uses the runtime's chain (`AGENT_VOICE_TTS`), else OpenAI. The
 session's `language` tells providers that speak many languages which one to pronounce.

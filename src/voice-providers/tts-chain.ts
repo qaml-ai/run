@@ -13,9 +13,38 @@ export type SpeechMember = { provider: SpeechProvider; voice: string; key(): Pro
 export type Served = { provider: string; model: string; voice: string; platform: boolean };
 
 export const SPEECH_CHAIN = Object.freeze({
-  /** A provider that has not sent its first audio by then is passed over for the next (when there is one). */
+  /**
+   * A provider that has not sent audible audio by then (bytes of silence do not count: a provider may stream silence
+   * and stall) is passed over for the next, when there is one.
+   */
   firstAudioMs: 3_000,
+  /** Audible: a 20 ms frame (24 kHz mono 16-bit) above -45 dBFS RMS. */
+  audibleRms: 32_768 * 10 ** (-45 / 20),
 });
+
+/** Whether PCM fed to it in pieces (24 kHz mono s16le, split anywhere) has reached an audible 20 ms frame yet. */
+class PcmLevel {
+  private carry = Buffer.alloc(0);
+  audible(chunk: Uint8Array): boolean {
+    let pcm = Buffer.concat([this.carry, Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength)]);
+    const frame = 960;
+    for (; pcm.length >= frame; pcm = pcm.subarray(frame)) {
+      let sum = 0;
+      for (let i = 0; i < frame; i += 2) sum += pcm.readInt16LE(i) ** 2;
+      if (Math.sqrt(sum / (frame / 2)) > SPEECH_CHAIN.audibleRms) return true;
+    }
+    // A last piece shorter than a frame is judged as it is (a short speech's end).
+    this.carry = Buffer.from(pcm);
+    return false;
+  }
+  /** What is left over, less than a frame, judged alone. */
+  rest(): boolean {
+    if (this.carry.length < 2) return false;
+    let sum = 0;
+    for (let i = 0; i + 1 < this.carry.length; i += 2) sum += this.carry.readInt16LE(i) ** 2;
+    return Math.sqrt(sum / (this.carry.length >> 1)) > SPEECH_CHAIN.audibleRms;
+  }
+}
 
 /**
  * A speech made by the first member that can: each in turn, skipping one without a key, and moving on when one fails
@@ -38,12 +67,28 @@ export async function* chainedSpeech(members: SpeechMember[], input: Omit<Speech
     const onAbort = () => own.abort(signal.reason);
     signal.addEventListener("abort", onAbort, { once: true });
     const iterator = member.provider.stream({ ...input, voice }, credentials, own.signal)[Symbol.asyncIterator]();
-    let first: IteratorResult<Uint8Array>;
+    // What came before the first audible audio, held back (it is played once the provider is chosen), and whether the
+    // stream ended there.
+    const held: Uint8Array[] = [];
+    let ended = false;
     try {
       const firstAudioMs = options.firstAudioMs ?? SPEECH_CHAIN.firstAudioMs;
       let timer: ReturnType<typeof setTimeout> | undefined;
-      const late = more ? new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new SpeechFailed(502, `${member.provider.id} made no audio within ${firstAudioMs} ms`)), firstAudioMs); }) : undefined;
-      try { first = await (late ? Promise.race([iterator.next(), late]) : iterator.next()); } finally { clearTimeout(timer); }
+      // With another member to turn to, this one must make audible audio in time: silence, or a stream that stalls
+      // after its first bytes, is passed over as an error would be. The last member is waited for.
+      const late = more ? new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new SpeechFailed(502, `${member.provider.id} made no audible audio within ${firstAudioMs} ms`)), firstAudioMs); }) : undefined;
+      const level = new PcmLevel();
+      let audible = false;
+      try {
+        for (;;) {
+          const next = await (late ? Promise.race([iterator.next(), late]) : iterator.next());
+          if (next.done) { ended = true; break; }
+          held.push(next.value);
+          if (!more) break;
+          if (level.audible(next.value)) { audible = true; break; }
+        }
+      } finally { clearTimeout(timer); }
+      if (more && !audible && !level.rest()) throw new SpeechFailed(502, `${member.provider.id} made ${held.some(chunk => chunk.byteLength) ? "only silence" : "no audio"}`);
     } catch (error) {
       signal.removeEventListener("abort", onAbort);
       own.abort();
@@ -55,8 +100,8 @@ export async function* chainedSpeech(members: SpeechMember[], input: Omit<Speech
     }
     try {
       served({ provider: member.provider.id, model: member.provider.model, voice, platform });
-      if (first.done) return;
-      yield first.value;
+      for (const chunk of held) yield chunk;
+      if (ended) return;
       for (;;) {
         const next = await iterator.next();
         if (next.done) return;

@@ -13,7 +13,7 @@
   prior-turn context: what was just said prompts the next utterance.
 - **Speech chain.** `speech: {providers, voices}` speaks through ElevenLabs `eleven_flash_v2_5`, Cartesia `sonic-3`,
   Deepgram `aura-2` or OpenAI, each provider with its own voice. A provider that fails or is slow (3 s) before its first
-  audio is passed over for the next.
+  audio (silence does not count) is passed over for the next.
 - **Runtime defaults.** `AGENT_VOICE_STT` and `AGENT_VOICE_TTS` set the chains a session gets when it names none
   ([configuration](configuration.md)).
 - **Keys.** New key providers `deepgram`, `soniox`, `assemblyai`, `elevenlabs` and `cartesia` (`PUT

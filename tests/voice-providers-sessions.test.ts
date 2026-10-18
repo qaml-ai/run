@@ -29,7 +29,7 @@ test("a session names its speech providers: Deepgram transcribes as people speak
     if (req.url?.endsWith("/audio/transcriptions")) { batch++; res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ text: "batch", usage: { type: "duration", seconds: 1 } })); return; }
     if (req.url?.startsWith("/v1/text-to-speech/")) {
       spoken.push({ url: req.url, key: String(req.headers["xi-api-key"]), body: JSON.parse(body) });
-      res.writeHead(200, { "Content-Type": "audio/pcm" }).end(Buffer.alloc(24_000));
+      res.writeHead(200, { "Content-Type": "audio/pcm" }).end(Buffer.alloc(24_000, 7));
       return;
     }
     res.writeHead(404).end();
