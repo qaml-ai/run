@@ -18417,6 +18417,144 @@
         }
       }
     },
+    "/v1/voices/search": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "elevenlabs",
+                "grok",
+                "openai",
+                "gemini"
+              ]
+            },
+            "required": true,
+            "name": "provider",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 500,
+              "default": ""
+            },
+            "required": false,
+            "name": "q",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "professional",
+                "famous",
+                "high_quality"
+              ]
+            },
+            "required": false,
+            "name": "category",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^([1-9]|[12][0-9]|30)$",
+              "default": "10",
+              "description": "1 to 30, default 10"
+            },
+            "required": false,
+            "description": "1 to 30, default 10",
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Matching voices; library metadata is fetched for every request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "voices": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "provider": {
+                            "type": "string",
+                            "enum": [
+                              "elevenlabs",
+                              "grok",
+                              "openai",
+                              "gemini"
+                            ]
+                          },
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "description": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "labels": {
+                            "type": "object",
+                            "additionalProperties": {
+                              "type": "string"
+                            }
+                          },
+                          "previewUrl": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "category": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "provider",
+                          "id",
+                          "name",
+                          "description",
+                          "labels",
+                          "previewUrl",
+                          "category"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "voices"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/voice/sessions": {
       "post": {
         "parameters": [

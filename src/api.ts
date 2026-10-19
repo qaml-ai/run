@@ -28,6 +28,7 @@ import { definitionRoutes } from "./definitions-api.ts";
 import { runRoutes, type RunsContext } from "./runs.ts";
 import { endUserRoutes } from "./end-users-api.ts";
 import { bucketInput, DEFAULT_BUCKET, type EndUserCredits } from "./end-user-credits.ts";
+import { searchVoices, VoiceSearchInput, VoiceSearchResult } from "./voice-library.ts";
 import { voiceRoutes } from "./voice-api.ts";
 import type { VoiceSessions } from "./voice-sessions.ts";
 import type { ClientEvent, RequestRecord, TurnSnapshot } from "../shared/client-protocol.ts";
@@ -115,6 +116,8 @@ export interface ApiContext {
   transcriptions?: TranscriptionService;
   /** `POST /v1/speech`; without it, speech is not made alone. */
   speech?: SpeechService;
+  /** The speech credential resolver, without a key scope, for voice library discovery. */
+  voiceLibraryKey?: (tenant: string) => Promise<string | undefined>;
   /** `POST /v1/images`; without it, image generation is not enabled. */
   images?: ImageService;
   /** The tenant's own users' credit (`/v1/end-users`, end-user-credits.ts); without it, end users are not metered. */
@@ -1234,6 +1237,13 @@ export function api(context: ApiContext) {
   definitionRoutes(route, () => context);
   runRoutes(route, () => context);
   endUserRoutes(route, () => context.endUsers);
+  route(createRoute({
+    method: "get", path: "/v1/voices/search", request: { query: VoiceSearchInput },
+    responses: { 200: reply("Matching voices; library metadata is fetched for every request", VoiceSearchResult) },
+  }), async c => {
+    const input = parse(VoiceSearchInput, c.req.query());
+    return json(c, 200, await searchVoices(input, () => context.voiceLibraryKey?.(c.var.principal.tenant) ?? accounts.apiKey(c.var.principal.tenant, "elevenlabs")));
+  });
   voiceRoutes(route, () => context.voice);
 
   route(createRoute({ method: "get", path: "/v1/agents/{id}/mounts", request: { params: agentId }, responses: { 200: reply("The agent's mounts", z.array(schema.Mount)) } }),

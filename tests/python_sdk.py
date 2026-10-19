@@ -1773,6 +1773,35 @@ class VersionTest(unittest.TestCase):
         self.assertEqual(camelai_run.__version__, tomllib.loads((ROOT / "clients" / "python" / "pyproject.toml").read_text())["project"]["version"])
 
 
+class VoiceLibraryTest(unittest.IsolatedAsyncioTestCase):
+    async def test_search_async_and_sync(self):
+        seen = []
+
+        def handle(request):
+            seen.append(request)
+            return httpx.Response(200, json={"voices": [{"provider": "elevenlabs", "id": "cat_voice", "name": "Cat"}]})
+
+        runtime = AgentRuntime(url="https://runtime.example", api_key="tenant-token")
+        await runtime.http.aclose()
+        runtime.http = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+        try:
+            result = await runtime.voices.search(provider="elevenlabs", q="cat & kitten", category="professional", limit=3)
+            self.assertEqual(result["voices"][0]["id"], "cat_voice")
+        finally:
+            await runtime.http.aclose()
+        runtime = sync.AgentRuntime(url="https://runtime.example", api_key="tenant-token")
+        runtime.http.close()
+        runtime.http = httpx.Client(transport=httpx.MockTransport(handle))
+        try:
+            runtime.voices.search(provider="grok", q="ARA")
+        finally:
+            runtime.http.close()
+        self.assertEqual(seen[0].url.path, "/v1/voices/search")
+        self.assertEqual(dict(seen[0].url.params), {"provider": "elevenlabs", "q": "cat & kitten", "category": "professional", "limit": "3"})
+        self.assertEqual(dict(seen[1].url.params), {"provider": "grok", "q": "ARA"})
+        self.assertTrue(all(request.headers["Authorization"] == "Bearer tenant-token" for request in seen))
+
+
 class OriginTest(unittest.TestCase):
     def test_plain_http_reaches_only_private_hosts(self):
         for url in ["http://localhost:8790", "http://127.0.0.1:8790", "http://runtime:8790", "http://agent-runtime.internal", "http://10.1.2.3", "http://172.20.0.5:8790", "http://192.168.1.9", "https://agents.example.com"]:

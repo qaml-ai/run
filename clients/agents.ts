@@ -299,6 +299,7 @@ export class Agents {
   get endUsers() { return this.runtime.endUsers; }
   /** Voice calls held for your bot, from the credentials its gateway got: `create`, `get`, `list`, `update`, `end`. */
   get voice() { return this.runtime.voice; }
+  get voices() { return this.runtime.voices; }
   private readonly open = new Set<Agent>();
   private readonly connection: "eager" | "lazy";
   constructor(options: AgentsOptions = {}) {

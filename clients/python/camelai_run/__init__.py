@@ -32,7 +32,7 @@ __all__ = [
     "Agents", "Agent", "Run", "RunInput", "InputDetail", "Mount", "WorkspaceMount", "RunStream", "StreamPart", "Runs", "StatelessRunStream",
     "tool", "Tool", "ToolContext", "InputRequired", "RuntimeIdentity", "identity_from_claims", "spawn_agent", "SpawnAgent", "agent_notice",
     "AgentError", "RunError", "CREDIT_REASONS", "EndUserCreditFailure", "end_user_credit",
-    "AgentRuntime", "AgentClient", "AgentFiles", "Download", "Volume", "Telemetry", "Transcriptions", "Images", "EndUsers", "Voice", "DEFAULT_URL",
+    "AgentRuntime", "AgentClient", "AgentFiles", "Download", "Volume", "Telemetry", "Transcriptions", "Images", "EndUsers", "Voice", "Voices", "DEFAULT_URL",
     "serve_tools", "verify_runtime_token", "verify_file_url", "RuntimeTokenError", "TestRuntime", "verify_webhook", "WebhookVerificationError",
 ]
 # Distinguishes "not given" from None (which means "never expires") in create_agent.
@@ -873,6 +873,7 @@ class AgentRuntime(_RuntimeCalls):
         self.end_users = EndUsers(self)
         # Voice calls held for your bot: create, get, list, update, end.
         self.voice = Voice(self)
+        self.voices = Voices(self)
 
     async def _form(self, path, fields, file):
         """A multipart POST with the API key (a transcription's audio), not retried: its answer."""
@@ -1228,6 +1229,18 @@ class EndUsers:
     def _entry(self, end_user, kind, amount, key, reference, metadata):
         body = {"kind": kind, "amount": amount, "key": key, **({"reference": reference} if reference is not None else {}), **({"metadata": metadata} if metadata is not None else {})}
         return self._runtime._rest("POST", self._path(end_user) + "/entries", body)
+
+
+class Voices:
+    """Voice library discovery (runtime.voices, agents.voices)."""
+
+    def __init__(self, runtime):
+        self._runtime = runtime
+
+    def search(self, *, provider, q=None, category=None, limit=None):
+        """Find voices by text; limit is 1 to 30 (default 10). No library results are cached."""
+        query = urlencode({key: value for key, value in {"provider": provider, "q": q, "category": category, "limit": limit}.items() if value is not None})
+        return self._runtime._rest("GET", "/v1/voices/search?" + query)
 
 
 class Voice:
@@ -2839,6 +2852,7 @@ class Agents:
         self.end_users = self.runtime.end_users
         # Voice calls held for your bot: create, get, list, update, end.
         self.voice = self.runtime.voice
+        self.voices = self.runtime.voices
         self._open = set()
         self.connection = connection
 
