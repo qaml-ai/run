@@ -41,7 +41,7 @@ const providerId = value("provider", "openai") as "openai" | "gemini" | "grok" |
 const model = value("model", providerId === "elevenlabs" ? "gemini-2.5-flash-lite" : providerId === "grok" ? "grok-voice-latest" : providerId === "gemini" ? process.env.GEMINI_LIVE_MODEL ?? "gemini-3.8-live" : process.env.OPENAI_REALTIME_MODEL ?? "gpt-realtime-2.1")!;
 const fakeMs = value("fake") === undefined ? undefined : Number(value("fake"));
 const only = (value("only") ?? "").split(",").filter(Boolean);
-const keyName = providerId === "elevenlabs" ? "gemini-2.5-flash-lite" : providerId === "grok" ? "XAI_API_KEY" : providerId === "gemini" ? "GEMINI_API_KEY" : "OPENAI_API_KEY";
+const keyName = providerId === "elevenlabs" ? "ELEVENLABS_API_KEY" : providerId === "grok" ? "XAI_API_KEY" : providerId === "gemini" ? "GEMINI_API_KEY" : "OPENAI_API_KEY";
 const key = process.env[keyName];
 if (!key && fakeMs === undefined) { console.error(`${keyName} is not set: pass --fake <ms> to time our own part with a stand-in provider`); process.exit(2); }
 

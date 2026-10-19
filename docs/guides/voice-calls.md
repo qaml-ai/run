@@ -386,8 +386,8 @@ await agents.voice.create({
 });
 ```
 
-It is off unless the runtime lists a provider in `AGENT_VOICE_REALTIME` (`openai`, `gemini`, `elevenlabs`), and the account has a key
-for it (your OpenAI key, or your `google` key for Gemini, or your `elevenlabs` key for ElevenLabs Agents, under Models & keys, else the platform's; 400
+It is off unless the runtime lists a provider in `AGENT_VOICE_REALTIME` (`openai`, `gemini`, `grok`, `elevenlabs`), and the account has a key
+for it (your OpenAI key, or your `google` key for Gemini, your `xai` key for Grok, or your `elevenlabs` key for ElevenLabs Agents, under Models & keys, else the platform's; 400
 `REALTIME_UNAVAILABLE` without one). The session speaks:
 `speak` may be left out, and your app joins un-muted.
 
@@ -397,7 +397,7 @@ How it works:
   each time who speaks changes, it keeps what came before as its own item and adds a note naming who speaks next:
   `[Ana]`, or `[Ana and Ben, at once]` while two talk over each other. Names come from `speakers` (by user id; PATCH
   it as people join), else `Speaker 1`, `Speaker 2`…
-- **Turns are ours** for OpenAI and Gemini. Their own turn detection is off. A turn ends as it does in the cascade ([turns](#turns):
+- **Turns are ours** for OpenAI, Gemini and Grok. Their own turn detection is off. A turn ends as it does in the cascade ([turns](#turns):
   Smart Turn, or silence), and only then is the model asked to answer. With smart turns it is asked at the likely end
   already (`realtime.speculative`, default true) and its audio waits for the turn to end; if the person goes on, it is
   taken back unheard. While someone else is mid-turn the answer waits for them, and their turn replaces it: one answer
@@ -421,8 +421,8 @@ How it works:
   for anything beyond small talk). Give it the same persona as the agent, and say what the agent can do (its tools),
   so the model knows what to ask it.
 
-`realtime` takes `provider` (`openai`, `gemini`, or `elevenlabs`; default the runtime's first), `model` (OpenAI: `gpt-realtime-2.1`, the
-default, or `gpt-realtime-2.1-mini`; Gemini: `gemini-3.8-live`; ElevenLabs: `gemini-2.5-flash-lite`), `voice` (the model's. OpenAI: `alloy`, `ash`, `ballad`,
+`realtime` takes `provider` (`openai`, `gemini`, `grok`, or `elevenlabs`; default the runtime's first), `model` (OpenAI: `gpt-realtime-2.1`, the
+default, or `gpt-realtime-2.1-mini`; Gemini: `gemini-3.8-live`; Grok: `grok-voice-latest` or `grok-voice-3.0`; ElevenLabs: `gemini-2.5-flash-lite`), `voice` (the model's. OpenAI: `alloy`, `ash`, `ballad`,
 `coral`, `echo`, `sage`, `shimmer`, `verse`, `marin`, `cedar`; Gemini: its prebuilt voices, `Kore`, `Aoede`, `Leda`,
 `Puck`, `Charon`… Default the session's `voice`, or the nearest: OpenAI `nova` → `marin`, `onyx` → `cedar`, `fable` →
 `ballad`; Gemini `coral` → `Kore`, `alloy` → `Aoede`, `onyx` → `Charon`…), `instructions`, `transcribe` (default true:
@@ -434,7 +434,13 @@ use; OpenAI voice names map to Jessica. Speaker labels are contextual updates ar
 attribution for overlapping speech. Interruptions stop buffered playback; streamed input cannot be withdrawn.
 Addressing is decided by the voice model from the call instructions, rather than the local named-turn gate.
 The runtime lazily creates or reuses one private agent per credential, with per-session overrides and signed URLs
-(see [configuration](../operations/configuration.md)). Conversation token usage is unavailable and recorded as zero.
+(see [configuration](../operations/configuration.md)). Conversation token counts are unavailable. Connection duration is billed through the normal speech usage records
+and end-user credit holds, including silent time and interrupted responses. Configure both
+`AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD` and `AGENT_PRICE_ELEVENLABS_LLM_MINUTE_USD`: the former from the
+[Agents pricing page](https://elevenlabs.io/pricing/agents), the latter from Gemini Flash Lite's Detailed costs estimate
+in the agent settings. LLM usage is billed separately by ElevenLabs; this runtime uses the configured per-minute
+estimate, not post-call token reconciliation. Missing either rate refuses sessions with `REALTIME_UNPRICED`.
+Silence discounts, burst surcharges and account-specific allowances are not reconciled.
 
 The providers differ where their APIs do. Gemini Live hears a turn as one activity (a change of speaker inside it is a
 note in its context), transcribes it only once it is asked to answer (a turn that only its words could address is

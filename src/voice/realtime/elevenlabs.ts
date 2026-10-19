@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { createHash } from "node:crypto";
 import { closeDetail, messageJson, openSocket, type Socket, type SocketFactory } from "../../voice-providers/socket.ts";
 import { Resampler24To16 } from "../turns/features.ts";
@@ -30,7 +31,7 @@ const VOICE_FOR = Object.freeze(Object.fromEntries(
   ["alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar", "nova", "onyx", "fable"].map(name => [name, ELEVENLABS_AGENTS.voice]),
 ));
 
-export function elevenlabsAgents(options: { baseUrl?: string; socket?: SocketFactory; fetch?: typeof fetch } = {}): RealtimeProvider {
+export function elevenlabsAgents(options: { baseUrl?: string; socket?: SocketFactory; fetch?: typeof fetch; now?: () => number } = {}): RealtimeProvider {
   const base = (options.baseUrl ?? "https://api.elevenlabs.io").replace(/\/+$/, "");
   const request = options.fetch ?? fetch;
   const socket = options.socket ?? openSocket;
@@ -88,7 +89,7 @@ export function elevenlabsAgents(options: { baseUrl?: string; socket?: SocketFac
         agents.set(identity, agent);
         void agent.catch(() => agents.delete(identity));
       }
-      return new ElevenLabs(config, events, async () => {
+      return new ElevenLabs(config, events, options.now ?? (() => performance.now()), async () => {
         const agentId = await agent;
         const signed = await api(apiKey, `conversation/get-signed-url?agent_id=${encodeURIComponent(agentId)}`);
         if (typeof signed.signed_url !== "string") throw new Error("ElevenLabs Agents returned no signed URL");
@@ -108,22 +109,28 @@ class ElevenLabs implements RealtimeConnection {
   private current?: string;
   private responses = 0;
   private lastAppend = 0;
+  private meteredAt?: number;
+  private readonly now: () => number;
   private readonly resampler = new Resampler24To16();
   private readonly timer: ReturnType<typeof setTimeout>;
   private silence?: ReturnType<typeof setInterval>;
   private readonly calls = new Map<string, string>();
   private suppressed = false;
 
-  constructor(config: RealtimeConfig, events: RealtimeEvents, connect: () => Promise<Socket>) {
+  constructor(config: RealtimeConfig, events: RealtimeEvents, now: () => number, connect: () => Promise<Socket>) {
     this.events = events;
+    this.now = now;
     this.timer = setTimeout(() => this.fail("The realtime connection did not open in time"), ELEVENLABS_AGENTS.connectTimeoutMs);
     this.timer.unref?.();
     void connect().then(socket => {
       if (this.ended) { socket.close(); return; }
       this.socket = socket;
-      socket.onopen = () => socket.send(JSON.stringify({ type: "conversation_initiation_client_data", conversation_config_override: {
-        agent: { prompt: { prompt: config.instructions }, first_message: "", language: config.language ?? "en" }, tts: { voice_id: config.voice },
-      } }));
+      socket.onopen = () => {
+        this.meteredAt = this.now();
+        socket.send(JSON.stringify({ type: "conversation_initiation_client_data", conversation_config_override: {
+          agent: { prompt: { prompt: config.instructions }, first_message: "", language: config.language ?? "en" }, tts: { voice_id: config.voice },
+        } }));
+      };
       socket.onmessage = event => this.message(messageJson(event.data));
       socket.onerror = () => this.fail("The realtime connection failed");
       socket.onclose = event => this.fail(closeDetail(event));
@@ -173,12 +180,20 @@ class ElevenLabs implements RealtimeConnection {
   private fail(detail: string) { this.end("error", detail); }
   private end(reason: "requested" | "error", detail?: string) {
     if (this.ended) return;
+    this.meter();
     this.ended = true;
     clearTimeout(this.timer);
     clearInterval(this.silence);
     this.queue = [];
     try { this.socket?.close(); } catch { /* closed already */ }
     this.events.closed(reason, detail);
+  }
+  private meter() {
+    if (this.meteredAt === undefined) return;
+    const now = this.now();
+    const seconds = Math.max(0, now - this.meteredAt) / 1_000;
+    this.meteredAt = now;
+    if (seconds) this.events.meter?.(seconds, 0);
   }
   private start() {
     if (!this.current) { this.current = `elevenlabs_${++this.responses}`; this.events.responseStarted(this.current); }
@@ -203,6 +218,7 @@ class ElevenLabs implements RealtimeConnection {
         for (const message of this.queue.splice(0)) this.socket!.send(message);
         // Discord streams stop at silence. Keep the provider's VAD clock running between speakers' packets.
         this.silence = setInterval(() => {
+          this.meter();
           if (Date.now() - this.lastAppend >= 40) this.send({ user_audio_chunk: Buffer.alloc(640).toString("base64") });
         }, 20);
         this.silence.unref?.();

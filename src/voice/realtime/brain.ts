@@ -8,7 +8,7 @@ import { TurnClock } from "../latency.ts";
 import type { Addressed, Floor } from "../turns/floor.ts";
 import type { TurnEvent } from "../turns/turn-taker.ts";
 import { Mixer } from "./mixer.ts";
-import { NO_USAGE, REALTIME_PRICES, realtimeCost, realtimeTranscriptionCost, type RealtimeConnection, type RealtimeEvents, type RealtimeTool, type RealtimeUsage } from "./provider.ts";
+import { NO_USAGE, realtimePrice, realtimeCost, realtimeTranscriptionCost, type RealtimeConnection, type RealtimeEvents, type RealtimeTool, type RealtimeUsage } from "./provider.ts";
 
 /**
  * A voice session's realtime brain (`brain: "realtime"`): a speech-to-speech model hears the call and answers aloud,
@@ -233,7 +233,7 @@ export class RealtimeBrain {
     this.hooks = hooks;
     this.clock = options.clock ?? nodeClock();
     this.mixer = new Mixer((pcm, speakers) => this.input(pcm, speakers), { clock: this.clock });
-    if (!REALTIME_PRICES[options.reference]) throw new Error(`Realtime model ${options.reference} has no price configured`);
+    if (!realtimePrice(options.reference)) throw new Error(`Realtime model ${options.reference} has no price configured`);
     this.open();
     if (this.metered) {
       // Flush quiet calls too, and replace their holds before the credit service expires them.
@@ -242,7 +242,7 @@ export class RealtimeBrain {
     }
   }
 
-  private get metered() { return "perMinute" in REALTIME_PRICES[this.options.reference]; }
+  private get metered() { return "perMinute" in realtimePrice(this.options.reference)!; }
 
   /** Who makes a turn's audio, as voice_turn_latency names it: the provider and its model. */
   private ttsInfo() {
@@ -383,6 +383,7 @@ export class RealtimeBrain {
     }
     for (const turn of this.turns.values()) for (const wake of turn.waiters) wake();
     this.connection?.close();
+    this.generation++;
     if (this.metered) this.flushMeter();
     const { costUsd, ...counts } = this.stats;
     this.hooks.log("voice_realtime_stats", { ...counts, costUsd: Math.round(costUsd * 1_000_000) / 1_000_000 });
@@ -466,7 +467,8 @@ export class RealtimeBrain {
     const live = () => !this.closed && generation === this.generation;
     return {
       ready: () => { if (live()) this.hooks.log("voice_realtime_ready"); },
-      meter: (seconds, textInputs) => { if (live() && this.metered) this.meter(seconds, textInputs); },
+      // close() may report its final billable interval after playback has stopped.
+      meter: (seconds, textInputs) => { if (generation === this.generation && this.metered) this.meter(seconds, textInputs); },
       // Responses are asked for one at a time (each after the one before is done): this is the one asked for last.
       responseStarted: id => {
         if (!live()) return;

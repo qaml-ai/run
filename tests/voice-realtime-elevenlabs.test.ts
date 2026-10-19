@@ -5,8 +5,12 @@ import type { AddressInfo } from "node:net";
 import { WebSocketServer, type WebSocket } from "ws";
 import { elevenlabsAgents, ELEVENLABS_AGENTS } from "../src/voice/realtime/elevenlabs.ts";
 import { ASK_AGENT, STAY_SILENT } from "../src/voice/realtime/brain.ts";
-import { realtimeVoice, type RealtimeEvents } from "../src/voice/realtime/provider.ts";
+import { NO_USAGE, realtimeCost, realtimePrice, realtimeVoice, type RealtimeEvents } from "../src/voice/realtime/provider.ts";
 import { sleep, testBrain, tone, until, utter } from "./voice-realtime-fakes.ts";
+
+// Synthetic rates only; real rates are supplied privately at runtime.
+process.env.AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD = "1";
+process.env.AGENT_PRICE_ELEVENLABS_LLM_MINUTE_USD = "2";
 
 async function fakeElevenLabs(t: { after(fn: () => unknown): void }, options: { existing?: boolean; fail?: boolean } = {}) {
   const seen = { requests: [] as { url: string; key: string; body: any }[], events: [] as any[], urls: [] as string[] };
@@ -114,7 +118,7 @@ for (const late of [false, true]) test(`ElevenLabs brain: ask_agent ${late ? "la
   const fake = await fakeElevenLabs(t);
   let resolve!: (reply: string) => void;
   const reply = new Promise<string>(r => { resolve = r; });
-  const state = testBrain({ provider: elevenlabsAgents({ baseUrl: fake.base }), ownsTurns: true, speculative: true,
+  const state = testBrain({ provider: elevenlabsAgents({ baseUrl: fake.base }), reference: "elevenlabs/gemini-2.5-flash-lite", ownsTurns: true, speculative: true,
     limits: { askAgentMs: late ? 20 : 5_000 }, askAgent: async () => reply });
   t.after(() => state.brain.close());
   await until(() => state.logs.some(e => e.type === "voice_realtime_ready"), "brain ready");
@@ -146,7 +150,7 @@ for (const late of [false, true]) test(`ElevenLabs brain: ask_agent ${late ? "la
 
 test("ElevenLabs brain: stay_silent returns a client result, interruption stops buffered playback and drops stale audio", async t => {
   const fake = await fakeElevenLabs(t);
-  const state = testBrain({ provider: elevenlabsAgents({ baseUrl: fake.base }), ownsTurns: true });
+  const state = testBrain({ provider: elevenlabsAgents({ baseUrl: fake.base }), reference: "elevenlabs/gemini-2.5-flash-lite", ownsTurns: true });
   t.after(() => state.brain.close());
   await until(() => state.logs.some(e => e.type === "voice_realtime_ready"), "ready");
   await utter(state.brain, "1", 200);
@@ -185,4 +189,94 @@ test("ElevenLabs close and protocol errors carry redacted reasons; provisioning 
   await until(() => c.got.some(e => e.type === "closed"), "provision failure");
   assert.equal(c.got[0].reason, "error");
   assert.equal(c.got[0].detail, "ElevenLabs Agents provisioning or authentication failed");
+});
+
+
+test("ElevenLabs pricing requires both runtime rates and includes the separately billed LLM", () => {
+  const reference = "elevenlabs/gemini-2.5-flash-lite";
+  assert.equal(realtimePrice(reference, {}), undefined);
+  assert.equal(realtimePrice(reference, { AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD: "1" }), undefined);
+  assert.equal(realtimePrice(reference, { AGENT_PRICE_ELEVENLABS_LLM_MINUTE_USD: "2" }), undefined);
+  assert.equal(realtimeCost(reference, NO_USAGE, 60), 3);
+  assert.equal(realtimeCost(reference, NO_USAGE, 30, 20), 1.5, "context updates are not billable text-only calls");
+  for (const value of ["0", "-1", "NaN", "Infinity", "invalid"]) {
+    for (const name of ["AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD", "AGENT_PRICE_ELEVENLABS_LLM_MINUTE_USD"]) {
+      assert.throws(() => realtimePrice(reference, { ...process.env, [name]: value }), /must be a positive number/);
+    }
+  }
+});
+
+test("ElevenLabs meters wall time once, including silence, interruption and the final close interval", async t => {
+  const fake = await fakeElevenLabs(t);
+  const { got, events } = recorder();
+  let now = 0;
+  const metered: number[] = [];
+  events.meter = (seconds, texts) => { metered.push(seconds); assert.equal(texts, 0); };
+  const provider = elevenlabsAgents({ baseUrl: fake.base, now: () => now });
+  const connection = provider.connect(config, { apiKey: "fixture" }, events);
+  await until(() => got.some(event => event.type === "ready"), "ready");
+  connection.append(tone(100));
+  now = 1_000;
+  await until(() => metered.length > 0, "silent time billed");
+  fake.send(audio());
+  fake.send({ type: "interruption" });
+  await until(() => got.some(event => event.type === "interrupted"), "interrupted");
+  now = 1_500;
+  connection.close();
+  connection.close();
+  await sleep(30);
+  assert.equal(metered.reduce((sum, seconds) => sum + seconds, 0), 1.5);
+});
+
+test("ElevenLabs bills final connection time through a rolling hold and releases no extra response holds", async t => {
+  const fake = await fakeElevenLabs(t);
+  let now = 0, holds = 0;
+  const settlements: number[] = [];
+  const state = testBrain({
+    reference: "elevenlabs/gemini-2.5-flash-lite", ownsTurns: true,
+    provider: elevenlabsAgents({ baseUrl: fake.base, now: () => now }),
+    hold: async () => {
+      holds++;
+      return { settle: async cost => { settlements.push(cost); }, release: async () => {} };
+    },
+  });
+  t.after(() => state.brain.close());
+  await until(() => fake.seen.events.some(event => event.type === "conversation_initiation_client_data"), "connection after hold");
+  fake.send(audio());
+  await until(() => state.brain.stats.responses === 1, "provider response");
+  assert.equal(holds, 1);
+  now = 100;
+  state.brain.close();
+  await until(() => settlements.length === 1, "final hold settled");
+  const expected = realtimeCost("elevenlabs/gemini-2.5-flash-lite", NO_USAGE, now / 1_000);
+  assert.equal(settlements[0], expected);
+  assert.equal(state.usage.reduce((sum, usage) => sum + usage.costUsd, 0), expected);
+  assert.equal(state.brain.stats.costUsd, expected);
+});
+
+
+test("ElevenLabs lost connections settle once and reconnect behind a renewed hold", async t => {
+  const fake = await fakeElevenLabs(t);
+  let now = 0, holds = 0;
+  const settlements: number[] = [];
+  const state = testBrain({
+    reference: "elevenlabs/gemini-2.5-flash-lite", ownsTurns: true,
+    provider: elevenlabsAgents({ baseUrl: fake.base, now: () => now }),
+    hold: async () => {
+      holds++;
+      return { settle: async cost => { settlements.push(cost); }, release: async () => {} };
+    },
+  });
+  t.after(() => state.brain.close());
+  await until(() => state.logs.some(log => log.type === "voice_realtime_ready"), "first connection");
+  now = 100;
+  fake.connections[0].close();
+  await until(() => fake.connections.length === 2, "replacement connection");
+  await until(() => state.logs.filter(log => log.type === "voice_realtime_ready").length === 2, "replacement ready");
+  assert.equal(holds, 2);
+  assert.equal(settlements.length, 1);
+  now = 200;
+  state.brain.close();
+  await until(() => settlements.length === 2, "replacement settled");
+  assert.equal(settlements.reduce((sum, cost) => sum + cost, 0), realtimeCost("elevenlabs/gemini-2.5-flash-lite", NO_USAGE, 0.2));
 });

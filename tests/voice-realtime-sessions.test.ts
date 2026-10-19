@@ -246,6 +246,12 @@ test("Grok speech usage settles the end user's real credit ledger and releases i
 });
 
 test("an ElevenLabs session accepts library voice ids, maps OpenAI names, disables speculation, and resolves the elevenlabs key", async t => {
+  const names = ["AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD", "AGENT_PRICE_ELEVENLABS_LLM_MINUTE_USD"];
+  for (const name of names) {
+    const previous = process.env[name];
+    process.env[name] = "1"; // Synthetic fixture rate.
+    t.after(() => { if (previous === undefined) delete process.env[name]; else process.env[name] = previous; });
+  }
   const realtime = fakeRealtimeProvider();
   const keys: string[] = [];
   const { elevenlabsAgents, ELEVENLABS_AGENTS } = await import("../src/voice/realtime/elevenlabs.ts");
@@ -265,4 +271,66 @@ test("an ElevenLabs session accepts library voice ids, maps OpenAI names, disabl
   assert.equal(mapped.realtime?.voice, ELEVENLABS_AGENTS.voice);
   await a.voice.end("alice", mapped.id);
   await assert.rejects(a.voice.create("alice", { discord: discordGrant(), brain: "realtime", realtime: { voice: "invalid voice" } }), (error: HttpError) => error.status === 400);
+});
+
+
+test("ElevenLabs refuses sessions without both pricing components, before credentials or media", async t => {
+  const { elevenlabsAgents } = await import("../src/voice/realtime/elevenlabs.ts");
+  const realtime = fakeRealtimeProvider();
+  let keys = 0;
+  const cluster = await voiceCluster(t, { realtime: {
+    providers: { elevenlabs: { ...elevenlabsAgents(), connect: realtime.provider.connect } },
+    key: async () => { keys++; return { apiKey: "fixture", platform: true }; },
+  } });
+  const a = await cluster.node("http://a");
+  const name = "AGENT_PRICE_ELEVENLABS_LLM_MINUTE_USD";
+  const previous = process.env[name];
+  delete process.env[name];
+  t.after(() => { if (previous !== undefined) process.env[name] = previous; });
+  await assert.rejects(a.voice.create("alice", { discord: discordGrant(), brain: "realtime", realtime: { provider: "elevenlabs" } }),
+    (error: HttpError) => error.code === "REALTIME_UNPRICED");
+  assert.equal(keys, 0);
+  assert.equal(realtime.connections.length, 0);
+});
+
+
+test("ElevenLabs connection minutes settle speech usage and the end-user ledger on close", async t => {
+  const { elevenlabsAgents } = await import("../src/voice/realtime/elevenlabs.ts");
+  const { NO_USAGE, realtimeCost } = await import("../src/voice/realtime/provider.ts");
+  for (const name of ["AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD", "AGENT_PRICE_ELEVENLABS_LLM_MINUTE_USD"]) {
+    const previous = process.env[name];
+    process.env[name] = "1"; // Synthetic fixture rate.
+    t.after(() => { if (previous === undefined) delete process.env[name]; else process.env[name] = previous; });
+  }
+  const realtime = fakeRealtimeProvider();
+  let credits: EndUserCredits;
+  const credit: VoiceCredit = { refusal: (...args) => credits.refusal(...args), hold: (...args) => credits.hold(...args) };
+  const cluster = await voiceCluster(t, { credit, realtime: {
+    providers: { elevenlabs: { ...elevenlabsAgents(), connect: realtime.provider.connect } },
+    key: async () => ({ apiKey: "fixture", platform: true }),
+  } });
+  credits = new EndUserCredits(cluster.db);
+  await credits.setSettings("alice", { enabled: true, allowances: { "*": 0 } });
+  await credits.post("alice", "ada", { kind: "grant", amount: 1_000_000, key: "fixture-grant" });
+  const a = await cluster.node("http://a");
+  const grant = discordGrant();
+  const created = await a.voice.create("alice", { discord: grant, brain: "realtime", realtime: { provider: "elevenlabs" }, subject: "ada", bucket: "bot:7" });
+  const media = await until(() => cluster.fake.open().find(open => open.credentials.sessionId === grant.sessionId), "media");
+  media.handlers.ready();
+  const model = await until(() => realtime.connections[0], "model after hold");
+  assert.equal(Number((await cluster.db.query("select count(*) as count from end_user_holds")).rows[0].count), 1);
+  model.events.meter?.(0.1, 0);
+  await model.answer("elevenlabs_1", { ms: 80 });
+  model.events.meter?.(0.05, 0);
+  await a.voice.end("alice", created.id);
+  await until(async () => Number((await cluster.db.query("select count(*) as count from end_user_holds")).rows[0].count) === 0, "holds released");
+  const expected = Math.round(realtimeCost("elevenlabs/gemini-2.5-flash-lite", NO_USAGE, 0.15) * 1e6);
+  const speech = cluster.usage.filter(entry => entry.usage.kind === "speech").map(entry => entry.usage);
+  assert.ok(speech.length > 0);
+  assert.ok(speech.every(entry => entry.provider === "elevenlabs" && entry.model === "gemini-2.5-flash-lite" && entry.platform && entry.identity?.subject === "ada"));
+  assert.equal(Math.round(speech.reduce((sum, entry) => sum + entry.usage.cost.total, 0) * 1e6), expected);
+  const entries = (await credits.ledger("alice", "ada")).entries.filter(entry => entry.kind === "usage");
+  assert.equal(entries.reduce((sum, entry) => sum + entry.raw, 0), expected);
+  assert.ok(entries.every(entry => entry.bucket === "bot:7"));
+  await until(async () => Math.round((await a.voice.get("alice", created.id)).costUsd * 1e6) === expected, "session cost");
 });
