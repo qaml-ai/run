@@ -215,6 +215,7 @@ export class MediaSession implements Media {
     catch (error) { this.events.diagnostic("audio_failed", { error: safeError(error) }); }
     this.closed = true;
     for (const playback of this.playing) playback.stop();
-    this.connection.close();
+    // A handoff leaves the call to the next node: the voice session must stay valid for it.
+    this.connection.close(flush === "handoff" ? "handoff" : "end");
   }
 }

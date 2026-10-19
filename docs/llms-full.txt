@@ -2943,6 +2943,13 @@ await agents.voice.update(session.id, { discord: { endpoint: voiceServer.endpoin
 send the next one) and `token`, and `ignoreUserIds` and `metadata`. A session whose connection was refused (the bot was
 disconnected or kicked, or Discord stopped taking its credentials) waits 15 seconds for new ones, then ends.
 
+When Discord stops taking the credentials (its voice session ended), only your gateway can get new ones, so camelRun
+says so at once: `voice.session.error` with `code: "credentials_needed"` (and `waitMs`, how long it waits). Send OP 4
+for the same channel again, and forward what Discord answers (`VOICE_STATE_UPDATE`'s `session_id`,
+`VOICE_SERVER_UPDATE`'s `endpoint` and `token`) with a PATCH: the session reconnects and goes on. A session moving
+between camelRun's nodes keeps its credentials: the node letting it go drops its voice socket rather than closing it,
+which would end Discord's voice session.
+
 To leave, end the session and send the answer's `leave` on your gateway: ending stops the listening, and only your
 gateway can take the bot out of the channel.
 
@@ -4152,7 +4159,7 @@ Every event is an envelope:
 | `usage.recorded` | A model response's usage was counted, a transcription's, or images' | `agentId`, `requestId`, `subject`, `actor`, `context`, `keyScope`, `provider`, `model`, `kind` (`response`, `compaction`, `transcription`, `image` or `speech`), tokens, `audioSeconds` (a transcription's, with no tokens), `images` (how many images were made), `cost: {usd, source}`, `at`. A [transcription](https://run.camelai.com/docs/guides/voice.md) made with `POST /v1/transcriptions`, or [images](https://run.camelai.com/docs/guides/images.md) made with `POST /v1/images`, has `agentId: null`, and the `subject`, `context` and `actor` it was sent with. Treat a `kind` you do not know as other usage: kinds may be added |
 | `voice.session.started` | A [voice session](https://run.camelai.com/docs/guides/voice-calls.md) connected and is listening (once) | `session`, `provider`, `guildId`, `channelId`, `botUserId`, `subject`, `metadata` |
 | `voice.session.ended` | A voice session ended; your app leaves the channel | as above, and `reason`, `limit` and `endUserReason` with `budget`, `startedAt`, `endedAt`, `utterances`, `speechSeconds`, `costUsd` |
-| `voice.session.error` | A voice session's audio failed: it reconnects at once (`restarting`), or after 3 failures in 5 minutes ends | the voice facts, `code` (`media_crashed`), `detail`, `restarting`, `attempt` |
+| `voice.session.error` | A voice session's audio failed: it reconnects at once (`restarting`), or after 3 failures in 5 minutes ends; or it needs new Discord credentials (`credentials_needed`) | the voice facts, `code` (`media_crashed`, `credentials_needed`), `detail`, `restarting`, `attempt?`, `waitMs?` |
 | `voice.utterance` | A person's utterance in a voice session, transcribed | as above, and `speakerId`, `seq`, `text`, `language`, `seconds`, `startedAt`, `endedAt`, `ended`, `costUsd`, `echo?` |
 | `voice.speech.started` | A voice session's bot started saying a [speech](https://run.camelai.com/docs/guides/voice-calls.md#speaking) | the voice facts, `speechId`, `latencyMs` |
 | `voice.speech.ended` | It ended | the voice facts, `speechId`, `reason`, `by`, `seconds`, `costUsd` |
@@ -7607,7 +7614,7 @@ dedupe by `id`. See [Webhooks](https://run.camelai.com/docs/guides/webhooks.md).
 | `input.resolved` | `agentId`, `requestId`, `inputId`, `state` |
 | `voice.session.started` | `session`, `provider`, `guildId`, `channelId`, `botUserId`, `subject`, `metadata`: a [voice session](https://run.camelai.com/docs/guides/voice-calls.md) connected (once) |
 | `voice.session.ended` | the above, `reason` (`requested`, `empty`, `idle`, `max_duration`, `budget`, `kicked`, `credentials`, `error`), `limit?` (`tenant`, `end_user`), `endUserReason?`, `startedAt`, `endedAt`, `utterances`, `speechSeconds`, `costUsd` |
-| `voice.session.error` | the voice facts, `code` (`media_crashed`), `detail`, `restarting`, `attempt`: the session's audio failed; it reconnects, or after 3 failures in 5 minutes ends (`voice.session.ended`, `error`) |
+| `voice.session.error` | the voice facts, `code` (`media_crashed`, `credentials_needed`), `detail`, `restarting`, `attempt?`, `waitMs?`. `media_crashed`: the session's audio failed; it reconnects, or after 3 failures in 5 minutes ends (`voice.session.ended`, `error`). `credentials_needed`: Discord stopped taking the session's credentials; send OP 4 for the channel again and PATCH what Discord answers within `waitMs`, or it ends (`credentials`) |
 | `voice.utterance` | the above facts, `speakerId`, `seq`, `text`, `language`, `seconds`, `startedAt`, `endedAt`, `ended` (`silence`, `max`, `error`, `handoff`, `end`), `costUsd`, `echo?` (`true`: the bot's own speech coming back, see Barge-in in voice-calls.md; not sent to `deliver.agent`) |
 | `voice.speech.started` | the voice facts, `speechId`, `latencyMs` (from the speak request to the first audio), `startedAt` (ms), and for the first speech of a reply to an utterance `turn`: `seq`, `path` and `stagesMs` (each stage since the end of speech: `turnCommit`, `transcript`, `delivered`, `llmFirstToken`, `firstPiece`, `ttsFirstAudio`, `firstPacket`) |
 | `voice.speech.ended` | the voice facts, `speechId`, `reason` (`done`, `interrupted`, `error`), `by?` (`interrupt`, `requested`, `barge_in`, `end`, `handoff`, `budget`), `seconds`, `costUsd` |

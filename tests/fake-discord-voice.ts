@@ -48,17 +48,28 @@ export async function fakeDiscordVoice(t: T) {
   /** The client's Speaking (op 5) flags, in order: 1 as it starts sending audio, 0 as it stops. */
   const speakingStates: number[] = [];
   const refused = new Set<string>();
+  /** How each client socket closed (1006: dropped, no close frame), and the voice sessions a normal close ended. */
+  const clientCloses: number[] = [];
+  const ended = new Set<string>();
   let members: string[] = [];
   let nextSsrc = 1000;
   const send = (ws: WebSocket, op: number, d: unknown) => ws.send(JSON.stringify({ op, d }));
 
   wss.on("connection", ws => {
     send(ws, 8, { heartbeat_interval: 1_000 });
+    // As Discord: a client that closes its socket normally leaves, and its voice session ends with it; a dropped
+    // socket keeps it, to resume or identify again.
+    ws.on("close", code => {
+      clientCloses.push(code);
+      const call = calls.find(entry => entry.ws === ws);
+      if (call && (code === 1000 || code === 1001)) ended.add(call.identify.session_id);
+    });
     ws.on("message", raw => {
       const { op, d } = JSON.parse(String(raw));
       if (op === 0) {
         identifies.push(d);
         if (refused.has(d.token)) { ws.close(4004, "Authentication failed"); return; }
+        if (ended.has(d.session_id)) { ws.close(4006, "Session no longer valid"); return; }
         const call: Call = { ws, identify: d, ssrc: nextSsrc++, key: randomBytes(32), nonce: 0, sequence: 0, timestamp: 0, announced: new Set(), heard: [] };
         calls.push(call);
         send(ws, 2, { ssrc: call.ssrc, ip: "127.0.0.1", port: (udp.address()).port, modes: ["aead_aes256_gcm_rtpsize"] });
@@ -121,7 +132,7 @@ export async function fakeDiscordVoice(t: T) {
   };
   return {
     endpoint: `127.0.0.1:${(server.address() as { port: number }).port}`,
-    identifies, resumes, calls, speakingStates,
+    identifies, resumes, calls, speakingStates, clientCloses,
     /** The client's own audio, decrypted, across its calls. */
     spoken: () => calls.flatMap(call => call.heard),
     /** When each of the client's packets arrived (ms, performance.now) and its size: speech's timing as a listener hears it. */

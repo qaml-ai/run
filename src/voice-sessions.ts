@@ -86,7 +86,11 @@ export interface VoiceConnection {
   play?(packets: AsyncIterable<Uint8Array>, started: () => void, expectedMs?: number): import("./voice-speech.ts").Playback;
   /** A session's event, for a transport whose far end shows them (a browser call's page). */
   notify?(event: Record<string, unknown>): void;
-  close(): void;
+  /**
+   * Close the connection. `handoff`: another node takes the call next, with the same credentials, so the voice
+   * service must not end its session (Discord's ends one whose socket closes normally: 4006 for the next node).
+   */
+  close(how?: "handoff" | "end"): void;
 }
 /** A voice service's connections (src/voice-discord.ts). */
 export interface VoiceTransport {
@@ -1108,6 +1112,8 @@ export class VoiceSessions {
         held.media = undefined;
         void media!.close("error");
         void this.setState(held, "reconnecting").catch(() => {});
+        // Only the app's gateway can get new credentials (OP 4 for the same channel again): it is told at once.
+        if (reason === "credentials") this.credentialsNeeded(held, detail);
       },
       diagnostic: (event, fields) => log(`voice_${event}`, fields),
       speechStart: speaker => {
@@ -1181,6 +1187,24 @@ export class VoiceSessions {
       return;
     }
     this.connect(held, transport);
+  }
+
+  /**
+   * Discord stopped taking the session's credentials (`lost`, `credentials`): `voice.session.error`
+   * (`credentials_needed`) goes out now, so the app sends OP 4 for the same channel again and PATCHes what Discord
+   * answers within `reconnectGraceMs`; else the session ends (`credentials`).
+   */
+  private credentialsNeeded(held: Held, detail?: string) {
+    const now = Date.now();
+    void transaction(this.db, async sql => {
+      const row = (await sql.query("select * from voice_sessions where id = $1", [held.id])).rows[0] as Row | undefined;
+      if (row?.options.deliver.webhooks && row.state !== "ended") {
+        await enqueueEvents(sql, [this.event(row, "voice.session.error", {
+          code: "credentials_needed", detail: (detail ?? "credentials").slice(0, 200), restarting: true,
+          waitMs: this.options.reconnectGraceMs ?? VOICE_LIMITS.reconnectGraceMs,
+        }, `voice:${held.id}:error:${now}`)]);
+      }
+    }).then(() => this.options.kickWebhooks?.(), error => console.error(JSON.stringify({ type: "voice_event_failed", session: held.id, error: safeError(error) })));
   }
 
   /** Apply a row changed elsewhere: new credentials reconnect, other changes are read as they are. */
