@@ -1,8 +1,7 @@
-import { createHash } from "node:crypto";
-import { testDatabase } from "./database.ts";
 import { z } from "zod";
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -10,6 +9,7 @@ import { elevenlabsAgents, ELEVENLABS_AGENTS } from "../src/voice/realtime/eleve
 import { ASK_AGENT, STAY_SILENT } from "../src/voice/realtime/brain.ts";
 import { NO_USAGE, realtimeCost, realtimePrice, realtimeVoice, type RealtimeEvents } from "../src/voice/realtime/provider.ts";
 import { sleep, testBrain, tone, until, utter } from "./voice-realtime-fakes.ts";
+import { testDatabase } from "./database.ts";
 
 // Synthetic rates only; real rates are supplied privately at runtime.
 process.env.AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD = "1";
@@ -435,8 +435,8 @@ test("ElevenLabs malformed error bodies keep HTTP status and diagnostics are cap
 
 
 test("ElevenLabs imports a known public owner directly and verifies account access after an add race", async t => {
-  const { db } = await testDatabase();
   for (const race of [false, true]) {
+    const { db } = await testDatabase();
     const fake = await fakeElevenLabs(t, { existing: true });
     const { got, events } = recorder();
     let added = false;
@@ -462,6 +462,7 @@ test("ElevenLabs imports a known public owner directly and verifies account acce
     await until(() => got.some(event => event.type === "ready"), "known owner ready");
     assert.equal(fake.seen.events[0].conversation_config_override.tts.voice_id, "account_copy");
     assert.equal(lists, race ? 3 : 1);
+    assert.deepEqual((await db.query("select voice_id from elevenlabs_voices")).rows, race ? [] : [{ voice_id: "account_copy" }], "an add failure never adopts a voice another caller added");
   }
 });
 
