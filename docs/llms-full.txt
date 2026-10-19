@@ -3268,10 +3268,13 @@ How it works:
   what was heard. Echo the guard rejects is dropped, not kept as someone's words.
 - **Tools.** `ask_agent(request)` prompts `deliver.agent` (its tools, memory and system prompt; its run is billed as
   any run, with `metadata.via: "realtime"` and the speaker as `from`), and the model says its answer in its own words.
-  The model fills the wait itself ("let me check"). Without `deliver.agent` there is no `ask_agent`. `stay_silent()`
-  answers nothing.
+  The model fills the wait itself ("let me check"). A reply not in after 45 seconds: the model is told the agent is
+  still working (and says so), and the reply, when it comes (within 5 minutes), is said then. Without `deliver.agent`
+  there is no `ask_agent`. `stay_silent()` answers nothing.
 - **One character.** `realtime.instructions` (at most 8,000 characters) is the bot's persona, before the call's own
-  rules (short spoken answers, names, ask_agent, stay_silent). Give it the same persona as the agent.
+  rules (short spoken answers, names, stay_silent, and with an agent: the model is the bot's voice and asks the agent
+  for anything beyond small talk). Give it the same persona as the agent, and say what the agent can do (its tools),
+  so the model knows what to ask it.
 
 `realtime` takes `provider` (`openai` or `gemini`; default the runtime's first), `model` (OpenAI: `gpt-realtime-2.1`, the
 default, or `gpt-realtime-2.1-mini`; Gemini: `gemini-3.8-live`), `voice` (the model's. OpenAI: `alloy`, `ash`, `ballad`,

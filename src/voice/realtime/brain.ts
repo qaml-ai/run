@@ -38,6 +38,8 @@ import { realtimeCost, realtimeTranscriptionCost, type RealtimeConnection, type 
 export const REALTIME_LIMITS = Object.freeze({
   /** How long ask_agent waits for the agent's reply before the model is told it is still working. */
   askAgentMs: 45_000,
+  /** How long a reply is waited for in all: one that comes after askAgentMs is said then (a late answer). */
+  askAgentLateMs: 5 * 60_000,
   /** The most of the agent's reply the model is given. */
   agentReplyChars: 4_000,
   /** How long an unaddressed turn waits for its transcript (addressing by name) before the model decides. */
@@ -56,8 +58,8 @@ export const REALTIME_LIMITS = Object.freeze({
 
 export const ASK_AGENT: RealtimeTool = {
   name: "ask_agent",
-  description: "Ask the bot's agent, which has the bot's tools, memory, files and knowledge, and can act. Use it for anything beyond small talk: facts, look-ups, actions, anything the bot's own code or memory knows. Give a clear, self-contained request. Before calling it, say a short natural filler in the same breath (\"let me check\", \"one sec\"). When it answers, say what it said in your own words, briefly.",
-  parameters: { type: "object", properties: { request: { type: "string", description: "What to ask or do, self-contained: who asked, and what they want" } }, required: ["request"] },
+  description: "Ask the bot's agent: the bot's brain, with its tools, data, memory and knowledge, and it can act. Call it for anything beyond small talk: facts, anything current or about this server and its people, look-ups, and anything someone asks the bot to do. Never answer those yourself. As you call it, say a short filler in character (\"one sec, let me check\"). When its reply comes, say it in your own words, briefly and naturally, as if you knew it.",
+  parameters: { type: "object", properties: { request: { type: "string", description: "The request, self-contained: who asked, what they want in their words, and any detail from the call it needs" } }, required: ["request"] },
 };
 export const STAY_SILENT: RealtimeTool = {
   name: "stay_silent",
@@ -73,7 +75,12 @@ export function realtimeInstructions(persona: string | undefined, options: { age
     "You are speaking in a live voice call. How it works:",
     "- Before each person's speech there is a note naming who speaks, like \"[Ana]\". Several people may be in the call; use their names when it helps.",
     "- Talk like a person in a call: short, natural sentences (one to three unless asked for more). No lists, markdown, code or links.",
-    ...options.agent ? ["- For facts, look-ups, actions, or anything you are unsure of, call ask_agent; say a short filler first (\"let me check\"). Then say its answer in your own words. Never make up what the agent would know."] : [],
+    ...options.agent ? [
+      "- You are the bot's voice; its agent is its brain. The agent has the bot's tools, data and memory, and does the real work. You only talk.",
+      "- Call ask_agent for anything beyond small talk: questions of fact, anything current (news, weather, prices, scores, dates), anything about this server, its people or the bot's own data and features, anything someone asks you to do, and anything you are not sure of. When in doubt, ask it.",
+      "- Never answer those from your own knowledge, never make up what the agent would know, and never say you cannot do something without asking it first.",
+      "- As you call it, say a short filler in character (\"one sec, let me check\"), then wait. When its reply comes, say it in your own words, briefly. If it failed or is still working, say so plainly.",
+    ] : [],
     ...options.group ? ["- If what was said was not meant for you (people talking to each other), call stay_silent and say nothing."] : [],
     "- If someone talks over you, you were cut off at that point: do not repeat what you already said unless asked.",
   ].join("\n");
@@ -135,6 +142,8 @@ export type BrainOptions = {
    */
   wordsAfterAnswer?: boolean;
   clock?: Clock;
+  /** ask_agent's waits (tests). */
+  limits?: { askAgentMs?: number; askAgentLateMs?: number };
 };
 
 /** A stretch of input between commits: whose audio it holds, from when. */
@@ -208,7 +217,7 @@ export class RealtimeBrain {
   private guard?: BargeInGuard;
   private readonly history: { who: string; text: string }[] = [];
   readonly stats = {
-    turns: 0, responses: 0, spoken: 0, speculative: 0, speculativeDiscarded: 0, superseded: 0, askAgent: 0, askAgentFailed: 0,
+    turns: 0, responses: 0, spoken: 0, speculative: 0, speculativeDiscarded: 0, superseded: 0, askAgent: 0, askAgentFailed: 0, askAgentLate: 0,
     staySilent: 0, unaddressed: 0, bargeIns: 0, echoRejected: 0, reconnects: 0, costUsd: 0, inputSeconds: 0, outputSeconds: 0,
   };
 
@@ -741,34 +750,53 @@ export class RealtimeBrain {
     const turn = response?.turn && !response.turn.ended ? response.turn : undefined;
     const abort = new AbortController();
     this.agentCalls.add(abort);
-    const timer = this.clock.setTimeout(() => abort.abort(new Error("timeout")), REALTIME_LIMITS.askAgentMs);
+    const limits = { ...REALTIME_LIMITS, ...this.options.limits };
     const started = this.clock.now();
+    // Past askAgentMs the model is told the agent is still working (and says so); its reply is said when it comes.
+    let late = false;
+    const waiting = this.clock.setTimeout(() => {
+      if (this.closed || this.connection !== connection) return;
+      late = true;
+      connection.toolResult(call.id, JSON.stringify({ pending: "The agent is still working on it. Say it is taking a moment and you will tell them when it is done." }));
+      this.respond({ ...(speaker ? { speaker } : {}), ...(turn && !turn.ended ? { turn } : {}) });
+    }, limits.askAgentMs);
+    const timer = this.clock.setTimeout(() => abort.abort(new Error("timeout")), limits.askAgentLateMs);
     void (async () => {
-      let output: string, outcome: "ok" | "timeout" | "error";
+      let reply: string | undefined, outcome: "ok" | "late" | "timeout" | "error";
       try {
         if (!request.trim()) throw new Error("empty request");
-        const reply = await this.hooks.askAgent!(request, speaker, abort.signal);
-        output = JSON.stringify({ reply: reply.trim().slice(0, REALTIME_LIMITS.agentReplyChars) || "(The agent did this, and wrote nothing back.)" });
-        outcome = "ok";
+        reply = (await this.hooks.askAgent!(request, speaker, abort.signal)).trim().slice(0, REALTIME_LIMITS.agentReplyChars);
+        outcome = late ? "late" : "ok";
       } catch (error) {
         const timedOut = abort.signal.aborted && !this.closed;
         outcome = timedOut ? "timeout" : "error";
         this.stats.askAgentFailed++;
-        output = JSON.stringify({ error: timedOut ? "The agent is still working on it and did not answer in time. Say you will follow up." : "The agent could not do it just now." });
         if (!timedOut && !this.closed) this.hooks.log("voice_realtime_ask_agent_failed", { error: safeError(error) });
       } finally {
+        this.clock.clearTimeout(waiting);
         this.clock.clearTimeout(timer);
         this.agentCalls.delete(abort);
       }
+      if (outcome === "late") this.stats.askAgentLate++;
       const ms = Math.round(this.clock.now() - started);
-      this.hooks.log("voice_realtime_tool", { tool: "ask_agent", outcome, ms, requestChars: request.length });
+      this.hooks.log("voice_realtime_tool", { tool: "ask_agent", outcome, ms, requestChars: request.length, ...(reply !== undefined ? { replyChars: reply.length } : {}) });
       writeMetricLine(metricLine("voice_realtime_ask_agent", {
         dimensions: { Outcome: outcome }, rollups: [["Outcome"]], metrics: { VoiceRealtimeAskAgentMs: [ms, "Milliseconds"] },
         properties: { session: this.options.session, tenant: this.options.tenant },
       }));
       if (this.closed || this.connection !== connection) return;
-      connection.toolResult(call.id, output);
-      this.respond({ ...(speaker ? { speaker } : {}), ...(turn && !turn.ended ? { turn } : {}) });
+      const said = reply || "(The agent did this, and wrote nothing back.)";
+      if (!late) {
+        connection.toolResult(call.id, JSON.stringify(reply !== undefined ? { reply: said } : { error: "The agent could not do it just now." }));
+        this.respond({ ...(speaker ? { speaker } : {}), ...(turn && !turn.ended ? { turn } : {}) });
+        return;
+      }
+      // The call was answered already ("still working"): the reply comes as a note, and is said now.
+      if (outcome === "timeout") return;
+      connection.note(reply !== undefined
+        ? `[The agent's late reply to "${request.slice(0, 300)}"]\n${said}`
+        : `[The agent could not finish "${request.slice(0, 300)}"]`);
+      this.respond({ ...(speaker ? { speaker } : {}), instructions: reply !== undefined ? "The agent's reply to an earlier request just came in (the last note): tell them now, briefly, in your own words." : "The agent could not finish an earlier request (the last note): say so briefly." });
     })();
   }
 

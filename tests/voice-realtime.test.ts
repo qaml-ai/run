@@ -182,6 +182,42 @@ test("ask_agent that times out or fails: the model is told so, and still answers
   brain.close();
 });
 
+test("ask_agent past its wait: the model says it is still working, and the late reply is said when it comes", async () => {
+  let finish!: (reply: string) => void;
+  const { brain, connection, logs } = testBrain({
+    limits: { askAgentMs: 40, askAgentLateMs: 2_000 },
+    askAgent: () => new Promise<string>(resolve => { finish = resolve; }),
+  });
+  await utter(brain, "1", 300);
+  const c = connection();
+  await c.answer("r1", { said: "One sec.", tool: { id: "call_1", name: "ask_agent", args: { request: "Top story on Hacker News" } } });
+  await until(() => c.responses === 2, "the still-working response");
+  assert.match(JSON.parse(c.of("tool_result")[0].output).pending, /still working/);
+  await c.answer("r2", { ms: 50, said: "Still looking." });
+  finish("A post about bees.");
+  await until(() => c.responses === 3, "the late answer's response");
+  assert.equal(c.of("tool_result").length, 1, "the call was answered once");
+  assert.ok(c.of("note").some(note => /late reply/.test(note.text) && /bees/.test(note.text)));
+  assert.equal(brain.stats.askAgentLate, 1);
+  assert.equal(logs.find(line => line.type === "voice_realtime_tool" && line.fields?.tool === "ask_agent")!.fields!.outcome, "late");
+  brain.close();
+});
+
+test("ask_agent that never answers: told it is still working, then let go at the late wait, with nothing more said", async () => {
+  const { brain, connection } = testBrain({
+    limits: { askAgentMs: 20, askAgentLateMs: 80 },
+    askAgent: (_request, _speaker, signal) => new Promise<string>((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason))),
+  });
+  await utter(brain, "1", 300);
+  const c = connection();
+  await c.answer("r1", { tool: { id: "call_1", name: "ask_agent", args: { request: "slow thing" } } });
+  await until(() => brain.stats.askAgentFailed === 1, "let go");
+  await sleep(30);
+  assert.equal(c.of("tool_result").length, 1);
+  assert.equal(c.responses, 2, "only the still-working response");
+  brain.close();
+});
+
 test("stay_silent: the model answers nothing; the tool's result is given and no response follows", async () => {
   const { brain, connection, playback } = testBrain();
   await utter(brain, "1", 300);
