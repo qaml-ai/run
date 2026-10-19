@@ -8,8 +8,8 @@ import { fileURLToPath } from "node:url";
  * under the job's AGENT_HOSTING. Files are dealt longest first to the shard with the least
  * time so far, by their seconds in tests/timings.json, so every shard gets the same files on
  * every runner and together they run each file once. A file the table does not know counts
- * as DEFAULT_SECONDS. `test-shard.ts --plan 12` prints every shard, for twelve shards a mode (CI's
- * count, the default; `--plan 12 10` for ten inline).
+ * as DEFAULT_SECONDS. `test-shard.ts --plan 6` prints every shard, for six shards a mode
+ * (larger hosted runners; the default is twelve; `--plan 12 10` for ten inline).
  *
  * Every shard also records each file's wall time as CI runs it (TEST_CONCURRENCY files at once) in
  * test-timings/<hosting>-<index>of<count>.json (scripts/test-timings-reporter.ts), kept as the run's

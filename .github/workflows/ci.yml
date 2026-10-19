@@ -12,6 +12,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   changes:
+    timeout-minutes: 3
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -20,6 +21,8 @@ jobs:
     outputs:
       tests: ${{ steps.changes.outputs.tests || 'true' }}
       reuse: ${{ steps.changes.outputs.reuse || 'false' }}
+      shards: ${{ (github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && !(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted')) && '[1,2,3,4,5,6]' || '[1,2,3,4,5,6,7,8,9,10,11,12]' }}
+      shard-count: ${{ (github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && !(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted')) && '6' || '12' }}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
@@ -75,14 +78,16 @@ jobs:
   test:
     # A shard takes 3-4 minutes, and a flaky file's rerun a few more (scripts/test-shard.ts).
     timeout-minutes: 15
-    # Duration-balanced files, four shards per mode; larger runners run eight files at once.
-    # Forks and self-hosted runners retain two-file concurrency.
-    name: test (${{ matrix.hosting }} ${{ matrix.shard }}/4)
+    # Duration-balanced files, six shards per mode; larger runners run eight files at once.
+    # Forks and self-hosted runners retain twelve shards per mode and two-file concurrency.
+    name: test (${{ matrix.hosting }} ${{ matrix.shard }}/${{ needs.changes.outputs.shard-count }})
     needs: [changes, v8-exec]
     if: needs.changes.outputs.tests == 'true'
     strategy:
       fail-fast: false
-      matrix: { hosting: [process, inline], shard: [1, 2, 3, 4] }
+      matrix:
+        hosting: [process, inline]
+        shard: ${{ fromJSON(needs.changes.outputs.shards) }}
     runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && vars.CI_RUNNER_LABELS || ((github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && '["run-ci-16-core"]' || '["ubuntu-latest"]')) }}
     services:
       postgres:
@@ -114,7 +119,7 @@ jobs:
           # Docker can allocate a new host port after restarting a dynamically published service.
           address=$(docker port "$id" 5432/tcp | head -n 1)
           echo "port=${address##*:}" >> "$GITHUB_OUTPUT"
-      - run: npm run test:shard -- ${{ matrix.shard }}/4
+      - run: npm run test:shard -- ${{ matrix.shard }}/${{ needs.changes.outputs.shard-count }}
         env:
           TEST_CONCURRENCY: ${{ (github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted')) && '2' || ((github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && '8' || '2') }}
           AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:${{ steps.postgres.outputs.port }}/postgres
@@ -141,8 +146,6 @@ jobs:
         if: ${{ failure() }}
         with: { name: sim-failures, path: sim-failures/, if-no-files-found: ignore }
   v8-exec:
-    needs: changes
-    if: needs.changes.outputs.tests == 'true'
     timeout-minutes: 30
     # js_exec's engine (sandbox/v8-exec), built here on x86_64 for the test shards, which run its tests
     # (seccomp included) and every js_exec suite on it; the image job builds and runs it on ARM64.
@@ -173,7 +176,7 @@ jobs:
           if-no-files-found: error
   image:
     # The deployed image installs only runtime dependencies; prove it migrates its database, starts and serves,
-    # with js_exec and file parsing confined by agent-launcher. Built natively for production's ARM64 (Graviton).
+    # with js_exec and file parsing confined by agent-launcher. Keep native ARM64 (production) and x86 coverage.
     strategy:
       fail-fast: false
       matrix: { arch: [amd64, arm64] }
@@ -269,6 +272,8 @@ jobs:
           tags: ${{ steps.ecr.outputs.registry }}/camelai-agent-runtime:${{ steps.image.outputs.tag }}
           cache-from: type=gha,scope=image-arm64
   docs:
+    needs: v8-exec
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -278,6 +283,9 @@ jobs:
         options: --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 20
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: v8-exec, path: sandbox/v8-exec/target/release }
+      - run: chmod +x sandbox/v8-exec/target/release/v8-exec
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
       - run: npm ci
@@ -286,6 +294,7 @@ jobs:
           AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/postgres
   ci:
     name: CI success
+    timeout-minutes: 5
     if: always()
     needs: [changes, checks, python, test, sim, v8-exec, image, publish, docs]
     runs-on: ubuntu-latest
@@ -294,7 +303,10 @@ jobs:
         env: { RESULTS: '${{ toJSON(needs) }}' }
         run: |
           echo "$RESULTS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")'
-          echo "$RESULTS" | jq -e '.changes.result == "success" and .checks.result == "success" and .image.result == "success" and .docs.result == "success"'
+          echo "$RESULTS" | jq -e '.changes.result == "success" and .checks.result == "success" and .image.result == "success" and .docs.result == "success" and .["v8-exec"].result == "success"'
+          if [ '${{ github.event_name }}' = push ] && [ '${{ github.ref }}' = refs/heads/main ]; then
+            echo "$RESULTS" | jq -e '.publish.result == "success"'
+          fi
           if [ '${{ needs.changes.outputs.tests }}' = true ]; then
             echo "$RESULTS" | jq -e '[.python, .test, .sim, .["v8-exec"]] | all(.result == "success")'
           fi
