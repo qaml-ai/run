@@ -64,7 +64,7 @@ Discord allows one voice connection per user and server: a second `POST` for the
 | `metadata` | anything, at most 4 KB of JSON, echoed in every `voice.*` event |
 | `notice` | the notice text (`{bot}` is the bot's id); by default "<@bot> is listening and transcribing speech in this channel. Audio is not stored." (with `speak`, "…listening, transcribing speech and may speak…") |
 | `speak` | the bot may [speak](#speaking) in the call: `true`, or `{agentReplies: true}` to also [speak `deliver.agent`'s replies](#speaking-an-agents-replies) (default `false`). Your app joins with `self_mute: false`: the answer's `join` says how it should have joined |
-| `bargeIn` | with `speak`: a person talking over the bot stops what it is saying, unless it is the bot's own voice coming back (default `true`; or `{minMs, confirmMs, resumeMs}`, see Barge-in) |
+| `bargeIn` | with `speak`: a person talking over the bot stops what it is saying, unless it is the bot's own voice coming back (default `true`; or `{minMs, confirmMs, resumeMs, backchannels}`, see Barge-in) |
 | `voice` | with `speak`: the voice its speech is made in (default `alloy`; OpenAI's voices: `alloy`, `ash`, `ballad`, `coral`, `echo`, `fable`, `nova`, `onyx`, `sage`, `shimmer`, `verse`…) |
 
 ## Keep it connected, and end it
@@ -191,8 +191,13 @@ and clears the queue.
   - If their words are anyone else's, it **stops**. If they keep talking for `confirmMs` (1000) after the pause, it
     stops without waiting for the words, since echo stops when the bot does.
   - The pause lasts at most `resumeMs` (3000). Then it stops if they are still talking, and resumes if not.
+  - If all they said is a backchannel, showing they listen ("mm-hm", "yeah", "ok", "sí", "vale", "ja", "oui",
+    "да", "haan", "嗯", "はい", "네"… in about 20 languages, and your `backchannels`), it **resumes**. A backchannel is
+    not a turn of theirs either: like echo, it never reaches `deliver.agent`, and its webhook carries
+    `backchannel: true`. "Yeah, but…" is words, and stops it.
+  - With `endOfTurn: smart`, a turn that ends with less speech than words take (a cough, a click) resumes it at once.
 
-  Pass `bargeIn: {minMs, confirmMs, resumeMs}` to change the timing; `confirmMs: 0` stops at `minMs` with no pause
+  Pass `bargeIn: {minMs, confirmMs, resumeMs, backchannels}` to change the timing (and add backchannels); `confirmMs: 0` stops at `minMs` with no pause
   and no echo check. With live transcription the words come as they are said, so the decision is usually quicker.
   An utterance judged echo is the bot's voice, not the person's: it never reaches `deliver.agent` (no reply), and its
   `voice.utterance` webhook carries `echo: true` so your app can drop it too.
