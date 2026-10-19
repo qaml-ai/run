@@ -28,16 +28,19 @@ const scenarios = list(process.env.VOICE_EVAL_SCENARIOS)?.map(name => {
 const profile = PROFILES[process.env.VOICE_EVAL_PROFILE ?? "realistic"];
 if (!profile) throw new Error(`No profile ${process.env.VOICE_EVAL_PROFILE}: ${Object.keys(PROFILES).join(", ")}`);
 const providers = process.env.VOICE_EVAL_PROVIDERS === "openai" ? "openai" as const : "fake" as const;
+/** VOICE_EVAL_SPEAKERS=clips: real people's speech (VOICE_EVAL_CLIPS, a directory; tests/fixtures/voice-turns by default). */
+const speakers = process.env.VOICE_EVAL_SPEAKERS === "clips" ? "clips" as const : "tones" as const;
+const clips = process.env.VOICE_EVAL_CLIPS;
 
 // CI runs every file under both hostings; the eval does not depend on how agents are hosted, so it runs under one.
 const skip = process.env.AGENT_HOSTING === "inline" ? "the voice eval runs in the process-hosted shards" : false;
 
-test(`voice eval: ${pipelines.length} pipelines x ${scenarios.length} scenarios (${providers} providers, ${profile.name})`, { timeout: 20 * 60_000, skip }, async () => {
+test(`voice eval: ${pipelines.length} pipelines x ${scenarios.length} scenarios (${providers} providers, ${profile.name}, ${speakers})`, { timeout: 20 * 60_000, skip }, async () => {
   // Each pipeline's scenarios at once (each a session). Pipelines too, in CI; one at a time with VOICE_EVAL_SERIAL=1
   // (npm run eval:voice), so that no pipeline's numbers share the node with another's.
   const scores: PipelineScore[] = [];
-  if (process.env.VOICE_EVAL_SERIAL) for (const pipeline of pipelines) scores.push(scorePipeline(await runPipeline({ pipeline, scenarios, profile, providers })));
-  else scores.push(...(await Promise.all(pipelines.map(pipeline => runPipeline({ pipeline, scenarios, profile, providers })))).map(scorePipeline));
+  if (process.env.VOICE_EVAL_SERIAL) for (const pipeline of pipelines) scores.push(scorePipeline(await runPipeline({ pipeline, scenarios, profile, providers, speakers, ...(clips ? { clips } : {}) })));
+  else scores.push(...(await Promise.all(pipelines.map(pipeline => runPipeline({ pipeline, scenarios, profile, providers, speakers, ...(clips ? { clips } : {}) })))).map(scorePipeline));
   const board = scoreboard(scores);
   console.log(`\n${board}\n`);
   if (process.env.VOICE_EVAL_OUT) {
