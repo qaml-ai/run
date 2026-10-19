@@ -213,6 +213,12 @@ export class RealtimeBrain {
     this.open();
   }
 
+  /** Who makes a turn's audio, as voice_turn_latency names it: the provider and its model. */
+  private ttsInfo() {
+    const [ttsProvider, ...model] = this.options.reference.split("/");
+    return { ttsProvider, ttsModel: model.join("/") };
+  }
+
   // The call's audio -----------------------------------------------------------------
 
   /** A speaker started talking. */
@@ -283,7 +289,7 @@ export class RealtimeBrain {
     // Said over the bot while it plays (a backchannel, or with barge-in off): kept as context, not answered.
     if (this.playing && !this.playing.cancelled) { this.turns.delete(speaker); return; }
     if (!this.fresh) { this.turns.delete(speaker); return; }
-    const turn = new TurnClock(cut.endedAt, { session: this.options.session, tenant: this.options.tenant, ttsModel: this.options.reference, speculative: false }).via("realtime").mark("turnCommit");
+    const turn = new TurnClock(cut.endedAt, { session: this.options.session, tenant: this.options.tenant, ...this.ttsInfo(), speculative: false }).via("realtime").mark("turnCommit");
     // A response held for this speaker's turn is replaced by one that hears it.
     if (current && !current.played && !current.tool && !current.cancelled) this.supersede(current);
     void this.decide(speaker, turnSoFar, turn);
@@ -492,7 +498,7 @@ export class RealtimeBrain {
     if (!this.options.floor.standing(speaker, this.hooks.humans())) return;
     this.mixer.flush();
     if (!this.commitSegment() && !this.fresh) return;
-    const turn = new TurnClock(speechEnd, { session: this.options.session, tenant: this.options.tenant, ttsModel: this.options.reference, speculative: true }).via("realtime");
+    const turn = new TurnClock(speechEnd, { session: this.options.session, tenant: this.options.tenant, ...this.ttsInfo(), speculative: true }).via("realtime");
     this.stats.speculative++;
     this.ask({ speaker, turn, held: true, speculative: true });
   }
