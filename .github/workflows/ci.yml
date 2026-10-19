@@ -127,13 +127,6 @@ jobs:
         hosting: [process, inline]
         shard: ${{ fromJSON(needs.changes.outputs.shards) }}
     runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && vars.CI_RUNNER_LABELS || ((github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && '["blacksmith-32vcpu-ubuntu-2404"]' || '["ubuntu-latest"]')) }}
-    services:
-      postgres:
-        # Hosted runners have a Docker Hub pull-limit exemption; ECR Public can throttle them.
-        image: ${{ github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && 'public.ecr.aws/docker/library/postgres:16-alpine' || 'postgres:16-alpine' }}
-        env: { POSTGRES_PASSWORD: test }
-        ports: ["127.0.0.1::5432"]
-        options: --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 20
     env:
       AGENT_HOSTING: ${{ matrix.hosting }}
     steps:
@@ -150,27 +143,29 @@ jobs:
         if: needs.changes.outputs.binary-cached != 'true'
         with: { name: v8-exec, path: sandbox/v8-exec/target/release }
       - run: chmod +x sandbox/v8-exec/target/release/v8-exec
-      - run: npm ci
-      # The service's 100 connections run out when a shard's busiest files run together (each test has its own pools):
-      # raise them as the devbox's runs do. A service container takes no server flags, so set it and restart.
-      - name: Postgres max_connections 1000
+      - uses: actions/cache@v4
+        id: dependencies
+        with:
+          path: node_modules
+          key: node-modules-${{ runner.os }}-${{ runner.arch }}-22-${{ hashFiles('package-lock.json', 'package.json', '.npmrc') }}
+      - if: steps.dependencies.outputs.cache-hit != 'true'
+        run: npm ci
+      - name: Start test Postgres
         id: postgres
-        run: |
-          id="${{ job.services.postgres.id }}"
-          docker exec "$id" psql -U postgres -c "alter system set max_connections = 1000"
-          docker restart "$id"
-          until docker exec "$id" pg_isready -U postgres -h 127.0.0.1; do sleep 1; done
-          docker exec "$id" psql -U postgres -tAc "show max_connections"
-          # Docker can allocate a new host port after restarting a dynamically published service.
-          address=$(docker port "$id" 5432/tcp | head -n 1)
-          echo "port=${address##*:}" >> "$GITHUB_OUTPUT"
+        uses: ./.github/actions/test-postgres
+        with:
+          image: ${{ github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && 'public.ecr.aws/docker/library/postgres:16-alpine' || 'postgres:16-alpine' }}
       - run: npm run test:shard -- ${{ matrix.shard }}/${{ needs.changes.outputs.shard-count }}
         env:
+          TEST_DATABASE_PER_FILE: "true"
           TEST_CONCURRENCY: ${{ (github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted')) && '2' || ((github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && '32' || '2') }}
           AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:${{ steps.postgres.outputs.port }}/postgres
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with: { name: "test-timings-${{ matrix.hosting }}-${{ matrix.shard }}", path: test-timings/, retention-days: 14, if-no-files-found: ignore }
+      - name: Stop test Postgres
+        if: always() && steps.postgres.outputs.container != ''
+        run: docker rm -f '${{ steps.postgres.outputs.container }}'
   sim:
     needs: changes
     if: needs.changes.outputs.tests == 'true'

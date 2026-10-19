@@ -26,7 +26,8 @@ const DEFAULT_SECONDS = 5;
 const RETRY_FILES = 3;
 // Per test file as well as per test: the longest cluster files (tests/cluster-fresh-lease-*) run past two minutes on a CI runner.
 // Keep CI's file concurrency independent of the shared host's CPU count.
-const TEST_ARGS = ["--experimental-strip-types", "--test", `--test-concurrency=${process.env.TEST_CONCURRENCY ?? 1}`, "--test-timeout=240000"];
+const TEST_ARGS = [
+  ...(process.env.TEST_DATABASE_PER_FILE === "true" ? ["--import", "./scripts/test-worker-database.ts"] : []),"--experimental-strip-types", "--test", `--test-concurrency=${process.env.TEST_CONCURRENCY ?? 1}`, "--test-timeout=240000"];
 const tests = new URL("../tests/", import.meta.url);
 const timingsFile = new URL("timings.json", tests);
 const files = readdirSync(tests).filter(name => name.endsWith(".test.ts")).sort();
