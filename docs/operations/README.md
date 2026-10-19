@@ -16,6 +16,7 @@ with the [Quickstart](../quickstart.md) and [Concepts](../concepts.md) instead.
 - [Model endpoints](model-endpoints.md): a tenant's model calls through a pass-through gateway of the operator's
 - [Account data](privacy.md): export, deletion, what is kept and for how long; handling requests by email
 - [Account email](account-email.md): sign-up, password reset and adding a password by email; SES setup
+- [Ops dashboard](admin-analytics.md): the team's dashboard at run.camelai.com/ops: Cloudflare Access, deployment, and what each figure counts
 - [Tenant isolation](isolation.md)
 - [Sandbox](sandbox.md): the codemode sandbox's layers and limits
 - [Voice pipeline](voice-pipeline.md): media workers, the control/media protocol, streaming, audio hygiene, turn latency

@@ -219,7 +219,7 @@ variable "journey_collect_unknown" {
 }
 
 variable "journey_internal_email_domains" {
-  description = "Email domains whose Google and password sign-ins are the operator's own staff: their accounts are marked internal and left out of reports."
+  description = "Email domains whose Google and password sign-ins are the operator's own staff: their accounts are marked internal and left out of reports, and the ops dashboard (admin.tf) leaves them out of its counts."
   type        = list(string)
   default     = ["camelai.com", "camelqa.com"]
 }
@@ -243,9 +243,21 @@ variable "storage_gc_dry_run" {
 }
 
 variable "admin_hostname" {
-  description = "The team's admin site (admin.tf, src/admin-site.ts), in the cloudflare_zone_id zone, behind Cloudflare Access. Empty for none."
+  description = "The hostname of the team's ops dashboard (admin.tf, src/admin-site.ts), behind Cloudflare Access: one of the runtime's own (hostname, primary_hostname), with admin_path, or a name of its own in the cloudflare_zone_id zone, which gets a certificate and DNS record. Empty for none."
   type        = string
-  default     = "admin.camelai.dev"
+  default     = "run.camelai.com"
+}
+
+variable "admin_path" {
+  description = "The path of admin_hostname the ops dashboard is served under (the path of AGENT_ADMIN_URL): /ops or /admin, names the runtime never routes. Empty: the whole of admin_hostname, which must then not be one of the runtime's own."
+  type        = string
+  default     = "/ops"
+
+  # As src/admin-site.ts checks at startup (ADMIN_PATHS).
+  validation {
+    condition     = contains(["", "/ops", "/admin"], var.admin_path)
+    error_message = "admin_path must be empty, /ops or /admin."
+  }
 }
 
 variable "admin_access_team" {
@@ -254,8 +266,19 @@ variable "admin_access_team" {
   default     = "https://qaml.cloudflareaccess.com"
 }
 
+variable "admin_emails" {
+  description = "The ops dashboard's admins (AGENT_ADMIN_EMAILS): the runtime refuses anyone else Cloudflare Access signs in, a second lock beside the Access application's policy, which should list the same addresses. Set in the deployment's tfvars, not in this repository. Empty: whoever the policy admits."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for email in var.admin_emails : can(regex("^[^\\s@,]+@[a-z0-9.-]+\\.[a-z]{2,}$", lower(email)))])
+    error_message = "admin_emails must be email addresses."
+  }
+}
+
 variable "admin_access_aud" {
-  description = "The AUD tag of the admin site's Access application (\"camelRun admin\" in Zero Trust → Access → Applications)."
+  description = "The AUD tag of the ops dashboard's Access application (\"camelRun admin\" in Zero Trust → Access → Applications), whose destinations must include admin_hostname with admin_path."
   type        = string
   default     = "041fd04d6d1fb5bc79df2e24d35bde86085109e322819cdc0964501ba5bd3478"
 }

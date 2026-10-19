@@ -1072,8 +1072,12 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   accountDeletions.start(config.schedulerIntervalMs);
 
   const app = new Hono<Env>();
-  // The team's admin site, behind Cloudflare Access on a hostname of its own (src/admin-site.ts): answered before anything else.
-  const adminSiteOptions = adminSiteFromEnvironment(env, { db, consoleDir, journey: journeySettings && { url: journeySettings.url, secret: journeySettings.secret }, reportSecret: secrets.journeyReportSecret });
+  // The team's admin site, behind Cloudflare Access on a path of the public hostname (/ops) or a hostname of its own
+  // (src/admin-site.ts): answered before anything else. Staff are told apart by the same domains journey events use.
+  const adminSiteOptions = adminSiteFromEnvironment(env, {
+    db, consoleDir, journey: journeySettings && { url: journeySettings.url, secret: journeySettings.secret }, reportSecret: secrets.journeyReportSecret,
+    runtimeHosts: origins.all.map(origin => new URL(origin).hostname), internalDomains: journeySettings?.internalEmailDomains,
+  });
   if (adminSiteOptions) app.use(adminSite(adminSiteOptions));
   // On an alias, the pages people use move to the public URL, whose host their sign-in cookies and OAuth callbacks belong to.
   // Everything else (the API, MCP, OAuth's token endpoint, webhooks, links) is served on every origin alike.

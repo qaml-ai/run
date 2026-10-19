@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { AdminTrend } from "../../../src/admin-signals";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { opsUrl } from "@/lib/ops";
 
 const number = (n:number) => new Intl.NumberFormat("en-US").format(n);
 const label = (day:string) => new Intl.DateTimeFormat("en-US",{timeZone:"UTC",month:"short",day:"numeric"}).format(new Date(day+"T12:00:00Z"));
@@ -10,7 +11,7 @@ export function AdminActivityTrend({refresh}:{refresh:number}) {
   const [state,setState]=useState<{refresh:number;data:AdminTrend|null;error:boolean}>({refresh:-1,data:null,error:false});
   useEffect(()=>{
     const abort=new AbortController();
-    fetch("/api/activity-trend?days=14",{credentials:"same-origin",cache:"no-store",signal:abort.signal})
+    fetch(opsUrl("/api/activity-trend?days=14"),{credentials:"same-origin",cache:"no-store",signal:abort.signal})
       .then(async response=>{if(!response.ok)throw new Error("unavailable");return await response.json() as AdminTrend;})
       .then(data=>{if(!abort.signal.aborted)setState({refresh,data,error:false});})
       .catch(()=>{if(!abort.signal.aborted)setState({refresh,data:null,error:true});});
