@@ -296,9 +296,10 @@ resource "aws_ecs_service" "runtime" {
   enable_execute_command = true
   propagate_tags         = "SERVICE"
 
+  # Leave room for the next rollout while one older generation still has protected turns.
   # Startup is local migrations and HTTP binding; allow six ALB probes before failed starts count.
   deployment_minimum_healthy_percent = 100
-  deployment_maximum_percent         = 200
+  deployment_maximum_percent         = 300
   health_check_grace_period_seconds  = 30
   availability_zone_rebalancing      = "ENABLED"
 
