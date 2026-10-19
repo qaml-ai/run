@@ -89,11 +89,9 @@ import { publicOrigins } from "./origins.ts";
 import { adminSite, adminSiteFromEnvironment } from "./admin-site.ts";
 import { AccountDeletions } from "./account-deletion.ts";
 import { RateLimits, rateLimitConfig } from "./rate-limits.ts";
-import { LIVE_TRANSCRIPTION_MODEL } from "./transcription-live.ts";
-import { liveProvider, sttReference } from "./voice-providers/stt.ts";
-import { DEFAULT_VOICES, speechProvider, ttsReference } from "./voice-providers/tts.ts";
+import { DEFAULT_VOICES, speechProvider } from "./voice-providers/tts.ts";
 import { speechPrices, ttsCost } from "./voice-providers/prices.ts";
-import { VOICE_CHANNEL, VoiceSessions, type VoiceReplyTarget, type VoiceTransport } from "./voice-sessions.ts";
+import { VOICE_CHANNEL, VoiceSessions, type VoiceTransport } from "./voice-sessions.ts";
 import { openaiRealtime } from "./voice/realtime/openai.ts";
 import { grokRealtime } from "./voice/realtime/grok.ts";
 import { elevenlabsAgents } from "./voice/realtime/elevenlabs.ts";
@@ -413,28 +411,14 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     provider: openaiTranscription({ outbound, ...(env.AGENT_TRANSCRIPTION_URL ? { baseUrl: env.AGENT_TRANSCRIPTION_URL } : {}) }),
     key: (tenant, keyScope, provider) => providerKey(tenant, keyScope, provider, secrets.azureOpenAI?.transcriptionDeployment),
     price: () => accounts.billing.pricing.transcription,
-    // Voice sessions transcribe as people speak through a chain of streaming providers (voice-providers/stt.ts), each on
-    // the tenant's key for it; batch (OpenAI, then the platform's Azure deployment) when all fail. The runtime's chain is
-    // AGENT_VOICE_STT, else OpenAI's Realtime with AGENT_VOICE_LIVE_TRANSCRIPTION=true, else none (a session may name one).
-    live: {
-      order: config.voice.stt.length ? config.voice.stt.map(sttReference) : config.voice.live ? [sttReference(`openai/${config.voice.liveModel ?? LIVE_TRANSCRIPTION_MODEL}`)] : [],
-      provider: reference => liveProvider(reference, {
-        ...(env.AGENT_TRANSCRIPTION_URL ? { openai: env.AGENT_TRANSCRIPTION_URL } : {}), ...(config.voice.liveDelay ? { openaiDelay: config.voice.liveDelay } : {}),
-        ...(config.voice.endpoints.deepgram ? { deepgram: config.voice.endpoints.deepgram } : {}), ...(config.voice.endpoints.soniox ? { soniox: config.voice.endpoints.soniox } : {}),
-        ...(config.voice.endpoints.assemblyai ? { assemblyai: config.voice.endpoints.assemblyai } : {}),
-      }),
-      // OpenAI's at its configured rate; the others at their list prices (voice-providers/prices.ts); one unpriced at OpenAI's.
-      price: reference => reference.startsWith("openai/") ? accounts.billing.pricing.liveTranscription : speechPriceTable.stt[reference]?.perMinute ?? accounts.billing.pricing.liveTranscription,
-    },
   });
-  // Speech made, for voice sessions that speak: OpenAI on the tenant's key (never the platform's Azure deployment), or
-  // a chain of providers (voice-providers/tts.ts), the runtime's AGENT_VOICE_TTS or the session's own.
+  // Speech made, for POST /v1/speech: OpenAI on the tenant's key (never the platform's Azure deployment), or a chain of
+  // providers (voice-providers/tts.ts) the request names.
   const synthesizer = new Synthesizer({
     provider: openaiSpeech({ outbound, ...(env.AGENT_SPEECH_URL ? { baseUrl: env.AGENT_SPEECH_URL } : {}) }),
     key: (tenant, keyScope, provider) => providerKey(tenant, keyScope, provider),
     price: () => accounts.billing.pricing.speech,
     chain: {
-      order: config.voice.tts.map(ttsReference),
       provider: reference => speechProvider(reference, outbound, {
         ...(env.AGENT_SPEECH_URL ? { openai: env.AGENT_SPEECH_URL } : {}), ...(config.voice.endpoints.elevenlabs ? { elevenlabs: config.voice.endpoints.elevenlabs } : {}),
         ...(config.voice.endpoints.cartesia ? { cartesia: config.voice.endpoints.cartesia } : {}), ...(config.voice.endpoints.deepgram ? { deepgram: config.voice.endpoints.deepgram } : {}),
@@ -690,13 +674,6 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     yield* streamedText(agent, await signedPost(owner, `/internal/agents/${agent}/stream`, { tenant, request }, 15 * 60_000, signal).catch(error => { ownership.forget(agent); throw error; }));
   }
 
-  /** As `submitStreamingAnywhere`, for a run already submitted (a prompt's speak): what it wrote so far, then as it writes. */
-  async function* followStreamingAnywhere(agent: string, tenant: string, requestId: string, signal: AbortSignal): AsyncGenerator<string> {
-    const owner = await clients.ownerElsewhere(agent);
-    if (!owner) { yield* clients.followStreaming(agent, tenant, requestId, signal); return; }
-    yield* streamedText(agent, await signedPost(owner, `/internal/agents/${agent}/follow`, { tenant, requestId }, 15 * 60_000, signal).catch(error => { ownership.forget(agent); throw error; }));
-  }
-
   /** The text an agent's node streams as NDJSON lines ({"text"}, then {"done"}, or {"error"}). */
   async function* streamedText(agent: string, response: Response): AsyncGenerator<string> {
     if (!response.ok || !response.body) {
@@ -717,20 +694,6 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
         if (frame.text) yield frame.text;
       }
     }
-  }
-
-  /** Speak a run's reply in a voice session (a prompt's speak) on the node that holds the session. */
-  async function speakRunAnywhere(tenant: string, target: VoiceReplyTarget, run: { agent: string; requestId: string }) {
-    if (!voice) throw new HttpError(404, "Voice sessions are not enabled on this runtime");
-    const owner = await ownership.route(`voice:${target.session}`);
-    if (!owner || owner === node) return voice.speakRun(tenant, target, run);
-    const response = await signedPost(owner, `/internal/voice/sessions/${target.session}/reply`, { tenant, target, run }).catch(error => { ownership.forget(`voice:${target.session}`); throw new HttpError(503, errorText(error)); });
-    if (!response.ok) {
-      const { error, code } = await response.json().catch(() => ({})) as { error?: string; code?: string };
-      if (response.status === 503) ownership.forget(`voice:${target.session}`);
-      throw new HttpError(response.status, error ?? `The voice session's node answered ${response.status}`, code);
-    }
-    return response.json();
   }
 
   async function deleteAnywhere(agent: string, tenant: string) {
@@ -832,11 +795,6 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   }, endUsers);
   const clients = new ClientSessions(supervisor, {
     runEvents: tenant => subscribers.runs(tenant),
-    // A prompt's speak: its reply spoken in one of the tenant's voice sessions, wherever that is held.
-    voiceReplies: {
-      check: (tenant, input, agentToken) => { if (!voice) throw new HttpError(404, "Voice sessions are not enabled on this runtime"); return voice.replyTarget(tenant, input, agentToken); },
-      follow: (tenant, target, run) => speakRunAnywhere(tenant, target, run),
-    },
     tracing: telemetry,
     // A self-hosted runtime configured by its environment takes keys there too.
     ...(config.selfHostedTenant ? { modelKeyHint: "On this self-hosted runtime, AGENT_TENANT_API_KEYS in its environment sets keys too ({\"anthropic\": \"sk-ant-...\"}; restart it after)." } : {}),
@@ -941,21 +899,15 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
     },
     agentOwned: (agent, tenant) => clients.owns(agent, tenant, true),
-    // Utterances are transcribed and billed as POST /v1/transcriptions is, and prompt agents wherever they run.
-    transcriber, synthesizer,
-    // OpenAI's key (batch transcription), or a key for one of the streaming chain's providers.
-    canTranscribe: async (tenant, keyScope, streaming = []) => {
-      for (const provider of new Set([transcriber.provider, ...streaming.map(reference => reference.split("/")[0])])) if (await transcriber.options.key(tenant, keyScope, provider)) return true;
-      return false;
-    },
+    // Listening sessions' utterances are transcribed and billed as POST /v1/transcriptions is.
+    transcriber,
     record: (tenant, usage) => accounts.recordUsage(tenant, "", usage),
-    submit: (agent, tenant, request) => submitAnywhere(agent, tenant, request),
+    // ask_agent prompts the session's agent wherever it runs.
     submitStreaming: (agent, tenant, request, signal) => submitStreamingAnywhere(agent, tenant, request, signal),
-    followStreaming: (agent, tenant, requestId, signal) => followStreamingAnywhere(agent, tenant, requestId, signal),
     // A session's subject pays from its bucket, where the tenant meters its end users (end-user-credits.ts).
     credit: endUsers,
     perTenant: tenant => tenants.maxVoiceSessions(tenant) ?? config.voice.perTenant, perNode: config.voice.perNode,
-    // A voice.utterance goes out at once: a bot that answers aloud waits on it (the outbox's scan is every 5 s).
+    // A voice.utterance goes out at once (the outbox's scan is every 5 s).
     kickWebhooks: () => webhooks.kick(),
     // A browser call's socket is on this thread, so its media is too; Discord's runs in media workers.
     media: (transport, provider) => provider === "browser" ? inlineMedia(transport, turnModels) : deps.voiceMedia ? deps.voiceMedia(transport) : voiceHost ? voiceHost.factory() : inlineMedia(transport, turnModels),
@@ -1222,24 +1174,6 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     const closed = new AbortController();
     c.env.outgoing.once("close", () => closed.abort());
     return streamText(clients.submitStreaming(c.req.param("id"), tenant, request, closed.signal), c);
-  });
-  app.post("/internal/agents/:id{client_[a-f0-9]{40}}/follow", async c => {
-    let body: string | undefined;
-    try { body = await signedBody(c); } catch { return c.body(null, 413); }
-    if (body === undefined) return c.body(null, 401);
-    const { tenant, requestId } = JSON.parse(body);
-    const closed = new AbortController();
-    c.env.outgoing.once("close", () => closed.abort());
-    return streamText(clients.followStreaming(c.req.param("id"), tenant, requestId, closed.signal), c);
-  });
-  app.post("/internal/voice/sessions/:id{vs_[a-f0-9]{24}}/reply", async c => {
-    let body: string | undefined;
-    try { body = await signedBody(c); } catch { return c.body(null, 413); }
-    if (body === undefined) return c.body(null, 401);
-    if (!voice) return c.json({ error: "Voice sessions are not enabled on this runtime" }, 404);
-    const { tenant, target, run } = JSON.parse(body);
-    try { return c.json(await voice.speakRun(tenant, { ...target, session: c.req.param("id") }, run)); }
-    catch (error) { return c.json({ error: errorText(error), code: errorCode(error, errorStatus(error, 400)) }, errorStatus(error, 400) as ContentfulStatusCode); }
   });
   app.post("/internal/agents/:id{client_[a-f0-9]{40}}/delete", async c => {
     let body: string | undefined;

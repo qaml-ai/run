@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { HttpError } from "../src/http.ts";
 import { VoiceSessions } from "../src/voice-sessions.ts";
-import { AGENT, discordGrant, fakeTranscriber, fakeTransport, sleep, until, voiceCluster } from "./voice-fakes.ts";
+import { AGENT, discordGrant, fakeTransport, sleep, until, voiceCluster } from "./voice-fakes.ts";
+import { fakeRealtimeProvider } from "./voice-realtime-fakes.ts";
 
 test("a session is stored sealed, taken and connected by the node that took it, and is live once ready", async t => {
   const { db, fake, node, events } = await voiceCluster(t);
@@ -13,7 +14,8 @@ test("a session is stored sealed, taken and connected by the node that took it, 
   assert.match(created.id, /^vs_[a-f0-9]{24}$/);
   assert.equal(created.state, "connecting");
   assert.deepEqual(created.discord, { guildId: grant.guildId, channelId: grant.channelId, userId: grant.userId });
-  assert.deepEqual(created.notice, { required: true, channelId: grant.channelId, text: `<@${grant.userId}> is listening and transcribing speech in this channel. Audio is not stored.` });
+  assert.deepEqual(created.notice, { required: true, channelId: grant.channelId, text: `<@${grant.userId}> is listening, transcribing speech and may speak in this channel. Audio is not stored.` });
+  assert.deepEqual(created.join, { self_mute: false, self_deaf: false }, "the bot speaks: its app joins un-muted");
   assert.equal(created.silenceMs, 800);
   assert.equal(created.maxMinutes, 240);
   assert.ok(!JSON.stringify(created).includes(grant.token) && !JSON.stringify(created).includes(grant.sessionId), "the grant never comes back");
@@ -44,7 +46,6 @@ test("what a session may be created with is checked, one per bot and server, and
   await refused({ discord: discordGrant({ endpoint: "127.0.0.1" }) }, 400, /not a Discord voice server/);
   await refused({ discord: discordGrant({ guildId: "not-an-id" }) }, 400, /discord.guildId/);
   await refused({ discord: { ...discordGrant(), extra: 1 } }, 400, /discord.extra is not a field/);
-  await refused({ discord: discordGrant(), deliver: { webhooks: false } }, 400, /somewhere/);
   await refused({ discord: discordGrant(), deliver: { agent: `client_${"b".repeat(40)}` } }, 404, /Unknown agent/);
   await refused({ discord: discordGrant(), silenceMs: 50 }, 400, /silenceMs/);
   await refused({ discord: discordGrant(), maxMinutes: 721 }, 400, /maxMinutes/);
@@ -69,7 +70,10 @@ test("a tenant that may not spend, or a runtime that cannot seal, makes no sessi
   const { node, db } = await voiceCluster(t, { admit: async () => { throw new HttpError(402, "Out of credit", "SPEND_LIMIT"); } });
   const a = await node("http://a");
   await assert.rejects(a.voice.create("alice", { discord: discordGrant() }), (error: HttpError) => error.status === 402 && error.code === "SPEND_LIMIT");
-  const rest = { node: "x", admit: async () => {}, agentOwned: async () => true, transcriber: fakeTranscriber().transcriber, canTranscribe: async () => true, record: () => {}, submit: async () => ({}) };
+  const rest = {
+    node: "x", admit: async () => {}, agentOwned: async () => true, record: () => {},
+    realtime: { providers: { openai: fakeRealtimeProvider().provider }, key: async () => ({ apiKey: "fixture-key", platform: true }) },
+  };
   const unsealed = new VoiceSessions({ db, accounts: { canStoreKeys: false } as any, transports: { discord: fakeTransport().transport }, ...rest });
   await assert.rejects(unsealed.create("alice", { discord: discordGrant() }), (error: HttpError) => error.status === 503);
   const none = new VoiceSessions({ db, accounts: { canStoreKeys: true } as any, transports: {}, ...rest });

@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Floor, mentions, withContext } from "../src/voice/turns/floor.ts";
-import { AGENT, discordGrant, fakeTranscriber, sleep, speak, until, voiceCluster } from "./voice-fakes.ts";
+import { Floor, mentions } from "../src/voice/turns/floor.ts";
+import { AGENT, discordGrant, speak, until, voiceCluster } from "./voice-fakes.ts";
 
-/** Floor control (src/voice/turns/floor.ts): which turns in a group call are the bot's, and one reply at a time. */
+/** Floor control (src/voice/turns/floor.ts): which turns in a group call are the bot's. */
 
 test("names are heard as speech recognition writes them", () => {
   assert.ok(mentions("Hey Camel, what's the weather?", ["camel"]));
@@ -17,13 +17,11 @@ test("names are heard as speech recognition writes them", () => {
   assert.ok(!mentions("anything", []));
 });
 
-test("addressed: named, in a conversation, or alone; others overheard and passed on as context", () => {
+test("addressed: named, in a conversation, or alone; others are not the bot's", () => {
   let now = 0;
   const floor = new Floor({ mode: "addressed", names: ["camel"], conversationMs: 20_000 }, () => now);
   assert.deepEqual(floor.decide("bob", "what's for lunch", 3), { addressed: false, reason: "not_addressed" });
-  floor.overheard("bob", "what's for lunch");
   assert.deepEqual(floor.decide("ada", "camel, what's the weather", 3), { addressed: true, reason: "named" });
-  assert.deepEqual(floor.takeContext().map(turn => turn.text), ["what's for lunch"]);
   now += 5_000;
   assert.deepEqual(floor.decide("ada", "and tomorrow?", 3), { addressed: true, reason: "conversation" });
   assert.deepEqual(floor.decide("bob", "I think so", 3), { addressed: false, reason: "not_addressed" }, "bob is not in the conversation");
@@ -35,62 +33,41 @@ test("addressed: named, in a conversation, or alone; others overheard and passed
   assert.equal(floor.decide("bob", "so?", 1).reason, "alone");
   const always = new Floor({}, () => now);
   assert.equal(always.decide("bob", "anything", 4).reason, "always");
-  assert.equal(withContext("hi", []), "hi");
-  assert.match(withContext("camel, and you?", [{ speaker: "1", text: "pizza" }]), /<@1>: pizza\n\[To you\]\ncamel, and you\?$/);
+  // Before its words are known: always, alone, or in a conversation; else only its words can say.
+  assert.equal(always.standing("bob", 4), "always");
+  assert.equal(floor.standing("bob", 1), "alone");
+  assert.equal(floor.standing("bob", 3), "conversation");
+  assert.equal(floor.standing("ada", 3), undefined);
 });
 
-test("in a session: only the bot's turns prompt the agent, with what was said around them", { timeout: 60_000 }, async t => {
-  const texts = ["what's for lunch", "hey camel, what should we order", "and to drink?", "I think so"];
-  const transcriber = fakeTranscriber(({ index }) => texts[index]);
-  const cluster = await voiceCluster(t, { transcriber: transcriber.transcriber });
-  const a = { ...cluster, n: await cluster.node("http://a") };
+test("in a session: only the bot's turns are answered; others go out as events, not addressed", { timeout: 60_000 }, async t => {
+  const cluster = await voiceCluster(t);
+  const a = await cluster.node("http://a");
   const grant = discordGrant();
-  const created = await a.n.voice.create("alice", { discord: grant, deliver: { agent: AGENT }, addressing: { names: ["camel"] }, silenceMs: 200 });
-  assert.deepEqual(created.addressing, { mode: "addressed", names: ["camel"], conversationMs: 20_000, contextTurns: 8, contextMs: 120_000 });
-  const connection = await until(() => a.fake.open().find(open => open.credentials.sessionId === grant.sessionId), "the connection");
+  const created = await a.voice.create("alice", { discord: grant, deliver: { agent: AGENT }, addressing: { names: ["camel"] }, silenceMs: 200 });
+  assert.deepEqual(created.addressing, { mode: "addressed", names: ["camel"], conversationMs: 20_000 });
+  const connection = await until(() => cluster.fake.open().find(open => open.credentials.sessionId === grant.sessionId), "the connection");
   connection.others = ["400000000000000001", "400000000000000002", "400000000000000003"];
   connection.handlers.ready();
-  await until(async () => (await a.n.voice.get("alice", created.id)).state === "live", "live");
+  await until(async () => (await a.voice.get("alice", created.id)).state === "live", "live");
+  const model = await until(() => cluster.realtime.connections[0], "the model");
   const bob = "400000000000000002", ada = "400000000000000001";
-  for (const [index, speaker] of [bob, ada, ada, bob].entries()) {
+  const turns: [string, string, boolean][] = [[bob, "what's for lunch", false], [ada, "hey camel, what should we order", true], [ada, "and to drink?", true], [bob, "I think so", false]];
+  let answered = 0;
+  for (const [index, [speaker, text, answers]] of turns.entries()) {
     speak(connection, speaker, 0.5);
-    await until(async () => (await a.events("voice.utterance")).length === index + 1, `utterance ${index + 1}`);
+    const commit = await until(() => model.of("commit")[index], `turn ${index + 1} committed`);
+    model.events.heard(commit.tag, text, 0.5);
+    await until(async () => (await cluster.events("voice.utterance")).length === index + 1, `utterance ${index + 1}`);
+    if (!answers) continue;
+    await until(() => model.responses === ++answered, `turn ${index + 1} answered`);
+    await model.answer(`resp_${answered}`, { ms: 100 });
+    await until(() => connection.played.length === answered && !connection.playing, `answer ${answered} played`);
   }
-  const utterances = (await a.events("voice.utterance")).map(event => [event.data.text, event.data.addressed, event.data.addressedBy]);
+  const utterances = (await cluster.events("voice.utterance")).map(event => [event.data.text, event.data.addressed, event.data.addressedBy]);
   assert.deepEqual(utterances, [
     ["what's for lunch", false, "not_addressed"], ["hey camel, what should we order", true, "named"],
     ["and to drink?", true, "conversation"], ["I think so", false, "not_addressed"],
   ]);
-  await sleep(100);
-  assert.deepEqual(a.prompts.map(prompt => prompt.request.params.text), [
-    `[Said in the call before this, not to you]\n<@${bob}>: what's for lunch\n[To you]\nhey camel, what should we order`,
-    "and to drink?",
-  ]);
-  assert.equal((a.prompts[0].request.params.metadata as Record<string, string>).addressedBy, "named");
-});
-
-test("one reply at a time: a newer turn's reply supersedes one not yet heard", { timeout: 60_000 }, async t => {
-  const transcriber = fakeTranscriber(({ index }) => ["first question", "and a second thing"][index] ?? "more");
-  // The agent writes slowly: the first reply is not heard before the second turn comes.
-  const submitStreaming = async function* (_agent: string, _tenant: string, request: { id: string }, signal: AbortSignal) {
-    await sleep(request.id.endsWith("_1") ? 1_500 : 50);
-    if (signal.aborted) return;
-    yield `Answer to ${request.id.slice(-1)}.`;
-  };
-  const cluster = await voiceCluster(t, { transcriber: transcriber.transcriber, submitStreaming, playEveryMs: 5 });
-  const a = await cluster.node("http://a");
-  const grant = discordGrant();
-  const created = await a.voice.create("alice", { discord: grant, deliver: { agent: AGENT }, speak: { agentReplies: true }, silenceMs: 200 });
-  const connection = await until(() => cluster.fake.open().find(open => open.credentials.sessionId === grant.sessionId), "the connection");
-  connection.handlers.ready();
-  await until(async () => (await a.voice.get("alice", created.id)).state === "live", "live");
-  speak(connection, "400000000000000001", 0.5);
-  await until(async () => (await cluster.events("voice.utterance")).length === 1, "first");
-  speak(connection, "400000000000000001", 0.5);
-  await until(async () => (await cluster.events("voice.speech.ended")).some(event => event.data.reason === "done"), "a reply spoken", 10_000);
-  await sleep(1_800);
-  const started = (await cluster.events("voice.speech.started")).map(event => event.data.text ?? event.data.reply?.requestId);
-  assert.equal(started.length, 1, `one reply heard (${JSON.stringify(started)})`);
-  const ended = await cluster.events("voice.speech.ended");
-  assert.ok(ended.every(event => event.data.reply?.requestId?.endsWith("_2") || event.data.reason !== "done"), "the first reply was not said");
+  assert.equal(model.responses, 2, "Bob's turns were only heard");
 });

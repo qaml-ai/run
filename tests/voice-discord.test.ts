@@ -135,18 +135,22 @@ test("a session handed to another node goes on with the same credentials; creden
   await until(async () => (await b.voice.get("alice", created.id)).state === "live", "live again");
 });
 
-test("a session on the Discord transport: the call's speech becomes utterances", async t => {
+test("a session on the Discord transport: the call's speech reaches the brain, and its words become an utterance", async t => {
   const voice = await fakeDiscordVoice(t);
-  const { node, events } = await voiceCluster(t, { transports: { discord: discordVoice() }, endpoints: /^127\.0\.0\.1$/ });
+  const { node, events, realtime } = await voiceCluster(t, { transports: { discord: discordVoice() }, endpoints: /^127\.0\.0\.1$/ });
   const a = await node("http://a");
   const grant = discordGrant({ endpoint: voice.endpoint });
   voice.members(["400000000000000004", grant.userId]);
   const created = await a.voice.create("alice", { discord: grant, silenceMs: 300 });
   await until(async () => (await a.voice.get("alice", created.id)).state === "live", "live");
+  const model = await until(() => realtime.connections[0], "the model");
   await voice.speak("400000000000000004", 5_002, Array.from({ length: 50 }, (_, index) => speechPacket(index)));
+  const commit = await until(() => model.of("commit")[0], "the turn committed");
+  assert.equal(commit.ms, 1_000, "all of its second of speech");
+  model.events.heard(commit.tag, "hello there", 1);
   const [utterance] = await until(async () => { const found = await events("voice.utterance"); return found.length && found; }, "the utterance");
   assert.equal(utterance.data.speakerId, "400000000000000004");
-  assert.equal(utterance.data.text, "heard 1.0 seconds");
+  assert.equal(utterance.data.text, "hello there");
   const ended = await a.voice.end("alice", created.id);
   assert.equal(ended.state, "ended");
   await until(() => !voice.connected(), "the socket to close");
@@ -277,27 +281,25 @@ test("what a connection keeps per speaker is bounded, and goes when they leave o
   await until(() => connection.audio().streams.length === 0, "every stream closed");
 });
 
-test("a session on the Discord transport: each utterance has all its packets, its first too, for each speaker", async t => {
+test("a session on the Discord transport: each turn has all its packets, its first too, for each speaker", async t => {
   const voice = await fakeDiscordVoice(t);
-  const { node, events } = await voiceCluster(t, { transports: { discord: discordVoice() }, endpoints: /^127\.0\.0\.1$/ });
+  const { node, realtime } = await voiceCluster(t, { transports: { discord: discordVoice() }, endpoints: /^127\.0\.0\.1$/ });
   const a = await node("http://a");
   const grant = discordGrant({ endpoint: voice.endpoint });
   const ada = "400000000000000004", bob = "500000000000000005";
   voice.members([ada, bob, grant.userId]);
   const created = await a.voice.create("alice", { discord: grant, silenceMs: 300 });
   await until(async () => (await a.voice.get("alice", created.id)).state === "live", "live");
-  // Two utterances each, of 50 packets (1.00 s); each speaker's Speaking trails their first 3 packets.
+  const model = await until(() => realtime.connections[0], "the model");
+  // Two turns each, one speaker at a time, of 50 packets (1.00 s); each speaker's Speaking trails their first 3 packets.
   for (let round = 0; round < 2; round++) {
-    await Promise.all([
-      voice.speak(ada, 8_001, Array.from({ length: 50 }, (_, index) => speechPacket(index)), 2, { speakingAfter: round === 0 ? 3 : undefined }),
-      voice.speak(bob, 8_002, Array.from({ length: 50 }, (_, index) => speechPacket(index)), 2, { speakingAfter: round === 0 ? 3 : undefined }),
-    ]);
-    await sleep(600);
+    for (const [speaker, ssrc] of [[ada, 8_001], [bob, 8_002]] as const) {
+      await voice.speak(speaker, ssrc, Array.from({ length: 50 }, (_, index) => speechPacket(index)), 2, { speakingAfter: round === 0 ? 3 : undefined });
+      await sleep(600);
+    }
   }
-  const utterances = await until(async () => { const found = await events("voice.utterance"); return found.length === 4 && found; }, "the utterances");
-  for (const speaker of [ada, bob]) {
-    const theirs = utterances.filter(utterance => utterance.data.speakerId === speaker);
-    assert.deepEqual(theirs.map(utterance => [utterance.data.seconds, utterance.data.text, utterance.data.ended]), [[1, "heard 1.0 seconds", "silence"], [1, "heard 1.0 seconds", "silence"]]);
-  }
+  const commits = await until(() => model.of("commit").length === 4 && model.of("commit"), "the turns");
+  assert.deepEqual(model.of("note").map(note => note.text), ["[Speaker 1]", "[Speaker 2]", "[Speaker 1]", "[Speaker 2]"], "each turn its speaker's");
+  assert.deepEqual(commits.map(commit => commit.ms), [1_000, 1_000, 1_000, 1_000], "every packet of each turn: 50 of 20 ms");
   await a.voice.end("alice", created.id);
 });

@@ -11,8 +11,8 @@ import { Mixer } from "./mixer.ts";
 import { NO_USAGE, realtimePrice, realtimeCost, realtimeTranscriptionCost, type RealtimeConnection, type RealtimeEvents, type RealtimeTool, type RealtimeUsage } from "./provider.ts";
 
 /**
- * A voice session's realtime brain (`brain: "realtime"`): a speech-to-speech model hears the call and answers aloud,
- * behind the same media plane, turn-taking, addressing and echo guard as the cascade.
+ * A voice session's realtime brain: a speech-to-speech model hears the call and answers aloud, behind the session's
+ * media plane, turn-taking, addressing and echo guard.
  *
  * - **Audio in.** Each speaker's PCM (the media's live stream) is mixed into one (Mixer). Whenever who speaks changes,
  *   the input so far is committed as its own item and a note names who speaks next ("[Ana]"), so the model knows who
@@ -516,17 +516,17 @@ export class RealtimeBrain {
       },
       // The provider's own words about what it refused (no audio or transcript in them).
       warning: (code, detail) => { if (live()) this.hooks.log("voice_realtime_warning", { errorCode: code, detail: detail.slice(0, 200) }); },
-      closed: (reason, detail) => { if (reason !== "requested" && live()) this.lost(detail ?? "closed"); },
+      closed: (reason, detail, options) => { if (reason !== "requested" && live()) this.lost(detail ?? "closed", options?.retryable); },
     };
   }
 
   /** The connection dropped: reconnect (a new conversation, briefed with what was said), a few times at most. */
-  private lost(detail: string) {
+  private lost(detail: string, retryable = true) {
     if (this.metered) { this.generation++; this.connection = undefined; this.flushMeter(); }
     const now = this.clock.now();
     this.reconnects = [...this.reconnects.filter(at => now - at < REALTIME_LIMITS.reconnectWindowMs), now];
-    const retrying = this.reconnects.length <= REALTIME_LIMITS.reconnects;
-    this.hooks.log("voice_realtime_lost", { detail: detail.slice(0, 200), attempt: this.reconnects.length, retrying });
+    const retrying = retryable && this.reconnects.length <= REALTIME_LIMITS.reconnects;
+    this.hooks.log("voice_realtime_lost", { detail: detail.slice(0, 300), attempt: this.reconnects.length, retrying });
     for (const response of [this.current, this.playing]) {
       if (!response || response.done) continue;
       response.done = true;

@@ -42,8 +42,15 @@ export const wsBase = (base: string) => base.replace(/\/+$/, "").replace(/^http/
  * "API key not valid", a model not found), shortened, with anything shaped like a key or token taken out.
  */
 export function closeDetail(event?: { code?: number; reason?: string }): string {
-  const reason = typeof event?.reason === "string"
-    ? event.reason.replace(/\b(?:AIza[\w-]{8,}|sk[-_][\w-]{8,}|xai-[\w-]{8,}|ya29\.[\w.-]{8,}|[A-Za-z0-9_-]{32,})/g, "[redacted]").replace(/\s+/g, " ").trim().slice(0, 200)
-    : "";
+  const reason = typeof event?.reason === "string" ? redactDetail(event.reason) : "";
   return `The realtime connection closed${event?.code ? ` (${event.code}${reason ? `: ${reason}` : ""})` : reason ? ` (${reason})` : ""}`;
+}
+
+/** Provider diagnostics share the socket-close redaction, including signed URLs with short signatures. */
+export function redactDetail(detail: string, limit = 200, secrets: readonly string[] = []): string {
+  let safe = detail.replace(/(?:https?|wss?):\/\/[^\s<>"']+/gi, "[redacted]")
+    .replace(/\b(?:AIza[\w-]{8,}|sk[-_][\w-]{8,}|xai-[\w-]{8,}|ya29\.[\w.-]{8,}|[A-Za-z0-9_-]{32,})/g, "[redacted]")
+    .replace(/\s+/g, " ").trim();
+  for (const secret of secrets) if (secret) safe = safe.replaceAll(secret, "[redacted]");
+  return safe.slice(0, limit);
 }

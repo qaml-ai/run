@@ -104,23 +104,39 @@ Runs-per-minute limits count each transcription as a run.
 
 ## Speech on its own
 
-`POST /v1/speech` turns text into speech in the voice a [voice session](voice-calls.md#speaking) would speak it
-in, and streams the audio back as it is made. Use it to preview what a bot sounds like:
+`POST /v1/speech` turns text into speech and streams the audio back as it is made:
 
 ```sh
 curl -sS https://run.camelai.com/v1/speech -H "Authorization: Bearer $CAMELRUN_API_KEY" -H "Content-Type: application/json" \
   -d '{"text": "Hi, I am your bot.", "voice": "coral", "format": "wav"}' -o hello.wav
 ```
 
-`format` is `pcm` (the default: raw 16-bit little-endian mono at 24 kHz, as a session plays it) or `wav` (the same
-in a WAV container, which an `<audio>` element plays as it downloads). `speech` (`{providers, voices}`) and `language` choose providers and voices exactly as a voice session's [speech providers](voice-calls.md#speech-providers) do; `voice`, `instructions`, `keyScope`, and
-`subject`, `context`, `actor` and `bucket` mean what they do for a session's speech and for a transcription. The text
-is at most 4,000 characters. By default speech is made with OpenAI's `gpt-4o-mini-tts` (`X-Speech-Model` names whichever provider served) on the OpenAI
-key a session's speech would use: without one it is a 400 (`SPEECH_UNAVAILABLE`), and text OpenAI refuses is a 400 too.
+`format` is `pcm` (the default: raw 16-bit little-endian mono at 24 kHz) or `wav` (the same in a WAV container, which
+an `<audio>` element plays as it downloads). The text is at most 4,000 characters; `instructions` (at most 1,000) says
+how to say it (tone, pace, accent) to OpenAI; `language` tells providers that speak many languages which one to
+pronounce; `keyScope`, `subject`, `context`, `actor` and `bucket` mean what they do for a transcription.
 
-It is billed as a session's speech is: `kind: "speech"` usage per second made, against an end user's credit
-when you name a `subject` (held before it is made). A caller that hangs up stops it; what was made is billed.
-Nothing is kept: neither the text nor the audio.
+By default speech is made with OpenAI's `gpt-4o-mini-tts` in `voice` (`alloy`, `coral`, `verse`…), on your OpenAI key
+or the platform's: without one it is a 400 (`SPEECH_UNAVAILABLE`), and text OpenAI refuses is a 400 too. `speech:
+{providers, voices}` names providers to try in order instead, each `<provider>` (its default model) or
+`<provider>/<model>`, on your key for it (`PUT /v1/providers/<provider>/key`, or a key scope's), else the platform's; one
+with no key is skipped. Without `providers`, `voices` that name a provider other than OpenAI choose them: those
+providers in the order given, then OpenAI (`{"voices": {"elevenlabs": "…", "openai": "coral"}}` speaks with ElevenLabs):
+
+| Provider | Default model | Voice (`speech.voices.<provider>`) |
+| --- | --- | --- |
+| `elevenlabs` | `eleven_flash_v2_5` (its fastest) | An ElevenLabs voice id. Default: the premade "Rachel" |
+| `cartesia` | `sonic-3` | A Cartesia voice id. Required: Cartesia is skipped without one |
+| `deepgram` | `aura-2` | An Aura voice. Default: `aura-2-thalia-en` |
+| `openai` | `gpt-4o-mini-tts` | `voice` (alloy, coral, verse…). Takes `instructions` |
+
+A provider that fails, or that sends no audible audio within 3 s, is passed over for the next one; once audio has gone
+out, a failure ends the stream. `X-Speech-Model` names the provider and model that served.
+
+It is billed as its provider bills it: OpenAI's per second of speech made ($0.015 a minute on the platform's key),
+ElevenLabs, Cartesia and Deepgram Aura per character of the text, at their list prices. Each is a `usage.recorded` with
+`kind: "speech"` and `audioSeconds`, against an end user's credit when you name a `subject` (held before it is made). A
+caller that hangs up stops it; what was made is billed. Nothing is kept: neither the text nor the audio.
 
 ## Formats and limits
 
@@ -164,7 +180,7 @@ for training). See [Account data](../operations/privacy.md#transcription).
 - **Audio to the model itself.** Every model reads the transcript today; models that hear audio natively may be
   given the sound later, beside it.
 - **Timestamps or speaker labels.** Transcripts are text only, from the one model.
-- **Live voice outside calls.** Transcription of streaming audio as it is spoken is offered in Discord voice calls:
-  camelRun listens in a call for your bot and sends each person's utterances, transcribed, to your webhooks or an
-  agent. See [Voice calls](voice-calls.md). Speech out is `POST /v1/speech` (above) or a session's `speak`.
+- **Live voice outside calls.** Live speech is offered in Discord voice calls: camelRun sits in a call for your bot, and
+  a realtime speech-to-speech model answers aloud. See [Voice calls](voice-calls.md). Speech out on its own is
+  `POST /v1/speech` (above).
 - **Audio in `initialMessages`.** Transcribe it first with `POST /v1/transcriptions` and import the text.

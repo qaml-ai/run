@@ -248,17 +248,17 @@ class AgentClient(_AgentCalls):
         return attached
 
     def _prompt_params(self, request_id, text, *, actor=None, from_=None, files=None, metadata=None, while_running=None, allow_disconnected=False,
-                       spend_limit=None, output=None, history=None, run_limits=None, speak=None):
+                       spend_limit=None, output=None, history=None, run_limits=None):
         attached = self._attach(request_id, files) if files else None
-        return _message_params(text, attached, _prompt_extra(actor, while_running, allow_disconnected, spend_limit, output, history, run_limits, speak), from_, metadata)
+        return _message_params(text, attached, _prompt_extra(actor, while_running, allow_disconnected, spend_limit, output, history, run_limits), from_, metadata)
 
     def prompt(self, text, *, actor=None, from_=None, files=None, metadata=None, while_running=None, idempotency_key=None, allow_disconnected=False,
-               spend_limit=None, output=None, history=None, timeout=None, traceparent=None, speak=None):
+               spend_limit=None, output=None, history=None, timeout=None, traceparent=None):
         """Send a message and wait for the run's raw result ({"reply", "output", "error", "stopped", "inputs", ...}), as
         camelai_run.AgentClient.prompt. `files`: bytes, a local path, {"name", "data", "content_type"?} or {"path"}."""
         request_id = idempotency_key or str(uuid.uuid4())
         params = self._prompt_params(request_id, text, actor=actor, from_=from_, files=files, metadata=metadata, while_running=while_running,
-                                     allow_disconnected=allow_disconnected, spend_limit=spend_limit, output=output, history=history, speak=speak)
+                                     allow_disconnected=allow_disconnected, spend_limit=spend_limit, output=output, history=history)
         result = self.request("prompt", params, idempotency_key=request_id, timeout=timeout, traceparent=traceparent)
         # A steered message's request completes as the running turn takes it, naming the turn: its outcome is the turn's.
         if while_running == "steer" and isinstance(result, dict) and isinstance(result.get("steeredInto"), str) and "reply" not in result:

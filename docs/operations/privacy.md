@@ -151,9 +151,11 @@ A voice session (`src/voice-sessions.ts`, [Voice calls](../guides/voice-calls.md
 Discord server, channel and bot ids, its settings (with the tenant's `subject`, `context` and `metadata`), counts and
 times. The voice credentials the app forwarded (session id, endpoint, token) are sealed with `AGENT_SECRETS_KEY` and
 dropped when the session ends; ended rows are deleted after 30 days, and with the account. Audio is never written
-anywhere: an utterance's Opus packets are held in the owning node's memory until it is transcribed (as
-[Transcription](#transcription) says), then dropped. A transcript lives in the `voice.utterance` webhook delivery
-until it is delivered (or for 3 days), and with `deliver.agent` in that agent's history as a prompt. Logs carry ids,
+anywhere: it streams from the owning node's memory to the session's realtime provider (OpenAI's Realtime API or Google's
+Gemini Live, on the tenant's key or the platform's), which transcribes it and answers aloud, under its API data policy;
+the answer's audio is played and dropped. What was said lately is held in memory to brief a new provider connection,
+never written. A transcript lives in the `voice.utterance` webhook delivery until it is delivered (or for 3 days), and
+what the model asks `deliver.agent` (`ask_agent`) stays in that agent's history as a prompt. Logs carry ids,
 lengths, counts and close codes (`voice_*` lines), never audio, transcripts or the credentials;
 @discordjs/voice's own debug output, which prints the voice gateway's packets, stays off.
 

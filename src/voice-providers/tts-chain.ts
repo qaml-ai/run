@@ -2,7 +2,7 @@ import { safeError } from "../metrics.ts";
 import { SpeechFailed, type SpeechCredentials, type SpeechInput, type SpeechProvider } from "../speech.ts";
 
 /**
- * Speech made by the first of several providers that can (tts.ts has them): the chain voice sessions speak through.
+ * Speech made by the first of several providers that can (tts.ts has them): the chain POST /v1/speech speaks through.
  * Kept apart from tts.ts so speech.ts's Synthesizer can use it without importing every provider.
  */
 

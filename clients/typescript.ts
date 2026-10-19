@@ -651,23 +651,22 @@ export type WebhookEvent = { id: string; created: number } & (
   | { type: "voice.session.error"; data: VoiceFacts & { code: "media_crashed"; detail: string; restarting: boolean; attempt: number } }
   | { type: "voice.utterance"; data: VoiceUtterance }
   | { type: "voice.speech.started"; data: VoiceFacts & {
-      speechId: string; latencyMs: number; reply?: VoiceReply;
+      speechId: string; latencyMs: number;
       /** When its first audio went out (ms). */
       startedAt?: number;
-      /** For the first speech of a reply to an utterance: each stage, in ms since the end of the person's speech. */
-      turn?: { seq?: number; path: "agent_reply" | "prompt_speak" | "speak" | "realtime" | null; stagesMs: Record<string, number> };
-      /** A realtime brain's answer. */
-      brain?: "realtime";
+      /** For the answer to a person's turn: each stage, in ms since the end of their speech (turnCommit, ttsFirstAudio, firstPacket). */
+      turn?: { path: "realtime"; stagesMs: Record<string, number> };
+      /** The session's realtime brain answered. */
+      brain: "realtime";
     } }
   | { type: "voice.speech.ended"; data: VoiceFacts & {
-      speechId: string; reason: "done" | "interrupted" | "error"; reply?: VoiceReply;
-      /** With interrupted: an interrupting speech, stopSpeaking, a person talking (bargeIn), the session ending or moving, credit running out. */
-      by?: "interrupt" | "requested" | "barge_in" | "end" | "handoff" | "budget" | "superseded";
+      speechId: string; reason: "done" | "interrupted" | "error";
+      /** With interrupted: stopSpeaking, a person talking (bargeIn), the session ending or moving, a newer turn taking its place, credit running out. */
+      by?: "requested" | "barge_in" | "end" | "superseded" | "budget";
+      /** Seconds played, and what its tokens cost (the session's usage already counts it). */
       seconds: number; costUsd: number;
-      brain?: "realtime";
+      brain: "realtime";
     } });
-/** A piece of an agent's reply a session speaks (speak: {agentReplies: true}): the agent and its run. */
-export type VoiceReply = { agent: string; requestId: string };
 /** What every voice.* event says of its session. */
 type VoiceFacts = { session: string; provider: "discord"; guildId: string; channelId: string; botUserId: string; subject: string | null; metadata: Record<string, unknown> };
 /**
@@ -688,12 +687,13 @@ export type VoiceUtterance = VoiceFacts & {
   /** silence; max (cut at 30 s, the speech goes on in the next); error (the speaker's stream broke); handoff (the session moved nodes); end. */
   ended: "silence" | "max" | "error" | "handoff" | "end";
   costUsd: number;
-  /** Said over the bot: its own words coming back (echo), or only a backchannel ("mm-hm"). Neither reaches deliver.agent. */
-  echo?: true; backchannel?: true;
-  /** Whether it was the bot's turn (`addressing`), and why: always (mode), alone, named, conversation, or not_addressed. */
-  addressed: boolean; addressedBy: "always" | "alone" | "named" | "conversation" | "not_addressed";
-  /** A realtime brain heard (and answered) it itself; `speakers`: everyone whose audio is in it, when people spoke at once. */
-  brain?: "realtime"; speakers?: string[];
+  /** Whether it was the bot's turn (`addressing`), and why: always (mode), alone, named, conversation, or not_addressed. None for a listening session. */
+  addressed?: boolean; addressedBy?: "always" | "alone" | "named" | "conversation" | "not_addressed";
+  /**
+   * realtime: the session's realtime brain heard (and answered) it itself; listen: a listening session transcribed it,
+   * and nothing answered. `speakers`: everyone whose audio is in it, when people spoke at once.
+   */
+  brain: "realtime" | "listen"; speakers?: string[];
 };
 
 /**
@@ -1331,9 +1331,12 @@ export interface VoiceSessionInput {
   bucket?: string;
   /** Your claims, carried in usage.recorded's context. */
   context?: Record<string, unknown>;
-  /** Transcribe with this key scope's OpenAI key. */
+  /** Answer with this key scope's key for the realtime provider. */
   keyScope?: string;
-  /** Where utterances go: your webhook endpoints that select voice.utterance (default), and/or an agent, as prompts from their speakers. */
+  /**
+   * `agent`: the bot's agent, which the realtime model asks (`ask_agent`) for facts, look-ups and actions, as prompts
+   * from their speakers. `webhooks`: voice.* events to your endpoints that select them (default true).
+   */
   deliver?: { agent?: string; webhooks?: boolean };
   /** The language spoken (en, pt-BR); detected per utterance when left out. */
   language?: string;
@@ -1354,38 +1357,20 @@ export interface VoiceSessionInput {
   /** The notice text to post ({bot} is the bot's id). */
   notice?: string;
   /**
-   * The bot may speak (`voice.speak`); your app joins with self_mute false. `{ agentReplies: true }` also speaks
-   * deliver.agent's reply to each utterance as it is written (sentence by sentence, markdown and code left out, at most
-   * 400 characters). Default false.
+   * A person talking over the bot stops its speech. It pauses after `minMs` (300) of their speech; speech going on for
+   * `confirmMs` (1000) after the pause stops it, and `resumeMs` (3000) is the longest pause (then it stops if they are
+   * still talking, else goes on). `confirmMs: 0` stops it at `minMs` with no pause. With endOfTurn smart, a sound too
+   * short to be words lets it go on at once. Default true.
    */
-  speak?: boolean | { agentReplies?: boolean };
-  /**
-   * With speak: a person talking over the bot stops its speech. It pauses after `minMs` (300) of their speech, and goes
-   * on if what it heard was its own words coming back through their speakers (echo). Speech going on for `confirmMs`
-   * (1000) after the pause stops it without waiting for the words; `resumeMs` (3000) is the longest pause. `confirmMs: 0`
-   * stops it at `minMs` without the check. Only a backchannel ("mm-hm", "yeah", "ok", "sí", "ja", "嗯", "はい"… and your
-   * `backchannels`) also lets it go on, as does, with endOfTurn smart, a sound too short to be words. Default true.
-   */
-  bargeIn?: boolean | { minMs?: number; confirmMs?: number; resumeMs?: number; backchannels?: string[] };
+  bargeIn?: boolean | { minMs?: number; confirmMs?: number; resumeMs?: number };
   /**
    * Which turns are the bot's in a group call (default every one): with `names` (its wake words) or `mode: "addressed"`,
    * turns that name it, come from someone it is talking with (within `conversationMs`, default 20 s), or are said with
-   * no one else in the call. Others still reach webhooks (`addressed: false`), and the agent as context with the next.
+   * no one else in the call. Others still reach webhooks (`addressed: false`), and the model hears them as context.
    */
   addressing?: { mode?: "always" | "addressed"; names?: string[]; conversationMs?: number };
-  /** With speak: the voice speech is made in (OpenAI's: alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, verse…). Default alloy. */
+  /** The bot's voice by OpenAI's names (alloy, coral, nova…), mapped to the realtime provider's nearest; `realtime.voice` names the provider's own. Default alloy. */
   voice?: string;
-  /**
-   * Speech to text as people speak: streaming providers to try in order (`deepgram`, `deepgram/flux`, `soniox`,
-   * `assemblyai`, `openai`; each on your key for it, else the platform's; one that fails mid-utterance hands it to the
-   * next), and terms to listen for. Default: the runtime's chain.
-   */
-  transcription?: { providers?: string[]; keyterms?: string[] };
-  /**
-   * With speak: text-to-speech providers to try in order (`elevenlabs`, `cartesia`, `deepgram`, `openai`), and the voice
-   * for each (`{ elevenlabs: "<voice id>", cartesia: "<voice id>" }`; OpenAI's is `voice`). Default: the runtime's chain.
-   */
-  speech?: { providers?: string[]; voices?: Record<string, string> };
   /**
    * How a speaker's turn ends. `smart` (the default where the runtime has the models): a turn-detection model judges, at
    * each pause, whether they are done; done, the turn ends at `commitMs` of silence (default 500), else they get up to
@@ -1394,14 +1379,18 @@ export interface VoiceSessionInput {
    */
   endOfTurn?: VoiceEndOfTurn["mode"] | Partial<VoiceEndOfTurn>;
   /**
-   * What answers (beta): `cascade` (the default; transcription, your app or deliver.agent, text to speech) or `realtime`,
-   * a speech-to-speech model that hears the call and answers aloud, asking deliver.agent (`ask_agent`) for anything
-   * beyond talk. Needs the runtime's AGENT_VOICE_REALTIME; the session speaks, and `voice.speak` is refused.
+   * What hears the call. `realtime` (the default): a speech-to-speech model that answers aloud (`realtime`). `listen`:
+   * muted; each utterance is transcribed after it ends and sent to webhooks, and nothing answers (`bargeIn`, `voice`,
+   * `addressing`, `realtime`, `speakers` and `deliver.agent` are ignored; your app joins muted).
    */
-  brain?: "cascade" | "realtime";
-  /** With brain realtime: its model, voice, the bot's persona (`instructions`), and how it listens. */
+  brain?: "realtime" | "listen";
+  /**
+   * The speech-to-speech model that hears the call and answers aloud, asking deliver.agent (`ask_agent`) for anything
+   * beyond talk: its provider (one of the runtime's AGENT_VOICE_REALTIME), model, voice, the bot's persona
+   * (`instructions`), and how it listens.
+   */
   realtime?: Partial<VoiceRealtime>;
-  /** Speakers' names by user id, for the realtime brain's note of who speaks ("[Ana]"); others are Speaker 1, 2… */
+  /** Speakers' names by user id, for the model's note of who speaks ("[Ana]"); others are Speaker 1, 2… */
   speakers?: Record<string, string>;
   /** An Idempotency-Key: the same key answers the same session. */
   idempotencyKey?: string;
@@ -1419,13 +1408,16 @@ export interface VoiceSession {
   deliver: { agent?: string; webhooks: boolean };
   subject?: string; bucket?: string; context?: Record<string, unknown>; keyScope?: string; language?: string; prompt?: string;
   silenceMs: number; maxMinutes: number; idleMinutes: number; emptySeconds: number; ignoreUserIds: string[]; metadata: Record<string, unknown>;
-  speak: boolean; bargeIn: boolean; voice: string; agentReplies: boolean;
-  /** With speak and bargeIn: the barge-in timing in use. */
-  interruption?: { minMs: number; confirmMs: number; resumeMs: number; backchannels?: string[] };
-  addressing: { mode: "always" | "addressed"; names: string[]; conversationMs: number; contextTurns: number; contextMs: number };
-  transcription?: { providers?: string[]; keyterms?: string[] }; speech?: { providers?: string[]; voices?: Record<string, string> };
+  /** realtime: a model hears the call and answers; listen: transcribed, muted. */
+  brain: "realtime" | "listen";
+  /** With brain realtime. */
+  bargeIn?: boolean; voice?: string;
+  /** With bargeIn: the barge-in timing in use. */
+  interruption?: { minMs: number; confirmMs: number; resumeMs: number };
+  addressing: { mode: "always" | "addressed"; names: string[]; conversationMs: number };
   endOfTurn: VoiceEndOfTurn;
-  brain: "cascade" | "realtime"; realtime?: VoiceRealtime; speakers?: Record<string, string>;
+  /** Its realtime brain's settings (none for a session from before them). */
+  realtime?: VoiceRealtime; speakers?: Record<string, string>;
   utterances: number; speechSeconds: number;
   /** Speeches played, and seconds of speech made. */
   speeches: number; spokenSeconds: number;
@@ -1435,30 +1427,17 @@ export interface VoiceSession {
 /** A new session, and the notice to post now in the voice channel's chat: people must know they are transcribed. */
 export type VoiceSessionCreated = VoiceSession & {
   notice: { required: true; channelId: string; text: string };
-  /** How your app's OP 4 should have joined: un-muted for a session that speaks. */
+  /** How your app's OP 4 should have joined: un-muted when the bot speaks (brain realtime), muted for listen. */
   join: { self_mute: boolean; self_deaf: false };
 };
-/** Something for a session's bot to say (`voice.speak`). */
-export interface VoiceSpeechInput {
-  /** 1 to 4,000 characters. */
-  text: string;
-  /** Another voice than the session's, for this speech. */
-  voice?: string;
-  /** This speech's voice for each speech provider, by provider (`{ elevenlabs: "<voice id>", openai: "fable" }`), over the session's speech.voices. */
-  voices?: Record<string, string>;
-  /** How to say it: tone, pace, accent (at most 1,000 characters). */
-  instructions?: string;
-  /** Stop what the bot is saying, and clear what it was going to, first. Default false: queued. */
-  interrupt?: boolean;
-}
-export interface VoiceSpeech { speechId: string; session: string; state: "queued"; position: number; voice: string; characters: number }
 /** An ended session, and the OP 4 your gateway sends to leave the channel (ending stops the listening, not the bot's presence). */
 export type VoiceSessionEnded = VoiceSession & { leave: { op: 4; d: { guild_id: string; channel_id: null; self_mute: boolean; self_deaf: boolean } } };
 
 /**
  * Voice calls the runtime holds for your bot (`runtime.voice`, `agents.voice`). Your app joins the voice channel on its
- * own gateway (OP 4) and forwards what Discord answers; the runtime listens, transcribes each person's utterances and
- * sends them to your webhooks (`voice.utterance`) or an agent.
+ * own gateway (OP 4) and forwards what Discord answers; the runtime listens, and a realtime speech-to-speech model
+ * answers aloud, asking your agent (`deliver.agent`) for anything beyond talk. What people say goes to your webhooks
+ * (`voice.utterance`).
  *
  *   const session = await agents.voice.create({ discord: { guildId, channelId, userId: botId, sessionId, endpoint, token }, subject: ownerId });
  *   await postInVoiceChat(session.notice.channelId, session.notice.text);
@@ -1484,13 +1463,6 @@ export class Voice {
   /** Discord moved the call (a new VOICE_SERVER_UPDATE, or a move to another channel): the session reconnects with these. */
   update(id: string, input: { discord?: Partial<Pick<DiscordVoiceGrant, "channelId" | "sessionId" | "endpoint" | "token">>; ignoreUserIds?: string[]; metadata?: Record<string, unknown>; speakers?: Record<string, string> }): Promise<VoiceSession> {
     return this.transport.json(this.path(id), this.key(), "PATCH", input);
-  }
-  /**
-   * Say something in the call (a session made with `speak: true`): queued behind what the bot is saying, or with
-   * `interrupt`, instead. `voice.speech.started` and `voice.speech.ended` follow.
-   */
-  speak(id: string, input: VoiceSpeechInput): Promise<VoiceSpeech> {
-    return this.transport.json(`${this.path(id)}/speak`, this.key(), "POST", input, false);
   }
   /** Stop what the bot is saying, and what it was going to. */
   stopSpeaking(id: string): Promise<{ stopped: number }> { return this.transport.json(`${this.path(id)}/speak`, this.key(), "DELETE"); }
@@ -2340,11 +2312,9 @@ export class AgentClient {
    * soon as the turn has it instead). `spendLimit` is this run's own
    * budget: it ends before its next model request once it has spent that; the agent's spendLimit is unchanged.
    * `output: { schema }` (a JSON Schema for an object) asks for structured output: the run ends with an answer that fits it, as `output`.
-   * `speak: { session, voice?, interrupt? }` speaks the run's reply in one of the tenant's voice sessions that speak, sentence by
-   * sentence as it is written (voice.speech.* events carry `reply: { agent, requestId }`).
    */
-  async prompt(text: string, options?: RunRequestOptions & { files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; whileRunning?: "queue" | "steer"; spendLimit?: { usd: number }; runLimits?: { maxResponses?: number; maxSeconds?: number }; output?: { schema: Record<string, unknown> }; history?: "full" | "none"; speak?: { session: string; voice?: string; interrupt?: boolean } }) {
-    const result = await this.message("prompt", text, options, { ...(options?.speak ? { speak: options.speak } : {}), ...(options?.actor ? { actor: options.actor } : {}), ...(options?.whileRunning === "steer" ? { whileRunning: "steer" } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}), ...(options?.spendLimit ? { spendLimit: options.spendLimit } : {}), ...(options?.runLimits ? { runLimits: options.runLimits } : {}), ...(options?.output ? { output: options.output } : {}), ...(options?.history === "none" ? { history: "none" } : {}) });
+  async prompt(text: string, options?: RunRequestOptions & { files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; whileRunning?: "queue" | "steer"; spendLimit?: { usd: number }; runLimits?: { maxResponses?: number; maxSeconds?: number }; output?: { schema: Record<string, unknown> }; history?: "full" | "none" }) {
+    const result = await this.message("prompt", text, options, { ...(options?.actor ? { actor: options.actor } : {}), ...(options?.whileRunning === "steer" ? { whileRunning: "steer" } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}), ...(options?.spendLimit ? { spendLimit: options.spendLimit } : {}), ...(options?.runLimits ? { runLimits: options.runLimits } : {}), ...(options?.output ? { output: options.output } : {}), ...(options?.history === "none" ? { history: "none" } : {}) });
     // A steered message's request completes as the running turn takes it, naming the turn: its outcome is the turn's.
     const into = options?.whileRunning === "steer" && isRecord(result) && typeof result.steeredInto === "string" && !("reply" in result) ? result.steeredInto : undefined;
     return into ? this.waitForRequest(into, { ...(options?.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}), ...(options?.signal ? { signal: options.signal } : {}) }) : result;
@@ -2375,7 +2345,7 @@ export class AgentClient {
    * Send a message and return as soon as the runtime has it (202), without waiting for its run: `{ id, state }`, the
    * request's id and whether it runs or is queued. Follow it with `waitForRequest(id)`, the stream, or a webhook.
    */
-  async submit(text: string, options?: RequestOptions & { files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; spendLimit?: { usd: number }; runLimits?: { maxResponses?: number; maxSeconds?: number }; output?: { schema: Record<string, unknown> }; history?: "full" | "none"; allowDisconnected?: boolean; speak?: { session: string; voice?: string; interrupt?: boolean } }): Promise<{ id: string; state: string }> {
+  async submit(text: string, options?: RequestOptions & { files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; spendLimit?: { usd: number }; runLimits?: { maxResponses?: number; maxSeconds?: number }; output?: { schema: Record<string, unknown> }; history?: "full" | "none"; allowDisconnected?: boolean }): Promise<{ id: string; state: string }> {
     if (this.closed || this.closing || this.fatal) throw this.fatal ?? new AgentError("Client closed");
     const id = options?.idempotencyKey ?? globalThis.crypto.randomUUID();
     if (!REQUEST_ID.test(id)) throw new AgentError(`An idempotency key is 1 to 80 letters, digits, _ and -: ${JSON.stringify(id.slice(0, 100))} is not`, 400);
@@ -2383,7 +2353,7 @@ export class AgentClient {
     const params = {
       text, ...(files ? { files } : {}), ...(options?.actor ? { actor: options.actor } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}),
       ...(options?.spendLimit ? { spendLimit: options.spendLimit } : {}), ...(options?.runLimits ? { runLimits: options.runLimits } : {}), ...(options?.output ? { output: options.output } : {}), ...(options?.history === "none" ? { history: "none" } : {}),
-      ...(options?.from ? { from: options.from } : {}), ...(options?.metadata ? { metadata: options.metadata } : {}), ...(options?.speak ? { speak: options.speak } : {}),
+      ...(options?.from ? { from: options.from } : {}), ...(options?.metadata ? { metadata: options.metadata } : {}),
     };
     const record = await this.transport.json(this.path("/requests"), this.session.token, "POST", { id, method: "prompt", params }, true, traceHeader(options?.traceparent)) as RequestRecord;
     if (record.outcome) this.settle(id, record.outcome);

@@ -1274,9 +1274,8 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
     async def test_voice_sessions_need_the_runtime_to_hold_calls(self):
         # This runtime runs without AGENT_VOICE: each call reaches the API and is answered that voice is off.
         discord = {"guildId": "1", "channelId": "2", "userId": "3", "sessionId": "s", "endpoint": "c-1.discord.media", "token": "t"}
-        for call in (lambda: self.agents.voice.create(discord, subject="user_1", agent=None, silence_ms=600, speak=True, voice="coral"), lambda: self.runtime.voice.list(state="live"),
-                     lambda: self.runtime.voice.end("vs_000000000000000000000000"), lambda: self.runtime.voice.speak("vs_000000000000000000000000", "hi", interrupt=True),
-                     lambda: self.agents.voice.stop_speaking("vs_000000000000000000000000")):
+        for call in (lambda: self.agents.voice.create(discord, subject="user_1", agent=None, silence_ms=600, voice="coral"), lambda: self.runtime.voice.list(state="live"),
+                     lambda: self.runtime.voice.end("vs_000000000000000000000000"), lambda: self.agents.voice.stop_speaking("vs_000000000000000000000000")):
             with self.assertRaises(AgentError) as refused:
                 await call()
             self.assertEqual(refused.exception.status, 404)

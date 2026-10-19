@@ -7,9 +7,9 @@ type Timer = ReturnType<typeof setTimeout>;
 
 /**
  * A voice call's audio, cut into utterances: each speaker's Opus packets (as Discord sends them: 48 kHz stereo, 20 ms
- * each, already decrypted) until they are silent for a while, packed as Ogg Opus, which transcription takes as it is.
- * Packets are decoded only to measure how loud they are (`Segmenter`), never re-encoded, and nothing is written
- * anywhere: an utterance lives in memory until it is transcribed.
+ * each, already decrypted) until they are silent for a while. Packets are decoded to measure how loud they are
+ * (`Segmenter`) and for the realtime brain's PCM; a listening session's utterances are packed as Ogg Opus, which
+ * transcription takes as it is. Nothing is written anywhere.
  */
 
 /** Samples (at 48 kHz) in an Opus packet, from its TOC byte (RFC 6716, 3.1). */
