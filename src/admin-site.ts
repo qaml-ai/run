@@ -234,14 +234,14 @@ export function adminSite(options: AdminSiteOptions): MiddlewareHandler {
     if (!email) return c.text("Sign in through Cloudflare Access", 401, { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
     // Access signed this person in, but they are not one of the admins the deployment names: nothing, and it is logged.
     if (options.admins && !options.admins.includes(email.toLowerCase())) {
-      console.error(JSON.stringify({ type: "admin_site_refused", viewer: email, path: full }));
+      console.error(JSON.stringify({ type: "admin_site_refused", viewer: email }));
       return c.text("This page is for camelRun's admins", 403, { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
     }
     let response: Response;
     try { response = await answer(c, email, full.slice(base.length) || "/"); }
     catch (error) {
       // What failed is in the log, not in the answer.
-      console.error(JSON.stringify({ type: "admin_site_failed", path: full, error: safeError(error) }));
+      console.error(JSON.stringify({ type: "admin_site_failed", error: safeError(error) }));
       response = c.json({ error: "unavailable" }, 500);
     }
     // Nothing the site answers is kept by Cloudflare or the browser but its build's assets, which say so themselves.
