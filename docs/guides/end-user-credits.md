@@ -161,19 +161,30 @@ if (run.error?.code === "end_user_credit") notify(user, run.error.reason === "da
 
 Read the error's `reason` rather than its message.
 
-### How far past zero
+### Costs past a call's hold: written off
 
-A balance can go a little below zero. Visible output never passes what a call holds,
-but these can:
+Usage never takes a balance below zero, and never takes paid spend past the daily
+limit or a bucket's limit. A call can still cost more than it held:
 
 - output a provider bills without streaming it (hidden reasoning tokens);
 - what streams while the last credit check is answered (milliseconds of output);
-- the gap between the input estimate and the real input;
+- the gap between the input estimate and the real input (a provider cache that
+  expired, a provider's own price at the time);
 - a call whose node died: its hold lapses after 10 minutes, and if the provider
-  reports its cost later, it is charged then.
+  reports its cost later, it is settled then.
 
-That is at most one call's unstreamed output per call in flight. The next grant
-covers it.
+When it settles, the person is charged at most what is left for it: the balance, the
+daily limit and the bucket's limit, less what their other calls in flight hold. The
+rest is **written off**: you bear it (your camelRun usage is the call's full cost, as
+always), and it is never charged to the person later, even after they buy credit.
+Each usage entry shows it as `writtenOff`, and `GET /v1/end-users/{id}` totals it per
+bucket for the day (`today.buckets[].writtenOff`), both in raw micro-USD. The limit
+that capped the charge fires `end_user.credit.exhausted` as a refused call would, and
+the person's next call is refused for it.
+
+A cost corrected down later takes back the write-off first, then refunds what the
+balance paid, then the allowance. One corrected up is capped the same way, by the
+limits of the day it posts to (the day the call began) and the balance as it is then.
 
 ## Webhooks
 
@@ -194,7 +205,7 @@ Every movement of a person's money is an entry, newest first:
 | `kind` | `amount` | Also |
 | --- | --- | --- |
 | `grant`, `refund`, `adjustment` | what you posted | your `key`, `reference` and `metadata` |
-| `usage` | what the balance paid (negative), 0 when the allowance covered it all | `raw` (the call's cost), `allowance` (what the allowance covered), `bucket`, and `metadata` naming the call (`response`, `compaction`, `transcription`, `image`, `web_search`…), its agent and run |
+| `usage` | what the balance paid (negative), 0 when the allowance covered it all | `raw` (the call's cost), `allowance` (what the allowance covered), `writtenOff` (the cost past what was left for it, not charged), `bucket`, and `metadata` naming the call (`response`, `compaction`, `transcription`, `image`, `web_search`…), its agent and run |
 
 A call whose cost is corrected later (a provider's final figure) has another usage
 entry for the difference. `balanceAfter` is the balance after each entry.

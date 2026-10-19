@@ -1161,14 +1161,16 @@ export const EndUserSettingsPatch = z.object({
 }).openapi("EndUserSettingsPatch", { description: "Only what is sent changes: allowances and bucketLimits key by key" });
 export const EndUserBucketDay = z.object({
   bucket: z.string(), allowance: micros("The bucket's allowance today (raw cost)"), allowanceSpent: micros("Spent from it today (raw cost)"),
-  paidSpent: micros("Charged to the balance today for this bucket"), held: micros("Held for calls in flight (allowance and balance)"),
+  paidSpent: micros("Charged to the balance today for this bucket"),
+  writtenOff: micros("Cost past what was left for this bucket today (the balance, the daily limit, the bucket's limit), raw: not charged to the user; the tenant bears it"),
+  held: micros("Held for calls in flight (allowance and balance)"),
   allowanceLeft: micros("Left of the allowance today, after holds"),
   paidLimit: micros("The bucket's own daily limit on paid spend (charged); null: none").nullable(),
 });
 export const EndUser = z.object({
   id: z.string().openapi({ description: "The end user: the subject of the agents and calls that spend for them" }),
   enabled: z.boolean().openapi({ description: "Whether the tenant meters its end users" }),
-  balance: micros("Paid credit left (charged units); slightly negative only by the documented overspend tolerance"),
+  balance: micros("Paid credit left (charged units); usage never takes it below zero (a negative adjustment of yours may)"),
   held: micros("Of the balance, what calls in flight hold"),
   available: micros("What paid spend may still take today: the balance less holds, within the daily limit"),
   dailyLimit: micros("The daily limit on paid spend that applies (the user's own, else the tenant's); null: none").nullable(),
@@ -1196,6 +1198,7 @@ export const EndUserLedgerEntry = z.object({
   kind: z.enum(["grant", "refund", "adjustment", "usage"]),
   amount: micros("What moved the balance: positive adds credit, negative spends it"),
   raw: micros("usage: the call's raw cost"), allowance: micros("usage: the part of the raw cost the bucket's allowance covered"),
+  writtenOff: micros("usage: the part of the raw cost past what was left for the call (the balance, the daily limit, the bucket's limit), not charged to the user; the tenant bears it"),
   bucket: z.string().nullable(), key: z.string(), reference: z.string().nullable(),
   metadata: z.record(z.string(), z.unknown()).openapi({ description: "usage: the call (kind, provider, model, agent, requestId, markupBps)" }),
   balanceAfter: micros("The balance after this entry"), createdAt: z.number(),

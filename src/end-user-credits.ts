@@ -50,14 +50,15 @@ export type EndUserSettings = {
 };
 export const DEFAULT_SETTINGS: Readonly<EndUserSettings> = Object.freeze({ enabled: false, allowances: {}, bucketLimits: {}, dailyLimit: null, markupBps: 0, lowBalance: null, updatedAt: null });
 export type LedgerEntry = {
-  id: number; kind: LedgerKind; amount: number; raw: number; allowance: number; bucket: string | null; key: string;
+  id: number; kind: LedgerKind; amount: number; raw: number; allowance: number; writtenOff: number; bucket: string | null; key: string;
   reference: string | null; metadata: Record<string, unknown>; balanceAfter: number; createdAt: number;
 };
 /**
  * One bucket's day: its allowance, what was spent from it and from the balance, what calls in flight hold, what is left
- * of the allowance, and its own limit on paid spend (null: none).
+ * of the allowance, its own limit on paid spend (null: none), and what was written off (raw: cost past every limit,
+ * which the tenant bears).
  */
-export type BucketDay = { bucket: string; allowance: number; allowanceSpent: number; paidSpent: number; held: number; allowanceLeft: number; paidLimit: number | null };
+export type BucketDay = { bucket: string; allowance: number; allowanceSpent: number; paidSpent: number; writtenOff: number; held: number; allowanceLeft: number; paidLimit: number | null };
 
 export const LEDGER_KINDS: readonly LedgerKind[] = [...ENTRY_KINDS, "usage"];
 /** How a ledger read is narrowed (`EndUserCredits.ledger`): times are epoch ms, `to` exclusive. */
@@ -168,7 +169,7 @@ const settingsView = (row: any): EndUserSettings => row ? {
 } : { ...DEFAULT_SETTINGS, allowances: {}, bucketLimits: {} };
 
 const entryView = (row: any): LedgerEntry => ({
-  id: Number(row.id), kind: row.kind, amount: Number(row.amount), raw: Number(row.raw), allowance: Number(row.allowance), bucket: row.bucket,
+  id: Number(row.id), kind: row.kind, amount: Number(row.amount), raw: Number(row.raw), allowance: Number(row.allowance), writtenOff: Number(row.written_off ?? 0), bucket: row.bucket,
   // A tenant's entry shows its own key; the runtime's usage keys (`attempt:…`, `charge:…`) show as they are.
   key: row.idempotency_key.startsWith("entry:") ? row.idempotency_key.slice(6) : row.idempotency_key, reference: row.reference, metadata: row.metadata ?? {}, balanceAfter: Number(row.balance_after), createdAt: Number(row.created_at),
 });
@@ -240,7 +241,7 @@ export class EndUserCredits {
     const [settings, user, days, holds] = await Promise.all([
       this.settings(tenant),
       this.db.query("select * from end_users where tenant = $1 and id = $2", [tenant, id]).then(result => result.rows[0]),
-      this.db.query("select bucket, allowance_spent, paid_spent from end_user_days where tenant = $1 and end_user = $2 and day = $3", [tenant, id, day]).then(result => result.rows),
+      this.db.query("select bucket, allowance_spent, paid_spent, written_off from end_user_days where tenant = $1 and end_user = $2 and day = $3", [tenant, id, day]).then(result => result.rows),
       this.db.query("select bucket, sum(allowance)::bigint as allowance, sum(paid)::bigint as paid from end_user_holds where tenant = $1 and end_user = $2 and expires_at > $3 group by bucket", [tenant, id, now]).then(result => result.rows),
     ]);
     const own: Allowances = user?.allowances ?? {}, ownLimits: Allowances = user?.bucket_limits ?? {};
@@ -251,7 +252,7 @@ export class EndUserCredits {
       const allowance = allowanceFor(settings.allowances, own, bucket);
       const allowanceSpent = Number(spent?.allowance_spent ?? 0), paidSpent = Number(spent?.paid_spent ?? 0);
       const heldAllowance = Number(held?.allowance ?? 0), heldPaid = Number(held?.paid ?? 0);
-      return { bucket, allowance, allowanceSpent, paidSpent, held: heldAllowance + heldPaid, allowanceLeft: Math.max(0, allowance - allowanceSpent - heldAllowance), paidLimit: bucketLimitFor(settings.bucketLimits, ownLimits, bucket) };
+      return { bucket, allowance, allowanceSpent, paidSpent, writtenOff: Number(spent?.written_off ?? 0), held: heldAllowance + heldPaid, allowanceLeft: Math.max(0, allowance - allowanceSpent - heldAllowance), paidLimit: bucketLimitFor(settings.bucketLimits, ownLimits, bucket) };
     });
     const ownLimit = user && user.daily_limit !== null ? Number(user.daily_limit) : null;
     const dailyLimit = ownLimit ?? settings.dailyLimit;
@@ -507,8 +508,8 @@ export class EndUserCredits {
 
   /**
    * Debit what a call cost (`raw`) that held nothing beforehand (a web search, a tool search's ranking), at once, once per
-   * `key`. Its usage counts against the allowance and the balance as any call's does, and may take the balance below
-   * zero: such calls cost cents, and they are refused once the user has nothing left (`refusal`).
+   * `key`. Its usage counts against the allowance and the balance as any call's does, within the same limits (what does
+   * not fit is written off: `settleUsage`); such calls cost cents, and are refused once the user has nothing left (`refusal`).
    */
   async charge(tenant: string, endUser: string, bucket: string, raw: number, key: string, metadata: Record<string, unknown> = {}, now = Date.now()) {
     if (!(raw > 0) || !await this.enabled(tenant)) return;
@@ -608,84 +609,95 @@ function refusal(endUser: string, bucket: string, room: Room): CreditRefusal {
       : { endUser, bucket, reason: "balance", message: `This end user ${out}: ${free}, and their balance is ${dollars(room.balance)}` };
 }
 
-/** What a call has posted to its user's ledger: its raw cost, the part the allowance covered, and what the balance paid. */
-export type Posted = { raw: number; allowance: number; paid: number };
-export const NOTHING_POSTED: Readonly<Posted> = Object.freeze({ raw: 0, allowance: 0, paid: 0 });
+/**
+ * What a call has posted to its user's ledger: its raw cost, the part the allowance covered, what the balance paid
+ * (charged), and the part written off (raw): cost past what was left for it, which the tenant bears and its user never pays.
+ */
+export type Posted = { raw: number; allowance: number; paid: number; writtenOff: number };
+export const NOTHING_POSTED: Readonly<Posted> = Object.freeze({ raw: 0, allowance: 0, paid: 0, writtenOff: 0 });
 
 /**
  * Post what a call cost its end user: `raw` in all, of which `previous` was posted before (a corrected cost posts the
  * difference). More: from what is left of the bucket's allowance on the call's `day` (its own `hold`, released here, no
- * longer counting against it), the rest charged to the balance at the markup. Less: the balance is refunded first, then
- * the allowance. In the caller's transaction, which this locks the user in; returns what the call has posted now.
+ * longer counting against it), the rest charged to the balance at the markup, at most the room left for it (`room`: the
+ * balance, the daily limit and the bucket's own limit, less what other calls hold); what does not fit is written off,
+ * and never charged later. Less: the write-off goes down first, then the balance is refunded, then the allowance. In the
+ * caller's transaction, which this locks the user in; returns what the call has posted now.
  */
-export async function settleUsage(sql: Sql, call: { tenant: string; endUser: string; bucket: string; day: string; raw: number; key: string; hold?: string; previous?: Posted; metadata?: Record<string, unknown> }, now = Date.now()): Promise<Posted> {
+export async function settleUsage(sql: Sql, call: { tenant: string; endUser: string; bucket: string; day: string; raw: number; key: string; hold?: string; previous?: Partial<Posted>; metadata?: Record<string, unknown> }, now = Date.now()): Promise<Posted> {
   const { tenant, endUser, bucket, day } = call;
-  const previous = call.previous ?? NOTHING_POSTED;
+  const previous: Posted = { ...NOTHING_POSTED, ...call.previous };
   const user = await lockEndUser(sql, tenant, endUser, now);
   if (call.hold) await sql.query("delete from end_user_holds where id = $1", [call.hold]);
   const raw = Math.max(0, Math.round(call.raw));
   if (raw === previous.raw) return previous;
-  const settings = (await sql.query("select * from end_user_settings where tenant = $1", [tenant])).rows[0];
-  const markupBps = Number(settings?.markup_bps ?? 0);
-  let allowance: number, paid: number;
+  const settings = settingsView((await sql.query("select * from end_user_settings where tenant = $1", [tenant])).rows[0]);
+  const markupBps = settings.markupBps;
+  let allowance: number, paid: number, writtenOff: number;
   if (raw > previous.raw) {
-    const allowed = allowanceFor(settings?.allowances ?? {}, user.allowances ?? {}, bucket);
-    const [{ rows: [spent] }, { rows: [held] }] = await Promise.all([
-      sql.query("select allowance_spent from end_user_days where tenant = $1 and end_user = $2 and day = $3 and bucket = $4", [tenant, endUser, day, bucket]),
-      sql.query("select coalesce(sum(allowance), 0)::bigint as allowance from end_user_holds where tenant = $1 and end_user = $2 and bucket = $3 and day = $4 and expires_at > $5", [tenant, endUser, bucket, day, now]),
-    ]);
+    // What is left for it on its day, its own hold released: every other call's hold still counts against it.
+    const left = await room(sql, tenant, user, settings, bucket, now, day);
     const more = raw - previous.raw;
-    const before = Number(spent?.allowance_spent ?? 0);
-    const covered = Math.min(more, Math.max(0, allowed - before - Number(held.allowance)));
+    const covered = Math.min(more, left.allowanceLeft);
+    const owed = marked(more - covered, markupBps);
+    const charged = Math.min(owed, left.paidRoom);
+    const lost = charged < owed ? more - covered - unmarked(charged, markupBps) : 0;
     allowance = previous.allowance + covered;
-    paid = previous.paid + marked(more - covered, markupBps);
+    paid = previous.paid + charged;
+    writtenOff = previous.writtenOff + lost;
+    const balance = Number(user.balance) - charged;
+    const spent = (await sql.query("select bucket, allowance_spent, paid_spent from end_user_days where tenant = $1 and end_user = $2 and day = $3", [tenant, endUser, day])).rows;
+    const mine = spent.find(row => row.bucket === bucket);
     // The bucket's allowance for the day is used up with this call: said once per user, bucket and day.
-    if (allowed > 0 && before < allowed && before + covered >= allowed) {
-      await exhausted(sql, tenant, endUser, { bucket, reason: "allowance", day, allowance: allowed, balance: Number(user.balance) - (paid - previous.paid) }, `allowance:${tenant}:${endUser}:${bucket}:${day}`);
+    const before = Number(mine?.allowance_spent ?? 0);
+    if (left.allowance > 0 && before < left.allowance && before + covered >= left.allowance) {
+      await exhausted(sql, tenant, endUser, { bucket, reason: "allowance", day, allowance: left.allowance, balance }, `allowance:${tenant}:${endUser}:${bucket}:${day}`);
     }
     // So is the bucket's own limit on paid spend: once per user, bucket and day.
-    const bucketLimit = bucketLimitFor(settings?.bucket_limits ?? {}, user.bucket_limits ?? {}, bucket);
-    if (bucketLimit !== null && paid > previous.paid) {
-      const before = Number((await sql.query("select paid_spent from end_user_days where tenant = $1 and end_user = $2 and day = $3 and bucket = $4", [tenant, endUser, day, bucket])).rows[0]?.paid_spent ?? 0);
-      if (before < bucketLimit && before + paid - previous.paid >= bucketLimit) {
-        await exhausted(sql, tenant, endUser, { bucket, reason: "bucket_limit", day, bucketLimit, balance: Number(user.balance) - (paid - previous.paid) }, `bucket_limit:${tenant}:${endUser}:${bucket}:${day}`);
-      }
+    const bucketPaid = Number(mine?.paid_spent ?? 0);
+    if (left.bucketLimit !== null && charged > 0 && bucketPaid < left.bucketLimit && bucketPaid + charged >= left.bucketLimit) {
+      await exhausted(sql, tenant, endUser, { bucket, reason: "bucket_limit", day, bucketLimit: left.bucketLimit, balance }, `bucket_limit:${tenant}:${endUser}:${bucket}:${day}`);
     }
     // So is the daily limit on paid spend: once per user and day.
-    const limit = user.daily_limit !== null && user.daily_limit !== undefined ? Number(user.daily_limit) : settings?.daily_limit !== null && settings?.daily_limit !== undefined ? Number(settings.daily_limit) : null;
-    if (limit !== null && paid > previous.paid) {
-      const today = Number((await sql.query("select coalesce(sum(paid_spent), 0)::bigint as paid from end_user_days where tenant = $1 and end_user = $2 and day = $3", [tenant, endUser, day])).rows[0].paid);
-      if (today < limit && today + paid - previous.paid >= limit) {
-        await exhausted(sql, tenant, endUser, { bucket, reason: "daily_limit", day, dailyLimit: limit, balance: Number(user.balance) - (paid - previous.paid) }, `daily_limit:${tenant}:${endUser}:${day}`);
-      }
+    const paidToday = spent.reduce((total, row) => total + Number(row.paid_spent), 0);
+    if (left.dailyLimit !== null && charged > 0 && paidToday < left.dailyLimit && paidToday + charged >= left.dailyLimit) {
+      await exhausted(sql, tenant, endUser, { bucket, reason: "daily_limit", day, dailyLimit: left.dailyLimit, balance }, `daily_limit:${tenant}:${endUser}:${day}`);
+    }
+    // A cost past what was left is written off, and the limit that stopped it is said, as a call it refused would be.
+    if (lost > 0) {
+      await refused(sql, tenant, { ...user, balance }, bucket, { ...left, balance }, now);
+      console.error(JSON.stringify({ type: "end_user_written_off", tenant, endUser, bucket, day, writtenOff: lost, reason: left.bound, key: call.key }));
     }
   } else {
-    // Less: what the balance paid is refunded first, at the rate it was paid at (the markup may have changed since), and
-    // never more than it paid; then the allowance.
-    allowance = Math.min(raw, previous.allowance);
-    const paidRaw = previous.raw - previous.allowance;
-    paid = paidRaw > 0 ? Math.min(previous.paid, Math.ceil((raw - allowance) * previous.paid / paidRaw)) : 0;
+    // Less: the write-off goes first (it was never charged); then what the balance paid is refunded, at the rate it was
+    // paid at (the markup may have changed since), and never more than it paid; then the allowance.
+    writtenOff = Math.max(0, previous.writtenOff - (previous.raw - raw));
+    const posted = raw - writtenOff, postedBefore = previous.raw - previous.writtenOff;
+    allowance = Math.min(posted, previous.allowance);
+    const paidRaw = postedBefore - previous.allowance;
+    paid = paidRaw > 0 ? Math.min(previous.paid, Math.ceil((posted - allowance) * previous.paid / paidRaw)) : 0;
   }
-  await sql.query(`insert into end_user_days (tenant, end_user, day, bucket, allowance_spent, paid_spent) values ($1, $2, $3, $4, $5, $6)
-    on conflict (tenant, end_user, day, bucket) do update set allowance_spent = end_user_days.allowance_spent + excluded.allowance_spent, paid_spent = end_user_days.paid_spent + excluded.paid_spent`,
-  [tenant, endUser, day, bucket, allowance - previous.allowance, paid - previous.paid]);
+  await sql.query(`insert into end_user_days (tenant, end_user, day, bucket, allowance_spent, paid_spent, written_off) values ($1, $2, $3, $4, $5, $6, $7)
+    on conflict (tenant, end_user, day, bucket) do update set allowance_spent = end_user_days.allowance_spent + excluded.allowance_spent,
+      paid_spent = end_user_days.paid_spent + excluded.paid_spent, written_off = end_user_days.written_off + excluded.written_off`,
+  [tenant, endUser, day, bucket, allowance - previous.allowance, paid - previous.paid, writtenOff - previous.writtenOff]);
   await appendEntry(sql, {
-    tenant, endUser, kind: "usage", amount: previous.paid - paid, raw: raw - previous.raw, allowance: allowance - previous.allowance, bucket, key: call.key,
-    metadata: { ...call.metadata, day, ...(markupBps ? { markupBps } : {}) },
+    tenant, endUser, kind: "usage", amount: previous.paid - paid, raw: raw - previous.raw, allowance: allowance - previous.allowance, writtenOff: writtenOff - previous.writtenOff,
+    bucket, key: call.key, metadata: { ...call.metadata, day, ...(markupBps ? { markupBps } : {}) },
   }, Number(user.balance), now);
-  return { raw, allowance, paid };
+  return { raw, allowance, paid, writtenOff };
 }
 
 /**
  * Append an entry and move the user's balance by its amount, with the user's row locked (`lockEndUser`) and its balance
  * as it was (`balance`). A key already in the ledger is never appended again: callers look for it first.
  */
-export async function appendEntry(sql: Sql, entry: { tenant: string; endUser: string; kind: LedgerKind; amount: number; raw?: number; allowance?: number; bucket?: string | null; key: string; reference?: string | null; metadata?: Record<string, unknown> }, balance: number, now = Date.now()): Promise<LedgerEntry> {
+export async function appendEntry(sql: Sql, entry: { tenant: string; endUser: string; kind: LedgerKind; amount: number; raw?: number; allowance?: number; writtenOff?: number; bucket?: string | null; key: string; reference?: string | null; metadata?: Record<string, unknown> }, balance: number, now = Date.now()): Promise<LedgerEntry> {
   const after = balance + entry.amount;
   const row = (await sql.query(`
-    insert into end_user_ledger (tenant, end_user, kind, amount, raw, allowance, bucket, idempotency_key, reference, metadata, balance_after, created_at)
-    values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) on conflict (tenant, idempotency_key) do nothing returning *`,
-  [entry.tenant, entry.endUser, entry.kind, entry.amount, entry.raw ?? 0, entry.allowance ?? 0, entry.bucket ?? null, entry.key, entry.reference ?? null, JSON.stringify(entry.metadata ?? {}), after, now])).rows[0];
+    insert into end_user_ledger (tenant, end_user, kind, amount, raw, allowance, written_off, bucket, idempotency_key, reference, metadata, balance_after, created_at)
+    values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) on conflict (tenant, idempotency_key) do nothing returning *`,
+  [entry.tenant, entry.endUser, entry.kind, entry.amount, entry.raw ?? 0, entry.allowance ?? 0, entry.writtenOff ?? 0, entry.bucket ?? null, entry.key, entry.reference ?? null, JSON.stringify(entry.metadata ?? {}), after, now])).rows[0];
   if (!row) throw new Error(`Ledger key ${entry.key} was posted already`);
   if (entry.amount) {
     await sql.query("update end_users set balance = $3, updated_at = $4 where tenant = $1 and id = $2", [entry.tenant, entry.endUser, after, now]);
