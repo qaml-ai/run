@@ -8994,6 +8994,93 @@
           "createdAt"
         ]
       },
+      "EndUserDays": {
+        "type": "object",
+        "properties": {
+          "days": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EndUserDay"
+            },
+            "description": "Newest first; days with no spend and no entries are left out"
+          },
+          "next": {
+            "type": "string",
+            "description": "More days are in the range: pass as `to` for the next page"
+          }
+        },
+        "required": [
+          "days"
+        ]
+      },
+      "EndUserDay": {
+        "type": "object",
+        "properties": {
+          "day": {
+            "type": "string",
+            "description": "The UTC day, YYYY-MM-DD. A call counts on the day it began; an entry on the day it was posted"
+          },
+          "freeRaw": {
+            "type": "integer",
+            "description": "What allowances paid that day, every bucket (raw cost), in micro-USD (1 USD = 1000000)"
+          },
+          "paidCharged": {
+            "type": "integer",
+            "description": "What the balance paid that day, every bucket (charged), in micro-USD (1 USD = 1000000)"
+          },
+          "granted": {
+            "type": "integer",
+            "description": "Credit the tenant granted that day (balance units), in micro-USD (1 USD = 1000000)"
+          },
+          "refunded": {
+            "type": "integer",
+            "description": "Credit the tenant refunded that day, as a positive amount (balance units), in micro-USD (1 USD = 1000000)"
+          },
+          "adjusted": {
+            "type": "integer",
+            "description": "What the tenant's adjustments moved the balance that day, signed (balance units), in micro-USD (1 USD = 1000000)"
+          },
+          "entries": {
+            "type": "integer",
+            "description": "How many grants, refunds and adjustments were posted that day"
+          },
+          "buckets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "bucket": {
+                  "type": "string"
+                },
+                "freeRaw": {
+                  "type": "integer",
+                  "description": "What the bucket's allowance paid that day, in raw cost (never charged), in micro-USD (1 USD = 1000000)"
+                },
+                "paidCharged": {
+                  "type": "integer",
+                  "description": "What the balance paid for the bucket that day, charged with the markup, in micro-USD (1 USD = 1000000)"
+                }
+              },
+              "required": [
+                "bucket",
+                "freeRaw",
+                "paidCharged"
+              ]
+            },
+            "description": "Spend by bucket, by name; buckets that spent nothing that day are left out"
+          }
+        },
+        "required": [
+          "day",
+          "freeRaw",
+          "paidCharged",
+          "granted",
+          "refunded",
+          "adjusted",
+          "entries",
+          "buckets"
+        ]
+      },
       "EndUserEntry": {
         "type": "object",
         "properties": {
@@ -17679,15 +17766,148 @@
             "description": "1–200, default 50",
             "name": "limit",
             "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Comma-separated kinds to include: grant, refund, adjustment, usage. `grant,refund,adjustment` is the person's credit history without usage",
+              "example": "grant,refund,adjustment"
+            },
+            "required": false,
+            "description": "Comma-separated kinds to include: grant, refund, adjustment, usage. `grant,refund,adjustment` is the person's credit history without usage",
+            "name": "kind",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Entries created at or after this time: epoch milliseconds, a UTC day (YYYY-MM-DD) or an ISO 8601 time"
+            },
+            "required": false,
+            "description": "Entries created at or after this time: epoch milliseconds, a UTC day (YYYY-MM-DD) or an ISO 8601 time",
+            "name": "from",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Entries created before this time (exclusive), as `from`"
+            },
+            "required": false,
+            "description": "Entries created before this time (exclusive), as `from`",
+            "name": "to",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Only this bucket's usage"
+            },
+            "required": false,
+            "description": "Only this bucket's usage",
+            "name": "bucket",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ],
+              "description": "true: only entries that moved the balance (usage the allowance paid for in full is left out)"
+            },
+            "required": false,
+            "description": "true: only entries that moved the balance (usage the allowance paid for in full is left out)",
+            "name": "moved",
+            "in": "query"
           }
         ],
         "responses": {
           "200": {
-            "description": "The end user's ledger, newest first: grants, refunds, adjustments and each call's usage",
+            "description": "The end user's ledger, newest first: grants, refunds, adjustments and each call's usage, as filtered",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/EndUserLedger"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/end-users/{id}/days": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The end user: the subject of the agents and calls that spend for them (URL-encoded)"
+            },
+            "required": true,
+            "description": "The end user: the subject of the agents and calls that spend for them (URL-encoded)",
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The first UTC day (YYYY-MM-DD); default: `to` less 366 days"
+            },
+            "required": false,
+            "description": "The first UTC day (YYYY-MM-DD); default: `to` less 366 days",
+            "name": "from",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The UTC day after the last (exclusive; YYYY-MM-DD); default: tomorrow, so today is the newest. The previous page's next"
+            },
+            "required": false,
+            "description": "The UTC day after the last (exclusive; YYYY-MM-DD); default: tomorrow, so today is the newest. The previous page's next",
+            "name": "to",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Only this bucket's spend (and no credit entries, which belong to no bucket)"
+            },
+            "required": false,
+            "description": "Only this bucket's spend (and no credit entries, which belong to no bucket)",
+            "name": "bucket",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Days a page, 1–100, default 31"
+            },
+            "required": false,
+            "description": "Days a page, 1–100, default 31",
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The end user's spend by bucket and credit entries per UTC day, newest first; days with neither are left out. A range spans at most 366 days",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EndUserDays"
                 }
               }
             }

@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import secrets
 import subprocess
@@ -1177,11 +1178,17 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
             await agent.run("again")
         self.assertEqual(refused.exception.code, "END_USER_CREDIT")
         self.assertEqual((await end_users.list())["endUsers"][0]["id"], "person")
+        # The credit history without usage, and the day's totals: the run's usage (allowance-paid) and the two entries.
+        history = await end_users.ledger("person", kind=["grant", "adjustment"], from_=datetime.now(timezone.utc) - timedelta(days=1))
+        self.assertEqual([entry["key"] for entry in history["entries"]], ["zero", "pi_1"])
+        self.assertEqual([entry["key"] for entry in (await end_users.ledger("person", moved=True, kind=["usage"]))["entries"]], [])
+        days = (await end_users.days("person", to=datetime.now(timezone.utc).date() + timedelta(days=1)))["days"]
+        self.assertEqual((len(days), days[0]["granted"], days[0]["entries"], days[0]["buckets"][0]["bucket"], days[0]["buckets"][0]["freeRaw"]), (1, 500_000, 2, "bot:7", 10_550))
 
         def synchronous():
             with sync.AgentRuntime(url=self.url, api_key=self.token) as runtime:
-                return runtime.end_users.get("person")["balance"], runtime.end_users.settings()["enabled"]
-        self.assertEqual(await asyncio.to_thread(synchronous), (0, True))
+                return runtime.end_users.get("person")["balance"], runtime.end_users.settings()["enabled"], len(runtime.end_users.days("person", limit=1)["days"])
+        self.assertEqual(await asyncio.to_thread(synchronous), (0, True, 1))
 
     async def test_volumes_files_snapshots_and_mounts(self):
         created = await self.runtime.create_volume(name="shared docs")
