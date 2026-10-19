@@ -30,7 +30,7 @@ WORKDIR /src
 # out so rustup uses the image's, with its cross targets.
 COPY sandbox/v8-exec/Cargo.toml sandbox/v8-exec/Cargo.lock ./
 COPY sandbox/v8-exec/src ./src
-RUN --mount=type=cache,target=/usr/local/cargo/registry --mount=type=cache,target=/src/target,id=v8exec-$TARGETARCH \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked --mount=type=cache,target=/src/target,id=v8exec-$TARGETARCH \
     cargo build --release --locked --target "$(cat /triple)" && cp "target/$(cat /triple)/release/v8-exec" /v8-exec
 
 FROM ${BASE_REGISTRY}/node:22-bookworm-slim
