@@ -28,6 +28,13 @@ once. The runtime does not start without a database.
 
 Migrations are plain SQL files, applied at startup in one transaction under an
 advisory lock and recorded in `schema_migrations`, so nodes may start together.
+A file whose first line is `-- migrate: concurrently` holds only
+`CREATE INDEX CONCURRENTLY IF NOT EXISTS` statements, for a table too large or busy
+to hold its writes while an index builds: it runs outside the transaction, under the
+same lock held by its connection, between the files before and after it. A build cut
+short leaves an invalid index, which the next start drops and builds again. The node
+that runs it starts once the build is done (the build has 10 minutes); others wait for
+the lock, and nodes already running keep serving.
 Application times (`createdAt`, `dueAt`, `expiresAt`) are bigint milliseconds;
 heartbeats and claims use `timestamptz` on the database clock.
 

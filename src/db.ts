@@ -231,6 +231,9 @@ function logErrors(pool: pg.Pool) {
  * waiting on a lock (an ALTER behind a long transaction) gives up after `lockTimeoutMs` (2 s), so the
  * queries on that table that queue behind it wait at most that long; the whole run is then tried again,
  * `attempts` times, and a lock held throughout fails the node's start within about 50 s.
+ *
+ * Files run in one transaction, up to a file that opens with CONCURRENT_MIGRATION: that one builds indexes on a
+ * table too large or busy to lock for the build, outside any transaction (`concurrently`), and the rest follow it.
  */
 export async function migrate(db: Db, directory = MIGRATIONS, options: { lockTimeoutMs?: number; attempts?: number; retryMs?: number } = {}): Promise<string[]> {
   const attempts = options.attempts ?? 10;
@@ -245,20 +248,79 @@ export async function migrate(db: Db, directory = MIGRATIONS, options: { lockTim
 }
 const LOCK_NOT_AVAILABLE = "55P03";
 
+/** The first line of a migration that builds indexes concurrently: each statement a CREATE INDEX CONCURRENTLY IF NOT EXISTS. */
+export const CONCURRENT_MIGRATION = "-- migrate: concurrently";
+/** The runners' lock: one per schema, so parallel test schemas migrate side by side. */
+const MIGRATION_LOCK = "hashtext('agent-runtime-migrations:' || coalesce(current_schema(), ''))";
+/** How long a concurrent index build may take before its node gives up (the build is tried again by the next start). */
+const CONCURRENT_BUILD_MS = 10 * 60_000;
+const CONCURRENT_INDEX = /^create\s+(?:unique\s+)?index\s+concurrently\s+if\s+not\s+exists\s+([a-z_][a-z0-9_]*)\s+on\s/i;
+const sleep = (ms: number) => clock().sleep(ms);
+
 async function migrateOnce(db: Db, directory: string, lockTimeoutMs: number) {
   const files = readdirSync(directory).filter(name => /^\d{3}_[a-z0-9_]+\.sql$/.test(name)).sort();
-  return transaction(db, async sql => {
-    await sql.query("select pg_advisory_xact_lock(hashtext('agent-runtime-migrations:' || coalesce(current_schema(), '')))");
-    await sql.query(`set local lock_timeout = ${Math.max(1, Math.floor(lockTimeoutMs))}`);
-    await sql.query("create table if not exists schema_migrations (name text primary key, applied_at timestamptz not null default now())");
-    const applied = new Set((await sql.query("select name from schema_migrations")).rows.map(row => row.name));
-    const pending = files.filter(name => !applied.has(name));
-    for (const name of pending) {
-      await sql.query(readFileSync(join(directory, name), "utf8"));
-      await sql.query("insert into schema_migrations (name) values ($1)", [name]);
-    }
-    return pending;
+  const applied: string[] = [];
+  for (;;) {
+    const { ran, next } = await transaction(db, async sql => {
+      // Waited for by polling, not by blocking: a statement blocked on the lock holds a snapshot, which a concurrent index
+      // build holding the lock would wait for in turn. Between polls this transaction holds none.
+      while (!(await sql.query(`select pg_try_advisory_xact_lock(${MIGRATION_LOCK}) as held`)).rows[0].held) await sleep(200);
+      await sql.query(`set local lock_timeout = ${Math.max(1, Math.floor(lockTimeoutMs))}`);
+      await sql.query("create table if not exists schema_migrations (name text primary key, applied_at timestamptz not null default now())");
+      const done = new Set((await sql.query("select name from schema_migrations")).rows.map(row => row.name));
+      const ran: string[] = [];
+      for (const name of files.filter(name => !done.has(name))) {
+        const text = readFileSync(join(directory, name), "utf8");
+        if (text.startsWith(CONCURRENT_MIGRATION)) return { ran, next: { name, text } };
+        await sql.query(text);
+        await sql.query("insert into schema_migrations (name) values ($1)", [name]);
+        ran.push(name);
+      }
+      return { ran, next: undefined };
+    });
+    applied.push(...ran);
+    if (!next) return applied;
+    if (await concurrently(db, next.name, next.text, lockTimeoutMs)) applied.push(next.name);
+  }
+}
+
+/**
+ * Apply a CONCURRENT_MIGRATION file: its indexes built without locking their table against writes, outside any
+ * transaction, on one connection holding the runners' lock (as a session's). A build cut short (its node stopped, the
+ * lock timeout) leaves an invalid index behind: it is dropped and built again. False: another runner applied it first.
+ */
+async function concurrently(db: Db, name: string, text: string, lockTimeoutMs: number): Promise<boolean> {
+  const statements = text.split("\n").filter(line => !line.trimStart().startsWith("--")).join("\n").split(";").map(statement => statement.trim()).filter(Boolean);
+  const indexes = statements.map(statement => {
+    const index = CONCURRENT_INDEX.exec(statement)?.[1];
+    if (!index) throw new Error(`${name}: a concurrent migration holds only CREATE INDEX CONCURRENTLY IF NOT EXISTS statements`);
+    return { statement, index };
   });
+  const client = await db.connect();
+  let broken: Error | undefined;
+  try {
+    while (!(await client.query(`select pg_try_advisory_lock(${MIGRATION_LOCK}) as held`)).rows[0].held) await sleep(200);
+    try {
+      if ((await client.query("select 1 from schema_migrations where name = $1", [name])).rowCount) return false;
+      await client.query(`set lock_timeout = ${Math.max(1, Math.floor(lockTimeoutMs))}`);
+      for (const { statement, index } of indexes) {
+        const { rows: [leftover] } = await client.query("select i.indisvalid as valid from pg_index i join pg_class c on c.oid = i.indexrelid where c.relname = $1 and c.relnamespace = current_schema()::regnamespace", [index]);
+        if (leftover && !leftover.valid) await client.query(`drop index concurrently if exists ${index}`);
+        // A build may outlast the pool's per-query timeout: it has its own.
+        await (client as unknown as { query(config: { text: string; query_timeout: number }): Promise<unknown> }).query({ text: statement, query_timeout: CONCURRENT_BUILD_MS });
+      }
+      await client.query("insert into schema_migrations (name) values ($1)", [name]);
+      return true;
+    } finally {
+      await client.query("reset lock_timeout").catch(() => {});
+      await client.query(`select pg_advisory_unlock(${MIGRATION_LOCK})`).catch(() => {});
+    }
+  } catch (error) {
+    broken = error as Error;
+    throw error;
+  } finally {
+    client.release(broken);
+  }
 }
 
 /**
