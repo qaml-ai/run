@@ -120,7 +120,7 @@ export function fakePlayer(everyMs = 2) {
 }
 
 /** A brain over a fake provider and player, with hooks recording what it reports. */
-export function testBrain(options: Partial<BrainOptions> & { addressing?: Partial<AddressingPolicy>; humans?: number; askAgent?: BrainHooks["askAgent"]; hold?: BrainHooks["hold"]; refuse?: boolean } = {}) {
+export function testBrain(options: Partial<BrainOptions> & { addressing?: Partial<AddressingPolicy>; humans?: number; askAgent?: BrainHooks["askAgent"]; hold?: BrainHooks["hold"]; provider?: RealtimeProvider; refuse?: boolean } = {}) {
   const realtime = fakeRealtimeProvider();
   const playback = fakePlayer();
   const usage: Parameters<BrainHooks["usage"]>[0][] = [];
@@ -136,9 +136,10 @@ export function testBrain(options: Partial<BrainOptions> & { addressing?: Partia
     session: "vs_000000000000000000000001", tenant: "alice", reference: options.reference ?? "openai/gpt-realtime-2.1", floor: new Floor(options.addressing ?? {}),
     speculative: options.speculative ?? false, transcribed: options.transcribed ?? true, ...(options.bargeIn ? { bargeIn: options.bargeIn } : {}),
     ...(options.clock ? { clock: options.clock } : {}),
+    ...(options.ownsTurns ? { ownsTurns: true } : {}),
     ...(options.wordsAfterAnswer ? { wordsAfterAnswer: true } : {}), ...(options.limits ? { limits: options.limits } : {}),
   }, {
-    connect: events => realtime.provider.connect(config, { apiKey: "fixture" }, events),
+    connect: events => (options.provider ?? realtime.provider).connect(config, { apiKey: "fixture" }, events),
     player: () => playback.player, resumeMedia: () => playback.resume(), humans: () => state.humans, name: speaker => names[speaker] ?? speaker,
     ...(options.askAgent ? { askAgent: options.askAgent } : {}),
     admit: async () => { if (options.refuse) throw Object.assign(new Error("No credit"), { status: 402 }); },

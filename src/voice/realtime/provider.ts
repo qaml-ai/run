@@ -5,7 +5,7 @@ import { micros } from "../../pricing.ts";
  * brain"). The session's media plane, turn-taking, addressing and echo guard stay in front of it
  * (src/voice/realtime/brain.ts): the model hears the call's audio mixed into one stream, with a text item naming who
  * speaks each time that changes, and it answers aloud only when the brain asks it to (manual commits; the provider's
- * own turn detection is off). Its audio plays on the session's connection like any speech.
+ * own turn detection is off, except providers with ownsTurns). Its audio plays on the session's connection like any speech.
  *
  * A provider is a connection factory. The connection's verbs are what the brain needs, not one vendor's events, so
  * Gemini Live (activityStart/activityEnd, clientContent) can be a second implementation of the same interface.
@@ -46,6 +46,8 @@ export interface RealtimeEvents {
   ready(): void;
   /** Billable audio seconds and text input items, as they cross the provider connection. */
   meter?(audioSeconds: number, textInputs: number): void;
+  /** The provider detected barge-in: stop buffered playback too. */
+  interrupted?(): void;
   /** A response began (`respond`), or the provider began one itself. */
   responseStarted(response: string): void;
   /** Audio of a response, as it is made. */
@@ -104,10 +106,14 @@ export interface RealtimeProvider {
   readonly voiceFor?: Readonly<Record<string, string>>;
   /** Its transcript of a turn comes only once it is asked to answer (Gemini): addressing by name decides after. */
   readonly wordsAfterAnswer?: boolean;
+  /** The provider owns VAD and starts responses without manual commits. */
+  readonly ownsTurns?: boolean;
+  /** Accept voice ids outside the prebuilt list. */
+  readonly customVoices?: boolean;
   connect(config: RealtimeConfig, credentials: { apiKey: string }, events: RealtimeEvents): RealtimeConnection;
 }
 
-export const REALTIME_PROVIDERS = ["openai", "gemini", "grok"] as const;
+export const REALTIME_PROVIDERS = ["openai", "gemini", "grok", "elevenlabs"] as const;
 export type RealtimeProviderId = typeof REALTIME_PROVIDERS[number];
 
 /** Micro-USD per million tokens, or per minute of audio and per text input item. */
@@ -154,6 +160,7 @@ export function realtimeTranscriptionCost(seconds: number): number {
  */
 export const REALTIME_VOICE_FOR: Readonly<Record<string, string>> = Object.freeze({ nova: "marin", onyx: "cedar", fable: "ballad" });
 export function realtimeVoice(provider: RealtimeProvider, voice: string): string {
+  if (provider.customVoices) return provider.voiceFor?.[voice] ?? voice;
   if (provider.voices.includes(voice)) return voice;
   const near = provider.voiceFor?.[voice] ?? REALTIME_VOICE_FOR[voice];
   return near && provider.voices.includes(near) ? near : provider.voices[0];

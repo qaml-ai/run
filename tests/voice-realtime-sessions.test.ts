@@ -244,3 +244,25 @@ test("Grok speech usage settles the end user's real credit ledger and releases i
   assert.ok(entries.every(entry => entry.bucket === "bot:7"));
   await until(async () => Math.round((await a.voice.get("alice", created.id)).costUsd * 1e6) === expected, "session cost");
 });
+
+test("an ElevenLabs session accepts library voice ids, maps OpenAI names, disables speculation, and resolves the elevenlabs key", async t => {
+  const realtime = fakeRealtimeProvider();
+  const keys: string[] = [];
+  const { elevenlabsAgents, ELEVENLABS_AGENTS } = await import("../src/voice/realtime/elevenlabs.ts");
+  const elevenlabs = elevenlabsAgents();
+  const cluster = await voiceCluster(t, {
+    realtime: {
+      providers: { elevenlabs: { ...elevenlabs, connect: realtime.provider.connect } },
+      key: async (_tenant, _scope, provider) => { keys.push(provider); return { apiKey: "fixture", platform: false }; },
+    },
+  });
+  const a = await cluster.node("http://a");
+  const created = await a.voice.create("alice", { discord: discordGrant(), brain: "realtime", realtime: { provider: "elevenlabs", voice: "cartoon_voice_id" } });
+  assert.deepEqual(created.realtime, { provider: "elevenlabs", model: ELEVENLABS_AGENTS.defaultModel, voice: "cartoon_voice_id", transcribe: true, speculative: false });
+  assert.ok(keys.includes("elevenlabs"));
+  await a.voice.end("alice", created.id);
+  const mapped = await a.voice.create("alice", { discord: discordGrant(), brain: "realtime", realtime: { provider: "elevenlabs", voice: "coral" } });
+  assert.equal(mapped.realtime?.voice, ELEVENLABS_AGENTS.voice);
+  await a.voice.end("alice", mapped.id);
+  await assert.rejects(a.voice.create("alice", { discord: discordGrant(), brain: "realtime", realtime: { voice: "invalid voice" } }), (error: HttpError) => error.status === 400);
+});

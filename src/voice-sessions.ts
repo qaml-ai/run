@@ -680,12 +680,12 @@ export class VoiceSessions {
     const model = given.model === undefined ? provider.defaultModel : given.model;
     if (typeof model !== "string" || !provider.models.includes(model)) throw new HttpError(400, `realtime.model must be one of ${provider.models.join(", ")}`);
     if (!REALTIME_PRICES[`${provider.id}/${model}`]) throw new HttpError(400, `Realtime model ${provider.id}/${model} has no price configured`, "REALTIME_UNPRICED");
-    if (given.voice !== undefined && (typeof given.voice !== "string" || !provider.voices.includes(given.voice))) throw new HttpError(400, `realtime.voice must be one of ${provider.id}'s: ${provider.voices.join(", ")}`);
+    if (given.voice !== undefined && (typeof given.voice !== "string" || !(provider.customVoices ? /^[a-zA-Z0-9_-]{1,100}$/.test(given.voice) : provider.voices.includes(given.voice)))) throw new HttpError(400, `realtime.voice must be one of ${provider.id}'s: ${provider.voices.join(", ")}`);
     const instructions = given.instructions === undefined ? undefined : text(given.instructions, "realtime.instructions", new RegExp(`^[\\s\\S]{1,${VOICE_LIMITS.realtimeInstructionsChars}}$`), `at most ${VOICE_LIMITS.realtimeInstructionsChars} characters`);
     for (const flag of ["transcribe", "speculative"] as const) if (given[flag] !== undefined && typeof given[flag] !== "boolean") throw new HttpError(400, `realtime.${flag} must be true or false`);
     return {
-      provider: provider.id, model, voice: (given.voice as string | undefined) ?? realtimeVoice(provider, voice),
-      ...(instructions ? { instructions } : {}), transcribe: given.transcribe !== false, speculative: given.speculative !== false,
+      provider: provider.id, model, voice: given.voice !== undefined && !provider.customVoices ? given.voice as string : realtimeVoice(provider, (given.voice as string | undefined) ?? voice),
+      ...(instructions ? { instructions } : {}), transcribe: given.transcribe !== false, speculative: !provider.ownsTurns && given.speculative !== false,
     };
   }
 
@@ -1758,7 +1758,7 @@ export class VoiceSessions {
       heard: heard => {
         const { keyScope } = options();
         if (heard.seconds > 0) this.options.record(held.tenant, {
-          provider: provider.id, model: REALTIME_TRANSCRIPTION.model, kind: "transcription", platform: credentials.platform, transcriptions: 1, audioSeconds: Math.ceil(heard.seconds),
+          provider: provider.id, model: provider.ownsTurns ? realtime.model : REALTIME_TRANSCRIPTION.model, kind: "transcription", platform: credentials.platform, transcriptions: 1, audioSeconds: Math.ceil(heard.seconds),
           usage: { cost: { total: heard.costUsd } }, timestamp: Date.now(), identity: identity(), ...(keyScope ? { keyScope } : {}),
         });
         if (!heard.text) return;
@@ -1798,7 +1798,8 @@ export class VoiceSessions {
     return new RealtimeBrain({
       session: held.id, tenant: held.tenant, reference: `${provider.id}/${realtime.model}`, floor: held.floor, transcribed: realtime.transcribe,
       ...(provider.wordsAfterAnswer ? { wordsAfterAnswer: true } : {}),
-      speculative: realtime.speculative && options().endOfTurn?.mode === "smart" && !!this.options.turnModels,
+      ...(provider.ownsTurns ? { ownsTurns: true } : {}),
+      speculative: !provider.ownsTurns && realtime.speculative && options().endOfTurn?.mode === "smart" && !!this.options.turnModels,
       ...(options().bargeIn !== false ? { bargeIn: policy } : {}),
     }, hooks);
   }
