@@ -13,7 +13,7 @@ concurrency:
 jobs:
   changes:
     timeout-minutes: 3
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && vars.CI_RUNNER_LABELS || ((github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && '["blacksmith-16vcpu-ubuntu-2404"]' || '["ubuntu-latest"]')) }}
     permissions:
       contents: read
       actions: read
@@ -36,7 +36,7 @@ jobs:
       # Release cached consumers immediately; a source change still builds once and shares an artifact.
       - id: binary-key
         env:
-          FAMILY: ${{ (github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && 'self-hosted' || 'github-hosted' }}
+          FAMILY: ${{ runner.environment }}
           SOURCES: ${{ hashFiles('sandbox/v8-exec/Cargo.lock', 'sandbox/v8-exec/Cargo.toml', 'sandbox/v8-exec/rust-toolchain.toml', 'sandbox/v8-exec/src/**') }}
         run: echo "key=v8-exec-binary-Linux-X64-$FAMILY-$SOURCES" >> "$GITHUB_OUTPUT"
       - id: binary
@@ -305,7 +305,7 @@ jobs:
     needs: [changes, v8-exec]
     if: ${{ !cancelled() && needs.changes.result == 'success' && (needs.v8-exec.result == 'success' || needs.changes.outputs.binary-cached == 'true') }}
     timeout-minutes: 15
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && vars.CI_RUNNER_LABELS || ((github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && '["blacksmith-16vcpu-ubuntu-2404"]' || '["ubuntu-latest"]')) }}
     services:
       postgres:
         image: postgres:16-alpine
