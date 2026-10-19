@@ -71,6 +71,7 @@ await agents.endUsers.configure({
   dailyLimit: 20_000_000,                                    // at most $20 of paid spend a day
   bucketLimits: { "bot:*": 2_000_000 },                      // and at most $2 of it per bot
   lowBalance: 2_000_000,                                     // end_user.balance.low below $2
+  allowanceWarningPercent: 80,                               // end_user.allowance.low at 80% of a bucket's allowance
 });
 ```
 
@@ -224,11 +225,62 @@ Subscribe an endpoint (`POST /v1/webhooks`) to:
 
 | Type | When |
 | --- | --- |
-| `end_user.balance.low` | a balance falls below `lowBalance`; again only after a grant lifts it back above |
-| `end_user.credit.exhausted` | `reason: "allowance"`: a bucket's allowance for the day is used up (the balance may still pay; once per person, bucket and day); `"balance"`: the balance reached zero, or a call was refused for it (once until the next grant); `"daily_limit"`: the daily limit was reached (once a day); `"bucket_limit"`: a bucket's own limit was reached (once per person, bucket and day) |
+| `end_user.balance.low` | a balance is below the person's threshold: their own `lowBalance` (`PATCH /v1/end-users/{id}`), else yours. See [when it fires](#when-balance-events-fire) |
+| `end_user.credit.exhausted` | `reason: "allowance"`: a bucket's allowance for the day is used up (the balance may still pay; once per person, bucket and day); `"balance"`: the balance reached zero, or a call was refused for it (see [when it fires](#when-balance-events-fire)); `"daily_limit"`: the daily limit was reached (once a day); `"bucket_limit"`: a bucket's own limit was reached (once per person, bucket and day) |
+| `end_user.credit.granted`, `.refunded`, `.adjusted` | you posted a grant, refund or adjustment: once per entry (a replayed `key` sends nothing). `{endUser, entryId, kind, amount, key, reference, metadata, balance, previousBalance}`, `amount` signed as in the ledger. For receipts, and for a second service or a mirror of balances |
+| `end_user.allowance.low` | a person's spend in a bucket passed `allowanceWarningPercent` (1–100, off by default) of its daily allowance: once per person, bucket and day. `{endUser, bucket, day, allowance, allowanceSpent, percent}` |
 
 They are signed and retried like every [webhook](webhooks.md), and written in the
 same transaction as the change that caused them.
+
+### When balance events fire
+
+`end_user.balance.low` and `end_user.credit.exhausted` with `reason: "balance"` each
+carry a `cause`: what moved the balance.
+
+```jsonc
+"cause": {
+  "kind": "usage",       // usage | usage_correction | grant | refund | adjustment | refusal | threshold_changed
+  "entryId": 1234,       // the ledger entry; none for refusal and threshold_changed
+  "entryKey": "dp_123",  // your key, for grant, refund and adjustment
+  "requestId": "…",      // usage: the run's request, when there is one
+  "bucket": "bot:42"
+}
+```
+
+- `usage_correction` is a call's cost posted again, corrected: a provider's final
+  figure, which can come long after the call.
+- `refusal` is a call refused with no balance left: there is no ledger entry.
+- A person's entry ids grow, so `entryId` puts their events in order, which delivery
+  may not.
+
+The rules:
+
+- **`balance.low` fires on a debit** (usage or a negative adjustment) that takes the
+  balance below the threshold from at or above it. Staying below fires nothing more,
+  until one of the next rules applies.
+- **`credit.exhausted` (`balance`) fires on a debit** that takes the balance from above
+  zero to zero or below, and on a call refused with no balance left
+  (`cause.kind: "refusal"`), once until the balance is back above zero or re-armed.
+- **A grant or a positive adjustment that leaves the balance short re-arms the event**:
+  the next debit fires it again. So with a $10 threshold, a $5 top-up that leaves someone
+  at $6 makes their next debit fire `balance.low` again, and a grant that leaves someone
+  at or below zero makes their next debit or refused call fire `credit.exhausted` again.
+- **Any move that leaves the balance past the line** (at or above the threshold, above
+  zero) resets the event, a call's cost corrected down included: the next crossing fires.
+- **Setting a threshold** fires `balance.low` once, with `cause.kind: "threshold_changed"`,
+  for each person under it who hasn't been told since they were last above it (or who
+  was re-armed since). A person's own threshold (`PATCH /v1/end-users/{id}`) applies to
+  them alone. Your tenant-wide `lowBalance` applies to everyone without their own who
+  has ever been credited. Setting the same value again fires nothing.
+- **Refunds are silent.** A refund fires neither event (no one should be topped up
+  because you gave money back), and counts as told for each line the balance is short
+  of, so neither fires until a grant or a positive adjustment.
+- **Someone never credited** (who only spends free allowances) isn't re-armed by
+  anything, and your tenant-wide threshold never tells them their balance is low.
+
+To top a person up automatically when their balance runs low, see
+[Auto top-up on end-user credits](end-user-auto-top-up.md).
 
 ## The ledger
 
@@ -283,9 +335,9 @@ A bucket's `held` today adds the allowance's part of holds (raw) to the balance'
 | Call | SDK (TypeScript / Python) |
 | --- | --- |
 | `GET`, `PUT`, `PATCH /v1/end-user-settings` | `endUsers.settings()`, `endUsers.configure({...})`, `endUsers.amend({...})` / `end_users.settings()`, `end_users.configure(...)`, `end_users.amend(...)` |
-| `GET /v1/end-users` | `endUsers.list({ after, limit })` |
+| `GET /v1/end-users` | `endUsers.list({ after, limit, belowLowBalance })`: `belowLowBalance` lists only those under their threshold |
 | `GET /v1/end-users/{id}?buckets=` | `endUsers.get(id, { buckets })` |
-| `PATCH /v1/end-users/{id}` | `endUsers.update(id, { allowances, bucketLimits, dailyLimit })`: a person's own allowances and bucket limits (merged; `null` removes one) and limit |
+| `PATCH /v1/end-users/{id}` | `endUsers.update(id, { allowances, bucketLimits, dailyLimit, lowBalance })`: a person's own allowances and bucket limits (merged; `null` removes one), limit and low-balance threshold (`null`: yours) |
 | `GET /v1/end-users/{id}/ledger?kind=&from=&to=&bucket=&moved=` | `endUsers.ledger(id, { before, limit, kind, from, to, bucket, moved })` / `end_users.ledger(id, before=, limit=, kind=, from_=, to=, bucket=, moved=)` |
 | `GET /v1/end-users/{id}/days?from=&to=&bucket=&limit=` | `endUsers.days(id, { from, to, bucket, limit })` / `end_users.days(id, from_=, to=, bucket=, limit=)` |
 | `POST /v1/end-users/{id}/entries` | `endUsers.grant`, `refund`, `adjust` |

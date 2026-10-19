@@ -44,11 +44,27 @@ export type EndUserSettings = {
   bucketLimits: Allowances;
   /** Added to the raw cost of paid spend, in basis points. */
   markupBps: number;
-  /** end_user.balance.low fires when a balance falls below this; null: never. */
+  /** end_user.balance.low fires when a balance falls below this (a person's own `lowBalance` over it); null: never. */
   lowBalance: number | null;
+  /** end_user.allowance.low fires once per person, bucket and day as spend passes this percent of the bucket's allowance; null: never. */
+  allowanceWarningPercent: number | null;
   updatedAt: number | null;
 };
-export const DEFAULT_SETTINGS: Readonly<EndUserSettings> = Object.freeze({ enabled: false, allowances: {}, bucketLimits: {}, dailyLimit: null, markupBps: 0, lowBalance: null, updatedAt: null });
+export const DEFAULT_SETTINGS: Readonly<EndUserSettings> = Object.freeze({ enabled: false, allowances: {}, bucketLimits: {}, dailyLimit: null, markupBps: 0, lowBalance: null, allowanceWarningPercent: null, updatedAt: null });
+
+/**
+ * What moved a balance, on end_user.balance.low and end_user.credit.exhausted (reason balance): a call's usage, a later
+ * correction of a call's cost, one of the tenant's entries, a call refused (no entry), or a threshold set above the
+ * balance (no entry). Stable codes: a receiver may switch on them.
+ */
+export const BALANCE_CAUSES = ["usage", "usage_correction", "grant", "refund", "adjustment", "refusal", "threshold_changed"] as const;
+export type BalanceCauseKind = typeof BALANCE_CAUSES[number];
+/**
+ * `entryId`: the ledger entry that moved the balance (none for a refusal or a threshold change); a person's entry ids
+ * grow, so they order that person's events. `entryKey`: the tenant's key, for its own entries. `requestId`: the run's
+ * request, for usage when there is one.
+ */
+export type BalanceCause = { kind: BalanceCauseKind; entryId?: number; entryKey?: string; requestId?: string; bucket: string | null };
 export type LedgerEntry = {
   id: number; kind: LedgerKind; amount: number; raw: number; allowance: number; writtenOff: number; bucket: string | null; key: string;
   reference: string | null; metadata: Record<string, unknown>; balanceAfter: number; createdAt: number;
@@ -165,7 +181,8 @@ export const utcDay = (at: number) => new Date(at).toISOString().slice(0, 10);
 
 const settingsView = (row: any): EndUserSettings => row ? {
   enabled: row.enabled, allowances: row.allowances ?? {}, bucketLimits: row.bucket_limits ?? {}, dailyLimit: row.daily_limit === null ? null : Number(row.daily_limit),
-  markupBps: row.markup_bps, lowBalance: row.low_balance === null ? null : Number(row.low_balance), updatedAt: Number(row.updated_at),
+  markupBps: row.markup_bps, lowBalance: row.low_balance === null ? null : Number(row.low_balance),
+  allowanceWarningPercent: row.allowance_warning_percent ?? null, updatedAt: Number(row.updated_at),
 } : { ...DEFAULT_SETTINGS, allowances: {}, bucketLimits: {} };
 
 const entryView = (row: any): LedgerEntry => ({
@@ -198,7 +215,7 @@ export class EndUserCredits {
    * other's fields or keys: of two writes to the same field or key, the later one wins.
    */
   async setSettings(tenant: string, input: Record<string, unknown>, { merge = false } = {}): Promise<EndUserSettings> {
-    const known = ["enabled", "allowances", "bucketLimits", "dailyLimit", "markupBps", "lowBalance"];
+    const known = ["enabled", "allowances", "bucketLimits", "dailyLimit", "markupBps", "lowBalance", "allowanceWarningPercent"];
     const unknown = Object.keys(input).find(key => !known.includes(key));
     if (unknown) throw new HttpError(400, `Unknown setting ${unknown}: settings are ${known.join(", ")}`);
     if (input.enabled !== undefined && typeof input.enabled !== "boolean") throw new HttpError(400, "enabled must be true or false");
@@ -209,13 +226,17 @@ export class EndUserCredits {
     if (input.markupBps !== undefined && (typeof input.markupBps !== "number" || !Number.isSafeInteger(input.markupBps) || input.markupBps < 0 || input.markupBps > 100_000)) {
       throw new HttpError(400, "markupBps must be an integer from 0 to 100000 (basis points: 2500 is +25%)");
     }
+    const warning = input.allowanceWarningPercent;
+    if (warning !== undefined && warning !== null && (typeof warning !== "number" || !Number.isInteger(warning) || warning < 1 || warning > 100)) {
+      throw new HttpError(400, "allowanceWarningPercent must be an integer from 1 to 100 (a percent of a bucket's daily allowance), or null");
+    }
     // An insert (no row yet) takes the defaults for what was not sent; an update sets only what was. A map's keys merge
     // in SQL: `(column || set) - removed`. Postgres takes the row before evaluating the update, so a writer queued behind
     // another merges into what that one wrote.
     const params: unknown[] = [tenant, Date.now()];
     const param = (value: unknown) => `$${params.push(value)}`;
     const sets: string[] = [], limits: string[] = [];
-    const values: Record<string, string> = { enabled: "false", allowances: "'{}'::jsonb", bucket_limits: "'{}'::jsonb", daily_limit: "null", markup_bps: "0", low_balance: "null" };
+    const values: Record<string, string> = { enabled: "false", allowances: "'{}'::jsonb", bucket_limits: "'{}'::jsonb", daily_limit: "null", markup_bps: "0", low_balance: "null", allowance_warning_percent: "null" };
     const column = (name: string, value: unknown) => {
       values[name] = param(value);
       sets.push(`${name} = excluded.${name}`);
@@ -236,21 +257,33 @@ export class EndUserCredits {
     if (dailyLimit !== undefined) column("daily_limit", dailyLimit);
     if (input.markupBps !== undefined) column("markup_bps", input.markupBps);
     if (lowBalance !== undefined) column("low_balance", lowBalance);
+    if (warning !== undefined) column("allowance_warning_percent", warning);
     const names = Object.keys(values);
-    const row = (await this.db.query(`
+    const write = async (sql: Sql) => (await sql.query(`
       insert into end_user_settings as s (tenant, ${names.join(", ")}, updated_at) values ($1, ${names.map(name => values[name]).join(", ")}, $2)
       on conflict (tenant) do update set ${[...sets, "updated_at = excluded.updated_at"].join(", ")}
       ${limits.length ? `where ${limits.join(" and ")}` : ""}
       returning *`, params)).rows[0];
+    // A threshold set: each person under it who has not been told yet is, once (in the same transaction).
+    const row = lowBalance === undefined ? await write(this.db) : await transaction(this.db, async sql => {
+      const row = await write(sql);
+      if (row) await thresholdChanged(sql, tenant, row.low_balance === null ? null : Number(row.low_balance));
+      return row;
+    });
     // No row: the row is there, and a PATCH would take one of its maps past 100 keys. Nothing was written.
     if (!row) throw new HttpError(400, "At most 100 keys in allowances, and 100 in bucketLimits");
     return settingsView(row);
   }
 
-  /** The tenant's end users, by id, a page at a time (`after`: the last id of the previous page). */
-  async list(tenant: string, options: { limit?: number; after?: string } = {}) {
+  /**
+   * The tenant's end users, by id, a page at a time (`after`: the last id of the previous page). `belowLowBalance`: only
+   * those whose balance is under the low-balance threshold that applies to them (their own, else the tenant's), the
+   * people an auto top-up sweep looks at.
+   */
+  async list(tenant: string, options: { limit?: number; after?: string; belowLowBalance?: boolean } = {}) {
     const limit = Math.min(Math.max(Math.floor(options.limit ?? 50) || 50, 1), 200);
-    const { rows } = await this.db.query(`select id, balance, created_at, updated_at from end_users where tenant = $1 and ($2::text is null or id > $2) order by id limit $3`,
+    const { rows } = await this.db.query(`select id, balance, created_at, updated_at from end_users where tenant = $1 and ($2::text is null or id > $2)
+      ${options.belowLowBalance ? "and balance < coalesce(low_balance, (select low_balance from end_user_settings where tenant = $1))" : ""} order by id limit $3`,
       [tenant, options.after ?? null, limit + 1]);
     const page = rows.slice(0, limit).map(row => ({ id: row.id as string, balance: Number(row.balance), createdAt: Number(row.created_at), updatedAt: Number(row.updated_at) }));
     return { endUsers: page, ...(rows.length > limit ? { next: page.at(-1)!.id } : {}) };
@@ -285,11 +318,13 @@ export class EndUserCredits {
     const paidSpent = days.reduce((total, row) => total + Number(row.paid_spent), 0);
     const heldPaid = holds.reduce((total, row) => total + Number(row.paid), 0);
     const balance = Number(user?.balance ?? 0);
+    const ownLow = user && user.low_balance !== null ? Number(user.low_balance) : null;
     return {
       id, enabled: settings.enabled, balance, held: heldPaid,
       /** What paid spend may still take today: the balance less holds, within the daily limit. */
       available: Math.max(0, Math.min(balance - heldPaid, dailyLimit === null ? Infinity : dailyLimit - paidSpent - heldPaid)),
-      dailyLimit, markupBps: settings.markupBps, overrides: { allowances: own, bucketLimits: ownLimits, dailyLimit: ownLimit },
+      dailyLimit, lowBalance: ownLow ?? settings.lowBalance, markupBps: settings.markupBps,
+      overrides: { allowances: own, bucketLimits: ownLimits, dailyLimit: ownLimit, lowBalance: ownLow },
       today: { day, paidSpent, buckets: today },
       createdAt: user ? Number(user.created_at) : null, updatedAt: user ? Number(user.updated_at) : null,
     };
@@ -297,20 +332,23 @@ export class EndUserCredits {
 
   /**
    * Set a user's own overrides: `allowances` and `bucketLimits` merged key by key into theirs (a key set to null is
-   * removed), and their `dailyLimit` (null: the tenant's). Makes the user if they are new. Never touches what they spent.
+   * removed), their `dailyLimit` and their `lowBalance` (null: the tenant's). Makes the user if they are new. Never
+   * touches what they spent. A threshold set above their balance fires end_user.balance.low once (`threshold_changed`).
    */
   async update(tenant: string, id: string, input: Record<string, unknown>) {
     endUserInput(id);
-    const unknown = Object.keys(input).find(key => !["allowances", "bucketLimits", "dailyLimit"].includes(key));
-    if (unknown) throw new HttpError(400, `Unknown field ${unknown}: an end user's overrides are allowances, bucketLimits and dailyLimit`);
+    const unknown = Object.keys(input).find(key => !["allowances", "bucketLimits", "dailyLimit", "lowBalance"].includes(key));
+    if (unknown) throw new HttpError(400, `Unknown field ${unknown}: an end user's overrides are allowances, bucketLimits, dailyLimit and lowBalance`);
     const allowances = input.allowances === undefined ? undefined : allowancesInput(input.allowances, true);
     const bucketLimits = input.bucketLimits === undefined ? undefined : allowancesInput(input.bucketLimits, true, "bucketLimits");
     const dailyLimit = input.dailyLimit === undefined ? undefined : amountInput(input.dailyLimit, "dailyLimit", { nullable: true });
+    const lowBalance = input.lowBalance === undefined ? undefined : amountInput(input.lowBalance, "lowBalance", { nullable: true });
     await transaction(this.db, async sql => {
       const user = await lockEndUser(sql, tenant, id);
-      await sql.query("update end_users set allowances = $3, bucket_limits = $4, daily_limit = $5, updated_at = $6 where tenant = $1 and id = $2",
+      await sql.query("update end_users set allowances = $3, bucket_limits = $4, daily_limit = $5, low_balance = $6, updated_at = $7 where tenant = $1 and id = $2",
         [tenant, id, JSON.stringify(mergeKeys(user.allowances, allowances, "allowance")), JSON.stringify(mergeKeys(user.bucket_limits, bucketLimits, "bucket limit")),
-          dailyLimit === undefined ? user.daily_limit : dailyLimit, Date.now()]);
+          dailyLimit === undefined ? user.daily_limit : dailyLimit, lowBalance === undefined ? user.low_balance : lowBalance, Date.now()]);
+      if (lowBalance !== undefined) await thresholdChanged(sql, tenant, null, id);
     });
     return this.get(tenant, id);
   }
@@ -432,6 +470,10 @@ export class EndUserCredits {
         }
       }
       const entry = await appendEntry(sql, { tenant, endUser: id, kind, amount: moved, key, reference: (input.reference as string | undefined) ?? null, metadata: (input.metadata as Record<string, unknown> | undefined) ?? {} }, Number(user.balance));
+      // Said once per entry (a replayed key posts nothing, so says nothing): for receipts, mirrors, a second service.
+      await enqueueEvents(sql, [webhookEvent(ENTRY_EVENTS[kind], tenant, {
+        endUser: id, entryId: entry.id, kind, amount: entry.amount, key: entry.key, reference: entry.reference, metadata: entry.metadata, balance: entry.balanceAfter, previousBalance: Number(user.balance),
+      }, `end_user_entry:${tenant}:${entry.id}`)]);
       return { entry, replayed: false };
     });
   }
@@ -687,6 +729,12 @@ export async function settleUsage(sql: Sql, call: { tenant: string; endUser: str
     if (left.allowance > 0 && before < left.allowance && before + covered >= left.allowance) {
       await exhausted(sql, tenant, endUser, { bucket, reason: "allowance", day, allowance: left.allowance, balance }, `allowance:${tenant}:${endUser}:${bucket}:${day}`);
     }
+    // Spend passed the tenant's warning percent of the bucket's allowance: said once per user, bucket and day.
+    const percent = settings.allowanceWarningPercent, allowed = left.allowance;
+    const warnAt = percent === null ? 0 : Math.ceil(allowed * percent / 100);
+    if (allowed > 0 && percent !== null && before < warnAt && before + covered >= warnAt) {
+      await enqueueEvents(sql, [webhookEvent("end_user.allowance.low", tenant, { endUser, bucket, day, allowance: allowed, allowanceSpent: before + covered, percent }, `allowance_low:${tenant}:${endUser}:${bucket}:${day}`)]);
+    }
     // So is the bucket's own limit on paid spend: once per user, bucket and day.
     const bucketPaid = Number(mine?.paid_spent ?? 0);
     if (left.bucketLimit !== null && charged > 0 && bucketPaid < left.bucketLimit && bucketPaid + charged >= left.bucketLimit) {
@@ -718,6 +766,8 @@ export async function settleUsage(sql: Sql, call: { tenant: string; endUser: str
   await appendEntry(sql, {
     tenant, endUser, kind: "usage", amount: previous.paid - paid, raw: raw - previous.raw, allowance: allowance - previous.allowance, writtenOff: writtenOff - previous.writtenOff,
     bucket, key: call.key, metadata: { ...call.metadata, day, ...(markupBps ? { markupBps } : {}) },
+    // A call's cost posted again, corrected (a reconciled or settled estimate): its own cause on balance events.
+    correction: previous.raw > 0,
   }, Number(user.balance), now);
   return { raw, allowance, paid, writtenOff };
 }
@@ -726,43 +776,99 @@ export async function settleUsage(sql: Sql, call: { tenant: string; endUser: str
  * Append an entry and move the user's balance by its amount, with the user's row locked (`lockEndUser`) and its balance
  * as it was (`balance`). A key already in the ledger is never appended again: callers look for it first.
  */
-export async function appendEntry(sql: Sql, entry: { tenant: string; endUser: string; kind: LedgerKind; amount: number; raw?: number; allowance?: number; writtenOff?: number; bucket?: string | null; key: string; reference?: string | null; metadata?: Record<string, unknown> }, balance: number, now = Date.now()): Promise<LedgerEntry> {
+export async function appendEntry(sql: Sql, entry: { tenant: string; endUser: string; kind: LedgerKind; amount: number; raw?: number; allowance?: number; writtenOff?: number; bucket?: string | null; key: string; reference?: string | null; metadata?: Record<string, unknown>; correction?: boolean }, balance: number, now = Date.now()): Promise<LedgerEntry> {
   const after = balance + entry.amount;
   const row = (await sql.query(`
     insert into end_user_ledger (tenant, end_user, kind, amount, raw, allowance, written_off, bucket, idempotency_key, reference, metadata, balance_after, created_at)
     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) on conflict (tenant, idempotency_key) do nothing returning *`,
   [entry.tenant, entry.endUser, entry.kind, entry.amount, entry.raw ?? 0, entry.allowance ?? 0, entry.writtenOff ?? 0, entry.bucket ?? null, entry.key, entry.reference ?? null, JSON.stringify(entry.metadata ?? {}), after, now])).rows[0];
   if (!row) throw new Error(`Ledger key ${entry.key} was posted already`);
+  const posted = entryView(row);
   if (entry.amount) {
     await sql.query("update end_users set balance = $3, updated_at = $4 where tenant = $1 and id = $2", [entry.tenant, entry.endUser, after, now]);
-    await balanceNotices(sql, entry.tenant, entry.endUser, balance, after, entry.bucket ?? null, entry.kind === "refund");
+    const requestId = entry.kind === "usage" && typeof posted.metadata.requestId === "string" ? posted.metadata.requestId : undefined;
+    await balanceNotices(sql, entry.tenant, entry.endUser, balance, after, {
+      kind: entry.kind === "usage" ? entry.correction ? "usage_correction" : "usage" : entry.kind, entryId: posted.id,
+      ...(entry.kind === "usage" ? {} : { entryKey: posted.key }), ...(requestId ? { requestId } : {}), bucket: entry.bucket ?? null,
+    });
   }
-  return entryView(row);
+  return posted;
+}
+
+/** The event each kind of the tenant's own entries sends. */
+const ENTRY_EVENTS = { grant: "end_user.credit.granted", refund: "end_user.credit.refunded", adjustment: "end_user.credit.adjusted" } as const;
+
+/** The low-balance threshold that applies to a user (their row): their own, else the tenant's (`settings`' row); null: none. */
+const thresholdOf = (user: any, settings: any): number | null =>
+  user?.low_balance !== null && user?.low_balance !== undefined ? Number(user.low_balance) : settings?.low_balance !== null && settings?.low_balance !== undefined ? Number(settings.low_balance) : null;
+
+/**
+ * The webhooks a balance's move fires, in the transaction that moves it (the caller holds the user's row locked), each
+ * with the `cause` that moved it. Two flags on the user's row per event: `*_notified` (told since the balance was last
+ * past the line) and `*_rearmed` (a grant since, that left the balance short of the line).
+ *
+ * - end_user.balance.low fires on a debit (usage, a negative adjustment) that takes the balance below the threshold that
+ *   applies (the user's own `lowBalance`, else the tenant's) from at or above it, or that leaves it below while re-armed.
+ * - end_user.credit.exhausted (reason balance) fires on a debit that takes the balance from above zero to zero or below,
+ *   or that leaves it there while re-armed (and on a call refused then: `refused`).
+ * - A grant or a positive adjustment that leaves the balance short of a line re-arms that event: "below $10, add $5"
+ *   fires again on the next debit while the balance stays under $10. Any move that leaves the balance past a line (at or
+ *   above the threshold, above zero) resets that event, a usage cost corrected down included: the next crossing fires.
+ * - A refund (money given back, the user leaving) is silent: it fires nothing, and marks each line the balance is short of
+ *   as told, so nothing fires until a grant or a positive adjustment re-arms it.
+ *
+ * A person never credited is never re-armed: one at zero who spends past their allowance hears nothing.
+ */
+async function balanceNotices(sql: Sql, tenant: string, endUser: string, before: number, after: number, cause: BalanceCause) {
+  const [{ rows: [user] }, { rows: [settings] }] = await Promise.all([
+    sql.query("select low_notified, low_rearmed, depleted_notified, depleted_rearmed, low_balance from end_users where tenant = $1 and id = $2", [tenant, endUser]),
+    sql.query("select low_balance from end_user_settings where tenant = $1", [tenant]),
+  ]);
+  const threshold = thresholdOf(user, settings);
+  const lines = [
+    { event: "end_user.balance.low" as const, short: threshold !== null && after < threshold, crossed: threshold !== null && before >= threshold, notified: user.low_notified as boolean, rearmed: user.low_rearmed as boolean,
+      data: { endUser, balance: after, threshold, previousBalance: before, cause } },
+    { event: "end_user.credit.exhausted" as const, short: after <= 0, crossed: before > 0, notified: user.depleted_notified as boolean, rearmed: user.depleted_rearmed as boolean,
+      data: { endUser, reason: "balance", bucket: cause.bucket, balance: after, day: utcDay(Date.now()), cause } },
+  ];
+  const credited = after > before && (cause.kind === "grant" || cause.kind === "adjustment");
+  const next = [];
+  for (const line of lines) {
+    let { notified, rearmed } = line;
+    if (!line.short) [notified, rearmed] = [false, false];
+    else if (cause.kind === "refund") [notified, rearmed] = [true, false];
+    else if (credited) rearmed = true;
+    else if (after < before && ((line.crossed && !notified) || rearmed)) {
+      await enqueueEvents(sql, [webhookEvent(line.event, tenant, line.data)]);
+      [notified, rearmed] = [true, false];
+    }
+    next.push(notified, rearmed);
+  }
+  if (next.some((value, i) => value !== [user.low_notified, user.low_rearmed, user.depleted_notified, user.depleted_rearmed][i])) {
+    await sql.query("update end_users set low_notified = $3, low_rearmed = $4, depleted_notified = $5, depleted_rearmed = $6 where tenant = $1 and id = $2", [tenant, endUser, ...next]);
+  }
 }
 
 /**
- * The webhooks a balance's move fires, in the transaction that moves it: end_user.balance.low as it falls below the
- * tenant's `lowBalance`, end_user.credit.exhausted (reason balance) as it reaches zero. Each fires once until the balance
- * rises past it again (its flag on the user's row, which the caller holds locked). A refund (money given back, the user
- * leaving) crosses them silently: no alert to top them up again, and none until a grant lifts the balance back past.
+ * A low-balance threshold set: end_user.balance.low (`threshold_changed`) once for each person now under the threshold
+ * that applies to them who was not told since they were last past it (or was re-armed since), and the event reset for
+ * each now at or above it. `endUser`: that person (their row locked), against their own threshold, else the tenant's.
+ * None: every person of the tenant without their own threshold, against the tenant's new `threshold`, of those ever
+ * credited (a grant or a positive adjustment): people who only ever spent free allowances are not told.
  */
-async function balanceNotices(sql: Sql, tenant: string, endUser: string, before: number, after: number, bucket: string | null, silent = false) {
-  const [{ rows: [user] }, { rows: [settings] }] = await Promise.all([
-    sql.query("select low_notified, depleted_notified from end_users where tenant = $1 and id = $2", [tenant, endUser]),
-    sql.query("select low_balance from end_user_settings where tenant = $1", [tenant]),
-  ]);
-  const threshold = settings?.low_balance === null || settings?.low_balance === undefined ? null : Number(settings.low_balance);
-  let low: boolean = user.low_notified, depleted: boolean = user.depleted_notified;
-  if (threshold !== null && after < threshold && before >= threshold && !low) {
-    if (!silent) await enqueueEvents(sql, [webhookEvent("end_user.balance.low", tenant, { endUser, balance: after, threshold, previousBalance: before })]);
-    low = true;
-  } else if (threshold === null || after >= threshold) low = false;
-  if (after <= 0 && before > 0 && !depleted) {
-    if (!silent) await enqueueEvents(sql, [webhookEvent("end_user.credit.exhausted", tenant, { endUser, reason: "balance", bucket, balance: after, day: utcDay(Date.now()) })]);
-    depleted = true;
-  } else if (after > 0) depleted = false;
-  if (low !== user.low_notified || depleted !== user.depleted_notified) {
-    await sql.query("update end_users set low_notified = $3, depleted_notified = $4 where tenant = $1 and id = $2", [tenant, endUser, low, depleted]);
+async function thresholdChanged(sql: Sql, tenant: string, threshold: number | null, endUser?: string) {
+  const applies = endUser ? "coalesce(u.low_balance, (select low_balance from end_user_settings where tenant = $1))" : "$2::bigint";
+  const short = `(${applies} is not null and u.balance < ${applies})`;
+  const credited = "exists (select 1 from end_user_ledger l where l.tenant = u.tenant and l.end_user = u.id and l.kind in ('grant', 'adjustment') and l.amount > 0)";
+  const { rows } = await sql.query(`
+    update end_users u set low_notified = ${short}, low_rearmed = false
+    where u.tenant = $1 and ${endUser ? "u.id = $2" : "u.low_balance is null"}
+      and (case when ${short} then (not u.low_notified or u.low_rearmed) ${endUser ? "" : `and ${credited}`} else u.low_notified or u.low_rearmed end)
+    returning u.id, u.balance, u.low_notified, ${applies} as threshold`, [tenant, endUser ?? threshold]);
+  for (const row of rows.filter(row => row.low_notified)) {
+    await enqueueEvents(sql, [webhookEvent("end_user.balance.low", tenant, {
+      endUser: row.id, balance: Number(row.balance), threshold: Number(row.threshold), previousBalance: Number(row.balance), cause: { kind: "threshold_changed", bucket: null },
+    })]);
   }
 }
 
@@ -782,9 +888,10 @@ async function refused(sql: Sql, tenant: string, user: any, bucket: string, room
     await exhausted(sql, tenant, user.id, { bucket, reason: "daily_limit", day: room.day, dailyLimit: room.dailyLimit, balance: room.balance }, `daily_limit:${tenant}:${user.id}:${room.day}`);
   } else if (said.reason === "bucket_limit") {
     await exhausted(sql, tenant, user.id, { bucket, reason: "bucket_limit", day: room.day, bucketLimit: room.bucketLimit, balance: room.balance }, `bucket_limit:${tenant}:${user.id}:${bucket}:${room.day}`);
-  } else if (!user.depleted_notified && room.balance <= 0) {
-    await enqueueEvents(sql, [webhookEvent("end_user.credit.exhausted", tenant, { endUser: user.id, reason: "balance", bucket, balance: room.balance, day: room.day })]);
-    await sql.query("update end_users set depleted_notified = true, updated_at = $3 where tenant = $1 and id = $2", [tenant, user.id, now]);
+  } else if ((!user.depleted_notified || user.depleted_rearmed) && room.balance <= 0) {
+    const cause: BalanceCause = { kind: "refusal", bucket };
+    await enqueueEvents(sql, [webhookEvent("end_user.credit.exhausted", tenant, { endUser: user.id, reason: "balance", bucket, balance: room.balance, day: room.day, cause })]);
+    await sql.query("update end_users set depleted_notified = true, depleted_rearmed = false, updated_at = $3 where tenant = $1 and id = $2", [tenant, user.id, now]);
   }
   return said;
 }

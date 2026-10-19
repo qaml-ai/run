@@ -618,11 +618,18 @@ export type WebhookEvent = { id: string; created: number } & (
       /** Integer micro-USD, including negative balances. */
       balance: number; threshold: number; previousBalance?: number; source: "balance" | "threshold_changed";
     } }
-  | { type: "end_user.balance.low"; data: { endUser: string; balance: number; previousBalance: number; threshold: number } }
+  | { type: "end_user.balance.low"; data: {
+      /** `threshold`: the one that applied (the person's own lowBalance, else the tenant's). */
+      endUser: string; balance: number; previousBalance: number; threshold: number; cause: EndUserBalanceCause;
+    } }
   | { type: "end_user.credit.exhausted"; data: {
       /** allowance: a bucket's free allowance for the day is used up (the balance may still pay); balance: no credit left; daily_limit: the day's paid spend reached its limit; bucket_limit: the bucket's paid spend reached its own. */
       endUser: string; reason: "allowance" | "balance" | "daily_limit" | "bucket_limit"; bucket: string | null; balance: number; day: string; allowance?: number; dailyLimit?: number | null; bucketLimit?: number | null;
+      /** With reason balance: what moved it. */
+      cause?: EndUserBalanceCause;
     } }
+  | { type: "end_user.credit.granted" | "end_user.credit.refunded" | "end_user.credit.adjusted"; data: EndUserEntryEvent }
+  | { type: "end_user.allowance.low"; data: { endUser: string; bucket: string; day: string; allowance: number; allowanceSpent: number; percent: number } }
   | { type: "run.started"; data: RunFacts & { resumes?: number } }
   | { type: "run.completed"; data: RunFacts & { usage: RunUsage | null; servedModel?: string; stopped?: "input_required" | "spend_limit" | "turn_limit"; inputIds?: string[]; replyIndex?: number; messageCount?: number; steeredInto?: string } }
   | { type: "run.failed"; data: RunFacts & Partial<ModelFailure> & { usage: RunUsage | null; servedModel?: string; error: string; code?: string; uncertain?: boolean; steeredInto?: string } }
@@ -1178,7 +1185,27 @@ export type Micros = number;
  * How the tenant meters its end users (`endUsers.settings`). Allowances are raw cost per UTC day, by bucket, prefix
  * ("bot:*") or "*"; bucket limits, keyed the same way, are the most a bucket may charge the balance per UTC day.
  */
-export interface EndUserSettings { enabled: boolean; allowances: Record<string, Micros>; bucketLimits: Record<string, Micros>; dailyLimit: Micros | null; markupBps: number; lowBalance: Micros | null; updatedAt: number | null }
+export interface EndUserSettings {
+  enabled: boolean; allowances: Record<string, Micros>; bucketLimits: Record<string, Micros>; dailyLimit: Micros | null; markupBps: number;
+  /** end_user.balance.low below this (a person's own `lowBalance` over it); null: never. */
+  lowBalance: Micros | null;
+  /** end_user.allowance.low once per person, bucket and day as spend passes this percent (1–100) of the bucket's allowance; null: never. */
+  allowanceWarningPercent: number | null;
+  updatedAt: number | null;
+}
+/**
+ * What moved an end user's balance, on end_user.balance.low and end_user.credit.exhausted (reason balance). `entryId`: the
+ * ledger entry (none for refusal or threshold_changed); a person's entry ids grow, so order their events by it.
+ */
+export interface EndUserBalanceCause {
+  kind: "usage" | "usage_correction" | "grant" | "refund" | "adjustment" | "refusal" | "threshold_changed";
+  entryId?: number; entryKey?: string; requestId?: string; bucket: string | null;
+}
+/** end_user.credit.granted, .refunded, .adjusted: an entry the tenant posted (`amount` signed as in the ledger). */
+export interface EndUserEntryEvent {
+  endUser: string; entryId: number; kind: "grant" | "refund" | "adjustment"; amount: Micros; key: string; reference: string | null;
+  metadata: Record<string, unknown>; balance: Micros; previousBalance: Micros;
+}
 /**
  * One bucket's day for an end user: its allowance, spent from it (raw) and from the balance (charged), written off (raw:
  * cost past what was left, which the user is not charged), held, left, and its own limit on paid spend (null: none).
@@ -1186,8 +1213,11 @@ export interface EndUserSettings { enabled: boolean; allowances: Record<string, 
 export interface EndUserBucketDay { bucket: string; allowance: Micros; allowanceSpent: Micros; paidSpent: Micros; writtenOff: Micros; held: Micros; allowanceLeft: Micros; paidLimit: Micros | null }
 /** An end user as they stand: balance, what calls in flight hold, what paid spend may still take today, and today by bucket. */
 export interface EndUser {
-  id: string; enabled: boolean; balance: Micros; held: Micros; available: Micros; dailyLimit: Micros | null; markupBps: number;
-  overrides: { allowances: Record<string, Micros>; bucketLimits: Record<string, Micros>; dailyLimit: Micros | null };
+  id: string; enabled: boolean; balance: Micros; held: Micros; available: Micros; dailyLimit: Micros | null;
+  /** The low-balance threshold that applies: their own, else the tenant's; null: none. */
+  lowBalance: Micros | null;
+  markupBps: number;
+  overrides: { allowances: Record<string, Micros>; bucketLimits: Record<string, Micros>; dailyLimit: Micros | null; lowBalance: Micros | null };
   today: { day: string; paidSpent: Micros; buckets: EndUserBucketDay[] };
   createdAt: number | null; updatedAt: number | null;
 }
@@ -1241,13 +1271,16 @@ export class EndUsers {
   get(id: string, options: { buckets?: string[] } = {}): Promise<EndUser> {
     return this.transport.json(`${this.path(id)}${options.buckets?.length ? `?buckets=${options.buckets.map(encodeURIComponent).join(",")}` : ""}`, this.key());
   }
-  /** End users by id, a page at a time: pass `next` as `after`. */
-  list(options: { after?: string; limit?: number } = {}): Promise<{ endUsers: { id: string; balance: Micros; createdAt: number; updatedAt: number }[]; next?: string }> {
+  /** End users by id, a page at a time: pass `next` as `after`. `belowLowBalance`: only those under the threshold that applies to them. */
+  list(options: { after?: string; limit?: number; belowLowBalance?: boolean } = {}): Promise<{ endUsers: { id: string; balance: Micros; createdAt: number; updatedAt: number }[]; next?: string }> {
     const query = new URLSearchParams(Object.entries(options).filter(([, value]) => value !== undefined).map(([name, value]) => [name, String(value)]));
     return this.transport.json(`/v1/end-users${query.size ? `?${query}` : ""}`, this.key());
   }
-  /** A person's own allowances and bucket limits (merged key by key; null removes one) and daily limit (null: the tenant's). */
-  update(id: string, overrides: { allowances?: Record<string, Micros | null>; bucketLimits?: Record<string, Micros | null>; dailyLimit?: Micros | null }): Promise<EndUser> { return this.transport.json(this.path(id), this.key(), "PATCH", overrides); }
+  /**
+   * A person's own allowances and bucket limits (merged key by key; null removes one), daily limit and low-balance
+   * threshold (null: the tenant's). A threshold set above their balance fires end_user.balance.low once.
+   */
+  update(id: string, overrides: { allowances?: Record<string, Micros | null>; bucketLimits?: Record<string, Micros | null>; dailyLimit?: Micros | null; lowBalance?: Micros | null }): Promise<EndUser> { return this.transport.json(this.path(id), this.key(), "PATCH", overrides); }
   /**
    * Their ledger, newest first, a page at a time: pass `next` as `before`. Narrow it by `kind` (a credit history without
    * usage: `["grant", "refund", "adjustment"]`), a time range on `createdAt` (`to` exclusive), `bucket`, and `moved` (only

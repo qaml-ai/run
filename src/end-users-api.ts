@@ -49,9 +49,16 @@ export function endUserRoutes(route: Route, context: () => EndUserCredits | unde
 
   route(createRoute({
     method: "get", path: "/v1/end-users",
-    request: { query: z.object({ after: z.string().optional().openapi({ description: "The previous page's next" }), limit: z.string().optional().openapi({ description: "1–200, default 50" }) }) },
+    request: { query: z.object({
+      after: z.string().optional().openapi({ description: "The previous page's next" }), limit: z.string().optional().openapi({ description: "1–200, default 50" }),
+      belowLowBalance: z.enum(["true", "false"]).optional().openapi({ description: "true: only those whose balance is under the low-balance threshold that applies to them (an auto top-up sweep)" }),
+    }) },
     responses: { 200: reply("The tenant's end users (each metered or credited at least once), by id", schema.EndUserList) },
-  }), async c => json(c, 200, await service().list(c.var.principal.tenant, { limit: page(c.req.query("limit"), "limit"), after: c.req.query("after") })));
+  }), async c => {
+    const below = c.req.query("belowLowBalance");
+    if (below !== undefined && below !== "true" && below !== "false") throw new HttpError(400, "belowLowBalance must be true or false");
+    return json(c, 200, await service().list(c.var.principal.tenant, { limit: page(c.req.query("limit"), "limit"), after: c.req.query("after"), belowLowBalance: below === "true" }));
+  });
   route(createRoute({
     method: "get", path: "/v1/end-users/{id}",
     request: { params: endUserId, query: z.object({ buckets: z.string().optional().openapi({ description: "Comma-separated buckets to include in today's spend even if unused today, e.g. builder,bot:42" }) }) },

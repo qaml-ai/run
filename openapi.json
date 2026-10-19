@@ -1452,17 +1452,21 @@
               },
               "threshold": {
                 "type": "integer",
-                "description": "The tenant's lowBalance"
+                "description": "The threshold that applied: the person's own lowBalance, else the tenant's"
               },
               "previousBalance": {
                 "type": "integer"
+              },
+              "cause": {
+                "$ref": "#/components/schemas/EndUserBalanceCause"
               }
             },
             "required": [
               "endUser",
               "balance",
               "threshold",
-              "previousBalance"
+              "previousBalance",
+              "cause"
             ]
           }
         },
@@ -1472,7 +1476,47 @@
           "created",
           "data"
         ],
-        "description": "An end user's balance fell below the tenant's lowBalance (once, until it rises past it again)"
+        "description": "An end user's balance is below their low-balance threshold: a debit took it there, or a debit after a grant left it there, or a threshold was set above it (cause.kind threshold_changed). See the guide's When balance events fire"
+      },
+      "EndUserBalanceCause": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "usage",
+              "usage_correction",
+              "grant",
+              "refund",
+              "adjustment",
+              "refusal",
+              "threshold_changed"
+            ],
+            "description": "What moved the balance: usage (a call's cost), usage_correction (a call's cost posted again, corrected, maybe long after the call), grant, refund or adjustment (the tenant's entries), refusal (a call refused; no entry), threshold_changed (a threshold set above the balance; no entry). Stable codes"
+          },
+          "entryId": {
+            "type": "integer",
+            "description": "The ledger entry that moved the balance. A person's entry ids grow: order their events by it"
+          },
+          "entryKey": {
+            "type": "string",
+            "description": "For a grant, refund or adjustment: your key"
+          },
+          "requestId": {
+            "type": "string",
+            "description": "For usage: the run's request, when there is one"
+          },
+          "bucket": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "bucket"
+        ]
       },
       "Event_end_user_credit.exhausted": {
         "type": "object",
@@ -1534,6 +1578,16 @@
               "balance": {
                 "type": "integer",
                 "description": "The balance (charged micro-USD)"
+              },
+              "cause": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/EndUserBalanceCause"
+                  },
+                  {
+                    "description": "With reason balance: what moved the balance (refusal: a call refused, no entry)"
+                  }
+                ]
               }
             },
             "required": [
@@ -1551,7 +1605,308 @@
           "created",
           "data"
         ],
-        "description": "An end user's free allowance for a bucket, their balance, their daily limit or a bucket's limit ran out (once per user, bucket or limit, and day; balance: once until they are credited again)"
+        "description": "An end user's free allowance for a bucket, their balance, their daily limit or a bucket's limit ran out (once per user, bucket or limit, and day; balance: once until they are credited again or re-armed)"
+      },
+      "Event_end_user_credit.granted": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "evt_…: the same each time the event is sent; dedupe by it",
+            "example": "evt_3f9c0a1b2c3d4e5f60718293"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "end_user.credit.granted"
+            ]
+          },
+          "created": {
+            "type": "number",
+            "description": "When it happened, in Unix seconds"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "endUser": {
+                "type": "string"
+              },
+              "entryId": {
+                "type": "integer"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "grant",
+                  "refund",
+                  "adjustment"
+                ]
+              },
+              "amount": {
+                "type": "integer",
+                "description": "As in the ledger: what moved the balance (a refund's is negative)"
+              },
+              "key": {
+                "type": "string"
+              },
+              "reference": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "metadata": {
+                "type": "object",
+                "additionalProperties": {}
+              },
+              "balance": {
+                "type": "integer"
+              },
+              "previousBalance": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "endUser",
+              "entryId",
+              "kind",
+              "amount",
+              "key",
+              "reference",
+              "metadata",
+              "balance",
+              "previousBalance"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "created",
+          "data"
+        ],
+        "description": "The tenant posted a grant to an end user's ledger (once per entry; a replayed key sends nothing)"
+      },
+      "Event_end_user_credit.refunded": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "evt_…: the same each time the event is sent; dedupe by it",
+            "example": "evt_3f9c0a1b2c3d4e5f60718293"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "end_user.credit.refunded"
+            ]
+          },
+          "created": {
+            "type": "number",
+            "description": "When it happened, in Unix seconds"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "endUser": {
+                "type": "string"
+              },
+              "entryId": {
+                "type": "integer"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "grant",
+                  "refund",
+                  "adjustment"
+                ]
+              },
+              "amount": {
+                "type": "integer",
+                "description": "As in the ledger: what moved the balance (a refund's is negative)"
+              },
+              "key": {
+                "type": "string"
+              },
+              "reference": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "metadata": {
+                "type": "object",
+                "additionalProperties": {}
+              },
+              "balance": {
+                "type": "integer"
+              },
+              "previousBalance": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "endUser",
+              "entryId",
+              "kind",
+              "amount",
+              "key",
+              "reference",
+              "metadata",
+              "balance",
+              "previousBalance"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "created",
+          "data"
+        ],
+        "description": "The tenant posted a refund (amount negative, as in the ledger)"
+      },
+      "Event_end_user_credit.adjusted": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "evt_…: the same each time the event is sent; dedupe by it",
+            "example": "evt_3f9c0a1b2c3d4e5f60718293"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "end_user.credit.adjusted"
+            ]
+          },
+          "created": {
+            "type": "number",
+            "description": "When it happened, in Unix seconds"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "endUser": {
+                "type": "string"
+              },
+              "entryId": {
+                "type": "integer"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "grant",
+                  "refund",
+                  "adjustment"
+                ]
+              },
+              "amount": {
+                "type": "integer",
+                "description": "As in the ledger: what moved the balance (a refund's is negative)"
+              },
+              "key": {
+                "type": "string"
+              },
+              "reference": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "metadata": {
+                "type": "object",
+                "additionalProperties": {}
+              },
+              "balance": {
+                "type": "integer"
+              },
+              "previousBalance": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "endUser",
+              "entryId",
+              "kind",
+              "amount",
+              "key",
+              "reference",
+              "metadata",
+              "balance",
+              "previousBalance"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "created",
+          "data"
+        ],
+        "description": "The tenant posted an adjustment (amount signed)"
+      },
+      "Event_end_user_allowance.low": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "evt_…: the same each time the event is sent; dedupe by it",
+            "example": "evt_3f9c0a1b2c3d4e5f60718293"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "end_user.allowance.low"
+            ]
+          },
+          "created": {
+            "type": "number",
+            "description": "When it happened, in Unix seconds"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "endUser": {
+                "type": "string"
+              },
+              "bucket": {
+                "type": "string"
+              },
+              "day": {
+                "type": "string"
+              },
+              "allowance": {
+                "type": "integer",
+                "description": "The bucket's daily allowance (raw micro-USD)"
+              },
+              "allowanceSpent": {
+                "type": "integer",
+                "description": "Spent from it today, with the call that passed the warning"
+              },
+              "percent": {
+                "type": "integer",
+                "description": "The tenant's allowanceWarningPercent"
+              }
+            },
+            "required": [
+              "endUser",
+              "bucket",
+              "day",
+              "allowance",
+              "allowanceSpent",
+              "percent"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "created",
+          "data"
+        ],
+        "description": "An end user's spend in a bucket passed the tenant's allowanceWarningPercent of its daily allowance: once per person, bucket and day"
       },
       "Error": {
         "type": "object",
@@ -2262,6 +2617,10 @@
                 "billing.topup.reconcile",
                 "end_user.balance.low",
                 "end_user.credit.exhausted",
+                "end_user.credit.granted",
+                "end_user.credit.refunded",
+                "end_user.credit.adjusted",
+                "end_user.allowance.low",
                 "voice.session.started",
                 "voice.session.ended",
                 "voice.session.error",
@@ -2270,7 +2629,7 @@
                 "voice.speech.ended"
               ]
             },
-            "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.session.error, voice.utterance, voice.speech.started, voice.speech.ended, and the billing.* events"
+            "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.session.error, voice.utterance, voice.speech.started, voice.speech.ended, the end_user.* events and the billing.* events"
           },
           "description": {
             "type": "string"
@@ -2323,6 +2682,10 @@
                 "billing.topup.reconcile",
                 "end_user.balance.low",
                 "end_user.credit.exhausted",
+                "end_user.credit.granted",
+                "end_user.credit.refunded",
+                "end_user.credit.adjusted",
+                "end_user.allowance.low",
                 "voice.session.started",
                 "voice.session.ended",
                 "voice.session.error",
@@ -2331,7 +2694,7 @@
                 "voice.speech.ended"
               ]
             },
-            "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.session.error, voice.utterance, voice.speech.started, voice.speech.ended, and the billing.* events"
+            "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.session.error, voice.utterance, voice.speech.started, voice.speech.ended, the end_user.* events and the billing.* events"
           },
           "description": {
             "type": "string",
@@ -2373,6 +2736,10 @@
                 "billing.topup.reconcile",
                 "end_user.balance.low",
                 "end_user.credit.exhausted",
+                "end_user.credit.granted",
+                "end_user.credit.refunded",
+                "end_user.credit.adjusted",
+                "end_user.allowance.low",
                 "voice.session.started",
                 "voice.session.ended",
                 "voice.session.error",
@@ -2381,7 +2748,7 @@
                 "voice.speech.ended"
               ]
             },
-            "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.session.error, voice.utterance, voice.speech.started, voice.speech.ended, and the billing.* events"
+            "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.session.error, voice.utterance, voice.speech.started, voice.speech.ended, the end_user.* events and the billing.* events"
           },
           "description": {
             "type": "string",
@@ -8770,7 +9137,14 @@
               "integer",
               "null"
             ],
-            "description": "end_user.balance.low fires when a balance falls below this; null: never, in micro-USD (1 USD = 1000000)"
+            "description": "end_user.balance.low fires when a balance falls below this (a person's own lowBalance over it); null: never, in micro-USD (1 USD = 1000000)"
+          },
+          "allowanceWarningPercent": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "end_user.allowance.low fires once per person, bucket and day as spend passes this percent (1–100) of the bucket's daily allowance; null: never"
           },
           "updatedAt": {
             "type": [
@@ -8786,6 +9160,7 @@
           "dailyLimit",
           "markupBps",
           "lowBalance",
+          "allowanceWarningPercent",
           "updatedAt"
         ]
       },
@@ -8834,6 +9209,14 @@
               "integer",
               "null"
             ]
+          },
+          "allowanceWarningPercent": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "maximum": 100
           }
         },
         "description": "Fields left out keep their current values; allowances and bucketLimits, when sent, replace the whole map (PATCH merges them). Only the fields sent are written, so concurrent writers never undo each other's other fields"
@@ -8882,6 +9265,14 @@
               "integer",
               "null"
             ]
+          },
+          "allowanceWarningPercent": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "maximum": 100
           }
         },
         "description": "Only what is sent changes: allowances and bucketLimits key by key, merged into the map as it stands when the write lands, so concurrent PATCHes of different fields or keys all keep their changes"
@@ -8955,6 +9346,13 @@
             ],
             "description": "The daily limit on paid spend that applies (the user's own, else the tenant's); null: none, in micro-USD (1 USD = 1000000)"
           },
+          "lowBalance": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "The low-balance threshold that applies (the user's own, else the tenant's); null: none, in micro-USD (1 USD = 1000000)"
+          },
           "markupBps": {
             "type": "integer"
           },
@@ -8978,14 +9376,21 @@
                   "integer",
                   "null"
                 ]
+              },
+              "lowBalance": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
               }
             },
             "required": [
               "allowances",
               "bucketLimits",
-              "dailyLimit"
+              "dailyLimit",
+              "lowBalance"
             ],
-            "description": "The user's own allowances, bucket limits and daily limit, over the tenant's"
+            "description": "The user's own allowances, bucket limits, daily limit and low-balance threshold, over the tenant's"
           },
           "today": {
             "type": "object",
@@ -9077,6 +9482,7 @@
           "held",
           "available",
           "dailyLimit",
+          "lowBalance",
           "markupBps",
           "overrides",
           "today",
@@ -9116,6 +9522,14 @@
             ],
             "minimum": 0,
             "description": "The user's own daily limit on paid spend; null: the tenant's"
+          },
+          "lowBalance": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "The user's own low-balance threshold (end_user.balance.low); null: the tenant's. Set above their balance, it fires once with cause threshold_changed"
           }
         }
       },
@@ -17849,6 +18263,20 @@
             "description": "1–200, default 50",
             "name": "limit",
             "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ],
+              "description": "true: only those whose balance is under the low-balance threshold that applies to them (an auto top-up sweep)"
+            },
+            "required": false,
+            "description": "true: only those whose balance is under the low-balance threshold that applies to them (an auto top-up sweep)",
+            "name": "belowLowBalance",
+            "in": "query"
           }
         ],
         "responses": {
@@ -20026,6 +20454,82 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/Event_end_user_credit.exhausted"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Any 2xx acknowledges it; anything else, or no answer within 10 seconds, is retried"
+          }
+        }
+      }
+    },
+    "end_user.credit.granted": {
+      "post": {
+        "summary": "end_user.credit.granted",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Event_end_user_credit.granted"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Any 2xx acknowledges it; anything else, or no answer within 10 seconds, is retried"
+          }
+        }
+      }
+    },
+    "end_user.credit.refunded": {
+      "post": {
+        "summary": "end_user.credit.refunded",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Event_end_user_credit.refunded"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Any 2xx acknowledges it; anything else, or no answer within 10 seconds, is retried"
+          }
+        }
+      }
+    },
+    "end_user.credit.adjusted": {
+      "post": {
+        "summary": "end_user.credit.adjusted",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Event_end_user_credit.adjusted"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Any 2xx acknowledges it; anything else, or no answer within 10 seconds, is retried"
+          }
+        }
+      }
+    },
+    "end_user.allowance.low": {
+      "post": {
+        "summary": "end_user.allowance.low",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Event_end_user_allowance.low"
               }
             }
           }

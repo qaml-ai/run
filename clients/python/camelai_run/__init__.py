@@ -1148,26 +1148,29 @@ class EndUsers:
         return f"/v1/end-users/{quote(end_user, safe='')}"
 
     def settings(self):
-        """How the tenant meters its end users: {"enabled", "allowances", "bucketLimits", "dailyLimit", "markupBps", "lowBalance", "updatedAt"}."""
+        """How the tenant meters its end users: {"enabled", "allowances", "bucketLimits", "dailyLimit", "markupBps", "lowBalance", "allowanceWarningPercent", "updatedAt"}."""
         return self._runtime._rest("GET", "/v1/end-user-settings")
 
-    def configure(self, *, enabled=None, allowances=None, bucket_limits=None, daily_limit=_DEFAULT, markup_bps=None, low_balance=_DEFAULT):
+    def configure(self, *, enabled=None, allowances=None, bucket_limits=None, daily_limit=_DEFAULT, markup_bps=None, low_balance=_DEFAULT, allowance_warning_percent=_DEFAULT):
         """Change the settings; what is left out keeps its value. `allowances`: raw cost per UTC day by bucket ("builder"), prefix
         ("bot:*") or "*", replacing the map; `bucket_limits`: the most each bucket may charge a person's balance a day, keyed
         the same way, replacing the map (0: the bucket spends its allowance only); `daily_limit`: the most a person's paid spend may be a day (None: no limit);
-        `markup_bps`: added to paid spend (2500 is +25%); `low_balance`: end_user.balance.low fires below it (None: never).
-        A changed allowance keeps what was spent today."""
+        `markup_bps`: added to paid spend (2500 is +25%); `low_balance`: end_user.balance.low fires below it (None: never);
+        `allowance_warning_percent`: end_user.allowance.low fires once per person, bucket and day past this percent of the
+        bucket's allowance (None: never). A changed allowance keeps what was spent today."""
         body = {**({"enabled": enabled} if enabled is not None else {}), **({"allowances": allowances} if allowances is not None else {}),
                 **({"bucketLimits": bucket_limits} if bucket_limits is not None else {}), **({"dailyLimit": daily_limit} if daily_limit is not _DEFAULT else {}), **({"markupBps": markup_bps} if markup_bps is not None else {}),
-                **({"lowBalance": low_balance} if low_balance is not _DEFAULT else {})}
+                **({"lowBalance": low_balance} if low_balance is not _DEFAULT else {}),
+                **({"allowanceWarningPercent": allowance_warning_percent} if allowance_warning_percent is not _DEFAULT else {})}
         return self._runtime._rest("PUT", "/v1/end-user-settings", body)
 
-    def amend(self, *, enabled=None, allowances=None, bucket_limits=None, daily_limit=_DEFAULT, markup_bps=None, low_balance=_DEFAULT):
+    def amend(self, *, enabled=None, allowances=None, bucket_limits=None, daily_limit=_DEFAULT, markup_bps=None, low_balance=_DEFAULT, allowance_warning_percent=_DEFAULT):
         """Change only what is sent: `allowances` and `bucket_limits` are merged key by key (a key set to None is removed),
         unlike configure, which replaces a map it is sent."""
         body = {**({"enabled": enabled} if enabled is not None else {}), **({"allowances": allowances} if allowances is not None else {}),
                 **({"bucketLimits": bucket_limits} if bucket_limits is not None else {}), **({"dailyLimit": daily_limit} if daily_limit is not _DEFAULT else {}),
-                **({"markupBps": markup_bps} if markup_bps is not None else {}), **({"lowBalance": low_balance} if low_balance is not _DEFAULT else {})}
+                **({"markupBps": markup_bps} if markup_bps is not None else {}), **({"lowBalance": low_balance} if low_balance is not _DEFAULT else {}),
+                **({"allowanceWarningPercent": allowance_warning_percent} if allowance_warning_percent is not _DEFAULT else {})}
         return self._runtime._rest("PATCH", "/v1/end-user-settings", body)
 
     def get(self, end_user, *, buckets=None):
@@ -1176,14 +1179,17 @@ class EndUsers:
         query = f"?buckets={','.join(quote(bucket, safe='') for bucket in buckets)}" if buckets else ""
         return self._runtime._rest("GET", self._path(end_user) + query)
 
-    def list(self, *, after=None, limit=None):
-        """End users by id, a page at a time: {"endUsers": [{"id", "balance", ...}], "next"?}; pass next as `after`."""
-        query = urlencode({key: value for key, value in (("after", after), ("limit", limit)) if value is not None})
+    def list(self, *, after=None, limit=None, below_low_balance=None):
+        """End users by id, a page at a time: {"endUsers": [{"id", "balance", ...}], "next"?}; pass next as `after`.
+        `below_low_balance=True`: only those under the low-balance threshold that applies to them (an auto top-up sweep)."""
+        query = urlencode({key: value for key, value in (("after", after), ("limit", limit), ("belowLowBalance", "true" if below_low_balance else None)) if value is not None})
         return self._runtime._rest("GET", "/v1/end-users" + (f"?{query}" if query else ""))
 
-    def update(self, end_user, *, allowances=None, bucket_limits=None, daily_limit=_DEFAULT):
-        """A person's own allowances and bucket limits (merged key by key; a key set to None is removed) and daily limit (None: the tenant's)."""
-        body = {**({"allowances": allowances} if allowances is not None else {}), **({"bucketLimits": bucket_limits} if bucket_limits is not None else {}), **({"dailyLimit": daily_limit} if daily_limit is not _DEFAULT else {})}
+    def update(self, end_user, *, allowances=None, bucket_limits=None, daily_limit=_DEFAULT, low_balance=_DEFAULT):
+        """A person's own allowances and bucket limits (merged key by key; a key set to None is removed), daily limit and
+        low-balance threshold (None: the tenant's). A threshold set above their balance fires end_user.balance.low once."""
+        body = {**({"allowances": allowances} if allowances is not None else {}), **({"bucketLimits": bucket_limits} if bucket_limits is not None else {}),
+                **({"dailyLimit": daily_limit} if daily_limit is not _DEFAULT else {}), **({"lowBalance": low_balance} if low_balance is not _DEFAULT else {})}
         return self._runtime._rest("PATCH", self._path(end_user), body)
 
     def ledger(self, end_user, *, before=None, limit=None, kind=None, from_=None, to=None, bucket=None, moved=None):
