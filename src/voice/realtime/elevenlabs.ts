@@ -24,7 +24,7 @@ export const ELEVENLABS_AGENTS = Object.freeze({
   models: ["gemini-2.5-flash-lite"] as const,
   defaultModel: "gemini-2.5-flash-lite",
   voice: "cgSgspJ2msm6clMCkdW9", // Jessica, a conversational default; sessions may supply any voice_id their key can use.
-  name: "camelRun realtime voice v1",
+  name: "camelRun realtime voice v2",
   connectTimeoutMs: 20_000,
 });
 const VOICE_FOR = Object.freeze(Object.fromEntries(
@@ -127,7 +127,7 @@ export function elevenlabsAgents(options: { baseUrl?: string; socket?: SocketFac
             response_timeout_secs: 60, interruption_mode: "allow", pre_tool_speech: tool.name === ASK_AGENT.name ? "force" : "off" })),
         } },
         asr: { user_input_audio_format: "pcm_16000" },
-        tts: { voice_id: voice, model_id: "eleven_flash_v2", agent_output_audio_format: "pcm_24000" },
+        tts: { voice_id: voice, model_id: "eleven_v4_turbo", agent_output_audio_format: "pcm_24000" },
         turn: { turn_eagerness: "normal", turn_timeout: 7, silence_end_call_timeout: -1 },
         conversation: { client_events: ["conversation_initiation_metadata", "ping", "audio", "interruption", "user_transcript", "agent_response", "client_tool_call", "agent_response_complete", "client_error"] },
       },
