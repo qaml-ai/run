@@ -206,6 +206,38 @@ resource "aws_cloudwatch_metric_alarm" "end_user_fallback" {
   ok_actions          = local.alarm_topics
 }
 
+# A model call that ended with no usage and no cost from its provider (model_usage_missing): billed at
+# the runtime's estimate (its input as estimated at begin, and what it streamed), corrected later only
+# where a provider record exists (an OpenRouter generation). A few are a stream closed early; many mean
+# a provider (or Pi's adapter for it) stopped reporting usage.
+resource "aws_cloudwatch_log_metric_filter" "model_usage_missing" {
+  name           = "${var.name}-model-usage-missing"
+  log_group_name = aws_cloudwatch_log_group.runtime.name
+  pattern        = "{ $.type = \"model_usage_missing\" }"
+
+  metric_transformation {
+    namespace     = "AgentRuntime/Logs"
+    name          = "ModelUsageMissing"
+    value         = "1"
+    default_value = "0"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "model_usage_missing" {
+  alarm_name          = "${var.name}-model-usage-missing"
+  alarm_description   = "Model calls ended with no usage and no provider cost (model_usage_missing) in /ecs/${var.name}, billed at an estimate; look for a provider or model that stopped reporting usage"
+  namespace           = "AgentRuntime/Logs"
+  metric_name         = "ModelUsageMissing"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 10
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_topics
+  ok_actions          = local.alarm_topics
+}
+
 # The control database is a burstable instance (db.t4g), and RDS runs T-class instances in Unlimited
 # mode only: when its CPU credit balance runs out it is not held to its baseline, it bursts on surplus
 # credits, billed when not earned back within 24 hours. So an empty balance is not the signal (a class

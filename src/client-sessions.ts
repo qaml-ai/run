@@ -11,7 +11,7 @@ import type { AgentConfig, Credentials, RunLimits, RunStop, ToolDefinition } fro
 import { errorText, PERSISTENCE_FAILED, scratchMount } from "./protocol.ts";
 import { enqueueEvents, usageCost, webhookEvent, type WebhookEvent } from "./webhooks.ts";
 import { AgentSupervisor } from "./supervisor.ts";
-import { platformUsage } from "./platform-pricing.ts";
+import { platformUsage, usageMissing } from "./platform-pricing.ts";
 import { withCatalogPrices } from "./pi-catalog.ts";
 import { configurationRefusal, configurationUpdate, runLimitsInput, type CustomProviders, type ModelEndpoints } from "./session-config.ts";
 import { outputInput, validateDefinitions } from "./tool-policy.ts";
@@ -5055,14 +5055,15 @@ export class ClientSessions {
 
   /**
    * A response's usage as it is billed: on a platform key of a tenant that pays for it, priced from the runtime's catalog,
-   * never from the agent's stored model; one that reported no usage is charged an estimate, and logged. An unbilled
-   * tenant's (an admin tenant's) is as the provider reported it, as its usage events say.
+   * never from the agent's stored model; one that reported no usage, or was cut short, is charged an estimate (the
+   * host's input estimate and `chars` streamed, at two a token), and logged. An unbilled tenant's (an admin tenant's) is
+   * as the provider reported it, as its usage events say.
    */
-  private billable(session: Session, usage: any, provider: string, model: string, abortedChars?: number, quiet = false) {
+  private billable(session: Session, usage: any, provider: string, model: string, estimate?: { chars: number; completed: boolean }, quiet = false) {
     if (!session.platformKey || !session.catalogPriced) return usage;
-    const priced = platformUsage(usage, provider, model, abortedChars === undefined ? undefined : { chars: abortedChars, inputTokens: usage?.estimatedInputTokens });
+    const priced = platformUsage(usage, provider, model, estimate && { ...estimate, inputTokens: usage?.estimatedInputTokens });
     if (!quiet && (priced.estimated || !priced.known)) {
-      console.log(JSON.stringify({ type: "platform_usage_untrusted", tenant: session.header.tenant, agent: session.header.id, provider, model, estimated: priced.estimated, known: priced.known, aborted: abortedChars !== undefined, reportedOutputTokens: usage?.output ?? 0, billedOutputTokens: priced.usage.output ?? 0, usd: priced.usage.cost.total }));
+      console.log(JSON.stringify({ type: "platform_usage_untrusted", tenant: session.header.tenant, agent: session.header.id, provider, model, estimated: priced.estimated, known: priced.known, aborted: !!estimate && !estimate.completed, reportedOutputTokens: usage?.output ?? 0, billedOutputTokens: priced.usage.output ?? 0, usd: priced.usage.cost.total }));
     }
     return priced.usage;
   }
@@ -5082,7 +5083,7 @@ export class ClientSessions {
    * agent's spend limit. One made in the background belongs to no run (`run` has no requestId). Returns the usage billed.
    */
   private compactionUsage(session: Session, event: any, run: Record<string, unknown>) {
-    const usage = this.billable(session, event.usage, event.provider, event.model);
+    const usage = this.billable(session, event.usage, event.provider, event.model, usageMissing(event.usage) ? { chars: Number(event.chars) || 0, completed: true } : undefined);
     // Responses through the tenant's own endpoint count under it: `chiridion/openrouter/<model>`.
     const via = this.endpoint(session) ? `${session.header.config.model.provider}/` : "";
     this.options.onUsage?.(session.header.tenant, session.header.id, { ...event, usage, ...run, provider: via + event.provider, kind: "compaction", platform: !!session.platformKey });
@@ -5101,8 +5102,10 @@ export class ClientSessions {
 
   /** A billed model response's usage, as `billable` prices it. `quiet`: logged already, or to be. */
   private responseUsage(session: Session, message: any, quiet = false) {
-    const chars = message.stopReason === "aborted" ? JSON.stringify(message.content ?? []).length : undefined;
-    return this.billable(session, message.usage, message.provider, message.model, chars, quiet);
+    // Cut short, or its usage never came: billed at the estimate of what it streamed.
+    const aborted = message.stopReason === "aborted";
+    const estimate = aborted || usageMissing(message.usage) ? { chars: message.content?.length ? JSON.stringify(message.content).length : 0, completed: !aborted } : undefined;
+    return this.billable(session, message.usage, message.provider, message.model, estimate, quiet);
   }
 
   /** Count spend against the agent's spend limit, if it has one, in this owner's count. */
