@@ -70,19 +70,26 @@ test("on a platform key a response is billed at the catalog's price, whatever th
   }, "the charge");
   assert.equal(priced, micros(10) - charged, "the catalog's price, not the stored model's zero");
 
-  // A response that reports no usage on the platform's key is charged as if it filled the window and wrote the most.
+  // A response that reports no usage on the platform's key is charged an estimate: the input the host estimated at its
+  // begin, and what it streamed at two characters a token. Never the whole context window and the longest reply.
   respond = () => ({ role: "assistant", content: "done" });
   assert.equal((await r.prompt(agent.id, "again", PAYG)).outcome.result.reply, "done");
-  // At the prices of the catalog's tier for that many input tokens, where it has tiers.
-  const rates = (catalog.cost.tiers ?? []).filter(tier => catalog.contextWindow > tier.inputTokensAbove).at(-1) ?? catalog.cost;
-  const estimate = funded((catalog.contextWindow * rates.input + catalog.maxTokens * rates.output) / 1e6);
   const after = await until(async () => {
     const { balance } = (await r.call("/v1/billing", { token: PAYG })).json;
     return balance !== priced && balance;
   }, "the estimate's charge");
-  assert.equal(after, priced - estimate);
+  const missing = r.logs.filter(line => line.includes('"model_usage_missing"')).map(line => JSON.parse(line.slice(line.indexOf("{"))));
+  assert.equal(missing.length, 1, "said once");
+  assert.equal(missing[0].completed, true);
+  assert.ok(missing[0].inputTokens > 0 && missing[0].chars > 0, JSON.stringify(missing[0]));
+  // At the prices of the catalog's tier for that many input tokens, where it has tiers.
+  const rates = (catalog.cost.tiers ?? []).filter(tier => missing[0].inputTokens > tier.inputTokensAbove).at(-1) ?? catalog.cost;
+  const estimate = funded((missing[0].inputTokens * rates.input + Math.ceil(missing[0].chars / 2) * rates.output) / 1e6);
+  assert.ok(Math.abs(priced - after - estimate) <= 2, `charged ${priced - after}, the estimate ${estimate}`);
+  const window = funded((catalog.contextWindow * rates.input + catalog.maxTokens * rates.output) / 1e6);
+  assert.ok((priced - after) * 20 < window, "a small fraction of the full window's price");
   assert.ok(r.logs.some(line => line.includes('"platform_usage_untrusted"') && line.includes('"estimated":true')), "the estimate is logged");
-  assert.equal((await r.call(`/v1/agents/${agent.id}/prompt`, { body: { text: "more" }, token: PAYG })).status, 402, "and the account is out of credit");
+  assert.equal((await r.prompt(agent.id, "more", PAYG)).outcome.result.reply, "done", "and the account still has credit");
 });
 
 test("an unbilled admin tenant's responses on platform or admin keys are as the provider reported them, never estimated", async t => {

@@ -4734,7 +4734,10 @@ catalog's.
 For Chat Completions servers. The runtime streams, sends tools as OpenAI function tools and reads tool calls
 as they arrive in pieces. It copes with what many servers leave out:
 
-- A stream without usage costs nothing and counts no tokens. Set
+- A stream without usage costs nothing and counts no tokens. If you meter
+  [end users' credits](https://run.camelai.com/docs/guides/end-user-credits.md), their call is charged an estimate
+  instead: its input as estimated before the call, and what it streamed at two
+  characters a token, never more than the call held. Set
   `compat.supportsUsageInStreaming: false` if the server refuses
   `stream_options`.
 - A server that ends its streams without `finish_reason` needs

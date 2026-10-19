@@ -29,6 +29,7 @@ import { observeTurns, recordCodeExecution } from "./metrics.ts";
 import { fitImage, fits, type Fitted } from "./inspect.ts";
 import { imageHeader } from "./image-header.ts";
 import { clock } from "./node-context.ts";
+import { usageMissing } from "./platform-pricing.ts";
 
 /** How often an agent reads back from its log what its history backlog could not hold (see `index`). */
 const LAG_READ_MS = 60_000;
@@ -380,7 +381,9 @@ export function createAgentHost(hostIO: HostIO) {
       const outcome = await runCompaction({
         // The summarizer reads messages as the model does, senders included; rendering keeps their count, so the cut still indexes the context.
         context: renderMessages(context), offset, previous, model: config.model, apiKey: perCall() ? () => io.modelAuth() : apiKey, signal, keepRecentTokens, modelHeaders: config.modelHeaders, dataCollection: config.dataCollection, gate, outbound: io.modelOutbound, attempt: io.modelAttempt,
-        onResponse: message => io.emit({ type: "compaction_usage", provider: message.provider, model: message.model, usage: message.usage, timestamp: message.timestamp, ...flag }),
+        // A summary whose usage never came is billed at the estimate of what it wrote (`chars`) and read.
+        onResponse: message => io.emit({ type: "compaction_usage", provider: message.provider, model: message.model, usage: message.usage, timestamp: message.timestamp,
+          ...(usageMissing(message.usage) ? { chars: message.content.length ? JSON.stringify(message.content).length : 0 } : {}), ...flag }),
       });
       if ("skipped" in outcome) {
         io.emit({ type: "compaction_end", reason, skipped: outcome.skipped, ...flag });

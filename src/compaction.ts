@@ -12,6 +12,7 @@ import type { Credentials } from "./protocol.ts";
 import { AZURE_CHAT_API_VERSION } from "./azure-openai.ts";
 import { guardedModelFetch, guardedNodeAgents, outboundOfProcess, type Outbound } from "./outbound.ts";
 import { reasoningFloor, withOpenRouterHosts } from "./pi-catalog.ts";
+import { usageMissing } from "./platform-pricing.ts";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { streamTimeouts, watchedStream, type Stall, type StreamTimeouts } from "./model-stream.ts";
 import { network } from "./node-context.ts";
@@ -400,6 +401,8 @@ function summarizer(apiKey: ApiKey, onResponse: ((message: AssistantMessage) => 
         streamTimeouts(model, callOptions?.reasoning), signal ? AbortSignal.any([signal, halt]) : halt, undefined, event => {
           if (sink.cost !== undefined) Object.assign(event.type === "done" ? event.message.usage : event.error.usage, { providerCost: sink.cost, providerCreditCost: sink.credits });
           if (sink.host) Object.assign(event.type === "done" ? event.message.usage : event.error.usage, { providerHost: sink.host });
+          // A summary that ended without its usage is billed at the input estimated here (and what it wrote).
+          if (event.type === "done" && usageMissing(event.message.usage)) Object.assign(event.message.usage, { estimatedInputTokens: estimate.inputTokens });
           return event;
         });
       }, estimate);

@@ -58,30 +58,39 @@ export function costAt(cost: Model<Api>["cost"], usage: Usage): number {
   return (count(usage.input) * cost.input + count(usage.output) * cost.output + count(usage.cacheRead) * cost.cacheRead + count(usage.cacheWrite) * cost.cacheWrite) / 1_000_000;
 }
 
+/** Whether a response reported nothing to bill it by: no token counts, and no cost of the provider's own. */
+export function usageMissing(usage: { input?: unknown; output?: unknown; cacheRead?: unknown; cacheWrite?: unknown; providerCost?: unknown } | undefined): boolean {
+  if (!usage) return true;
+  const reported = typeof usage.providerCost === "number" && Number.isFinite(usage.providerCost) && usage.providerCost > 0;
+  return !reported && count(usage.input) + count(usage.output) + count(usage.cacheRead) + count(usage.cacheWrite) === 0;
+}
+
 /**
  * A response on a platform key, priced from the runtime's catalog when it is billed: never from the agent's model
  * as stored, whose prices are not the tenant's to set. A cost the provider reported itself (`providerCost`) still
- * comes first. A response with no token counts and no provider cost (usage suppressed) is charged as if it filled
- * the model's context window and wrote its longest reply: `estimated`. One aborted before the provider sent usage
- * (`aborted`) uses the host's input estimate and its partial reply at two characters a token, wherever reported
- * input counts are missing. An interrupted output count is a lower bound: the larger of it and the reply
- * estimate is used. Provider-reported cost takes precedence, and completed responses keep their counts.
+ * comes first. A response with no token counts and no provider cost (its usage never arrived, or was suppressed) is
+ * charged an estimate, `estimated`: the host's input estimate and the characters it streamed at two a token
+ * (`estimate`; none given, nothing). One aborted before the provider sent its usage (`estimate` not `completed`) also
+ * uses the estimate wherever reported counts fall short: an interrupted output count is a lower bound, so the larger of
+ * it and the reply estimate is used, and the input estimate where no input was reported. Provider-reported cost takes
+ * precedence, and completed responses keep their counts.
  */
-export function platformUsage<T extends Usage>(usage: T, provider: string, id: string, aborted?: { chars: number; inputTokens?: number }): { usage: T; estimated: boolean; known: boolean } {
+export function platformUsage<T extends Usage>(usage: T, provider: string, id: string, estimate?: { chars: number; inputTokens?: number; completed?: boolean }): { usage: T; estimated: boolean; known: boolean } {
   const model = catalogModel(provider, id);
   const rates = model ? { ...model.cost, contextWindow: model.contextWindow, maxTokens: model.maxTokens } : dearest(provider);
   const reported = typeof usage.providerCost === "number" && Number.isFinite(usage.providerCost) && usage.providerCost > 0;
-  const missing = !reported && count(usage.input) + count(usage.output) + count(usage.cacheRead) + count(usage.cacheWrite) === 0;
+  const missing = usageMissing(usage);
+  const outputEstimate = Math.ceil(count(estimate?.chars) / 2), inputEstimate = Math.min(rates.contextWindow, count(estimate?.inputTokens));
   const tokens = missing
-    ? aborted ? { input: Math.min(rates.contextWindow, count(aborted.inputTokens)), output: Math.ceil(count(aborted.chars) / 2), cacheRead: 0, cacheWrite: 0 } : { input: rates.contextWindow, output: rates.maxTokens, cacheRead: 0, cacheWrite: 0 }
+    ? { input: inputEstimate, output: outputEstimate, cacheRead: 0, cacheWrite: 0 }
     : { input: count(usage.input), output: count(usage.output), cacheRead: count(usage.cacheRead), cacheWrite: count(usage.cacheWrite), cacheWrite1h: Math.min(count(usage.cacheWrite1h), count(usage.cacheWrite)) };
   // A stream may report one or two output tokens at its start and never update them before cancellation.
   // Nonzero partial usage is not final usage. Never reduce a count the provider has already reported.
-  const outputEstimate = aborted ? Math.ceil(count(aborted.chars) / 2) : 0;
-  const partialOutput = !reported && !!aborted && outputEstimate > tokens.output;
+  const aborted = !!estimate && !estimate.completed;
+  const partialOutput = !reported && aborted && outputEstimate > tokens.output;
   if (partialOutput) tokens.output = outputEstimate;
-  const partialInput = !reported && !!aborted && tokens.input + tokens.cacheRead + tokens.cacheWrite === 0 && count(aborted.inputTokens) > 0;
-  if (partialInput) tokens.input = Math.min(rates.contextWindow, count(aborted!.inputTokens));
+  const partialInput = !reported && aborted && tokens.input + tokens.cacheRead + tokens.cacheWrite === 0 && inputEstimate > 0;
+  if (partialInput) tokens.input = inputEstimate;
   const estimated = missing || partialOutput || partialInput;
   const cost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
   calculateCost({ cost: rates } as unknown as Model<Api>, { ...tokens, totalTokens: 0, cost } as never);
