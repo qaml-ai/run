@@ -227,7 +227,8 @@ voice. The realtime provider therefore checks the account's
 [available voices](https://elevenlabs.io/docs/api-reference/voices/search) before
 opening a conversation. If the exact ID is missing, it finds that ID's public
 owner in the library and [adds the shared voice](https://elevenlabs.io/docs/api-reference/voices/voice-library/share),
-using the returned account voice ID for the override. Concurrent starts on one
+using the returned account voice ID for the override. Account copies with a
+different ID are recognized by `sharing.original_voice_id`, across account pages. Concurrent starts on one
 node share only the in-flight check/add; later starts recheck the account, so an
 already-added voice is not added again. An add failure is accepted only when a
 fresh account lookup confirms another request added it. Search itself never adds
