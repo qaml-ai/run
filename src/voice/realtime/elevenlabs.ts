@@ -1,5 +1,6 @@
 import { performance } from "node:perf_hooks";
 import { createHash } from "node:crypto";
+import { transaction, type Db, type Sql } from "../../db.ts";
 import { closeDetail, redactDetail, messageJson, openSocket, type Socket, type SocketFactory } from "../../voice-providers/socket.ts";
 import { Resampler24To16 } from "../turns/features.ts";
 import { ASK_AGENT, STAY_SILENT } from "./brain.ts";
@@ -31,18 +32,18 @@ const VOICE_FOR = Object.freeze(Object.fromEntries(
   ["alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar", "nova", "onyx", "fable"].map(name => [name, ELEVENLABS_AGENTS.voice]),
 ));
 
-export function elevenlabsAgents(options: { baseUrl?: string; socket?: SocketFactory; fetch?: typeof fetch; now?: () => number } = {}): RealtimeProvider {
+export function elevenlabsAgents(options: { baseUrl?: string; socket?: SocketFactory; fetch?: typeof fetch; now?: () => number; db?: Db; log?: (type: string, fields: { voice: string; lastUsedAt: number }) => void } = {}): RealtimeProvider {
   const base = (options.baseUrl ?? "https://api.elevenlabs.io").replace(/\/+$/, "");
   const request = options.fetch ?? fetch;
   const socket = options.socket ?? openSocket;
   // Per node lifetime, one single-flight resolution per credential (platform or tenant). No TTL or raw keys retained.
   const agents = new Map<string, Promise<string>>();
   const voices = new Map<string, Promise<string>>();
-  async function api(apiKey: string, stage: string, path: string, body?: unknown) {
+  async function api(apiKey: string, stage: string, path: string, body?: unknown, method?: string) {
     try {
       const response = await request(`${base}${path}`, {
         headers: { "xi-api-key": apiKey, "Content-Type": "application/json" },
-        ...(body ? { method: "POST", body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(ELEVENLABS_AGENTS.connectTimeoutMs),
+        ...(body ? { method: "POST", body: JSON.stringify(body) } : {}), ...(method ? { method } : {}), signal: AbortSignal.timeout(ELEVENLABS_AGENTS.connectTimeoutMs),
       });
       if (!response.ok) {
         const error = await response.json().catch(() => undefined);
@@ -52,7 +53,7 @@ export function elevenlabsAgents(options: { baseUrl?: string; socket?: SocketFac
           : typeof detail === "string" ? detail : [detail?.status, detail?.message].filter(value => typeof value === "string").join(": ");
         throw new ElevenLabsFailure(stage, message || "request failed", response.status >= 500, response.status);
       }
-      return await response.json();
+      return response.status === 204 ? undefined : await response.json();
     } catch (error) {
       const failure = error instanceof ElevenLabsFailure ? error : new ElevenLabsFailure(stage, error instanceof Error ? error.message : "network error", error instanceof TypeError || (error instanceof Error && ["TimeoutError", "AbortError"].includes(error.name)));
       failure.message = redactDetail(failure.message, 300, [apiKey]);
@@ -70,7 +71,7 @@ export function elevenlabsAgents(options: { baseUrl?: string; socket?: SocketFac
       if (page.has_more && !token) throw new ElevenLabsFailure("list voices", "no next page token", false);
     } while (token);
   }
-  async function resolveVoice(apiKey: string, voice: string, publicOwnerId?: string): Promise<string> {
+  async function resolveVoice(apiKey: string, voice: string, publicOwnerId?: string, sql?: Sql, keyHash?: string): Promise<string> {
     const owned = await accountVoice(apiKey, voice);
     if (owned) return owned;
     // Exact ID lookup exposes sharing.public_owner_id; shared-voices search is text, not an ID filter.
@@ -79,14 +80,47 @@ export function elevenlabsAgents(options: { baseUrl?: string; socket?: SocketFac
     const shared = publicOwnerId ? undefined : await api(apiKey, "get voice", `/v1/voices/${encodeURIComponent(voice)}`);
     const owner = publicOwnerId ?? shared?.sharing?.public_owner_id;
     if (typeof owner !== "string" || !owner) throw new ElevenLabsFailure("find shared voice", "voice has no public owner; supply realtime.publicOwnerId from voice search", false);
-    try {
+    if (!sql || !keyHash) throw new ElevenLabsFailure("add shared voice", "Postgres is required to track library voice ownership", false);
+    // https://elevenlabs.io/docs/api-reference/user/subscription/get
+    async function atLimit() {
+      const subscription = await api(apiKey, "voice slots", "/v1/user/subscription");
+      if (!Number.isInteger(subscription.voice_slots_used) || !Number.isInteger(subscription.voice_limit)) {
+        throw new ElevenLabsFailure("voice slots", "subscription returned no voice slot counts", false);
+      }
+      return subscription.voice_slots_used >= subscription.voice_limit;
+    }
+    async function evict() {
+      const { rows } = await sql!.query<{ voice_id: string; last_used_at: number }>(`
+        select voice_id, last_used_at from elevenlabs_voices where key_hash = $1
+        order by last_used_at, added_at, voice_id limit 1`, [keyHash]);
+      const oldest = rows[0];
+      if (!oldest) throw new ElevenLabsFailure("voice slots", "account is at its voice limit; no camelRun-added voice is available to evict", false);
+      await api(apiKey, "delete voice", `/v1/voices/${encodeURIComponent(oldest.voice_id)}`, undefined, "DELETE");
+      await sql!.query("delete from elevenlabs_voices where key_hash = $1 and voice_id = $2", [keyHash, oldest.voice_id]);
+      const fields = { voice: oldest.voice_id, lastUsedAt: Number(oldest.last_used_at) };
+      if (options.log) options.log("voice_slot_evicted", fields);
+      else console.log(JSON.stringify({ type: "voice_slot_evicted", ...fields }));
+    }
+    const evicted = await atLimit();
+    if (evicted) await evict();
+    async function add() {
       const added = await api(apiKey, "add shared voice", `/v1/voices/add/${encodeURIComponent(owner)}/${encodeURIComponent(voice)}`, { new_name: shared?.name || voice });
       if (typeof added.voice_id !== "string") throw new ElevenLabsFailure("add shared voice", "no voice id returned", false);
-      return added.voice_id;
-    } catch (error) {
+      const now = Date.now();
+      await sql!.query(`insert into elevenlabs_voices (key_hash, voice_id, added_at, last_used_at)
+        values ($1, $2, $3, $3) on conflict (key_hash, voice_id) do nothing`, [keyHash, added.voice_id, now]);
+      return added.voice_id as string;
+    }
+    try { return await add(); }
+    catch (error) {
       // Another node may have added it while this request was in flight. Only verified access makes that a success.
       const added = await accountVoice(apiKey, voice);
       if (added) return added;
+      // The dashboard or another key can consume a slot after our preflight check. Retry once, only at a verified limit.
+      if (!evicted && await atLimit()) {
+        await evict();
+        return add();
+      }
       throw error;
     }
   }
@@ -94,7 +128,19 @@ export function elevenlabsAgents(options: { baseUrl?: string; socket?: SocketFac
     const identity = `${createHash("sha256").update(apiKey).digest("hex")}:${voice}:${publicOwnerId ?? ""}`;
     let pending = voices.get(identity);
     if (!pending) {
-      pending = resolveVoice(apiKey, voice, publicOwnerId);
+      const keyHash = createHash("sha256").update(apiKey).digest("hex");
+      pending = options.db ? transaction(options.db, async sql => {
+        await sql.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [`elevenlabs-voices:${keyHash}`]);
+        // API changes cannot roll back. Commit successful deletes/adds even if a later API request fails; never rerun them.
+        try {
+          const resolved = await resolveVoice(apiKey, voice, publicOwnerId, sql, keyHash);
+          await sql.query("update elevenlabs_voices set last_used_at = $3 where key_hash = $1 and voice_id = $2", [keyHash, resolved, Date.now()]);
+          return { voice: resolved };
+        } catch (error) { return { error }; }
+      }, { rerun: false }).then(result => {
+        if ("error" in result) throw result.error;
+        return result.voice;
+      }) : resolveVoice(apiKey, voice, publicOwnerId);
       voices.set(identity, pending);
       void pending.finally(() => voices.delete(identity)).catch(() => {});
     }

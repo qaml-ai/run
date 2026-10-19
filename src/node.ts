@@ -888,7 +888,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   const realtimeProviders = config.voice.realtime.length ? Object.fromEntries(config.voice.realtime.map(id => {
     if (!(REALTIME_PROVIDERS as readonly string[]).includes(id)) throw new Error(`AGENT_VOICE_REALTIME: ${id} is not a realtime provider (${REALTIME_PROVIDERS.join(", ")})`);
     if (id === "grok") return [id, grokRealtime(config.voice.grokRealtimeUrl ? { baseUrl: config.voice.grokRealtimeUrl } : {})];
-    if (id === "elevenlabs") return [id, elevenlabsAgents()];
+    if (id === "elevenlabs") return [id, elevenlabsAgents({ db })];
     if (id === "gemini") return [id, geminiLive(config.voice.geminiLiveUrl ? { baseUrl: config.voice.geminiLiveUrl } : {})];
     return [id, openaiRealtime(config.voice.realtimeUrl ? { baseUrl: config.voice.realtimeUrl } : {})];
   })) : undefined;

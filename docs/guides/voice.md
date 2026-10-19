@@ -235,6 +235,12 @@ different ID are recognized by `sharing.original_voice_id`, across account pages
 node share only the in-flight check/add; later starts recheck the account, so an
 already-added voice is not added again. An add failure is accepted only when a
 fresh account lookup confirms another request added it. The library `search` parameter filters text, so voice IDs are never passed as
-search text during import. Search itself never adds voices. The ElevenLabs account must allow library API access and have permission
-to add voices; this behavior has mocked coverage and needs a live account check
-before rollout.
+search text during import. Search itself never adds voices.
+
+Before adding, camelRun checks the account's [voice slot counts](https://elevenlabs.io/docs/api-reference/user/subscription/get).
+At the limit it removes the least recently used voice it added, then adds the requested voice. A failed add that
+finds the account newly at the limit gets one eviction and one retry. Existing account voices, including premade
+and manually added voices, are never adopted for eviction; voices imported before ownership tracking began are
+also left alone. If no tracked voice is available, the session fails with a voice-limit error.
+The key needs subscription read access and permission to add and delete voices, alongside library API access.
+This behavior has fake-API coverage and needs a live account check before rollout.
