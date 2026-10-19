@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -8,6 +9,7 @@ import { elevenlabsAgents, ELEVENLABS_AGENTS } from "../src/voice/realtime/eleve
 import { ASK_AGENT, STAY_SILENT } from "../src/voice/realtime/brain.ts";
 import { NO_USAGE, realtimeCost, realtimePrice, realtimeVoice, type RealtimeEvents } from "../src/voice/realtime/provider.ts";
 import { sleep, testBrain, tone, until, utter } from "./voice-realtime-fakes.ts";
+import { testDatabase } from "./database.ts";
 
 // Synthetic rates only; real rates are supplied privately at runtime.
 process.env.AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD = "1";
@@ -57,6 +59,7 @@ async function fakeElevenLabs(t: { after(fn: () => unknown): void }, options: { 
     if (options.fail) { res.writeHead(401).end('{"detail":"never logged"}'); return; }
     if (req.url?.startsWith("/v1/convai/agents?")) res.end(JSON.stringify({ agents: options.existing ? [{ name: ELEVENLABS_AGENTS.name, agent_id: "agent_test" }] : [], has_more: false }));
     else if (req.url?.startsWith("/v2/voices?")) res.end(JSON.stringify({ voices: [ELEVENLABS_AGENTS.voice, "character_voice", "another_voice", "marin"].map(voice_id => ({ voice_id })), has_more: false }));
+    else if (req.url === "/v1/user/subscription") res.end('{"voice_slots_used":0,"voice_limit":10}');
     else if (req.url === "/v1/convai/agents/create") res.end('{"agent_id":"agent_test"}');
     else res.end(JSON.stringify({ signed_url: `${base.replace(/^http/, "ws")}/v1/convai/conversation?agent_id=agent_test&conversation_signature=private` }));
   });
@@ -116,7 +119,8 @@ test("ElevenLabs provisions once per credential, authenticates with signed URLs,
   assert.equal(fake.seen.requests.filter(r => r.url.includes("get-signed-url?agent_id=agent_test")).length, 2);
   assert.ok(fake.seen.requests.every(r => r.key === "tenant-key"));
   assert.ok(fake.seen.urls.every(url => !url.includes("tenant-key")));
-  const overrides = fake.seen.events.filter(e => e.type === "conversation_initiation_client_data").map(e => e.conversation_config_override);
+  const overrides = fake.seen.events.filter(e => e.type === "conversation_initiation_client_data").map(e => e.conversation_config_override)
+    .sort((a, b) => b.tts.voice_id.localeCompare(a.tts.voice_id));
   assert.deepEqual(overrides[0], { agent: { prompt: { prompt: "Be Mochi." }, first_message: "", language: "ja" }, tts: { voice_id: "character_voice" } });
   assert.equal(overrides[1].tts.voice_id, "another_voice");
   assert.equal(realtimeVoice(provider, "coral"), ELEVENLABS_AGENTS.voice);
@@ -359,6 +363,7 @@ test("ElevenLabs retries network failures and preserves their stage", async t =>
 });
 
 test("ElevenLabs resolves library IDs independently of name search, uses returned IDs, and reuses account copies after restart", async t => {
+  const { db } = await testDatabase();
   const fake = await fakeElevenLabs(t);
   const owned: { voice_id: string; sharing: { original_voice_id: string } }[] = [];
   const adds: string[] = [];
@@ -382,7 +387,7 @@ test("ElevenLabs resolves library IDs independently of name search, uses returne
     return fetch(url, init);
   };
   for (let restart = 0; restart < 2; restart++) {
-    const provider = elevenlabsAgents({ baseUrl: fake.base, fetch: request });
+    const provider = elevenlabsAgents({ db, baseUrl: fake.base, fetch: request });
     const sessions = [recorder(), recorder()];
     const connections = sessions.map(session => provider.connect(config, { apiKey: "tenant-key" }, session.events));
     t.after(() => connections.forEach(connection => connection.close()));
@@ -431,11 +436,12 @@ test("ElevenLabs malformed error bodies keep HTTP status and diagnostics are cap
 
 test("ElevenLabs imports a known public owner directly and verifies account access after an add race", async t => {
   for (const race of [false, true]) {
+    const { db } = await testDatabase();
     const fake = await fakeElevenLabs(t, { existing: true });
     const { got, events } = recorder();
     let added = false;
     let lists = 0;
-    const provider = elevenlabsAgents({ baseUrl: fake.base, fetch: async (url, init) => {
+    const provider = elevenlabsAgents({ db, baseUrl: fake.base, fetch: async (url, init) => {
       const path = new URL(String(url));
       if (path.pathname === "/v2/voices") {
         lists++;
@@ -456,13 +462,15 @@ test("ElevenLabs imports a known public owner directly and verifies account acce
     await until(() => got.some(event => event.type === "ready"), "known owner ready");
     assert.equal(fake.seen.events[0].conversation_config_override.tts.voice_id, "account_copy");
     assert.equal(lists, race ? 3 : 1);
+    assert.deepEqual((await db.query("select voice_id from elevenlabs_voices")).rows, race ? [] : [{ voice_id: "account_copy" }], "an add failure never adopts a voice another caller added");
   }
 });
 
 test("ElevenLabs refuses failed shared additions without verified account access", async t => {
+  const { db } = await testDatabase();
   const fake = await fakeElevenLabs(t, { existing: true });
   const { got, events } = recorder();
-  const provider = elevenlabsAgents({ baseUrl: fake.base, fetch: async (url, init) => {
+  const provider = elevenlabsAgents({ db, baseUrl: fake.base, fetch: async (url, init) => {
     const path = new URL(String(url));
     if (path.pathname === "/v2/voices") return Response.json({ voices: [], has_more: false });
     if (path.pathname.startsWith("/v1/voices/add/")) return Response.json({ detail: { status: "voice_limit_reached" } }, { status: 400 });
@@ -473,4 +481,116 @@ test("ElevenLabs refuses failed shared additions without verified account access
   await until(() => got.some(event => event.type === "closed"), "add rejected");
   assert.match(got.find(event => event.type === "closed")!.detail, /add shared voice.*voice_limit_reached/);
   assert.equal(fake.seen.urls.length, 0);
+});
+
+for (const race of [false, true]) test(`ElevenLabs voice slots: ${race ? "a slot consumed after preflight" : "at limit"} evicts only the tracked LRU and records the replacement`, async t => {
+  const { db } = await testDatabase();
+  const keyHash = createHash("sha256").update("tenant-key").digest("hex");
+  await db.query(`insert into elevenlabs_voices values
+    ($1, 'old', 1, 10), ($1, 'recent', 2, 20), ('another-key-hash', 'other-account', 0, 0)`, [keyHash]);
+  const fake = await fakeElevenLabs(t, { existing: true });
+  const voices = new Set(["manual", "premade", "old", "recent"]);
+  const deleted: string[] = [], added: string[] = [];
+  const logs: { type: string; fields: unknown }[] = [];
+  let checks = 0;
+  const request: typeof fetch = async (url, init) => {
+    const path = new URL(String(url)).pathname;
+    if (path === "/v2/voices") return Response.json({ voices: [...voices].map(voice_id => ({ voice_id })), has_more: false });
+    if (path === "/v1/user/subscription") return Response.json({ voice_slots_used: race && checks++ === 0 ? 3 : voices.size, voice_limit: 4 });
+    if (init?.method === "DELETE") {
+      const id = path.split("/").at(-1)!;
+      assert.equal(voices.delete(id), true);
+      deleted.push(id);
+      return new Response(null, { status: 204 });
+    }
+    if (path.startsWith("/v1/voices/add/")) {
+      added.push(path);
+      if (voices.size >= 4) return Response.json({ detail: { status: "slot_failure" } }, { status: 400 });
+      voices.add(config.voice);
+      return Response.json({ voice_id: config.voice });
+    }
+    return fetch(url, init);
+  };
+  const provider = () => elevenlabsAgents({ db, baseUrl: fake.base, fetch: request, log: (type, fields) => logs.push({ type, fields }) });
+  // Separate provider instances share no in-memory single-flight cache: the database serializes both nodes.
+  const sessions = [recorder(), recorder()];
+  const connections = sessions.map(session => provider().connect({ ...config, publicOwnerId: "known_owner" }, { apiKey: "tenant-key" }, session.events));
+  t.after(() => connections.forEach(connection => connection.close()));
+  await until(() => sessions.every(session => session.got.some(event => event.type === "ready")), "both nodes ready");
+  assert.deepEqual(deleted, ["old"]);
+  assert.equal(added.length, race ? 2 : 1);
+  assert.deepEqual(logs, [{ type: "voice_slot_evicted", fields: { voice: "old", lastUsedAt: 10 } }]);
+  assert.ok(voices.has("manual") && voices.has("premade") && voices.has("recent"));
+  const rows = (await db.query("select * from elevenlabs_voices order by voice_id")).rows;
+  assert.deepEqual(rows.map(row => row.voice_id), [config.voice, "other-account", "recent"]);
+  const replacement = rows[0];
+  assert.equal(replacement.key_hash, keyHash);
+  assert.ok(replacement.added_at > 20 && replacement.last_used_at >= replacement.added_at);
+  // A later session updates use time without changing ownership or insertion time.
+  await db.query("update elevenlabs_voices set last_used_at = 1 where voice_id = $1", [config.voice]);
+  const later = recorder();
+  const connection = provider().connect(config, { apiKey: "tenant-key" }, later.events);
+  t.after(() => connection.close());
+  await until(() => later.got.some(event => event.type === "ready"), "later session ready");
+  const used = (await db.query("select * from elevenlabs_voices where voice_id = $1", [config.voice])).rows[0];
+  assert.equal(used.added_at, replacement.added_at);
+  assert.ok(used.last_used_at >= replacement.last_used_at);
+  assert.equal(deleted.length, 1);
+});
+
+test("ElevenLabs at limit with only manual/premade or other-key voices fails clearly without deleting or adding", async t => {
+  const { db } = await testDatabase();
+  await db.query("insert into elevenlabs_voices values ('other-key', 'other-account', 1, 1)");
+  const fake = await fakeElevenLabs(t, { existing: true });
+  const { got, events } = recorder();
+  const provider = elevenlabsAgents({ db, baseUrl: fake.base, fetch: async (url, init) => {
+    const path = new URL(String(url)).pathname;
+    assert.notEqual(init?.method, "DELETE");
+    assert.ok(!path.startsWith("/v1/voices/add/"));
+    if (path === "/v2/voices") return Response.json({ voices: [{ voice_id: "manual" }, { voice_id: "premade" }], has_more: false });
+    if (path === "/v1/user/subscription") return Response.json({ voice_slots_used: 2, voice_limit: 2 });
+    return fetch(url, init);
+  } });
+  const connection = provider.connect({ ...config, publicOwnerId: "known_owner" }, { apiKey: "tenant-key" }, events);
+  t.after(() => connection.close());
+  await until(() => got.some(event => event.type === "closed"), "no managed slots");
+  assert.match(got.find(event => event.type === "closed")!.detail, /at its voice limit; no camelRun-added voice/);
+  assert.equal(fake.seen.urls.length, 0);
+  assert.equal((await db.query("select count(*) from elevenlabs_voices")).rows[0].count, 1);
+});
+
+test("ElevenLabs failed replacement keeps the eviction durable and never evicts twice", async t => {
+  const { db } = await testDatabase();
+  const keyHash = createHash("sha256").update("tenant-key").digest("hex");
+  await db.query("insert into elevenlabs_voices values ($1, 'old', 1, 1), ($1, 'recent', 2, 2)", [keyHash]);
+  const fake = await fakeElevenLabs(t, { existing: true });
+  const { got, events } = recorder();
+  let deletes = 0, adds = 0;
+  const provider = elevenlabsAgents({ db, baseUrl: fake.base, log: () => {}, fetch: async (url, init) => {
+    const path = new URL(String(url)).pathname;
+    if (path === "/v2/voices") return Response.json({ voices: [], has_more: false });
+    if (path === "/v1/user/subscription") return Response.json({ voice_slots_used: 2, voice_limit: 2 });
+    if (init?.method === "DELETE") { deletes++; return Response.json({ status: "ok" }); }
+    if (path.startsWith("/v1/voices/add/")) { adds++; return Response.json({ detail: "replacement refused" }, { status: 400 }); }
+    return fetch(url, init);
+  } });
+  const connection = provider.connect({ ...config, publicOwnerId: "known_owner" }, { apiKey: "tenant-key" }, events);
+  t.after(() => connection.close());
+  await until(() => got.some(event => event.type === "closed"), "replacement failed");
+  assert.match(got.find(event => event.type === "closed")!.detail, /replacement refused/);
+  assert.equal(deletes, 1);
+  assert.equal(adds, 1);
+  assert.deepEqual((await db.query("select voice_id from elevenlabs_voices")).rows, [{ voice_id: "recent" }]);
+});
+
+
+test("ElevenLabs using an existing account voice never adopts it for eviction", async t => {
+  const { db } = await testDatabase();
+  const fake = await fakeElevenLabs(t, { existing: true });
+  const { got, events } = recorder();
+  const connection = elevenlabsAgents({ db, baseUrl: fake.base }).connect(config, { apiKey: "tenant-key" }, events);
+  t.after(() => connection.close());
+  await until(() => got.some(event => event.type === "ready"), "existing voice ready");
+  assert.deepEqual((await db.query("select * from elevenlabs_voices")).rows, []);
+  assert.ok(!fake.seen.requests.some(request => request.url === "/v1/user/subscription" || request.url.startsWith("/v1/voices/add/")));
 });

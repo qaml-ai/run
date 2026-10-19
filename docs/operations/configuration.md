@@ -156,6 +156,11 @@ The tenant's ElevenLabs key takes precedence over the platform key, as for other
 list/create and signed-conversation access. On first use each node resolves the private agent named
 `camelRun realtime voice v1`, creating it if absent, once per credential with single-flight resolution and no TTL.
 Sessions override its prompt, first message (empty), language and voice. No per-bot ElevenLabs agent is needed.
+Library voice imports require migration `077_elevenlabs_voices.sql`. The table tracks only successful camelRun imports,
+by SHA-256 key identity and account voice ID, with added/use times in milliseconds. Resolution, use-time updates and
+slot eviction serialize across nodes through a transaction advisory lock per key identity. No existing voices are
+backfilled. Keys used for imports need subscription read and voice delete access in addition to voice add access.
+Evictions emit `voice_slot_evicted` with `voice` and `lastUsedAt`, without credentials. No new environment settings are required.
 ElevenLabs owns VAD, turn detection and interruptions; local speculative commits are disabled. The mixed call stream
 is resampled to PCM 16 kHz, with PCM 24 kHz output. Speaker labels are contextual updates, not reliable diarization of
 overlapping speech. Client tools run camelRun's agent; late replies start a new spoken turn. WebSocket events do not
