@@ -13,7 +13,7 @@ import {
   AgentClient, AgentError, AgentRuntime, RunError, toolServer,
   type AgentFiles, type Builtin, type DelegateSettings, type InlineMcpServer, type RecordedMessage, type AgentInput, type AgentOptions, type Attachment, type CreateAgentOptions, type HistoryPage, type InputAnswer,
   type ForkedFrom, type ForkOptions, type MountInput, type RunResult, type RunUsage, type RuntimeOptions, type Sender, type SessionCredentials, type ToolError, type RunToolCall, type ToolServer, type Tools, type AgentFile, type SteerReceipt,
-  type RunFrame, type RunInputPart, type RunRequest, type StatelessRun,
+  type RunFrame, type RunInputPart, type RunRequest, type StatelessRun, type CreditReason,
 } from "./typescript.ts";
 import type { AgentEvent, ModelFailure, ThinkingLevel } from "./types.ts";
 import type { Static, TSchema } from "typebox";
@@ -132,8 +132,14 @@ export interface RunFailure extends Partial<ModelFailure> {
   message: string;
   /** The runtime could not tell whether the run's work took effect (a restart cut it short). */
   uncertain?: boolean;
-  /** With code end_user_credit: why its end user's credit stopped it (`balance`, `daily_limit`, `bucket_limit`). */
-  reason?: string;
+  /** With code spend_limit or end_user_credit: which limit (the run's own, its agent's, the tenant's monthly cap, prepaid credit, or its end user's credit). */
+  limit?: "run" | "agent" | "tenant" | "credit" | "end_user";
+  /** With code end_user_credit: why its end user's credit refused or stopped it (`CREDIT_REASONS`; `endUserCredit` reads it from any failure). */
+  reason?: CreditReason;
+  /** With code end_user_credit: the bucket refused. */
+  bucket?: string;
+  /** With code end_user_credit: whose credit (the subject). */
+  endUser?: string;
 }
 
 /**
@@ -626,7 +632,7 @@ export class Agent {
     catch (error) {
       // A run that ended in an error settles with it; anything else (a refused request, a closed client) is not a run.
       if (!(error instanceof AgentError) || error.status !== 0 || error.requestId !== id || /^Client closed/.test(error.message)) throw error;
-      run = { id, status: "failed", text: "", inputs: [], usage: null, files: [], toolErrors: [], toolCalls: [], sourceErrors: [], raw: null, error: { code: error.code ?? "runtime_error", message: error.message, ...(error.uncertain ? { uncertain: true } : {}) } };
+      run = { id, status: "failed", text: "", inputs: [], usage: null, files: [], toolErrors: [], toolCalls: [], sourceErrors: [], raw: null, error: { code: error.code ?? "runtime_error", message: error.message, ...(error.uncertain ? { uncertain: true } : {}), ...(error.reason ? { reason: error.reason } : {}), ...(error.bucket ? { bucket: error.bucket } : {}), ...(error.endUser ? { endUser: error.endUser } : {}) } };
     }
     if (run.error && throwOnError) throw new RunError(run);
     return run;
@@ -634,7 +640,7 @@ export class Agent {
 
   private async toRun<T>(id: string, result: RunResult | undefined, schema?: OutputSchema): Promise<Run<T>> {
     const raw = result ?? null;
-    let error: RunFailure | null = raw?.error ? { code: raw.code ?? "model_error", message: raw.error, ...raw.modelError, ...(raw.reason ? { reason: raw.reason } : {}) }
+    let error: RunFailure | null = raw?.error ? { code: raw.code ?? "model_error", message: raw.error, ...raw.modelError, ...(raw.limit ? { limit: raw.limit } : {}), ...(raw.reason ? { reason: raw.reason } : {}), ...(raw.bucket ? { bucket: raw.bucket } : {}), ...(raw.endUser ? { endUser: raw.endUser } : {}) }
       : raw?.stopped === "spend_limit" ? { code: "spend_limit", message: "The agent reached its spend limit; raise it (configure spendLimit) to go on" }
       : raw?.stopped === "turn_limit" ? { code: "turn_limit", message: "The run reached its limit of model responses or time; send another message to continue" } : null;
     // The runtime checked the output against the JSON Schema; a Standard Schema parses it too (refinements, transforms).

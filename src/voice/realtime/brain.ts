@@ -110,7 +110,7 @@ export interface BrainHooks {
   /** Hold `usd` of the end user's credit (where the tenant meters end users); throws 402 END_USER_CREDIT. */
   hold(usd: number): Promise<Hold | undefined>;
   /** The money ran out: the session ends. */
-  budget(limit: "tenant" | "end_user", endUserReason?: string): void;
+  budget(limit: "tenant" | "end_user", endUserReason?: string, bucket?: string): void;
   /** A response's usage: its tokens, cost (USD) and the seconds of audio it made. */
   usage(record: { usage: RealtimeUsage; costUsd: number; audioSeconds: number }): void;
   /** A turn was committed: its speaker, and when it was spoken (the session's counts and idle clock). */
@@ -618,7 +618,8 @@ export class RealtimeBrain {
       this.cancel(response, "budget", 0);
       const endUser = refused.code === "END_USER_CREDIT";
       const reason = refused.details?.reason;
-      this.hooks.budget(endUser ? "end_user" : "tenant", endUser && typeof reason === "string" ? reason : undefined);
+      const bucket = refused.details?.bucket;
+      this.hooks.budget(endUser ? "end_user" : "tenant", endUser && typeof reason === "string" ? reason : undefined, endUser && typeof bucket === "string" ? bucket : undefined);
     });
   }
 

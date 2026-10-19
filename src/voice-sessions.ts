@@ -104,7 +104,8 @@ export type VoiceState = "connecting" | "live" | "reconnecting" | "ended";
 export const END_REASONS = ["requested", "empty", "idle", "max_duration", "budget", "kicked", "credentials", "error"] as const;
 export type EndReason = typeof END_REASONS[number];
 /** Why a session ended, with what the reason needs: which limit for `budget`, a short detail for `error`. */
-export type Ending = { reason: EndReason; limit?: "tenant" | "end_user"; endUserReason?: string; detail?: string };
+/** How a session ended; with reason budget, whose credit (`limit`), and for an end user's why (one of CREDIT_REASONS) and which bucket. */
+export type Ending = { reason: EndReason; limit?: "tenant" | "end_user"; endUserReason?: string; bucket?: string; detail?: string };
 
 /** A session's settings, as created (and some patched): stored as they are read back. */
 export type VoiceOptions = {
@@ -1415,8 +1416,8 @@ export class VoiceSessions {
           : undefined;
       } catch (error) {
         if ((error as HttpError).code !== "END_USER_CREDIT") throw error;
-        const reason = (error as HttpError).details?.reason;
-        await this.endFor(origin, { reason: "budget", limit: "end_user", ...(typeof reason === "string" ? { endUserReason: reason } : {}) });
+        const { reason, bucket } = (error as HttpError).details ?? {};
+        await this.endFor(origin, { reason: "budget", limit: "end_user", ...(typeof reason === "string" ? { endUserReason: reason } : {}), ...(typeof bucket === "string" ? { bucket } : {}) });
         return;
       }
       const bytes = oggOpus(cut.packets);
@@ -1653,7 +1654,7 @@ export class VoiceSessions {
         where id = $1 and state <> 'ended' returning *`, [id, ending.reason, now, JSON.stringify({ ...options, ...(ending.limit || ending.endUserReason ? { ending } : {}) })]);
       const row = rows[0] as Row | undefined;
       if (row?.options.deliver.webhooks) await enqueueEvents(sql, [this.event(row, "voice.session.ended", {
-        reason: ending.reason, ...(ending.limit ? { limit: ending.limit } : {}), ...(ending.endUserReason ? { endUserReason: ending.endUserReason } : {}),
+        reason: ending.reason, ...(ending.limit ? { limit: ending.limit } : {}), ...(ending.endUserReason ? { endUserReason: ending.endUserReason } : {}), ...(ending.bucket ? { bucket: ending.bucket } : {}),
         startedAt: num(row.started_at), endedAt: now, utterances: row.utterances, speechSeconds: row.speech_seconds, costUsd: Number(row.cost) / 1_000_000,
       }, `voice:${id}:ended`)]);
       return row;
@@ -1735,8 +1736,8 @@ export class VoiceSessions {
         const { subject, bucket } = options();
         return subject !== undefined && this.options.credit ? this.options.credit.hold(held.tenant, subject, bucket ?? DEFAULT_BUCKET, usd, "voice_realtime", { session: held.id }) : undefined;
       },
-      budget: (limit, endUserReason) => {
-        void this.finish(this.held.get(held.id) === held ? held : undefined, held.id, { reason: "budget", limit, ...(endUserReason ? { endUserReason } : {}) })
+      budget: (limit, endUserReason, bucket) => {
+        void this.finish(this.held.get(held.id) === held ? held : undefined, held.id, { reason: "budget", limit, ...(endUserReason ? { endUserReason } : {}), ...(bucket ? { bucket } : {}) })
           .catch(error => console.error(JSON.stringify({ type: "voice_finish_failed", session: held.id, error: safeError(error) })));
       },
       usage: ({ usage, costUsd, audioSeconds }) => {
@@ -1859,8 +1860,8 @@ export class VoiceSessions {
           reason: ending.reason, ...(ending.by ? { by: ending.by } : {}), seconds: ending.seconds, costUsd: ending.costUsd,
         }, ending.seconds > 0 ? ending : undefined);
       },
-      budget: (limit: "tenant" | "end_user", endUserReason?: string) => {
-        void this.finish(this.held.get(held.id) === held ? held : undefined, held.id, { reason: "budget", limit, ...(endUserReason ? { endUserReason } : {}) })
+      budget: (limit: "tenant" | "end_user", endUserReason?: string, bucket?: string) => {
+        void this.finish(this.held.get(held.id) === held ? held : undefined, held.id, { reason: "budget", limit, ...(endUserReason ? { endUserReason } : {}), ...(bucket ? { bucket } : {}) })
           .catch(error => console.error(JSON.stringify({ type: "voice_finish_failed", session: held.id, error: safeError(error) })));
       },
     };

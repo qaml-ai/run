@@ -6,6 +6,12 @@ import { OPENAI_REALTIME } from "./voice/realtime/openai.ts";
 import { GEMINI_LIVE } from "./voice/realtime/gemini.ts";
 import { MIN_CONTEXT_TOKENS } from "./protocol.ts";
 import { MODEL_ERROR_CLASSES } from "./model-errors.ts";
+import { CREDIT_REASONS } from "./end-user-credits.ts";
+
+/** An end user's credit refusal's fields, the same on a 402, a run's error, run.failed and voice.session.ended. */
+const creditReason = z.enum(CREDIT_REASONS).openapi({ description: "Why an end user's credit refused or stopped it (see the errors reference): balance (no credit left: nothing of the bucket's free allowance today, and no paid balance), daily_limit (the end user's daily credit limit on paid spend), bucket_limit (the bucket's own daily limit on paid spend; a bucket limited to 0 spends only its allowance). More may be added: treat an unknown one as a credit refusal of no particular kind" });
+const creditBucket = z.string().openapi({ description: "With an end user's credit refusal: the bucket refused (builder, bot:42, default)" });
+const creditEndUser = z.string().openapi({ description: "With an end user's credit refusal: whose credit (the subject)" });
 
 const SEND_KEY = "Send {\"apiKey\": \"...\"} with the provider's API key";
 const SEND_TEXT = "Send {\"text\": \"...\"}, or attach audio to transcribe";
@@ -15,7 +21,9 @@ export const ERROR_CODES = {
   INVALID_REQUEST: "400: the request is malformed or invalid", UNAUTHORIZED: "401: no valid token", PAYMENT_REQUIRED: "402", FORBIDDEN: "403: the token may not do this",
   NOT_FOUND: "404", CONFLICT: "409", GONE: "410", TOO_LARGE: "413", RATE_LIMITED: "429: retry after Retry-After", UNAVAILABLE: "503: retry after Retry-After", DATABASE_RETRY: "503: the database refused the request for now (a conflict with another, or a statement timeout); retry after Retry-After", INTERNAL: "500",
   BUSY_AGENT_LIMIT: "429: the tenant has as many agents busy as it may (the body's busyAgents, a BusyAgents, says the limit, its usage tier and the next); retry after Retry-After",
-  SPEND_LIMIT: "402: a spend limit (the agent's, or the tenant's monthly cap) is reached", INSUFFICIENT_CREDIT: "402: the tenant's prepaid credit is spent", STORAGE_LIMIT: "507: the tenant's storage limit would be passed; the body has limit and used, in bytes",
+  SPEND_LIMIT: "402: a spend limit (the agent's, or the tenant's monthly cap) is reached", INSUFFICIENT_CREDIT: "402: the tenant's prepaid credit is spent",
+  END_USER_CREDIT: "402: the end user's credit refused the work; the body has endUser, bucket and reason (balance, daily_limit or bucket_limit)",
+  INSUFFICIENT_BALANCE: "409: a refund would return more than the end user's balance not held by calls in flight; the body has refundable (micro-USD)", STORAGE_LIMIT: "507: the tenant's storage limit would be passed; the body has limit and used, in bytes",
   IDEMPOTENCY_CONFLICT: "409: the Idempotency-Key or request id was used for another request", IDEMPOTENCY_IN_PROGRESS: "409: the first request with this Idempotency-Key is still running; retry",
   APPLICATION_CONNECTED: "409: another connection serves this agent's tools; connect with ?takeover=true to replace it",
   APPLICATION_NOT_CONNECTED: "409: this agent's tools need its application, and none is connected; connect it, or send allowDisconnected: true",
@@ -31,6 +39,10 @@ export const ApiError = z.object({
     max: z.number().int(),
     windowSeconds: z.number().int(),
   }).optional().openapi({ description: "On a rate limit's 429: the limit reached. Retry-After says when to retry" }),
+  endUser: creditEndUser.optional().openapi({ description: "With END_USER_CREDIT: whose credit refused the work (the subject)" }),
+  bucket: creditBucket.optional().openapi({ description: "With END_USER_CREDIT: the bucket refused" }),
+  reason: creditReason.optional(),
+  refundable: z.number().int().optional().openapi({ description: "With INSUFFICIENT_BALANCE: the most a refund may return now (micro-USD)" }),
 }).openapi("Error");
 export const Deleted = z.object({ deleted: z.literal(true) });
 export const SignedOut = z.object({ signedOut: z.number().int().openapi({ description: "How many console sessions ended" }) }).openapi("SignedOut");
@@ -191,7 +203,9 @@ export const WebhookEvents = {
     steeredInto: z.string().optional().openapi({ description: "A prompt sent with whileRunning: steer that a running turn took: that turn's request" }),
   }), "A run ended without an error"),
   "run.failed": envelope("run.failed", z.object({
-    ...runFacts, usage: runUsage, servedModel, error: z.string(), code: z.string().optional().openapi({ description: "The failure's name, where it has one: cancelled (a stop cancelled it before it began), aborted, model_stream_stalled, turn_limit, spend_limit, output_missing..." }), uncertain: z.boolean().optional().openapi({ description: "A restart cut it short: its effects are unknown" }), steeredInto: z.string().optional(),
+    ...runFacts, usage: runUsage, servedModel, error: z.string(), code: z.string().optional().openapi({ description: "The failure's name, where it has one: cancelled (a stop cancelled it before it began), aborted, model_stream_stalled, turn_limit, spend_limit (a spend limit or the account's credit: limit says which), end_user_credit (the end user's credit: reason, bucket and endUser say why, which and whose), output_missing... The same whether the limit refused the run as it started or stopped it mid-way. Branch on code, never on error, whose words may change" }),
+    limit: z.enum(["run", "agent", "tenant", "credit", "end_user"]).optional().openapi({ description: "With spend_limit or end_user_credit: which limit stopped it: the run's own, its agent's, the tenant's monthly cap, the account's prepaid credit, or the end user's credit" }),
+    reason: creditReason.optional(), bucket: creditBucket.optional(), endUser: creditEndUser.optional(), uncertain: z.boolean().optional().openapi({ description: "A restart cut it short: its effects are unknown" }), steeredInto: z.string().optional(),
     ...ModelFailure.partial().shape,
   }), "A run ended with an error: the runtime's, or the model's"),
   "input.requested": envelope("input.requested", z.object({
@@ -209,7 +223,8 @@ export const WebhookEvents = {
   "voice.session.ended": envelope("voice.session.ended", z.object({
     ...voiceFacts, reason: z.enum(VOICE_END_REASONS).openapi({ description: "requested: DELETE; empty: no one else in the call for emptySeconds; idle: no speech for idleMinutes; max_duration: maxMinutes passed; budget: the account's or the end user's credit ran out (limit); kicked: the bot was disconnected from the channel and no new credentials came; credentials: Discord stopped taking the session's credentials; error: the connection failed" }),
     limit: z.enum(["tenant", "end_user"]).optional().openapi({ description: "With reason budget: whose credit ran out" }),
-    endUserReason: z.string().optional().openapi({ description: "With limit end_user: why (balance, daily_limit, bucket_limit)" }),
+    endUserReason: creditReason.optional().openapi({ description: "With limit end_user: why, one of the credit reasons a run's end_user_credit has (balance, daily_limit, bucket_limit)" }),
+    bucket: creditBucket.optional().openapi({ description: "With limit end_user: the bucket refused" }),
     startedAt: z.number().nullable(), endedAt: z.number(), utterances: z.number(), speechSeconds: z.number(), costUsd: z.number(),
   }), "A voice session ended. The bot is still in the channel until your app leaves it (OP 4 with channel_id null)"),
   "voice.session.error": envelope("voice.session.error", z.object({
@@ -254,6 +269,19 @@ export const WebhookEvents = {
     seconds: z.number().openapi({ description: "Seconds of speech made (and billed)" }), costUsd: z.number(),
     brain: z.literal("realtime").optional().openapi({ description: "Present for a realtime brain's response: costUsd is what its tokens cost (the session's usage already counts it)" }),
   }), "A speech ended"),
+  "end_user.balance.low": envelope("end_user.balance.low", z.object({
+    endUser: z.string(), balance: z.number().int().openapi({ description: "The balance now (charged micro-USD)" }),
+    threshold: z.number().int().openapi({ description: "The tenant's lowBalance" }), previousBalance: z.number().int(),
+  }), "An end user's balance fell below the tenant's lowBalance (once, until it rises past it again)"),
+  "end_user.credit.exhausted": envelope("end_user.credit.exhausted", z.object({
+    endUser: z.string(), bucket: z.string().nullable().openapi({ description: "The bucket the spend or refusal was in; null for a tenant's entry that took the balance to zero" }),
+    reason: z.enum(["allowance", ...CREDIT_REASONS]).openapi({ description: "allowance: the bucket's free allowance for the day is used up (work goes on from the balance, if it may); balance, daily_limit, bucket_limit: as a credit refusal's reason (the errors reference). More may be added" }),
+    day: z.string().openapi({ description: "The UTC day, YYYY-MM-DD" }),
+    allowance: z.number().int().optional().openapi({ description: "With allowance: the bucket's allowance that day (raw micro-USD)" }),
+    dailyLimit: z.number().int().optional().openapi({ description: "With daily_limit: the end user's daily limit (charged micro-USD)" }),
+    bucketLimit: z.number().int().optional().openapi({ description: "With bucket_limit: the bucket's daily limit on paid spend (charged micro-USD)" }),
+    balance: z.number().int().openapi({ description: "The balance (charged micro-USD)" }),
+  }), "An end user's free allowance for a bucket, their balance, their daily limit or a bucket's limit ran out (once per user, bucket or limit, and day; balance: once until they are credited again)"),
 };
 
 export const Model = z.object({
@@ -573,7 +601,9 @@ const RunFailure = z.object({
   code: z.string().openapi({ description: "Stable: model_error, runtime_error, output_missing, spend_limit, turn_limit, end_user_credit, aborted…" }),
   message: z.string(),
   uncertain: z.boolean().optional().openapi({ description: "The runtime could not tell whether the run's work took effect" }),
-  reason: z.enum(["balance", "daily_limit", "bucket_limit"]).optional().openapi({ description: "With end_user_credit: the subject had no credit left (balance), reached its daily limit (daily_limit), or the run's bucket reached its own daily limit on paid spend (bucket_limit)" }),
+  limit: z.enum(["run", "agent", "tenant", "credit", "end_user"]).optional().openapi({ description: "With spend_limit or end_user_credit: which limit: the run's own, its agent's, the tenant's monthly cap, the account's prepaid credit, or the end user's credit" }),
+  reason: creditReason.optional().openapi({ description: "With end_user_credit: " + "Why an end user's credit refused or stopped it (see the errors reference): balance (no credit left: nothing of the bucket's free allowance today, and no paid balance), daily_limit (the end user's daily credit limit on paid spend), bucket_limit (the bucket's own daily limit on paid spend; a bucket limited to 0 spends only its allowance). More may be added: treat an unknown one as a credit refusal of no particular kind" }),
+  bucket: creditBucket.optional(), endUser: creditEndUser.optional(),
   ...ModelFailure.partial().shape,
 }).openapi("RunFailure", { description: "errorClass, providerStatus, retryable and model are there when a model call failed the run (model_error, model_stream_stalled, model_key_invalid…)" });
 export const Run = z.object({
@@ -1420,7 +1450,7 @@ export const VoiceSession = z.object({
   discord: z.object(voiceDiscord).openapi({ description: "For a browser session: its own ids (guildId the session's), not Discord's" }),
   state: z.enum(["connecting", "live", "reconnecting", "ended"]).openapi({ description: "connecting: not yet listening; live: listening; reconnecting: the connection dropped or moves (between nodes, or waiting for new credentials); ended" }),
   endReason: z.enum(VOICE_END_REASONS).nullable(),
-  limit: z.enum(["tenant", "end_user"]).optional(), endUserReason: z.string().optional(),
+  limit: z.enum(["tenant", "end_user"]).optional(), endUserReason: creditReason.optional(),
   deliver: z.object({ agent: z.string().optional(), webhooks: z.boolean() }),
   subject: z.string().optional(), bucket: z.string().optional(), context: z.record(z.string(), z.unknown()).optional(), keyScope: z.string().optional(),
   language: z.string().optional(), prompt: z.string().optional(),

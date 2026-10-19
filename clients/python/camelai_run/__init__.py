@@ -31,7 +31,7 @@ __version__ = "0.17.0"
 __all__ = [
     "Agents", "Agent", "Run", "RunInput", "InputDetail", "Mount", "WorkspaceMount", "RunStream", "StreamPart", "Runs", "StatelessRunStream",
     "tool", "Tool", "ToolContext", "InputRequired", "RuntimeIdentity", "identity_from_claims", "spawn_agent", "SpawnAgent", "agent_notice",
-    "AgentError", "RunError",
+    "AgentError", "RunError", "CREDIT_REASONS", "EndUserCreditFailure", "end_user_credit",
     "AgentRuntime", "AgentClient", "AgentFiles", "Download", "Volume", "Telemetry", "Transcriptions", "Images", "EndUsers", "Voice", "DEFAULT_URL",
     "serve_tools", "verify_runtime_token", "verify_file_url", "RuntimeTokenError", "TestRuntime", "verify_webhook", "WebhookVerificationError",
 ]
@@ -52,16 +52,43 @@ def _env(*names):
     return next((os.environ[name] for name in names if os.environ.get(name)), None)
 
 
+# Why an end user's credit refused or stopped work, the same on every path (a 402 END_USER_CREDIT, a run's
+# end_user_credit error, run.failed, voice.session.ended's endUserReason): "balance" (nothing left of the bucket's free
+# allowance today, and no paid balance), "daily_limit" (the end user's daily credit limit), "bucket_limit" (the bucket's
+# own daily limit on paid spend; a bucket limited to 0 spends only its allowance). More may be added: treat one you do
+# not know as a credit refusal of no particular kind. Branch on these, never on the message.
+CREDIT_REASONS = ("balance", "daily_limit", "bucket_limit")
+
+
 class AgentError(RuntimeError):
     """`status` is the HTTP status (0 for a run's or the connection's failure); `code` a stable name for the
-    failure where the runtime gives one; `uncertain` that nobody can tell whether the work took effect."""
+    failure where the runtime gives one; `uncertain` that nobody can tell whether the work took effect. With code
+    END_USER_CREDIT (a 402) or end_user_credit (a run): `reason` (one of CREDIT_REASONS), `bucket` and `end_user`."""
 
-    def __init__(self, message, status=0, request_id=None, retry_after=None, code=None, uncertain=False):
+    def __init__(self, message, status=0, request_id=None, retry_after=None, code=None, uncertain=False, reason=None, bucket=None, end_user=None):
         super().__init__(message)
         self.status, self.request_id = status, request_id
         # Seconds the runtime asked to wait before retrying (its Retry-After), for 429 and 503.
         self.retry_after = retry_after
         self.code, self.uncertain = code, uncertain
+        self.reason, self.bucket, self.end_user = reason, bucket, end_user
+
+
+def _credit_of(value):
+    """An end user's credit refusal's fields, from an error body or a run's error, as AgentError's keywords."""
+    value = value or {}
+    return {name: value[key] for name, key in (("reason", "reason"), ("bucket", "bucket"), ("end_user", "endUser")) if isinstance(value.get(key), str)}
+
+
+def _failure(response):
+    """A failed response as the AgentError it is: its message, status, Retry-After, code and credit refusal's fields."""
+    try:
+        value = response.json()
+    except ValueError:
+        value = {}
+    if not isinstance(value, dict):
+        value = {}
+    return AgentError(value.get("error") or f"HTTP {response.status_code}", response.status_code, retry_after=_retry_after(response), code=_code(value), **_credit_of(value))
 
 
 class RunError(AgentError):
@@ -70,8 +97,40 @@ class RunError(AgentError):
 
     def __init__(self, run):
         super().__init__(run.error["message"] if run.error else "The run failed", request_id=run.id,
-                         code=run.error and run.error["code"], uncertain=bool(run.error and run.error.get("uncertain")))
+                         code=run.error and run.error["code"], uncertain=bool(run.error and run.error.get("uncertain")), **_credit_of(run.error))
         self.run = run
+
+
+@dataclass
+class EndUserCreditFailure:
+    """An end user's credit refusing or stopping work, in one shape however it came (end_user_credit)."""
+    reason: str | None
+    bucket: str | None
+    end_user: str | None
+    # For people: its words may change.
+    message: str
+    code: str = "end_user_credit"
+
+
+def end_user_credit(value):
+    """Whether an end user's credit refused or stopped this, and why: an EndUserCreditFailure from an AgentError (a 402
+    END_USER_CREDIT: agent.run, a stateless run, transcribe, speech, images, a voice session), a RunError, a Run or its
+    error dict (end_user_credit: refused as it started, or stopped mid-way); None for anything else.
+
+        credit = end_user_credit(error_or_run)
+        if credit and credit.reason == "bucket_limit": ...
+    """
+    if isinstance(value, RunError) and value.run.error:
+        value = value.run.error
+    if isinstance(value, AgentError):
+        if value.code not in ("END_USER_CREDIT", "end_user_credit"):
+            return None
+        return EndUserCreditFailure(value.reason, value.bucket, value.end_user, str(value))
+    error = getattr(value, "error", value)
+    if not isinstance(error, dict) or error.get("code") not in ("END_USER_CREDIT", "end_user_credit"):
+        return None
+    fields = _credit_of(error)
+    return EndUserCreditFailure(fields.get("reason"), fields.get("bucket"), fields.get("end_user"), error.get("message") or error.get("error") or "")
 
 
 @dataclass
@@ -461,7 +520,7 @@ def _json_of(response):
             value = response.json()
         except ValueError:
             value = {}
-        raise AgentError(value.get("error", f"HTTP {response.status_code}"), response.status_code, retry_after=_retry_after(response), code=_code(value))
+        raise AgentError(value.get("error", f"HTTP {response.status_code}"), response.status_code, retry_after=_retry_after(response), code=_code(value), **_credit_of(value))
     return response.json()
 
 
@@ -819,7 +878,7 @@ class AgentRuntime(_RuntimeCalls):
         """A multipart POST with the API key (a transcription's audio), not retried: its answer."""
         response = await self.http.post(self.base + path, data=fields, files=[file], headers={"Authorization": f"Bearer {self._operator()}"}, timeout=_TRANSCRIPTION_TIMEOUT)
         if not response.is_success:
-            raise AgentError(_error(response), response.status_code)
+            raise _failure(response)
         return response.json()
 
     async def _rest(self, method, path, body=None, *, retry=True, headers=None, timeout=None, then=None, missing=_DEFAULT):
@@ -1856,7 +1915,7 @@ class AgentClient(_AgentCalls):
         if future and not future.done():
             if "error" in value:
                 future.set_exception(AgentError(value["error"], request_id=request_id, code=value.get("code") if isinstance(value.get("code"), str) else None,
-                                                uncertain=bool(value.get("uncertain"))))
+                                                uncertain=bool(value.get("uncertain")), **_credit_of(value)))
             else:
                 future.set_result(value.get("result"))
 
@@ -2275,10 +2334,15 @@ class InputDetail(TypedDict):
     origin: NotRequired[str]
 
 
+def _limit_of(value):
+    """A limit's fields on a run's error, as the runtime names them: which limit, and for an end user's credit why, which bucket and whose."""
+    return {key: value[key] for key in ("limit", "reason", "bucket", "endUser") if isinstance(value.get(key), str)}
+
+
 def _run_of(request_id, result, output, make_input):
     """A run from an agent's prompt result: its status, text, output (parsed by a pydantic model) and inputs (make_input of each)."""
     result = result or {}
-    error = ({"code": result.get("code") or "model_error", "message": result["error"], **(result.get("modelError") or {})} if result.get("error")
+    error = ({"code": result.get("code") or "model_error", "message": result["error"], **(result.get("modelError") or {}), **_limit_of(result)} if result.get("error")
              else {"code": "spend_limit", "message": "The agent reached its spend limit; raise it (spend_limit) to go on"} if result.get("stopped") == "spend_limit"
              else {"code": "turn_limit", "message": "The run reached its limit of model responses or time; send another message to continue"} if result.get("stopped") == "turn_limit" else None)
     # The runtime checked the output against the JSON Schema; a pydantic model parses it too (validators, types).
@@ -2429,7 +2493,7 @@ def _outcome_run(request_id, outcome, output, make_input):
     """A run from a request's outcome: its result, or the runtime's error ({"error", "code"?, "uncertain"?})."""
     if "error" in outcome:
         code = outcome.get("code") if isinstance(outcome.get("code"), str) else None
-        return Run(request_id, "failed", error={"code": code or "runtime_error", "message": outcome["error"], **({"uncertain": True} if outcome.get("uncertain") else {})})
+        return Run(request_id, "failed", error={"code": code or "runtime_error", "message": outcome["error"], **({"uncertain": True} if outcome.get("uncertain") else {}), **_limit_of(outcome)})
     return _run_of(request_id, outcome.get("result"), output, make_input)
 
 

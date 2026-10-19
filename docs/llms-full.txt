@@ -4056,22 +4056,46 @@ of their agents at once) never each see the whole balance.
 When nothing more can be held:
 
 - **A new run** is refused with `402` and code `END_USER_CREDIT`, with `endUser`,
-  `bucket` and `reason` in the body.
+  `bucket` and `reason` in the body. The SDKs throw `AgentError` with the same fields
+  (`reason`, `bucket`, `endUser`; Python `end_user`).
+- **A run waiting in the queue** that is refused as it comes to start fails with code
+  `end_user_credit`, `reason`, `bucket` and `endUser`, as below.
 - **A run already going** stops where the credit ends, even in the middle of a reply:
   what streamed is kept, and the run fails with code `end_user_credit`, `stopped:
-  "spend_limit"`, `limit: "end_user"` and a `reason`. It is never retried.
-  - `reason: "balance"`: no allowance left in the bucket today, and no balance.
-  - `reason: "daily_limit"`: the person's paid spend reached the daily limit.
-  - `reason: "bucket_limit"`: the bucket's paid spend reached its own limit (the person
-    may still have a balance, for their other buckets).
-- Transcriptions and images are refused before they are made, with the same 402.
+  "spend_limit"`, `limit: "end_user"`, a `reason`, the `bucket` and the `endUser`. It is never retried.
+- `run.failed` carries `code`, `limit`, `reason`, `bucket` and `endUser` too, and
+  `voice.session.ended` its `endUserReason` and `bucket`.
+- Transcriptions, speech and images are refused before they are made, with the same 402.
+
+`reason` is one of the [credit reasons](https://run.camelai.com/docs/reference/errors.md#end-user-credit-reasons):
+
+- `balance`: no allowance left in the bucket today, and no balance.
+- `daily_limit`: the person's paid spend reached the daily limit.
+- `bucket_limit`: the bucket's paid spend reached its own limit (the person may still
+  have a balance, for their other buckets; a bucket limited to 0 spends only its allowance).
+
+`endUserCredit` (Python `end_user_credit`) reads these from a thrown error, a failed
+run or its error, so one place handles every path:
 
 ```ts
-const run = await agent.run(text, { throwOnError: false });
-if (run.error?.code === "end_user_credit") notify(user, run.error.reason === "daily_limit" ? "You've reached today's limit" : "You're out of credit");
+import { endUserCredit } from "@camelai/run";
+
+try {
+  const run = await agent.run(text, { throwOnError: false });
+  const credit = endUserCredit(run);
+  if (credit) notify(user, credit.reason);
+} catch (error) {
+  const credit = endUserCredit(error); // a 402 at submit
+  if (!credit) throw error;
+  notify(user, credit.reason);
+}
+
+function notify(user: string, reason?: string) {
+  // "daily_limit" | "bucket_limit" | "balance"; a reason added later: a credit refusal of no particular kind.
+}
 ```
 
-Read the error's `reason` rather than its message.
+Branch on `code` and `reason`, never on the message: its words are for people and may change.
 
 ### How far past zero
 
@@ -6465,7 +6489,13 @@ with Agents() as agents:  # CAMELAI_API_KEY
 - `AgentError`: `status` (HTTP, or 0), `code` (a stable name where the runtime
   gives one: `APPLICATION_CONNECTED`, `APPLICATION_REPLACED`, `REPLAY_GAP`,
   `spend_limit`, …), `requestId`, `uncertain`, `retryAfterMs` (Python
-  `request_id`, `retry_after` in seconds).
+  `request_id`, `retry_after` in seconds). With `END_USER_CREDIT` (a 402) or
+  `end_user_credit` (a run): `reason` (one of `CREDIT_REASONS`: `balance`,
+  `daily_limit`, `bucket_limit`), `bucket` and `endUser` (Python `end_user`); see
+  [credit reasons](https://run.camelai.com/docs/reference/errors.md#end-user-credit-reasons).
+- `endUserCredit(errorOrRun)` (Python `end_user_credit`): an end user's credit
+  refusal from a thrown error, a run or its error, in one shape
+  (`{ code: "end_user_credit", reason, bucket, endUser, message }`), else undefined.
 - `RunError extends AgentError`: a failed run, with `run`. When a model call failed it,
   `run.error` also has `errorClass` (`billing`, `rate_limit`, `server`, `refusal`, `auth`,
   `timeout`, `other`), `providerStatus`, `retryable` and `model`: branch on those, not the
@@ -7663,18 +7693,18 @@ dedupe by `id`. See [Webhooks](https://run.camelai.com/docs/guides/webhooks.md).
 | --- | --- |
 | `run.started` | `agentId`, `requestId`, `method` (`prompt`, `continue`, `resume`, `execute`), `actor?`, `metadata?`, `resumes?` |
 | `run.completed` | the above, `usage` (`{responses, input, output, cacheRead, cacheWrite, costUsd}` or null), `stopped?`, `inputIds?`, `replyIndex?`, `messageCount?`, `steeredInto?` |
-| `run.failed` | the above, `usage`, `error`, `code?` (the outcome's code: `cancelled`, `aborted`, `model_stream_stalled`, `turn_limit`…), `uncertain?`, `steeredInto?` |
+| `run.failed` | the above, `usage`, `error`, `code?` (the outcome's code: `cancelled`, `aborted`, `model_stream_stalled`, `turn_limit`, `spend_limit`, `end_user_credit`…), `limit?` (with `spend_limit` or `end_user_credit`: which limit), `reason?`, `bucket?`, `endUser?` (with `end_user_credit`: why, which bucket, whose; see [credit reasons](https://run.camelai.com/docs/reference/errors.md#end-user-credit-reasons)), `uncertain?`, `steeredInto?`. A run refused as it came to start in the queue carries them as one stopped mid-way does |
 | `input.requested` | `agentId`, `requestId`, `inputId`, `toolCallId`, `kind`, `expiresAt` |
 | `input.resolved` | `agentId`, `requestId`, `inputId`, `state` |
 | `voice.session.started` | `session`, `provider`, `guildId`, `channelId`, `botUserId`, `subject`, `metadata`: a [voice session](https://run.camelai.com/docs/guides/voice-calls.md) connected (once) |
-| `voice.session.ended` | the above, `reason` (`requested`, `empty`, `idle`, `max_duration`, `budget`, `kicked`, `credentials`, `error`), `limit?` (`tenant`, `end_user`), `endUserReason?`, `startedAt`, `endedAt`, `utterances`, `speechSeconds`, `costUsd` |
+| `voice.session.ended` | the above, `reason` (`requested`, `empty`, `idle`, `max_duration`, `budget`, `kicked`, `credentials`, `error`), `limit?` (`tenant`, `end_user`), `endUserReason?` (with `limit: "end_user"`: a [credit reason](https://run.camelai.com/docs/reference/errors.md#end-user-credit-reasons)), `bucket?` (with `limit: "end_user"`: the bucket refused), `startedAt`, `endedAt`, `utterances`, `speechSeconds`, `costUsd` |
 | `voice.session.error` | the voice facts, `code` (`media_crashed`, `credentials_needed`), `detail`, `restarting`, `attempt?`, `waitMs?`. `media_crashed`: the session's audio failed; it reconnects, or after 3 failures in 5 minutes ends (`voice.session.ended`, `error`). `credentials_needed`: Discord stopped taking the session's credentials; send OP 4 for the channel again and PATCH what Discord answers within `waitMs`, or it ends (`credentials`) |
 | `voice.utterance` | the above facts, `speakerId`, `seq`, `text`, `language`, `seconds`, `startedAt`, `endedAt`, `ended` (`silence`, `max`, `error`, `handoff`, `end`), `costUsd`, `echo?` (`true`: the bot's own speech coming back, see Barge-in in voice-calls.md; not sent to `deliver.agent`) |
 | `voice.speech.started` | the voice facts, `speechId`, `latencyMs` (from the speak request to the first audio), `startedAt` (ms), and for the first speech of a reply to an utterance `turn`: `seq`, `path` and `stagesMs` (each stage since the end of speech: `turnCommit`, `transcript`, `delivered`, `llmFirstToken`, `firstPiece`, `ttsFirstAudio`, `firstPacket`) |
 | `voice.speech.ended` | the voice facts, `speechId`, `reason` (`done`, `interrupted`, `error`), `by?` (`interrupt`, `requested`, `barge_in`, `end`, `handoff`, `budget`), `seconds`, `costUsd` |
 | `usage.recorded` | `agentId` (null for a [transcription](https://run.camelai.com/docs/guides/voice.md) or [images](https://run.camelai.com/docs/guides/images.md) made alone), `requestId`, `subject`, `actor`, `context`, `keyScope`, `provider`, `model`, `kind` (`response`, `compaction`, `transcription`, `image`, `speech`), `input`, `output`, `cacheRead`, `cacheWrite`, `reasoning?`, `audioSeconds?` (a transcription's), `images?` (how many images were made), `cost: {usd, source}`, `at` |
 | `end_user.balance.low` | `endUser`, `balance`, `previousBalance`, `threshold` (integer micro-USD): an [end user's](https://run.camelai.com/docs/guides/end-user-credits.md) balance fell below the tenant's `lowBalance` |
-| `end_user.credit.exhausted` | `endUser`, `reason` (`allowance`, `balance`, `daily_limit`), `bucket`, `balance`, `day`, `allowance?`, `dailyLimit?` |
+| `end_user.credit.exhausted` | `endUser`, `reason` (`allowance`: the bucket's free allowance for the day is used up; or a [credit reason](https://run.camelai.com/docs/reference/errors.md#end-user-credit-reasons): `balance`, `daily_limit`, `bucket_limit`), `bucket`, `balance`, `day`, `allowance?`, `dailyLimit?`, `bucketLimit?` |
 
 ---
 
@@ -8003,12 +8033,13 @@ retry.
 | 400 | `FORK_POINT_INVALID` | A fork's `atMessage` is not an index in the agent's history, nor a request id one of its messages carries |
 | 401 | `UNAUTHORIZED` | No valid token; the message says where to create one (https://run.camelai.com/console/tokens) |
 | 402 | `SPEND_LIMIT` | A spend limit is reached: the agent's, or the account's monthly cap; or a message's audio, or an image, would cost more than the run's or agent's spend limit has left |
-| 402 | `INSUFFICIENT_CREDIT` | The account's prepaid credit is spent: no runs start and no files are stored |
-| 402 | `END_USER_CREDIT` | With [end-user credits](https://run.camelai.com/docs/guides/end-user-credits.md) on: the run's or call's end user (its subject) has nothing left in its bucket: no allowance today and no balance (`reason: "balance"`), or their daily limit is reached (`reason: "daily_limit"`). The body names `endUser` and `bucket`. Grant them credit, or wait for tomorrow's allowance |
+| 402 | `INSUFFICIENT_CREDIT` | The account's prepaid credit is spent (or a payment for it is disputed): no runs start and no files are stored |
+| 402 | `END_USER_CREDIT` | With [end-user credits](https://run.camelai.com/docs/guides/end-user-credits.md) on: the run's or call's end user (its subject) may not spend more in its bucket. The body names whose (`endUser`), which `bucket`, and why (`reason`, one of the [credit reasons](https://run.camelai.com/docs/reference/errors.md#end-user-credit-reasons)). Grant them credit, raise the limit, or wait for tomorrow's allowance |
 | 403 | `FORBIDDEN` | The token may not do this |
 | 404 | `NOT_FOUND` | No such agent, request, input or other resource for this account, or no such path at all (the message points at `/llms.txt`) |
 | 409 | `IDEMPOTENCY_CONFLICT` | The Idempotency-Key or request id was used for another request |
 | 409 | `IDEMPOTENCY_IN_PROGRESS` | The first request with this Idempotency-Key is still running; retry |
+| 409 | `INSUFFICIENT_BALANCE` | An end user's refund would return more than their balance not held by calls in flight; `refundable` in the body is the most it may return now (micro-USD). Post an adjustment to correct a balance |
 | 409 | `VOICE_SESSION_EXISTS` | The bot already has a voice session in this server (`session` names it): update or end it |
 | 403 | `VOICE_SPEAK_FORBIDDEN` | A prompt's `speak` named a voice session its credential may not speak in: an agent's own token speaks only in sessions of its agent's `subject` (prompt with an API key for any) |
 | 409 | `VOICE_SPEAK_DISABLED` | The voice session does not speak: start one with `speak: true` |
@@ -8088,11 +8119,29 @@ A run ends in one of three ways: it answered, it waits on people
 | `model_error` | `result.error` is set | The model provider refused or failed (after 3 retries for transient failures): a bad request, content refused, context overflow that compaction could not fix |
 | `output_missing` | `result.code` (with `result.error`) | A run sent with `output` ended without the model calling `final_output`: it answered in prose twice, the second time after a reminder. `text` has what it said. Send the prompt again, make the instructions say what the answer is for, or use a stronger model |
 | `output_invalid` | (the SDKs only) | The output fit the JSON Schema the runtime checked, but not the zod or pydantic schema the SDK parsed it with (a refinement or validator the JSON Schema cannot say) |
-| `spend_limit` | `result.stopped: "spend_limit"` | A spend limit stopped the turn after the response that crossed it; its tool calls ran. `result.limit` says which: `run` (the run's own `spendLimit`), `agent`, `tenant` (the monthly cap) or `credit` (prepaid credit spent). Raise that limit and send the next message |
+| `spend_limit` | `result.stopped: "spend_limit"` | A spend limit stopped the turn after the response that crossed it (its tool calls ran), or refused the run as it came to start in the queue. `result.limit` says which: `run` (the run's own `spendLimit`), `agent`, `tenant` (the monthly cap) or `credit` (prepaid credit spent). Raise that limit and send the next message |
 | `turn_limit` | `result.stopped: "turn_limit"` | The run made as many model responses (1,000 by default) or ran as long (2 hours) as its [run limits](https://run.camelai.com/docs/guides/models-and-keys.md#run-limits) allow; the turn stopped after that response's tool calls. Send another message to continue, or raise the agent's `runLimits` |
-| `end_user_credit` | `result.stopped: "spend_limit"`, `limit: "end_user"`, `reason` | The run's [end user](https://run.camelai.com/docs/guides/end-user-credits.md) ran out of credit: a model call was refused, or cut where its hold ended mid-reply (what streamed is kept). `reason` is `balance` or `daily_limit`. Not retried. Grant them credit and send the next message |
-| `runtime_error` | `outcome.error` (no `result`) | The runtime could not carry the run out: e.g. the agent was deleted, code execution failed, a queued run refused for credit |
+| `end_user_credit` | `result.stopped: "spend_limit"`, `limit: "end_user"`, `reason`, `bucket`, `endUser` | The run's [end user](https://run.camelai.com/docs/guides/end-user-credits.md) may not spend more: the run was refused as it came to start in the queue, a model call was refused, or one was cut where its hold ended mid-reply (what streamed is kept). `reason` is one of the [credit reasons](https://run.camelai.com/docs/reference/errors.md#end-user-credit-reasons). Not retried. Grant them credit and send the next message |
+| `runtime_error` | `outcome.error` (no `result`) | The runtime could not carry the run out: e.g. the agent was deleted, or code execution failed |
 | (any, with `uncertain`) | `outcome.uncertain: true` | A restart cut the run short where it could not resume (a code execution, or a turn resumed twice already): its tool calls may or may not have taken effect. Check before retrying |
+
+### End-user credit reasons
+
+When an end user's credit refuses or stops work, every path says so the same way: a 402's `code: "END_USER_CREDIT"`,
+a run's `code: "end_user_credit"` (refused as it started, stopped mid-way, or a sub-agent's notification refused as it
+landed), the `run.failed` webhook, and `voice.session.ended`'s `endUserReason` (with `limit: "end_user"`). Each carries
+`reason`, `bucket` (the bucket refused) and `endUser` (whose credit). `reason` is one of:
+
+| `reason` | Meaning | What the end user can do |
+| --- | --- | --- |
+| `balance` | Nothing is left of the bucket's free allowance today, and their paid balance has nothing left (after what calls in flight hold) | Add credit (a `grant`), or wait for tomorrow's allowance |
+| `daily_limit` | Their own daily credit limit on paid spend (`dailyLimit`, theirs or the tenant's) is reached | Wait for tomorrow, or have the limit raised |
+| `bucket_limit` | The bucket's own daily limit on paid spend (`bucketLimits`) is reached. A bucket limited to 0 spends only its free allowance, never the balance | Wait for tomorrow's allowance, or have the bucket's limit raised |
+
+The SDKs type these as `CREDIT_REASONS` (TypeScript: `CreditReason`), put them on `AgentError` (`reason`, `bucket`,
+`endUser`; Python `end_user`) and on a run's error, and `endUserCredit(errorOrRun)` (Python `end_user_credit`) reads
+them from any of these in one shape. The messages are for people and may change: branch on `code` and `reason`. More
+reasons may be added: treat one you do not know as a credit refusal of no particular kind.
 
 ### Model failures
 

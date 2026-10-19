@@ -739,16 +739,32 @@ export interface RequestOptions {
 export interface RunRequestOptions extends RequestOptions { allowDisconnected?: boolean }
 /** Who sent a message: `id` is yours and the model may rely on it; the names are the sender's own. */
 export interface Sender { id: string; name?: string; username?: string }
+/**
+ * Why an end user's credit refused or stopped work, the same on every path (a 402 END_USER_CREDIT, a run's
+ * end_user_credit error, run.failed, voice.session.ended's endUserReason): `balance` (nothing left of the bucket's free
+ * allowance today, and no paid balance), `daily_limit` (the end user's daily credit limit), `bucket_limit` (the
+ * bucket's own daily limit on paid spend; a bucket limited to 0 spends only its allowance). More may be added: treat
+ * one you do not know as a credit refusal of no particular kind. Branch on these, never on the message.
+ */
+export const CREDIT_REASONS = ["balance", "daily_limit", "bucket_limit"] as const;
+export type CreditReason = typeof CREDIT_REASONS[number];
+
 export class AgentError extends Error {
   /** The HTTP status, or 0 for a failure that is not an HTTP response's (a run's, the connection's). */
   status: number;
   requestId?: string;
-  /** A stable name for the failure where the runtime gives one, e.g. APPLICATION_NOT_CONNECTED. */
+  /** A stable name for the failure where the runtime gives one, e.g. APPLICATION_NOT_CONNECTED, END_USER_CREDIT. */
   code?: string;
   /** The runtime could not tell whether the work took effect (a restart cut it short). */
   uncertain?: boolean;
   /** Milliseconds the runtime asked to wait before retrying (its Retry-After), for 429 and 503. */
   retryAfterMs?: number;
+  /** With code END_USER_CREDIT (a 402) or end_user_credit (a run): why its end user's credit refused it. */
+  reason?: CreditReason;
+  /** With an end user's credit refusal: the bucket refused. */
+  bucket?: string;
+  /** With an end user's credit refusal: whose credit (the subject). */
+  endUser?: string;
   constructor(message: string, status = 0, requestId?: string) { super(message); this.name = "AgentError"; this.status = status; this.requestId = requestId; }
 }
 /**
@@ -763,6 +779,7 @@ export class RunError extends AgentError {
     this.run = run;
     this.code = run.error?.code;
     if (run.error?.uncertain) this.uncertain = true;
+    Object.assign(this, creditOf(run.error ?? {}));
   }
 }
 /** What a run produced: its reply, how it stopped, the inputs it waits on and the files it wrote. */
@@ -775,8 +792,12 @@ export interface RunResult {
   stopped?: "input_required" | "spend_limit" | "turn_limit";
   /** With stopped "spend_limit": which limit stopped it (the run's own, its agent's, the tenant's monthly cap, prepaid credit, or its end user's credit: code `end_user_credit`). */
   limit?: "run" | "agent" | "tenant" | "credit" | "end_user";
-  /** With limit "end_user": why its end user's credit stopped it (`balance`: none left; `daily_limit`: the day's limit reached; `bucket_limit`: the bucket's own). */
-  reason?: "balance" | "daily_limit" | "bucket_limit";
+  /** With limit "end_user" (code `end_user_credit`): why its end user's credit stopped it (`CREDIT_REASONS`). */
+  reason?: CreditReason;
+  /** With limit "end_user": the bucket refused. */
+  bucket?: string;
+  /** With limit "end_user": whose credit (the subject). */
+  endUser?: string;
   inputs?: AgentInput[];
   replyIndex?: number;
   /** Messages in the agent's history after it. */
@@ -815,10 +836,45 @@ export interface RunToolCall {
   agentId?: string;
 }
 /** An error body's stable name: its `code`, or the prefix of its message (`APPLICATION_CONNECTED: …`). */
-function codeOf(value: { error?: unknown; code?: unknown }): { code?: string } {
-  if (typeof value.code === "string") return { code: value.code };
+function codeOf(value: { error?: unknown; code?: unknown; reason?: unknown; bucket?: unknown; endUser?: unknown }): { code?: string } & ReturnType<typeof creditOf> {
+  const credit = creditOf(value);
+  if (typeof value.code === "string") return { code: value.code, ...credit };
   const prefix = typeof value.error === "string" ? /^([A-Z][A-Z0-9_]+):/.exec(value.error)?.[1] : undefined;
   return prefix ? { code: prefix } : {};
+}
+/** An end user's credit refusal's fields, from an error body or a run's error: why, which bucket, whose. */
+function creditOf(value: { reason?: unknown; bucket?: unknown; endUser?: unknown }): { reason?: CreditReason; bucket?: string; endUser?: string } {
+  return {
+    ...(typeof value.reason === "string" ? { reason: value.reason as CreditReason } : {}),
+    ...(typeof value.bucket === "string" ? { bucket: value.bucket } : {}), ...(typeof value.endUser === "string" ? { endUser: value.endUser } : {}),
+  };
+}
+
+/** An end user's credit refusing or stopping work, in one shape however it came (`endUserCredit`). */
+export interface EndUserCreditFailure {
+  code: "end_user_credit";
+  /** Why (`CREDIT_REASONS`); a reason added later arrives as itself. */
+  reason?: CreditReason;
+  bucket?: string;
+  endUser?: string;
+  /** For people: its words may change. */
+  message: string;
+}
+/**
+ * Whether an end user's credit refused or stopped this, and why, in one shape: from an AgentError (a 402
+ * END_USER_CREDIT that refused a call: agent.run, a stateless run, transcribe, speech, images, a voice session), a
+ * RunError, a Run or its error (end_user_credit: refused as it started, or stopped mid-way). Undefined for anything else.
+ *
+ *   const credit = endUserCredit(errorOrRun);
+ *   if (credit?.reason === "bucket_limit") ...
+ */
+export function endUserCredit(value: unknown): EndUserCreditFailure | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const failure = value instanceof RunError ? value.run.error ?? value
+    : !(value instanceof AgentError) && "error" in value && value.error && typeof value.error === "object" ? value.error : value;
+  const { code, message } = failure as { code?: unknown; message?: unknown };
+  if (code !== "END_USER_CREDIT" && code !== "end_user_credit") return undefined;
+  return { code: "end_user_credit", ...creditOf(failure as Record<string, unknown>), message: typeof message === "string" ? message : "" };
 }
 /** Retry-After as milliseconds (seconds or an HTTP date), capped so a bad value cannot stall a caller. */
 function retryAfter(response: Response): number | undefined {
@@ -2091,9 +2147,9 @@ export class AgentClient {
     if (!waiter) return;
     this.pending.delete(id);
     if ("error" in value) {
-      const outcome = value as { error?: string; code?: unknown; uncertain?: boolean };
+      const outcome = value as { error?: string; code?: unknown; uncertain?: boolean; reason?: unknown; bucket?: unknown; endUser?: unknown };
       waiter.reject(Object.assign(new AgentError(outcome.error ?? "Unknown failure", 0, id), {
-        ...(typeof outcome.code === "string" ? { code: outcome.code } : {}), ...(outcome.uncertain ? { uncertain: true } : {}),
+        ...(typeof outcome.code === "string" ? { code: outcome.code } : {}), ...(outcome.uncertain ? { uncertain: true } : {}), ...creditOf(outcome),
       }));
     } else waiter.resolve(value.result);
   }

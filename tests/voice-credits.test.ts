@@ -63,7 +63,7 @@ test("each utterance holds its cost of the subject's credit and settles it; runn
   assert.equal(session.endUserReason, "balance");
   assert.equal(transcription.calls.length, 2, "the third was never sent");
   const [ended] = await events("voice.session.ended");
-  assert.deepEqual([ended.data.reason, ended.data.limit, ended.data.endUserReason], ["budget", "end_user", "balance"]);
+  assert.deepEqual([ended.data.reason, ended.data.limit, ended.data.endUserReason, ended.data.bucket], ["budget", "end_user", "balance", "bot:7"]);
 });
 
 test("a transcription that fails gives its hold back", async t => {

@@ -151,22 +151,46 @@ of their agents at once) never each see the whole balance.
 When nothing more can be held:
 
 - **A new run** is refused with `402` and code `END_USER_CREDIT`, with `endUser`,
-  `bucket` and `reason` in the body.
+  `bucket` and `reason` in the body. The SDKs throw `AgentError` with the same fields
+  (`reason`, `bucket`, `endUser`; Python `end_user`).
+- **A run waiting in the queue** that is refused as it comes to start fails with code
+  `end_user_credit`, `reason`, `bucket` and `endUser`, as below.
 - **A run already going** stops where the credit ends, even in the middle of a reply:
   what streamed is kept, and the run fails with code `end_user_credit`, `stopped:
-  "spend_limit"`, `limit: "end_user"` and a `reason`. It is never retried.
-  - `reason: "balance"`: no allowance left in the bucket today, and no balance.
-  - `reason: "daily_limit"`: the person's paid spend reached the daily limit.
-  - `reason: "bucket_limit"`: the bucket's paid spend reached its own limit (the person
-    may still have a balance, for their other buckets).
-- Transcriptions and images are refused before they are made, with the same 402.
+  "spend_limit"`, `limit: "end_user"`, a `reason`, the `bucket` and the `endUser`. It is never retried.
+- `run.failed` carries `code`, `limit`, `reason`, `bucket` and `endUser` too, and
+  `voice.session.ended` its `endUserReason` and `bucket`.
+- Transcriptions, speech and images are refused before they are made, with the same 402.
+
+`reason` is one of the [credit reasons](../reference/errors.md#end-user-credit-reasons):
+
+- `balance`: no allowance left in the bucket today, and no balance.
+- `daily_limit`: the person's paid spend reached the daily limit.
+- `bucket_limit`: the bucket's paid spend reached its own limit (the person may still
+  have a balance, for their other buckets; a bucket limited to 0 spends only its allowance).
+
+`endUserCredit` (Python `end_user_credit`) reads these from a thrown error, a failed
+run or its error, so one place handles every path:
 
 ```ts
-const run = await agent.run(text, { throwOnError: false });
-if (run.error?.code === "end_user_credit") notify(user, run.error.reason === "daily_limit" ? "You've reached today's limit" : "You're out of credit");
+import { endUserCredit } from "@camelai/run";
+
+try {
+  const run = await agent.run(text, { throwOnError: false });
+  const credit = endUserCredit(run);
+  if (credit) notify(user, credit.reason);
+} catch (error) {
+  const credit = endUserCredit(error); // a 402 at submit
+  if (!credit) throw error;
+  notify(user, credit.reason);
+}
+
+function notify(user: string, reason?: string) {
+  // "daily_limit" | "bucket_limit" | "balance"; a reason added later: a credit refusal of no particular kind.
+}
 ```
 
-Read the error's `reason` rather than its message.
+Branch on `code` and `reason`, never on the message: its words are for people and may change.
 
 ### How far past zero
 

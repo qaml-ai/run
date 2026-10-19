@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "clients" / "python"))
 from camelai_run import AgentClient, _answer_for, _origin, AgentError, AgentRuntime, Agents, RunError, Runs, RuntimeTokenError, TestRuntime, ToolContext, WebhookVerificationError, agent_notice, spawn_agent, _answer_mcp, _tool_context, serve_tools, tool, verify_file_url, verify_runtime_token, verify_webhook
 from camelai_run import sync
+from camelai_run import CREDIT_REASONS, EndUserCreditFailure, _run_of, end_user_credit
 from camelai_run.projects import Projects, file_bytes, publish_tool
 
 DATABASE_URL = os.environ.get("AGENT_TEST_DATABASE_URL", "postgres://postgres:test@127.0.0.1:55432/postgres")
@@ -1177,6 +1178,15 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(AgentError) as refused:
             await agent.run("again")
         self.assertEqual(refused.exception.code, "END_USER_CREDIT")
+        self.assertEqual((refused.exception.reason, refused.exception.bucket, refused.exception.end_user), ("balance", "bot:7", "person"))
+        self.assertEqual(end_user_credit(refused.exception), EndUserCreditFailure("balance", "bot:7", "person", str(refused.exception)))
+        # A run stopped mid-way, or refused as it left the queue: its error has the same fields, by code.
+        stopped = _run_of("r1", {"error": "words that may change", "stopped": "spend_limit", "code": "end_user_credit", "limit": "end_user", "reason": "bucket_limit", "bucket": "bot:7", "endUser": "person"}, None, lambda value: value)
+        self.assertEqual((stopped.status, stopped.error["code"], stopped.error["reason"], stopped.error["bucket"], stopped.error["endUser"], stopped.error["limit"]), ("failed", "end_user_credit", "bucket_limit", "bot:7", "person", "end_user"))
+        self.assertEqual(end_user_credit(stopped).reason, "bucket_limit")
+        self.assertEqual(end_user_credit(RunError(stopped)).bucket, "bot:7")
+        self.assertIsNone(end_user_credit(AgentError("busy", 429, code="RATE_LIMITED")))
+        self.assertEqual(CREDIT_REASONS, ("balance", "daily_limit", "bucket_limit"))
         self.assertEqual((await end_users.list())["endUsers"][0]["id"], "person")
         # The credit history without usage, and the day's totals: the run's usage (allowance-paid) and the two entries.
         history = await end_users.ledger("person", kind=["grant", "adjustment"], from_=datetime.now(timezone.utc) - timedelta(days=1))
