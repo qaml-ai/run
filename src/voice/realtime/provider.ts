@@ -44,6 +44,8 @@ export const NO_USAGE: Readonly<RealtimeUsage> = Object.freeze({ inputText: 0, i
 export interface RealtimeEvents {
   /** Opened and configured. */
   ready(): void;
+  /** Billable audio seconds and text input items, as they cross the provider connection. */
+  meter?(audioSeconds: number, textInputs: number): void;
   /** A response began (`respond`), or the provider began one itself. */
   responseStarted(response: string): void;
   /** Audio of a response, as it is made. */
@@ -108,8 +110,8 @@ export interface RealtimeProvider {
 export const REALTIME_PROVIDERS = ["openai", "gemini", "grok"] as const;
 export type RealtimeProviderId = typeof REALTIME_PROVIDERS[number];
 
-/** Micro-USD per million tokens, by kind; `transcriptionPerMinute` is micro-USD per minute of input transcribed. */
-export type RealtimePrice = { inputText: number; cachedText: number; outputText: number; inputAudio: number; cachedAudio: number; outputAudio: number };
+/** Micro-USD per million tokens, or per minute of audio and per text input item. */
+export type RealtimePrice = { perMinute: number; perTextInput: number } | { inputText: number; cachedText: number; outputText: number; inputAudio: number; cachedAudio: number; outputAudio: number };
 
 /**
  * List prices as of 2026-10-18 (developers.openai.com/api/docs/pricing), per million tokens. Audio is 10 tokens a
@@ -118,6 +120,10 @@ export type RealtimePrice = { inputText: number; cachedText: number; outputText:
 export const REALTIME_PRICES: Readonly<Record<string, RealtimePrice>> = Object.freeze({
   "openai/gpt-realtime-2.1": { inputText: micros(4), cachedText: micros(0.4), outputText: micros(24), inputAudio: micros(32), cachedAudio: micros(0.4), outputAudio: micros(64) },
   "openai/gpt-realtime-2.1-mini": { inputText: micros(0.6), cachedText: micros(0.06), outputText: micros(2.4), inputAudio: micros(10), cachedAudio: micros(0.3), outputAudio: micros(20) },
+  // https://docs.x.ai/developers/models/speech-to-speech (2026-10-19): manual turns bill audio sent and received,
+  // plus text input items; function_call_output is exempt. https://docs.x.ai/developers/pricing lists grok-voice-3.0.
+  "grok/grok-voice-latest": { perMinute: micros(0.08), perTextInput: micros(0.004) },
+  "grok/grok-voice-3.0": { perMinute: micros(0.08), perTextInput: micros(0.004) },
   // ai.google.dev/gemini-api/docs/pricing (2026-10-18): no cached price is listed, so cached tokens are billed in full;
   // thoughts are output text.
   "gemini/gemini-3.8-live": { inputText: micros(0.75), cachedText: micros(0.75), outputText: micros(4.5), inputAudio: micros(3), cachedAudio: micros(3), outputAudio: micros(12) },
@@ -125,10 +131,11 @@ export const REALTIME_PRICES: Readonly<Record<string, RealtimePrice>> = Object.f
 /** The input transcription's model, and its price per minute (gpt-transcribe, as POST /v1/transcriptions bills it). */
 export const REALTIME_TRANSCRIPTION = Object.freeze({ model: "gpt-transcribe", perMinute: micros(0.0045) });
 
-/** What a response's tokens cost (USD) at `reference`'s list price; 0 for a model without one. */
-export function realtimeCost(reference: string, usage: RealtimeUsage): number {
+/** What tokens or metered audio and text items cost (USD) at `reference`'s list price. */
+export function realtimeCost(reference: string, usage: RealtimeUsage, audioSeconds = 0, textInputs = 0): number {
   const price = REALTIME_PRICES[reference];
-  if (!price) return 0;
+  if (!price) throw new Error(`Realtime model ${reference} has no price configured`);
+  if ("perMinute" in price) return (Math.max(0, audioSeconds) * price.perMinute / 60 + Math.max(0, textInputs) * price.perTextInput) / 1_000_000;
   // Cached tokens are counted within input: billed at the cached rate, the rest at the full one.
   const micro = (usage.inputText - usage.cachedText) * price.inputText + usage.cachedText * price.cachedText
     + (usage.inputAudio - usage.cachedAudio) * price.inputAudio + usage.cachedAudio * price.cachedAudio

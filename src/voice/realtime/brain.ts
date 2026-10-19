@@ -8,7 +8,7 @@ import { TurnClock } from "../latency.ts";
 import type { Addressed, Floor } from "../turns/floor.ts";
 import type { TurnEvent } from "../turns/turn-taker.ts";
 import { Mixer } from "./mixer.ts";
-import { realtimeCost, realtimeTranscriptionCost, type RealtimeConnection, type RealtimeEvents, type RealtimeTool, type RealtimeUsage } from "./provider.ts";
+import { NO_USAGE, REALTIME_PRICES, realtimeCost, realtimeTranscriptionCost, type RealtimeConnection, type RealtimeEvents, type RealtimeTool, type RealtimeUsage } from "./provider.ts";
 
 /**
  * A voice session's realtime brain (`brain: "realtime"`): a speech-to-speech model hears the call and answers aloud,
@@ -29,8 +29,8 @@ import { realtimeCost, realtimeTranscriptionCost, type RealtimeConnection, type 
  *   heard (`truncate`), so the model's history matches what people heard. Echo resumes it.
  * - **Tools.** `ask_agent(request)` runs the bot's agent (its tools, memory and system prompt), and the model speaks
  *   its answer; the model fills the wait itself ("let me check"). `stay_silent()` answers nothing.
- * - **Money.** Each response's tokens are priced and recorded (`usage`), and held against the end user's credit
- *   before it is asked for. A refusal ends the session (`budget`).
+ * - **Money.** Tokens, or audio duration and text items, are priced and recorded (`usage`), with end-user credit
+ *   held for responses or renewed as metered audio flows. A refusal ends the session (`budget`).
  *
  * Nothing the people or the model say is logged: logs carry counts, timings and lengths.
  */
@@ -44,7 +44,7 @@ export const REALTIME_LIMITS = Object.freeze({
   agentReplyChars: 4_000,
   /** How long an unaddressed turn waits for its transcript (addressing by name) before the model decides. */
   addressWaitMs: 2_500,
-  /** End-user credit held before each response (USD), settled with what it cost. */
+  /** End-user credit held for a response or a slice of metered audio (USD), settled with what it cost. */
   holdUsd: 0.05,
   /** Reconnects to the provider within `reconnectWindowMs` before the session gives up (error, realtime_failed). */
   reconnects: 3, reconnectWindowMs: 5 * 60_000,
@@ -111,7 +111,7 @@ export interface BrainHooks {
   hold(usd: number): Promise<Hold | undefined>;
   /** The money ran out: the session ends. */
   budget(limit: "tenant" | "end_user", endUserReason?: string, bucket?: string): void;
-  /** A response's usage: its tokens, cost (USD) and the seconds of audio it made. */
+  /** Usage: response tokens or metered audio and text items, cost (USD), and seconds of audio made. */
   usage(record: { usage: RealtimeUsage; costUsd: number; audioSeconds: number }): void;
   /** A turn was committed: its speaker, and when it was spoken (the session's counts and idle clock). */
   turn(turn: { speaker: string; startedAt: number; endedAt: number; seconds: number }): void;
@@ -193,6 +193,10 @@ export class RealtimeBrain {
   private readonly mixer: Mixer;
   private connection?: RealtimeConnection;
   private closed = false;
+  private meteredHold?: Promise<Hold | undefined>;
+  private meteredSeconds = 0;
+  private meteredTextInputs = 0;
+  private meterTimer?: ReturnType<Clock["setInterval"]>;
   private reconnects: number[] = [];
   private generation = 0;
   private segment?: Segment;
@@ -226,8 +230,16 @@ export class RealtimeBrain {
     this.hooks = hooks;
     this.clock = options.clock ?? nodeClock();
     this.mixer = new Mixer((pcm, speakers) => this.input(pcm, speakers), { clock: this.clock });
+    if (!REALTIME_PRICES[options.reference]) throw new Error(`Realtime model ${options.reference} has no price configured`);
     this.open();
+    if (this.metered) {
+      // Flush quiet calls too, and replace their holds before the credit service expires them.
+      this.meterTimer = this.clock.setInterval(() => this.flushMeter(), 60_000);
+      this.meterTimer.unref?.();
+    }
   }
+
+  private get metered() { return "perMinute" in REALTIME_PRICES[this.options.reference]; }
 
   /** Who makes a turn's audio, as voice_turn_latency names it: the provider and its model. */
   private ttsInfo() {
@@ -349,6 +361,7 @@ export class RealtimeBrain {
   close() {
     if (this.closed) return;
     this.closed = true;
+    this.clock.clearInterval(this.meterTimer);
     this.mixer.close();
     this.guard?.close();
     for (const call of this.agentCalls) call.abort();
@@ -362,6 +375,7 @@ export class RealtimeBrain {
     }
     for (const turn of this.turns.values()) for (const wake of turn.waiters) wake();
     this.connection?.close();
+    if (this.metered) this.flushMeter();
     const { costUsd, ...counts } = this.stats;
     this.hooks.log("voice_realtime_stats", { ...counts, costUsd: Math.round(costUsd * 1_000_000) / 1_000_000 });
     writeMetricLine(metricLine("voice_realtime", {
@@ -377,11 +391,63 @@ export class RealtimeBrain {
   // The provider ---------------------------------------------------------------------
 
   private open() {
-    this.connection = this.hooks.connect(this.events());
-    // A new connection after a reconnect: what was said before, as context.
-    if (this.history.length) this.connection.note(`[Earlier in this call]\n${this.history.map(line => `${line.who}: ${line.text}`).join("\n")}`);
-    this.segment = undefined;
-    this.lastLabel = undefined;
+    const connect = () => {
+      if (this.closed) return;
+      this.connection = this.hooks.connect(this.events());
+      // A new connection after a reconnect: what was said before, as context.
+      if (this.history.length) this.connection.note(`[Earlier in this call]\n${this.history.map(line => `${line.who}: ${line.text}`).join("\n")}`);
+      this.segment = undefined;
+      this.lastLabel = undefined;
+    };
+    if (this.metered) {
+      this.meteredHold ??= this.creditHold();
+      void this.meteredHold.then(() => {
+        try { connect(); } catch { this.hooks.failed("realtime_failed"); }
+      }).catch(() => {});
+    } else connect();
+  }
+
+  private async creditHold() {
+    try {
+      await this.hooks.admit();
+      return await this.hooks.hold(REALTIME_LIMITS.holdUsd);
+    } catch (error) {
+      const refused = error as HttpError;
+      if (refused.status === 402) {
+        const endUser = refused.code === "END_USER_CREDIT";
+        this.hooks.budget(endUser ? "end_user" : "tenant", endUser ? refused.details?.reason as string : undefined, endUser ? refused.details?.bucket as string : undefined);
+      } else this.hooks.failed("realtime_credit_failed");
+      throw error;
+    }
+  }
+
+  /** Manual-turn providers meter all audio on the wire, even discarded input and cancelled output. */
+  private meter(seconds: number, textInputs: number) {
+    this.meteredSeconds += seconds;
+    this.meteredTextInputs += textInputs;
+    if (realtimeCost(this.options.reference, NO_USAGE, this.meteredSeconds, this.meteredTextInputs) >= REALTIME_LIMITS.holdUsd / 2) this.flushMeter();
+  }
+
+  private flushMeter(usage: RealtimeUsage = NO_USAGE, audioSeconds = 0) {
+    const costUsd = realtimeCost(this.options.reference, usage, this.meteredSeconds, this.meteredTextInputs);
+    this.meteredSeconds = 0;
+    this.meteredTextInputs = 0;
+    this.stats.costUsd += costUsd;
+    if (costUsd || usage !== NO_USAGE) this.hooks.usage({ usage, costUsd, audioSeconds });
+    const hold = this.meteredHold;
+    const closing = this.closed;
+    this.meteredHold = (async () => {
+      const credit = await hold;
+      if (costUsd > 0) await credit?.settle(costUsd);
+      else await credit?.release();
+      return closing ? undefined : this.creditHold();
+    })();
+    void this.meteredHold.catch(error => {
+      if ((error as HttpError)?.status === 402) return;
+      this.hooks.log("voice_realtime_credit_failed", { error: safeError(error) });
+      if (!this.closed) this.hooks.failed("realtime_credit_failed");
+    });
+    return costUsd;
   }
 
   private events(): RealtimeEvents {
@@ -390,11 +456,13 @@ export class RealtimeBrain {
     const live = () => !this.closed && generation === this.generation;
     return {
       ready: () => { if (live()) this.hooks.log("voice_realtime_ready"); },
+      meter: (seconds, textInputs) => { if (live() && this.metered) this.meter(seconds, textInputs); },
       // Responses are asked for one at a time (each after the one before is done): this is the one asked for last.
       responseStarted: id => { if (live() && this.current && !this.current.id) this.current.id = id; },
       audio: (id, pcm) => {
+        if (!live()) return;
         const response = this.byId(id);
-        if (!live() || !response || response.cancelled) return;
+        if (!response || response.cancelled) return;
         if (!response.audio.bytes) response.turn?.mark("ttsFirstAudio");
         response.audio.push(pcm);
         this.play(response);
@@ -414,6 +482,7 @@ export class RealtimeBrain {
 
   /** The connection dropped: reconnect (a new conversation, briefed with what was said), a few times at most. */
   private lost(detail: string) {
+    if (this.metered) { this.generation++; this.connection = undefined; this.flushMeter(); }
     const now = this.clock.now();
     this.reconnects = [...this.reconnects.filter(at => now - at < REALTIME_LIMITS.reconnectWindowMs), now];
     const retrying = this.reconnects.length <= REALTIME_LIMITS.reconnects;
@@ -484,7 +553,7 @@ export class RealtimeBrain {
     const segment = this.segments.get(tag);
     if (!segment) return;
     this.segments.delete(tag);
-    const costUsd = seconds > 0 ? realtimeTranscriptionCost(seconds) : 0;
+    const costUsd = seconds > 0 && !this.metered ? realtimeTranscriptionCost(seconds) : 0;
     this.stats.costUsd += costUsd;
     const turn = segment.turn;
     if (turn) { turn.heard.set(tag, text); for (const wake of turn.waiters.splice(0)) wake(); }
@@ -608,6 +677,7 @@ export class RealtimeBrain {
     this.lastLabel = undefined;
     this.stats.responses++;
     connection.respond(request.instructions ? { instructions: request.instructions } : {});
+    if (this.metered) return;
     // The money is checked alongside, not before: a refusal cancels it (nothing is heard), and ends the session.
     response.hold = (async () => {
       await this.hooks.admit();
@@ -700,9 +770,11 @@ export class RealtimeBrain {
 
   private responseDone(id: string, outcome: { status: string; usage: RealtimeUsage; error?: string }) {
     const response = this.byId(id) ?? (this.current && !this.current.id ? this.current : undefined);
-    const costUsd = realtimeCost(this.options.reference, outcome.usage);
-    this.stats.costUsd += costUsd;
-    this.hooks.usage({ usage: outcome.usage, costUsd, audioSeconds: outcome.usage.outputAudio / 20 });
+    const costUsd = this.metered ? this.flushMeter(outcome.usage, (response?.audio.bytes ?? 0) / 48_000) : realtimeCost(this.options.reference, outcome.usage);
+    if (!this.metered) {
+      this.stats.costUsd += costUsd;
+      this.hooks.usage({ usage: outcome.usage, costUsd, audioSeconds: outcome.usage.outputAudio / 20 });
+    }
     if (outcome.status === "failed") this.hooks.log("voice_realtime_response_failed", { ...(outcome.error ? { error: outcome.error } : {}) });
     if (!response) return;
     response.done = true;

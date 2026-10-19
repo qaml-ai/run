@@ -30,9 +30,14 @@ export class FakeConnection implements RealtimeConnection {
   readonly config: RealtimeConfig;
   private bytes = 0;
   responses = 0;
-  constructor(config: RealtimeConfig, events: RealtimeEvents) { this.config = config; this.events = events; queueMicrotask(() => events.ready()); }
+  constructor(config: RealtimeConfig, events: RealtimeEvents) {
+    this.config = config;
+    this.events = config.model.startsWith("grok-") ? { ...events, audio: (id, pcm) => { events.meter?.(pcm.byteLength / 48_000, 0); events.audio(id, pcm); } } : events;
+    queueMicrotask(() => events.ready());
+  }
   get pendingMs() { return this.bytes / 48; }
   append(pcm: Uint8Array) {
+    if (this.config.model.startsWith("grok-")) this.events.meter?.(pcm.byteLength / 48_000, 0);
     this.bytes += pcm.byteLength;
     const last = this.sent.at(-1);
     if (last?.type === "append") last.bytes += pcm.byteLength;
@@ -46,7 +51,7 @@ export class FakeConnection implements RealtimeConnection {
     return true;
   }
   discard() { if (this.bytes) { this.bytes = 0; this.sent.push({ type: "discard" }); } }
-  note(text: string) { this.sent.push({ type: "note", text }); }
+  note(text: string) { if (this.config.model.startsWith("grok-")) this.events.meter?.(0, 1); this.sent.push({ type: "note", text }); }
   respond(options: { instructions?: string } = {}) { this.responses++; this.sent.push({ type: "respond", ...(options.instructions ? { instructions: options.instructions } : {}) }); }
   cancel() { this.sent.push({ type: "cancel" }); }
   truncate(response: string, heardMs: number) { this.sent.push({ type: "truncate", response, heardMs: Math.round(heardMs) }); }
@@ -115,7 +120,7 @@ export function fakePlayer(everyMs = 2) {
 }
 
 /** A brain over a fake provider and player, with hooks recording what it reports. */
-export function testBrain(options: Partial<BrainOptions> & { addressing?: Partial<AddressingPolicy>; humans?: number; askAgent?: BrainHooks["askAgent"]; refuse?: boolean } = {}) {
+export function testBrain(options: Partial<BrainOptions> & { addressing?: Partial<AddressingPolicy>; humans?: number; askAgent?: BrainHooks["askAgent"]; hold?: BrainHooks["hold"]; refuse?: boolean } = {}) {
   const realtime = fakeRealtimeProvider();
   const playback = fakePlayer();
   const usage: Parameters<BrainHooks["usage"]>[0][] = [];
@@ -126,17 +131,18 @@ export function testBrain(options: Partial<BrainOptions> & { addressing?: Partia
   const budget: string[] = [];
   const names: Record<string, string> = { "1": "Ana", "2": "Ben", "3": "Cy" };
   const state = { humans: options.humans ?? 1 };
-  const config: RealtimeConfig = { model: "gpt-realtime-2.1", voice: "marin", instructions: "Be nice.", tools: [], transcribe: options.transcribed ?? true };
+  const config: RealtimeConfig = { model: options.reference?.split("/").slice(1).join("/") ?? "gpt-realtime-2.1", voice: "marin", instructions: "Be nice.", tools: [], transcribe: options.transcribed ?? true };
   const brain = new RealtimeBrain({
-    session: "vs_000000000000000000000001", tenant: "alice", reference: "openai/gpt-realtime-2.1", floor: new Floor(options.addressing ?? {}),
+    session: "vs_000000000000000000000001", tenant: "alice", reference: options.reference ?? "openai/gpt-realtime-2.1", floor: new Floor(options.addressing ?? {}),
     speculative: options.speculative ?? false, transcribed: options.transcribed ?? true, ...(options.bargeIn ? { bargeIn: options.bargeIn } : {}),
+    ...(options.clock ? { clock: options.clock } : {}),
     ...(options.wordsAfterAnswer ? { wordsAfterAnswer: true } : {}), ...(options.limits ? { limits: options.limits } : {}),
   }, {
     connect: events => realtime.provider.connect(config, { apiKey: "fixture" }, events),
     player: () => playback.player, resumeMedia: () => playback.resume(), humans: () => state.humans, name: speaker => names[speaker] ?? speaker,
     ...(options.askAgent ? { askAgent: options.askAgent } : {}),
     admit: async () => { if (options.refuse) throw Object.assign(new Error("No credit"), { status: 402 }); },
-    hold: async () => undefined,
+    hold: options.hold ?? (async () => undefined),
     budget: limit => { budget.push(limit); },
     usage: record => { usage.push(record); }, turn: turn => { turns.push(turn); }, heard: entry => { heard.push(entry); }, spoke: event => { spoke.push(event); },
     failed: () => {}, log: (type, fields) => { logs.push({ type, ...(fields ? { fields } : {}) }); },

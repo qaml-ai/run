@@ -194,3 +194,27 @@ test("native transcripts are suppressed when disabled, and failed response detai
   assert.equal(got.find(event => event.type === "done")?.error, "invalid key [redacted]");
   connection.close();
 });
+
+
+test("Grok meters only transmitted audio and text items, excluding tool results and response requests", async t => {
+  const fake = await fakeGrok(t);
+  const { got, events } = recorder();
+  const metered: { seconds: number; texts: number }[] = [];
+  events.meter = (seconds, texts) => { metered.push({ seconds, texts }); };
+  const connection = grokRealtime({ baseUrl: fake.base }).connect({ model: GROK_REALTIME.defaultModel, voice: "ara", instructions: "x", transcribe: true, tools: [] }, { apiKey: "fixture" }, events);
+  connection.append(tone(200));
+  connection.note("[Ana]");
+  assert.deepEqual(metered, [], "queued events are not charged before the socket opens");
+  await until(() => got.some(event => event.type === "ready"), "ready");
+  assert.deepEqual(metered, [{ seconds: 0.2, texts: 0 }, { seconds: 0, texts: 1 }]);
+  connection.discard();
+  connection.toolResult("call_1", "result");
+  connection.respond();
+  fake.send({ type: "response.audio.delta", response_id: "r1", delta: Buffer.from(tone(400)).toString("base64") });
+  await until(() => metered.length === 3, "output metered");
+  assert.deepEqual(metered[2], { seconds: 0.4, texts: 0 });
+  connection.close();
+  connection.append(tone(200));
+  connection.note("not sent");
+  assert.equal(metered.length, 3, "closed connections do not charge unsent events");
+});

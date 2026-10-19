@@ -25,7 +25,7 @@ import { DEFAULT_ADDRESSING, Floor, withContext, type Addressed, type Addressing
 import { BARGE_IN_LIMITS, BargeInGuard, DEFAULT_BARGE_IN, type BargeInOutcome, type BargeInPolicy } from "./voice/echo-guard.ts";
 import type { TurnModels } from "./voice/turns/inference.ts";
 import { RealtimeBrain, ASK_AGENT, STAY_SILENT, realtimeInstructions, type BrainHooks } from "./voice/realtime/brain.ts";
-import { REALTIME_PROVIDERS, REALTIME_TRANSCRIPTION, realtimeVoice, type RealtimeProvider, type RealtimeProviderId } from "./voice/realtime/provider.ts";
+import { REALTIME_PRICES, REALTIME_PROVIDERS, REALTIME_TRANSCRIPTION, realtimeVoice, type RealtimeProvider, type RealtimeProviderId } from "./voice/realtime/provider.ts";
 
 /**
  * Voice sessions: calls camelRun holds for a tenant's bot. Joining a voice channel is the one step that needs the bot's
@@ -679,6 +679,7 @@ export class VoiceSessions {
     if (!provider) throw new HttpError(400, `realtime.provider must be one of this runtime's: ${Object.keys(providers).join(", ")}`);
     const model = given.model === undefined ? provider.defaultModel : given.model;
     if (typeof model !== "string" || !provider.models.includes(model)) throw new HttpError(400, `realtime.model must be one of ${provider.models.join(", ")}`);
+    if (!REALTIME_PRICES[`${provider.id}/${model}`]) throw new HttpError(400, `Realtime model ${provider.id}/${model} has no price configured`, "REALTIME_UNPRICED");
     if (given.voice !== undefined && (typeof given.voice !== "string" || !provider.voices.includes(given.voice))) throw new HttpError(400, `realtime.voice must be one of ${provider.id}'s: ${provider.voices.join(", ")}`);
     const instructions = given.instructions === undefined ? undefined : text(given.instructions, "realtime.instructions", new RegExp(`^[\\s\\S]{1,${VOICE_LIMITS.realtimeInstructionsChars}}$`), `at most ${VOICE_LIMITS.realtimeInstructionsChars} characters`);
     for (const flag of ["transcribe", "speculative"] as const) if (given[flag] !== undefined && typeof given[flag] !== "boolean") throw new HttpError(400, `realtime.${flag} must be true or false`);
@@ -1680,6 +1681,7 @@ export class VoiceSessions {
     const realtime = options().realtime!;
     const provider = this.options.realtime?.providers[realtime.provider];
     if (!provider) throw new Error(`Realtime provider ${realtime.provider} is not enabled on this runtime`);
+    if (!REALTIME_PRICES[`${provider.id}/${realtime.model}`]) throw new Error(`Realtime model ${provider.id}/${realtime.model} has no price configured`);
     const credentials = await this.options.realtime!.key(held.tenant, options().keyScope, provider.key);
     if (!credentials) throw new Error(`No ${provider.key} key for a realtime brain`);
     const agent = options().deliver.agent;

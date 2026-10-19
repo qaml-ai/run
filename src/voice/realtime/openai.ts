@@ -41,6 +41,8 @@ type RealtimeProtocol = {
   legacyAudioEvents?: boolean;
   /** Input transcripts are included in the voice service, without a separate transcription charge. */
   nativeTranscription?: boolean;
+  /** Report audio duration and text input items instead of relying on response tokens for pricing. */
+  metered?: boolean;
   redact?: (text: string) => string;
 };
 
@@ -65,6 +67,7 @@ class OpenAIRealtime implements RealtimeConnection {
   private readonly instructions: string;
   private readonly legacyAudioEvents: boolean;
   private readonly redact: (text: string) => string;
+  private readonly metered: boolean;
   private open = false;
   private ready = false;
   private ended = false;
@@ -88,6 +91,7 @@ class OpenAIRealtime implements RealtimeConnection {
     this.events = options.nativeTranscription ? {
       ...events, heard: (tag, text) => { if (config.transcribe) events.heard(tag, text, 0); },
     } : events;
+    this.metered = options.metered ?? false;
     this.instructions = config.instructions;
     this.redact = options.redact ?? (text => text);
     this.legacyAudioEvents = options.legacyAudioEvents ?? false;
@@ -96,7 +100,7 @@ class OpenAIRealtime implements RealtimeConnection {
     this.timer.unref?.();
     socket.onopen = () => {
       this.open = true;
-      for (const message of this.queue.splice(0)) socket.send(message);
+      for (const message of this.queue.splice(0)) this.transmit(message);
     };
     socket.onmessage = event => this.message(messageJson(event.data));
     socket.onerror = () => this.fail("The realtime connection failed");
@@ -169,8 +173,16 @@ class OpenAIRealtime implements RealtimeConnection {
   private send(message: unknown) {
     if (this.ended) return;
     const data = JSON.stringify(message);
-    if (this.open) this.socket.send(data);
+    if (this.open) this.transmit(data);
     else this.queue.push(data);
+  }
+
+  private transmit(data: string) {
+    this.socket.send(data);
+    if (!this.metered) return;
+    const message = JSON.parse(data);
+    if (message.type === "input_audio_buffer.append") this.events.meter?.(Buffer.byteLength(message.audio, "base64") / 48_000, 0);
+    if (message.type === "conversation.item.create" && message.item.type === "message") this.events.meter?.(0, 1);
   }
 
   private fail(detail: string) {
@@ -201,7 +213,9 @@ class OpenAIRealtime implements RealtimeConnection {
       case "response.output_audio.delta":
         if (typeof event.delta === "string" && event.delta) {
           if (event.item_id && event.response_id) this.audioItem(event.response_id, event.item_id);
-          this.events.audio(event.response_id, Buffer.from(event.delta, "base64"));
+          const pcm = Buffer.from(event.delta, "base64");
+          if (this.metered) this.events.meter?.(pcm.byteLength / 48_000, 0);
+          this.events.audio(event.response_id, pcm);
         }
         return;
       case "response.output_audio_transcript.delta":
