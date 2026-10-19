@@ -363,6 +363,71 @@ The socket carries:
 
 The socket may reach any node: one that does not hold the session relays it to the one that does.
 
+## Realtime brain (beta)
+
+By default a session is a cascade: each utterance is transcribed, your app or `deliver.agent` writes the answer, and
+text to speech says it. With `brain: "realtime"`, a speech-to-speech model hears the call and answers aloud itself, in
+its own voice, without text in between. It hears tone and hesitation, and its prosody fits the moment; it asks the
+bot's agent for anything beyond talk.
+
+```ts
+await agents.voice.create({
+  discord, deliver: { agent: agent.id }, brain: "realtime",
+  realtime: { instructions: "You are Mochi, a cheerful cat who loves puns.", voice: "marin" },
+  speakers: { "400000000000000001": "Ana", "400000000000000002": "Ben" },
+  addressing: { names: ["mochi"] },
+});
+```
+
+It is off unless the runtime lists a provider in `AGENT_VOICE_REALTIME` (`openai`), and the account has a key for it
+(your OpenAI key under Models & keys, else the platform's; 400 `REALTIME_UNAVAILABLE` without one). The session speaks:
+`speak` may be left out, and your app joins un-muted.
+
+How it works:
+
+- **Who said what.** Discord gives each person's audio apart; a model hears one stream. The session mixes them, and
+  each time who speaks changes, it keeps what came before as its own item and adds a note naming who speaks next:
+  `[Ana]`, or `[Ana and Ben, at once]` while two talk over each other. Names come from `speakers` (by user id; PATCH
+  it as people join), else `Speaker 1`, `Speaker 2`…
+- **Turns are ours.** The provider's own turn detection is off. A turn ends as it does in the cascade ([turns](#turns):
+  Smart Turn, or silence), and only then is the model asked to answer. With smart turns it is asked at the likely end
+  already (`realtime.speculative`, default true) and its audio waits for the turn to end; if the person goes on, it is
+  taken back unheard. While someone else is mid-turn the answer waits for them, and their turn replaces it: one answer
+  to both.
+- **Who it answers** follows [addressing](#who-it-answers): a turn from someone alone with the bot or in a conversation
+  with it is answered at once. Otherwise, with `names`, the turn's transcript decides (named: answered; not: the model
+  only listens). Without names, the model is told the turn did not name it, and calls `stay_silent` when people are
+  talking to each other.
+- **Barge-in** works as in the cascade: a person talking over the bot pauses it, the echo guard decides, and their own
+  speech stops it. The model's answer is then cut where people stopped hearing it, so its memory of the call matches
+  what was heard. Echo the guard rejects is dropped, not kept as someone's words.
+- **Tools.** `ask_agent(request)` prompts `deliver.agent` (its tools, memory and system prompt; its run is billed as
+  any run, with `metadata.via: "realtime"` and the speaker as `from`), and the model says its answer in its own words.
+  The model fills the wait itself ("let me check"). Without `deliver.agent` there is no `ask_agent`. `stay_silent()`
+  answers nothing.
+- **One character.** `realtime.instructions` (at most 8,000 characters) is the bot's persona, before the call's own
+  rules (short spoken answers, names, ask_agent, stay_silent). Give it the same persona as the agent.
+
+`realtime` takes `provider` (`openai`), `model` (`gpt-realtime-2.1`, the default, or `gpt-realtime-2.1-mini`), `voice`
+(the model's: `alloy`, `ash`, `ballad`, `coral`, `echo`, `sage`, `shimmer`, `verse`, `marin`, `cedar`; default the
+session's `voice`, or the nearest: `nova` → `marin`, `onyx` → `cedar`, `fable` → `ballad`), `instructions`,
+`transcribe` (default true: what people say is transcribed, for `names` and for `voice.utterance`) and `speculative`.
+
+What changes for your app: `voice.utterance` still comes for each person's speech (with `brain: "realtime"`; with
+`transcribe`), but the model has answered it already, so your app should not. `POST …/speak` is refused (409
+`VOICE_REALTIME`); `DELETE …/speak` stops what the bot says. The cascade's `speak.agentReplies`,
+`transcription.providers` and `speech` do not apply. `voice.speech.started` and `voice.speech.ended` come for each
+answer played, with `brain: "realtime"`.
+
+Each answer's first audio is timed as a cascade turn is: `voice_turn_latency` with `Path=realtime`, from the end of
+speech (`turnCommit`, `ttsFirstAudio`: the model's first audio, `firstPacket`), plus `VoiceRealtimeMs` (commit to the
+model's first audio). When the session is let go, `voice_realtime_stats` counts its turns, answers, ask_agent and
+stay_silent calls, barge-ins and speculation taken back.
+
+A provider connection that drops is opened again (three times in five minutes at most, else the session ends with
+`error`, `realtime_failed`), told what was said lately. A session that moves to another node starts a new conversation
+the same way.
+
 ## Cost
 
 Only speech is paid for: Discord sends no audio while people are silent, quiet audio is trimmed from each utterance, and
@@ -377,6 +442,15 @@ was made: its seconds made with OpenAI, and its whole text with a provider that 
 through another provider is billed at that provider's price, per second of audio streamed. On your own key the
 provider bills you directly; the usage record still carries the cost. With end-user credits, each speech holds its estimate of the subject's credit before it is made and settles
 at what it cost; running out ends the session (`budget`).
+
+A realtime brain is billed by the tokens its model uses, at the provider's list price on the platform's key: each
+answer is a `usage.recorded` with `kind: "speech"`, the model as `model`, its tokens in `input` and `output` (`cacheRead`
+for cached ones) and `audioSeconds` of audio made. Each answer bills the conversation so far again (mostly cached, at a
+tenth or less of the price), so a minute costs more as a call goes on. A conversational minute (people talk half of
+it, the bot a third) is about $0.05 on `gpt-realtime-2.1` and $0.02 on `gpt-realtime-2.1-mini`, against $0.015-0.02
+for the cascade. What people say is transcribed (`transcribe`) at the transcription price, as `kind: "transcription"`.
+With end-user credits, each answer holds $0.05 of the subject's credit before it is asked for and settles at what it
+cost.
 
 A session starts only when the account may spend (402 `SPEND_LIMIT` otherwise) and has a key to transcribe with: OpenAI's, or one of its transcription providers'
 (400 `TRANSCRIPTION_UNAVAILABLE`). An account that runs out during a call ends it: `reason: "budget"`, `limit: "tenant"`.
@@ -396,6 +470,9 @@ holds its cost of the subject's credit before it is transcribed, and running out
   Once its transcript is written, it is delivered at least once: dedupe webhook events by `id`.
 - Discord's end-to-end encryption (DAVE) is checked: a member of the call's encryption group that Discord's voice
   server never named drops the connection, which joins again with a new group.
+- With a realtime brain, the call's audio goes to the provider (OpenAI) as it is spoken, and the model's answers come
+  back as audio; neither is stored by camelRun, and the provider keeps them under its API data policy. What was said
+  lately is held in memory (to brief a new connection), never written.
 - Text a session speaks goes to OpenAI to be made into speech, under its API data policy (not used for training); the
   speech is played and dropped, never stored. Logs carry its length and timings, never the text.
 - A bot that speaks sends audio its call's encryption group can decrypt, so its group is checked strictly: a Welcome

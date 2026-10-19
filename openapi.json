@@ -1060,6 +1060,20 @@
                   true
                 ],
                 "description": "Present when barge-in judged it the bot's own speech coming back through the speaker's speakers (its words are the bot's, in order). It is not sent to deliver.agent and nothing replies to it; drop it unless you want it"
+              },
+              "brain": {
+                "type": "string",
+                "enum": [
+                  "realtime"
+                ],
+                "description": "Present for a session with a realtime brain: its model heard and answered this itself; your app need not (POST …/speak is refused)"
+              },
+              "speakers": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "With brain realtime, when people spoke at once: everyone whose audio is in it (speakerId is the first)"
               }
             },
             "required": [
@@ -1172,6 +1186,7 @@
                       "agent_reply",
                       "prompt_speak",
                       "speak",
+                      "realtime",
                       null
                     ]
                   },
@@ -1204,6 +1219,13 @@
                   "requestId"
                 ],
                 "description": "For a piece of an agent's reply the session speaks (agentReplies, or a prompt's speak): the agent and its run"
+              },
+              "brain": {
+                "type": "string",
+                "enum": [
+                  "realtime"
+                ],
+                "description": "Present when a realtime brain's response is speaking"
               }
             },
             "required": [
@@ -1327,6 +1349,13 @@
               },
               "costUsd": {
                 "type": "number"
+              },
+              "brain": {
+                "type": "string",
+                "enum": [
+                  "realtime"
+                ],
+                "description": "Present for a realtime brain's response: costUsd is what its tokens cost (the session's usage already counts it)"
               }
             },
             "required": [
@@ -9368,6 +9397,55 @@
             ],
             "description": "How a speaker's turn ends (smart: a turn-detection model at pauses; silence: silenceMs of quiet)"
           },
+          "brain": {
+            "type": "string",
+            "enum": [
+              "cascade",
+              "realtime"
+            ],
+            "description": "What answers: cascade, or a realtime speech-to-speech model"
+          },
+          "realtime": {
+            "type": "object",
+            "properties": {
+              "provider": {
+                "type": "string",
+                "enum": [
+                  "openai"
+                ]
+              },
+              "model": {
+                "type": "string"
+              },
+              "voice": {
+                "type": "string"
+              },
+              "instructions": {
+                "type": "string"
+              },
+              "transcribe": {
+                "type": "boolean"
+              },
+              "speculative": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "provider",
+              "model",
+              "voice",
+              "transcribe",
+              "speculative"
+            ],
+            "description": "With brain realtime: its settings"
+          },
+          "speakers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Speakers' names by user id, as given"
+          },
           "speeches": {
             "type": "number",
             "description": "Speeches played (each counted when it ended having made speech)"
@@ -9428,6 +9506,7 @@
           "addressing",
           "agentReplies",
           "endOfTurn",
+          "brain",
           "speeches",
           "spokenSeconds",
           "utterances",
@@ -9723,6 +9802,64 @@
               }
             ],
             "description": "How a speaker's turn (an utterance) ends: smart or silence, or {mode, commitMs, threshold, maxSilenceMs}"
+          },
+          "brain": {
+            "type": "string",
+            "enum": [
+              "cascade",
+              "realtime"
+            ],
+            "description": "What answers. cascade (the default): each utterance is transcribed, and your app or deliver.agent answers through text to speech. realtime (beta): a speech-to-speech model hears the call and answers aloud itself, asking deliver.agent (ask_agent) for facts, actions and anything beyond talk; the session speaks (speak may be left out), POST …/speak is refused, and transcription.providers and speak.agentReplies do not apply. Needs the runtime's AGENT_VOICE_REALTIME and a key for the provider"
+          },
+          "realtime": {
+            "$ref": "#/components/schemas/VoiceRealtime"
+          },
+          "speakers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 40
+            },
+            "description": "Speakers' names by Discord user id, for the realtime brain's note of who speaks (\"[Ana]\"); others are Speaker 1, Speaker 2… PATCH it as people join",
+            "example": {
+              "400000000000000001": "Ana"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "VoiceRealtime": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": [
+              "openai"
+            ],
+            "description": "The speech-to-speech provider, one of the runtime's (AGENT_VOICE_REALTIME). Default its first: openai"
+          },
+          "model": {
+            "type": "string",
+            "description": "The model: gpt-realtime-2.1, gpt-realtime-2.1-mini. Default gpt-realtime-2.1",
+            "example": "gpt-realtime-2.1"
+          },
+          "voice": {
+            "type": "string",
+            "description": "The provider's voice: alloy, ash, ballad, coral, echo, sage, shimmer, verse, marin, cedar (OpenAI). Default the session's voice where the model has it, else the nearest (nova → marin, onyx → cedar, fable → ballad)",
+            "example": "marin"
+          },
+          "instructions": {
+            "type": "string",
+            "maxLength": 8000,
+            "description": "The bot's persona and instructions, before the call's own rules (who speaks, short spoken answers, ask_agent, stay_silent): the voice and the agent stay one character"
+          },
+          "transcribe": {
+            "type": "boolean",
+            "description": "Transcribe what people say (gpt-transcribe, billed as transcription): voice.utterance gets their words, and addressing.names can address the bot. Default true"
+          },
+          "speculative": {
+            "type": "boolean",
+            "description": "With endOfTurn smart: begin the answer when the turn is likely over, and play it once the turn ends (taken back, unheard, if they go on). Default true"
           }
         },
         "additionalProperties": false
@@ -9785,6 +9922,14 @@
           "metadata": {
             "type": "object",
             "additionalProperties": {}
+          },
+          "speakers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 40
+            },
+            "description": "Speakers' names by Discord user id (replaces the session's), for a realtime brain"
           }
         },
         "additionalProperties": false
