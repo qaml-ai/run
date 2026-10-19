@@ -76,7 +76,7 @@ jobs:
   test:
     # A shard takes 3-4 minutes, and a flaky file's rerun a few more (scripts/test-shard.ts).
     timeout-minutes: 15
-    # Duration-balanced files, two shards per mode; larger runners run 32 files at once.
+    # Duration-balanced files, two shards per mode; larger runners run 16 files at once.
     # Forks and self-hosted runners retain twelve shards per mode and two-file concurrency.
     name: test (${{ matrix.hosting }} ${{ matrix.shard }}/${{ needs.changes.outputs.shard-count }})
     needs: changes
@@ -86,7 +86,7 @@ jobs:
       matrix:
         hosting: [process, inline]
         shard: ${{ fromJSON(needs.changes.outputs.shards) }}
-    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && vars.CI_RUNNER_LABELS || ((github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && '["blacksmith-32vcpu-ubuntu-2404"]' || '["ubuntu-latest"]')) }}
+    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && vars.CI_RUNNER_LABELS || ((github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && '["blacksmith-16vcpu-ubuntu-2404"]' || '["ubuntu-latest"]')) }}
     env:
       AGENT_HOSTING: ${{ matrix.hosting }}
     steps:
@@ -109,7 +109,7 @@ jobs:
       - run: npm run test:shard -- ${{ matrix.shard }}/${{ needs.changes.outputs.shard-count }}
         env:
           TEST_DATABASE_PER_FILE: "true"
-          TEST_CONCURRENCY: ${{ (github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted')) && '2' || ((github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && '32' || '2') }}
+          TEST_CONCURRENCY: ${{ (github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted')) && '2' || ((github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && '16' || '2') }}
           AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:${{ steps.postgres.outputs.port }}/postgres
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
