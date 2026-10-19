@@ -25,7 +25,7 @@ export type SpeechItem = {
 };
 /** How a speech ended: said whole, cut short (`by` whom), or failed. */
 export type SpeechEnding = { reason: "done" | "interrupted" | "error"; by?: StopReason; seconds: number; costUsd: number; error?: string };
-export type StopReason = "interrupt" | "requested" | "barge_in" | "end" | "handoff" | "budget";
+export type StopReason = "interrupt" | "requested" | "barge_in" | "end" | "handoff" | "budget" | "superseded";
 
 /** A playback on a connection: done when its packets ran out (`done`), it was stopped, or it failed. */
 export interface Playback {
@@ -148,6 +148,24 @@ export class SessionSpeech {
       current.playback?.stop();
     }
     return cleared.length + (current ? 1 : 0);
+  }
+
+  /**
+   * Take back what `match`es (a superseded reply's sentences): those waiting end at once, and the one being made or
+   * played, if it matches, stops; the rest of the queue stays. Each ends `interrupted`, `by`.
+   */
+  cancel(match: (item: SpeechItem) => boolean, by: StopReason) {
+    for (let i = this.queue.length - 1; i >= 0; i--) {
+      if (!match(this.queue[i])) continue;
+      const [item] = this.queue.splice(i, 1);
+      this.effects.ended(item, { reason: "interrupted", by, seconds: 0, costUsd: 0 }, undefined);
+    }
+    const current = this.current;
+    if (current && !current.stoppedBy && match(current.item)) {
+      current.stoppedBy = by;
+      current.abort.abort();
+      current.playback?.stop();
+    }
   }
 
   /** The session ended or moved: nothing more is said. */
