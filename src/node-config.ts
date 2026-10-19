@@ -150,7 +150,7 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     voice: {
       enabled: env.AGENT_VOICE === "true",
       // The speech-to-speech providers sessions answer with (src/voice/realtime): AGENT_VOICE_REALTIME lists them
-      // ("openai", "gemini", "grok"; a session takes the first unless it names another); unset, OpenAI.
+      // ("openai", "gemini", "grok", "elevenlabs"; a session takes the first unless it names another); unset, OpenAI.
       // AGENT_OPENAI_REALTIME_URL, AGENT_GEMINI_LIVE_URL and AGENT_GROK_REALTIME_URL dial other addresses (a proxy, a
       // test's fake).
       realtime: list(env.AGENT_VOICE_REALTIME).length ? list(env.AGENT_VOICE_REALTIME) : ["openai"],

@@ -186,9 +186,10 @@ await agents.voice.create({
 });
 ```
 
-The runtime offers the providers its `AGENT_VOICE_REALTIME` lists (`openai`, `gemini`; OpenAI when unset). The account
-needs a key for the session's provider: your OpenAI key, or your `google` key for Gemini, under Models & keys, else the
-platform's (400 `REALTIME_UNAVAILABLE` without one).
+The runtime offers the providers its `AGENT_VOICE_REALTIME` lists (`openai`, `gemini`, `grok`, `elevenlabs`; OpenAI
+when unset). The account needs a key for the session's provider: your OpenAI key, your `google` key for Gemini, your
+`xai` key for Grok, or your `elevenlabs` key for ElevenLabs Agents, under Models & keys, else the platform's (400
+`REALTIME_UNAVAILABLE` without one).
 
 How it works:
 
@@ -196,8 +197,9 @@ How it works:
   each time who speaks changes, it keeps what came before as its own item and adds a note naming who speaks next:
   `[Ana]`, or `[Ana and Ben, at once]` while two talk over each other. Names come from `speakers` (by user id; PATCH
   it as people join), else `Speaker 1`, `Speaker 2`…
-- **Turns are ours.** A turn ends as [turns](#turns) says (Smart Turn, or silence), and only then is the model asked to
-  answer (or at the likely end, with `speculative`).
+- **Turns are ours** for OpenAI, Gemini and Grok: their own turn detection is off. A turn ends as [turns](#turns) says
+  (Smart Turn, or silence), and only then is the model asked to answer (or at the likely end, with `speculative`).
+  ElevenLabs Agents ends turns itself (see below).
 - **Who it answers** follows [addressing](#who-it-answers).
 - **Tools.** `ask_agent(request)` prompts `deliver.agent` (its tools, memory and system prompt; its run is billed as
   any run, with `metadata.via: "realtime"` and the speaker as `from`), and the model says its answer in its own words.
@@ -209,12 +211,26 @@ How it works:
   for anything beyond small talk). Give it the same persona as the agent, and say what the agent can do (its tools),
   so the model knows what to ask it.
 
-`realtime` takes `provider` (`openai` or `gemini`; default the runtime's first), `model` (OpenAI: `gpt-realtime-2.1`, the
-default, or `gpt-realtime-2.1-mini`; Gemini: `gemini-3.8-live`), `voice` (the model's. OpenAI: `alloy`, `ash`, `ballad`,
+`realtime` takes `provider` (`openai`, `gemini`, `grok`, or `elevenlabs`; default the runtime's first), `model` (OpenAI: `gpt-realtime-2.1`, the
+default, or `gpt-realtime-2.1-mini`; Gemini: `gemini-3.8-live`; Grok: `grok-voice-latest` or `grok-voice-3.0`; ElevenLabs: `gemini-2.5-flash-lite`), `voice` (the model's. OpenAI: `alloy`, `ash`, `ballad`,
 `coral`, `echo`, `sage`, `shimmer`, `verse`, `marin`, `cedar`; Gemini: its prebuilt voices, `Kore`, `Aoede`, `Leda`,
 `Puck`, `Charon`… Default the session's `voice`, or the nearest: OpenAI `nova` → `marin`, `onyx` → `cedar`, `fable` →
 `ballad`; Gemini `coral` → `Kore`, `alloy` → `Aoede`, `onyx` → `Charon`…), `instructions`, `transcribe` (default true:
 what people say is transcribed, for `names` and for `voice.utterance`) and `speculative`.
+
+ElevenLabs Agents uses its own VAD and turn detection, so `speculative` is disabled. Its built-in LLM is the
+voice front-end; `ask_agent` and `stay_silent` are client tools. Set `realtime.voice` to a library voice_id your key can
+use; OpenAI voice names map to Jessica. Speaker labels are contextual updates around mixed audio, with no reliable
+attribution for overlapping speech. Interruptions stop buffered playback; streamed input cannot be withdrawn.
+Addressing is decided by the voice model from the call instructions, rather than the local named-turn gate.
+The runtime lazily creates or reuses one private agent per credential, with per-session overrides and signed URLs
+(see [configuration](../operations/configuration.md)). Conversation token counts are unavailable. Connection duration is billed through the normal speech usage records
+and end-user credit holds, including silent time and interrupted responses. Configure both
+`AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD` and `AGENT_PRICE_ELEVENLABS_LLM_MINUTE_USD`: the former from the
+[Agents pricing page](https://elevenlabs.io/pricing/agents), the latter from Gemini Flash Lite's Detailed costs estimate
+in the agent settings. LLM usage is billed separately by ElevenLabs; this runtime uses the configured per-minute
+estimate, not post-call token reconciliation. Missing either rate refuses sessions with `REALTIME_UNPRICED`.
+Silence discounts, burst surcharges and account-specific allowances are not reconciled.
 
 The providers differ where their APIs do. Gemini Live hears a turn as one activity (a change of speaker inside it is a
 note in its context), transcribes it only once it is asked to answer (a turn that only its words could address is

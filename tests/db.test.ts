@@ -30,6 +30,55 @@ test("migrations apply once: running them again does nothing", async () => {
   assert.deepEqual((await db.query("select name from schema_migrations order by name")).rows.map(row => row.name), MIGRATIONS);
 });
 
+test("a concurrent migration builds its index outside a transaction, in order between the others, and once", async () => {
+  const { db } = await testDatabase({ migrate: false });
+  const directory = mkdtempSync(join(tmpdir(), "migrations-"));
+  writeFileSync(join(directory, "001_table.sql"), "create table things (id bigserial primary key, kind text not null, owner text not null);");
+  writeFileSync(join(directory, "002_index.sql"), "-- migrate: concurrently\n-- Two indexes; comments are skipped.\ncreate index concurrently if not exists things_owner on things (owner, id) where kind <> 'x';\ncreate unique index concurrently if not exists things_kind on things (kind, id);\n");
+  writeFileSync(join(directory, "003_column.sql"), "alter table things add column note text;");
+  assert.deepEqual(await migrate(db, directory), ["001_table.sql", "002_index.sql", "003_column.sql"]);
+  assert.deepEqual(await migrate(db, directory), []);
+  const indexes = (await db.query("select c.relname as name, i.indisvalid as valid from pg_index i join pg_class c on c.oid = i.indexrelid where c.relname in ('things_kind', 'things_owner') and c.relnamespace = current_schema()::regnamespace order by 1")).rows;
+  assert.deepEqual(indexes, [{ name: "things_kind", valid: true }, { name: "things_owner", valid: true }]);
+  assert.deepEqual((await db.query("select name from schema_migrations order by name")).rows.map(row => row.name), ["001_table.sql", "002_index.sql", "003_column.sql"]);
+  assert.equal((await db.query("select pg_try_advisory_lock(hashtext('agent-runtime-migrations:' || current_schema())) as held")).rows[0].held, true, "the runners' lock was let go");
+});
+
+test("a concurrent build cut short leaves an invalid index, which the next run drops and builds again", async () => {
+  const { db } = await testDatabase({ migrate: false });
+  const directory = mkdtempSync(join(tmpdir(), "migrations-"));
+  writeFileSync(join(directory, "001_table.sql"), "create table things (id bigint not null, kind text not null); insert into things values (1, 'a'), (1, 'a');");
+  writeFileSync(join(directory, "002_index.sql"), "-- migrate: concurrently\ncreate unique index concurrently if not exists things_unique on things (id, kind);\n");
+  // The duplicate fails the build part way: Postgres leaves the index behind, invalid, and the file is not applied.
+  await assert.rejects(migrate(db, directory), /could not create unique index/);
+  assert.deepEqual((await db.query("select i.indisvalid as valid from pg_index i join pg_class c on c.oid = i.indexrelid where c.relname = 'things_unique' and c.relnamespace = current_schema()::regnamespace")).rows, [{ valid: false }]);
+  await db.query("delete from things where ctid <> (select min(ctid) from things)");
+  assert.deepEqual(await migrate(db, directory), ["002_index.sql"]);
+  assert.deepEqual((await db.query("select i.indisvalid as valid from pg_index i join pg_class c on c.oid = i.indexrelid where c.relname = 'things_unique' and c.relnamespace = current_schema()::regnamespace")).rows, [{ valid: true }]);
+});
+
+test("a concurrent migration holds index builds only, and writes go on while one builds", async () => {
+  const { db } = await testDatabase({ migrate: false });
+  const directory = mkdtempSync(join(tmpdir(), "migrations-"));
+  writeFileSync(join(directory, "001_table.sql"), "create table things (id bigint not null);");
+  writeFileSync(join(directory, "002_bad.sql"), "-- migrate: concurrently\ncreate index concurrently if not exists things_id on things (id);\ndrop table things;\n");
+  await assert.rejects(migrate(db, directory), /holds only CREATE INDEX CONCURRENTLY/);
+  assert.deepEqual((await db.query("select name from schema_migrations")).rows.map(row => row.name), ["001_table.sql"]);
+
+  // A transaction writing to the table, open while the build starts: a plain CREATE INDEX would wait for it and hold
+  // writes behind it; the concurrent build waits for it without holding the next write.
+  writeFileSync(join(directory, "002_bad.sql"), "-- migrate: concurrently\ncreate index concurrently if not exists things_id on things (id);\n");
+  const writer = await db.connect();
+  await writer.query("begin");
+  await writer.query("insert into things values (1)");
+  const built = migrate(db, directory);
+  await new Promise(resolve => setTimeout(resolve, 300));
+  await db.query("insert into things values (2)");
+  await writer.query("commit");
+  writer.release();
+  assert.deepEqual(await built, ["002_bad.sql"]);
+});
+
 /** Apply the migrations before `name` only: the schema as an older release left it. */
 async function migrateBefore(db: pg.Pool, name: string) {
   const all = fileURLToPath(new URL("../migrations", import.meta.url));

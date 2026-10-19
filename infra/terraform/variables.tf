@@ -166,9 +166,13 @@ variable "runtime_env" {
     AGENT_VOICE                 = "true"
     # Smart end of turn (Silero VAD + Smart Turn, run#240/#254) for every voice session; ~190 MB and one Smart Turn thread per node.
     AGENT_VOICE_TURN_MODELS = "true"
-    # Voice sessions' realtime brain (run#265; a session may instead only listen): OpenAI Realtime first (the default) while Gemini Live sessions fail at setup (1007), Gemini too; each on the platform key unless the tenant brings one.
-    AGENT_VOICE_REALTIME = "openai,gemini"
-    GITHUB_ORG           = "qaml-ai"
+    # Voice sessions' realtime brain (run#265; a session may instead only listen): OpenAI Realtime first (the default); Gemini Live, Grok (xAI, run#288) and
+    # ElevenLabs Agents (run#289, any library voice) too; each on the platform key unless the tenant brings one.
+    AGENT_VOICE_REALTIME = "openai,gemini,grok,elevenlabs"
+    # ElevenLabs Agents list prices (elevenlabs.io/pricing/agents: per call minute; the built-in LLM is passed through, estimated per minute).
+    AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD = "0.08"
+    AGENT_PRICE_ELEVENLABS_LLM_MINUTE_USD    = "0.001"
+    GITHUB_ORG                               = "qaml-ai"
     # Anyone with a GitHub account may sign in to the console. Their tenant is prepaid: platform keys only
     # against its credit, with the free limits (the Free usage tier, AGENT_FREE_HOURLY_SPEND_USD) until it buys some.
     AGENT_OPEN_SIGNUP = "true"

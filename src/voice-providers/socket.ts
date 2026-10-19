@@ -43,7 +43,7 @@ export const wsBase = (base: string) => base.replace(/\/+$/, "").replace(/^http/
  */
 export function closeDetail(event?: { code?: number; reason?: string }): string {
   const reason = typeof event?.reason === "string"
-    ? event.reason.replace(/\b(?:AIza[\w-]{8,}|sk-[\w-]{8,}|xai-[\w-]{8,}|ya29\.[\w.-]{8,}|[A-Za-z0-9_-]{32,})/g, "[redacted]").replace(/\s+/g, " ").trim().slice(0, 200)
+    ? event.reason.replace(/\b(?:AIza[\w-]{8,}|sk[-_][\w-]{8,}|xai-[\w-]{8,}|ya29\.[\w.-]{8,}|[A-Za-z0-9_-]{32,})/g, "[redacted]").replace(/\s+/g, " ").trim().slice(0, 200)
     : "";
   return `The realtime connection closed${event?.code ? ` (${event.code}${reason ? `: ${reason}` : ""})` : reason ? ` (${reason})` : ""}`;
 }
