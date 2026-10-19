@@ -267,7 +267,6 @@ export class RealtimeBrain {
       return;
     }
     this.stats.turns++;
-    const turnSoFar = this.turns.get(speaker);
     const current = this.current;
     // Its response began at likely_end: the turn is over, so it may be heard.
     if (current?.speculative && current.speaker === speaker && !current.cancelled) {
@@ -280,12 +279,13 @@ export class RealtimeBrain {
     }
     this.commitSegment();
     this.turnDone(speaker, cut);
+    const turnSoFar = this.turns.get(speaker);
     // Said over the bot while it plays (a backchannel, or with barge-in off): kept as context, not answered.
     if (this.playing && !this.playing.cancelled) { this.turns.delete(speaker); return; }
     if (!this.fresh) { this.turns.delete(speaker); return; }
     const turn = new TurnClock(cut.endedAt, { session: this.options.session, tenant: this.options.tenant, ttsModel: this.options.reference, speculative: false }).via("realtime").mark("turnCommit");
     // A response held for this speaker's turn is replaced by one that hears it.
-    if (current && !current.done && !current.played && !current.tool) this.supersede(current);
+    if (current && !current.played && !current.tool && !current.cancelled) this.supersede(current);
     void this.decide(speaker, turnSoFar, turn);
   }
 
