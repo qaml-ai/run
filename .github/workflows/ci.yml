@@ -23,8 +23,8 @@ jobs:
       reuse: ${{ steps.changes.outputs.reuse || 'false' }}
       binary-key: ${{ steps.binary-key.outputs.key }}
       binary-cached: ${{ steps.binary.outputs.cache-hit }}
-      shards: ${{ (github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && !(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted')) && '[1,2,3,4,5,6]' || '[1,2,3,4,5,6,7,8,9,10,11,12]' }}
-      shard-count: ${{ (github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && !(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted')) && '6' || '12' }}
+      shards: ${{ (github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && !(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted')) && '[1,2,3,4,5,6,7,8]' || '[1,2,3,4,5,6,7,8,9,10,11,12]' }}
+      shard-count: ${{ (github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && !(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted')) && '8' || '12' }}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
@@ -99,7 +99,7 @@ jobs:
   test:
     # A shard takes 3-4 minutes, and a flaky file's rerun a few more (scripts/test-shard.ts).
     timeout-minutes: 15
-    # Duration-balanced files, six shards per mode; larger runners run eight files at once.
+    # Duration-balanced files, eight shards per mode; larger runners run eight files at once.
     # Forks and self-hosted runners retain twelve shards per mode and two-file concurrency.
     name: test (${{ matrix.hosting }} ${{ matrix.shard }}/${{ needs.changes.outputs.shard-count }})
     needs: [changes, v8-exec]
