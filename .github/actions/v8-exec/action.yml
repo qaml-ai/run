@@ -1,0 +1,22 @@
+name: V8 executable
+description: Restore the source-keyed sandbox executable, or build it on a cache miss.
+runs:
+  using: composite
+  steps:
+    - uses: actions/cache@v4
+      id: binary
+      with:
+        path: sandbox/v8-exec/target/release/v8-exec
+        key: v8-exec-binary-${{ runner.os }}-${{ runner.arch }}-${{ runner.environment }}-${{ hashFiles('sandbox/v8-exec/Cargo.lock', 'sandbox/v8-exec/Cargo.toml', 'sandbox/v8-exec/rust-toolchain.toml', 'sandbox/v8-exec/src/**') }}
+    - if: steps.binary.outputs.cache-hit != 'true'
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          sandbox/v8-exec/target
+        key: v8-exec-${{ runner.os }}-${{ runner.arch }}-${{ runner.environment }}-${{ hashFiles('sandbox/v8-exec/Cargo.lock', 'sandbox/v8-exec/rust-toolchain.toml') }}
+    - if: steps.binary.outputs.cache-hit != 'true'
+      shell: bash
+      run: cd sandbox/v8-exec && cargo build --release --locked
+    - shell: bash
+      run: chmod +x sandbox/v8-exec/target/release/v8-exec
