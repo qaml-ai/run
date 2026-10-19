@@ -60,8 +60,8 @@ export interface SpeechEffects {
   speak?(input: SpeechInput, signal: AbortSignal, served: (who: Served) => void): AsyncIterable<Uint8Array>;
   estimate?(text: string): number;
   cost?(who: Served, made: { characters: number; seconds: number }): number;
-  /** The speech started playing, `latencyMs` after it was asked for. */
-  started(item: SpeechItem, latencyMs: number, turn?: TurnClock): void;
+  /** The speech started playing, `latencyMs` after it was asked for; `platform` and `served` as for `ended`. */
+  started(item: SpeechItem, latencyMs: number, turn?: TurnClock, platform?: boolean, served?: Served): void;
   /** It ended; `platform` says whose key made it (usage), `served` which provider (when a chain made it). */
   ended(item: SpeechItem, ending: SpeechEnding, platform: boolean | undefined, served?: Served): void;
   /** The money ran out: the session ends (`budget`). */
@@ -211,10 +211,12 @@ export class SessionSpeech {
         const input = { text: item.text, voice: item.voice, ...(item.voices ? { voices: item.voices } : {}), ...(item.instructions ? { instructions: item.instructions } : {}) };
         const chain = this.effects.speak;
         let source: AsyncIterable<Uint8Array>;
-        if (chain) source = chain(input, abort.signal, who => { making.served = who; making.platform = who.platform; });
+        // The turn it answers is told who made its audio (its first piece's): the chain's member that served, else the built-in provider.
+        if (chain) source = chain(input, abort.signal, who => { making.served = who; making.platform = who.platform; item.turn?.spokenBy(who.provider, who.model); });
         else {
           const credentials = await this.effects.credentials();
           making.platform = credentials.platform;
+          item.turn?.spokenBy(this.synthesizer.provider, this.synthesizer.model);
           source = this.synthesizer.stream(input, credentials, abort.signal);
         }
         // What was made is what is billed: counted as it comes from the provider.
@@ -283,7 +285,7 @@ export class SessionSpeech {
         // The first speech of a turn ends it, and tells its stages; a turn's later pieces do not.
         const turn = item.turn && !item.turn.ended ? item.turn : undefined;
         turn?.mark("firstPacket").end("spoken");
-        this.effects.started(item, Date.now() - item.queuedAt, turn);
+        this.effects.started(item, Date.now() - item.queuedAt, turn, making.platform, making.served);
       }, this.synthesizer.estimateSeconds(item.text) * 1_000);
       if (current.stoppedBy) current.playback.stop();
       result = await current.playback.done;

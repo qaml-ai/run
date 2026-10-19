@@ -195,7 +195,10 @@ A `TurnClock` follows one turn, from the utterance's cut to the first audio of t
 Each finished turn writes one EMF line, `voice_turn_latency`. Each stage is a metric in ms, from `speechEnd`:
 `VoiceTurnCommitMs`, `VoiceTranscriptMs`, `VoiceLlmFirstTokenMs`, `VoiceTtsFirstAudioMs` and `VoiceFirstPacketMs` (=
 end of speech to first audio, the headline). There are deltas too: `VoiceSttMs`, `VoiceLlmMs` and `VoiceTtsMs`. The
-dimensions are `Path` (`agent_reply` | `prompt_speak` | `speak`), plus `SttModel` and `TtsModel` in the properties. A
+dimensions are `Path` (`agent_reply` | `prompt_speak` | `speak`). The properties carry `sttModel`, and `ttsProvider`
+and `ttsModel`: the provider and model that made the reply's first audio (with a chain such as
+`AGENT_VOICE_TTS=elevenlabs,openai`, the member that served, so a failover shows as `openai`; a turn with no audio has
+neither). `voice_speech_started` and `voice_speech_ended` carry the same as `provider` and `model`. A
 turn that never reaches audio (no reply, barge-in, error) logs its marks with `outcome`, but publishes no
 `VoiceFirstPacketMs`.
 

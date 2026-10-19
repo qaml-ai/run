@@ -20,7 +20,7 @@ function turnLines(t: { after(fn: () => void): void }) {
 
 test("a turn's line: each stage in ms since the end of speech, the stages' own lengths, by Path; marked once, ended once", t => {
   const lines = turnLines(t);
-  const turn = new TurnClock(1_000, { session: "vs_1", tenant: "alice", ttsModel: "tts" }).via("agent_reply");
+  const turn = new TurnClock(1_000, { session: "vs_1", tenant: "alice" }).via("agent_reply");
   turn.mark("turnCommit", 1_800).mark("transcript", 2_100).mark("llmFirstToken", 2_600).mark("firstPiece", 2_900)
     .mark("ttsFirstAudio", 3_200).mark("ttsFirstAudio", 9_999).mark("firstPacket", 3_400);
   turn.end("spoken");
@@ -41,6 +41,19 @@ test("a turn's line: each stage in ms since the end of speech, the stages' own l
   assert.equal(silent.VoiceFirstPacketMs, undefined);
   assert.equal(silent.VoiceTranscriptMs, 400);
   assert.equal(silent.Path, "none");
+});
+
+test("a turn's line names who made its reply's audio: the first piece's provider and model, none without audio", t => {
+  const lines = turnLines(t);
+  const turn = new TurnClock(0, { session: "vs_1", tenant: "alice" }).via("agent_reply").mark("ttsFirstAudio", 300);
+  // The chain's member that served the first piece; a later piece (another provider, after a failover) does not replace it.
+  turn.spokenBy("elevenlabs", "eleven_flash_v2_5").spokenBy("openai", "gpt-4o-mini-tts");
+  turn.mark("firstPacket", 400).end("spoken");
+  assert.deepEqual([lines[0].ttsProvider, lines[0].ttsModel], ["elevenlabs", "eleven_flash_v2_5"]);
+  const none = new TurnClock(0, { session: "vs_1", tenant: "alice" });
+  none.end("no_reply");
+  none.spokenBy("openai", "gpt-4o-mini-tts");
+  assert.equal("ttsProvider" in lines[1] || "ttsModel" in lines[1], false, "no reply, no speech provider (not the session's default)");
 });
 
 test("a turn waiting for the app's speech: the next one taken; a newer one replaces it; nobody's ends no_reply", async t => {
@@ -79,6 +92,7 @@ test("an agent's reply spoken: one line per turn, every stage from commit to fir
   assert.equal(line.Path, "agent_reply");
   assert.equal(line.seq, 1);
   assert.equal(line.sttModel, "gpt-transcribe");
+  assert.deepEqual([line.ttsProvider, line.ttsModel], ["openai", "gpt-4o-mini-tts"], "the built-in provider spoke it (no chain)");
   const stages = ["turnCommit", "transcript", "llmFirstToken", "firstPiece", "ttsFirstAudio", "firstPacket"];
   assert.deepEqual(Object.keys(line.stagesMs), stages);
   for (let i = 1; i < stages.length; i++) assert.ok(line.stagesMs[stages[i]] >= line.stagesMs[stages[i - 1]], `${stages[i]} after ${stages[i - 1]}`);
