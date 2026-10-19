@@ -6955,6 +6955,17 @@ changing its history with `agent.client.setMetadata({ name, type })`
 (`npm run studio`) at `/studio/agents`; Studio observes the runtime, and your
 application keeps serving its tools.
 
+## 0.22.1 (TypeScript) / 0.18.1 (Python), 2026-10-19
+
+Needs runtime 0.11.1 or later.
+
+- End-user auto top-up: `lowBalance` on `endUsers.update` (null uses the tenant's threshold), `belowLowBalance` on
+  `list`, and `allowanceWarningPercent` on `configure`/`amend`; Python uses `low_balance`, `below_low_balance`
+  and `allowance_warning_percent` on the corresponding `end_users` methods.
+- Types for `end_user.credit.granted`, `end_user.credit.refunded`, `end_user.credit.adjusted` and
+  `end_user.allowance.low`, plus `cause`, `entryId`, `entryKey` and `requestId` on balance events. See
+  [Auto top-up on end-user credits](https://run.camelai.com/docs/guides/end-user-auto-top-up.md).
+
 ## 0.22.0 (TypeScript) / 0.18.0 (Python), 2026-10-19
 
 Needs runtime 0.11.0 or later (run.camelai.com has it).
