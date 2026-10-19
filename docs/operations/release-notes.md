@@ -11,6 +11,13 @@ Changes on main since the last tag are in [unreleased/](unreleased/), a file for
 any order never conflict here), gathered into a version's notes when it is tagged: `npm run release-notes` shows them
 together, and `npm run release-notes -- <version>` writes them here and removes the files.
 
+## 0.11.3 (runtime-v0.11.3, 2026-10-19)
+
+The published self-host image is 0.11.1 plus the image build fixes
+([#292](https://github.com/qaml-ai/run/pull/292), [#293](https://github.com/qaml-ai/run/pull/293)):
+use the Google mirror for base images and lock the shared Cargo registry cache during platform builds.
+The 0.11.1 and 0.11.2 images failed to publish; self-hosted installations should use 0.11.3.
+
 ## 0.11.1 (runtime-v0.11.1, 2026-10-19)
 
 End-user balance events for auto top-up and receipts, the Grok realtime voice provider, and concurrent index migrations for credit history. The TypeScript SDK 0.22.1 and Python SDK 0.18.1 use it ([SDK reference](../reference/sdk.md)).

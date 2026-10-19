@@ -11,11 +11,27 @@ concurrency:
   group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    outputs:
+      tests: ${{ steps.changes.outputs.tests || 'true' }}
+      reuse: ${{ steps.changes.outputs.reuse || 'false' }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - id: changes
+        # API, artifact or git uncertainty always runs the full suite.
+        continue-on-error: true
+        run: bash scripts/ci-changes.sh
+        env: { GH_TOKEN: "${{ github.token }}" }
   checks:
     # Fail fast: each job here takes 1-4 minutes, so anything near this limit is hung.
     timeout-minutes: 15
-    # The organization runner group admits only this workflow on main; PRs use hosted runners.
-    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
+    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && vars.CI_RUNNER_LABELS || ((github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && '["run-ci-16-core"]' || '["ubuntu-latest"]')) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -28,9 +44,9 @@ jobs:
     timeout-minutes: 15
     # The Python SDK tests start a real runtime, whose js_exec runs on the v8-exec job's binary. Their own job, beside
     # checks: they take three minutes, the rest of checks one.
-    needs: v8-exec
-    # The organization runner group admits only this workflow on main; PRs use hosted runners.
-    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
+    needs: [changes, v8-exec]
+    if: needs.changes.outputs.tests == 'true'
+    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && vars.CI_RUNNER_LABELS || ((github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && '["run-ci-16-core"]' || '["ubuntu-latest"]')) }}
     services:
       postgres:
         # Hosted runners have a Docker Hub pull-limit exemption; ECR Public can throttle them.
@@ -59,19 +75,15 @@ jobs:
   test:
     # A shard takes 3-4 minutes, and a flaky file's rerun a few more (scripts/test-shard.ts).
     timeout-minutes: 15
-    # Both hosting modes run the full suite side by side (the simulator's files, inline whatever the mode, in the
-    # inline shards alone), each split over twelve shards (about three minutes each) balanced by tests/timings.json
-    # (scripts/test-shard.ts).
-    # Public hosted runners have 4 vCPUs/16 GiB; run two files at once, retaining the existing two-file limit on
-    # self-hosted runners. Each shard keeps its files' times as an artifact, to rebalance from
-    # (`npm run test:shard -- --update`). js_exec runs on v8-exec, built once by the v8-exec job.
-    name: test (${{ matrix.hosting }} ${{ matrix.shard }}/12)
-    needs: v8-exec
+    # Duration-balanced files, four shards per mode; larger runners run eight files at once.
+    # Forks and self-hosted runners retain two-file concurrency.
+    name: test (${{ matrix.hosting }} ${{ matrix.shard }}/4)
+    needs: [changes, v8-exec]
+    if: needs.changes.outputs.tests == 'true'
     strategy:
       fail-fast: false
-      matrix: { hosting: [process, inline], shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] }
-    # The organization runner group admits only this workflow on main; PRs use hosted runners.
-    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
+      matrix: { hosting: [process, inline], shard: [1, 2, 3, 4] }
+    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && vars.CI_RUNNER_LABELS || ((github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && '["run-ci-16-core"]' || '["ubuntu-latest"]')) }}
     services:
       postgres:
         # Hosted runners have a Docker Hub pull-limit exemption; ECR Public can throttle them.
@@ -102,20 +114,21 @@ jobs:
           # Docker can allocate a new host port after restarting a dynamically published service.
           address=$(docker port "$id" 5432/tcp | head -n 1)
           echo "port=${address##*:}" >> "$GITHUB_OUTPUT"
-      - run: npm run test:shard -- ${{ matrix.shard }}/12
+      - run: npm run test:shard -- ${{ matrix.shard }}/4
         env:
-          TEST_CONCURRENCY: '2'
+          TEST_CONCURRENCY: ${{ (github.ref == 'refs/heads/main' && vars.CI_RUNNER_LABELS) && '2' || ((github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && '8' || '2') }}
           AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:${{ steps.postgres.outputs.port }}/postgres
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with: { name: "test-timings-${{ matrix.hosting }}-${{ matrix.shard }}", path: test-timings/, retention-days: 14, if-no-files-found: ignore }
   sim:
+    needs: changes
+    if: needs.changes.outputs.tests == 'true'
     # The deterministic simulator (tests/sim, npm run sim): ten fixed seeds, each run twice and required to replay to the
     # same trace. Fresh seeds explore beyond them after the deploy (sim-seeds.yml), so finding a new one never holds a
     # deploy back. Seeds are CPU-bound, one process per vCPU. A failing seed prints the commands that reproduce it, and
     # its plan, history and logs are kept as the sim-failures artifact (npm run sim -- --replay <file>).
-    # The organization runner group admits only this workflow on main; PRs use hosted runners.
-    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
+    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && vars.CI_RUNNER_LABELS || ((github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && '["run-ci-16-core"]' || '["ubuntu-latest"]')) }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -123,16 +136,17 @@ jobs:
         with: { node-version: 22, cache: npm }
       - run: npm ci
       - name: fixed seeds, twice each
-        run: npm run -s sim -- --seeds 1-10 --twice --jobs 4
+        run: npm run -s sim -- --seeds 1-10 --twice --jobs "$(nproc)"
       - uses: actions/upload-artifact@v4
         if: ${{ failure() }}
         with: { name: sim-failures, path: sim-failures/, if-no-files-found: ignore }
   v8-exec:
+    needs: changes
+    if: needs.changes.outputs.tests == 'true'
     timeout-minutes: 30
     # js_exec's engine (sandbox/v8-exec), built here on x86_64 for the test shards, which run its tests
     # (seccomp included) and every js_exec suite on it; the image job builds and runs it on ARM64.
-    # The organization runner group admits only this workflow on main; PRs use hosted runners.
-    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
+    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && vars.CI_RUNNER_LABELS || ((github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && '["run-ci-16-core"]' || '["ubuntu-latest"]')) }}
     steps:
       - uses: actions/checkout@v4
       # The binary itself, keyed by everything it is built from: a hit skips cargo altogether.
@@ -160,7 +174,10 @@ jobs:
   image:
     # The deployed image installs only runtime dependencies; prove it migrates its database, starts and serves,
     # with js_exec and file parsing confined by agent-launcher. Built natively for production's ARM64 (Graviton).
-    runs-on: ubuntu-24.04-arm
+    strategy:
+      fail-fast: false
+      matrix: { arch: [amd64, arm64] }
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || fromJSON(github.ref == 'refs/heads/main' && vars.CI_RUNNER_LABELS || ((github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && '["run-ci-16-core"]' || '["ubuntu-latest"]')) }}
     timeout-minutes: 20
     services:
       postgres:
@@ -180,12 +197,12 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/arm64
+          platforms: linux/${{ matrix.arch }}
           provenance: false
           load: true
           tags: agent-runtime:ci
-          cache-from: type=gha,scope=image-arm64
-          cache-to: type=gha,mode=max,scope=image-arm64
+          cache-from: type=gha,scope=image-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=image-${{ matrix.arch }}
       - run: |
           mkdir -p /tmp/ci-tenants && chmod 755 /tmp/ci-tenants
           echo '{"tenants":{"ci":{"tokenSha256":"'"$(printf %s ci-boot-token-at-least-32-characters | sha256sum | cut -d' ' -f1)"'"}}}' > /tmp/ci-tenants/tenants.json
@@ -251,3 +268,44 @@ jobs:
           push: true
           tags: ${{ steps.ecr.outputs.registry }}/camelai-agent-runtime:${{ steps.image.outputs.tag }}
           cache-from: type=gha,scope=image-arm64
+  docs:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: { POSTGRES_PASSWORD: test }
+        ports: ["127.0.0.1::5432"]
+        options: --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 20
+    env:
+      AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: node --experimental-strip-types --test scripts/ci-changes.test.ts tests/docs.test.ts tests/openapi.test.ts tests/openapi-sources.test.ts
+  ci:
+    name: CI success
+    if: always()
+    needs: [changes, checks, python, test, sim, v8-exec, image, publish, docs]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require successful checks or intentional skips
+        env: { RESULTS: '${{ toJSON(needs) }}' }
+        run: |
+          echo "$RESULTS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")'
+          echo "$RESULTS" | jq -e '.changes.result == "success" and .checks.result == "success" and .image.result == "success" and .docs.result == "success"'
+          if [ '${{ needs.changes.outputs.tests }}' = true ]; then
+            echo "$RESULTS" | jq -e '[.python, .test, .sim, .["v8-exec"]] | all(.result == "success")'
+          fi
+      - uses: actions/checkout@v4
+        if: github.event_name == 'pull_request'
+      - name: Record the tested merge commit
+        if: github.event_name == 'pull_request'
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: jq -n --arg commit "$(git rev-parse HEAD)" --arg head "$PR_HEAD" --argjson pr "$PR_NUMBER" '{commit:$commit,head:$head,pr:$pr}' > merge.json
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'pull_request'
+        with: { name: tested-merge, path: merge.json, retention-days: 14 }
