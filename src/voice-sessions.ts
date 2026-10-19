@@ -223,6 +223,12 @@ export function interruption(options: Pick<VoiceOptions, "interruption">): Barge
   return { ...DEFAULT_BARGE_IN, ...options.interruption };
 }
 
+/** Two parts of one turn's transcript, as one (a failure of either fails it: the turn is then transcribed whole). */
+function joined(first: Promise<Transcript>, second: Promise<Transcript>): Promise<Transcript> {
+  const both = Promise.all([first, second]).then(([a, b]) => ({ ...a, ...b, text: [a.text, b.text].map(text => text.trim()).filter(Boolean).join(" "), seconds: a.seconds + b.seconds, ...(b.language ?? a.language ? { language: b.language ?? a.language } : {}) }));
+  both.catch(() => {});
+  return both;
+}
 /** addressing as given: {mode, names, conversationMs}. */
 function addressingInput(value: unknown): AddressingPolicy {
   if (value === undefined) return { ...DEFAULT_ADDRESSING };
@@ -459,10 +465,23 @@ type Held = {
   speechStarts?: Map<string, number>;
   /** Which turns are the bot's, and what was said around them (addressing). */
   floor: Floor;
+  /** Smart turns' events counted (voice_turn_stats when the session is let go). */
+  turnStats?: { likelyEnds: number; resumes: number; turns: number };
   /** The reply being made to the last turn (agentReplies), until it is heard: a newer turn supersedes it before then. */
   reply?: { requestId: string; speaker: string; abort: AbortController; heard: boolean };
 };
-type LiveSpeaker = { stream: LiveTranscription; platform: Promise<boolean>; idle?: ReturnType<typeof setTimeout> };
+type LiveSpeaker = {
+  stream: LiveTranscription; platform: Promise<boolean>; idle?: ReturnType<typeof setTimeout>;
+  /** Bytes appended since its last commit or clear. */
+  appended: number;
+  /**
+   * What was committed early (at likely_end, before the turn ended) of the turn being spoken: its transcript comes while
+   * the turn waits to be sure, and the cut adds only what was said after, if anything.
+   */
+  early?: Promise<Transcript>;
+  /** They spoke again after it: what came after is speech, and is committed with the cut (else it is silence). */
+  resumed?: boolean;
+};
 /** An utterance's transcript from its speaker's live stream, committed as it was cut. */
 type Committed = { transcript: Promise<Transcript>; platform: Promise<boolean> };
 /** A prompt's `speak`: the voice session its run's reply is spoken in, and how. */
@@ -1009,9 +1028,19 @@ export class VoiceSessions {
       },
       speechProgress: (speaker, speechMs) => { if (current()) held.guard?.progress(speaker, speechMs); },
       // Smart turns: a turn too short to be an utterance (a cough) ends a barge-in pause it made, at once.
-      turn: event => { if (current() && event.type === "turn_end") held.guard?.ended(event.speaker, event.speechMs); },
+      turn: event => {
+        if (!current()) return;
+        if (event.type === "turn_end") held.guard?.ended(event.speaker, event.speechMs);
+        // Likely done: its transcript is made now, while the turn waits to be sure (preemptive transcription).
+        if (event.type === "likely_end") this.commitEarly(held, event.speaker);
+        if (event.type === "resume") { const live = held.live?.get(event.speaker); if (live?.early) live.resumed = true; }
+        (held.turnStats ??= { likelyEnds: 0, resumes: 0, turns: 0 });
+        if (event.type === "likely_end") held.turnStats.likelyEnds++;
+        else if (event.type === "resume") held.turnStats.resumes++;
+        else if (event.type === "turn_end") held.turnStats.turns++;
+      },
       pcm: (speaker, pcm) => { if (current()) this.liveAudio(held, speaker, pcm); },
-      drop: speaker => held.live?.get(speaker)?.stream.clear(),
+      drop: speaker => this.liveDrop(held, speaker),
       cut: cut => this.cut(held, cut),
       crashed: reason => { if (current()) this.crashed(held, transport, reason); },
     });
@@ -1074,6 +1103,11 @@ export class VoiceSessions {
     // Speech stops first (why: the session ended or moved), then the media cuts what its speakers said so far.
     held.speech?.close(cut);
     held.guard?.close();
+    // What turn-taking did in this session, for tuning: likely ends spoken past (resumes) are speculation discarded.
+    if (held.turnStats) {
+      const { likelyEnds, resumes, turns } = held.turnStats;
+      console.log(JSON.stringify({ type: "voice_turn_stats", session: held.id, turns, likelyEnds, resumes, discardRate: likelyEnds ? Math.round(resumes / likelyEnds * 1_000) / 1_000 : null, floor: held.floor.stats }));
+    }
     this.waitingTurns.forget(held.id);
     const media = held.media;
     held.media = undefined;
@@ -1118,9 +1152,10 @@ export class VoiceSessions {
       };
       const opened = this.options.transcriber.live({ tenant: held.tenant, ...(options.keyScope ? { keyScope: options.keyScope } : {}) }, { ...(options.language ? { language: options.language } : {}), ...(options.prompt ? { prompt: options.prompt } : {}), ...(options.transcription?.keyterms ? { keyterms: options.transcription.keyterms } : {}), onEvent }, options.transcription?.providers);
       if (!opened) return;
-      (held.live ??= new Map()).set(speaker, live = opened);
+      (held.live ??= new Map()).set(speaker, live = { ...opened, appended: 0 });
     }
     live.stream.append(pcm);
+    live.appended += pcm.length;
     clearTimeout(live.idle);
     const current = live;
     live.idle = setTimeout(() => {
@@ -1132,6 +1167,27 @@ export class VoiceSessions {
   }
 
   /** An utterance was cut: transcribed and delivered after the speaker's previous one. */
+  /** A turn is likely over: commit its speaker's stream now (more of it, if they go on, is committed with the cut). */
+  private commitEarly(held: Held, speaker: string) {
+    const live = held.live?.get(speaker);
+    if (!live || live.stream.closed || !live.appended) return;
+    const part = live.stream.commit();
+    part.catch(() => {});
+    live.early = live.early ? joined(live.early, part) : part;
+    live.appended = 0;
+    live.resumed = undefined;
+  }
+
+  /** An utterance too short to keep: its stream forgets it, and what was committed early of it. */
+  private liveDrop(held: Held, speaker: string) {
+    const live = held.live?.get(speaker);
+    if (!live) return;
+    live.stream.clear();
+    live.appended = 0;
+    live.early = undefined;
+    live.resumed = undefined;
+  }
+
   private cut(held: Held, cut: Cut) {
     const origin: Origin = { id: held.id, tenant: held.tenant, claim: held.claim, row: held.row };
     const key = `${held.id}:${cut.speaker}`;
@@ -1139,7 +1195,15 @@ export class VoiceSessions {
     const live = cut.live ? held.live?.get(cut.speaker) : undefined;
     let committed: Committed | undefined;
     if (live) {
-      committed = { transcript: live.stream.commit(), platform: live.platform };
+      // What was committed early, and what came after it: speech only if they spoke again, else the silence before the
+      // cut (cleared, not sent).
+      const early = live.early, resumed = live.resumed;
+      live.early = undefined;
+      live.resumed = undefined;
+      const rest = !early || (resumed && live.appended) ? live.stream.commit() : undefined;
+      if (!rest && live.appended) live.stream.clear();
+      live.appended = 0;
+      committed = { transcript: early && rest ? joined(early, rest) : (rest ?? early)!, platform: live.platform };
       committed.transcript.catch(() => {});
       // A broken stream is replaced at the speaker's next utterance.
       if (live.stream.closed) { clearTimeout(live.idle); held.live!.delete(cut.speaker); }
