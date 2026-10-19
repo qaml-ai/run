@@ -393,7 +393,9 @@ How it works:
   Smart Turn, or silence), and only then is the model asked to answer. With smart turns it is asked at the likely end
   already (`realtime.speculative`, default true) and its audio waits for the turn to end; if the person goes on, it is
   taken back unheard. While someone else is mid-turn the answer waits for them, and their turn replaces it: one answer
-  to both.
+  to both. The provider's VAD is not used: on a mixed stream it fires on anyone (chatter, echo), it cannot know who
+  holds the floor, and it is no faster (the lifelike-voice probe: Gemini Live's first audio 1.2 s after the last word
+  with its own VAD, 0.6 s after our commit).
 - **Who it answers** follows [addressing](#who-it-answers): a turn from someone alone with the bot or in a conversation
   with it is answered at once. Otherwise, with `names`, the turn's transcript decides (named: answered; not: the model
   only listens). Without names, the model is told the turn did not name it, and calls `stay_silent` when people are
