@@ -31,7 +31,7 @@ const createAgentSchema = z.object({
       }).strict()),
     }).strict() }).strict(),
     asr: z.object({ user_input_audio_format: z.literal("pcm_16000") }).strict(),
-    tts: z.object({ voice_id: z.string(), model_id: z.literal("eleven_flash_v2"), agent_output_audio_format: z.literal("pcm_24000") }).strict(),
+    tts: z.object({ voice_id: z.string(), model_id: z.literal("eleven_v4_turbo"), agent_output_audio_format: z.literal("pcm_24000") }).strict(),
     turn: z.object({ turn_eagerness: z.enum(["patient", "normal", "eager"]), turn_timeout: z.number(), silence_end_call_timeout: z.number() }).strict(),
     conversation: z.object({ client_events: z.array(z.enum(["conversation_initiation_metadata", "ping", "audio", "interruption", "user_transcript", "agent_response", "client_tool_call", "agent_response_complete", "client_error"])) }).strict(),
   }).strict(),
