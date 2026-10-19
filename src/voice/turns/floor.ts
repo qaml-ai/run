@@ -106,6 +106,18 @@ export class Floor {
     return { addressed, reason };
   }
 
+  /**
+   * Whether `speaker`'s turn is the bot's before its words are known (a realtime brain answers before a transcript):
+   * always, alone, or in a conversation with the bot; undefined when only its words could say (it names the bot or
+   * not). Changes nothing: `decide` does, once the words are known.
+   */
+  standing(speaker: string, humans?: number): Addressed["reason"] | undefined {
+    if (this.policy.mode === "always") return "always";
+    if (humans === 1) return "alone";
+    if ((this.conversations.get(speaker) ?? 0) > this.now()) return "conversation";
+    return undefined;
+  }
+
   /** The bot answered `speaker`: the conversation goes on from now. */
   answered(speaker: string) {
     this.conversations.set(speaker, this.now() + this.policy.conversationMs);

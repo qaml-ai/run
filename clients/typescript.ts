@@ -648,13 +648,16 @@ export type WebhookEvent = { id: string; created: number } & (
       /** When its first audio went out (ms). */
       startedAt?: number;
       /** For the first speech of a reply to an utterance: each stage, in ms since the end of the person's speech. */
-      turn?: { seq?: number; path: "agent_reply" | "prompt_speak" | "speak" | null; stagesMs: Record<string, number> };
+      turn?: { seq?: number; path: "agent_reply" | "prompt_speak" | "speak" | "realtime" | null; stagesMs: Record<string, number> };
+      /** A realtime brain's answer. */
+      brain?: "realtime";
     } }
   | { type: "voice.speech.ended"; data: VoiceFacts & {
       speechId: string; reason: "done" | "interrupted" | "error"; reply?: VoiceReply;
       /** With interrupted: an interrupting speech, stopSpeaking, a person talking (bargeIn), the session ending or moving, credit running out. */
       by?: "interrupt" | "requested" | "barge_in" | "end" | "handoff" | "budget" | "superseded";
       seconds: number; costUsd: number;
+      brain?: "realtime";
     } });
 /** A piece of an agent's reply a session speaks (speak: {agentReplies: true}): the agent and its run. */
 export type VoiceReply = { agent: string; requestId: string };
@@ -682,6 +685,8 @@ export type VoiceUtterance = VoiceFacts & {
   echo?: true; backchannel?: true;
   /** Whether it was the bot's turn (`addressing`), and why: always (mode), alone, named, conversation, or not_addressed. */
   addressed: boolean; addressedBy: "always" | "alone" | "named" | "conversation" | "not_addressed";
+  /** A realtime brain heard (and answered) it itself; `speakers`: everyone whose audio is in it, when people spoke at once. */
+  brain?: "realtime"; speakers?: string[];
 };
 
 /**
@@ -1262,9 +1267,21 @@ export interface VoiceSessionInput {
    * `silenceMs` of quiet.
    */
   endOfTurn?: VoiceEndOfTurn["mode"] | Partial<VoiceEndOfTurn>;
+  /**
+   * What answers (beta): `cascade` (the default; transcription, your app or deliver.agent, text to speech) or `realtime`,
+   * a speech-to-speech model that hears the call and answers aloud, asking deliver.agent (`ask_agent`) for anything
+   * beyond talk. Needs the runtime's AGENT_VOICE_REALTIME; the session speaks, and `voice.speak` is refused.
+   */
+  brain?: "cascade" | "realtime";
+  /** With brain realtime: its model, voice, the bot's persona (`instructions`), and how it listens. */
+  realtime?: Partial<VoiceRealtime>;
+  /** Speakers' names by user id, for the realtime brain's note of who speaks ("[Ana]"); others are Speaker 1, 2… */
+  speakers?: Record<string, string>;
   /** An Idempotency-Key: the same key answers the same session. */
   idempotencyKey?: string;
 }
+/** A realtime brain's settings: `gpt-realtime-2.1` (or `-mini`), a voice of the model's (marin, cedar, coral…). */
+export type VoiceRealtime = { provider: "openai" | "gemini"; model: string; voice: string; instructions?: string; transcribe: boolean; speculative: boolean };
 /** How a voice session ends each speaker's turn (`endOfTurn`). */
 export type VoiceEndOfTurn = { mode: "smart" | "silence"; commitMs: number; threshold: number; maxSilenceMs: number };
 export interface VoiceSession {
@@ -1282,6 +1299,7 @@ export interface VoiceSession {
   addressing: { mode: "always" | "addressed"; names: string[]; conversationMs: number; contextTurns: number; contextMs: number };
   transcription?: { providers?: string[]; keyterms?: string[] }; speech?: { providers?: string[]; voices?: Record<string, string> };
   endOfTurn: VoiceEndOfTurn;
+  brain: "cascade" | "realtime"; realtime?: VoiceRealtime; speakers?: Record<string, string>;
   utterances: number; speechSeconds: number;
   /** Speeches played, and seconds of speech made. */
   speeches: number; spokenSeconds: number;
@@ -1338,7 +1356,7 @@ export class Voice {
     return this.transport.json(`/v1/voice/sessions${query.size ? `?${query}` : ""}`, this.key());
   }
   /** Discord moved the call (a new VOICE_SERVER_UPDATE, or a move to another channel): the session reconnects with these. */
-  update(id: string, input: { discord?: Partial<Pick<DiscordVoiceGrant, "channelId" | "sessionId" | "endpoint" | "token">>; ignoreUserIds?: string[]; metadata?: Record<string, unknown> }): Promise<VoiceSession> {
+  update(id: string, input: { discord?: Partial<Pick<DiscordVoiceGrant, "channelId" | "sessionId" | "endpoint" | "token">>; ignoreUserIds?: string[]; metadata?: Record<string, unknown>; speakers?: Record<string, string> }): Promise<VoiceSession> {
     return this.transport.json(this.path(id), this.key(), "PATCH", input);
   }
   /**

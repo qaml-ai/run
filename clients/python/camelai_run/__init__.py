@@ -1156,7 +1156,7 @@ class Voice:
     def create(self, discord, *, subject=None, bucket=None, context=None, key_scope=None, agent=None, webhooks=None, language=None,
                prompt=None, silence_ms=None, max_minutes=None, idle_minutes=None, empty_seconds=None, ignore_user_ids=None,
                metadata=None, notice=None, speak=None, barge_in=None, voice=None, agent_replies=None, transcription=None, speech=None,
-               idempotency_key=None):
+               brain=None, realtime=None, speakers=None, idempotency_key=None):
         """Start a session from `discord`: {"guildId", "channelId", "userId" (the bot), "sessionId" (its
         VOICE_STATE_UPDATE), "endpoint", "token" (VOICE_SERVER_UPDATE)}. `subject` pays (its `bucket` with end-user
         credits on); utterances go to your webhooks (`webhooks`, default True) and/or `agent` as prompts. `silence_ms`
@@ -1168,6 +1168,9 @@ class Voice:
         `transcription` ({"providers": ["deepgram/flux", "soniox", "openai"], "keyterms": [...]}) streams speech to text
         through those providers in order; `speech` ({"providers": ["elevenlabs", "openai"], "voices": {"elevenlabs": id}})
         speaks through them. Each uses your key for it (PUT /v1/providers/<provider>/key), else the platform's; default: the runtime's chains.
+        `brain="realtime"` (beta) has a speech-to-speech model hear the call and answer aloud, asking `agent` (ask_agent)
+        for anything beyond talk; `realtime` ({"model", "voice", "instructions", "transcribe", "speculative"}) sets it up,
+        and `speakers` ({user_id: name}) names who speaks.
         Returns the session with "notice": post its "text" in the voice channel's chat now. Raises 409
         VOICE_SESSION_EXISTS when the bot has one in the server."""
         if agent_replies is not None:
@@ -1175,7 +1178,7 @@ class Voice:
         fields = {"subject": subject, "bucket": bucket, "context": context, "keyScope": key_scope, "language": language, "prompt": prompt,
                   "silenceMs": silence_ms, "maxMinutes": max_minutes, "idleMinutes": idle_minutes, "emptySeconds": empty_seconds,
                   "ignoreUserIds": ignore_user_ids, "metadata": metadata, "notice": notice, "speak": speak, "bargeIn": barge_in, "voice": voice,
-                  "transcription": transcription, "speech": speech}
+                  "transcription": transcription, "speech": speech, "brain": brain, "realtime": realtime, "speakers": speakers}
         deliver = {key: value for key, value in {"agent": agent, "webhooks": webhooks}.items() if value is not None}
         body = {"provider": "discord", "discord": discord, **{key: value for key, value in fields.items() if value is not None}, **({"deliver": deliver} if deliver else {})}
         headers = {"Idempotency-Key": idempotency_key} if idempotency_key is not None else None
@@ -1189,10 +1192,10 @@ class Voice:
         query = urlencode({key: value for key, value in {"state": state, "limit": limit, "after": after}.items() if value is not None})
         return self._runtime._rest("GET", f"/v1/voice/sessions{'?' + query if query else ''}")
 
-    def update(self, session_id, *, discord=None, ignore_user_ids=None, metadata=None):
+    def update(self, session_id, *, discord=None, ignore_user_ids=None, metadata=None, speakers=None):
         """Discord moved the call: `discord` with what changed ({"endpoint", "token"}, or "channelId", "sessionId"); the
-        session reconnects with it."""
-        body = {key: value for key, value in {"discord": discord, "ignoreUserIds": ignore_user_ids, "metadata": metadata}.items() if value is not None}
+        session reconnects with it. `speakers` ({user_id: name}) renames who speaks, for a realtime brain."""
+        body = {key: value for key, value in {"discord": discord, "ignoreUserIds": ignore_user_ids, "metadata": metadata, "speakers": speakers}.items() if value is not None}
         return self._runtime._rest("PATCH", f"/v1/voice/sessions/{quote(session_id, safe='')}", body)
 
     def speak(self, session_id, text, *, voice=None, voices=None, instructions=None, interrupt=None):

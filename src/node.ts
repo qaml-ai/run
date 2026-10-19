@@ -94,6 +94,9 @@ import { liveProvider, sttReference } from "./voice-providers/stt.ts";
 import { DEFAULT_VOICES, speechProvider, ttsReference } from "./voice-providers/tts.ts";
 import { speechPrices, ttsCost } from "./voice-providers/prices.ts";
 import { VOICE_CHANNEL, VoiceSessions, type VoiceReplyTarget, type VoiceTransport } from "./voice-sessions.ts";
+import { openaiRealtime } from "./voice/realtime/openai.ts";
+import { geminiLive } from "./voice/realtime/gemini.ts";
+import { REALTIME_PROVIDERS } from "./voice/realtime/provider.ts";
 import { MediaHost } from "./voice/media-host.ts";
 import { inlineMedia, type MediaFactory } from "./voice/media.ts";
 import { browserVoice, type BrowserTransport } from "./voice-browser.ts";
@@ -922,6 +925,11 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   // Calls from a web page (provider browser, src/voice-browser.ts): their sockets come to whichever node holds the session.
   const browserTransport = deps.voiceTransports ? deps.voiceTransports.browser : config.voice.enabled ? browserVoice() : undefined;
   const voiceTransports = deps.voiceTransports ?? (config.voice.enabled ? { discord: voiceHost ? voiceHost.transport() : (await import("./voice-discord.ts")).discordVoice(), ...(browserTransport ? { browser: browserTransport } : {}) } : undefined);
+  const realtimeProviders = config.voice.realtime.length ? Object.fromEntries(config.voice.realtime.map(id => {
+    if (!(REALTIME_PROVIDERS as readonly string[]).includes(id)) throw new Error(`AGENT_VOICE_REALTIME: ${id} is not a realtime provider (${REALTIME_PROVIDERS.join(", ")})`);
+    if (id === "gemini") return [id, geminiLive(config.voice.geminiLiveUrl ? { baseUrl: config.voice.geminiLiveUrl } : {})];
+    return [id, openaiRealtime(config.voice.realtimeUrl ? { baseUrl: config.voice.realtimeUrl } : {})];
+  })) : undefined;
   const voice = voiceTransports && new VoiceSessions({
     db, accounts, node, ownership, transports: voiceTransports, ...(deps.voiceEndpoints ? { endpoints: deps.voiceEndpoints } : {}),
     admit: async tenant => {
@@ -949,6 +957,17 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     media: (transport, provider) => provider === "browser" ? inlineMedia(transport, turnModels) : deps.voiceMedia ? deps.voiceMedia(transport) : voiceHost ? voiceHost.factory() : inlineMedia(transport, turnModels),
     ...(browserTransport ? { browser: { secret: sessionSecret!, url: (id: string) => `${(browserUrl || links.publicUrl).replace(/^http/, "ws")}/v1/voice/sessions/${id}/socket` } } : {}),
     ...(turnModels ? { turnModels } : {}),
+    // Realtime brains, on the providers AGENT_VOICE_REALTIME names, each on the tenant's key for it (else the
+    // platform's). A key scope's gateway address is for model calls: a realtime brain needs the provider's own key.
+    ...(realtimeProviders ? {
+      realtime: {
+        providers: realtimeProviders,
+        key: async (tenant: string, keyScope: string | undefined, provider: string) => {
+          const key = await providerKey(tenant, keyScope, provider);
+          return key && key.apiKey && !("baseUrl" in key && key.baseUrl) ? { apiKey: key.apiKey, platform: key.platform } : undefined;
+        },
+      },
+    } : {}),
   });
   // An agent loaded on another node: this node's idle watchers of it end, and reconnect to that node.
   // A tenant's webhook endpoints changed on some node: read them again at its next run.
