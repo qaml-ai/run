@@ -5,7 +5,7 @@
   conversation with the bot (it answered them, or they named it, within `conversationMs`, 20 s; someone else naming it
   moves the conversation to them), or when no one else is in the call. Rules, not a model: language models pick a
   multi-party addressee near chance. `mode: "always"` (the default without names) is as before.
-- The other turns still reach webhooks: `voice.utterance` has `addressed` and `addressedBy`. The agent gets them as
-  context with the next turn that is the bot's. Prompt metadata has `addressedBy` when it is not `always`.
-- With `agentReplies`, one reply at a time: a reply not yet heard when a newer turn's reply starts is taken back
-  (`voice.speech.ended` `by: "superseded"`, log `voice_reply_superseded`), so rapid-fire turns get one answer.
+- The other turns still reach webhooks: `voice.utterance` has `addressed` and `addressedBy`. The model hears them as
+  context, and only listens.
+- One answer at a time: an answer not yet heard when a newer turn ends is taken back (`voice.speech.ended`
+  `by: "superseded"`), so rapid-fire turns get one answer.

@@ -13,7 +13,7 @@ import { onFreePort, sha, token } from "./cluster-helpers.ts";
 import { testDatabase } from "./database.ts";
 import { until } from "./runtime-server.ts";
 
-test("POST /v1/speech: the voice a session would speak in, streamed as made (pcm or wav), billed per second made", async t => {
+test("POST /v1/speech: OpenAI by default, streamed as made (pcm or wav), billed per second made", async t => {
   const root = await mkdtemp(join(tmpdir(), "agent-speech-"));
   t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
   writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: {
@@ -85,7 +85,7 @@ test("POST /v1/speech: the voice a session would speak in, streamed as made (pcm
   assert.equal((await noKey.json() as any).code, "SPEECH_UNAVAILABLE");
 });
 
-test("POST /v1/speech through a chain of providers, as a session's speech: the first with a key serves, and says so", async t => {
+test("POST /v1/speech through a chain of providers it names: the first with a key serves, and says so", async t => {
   const root = await mkdtemp(join(tmpdir(), "agent-speech-chain-"));
   t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
   writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(token), apiKeys: { openrouter: "fixture-key", openai: "tenant-openai-key", elevenlabs: "tenant-eleven-key" } } } }));
@@ -107,7 +107,7 @@ test("POST /v1/speech through a chain of providers, as a session's speech: the f
       AGENT_DATA_DIR: join(root, "shared"), AGENT_STORAGE: "shared-file", AGENT_HOSTING: "inline", AGENT_LEASE_TTL_MS: "1500", AGENT_SCHEDULER_INTERVAL_MS: "200",
       AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_SESSION_SECRET: "speech-api-session-secret-with-32-chars!", AGENT_SECRETS_KEY: randomBytes(32).toString("hex"),
       AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", AGENT_SPEECH_URL: `${fakeUrl}/v1`, AGENT_ELEVENLABS_URL: fakeUrl,
-      AGENT_VOICE: "true", AGENT_VOICE_ISOLATION: "inline", AGENT_VOICE_TTS: "openai",
+      AGENT_VOICE: "true", AGENT_VOICE_ISOLATION: "inline",
     });
     const made = await createNode(config, await nodeDeps(config));
     try { await made.start(); } catch (error) { await made.close().catch(() => {}); throw error; }

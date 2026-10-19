@@ -556,10 +556,9 @@ rates below as your account is charged them.
 | `web_search` on the platform's keys | Per search, by the provider that answered: Exa $0.007, Brave $0.005, Parallel $0.001 |
 | `web_fetch` page rendering on the platform's key | $0.00083 per page Firecrawl renders |
 | [Transcription](https://run.camelai.com/docs/guides/voice.md) on the platform's OpenAI key | $0.0045 per minute of audio (`gpt-transcribe`), billed per second |
-| [Live transcription](https://run.camelai.com/docs/guides/voice-calls.md#utterances) a voice session makes as people speak (when the runtime turns it on), on the platform's OpenAI key | $0.017 per minute of audio (`gpt-live-transcribe`), billed per second |
-| [Speech](https://run.camelai.com/docs/guides/voice-calls.md#speaking) a voice session says, on the platform's OpenAI key | $0.015 per minute of speech made (`gpt-4o-mini-tts`), billed per second |
-| [Live transcription through other providers](https://run.camelai.com/docs/guides/voice-calls.md#speech-providers), on the platform's key for each | Their list prices, per minute of audio streamed, billed per second: Deepgram `nova-3` $0.0077 (multilingual $0.0092), Deepgram `flux-general-en` $0.0077, Soniox `stt-rt-v3` $0.002, AssemblyAI Universal Streaming $0.0025 |
-| [Speech through other providers](https://run.camelai.com/docs/guides/voice-calls.md#speech-providers), on the platform's key for each | Their list prices, per 1,000 characters spoken: ElevenLabs Flash/Turbo v2.5 $0.05, Cartesia `sonic-3` $0.05, Deepgram `aura-2` $0.03 |
+| [Voice calls](https://run.camelai.com/docs/guides/voice-calls.md#cost) on the platform's key | The realtime model's tokens at its list price (about $0.02 to $0.05 a conversational minute); what people say transcribed at the transcription price |
+| [Speech](https://run.camelai.com/docs/guides/voice.md#speech-on-its-own) (`POST /v1/speech`) on the platform's OpenAI key | $0.015 per minute of speech made (`gpt-4o-mini-tts`), billed per second |
+| [Speech through other providers](https://run.camelai.com/docs/guides/voice.md#speech-on-its-own), on the platform's key for each | Their list prices, per 1,000 characters spoken: ElevenLabs Flash/Turbo v2.5 $0.05, Cartesia `sonic-3` $0.05, Deepgram `aura-2` $0.03 |
 | [Images](https://run.camelai.com/docs/guides/images.md) on the platform's OpenAI key | Per token as OpenAI bills `gpt-image-2.5-flare`: $5 per million text tokens in, $8 per million image tokens in, $30 per million image tokens out. A 1024x1024 image is $0.0059 at `low`, $0.0132 at `medium`, $0.0527 at `high` |
 
 ## Credit
@@ -2791,23 +2790,38 @@ Runs-per-minute limits count each transcription as a run.
 
 ## Speech on its own
 
-`POST /v1/speech` turns text into speech in the voice a [voice session](https://run.camelai.com/docs/guides/voice-calls.md#speaking) would speak it
-in, and streams the audio back as it is made. Use it to preview what a bot sounds like:
+`POST /v1/speech` turns text into speech and streams the audio back as it is made:
 
 ```sh
 curl -sS https://run.camelai.com/v1/speech -H "Authorization: Bearer $CAMELRUN_API_KEY" -H "Content-Type: application/json" \
   -d '{"text": "Hi, I am your bot.", "voice": "coral", "format": "wav"}' -o hello.wav
 ```
 
-`format` is `pcm` (the default: raw 16-bit little-endian mono at 24 kHz, as a session plays it) or `wav` (the same
-in a WAV container, which an `<audio>` element plays as it downloads). `speech` (`{providers, voices}`) and `language` choose providers and voices exactly as a voice session's [speech providers](https://run.camelai.com/docs/guides/voice-calls.md#speech-providers) do; `voice`, `instructions`, `keyScope`, and
-`subject`, `context`, `actor` and `bucket` mean what they do for a session's speech and for a transcription. The text
-is at most 4,000 characters. By default speech is made with OpenAI's `gpt-4o-mini-tts` (`X-Speech-Model` names whichever provider served) on the OpenAI
-key a session's speech would use: without one it is a 400 (`SPEECH_UNAVAILABLE`), and text OpenAI refuses is a 400 too.
+`format` is `pcm` (the default: raw 16-bit little-endian mono at 24 kHz) or `wav` (the same in a WAV container, which
+an `<audio>` element plays as it downloads). The text is at most 4,000 characters; `instructions` (at most 1,000) says
+how to say it (tone, pace, accent) to OpenAI; `language` tells providers that speak many languages which one to
+pronounce; `keyScope`, `subject`, `context`, `actor` and `bucket` mean what they do for a transcription.
 
-It is billed as a session's speech is: `kind: "speech"` usage per second made, against an end user's credit
-when you name a `subject` (held before it is made). A caller that hangs up stops it; what was made is billed.
-Nothing is kept: neither the text nor the audio.
+By default speech is made with OpenAI's `gpt-4o-mini-tts` in `voice` (`alloy`, `coral`, `verse`…), on your OpenAI key
+or the platform's: without one it is a 400 (`SPEECH_UNAVAILABLE`), and text OpenAI refuses is a 400 too. `speech:
+{providers, voices}` names providers to try in order instead, each `<provider>` (its default model) or
+`<provider>/<model>`, on your key for it (`PUT /v1/providers/<provider>/key`, or a key scope's), else the platform's; one
+with no key is skipped:
+
+| Provider | Default model | Voice (`speech.voices.<provider>`) |
+| --- | --- | --- |
+| `elevenlabs` | `eleven_flash_v2_5` (its fastest) | An ElevenLabs voice id. Default: the premade "Rachel" |
+| `cartesia` | `sonic-3` | A Cartesia voice id. Required: Cartesia is skipped without one |
+| `deepgram` | `aura-2` | An Aura voice. Default: `aura-2-thalia-en` |
+| `openai` | `gpt-4o-mini-tts` | `voice` (alloy, coral, verse…). Takes `instructions` |
+
+A provider that fails, or that sends no audible audio within 3 s, is passed over for the next one; once audio has gone
+out, a failure ends the stream. `X-Speech-Model` names the provider and model that served.
+
+It is billed as its provider bills it: OpenAI's per second of speech made ($0.015 a minute on the platform's key),
+ElevenLabs, Cartesia and Deepgram Aura per character of the text, at their list prices. Each is a `usage.recorded` with
+`kind: "speech"` and `audioSeconds`, against an end user's credit when you name a `subject` (held before it is made). A
+caller that hangs up stops it; what was made is billed. Nothing is kept: neither the text nor the audio.
 
 ## Formats and limits
 
@@ -2851,9 +2865,9 @@ for training). See [Account data](https://run.camelai.com/docs/operations/privac
 - **Audio to the model itself.** Every model reads the transcript today; models that hear audio natively may be
   given the sound later, beside it.
 - **Timestamps or speaker labels.** Transcripts are text only, from the one model.
-- **Live voice outside calls.** Transcription of streaming audio as it is spoken is offered in Discord voice calls:
-  camelRun listens in a call for your bot and sends each person's utterances, transcribed, to your webhooks or an
-  agent. See [Voice calls](https://run.camelai.com/docs/guides/voice-calls.md). Speech out is `POST /v1/speech` (above) or a session's `speak`.
+- **Live voice outside calls.** Live speech is offered in Discord voice calls: camelRun sits in a call for your bot, and
+  a realtime speech-to-speech model answers aloud. See [Voice calls](https://run.camelai.com/docs/guides/voice-calls.md). Speech out on its own is
+  `POST /v1/speech` (above).
 - **Audio in `initialMessages`.** Transcribe it first with `POST /v1/transcriptions` and import the text.
 
 ---
@@ -2862,9 +2876,9 @@ for training). See [Account data](https://run.camelai.com/docs/operations/privac
 
 # Voice calls
 
-camelRun can sit in a Discord voice call for your bot and listen: it cuts each person's speech into utterances,
-transcribes them, and sends the text to your webhooks or to an agent. Your app keeps its Discord gateway and its bot
-token; camelRun never sees either.
+camelRun can sit in a Discord voice call for your bot and talk with the people in it: a realtime speech-to-speech model
+hears the call and answers aloud, and asks your bot's agent for anything beyond talk. What people say also goes to your
+webhooks, transcribed. Your app keeps its Discord gateway and its bot token; camelRun never sees either.
 
 Joining a voice channel is the only step that needs the bot's gateway. Your app asks to join (OP 4, voice state
 update), and Discord answers on the gateway with two dispatches: the bot's `VOICE_STATE_UPDATE` (its voice
@@ -2884,12 +2898,14 @@ hosted runtime's network).
 import { Agents } from "@camelai/run";
 const agents = new Agents();
 
-// On your gateway: OP 4 {guild_id, channel_id, self_mute: true, self_deaf: false}; then, from Discord's answers:
+// On your gateway: OP 4 {guild_id, channel_id, self_mute: false, self_deaf: false}; then, from Discord's answers:
 const session = await agents.voice.create({
   discord: { guildId, channelId, userId: botUserId, sessionId: voiceState.session_id, endpoint: voiceServer.endpoint, token: voiceServer.token },
+  deliver: { agent: agent.id },     // the bot's agent, which the model asks for facts and actions
+  realtime: { instructions: "You are Mochi, a cheerful cat who loves puns." },
   subject: ownerId,                 // whose usage it is (and whose credit, with end-user credits)
   metadata: { botId: 42 },          // echoed in every voice.* event
-  ignoreUserIds: otherBotIds,       // never transcribed, and not company in the call
+  ignoreUserIds: otherBotIds,       // never heard, and not company in the call
 });
 // People must know they are transcribed: post the notice in the voice channel's chat now.
 await postMessage(session.notice.channelId, session.notice.text);
@@ -2899,13 +2915,14 @@ await postMessage(session.notice.channelId, session.notice.text);
 session = await agents.voice.create(
     {"guildId": guild_id, "channelId": channel_id, "userId": bot_user_id, "sessionId": state["session_id"],
      "endpoint": server["endpoint"], "token": server["token"]},
+    agent=agent_id, realtime={"instructions": "You are Mochi, a cheerful cat who loves puns."},
     subject=owner_id, metadata={"botId": 42})
 ```
 
 ```bash
 curl -X POST "$RUNTIME/v1/voice/sessions" -H "Authorization: Bearer $CAMELAI_API_KEY" -H "Content-Type: application/json" \
   -d '{"discord": {"guildId": "…", "channelId": "…", "userId": "…", "sessionId": "…", "endpoint": "c-ams12-1a2b.discord.media:443", "token": "…"},
-       "subject": "user_42", "language": "en"}'
+       "deliver": {"agent": "client_…"}, "subject": "user_42", "language": "en"}'
 ```
 
 The answer is the session (`id`, `state: "connecting"`, its settings) and `notice`. A bot has one session per server, as
@@ -2915,20 +2932,24 @@ Discord allows one voice connection per user and server: a second `POST` for the
 | Field | |
 | --- | --- |
 | `discord` | `guildId`, `channelId`, `userId` (the bot), `sessionId`, `endpoint` (a `*.discord.media` host), `token`. The token is stored encrypted, never returned, and dropped when the session ends |
-| `subject`, `context`, `keyScope` | whose usage it is (`usage.recorded`'s `subject`), your claims in its `context`, and a [key scope](https://run.camelai.com/docs/guides/models-and-keys.md#key-scopes) whose OpenAI key transcribes |
+| `realtime` | the model that answers: `{provider, model, voice, instructions, transcribe, speculative}`; see [the realtime brain](https://run.camelai.com/docs/guides/voice-calls.md#the-realtime-brain) |
+| `subject`, `context`, `keyScope` | whose usage it is (`usage.recorded`'s `subject`), your claims in its `context`, and a [key scope](https://run.camelai.com/docs/guides/models-and-keys.md#key-scopes) whose key for the realtime provider is used |
 | `bucket` | with end-user credits on: which of the subject's buckets pays |
-| `deliver` | `webhooks` (default `true`): `voice.*` events to your endpoints; `agent`: each utterance as a prompt to that agent |
-| `language`, `prompt` | the language spoken (`en`, `pt-BR`; detected per utterance when left out), and words to expect (names, jargon) |
+| `deliver` | `agent`: the bot's agent, which the model asks for anything beyond talk (`ask_agent`); `webhooks` (default `true`): `voice.*` events to your endpoints |
+| `language`, `prompt` | the language spoken (`en`, `pt-BR`; detected when left out), and words to expect (names, jargon), for the transcripts |
 | `addressing` | which turns are the bot's in a group call: `{names, mode, conversationMs}`; see [who it answers](https://run.camelai.com/docs/guides/voice-calls.md#who-it-answers) (default: every turn) |
-| `endOfTurn` | how a speaker's turn (an utterance) ends: `smart` (the default where the runtime has the models) or `silence`, or `{mode, commitMs, threshold, maxSilenceMs}`; see [turns](https://run.camelai.com/docs/guides/voice-calls.md#turns) |
-| `silenceMs` | with `endOfTurn: silence`: silence that ends an utterance: 200 to 5000, default 800 |
+| `endOfTurn` | how a speaker's turn ends: `smart` (the default where the runtime has the models) or `silence`, or `{mode, commitMs, threshold, maxSilenceMs}`; see [turns](https://run.camelai.com/docs/guides/voice-calls.md#turns) |
+| `silenceMs` | with `endOfTurn: silence`: silence that ends a turn: 200 to 5000, default 800 |
 | `maxMinutes`, `idleMinutes`, `emptySeconds` | the session ends after `maxMinutes` (default 240, at most 720), after `idleMinutes` without speech (default 30), or with no one else in the call for `emptySeconds` (default 60) |
-| `ignoreUserIds` | users never transcribed and not counted as company: other bots |
+| `ignoreUserIds` | users never heard and not counted as company: other bots |
 | `metadata` | anything, at most 4 KB of JSON, echoed in every `voice.*` event |
-| `notice` | the notice text (`{bot}` is the bot's id); by default "<@bot> is listening and transcribing speech in this channel. Audio is not stored." (with `speak`, "…listening, transcribing speech and may speak…") |
-| `speak` | the bot may [speak](https://run.camelai.com/docs/guides/voice-calls.md#speaking) in the call: `true`, or `{agentReplies: true}` to also [speak `deliver.agent`'s replies](https://run.camelai.com/docs/guides/voice-calls.md#speaking-an-agents-replies) (default `false`). Your app joins with `self_mute: false`: the answer's `join` says how it should have joined |
-| `bargeIn` | with `speak`: a person talking over the bot stops what it is saying, unless it is the bot's own voice coming back (default `true`; or `{minMs, confirmMs, resumeMs, backchannels}`, see Barge-in) |
-| `voice` | with `speak`: the voice its speech is made in (default `alloy`; OpenAI's voices: `alloy`, `ash`, `ballad`, `coral`, `echo`, `fable`, `nova`, `onyx`, `sage`, `shimmer`, `verse`…) |
+| `notice` | the notice text (`{bot}` is the bot's id); by default "<@bot> is listening, transcribing speech and may speak in this channel. Audio is not stored." |
+| `bargeIn` | a person talking over the bot stops what it is saying, unless it is the bot's own voice coming back (default `true`; or `{minMs, confirmMs, resumeMs}`, see [barge-in](https://run.camelai.com/docs/guides/voice-calls.md#barge-in)) |
+| `voice` | the bot's voice by OpenAI's names (`alloy`, the default, `coral`, `nova`…), mapped to the provider's nearest; `realtime.voice` names the provider's own |
+| `speakers` | names by Discord user id, for the model's note of who speaks (`{"400000000000000001": "Ana"}`); PATCH it as people join |
+| `brain` | deprecated: `"realtime"` is the only one, and the default |
+
+The bot speaks, so your app joins un-muted (OP 4 with `self_mute: false`): the answer's `join` says so.
 
 ## Keep it connected, and end it
 
@@ -2940,7 +2961,7 @@ await agents.voice.update(session.id, { discord: { endpoint: voiceServer.endpoin
 ```
 
 `PATCH /v1/voice/sessions/{id}` takes `discord.channelId`, `sessionId`, `endpoint` (null: Discord is moving the call;
-send the next one) and `token`, and `ignoreUserIds` and `metadata`. A session whose connection was refused (the bot was
+send the next one) and `token`, and `ignoreUserIds`, `metadata` and `speakers`. A session whose connection was refused (the bot was
 disconnected or kicked, or Discord stopped taking its credentials) waits 15 seconds for new ones, then ends.
 
 When Discord stops taking the credentials (its voice session ended), only your gateway can get new ones, so camelRun
@@ -2962,12 +2983,12 @@ When camelRun ends a session itself (`voice.session.ended` with a `reason` other
 to leave. When your gateway sees the bot's own `VOICE_STATE_UPDATE` with `channel_id: null` (kicked), end the session.
 
 `GET /v1/voice/sessions/{id}` reads one (`state`: `connecting`, `live`, `reconnecting`, `ended`; `utterances`,
-`speechSeconds`, `costUsd`); `GET /v1/voice/sessions?state=live` lists them, newest first, a page at a time. Ended
+`speechSeconds`, `speeches`, `spokenSeconds`, `costUsd`); `GET /v1/voice/sessions?state=live` lists them, newest first, a page at a time. Ended
 sessions are listed for 30 days.
 
 ## Turns
 
-An utterance is one speaker's turn. How it ends is `endOfTurn`:
+A turn is one speaker's stretch of speech, and the model is asked to answer when it ends. How it ends is `endOfTurn`:
 
 - `smart` (the default where the runtime runs the turn models, which its operator turns on): speech is found by a voice activity model (Silero VAD),
   not by loudness, so room noise or an open mic is not speech. At each pause, after 200 ms of silence, a turn-detection
@@ -2983,17 +3004,19 @@ for them 87% of the time (`silence` cuts 99% of such pauses of 800 ms or more). 
 operator has not set `AGENT_VOICE_TURN_MODELS=true`, or they could not load) ends turns on `silence`, and refuses
 `smart`.
 
-With live transcription on, a `smart` turn the model calls complete is transcribed from that moment, while the turn
-waits out `commitMs`: its transcript comes that much sooner (if the speaker goes on, the rest is added to it).
+The provider's own turn detection is off: on a mixed stream it fires on anyone (chatter, echo), it cannot know who
+holds the floor, and it is no faster (Gemini Live's first audio came 1.2 s after the last word with its own VAD, 0.6 s
+after our commit). With `smart`, the model is asked to answer already at the likely end (`realtime.speculative`, default
+true), and its audio waits for the turn to end; if the person goes on, it is taken back unheard. While someone else is
+mid-turn the answer waits for them, and their turn replaces it: one answer to both.
 
 ## Who it answers
 
-By default every turn goes to `deliver.agent`. In a group call that makes a bot answer everything said near it.
-`addressing` makes it answer only the turns that are its own:
+By default every turn is answered. In a group call that makes a bot answer everything said near it. `addressing` makes
+it answer only the turns that are its own:
 
 ```ts
-await agents.voice.create({ discord, deliver: { agent: agent.id }, speak: { agentReplies: true },
-  addressing: { names: ["camel", "hey camel"] } });
+await agents.voice.create({ discord, deliver: { agent: agent.id }, addressing: { names: ["camel", "hey camel"] } });
 ```
 
 With `names` (its wake words; `mode: "addressed"` is then the default), a turn is the bot's when:
@@ -3004,254 +3027,29 @@ With `names` (its wake words; `mode: "addressed"` is then the default), a turn i
   (default 20 s), and no one else has named it since;
 - or no one else is in the call.
 
-The other turns still reach your webhooks (`voice.utterance` with `addressed: false`). The agent gets them as context
-with the next turn that is the bot's: the prompt starts with `[Said in the call before this, not to you]` and those
-turns (`<@speaker>: text`), then `[To you]` and the turn. Every `voice.utterance` says `addressed` and `addressedBy`
-(`always`, `alone`, `named`, `conversation` or `not_addressed`).
+A turn from someone alone with the bot, or in a conversation with it, is answered at once. Otherwise, with `names`,
+the turn's transcript decides (named: answered; not: the model only listens, and hears it as context). Without names,
+the model is told the turn did not name it, and calls `stay_silent` when people are talking to each other. The other
+turns still reach your webhooks (`voice.utterance` with `addressed: false`). Every `voice.utterance` says `addressed`
+and `addressedBy` (`always`, `alone`, `named`, `conversation` or `not_addressed`).
 
-With `speak: {agentReplies: true}` the bot says one reply at a time. A reply that has not started playing when a newer
-turn's reply starts is not said (`voice.speech.ended` with `by: "superseded"`); the newer one is, and the agent has
-both turns.
+## The realtime brain
 
-## Utterances
-
-Each person's audio is cut into utterances: their speech until their turn ends (see [turns](https://run.camelai.com/docs/guides/voice-calls.md#turns)), at most 30 seconds each
-(a longer monologue goes on in the next), and none with less than 300 ms of speech. Silence is either no audio (a
-person's client stops sending when they stop talking) or quiet audio, under -45 dBFS: a sender that never stops (a bot
-playing a file, a client set to transmit always) sends encoded silence in its pauses. Quiet beyond 200 ms before and
-after the speech is trimmed. Each is transcribed as
-[`POST /v1/transcriptions`](https://run.camelai.com/docs/guides/voice.md#transcribing-on-its-own) transcribes audio, in the order each person spoke.
-
-With `deliver.webhooks`, each goes to your [webhook endpoints](https://run.camelai.com/docs/guides/webhooks.md) that select `voice.utterance`:
-
-```json
-{"id": "evt_…", "type": "voice.utterance", "created": 1790000000,
- "data": {"session": "vs_…", "provider": "discord", "guildId": "…", "channelId": "…", "botUserId": "…",
-          "speakerId": "<the Discord user who spoke>", "seq": 12, "text": "Can you add that to the list?", "language": "en",
-          "seconds": 2.4, "startedAt": 1790000000000, "endedAt": 1790000002400, "ended": "silence", "costUsd": 0.000225,
-          "subject": "user_42", "metadata": {"botId": 42}}}
-```
-
-`ended` says why it ended: `silence`; `max` (cut at 30 s); `error` (the speaker's audio broke off); `handoff` (the
-session moved to another node of the runtime, which goes on from the next); `end` (the session ended). `seq` numbers
-them in the order their transcripts were made. An utterance that transcribes to nothing is billed but not sent.
-
-A runtime may instead transcribe utterances as they are spoken (off by default; its operator turns it on with
-`AGENT_VOICE_LIVE_TRANSCRIPTION=true`): each person's audio streams to OpenAI's Realtime transcription
-(`gpt-live-transcribe`) while they talk, and the cut commits it. Measured, that brings the transcript at most about
-200 ms sooner, at the [live transcription price](https://run.camelai.com/docs/pricing.md) (3.8 times the other, per second sent, including the
-quiet up to `silenceMs` after the speech). If it fails, the utterance is transcribed after it is cut; the event is the
-same either way.
-
-With `deliver.agent`, each is a prompt to that agent, from its speaker (`from: {id: speakerId}`), with metadata
-`{voiceSession, utterance}`; the agent's runs answer as any run does (`run.completed`, its events). A deleted agent gets
-nothing more.
-
-`voice.session.started` tells that the session connected (once), and `voice.session.ended` that it ended, with `reason`
-(`requested`, `empty`, `idle`, `max_duration`, `budget`, `kicked`, `credentials`, `error`), `limit` and
-`endUserReason` with `budget`, and the session's totals.
-
-`voice.session.error` tells that the session's audio failed (`code: "media_crashed"`). Each session's audio is handled
-apart from every other's, so a failure is its own. With `restarting: true` it reconnects at once, and the call goes on:
-what the bot was saying ends (`voice.speech.ended`, `error`), and what someone was halfway through saying may be lost.
-After 3 failures in 5 minutes it stops trying (`restarting: false`), and `voice.session.ended` (`error`) follows.
-
-## Speaking
-
-A session started with `speak: true` can talk: what you send it is made into speech with OpenAI's `gpt-4o-mini-tts` and
-played in the call by the bot. Join un-muted (OP 4 with `self_mute: false`).
-
-```ts
-const { speechId } = await agents.voice.speak(session.id, { text: "Hi! I'm taking notes for this call.", instructions: "Warm and brief." });
-await agents.voice.stopSpeaking(session.id);   // stop what it is saying, and what it was going to
-```
-
-```python
-speech = await agents.voice.speak(session["id"], "Hi! I'm taking notes for this call.", instructions="Warm and brief.")
-await agents.voice.stop_speaking(session["id"])
-```
-
-`POST /v1/voice/sessions/{id}/speak` takes `text` (1 to 4,000 characters), `voice` (another than the session's, for
-this speech: OpenAI's), `voices` (this speech's voice for each [speech provider](https://run.camelai.com/docs/guides/voice-calls.md#speech-providers), by provider, over
-the session's `speech.voices`: `{"elevenlabs": "<voice id>", "openai": "fable"}`), `instructions` (how to say it: tone,
-pace, accent; at most 1,000 characters) and `interrupt` (stop what
-is playing and clear the queue first). It answers 202 with `speechId` and `position` (speeches ahead of it): speeches
-play one at a time, in order, at most 20 waiting. `DELETE /v1/voice/sessions/{id}/speak` stops what the bot is saying
-and clears the queue.
-
-- **Events.** `voice.speech.started` (`speechId`, `latencyMs` from the request to the first audio) and
-  `voice.speech.ended` (`speechId`, `reason`: `done`, `interrupted` or `error`; `by` with interrupted: `interrupt`,
-  `requested`, `barge_in`, `end`, `handoff` or `budget`; `seconds` made and `costUsd`). A speech that never started
-  ends `interrupted` with 0 seconds.
-- **Barge-in.** With `bargeIn` (the default), a person talking over the bot (not the bot, not `ignoreUserIds`) stops
-  the speech playing and clears the queue (`by: "barge_in"`), so the bot does not talk over people. Someone on laptop
-  speakers without headphones can send the bot's own voice back into the call, so the bot checks first:
-  - After `minMs` (300) of their speech, it **pauses**. It keeps what it was saying.
-  - If their words are the bot's own, in its order (echo), or they said nothing, it **resumes** where it paused.
-  - If their words are anyone else's, it **stops**. If they keep talking for `confirmMs` (1000) after the pause, it
-    stops without waiting for the words, since echo stops when the bot does.
-  - The pause lasts at most `resumeMs` (3000). Then it stops if they are still talking, and resumes if not.
-  - If all they said is a backchannel, showing they listen ("mm-hm", "yeah", "ok", "sí", "vale", "ja", "oui",
-    "да", "haan", "嗯", "はい", "네"… in about 20 languages, and your `backchannels`), it **resumes**. A backchannel is
-    not a turn of theirs either: like echo, it never reaches `deliver.agent`, and its webhook carries
-    `backchannel: true`. "Yeah, but…" is words, and stops it.
-  - With `endOfTurn: smart`, a turn that ends with less speech than words take (a cough, a click) resumes it at once.
-
-  Pass `bargeIn: {minMs, confirmMs, resumeMs, backchannels}` to change the timing (and add backchannels); `confirmMs: 0` stops at `minMs` with no pause
-  and no echo check. With live transcription the words come as they are said, so the decision is usually quicker.
-  An utterance judged echo is the bot's voice, not the person's: it never reaches `deliver.agent` (no reply), and its
-  `voice.utterance` webhook carries `echo: true` so your app can drop it too.
-  Sessions show the timing in use as `interruption`. Logs: `voice_barge_in_candidate` (paused),
-  `voice_barge_in_confirmed` and `voice_barge_in_echo_rejected` (`why`, `pausedMs`).
-- **Latency.** Speech plays as it is made: OpenAI streams it, and each 20 ms is encoded and sent as it comes, so the
-  first audio goes out well before the whole is made (`latencyMs` measures it per speech).
-- **Its own voice.** What the bot says is never transcribed (Discord does not send a bot its own audio, and the
-  session ignores the bot's user), and does not count as speech for `idleMinutes` or company for `emptySeconds`.
-- **Requests go where the call is.** Any node takes the request and passes it to the one holding the call; while the
-  session moves between nodes, a 503 says to retry (the SDKs do).
-
-### Speaking an agent's replies
-
-With `deliver.agent` and `speak: {agentReplies: true}`, the session speaks the agent's reply to each utterance itself,
-as the agent writes it: each sentence is made into speech and played as soon as it is whole, so the bot starts
-answering while the agent is still writing. What is spoken is what a person would say aloud: markdown's marks, links'
-addresses, bare URLs and code blocks are left out, and at most 400 characters are spoken (cut at a word). The whole
-reply is still the run's (`run.completed`, the agent's history). Each sentence is a speech, with `reply: {agent,
-requestId}` in its `voice.speech.*` events. A person starting to talk (barge-in), an interrupting speech or `DELETE
-…/speak` stops the rest of the reply too.
-
-### Speaking a prompt's reply
-
-To choose per utterance whether and which agent answers (a wake word, a different agent per channel), leave out
-`deliver.agent`, read the transcripts from `voice.utterance` webhooks, and prompt the agent yourself with `speak`:
-
-```http
-POST /v1/agents/{agent}/prompt
-{"text": "What's on the calendar today?", "speak": {"session": "vs_…", "voice": "verse", "interrupt": true}}
-```
-
-The run's reply is spoken in that session as `agentReplies` speaks one: sentence by sentence as it is written, with the
-same cleanup, 400-character cap and barge-in, each speech's events carrying `reply: {agent, requestId}`. The session
-must be one of yours that speaks and has not ended (404, or 409 `VOICE_SPEAK_DISABLED` / `VOICE_SESSION_ENDED`, before
-the prompt is taken); the agent and the session may be on different nodes. `voice` overrides the session's for this
-reply; `interrupt` has its first sentence stop what the session is saying. Not with `whileRunning: "steer"`. A prompt
-sent again with its request id is not spoken again. SDKs: `prompt(text, { speak })`, `submit(text, { speak })` (Python
-`speak={...}`).
-
-Prompted with your API key, any of your sessions may speak. Prompted with an agent's own token (which may be in an end
-user's browser), only a session whose `subject` is the agent's: an agent without a subject, or a session of another
-subject, is a 403 `VOICE_SPEAK_FORBIDDEN`, so one user cannot make another's bot talk.
-
-## Speech providers
-
-A session picks who transcribes and who speaks, each as providers to try in order. Each provider uses your key for it
-(`PUT /v1/providers/<provider>/key`, or a key scope's), else the platform's where your account
-may use the platform's keys. A provider with no key is skipped.
-
-```http
-POST /v1/voice/sessions
-{"discord": {…}, "language": "en", "speak": true,
- "transcription": {"providers": ["deepgram/flux", "soniox", "openai"], "keyterms": ["camelRun", "Miguel"]},
- "speech": {"providers": ["elevenlabs", "cartesia", "openai"],
-            "voices": {"elevenlabs": "21m00Tcm4TlvDq8ikWAM", "cartesia": "<a Cartesia voice id>", "openai": "coral"}}}
-```
-
-**Transcription** (`transcription.providers`) streams each person's audio to the first provider as they talk. The cut
-commits the utterance, so its transcript follows the end of speech by the provider's last step. Each name is
-`<provider>` (its default model) or `<provider>/<model>`:
-
-| Provider | Default model | Notes |
-| --- | --- | --- |
-| `deepgram` | `nova-3` | Interim words as they are heard. Without `language` it hears many languages (`nova-3-multilingual`, priced so) |
-| `deepgram/flux` | `flux-general-en` | Built for conversation: it says where turns end itself, early and for sure. English only |
-| `soniox` | `stt-rt-v3` | 60 languages, switching mid-stream; `language` is a hint, `prompt` and `keyterms` its context |
-| `assemblyai` | `universal-streaming-english` | Any of its streaming models by name: `assemblyai/<speech_model>` |
-| `openai` | `gpt-live-transcribe` | OpenAI's Realtime transcription. What was just said prompts the next utterance, so names carry over |
-
-- **Failover mid-utterance.** The utterance's audio is kept until its transcript comes. If the serving provider fails
-  (its connection drops, it errs, or it has not answered 3 s after the cut), the next provider gets the utterance whole.
-- **Last resort.** If every provider fails, the utterance is transcribed after it is cut, with OpenAI's
-  `gpt-transcribe`.
-- **`keyterms`.** Names and jargon to listen for, at most 100 terms. They go to each provider in the form it takes them.
-- **Default.** Without `transcription.providers`, the session uses the runtime's chain (`AGENT_VOICE_STT`). With no
-  chain set on the runtime, each utterance is transcribed after it ends.
-
-**Speech** (`speech.providers`) is made by the first provider that can. Each streams 24 kHz audio as it is made, and the
-bot plays it as it comes:
-
-| Provider | Default model | Voice (`speech.voices.<provider>`) |
-| --- | --- | --- |
-| `elevenlabs` | `eleven_flash_v2_5` (its fastest) | An ElevenLabs voice id. Default: the premade "Rachel" |
-| `cartesia` | `sonic-3` | A Cartesia voice id. Required: Cartesia is skipped without one |
-| `deepgram` | `aura-2` | An Aura voice. Default: `aura-2-thalia-en` |
-| `openai` | `gpt-4o-mini-tts` | `voice` (alloy, coral, verse…). Takes `instructions` |
-
-A provider that fails, or that sends no audible audio within 3 s (silence does not count, so a provider that streams
-silence and stalls is caught), is passed over for the next one. Once the bot has started
-speaking, a failure ends that speech (`voice.speech.ended` with `reason: "error"`): another voice cannot carry on
-mid-sentence. Without `speech.providers`, a session uses the runtime's chain (`AGENT_VOICE_TTS`), else OpenAI. The
-session's `language` tells providers that speak many languages which one to pronounce.
-
-Usage records name the provider and model that served, `deepgram/nova-3` or `elevenlabs/eleven_flash_v2_5` for
-example, as `usage.recorded`'s `provider` and `model`.
-## From a browser
-
-A session with `provider: "browser"` is a call from a web page, with no Discord in it: for trying a voice bot out
-(a test panel, a preview) through the same pipeline a Discord call takes: cutting utterances, barge-in,
-transcription, `speak`, agent replies. Create it from your server, and give the page only the answer's `browser.url`
-and `browser.token`, never your API key:
-
-```ts
-const session = await fetch("https://run.camelai.com/v1/voice/sessions", {
-  method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-  body: JSON.stringify({ provider: "browser", speak: true, deliver: { webhooks: false }, metadata: { preview: true } }),
-}).then(response => response.json());
-// In the page:
-const socket = new WebSocket(`${session.browser.url}?token=${encodeURIComponent(session.browser.token)}`);
-socket.binaryType = "arraybuffer";
-```
-
-A browser session needs no `discord`, and may deliver to neither webhooks nor an agent: its socket gets every
-utterance itself. The token opens the socket for 10 minutes; `POST /v1/voice/sessions/{id}/browser-token` makes
-another (a page that reloads). One socket is open at a time, and closing it hangs up: the call is then empty, and
-`emptySeconds` ends the session.
-
-The socket carries:
-
-| Direction | Frame | What |
-| --- | --- | --- |
-| page → camelRun | binary, first byte `1` | An Opus packet, 20 ms at 48 kHz (mono or stereo, as WebCodecs' `AudioEncoder` makes it) |
-| page → camelRun | binary, first byte `2` | 20 ms of 16-bit little-endian PCM, 48 kHz mono (1,920 bytes), which camelRun encodes |
-| page → camelRun | `{"type":"speaker","id":"…"}` | Whose the frames that follow are (`browser` by default; letters, digits, `_` and `-`) |
-| page → camelRun | `{"type":"others","users":[…]}` | Who else is "in the call" (an empty list lets `emptySeconds` end it) |
-| page → camelRun | `{"type":"config","audio":"pcm"}` | The bot's speech as PCM rather than Opus |
-| camelRun → page | binary, first byte `1` or `2` | The bot's speech, a frame every 20 ms as it plays: Opus (48 kHz stereo), or PCM (48 kHz mono) |
-| camelRun → page | `{"type":"ready"}` | Connected |
-| camelRun → page | `{"type":"utterance",…}` | Each utterance transcribed: `speakerId`, `seq`, `text`, `startedAt`, `endedAt`, `ended`, `transcriptMs`, and `turnCommitMs` in a session that speaks |
-| camelRun → page | `{"type":"speech",…}` | `state: "started"` (`speechId`, `latencyMs`, `startedAt`) and `state: "ended"` (`reason`, `by`, `seconds`) |
-
-The socket may reach any node: one that does not hold the session relays it to the one that does.
-
-## Realtime brain (beta)
-
-By default a session is a cascade: each utterance is transcribed, your app or `deliver.agent` writes the answer, and
-text to speech says it. With `brain: "realtime"`, a speech-to-speech model hears the call and answers aloud itself, in
-its own voice, without text in between. It hears tone and hesitation, and its prosody fits the moment; it asks the
-bot's agent for anything beyond talk.
+A speech-to-speech model hears the call and answers aloud, in its own voice, without text in between. It hears tone and
+hesitation, its prosody fits the moment, and it asks the bot's agent for anything beyond talk.
 
 ```ts
 await agents.voice.create({
-  discord, deliver: { agent: agent.id }, brain: "realtime",
+  discord, deliver: { agent: agent.id },
   realtime: { instructions: "You are Mochi, a cheerful cat who loves puns.", voice: "marin" },
   speakers: { "400000000000000001": "Ana", "400000000000000002": "Ben" },
   addressing: { names: ["mochi"] },
 });
 ```
 
-It is off unless the runtime lists a provider in `AGENT_VOICE_REALTIME` (`openai`, `gemini`), and the account has a key
-for it (your OpenAI key, or your `google` key for Gemini, under Models & keys, else the platform's; 400
-`REALTIME_UNAVAILABLE` without one). The session speaks:
-`speak` may be left out, and your app joins un-muted.
+The runtime offers the providers its `AGENT_VOICE_REALTIME` lists (`openai`, `gemini`; OpenAI when unset). The account
+needs a key for the session's provider: your OpenAI key, or your `google` key for Gemini, under Models & keys, else the
+platform's (400 `REALTIME_UNAVAILABLE` without one).
 
 How it works:
 
@@ -3259,20 +3057,9 @@ How it works:
   each time who speaks changes, it keeps what came before as its own item and adds a note naming who speaks next:
   `[Ana]`, or `[Ana and Ben, at once]` while two talk over each other. Names come from `speakers` (by user id; PATCH
   it as people join), else `Speaker 1`, `Speaker 2`…
-- **Turns are ours.** The provider's own turn detection is off. A turn ends as it does in the cascade ([turns](https://run.camelai.com/docs/guides/voice-calls.md#turns):
-  Smart Turn, or silence), and only then is the model asked to answer. With smart turns it is asked at the likely end
-  already (`realtime.speculative`, default true) and its audio waits for the turn to end; if the person goes on, it is
-  taken back unheard. While someone else is mid-turn the answer waits for them, and their turn replaces it: one answer
-  to both. The provider's VAD is not used: on a mixed stream it fires on anyone (chatter, echo), it cannot know who
-  holds the floor, and it is no faster (the lifelike-voice probe: Gemini Live's first audio 1.2 s after the last word
-  with its own VAD, 0.6 s after our commit).
-- **Who it answers** follows [addressing](https://run.camelai.com/docs/guides/voice-calls.md#who-it-answers): a turn from someone alone with the bot or in a conversation
-  with it is answered at once. Otherwise, with `names`, the turn's transcript decides (named: answered; not: the model
-  only listens). Without names, the model is told the turn did not name it, and calls `stay_silent` when people are
-  talking to each other.
-- **Barge-in** works as in the cascade: a person talking over the bot pauses it, the echo guard decides, and their own
-  speech stops it. The model's answer is then cut where people stopped hearing it, so its memory of the call matches
-  what was heard. Echo the guard rejects is dropped, not kept as someone's words.
+- **Turns are ours.** A turn ends as [turns](https://run.camelai.com/docs/guides/voice-calls.md#turns) says (Smart Turn, or silence), and only then is the model asked to
+  answer (or at the likely end, with `speculative`).
+- **Who it answers** follows [addressing](https://run.camelai.com/docs/guides/voice-calls.md#who-it-answers).
 - **Tools.** `ask_agent(request)` prompts `deliver.agent` (its tools, memory and system prompt; its run is billed as
   any run, with `metadata.via: "realtime"` and the speaker as `from`), and the model says its answer in its own words.
   The model fills the wait itself ("let me check"). A reply not in after 45 seconds: the model is told the agent is
@@ -3296,68 +3083,141 @@ answered at once, and taken back before it is heard if they do not name the bot)
 the guard rejects stays in its context), and is told how much of a cut-off answer was heard rather than having it
 truncated.
 
-What changes for your app: `voice.utterance` still comes for each person's speech (with `brain: "realtime"`; with
-`transcribe`), but the model has answered it already, so your app should not. `POST …/speak` is refused (409
-`VOICE_REALTIME`); `DELETE …/speak` stops what the bot says. The cascade's `speak.agentReplies`,
-`transcription.providers` and `speech` do not apply. `voice.speech.started` and `voice.speech.ended` come for each
-answer played, with `brain: "realtime"`.
-
-Each answer's first audio is timed as a cascade turn is: `voice_turn_latency` with `Path=realtime`, from the end of
-speech (`turnCommit`, `ttsFirstAudio`: the model's first audio, `firstPacket`), plus `VoiceRealtimeMs` (commit to the
-model's first audio). When the session is let go, `voice_realtime_stats` counts its turns, answers, ask_agent and
-stay_silent calls, barge-ins and speculation taken back.
-
 A provider connection that drops is opened again (three times in five minutes at most, else the session ends with
 `error`, `realtime_failed`), told what was said lately. A session that moves to another node starts a new conversation
 the same way.
 
+## Utterances
+
+With `realtime.transcribe` (the default), what each person says is transcribed, and with `deliver.webhooks` it goes to
+your [webhook endpoints](https://run.camelai.com/docs/guides/webhooks.md) that select `voice.utterance`. The model has answered it already, so your app
+should not:
+
+```json
+{"id": "evt_…", "type": "voice.utterance", "created": 1790000000,
+ "data": {"session": "vs_…", "provider": "discord", "guildId": "…", "channelId": "…", "botUserId": "…",
+          "speakerId": "<the Discord user who spoke>", "seq": 12, "text": "Can you add that to the list?", "language": "en",
+          "seconds": 2.4, "startedAt": 1790000000000, "endedAt": 1790000002400, "ended": "silence", "costUsd": 0.000225,
+          "addressed": true, "addressedBy": "always", "brain": "realtime", "subject": "user_42", "metadata": {"botId": 42}}}
+```
+
+`speakers` lists everyone whose audio is in it, when people spoke at once (`speakerId` is the first). `seq` numbers
+them in the order their transcripts were made.
+
+`voice.session.started` tells that the session connected (once), and `voice.session.ended` that it ended, with `reason`
+(`requested`, `empty`, `idle`, `max_duration`, `budget`, `kicked`, `credentials`, `error`), `limit` and
+`endUserReason` with `budget`, and the session's totals.
+
+`voice.session.error` tells that the session's audio failed (`code: "media_crashed"`). Each session's audio is handled
+apart from every other's, so a failure is its own. With `restarting: true` it reconnects at once, and the call goes on:
+what the bot was saying ends (`voice.speech.ended`, `error`), and what someone was halfway through saying may be lost.
+After 3 failures in 5 minutes it stops trying (`restarting: false`), and `voice.session.ended` (`error`) follows.
+
+## Speaking
+
+Each answer the model gives plays in the call as it is made, and is told in `voice.speech.started` (`speechId`,
+`latencyMs` from asking the model to the first audio out, `startedAt`, and `turn.stagesMs` for the answer to a turn) and
+`voice.speech.ended` (`speechId`, `reason`: `done`, `interrupted` or `error`; `by` with interrupted: `requested`,
+`barge_in`, `end`, `superseded` or `budget`; `seconds` played and `costUsd`), each with `brain: "realtime"`.
+
+`DELETE /v1/voice/sessions/{id}/speak` (`stopSpeaking`) stops what the bot is saying, and what it was about to. Any
+node takes the request and passes it to the one holding the call; while the session moves between nodes, a 503 says to
+retry (the SDKs do).
+
+What the bot says is never heard back as speech (Discord does not send a bot its own audio, and the session ignores the
+bot's user), and does not count as speech for `idleMinutes` or company for `emptySeconds`.
+
+### Barge-in
+
+With `bargeIn` (the default), a person talking over the bot (not the bot, not `ignoreUserIds`) stops its answer
+(`by: "barge_in"`), so the bot does not talk over people. The model's answer is then cut where people stopped hearing
+it, so its memory of the call matches what was heard. Someone on laptop speakers without headphones can send the bot's
+own voice back into the call, so the bot checks first:
+
+- After `minMs` (300) of their speech, it **pauses**. It keeps what it was saying.
+- If they keep talking for `confirmMs` (1000) after the pause, it **stops**: echo stops when the bot does.
+- The pause lasts at most `resumeMs` (3000). Then it stops if they are still talking, and **resumes** if not.
+- With `endOfTurn: smart`, a turn that ends with less speech than words take (a cough, a click) resumes it at once.
+
+Echo the guard rejects is dropped, not kept as someone's words. Pass `bargeIn: {minMs, confirmMs,
+resumeMs}` to change the timing; `confirmMs: 0` stops at `minMs` with no pause and no echo check. Sessions show the
+timing in use as `interruption`. Logs: `voice_barge_in_confirmed` and `voice_barge_in_echo_rejected` (`why`,
+`pausedMs`).
+
+## From a browser
+
+A session with `provider: "browser"` is a call from a web page, with no Discord in it: for trying a voice bot out
+(a test panel, a preview) through the same pipeline a Discord call takes: turns, barge-in, the realtime brain. Create
+it from your server, and give the page only the answer's `browser.url` and `browser.token`, never your API key:
+
+```ts
+const session = await fetch("https://run.camelai.com/v1/voice/sessions", {
+  method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+  body: JSON.stringify({ provider: "browser", deliver: { agent: agentId, webhooks: false }, metadata: { preview: true } }),
+}).then(response => response.json());
+// In the page:
+const socket = new WebSocket(`${session.browser.url}?token=${encodeURIComponent(session.browser.token)}`);
+socket.binaryType = "arraybuffer";
+```
+
+A browser session needs no `discord`; its socket gets every utterance itself. The token opens the socket for 10
+minutes; `POST /v1/voice/sessions/{id}/browser-token` makes another (a page that reloads). One socket is open at a
+time, and closing it hangs up: the call is then empty, and `emptySeconds` ends the session.
+
+The socket carries:
+
+| Direction | Frame | What |
+| --- | --- | --- |
+| page → camelRun | binary, first byte `1` | An Opus packet, 20 ms at 48 kHz (mono or stereo, as WebCodecs' `AudioEncoder` makes it) |
+| page → camelRun | binary, first byte `2` | 20 ms of 16-bit little-endian PCM, 48 kHz mono (1,920 bytes), which camelRun encodes |
+| page → camelRun | `{"type":"speaker","id":"…"}` | Whose the frames that follow are (`browser` by default; letters, digits, `_` and `-`) |
+| page → camelRun | `{"type":"others","users":[…]}` | Who else is "in the call" (an empty list lets `emptySeconds` end it) |
+| page → camelRun | `{"type":"config","audio":"pcm"}` | The bot's speech as PCM rather than Opus |
+| camelRun → page | binary, first byte `1` or `2` | The bot's speech, a frame every 20 ms as it plays: Opus (48 kHz stereo), or PCM (48 kHz mono) |
+| camelRun → page | `{"type":"ready"}` | Connected |
+| camelRun → page | `{"type":"utterance",…}` | Each utterance transcribed: `speakerId`, `text`, `startedAt`, `endedAt`, `brain` |
+| camelRun → page | `{"type":"speech",…}` | `state: "started"` (`speechId`, `latencyMs`, `startedAt`, `turn`) and `state: "ended"` (`reason`, `by`, `seconds`) |
+
+The socket may reach any node: one that does not hold the session relays it to the one that does.
+
+## Latency
+
+Each answer's first audio is timed: `voice_turn_latency` with `Path=realtime`, in ms from the end of speech
+(`turnCommit`; `ttsFirstAudio`, the model's first audio; `firstPacket`, its first audio out), plus `VoiceRealtimeMs`
+(commit to the model's first audio) and `VoicePlayoutMs`. When the session is let go, `voice_realtime_stats` counts its
+turns, answers, ask_agent and stay_silent calls, barge-ins and speculation taken back.
+
 ## Cost
 
-Only speech is paid for: Discord sends no audio while people are silent, quiet audio is trimmed from each utterance, and
-each utterance is transcribed at the
-[transcription price](https://run.camelai.com/docs/pricing.md), per second, as `usage.recorded` with `kind: "transcription"`, the session's
-`subject`, and `context.voiceSession`. Holding the call itself costs nothing.
+A session is billed by the tokens its model uses, at the provider's list price on the platform's key: each answer is a
+`usage.recorded` with `kind: "speech"`, the model as `model`, its tokens in `input` and `output` (`cacheRead` for cached
+ones) and `audioSeconds` of audio made, with the session's `subject` and `context.voiceSession`. Each answer bills the
+conversation so far again (mostly cached, at a tenth or less of the price), so a minute costs more as a call goes on. A
+conversational minute (people talk half of it, the bot a third) is about $0.05 on `gpt-realtime-2.1`, $0.02 on
+`gpt-realtime-2.1-mini` and $0.02-0.035 on `gemini-3.8-live` (measured). What people say is transcribed (`transcribe`)
+at the [transcription price](https://run.camelai.com/docs/pricing.md), as `kind: "transcription"`. `ask_agent`'s runs are billed as any run. On
+your own key the provider bills you directly; the usage record still carries the cost. Holding the call itself costs
+nothing.
 
-Speech the bot says is billed as its provider bills it, at the [speech price](https://run.camelai.com/docs/pricing.md). OpenAI's is $0.015 a
-minute on the platform's key, per second of speech made. ElevenLabs, Cartesia and Deepgram Aura bill per character of
-the text. Each speech is a `usage.recorded` with `kind: "speech"` and `audioSeconds`. A speech cut short pays for what
-was made: its seconds made with OpenAI, and its whole text with a provider that bills per character. Transcription
-through another provider is billed at that provider's price, per second of audio streamed. On your own key the
-provider bills you directly; the usage record still carries the cost. With end-user credits, each speech holds its estimate of the subject's credit before it is made and settles
-at what it cost; running out ends the session (`budget`).
-
-A realtime brain is billed by the tokens its model uses, at the provider's list price on the platform's key: each
-answer is a `usage.recorded` with `kind: "speech"`, the model as `model`, its tokens in `input` and `output` (`cacheRead`
-for cached ones) and `audioSeconds` of audio made. Each answer bills the conversation so far again (mostly cached, at a
-tenth or less of the price), so a minute costs more as a call goes on. A conversational minute (people talk half of
-it, the bot a third) is about $0.05 on `gpt-realtime-2.1`, $0.02 on `gpt-realtime-2.1-mini` and $0.02-0.035 on
-`gemini-3.8-live` (measured), against $0.015-0.02 for the cascade. What people say is transcribed (`transcribe`) at the transcription price, as `kind: "transcription"`.
-With end-user credits, each answer holds $0.05 of the subject's credit before it is asked for and settles at what it
-cost.
-
-A session starts only when the account may spend (402 `SPEND_LIMIT` otherwise) and has a key to transcribe with: OpenAI's, or one of its transcription providers'
-(400 `TRANSCRIPTION_UNAVAILABLE`). An account that runs out during a call ends it: `reason: "budget"`, `limit: "tenant"`.
-With end-user credits on, a subject with nothing left is refused at the start (402 `END_USER_CREDIT`), each utterance
-holds its cost of the subject's credit before it is transcribed, and running out ends the session (`limit:
-"end_user"`).
+A session starts only when the account may spend (402 `SPEND_LIMIT` otherwise). An account that runs out during a call
+ends it: `reason: "budget"`, `limit: "tenant"`. With end-user credits on, a subject with nothing left is refused at the
+start (402 `END_USER_CREDIT`), each answer holds $0.05 of the subject's credit before it is asked for and settles at
+what it cost, and running out ends the session (`limit: "end_user"`).
 
 ## Privacy and your duties
 
 - People in the call must know they are being transcribed. camelRun cannot post in Discord, so your app posts
   `notice.text` in the voice channel's chat when it joins, from code your bot's authors cannot turn off. Telling them
   is your app's job: camelRun cannot check it.
-- Audio is never stored: it is held in memory until its utterance is transcribed, then dropped. Transcripts are not kept
-  beyond delivery (an undelivered webhook event is retried for up to 3 days; an agent keeps its prompts in its history).
-  Logs carry ids, lengths and counts, never audio or text.
-- An utterance being transcribed when a runtime node is lost is lost with it (its audio was only in that node's memory).
-  Once its transcript is written, it is delivered at least once: dedupe webhook events by `id`.
+- Audio is never stored: it streams to the realtime provider as it is spoken, and is dropped. Transcripts are not kept
+  beyond delivery (an undelivered webhook event is retried for up to 3 days; an agent keeps what `ask_agent` asked in
+  its history). Logs carry ids, lengths and counts, never audio or text.
+- Webhook events are delivered at least once: dedupe them by `id`.
 - Discord's end-to-end encryption (DAVE) is checked: a member of the call's encryption group that Discord's voice
   server never named drops the connection, which joins again with a new group.
-- With a realtime brain, the call's audio goes to the provider (OpenAI) as it is spoken, and the model's answers come
-  back as audio; neither is stored by camelRun, and the provider keeps them under its API data policy. What was said
-  lately is held in memory (to brief a new connection), never written.
-- Text a session speaks goes to OpenAI to be made into speech, under its API data policy (not used for training); the
-  speech is played and dropped, never stored. Logs carry its length and timings, never the text.
+- The call's audio goes to the realtime provider (OpenAI or Google) as it is spoken, and the model's answers come back
+  as audio; neither is stored by camelRun, and the provider keeps them under its API data policy. What was said lately
+  is held in memory (to brief a new connection), never written.
 - A bot that speaks sends audio its call's encryption group can decrypt, so its group is checked strictly: a Welcome
   into a group with a member Discord's voice server never named is refused at once (and the bot is welcomed again into
   one of the call's members), and speech goes out only while every member of the group is named and the group is
@@ -3371,7 +3231,7 @@ holds its cost of the subject's credit before it is transcribed, and running out
 | Live sessions per account | 10 (`AGENT_VOICE_SESSIONS_PER_TENANT`; an operator can set an account's own, `maxVoiceSessions`) |
 | Sessions per bot and server | 1 |
 | Session length | `maxMinutes`, at most 720 |
-| Utterance | 300 ms to 30 s |
+| Turn | 300 ms to 30 s |
 | Reconnect wait for new credentials | 15 s |
 
 ---
@@ -3926,7 +3786,7 @@ balances are your ledger of your users, and camelRun never moves money for them.
   agent spends from its `bucket`; a stateless run or call names its own. A run sent
   with your API key (`POST /v1/agents/{id}/prompt`) may name another; an agent's own
   token cannot. A run that names none (one you send without, a schedule's, a
-  sub-agent's notice, a channel's or a voice session's message) spends from the
+  sub-agent's notice, a channel's message, or a voice session's `ask_agent`) spends from the
   agent's bucket, else the one your latest run of the agent named, and only with
   neither from `default` (logged as `end_user_default_bucket`).
 - **Daily allowance**: free spend per bucket per UTC day, spent first. Set by bucket
@@ -4163,9 +4023,9 @@ Every event is an envelope:
 | `voice.session.started` | A [voice session](https://run.camelai.com/docs/guides/voice-calls.md) connected and is listening (once) | `session`, `provider`, `guildId`, `channelId`, `botUserId`, `subject`, `metadata` |
 | `voice.session.ended` | A voice session ended; your app leaves the channel | as above, and `reason`, `limit` and `endUserReason` with `budget`, `startedAt`, `endedAt`, `utterances`, `speechSeconds`, `costUsd` |
 | `voice.session.error` | A voice session's audio failed: it reconnects at once (`restarting`), or after 3 failures in 5 minutes ends; or it needs new Discord credentials (`credentials_needed`) | the voice facts, `code` (`media_crashed`, `credentials_needed`), `detail`, `restarting`, `attempt?`, `waitMs?` |
-| `voice.utterance` | A person's utterance in a voice session, transcribed | as above, and `speakerId`, `seq`, `text`, `language`, `seconds`, `startedAt`, `endedAt`, `ended`, `costUsd`, `echo?` |
-| `voice.speech.started` | A voice session's bot started saying a [speech](https://run.camelai.com/docs/guides/voice-calls.md#speaking) | the voice facts, `speechId`, `latencyMs` |
-| `voice.speech.ended` | It ended | the voice facts, `speechId`, `reason`, `by`, `seconds`, `costUsd` |
+| `voice.utterance` | A person's utterance in a voice session, transcribed | as above, and `speakerId`, `seq`, `text`, `language`, `seconds`, `startedAt`, `endedAt`, `ended`, `costUsd`, `addressed`, `addressedBy`, `speakers?`, `brain` |
+| `voice.speech.started` | A voice session's bot started saying an [answer](https://run.camelai.com/docs/guides/voice-calls.md#speaking) | the voice facts, `speechId`, `latencyMs`, `startedAt`, `turn?`, `brain` |
+| `voice.speech.ended` | It ended | the voice facts, `speechId`, `reason`, `by`, `seconds`, `costUsd`, `brain` |
 | `billing.balance.low` | Funded balance crosses below the alert threshold (default $2) | `balance`, `previousBalance`, `threshold` (integer micro-USD), `source` |
 | `billing.balance.depleted` | Positive balance reaches zero or below | Same balance fields |
 | `end_user.balance.low` | An [end user's](https://run.camelai.com/docs/guides/end-user-credits.md) balance falls below your `lowBalance` | `endUser`, `balance`, `previousBalance`, `threshold` (integer micro-USD) |
@@ -6531,12 +6391,9 @@ retried, as each attempt is billed.
 
 `agents.voice` (`runtime.voice`) holds Discord voice calls for your bot, `/v1/voice/sessions`: `create` (from what
 Discord answered your gateway's OP 4), `get`, `list({ state, limit, after })`, `update` (Discord moved the call) and
-`end` (its answer's `leave` is the OP 4 that takes the bot out of the channel). A session made with `speak: true` also
-takes `speak(id, { text, voice?, instructions?, interrupt? })` and `stopSpeaking(id)` (Python: `speak(id, text, ...)`,
-`stop_speaking(id)`). With `deliver.agent`, `speak: { agentReplies: true }` (Python `agent_replies=True`) speaks the
-agent's replies as they are written; to choose per utterance instead, prompt any agent with
-`prompt(text, { speak: { session, voice?, interrupt? } })` (Python `speak={"session": ...}`), which speaks that run's reply in
-the session. See [Voice calls](https://run.camelai.com/docs/guides/voice-calls.md).
+`end` (its answer's `leave` is the OP 4 that takes the bot out of the channel). A realtime model answers in the call,
+asking `deliver.agent` (Python `agent=`) for anything beyond talk; `realtime` sets it up (model, voice, persona).
+`stopSpeaking(id)` (Python `stop_speaking(id)`) stops what the bot is saying. See [Voice calls](https://run.camelai.com/docs/guides/voice-calls.md).
 
 ```ts
 const session = await agents.voice.create({ discord: { guildId, channelId, userId, sessionId, endpoint, token }, subject: ownerId });
@@ -7618,10 +7475,10 @@ dedupe by `id`. See [Webhooks](https://run.camelai.com/docs/guides/webhooks.md).
 | `voice.session.started` | `session`, `provider`, `guildId`, `channelId`, `botUserId`, `subject`, `metadata`: a [voice session](https://run.camelai.com/docs/guides/voice-calls.md) connected (once) |
 | `voice.session.ended` | the above, `reason` (`requested`, `empty`, `idle`, `max_duration`, `budget`, `kicked`, `credentials`, `error`), `limit?` (`tenant`, `end_user`), `endUserReason?`, `startedAt`, `endedAt`, `utterances`, `speechSeconds`, `costUsd` |
 | `voice.session.error` | the voice facts, `code` (`media_crashed`, `credentials_needed`), `detail`, `restarting`, `attempt?`, `waitMs?`. `media_crashed`: the session's audio failed; it reconnects, or after 3 failures in 5 minutes ends (`voice.session.ended`, `error`). `credentials_needed`: Discord stopped taking the session's credentials; send OP 4 for the channel again and PATCH what Discord answers within `waitMs`, or it ends (`credentials`) |
-| `voice.utterance` | the above facts, `speakerId`, `seq`, `text`, `language`, `seconds`, `startedAt`, `endedAt`, `ended` (`silence`, `max`, `error`, `handoff`, `end`), `costUsd`, `echo?` (`true`: the bot's own speech coming back, see Barge-in in voice-calls.md; not sent to `deliver.agent`) |
-| `voice.speech.started` | the voice facts, `speechId`, `latencyMs` (from the speak request to the first audio), `startedAt` (ms), and for the first speech of a reply to an utterance `turn`: `seq`, `path` and `stagesMs` (each stage since the end of speech: `turnCommit`, `transcript`, `delivered`, `llmFirstToken`, `firstPiece`, `ttsFirstAudio`, `firstPacket`) |
-| `voice.speech.ended` | the voice facts, `speechId`, `reason` (`done`, `interrupted`, `error`), `by?` (`interrupt`, `requested`, `barge_in`, `end`, `handoff`, `budget`), `seconds`, `costUsd` |
-| `usage.recorded` | `agentId` (null for a [transcription](https://run.camelai.com/docs/guides/voice.md) or [images](https://run.camelai.com/docs/guides/images.md) made alone), `requestId`, `subject`, `actor`, `context`, `keyScope`, `provider`, `model`, `kind` (`response`, `compaction`, `transcription`, `image`, `speech`), `input`, `output`, `cacheRead`, `cacheWrite`, `reasoning?`, `audioSeconds?` (a transcription's), `images?` (how many images were made), `cost: {usd, source}`, `at` |
+| `voice.utterance` | the above facts, `speakerId`, `seq`, `text`, `language`, `seconds`, `startedAt`, `endedAt`, `ended` (`silence`, `max`, `error`, `handoff`, `end`), `costUsd`, `addressed`, `addressedBy`, `speakers?` (everyone whose audio is in it, when people spoke at once), `brain` (`realtime`: the model answered it already) |
+| `voice.speech.started` | the voice facts, `speechId`, `latencyMs` (from asking the model to the first audio out), `startedAt` (ms), `brain`, and for the answer to a turn `turn`: `path` (`realtime`) and `stagesMs` (each stage since the end of speech: `turnCommit`, `ttsFirstAudio`, `firstPacket`) |
+| `voice.speech.ended` | the voice facts, `speechId`, `reason` (`done`, `interrupted`, `error`), `by?` (`requested`, `barge_in`, `end`, `superseded`, `budget`), `seconds` (played), `costUsd` (its tokens; the session's usage already counts it), `brain` |
+| `usage.recorded` | `agentId` (null for a [transcription](https://run.camelai.com/docs/guides/voice.md) or [images](https://run.camelai.com/docs/guides/images.md) made alone), `requestId`, `subject`, `actor`, `context`, `keyScope`, `provider`, `model`, `kind` (`response`, `compaction`, `transcription`, `image`, `speech`), `input`, `output`, `cacheRead`, `cacheWrite`, `reasoning?`, `audioSeconds?` (a transcription's, or speech made), `images?` (how many images were made), `cost: {usd, source}`, `at` |
 | `end_user.balance.low` | `endUser`, `balance`, `previousBalance`, `threshold` (integer micro-USD): an [end user's](https://run.camelai.com/docs/guides/end-user-credits.md) balance fell below the tenant's `lowBalance` |
 | `end_user.credit.exhausted` | `endUser`, `reason` (`allowance`, `balance`, `daily_limit`), `bucket`, `balance`, `day`, `allowance?`, `dailyLimit?` |
 
@@ -7947,6 +7804,7 @@ retry.
 | 400 | `INVALID_REQUEST` | The request is malformed or invalid; the message says how |
 | 400 | `INVALID_HISTORY` | An imported history (`initialMessages`) has a message it cannot take; the message names which, and what it lacks |
 | 400 | `TRANSCRIPTION_UNAVAILABLE` | Audio was to be transcribed and the account has no OpenAI key to do it with (nor the platform's); the message says how to add one |
+| 400 | `REALTIME_UNAVAILABLE` | A voice session's realtime provider needs a key, and the account has none for it (nor the platform's); the message says how to add one |
 | 400 | `IMAGE_UNAVAILABLE` | An image was to be made and the account has no OpenAI key to do it with (nor the platform's); the message says how to add one |
 | 400 | `IMAGE_REFUSED` | OpenAI's safety system refused the request (`stage: "input"`) or the image it made (`stage: "output"`); `categories` names why. Nothing was charged |
 | 400 | `FORK_POINT_INVALID` | A fork's `atMessage` is not an index in the agent's history, nor a request id one of its messages carries |
@@ -7959,8 +7817,6 @@ retry.
 | 409 | `IDEMPOTENCY_CONFLICT` | The Idempotency-Key or request id was used for another request |
 | 409 | `IDEMPOTENCY_IN_PROGRESS` | The first request with this Idempotency-Key is still running; retry |
 | 409 | `VOICE_SESSION_EXISTS` | The bot already has a voice session in this server (`session` names it): update or end it |
-| 403 | `VOICE_SPEAK_FORBIDDEN` | A prompt's `speak` named a voice session its credential may not speak in: an agent's own token speaks only in sessions of its agent's `subject` (prompt with an API key for any) |
-| 409 | `VOICE_SPEAK_DISABLED` | The voice session does not speak: start one with `speak: true` |
 | 409 | `VOICE_SESSION_ENDED` | The voice session ended; start a new one |
 | 409 | `APPLICATION_CONNECTED` | Another connection serves this agent's tools; connect with `?takeover=true` to replace it |
 | 409 | `APPLICATION_NOT_CONNECTED` | The agent's tools need its application and none is connected; connect it, or send `allowDisconnected: true` |
@@ -7975,7 +7831,6 @@ retry.
 | 415 | `UNSUPPORTED_AUDIO` | Audio to transcribe is in a format transcription does not take, or its container gives no length |
 | 415 | `UNSUPPORTED_IMAGE` | An image to edit is not PNG, JPEG or WebP |
 | 429 | `BUSY_AGENT_LIMIT` | The account has as many agents busy as its [usage tier](https://run.camelai.com/docs/reference/limits.md#usage-tiers) allows; `busyAgents` in the body has the limit and the next tier. Retry after `Retry-After`, or when one of its runs ends |
-| 429 | `VOICE_SPEECH_QUEUE_FULL` | The voice session has 20 speeches waiting: interrupt, or wait for them |
 | 429 | `VOICE_SESSION_LIMIT` | The account has as many live voice sessions as it may (`limit`): end one first |
 | 429 | `RATE_LIMITED` | Too many: a rate limit (the body's `limit` names it: `{name, scope, max, windowSeconds}`; see [Rate limits](https://run.camelai.com/docs/reference/limits.md#rate-limits)), or too many agents, requests or subscribers at once; retry after `Retry-After` |
 | 502 | `TRANSCRIPTION_FAILED` | The transcription provider failed or refused the key; nothing was charged |

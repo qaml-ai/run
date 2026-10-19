@@ -149,19 +149,13 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     // Voice sessions (src/voice-sessions.ts): on with AGENT_VOICE=true; live ones per tenant, and the most one node holds.
     voice: {
       enabled: env.AGENT_VOICE === "true",
-      // Transcribing as people speak (OpenAI Realtime): off unless "true" (measured: at most ~200 ms sooner, at 3.8x the
-      // price); the model, and its delay setting, when given.
-      live: env.AGENT_VOICE_LIVE_TRANSCRIPTION === "true", liveModel: env.AGENT_VOICE_LIVE_MODEL || undefined, liveDelay: env.AGENT_VOICE_LIVE_DELAY || undefined,
-      // The speech providers a session uses when it names none, in order (voice-providers/): AGENT_VOICE_STT streams
-      // speech to text as people speak (e.g. "deepgram/flux,soniox,openai"; set, it is on whatever
-      // AGENT_VOICE_LIVE_TRANSCRIPTION says), AGENT_VOICE_TTS speaks (e.g. "elevenlabs,openai"; unset: OpenAI alone).
-      stt: list(env.AGENT_VOICE_STT), tts: list(env.AGENT_VOICE_TTS),
-      // Speech-to-speech brains a session may ask for (brain: "realtime"; src/voice/realtime): AGENT_VOICE_REALTIME lists
-      // the providers ("openai", "gemini"); unset, none is offered. AGENT_OPENAI_REALTIME_URL and AGENT_GEMINI_LIVE_URL
-      // dial other addresses (a proxy, a test's fake).
-      realtime: list(env.AGENT_VOICE_REALTIME), realtimeUrl: env.AGENT_OPENAI_REALTIME_URL || undefined, geminiLiveUrl: env.AGENT_GEMINI_LIVE_URL || undefined,
-      // Where each speech provider is dialled, when not its own address (a proxy, a test's fake).
-      endpoints: { deepgram: env.AGENT_DEEPGRAM_URL, soniox: env.AGENT_SONIOX_URL, assemblyai: env.AGENT_ASSEMBLYAI_URL, elevenlabs: env.AGENT_ELEVENLABS_URL, cartesia: env.AGENT_CARTESIA_URL },
+      // The speech-to-speech providers sessions answer with (src/voice/realtime): AGENT_VOICE_REALTIME lists them
+      // ("openai", "gemini"; a session takes the first unless it names another); unset, OpenAI. AGENT_OPENAI_REALTIME_URL
+      // and AGENT_GEMINI_LIVE_URL dial other addresses (a proxy, a test's fake).
+      realtime: list(env.AGENT_VOICE_REALTIME).length ? list(env.AGENT_VOICE_REALTIME) : ["openai"],
+      realtimeUrl: env.AGENT_OPENAI_REALTIME_URL || undefined, geminiLiveUrl: env.AGENT_GEMINI_LIVE_URL || undefined,
+      // Where each text-to-speech provider (POST /v1/speech) is dialled, when not its own address (a proxy, a test's fake).
+      endpoints: { deepgram: env.AGENT_DEEPGRAM_URL, elevenlabs: env.AGENT_ELEVENLABS_URL, cartesia: env.AGENT_CARTESIA_URL },
       perTenant: Number(env.AGENT_VOICE_SESSIONS_PER_TENANT ?? 10), perNode: Number(env.AGENT_VOICE_SESSIONS_PER_NODE ?? 200),
       // Where each session's audio is handled (src/voice/media-host.ts): in media workers (the default; a crash there ends
       // only that session's audio, which restarts), or "inline" on the node's own thread.

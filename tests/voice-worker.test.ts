@@ -14,7 +14,7 @@ import { MediaHost } from "../src/voice/media-host.ts";
 import { MEDIA_CRASHES } from "../src/voice-sessions.ts";
 import type { Cut } from "../src/voice-audio.ts";
 import { fakeDiscordVoice } from "./fake-discord-voice.ts";
-import { discordGrant, sleep, speechPacket, until, voiceCluster } from "./voice-fakes.ts";
+import { discordGrant, fakeOpenAIRealtime, hearAll, sleep, speechPacket, until, voiceCluster } from "./voice-fakes.ts";
 import { workerFakes, type Report } from "./voice-worker-transport.ts";
 
 const TRANSPORT = { module: new URL("./voice-worker-transport.ts", import.meta.url).href, export: "workerFakeTransport" };
@@ -25,13 +25,17 @@ async function workerCluster(t: { after(fn: () => unknown): void }, host: MediaH
   t.after(() => { fakes.close(); return host.close(); });
   const cluster = await voiceCluster(t, { transports: { discord: host.transport() }, media: () => host.factory() });
   const a = await cluster.node("http://a");
-  /** A live session in guild `guild`, its connection made in a worker: which thread. */
+  // Every turn the brains commit is heard: a voice.utterance each.
+  hearAll(t, cluster.realtime.connections);
+  /** A live session in guild `guild`, its connection made in a worker (which thread), and its model's connection. */
   const session = async (guild: string, input: Record<string, unknown> = {}) => {
-    const created = await a.voice.create("alice", { discord: discordGrant({ guildId: guild }), silenceMs: 200, ...input });
+    const models = cluster.realtime.connections.length;
+    const created = await a.voice.create("alice", { discord: discordGrant({ guildId: guild }), silenceMs: 200, addressing: { mode: "always" }, ...input });
     const connected = await until(() => fakes.reports.find(report => report.guild === guild && report.event === "connected"), `${guild}'s connection`);
     fakes.send({ guild, cmd: "ready" });
     await until(async () => (await a.voice.get("alice", created.id)).state === "live", "live");
-    return { id: created.id, guild, thread: (connected as Extract<Report, { event: "connected" }>).thread };
+    const model = await until(() => cluster.realtime.connections[models], "the model");
+    return { id: created.id, guild, model, thread: (connected as Extract<Report, { event: "connected" }>).thread };
   };
   const utterances = async (id: string) => (await cluster.events("voice.utterance")).filter((event: any) => event.data.session === id).length;
   return { ...cluster, a, fakes, session, utterances };
@@ -92,32 +96,32 @@ test(`a session whose media fails ${MEDIA_CRASHES.max} times in ${MEDIA_CRASHES.
   assert.equal(ended.data.reason, "error");
 });
 
-test("speech plays through a media worker: PCM down, encoded and played there; a person talking stops it (barge-in); a session's close flushes its speakers", { timeout: 120_000 }, async t => {
+test("speech plays through a media worker: the brain's PCM down, encoded and played there; a person talking stops it (barge-in); a session's close lets its worker go", { timeout: 120_000 }, async t => {
   const host = new MediaHost({ transport: TRANSPORT, speaks: true, tickMs: 200, spare: 1 });
-  const { a, fakes, session, events, utterances } = await workerCluster(t, host);
-  const one = await session("100000000000000004", { speak: true, bargeIn: true });
-  // 1.2 s of speech (12 characters at a tenth of a second each): 60 packets.
-  await a.voice.speak("alice", one.id, { text: "x".repeat(12) });
-  await until(async () => (await events("voice.speech.ended")).length === 1, "the speech to end");
+  const { a, fakes, session, events } = await workerCluster(t, host);
+  const one = await session("100000000000000004", { bargeIn: true });
+  // Someone asks; the model answers with 1.2 s of speech: 60 packets.
+  fakes.send({ guild: one.guild, cmd: "talk", speaker: "400000000000000006", seconds: 0.5 });
+  await until(() => one.model.responses === 1, "the answer asked for", 20_000);
+  await one.model.answer("resp_1", { ms: 1_200 });
+  await until(async () => (await events("voice.speech.ended")).length === 1, "the speech to end", 20_000);
   const [started] = await events("voice.speech.started");
   assert.ok(started.data.latencyMs >= 0);
   const [ended] = await events("voice.speech.ended");
   assert.deepEqual([ended.data.reason, ended.data.seconds], ["done", 1.2]);
   assert.equal((fakes.reports.find(report => report.guild === one.guild && report.event === "played") as Extract<Report, { event: "played" }>).packets, 60);
 
-  // A long speech, cut short by someone talking.
-  await a.voice.speak("alice", one.id, { text: "x".repeat(200) });
-  await until(async () => (await events("voice.speech.started")).length === 2, "the second speech to start");
+  // A long answer, cut short by someone talking on.
+  fakes.send({ guild: one.guild, cmd: "talk", speaker: "400000000000000006", seconds: 0.5 });
+  await until(() => one.model.responses === 2, "the second answer asked for", 20_000);
+  await one.model.answer("resp_2", { ms: 20_000 });
+  await until(async () => (await events("voice.speech.started")).length === 2, "the second speech to start", 20_000);
   fakes.send({ guild: one.guild, cmd: "talk", speaker: "400000000000000006", seconds: 3 });
-  await until(async () => (await events("voice.speech.ended")).length === 2, "the barge-in");
+  await until(async () => (await events("voice.speech.ended")).length === 2, "the barge-in", 20_000);
   const stopped = (await events("voice.speech.ended"))[1];
   assert.deepEqual([stopped.data.reason, stopped.data.by], ["interrupted", "barge_in"]);
-  // Ending the session mid-sentence: what was said so far is cut and transcribed.
   await sleep(300);
   await a.voice.end("alice", one.id);
-  await until(async () => await utterances(one.id) === 1, "the flushed utterance");
-  const [utterance] = await events("voice.utterance");
-  assert.equal(utterance.data.ended, "end");
   await until(() => host.stats().sessions === 0, "the session to leave its worker");
   assert.equal(host.stats().workers, 1, "its worker ended; the spare waits");
 });
@@ -174,6 +178,7 @@ test("the Discord transport in a media worker, against a voice server: a person'
 
 test("a node with voice on holds each session's media in a worker by default: the Discord connection is made there, and goes live", { timeout: 120_000 }, async t => {
   const voice = await fakeDiscordVoice(t);
+  const openai = await fakeOpenAIRealtime(t);
   const root = await mkdtemp(join(tmpdir(), "agent-voice-worker-"));
   t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
   writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(token), apiKeys: { openrouter: "fixture-key", openai: "fixture-key" } } } }));
@@ -185,7 +190,7 @@ test("a node with voice on holds each session's media in a worker by default: th
       PORT: String(port), HOST: "127.0.0.1", AGENT_NODE_URL: `http://127.0.0.1:${port}`, AGENT_DATABASE_URL: databaseUrl,
       AGENT_DATA_DIR: join(root, "shared"), AGENT_STORAGE: "shared-file", AGENT_HOSTING: "inline", AGENT_LEASE_TTL_MS: "1500", AGENT_SCHEDULER_INTERVAL_MS: "200",
       AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_SESSION_SECRET: "voice-api-session-secret-with-32-chars!!", AGENT_SECRETS_KEY: randomBytes(32).toString("hex"),
-      AGENT_VOICE: "true",
+      AGENT_VOICE: "true", AGENT_OPENAI_REALTIME_URL: openai.url,
     });
     assert.equal(config.voice.isolation, "worker");
     const made = await createNode(config, { ...await nodeDeps(config), voiceEndpoints: /^127\.0\.0\.1$/ });
@@ -197,7 +202,7 @@ test("a node with voice on holds each session's media in a worker by default: th
     const response = await fetch(base + path, { method, body: body === undefined ? undefined : JSON.stringify(body), headers: { Authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "Content-Type": "application/json" }) } });
     return { status: response.status, json: await response.json() as any };
   };
-  const created = await call("POST", "/v1/voice/sessions", { discord: discordGrant({ endpoint: voice.endpoint }), speak: true });
+  const created = await call("POST", "/v1/voice/sessions", { discord: discordGrant({ endpoint: voice.endpoint }) });
   assert.equal(created.status, 201, JSON.stringify(created.json));
   await until(async () => (await call("GET", `/v1/voice/sessions/${created.json.id}`)).json.state === "live", "live, connected from its worker", 30_000);
   assert.equal(voice.identifies.length, 1);

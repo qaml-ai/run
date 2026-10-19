@@ -1,8 +1,7 @@
 import { micros } from "../../pricing.ts";
 
 /**
- * A speech-to-speech model as a voice session's brain (`brain: "realtime"`; docs/guides/voice-calls.md, "Realtime
- * brain"). The session's media plane, turn-taking, addressing and echo guard stay in front of it
+ * A speech-to-speech model as a voice session's brain (docs/guides/voice-calls.md, "Realtime brain"). The session's media plane, turn-taking, addressing and echo guard stay in front of it
  * (src/voice/realtime/brain.ts): the model hears the call's audio mixed into one stream, with a text item naming who
  * speaks each time that changes, and it answers aloud only when the brain asks it to (manual commits; the provider's
  * own turn detection is off). Its audio plays on the session's connection like any speech.
@@ -11,10 +10,6 @@ import { micros } from "../../pricing.ts";
  * Gemini Live (activityStart/activityEnd, clientContent) can be a second implementation of the same interface.
  * Audio is 24 kHz mono 16-bit PCM both ways, as the media plane gives and takes it.
  */
-
-/** The brains a session may have: today's pipeline (STT, the agent, TTS), or a speech-to-speech model. */
-export const BRAINS = ["cascade", "realtime"] as const;
-export type Brain = typeof BRAINS[number];
 
 /** A tool the model may call. */
 export type RealtimeTool = { name: string; description: string; parameters: Record<string, unknown> };

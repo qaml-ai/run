@@ -4,8 +4,9 @@ How a voice session's audio moves through a node, and the interfaces the parts p
 plane: what runs per session, where it runs, and how its timing is measured. The API and the session's lifecycle are
 covered elsewhere: [Voice calls](../guides/voice-calls.md) and `src/voice-sessions.ts`.
 
-Status: design, landing in the PRs listed under [Rollout](#rollout). The sections say what is true today and what each
-PR changes.
+Status: landed (see [Rollout](#rollout)). Since 2026-10-19 every session answers with a realtime speech-to-speech
+model (`src/voice/realtime/`); the pipeline that transcribed each utterance, had an agent or the app write a reply, and
+spoke it through text to speech is gone, with its streaming STT and TTS providers.
 
 ## Goals
 
@@ -16,8 +17,8 @@ PR changes.
 2. **Latency we can see.** Each stage of a turn gets a timestamp, from the end of speech to the first Opus packet out,
    published as a metric with p50 and p95, plus an alarm. This is the yardstick for every other change: turn-taking,
    providers and this pipeline.
-3. **Streaming end to end.** Audio goes to STT as it arrives. Speech plays as soon as the first clause is made. Nothing
-   waits for a whole utterance or a whole reply when it does not have to.
+3. **Streaming end to end.** Audio goes to the model as it arrives, and the model's audio plays as it comes. Nothing
+   waits for a whole turn or a whole answer when it does not have to.
 4. **Clean audio.** Packets are reordered, losses are concealed, silence frames go out when the bot stops, and the bot's
    speaking state and the voice gateway's resume behave as Discord expects.
 
@@ -29,15 +30,15 @@ PR changes.
  VoiceSessions: DB rows, ownership, billing   ◀──────▶  MediaSession
    │  MediaHost: spawn, supervise, restart    protocol    ├─ DiscordVoice: voice WS (v8), UDP, DAVE
    │                                                      ├─ JitterBuffer per SSRC (reorder, loss → PLC)
-   ├─ STT: LiveTranscription (voice-providers) ◀── PCM ───├─ Decoder per speaker (Opus → 24 kHz mono)
-   ├─ batch STT on the cut's Ogg Opus         ◀── cut ────├─ Segmenter (cuts) + TurnTaker (voice-turns)
-   ├─ agent delivery, reply text                          ├─ barge-in / duck: local, no round trip
-   ├─ TTS: SpeechProvider (voice-providers) ─── PCM ────▶ ├─ Encoder (24 kHz mono → 20 ms Opus 48 kHz stereo)
+   ├─ RealtimeBrain: mixer, provider socket  ◀── PCM ───├─ Decoder per speaker (Opus → 24 kHz mono)
+   │    (OpenAI Realtime, Gemini Live)       ◀── cut ────├─ Segmenter (cuts) + TurnTaker (voice-turns)
+   ├─ ask_agent → deliver.agent                          ├─ barge-in / duck: local, no round trip
+   ├─ the model's audio                     ─── PCM ────▶ ├─ Encoder (24 kHz mono → 20 ms Opus 48 kHz stereo)
    └─ TurnClock → voice_turn_latency                      └─ Player: jitter-buffered playback, silence frames
 ```
 
-The main thread keeps what needs the database, keys or money: rows, claims, credit holds, provider calls, agent
-delivery and webhooks. The worker keeps everything that touches audio samples or the Discord media connection.
+The main thread keeps what needs the database, keys or money: rows, claims, credit holds, the realtime provider's
+connection, `ask_agent` and webhooks. The worker keeps everything that touches audio samples or the Discord media connection.
 
 ### Why worker_threads, not a child process
 
@@ -71,13 +72,13 @@ numbers go into the isolation PR, and from them the default per-node cap (`AGENT
   - A `voice_worker_crashed` log line and a `VoiceWorkerCrashes` metric.
   - A `voice.session.error` event for the tenant's webhooks:
     `{ code: "media_crashed", detail, restarting: true, attempt }`.
-  - Utterances already cut were on the main thread and are still transcribed. Audio not cut yet is lost, at most
-    `maxMs` (30 s) per speaker and usually under a second.
+  - Audio already sent to the model stays in its conversation. Audio of a turn not yet cut is lost, at most `maxMs`
+    (30 s) per speaker and usually under a second.
   - The session's speech stops (`voice.speech.ended`, `reason: "error"`).
   - The session restarts in a fresh worker with the same credentials. The library identifies again, and DAVE re-forms.
 - **Repeated crashes end the session**: 3 crashes in 5 minutes ends it with `reason: "error"`, `detail: "media_crashed"`,
   so a poisoned session cannot loop forever.
-- **The main thread never awaits the worker on the request path.** `speak`, `DELETE` and `PATCH` post a message and
+- **The main thread never awaits the worker on the request path.** `DELETE …/speak`, `DELETE` and `PATCH` post a message and
   return. A worker that is gone simply drops the message, and the restart re-sends the current credentials and options.
 
 ## Protocol (`src/voice/protocol.ts`)
@@ -90,15 +91,15 @@ Control → media:
 
 | `t` | Fields | Meaning |
 | --- | --- | --- |
-| `open` | `session, credentials, options: MediaOptions, models?: MessagePort` | Connect and start listening. `MediaOptions`: `silenceMs, ignoreUserIds, bargeIn, bargeInMinMs, bargeInPause, live (send PCM up), turns?: TurnPolicy` |
+| `open` | `session, credentials, options: MediaOptions` | Connect and start listening. `MediaOptions`: `silenceMs, ignoreUserIds, bargeIn, bargeInMinMs, bargeInPause, live (send PCM up; always, for the model), endOfTurn?` |
+| `models` | `port: MessagePort` | The node's turn models (one shared inference worker) |
 | `update` | `credentials` | Discord moved the call: reconnect |
-| `options` | `Partial<MediaOptions>` | `ignoreUserIds`, `bargeIn` changed |
-| `play` | `id` | A speech begins: PCM follows |
-| `pcm` | `id, pcm: ArrayBuffer` | 24 kHz mono s16le TTS audio, as the provider made it |
+| `configure` | `Partial<MediaOptions>` | `ignoreUserIds` changed |
+| `play` | `id, expectedMs?` | An answer begins: PCM follows |
+| `pcm` | `id, pcm: ArrayBuffer` | 24 kHz mono s16le audio, as the model made it |
 | `pcm_end` | `id, error?` | The speech's audio is whole (or failed) |
 | `stop` | `id` | Stop this speech now (5 silence frames follow) |
 | `resume` | | End a barge-in pause (`bargeInPause`): what still plays goes on where it paused |
-| `interim` | `speaker, text` | An STT partial, for the turn model (`TurnTaker.interim`) |
 | `close` | | Flush every speaker (`ended: "end" \| "handoff"`), then exit |
 
 Media → control:
@@ -111,8 +112,8 @@ Media → control:
 | `barge_in` | `speaker, speechMs` | The utterance has `bargeInMinMs` of speech over the bot. Playback has already been stopped locally, or with `bargeInPause` paused until `resume` (src/voice/echo-guard.ts) |
 | `speech_progress` | `speaker, speechMs` | While paused: each further loud frame of that speaker's utterance, so the echo guard sees speech go on |
 | `pcm` | `speaker, pcm: ArrayBuffer, at` | 24 kHz mono s16le, 40–60 ms at a time, from the first loud frame (only with `live`) |
-| `drop` | `speaker` | The utterance was too short: clear its live STT buffer |
-| `cut` | `Cut` (packets as ArrayBuffers) | An utterance ended. Its Ogg Opus is built on main, for batch STT |
+| `drop` | `speaker` | The turn was too short (a cough): the model's input for it is dropped |
+| `cut` | `Cut` (packets as ArrayBuffers) | A turn ended: the brain commits it and asks the model to answer |
 | `turn` | `TurnEvent` | voice-turns' events (`likely_end`, `turn_end`, `resume`, `barge_in`, `duck`, …), at their `at` |
 | `started` | `id, at` | The speech's first Opus packet went to the player |
 | `played` | `id, result, stats` | The speech ended: `done \| stopped \| error`, with `speech_played` stats |
@@ -125,47 +126,28 @@ the main thread's `Date.now()`, to within a millisecond.
 
 - **Turn-taking (voice-turns, `src/voice/turns/`).** `TurnTaker` is constructed inside `MediaSession`, one per session.
   It gets `frame(speaker, pcm: Int16Array /* 320 samples, 20 ms, 16 kHz mono */, atMs, { concealed? })` for every
-  received or concealed packet, in RTP order after the jitter buffer. It gets `interim(speaker, text)` from `interim`
-  messages, and `botSpeaking(text | null)` from the player. Its `duck`, `unduck` and `barge_in` act on the player
+  received or concealed packet, in RTP order after the jitter buffer, and `botSpeaking(text | null)` from the player. Its `duck`, `unduck` and `barge_in` act on the player
   locally. Every event is also forwarded as `turn`. When a `TurnPolicy` is given, `turn_end` (not the Segmenter's
   silence timer) cuts the utterance. The models (Silero VAD, Smart Turn) are not loaded per session. One shared
   inference worker per node (`TurnModels`, voice-turns) batches VAD across every speaker on the node, and MediaHost
   transfers a `MessagePort` to it into each session worker (`open.models`). That is about 21 MB of models per node
   instead of per session, and a crash of the inference worker degrades turn-taking to the silence timer rather than
-  ending sessions. `TurnTaker` itself is a pure state machine on an injected clock. `likely_end` and `resume` drive a speculative agent turn on main (voice-turns owns
-  that policy; the pipeline carries the events). The module must have no DB, network or main-thread dependencies.
-- **STT (voice-providers).** Unchanged: `LiveTranscription` / `LiveTranscriptionProvider` (`src/transcription-live.ts`)
-  on main, fed from `pcm` messages (24 kHz mono s16le) and committed on `cut`. `SttEvent` partials from a provider's
-  `onEvent` go down as `interim`. If a provider sets `turnDetection: true`, its `end_of_turn` may commit the turn. Each
-  `LiveTranscript` should say which provider served it (`provider`), so latency can be split by provider.
-- **TTS (voice-providers).** Unchanged: `SpeechProvider.stream()` (24 kHz mono s16le) on main. Chunks are forwarded as
-  `pcm` as they arrive, and the worker frames and encodes them. `Player.play` now takes PCM, not Opus packets: encoding
-  belongs to the media side.
-- **End-to-end eval (voice-e2e, `tests/voice-eval/`).** It reads the same `voice_turn_latency` stages as the metric (see
-  below).
+  ending sessions. `TurnTaker` itself is a pure state machine on an injected clock. `likely_end` and `resume` drive the brain's
+  speculative answer on main (`realtime.speculative`; the pipeline carries the events). The module must have no DB, network or main-thread dependencies.
+- **The realtime brain (`src/voice/realtime/`).** On main. It takes each speaker's `pcm`, mixes them into one 24 kHz
+  stream with a note naming who speaks at each change, commits a turn at its `cut` (or at `likely_end`, speculatively)
+  and asks the provider to answer. The answer's PCM goes down as `play`/`pcm`/`pcm_end`, and a barge-in cancels it and
+  truncates the model's item at what was heard. `RealtimeProvider` (`provider.ts`) is the seam: OpenAI Realtime
+  (`openai.ts`) and Gemini Live (`gemini.ts`).
 
 ## Streaming
 
-What is already true on main: live STT streams each speaker's PCM from the first loud packet, with a commit at the cut
-(`AGENT_VOICE_LIVE_TRANSCRIPTION`, off by default for cost). TTS streams PCM, and playback starts after 200 ms of
-buffer. An agent's reply is spoken sentence by sentence as it is written (`SpokenReply`).
-
-What changes:
-
-- **Per-speaker streams end to end.** Each speaker has one ordered stream from the jitter buffer through decoding, the
-  segmenter and the turn model, up to their own `LiveTranscription`. No stage batches a whole utterance except the
-  batch-STT fallback.
-- **First clause first.** The first piece of a reply is cut at the first clause boundary (`,` `;` `:` `—`) once it holds
-  at least 24 characters, or at a sentence end, whichever comes first. Later pieces stay whole sentences (better
-  prosody). The first audio then waits for a clause, not a sentence.
-- **Synthesis runs ahead of playback.** `SessionSpeech` synthesizes the next queued piece while the current one plays
-  (one ahead), so a sentence boundary costs no provider round trip. Today each piece's synthesis starts only after the
-  previous one has finished playing: one TTFB, 200–500 ms, of dead air per sentence.
-- **Playback starts on the first chunk** once the provider's rate proves it will stay ahead (the jitter buffer's
-  `startRate` rule, with `startMs` cut from 200 to 100 ms for providers that have proven fast in that session).
-- **Webhooks without the poll.** `voice.*` events kick the webhook outbox at once (`Webhooks.kick()`). Before, they
-  waited for the 5 s scheduler poll: 2.5 s on average added to every reply an app makes from `voice.utterance` (found by
-  voice-e2e).
+- **Per-speaker streams to the model.** Each speaker has one ordered stream from the jitter buffer through decoding, the
+  segmenter and the turn model, up to the brain's mixer. Nothing batches a whole turn.
+- **Playback starts on the first chunk** once the model's rate proves it will stay ahead (the jitter buffer's
+  `startRate` rule).
+- **Webhooks without the poll.** `voice.*` events kick the webhook outbox at once (`Webhooks.kick()`), rather than
+  waiting for the 5 s scheduler poll.
 
 ## Audio hygiene
 
@@ -179,32 +161,21 @@ What changes:
 
 ## Latency instrumentation (`src/voice/latency.ts`)
 
-A `TurnClock` follows one turn, from the utterance's cut to the first audio of the reply it caused:
+A `TurnClock` follows one turn, from its cut to the first audio of the model's answer:
 
 | Mark | Where | Stage |
 | --- | --- | --- |
 | `speechEnd` | the last loud packet (`Cut.endedAt`) | origin, 0 |
-| `turnCommit` | the cut | turn-taking delay (`silenceMs`, or the turn model) |
-| `transcript` | the final transcript | STT |
-| `delivered` | the agent accepted the prompt (or the webhook was enqueued) | delivery |
-| `llmFirstToken` | the first text of the agent's reply | the model's TTFT, plus the run's start |
-| `firstPiece` | the first piece queued to speak | chunking |
-| `ttsFirstAudio` | the first PCM bytes from the provider | TTS TTFB |
+| `turnCommit` | the cut (or, for an answer begun at `likely_end`, the turn's end confirming it) | turn-taking delay (`silenceMs`, or the turn model) |
+| `ttsFirstAudio` | the first PCM bytes from the model | the model's time to first audio |
 | `firstPacket` | the first Opus packet to the player (`started`) | the playback buffer, encoding, DAVE |
 
 Each finished turn writes one EMF line, `voice_turn_latency`. Each stage is a metric in ms, from `speechEnd`:
-`VoiceTurnCommitMs`, `VoiceTranscriptMs`, `VoiceLlmFirstTokenMs`, `VoiceTtsFirstAudioMs` and `VoiceFirstPacketMs` (=
-end of speech to first audio, the headline). There are deltas too: `VoiceSttMs`, `VoiceLlmMs` and `VoiceTtsMs`. The
-dimensions are `Path` (`agent_reply` | `prompt_speak` | `speak`). The properties carry `sttModel`, and `ttsProvider`
-and `ttsModel`: the provider and model that made the reply's first audio (with a chain such as
-`AGENT_VOICE_TTS=elevenlabs,openai`, the member that served, so a failover shows as `openai`; a turn with no audio has
-neither). `voice_speech_started` and `voice_speech_ended` carry the same as `provider` and `model`. A
-turn that never reaches audio (no reply, barge-in, error) logs its marks with `outcome`, but publishes no
-`VoiceFirstPacketMs`.
-
-For an app that speaks from the webhook (`POST …/speak` after `voice.utterance`), the clock is keyed by the utterance.
-The next `speak` within 30 s of that session's transcript closes it under `Path=speak`. This captures the camel-bots
-path without the app's cooperation.
+`VoiceTurnCommitMs`, `VoiceTtsFirstAudioMs` and `VoiceFirstPacketMs` (= end of speech to first audio, the headline).
+There are deltas too: `VoiceRealtimeMs` (commit to the model's first audio) and `VoicePlayoutMs` (first audio to first
+packet). The dimension is `Path` (`realtime`). The properties carry `ttsProvider` and `ttsModel` (the realtime provider
+and model), `speculative` and `askAgent`. A turn that never reaches audio (no answer, `stay_silent`, barge-in, error)
+logs its marks with `outcome`, but publishes no `VoiceFirstPacketMs`.
 
 In CloudWatch, the `${name}-launch` dashboard gets a Voice row: p50, p95 and p99 of `VoiceFirstPacketMs`, and p95 of
 each stage, stacked. A `voice_turn_latency_p95` alarm fires when p95 `VoiceFirstPacketMs` exceeds
@@ -220,8 +191,7 @@ grows three ways:
 - A worker is killed (crash, OOM, hang) in the middle of the run. Asserted: only that session gets `voice.session.error`
   and restarts; every other session keeps its cadence of utterances. A concurrent stream of agent turns on the same node
   keeps its time to first token. The main thread's event-loop delay (p99, `monitorEventLoopDelay`) stays under 20 ms.
-- With streaming on, it checks that `voice_turn_latency` lines have every stage, and that consecutive speech pieces
-  have no inter-piece gap beyond a frame (`speech_played.gapMs`).
+- It checks that `voice_turn_latency` lines have every stage.
 
 ## Rollout
 
@@ -238,8 +208,9 @@ Each PR is behind no flag unless noted, has tests, and leaves `tests/voice-load.
    the load test's crash scenarios. `AGENT_VOICE_ISOLATION=worker` becomes the default (`inline` stays for tests and
    as an escape hatch).
 5. **Audio hygiene.** Jitter buffer, PLC, silence frames on stop, speaking and resume tests.
-6. **Streaming.** First-clause chunking, synthesis one ahead, the faster start for proven providers, and PCM batching
-   up the protocol.
+6. **Streaming.** The faster playback start, and PCM batching up the protocol.
+7. **Realtime only** (2026-10-19). The realtime brain is the only one: streaming STT providers, text to speech for
+   replies, `POST …/speak` and the cascade's latency stages are removed.
 
 Merge in that order: 3 before 4 (4 builds on the boundary), and 2 any time before 4, so the crash scenarios are
 measured. Rebase onto 5 and 6 if voice-turns or voice-providers land first: they touch `src/voice/turns/`,

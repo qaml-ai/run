@@ -1,11 +1,16 @@
 /**
  * The realtime brain end to end (docs/guides/voice-calls.md, "Realtime brain"): our RealtimeBrain, the real provider,
- * and the session's playback path (Opus encoding and the jitter buffer), on the voice bake-off's clips, timed from the
- * end of speech to the first packet out, as voice_turn_latency times a turn. No database, Discord or camelRun node:
+ * and the session's playback path (Opus encoding and the jitter buffer), on synthetic clips, timed from the end of
+ * speech to the first packet out, as voice_turn_latency times a turn. No database, Discord or camelRun node:
  * only what sits between the media plane and the model.
  *
  *   OPENAI_API_KEY=… node --experimental-strip-types scripts/voice-realtime-e2e.ts [--provider openai|gemini] [--speakers 1|2|3] [--overlap]
  *        [--commit-ms 580] [--speculative] [--agent] [--model gpt-realtime-2.1] [--repeat 2] [--only id,id] [--out report.json]
+ *        [--clips <dir>]
+ *
+ * The clips are said by OpenAI's gpt-4o-mini-tts the first time (OPENAI_API_KEY), and kept in
+ * ~/.cache/camelrun-voice-realtime-e2e as `<id>.pcm` (24 kHz mono 16-bit). `--clips <dir>` reads `<id>.pcm` files from
+ * there instead (recorded speech, say).
  *
  * Gemini Live (`--provider gemini`) takes GEMINI_API_KEY. Without the key, `--fake <ms>` stands in for the provider: its first audio comes <ms> after each response is
  * asked for, then audio at twice real time. That measures our own part only (mixing, commits, playback start).
@@ -18,7 +23,7 @@
  * - `--agent`: the bot's agent answers ask_agent after 400 ms (a stand-in), and the model is told to use it.
  * - Cost per minute: what the responses' tokens cost at list price, over the minutes of the run (people and bot).
  */
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { RealtimeBrain, ASK_AGENT, STAY_SILENT, realtimeInstructions, type BrainHooks } from "../src/voice/realtime/brain.ts";
@@ -27,6 +32,8 @@ import { geminiLive } from "../src/voice/realtime/gemini.ts";
 import { NO_USAGE, type RealtimeConnection, type RealtimeEvents, type RealtimeProvider } from "../src/voice/realtime/provider.ts";
 import { Floor } from "../src/voice/turns/floor.ts";
 import { buffered, opusFromPcm } from "../src/voice-audio.ts";
+import { openaiSpeech } from "../src/speech.ts";
+import { outboundOfProcess } from "../src/outbound.ts";
 import type { Playback, Player } from "../src/voice-speech.ts";
 
 const args = process.argv.slice(2);
@@ -45,14 +52,41 @@ if (!key && fakeMs === undefined) { console.error(`${keyName} is not set: pass -
 
 const BYTES_PER_MS = 48;
 const NAMES = ["Ana", "Ben", "Cy"];
-const ASKING = ["cmd-book", "names", "accent-spanish", "noise-cafe", "es", "fr", "pt-br", "code-switch", "disfluent", "cmd-volume"];
+/** What each clip says, and how (OpenAI's voice and instructions). */
+const CLIPS: Record<string, { text: string; voice: string; instructions?: string }> = {
+  "cmd-book": { text: "Book a table for four at seven thirty tomorrow night.", voice: "sage" },
+  "names": { text: "Can you ask Miguel and Illiana to review the camelRun pull request before Friday?", voice: "ballad" },
+  "accent-spanish": { text: "Sorry, can you repeat the last part? I did not understand the price.", voice: "nova", instructions: "Speak English with a heavy Spanish accent." },
+  "noise-cafe": { text: "Could you remind me to call the dentist at three?", voice: "coral" },
+  "es": { text: "¿Puedes recordarme llamar a mi madre mañana a las cinco?", voice: "nova" },
+  "fr": { text: "Est-ce que tu peux mettre la réunion à jeudi après-midi ?", voice: "shimmer" },
+  "pt-br": { text: "Você pode me mandar o link da reunião de amanhã?", voice: "coral", instructions: "Brazilian Portuguese." },
+  "code-switch": { text: "Okay so the meeting es mañana a las diez, right?", voice: "nova", instructions: "A bilingual speaker switching between English and Spanish naturally." },
+  "disfluent": { text: "Um, so, I was, uh, thinking we could maybe move it to Friday?", voice: "ballad", instructions: "Hesitant, with natural pauses and fillers." },
+  "cmd-volume": { text: "Turn the music up a bit.", voice: "verse" },
+};
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 type Clip = { id: string; pcm: Buffer; speechEndMs: number };
-function loadClips(): Clip[] {
-  const cache = join(homedir(), ".cache", "camelrun-voice-bakeoff");
-  return (only.length ? only : ASKING).filter(id => existsSync(join(cache, `${id}.clean.pcm`))).map(id => {
-    const pcm = Buffer.concat([Buffer.alloc(200 * BYTES_PER_MS), readFileSync(join(cache, `${id}.clean.pcm`))]);
+/** Each clip's PCM: from `--clips`, else the cache, else said by OpenAI once and cached. */
+async function loadClips(): Promise<Clip[]> {
+  const dir = value("clips") ?? join(homedir(), ".cache", "camelrun-voice-realtime-e2e");
+  const ids = (only.length ? only : Object.keys(CLIPS)).filter(id => existsSync(join(dir, `${id}.pcm`)) || (!value("clips") && CLIPS[id]));
+  const missing = ids.filter(id => !existsSync(join(dir, `${id}.pcm`)));
+  if (missing.length) {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) { console.error(`No clips in ${dir}: OPENAI_API_KEY makes them once (or pass --clips <dir>)`); process.exit(2); }
+    mkdirSync(dir, { recursive: true });
+    const tts = openaiSpeech({ outbound: outboundOfProcess() });
+    for (const id of missing) {
+      const { text, voice, instructions } = CLIPS[id];
+      const chunks: Buffer[] = [];
+      for await (const chunk of tts.stream({ text, voice, ...(instructions ? { instructions } : {}) }, { apiKey }, AbortSignal.timeout(60_000))) chunks.push(Buffer.from(chunk));
+      writeFileSync(join(dir, `${id}.pcm`), Buffer.concat(chunks));
+    }
+  }
+  return ids.map(id => {
+    const pcm = Buffer.concat([Buffer.alloc(200 * BYTES_PER_MS), readFileSync(join(dir, `${id}.pcm`))]);
     let last = 0;
     for (let at = 0; at + 960 <= pcm.length; at += 960) {
       let sum = 0;
@@ -116,8 +150,8 @@ const player: Player = {
 type Sample = { clip: string; speaker: string; firstPacketMs?: number; afterCommitMs?: number; outcome: string; askAgent?: boolean; speculative?: boolean };
 
 async function run() {
-  const clips = loadClips();
-  if (!clips.length) { console.error("No clips: run `npm run bakeoff:voice` once to make them (~/.cache/camelrun-voice-bakeoff)"); process.exit(2); }
+  const clips = await loadClips();
+  if (!clips.length) { console.error("No clips: --only names none, or --clips has no <id>.pcm"); process.exit(2); }
   const provider = fakeMs !== undefined ? fakeProvider(fakeMs) : providerId === "gemini" ? geminiLive() : openaiRealtime();
   let costUsd = 0, talkMs = 0, botMs = 0;
   const started = performance.now();

@@ -1,14 +1,13 @@
-### Voice: a realtime brain (beta), off by default
+### Voice: sessions answer with a realtime speech-to-speech model
 
-- A voice session may have `brain: "realtime"` (`"cascade"`, today's pipeline, is the default): a speech-to-speech
-  model (OpenAI Realtime, `gpt-realtime-2.1` or `-mini`, or Gemini Live, `gemini-3.8-live`, each over a server-side
-  WebSocket) hears the call and answers aloud,
-  asking `deliver.agent` for anything beyond talk (`ask_agent`), and staying quiet when people talk to each other
-  (`stay_silent`). See [Voice calls](../guides/voice-calls.md#realtime-brain-beta). Nothing changes for sessions that
-  do not ask for it.
-- It is offered only where `AGENT_VOICE_REALTIME` lists a provider (`openai`, `gemini`); unset, `brain: "realtime"` is
-  refused (404). `AGENT_OPENAI_REALTIME_URL` and `AGENT_GEMINI_LIVE_URL` dial other addresses. The tenant's key for the
-  provider is used (`openai`, `google`), else the platform's.
+- A voice session's brain is a speech-to-speech model (OpenAI Realtime, `gpt-realtime-2.1` or `-mini`, or Gemini Live,
+  `gemini-3.8-live`, each over a server-side WebSocket): it hears the call and answers aloud, asking `deliver.agent`
+  for anything beyond talk (`ask_agent`), and staying quiet when people talk to each other (`stay_silent`). See
+  [Voice calls](../guides/voice-calls.md#the-realtime-brain). `realtime` sets it up: `provider`, `model`, `voice`,
+  `instructions` (the bot's persona), `transcribe`, `speculative`.
+- The runtime offers the providers `AGENT_VOICE_REALTIME` lists (`openai`, `gemini`); unset, `openai`.
+  `AGENT_OPENAI_REALTIME_URL` and `AGENT_GEMINI_LIVE_URL` dial other addresses. The tenant's key for the provider is
+  used (`openai`, `google`), else the platform's; without one a session is refused (400 `REALTIME_UNAVAILABLE`).
 - Our media plane, Smart Turn, addressing and echo guard stay in front of the model: the call's per-speaker audio is
   mixed, with a note naming who speaks at each change (`speakers` names them); turns are committed by us (the
   provider's turn detection is off), with the answer begun at Smart Turn's likely end and held until the turn ends; a
@@ -19,7 +18,7 @@
   audio), `voice_realtime_stats` and the `voice_realtime` metric line per session (turns, answers, ask_agent,
   stay_silent, barge-ins, speculation taken back), `voice_realtime_ask_agent` (`VoiceRealtimeAskAgentMs` by outcome).
   No words are logged.
-- `scripts/voice-realtime-e2e.ts` measures it end to end on the bake-off's clips (one-on-one, 2-3 speakers,
-  overlapping), against OpenAI (`OPENAI_API_KEY`) or Gemini (`--provider gemini`, `GEMINI_API_KEY`), or a stand-in
-  provider (`--fake <ms>`). Gemini Live, measured through it: 0.89-0.92 s from the end of speech to the first packet
-  with speculation, 1.35 s without (commit at Smart Turn's median 580 ms).
+- `scripts/voice-realtime-e2e.ts` measures it end to end on synthetic clips (one-on-one, 2-3 speakers, overlapping),
+  against OpenAI (`OPENAI_API_KEY`) or Gemini (`--provider gemini`, `GEMINI_API_KEY`), or a stand-in provider
+  (`--fake <ms>`). Gemini Live, measured through it: 0.89-0.92 s from the end of speech to the first packet with
+  speculation, 1.35 s without (commit at Smart Turn's median 580 ms).

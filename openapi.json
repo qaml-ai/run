@@ -571,7 +571,7 @@
                   "image",
                   "speech"
                 ],
-                "description": "speech: speech made for a voice session (audioSeconds of it; no tokens); response: a model response of a run; compaction: a summary of older context; transcription: audio transcribed (audioSeconds of it; no tokens); image: images made (images of them; input is text and image tokens in, output image tokens out)"
+                "description": "speech: speech made, by POST /v1/speech (audioSeconds of it; no tokens) or a voice session's realtime brain (its tokens, and audioSeconds); response: a model response of a run; compaction: a summary of older context; transcription: audio transcribed (audioSeconds of it; no tokens); image: images made (images of them; input is text and image tokens in, output image tokens out)"
               },
               "input": {
                 "type": "number"
@@ -1051,33 +1051,19 @@
                 ],
                 "description": "Why: always (mode); alone (no one else in the call); named (it said one of names); conversation (the bot was talking with its speaker); not_addressed"
               },
-              "backchannel": {
-                "type": "boolean",
-                "enum": [
-                  true
-                ],
-                "description": "Present when it was said over the bot and was only a backchannel (mm-hm, yeah, ok…): the bot went on. It is not sent to deliver.agent and nothing replies to it"
-              },
-              "echo": {
-                "type": "boolean",
-                "enum": [
-                  true
-                ],
-                "description": "Present when barge-in judged it the bot's own speech coming back through the speaker's speakers (its words are the bot's, in order). It is not sent to deliver.agent and nothing replies to it; drop it unless you want it"
-              },
               "brain": {
                 "type": "string",
                 "enum": [
                   "realtime"
                 ],
-                "description": "Present for a session with a realtime brain: its model heard and answered this itself; your app need not (POST …/speak is refused)"
+                "description": "The session's realtime brain heard (and answered) this itself: your app need not"
               },
               "speakers": {
                 "type": "array",
                 "items": {
                   "type": "string"
                 },
-                "description": "With brain realtime, when people spoke at once: everyone whose audio is in it (speakerId is the first)"
+                "description": "When people spoke at once: everyone whose audio is in it (speakerId is the first)"
               }
             },
             "required": [
@@ -1098,7 +1084,8 @@
               "ended",
               "costUsd",
               "addressed",
-              "addressedBy"
+              "addressedBy",
+              "brain"
             ]
           }
         },
@@ -1168,7 +1155,7 @@
               },
               "latencyMs": {
                 "type": "number",
-                "description": "From the speak request (or the reply's sentence being whole) to the first audio going out"
+                "description": "From the brain asking for the answer to its first audio going out"
               },
               "startedAt": {
                 "type": "number",
@@ -1177,21 +1164,10 @@
               "turn": {
                 "type": "object",
                 "properties": {
-                  "seq": {
-                    "type": "number",
-                    "description": "The utterance it answers (voice.utterance's seq)"
-                  },
                   "path": {
-                    "type": [
-                      "string",
-                      "null"
-                    ],
+                    "type": "string",
                     "enum": [
-                      "agent_reply",
-                      "prompt_speak",
-                      "speak",
-                      "realtime",
-                      null
+                      "realtime"
                     ]
                   },
                   "stagesMs": {
@@ -1199,37 +1175,20 @@
                     "additionalProperties": {
                       "type": "number"
                     },
-                    "description": "Each stage of the turn, in ms since the end of the person's speech: turnCommit, transcript, delivered, llmFirstToken, firstPiece, ttsFirstAudio, firstPacket (the reply's first audio)"
+                    "description": "Each stage of the turn, in ms since the end of the person's speech: turnCommit, ttsFirstAudio (the model's first audio), firstPacket (its first audio out)"
                   }
                 },
                 "required": [
                   "path",
                   "stagesMs"
                 ],
-                "description": "For the first speech of a reply to an utterance: how long each stage took"
-              },
-              "reply": {
-                "type": "object",
-                "properties": {
-                  "agent": {
-                    "type": "string"
-                  },
-                  "requestId": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "agent",
-                  "requestId"
-                ],
-                "description": "For a piece of an agent's reply the session speaks (agentReplies, or a prompt's speak): the agent and its run"
+                "description": "For the answer to a person's turn: how long each stage took"
               },
               "brain": {
                 "type": "string",
                 "enum": [
                   "realtime"
-                ],
-                "description": "Present when a realtime brain's response is speaking"
+                ]
               }
             },
             "required": [
@@ -1242,7 +1201,8 @@
               "metadata",
               "speechId",
               "latencyMs",
-              "startedAt"
+              "startedAt",
+              "brain"
             ]
           }
         },
@@ -1252,7 +1212,7 @@
           "created",
           "data"
         ],
-        "description": "The bot started saying a speech (POST /v1/voice/sessions/{id}/speak)"
+        "description": "The bot started saying an answer"
       },
       "Event_voice_speech.ended": {
         "type": "object",
@@ -1310,21 +1270,6 @@
               "speechId": {
                 "type": "string"
               },
-              "reply": {
-                "type": "object",
-                "properties": {
-                  "agent": {
-                    "type": "string"
-                  },
-                  "requestId": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "agent",
-                  "requestId"
-                ]
-              },
               "reason": {
                 "type": "string",
                 "enum": [
@@ -1332,34 +1277,32 @@
                   "interrupted",
                   "error"
                 ],
-                "description": "done: said whole; interrupted: cut short or never started (by); error: speech could not be made or played"
+                "description": "done: said whole; interrupted: cut short (by); error: it could not be played"
               },
               "by": {
                 "type": "string",
                 "enum": [
-                  "interrupt",
                   "requested",
                   "barge_in",
                   "end",
-                  "handoff",
-                  "budget",
-                  "superseded"
+                  "superseded",
+                  "budget"
                 ],
-                "description": "With interrupted: a speech asked with interrupt; DELETE …/speak; a person started talking (bargeIn); the session ended or moved; credit ran out; a newer turn's reply took the place of this one, not yet heard (agentReplies)"
+                "description": "With interrupted: DELETE …/speak; a person started talking (bargeIn); the session ended or moved; a newer turn took its place; credit ran out"
               },
               "seconds": {
                 "type": "number",
-                "description": "Seconds of speech made (and billed)"
+                "description": "Seconds of speech played"
               },
               "costUsd": {
-                "type": "number"
+                "type": "number",
+                "description": "What its tokens cost (the session's usage already counts it)"
               },
               "brain": {
                 "type": "string",
                 "enum": [
                   "realtime"
-                ],
-                "description": "Present for a realtime brain's response: costUsd is what its tokens cost (the session's usage already counts it)"
+                ]
               }
             },
             "required": [
@@ -1373,7 +1316,8 @@
               "speechId",
               "reason",
               "seconds",
-              "costUsd"
+              "costUsd",
+              "brain"
             ]
           }
         },
@@ -1383,7 +1327,7 @@
           "created",
           "data"
         ],
-        "description": "A speech ended"
+        "description": "An answer ended"
       },
       "Error": {
         "type": "object",
@@ -1631,7 +1575,7 @@
               "fetch",
               "speech"
             ],
-            "description": "model: an LLM provider; search: a web search API, whose key the web_search built-in uses; fetch: a page renderer web_fetch uses for JavaScript-only pages; speech: speech to text or text to speech for voice sessions (deepgram, soniox, assemblyai, elevenlabs, cartesia)"
+            "description": "model: an LLM provider; search: a web search API, whose key the web_search built-in uses; fetch: a page renderer web_fetch uses for JavaScript-only pages; speech: text to speech for POST /v1/speech (elevenlabs, cartesia, deepgram)"
           },
           "models": {
             "type": "integer"
@@ -3457,29 +3401,6 @@
             ],
             "description": "What the model sees of the agent's history in this run. full (default): all of it. none: only the system prompt (instructions, tools) and this message, as a new conversation would, without making an agent. The run is still recorded in the history (its user message carries history: \"none\"), and later runs that do not say none see it. Not with whileRunning: steer"
           },
-          "speak": {
-            "type": "object",
-            "properties": {
-              "session": {
-                "type": "string",
-                "description": "A voice session of yours that speaks (created with speak: true), not ended",
-                "example": "vs_0123456789abcdef01234567"
-              },
-              "voice": {
-                "type": "string",
-                "description": "The voice for this reply; default the session's"
-              },
-              "interrupt": {
-                "type": "boolean",
-                "description": "Its first sentence stops what the session is saying (and what was queued), instead of waiting behind it"
-              }
-            },
-            "required": [
-              "session"
-            ],
-            "additionalProperties": false,
-            "description": "Speak this run's reply in a voice session as it is written, as speak.agentReplies does for an utterance: sentence by sentence, markdown, links and code left out, at most 400 characters, each a voice.speech.* event carrying reply {agent, requestId}; someone talking over it stops it. Billed as POST /v1/voice/sessions/{id}/speak. Not with whileRunning: steer. An agent's own token (POST /clients/{id}/requests) may name only sessions whose subject is the agent's (403 VOICE_SPEAK_FORBIDDEN)"
-          },
           "metadata": {
             "type": "object",
             "additionalProperties": {
@@ -5271,7 +5192,7 @@
                     "image",
                     "speech"
                   ],
-                  "description": "turn: the agent's own responses; compaction: summaries of older context; transcription: audio transcribed (responses counts transcriptions); image: images made (responses counts images); speech: voice sessions' speech made (responses counts speeches)"
+                  "description": "turn: the agent's own responses; compaction: summaries of older context; transcription: audio transcribed (responses counts transcriptions); image: images made (responses counts images); speech: speech made, by POST /v1/speech or voice sessions (responses counts speeches)"
                 }
               },
               "required": [
@@ -5438,7 +5359,7 @@
               "pcm",
               "wav"
             ],
-            "description": "pcm (default): raw 16-bit little-endian mono at 24 kHz, as a voice session plays it. wav: the same in a streamed WAV container, which an <audio> element plays"
+            "description": "pcm (default): raw 16-bit little-endian mono at 24 kHz. wav: the same in a streamed WAV container, which an <audio> element plays"
           },
           "language": {
             "type": "string",
@@ -5446,7 +5367,7 @@
           },
           "speech": {
             "$ref": "#/components/schemas/VoiceSpeechProviders",
-            "description": "Providers to try in order, and their voices, as a voice session's speech: the same voice the session would speak in"
+            "description": "Text-to-speech providers to try in order, and their voices"
           },
           "keyScope": {
             "type": "string",
@@ -5485,7 +5406,7 @@
             },
             "minItems": 1,
             "maxItems": 5,
-            "description": "Text-to-speech providers to try in order, each <provider> or <provider>/<model>: elevenlabs (eleven_flash_v2_5), cartesia (sonic-3), deepgram (aura-2), openai (gpt-4o-mini-tts). One without a key is skipped; one that fails before its first audio is passed over. Default: the runtime's chain (AGENT_VOICE_TTS), else OpenAI",
+            "description": "Text-to-speech providers to try in order, each <provider> or <provider>/<model>: elevenlabs (eleven_flash_v2_5), cartesia (sonic-3), deepgram (aura-2), openai (gpt-4o-mini-tts). One without a key is skipped; one that fails before its first audio is passed over. Default: OpenAI",
             "example": [
               "elevenlabs",
               "openai"
@@ -9083,7 +9004,10 @@
                 "type": "object",
                 "properties": {
                   "self_mute": {
-                    "type": "boolean"
+                    "type": "boolean",
+                    "enum": [
+                      false
+                    ]
                   },
                   "self_deaf": {
                     "type": "boolean",
@@ -9096,7 +9020,7 @@
                   "self_mute",
                   "self_deaf"
                 ],
-                "description": "How your app's OP 4 should have joined: self_mute false for a session that speaks"
+                "description": "How your app's OP 4 should have joined: un-muted, since the bot speaks"
               },
               "browser": {
                 "type": "object",
@@ -9127,39 +9051,6 @@
             ]
           }
         ]
-      },
-      "VoiceTranscription": {
-        "type": "object",
-        "properties": {
-          "providers": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "minItems": 1,
-            "maxItems": 5,
-            "description": "Streaming speech-to-text providers to try in order, each <provider> or <provider>/<model>: deepgram (nova-3), deepgram/flux (flux-general-en, which detects turns itself; English), soniox (stt-rt-v3), assemblyai (universal-streaming-english), openai (gpt-live-transcribe). Each uses your key for that provider (PUT /v1/providers/<provider>/key), else the platform's; one without a key is skipped, one that fails mid-utterance hands the utterance to the next. Default: the runtime's chain (AGENT_VOICE_STT), else transcription after each utterance",
-            "example": [
-              "deepgram/flux",
-              "soniox",
-              "openai"
-            ]
-          },
-          "keyterms": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "maxLength": 50
-            },
-            "maxItems": 100,
-            "description": "Terms to listen for (names, jargon): Deepgram keyterms, AssemblyAI keyterms_prompt, Soniox context, OpenAI's prompt",
-            "example": [
-              "camelRun",
-              "Miguel"
-            ]
-          }
-        },
-        "additionalProperties": false
       },
       "VoiceSession": {
         "type": "object",
@@ -9293,9 +9184,6 @@
           "notice": {
             "type": "string"
           },
-          "speak": {
-            "type": "boolean"
-          },
           "bargeIn": {
             "type": "boolean"
           },
@@ -9320,20 +9208,12 @@
               },
               "conversationMs": {
                 "type": "number"
-              },
-              "contextTurns": {
-                "type": "number"
-              },
-              "contextMs": {
-                "type": "number"
               }
             },
             "required": [
               "mode",
               "names",
-              "conversationMs",
-              "contextTurns",
-              "contextMs"
+              "conversationMs"
             ],
             "description": "Which turns are the bot's (addressing)"
           },
@@ -9348,12 +9228,6 @@
               },
               "resumeMs": {
                 "type": "number"
-              },
-              "backchannels": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
               }
             },
             "required": [
@@ -9361,17 +9235,7 @@
               "confirmMs",
               "resumeMs"
             ],
-            "description": "With speak and bargeIn: the barge-in timing in use"
-          },
-          "agentReplies": {
-            "type": "boolean",
-            "description": "The session speaks deliver.agent's replies (speak: {agentReplies: true})"
-          },
-          "transcription": {
-            "$ref": "#/components/schemas/VoiceTranscription"
-          },
-          "speech": {
-            "$ref": "#/components/schemas/VoiceSpeechProviders"
+            "description": "With bargeIn: the barge-in timing in use"
           },
           "endOfTurn": {
             "type": "object",
@@ -9400,14 +9264,6 @@
               "maxSilenceMs"
             ],
             "description": "How a speaker's turn ends (smart: a turn-detection model at pauses; silence: silenceMs of quiet)"
-          },
-          "brain": {
-            "type": "string",
-            "enum": [
-              "cascade",
-              "realtime"
-            ],
-            "description": "What answers: cascade, or a realtime speech-to-speech model"
           },
           "realtime": {
             "type": "object",
@@ -9442,7 +9298,7 @@
               "transcribe",
               "speculative"
             ],
-            "description": "With brain realtime: its settings"
+            "description": "Its realtime brain's settings (none for a session from before them)"
           },
           "speakers": {
             "type": "object",
@@ -9505,13 +9361,10 @@
           "ignoreUserIds",
           "metadata",
           "notice",
-          "speak",
           "bargeIn",
           "voice",
           "addressing",
-          "agentReplies",
           "endOfTurn",
-          "brain",
           "speeches",
           "spokenSeconds",
           "utterances",
@@ -9592,18 +9445,18 @@
           },
           "keyScope": {
             "type": "string",
-            "description": "Transcribe with this key scope's OpenAI key"
+            "description": "Answer with this key scope's key for the realtime provider"
           },
           "deliver": {
             "type": "object",
             "properties": {
               "agent": {
                 "type": "string",
-                "description": "An agent that gets each utterance as a prompt (its sender the speaker)"
+                "description": "The bot's agent: the model asks it (ask_agent) for facts, look-ups and actions, as a prompt whose sender is the speaker, and says its answer"
               },
               "webhooks": {
                 "type": "boolean",
-                "description": "Send voice.* events to your webhook endpoints that select them. Default true. A browser session may deliver to neither: its socket gets every utterance"
+                "description": "Send voice.* events to your webhook endpoints that select them. Default true"
               }
             },
             "additionalProperties": false
@@ -9658,24 +9511,6 @@
             "maxLength": 500,
             "description": "The listening notice your app posts (see notice in the answer); {bot} is the bot's id"
           },
-          "speak": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "agentReplies": {
-                    "type": "boolean",
-                    "description": "Speak deliver.agent's reply to each utterance as it is written: sentence by sentence, markdown, links and code left out, at most 400 characters (the whole reply is still the run's)"
-                  }
-                },
-                "additionalProperties": false
-              }
-            ],
-            "description": "The bot may speak (POST …/speak): true, or {agentReplies: true} to also speak the agent's replies. Your app joins with self_mute false. Default false"
-          },
           "bargeIn": {
             "anyOf": [
               {
@@ -9694,42 +9529,24 @@
                     "type": "integer",
                     "minimum": 0,
                     "maximum": 5000,
-                    "description": "Speech going on this long (ms) after the pause stops the bot without waiting for its words; 0 stops it at minMs, with no pause or echo check. Default 1000"
+                    "description": "Speech going on this long (ms) after the pause stops the bot; 0 stops it at minMs, with no pause. Default 1000"
                   },
                   "resumeMs": {
                     "type": "integer",
                     "minimum": 500,
                     "maximum": 10000,
                     "description": "The longest pause (ms): then it stops if they are still talking, else goes on. Default 3000"
-                  },
-                  "backchannels": {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    },
-                    "maxItems": 50,
-                    "description": "More words or short phrases that only show someone listens, beyond those built in (mm-hm, yeah, ok, sí, ja, 嗯, はい… in about 20 languages): said over the bot, it goes on",
-                    "example": [
-                      "bet",
-                      "word"
-                    ]
                   }
                 },
                 "additionalProperties": false
               }
             ],
-            "description": "With speak: a person talking over the bot stops its speech and what it was going to say. It pauses first, and goes on if what it heard was its own words coming back through someone's speakers (echo), only a backchannel (mm-hm, yeah…), or a sound too short to be words (with endOfTurn smart). true, false, or the timing. Default true"
+            "description": "A person talking over the bot stops its speech and what it was going to say. It pauses first, and goes on if the sound stops before confirmMs, or is too short to be words (with endOfTurn smart). true, false, or the timing. Default true"
           },
           "voice": {
             "type": "string",
-            "description": "With speak: the voice speech is made in (OpenAI's: alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, verse…). Default alloy",
+            "description": "The bot's voice by OpenAI's names (alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, verse…), mapped to the realtime provider's nearest; realtime.voice names the provider's own. Default alloy",
             "example": "coral"
-          },
-          "transcription": {
-            "$ref": "#/components/schemas/VoiceTranscription"
-          },
-          "speech": {
-            "$ref": "#/components/schemas/VoiceSpeechProviders"
           },
           "addressing": {
             "type": "object",
@@ -9740,7 +9557,7 @@
                   "always",
                   "addressed"
                 ],
-                "description": "always: every turn goes to deliver.agent (and is answered); addressed: only turns that name the bot (names), come from someone it is talking with (conversationMs), or are said with no one else in the call. Default addressed when names are given, else always"
+                "description": "always: every turn is answered; addressed: only turns that name the bot (names), come from someone it is talking with (conversationMs), or are said with no one else in the call. Default addressed when names are given, else always"
               },
               "names": {
                 "type": "array",
@@ -9762,7 +9579,7 @@
               }
             },
             "additionalProperties": false,
-            "description": "Which turns are the bot's in a group call. Others still go to webhooks (voice.utterance's addressed: false), and to the agent as context with the next turn that is the bot's"
+            "description": "Which turns are the bot's in a group call. Others still go to webhooks (voice.utterance's addressed: false), and the model hears them as context"
           },
           "endOfTurn": {
             "anyOf": [
@@ -9808,13 +9625,19 @@
             ],
             "description": "How a speaker's turn (an utterance) ends: smart or silence, or {mode, commitMs, threshold, maxSilenceMs}"
           },
+          "speak": {
+            "type": "boolean",
+            "enum": [
+              true
+            ],
+            "description": "Deprecated: every session speaks. true is taken and changes nothing"
+          },
           "brain": {
             "type": "string",
             "enum": [
-              "cascade",
               "realtime"
             ],
-            "description": "What answers. cascade (the default): each utterance is transcribed, and your app or deliver.agent answers through text to speech. realtime (beta): a speech-to-speech model hears the call and answers aloud itself, asking deliver.agent (ask_agent) for facts, actions and anything beyond talk; the session speaks (speak may be left out), POST …/speak is refused, and transcription.providers and speak.agentReplies do not apply. Needs the runtime's AGENT_VOICE_REALTIME and a key for the provider"
+            "description": "Deprecated, and the only value: every session's brain is a realtime speech-to-speech model"
           },
           "realtime": {
             "$ref": "#/components/schemas/VoiceRealtime"
@@ -9825,7 +9648,7 @@
               "type": "string",
               "maxLength": 40
             },
-            "description": "Speakers' names by Discord user id, for the realtime brain's note of who speaks (\"[Ana]\"); others are Speaker 1, Speaker 2… PATCH it as people join",
+            "description": "Speakers' names by Discord user id, for the model's note of who speaks (\"[Ana]\"); others are Speaker 1, Speaker 2… PATCH it as people join",
             "example": {
               "400000000000000001": "Ana"
             }
@@ -9868,7 +9691,8 @@
             "description": "With endOfTurn smart: begin the answer when the turn is likely over, and play it once the turn ends (taken back, unheard, if they go on). Default true"
           }
         },
-        "additionalProperties": false
+        "additionalProperties": false,
+        "description": "The speech-to-speech model that hears the call and answers aloud, asking deliver.agent (ask_agent) for facts, actions and anything beyond talk: its provider, model, voice, persona, and how it listens. Needs a key for the provider (else the platform's)"
       },
       "VoiceSessionList": {
         "type": "object",
@@ -9935,82 +9759,9 @@
               "type": "string",
               "maxLength": 40
             },
-            "description": "Speakers' names by Discord user id (replaces the session's), for a realtime brain"
+            "description": "Speakers' names by Discord user id (replaces the session's), for the model's note of who speaks"
           }
         },
-        "additionalProperties": false
-      },
-      "VoiceSpeech": {
-        "type": "object",
-        "properties": {
-          "speechId": {
-            "type": "string",
-            "example": "sp_3f9c0a1b2c3d4e5f60718293"
-          },
-          "session": {
-            "type": "string"
-          },
-          "state": {
-            "type": "string",
-            "enum": [
-              "queued"
-            ]
-          },
-          "position": {
-            "type": "number",
-            "description": "Speeches ahead of it: 0 plays next (or now)"
-          },
-          "voice": {
-            "type": "string"
-          },
-          "characters": {
-            "type": "number"
-          }
-        },
-        "required": [
-          "speechId",
-          "session",
-          "state",
-          "position",
-          "voice",
-          "characters"
-        ]
-      },
-      "VoiceSpeechInput": {
-        "type": "object",
-        "properties": {
-          "text": {
-            "type": "string",
-            "description": "What to say: 1 to 4,000 characters"
-          },
-          "voice": {
-            "type": "string",
-            "description": "Another voice than the session's, for this speech"
-          },
-          "voices": {
-            "type": "object",
-            "additionalProperties": {
-              "type": "string"
-            },
-            "description": "This speech's voice for each text-to-speech provider, by provider, over the session's speech.voices: an ElevenLabs voice id, a Cartesia voice id, an Aura voice, an OpenAI voice",
-            "example": {
-              "elevenlabs": "JBFqnCBsd6RMkjVDRZzb",
-              "openai": "fable"
-            }
-          },
-          "instructions": {
-            "type": "string",
-            "description": "How to say it (tone, pace, accent), as OpenAI's instructions: at most 1,000 characters",
-            "example": "Warm and unhurried."
-          },
-          "interrupt": {
-            "type": "boolean",
-            "description": "Stop what the bot is saying, and clear what it was going to, first. Default false: queued"
-          }
-        },
-        "required": [
-          "text"
-        ],
         "additionalProperties": false
       },
       "VoiceBrowserToken": {
@@ -10039,7 +9790,7 @@
         "properties": {
           "stopped": {
             "type": "number",
-            "description": "Speeches stopped: the one playing and those queued"
+            "description": "Answers stopped: the one playing and the one being made"
           }
         },
         "required": [
@@ -17994,96 +17745,6 @@
         }
       }
     },
-    "/v1/voice/sessions/{id}/speak": {
-      "post": {
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "maxLength": 255,
-              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
-            },
-            "required": false,
-            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
-            "name": "idempotency-key",
-            "in": "header"
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/VoiceSpeechInput"
-              }
-            }
-          }
-        },
-        "responses": {
-          "202": {
-            "description": "Queued: it plays in turn (voice.speech.started and voice.speech.ended follow)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VoiceSpeech"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      },
-      "delete": {
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "What the bot was saying, and was going to, stopped",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VoiceSpeechStopped"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/v1/voice/sessions/{id}/browser-token": {
       "post": {
         "parameters": [
@@ -18114,6 +17775,42 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/VoiceBrowserToken"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/voice/sessions/{id}/speak": {
+      "delete": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "What the bot was saying, and was going to, stopped",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceSpeechStopped"
                 }
               }
             }

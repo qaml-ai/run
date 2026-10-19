@@ -7,8 +7,8 @@ import { deepseekOnOpenRouter } from "./deepseek-replay.ts";
 
 /** Page renderers web_fetch can use, by the provider key they take. */
 export const FETCH_PROVIDERS = ["firecrawl"] as const;
-/** Speech providers (voice-providers/), by the key they take: speech to text, text to speech, or both. */
-export const SPEECH_PROVIDERS = ["assemblyai", "cartesia", "deepgram", "elevenlabs", "soniox"] as const;
+/** Text-to-speech providers for POST /v1/speech (voice-providers/), by the key they take. */
+export const SPEECH_PROVIDERS = ["cartesia", "deepgram", "elevenlabs"] as const;
 
 /** Providers that authenticate with something other than a single API key. */
 const NOT_API_KEY: Record<string, string> = {

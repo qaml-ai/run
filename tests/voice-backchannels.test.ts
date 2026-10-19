@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Clock } from "../src/node-context.ts";
 import { BargeInGuard, isBackchannel, type BargeInOutcome } from "../src/voice/echo-guard.ts";
-import { AGENT, discordGrant, fakeTranscriber, speak, until, voiceCluster } from "./voice-fakes.ts";
+import { discordGrant, speak, until, voiceCluster } from "./voice-fakes.ts";
 
 /**
  * Barge-in's backchannels (src/voice/echo-guard.ts): someone saying "mm-hm" over the bot shows they listen, and does not
@@ -77,30 +77,29 @@ test("the guard: a turn too short to be words ends its pause at once; a longer o
   assert.deepEqual((outcomes as BargeInOutcome[]).map(o => o.why), ["ended"]);
 });
 
-test("in a session: 'mm-hm' over the bot lets it go on, says backchannel: true, and reaches no agent; bargeIn.backchannels is taken and shown", { timeout: 60_000 }, async t => {
-  const said = ["what will the weather be tomorrow", "mm-hm"];
-  const { transcriber } = fakeTranscriber(({ index }) => said[index] ?? "");
-  const asked: string[] = [];
-  async function* reply(text: string) { asked.push(text); yield BOT; }
-  const { fake, node, events } = await voiceCluster(t, { playEveryMs: 10, transcriber, submitStreaming: (_agent, _tenant, request) => reply(String(request.params.text)) });
+test("in a session: a short sound over the bot pauses it, and it goes on (no words came); what was said over it is not answered; bargeIn's timing is taken and shown", { timeout: 60_000 }, async t => {
+  const { fake, realtime, node, events } = await voiceCluster(t, { playEveryMs: 10 });
   const a = await node("http://a");
-  const session = await a.voice.create("alice", { discord: discordGrant(), speak: { agentReplies: true }, deliver: { agent: AGENT }, silenceMs: 200, bargeIn: { backchannels: ["Bet", "bet"] } });
-  assert.deepEqual(session.interruption, { minMs: 300, confirmMs: 1_000, resumeMs: 3_000, backchannels: ["bet"] });
+  const session = await a.voice.create("alice", { discord: discordGrant(), silenceMs: 200, bargeIn: { resumeMs: 1_000 } });
+  assert.deepEqual(session.interruption, { minMs: 300, confirmMs: 1_000, resumeMs: 1_000 });
   const connection = await until(() => fake.open()[0], "the connection");
+  connection.others = ["400000000000000004"];
   connection.handlers.ready();
+  const model = await until(() => realtime.connections[0], "the model");
   speak(connection, "400000000000000004", 0.6);
-  await until(() => connection.played[0]?.length >= 20, "the reply to play");
+  await until(() => model.responses === 1, "a response asked for");
+  await model.answer("resp_1", { ms: 8_000, said: BOT });
+  await until(() => connection.played[0]?.length >= 20, "the answer to play");
   let paused = false;
   const watch = setInterval(() => { paused ||= !!connection.paused; }, 2);
   t.after(() => clearInterval(watch));
-  speak(connection, "400000000000000004", 0.6);
-  const [ended] = await until(async () => { const found = await events("voice.speech.ended"); return found.length ? found : undefined; }, "the reply to end", 30_000);
+  speak(connection, "400000000000000004", 0.4);
+  const [ended] = await until(async () => { const found = await events("voice.speech.ended"); return found.length ? found : undefined; }, "the answer to end", 30_000);
   assert.equal(paused, true, "it paused while deciding");
   assert.deepEqual([ended.data.reason, ended.data.by], ["done", undefined], "and went on to the end");
-  const utterances = (await events("voice.utterance")).map(event => [event.data.text, event.data.backchannel ?? false]);
-  assert.deepEqual(utterances, [["what will the weather be tomorrow", false], ["mm-hm", true]]);
-  assert.deepEqual(asked, ["what will the weather be tomorrow"], "no reply to a backchannel");
-  for (const bargeIn of [{ backchannels: "yeah" }, { backchannels: [""] }, { backchannels: Array.from({ length: 51 }, (_, i) => `w${i}`) }]) {
-    await assert.rejects(a.voice.create("alice", { discord: discordGrant({ guildId: "100000000000000094" }), speak: true, bargeIn }), (error: { status?: number }) => error.status === 400, JSON.stringify(bargeIn));
+  assert.equal(model.responses, 1, "no answer to what was said over it");
+  assert.equal(model.of("cancel").length, 0);
+  for (const bargeIn of [{ backchannels: ["yeah"] }, { resumeMs: 100 }, { minMs: "300" }]) {
+    await assert.rejects(a.voice.create("alice", { discord: discordGrant({ guildId: "100000000000000094" }), bargeIn }), (error: { status?: number }) => error.status === 400, JSON.stringify(bargeIn));
   }
 });
