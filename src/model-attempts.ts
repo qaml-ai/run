@@ -195,10 +195,10 @@ export class ModelAttempts {
       if (row.end_user && endUserRaw !== Number(row.end_user_raw)) {
         const posted = await settleUsage(sql, {
           tenant, endUser: row.end_user, bucket: row.end_user_bucket, day: utcDay(Number(row.started_at)), raw: endUserRaw, key: `attempt:${id}:${revision}`,
-          previous: { raw: Number(row.end_user_raw), allowance: Number(row.end_user_allowance), paid: Number(row.end_user_paid) },
+          previous: { raw: Number(row.end_user_raw), allowance: Number(row.end_user_allowance), paid: Number(row.end_user_paid), writtenOff: Number(row.end_user_written_off ?? 0) },
           metadata: { call: row.kind === "compaction" ? "compaction" : "response", attempt: id, provider: row.provider, model: row.model, agent, ...(row.context?.requestId ? { requestId: row.context.requestId } : {}), ...(final ? {} : { estimated: true }) },
         });
-        await sql.query("update model_attempts set end_user_raw=$2, end_user_allowance=$3, end_user_paid=$4 where id=$1", [id, posted.raw, posted.allowance, posted.paid]);
+        await sql.query("update model_attempts set end_user_raw=$2, end_user_allowance=$3, end_user_paid=$4, end_user_written_off=$5 where id=$1", [id, posted.raw, posted.allowance, posted.paid, posted.writtenOff]);
       }
       await applyUsageRows(sql, [{ tenant, day: quote.day, model: quote.model, ...delta }]);
       if (adjustment) {

@@ -1123,8 +1123,11 @@ export type Micros = number;
  * ("bot:*") or "*"; bucket limits, keyed the same way, are the most a bucket may charge the balance per UTC day.
  */
 export interface EndUserSettings { enabled: boolean; allowances: Record<string, Micros>; bucketLimits: Record<string, Micros>; dailyLimit: Micros | null; markupBps: number; lowBalance: Micros | null; updatedAt: number | null }
-/** One bucket's day for an end user: its allowance, spent from it (raw) and from the balance (charged), held, left, and its own limit on paid spend (null: none). */
-export interface EndUserBucketDay { bucket: string; allowance: Micros; allowanceSpent: Micros; paidSpent: Micros; held: Micros; allowanceLeft: Micros; paidLimit: Micros | null }
+/**
+ * One bucket's day for an end user: its allowance, spent from it (raw) and from the balance (charged), written off (raw:
+ * cost past what was left, which the user is not charged), held, left, and its own limit on paid spend (null: none).
+ */
+export interface EndUserBucketDay { bucket: string; allowance: Micros; allowanceSpent: Micros; paidSpent: Micros; writtenOff: Micros; held: Micros; allowanceLeft: Micros; paidLimit: Micros | null }
 /** An end user as they stand: balance, what calls in flight hold, what paid spend may still take today, and today by bucket. */
 export interface EndUser {
   id: string; enabled: boolean; balance: Micros; held: Micros; available: Micros; dailyLimit: Micros | null; markupBps: number;
@@ -1132,9 +1135,12 @@ export interface EndUser {
   today: { day: string; paidSpent: Micros; buckets: EndUserBucketDay[] };
   createdAt: number | null; updatedAt: number | null;
 }
-/** A ledger entry: `amount` moved the balance; for usage, `raw` is the call's cost and `allowance` what the bucket's allowance covered. */
+/**
+ * A ledger entry: `amount` moved the balance; for usage, `raw` is the call's cost, `allowance` what the bucket's allowance
+ * covered, and `writtenOff` the part past what was left for it (the balance, the daily limit, the bucket's limit), not charged.
+ */
 export interface EndUserLedgerEntry {
-  id: number; kind: "grant" | "refund" | "adjustment" | "usage"; amount: Micros; raw: Micros; allowance: Micros; bucket: string | null; key: string;
+  id: number; kind: "grant" | "refund" | "adjustment" | "usage"; amount: Micros; raw: Micros; allowance: Micros; writtenOff: Micros; bucket: string | null; key: string;
   reference: string | null; metadata: Record<string, unknown>; balanceAfter: Micros; createdAt: number;
 }
 /** How `endUsers.ledger` narrows a ledger: kinds, a time range on `createdAt` (epoch ms or a Date; `to` exclusive), a bucket, only entries that moved the balance. */
@@ -1143,12 +1149,13 @@ export interface EndUserLedgerQuery {
 }
 /**
  * An end user's UTC day (`endUsers.days`): by bucket, what the allowance paid (`freeRaw`, raw cost: never charged) and
- * what the balance paid (`paidCharged`, with the markup), and their totals; and what your entries moved that day, in
+ * what the balance paid (`paidCharged`, with the markup), what was written off (`writtenOff`, raw: cost past what was
+ * left, never charged), and their totals; and what your entries moved that day, in
  * balance units (`granted`, `refunded` as a positive amount, `adjusted` signed; `entries`: how many).
  */
 export interface EndUserDay {
-  day: string; freeRaw: Micros; paidCharged: Micros; granted: Micros; refunded: Micros; adjusted: Micros; entries: number;
-  buckets: { bucket: string; freeRaw: Micros; paidCharged: Micros }[];
+  day: string; freeRaw: Micros; paidCharged: Micros; writtenOff: Micros; granted: Micros; refunded: Micros; adjusted: Micros; entries: number;
+  buckets: { bucket: string; freeRaw: Micros; paidCharged: Micros; writtenOff: Micros }[];
 }
 const queryOf = (values: Record<string, unknown>) => new URLSearchParams(Object.entries(values).filter(([, value]) => value !== undefined).map(([name, value]) => [name, String(value)]));
 const timeOf = (value: number | Date | undefined) => value instanceof Date ? value.getTime() : value;

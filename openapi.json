@@ -8730,7 +8730,7 @@
           },
           "balance": {
             "type": "integer",
-            "description": "Paid credit left (charged units); slightly negative only by the documented overspend tolerance, in micro-USD (1 USD = 1000000)"
+            "description": "Paid credit left (charged units); usage never takes it below zero (a negative adjustment of yours may), in micro-USD (1 USD = 1000000)"
           },
           "held": {
             "type": "integer",
@@ -8809,6 +8809,10 @@
                       "type": "integer",
                       "description": "Charged to the balance today for this bucket, in micro-USD (1 USD = 1000000)"
                     },
+                    "writtenOff": {
+                      "type": "integer",
+                      "description": "Cost past what was left for this bucket today (the balance, the daily limit, the bucket's limit), raw: not charged to the user; the tenant bears it, in micro-USD (1 USD = 1000000)"
+                    },
                     "held": {
                       "type": "integer",
                       "description": "Held for calls in flight (allowance and balance), in micro-USD (1 USD = 1000000)"
@@ -8830,6 +8834,7 @@
                     "allowance",
                     "allowanceSpent",
                     "paidSpent",
+                    "writtenOff",
                     "held",
                     "allowanceLeft",
                     "paidLimit"
@@ -8952,6 +8957,10 @@
             "type": "integer",
             "description": "usage: the part of the raw cost the bucket's allowance covered, in micro-USD (1 USD = 1000000)"
           },
+          "writtenOff": {
+            "type": "integer",
+            "description": "usage: the part of the raw cost past what was left for the call (the balance, the daily limit, the bucket's limit), not charged to the user; the tenant bears it, in micro-USD (1 USD = 1000000)"
+          },
           "bucket": {
             "type": [
               "string",
@@ -8986,6 +8995,7 @@
           "amount",
           "raw",
           "allowance",
+          "writtenOff",
           "bucket",
           "key",
           "reference",
@@ -9028,6 +9038,10 @@
             "type": "integer",
             "description": "What the balance paid that day, every bucket (charged), in micro-USD (1 USD = 1000000)"
           },
+          "writtenOff": {
+            "type": "integer",
+            "description": "What was written off that day, every bucket (raw cost), in micro-USD (1 USD = 1000000)"
+          },
           "granted": {
             "type": "integer",
             "description": "Credit the tenant granted that day (balance units), in micro-USD (1 USD = 1000000)"
@@ -9059,12 +9073,17 @@
                 "paidCharged": {
                   "type": "integer",
                   "description": "What the balance paid for the bucket that day, charged with the markup, in micro-USD (1 USD = 1000000)"
+                },
+                "writtenOff": {
+                  "type": "integer",
+                  "description": "Cost past what was left for the bucket that day (the balance, the daily limit, the bucket's limit), raw: not charged; the tenant bears it, in micro-USD (1 USD = 1000000)"
                 }
               },
               "required": [
                 "bucket",
                 "freeRaw",
-                "paidCharged"
+                "paidCharged",
+                "writtenOff"
               ]
             },
             "description": "Spend by bucket, by name; buckets that spent nothing that day are left out"
@@ -9074,6 +9093,7 @@
           "day",
           "freeRaw",
           "paidCharged",
+          "writtenOff",
           "granted",
           "refunded",
           "adjusted",
