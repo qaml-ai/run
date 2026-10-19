@@ -10152,7 +10152,8 @@
                 "enum": [
                   "openai",
                   "gemini",
-                  "grok"
+                  "grok",
+                  "elevenlabs"
                 ]
               },
               "model": {
@@ -10577,18 +10578,19 @@
             "enum": [
               "openai",
               "gemini",
-              "grok"
+              "grok",
+              "elevenlabs"
             ],
-            "description": "The speech-to-speech provider, one of the runtime's (AGENT_VOICE_REALTIME): openai (OpenAI Realtime, your OpenAI key), gemini (Gemini Live, your google key), or grok (xAI Voice Agent, your xai key). Default the runtime's first"
+            "description": "The speech-to-speech provider, one of the runtime's (AGENT_VOICE_REALTIME): openai (OpenAI Realtime, your OpenAI key), gemini (Gemini Live, your google key), grok (xAI Voice Agent, your xai key), or elevenlabs (ElevenLabs Agents, your elevenlabs key). Default the runtime's first"
           },
           "model": {
             "type": "string",
-            "description": "The model: openai gpt-realtime-2.1, gpt-realtime-2.1-mini (default gpt-realtime-2.1); gemini gemini-3.8-live; grok grok-voice-latest, grok-voice-3.0 (default grok-voice-latest)",
+            "description": "The model: openai gpt-realtime-2.1, gpt-realtime-2.1-mini (default gpt-realtime-2.1); gemini gemini-3.8-live; elevenlabs gemini-2.5-flash-lite; grok grok-voice-latest, grok-voice-3.0 (default grok-voice-latest)",
             "example": "gpt-realtime-2.1"
           },
           "voice": {
             "type": "string",
-            "description": "The provider's voice: openai alloy, ash, ballad, coral, echo, sage, shimmer, verse, marin, cedar; gemini Kore, Aoede, Leda, Zephyr, Puck, Charon, Fenrir, Orus, Callirrhoe, Autonoe, Enceladus, Iapetus, Umbriel, Algieba, Despina, Erinome, Algenib, Rasalgethi, Laomedeia, Achernar, Alnilam, Schedar, Gacrux, Pulcherrima, Achird, Zubenelgenubi, Vindemiatrix, Sadachbia, Sadaltager, Sulafat; grok ara, eve, leo, rex, sal, carina, zagan, helix, orion, luna, iris, altair, zenith, perseus, helios, lux, kepler, rigel, cosmo, celeste, ursa, sirius, lumen, castor, naksh, atlas, aurora, liora. Default the session's voice where the model has it, else the nearest (OpenAI: nova → marin, onyx → cedar, fable → ballad; Gemini: alloy → Aoede, coral → Kore, onyx → Charon…; Grok: alloy → sal, coral → ara, onyx → leo…)",
+            "description": "The provider's voice: elevenlabs accepts a voice_id (OpenAI names map to Jessica); openai alloy, ash, ballad, coral, echo, sage, shimmer, verse, marin, cedar; gemini Kore, Aoede, Leda, Zephyr, Puck, Charon, Fenrir, Orus, Callirrhoe, Autonoe, Enceladus, Iapetus, Umbriel, Algieba, Despina, Erinome, Algenib, Rasalgethi, Laomedeia, Achernar, Alnilam, Schedar, Gacrux, Pulcherrima, Achird, Zubenelgenubi, Vindemiatrix, Sadachbia, Sadaltager, Sulafat; grok ara, eve, leo, rex, sal, carina, zagan, helix, orion, luna, iris, altair, zenith, perseus, helios, lux, kepler, rigel, cosmo, celeste, ursa, sirius, lumen, castor, naksh, atlas, aurora, liora. Default the session's voice where the model has it, else the nearest (OpenAI: nova → marin, onyx → cedar, fable → ballad; Gemini: alloy → Aoede, coral → Kore, onyx → Charon…; Grok: alloy → sal, coral → ara, onyx → leo…)",
             "example": "marin"
           },
           "instructions": {
@@ -10598,11 +10600,11 @@
           },
           "transcribe": {
             "type": "boolean",
-            "description": "Transcribe what people say (gpt-transcribe, billed as transcription): voice.utterance gets their words, and addressing.names can address the bot. Default true"
+            "description": "Transcribe what people say (OpenAI uses gpt-transcribe; ElevenLabs includes transcripts in its conversation): voice.utterance gets their words, and addressing.names can address the bot. Default true"
           },
           "speculative": {
             "type": "boolean",
-            "description": "With endOfTurn smart: begin the answer when the turn is likely over, and play it once the turn ends (taken back, unheard, if they go on). Default true"
+            "description": "Ignored for ElevenLabs (provider turn detection). With endOfTurn smart: begin the answer when the turn is likely over, and play it once the turn ends (taken back, unheard, if they go on). Default true"
           }
         },
         "additionalProperties": false
