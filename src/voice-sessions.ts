@@ -1694,12 +1694,13 @@ export class VoiceSessions {
       ...(submit ? {
         askAgent: async (request: string, speaker: string | undefined, signal: AbortSignal) => {
           const id = `voice_${held.id.slice(3)}_ask_${Date.now().toString(36)}${++asks}`;
+          const name = speaker ? options().speakers?.[speaker] : undefined;
           let text = "";
           for await (const piece of submit(agent!, held.tenant, {
             id, method: "prompt",
             params: {
-              text: `[Asked by your voice in a voice call: your reply is read aloud, so keep it short and plain]\n${request}`,
-              ...(speaker ? { from: { id: speaker } } : {}), metadata: { voiceSession: held.id, via: "realtime" }, allowDisconnected: true,
+              text: `[A request from your voice in a live voice call${name ? `, asked by ${name}` : ""}. Do what it needs with your tools first; then answer in one to three plain spoken sentences (no markdown, lists, links or emoji), since your reply is read aloud]\n${request}`,
+              ...(speaker ? { from: { id: speaker, ...(name ? { name } : {}) } } : {}), metadata: { voiceSession: held.id, via: "realtime" }, allowDisconnected: true,
             },
           }, signal)) text += piece;
           return text;
