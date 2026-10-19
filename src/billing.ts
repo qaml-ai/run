@@ -267,8 +267,8 @@ export class Billing {
   async creditLimit(tenant: string): Promise<HttpError | undefined> {
     if (await this.mode(tenant) !== "prepaid") return undefined;
     const { balance, purchased, lastHour, disputed } = await this.account(tenant);
-    if (disputed) return new HttpError(402, "A payment for this account's credit is disputed with the card issuer, so runs cannot start until the dispute is resolved");
-    if (balance <= 0) return new HttpError(402, `This account is out of credit (balance ${usd(balance)}), so runs cannot start`);
+    if (disputed) return new HttpError(402, "A payment for this account's credit is disputed with the card issuer, so runs cannot start until the dispute is resolved", "INSUFFICIENT_CREDIT");
+    if (balance <= 0) return new HttpError(402, `This account is out of credit (balance ${usd(balance)}), so runs cannot start`, "INSUFFICIENT_CREDIT");
     const allowance = this.pricing.free.hourlySpend;
     if (purchased <= 0 && lastHour >= allowance) {
       return new HttpError(429, `This account has reached its spending limit on free credit: ${usd(lastHour)} in the last hour, of ${usd(allowance)} an hour; try again later`);

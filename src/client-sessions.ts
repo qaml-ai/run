@@ -7,7 +7,7 @@ import { Hono, type Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { HttpBindings } from "@hono/node-server";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
-import type { AgentConfig, Credentials, RunLimits, ToolDefinition } from "./protocol.ts";
+import type { AgentConfig, Credentials, RunLimits, RunStop, ToolDefinition } from "./protocol.ts";
 import { errorText, PERSISTENCE_FAILED, scratchMount } from "./protocol.ts";
 import { enqueueEvents, usageCost, webhookEvent, type WebhookEvent } from "./webhooks.ts";
 import { AgentSupervisor } from "./supervisor.ts";
@@ -516,6 +516,25 @@ const visible = ({ params: _params, announce: _announce, handedOff: _handedOff, 
   return { ...record, ...ending, status };
 };
 
+/**
+ * How a limit's refusal of a run (a 402 of `runLimit`) ends it, said as a stop at that limit mid-run is: so a run refused
+ * as it left the queue, one stopped between steps and a notification's turn refused as it landed all carry the same
+ * `code` and fields. End-user credit: `end_user_credit`, with why (`reason`), whose (`endUser`) and which `bucket`; the
+ * agent's or the tenant's spend limit, or the tenant's spent credit: `spend_limit`, with which (`limit`). Undefined: not
+ * a limit's refusal.
+ */
+export function refusalStop(error: unknown): (Omit<RunStop, "message" | "stopped"> & { stopped: "spend_limit"; code: string }) | undefined {
+  if (!(error instanceof HttpError) || error.status !== 402) return undefined;
+  if (error.code === "END_USER_CREDIT") {
+    const { reason, bucket, endUser } = error.details ?? {};
+    return { stopped: "spend_limit", code: END_USER_CREDIT, limit: "end_user", ...(typeof reason === "string" ? { reason } : {}), ...(typeof bucket === "string" ? { bucket } : {}), ...(typeof endUser === "string" ? { endUser } : {}) };
+  }
+  const limit = (error as { stopLimit?: RunStop["limit"] }).stopLimit;
+  if (error.code === "SPEND_LIMIT") return { stopped: "spend_limit", code: "spend_limit", ...(limit ? { limit } : {}) };
+  if (error.code === "INSUFFICIENT_CREDIT") return { stopped: "spend_limit", code: "spend_limit", limit: "credit" };
+  return undefined;
+}
+
 export interface ClientSessionOptions {
   secret: string; toolTimeoutMs?: number; ttlMs?: number; eventBytes?: number;
   /** Event ids reserved at a time (default EVENT_BLOCK); tests set fewer, to reserve often. */
@@ -913,13 +932,15 @@ export class ClientSessions {
     const base = { agentId, requestId: record.id, method: record.method, ...(record.actor ? { actor: record.actor } : {}), ...(record.metadata ? { metadata: record.metadata } : {}) };
     if (record.state === "running") return webhookEvent("run.started", tenant, { ...base, ...(record.resumes ? { resumes: record.resumes } : {}) }, `run.started:${agentId}:${record.id}`);
     const outcome = record.outcome ?? { error: "No outcome was recorded" };
-    const result = (outcome.result ?? {}) as { stopped?: string; inputs?: { id: string }[]; replyIndex?: number; messages?: number; code?: unknown; servedModel?: string; modelError?: object };
+    const result = (outcome.result ?? {}) as { stopped?: string; inputs?: { id: string }[]; replyIndex?: number; messages?: number; code?: unknown; limit?: unknown; reason?: unknown; bucket?: unknown; endUser?: unknown; servedModel?: string; modelError?: object };
     const { error } = outcomeEnding(outcome);
     const ended = { ...base, ...(record.steeredInto ? { steeredInto: record.steeredInto } : {}), usage: usage ?? null, ...(result.servedModel ? { servedModel: result.servedModel } : {}) };
     const key = `run.ended:${agentId}:${record.id}`;
     // Its code, where the run's outcome has one: `cancelled` (a stop cancelled it before it began), `aborted`, `model_stream_stalled`...
     // And how its model call failed, where it did (errorClass, providerStatus, retryable, model).
-    if (error !== undefined) return webhookEvent("run.failed", tenant, { ...ended, error, ...(typeof result.code === "string" ? { code: result.code } : {}), ...(outcome.error === undefined ? result.modelError : {}), ...(outcome.uncertain ? { uncertain: true } : {}) }, key);
+    // A limit's: which (limit), and for an end user's credit why (reason), whose (endUser) and which bucket.
+    const coded = Object.fromEntries((["code", "limit", "reason", "bucket", "endUser"] as const).flatMap(name => typeof result[name] === "string" ? [[name, result[name]]] : []));
+    if (error !== undefined) return webhookEvent("run.failed", tenant, { ...ended, error, ...coded, ...(outcome.error === undefined ? result.modelError : {}), ...(outcome.uncertain ? { uncertain: true } : {}) }, key);
     return webhookEvent("run.completed", tenant, {
       ...ended, ...(result.stopped ? { stopped: result.stopped } : {}), ...(result.inputs?.length ? { inputIds: result.inputs.map(input => input.id) } : {}),
       ...(typeof result.replyIndex === "number" ? { replyIndex: result.replyIndex } : {}), ...(typeof result.messages === "number" ? { messageCount: result.messages } : {}),
@@ -1609,7 +1630,7 @@ export class ClientSessions {
           // Its end user has nothing left for its next model request: stopped here, rather than refused at the request.
           const payer = this.payer(session, this.runningRun(session));
           const broke = payer && await this.options.endUsers?.refusal(session.header.tenant, payer.id, payer.bucket);
-          if (broke) return { stopped: "spend_limit" as const, message: broke.message, limit: "end_user" as const, code: END_USER_CREDIT, reason: broke.reason };
+          if (broke) return { stopped: "spend_limit" as const, message: broke.message, limit: "end_user" as const, code: END_USER_CREDIT, reason: broke.reason, bucket: broke.bucket, endUser: broke.endUser };
           // This node is leaving: the turn stops at this step boundary, and its next owner continues it (`park`).
           return this.handingOff ? { stopped: "handoff" as const, message: `This node is leaving the cluster (${this.handingOff.reason}); the turn continues on another` } : undefined;
         },
@@ -2571,7 +2592,7 @@ export class ClientSessions {
     const turns = refused ? 0 : Number((fresh
       ? await this.db.query("insert into agent_wakes (root, hour, turns) values ($1, $2, 1) on conflict (root, hour) do update set turns = agent_wakes.turns + 1 returning turns", [notice.root, hour])
       : await this.db.query("select turns from agent_wakes where root = $1 and hour = $2", [notice.root, hour])).rows[0]?.turns ?? 0);
-    const refusal = refused ? { stopped: "spend_limit", message: refused.message }
+    const refusal = refused ? { message: refused.message, ...refusalStop(refused) ?? { stopped: "spend_limit" } }
       : turns > cap ? { stopped: "agent_loop_limit", message: `This agent's chain has had ${cap} turns started by sub-agent notifications and messages this hour, its limit (AGENT_WAKES_PER_HOUR): the message is in its history, but no turn ran. Send a message to go on` } : undefined;
     if (!refusal) return { params };
     if (refusal.stopped === "agent_loop_limit") sometimes(true, "a notification reached its chain's wake cap");
@@ -4849,10 +4870,12 @@ export class ClientSessions {
       }
     }
     catch (error) {
-      value = { error: errorText(error) };
+      // A limit that refused the run as it left the queue: its result is coded as a stop at that limit mid-run is.
+      const stop = refusalStop(error);
+      value = stop ? { result: { error: errorText(error), ...stop } } : { error: errorText(error) };
       // Its host's transcript failed a write: only a reload knows what it holds, so the agent is given up as a fault of
       // the session's own would, and the turn goes on from storage, not from this host's memory.
-      if (value.error.startsWith(PERSISTENCE_FAILED)) this.fail(session, error, "transcript");
+      if (errorText(error).startsWith(PERSISTENCE_FAILED)) this.fail(session, error, "transcript");
     }
     if (RUN_METHODS.includes(record.method)) session.outputs = undefined;
     this.reportActive(session, false);
@@ -5174,9 +5197,10 @@ export class ClientSessions {
   /** Why a run may not start: a model run's spend limit (a monthly cap or spent credit), or for any run, spent credit. */
   private async runLimit(session: Session, method: string, bucket?: string): Promise<HttpError | undefined> {
     const tenant = session.header.tenant;
-    const refused = (refusal: Refusal | undefined, code: string) => typeof refusal === "string" ? new HttpError(402, refusal, code) : refusal;
+    const refused = (refusal: Refusal | undefined, code: string, limit?: RunStop["limit"]) => typeof refusal === "string" ? Object.assign(new HttpError(402, refusal, code), { stopLimit: limit }) : refusal;
     if (MODEL_RUNS.includes(method)) {
-      const limited = refused(await this.agentSpendLimit(session) ?? await this.options.spendLimit?.(tenant), "SPEND_LIMIT");
+      const agent = await this.agentSpendLimit(session);
+      const limited = agent ? refused(agent, "SPEND_LIMIT", "agent") : refused(await this.options.spendLimit?.(tenant), "SPEND_LIMIT", "tenant");
       if (limited) return limited;
       // Its end user has nothing left in the run's bucket.
       const payer = this.payer(session, bucket ? { bucket } as RequestRecord : undefined);

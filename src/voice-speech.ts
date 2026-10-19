@@ -65,7 +65,7 @@ export interface SpeechEffects {
   /** It ended; `platform` says whose key made it (usage), `served` which provider (when a chain made it). */
   ended(item: SpeechItem, ending: SpeechEnding, platform: boolean | undefined, served?: Served): void;
   /** The money ran out: the session ends (`budget`). */
-  budget(limit: "tenant" | "end_user", endUserReason?: string): void;
+  budget(limit: "tenant" | "end_user", endUserReason?: string, bucket?: string): void;
 }
 
 /** Speeches waiting at most per session, and how long one waits for a connection to play on. */
@@ -79,7 +79,7 @@ export const speechId = () => `sp_${randomBytes(12).toString("hex")}`;
  */
 type Making = {
   item: SpeechItem; abort: AbortController;
-  ready: Promise<{ held: Awaited<ReturnType<SpeechEffects["hold"]>>; pcm: AsyncIterable<Uint8Array> } | { budget: { limit: "tenant" | "end_user"; endUserReason?: string } }>;
+  ready: Promise<{ held: Awaited<ReturnType<SpeechEffects["hold"]>>; pcm: AsyncIterable<Uint8Array> } | { budget: { limit: "tenant" | "end_user"; endUserReason?: string; bucket?: string } }>;
   made: Promise<void>;
   /** PCM samples made so far: what is billed. */
   samples: number;
@@ -203,8 +203,8 @@ export class SessionSpeech {
       } catch (refused) {
         if ((refused as HttpError).status !== 402) throw refused;
         const endUser = (refused as HttpError).code === "END_USER_CREDIT";
-        const reason = (refused as HttpError).details?.reason;
-        return { budget: { limit: endUser ? "end_user" as const : "tenant" as const, ...(endUser && typeof reason === "string" ? { endUserReason: reason } : {}) } };
+        const { reason, bucket } = (refused as HttpError).details ?? {};
+        return { budget: { limit: endUser ? "end_user" as const : "tenant" as const, ...(endUser && typeof reason === "string" ? { endUserReason: reason } : {}), ...(endUser && typeof bucket === "string" ? { bucket } : {}) } };
       }
       try {
         await this.effects.fresh();
@@ -270,7 +270,7 @@ export class SessionSpeech {
       const ready = await making.ready;
       if ("budget" in ready) {
         current.stoppedBy = "budget";
-        this.effects.budget(ready.budget.limit, ready.budget.endUserReason);
+        this.effects.budget(ready.budget.limit, ready.budget.endUserReason, ready.budget.bucket);
         return;
       }
       held = ready.held;

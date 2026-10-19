@@ -574,7 +574,14 @@ export function creditError(refused: CreditRefusal) {
  * Why an end user's call was refused: their balance (nothing left of the bucket's allowance and none paid), their daily
  * limit, or the bucket's own daily limit on paid spend.
  */
-export type CreditRefusal = { endUser: string; bucket: string; reason: "balance" | "daily_limit" | "bucket_limit"; message: string };
+export type CreditRefusal = { endUser: string; bucket: string; reason: CreditReason; message: string };
+/**
+ * Why an end user's credit refused or stopped work, the one list every path names (a 402's, a run's result, run.failed,
+ * voice.session.ended's endUserReason): the balance, their daily credit limit, or the bucket's own daily limit on paid
+ * spend. More may be added; code that meets one it does not know treats it as a credit refusal of no particular kind.
+ */
+export const CREDIT_REASONS = ["balance", "daily_limit", "bucket_limit"] as const;
+export type CreditReason = typeof CREDIT_REASONS[number];
 /** What a call holds: raw micro-USD in all, of which `allowance` from the bucket's allowance, and `paid` (charged) from the balance. */
 export type Hold = { id: string; raw: number; allowance: number; paid: number };
 export type Reserved = { hold: Hold; refused?: undefined } | { refused: CreditRefusal; hold?: undefined };

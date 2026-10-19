@@ -342,7 +342,13 @@ with Agents() as agents:  # CAMELAI_API_KEY
 - `AgentError`: `status` (HTTP, or 0), `code` (a stable name where the runtime
   gives one: `APPLICATION_CONNECTED`, `APPLICATION_REPLACED`, `REPLAY_GAP`,
   `spend_limit`, …), `requestId`, `uncertain`, `retryAfterMs` (Python
-  `request_id`, `retry_after` in seconds).
+  `request_id`, `retry_after` in seconds). With `END_USER_CREDIT` (a 402) or
+  `end_user_credit` (a run): `reason` (one of `CREDIT_REASONS`: `balance`,
+  `daily_limit`, `bucket_limit`), `bucket` and `endUser` (Python `end_user`); see
+  [credit reasons](errors.md#end-user-credit-reasons).
+- `endUserCredit(errorOrRun)` (Python `end_user_credit`): an end user's credit
+  refusal from a thrown error, a run or its error, in one shape
+  (`{ code: "end_user_credit", reason, bucket, endUser, message }`), else undefined.
 - `RunError extends AgentError`: a failed run, with `run`. When a model call failed it,
   `run.error` also has `errorClass` (`billing`, `rate_limit`, `server`, `refusal`, `auth`,
   `timeout`, `other`), `providerStatus`, `retryable` and `model`: branch on those, not the
