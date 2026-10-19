@@ -21,7 +21,7 @@ balances are your ledger of your users, and camelRun never moves money for them.
   agent spends from its `bucket`; a stateless run or call names its own. A run sent
   with your API key (`POST /v1/agents/{id}/prompt`) may name another; an agent's own
   token cannot. A run that names none (one you send without, a schedule's, a
-  sub-agent's notice, a channel's or a voice session's message) spends from the
+  sub-agent's notice, a channel's message, or a voice session's `ask_agent`) spends from the
   agent's bucket, else the one your latest run of the agent named, and only with
   neither from `default` (logged as `end_user_default_bucket`).
 - **Daily allowance**: free spend per bucket per UTC day, spent first. Set by bucket

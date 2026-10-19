@@ -5,10 +5,11 @@ import { safeError } from "./metrics.ts";
 import { chainedSpeech, type Served, type SpeechMember } from "./voice-providers/tts-chain.ts";
 
 /**
- * Text to speech, for voice sessions that speak (voice-sessions.ts): text in, 24 kHz mono 16-bit PCM out, as it is made,
- * so playback starts before the provider finishes. OpenAI's is the one provider, on the tenant's OpenAI key as a model
- * call resolves it (its key scope's, its own, else the platform's, which a prepaid tenant pays for per second of speech
- * made). The text goes to OpenAI and nowhere else: it is never logged, nor is the audio; logs carry lengths and timings.
+ * Text to speech, for POST /v1/speech (speech-api.ts): text in, 24 kHz mono 16-bit PCM out, as it is made, so playback
+ * starts before the provider finishes. OpenAI's is the built-in provider, on the tenant's OpenAI key as a model call
+ * resolves it (its key scope's, its own, else the platform's, which a prepaid tenant pays for per second of speech made);
+ * a request may name others (voice-providers/tts.ts). The text goes to the provider and nowhere else: it is never logged,
+ * nor is the audio; logs carry lengths and timings.
  */
 
 /** The model speech is made with: OpenAI's low-latency one, which streams and takes instructions on how to speak. */
@@ -23,6 +24,8 @@ export const SPEECH_LIMITS = Object.freeze({
   maxBytes: 5 * 60 * SPEECH_RATE * 2,
   /** From the request to the first byte of audio, and between bytes. */
   timeoutMs: 30_000,
+  /** Providers a request's chain names at most. */
+  providers: 5,
 });
 /** The voice a speech is made in when none is asked for. */
 export const DEFAULT_VOICE = "alloy";
@@ -30,7 +33,7 @@ export const DEFAULT_VOICE = "alloy";
 /** `language` (ISO 639-1 or a locale) helps providers that speak many to pick its pronunciation. */
 export type SpeechInput = {
   text: string; voice: string; instructions?: string; language?: string;
-  /** Through a chain (Synthesizer.speak): this speech's voice for each provider, over the session's (SpeechChoice.voices). */
+  /** Through a chain (Synthesizer.speak): this speech's voice for each provider, over the request's (SpeechChoice.voices). */
   voices?: Record<string, string>;
 };
 export type SpeechCredentials = { apiKey: string; baseUrl?: string; headers?: Record<string, string> };
@@ -41,8 +44,6 @@ export interface SpeechProvider {
   model: string;
   /** The speech's PCM (SPEECH_RATE, mono, signed 16-bit little-endian), chunk by chunk as the provider makes it. */
   stream(input: SpeechInput, credentials: SpeechCredentials, signal: AbortSignal): AsyncIterable<Uint8Array>;
-  /** Open a connection to the provider ahead of a speech (someone started talking), so the speech skips connecting. */
-  warm?(): Promise<void>;
 }
 
 /** Why speech was not made: 502 when the provider failed, 400 when it refused the input. */
@@ -53,18 +54,9 @@ export class SpeechFailed extends HttpError {
 /** OpenAI's speech API (`/v1/audio/speech`), streaming raw PCM. */
 export function openaiSpeech(options: { outbound: Outbound; baseUrl?: string }): SpeechProvider {
   const { outbound, baseUrl = "https://api.openai.com/v1" } = options;
-  let warmedAt = 0;
   return {
     id: "openai",
     model: SPEECH_MODEL,
-    // A request without a key (401, nothing spent) leaves a connection in the outbound pool, which keeps it 30 s. At
-    // most every 10 s: one connection warm is what the next speech needs.
-    async warm() {
-      if (Date.now() - warmedAt < 10_000) return;
-      warmedAt = Date.now();
-      const response = await outbound.fetch(`${baseUrl.replace(/\/+$/, "")}/models`, { method: "GET", timeoutMs: 10_000, maxBytes: 64 * 1024 }).catch(() => undefined);
-      await response?.arrayBuffer().catch(() => {});
-    },
     async *stream(input, credentials, signal) {
       const url = `${(credentials.baseUrl ?? baseUrl).replace(/\/+$/, "")}/audio/speech`;
       let response: Response;
@@ -99,19 +91,18 @@ export interface SynthesizerOptions {
   /** Micro-USD per minute of speech made. */
   price(): number;
   /**
-   * Other providers a session may speak through, in a chain (voice-providers/tts.ts): each by reference
-   * (`elevenlabs/eleven_flash_v2_5`), the chain a session uses when it names none (`order`; empty: `provider` alone),
-   * each provider's default voice, and what a speech by a reference cost (USD), when it has a price.
+   * Other providers a request may speak through, in a chain (voice-providers/tts.ts): each by reference
+   * (`elevenlabs/eleven_flash_v2_5`), each provider's default voice, and what a speech by a reference cost (USD), when
+   * it has a price. A request that names none speaks through `provider` alone.
    */
   chain?: {
-    order: string[];
     provider(reference: string): SpeechProvider;
     defaultVoice(provider: string): string | undefined;
     price(reference: string, made: { characters: number; seconds: number }): number | undefined;
   };
 }
 
-/** How a session speaks: the chain it names (else the runtime's), and its voice for each provider. */
+/** How a request speaks: the chain it names (else the built-in provider), and its voice for each provider. */
 export type SpeechChoice = { providers?: string[]; voices?: Record<string, string> };
 
 export class Synthesizer {
@@ -128,10 +119,9 @@ export class Synthesizer {
     return Math.ceil(seconds) * this.options.price() / 60 / MICROS;
   }
 
-  /** The chain a session speaks through: the one it names, else the runtime's, else the built-in provider alone. */
+  /** The chain a request speaks through: the one it names, else the built-in provider alone. */
   order(asked?: string[]): string[] {
-    if (asked?.length) return asked;
-    return this.options.chain?.order.length ? this.options.chain.order : [this.reference];
+    return asked?.length ? asked : [this.reference];
   }
 
   /**
@@ -150,10 +140,9 @@ export class Synthesizer {
   }
 
   /**
-   * A speech made through the session's chain (`choice`), on the tenant's key for each provider: the first that can
+   * A speech made through the request's chain (`choice`), on the tenant's key for each provider: the first that can
    * makes it (tts-chain.ts), and `served` says which, with its voice and whose key, before the first audio. The
-   * session's `voice` is OpenAI's; another provider speaks in the speech's voice for it (`input.voices`), else the
-   * session's, else its default.
+   * request's `voice` is OpenAI's; another provider speaks in its voice for it (`choice.voices`), else its default.
    */
   speak(context: { tenant: string; keyScope?: string }, choice: SpeechChoice, input: SpeechInput, signal: AbortSignal, served: (who: Served) => void) {
     const members: SpeechMember[] = this.order(choice.providers).map(reference => {
@@ -189,12 +178,5 @@ export class Synthesizer {
   /** The speech's PCM as it is made (SPEECH_RATE, mono, 16-bit), from `credentials` (see `credentials`). */
   stream(input: SpeechInput, credentials: SpeechCredentials, signal: AbortSignal) {
     return this.options.provider.stream(input, credentials, signal);
-  }
-
-  /** Have a connection to the provider ready for the next speech (see `SpeechProvider.warm`): the chain's first. */
-  warm(order?: string[]) {
-    const first = this.order(order)[0];
-    const provider = first === this.reference || !this.options.chain ? this.options.provider : this.options.chain.provider(first);
-    void provider.warm?.().catch(() => {});
   }
 }

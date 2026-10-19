@@ -164,12 +164,9 @@ variable "runtime_env" {
     AGENT_IDLE_MS               = "300000"
     AGENT_TOOL_TIMEOUT_MS       = "60000"
     AGENT_VOICE                 = "true"
-    # Voice sessions speak with ElevenLabs Flash first (bake-off 2026-10-18: ~135 ms to first audio vs ~550 ms), OpenAI as fallback.
-    # Needs platformKeys.elevenlabs in the tenants secret; without it the chain skips to OpenAI.
-    AGENT_VOICE_TTS = "elevenlabs,openai"
     # Smart end of turn (Silero VAD + Smart Turn, run#240/#254) for every voice session; ~190 MB and one Smart Turn thread per node.
     AGENT_VOICE_TURN_MODELS = "true"
-    # Realtime voice brain (brain: "realtime", run#265): OpenAI Realtime first (the default); Gemini Live, Grok (xAI, run#288) and
+    # Voice sessions' realtime brain (run#265; a session may instead only listen): OpenAI Realtime first (the default); Gemini Live, Grok (xAI, run#288) and
     # ElevenLabs Agents (run#289, any library voice) too; each on the platform key unless the tenant brings one.
     AGENT_VOICE_REALTIME = "openai,gemini,grok,elevenlabs"
     # ElevenLabs Agents list prices (elevenlabs.io/pricing/agents: per call minute; the built-in LLM is passed through, estimated per minute).

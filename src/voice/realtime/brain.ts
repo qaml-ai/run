@@ -11,8 +11,8 @@ import { Mixer } from "./mixer.ts";
 import { NO_USAGE, realtimePrice, realtimeCost, realtimeTranscriptionCost, type RealtimeConnection, type RealtimeEvents, type RealtimeTool, type RealtimeUsage } from "./provider.ts";
 
 /**
- * A voice session's realtime brain (`brain: "realtime"`): a speech-to-speech model hears the call and answers aloud,
- * behind the same media plane, turn-taking, addressing and echo guard as the cascade.
+ * A voice session's realtime brain: a speech-to-speech model hears the call and answers aloud, behind the session's
+ * media plane, turn-taking, addressing and echo guard.
  *
  * - **Audio in.** Each speaker's PCM (the media's live stream) is mixed into one (Mixer). Whenever who speaks changes,
  *   the input so far is committed as its own item and a note names who speaks next ("[Ana]"), so the model knows who

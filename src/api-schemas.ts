@@ -1,7 +1,7 @@
 import { z } from "@hono/zod-openapi";
 import { EVENT_TYPES } from "./webhooks.ts";
 import { END_REASONS as VOICE_END_REASONS, VOICE_LIMITS } from "./voice-sessions.ts";
-import { BRAINS, REALTIME_PROVIDERS } from "./voice/realtime/provider.ts";
+import { REALTIME_PROVIDERS } from "./voice/realtime/provider.ts";
 import { OPENAI_REALTIME } from "./voice/realtime/openai.ts";
 import { GROK_REALTIME } from "./voice/realtime/grok.ts";
 import { GEMINI_LIVE } from "./voice/realtime/gemini.ts";
@@ -91,7 +91,7 @@ export const CustomProviderInput = z.object({
 
 export const Provider = z.object({
   id: z.string(),
-  kind: z.enum(["model", "search", "fetch", "speech"]).openapi({ description: "model: an LLM provider; search: a web search API, whose key the web_search built-in uses; fetch: a page renderer web_fetch uses for JavaScript-only pages; speech: speech to text or text to speech for voice sessions (deepgram, soniox, assemblyai, elevenlabs, cartesia)" }),
+  kind: z.enum(["model", "search", "fetch", "speech"]).openapi({ description: "model: an LLM provider; search: a web search API, whose key the web_search built-in uses; fetch: a page renderer web_fetch uses for JavaScript-only pages; speech: text to speech for POST /v1/speech (elevenlabs, cartesia, deepgram)" }),
   models: z.number().int(),
   apiKey: z.boolean().openapi({ description: "Whether one API key is enough to use this provider" }),
   requires: z.string().optional().openapi({ description: "What the provider needs instead of an API key" }),
@@ -230,7 +230,7 @@ export const WebhookEvents = {
   }), "An input settled"),
   "usage.recorded": envelope("usage.recorded", z.object({
     agentId: z.string().nullable().openapi({ description: "null for a transcription made with POST /v1/transcriptions, or images made with POST /v1/images, which no agent made" }), requestId: z.string().nullable(), subject: z.string().nullable(), actor: z.string().nullable(), context: z.record(z.string(), z.unknown()), keyScope: z.string().nullable(),
-    provider: z.string(), model: z.string(), kind: z.enum(["response", "compaction", "transcription", "image", "speech"]).openapi({ description: "speech: speech made for a voice session (audioSeconds of it; no tokens); response: a model response of a run; compaction: a summary of older context; transcription: audio transcribed (audioSeconds of it; no tokens); image: images made (images of them; input is text and image tokens in, output image tokens out)" }), input: z.number(), output: z.number(), cacheRead: z.number(), cacheWrite: z.number(),
+    provider: z.string(), model: z.string(), kind: z.enum(["response", "compaction", "transcription", "image", "speech"]).openapi({ description: "speech: speech made, by POST /v1/speech (audioSeconds of it; no tokens) or a voice session's realtime brain (its tokens, and audioSeconds); response: a model response of a run; compaction: a summary of older context; transcription: audio transcribed (audioSeconds of it; no tokens); image: images made (images of them; input is text and image tokens in, output image tokens out)" }), input: z.number(), output: z.number(), cacheRead: z.number(), cacheWrite: z.number(),
     reasoning: z.number().optional(), audioSeconds: z.number().optional().openapi({ description: "For a transcription: the seconds of audio billed; for speech: the seconds of speech made" }), images: z.number().optional().openapi({ description: "For images made: how many" }), cost: z.object({ usd: z.number(), source: z.enum(["provider", "catalog"]) }), at: z.number(),
   }), "A model response's usage and cost, a transcription's, or images'"),
   "voice.session.started": envelope("voice.session.started", z.object(voiceFacts), "A voice session connected and is listening (once per session)"),
@@ -257,32 +257,27 @@ export const WebhookEvents = {
     startedAt: z.number(), endedAt: z.number(),
     ended: z.enum(["silence", "max", "error", "handoff", "end"]).openapi({ description: "Why it ended: silenceMs without speech; cut at 30 seconds (the speech goes on in the next); the speaker's stream broke; the session moved to another node; the session ended" }),
     costUsd: z.number(),
-    addressed: z.boolean().openapi({ description: "Whether the turn was the bot's (addressing); true with addressing mode always" }),
+    addressed: z.boolean().optional().openapi({ description: "Whether the turn was the bot's (addressing); true with addressing mode always. None for a listening session" }),
     addressedBy: z.enum(["always", "alone", "named", "conversation", "not_addressed"]).openapi({ description: "Why: always (mode); alone (no one else in the call); named (it said one of names); conversation (the bot was talking with its speaker); not_addressed" }),
-    backchannel: z.literal(true).optional().openapi({ description: "Present when it was said over the bot and was only a backchannel (mm-hm, yeah, ok…): the bot went on. It is not sent to deliver.agent and nothing replies to it" }),
-    echo: z.literal(true).optional().openapi({ description: "Present when barge-in judged it the bot's own speech coming back through the speaker's speakers (its words are the bot's, in order). It is not sent to deliver.agent and nothing replies to it; drop it unless you want it" }),
-    brain: z.literal("realtime").optional().openapi({ description: "Present for a session with a realtime brain: its model heard and answered this itself; your app need not (POST …/speak is refused)" }),
-    speakers: z.array(z.string()).optional().openapi({ description: "With brain realtime, when people spoke at once: everyone whose audio is in it (speakerId is the first)" }),
+    brain: z.enum(["realtime", "listen"]).openapi({ description: "realtime: the session's realtime brain heard (and answered) this itself, your app need not; listen: a listening session transcribed it, and nothing answered" }),
+    speakers: z.array(z.string()).optional().openapi({ description: "When people spoke at once: everyone whose audio is in it (speakerId is the first)" }),
   }), "A person's utterance in a voice session, transcribed"),
   "voice.speech.started": envelope("voice.speech.started", z.object({
-    ...voiceFacts, speechId: z.string(), latencyMs: z.number().openapi({ description: "From the speak request (or the reply's sentence being whole) to the first audio going out" }),
+    ...voiceFacts, speechId: z.string(), latencyMs: z.number().openapi({ description: "From the brain asking for the answer to its first audio going out" }),
     startedAt: z.number().openapi({ description: "When its first audio went out (ms)" }),
     turn: z.object({
-      seq: z.number().optional().openapi({ description: "The utterance it answers (voice.utterance's seq)" }),
-      path: z.enum(["agent_reply", "prompt_speak", "speak", "realtime"]).nullable(),
-      stagesMs: z.record(z.string(), z.number()).openapi({ description: "Each stage of the turn, in ms since the end of the person's speech: turnCommit, transcript, delivered, llmFirstToken, firstPiece, ttsFirstAudio, firstPacket (the reply's first audio)" }),
-    }).optional().openapi({ description: "For the first speech of a reply to an utterance: how long each stage took" }),
-    reply: z.object({ agent: z.string(), requestId: z.string() }).optional().openapi({ description: "For a piece of an agent's reply the session speaks (agentReplies, or a prompt's speak): the agent and its run" }),
-    brain: z.literal("realtime").optional().openapi({ description: "Present when a realtime brain's response is speaking" }),
-  }), "The bot started saying a speech (POST /v1/voice/sessions/{id}/speak)"),
+      path: z.literal("realtime"),
+      stagesMs: z.record(z.string(), z.number()).openapi({ description: "Each stage of the turn, in ms since the end of the person's speech: turnCommit, ttsFirstAudio (the model's first audio), firstPacket (its first audio out)" }),
+    }).optional().openapi({ description: "For the answer to a person's turn: how long each stage took" }),
+    brain: z.literal("realtime"),
+  }), "The bot started saying an answer"),
   "voice.speech.ended": envelope("voice.speech.ended", z.object({
     ...voiceFacts, speechId: z.string(),
-    reply: z.object({ agent: z.string(), requestId: z.string() }).optional(),
-    reason: z.enum(["done", "interrupted", "error"]).openapi({ description: "done: said whole; interrupted: cut short or never started (by); error: speech could not be made or played" }),
-    by: z.enum(["interrupt", "requested", "barge_in", "end", "handoff", "budget", "superseded"]).optional().openapi({ description: "With interrupted: a speech asked with interrupt; DELETE …/speak; a person started talking (bargeIn); the session ended or moved; credit ran out; a newer turn's reply took the place of this one, not yet heard (agentReplies)" }),
-    seconds: z.number().openapi({ description: "Seconds of speech made (and billed)" }), costUsd: z.number(),
-    brain: z.literal("realtime").optional().openapi({ description: "Present for a realtime brain's response: costUsd is what its tokens cost (the session's usage already counts it)" }),
-  }), "A speech ended"),
+    reason: z.enum(["done", "interrupted", "error"]).openapi({ description: "done: said whole; interrupted: cut short (by); error: it could not be played" }),
+    by: z.enum(["requested", "barge_in", "end", "superseded", "budget"]).optional().openapi({ description: "With interrupted: DELETE …/speak; a person started talking (bargeIn); the session ended or moved; a newer turn took its place; credit ran out" }),
+    seconds: z.number().openapi({ description: "Seconds of speech played" }), costUsd: z.number().openapi({ description: "What its tokens cost (the session's usage already counts it)" }),
+    brain: z.literal("realtime"),
+  }), "An answer ended"),
   "end_user.balance.low": envelope("end_user.balance.low", z.object({
     endUser: z.string(), balance: z.number().int().openapi({ description: "The balance now (charged micro-USD)" }),
     threshold: z.number().int().openapi({ description: "The threshold that applied: the person's own lowBalance, else the tenant's" }), previousBalance: z.number().int(),
@@ -417,11 +412,6 @@ export const PromptInput = z.object({
     schema: z.record(z.string(), z.unknown()).openapi({ description: "A JSON Schema for an object (type: \"object\"; at most 64 KB)", example: { type: "object", properties: { sentiment: { type: "string", enum: ["positive", "neutral", "negative"] } }, required: ["sentiment"] } }),
   }).optional().openapi({ description: "Structured output: the agent ends this run by calling a final_output tool whose arguments are the schema, checked against it (a call that does not fit goes back to the model with what is wrong). The run's outcome.result.output is that object. A model that answers in text instead is asked once more, with a reminder; a run that still ends without an output fails with code output_missing. The tool stays declared until a prompt without output. Not with whileRunning: steer" }),
   history: z.enum(["full", "none"]).optional().openapi({ description: "What the model sees of the agent's history in this run. full (default): all of it. none: only the system prompt (instructions, tools) and this message, as a new conversation would, without making an agent. The run is still recorded in the history (its user message carries history: \"none\"), and later runs that do not say none see it. Not with whileRunning: steer" }),
-  speak: z.strictObject({
-    session: z.string().openapi({ description: "A voice session of yours that speaks (created with speak: true), not ended", example: "vs_0123456789abcdef01234567" }),
-    voice: z.string().optional().openapi({ description: "The voice for this reply; default the session's" }),
-    interrupt: z.boolean().optional().openapi({ description: "Its first sentence stops what the session is saying (and what was queued), instead of waiting behind it" }),
-  }).optional().openapi({ description: "Speak this run's reply in a voice session as it is written, as speak.agentReplies does for an utterance: sentence by sentence, markdown, links and code left out, at most 400 characters, each a voice.speech.* event carrying reply {agent, requestId}; someone talking over it stops it. Billed as POST /v1/voice/sessions/{id}/speak. Not with whileRunning: steer. An agent's own token (POST /clients/{id}/requests) may name only sessions whose subject is the agent's (403 VOICE_SPEAK_FORBIDDEN)" }),
   metadata: z.record(z.string(), z.string({ error: "metadata values must be strings" }), { error: "metadata must be an object of string values" }).optional().openapi({ description: "Your own key-value data about this message (its source, a client-side id): at most 16 keys of 1–64 characters, values of at most 512. Kept on the user message (history, events, snapshots) and the request, and sent with its run's webhook events; never shown to the model", example: { source: "web", clientMessageId: "m_123" } }),
   files: z.array(z.union([
     z.strictObject({ path: z.string().openapi({ description: "A file in the agent's mounts, e.g. one uploaded with PUT /v1/agents/{id}/uploads/{requestId}/{name}" }), transcribe: TRANSCRIBE }),
@@ -842,9 +832,9 @@ export const SpeechInput = z.strictObject({
   text: z.string().min(1).max(4_000).openapi({ description: "What to say: at most 4,000 characters" }),
   voice: z.string().optional().openapi({ description: "The voice: alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer or verse. Default alloy", example: "coral" }),
   instructions: z.string().max(1_000).optional().openapi({ description: "How to say it (tone, pace, accent): at most 1,000 characters" }),
-  format: z.enum(["pcm", "wav"]).optional().openapi({ description: "pcm (default): raw 16-bit little-endian mono at 24 kHz, as a voice session plays it. wav: the same in a streamed WAV container, which an <audio> element plays" }),
+  format: z.enum(["pcm", "wav"]).optional().openapi({ description: "pcm (default): raw 16-bit little-endian mono at 24 kHz. wav: the same in a streamed WAV container, which an <audio> element plays" }),
   language: z.string().optional().openapi({ description: "The language it is in, for providers that take it (ISO 639-1)" }),
-  speech: z.lazy(() => VoiceSpeechProviders).optional().openapi({ description: "Providers to try in order, and their voices, as a voice session's speech: the same voice the session would speak in" }),
+  speech: z.lazy(() => VoiceSpeechProviders).optional().openapi({ description: "Text-to-speech providers to try in order, and their voices" }),
   keyScope: TranscriptionFields.keyScope, subject: TranscriptionFields.subject, context: TranscriptionFields.context, actor: TranscriptionFields.actor, bucket: TranscriptionFields.bucket,
 }).openapi("SpeechInput");
 export const Transcription = z.object({
@@ -897,7 +887,7 @@ export const Images = z.object({
 export const Usage = z.object({
   since: z.number(),
   totals: Totals,
-  days: z.array(Totals.extend({ day: z.string(), model: z.string(), kind: z.enum(["turn", "compaction", "transcription", "image", "speech"]).openapi({ description: "turn: the agent's own responses; compaction: summaries of older context; transcription: audio transcribed (responses counts transcriptions); image: images made (responses counts images); speech: voice sessions' speech made (responses counts speeches)" }) })),
+  days: z.array(Totals.extend({ day: z.string(), model: z.string(), kind: z.enum(["turn", "compaction", "transcription", "image", "speech"]).openapi({ description: "turn: the agent's own responses; compaction: summaries of older context; transcription: audio transcribed (responses counts transcriptions); image: images made (responses counts images); speech: speech made, by POST /v1/speech or voice sessions (responses counts speeches)" }) })),
 }).openapi("Usage");
 
 const ThinkingLevel = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
@@ -1395,16 +1385,9 @@ const voiceDiscord = {
 };
 const range = (limits: { default: number; min: number; max: number }, unit: string, what: string) =>
   z.number().int().min(limits.min).max(limits.max).optional().openapi({ description: `${what}, in ${unit}: ${limits.min} to ${limits.max}, default ${limits.default}` });
-const VoiceTranscription = z.strictObject({
-  providers: z.array(z.string()).min(1).max(5).optional().openapi({
-    description: "Streaming speech-to-text providers to try in order, each <provider> or <provider>/<model>: deepgram (nova-3), deepgram/flux (flux-general-en, which detects turns itself; English), soniox (stt-rt-v3), assemblyai (universal-streaming-english), openai (gpt-live-transcribe). Each uses your key for that provider (PUT /v1/providers/<provider>/key), else the platform's; one without a key is skipped, one that fails mid-utterance hands the utterance to the next. Default: the runtime's chain (AGENT_VOICE_STT), else transcription after each utterance",
-    example: ["deepgram/flux", "soniox", "openai"],
-  }),
-  keyterms: z.array(z.string().max(50)).max(100).optional().openapi({ description: "Terms to listen for (names, jargon): Deepgram keyterms, AssemblyAI keyterms_prompt, Soniox context, OpenAI's prompt", example: ["camelRun", "Miguel"] }),
-}).openapi("VoiceTranscription");
 const VoiceSpeechProviders = z.strictObject({
   providers: z.array(z.string()).min(1).max(5).optional().openapi({
-    description: "Text-to-speech providers to try in order, each <provider> or <provider>/<model>: elevenlabs (eleven_flash_v2_5), cartesia (sonic-3), deepgram (aura-2), openai (gpt-4o-mini-tts). One without a key is skipped; one that fails before its first audio is passed over. Default: the runtime's chain (AGENT_VOICE_TTS), else OpenAI",
+    description: "Text-to-speech providers to try in order, each <provider> or <provider>/<model>: elevenlabs (eleven_flash_v2_5), cartesia (sonic-3), deepgram (aura-2), openai (gpt-4o-mini-tts). One without a key is skipped; one that fails before its first audio is passed over. Default: the providers voices names (in its order, then OpenAI), else OpenAI",
     example: ["elevenlabs", "openai"],
   }),
   voices: z.record(z.string(), z.string()).optional().openapi({ description: "The voice for each provider, by provider: an ElevenLabs voice id, a Cartesia voice id (required for cartesia), an Aura voice (aura-2-thalia-en), an OpenAI voice (else `voice`)", example: { elevenlabs: "21m00Tcm4TlvDq8ikWAM", openai: "coral" } }),
@@ -1428,10 +1411,10 @@ export const VoiceSessionInput = z.strictObject({
   subject: z.string().optional().openapi({ description: "The end user the session is for: its usage is theirs (usage.recorded's subject, and their credit where you meter end users)" }),
   bucket: z.string().optional().openapi({ description: "Which of the end user's credit buckets it spends from (end-user credits)" }),
   context: z.record(z.string(), z.unknown()).optional().openapi({ description: "Your claims, carried in usage.recorded's context" }),
-  keyScope: z.string().optional().openapi({ description: "Transcribe with this key scope's OpenAI key" }),
+  keyScope: z.string().optional().openapi({ description: "Answer with this key scope's key for the realtime provider" }),
   deliver: z.strictObject({
-    agent: z.string().optional().openapi({ description: "An agent that gets each utterance as a prompt (its sender the speaker)" }),
-    webhooks: z.boolean().optional().openapi({ description: "Send voice.* events to your webhook endpoints that select them. Default true. A browser session may deliver to neither: its socket gets every utterance" }),
+    agent: z.string().optional().openapi({ description: "The bot's agent: the model asks it (ask_agent) for facts, look-ups and actions, as a prompt whose sender is the speaker, and says its answer" }),
+    webhooks: z.boolean().optional().openapi({ description: "Send voice.* events to your webhook endpoints that select them. Default true" }),
   }).optional(),
   language: z.string().optional().openapi({ description: "The language spoken, ISO 639-1 (en) or a locale; left out, the provider detects it per utterance" }),
   prompt: z.string().optional().openapi({ description: "Words to expect (names, jargon), as transcription's prompt" }),
@@ -1442,32 +1425,27 @@ export const VoiceSessionInput = z.strictObject({
   ignoreUserIds: z.array(z.string()).max(VOICE_LIMITS.ignoreUserIds).optional().openapi({ description: "Users whose audio is never transcribed and who do not count as company in the call: other bots" }),
   metadata: z.record(z.string(), z.unknown()).optional().openapi({ description: "Anything (at most 4 KB of JSON), echoed in every voice.* event" }),
   notice: z.string().max(VOICE_LIMITS.noticeChars).optional().openapi({ description: "The listening notice your app posts (see notice in the answer); {bot} is the bot's id" }),
-  speak: z.union([z.boolean(), z.strictObject({
-    agentReplies: z.boolean().optional().openapi({ description: "Speak deliver.agent's reply to each utterance as it is written: sentence by sentence, markdown, links and code left out, at most 400 characters (the whole reply is still the run's)" }),
-  })]).optional().openapi({ description: "The bot may speak (POST …/speak): true, or {agentReplies: true} to also speak the agent's replies. Your app joins with self_mute false. Default false" }),
   bargeIn: z.union([z.boolean(), z.strictObject({
     minMs: z.number().int().min(0).max(2_000).optional().openapi({ description: "Speech over the bot (ms) before it pauses. Default 300" }),
-    confirmMs: z.number().int().min(0).max(5_000).optional().openapi({ description: "Speech going on this long (ms) after the pause stops the bot without waiting for its words; 0 stops it at minMs, with no pause or echo check. Default 1000" }),
+    confirmMs: z.number().int().min(0).max(5_000).optional().openapi({ description: "Speech going on this long (ms) after the pause stops the bot; 0 stops it at minMs, with no pause. Default 1000" }),
     resumeMs: z.number().int().min(500).max(10_000).optional().openapi({ description: "The longest pause (ms): then it stops if they are still talking, else goes on. Default 3000" }),
-    backchannels: z.array(z.string()).max(50).optional().openapi({ description: "More words or short phrases that only show someone listens, beyond those built in (mm-hm, yeah, ok, sí, ja, 嗯, はい… in about 20 languages): said over the bot, it goes on", example: ["bet", "word"] }),
-  })]).optional().openapi({ description: "With speak: a person talking over the bot stops its speech and what it was going to say. It pauses first, and goes on if what it heard was its own words coming back through someone's speakers (echo), only a backchannel (mm-hm, yeah…), or a sound too short to be words (with endOfTurn smart). true, false, or the timing. Default true" }),
-  voice: z.string().optional().openapi({ description: "With speak: the voice speech is made in (OpenAI's: alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, verse…). Default alloy", example: "coral" }),
-  transcription: VoiceTranscription.optional(),
-  speech: VoiceSpeechProviders.optional(),
+  })]).optional().openapi({ description: "A person talking over the bot stops its speech and what it was going to say. It pauses first, and goes on if the sound stops before confirmMs, or is too short to be words (with endOfTurn smart). true, false, or the timing. Default true" }),
+  voice: z.string().optional().openapi({ description: "The bot's voice by OpenAI's names (alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, verse…), mapped to the realtime provider's nearest; realtime.voice names the provider's own. Default alloy", example: "coral" }),
   addressing: z.strictObject({
-    mode: z.enum(["always", "addressed"]).optional().openapi({ description: "always: every turn goes to deliver.agent (and is answered); addressed: only turns that name the bot (names), come from someone it is talking with (conversationMs), or are said with no one else in the call. Default addressed when names are given, else always" }),
+    mode: z.enum(["always", "addressed"]).optional().openapi({ description: "always: every turn is answered; addressed: only turns that name the bot (names), come from someone it is talking with (conversationMs), or are said with no one else in the call. Default addressed when names are given, else always" }),
     names: z.array(z.string()).max(20).optional().openapi({ description: "The bot's names (wake words), matched as words anywhere in a turn, near misses of long names included", example: ["camel", "hey camel"] }),
     conversationMs: range(VOICE_LIMITS.conversationMs, "milliseconds", "How long after the bot answers someone (or they name it) their turns are still its (default 20000)"),
-  }).optional().openapi({ description: "Which turns are the bot's in a group call. Others still go to webhooks (voice.utterance's addressed: false), and to the agent as context with the next turn that is the bot's" }),
+  }).optional().openapi({ description: "Which turns are the bot's in a group call. Others still go to webhooks (voice.utterance's addressed: false), and the model hears them as context" }),
   endOfTurn: z.union([z.enum(["smart", "silence"]), z.strictObject({
     mode: z.enum(["smart", "silence"]).optional().openapi({ description: "smart: a speaker's turn ends when a turn-detection model (Smart Turn, on their audio) judges them done at a pause, with speech found by a VAD (Silero), not by loudness; silence: after silenceMs of quiet. Default smart where the runtime has the models" }),
     commitMs: range(VOICE_LIMITS.commitMs, "milliseconds", "smart: silence after which a turn the model calls complete ends"),
     threshold: z.number().min(0.05).max(0.95).optional().openapi({ description: "smart: how sure the model must be that the speaker is done (0.05-0.95, default 0.5): higher waits more often" }),
     maxSilenceMs: range(VOICE_LIMITS.maxSilenceMs, "milliseconds", "smart: silence after which any turn ends (a speaker the model expects to go on, who does not)"),
   })]).optional().openapi({ description: "How a speaker's turn (an utterance) ends: smart or silence, or {mode, commitMs, threshold, maxSilenceMs}" }),
-  brain: z.enum(BRAINS).optional().openapi({ description: "What answers. cascade (the default): each utterance is transcribed, and your app or deliver.agent answers through text to speech. realtime (beta): a speech-to-speech model hears the call and answers aloud itself, asking deliver.agent (ask_agent) for facts, actions and anything beyond talk; the session speaks (speak may be left out), POST …/speak is refused, and transcription.providers and speak.agentReplies do not apply. Needs the runtime's AGENT_VOICE_REALTIME and a key for the provider" }),
-  realtime: VoiceRealtime.optional(),
-  speakers: z.record(z.string(), z.string().max(VOICE_LIMITS.speakerNameChars)).optional().openapi({ description: "Speakers' names by Discord user id, for the realtime brain's note of who speaks (\"[Ana]\"); others are Speaker 1, Speaker 2… PATCH it as people join", example: { "400000000000000001": "Ana" } }),
+  speak: z.literal(true).optional().openapi({ description: "Deprecated: a realtime session speaks. true is taken and changes nothing" }),
+  brain: z.enum(["realtime", "listen"]).optional().openapi({ description: "What hears the call. realtime (the default): a speech-to-speech model hears it and answers aloud (realtime). listen: muted; each utterance is transcribed after it ends (gpt-transcribe, billed as POST /v1/transcriptions) and sent to webhooks as voice.utterance, and nothing answers. A listening session ignores speak, bargeIn, voice, addressing, realtime, speakers and deliver.agent; your app joins muted" }),
+  realtime: VoiceRealtime.optional().openapi({ description: "The speech-to-speech model that hears the call and answers aloud, asking deliver.agent (ask_agent) for facts, actions and anything beyond talk: its provider, model, voice, persona, and how it listens. Needs a key for the provider (else the platform's)" }),
+  speakers: z.record(z.string(), z.string().max(VOICE_LIMITS.speakerNameChars)).optional().openapi({ description: "Speakers' names by Discord user id, for the model's note of who speaks (\"[Ana]\"); others are Speaker 1, Speaker 2… PATCH it as people join", example: { "400000000000000001": "Ana" } }),
 }).openapi("VoiceSessionInput");
 export const VoiceSessionUpdate = z.strictObject({
   discord: z.strictObject({
@@ -1476,7 +1454,7 @@ export const VoiceSessionUpdate = z.strictObject({
   }).optional().openapi({ description: "What changed in a later VOICE_STATE_UPDATE or VOICE_SERVER_UPDATE: the session reconnects with it" }),
   ignoreUserIds: z.array(z.string()).max(VOICE_LIMITS.ignoreUserIds).optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
-  speakers: z.record(z.string(), z.string().max(VOICE_LIMITS.speakerNameChars)).optional().openapi({ description: "Speakers' names by Discord user id (replaces the session's), for a realtime brain" }),
+  speakers: z.record(z.string(), z.string().max(VOICE_LIMITS.speakerNameChars)).optional().openapi({ description: "Speakers' names by Discord user id (replaces the session's), for the model's note of who speaks" }),
 }).openapi("VoiceSessionUpdate");
 export const VoiceSession = z.object({
   id: z.string().openapi({ example: "vs_3f9c0a1b2c3d4e5f60718293" }), provider: z.enum(["discord", "browser"]),
@@ -1489,16 +1467,14 @@ export const VoiceSession = z.object({
   language: z.string().optional(), prompt: z.string().optional(),
   silenceMs: z.number(), maxMinutes: z.number(), idleMinutes: z.number(), emptySeconds: z.number(),
   ignoreUserIds: z.array(z.string()), metadata: z.record(z.string(), z.unknown()), notice: z.string(),
-  speak: z.boolean(), bargeIn: z.boolean(), voice: z.string(),
-  addressing: z.object({ mode: z.enum(["always", "addressed"]), names: z.array(z.string()), conversationMs: z.number(), contextTurns: z.number(), contextMs: z.number() }).openapi({ description: "Which turns are the bot's (addressing)" }),
-  interruption: z.object({ minMs: z.number(), confirmMs: z.number(), resumeMs: z.number(), backchannels: z.array(z.string()).optional() }).optional().openapi({ description: "With speak and bargeIn: the barge-in timing in use" }),
-  agentReplies: z.boolean().openapi({ description: "The session speaks deliver.agent's replies (speak: {agentReplies: true})" }),
-  transcription: VoiceTranscription.optional(), speech: VoiceSpeechProviders.optional(),
+  brain: z.enum(["realtime", "listen"]).openapi({ description: "What hears the call: a realtime model that answers, or listen (transcribed, muted)" }),
+  bargeIn: z.boolean().optional().openapi({ description: "With brain realtime" }), voice: z.string().optional().openapi({ description: "With brain realtime" }),
+  addressing: z.object({ mode: z.enum(["always", "addressed"]), names: z.array(z.string()), conversationMs: z.number() }).openapi({ description: "Which turns are the bot's (addressing)" }),
+  interruption: z.object({ minMs: z.number(), confirmMs: z.number(), resumeMs: z.number() }).optional().openapi({ description: "With bargeIn: the barge-in timing in use" }),
   endOfTurn: z.object({ mode: z.enum(["smart", "silence"]), commitMs: z.number(), threshold: z.number(), maxSilenceMs: z.number() }).openapi({ description: "How a speaker's turn ends (smart: a turn-detection model at pauses; silence: silenceMs of quiet)" }),
-  brain: z.enum(BRAINS).openapi({ description: "What answers: cascade, or a realtime speech-to-speech model" }),
   realtime: z.object({
     provider: z.enum(REALTIME_PROVIDERS), model: z.string(), voice: z.string(), instructions: z.string().optional(), transcribe: z.boolean(), speculative: z.boolean(),
-  }).optional().openapi({ description: "With brain realtime: its settings" }),
+  }).optional().openapi({ description: "Its realtime brain's settings (none for a session from before them)" }),
   speakers: z.record(z.string(), z.string()).optional().openapi({ description: "Speakers' names by user id, as given" }),
   speeches: z.number().openapi({ description: "Speeches played (each counted when it ended having made speech)" }), spokenSeconds: z.number().openapi({ description: "Seconds of speech made (billed)" }),
   utterances: z.number(), speechSeconds: z.number().openapi({ description: "Seconds of speech transcribed (billed)" }), costUsd: z.number(),
@@ -1509,7 +1485,7 @@ export const VoiceSessionCreated = VoiceSession.extend({
     required: z.literal(true), channelId: z.string(),
     text: z.string().openapi({ description: "Post this in the voice channel's chat now: people must know they are transcribed, and camelRun cannot post (it has no gateway)" }),
   }),
-  join: z.object({ self_mute: z.boolean(), self_deaf: z.literal(false) }).openapi({ description: "How your app's OP 4 should have joined: self_mute false for a session that speaks" }),
+  join: z.object({ self_mute: z.boolean(), self_deaf: z.literal(false) }).openapi({ description: "How your app's OP 4 should have joined: un-muted for brain realtime (the bot speaks), muted for listen" }),
   browser: z.object({
     url: z.string().openapi({ description: "The session's WebSocket (wss://…/v1/voice/sessions/{id}/socket)" }),
     token: z.string().openapi({ description: "Opens it once: pass it as ?token=. Give the page only url and token, never your API key" }),
@@ -1519,18 +1495,7 @@ export const VoiceSessionCreated = VoiceSession.extend({
 export const VoiceBrowserToken = z.object({
   url: z.string().openapi({ description: "The session's WebSocket" }), token: z.string().openapi({ description: "Opens it once, as ?token=" }), expiresAt: z.number(),
 }).openapi("VoiceBrowserToken");
-export const VoiceSpeechInput = z.strictObject({
-  text: z.string().openapi({ description: "What to say: 1 to 4,000 characters" }),
-  voice: z.string().optional().openapi({ description: "Another voice than the session's, for this speech" }),
-  voices: z.record(z.string(), z.string()).optional().openapi({ description: "This speech's voice for each text-to-speech provider, by provider, over the session's speech.voices: an ElevenLabs voice id, a Cartesia voice id, an Aura voice, an OpenAI voice", example: { elevenlabs: "JBFqnCBsd6RMkjVDRZzb", openai: "fable" } }),
-  instructions: z.string().optional().openapi({ description: "How to say it (tone, pace, accent), as OpenAI's instructions: at most 1,000 characters", example: "Warm and unhurried." }),
-  interrupt: z.boolean().optional().openapi({ description: "Stop what the bot is saying, and clear what it was going to, first. Default false: queued" }),
-}).openapi("VoiceSpeechInput");
-export const VoiceSpeech = z.object({
-  speechId: z.string().openapi({ example: "sp_3f9c0a1b2c3d4e5f60718293" }), session: z.string(), state: z.literal("queued"),
-  position: z.number().openapi({ description: "Speeches ahead of it: 0 plays next (or now)" }), voice: z.string(), characters: z.number(),
-}).openapi("VoiceSpeech");
-export const VoiceSpeechStopped = z.object({ stopped: z.number().openapi({ description: "Speeches stopped: the one playing and those queued" }) }).openapi("VoiceSpeechStopped");
+export const VoiceSpeechStopped = z.object({ stopped: z.number().openapi({ description: "Answers stopped: the one playing and the one being made" }) }).openapi("VoiceSpeechStopped");
 export const VoiceSessionEnded = VoiceSession.extend({
   leave: z.object({ op: z.literal(4), d: z.object({ guild_id: z.string(), channel_id: z.null(), self_mute: z.boolean(), self_deaf: z.boolean() }) })
     .openapi({ description: "Send this on your gateway to leave the channel: ending the session stops the listening, not the bot's presence" }),

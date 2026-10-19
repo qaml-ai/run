@@ -3,7 +3,7 @@ import { safeError } from "../metrics.ts";
 import { DEFAULT_VOICE, openaiSpeech, SPEECH_LIMITS, SPEECH_MODEL, SpeechFailed, type SpeechCredentials, type SpeechInput, type SpeechProvider } from "../speech.ts";
 
 /**
- * Text to speech across providers, each streaming 24 kHz mono 16-bit PCM as it is made (what voice sessions play):
+ * Text to speech across providers (POST /v1/speech), each streaming 24 kHz mono 16-bit PCM as it is made:
  * ElevenLabs Flash (`pcm_24000`), Cartesia Sonic-3 (raw `pcm_s16le`), Deepgram Aura-2 (`linear16`, no container) and
  * OpenAI (speech.ts). Each is `<provider>/<model>`, on the tenant's key for that provider; a voice is the provider's own
  * (an ElevenLabs voice id, a Cartesia voice id, an Aura voice model, an OpenAI voice name). A chain of them fails over
@@ -14,7 +14,7 @@ import { DEFAULT_VOICE, openaiSpeech, SPEECH_LIMITS, SPEECH_MODEL, SpeechFailed,
 export const TTS_PROVIDERS = ["elevenlabs", "cartesia", "deepgram", "openai"] as const;
 export const DEFAULT_TTS_MODELS: Record<string, string> = { elevenlabs: "eleven_flash_v2_5", cartesia: "sonic-3", deepgram: "aura-2", openai: SPEECH_MODEL };
 /**
- * The voice a provider speaks in when the session names none for it: ElevenLabs' premade "Rachel", Aura-2's "Thalia",
+ * The voice a provider speaks in when the request names none for it: ElevenLabs' premade "Rachel", Aura-2's "Thalia",
  * OpenAI's alloy. Cartesia has no voice every account has, so it speaks only with one given.
  */
 export const DEFAULT_VOICES: Record<string, string | undefined> = { elevenlabs: "21m00Tcm4TlvDq8ikWAM", cartesia: undefined, deepgram: "aura-2-thalia-en", openai: DEFAULT_VOICE };
@@ -66,27 +66,13 @@ async function* streamed(outbound: Outbound, name: string, request: Request, sig
 const usable = (credentials: SpeechCredentials) => !credentials.baseUrl && !!credentials.apiKey;
 
 /**
- * A request without a key (401, nothing spent) leaves a connection in the outbound pool, which keeps it 30 s, so the
- * next speech skips connecting: at most every 10 s, as OpenAI's (speech.ts).
- */
-function warmer(outbound: Outbound, url: string) {
-  let warmedAt = 0;
-  return async () => {
-    if (Date.now() - warmedAt < 10_000) return;
-    warmedAt = Date.now();
-    const response = await outbound.fetch(url, { method: "GET", timeoutMs: 10_000, maxBytes: 64 * 1024 }).catch(() => undefined);
-    await response?.arrayBuffer().catch(() => {});
-  };
-}
-
-/**
  * ElevenLabs' streaming endpoint (`/v1/text-to-speech/{voice}/stream`), raw 24 kHz PCM. Flash v2.5 is its fastest
  * model (about 75 ms to the first audio, as ElevenLabs measures it). `instructions` are not taken.
  */
 export function elevenlabsSpeech(options: { outbound: Outbound; baseUrl?: string; model?: string }): SpeechProvider {
   const { outbound, baseUrl = "https://api.elevenlabs.io", model = DEFAULT_TTS_MODELS.elevenlabs } = options;
   return {
-    id: "elevenlabs", warm: warmer(outbound, `${baseUrl.replace(/\/+$/, "")}/v1/models`),
+    id: "elevenlabs",
     model,
     async *stream(input, credentials, signal) {
       if (!usable(credentials)) throw new SpeechFailed(502, "ElevenLabs needs an ElevenLabs key");
@@ -105,7 +91,7 @@ export function elevenlabsSpeech(options: { outbound: Outbound; baseUrl?: string
 export function cartesiaSpeech(options: { outbound: Outbound; baseUrl?: string; model?: string; version?: string }): SpeechProvider {
   const { outbound, baseUrl = "https://api.cartesia.ai", model = DEFAULT_TTS_MODELS.cartesia, version = "2025-04-16" } = options;
   return {
-    id: "cartesia", warm: warmer(outbound, `${baseUrl.replace(/\/+$/, "")}/voices`),
+    id: "cartesia",
     model,
     async *stream(input, credentials, signal) {
       if (!usable(credentials)) throw new SpeechFailed(502, "Cartesia needs a Cartesia key");
@@ -128,7 +114,7 @@ export function cartesiaSpeech(options: { outbound: Outbound; baseUrl?: string; 
 export function deepgramSpeech(options: { outbound: Outbound; baseUrl?: string; model?: string }): SpeechProvider {
   const { outbound, baseUrl = "https://api.deepgram.com", model = DEFAULT_TTS_MODELS.deepgram } = options;
   return {
-    id: "deepgram", warm: warmer(outbound, `${baseUrl.replace(/\/+$/, "")}/v1/projects`),
+    id: "deepgram",
     model,
     async *stream(input, credentials, signal) {
       if (!usable(credentials)) throw new SpeechFailed(502, "Deepgram needs a Deepgram key");

@@ -11,7 +11,6 @@
     "test:props": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test --test-timeout=3600000 tests/prop-*.test.ts",
     "test:shard": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/test-shard.ts",
     "test:python": "python3 tests/python_sdk.py",
-    "eval:voice": "VOICE_EVAL_SERIAL=1 node --experimental-strip-types --disable-warning=ExperimentalWarning --test --test-timeout=1800000 tests/voice-eval.test.ts",
     "typecheck": "tsc -p tsconfig.json && tsc -p studio/tsconfig.json && tsc -p console/tsconfig.json && tsc -p packages/react/tsconfig.json && tsc -p packages/registry/tsconfig.json && tsc -p packages/bindings.tsconfig.json && tsc -p packages/cli/tsconfig.json",
     "test:ui": "vitest run --config packages/react/vitest.config.ts && vitest run --config packages/registry/vitest.config.ts && vitest run --config packages/bindings.vitest.config.ts && npm run test:console",
     "test:console": "vitest run --config console/vitest.config.ts",
@@ -29,7 +28,6 @@
     "sim": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/sim.ts",
     "sim:mcp": "node --experimental-strip-types --disable-warning=ExperimentalWarning tests/sim/mcp.ts",
     "bench:sim-hooks": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/bench-sim-hooks.ts",
-    "bakeoff:voice": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/voice-bakeoff.ts",
     "bench:search": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/bench-search.ts",
     "bench:codemode": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/bench-codemode.ts",
     "test:studio": "node --experimental-strip-types --disable-warning=ExperimentalWarning studio/smoke.ts"

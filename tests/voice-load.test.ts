@@ -5,12 +5,27 @@ import { opusStats } from "../src/opus.ts";
 import { MediaHost } from "../src/voice/media-host.ts";
 import { discordGrant, sleep, speechPacket, until, voiceCluster, type FakeConnection } from "./voice-fakes.ts";
 import { workerFakes } from "./voice-worker-transport.ts";
+import type { FakeConnection as ModelConnection } from "./voice-realtime-fakes.ts";
 
 /**
- * A node under voice load: SESSIONS sessions that speak, each with SPEAKERS people talking in turns of 0.4-2 s in real
- * time (a decoder each, made and freed per utterance), while each session's bot speaks every second or so (an encoder
- * each, and barge-in stopping some mid-way, so playback is abandoned too), for VOICE_LOAD_SECONDS (20 by default; run
- * VOICE_LOAD_SECONDS=600 by hand before turning voice on). Nothing may fail: no codec error, no utterance or speech that
+ * The model's part, for a session's brain until `until`: each committed turn heard (its transcript, so a
+ * voice.utterance), and each response asked for answered with 0.3-1.5 s of speech.
+ */
+async function drive(model: ModelConnection, until: number) {
+  let heard = 0, answered = 0;
+  while (Date.now() < until) {
+    const commits = model.of("commit");
+    for (; heard < commits.length; heard++) model.events.heard(commits[heard].tag, "some words", commits[heard].ms / 1_000);
+    for (; answered < model.responses; answered++) await model.answer(`resp_${answered + 1}`, { ms: 300 + Math.floor(Math.random() * 1_200), said: "an answer", usage: { outputAudio: 20 } });
+    await sleep(50);
+  }
+}
+
+/**
+ * A node under voice load: SESSIONS sessions, each with SPEAKERS people talking (at times over each other) in turns of
+ * 0.4-2 s in real time (a decoder each, made and freed per utterance), while each session's brain answers them (an
+ * encoder each, and barge-in stopping some mid-way, so playback is abandoned too), for VOICE_LOAD_SECONDS (20 by
+ * default; run VOICE_LOAD_SECONDS=600 by hand before turning voice on). Nothing may fail: no codec error, no utterance or speech that
  * errs, nothing thrown to the process (the test runner fails on that), and memory stays bounded.
  */
 const SECONDS = Number(process.env.VOICE_LOAD_SECONDS ?? 20);
@@ -20,30 +35,30 @@ const SPEAKERS = Number(process.env.VOICE_LOAD_SPEAKERS ?? 8);
 test(`voice under load: ${SESSIONS} sessions x ${SPEAKERS} speakers with speech playing, ${SECONDS} s`, { timeout: (SECONDS + 120) * 1_000 }, async t => {
   // What the node logs, for failures it reports rather than throws.
   const failures: string[] = [];
-  // Each turn's latency line (src/voice/latency.ts): the app's speech after an utterance is that turn's reply.
+  // Each turn's latency line (src/voice/latency.ts): the brain's answer is that turn's reply.
   const turns: { outcome: string; stagesMs: Record<string, number> }[] = [];
   const watch = (line: unknown) => {
     const text = String(line);
     if (text.includes('"type":"voice_turn_latency"')) turns.push(JSON.parse(text));
-    if (/voice_(segment_failed|audio_failed|speech_error|utterance_failed|utterance_dropped)|Opus|process_fatal/.test(text)) failures.push(text.slice(0, 300));
+    if (/voice_(segment_failed|audio_failed|speech_error|realtime_write_failed|realtime_lost)|Opus|process_fatal/.test(text)) failures.push(text.slice(0, 300));
   };
   const { log, error } = console;
   console.log = (...args: unknown[]) => { watch(args[0]); log(...args); };
   console.error = (...args: unknown[]) => { watch(args[0]); error(...args); };
   t.after(() => { console.log = log; console.error = error; });
 
-  const { fake, node, events, transcription, usage } = await voiceCluster(t, { playEveryMs: 20, perTenant: () => SESSIONS });
+  const { fake, node, events, realtime, usage } = await voiceCluster(t, { playEveryMs: 20, perTenant: () => SESSIONS });
   const a = await node("http://a");
   const beforeSessionsRss = Math.round(process.memoryUsage().rss / 1_048_576);
-  const sessions: { id: string; connection: FakeConnection }[] = [];
+  const sessions: { id: string; connection: FakeConnection; model: ModelConnection }[] = [];
   for (let index = 0; index < SESSIONS; index++) {
     const grant = discordGrant({ guildId: `1000000000000001${String(index).padStart(2, "0")}` });
     // Half the sessions barge in (speech stopped as people talk, its playback abandoned), half talk on to the end.
-    const created = await a.voice.create("alice", { discord: grant, speak: true, voice: "coral", silenceMs: 300, bargeIn: index % 2 === 0 });
+    const created = await a.voice.create("alice", { discord: grant, voice: "coral", silenceMs: 300, bargeIn: index % 2 === 0, addressing: { mode: "always" } });
     const connection = await until(() => fake.open().find(open => open.credentials.guildId === grant.guildId), "the connection");
     connection.handlers.ready();
     await until(async () => (await a.voice.get("alice", created.id)).state === "live", "live");
-    sessions.push({ id: created.id, connection });
+    sessions.push({ id: created.id, connection, model: await until(() => realtime.connections[index], "the model") });
   }
   const rss = () => Math.round(process.memoryUsage().rss / 1_048_576);
   const startRss = rss();
@@ -53,9 +68,9 @@ test(`voice under load: ${SESSIONS} sessions x ${SPEAKERS} speakers with speech 
   // CPU of the whole process (its worker threads too), as a share of one core.
   const cpuStart = process.cpuUsage(), cpuAt = performance.now();
   const deadline = Date.now() + SECONDS * 1_000;
-  let packets = 0, spoken = 0, transcribed = 0, refused = 0;
-  // The fakes keep each call's audio: counted and let go, so memory is the node's, not the test's.
-  const letGo = setInterval(() => { transcribed += transcription.calls.length; transcription.calls.length = 0; usage.length = 0; for (const { connection } of sessions) connection.played.length = 0; }, 1_000);
+  let packets = 0;
+  // The fakes keep each call's audio: let go, so memory is the node's, not the test's.
+  const letGo = setInterval(() => { usage.length = 0; for (const { connection } of sessions) connection.played.length = 0; }, 1_000);
   t.after(() => clearInterval(letGo));
   const sampler = process.env.VOICE_LOAD_TRACE ? setInterval(() => { (globalThis as any).gc?.(); console.log(JSON.stringify({ type: "voice_load_heap", heapMb: Math.round(process.memoryUsage().heapUsed / 1_048_576), externalMb: Math.round(process.memoryUsage().external / 1_048_576), arrayBuffersMb: Math.round(process.memoryUsage().arrayBuffers / 1_048_576), rssMb: rss(), codecs: opusStats() })); }, 30_000) : undefined;
   t.after(() => clearInterval(sampler));
@@ -69,32 +84,17 @@ test(`voice under load: ${SESSIONS} sessions x ${SPEAKERS} speakers with speech 
         packets++;
         await sleep(20);
       }
-      await sleep(400 + Math.floor(Math.random() * 1_000));
-    }
-  };
-  // Each session's bot: something to say every second or so, sometimes interrupting what it says.
-  const bot = async (session: { id: string }) => {
-    while (Date.now() < deadline) {
-      // Faster than a session that does not barge in can say it: past its queue's limit the speech is refused (a 429 to
-      // wait on, as an app would), and the next is asked for later.
-      try {
-        await a.voice.speak("alice", session.id, { text: "x".repeat(10 + Math.floor(Math.random() * 30)), interrupt: Math.random() < 0.2 });
-        spoken++;
-      } catch (error) {
-        if ((error as { code?: string }).code !== "VOICE_SPEECH_QUEUE_FULL") throw error;
-        refused++;
-      }
-      await sleep(700 + Math.floor(Math.random() * 800));
+      // Pauses long enough that the call is now and then quiet: the brain's answers play then.
+      await sleep(400 + Math.floor(Math.random() * 1_000) + Math.floor(Math.random() * 1_500) * (SPEAKERS - 1));
     }
   };
   await Promise.all(sessions.flatMap(session => [
-    bot(session),
+    drive(session.model, deadline + 2_000),
     ...Array.from({ length: SPEAKERS }, (_, index) => speaker(session.connection, `4000000000000000${String(index).padStart(2, "0")}`)),
   ]));
-  // What was cut is transcribed; what was queued finishes or is stopped.
-  await sleep(2_000);
+  // What was cut is heard; what was being said finishes or is stopped.
+  await sleep(500);
   clearInterval(letGo);
-  transcribed += transcription.calls.length;
   const utterances = (await events("voice.utterance")).length;
   const ended = await events("voice.speech.ended");
   const endRss = rss();
@@ -104,8 +104,7 @@ test(`voice under load: ${SESSIONS} sessions x ${SPEAKERS} speakers with speech 
   const codecs = opusStats();
   const firstAudio = turns.filter(turn => turn.outcome === "spoken").map(turn => turn.stagesMs.firstPacket).sort((x, y) => x - y);
   const percentile = (p: number) => firstAudio[Math.min(firstAudio.length - 1, Math.floor(firstAudio.length * p))];
-  console.log(JSON.stringify({ type: "voice_load", seconds: SECONDS, sessions: SESSIONS, speakers: SPEAKERS, packets, utterances, transcriptions: transcribed,
-    speeches: spoken, queueFull: refused, speechEnded: ended.length, reasons: ended.reduce((counts: Record<string, number>, event: any) => ({ ...counts, [event.data.reason]: (counts[event.data.reason] ?? 0) + 1 }), {}), rssMb: { beforeSessions: beforeSessionsRss, start: startRss, end: endRss, perSession: Math.round((endRss - beforeSessionsRss) / SESSIONS * 10) / 10 }, cpuPercent, codecs,
+  console.log(JSON.stringify({ type: "voice_load", seconds: SECONDS, sessions: SESSIONS, speakers: SPEAKERS, packets, utterances, speechEnded: ended.length, reasons: ended.reduce((counts: Record<string, number>, event: any) => ({ ...counts, [event.data.reason]: (counts[event.data.reason] ?? 0) + 1 }), {}), rssMb: { beforeSessions: beforeSessionsRss, start: startRss, end: endRss, perSession: Math.round((endRss - beforeSessionsRss) / SESSIONS * 10) / 10 }, cpuPercent, codecs,
     turns: { timed: turns.length, spoken: firstAudio.length, firstPacketMs: { p50: percentile(0.5), p95: percentile(0.95) } },
     eventLoopDelayMs: { p50: Math.round(delay.percentile(50) / 1e6), p99: Math.round(delay.percentile(99) / 1e6), max: Math.round(delay.max / 1e6) } }));
 
@@ -115,7 +114,7 @@ test(`voice under load: ${SESSIONS} sessions x ${SPEAKERS} speakers with speech 
   assert.ok(!ended.some((event: any) => event.data.reason === "error"), "no speech ended in error");
   // Turns are timed under load, and every spoken one has each stage up to its first packet.
   assert.ok(firstAudio.length >= SESSIONS, `spoken turns were timed (${firstAudio.length})`);
-  assert.ok(turns.filter(turn => turn.outcome === "spoken").every(turn => ["turnCommit", "transcript", "firstPiece", "ttsFirstAudio", "firstPacket"].every(stage => stage in turn.stagesMs)), "spoken turns have every stage");
+  assert.ok(turns.filter(turn => turn.outcome === "spoken").every(turn => ["turnCommit", "ttsFirstAudio", "firstPacket"].every(stage => stage in turn.stagesMs)), "spoken turns have every stage");
   // Every utterance's decoder and every speech's encoder is freed: what is left is what is open now, at most one each.
   assert.ok(codecs.live <= SESSIONS * (SPEAKERS + 1), `codecs freed (${codecs.live} alive)`);
   assert.ok(endRss - startRss < 150, `memory stayed bounded (${startRss} -> ${endRss} MB)`);
@@ -133,7 +132,7 @@ test(`voice under load in media workers: ${SESSIONS} sessions x ${SPEAKERS} spea
   const failures: string[] = [];
   const watch = (line: unknown) => {
     const text = String(line);
-    if (/voice_(segment_failed|audio_failed|speech_error|utterance_failed|utterance_dropped|media_message_failed)|process_fatal/.test(text)) failures.push(text.slice(0, 300));
+    if (/voice_(segment_failed|audio_failed|speech_error|realtime_write_failed|media_message_failed)|process_fatal/.test(text)) failures.push(text.slice(0, 300));
   };
   const { log, error } = console;
   console.log = (...args: unknown[]) => { watch(args[0]); log(...args); };
@@ -143,17 +142,17 @@ test(`voice under load in media workers: ${SESSIONS} sessions x ${SPEAKERS} spea
   const host = new MediaHost({ transport: { module: new URL("./voice-worker-transport.ts", import.meta.url).href, export: "workerFakeTransport", options: { playEveryMs: 20 } }, speaks: true, tickMs: 500, spare: 0 });
   const fakes = workerFakes();
   t.after(() => { fakes.close(); return host.close(); });
-  const { node, events } = await voiceCluster(t, { transports: { discord: host.transport() }, media: () => host.factory(), perTenant: () => SESSIONS });
+  const { node, events, realtime } = await voiceCluster(t, { transports: { discord: host.transport() }, media: () => host.factory(), perTenant: () => SESSIONS });
   const a = await node("http://a");
   const beforeSessionsRss = Math.round(process.memoryUsage().rss / 1_048_576);
-  const sessions: { id: string; guild: string }[] = [];
+  const sessions: { id: string; guild: string; model: ModelConnection }[] = [];
   for (let index = 0; index < SESSIONS; index++) {
     const guild = `1000000000000002${String(index).padStart(2, "0")}`;
-    const created = await a.voice.create("alice", { discord: discordGrant({ guildId: guild }), speak: true, voice: "coral", silenceMs: 300, bargeIn: index % 2 === 0 });
+    const created = await a.voice.create("alice", { discord: discordGrant({ guildId: guild }), voice: "coral", silenceMs: 300, bargeIn: index % 2 === 0, addressing: { mode: "always" } });
     await until(() => fakes.reports.some(report => report.guild === guild && report.event === "connected"), "the connection");
     fakes.send({ guild, cmd: "ready" });
     await until(async () => (await a.voice.get("alice", created.id)).state === "live", "live");
-    sessions.push({ id: created.id, guild });
+    sessions.push({ id: created.id, guild, model: await until(() => realtime.connections[index], "the model") });
   }
   const startRss = Math.round(process.memoryUsage().rss / 1_048_576);
   const delay = monitorEventLoopDelay({ resolution: 10 });
@@ -175,15 +174,7 @@ test(`voice under load in media workers: ${SESSIONS} sessions x ${SPEAKERS} spea
     while (Date.now() < deadline) {
       const seconds = 0.4 + Math.random() * 1.6;
       fakes.send({ guild: session.guild, cmd: "talk", speaker: id, seconds });
-      await sleep(seconds * 1_000 + 400 + Math.floor(Math.random() * 1_000));
-    }
-  };
-  let spoken = 0;
-  const bot = async (session: { id: string }) => {
-    while (Date.now() < deadline) {
-      try { await a.voice.speak("alice", session.id, { text: "x".repeat(10 + Math.floor(Math.random() * 30)), interrupt: Math.random() < 0.2 }); spoken++; }
-      catch (error) { if (!["VOICE_SPEECH_QUEUE_FULL"].includes((error as { code?: string }).code!) && (error as { status?: number }).status !== 503) throw error; }
-      await sleep(700 + Math.floor(Math.random() * 800));
+      await sleep(seconds * 1_000 + 400 + Math.floor(Math.random() * 1_000) + Math.floor(Math.random() * 1_500) * (SPEAKERS - 1));
     }
   };
   const victim = sessions[0];
@@ -197,8 +188,8 @@ test(`voice under load in media workers: ${SESSIONS} sessions x ${SPEAKERS} spea
     await until(() => fakes.reports.filter(report => report.guild === victim.guild && report.event === "connected").length === 2, "the victim's restart", 20_000);
     fakes.send({ guild: victim.guild, cmd: "ready" });
   })();
-  await Promise.all([turn, crash, ...sessions.flatMap(session => [bot(session), ...Array.from({ length: SPEAKERS }, (_, index) => speaker(session, `4000000000000001${String(index).padStart(2, "0")}`))])]);
-  await sleep(2_000);
+  await Promise.all([turn, crash, ...sessions.flatMap(session => [drive(session.model, deadline + 2_000), ...Array.from({ length: SPEAKERS }, (_, index) => speaker(session, `4000000000000001${String(index).padStart(2, "0")}`))])]);
+  await sleep(500);
   delay.disable();
   const cpu = process.cpuUsage(cpuStart);
   const cpuPercent = Math.round((cpu.user + cpu.system) / 1_000 / (performance.now() - cpuAt) * 100);
@@ -206,7 +197,7 @@ test(`voice under load in media workers: ${SESSIONS} sessions x ${SPEAKERS} spea
   const errors = await events("voice.session.error");
   const ended = await events("voice.speech.ended");
   const workerRss = Math.round(process.memoryUsage().rss / 1_048_576);
-  console.log(JSON.stringify({ type: "voice_load_workers", seconds: SECONDS, sessions: SESSIONS, speakers: SPEAKERS, utterances: after, atCrash, speeches: spoken, speechEnded: ended.length,
+  console.log(JSON.stringify({ type: "voice_load_workers", seconds: SECONDS, sessions: SESSIONS, speakers: SPEAKERS, utterances: after, atCrash, speechEnded: ended.length,
     errors: errors.map((event: any) => event.data.session === victim.id ? "victim" : "other"), host: host.stats(), rssMb: { beforeSessions: beforeSessionsRss, start: startRss, end: workerRss, perSession: Math.round((workerRss - beforeSessionsRss) / SESSIONS * 10) / 10 }, cpuPercent,
     agentTurn: { tokens, longestGapMs: Math.round(longestGapMs) },
     eventLoopDelayMs: { p50: Math.round(delay.percentile(50) / 1e6), p99: Math.round(delay.percentile(99) / 1e6), max: Math.round(delay.max / 1e6) } }));

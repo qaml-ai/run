@@ -5,11 +5,12 @@ import { Opus } from "../src/opus.ts";
 import { opusStats } from "../src/opus.ts";
 import { hostClient, startTurnModels, type TurnModels } from "../src/voice/turns/inference.ts";
 import { nodeConfig } from "../src/node-config.ts";
-import { discordGrant, sleep, until, voiceCluster } from "./voice-fakes.ts";
+import { discordGrant, hearAll, sleep, until, voiceCluster } from "./voice-fakes.ts";
 
 /**
  * Voice sessions that end turns with turn-taking (endOfTurn smart: Silero VAD and Smart Turn, src/voice/turns), on
- * recorded speech encoded as Discord sends it (20 ms Opus packets, 48 kHz stereo, nothing while silent).
+ * recorded speech encoded as Discord sends it (20 ms Opus packets, 48 kHz stereo, nothing while silent). Each turn the
+ * brain commits is heard (a voice.utterance), so the utterances are the turns.
  */
 
 const FIXTURES = new URL("./fixtures/voice-turns/", import.meta.url);
@@ -56,6 +57,7 @@ async function turnModels(t: TestContext) {
 async function liveSession(t: TestContext, options: Record<string, unknown> = {}, models?: TurnModels) {
   const cluster = await voiceCluster(t, models ? { turnModels: models } : {});
   const a = await cluster.node("http://a");
+  hearAll(t, cluster.realtime.connections);
   const grant = discordGrant();
   const created = await a.voice.create("alice", { discord: grant, ...options });
   const connection = await until(() => cluster.fake.open().find(open => open.credentials.sessionId === grant.sessionId), "the connection");
@@ -93,8 +95,9 @@ test("endOfTurn: smart by default where the runtime has turn models, silence oth
 
 test("a recorded turn is one utterance, cut soon after the speaker is done; noise and a thinking pause are not cut", { timeout: 120_000 }, async t => {
   const models = await turnModels(t);
-  // Up to 2 s of thinking, for the pause below.
-  const { play, events, transcription } = await liveSession(t, { endOfTurn: { maxSilenceMs: 2_000 } }, models);
+  // Up to 2 s of thinking, for the pause below. Not speculative: a turn is then one item, so one utterance (an answer
+  // begun at likely_end commits the turn so far then, and the rest at its end).
+  const { play, events } = await liveSession(t, { endOfTurn: { maxSilenceMs: 2_000 }, realtime: { speculative: false } }, models);
   const speaker = "400000000000000001";
   // A complete turn: cut once, within about commitMs (+ the VAD's lag) of the end of speech.
   const complete = packets(wav16("eng-c-0187c333.wav"));
@@ -111,7 +114,6 @@ test("a recorded turn is one utterance, cut soon after the speaker is done; nois
   assert.equal((await events("voice.utterance")).length, 1, "noise is not speech");
   // An incomplete turn, a pause of more than a second after its last word, then the rest: one utterance (the energy
   // segmenter, at 800 ms, cuts it in two).
-  transcription.calls.length = 0;
   const incomplete = packets(wav16("eng-i-00d8ee40.wav"));
   await play(speaker, incomplete);
   await sleep(1_000);
@@ -135,16 +137,15 @@ test("the energy segmenter, for comparison: the same noise is an utterance, and 
   await until(async () => (await events("voice.utterance")).length >= 3, "cut in two", 5_000);
 });
 
-test("smart sessions free their decoders, and a session ending cuts what was being said", { timeout: 60_000 }, async t => {
+test("smart sessions free their decoders when the session ends mid-turn; what was not a whole turn is not answered", { timeout: 60_000 }, async t => {
   const models = await turnModels(t);
-  const { a, created, play, events } = await liveSession(t, {}, models);
+  const { a, created, play, realtime } = await liveSession(t, {}, models);
   const before = opusStats().live;
   const turn = packets(wav16("spa-c-01d233b8.wav"));
   await play("400000000000000001", turn.slice(0, 100));
   await a.voice.end("alice", created.id);
-  await until(async () => (await events("voice.utterance")).length === 1, "the cut utterance", 5_000);
-  assert.equal((await events("voice.utterance"))[0].data.ended, "end");
-  assert.ok(opusStats().live <= before, `decoders freed (${before} -> ${opusStats().live})`);
+  await until(() => opusStats().live <= before, `decoders freed (${before} -> ${opusStats().live})`, 5_000);
+  assert.equal(realtime.connections[0].responses, 0);
 });
 
 test("in a media worker, smart end of turn reaches the node's models over a port; when the models restart, the worker gets another", { timeout: 120_000 }, async t => {
@@ -157,6 +158,7 @@ test("in a media worker, smart end of turn reaches the node's models over a port
   t.after(async () => { fakes.close(); await host.close(); await turnHost.close(); });
   const cluster = await voiceCluster(t, { transports: { discord: host.transport() }, media: () => host.factory(), turnModels: hostClient(turnHost) });
   const a = await cluster.node("http://a");
+  hearAll(t, cluster.realtime.connections);
   const guild = "100000000000000031";
   const created = await a.voice.create("alice", { discord: discordGrant({ guildId: guild }) });
   assert.equal(created.endOfTurn.mode, "smart");

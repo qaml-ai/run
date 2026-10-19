@@ -8,7 +8,7 @@ import { safeError } from "./metrics.ts";
  * Voice sessions from a browser (`provider: "browser"`): a call with no Discord in it, for trying a voice bot out (a
  * test panel, a preview). The browser holds one WebSocket to the session (`/v1/voice/sessions/{id}/socket`), sends the
  * microphone's audio, and hears the bot's speech on the same socket. Everything else is the session as Discord's: the
- * segmenter, barge-in, transcription, delivery, speak and agent replies.
+ * segmenter, barge-in, and the realtime brain that hears and answers.
  *
  * The socket's protocol:
  * - Browser → runtime, binary: one frame per message, its first byte its kind. 1: an Opus packet (20 ms at 48 kHz, mono

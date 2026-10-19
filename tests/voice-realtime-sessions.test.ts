@@ -6,16 +6,14 @@ import type { HttpError } from "../src/http.ts";
 import { AGENT, discordGrant, sleep, speak, until, voiceCluster } from "./voice-fakes.ts";
 import { fakeRealtimeProvider } from "./voice-realtime-fakes.ts";
 
-/** A voice session with brain: "realtime" (src/voice/realtime), end to end through VoiceSessions with a fake provider. */
+/** A voice session's realtime brain (src/voice/realtime), end to end through VoiceSessions with a fake provider. */
 
 const ANA = "400000000000000001", BEN = "400000000000000002";
 
 async function realtimeCluster(t: Parameters<typeof voiceCluster>[0], extra: Parameters<typeof voiceCluster>[1] = {}) {
-  const realtime = fakeRealtimeProvider();
   const asked: { agent: string; request: { id: string; params: Record<string, unknown> } }[] = [];
   const cluster = await voiceCluster(t, {
     playEveryMs: 2,
-    realtime: { providers: { openai: realtime.provider }, key: async () => ({ apiKey: "fixture-openai", platform: true }) },
     submitStreaming: async function* (agent, _tenant, request) {
       asked.push({ agent, request });
       await sleep(20);
@@ -24,26 +22,54 @@ async function realtimeCluster(t: Parameters<typeof voiceCluster>[0], extra: Par
     },
     ...extra,
   });
-  return { ...cluster, realtime, asked };
+  return { ...cluster, asked };
 }
 
-test("validation: a realtime brain needs the runtime's providers, speaks, and is not the cascade's options", async t => {
-  const plain = await voiceCluster(t);
+test("validation: sessions need the runtime's realtime providers; brain is only realtime; the brain's settings are checked", async t => {
+  const plain = await voiceCluster(t, { realtime: undefined });
   const p = await plain.node("http://plain");
-  await assert.rejects(p.voice.create("alice", { discord: discordGrant(), brain: "realtime" }), (error: HttpError) => error.status === 404 && /AGENT_VOICE_REALTIME/.test(error.message));
+  await assert.rejects(p.voice.create("alice", { discord: discordGrant() }), (error: HttpError) => error.status === 404 && /AGENT_VOICE_REALTIME/.test(error.message));
   const cluster = await realtimeCluster(t);
   const a = await cluster.node("http://a");
-  await assert.rejects(a.voice.create("alice", { discord: discordGrant(), brain: "realtime", speak: false }), (error: HttpError) => error.status === 400);
-  await assert.rejects(a.voice.create("alice", { discord: discordGrant(), brain: "realtime", deliver: { agent: AGENT }, speak: { agentReplies: true } }), (error: HttpError) => error.status === 400 && /agentReplies/.test(error.message));
-  await assert.rejects(a.voice.create("alice", { discord: discordGrant(), brain: "realtime", realtime: { voice: "nova" } }), (error: HttpError) => error.status === 400 && /marin/.test(error.message));
-  await assert.rejects(a.voice.create("alice", { discord: discordGrant(), brain: "realtime", realtime: { model: "gpt-4o" } }), (error: HttpError) => error.status === 400);
-  await assert.rejects(a.voice.create("alice", { discord: discordGrant(), realtime: {} }), (error: HttpError) => error.status === 400 && /brain: realtime/.test(error.message));
+  for (const removed of [{ transcription: { providers: ["deepgram"] } }, { speech: { providers: ["elevenlabs"] } }, { bargeIn: { backchannels: ["bet"] } }]) {
+    await assert.rejects(a.voice.create("alice", { discord: discordGrant(), ...removed }), (error: HttpError) => error.status === 400 && /is not a field/.test(error.message), JSON.stringify(removed));
+  }
+  // speak: every session speaks; true (from before) is taken, anything else refused.
+  for (const speak of [false, { agentReplies: true }]) {
+    await assert.rejects(a.voice.create("alice", { discord: discordGrant(), speak }), (error: HttpError) => error.status === 400 && /speak can only be true/.test(error.message), JSON.stringify(speak));
+  }
+  await assert.rejects(a.voice.create("alice", { discord: discordGrant(), brain: "cascade" }), (error: HttpError) => error.status === 400 && /brain must be realtime/.test(error.message));
   await assert.rejects(a.voice.create("alice", { discord: discordGrant(), brain: "telepathy" }), (error: HttpError) => error.status === 400);
-  await assert.rejects(a.voice.create("alice", { discord: discordGrant(), brain: "realtime", speakers: { nope: "x" } }), (error: HttpError) => error.status === 400);
-  // The cascade is the default, and unchanged.
-  const cascade = await a.voice.create("alice", { discord: discordGrant({ guildId: "100000000000000009" }) });
-  assert.equal(cascade.brain, "cascade");
-  assert.equal(cascade.realtime, undefined);
+  await assert.rejects(a.voice.create("alice", { discord: discordGrant(), realtime: { voice: "nova" } }), (error: HttpError) => error.status === 400 && /marin/.test(error.message));
+  await assert.rejects(a.voice.create("alice", { discord: discordGrant(), realtime: { model: "gpt-4o" } }), (error: HttpError) => error.status === 400);
+  await assert.rejects(a.voice.create("alice", { discord: discordGrant(), realtime: { provider: "gemini" } }), (error: HttpError) => error.status === 400 && /one of this runtime's: openai/.test(error.message));
+  await assert.rejects(a.voice.create("alice", { discord: discordGrant(), speakers: { nope: "x" } }), (error: HttpError) => error.status === 400);
+  // No brain given: the runtime's first provider, with its defaults; "realtime" is still taken.
+  const plainSession = await a.voice.create("alice", { discord: discordGrant({ guildId: "100000000000000009" }) });
+  assert.deepEqual(plainSession.realtime, { provider: "openai", model: "gpt-realtime-2.1", voice: "alloy", transcribe: true, speculative: true });
+  const named = await a.voice.create("alice", { discord: discordGrant({ guildId: "100000000000000010" }), brain: "realtime", speak: true });
+  assert.equal(named.realtime?.provider, "openai");
+  // A tenant without a key for the provider is told which.
+  const keyless = await realtimeCluster(t, { realtime: { providers: { openai: cluster.realtime.provider }, key: async () => undefined } });
+  const k = await keyless.node("http://k");
+  await assert.rejects(k.voice.create("alice", { discord: discordGrant() }), (error: HttpError) => error.status === 400 && error.code === "REALTIME_UNAVAILABLE");
+});
+
+test("a session stored before realtime brains (no realtime settings) ends when taken: its pipeline is gone", async t => {
+  const cluster = await realtimeCluster(t);
+  const a = await cluster.node("http://a");
+  const created = await a.voice.create("alice", { discord: discordGrant() });
+  await until(() => cluster.fake.open()[0], "the connection");
+  // As a peer finds it after this node let go: its options as the removed pipeline stored them.
+  await a.voice.release();
+  await cluster.db.query(`update voice_sessions set options = (options - 'realtime') || '{"brain": "cascade", "speak": true, "agentReplies": true}'::jsonb where id = $1`, [created.id]);
+  const b = await cluster.node("http://b");
+  await b.voice.scan();
+  const ended = await until(async () => { const view = await b.voice.get("alice", created.id); return view.state === "ended" ? view : undefined; }, "ended");
+  assert.equal(ended.endReason, "error");
+  assert.equal(b.voice.size, 0);
+  assert.equal(cluster.realtime.connections.length, 1, "no brain was made for it");
+  assert.equal((await cluster.events("voice.session.ended")).at(-1)?.data.reason, "error");
 });
 
 test("a realtime session: the call's audio reaches the model with who speaks, its answer plays, and each is billed and sent as events", async t => {
@@ -51,12 +77,10 @@ test("a realtime session: the call's audio reaches the model with who speaks, it
   const a = await cluster.node("http://a");
   const grant = discordGrant();
   const created = await a.voice.create("alice", {
-    discord: grant, brain: "realtime", deliver: { agent: AGENT }, voice: "nova", silenceMs: 200, subject: "user_1",
+    discord: grant, deliver: { agent: AGENT }, voice: "nova", silenceMs: 200, subject: "user_1",
     realtime: { instructions: "You are Mochi, a cheerful cat." }, speakers: { [ANA]: "Ana" },
   });
-  assert.equal(created.brain, "realtime");
   assert.deepEqual(created.realtime, { provider: "openai", model: "gpt-realtime-2.1", voice: "marin", instructions: "You are Mochi, a cheerful cat.", transcribe: true, speculative: true });
-  assert.equal(created.speak, true);
   assert.deepEqual(created.join, { self_mute: false, self_deaf: false });
   const connection = await until(() => cluster.fake.open().find(open => open.credentials.sessionId === grant.sessionId), "the connection");
   connection.others = [ANA];
@@ -96,12 +120,11 @@ test("a realtime session: the call's audio reaches the model with who speaks, it
   assert.equal(speech.usage.platform, true);
   const transcription = cluster.usage.find(entry => entry.usage.kind === "transcription")!;
   assert.equal(transcription.usage.model, "gpt-transcribe");
-  assert.equal(cluster.transcription.calls.length, 0, "nothing transcribed by the cascade");
   const view = await until(async () => { const v = await a.voice.get("alice", created.id); return v.speeches === 1 && v.utterances === 1 ? v : undefined; }, "the counts");
   assert.ok(view.costUsd > 0);
   assert.ok(view.lastSpeechAt !== null, "a turn keeps the session from idling");
-  // The cascade's speak is refused: the brain speaks for itself.
-  await assert.rejects(a.voice.speak("alice", created.id, { text: "hello" }), (error: HttpError) => error.status === 409 && error.code === "VOICE_REALTIME");
+  // DELETE …/speak stops the brain's answer: nothing is playing now.
+  assert.deepEqual(await a.voice.stopSpeaking("alice", created.id), { stopped: 0 });
   await a.voice.end("alice", created.id);
   await until(() => model.of("close").length === 1, "the model's connection closed");
 });
@@ -110,7 +133,7 @@ test("ask_agent in a session: the agent's run is prompted (from the speaker), an
   const cluster = await realtimeCluster(t);
   const a = await cluster.node("http://a");
   const grant = discordGrant();
-  const created = await a.voice.create("alice", { discord: grant, brain: "realtime", deliver: { agent: AGENT }, silenceMs: 200 });
+  const created = await a.voice.create("alice", { discord: grant, deliver: { agent: AGENT }, silenceMs: 200 });
   const connection = await until(() => cluster.fake.open().find(open => open.credentials.sessionId === grant.sessionId), "the connection");
   connection.others = [ANA];
   connection.handlers.ready();
@@ -133,7 +156,7 @@ test("a group call: who speaks is named from speakers (PATCH), others numbered",
   const cluster = await realtimeCluster(t);
   const a = await cluster.node("http://a");
   const grant = discordGrant();
-  const created = await a.voice.create("alice", { discord: grant, brain: "realtime", silenceMs: 200, addressing: { mode: "always" } });
+  const created = await a.voice.create("alice", { discord: grant, silenceMs: 200, addressing: { mode: "always" } });
   assert.deepEqual(created.realtime?.speculative, true);
   const connection = await until(() => cluster.fake.open().find(open => open.credentials.sessionId === grant.sessionId), "the connection");
   connection.others = [ANA, BEN];
@@ -164,8 +187,8 @@ test("a session on Gemini Live: its provider's voices and model, the google key"
     },
   });
   const a = await cluster.node("http://a");
-  await assert.rejects(a.voice.create("alice", { discord: discordGrant(), brain: "realtime", realtime: { provider: "gemini", voice: "marin" } }), (error: HttpError) => error.status === 400 && /Kore/.test(error.message));
-  const created = await a.voice.create("alice", { discord: discordGrant(), brain: "realtime", voice: "coral", realtime: { provider: "gemini" } });
+  await assert.rejects(a.voice.create("alice", { discord: discordGrant(), realtime: { provider: "gemini", voice: "marin" } }), (error: HttpError) => error.status === 400 && /Kore/.test(error.message));
+  const created = await a.voice.create("alice", { discord: discordGrant(), voice: "coral", realtime: { provider: "gemini" } });
   assert.deepEqual(created.realtime, { provider: "gemini", model: "gemini-3.8-live", voice: "Kore", transcribe: true, speculative: true });
   assert.ok(keys.includes("google"), "Gemini runs on the tenant's google key");
   await a.voice.end("alice", created.id);

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import type { Clock } from "../src/node-context.ts";
 import { BargeInGuard, DEFAULT_BARGE_IN, echoVerdict, type BargeInOutcome } from "../src/voice/echo-guard.ts";
 import { MediaSession, type MediaEvents } from "../src/voice/media.ts";
-import { AGENT, discordGrant, fakeTranscriber, fakeTransport, sleep, speak, speechPacket, until, voiceCluster, type FakeConnection } from "./voice-fakes.ts";
+import { discordGrant, fakeTransport, sleep, speak, speechPacket, until, voiceCluster, type FakeConnection } from "./voice-fakes.ts";
 
 const BOT = "The forecast for tomorrow is sunny with a light breeze from the west, and highs near seventy degrees.";
 
@@ -177,57 +177,49 @@ test("media: under minMs nothing happens; at minMs playback pauses (not stops) a
   await media.close("end");
 });
 
-/** A session that speaks `BOT`, and a person whose utterance over it is transcribed as `heard`. */
-async function overTheBot(t: Parameters<typeof voiceCluster>[0], heard: string, talk: (connection: FakeConnection) => Promise<void> | void) {
-  const { transcriber } = fakeTranscriber(() => heard);
-  const { fake, node, events } = await voiceCluster(t, { playEveryMs: 10, transcriber });
+/** A session whose brain is saying `BOT` (about 8 s of it, a packet each 10 ms here), and a person who talks over it. */
+async function overTheBot(t: Parameters<typeof voiceCluster>[0], talk: (connection: FakeConnection) => Promise<void> | void) {
+  const { fake, realtime, node, events } = await voiceCluster(t, { playEveryMs: 10 });
   const a = await node("http://a");
-  const session = await a.voice.create("alice", { discord: discordGrant(), speak: true, silenceMs: 200 });
+  const session = await a.voice.create("alice", { discord: discordGrant(), silenceMs: 200 });
   assert.deepEqual(session.interruption, DEFAULT_BARGE_IN);
   const connection = await until(() => fake.open()[0], "the connection");
+  connection.others = ["400000000000000004"];
   connection.handlers.ready();
-  // About 10 s of speech, a packet each 10 ms here.
-  await a.voice.speak("alice", session.id, { text: BOT });
+  const model = await until(() => realtime.connections[0], "the model");
+  speak(connection, "400000000000000004", 0.6);
+  await until(() => model.responses === 1, "a response asked for");
+  await model.answer("resp_1", { ms: 8_000, said: BOT });
   await until(() => connection.played[0]?.length >= 20, "it to play");
   let paused = false;
   const watch = setInterval(() => { paused ||= connection.paused; }, 2);
   await talk(connection);
   const [ended] = await until(async () => { const found = await events("voice.speech.ended"); return found.length ? found : undefined; }, "the speech to end", 30_000);
   clearInterval(watch);
-  return { ended: ended.data, paused, played: connection.played[0].length };
+  return { ended: ended.data, paused, played: connection.played[0].length, model };
 }
 
-test("barge-in, echoed: the bot's own speech coming back through someone's speakers pauses it, then it resumes and says it all", { timeout: 60_000 }, async t => {
-  const { ended, paused, played } = await overTheBot(t, "the forecast for tomorrow is sunny with a light", connection => speak(connection, "400000000000000004", 0.6));
-  assert.equal(paused, true, "it paused while deciding");
-  assert.deepEqual([ended.reason, ended.by], ["done", undefined]);
-  assert.equal(played, Math.round(BOT.length / 10 * 50), "every packet of it played");
-});
-
-test("barge-in, someone else talking: their words stop the bot (by: barge_in)", { timeout: 60_000 }, async t => {
-  const { ended, paused, played } = await overTheBot(t, "wait, stop, I have a question", connection => speak(connection, "400000000000000004", 0.6));
-  assert.equal(paused, true);
-  assert.deepEqual([ended.reason, ended.by], ["interrupted", "barge_in"]);
-  assert.ok(played < Math.round(BOT.length / 10 * 50));
-});
-
-test("barge-in, someone talking on before their words are known: speech going on after the pause stops the bot", { timeout: 60_000 }, async t => {
-  // Their words come only when they stop: speech 1.3 s past the pause decides first.
-  const { ended } = await overTheBot(t, "the forecast for tomorrow", async connection => {
+test("barge-in, someone talking on: speech going on after the pause stops the bot (by: barge_in), and the model's item is cut at what was heard", { timeout: 60_000 }, async t => {
+  const { ended, paused, played, model } = await overTheBot(t, async connection => {
     for (let index = 0; index < 100; index++) { connection.handlers.packet("400000000000000004", speechPacket(index)); await sleep(15); }
   });
+  assert.equal(paused, true, "it paused while deciding");
   assert.deepEqual([ended.reason, ended.by], ["interrupted", "barge_in"]);
+  assert.ok(played < 400, "not all of it");
+  const [truncated] = model.of("truncate");
+  assert.equal(truncated?.response, "resp_1");
+  assert.ok(truncated.heardMs > 0 && truncated.heardMs < 8_000, `cut at ${truncated?.heardMs} ms`);
 });
 
 test("bargeIn takes its timing: shown as interruption; out of range or unknown is a 400; off shows none", async t => {
   const { node } = await voiceCluster(t);
   const a = await node("http://a");
-  const tuned = await a.voice.create("alice", { discord: discordGrant({ guildId: "100000000000000091" }), speak: true, bargeIn: { minMs: 200, confirmMs: 0 } });
+  const tuned = await a.voice.create("alice", { discord: discordGrant({ guildId: "100000000000000091" }), bargeIn: { minMs: 200, confirmMs: 0 } });
   assert.deepEqual([tuned.bargeIn, tuned.interruption], [true, { minMs: 200, confirmMs: 0, resumeMs: 3_000 }]);
-  const off = await a.voice.create("alice", { discord: discordGrant({ guildId: "100000000000000092" }), speak: true, bargeIn: false });
+  const off = await a.voice.create("alice", { discord: discordGrant({ guildId: "100000000000000092" }), bargeIn: false });
   assert.deepEqual([off.bargeIn, off.interruption], [false, undefined]);
   for (const bargeIn of [{ minMs: -1 }, { resumeMs: 100 }, { confirmMs: 1.5 }, { other: 1 }, "yes"]) {
-    await assert.rejects(a.voice.create("alice", { discord: discordGrant({ guildId: "100000000000000093" }), speak: true, bargeIn }), (error: { status?: number }) => error.status === 400, JSON.stringify(bargeIn));
+    await assert.rejects(a.voice.create("alice", { discord: discordGrant({ guildId: "100000000000000093" }), bargeIn }), (error: { status?: number }) => error.status === 400, JSON.stringify(bargeIn));
   }
 });
 
@@ -239,30 +231,4 @@ test("the guard: an utterance its partials showed to be echo is echo when its fi
   assert.deepEqual(outcomes.map(outcome => outcome.type), ["echo_rejected"]);
   assert.equal(guard.heard("u1", "sunny with a light breeze from the west", true, startedAt - 20), "echo", "its final transcript");
   assert.equal(guard.heard("u1", "sunny with a light breeze", true, startedAt + 5_000), undefined, "no candidate, nothing judged: delivered as theirs");
-});
-
-test("an echoed utterance never reaches the agent (no reply); its webhook says echo: true; the person's own words do reach it", { timeout: 60_000 }, async t => {
-  const said = ["what will the weather be tomorrow", "the forecast for tomorrow is sunny with a light breeze"];
-  const { transcriber } = fakeTranscriber(({ index }) => said[index] ?? "");
-  const asked: string[] = [];
-  async function* reply(text: string) { asked.push(text); yield BOT; }
-  const { fake, node, events } = await voiceCluster(t, {
-    playEveryMs: 10, transcriber, submitStreaming: (_agent, _tenant, request) => reply(String(request.params.text)),
-  });
-  const a = await node("http://a");
-  await a.voice.create("alice", { discord: discordGrant(), speak: { agentReplies: true }, deliver: { agent: AGENT }, silenceMs: 200 });
-  const connection = await until(() => fake.open()[0], "the connection");
-  connection.handlers.ready();
-  // The person asks; the agent's reply plays.
-  speak(connection, "400000000000000004", 0.6);
-  await until(() => connection.played[0]?.length >= 20, "the reply to play");
-  // Their speakers send the reply back into the call.
-  speak(connection, "400000000000000004", 0.6);
-  const [ended] = await until(async () => { const found = await events("voice.speech.ended"); return found.length ? found : undefined; }, "the reply to end", 30_000);
-  assert.deepEqual([ended.data.reason, ended.data.by], ["done", undefined], "the echo did not stop it");
-  const utterances = await until(async () => { const found = await events("voice.utterance"); return found.length === 2 ? found : undefined; }, "both utterances");
-  assert.deepEqual(utterances.map(event => [event.data.text, event.data.echo]), [[said[0], undefined], [said[1], true]]);
-  await sleep(300);
-  assert.deepEqual(asked, [said[0]], "only the person's own words were sent to the agent");
-  assert.equal((await events("voice.speech.ended")).length, 1, "nothing was said in reply to the echo");
 });

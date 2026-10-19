@@ -14,10 +14,9 @@ rates below as your account is charged them.
 | `web_search` on the platform's keys | Per search, by the provider that answered: Exa $0.007, Brave $0.005, Parallel $0.001 |
 | `web_fetch` page rendering on the platform's key | $0.00083 per page Firecrawl renders |
 | [Transcription](guides/voice.md) on the platform's OpenAI key | $0.0045 per minute of audio (`gpt-transcribe`), billed per second |
-| [Live transcription](guides/voice-calls.md#utterances) a voice session makes as people speak (when the runtime turns it on), on the platform's OpenAI key | $0.017 per minute of audio (`gpt-live-transcribe`), billed per second |
-| [Speech](guides/voice-calls.md#speaking) a voice session says, on the platform's OpenAI key | $0.015 per minute of speech made (`gpt-4o-mini-tts`), billed per second |
-| [Live transcription through other providers](guides/voice-calls.md#speech-providers), on the platform's key for each | Their list prices, per minute of audio streamed, billed per second: Deepgram `nova-3` $0.0077 (multilingual $0.0092), Deepgram `flux-general-en` $0.0077, Soniox `stt-rt-v3` $0.002, AssemblyAI Universal Streaming $0.0025 |
-| [Speech through other providers](guides/voice-calls.md#speech-providers), on the platform's key for each | Their list prices, per 1,000 characters spoken: ElevenLabs Flash/Turbo v2.5 $0.05, Cartesia `sonic-3` $0.05, Deepgram `aura-2` $0.03 |
+| [Voice calls](guides/voice-calls.md#cost) on the platform's key | The realtime model's tokens at its list price (about $0.02 to $0.05 a conversational minute); what people say transcribed at the transcription price |
+| [Speech](guides/voice.md#speech-on-its-own) (`POST /v1/speech`) on the platform's OpenAI key | $0.015 per minute of speech made (`gpt-4o-mini-tts`), billed per second |
+| [Speech through other providers](guides/voice.md#speech-on-its-own), on the platform's key for each | Their list prices, per 1,000 characters spoken: ElevenLabs Flash/Turbo v2.5 $0.05, Cartesia `sonic-3` $0.05, Deepgram `aura-2` $0.03 |
 | [Images](guides/images.md) on the platform's OpenAI key | Per token as OpenAI bills `gpt-image-2.5-flare`: $5 per million text tokens in, $8 per million image tokens in, $30 per million image tokens out. A 1024x1024 image is $0.0059 at `low`, $0.0132 at `medium`, $0.0527 at `high` |
 
 ## Credit

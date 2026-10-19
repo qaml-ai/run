@@ -1,8 +1,7 @@
 import { fold } from "../echo-guard.ts";
 
 /**
- * Floor control for a bot in a group call: whether a turn is for the bot (addressing), and which of its replies still
- * deserve to be said (one reply at a time per call, a newer turn superseding an older reply not yet heard).
+ * Floor control for a bot in a group call: whether a turn is for the bot (addressing).
  *
  * Addressing is rules, not a model: language models pick a multi-party addressee near chance. A turn is the bot's when
  *
@@ -13,8 +12,7 @@ import { fold } from "../echo-guard.ts";
  *   (`conversation`), unless someone else named it since (the bot then talks with them);
  * - or the mode is `always` (every turn, as before floor control).
  *
- * Otherwise it is `not_addressed`: the session still delivers its event, and keeps it as context for the next turn
- * that is the bot's (the call's last `contextTurns`, within `contextMs`).
+ * Otherwise it is `not_addressed`: the session still delivers its event, and the realtime model hears it as context.
  */
 
 export type AddressingPolicy = {
@@ -22,10 +20,8 @@ export type AddressingPolicy = {
   /** The bot's names (wake words): "camel", "hey camel", a persona's name. */
   names: string[];
   conversationMs: number;
-  /** Turns kept as context for the next one that is the bot's, and for how long. */
-  contextTurns: number; contextMs: number;
 };
-export const DEFAULT_ADDRESSING: AddressingPolicy = Object.freeze({ mode: "always", names: [], conversationMs: 20_000, contextTurns: 8, contextMs: 120_000 }) as AddressingPolicy;
+export const DEFAULT_ADDRESSING: AddressingPolicy = Object.freeze({ mode: "always", names: [], conversationMs: 20_000 }) as AddressingPolicy;
 
 export type Addressed = { addressed: boolean; reason: "always" | "alone" | "named" | "conversation" | "not_addressed" };
 
@@ -68,14 +64,11 @@ export function mentions(text: string, names: readonly string[]) {
   return false;
 }
 
-type Turn = { speaker: string; text: string; at: number };
-
 export class Floor {
   readonly policy: AddressingPolicy;
   private readonly now: () => number;
   /** Who the bot is talking with now, and until when. */
   private readonly conversations = new Map<string, number>();
-  private readonly recent: Turn[] = [];
   readonly stats = { turns: 0, addressed: 0, named: 0, conversation: 0, alone: 0, ignored: 0 };
 
   constructor(policy: Partial<AddressingPolicy> = {}, now: () => number = Date.now) {
@@ -122,24 +115,4 @@ export class Floor {
   answered(speaker: string) {
     this.conversations.set(speaker, this.now() + this.policy.conversationMs);
   }
-
-  /** Keep a turn the bot was not asked about, as context for the next it is. */
-  overheard(speaker: string, text: string) {
-    this.recent.push({ speaker, text, at: this.now() });
-    while (this.recent.length > this.policy.contextTurns) this.recent.shift();
-  }
-
-  /** The turns overheard since the bot was last asked (within contextMs), and forgets them: they go with this turn. */
-  takeContext(): Turn[] {
-    const since = this.now() - this.policy.contextMs;
-    const turns = this.recent.filter(turn => turn.at >= since);
-    this.recent.length = 0;
-    return turns;
-  }
-}
-
-/** A turn's prompt with what was said around it: who said what before (`<@id>: text`), then the turn itself. */
-export function withContext(text: string, context: { speaker: string; text: string }[]) {
-  if (!context.length) return text;
-  return `[Said in the call before this, not to you]\n${context.map(turn => `<@${turn.speaker}>: ${turn.text}`).join("\n")}\n[To you]\n${text}`;
 }
