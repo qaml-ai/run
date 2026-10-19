@@ -24,7 +24,7 @@ export const ELEVENLABS_AGENTS = Object.freeze({
   models: ["gemini-2.5-flash-lite"] as const,
   defaultModel: "gemini-2.5-flash-lite",
   voice: "cgSgspJ2msm6clMCkdW9", // Jessica, a conversational default; sessions may supply any voice_id their key can use.
-  name: "camelRun realtime voice v1",
+  name: "camelRun realtime voice v2",
   connectTimeoutMs: 20_000,
 });
 const VOICE_FOR = Object.freeze(Object.fromEntries(
