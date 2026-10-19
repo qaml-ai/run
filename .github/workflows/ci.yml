@@ -137,7 +137,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix: { arch: [amd64, arm64] }
-    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || fromJSON(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && vars.CI_RUNNER_LABELS || ((github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && '["blacksmith-16vcpu-ubuntu-2404"]' || '["ubuntu-latest"]')) }}
+    runs-on: ${{ matrix.arch == 'arm64' && ((github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && 'blacksmith-16vcpu-ubuntu-2404-arm' || 'ubuntu-24.04-arm') || fromJSON(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && vars.CI_RUNNER_LABELS || ((github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && '["blacksmith-16vcpu-ubuntu-2404"]' || '["ubuntu-latest"]')) }}
     timeout-minutes: 20
     services:
       postgres:
@@ -150,10 +150,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/node-dependencies
       - run: npm run build:console
-      - uses: docker/setup-buildx-action@v3
+      - if: ${{ !((github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && (matrix.arch == 'arm64' || !(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted')))) }}
+        uses: docker/setup-buildx-action@v3
         with: { driver-opts: "image=mirror.gcr.io/moby/buildkit:buildx-stable-1" }
-      # Layers are cached across runs, so only changed stages (usually just src) rebuild.
-      - uses: docker/build-push-action@v6
+      - if: ${{ (github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && (matrix.arch == 'arm64' || !(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted'))) }}
+        uses: useblacksmith/setup-docker-builder@v2
+        with: { cache-key: "run-image-${{ matrix.arch }}" }
+      - if: ${{ !((github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && (matrix.arch == 'arm64' || !(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted')))) }}
+        uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/${{ matrix.arch }}
@@ -162,6 +166,14 @@ jobs:
           tags: agent-runtime:ci
           cache-from: type=gha,scope=image-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=image-${{ matrix.arch }}
+      - if: ${{ (github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && (matrix.arch == 'arm64' || !(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted'))) }}
+        uses: useblacksmith/build-push-action@v2
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          provenance: false
+          load: true
+          tags: agent-runtime:ci
       - run: |
           mkdir -p /tmp/ci-tenants && chmod 755 /tmp/ci-tenants
           echo '{"tenants":{"ci":{"tokenSha256":"'"$(printf %s ci-boot-token-at-least-32-characters | sha256sum | cut -d' ' -f1)"'"}}}' > /tmp/ci-tenants/tenants.json
@@ -188,7 +200,7 @@ jobs:
     # deploy (which waits for all of CI) only rolls it out. The deploy role trusts only the production
     # environment. Tags are immutable: a re-run finds its image already pushed.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04-arm
+    runs-on: blacksmith-16vcpu-ubuntu-2404-arm
     timeout-minutes: 20
     environment: production
     permissions:
@@ -215,17 +227,16 @@ jobs:
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
       - if: steps.image.outputs.pushed != 'true'
-        uses: docker/setup-buildx-action@v3
-        with: { driver-opts: "image=mirror.gcr.io/moby/buildkit:buildx-stable-1" }
+        uses: useblacksmith/setup-docker-builder@v2
+        with: { cache-key: run-image-arm64 }
       - if: steps.image.outputs.pushed != 'true'
-        uses: docker/build-push-action@v6
+        uses: useblacksmith/build-push-action@v2
         with:
           context: .
           platforms: linux/arm64
           provenance: false
           push: true
           tags: ${{ steps.ecr.outputs.registry }}/camelai-agent-runtime:${{ steps.image.outputs.tag }}
-          cache-from: type=gha,scope=image-arm64
   docs:
     timeout-minutes: 15
     runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && vars.CI_RUNNER_LABELS || ((github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && '["blacksmith-16vcpu-ubuntu-2404"]' || '["ubuntu-latest"]')) }}
