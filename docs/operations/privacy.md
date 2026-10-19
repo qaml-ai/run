@@ -106,7 +106,7 @@ email address may sign up again as a new, empty tenant.
 | Email thread metadata (addresses, subjects, Message-IDs) | until its agent or channel is deleted |
 | Inbound mail stored in S3 (large messages) | 7 days (`email.tf` lifecycle) |
 | A deleted volume's files | until storage collection's grace period passes (`AGENT_GC_GRACE_MS`, a day), once collection is enabled; at once on account deletion |
-| Runtime logs (`/ecs/camelai-agent-runtime`) | 30 days; ids, sizes and error classes only (see "What logs hold" in [architecture](architecture.md)) |
+| Runtime logs (`/ecs/camelai-agent-runtime`) | 30 days; ids, sizes and error classes only, and the email of whoever viewed the ops dashboard (see "What logs hold" in [architecture](architecture.md)) |
 | Other log groups | see [infra/terraform/README.md](../../infra/terraform/README.md#log-retention) |
 | Rate limit counters (`rate_limits`: tenant ids, and client addresses and email addresses as keyed hashes) | until their window (a minute, 15 minutes, an hour, or a UTC day) ends, then swept within an hour; per-node request counts are in memory only |
 | Mailed links (`account_email_links`: the address, the token's hash, a sign-up's password hash) | until used or replaced, else a day after mailing (a reset link, an hour), then swept; a tenant's go with its account |
@@ -256,7 +256,7 @@ naming only the `account_ref`, so the store deletes its copy. That event waits u
 however long, and is queued even on a runtime whose journey events have since been switched off (it is
 sent when they are on again).
 
-**Reports.** The team's admin site (`AGENT_ADMIN_HOST`, see [configuration](configuration.md)) can ask the store
+**Reports.** The team's [ops dashboard](#the-ops-dashboard) can ask the store
 what it holds: sign-ups, first runs and payments by day, the accounts active in a range, and one account's
 events, each account named by its `account_ref` and nothing else. The runtime asks on the viewer's behalf
 (`src/admin-report.ts`), signed with a secret of its own (`AGENT_JOURNEY_REPORT_SECRET_ARN`), which never
@@ -272,6 +272,23 @@ asked for with the same signature: `summary.json` (how the store says the accoun
 sent to Google Analytics of those events. `summary.json` also says when the account last refused, if it has. The store is asked for the account this runtime
 authenticated, never one a request names. If the store cannot be asked the export fails, as for any part it
 cannot read whole.
+
+## The ops dashboard
+
+The team's ops dashboard (`run.camelai.com/ops`, `AGENT_ADMIN_URL`; see
+[Ops dashboard](admin-analytics.md)) shows the operator's admins what the runtime knows of every account. The admins
+are whoever Cloudflare Access's policy for it admits, and the runtime checks each request's Access token itself.
+Its tabs are counts and sums, with lists of the accounts that use or spend the most, each named by its GitHub login,
+Google address or password address. Each answer is logged with the email of the admin who asked (`admin_*_viewed`
+lines, with the window's days), which the hosted runtime keeps 30 days.
+
+One account's drill-down (`GET /ops/api/account`) shows more: the account's channels by type and name, the providers
+it keeps its own key for and the MCP clients it connected (names, never a key or token), and for each of up to 50 live
+agents its setup and **the first 1,500 characters of its system prompt**, with what looks like a credential (a
+provider key, a token, a private key) hidden. A prompt is customer text, so a secret written in no known form can
+still show in it. An agent's MCP servers are shown by host only, since an address's path or query can carry a
+credential. No message, history, file, stored key or token is shown. Each
+view of an account is logged as `admin_account_viewed` with the admin's email and the tenant.
 
 ## Runbook: a deletion or export request by email
 

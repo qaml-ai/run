@@ -120,6 +120,10 @@ and the RDS instance also have deletion protection in AWS.
     chat deployments it stores are offered as `azure/<model>`).
   - `AGENT_OPENAI_APPS_CHALLENGE` from `openai_apps_challenge`, when set: the ChatGPT plugin's domain-verification
     token (`plugins/chatgpt/README.md`).
+  - `AGENT_ADMIN_URL` (`https://<admin_hostname><admin_path>`), `AGENT_ADMIN_ACCESS_TEAM`, `AGENT_ADMIN_ACCESS_AUD`
+    and `AGENT_ADMIN_EMAILS` from the `admin_*` variables (`admin.tf`): the team's ops dashboard at
+    `run.camelai.com/ops` (see "Hostnames"). `admin_emails`, the admins' addresses, is set in `prod.auto.tfvars`,
+    never in this repository.
 
   The task definition has no `secrets`: the runtime reads every secret itself,
   through the task role, so no secret value is in its environment, where a
@@ -378,3 +382,14 @@ identity tokens' `iss` and the OAuth issuer name it, and tool servers (chiridion
 among them) and MCP clients check it. The email channels' SNS endpoint also
 stays on `hostname`. `run.camelai.com` needs the `camelai.com` zone's SSL mode
 at Full (strict), since Cloudflare connects to the ALB by that name.
+
+The team's ops dashboard is a path of `run.camelai.com`: `/ops` (`admin_hostname`,
+`admin_path`; `admin.tf`), behind the Cloudflare Access application "camelRun
+admin", which must have `run.camelai.com` with path `ops` among its destinations.
+Everything else on the name stays the runtime's. It replaced `admin.camelai.dev`,
+whose certificate and DNS record `admin.tf` no longer makes. A hostname that is
+not the runtime's still gets both, and may be the dashboard's whole
+(`admin_path = ""`). An image from before `AGENT_ADMIN_URL` refuses to start with these
+settings and the deployment circuit breaker rolls it back, so applying before
+deploying, or rolling back an image, cannot hand the whole name to the site. See
+[the ops dashboard](../../docs/operations/admin-analytics.md#deployment).

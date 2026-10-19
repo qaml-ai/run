@@ -1,0 +1,20 @@
+/* The ops dashboard's chart colours (console/DESIGN.md: monochrome ink, signal blue for the series in focus). Context
+   series are ink, then a mid grey, each its own step in dark mode rather than a flip; grid lines sit one step off the
+   card and the baseline one step further. */
+:root {
+  --ops-focus: var(--chart-1);
+  --ops-ink: #3f3f45;
+  --ops-mid: #8a888f;
+  --ops-grid: #e1ded5;
+  --ops-axis: #c6c3ba;
+  /* Text set on a strong blue cell: dark in both modes, since signal blue is light. */
+  --ops-on-focus: #111113;
+}
+
+.dark {
+  --ops-ink: #b3b1aa;
+  --ops-mid: #6e6e77;
+  --ops-grid: #1c1c21;
+  --ops-axis: #2c2c31;
+  --ops-on-focus: #0b0b0c;
+}

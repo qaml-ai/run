@@ -261,7 +261,8 @@ on them are in `infra/terraform/observability.tf`.
 
 **What logs hold.** Log lines carry ids (tenant, agent, request, channel, item),
 counts, sizes and durations, never what a user wrote: no prompt, transcript, tool
-arguments or results, file names or contents, or email addresses, subjects or bodies.
+arguments or results, file names or contents, or email addresses, subjects or bodies. The ops dashboard's
+lines (`admin_*_viewed`) do name the staff member who viewed it (`viewer`, their Access email).
 An error from a model provider, a channel, a tool server or a request can echo such
 text, so those lines carry `safeError(error)` (`src/metrics.ts`): the error's class,
 its name, status and code, and its message's length, not the message. Only background

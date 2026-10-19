@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog as Sheet, DialogContent as SheetContent, DialogHeader as SheetHeader, DialogTitle as SheetTitle, DialogDescription as SheetDescription } from "@/components/ui/dialog";
-import { PageHeader } from "@/components/common";
+import { opsUrl } from "@/lib/ops";
 import type { AdminSignals } from "../../../src/admin-signals";
 import "./admin-analytics.css";
 import { AdminActivityTrend } from "./admin-activity-trend";
@@ -40,7 +40,7 @@ function useReport<T extends ReportResult>(request: ReportRequest|null, refresh:
     const parsed = JSON.parse(key) as ReportRequest;
     const signalRequest = parsed.kind === "signals";
     const url = signalRequest ? `/api/product-signals?${new URLSearchParams({start_date:parsed.start_date,end_date:parsed.end_date,time_zone:parsed.time_zone})}` : "/api/report";
-    fetch(url,{method:signalRequest?"GET":"POST",...(signalRequest?{}:{headers:{"content-type":"application/json"},body:key}),credentials:"same-origin",cache:"no-store",signal:abort.signal})
+    fetch(opsUrl(url),{method:signalRequest?"GET":"POST",...(signalRequest?{}:{headers:{"content-type":"application/json"},body:key}),credentials:"same-origin",cache:"no-store",signal:abort.signal})
       .then(async r=>{if(r.status===401)throw new Error("sign_in_required");if(r.status===403)throw new Error("admin_required");const body=await r.json();if(!r.ok)throw new Error(body.error||"report_unavailable");return (signalRequest?{...body,kind:"signals"}:body) as T;})
       .then(data=>{if(!abort.signal.aborted)setState({key,refresh,data,error:null});})
       .catch(e=>{if(!abort.signal.aborted)setState({key,refresh,data:null,error:e instanceof Error?e.message:"report_unavailable"});});
@@ -56,10 +56,12 @@ function Notice({error,loading}: {error:string|null;loading?:boolean}) {
 function Coverage({report}: {report: JourneysReport|JourneyReport|PagesReport}) {
   return <p className="coverage">{report.coverage.first_event_at ? <>Tracking records available from {date(report.coverage.first_event_at)}. Latest event: {date(report.coverage.last_event_at,true)}.</> : "Connected, but no events have been collected yet."} <span>Report updated {date(report.generated_at,true)}.</span></p>;
 }
-export function AdminAnalytics() {
+/** The journey store's reports, with their own calendar dates (the ops dashboard's Journeys tab); `refresh` is the page's Refresh. */
+export function AdminAnalytics({refresh:outer=0}:{refresh?:number}={}) {
   const [range,setRange]=useState<ReportRange>(()=>presetRange("today"));
   const [draft,setDraft]=useState(range),[preset,setPreset]=useState("today"),[filterError,setFilterError]=useState<string|null>(null);
-  const [tab,setTab]=useState("signals"),[refresh,setRefresh]=useState(0);
+  const [tab,setTab]=useState("signals"),[own,setRefresh]=useState(0);
+  const refresh=own+outer;
   const [cursors,setCursors]=useState<string[]>([]),[selected,setSelected]=useState<string|null>(null);
   const report=useReport<SignalsReport|JourneysReport|PagesReport>({schema_version:1,...range,kind:tab==="signals"?"signals":tab==="pages"?"pages":"journeys",...(tab==="journeys"&&cursors.length?{cursor:cursors.at(-1)}:{})},refresh);
   const applyRange=(next:ReportRange)=>{ const error=rangeError(next);setFilterError(error);if(error)return false;setRange(next);setDraft(next);setCursors([]);setSelected(null);return true; };
@@ -70,7 +72,7 @@ export function AdminAnalytics() {
   const status=report.loading?"Loading report":report.data?(signals?"Run database":report.data.kind!=="signals"&&report.data.coverage.first_event_at?"Tracking connected":"Connected · no events yet"):(report.error==="report_not_configured")?"Tracking not connected":"Report unavailable";
   return <div className="admin-analytics">
     <section aria-label="Run analytics">
-      <PageHeader title="Admin" description="Product signals, Run pages and user journeys" actions={<span className="connection" aria-live="polite">{status}</span>}/>
+      <div className="mb-4 flex flex-wrap items-end justify-between gap-3"><div className="min-w-0"><h2 className="text-base font-semibold">Journeys</h2><p className="text-muted-foreground mt-0.5 text-sm">Product signals, Run pages and user journeys, by calendar day in Central Time</p></div><span className="connection" aria-live="polite">{status}</span></div>
       <form className="date-bar" onSubmit={e=>{e.preventDefault();applyRange(draft);}} aria-label="Date range">
         <div className="date-title"><CalendarDays size={18}/><strong>Date range</strong></div>
         <label className="preset-label" htmlFor="calendar-preset"><span>Calendar preset</span><select id="calendar-preset" aria-label="Calendar preset" value={preset} onChange={e=>{setPreset(e.target.value);if(e.target.value!=="custom")applyRange(presetRange(e.target.value));}}>{[["today","Today"],["yesterday","Yesterday"],["last-7","Last 7 days"],["last-14","Last 14 days"],["last-30","Last 30 days"],["week","This week"],["month","This month"],["last-month","Last month"],["custom","Custom dates"]].map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></label>
