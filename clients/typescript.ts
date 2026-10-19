@@ -1149,12 +1149,13 @@ export interface EndUserLedgerQuery {
 }
 /**
  * An end user's UTC day (`endUsers.days`): by bucket, what the allowance paid (`freeRaw`, raw cost: never charged) and
- * what the balance paid (`paidCharged`, with the markup), and their totals; and what your entries moved that day, in
+ * what the balance paid (`paidCharged`, with the markup), what was written off (`writtenOff`, raw: cost past what was
+ * left, never charged), and their totals; and what your entries moved that day, in
  * balance units (`granted`, `refunded` as a positive amount, `adjusted` signed; `entries`: how many).
  */
 export interface EndUserDay {
-  day: string; freeRaw: Micros; paidCharged: Micros; granted: Micros; refunded: Micros; adjusted: Micros; entries: number;
-  buckets: { bucket: string; freeRaw: Micros; paidCharged: Micros }[];
+  day: string; freeRaw: Micros; paidCharged: Micros; writtenOff: Micros; granted: Micros; refunded: Micros; adjusted: Micros; entries: number;
+  buckets: { bucket: string; freeRaw: Micros; paidCharged: Micros; writtenOff: Micros }[];
 }
 const queryOf = (values: Record<string, unknown>) => new URLSearchParams(Object.entries(values).filter(([, value]) => value !== undefined).map(([name, value]) => [name, String(value)]));
 const timeOf = (value: number | Date | undefined) => value instanceof Date ? value.getTime() : value;

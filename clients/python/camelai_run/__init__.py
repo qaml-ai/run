@@ -1139,9 +1139,10 @@ class EndUsers:
         return self._runtime._rest("GET", self._path(end_user) + "/ledger" + (f"?{query}" if query else ""))
 
     def days(self, end_user, *, from_=None, to=None, bucket=None, limit=None):
-        """Their spend and credit per UTC day, newest first: {"days": [{"day", "freeRaw", "paidCharged", "granted", "refunded",
-        "adjusted", "entries", "buckets": [{"bucket", "freeRaw", "paidCharged"}]}], "next"?}; pass next as `to`. freeRaw is
-        what allowances paid (raw cost), paidCharged what the balance paid (with the markup); the rest is what your entries
+        """Their spend and credit per UTC day, newest first: {"days": [{"day", "freeRaw", "paidCharged", "writtenOff", "granted",
+        "refunded", "adjusted", "entries", "buckets": [{"bucket", "freeRaw", "paidCharged", "writtenOff"}]}], "next"?}; pass next
+        as `to`. freeRaw is what allowances paid (raw cost), paidCharged what the balance paid (with the markup), writtenOff
+        the cost past what was left (raw, never charged); the rest is what your entries
         moved, in balance units. `from_`/`to` are UTC days (YYYY-MM-DD strings or dates, `to` exclusive), at most 366 apart;
         `bucket` keeps that bucket's spend alone, without entries; `limit`: days a page (default 31)."""
         query = urlencode({key: value for key, value in (("from", _day(from_)), ("to", _day(to)), ("bucket", bucket), ("limit", limit)) if value is not None})

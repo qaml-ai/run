@@ -1212,10 +1212,12 @@ const DayBucket = z.object({
   bucket: z.string(),
   freeRaw: micros("What the bucket's allowance paid that day, in raw cost (never charged)"),
   paidCharged: micros("What the balance paid for the bucket that day, charged with the markup"),
+  writtenOff: micros("Cost past what was left for the bucket that day (the balance, the daily limit, the bucket's limit), raw: not charged; the tenant bears it"),
 });
 export const EndUserDay = z.object({
   day: z.string().openapi({ description: "The UTC day, YYYY-MM-DD. A call counts on the day it began; an entry on the day it was posted" }),
   freeRaw: micros("What allowances paid that day, every bucket (raw cost)"), paidCharged: micros("What the balance paid that day, every bucket (charged)"),
+  writtenOff: micros("What was written off that day, every bucket (raw cost)"),
   granted: micros("Credit the tenant granted that day (balance units)"), refunded: micros("Credit the tenant refunded that day, as a positive amount (balance units)"),
   adjusted: micros("What the tenant's adjustments moved the balance that day, signed (balance units)"),
   entries: z.number().int().openapi({ description: "How many grants, refunds and adjustments were posted that day" }),

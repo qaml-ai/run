@@ -71,8 +71,8 @@ export type DaysQuery = { from?: string; to?: string; bucket?: string; limit?: n
  * units: `granted`, `refunded` (positive: what was taken back), `adjusted` (signed), and how many there were (`entries`).
  */
 export type EndUserDay = {
-  day: string; freeRaw: number; paidCharged: number; granted: number; refunded: number; adjusted: number; entries: number;
-  buckets: { bucket: string; freeRaw: number; paidCharged: number }[];
+  day: string; freeRaw: number; paidCharged: number; writtenOff: number; granted: number; refunded: number; adjusted: number; entries: number;
+  buckets: { bucket: string; freeRaw: number; paidCharged: number; writtenOff: number }[];
 };
 /** The most days one per-day read may span. */
 export const MAX_DAYS = 366;
@@ -334,8 +334,8 @@ export class EndUserCredits {
     const bucket = options.bucket === undefined ? null : bucketInput(options.bucket);
     const { rows } = await this.db.query(`
       with spent as (
-        select day, bucket, allowance_spent, paid_spent from end_user_days
-        where tenant = $1 and end_user = $2 and day >= $3::date and day < $4::date and ($5::text is null or bucket = $5) and (allowance_spent <> 0 or paid_spent <> 0)
+        select day, bucket, allowance_spent, paid_spent, written_off from end_user_days
+        where tenant = $1 and end_user = $2 and day >= $3::date and day < $4::date and ($5::text is null or bucket = $5) and (allowance_spent <> 0 or paid_spent <> 0 or written_off <> 0)
       ), credited as (
         select (to_timestamp(created_at / 1000.0) at time zone 'UTC')::date as day,
           coalesce(sum(amount) filter (where kind = 'grant'), 0)::bigint as granted, coalesce(-sum(amount) filter (where kind = 'refund'), 0)::bigint as refunded,
@@ -346,7 +346,7 @@ export class EndUserCredits {
       ), picked as (
         select day from spent union select day from credited order by day desc limit $8
       )
-      select to_char(p.day, 'YYYY-MM-DD') as day, s.bucket, s.allowance_spent, s.paid_spent, c.granted, c.refunded, c.adjusted, c.entries
+      select to_char(p.day, 'YYYY-MM-DD') as day, s.bucket, s.allowance_spent, s.paid_spent, s.written_off, c.granted, c.refunded, c.adjusted, c.entries
       from picked p left join spent s on s.day = p.day left join credited c on c.day = p.day
       order by p.day desc, s.bucket`,
     [tenant, id, from, to, bucket, Date.parse(`${from}T00:00:00Z`), Date.parse(`${to}T00:00:00Z`), limit + 1]);
@@ -354,14 +354,15 @@ export class EndUserCredits {
     for (const row of rows) {
       let day = days.at(-1);
       if (!day || day.day !== row.day) {
-        day = { day: row.day, freeRaw: 0, paidCharged: 0, granted: Number(row.granted ?? 0), refunded: Number(row.refunded ?? 0), adjusted: Number(row.adjusted ?? 0), entries: Number(row.entries ?? 0), buckets: [] };
+        day = { day: row.day, freeRaw: 0, paidCharged: 0, writtenOff: 0, granted: Number(row.granted ?? 0), refunded: Number(row.refunded ?? 0), adjusted: Number(row.adjusted ?? 0), entries: Number(row.entries ?? 0), buckets: [] };
         days.push(day);
       }
       if (row.bucket === null) continue;
-      const freeRaw = Number(row.allowance_spent), paidCharged = Number(row.paid_spent);
-      day.buckets.push({ bucket: row.bucket, freeRaw, paidCharged });
+      const freeRaw = Number(row.allowance_spent), paidCharged = Number(row.paid_spent), writtenOff = Number(row.written_off);
+      day.buckets.push({ bucket: row.bucket, freeRaw, paidCharged, writtenOff });
       day.freeRaw += freeRaw;
       day.paidCharged += paidCharged;
+      day.writtenOff += writtenOff;
     }
     const page = days.slice(0, limit);
     return { days: page, ...(days.length > limit ? { next: page.at(-1)!.day } : {}) };

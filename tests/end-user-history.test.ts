@@ -74,10 +74,10 @@ test("per-day totals equal the day's usage rows by bucket, with the tenant's ent
     }
   }
   const [today, yesterday, before] = read;
-  assert.deepEqual(today, { day: days.today, freeRaw: 0, paidCharged: 0, granted: 10 * USD, refunded: 0, adjusted: 0, entries: 1, buckets: [] }, "a day with only an entry");
+  assert.deepEqual(today, { day: days.today, freeRaw: 0, paidCharged: 0, writtenOff: 0, granted: 10 * USD, refunded: 0, adjusted: 0, entries: 1, buckets: [] }, "a day with only an entry");
   // builder: USD / 2 from its allowance, the other USD / 2 paid at +25%.
-  assert.deepEqual(yesterday, { day: days.yesterday, freeRaw: USD / 2, paidCharged: 625_000, granted: 0, refunded: 0, adjusted: 0, entries: 0, buckets: [{ bucket: "builder", freeRaw: USD / 2, paidCharged: 625_000 }] });
-  assert.deepEqual(before.buckets, [{ bucket: "bot:1", freeRaw: USD, paidCharged: 250_000 }, { bucket: "builder", freeRaw: 200_000, paidCharged: 0 }]);
+  assert.deepEqual(yesterday, { day: days.yesterday, freeRaw: USD / 2, paidCharged: 625_000, writtenOff: 0, granted: 0, refunded: 0, adjusted: 0, entries: 0, buckets: [{ bucket: "builder", freeRaw: USD / 2, paidCharged: 625_000, writtenOff: 0 }] });
+  assert.deepEqual(before.buckets, [{ bucket: "bot:1", freeRaw: USD, paidCharged: 250_000, writtenOff: 0 }, { bucket: "builder", freeRaw: 200_000, paidCharged: 0, writtenOff: 0 }]);
   assert.deepEqual([before.freeRaw, before.paidCharged, before.granted, before.refunded, before.adjusted, before.entries], [1_200_000, 250_000, 0, USD, -250_000, 2]);
 
   // A page at a time: next is passed as to.

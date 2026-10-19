@@ -69,6 +69,8 @@ test("a bot at a bucket limit of 0: a call past its allowance never charges a ba
   assert.equal(await balance(db), 0);
   assert.deepEqual(await day(db, "bot:42"), { allowanceSpent: USD, paidSpent: 0, writtenOff: 225_000 });
   assert.equal((await exhausted(db)).filter(event => event.reason === "bucket_limit").length, 1, "once per person, bucket and day");
+  const [todays] = (await service.days("t", "u")).days;
+  assert.deepEqual([todays.writtenOff, todays.paidCharged, todays.buckets], [225_000, 0, [{ bucket: "bot:42", freeRaw: USD, paidCharged: 0, writtenOff: 225_000 }]], "the per-day totals show it");
   // Their first grant shows in full.
   await service.post("t", "u", { kind: "grant", amount: 10 * USD, key: "pay" });
   assert.equal(await balance(db), 10 * USD);

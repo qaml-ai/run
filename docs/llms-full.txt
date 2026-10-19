@@ -4019,7 +4019,7 @@ const person = await agents.endUsers.get(user.id, { buckets: ["builder"] });
 // person.balance, person.available, person.today.buckets[0].allowanceLeft
 const purchases = await agents.endUsers.ledger(user.id, { kind: ["grant", "refund", "adjustment"], limit: 20 });
 const { days, next } = await agents.endUsers.days(user.id, { limit: 7 });
-// days[0]: { day: "…", freeRaw, paidCharged, granted, refunded, adjusted, entries, buckets: [{ bucket: "bot:42", freeRaw, paidCharged }] }
+// days[0]: { day: "…", freeRaw, paidCharged, writtenOff, granted, refunded, adjusted, entries, buckets: [{ bucket: "bot:42", freeRaw, paidCharged, writtenOff }] }
 ```
 
 ```python
@@ -4082,8 +4082,9 @@ When it settles, the person is charged at most what is left for it: the balance,
 daily limit and the bucket's limit, less what their other calls in flight hold. The
 rest is **written off**: you bear it (your camelRun usage is the call's full cost, as
 always), and it is never charged to the person later, even after they buy credit.
-Each usage entry shows it as `writtenOff`, and `GET /v1/end-users/{id}` totals it per
-bucket for the day (`today.buckets[].writtenOff`), both in raw micro-USD. The limit
+Each usage entry shows it as `writtenOff`, `GET /v1/end-users/{id}` totals it per
+bucket for today (`today.buckets[].writtenOff`), and `GET /v1/end-users/{id}/days` per
+bucket and day, all in raw micro-USD. The limit
 that capped the charge fires `end_user.credit.exhausted` as a refused call would, and
 the person's next call is refused for it.
 
@@ -4142,7 +4143,7 @@ charged, in the balance's units (raw cost with your markup).
 | Field | Unit |
 | --- | --- |
 | `allowances`, `allowance`, `allowanceSpent`, `allowanceLeft` | raw |
-| a usage entry's `raw` and `allowance` | raw |
+| a usage entry's `raw`, `allowance` and `writtenOff`; a bucket's or a day's `writtenOff` | raw |
 | `balance`, `held`, `available`, `dailyLimit`, `bucketLimits`, `paidLimit`, `lowBalance` | charged |
 | `paidSpent`, any entry's `amount` and `balanceAfter` | charged |
 | a day's `freeRaw` (what allowances paid) | raw |
