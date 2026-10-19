@@ -56,6 +56,22 @@ test("the ledger narrows by kind, time, bucket and moved, and pages with its fil
   assert.deepEqual((await credits.ledger("b", "p", { kinds: ["grant"] })).entries, [], "another tenant's are its own");
 });
 
+test("a credit history among much usage is read from the entries index, not the usage", async () => {
+  const { db } = await testDatabase();
+  const credits = new EndUserCredits(db);
+  await db.query(`insert into end_user_ledger (tenant, end_user, kind, amount, bucket, idempotency_key, balance_after, created_at)
+    select 'a', 'p', 'usage', 0, 'bot:1', 'charge:' || n, 0, n from generate_series(1, 10000) n`);
+  for (const key of ["pi_1", "pi_2", "pi_3"]) await credits.post("a", "p", { kind: "grant", amount: USD, key });
+  await db.query("analyze end_user_ledger");
+  assert.deepEqual((await credits.ledger("a", "p", { kinds: ["grant", "refund", "adjustment"] })).entries.map(entry => entry.key), ["pi_3", "pi_2", "pi_1"]);
+  // The statement ledger() makes for that read, and days()' entries part.
+  const plans = await Promise.all([
+    "select * from end_user_ledger where tenant = 'a' and end_user = 'p' and kind = any('{grant,refund,adjustment}'::text[]) and kind <> 'usage' order by id desc limit 51",
+    "select count(*) from end_user_ledger where tenant = 'a' and end_user = 'p' and kind <> 'usage' and created_at >= 0 and created_at < 9999999999999",
+  ].map(async query => (await db.query(`explain ${query}`)).rows.map(row => row["QUERY PLAN"]).join("\n")));
+  for (const plan of plans) assert.match(plan, /end_user_ledger_entries/, plan);
+});
+
 test("per-day totals equal the day's usage rows by bucket, with the tenant's entries, newest first and paged", async () => {
   const { db } = await testDatabase();
   const credits = new EndUserCredits(db);
