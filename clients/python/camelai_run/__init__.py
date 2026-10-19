@@ -1059,6 +1059,18 @@ class Images:
         return self._runtime._rest("POST", "/v1/images", body, retry=False, timeout=_IMAGES_TIMEOUT)
 
 
+def _epoch_ms(value):
+    """A time as epoch milliseconds: an int as it is, a datetime (naive: UTC) converted."""
+    if isinstance(value, datetime):
+        return int((value if value.tzinfo else value.replace(tzinfo=timezone.utc)).timestamp() * 1000)
+    return value
+
+
+def _day(value):
+    """A UTC day as YYYY-MM-DD: a string as it is, a date or datetime formatted."""
+    return value.strftime("%Y-%m-%d") if hasattr(value, "strftime") else value
+
+
 class EndUsers:
     """Your users' credit (runtime.end_users, agents.end_users). Agents and calls with a `subject` spend that person's credit,
     from their bucket's daily allowance first, then their balance (with your markup), within their daily limit; a run that
@@ -1115,11 +1127,25 @@ class EndUsers:
         body = {**({"allowances": allowances} if allowances is not None else {}), **({"bucketLimits": bucket_limits} if bucket_limits is not None else {}), **({"dailyLimit": daily_limit} if daily_limit is not _DEFAULT else {})}
         return self._runtime._rest("PATCH", self._path(end_user), body)
 
-    def ledger(self, end_user, *, before=None, limit=None):
+    def ledger(self, end_user, *, before=None, limit=None, kind=None, from_=None, to=None, bucket=None, moved=None):
         """Their ledger, newest first: {"entries": [...], "next"?}; pass next as `before`. Usage entries carry the call's raw
-        cost ("raw"), what the bucket's allowance covered ("allowance") and what the balance paid ("amount", negative)."""
-        query = urlencode({key: value for key, value in (("before", before), ("limit", limit)) if value is not None})
+        cost ("raw"), what the bucket's allowance covered ("allowance") and what the balance paid ("amount", negative).
+        Narrow it by `kind` (a list: ["grant", "refund", "adjustment"] is the credit history without usage), a time range on
+        createdAt (`from_`, `to` exclusive: epoch ms or a datetime), `bucket`, and `moved=True` (only entries that moved
+        the balance)."""
+        query = urlencode({key: value for key, value in (
+            ("before", before), ("limit", limit), ("kind", ",".join(kind) if kind else None), ("from", _epoch_ms(from_)), ("to", _epoch_ms(to)),
+            ("bucket", bucket), ("moved", "true" if moved else None)) if value is not None})
         return self._runtime._rest("GET", self._path(end_user) + "/ledger" + (f"?{query}" if query else ""))
+
+    def days(self, end_user, *, from_=None, to=None, bucket=None, limit=None):
+        """Their spend and credit per UTC day, newest first: {"days": [{"day", "freeRaw", "paidCharged", "granted", "refunded",
+        "adjusted", "entries", "buckets": [{"bucket", "freeRaw", "paidCharged"}]}], "next"?}; pass next as `to`. freeRaw is
+        what allowances paid (raw cost), paidCharged what the balance paid (with the markup); the rest is what your entries
+        moved, in balance units. `from_`/`to` are UTC days (YYYY-MM-DD strings or dates, `to` exclusive), at most 366 apart;
+        `bucket` keeps that bucket's spend alone, without entries; `limit`: days a page (default 31)."""
+        query = urlencode({key: value for key, value in (("from", _day(from_)), ("to", _day(to)), ("bucket", bucket), ("limit", limit)) if value is not None})
+        return self._runtime._rest("GET", self._path(end_user) + "/days" + (f"?{query}" if query else ""))
 
     def grant(self, end_user, *, amount, key, reference=None, metadata=None):
         """Add credit (after a payment), once per `key` (the payment's id): {"entry", "replayed"}."""

@@ -1205,6 +1205,23 @@ export const EndUserLedger = z.object({
   entries: z.array(EndUserLedgerEntry).openapi({ description: "Newest first" }),
   next: z.number().int().optional().openapi({ description: "Pass as `before` for the next page" }),
 }).openapi("EndUserLedger");
+const DayBucket = z.object({
+  bucket: z.string(),
+  freeRaw: micros("What the bucket's allowance paid that day, in raw cost (never charged)"),
+  paidCharged: micros("What the balance paid for the bucket that day, charged with the markup"),
+});
+export const EndUserDay = z.object({
+  day: z.string().openapi({ description: "The UTC day, YYYY-MM-DD. A call counts on the day it began; an entry on the day it was posted" }),
+  freeRaw: micros("What allowances paid that day, every bucket (raw cost)"), paidCharged: micros("What the balance paid that day, every bucket (charged)"),
+  granted: micros("Credit the tenant granted that day (balance units)"), refunded: micros("Credit the tenant refunded that day, as a positive amount (balance units)"),
+  adjusted: micros("What the tenant's adjustments moved the balance that day, signed (balance units)"),
+  entries: z.number().int().openapi({ description: "How many grants, refunds and adjustments were posted that day" }),
+  buckets: z.array(DayBucket).openapi({ description: "Spend by bucket, by name; buckets that spent nothing that day are left out" }),
+}).openapi("EndUserDay");
+export const EndUserDays = z.object({
+  days: z.array(EndUserDay).openapi({ description: "Newest first; days with no spend and no entries are left out" }),
+  next: z.string().optional().openapi({ description: "More days are in the range: pass as `to` for the next page" }),
+}).openapi("EndUserDays");
 export const BillingAlertChoices = z.object({ low: z.boolean(), depleted: z.boolean(), problems: z.boolean(), receipts: z.boolean() });
 export const BillingRecipient = z.object({ id: z.uuid(), email: z.email(), status: z.enum(["pending", "verified", "bounced", "unsubscribed"]), events: BillingAlertChoices });
 export const BillingAlerts = z.object({ threshold: micros("Low-balance threshold"), emailEnabled: z.boolean(), recipients: z.array(BillingRecipient) });

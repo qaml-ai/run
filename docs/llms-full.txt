@@ -4014,16 +4014,23 @@ app.post("/stripe/webhook", async (req, res) => {
   res.sendStatus(200);
 });
 
-// 4. Their credit page.
+// 4. Their credit page: where they stand, what they bought, and what their credit went to each day.
 const person = await agents.endUsers.get(user.id, { buckets: ["builder"] });
 // person.balance, person.available, person.today.buckets[0].allowanceLeft
-const { entries, next } = await agents.endUsers.ledger(user.id, { limit: 50 });
+const purchases = await agents.endUsers.ledger(user.id, { kind: ["grant", "refund", "adjustment"], limit: 20 });
+const { days, next } = await agents.endUsers.days(user.id, { limit: 7 });
+// days[0]: { day: "…", freeRaw, paidCharged, granted, refunded, adjusted, entries, buckets: [{ bucket: "bot:42", freeRaw, paidCharged }] }
 ```
 
 ```python
 await agents.end_users.grant(user_id, amount=amount_cents * 10_000, key=payment_id, reference=f"Stripe {payment_id}")
 person = await agents.end_users.get(user_id, buckets=["builder"])
+purchases = await agents.end_users.ledger(user_id, kind=["grant", "refund", "adjustment"], limit=20)
+days = await agents.end_users.days(user_id, limit=7)
 ```
+
+A credit page reads no usage rows: the ledger's `kind` filter leaves them out, and
+`days` gives each UTC day's totals by bucket in one request.
 
 A refund you make in Stripe: `endUsers.refund(id, { amount, key })` takes the credit
 back: at most the balance that calls in flight do not hold, else a 409
@@ -4097,6 +4104,42 @@ Every movement of a person's money is an entry, newest first:
 A call whose cost is corrected later (a provider's final figure) has another usage
 entry for the difference. `balanceAfter` is the balance after each entry.
 
+Narrow it with `kind` (any of `grant`, `refund`, `adjustment`, `usage`, comma-separated
+in the API), `from` and `to` (a time range on `createdAt`, `to` exclusive: epoch
+milliseconds, a UTC day or an ISO 8601 time), `bucket`, and `moved=true` (only entries
+that moved the balance, so usage the allowance paid for in full is left out). They
+combine with each other and with `before` and `limit`.
+
+### Per day
+
+`GET /v1/end-users/{id}/days` (`endUsers.days(id, { from, to, bucket, limit })`) gives
+a person's UTC days, newest first, `limit` days a page (default 31, at most 100; pass
+`next` as `to` for the next). `from` and `to` are UTC days (`YYYY-MM-DD`, `to`
+exclusive), at most 366 apart; by default the 366 days up to today. Days with no spend
+and no entries are left out. `bucket` keeps that bucket's spend alone, without entries
+(they belong to no bucket).
+
+A call counts on the UTC day it began (its usage entry's `metadata.day`), so near
+midnight its day can differ from the day of its entry's `createdAt`. An entry of yours
+counts on the day it was posted.
+
+### Units
+
+Amounts are integer micro-USD. Some are raw cost (what a call cost you); others are
+charged, in the balance's units (raw cost with your markup).
+
+| Field | Unit |
+| --- | --- |
+| `allowances`, `allowance`, `allowanceSpent`, `allowanceLeft` | raw |
+| a usage entry's `raw` and `allowance` | raw |
+| `balance`, `held`, `available`, `dailyLimit`, `bucketLimits`, `paidLimit`, `lowBalance` | charged |
+| `paidSpent`, any entry's `amount` and `balanceAfter` | charged |
+| a day's `freeRaw` (what allowances paid) | raw |
+| a day's `paidCharged` (what the balance paid), `granted`, `refunded`, `adjusted` | charged |
+
+A bucket's `held` today adds the allowance's part of holds (raw) to the balance's
+(charged): read `available` and `allowanceLeft` for what is left.
+
 ## API
 
 | Call | SDK (TypeScript / Python) |
@@ -4105,7 +4148,8 @@ entry for the difference. `balanceAfter` is the balance after each entry.
 | `GET /v1/end-users` | `endUsers.list({ after, limit })` |
 | `GET /v1/end-users/{id}?buckets=` | `endUsers.get(id, { buckets })` |
 | `PATCH /v1/end-users/{id}` | `endUsers.update(id, { allowances, bucketLimits, dailyLimit })`: a person's own allowances and bucket limits (merged; `null` removes one) and limit |
-| `GET /v1/end-users/{id}/ledger` | `endUsers.ledger(id, { before, limit })` |
+| `GET /v1/end-users/{id}/ledger?kind=&from=&to=&bucket=&moved=` | `endUsers.ledger(id, { before, limit, kind, from, to, bucket, moved })` / `end_users.ledger(id, before=, limit=, kind=, from_=, to=, bucket=, moved=)` |
+| `GET /v1/end-users/{id}/days?from=&to=&bucket=&limit=` | `endUsers.days(id, { from, to, bucket, limit })` / `end_users.days(id, from_=, to=, bucket=, limit=)` |
 | `POST /v1/end-users/{id}/entries` | `endUsers.grant`, `refund`, `adjust` |
 
 `bucket` is taken by agent upserts and configuration, prompts sent with your API key,

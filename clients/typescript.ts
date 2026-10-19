@@ -1137,6 +1137,21 @@ export interface EndUserLedgerEntry {
   id: number; kind: "grant" | "refund" | "adjustment" | "usage"; amount: Micros; raw: Micros; allowance: Micros; bucket: string | null; key: string;
   reference: string | null; metadata: Record<string, unknown>; balanceAfter: Micros; createdAt: number;
 }
+/** How `endUsers.ledger` narrows a ledger: kinds, a time range on `createdAt` (epoch ms or a Date; `to` exclusive), a bucket, only entries that moved the balance. */
+export interface EndUserLedgerQuery {
+  before?: number; limit?: number; kind?: EndUserLedgerEntry["kind"][]; from?: number | Date; to?: number | Date; bucket?: string; moved?: boolean;
+}
+/**
+ * An end user's UTC day (`endUsers.days`): by bucket, what the allowance paid (`freeRaw`, raw cost: never charged) and
+ * what the balance paid (`paidCharged`, with the markup), and their totals; and what your entries moved that day, in
+ * balance units (`granted`, `refunded` as a positive amount, `adjusted` signed; `entries`: how many).
+ */
+export interface EndUserDay {
+  day: string; freeRaw: Micros; paidCharged: Micros; granted: Micros; refunded: Micros; adjusted: Micros; entries: number;
+  buckets: { bucket: string; freeRaw: Micros; paidCharged: Micros }[];
+}
+const queryOf = (values: Record<string, unknown>) => new URLSearchParams(Object.entries(values).filter(([, value]) => value !== undefined).map(([name, value]) => [name, String(value)]));
+const timeOf = (value: number | Date | undefined) => value instanceof Date ? value.getTime() : value;
 /** An entry of yours: `key` is its idempotency key (a payment's id), `reference` shown in the ledger. */
 export interface EndUserEntryInput { amount: Micros; key: string; reference?: string; metadata?: Record<string, unknown> }
 
@@ -1170,10 +1185,25 @@ export class EndUsers {
   }
   /** A person's own allowances and bucket limits (merged key by key; null removes one) and daily limit (null: the tenant's). */
   update(id: string, overrides: { allowances?: Record<string, Micros | null>; bucketLimits?: Record<string, Micros | null>; dailyLimit?: Micros | null }): Promise<EndUser> { return this.transport.json(this.path(id), this.key(), "PATCH", overrides); }
-  /** Their ledger, newest first, a page at a time: pass `next` as `before`. */
-  ledger(id: string, options: { before?: number; limit?: number } = {}): Promise<{ entries: EndUserLedgerEntry[]; next?: number }> {
-    const query = new URLSearchParams(Object.entries(options).filter(([, value]) => value !== undefined).map(([name, value]) => [name, String(value)]));
+  /**
+   * Their ledger, newest first, a page at a time: pass `next` as `before`. Narrow it by `kind` (a credit history without
+   * usage: `["grant", "refund", "adjustment"]`), a time range on `createdAt` (`to` exclusive), `bucket`, and `moved` (only
+   * entries that moved the balance).
+   */
+  ledger(id: string, options: EndUserLedgerQuery = {}): Promise<{ entries: EndUserLedgerEntry[]; next?: number }> {
+    const { kind, from, to, moved, ...rest } = options;
+    const query = queryOf({ ...rest, kind: kind?.length ? kind.join(",") : undefined, from: timeOf(from), to: timeOf(to), moved: moved ? "true" : undefined });
     return this.transport.json(`${this.path(id)}/ledger${query.size ? `?${query}` : ""}`, this.key());
+  }
+  /**
+   * Their spend and credit per UTC day, newest first, a page of `limit` days (default 31) at a time: pass `next` as `to`.
+   * Each day has what allowances paid (`freeRaw`, raw cost) and what the balance paid (`paidCharged`, with the markup),
+   * by bucket, and what your grants, refunds and adjustments moved. `from`/`to` are UTC days (YYYY-MM-DD, `to` exclusive),
+   * at most 366 apart; `bucket` keeps that bucket's spend alone, without entries.
+   */
+  days(id: string, options: { from?: string; to?: string; bucket?: string; limit?: number } = {}): Promise<{ days: EndUserDay[]; next?: string }> {
+    const query = queryOf(options);
+    return this.transport.json(`${this.path(id)}/days${query.size ? `?${query}` : ""}`, this.key());
   }
   /** Add credit (after a payment): once per `key`; the same key again returns the first entry. */
   grant(id: string, input: EndUserEntryInput) { return this.entry(id, "grant", input); }

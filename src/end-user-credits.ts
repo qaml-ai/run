@@ -59,6 +59,32 @@ export type LedgerEntry = {
  */
 export type BucketDay = { bucket: string; allowance: number; allowanceSpent: number; paidSpent: number; held: number; allowanceLeft: number; paidLimit: number | null };
 
+export const LEDGER_KINDS: readonly LedgerKind[] = [...ENTRY_KINDS, "usage"];
+/** How a ledger read is narrowed (`EndUserCredits.ledger`): times are epoch ms, `to` exclusive. */
+export type LedgerQuery = { limit?: number; before?: number; kinds?: LedgerKind[]; from?: number; to?: number; bucket?: string; moved?: boolean };
+/** Which days a per-day read covers (`EndUserCredits.days`): UTC days as YYYY-MM-DD, `to` exclusive. */
+export type DaysQuery = { from?: string; to?: string; bucket?: string; limit?: number };
+/**
+ * An end user's UTC day: by bucket, what the allowance paid (`freeRaw`, raw cost) and what the balance paid
+ * (`paidCharged`, charged with the markup), and their totals; and what the tenant's own entries moved that day, in balance
+ * units: `granted`, `refunded` (positive: what was taken back), `adjusted` (signed), and how many there were (`entries`).
+ */
+export type EndUserDay = {
+  day: string; freeRaw: number; paidCharged: number; granted: number; refunded: number; adjusted: number; entries: number;
+  buckets: { bucket: string; freeRaw: number; paidCharged: number }[];
+};
+/** The most days one per-day read may span. */
+export const MAX_DAYS = 366;
+/** The UTC day `days` after `day` (YYYY-MM-DD; negative: before). */
+export const dayAfter = (day: string, days: number) => utcDay(Date.parse(`${day}T00:00:00Z`) + days * 86_400_000);
+/** A UTC day as given: YYYY-MM-DD, a real date. */
+export function dayInput(value: unknown, what: string): string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(Date.parse(`${value}T00:00:00Z`)) || utcDay(Date.parse(`${value}T00:00:00Z`)) !== value) {
+    throw new HttpError(400, `${what} must be a UTC day, YYYY-MM-DD`);
+  }
+  return value;
+}
+
 /** A bucket's name as a run or call gives it. */
 export function bucketInput(value: unknown, what = "bucket"): string {
   if (typeof value !== "string" || !BUCKET_NAME.test(value)) throw new HttpError(400, `${what} must be 1–100 characters of letters, digits and _ . : @ / -`);
@@ -262,14 +288,82 @@ export class EndUserCredits {
     return this.get(tenant, id);
   }
 
-  /** A user's ledger, newest first, a page at a time (`before`: an entry id, the previous page's `next`). */
-  async ledger(tenant: string, id: string, options: { limit?: number; before?: number } = {}) {
+  /**
+   * A user's ledger, newest first, a page at a time (`before`: an entry id, the previous page's `next`), narrowed by kind,
+   * a time range on `createdAt` (`to` exclusive), bucket, and `moved` (only entries that moved the balance: usage the
+   * allowance paid for in full is left out). The filters combine with each other and with paging.
+   */
+  async ledger(tenant: string, id: string, options: LedgerQuery = {}) {
     endUserInput(id);
     const limit = Math.min(Math.max(Math.floor(options.limit ?? 50) || 50, 1), 200);
-    const { rows } = await this.db.query(`select * from end_user_ledger where tenant = $1 and end_user = $2 and ($3::bigint is null or id < $3) order by id desc limit $4`,
-      [tenant, id, options.before ?? null, limit + 1]);
+    const where = ["tenant = $1", "end_user = $2"], params: unknown[] = [tenant, id];
+    const add = (clause: string, value: unknown) => { params.push(value); where.push(clause.replace("?", `$${params.length}`)); };
+    if (options.before !== undefined) add("id < ?", options.before);
+    if (options.kinds?.length) {
+      const kinds = [...new Set(options.kinds)];
+      if (kinds.some(kind => !LEDGER_KINDS.includes(kind))) throw new HttpError(400, `kind must be any of ${LEDGER_KINDS.join(", ")}`);
+      add("kind = any(?::text[])", kinds);
+      // Said literally too, so that a history without usage can be read from the user's few other entries, however much usage they have.
+      if (!kinds.includes("usage")) where.push("kind <> 'usage'");
+    }
+    if (options.from !== undefined) add("created_at >= ?", options.from);
+    if (options.to !== undefined) add("created_at < ?", options.to);
+    if (options.bucket !== undefined) add("bucket = ?", bucketInput(options.bucket));
+    if (options.moved) where.push("amount <> 0");
+    params.push(limit + 1);
+    const { rows } = await this.db.query(`select * from end_user_ledger where ${where.join(" and ")} order by id desc limit $${params.length}`, params);
     const entries = rows.slice(0, limit).map(entryView);
     return { entries, ...(rows.length > limit ? { next: entries.at(-1)!.id } : {}) };
+  }
+
+  /**
+   * A user's spend and credit per UTC day, newest first, days with neither left out, `limit` days a page (`next`: pass it
+   * as `to`). Per day and bucket, what the allowance paid (`freeRaw`, raw cost) and what the balance paid (`paidCharged`,
+   * with the markup), as kept per day and bucket (a call counts on the day it began); and what the tenant's own entries
+   * moved that day (grants, refunds, adjustments, in balance units). With `bucket`: that bucket's spend alone, and no
+   * entries, which belong to no bucket. One statement: the days' rows by their key, and the user's entries but usage.
+   */
+  async days(tenant: string, id: string, options: DaysQuery = {}, now = Date.now()): Promise<{ days: EndUserDay[]; next?: string }> {
+    endUserInput(id);
+    const limit = Math.min(Math.max(Math.floor(options.limit ?? 31) || 31, 1), 100);
+    const to = options.to === undefined ? dayAfter(utcDay(now), 1) : dayInput(options.to, "to");
+    const from = options.from === undefined ? dayAfter(to, -MAX_DAYS) : dayInput(options.from, "from");
+    if (from >= to) throw new HttpError(400, "from must be a day before to (to is exclusive)");
+    if (dayAfter(from, MAX_DAYS) < to) throw new HttpError(400, `Ask for at most ${MAX_DAYS} days at a time`);
+    const bucket = options.bucket === undefined ? null : bucketInput(options.bucket);
+    const { rows } = await this.db.query(`
+      with spent as (
+        select day, bucket, allowance_spent, paid_spent from end_user_days
+        where tenant = $1 and end_user = $2 and day >= $3::date and day < $4::date and ($5::text is null or bucket = $5) and (allowance_spent <> 0 or paid_spent <> 0)
+      ), credited as (
+        select (to_timestamp(created_at / 1000.0) at time zone 'UTC')::date as day,
+          coalesce(sum(amount) filter (where kind = 'grant'), 0)::bigint as granted, coalesce(-sum(amount) filter (where kind = 'refund'), 0)::bigint as refunded,
+          coalesce(sum(amount) filter (where kind = 'adjustment'), 0)::bigint as adjusted, count(*)::int as entries
+        from end_user_ledger
+        where tenant = $1 and end_user = $2 and kind <> 'usage' and $5::text is null and created_at >= $6 and created_at < $7
+        group by 1
+      ), picked as (
+        select day from spent union select day from credited order by day desc limit $8
+      )
+      select to_char(p.day, 'YYYY-MM-DD') as day, s.bucket, s.allowance_spent, s.paid_spent, c.granted, c.refunded, c.adjusted, c.entries
+      from picked p left join spent s on s.day = p.day left join credited c on c.day = p.day
+      order by p.day desc, s.bucket`,
+    [tenant, id, from, to, bucket, Date.parse(`${from}T00:00:00Z`), Date.parse(`${to}T00:00:00Z`), limit + 1]);
+    const days: EndUserDay[] = [];
+    for (const row of rows) {
+      let day = days.at(-1);
+      if (!day || day.day !== row.day) {
+        day = { day: row.day, freeRaw: 0, paidCharged: 0, granted: Number(row.granted ?? 0), refunded: Number(row.refunded ?? 0), adjusted: Number(row.adjusted ?? 0), entries: Number(row.entries ?? 0), buckets: [] };
+        days.push(day);
+      }
+      if (row.bucket === null) continue;
+      const freeRaw = Number(row.allowance_spent), paidCharged = Number(row.paid_spent);
+      day.buckets.push({ bucket: row.bucket, freeRaw, paidCharged });
+      day.freeRaw += freeRaw;
+      day.paidCharged += paidCharged;
+    }
+    const page = days.slice(0, limit);
+    return { days: page, ...(days.length > limit ? { next: page.at(-1)!.day } : {}) };
   }
 
   /**
