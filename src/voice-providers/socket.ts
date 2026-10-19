@@ -36,3 +36,14 @@ export function messageJson(data: unknown): any {
 
 /** `http(s)://…` as `ws(s)://…`, without a trailing slash. */
 export const wsBase = (base: string) => base.replace(/\/+$/, "").replace(/^http/, "ws");
+
+/**
+ * A provider socket's close as a failure's detail: the code, and the provider's reason (Gemini puts its error there:
+ * "API key not valid", a model not found), shortened, with anything shaped like a key or token taken out.
+ */
+export function closeDetail(event?: { code?: number; reason?: string }): string {
+  const reason = typeof event?.reason === "string"
+    ? event.reason.replace(/\b(?:AIza[\w-]{8,}|sk-[\w-]{8,}|ya29\.[\w.-]{8,}|[A-Za-z0-9_-]{32,})/g, "[redacted]").replace(/\s+/g, " ").trim().slice(0, 200)
+    : "";
+  return `The realtime connection closed${event?.code ? ` (${event.code}${reason ? `: ${reason}` : ""})` : reason ? ` (${reason})` : ""}`;
+}
