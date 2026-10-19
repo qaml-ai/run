@@ -430,9 +430,25 @@ what people say is transcribed, for `names` and for `voice.utterance`) and `spec
 
 ElevenLabs Agents uses its own VAD and turn detection, so `speculative` is disabled. Its built-in LLM is the
 voice front-end; `ask_agent` and `stay_silent` are client tools. Set `realtime.voice` to a library voice_id your key can
-use; OpenAI voice names map to Jessica. Speaker labels are contextual updates around mixed audio, with no reliable
+use; OpenAI voice names map to Jessica (subject to the account's Default voice access). Speaker labels are contextual updates around mixed audio, with no reliable
 attribution for overlapping speech. Interruptions stop buffered playback; streamed input cannot be withdrawn.
 Addressing is decided by the voice model from the call instructions, rather than the local named-turn gate.
+The runtime checks account voices before connecting. A shared library voice is added once per credential and voice,
+using its public owner ID and the [add shared voice API](https://elevenlabs.io/docs/api-reference/voices/voice-library/share).
+Account copies are reused after restart, and the returned account voice ID is used in the session override. The key
+needs voice read access and, for a library voice not yet added, voice write access. The account must have API access
+to that voice; [Voice Library restrictions](https://elevenlabs.io/docs/eleven-creative/voices/voice-library) still apply.
+
+Creation uses the first session's resolved voice, rather than requiring Jessica in addition to the requested voice.
+[Default voices are account-dependent](https://elevenlabs.io/docs/help-center/product/voices/my-voices/how-do-i-access-eleven-labs-default-voices).
+The [create schema](https://elevenlabs.io/docs/api-reference/agents/create) and
+[published OpenAPI](https://api.elevenlabs.io/openapi.json) accept client tools with `parameters` and `expects_response`,
+`pre_tool_speech: force/off`, `gemini-2.5-flash-lite`, Flash v2.5 with `pcm_24000`, the configured client events,
+and `turn_timeout: 7` / `silence_end_call_timeout: -1` (reviewed 2026-10-19).
+Failures identify the stage and HTTP status, retaining provider error codes/messages and validation field paths;
+keys, tokens and URLs are redacted before the detail is capped at 300 characters. HTTP 4xx failures are terminal;
+network and HTTP 5xx failures use the bounded reconnect budget.
+
 The runtime lazily creates or reuses one private agent per credential, with per-session overrides and signed URLs
 (see [configuration](../operations/configuration.md)). Conversation token counts are unavailable. Connection duration is billed through the normal speech usage records
 and end-user credit holds, including silent time and interrupted responses. Configure both
