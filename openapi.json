@@ -1038,7 +1038,7 @@
               },
               "addressed": {
                 "type": "boolean",
-                "description": "Whether the turn was the bot's (addressing); true with addressing mode always"
+                "description": "Whether the turn was the bot's (addressing); true with addressing mode always. None for a listening session"
               },
               "addressedBy": {
                 "type": "string",
@@ -1054,9 +1054,10 @@
               "brain": {
                 "type": "string",
                 "enum": [
-                  "realtime"
+                  "realtime",
+                  "listen"
                 ],
-                "description": "The session's realtime brain heard (and answered) this itself: your app need not"
+                "description": "realtime: the session's realtime brain heard (and answered) this itself, your app need not; listen: a listening session transcribed it, and nothing answered"
               },
               "speakers": {
                 "type": "array",
@@ -1083,7 +1084,6 @@
               "endedAt",
               "ended",
               "costUsd",
-              "addressed",
               "addressedBy",
               "brain"
             ]
@@ -9004,10 +9004,7 @@
                 "type": "object",
                 "properties": {
                   "self_mute": {
-                    "type": "boolean",
-                    "enum": [
-                      false
-                    ]
+                    "type": "boolean"
                   },
                   "self_deaf": {
                     "type": "boolean",
@@ -9020,7 +9017,7 @@
                   "self_mute",
                   "self_deaf"
                 ],
-                "description": "How your app's OP 4 should have joined: un-muted, since the bot speaks"
+                "description": "How your app's OP 4 should have joined: un-muted for brain realtime (the bot speaks), muted for listen"
               },
               "browser": {
                 "type": "object",
@@ -9184,11 +9181,21 @@
           "notice": {
             "type": "string"
           },
+          "brain": {
+            "type": "string",
+            "enum": [
+              "realtime",
+              "listen"
+            ],
+            "description": "What hears the call: a realtime model that answers, or listen (transcribed, muted)"
+          },
           "bargeIn": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "With brain realtime"
           },
           "voice": {
-            "type": "string"
+            "type": "string",
+            "description": "With brain realtime"
           },
           "addressing": {
             "type": "object",
@@ -9361,8 +9368,7 @@
           "ignoreUserIds",
           "metadata",
           "notice",
-          "bargeIn",
-          "voice",
+          "brain",
           "addressing",
           "endOfTurn",
           "speeches",
@@ -9630,14 +9636,15 @@
             "enum": [
               true
             ],
-            "description": "Deprecated: every session speaks. true is taken and changes nothing"
+            "description": "Deprecated: a realtime session speaks. true is taken and changes nothing"
           },
           "brain": {
             "type": "string",
             "enum": [
-              "realtime"
+              "realtime",
+              "listen"
             ],
-            "description": "Deprecated, and the only value: every session's brain is a realtime speech-to-speech model"
+            "description": "What hears the call. realtime (the default): a speech-to-speech model hears it and answers aloud (realtime). listen: muted; each utterance is transcribed after it ends (gpt-transcribe, billed as POST /v1/transcriptions) and sent to webhooks as voice.utterance, and nothing answers. A listening session takes none of speak, bargeIn, voice, addressing, realtime, speakers or deliver.agent; your app joins muted"
           },
           "realtime": {
             "$ref": "#/components/schemas/VoiceRealtime"

@@ -46,7 +46,7 @@ Every event is an envelope:
 | `voice.session.started` | A [voice session](voice-calls.md) connected and is listening (once) | `session`, `provider`, `guildId`, `channelId`, `botUserId`, `subject`, `metadata` |
 | `voice.session.ended` | A voice session ended; your app leaves the channel | as above, and `reason`, `limit` and `endUserReason` with `budget`, `startedAt`, `endedAt`, `utterances`, `speechSeconds`, `costUsd` |
 | `voice.session.error` | A voice session's audio failed: it reconnects at once (`restarting`), or after 3 failures in 5 minutes ends; or it needs new Discord credentials (`credentials_needed`) | the voice facts, `code` (`media_crashed`, `credentials_needed`), `detail`, `restarting`, `attempt?`, `waitMs?` |
-| `voice.utterance` | A person's utterance in a voice session, transcribed | as above, and `speakerId`, `seq`, `text`, `language`, `seconds`, `startedAt`, `endedAt`, `ended`, `costUsd`, `addressed`, `addressedBy`, `speakers?`, `brain` |
+| `voice.utterance` | A person's utterance in a voice session, transcribed | as above, and `speakerId`, `seq`, `text`, `language`, `seconds`, `startedAt`, `endedAt`, `ended`, `costUsd`, `addressed?`, `addressedBy?`, `speakers?`, `brain` |
 | `voice.speech.started` | A voice session's bot started saying an [answer](voice-calls.md#speaking) | the voice facts, `speechId`, `latencyMs`, `startedAt`, `turn?`, `brain` |
 | `voice.speech.ended` | It ended | the voice facts, `speechId`, `reason`, `by`, `seconds`, `costUsd`, `brain` |
 | `billing.balance.low` | Funded balance crosses below the alert threshold (default $2) | `balance`, `previousBalance`, `threshold` (integer micro-USD), `source` |

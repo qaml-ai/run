@@ -680,10 +680,13 @@ export type VoiceUtterance = VoiceFacts & {
   /** silence; max (cut at 30 s, the speech goes on in the next); error (the speaker's stream broke); handoff (the session moved nodes); end. */
   ended: "silence" | "max" | "error" | "handoff" | "end";
   costUsd: number;
-  /** Whether it was the bot's turn (`addressing`), and why: always (mode), alone, named, conversation, or not_addressed. */
-  addressed: boolean; addressedBy: "always" | "alone" | "named" | "conversation" | "not_addressed";
-  /** The session's realtime brain heard (and answered) it itself; `speakers`: everyone whose audio is in it, when people spoke at once. */
-  brain: "realtime"; speakers?: string[];
+  /** Whether it was the bot's turn (`addressing`), and why: always (mode), alone, named, conversation, or not_addressed. None for a listening session. */
+  addressed?: boolean; addressedBy?: "always" | "alone" | "named" | "conversation" | "not_addressed";
+  /**
+   * realtime: the session's realtime brain heard (and answered) it itself; listen: a listening session transcribed it,
+   * and nothing answered. `speakers`: everyone whose audio is in it, when people spoke at once.
+   */
+  brain: "realtime" | "listen"; speakers?: string[];
 };
 
 /**
@@ -1249,8 +1252,12 @@ export interface VoiceSessionInput {
    * `silenceMs` of quiet.
    */
   endOfTurn?: VoiceEndOfTurn["mode"] | Partial<VoiceEndOfTurn>;
-  /** Deprecated, and the only value: every session's brain is a realtime speech-to-speech model. */
-  brain?: "realtime";
+  /**
+   * What hears the call. `realtime` (the default): a speech-to-speech model that answers aloud (`realtime`). `listen`:
+   * muted; each utterance is transcribed after it ends and sent to webhooks, and nothing answers (it takes none of
+   * `bargeIn`, `voice`, `addressing`, `realtime`, `speakers` or `deliver.agent`; your app joins muted).
+   */
+  brain?: "realtime" | "listen";
   /**
    * The speech-to-speech model that hears the call and answers aloud, asking deliver.agent (`ask_agent`) for anything
    * beyond talk: its provider (one of the runtime's AGENT_VOICE_REALTIME), model, voice, the bot's persona
@@ -1275,7 +1282,10 @@ export interface VoiceSession {
   deliver: { agent?: string; webhooks: boolean };
   subject?: string; bucket?: string; context?: Record<string, unknown>; keyScope?: string; language?: string; prompt?: string;
   silenceMs: number; maxMinutes: number; idleMinutes: number; emptySeconds: number; ignoreUserIds: string[]; metadata: Record<string, unknown>;
-  bargeIn: boolean; voice: string;
+  /** realtime: a model hears the call and answers; listen: transcribed, muted. */
+  brain: "realtime" | "listen";
+  /** With brain realtime. */
+  bargeIn?: boolean; voice?: string;
   /** With bargeIn: the barge-in timing in use. */
   interruption?: { minMs: number; confirmMs: number; resumeMs: number };
   addressing: { mode: "always" | "addressed"; names: string[]; conversationMs: number };
@@ -1291,8 +1301,8 @@ export interface VoiceSession {
 /** A new session, and the notice to post now in the voice channel's chat: people must know they are transcribed. */
 export type VoiceSessionCreated = VoiceSession & {
   notice: { required: true; channelId: string; text: string };
-  /** How your app's OP 4 should have joined: un-muted, since the bot speaks. */
-  join: { self_mute: false; self_deaf: false };
+  /** How your app's OP 4 should have joined: un-muted when the bot speaks (brain realtime), muted for listen. */
+  join: { self_mute: boolean; self_deaf: false };
 };
 /** An ended session, and the OP 4 your gateway sends to leave the channel (ending stops the listening, not the bot's presence). */
 export type VoiceSessionEnded = VoiceSession & { leave: { op: 4; d: { guild_id: string; channel_id: null; self_mute: boolean; self_deaf: boolean } } };

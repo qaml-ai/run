@@ -1166,7 +1166,8 @@ class Voice:
         (default 800) ends a turn; `max_minutes` (240), `idle_minutes` (30) and `empty_seconds` (60) end the session.
         Your app joins with self_mute false. `barge_in` (default True) stops the bot's speech when a person talks over
         it (it pauses first, and goes on if it hears its own words come back: echo; or {"minMs", "confirmMs",
-        "resumeMs"} for the timing). `brain` is deprecated: "realtime" is the only one.
+        "resumeMs"} for the timing). `brain="listen"` makes a muted session instead: each utterance is transcribed and sent
+        to your webhooks, nothing answers (no agent, barge_in, voice, realtime or speakers), and your app joins muted.
         Returns the session with "notice": post its "text" in the voice channel's chat now. Raises 409
         VOICE_SESSION_EXISTS when the bot has one in the server."""
         fields = {"subject": subject, "bucket": bucket, "context": context, "keyScope": key_scope, "language": language, "prompt": prompt,

@@ -895,6 +895,8 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
     },
     agentOwned: (agent, tenant) => clients.owns(agent, tenant, true),
+    // Listening sessions' utterances are transcribed and billed as POST /v1/transcriptions is.
+    transcriber,
     record: (tenant, usage) => accounts.recordUsage(tenant, "", usage),
     // ask_agent prompts the session's agent wherever it runs.
     submitStreaming: (agent, tenant, request, signal) => submitStreamingAnywhere(agent, tenant, request, signal),

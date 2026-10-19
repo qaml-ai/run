@@ -7,9 +7,10 @@ import { clock } from "./node-context.ts";
 import { identityInput } from "./identity.ts";
 import { metricLine, safeError, writeMetricLine } from "./metrics.ts";
 import { underClaim, type Claim, type Ownership } from "./ownership.ts";
-import { languageInput } from "./transcription.ts";
+import { checkedAudio, languageInput, type Transcribed, type Transcriber } from "./transcription.ts";
 import { enqueueEvents, webhookEvent, type WebhookEvent } from "./webhooks.ts";
 import type { UsageRecord } from "./client-sessions.ts";
+import { oggOpus, type Cut } from "./voice-audio.ts";
 import { inlineMedia, type Media, type MediaFactory, type MediaOptions } from "./voice/media.ts";
 import { DEFAULT_VOICE } from "./speech.ts";
 import { bucketInput, DEFAULT_BUCKET } from "./end-user-credits.ts";
@@ -32,10 +33,12 @@ import { REALTIME_TRANSCRIPTION, realtimeVoice, type RealtimeProvider, type Real
  * usage) are written under the owner's claim. The credentials are sealed and dropped when the session ends; audio is
  * never stored.
  *
- * The owner's media cuts each speaker's audio into turns (src/voice/turns), and a realtime brain (src/voice/realtime)
- * hears the call and answers aloud: a speech-to-speech model on the tenant's key for its provider, asking deliver.agent
- * (ask_agent) for anything beyond talk. What people say goes out as `voice.utterance` events for the tenant's webhooks,
- * what the bot says as `voice.speech.*`; their usage is recorded as the session's subject's. Audio is never stored.
+ * The owner's media cuts each speaker's audio into turns (src/voice/turns). A session's `brain` decides what comes of
+ * them: `realtime` (the default), a speech-to-speech model (src/voice/realtime) that hears the call and answers aloud on
+ * the tenant's key for its provider, asking deliver.agent (ask_agent) for anything beyond talk; or `listen`, muted, where
+ * each utterance is transcribed after it is cut, as `POST /v1/transcriptions` would (the same provider, model and price),
+ * and nothing answers. What people say goes out as `voice.utterance` events for the tenant's webhooks, what the bot says
+ * as `voice.speech.*`; their usage is recorded as the session's subject's. Audio is never stored.
  */
 
 /** What a voice connection needs: the bot's voice session (its user, guild and channel) and the voice server's grant. */
@@ -105,12 +108,12 @@ export type VoiceOptions = {
   silenceMs: number; maxMinutes: number; idleMinutes: number; emptySeconds: number;
   ignoreUserIds: string[]; metadata: Record<string, unknown>;
   notice: string;
-  /** A person talking over the bot stops its speech (after the echo guard: src/voice/echo-guard.ts). */
-  bargeIn: boolean;
+  /** A person talking over the bot stops its speech (after the echo guard: src/voice/echo-guard.ts); realtime only. */
+  bargeIn?: boolean;
   /** With bargeIn: its timing, when the session set it (else DEFAULT_BARGE_IN). */
   interruption?: BargeInPolicy;
   /** The voice asked for (OpenAI's names: alloy, coral…), mapped to the realtime provider's (realtime.voice). */
-  voice: string;
+  voice?: string;
   /**
    * How a speaker's turn ends: smart, when Smart Turn judges them done at a pause (commitMs of silence) or after
    * maxSilenceMs regardless (src/voice/turns), with Silero VAD for speech; silence, after silenceMs of quiet (the
@@ -124,10 +127,12 @@ export type VoiceOptions = {
    */
   addressing?: AddressingPolicy;
   /**
-   * The speech-to-speech model that hears the call and answers aloud (src/voice/realtime): its provider, model and
-   * voice, the bot's persona, and how it listens. Sessions from before it (a removed pipeline that transcribed each
-   * utterance and spoke through text to speech) have none: they end when taken.
+   * What hears the call: a realtime brain (`realtime`, the default; its settings in `realtime`), or `listen`: muted,
+   * each utterance transcribed and sent out, nothing answering. Sessions from before (a removed pipeline that spoke
+   * replies through text to speech) have neither `listen` nor `realtime` settings: they end when taken.
    */
+  brain?: "realtime" | "listen";
+  /** With brain realtime: the speech-to-speech model's provider, model and voice, the bot's persona, and how it listens. */
   realtime?: RealtimeOptions;
   /** Speakers' names by user id, for the realtime brain's notes of who speaks (else "Speaker 1", "Speaker 2"…). */
   speakers?: Record<string, string>;
@@ -159,6 +164,9 @@ export const VOICE_LIMITS = Object.freeze({
   perNode: 200,
   /** How long a connection that lost its credentials waits for new ones (PATCH) before the session ends. */
   reconnectGraceMs: 15_000,
+  /** Utterances one node transcribes at once (listening sessions); one waiting longer than `queueMs` is dropped. */
+  transcriptionsPerNode: 16,
+  queueMs: 60_000,
   ignoreUserIds: 50,
   metadataBytes: 4_096,
   noticeChars: 500,
@@ -172,6 +180,7 @@ export const VOICE_LIMITS = Object.freeze({
 /** A session whose media crashes this many times within `windowMs` ends (`error`, `media_crashed`). */
 export const MEDIA_CRASHES = Object.freeze({ max: 3, windowMs: 5 * 60_000 });
 const DEFAULT_NOTICE = "<@{bot}> is listening, transcribing speech and may speak in this channel. Audio is not stored.";
+const LISTENING_NOTICE = "<@{bot}> is listening and transcribing speech in this channel. Audio is not stored.";
 const VOICE_NAME = /^[a-z][a-z0-9_-]{1,31}$/;
 /** The voice notifications' channel: a session's id, changed on some node. */
 export const VOICE_CHANNEL = "voice_sessions";
@@ -203,8 +212,11 @@ export function sessionView(row: Row) {
     state: row.state, endReason: row.end_reason,
     ...(ending?.limit ? { limit: ending.limit } : {}), ...(ending?.endUserReason ? { endUserReason: ending.endUserReason } : {}),
     ...options,
-    bargeIn: options.bargeIn ?? true, voice: options.voice ?? DEFAULT_VOICE,
-    ...(options.bargeIn ?? true ? { interruption: interruption(options) } : {}),
+    brain: options.brain === "listen" ? "listen" as const : "realtime" as const,
+    ...(options.brain === "listen" ? {} : {
+      bargeIn: options.bargeIn ?? true, voice: options.voice ?? DEFAULT_VOICE,
+      ...(options.bargeIn ?? true ? { interruption: interruption(options) } : {}),
+    }),
     endOfTurn: options.endOfTurn ?? { mode: "silence" as const, ...SMART_DEFAULTS },
     addressing: options.addressing ?? { ...DEFAULT_ADDRESSING },
     utterances: row.utterances, speechSeconds: row.speech_seconds, speeches: row.speeches ?? 0, spokenSeconds: Number(row.spoken_seconds ?? 0),
@@ -365,6 +377,10 @@ export interface VoiceSessionsOptions {
   admit(tenant: string): Promise<void>;
   /** Whether an agent is the tenant's (and not deleted), for `deliver.agent`. */
   agentOwned(agent: string, tenant: string): Promise<boolean>;
+  /** Speech to text for listening sessions, as `POST /v1/transcriptions` makes it; without it, brain listen is refused. */
+  transcriber?: Transcriber;
+  /** Utterances one node transcribes at once (VOICE_LIMITS.transcriptionsPerNode). */
+  transcriptionsPerNode?: number;
   /** Records the brain's usage (its speech, its inputs' transcription), as a model response's is (billing, usage.recorded). */
   record(tenant: string, usage: UsageRecord): void;
   /** Submit a prompt to an agent wherever it is served, yielding the text its run writes as it is written (ask_agent); without it, no ask_agent. */
@@ -401,6 +417,8 @@ export interface VoiceSessionsOptions {
   media?(transport: VoiceTransport, provider: typeof VOICE_PROVIDERS[number]): MediaFactory;
 }
 
+/** What an utterance's work needs of its session, fixed when it was cut: the session may move or end meanwhile. */
+type Origin = { id: string; tenant: string; claim: Claim; row: Row };
 /** A session this node holds: its claim, its media (its connection, its speakers' audio), and what its limits are measured from. */
 type Held = {
   id: string; tenant: string; claim: Claim; revision: number; row: Row;
@@ -418,8 +436,8 @@ type Held = {
   floor: Floor;
   /** Smart turns' events counted (voice_turn_stats when the session is let go). */
   turnStats?: { likelyEnds: number; resumes: number; turns: number };
-  /** The realtime brain that hears the call and answers. */
-  brain: RealtimeBrain;
+  /** The realtime brain that hears the call and answers; none for a listening session. */
+  brain?: RealtimeBrain;
 };
 export class VoiceSessions {
   readonly db: Db;
@@ -432,6 +450,11 @@ export class VoiceSessions {
   private rescan = false;
   /** Sessions being taken now. */
   private readonly taking = new Set<string>();
+  /** Listening sessions' utterances being transcribed, and the last of each speaker's (they go one at a time). */
+  private readonly pending = new Set<Promise<void>>();
+  private readonly speakers = new Map<string, Promise<void>>();
+  private transcribing = 0;
+  private readonly slots: (() => void)[] = [];
 
   constructor(options: VoiceSessionsOptions) {
     this.options = options;
@@ -449,12 +472,15 @@ export class VoiceSessions {
     this.timer.unref();
   }
 
-  /** Stop taking sessions, and hand those held to peers (`release`). */
-  async stop() {
+  /** Stop taking sessions, hand those held to peers (`release`), and finish the utterances cut (for up to `waitMs`). */
+  async stop(waitMs = 30_000) {
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
     await this.release();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([Promise.allSettled([...this.pending]), new Promise(resolve => { timer = setTimeout(resolve, waitMs); })]);
+    clearTimeout(timer);
   }
 
   /**
@@ -473,7 +499,7 @@ export class VoiceSessions {
   private endpoints() { return this.options.endpoints ?? /^[a-z0-9-]+(\.[a-z0-9-]+)*\.discord\.media$/i; }
 
   /** Validate a create request's settings. */
-  private settings(input: Record<string, unknown>): VoiceOptions {
+  private settings(input: Record<string, unknown>, socket = false): VoiceOptions {
     const deliverGiven = input.deliver === undefined ? {} : object(input.deliver, "deliver");
     only(deliverGiven, "deliver", ["agent", "webhooks"]);
     const agent = deliverGiven.agent === undefined ? undefined : text(deliverGiven.agent, "deliver.agent", /^client_[a-f0-9]{40}$/, "an agent id");
@@ -483,15 +509,25 @@ export class VoiceSessions {
     const bucket = input.bucket === undefined ? undefined : bucketInput(input.bucket);
     const keyScope = input.keyScope === undefined ? undefined : text(input.keyScope, "keyScope", /^.{1,100}$/s, "a key scope's name");
     const language = languageInput(input.language);
-    // Every session speaks: `speak: true` (from before) is taken and changes nothing.
-    if (input.speak !== undefined && input.speak !== true) throw new HttpError(400, "speak can only be true (every session speaks), or left out");
+    if (input.brain !== undefined && input.brain !== "realtime" && input.brain !== "listen") throw new HttpError(400, "brain must be realtime (the default) or listen");
+    const listen = input.brain === "listen";
+    if (listen) {
+      // Muted: nothing answers, so nothing of answering applies.
+      const answering = ["speak", "bargeIn", "voice", "addressing", "realtime", "speakers"].find(key => input[key] !== undefined);
+      if (answering) throw new HttpError(400, `${answering} is for a session that answers (brain realtime): a listening session only transcribes`);
+      if (agent) throw new HttpError(400, "deliver.agent is for a session that answers (brain realtime): a listening session sends its utterances to webhooks");
+      // A browser session's socket gets every utterance itself.
+      if (!webhooks && !socket) throw new HttpError(400, "A listening session sends its utterances to webhooks: leave deliver.webhooks on");
+    }
+    // A realtime session speaks: `speak: true` (from before) is taken and changes nothing.
+    if (input.speak !== undefined && input.speak !== true) throw new HttpError(400, "speak can only be true (a realtime session speaks), or left out; brain listen is a muted session");
     const prompt = input.prompt === undefined ? undefined : text(input.prompt, "prompt", new RegExp(`^[\\s\\S]{1,${VOICE_LIMITS.promptChars}}$`), `at most ${VOICE_LIMITS.promptChars} characters`);
     const bargeIn = bargeInInput(input.bargeIn);
     const voice = input.voice === undefined ? DEFAULT_VOICE : text(input.voice, "voice", VOICE_NAME, "a voice's name, such as alloy, coral or verse");
-    const notice = input.notice === undefined ? DEFAULT_NOTICE : text(input.notice, "notice", new RegExp(`^[\\s\\S]{1,${VOICE_LIMITS.noticeChars}}$`), `at most ${VOICE_LIMITS.noticeChars} characters`);
-    const realtime = this.realtimeInput(input, voice);
+    const notice = input.notice === undefined ? listen ? LISTENING_NOTICE : DEFAULT_NOTICE : text(input.notice, "notice", new RegExp(`^[\\s\\S]{1,${VOICE_LIMITS.noticeChars}}$`), `at most ${VOICE_LIMITS.noticeChars} characters`);
+    const realtime = listen ? undefined : this.realtimeInput(input, voice);
     const speakers = speakersInput(input.speakers);
-    return {
+    const common = {
       deliver: { ...(agent ? { agent } : {}), webhooks },
       ...(identity?.subject !== undefined ? { subject: identity.subject } : {}), ...(bucket ? { bucket } : {}),
       ...(identity?.context ? { context: identity.context } : {}), ...(keyScope ? { keyScope } : {}),
@@ -501,10 +537,12 @@ export class VoiceSessions {
       idleMinutes: integer(input.idleMinutes, "idleMinutes", VOICE_LIMITS.idleMinutes),
       emptySeconds: integer(input.emptySeconds, "emptySeconds", VOICE_LIMITS.emptySeconds),
       ignoreUserIds: ignored(input.ignoreUserIds), metadata: metadataInput(input.metadata), notice,
-      bargeIn: bargeIn.on, ...(bargeIn.policy ? { interruption: bargeIn.policy } : {}), voice,
       endOfTurn: endOfTurnInput(input.endOfTurn, this.options.turnModels ? "smart" : "silence"),
-      addressing: addressingInput(input.addressing),
-      realtime, ...(speakers ? { speakers } : {}),
+    };
+    if (!realtime) return { ...common, brain: "listen" };
+    return {
+      ...common, bargeIn: bargeIn.on, ...(bargeIn.policy ? { interruption: bargeIn.policy } : {}), voice,
+      addressing: addressingInput(input.addressing), realtime, ...(speakers ? { speakers } : {}),
     };
   }
 
@@ -513,7 +551,6 @@ export class VoiceSessions {
    * when not given), persona and listening settings.
    */
   private realtimeInput(input: Record<string, unknown>, voice: string): RealtimeOptions {
-    if (input.brain !== undefined && input.brain !== "realtime") throw new HttpError(400, "brain must be realtime (the only one), or left out");
     const providers = this.options.realtime?.providers ?? {};
     if (!Object.keys(providers).length) throw new HttpError(404, "Voice sessions need a realtime provider, and this runtime has none (AGENT_VOICE_REALTIME)");
     const given = input.realtime === undefined ? {} : object(input.realtime, "realtime");
@@ -552,16 +589,25 @@ export class VoiceSessions {
       if (input.discord === undefined) throw new HttpError(400, "discord is required: guildId, channelId, userId, sessionId, endpoint and token");
       credentials = discordInput(input.discord, this.endpoints()) as VoiceCredentials;
     }
-    const options = this.settings(input);
-    if (!this.options.transports[provider]?.speaks) throw new HttpError(404, "Voice sessions are not enabled on this runtime: its connections cannot speak");
+    const options = this.settings(input, provider === "browser");
+    const listen = options.brain === "listen";
+    if (listen && !this.options.transcriber) throw new HttpError(404, "Listening sessions (brain listen) are not enabled on this runtime");
+    if (!listen && !this.options.transports[provider]?.speaks) throw new HttpError(404, "Voice sessions are not enabled on this runtime: its connections cannot speak");
     if (options.endOfTurn?.mode === "smart" && !this.options.turnModels) throw new HttpError(404, "Smart end of turn is not enabled on this runtime: use endOfTurn silence");
     if (options.deliver.agent && !await this.options.agentOwned(options.deliver.agent, tenant)) throw new HttpError(404, "Unknown agent in deliver.agent");
     await this.options.admit(tenant);
     const refused = options.subject !== undefined ? await this.options.credit?.refusal(tenant, options.subject, options.bucket ?? DEFAULT_BUCKET) : undefined;
     if (refused) throw new HttpError(402, refused.message, "END_USER_CREDIT", { endUser: options.subject, bucket: options.bucket ?? DEFAULT_BUCKET, reason: refused.reason });
-    const realtime = this.options.realtime!.providers[options.realtime!.provider]!;
-    if (!await this.options.realtime!.key(tenant, options.keyScope, realtime.key)) {
-      throw new HttpError(400, `Voice sessions on ${realtime.id} need a key for ${realtime.key}: add one under Models & keys (PUT /v1/providers/${realtime.key}/key)${options.keyScope ? `, or to key scope ${options.keyScope}` : ""}`, "REALTIME_UNAVAILABLE");
+    if (listen) {
+      const transcriber = this.options.transcriber!;
+      if (!await transcriber.options.key(tenant, options.keyScope, transcriber.provider)) {
+        throw new HttpError(400, `A listening session transcribes with a key for ${transcriber.provider}: add one under Models & keys (PUT /v1/providers/${transcriber.provider}/key)${options.keyScope ? `, or to key scope ${options.keyScope}` : ""}`, "TRANSCRIPTION_UNAVAILABLE");
+      }
+    } else {
+      const realtime = this.options.realtime!.providers[options.realtime!.provider]!;
+      if (!await this.options.realtime!.key(tenant, options.keyScope, realtime.key)) {
+        throw new HttpError(400, `Voice sessions on ${realtime.id} need a key for ${realtime.key}: add one under Models & keys (PUT /v1/providers/${realtime.key}/key)${options.keyScope ? `, or to key scope ${options.keyScope}` : ""}`, "REALTIME_UNAVAILABLE");
+      }
     }
     const now = Date.now();
     const limit = this.options.perTenant?.(tenant) ?? VOICE_LIMITS.perTenant;
@@ -583,8 +629,8 @@ export class VoiceSessions {
     if (!this.stopped) void this.take(row).catch(error => console.error(JSON.stringify({ type: "voice_take_failed", session: id, error: safeError(error) })));
     return {
       ...sessionView(row), notice: { required: true, channelId: credentials.channelId, text: options.notice.replaceAll("{bot}", credentials.userId) },
-      // How the app should have joined: un-muted, since the bot speaks.
-      join: { self_mute: false, self_deaf: false },
+      // How the app should have joined: un-muted when the bot speaks.
+      join: { self_mute: listen, self_deaf: false },
       ...(provider === "browser" ? { browser: this.browserToken(id) } : {}),
     };
   }
@@ -669,10 +715,11 @@ export class VoiceSessions {
   /** Stop what the bot is saying, and what it was going to: answers how many speeches that stopped. */
   async stopSpeaking(tenant: string, id: string) {
     const row = await this.row(tenant, id);
+    if (row.options.brain === "listen") throw new HttpError(409, "This voice session listens and does not speak", "VOICE_SPEAK_DISABLED");
     if (row.state === "ended") return { stopped: 0 };
     const held = this.held.get(id);
     if (!held) throw new HttpError(503, "This voice session is moving between nodes; retry");
-    return { stopped: held.brain.stopSpeaking() };
+    return { stopped: held.brain?.stopSpeaking() ?? 0 };
   }
 
   /** End a session (`requested`): answers it, and the OP 4 the app sends to leave the channel. */
@@ -776,17 +823,19 @@ export class VoiceSessions {
       id: current.id, tenant: current.tenant, claim: taken.claim, revision: current.revision, row: current, credentials: this.credentials(current),
       floor: new Floor(current.options.addressing ?? {}, () => clock().now()),
     } as Held;
-    // A session from before realtime brains (its pipeline is gone) cannot go on.
-    const brain = current.options.realtime ? await this.brainOf(held).catch((error: unknown) => {
-      console.error(JSON.stringify({ type: "voice_realtime_unavailable", session: held.id, error: safeError(error) }));
-      return undefined;
-    }) : undefined;
-    if (!brain) {
-      await ownership.release(taken.claim).catch(() => {});
-      await this.finish(undefined, held.id, { reason: "error", detail: current.options.realtime ? "realtime_unavailable" : "brain_removed" }).catch(() => {});
-      return;
+    // A listening session has no brain; one from before realtime brains (its pipeline is gone) cannot go on.
+    if (current.options.brain !== "listen") {
+      const brain = current.options.realtime ? await this.brainOf(held).catch((error: unknown) => {
+        console.error(JSON.stringify({ type: "voice_realtime_unavailable", session: held.id, error: safeError(error) }));
+        return undefined;
+      }) : undefined;
+      if (!brain) {
+        await ownership.release(taken.claim).catch(() => {});
+        await this.finish(undefined, held.id, { reason: "error", detail: current.options.realtime ? "realtime_unavailable" : "brain_removed" }).catch(() => {});
+        return;
+      }
+      held.brain = brain;
     }
-    held.brain = brain;
     this.held.set(held.id, held);
     console.log(JSON.stringify({ type: "voice_session_acquired", session: held.id, node: this.options.node, epoch: taken.claim.epoch }));
     if (current.state === "live") await this.setState(held, "reconnecting").catch(() => {});
@@ -803,10 +852,10 @@ export class VoiceSessions {
     const { options } = held.row;
     const policy = interruption(options);
     return {
-      silenceMs: options.silenceMs, ignoreUserIds: options.ignoreUserIds, bargeIn: options.bargeIn !== false,
+      silenceMs: options.silenceMs, ignoreUserIds: options.ignoreUserIds, bargeIn: !!held.brain && options.bargeIn !== false,
       bargeInMinMs: policy.minMs, bargeInPause: policy.confirmMs > 0,
-      // The brain hears each speaker's audio as it comes.
-      live: true,
+      // A brain hears each speaker's audio as it comes; a listening session transcribes each cut whole.
+      live: !!held.brain,
       ...(options.endOfTurn ? { endOfTurn: options.endOfTurn } : {}),
     };
   }
@@ -841,24 +890,25 @@ export class VoiceSessions {
       speechStart: speaker => {
         if (!current()) return;
         (held.speechStarts ??= new Map()).set(speaker, clock().now());
-        held.brain.speechStart(speaker);
+        held.brain?.speechStart(speaker);
       },
       // Barge-in: a person talked over the bot for minMs. The media already stopped what it plays, or paused it for
       // the brain's echo guard to decide.
-      bargeIn: (speaker, speechMs) => { if (current()) held.brain.bargeIn(speaker, speechMs, held.speechStarts?.get(speaker)); },
-      speechProgress: (speaker, speechMs) => { if (current()) held.brain.speechProgress(speaker, speechMs); },
+      bargeIn: (speaker, speechMs) => { if (current()) held.brain?.bargeIn(speaker, speechMs, held.speechStarts?.get(speaker)); },
+      speechProgress: (speaker, speechMs) => { if (current()) held.brain?.speechProgress(speaker, speechMs); },
       turn: event => {
         if (!current()) return;
-        held.brain.turnEvent(event);
+        held.brain?.turnEvent(event);
         (held.turnStats ??= { likelyEnds: 0, resumes: 0, turns: 0 });
         if (event.type === "likely_end") held.turnStats.likelyEnds++;
         else if (event.type === "resume") held.turnStats.resumes++;
         else if (event.type === "turn_end") held.turnStats.turns++;
       },
-      pcm: (speaker, pcm) => { if (current()) held.brain.pcm(speaker, pcm); },
-      drop: speaker => { if (current()) held.brain.drop(speaker); },
-      // The brain's turns are its own: nothing is transcribed after.
-      cut: cut => { if (current()) held.brain.cut(cut); },
+      pcm: (speaker, pcm) => { if (current()) held.brain?.pcm(speaker, pcm); },
+      drop: speaker => { if (current()) held.brain?.drop(speaker); },
+      // A brain's turns are its own. A listening session transcribes each cut, even one of a media replaced or a
+      // session let go (handoff, end): what was said is still sent.
+      cut: cut => { if (held.brain) { if (current()) held.brain.cut(cut); } else this.listened(held, cut); },
             crashed: reason => { if (current()) this.crashed(held, transport, reason); },
     });
     held.media = media;
@@ -933,7 +983,7 @@ export class VoiceSessions {
   private async drop(held: Held, release: boolean, cut: "handoff" | "end" = "handoff") {
     if (this.held.get(held.id) !== held) return;
     this.held.delete(held.id);
-    held.brain.close();
+    held.brain?.close();
     // What turn-taking did in this session, for tuning: likely ends spoken past (resumes) are speculation discarded.
     if (held.turnStats) {
       const { likelyEnds, resumes, turns } = held.turnStats;
@@ -962,6 +1012,132 @@ export class VoiceSessions {
 
   private async setState(held: Held, state: VoiceState) {
     await underClaim(this.db, held.claim, sql => sql.query("update voice_sessions set state = $2, updated_at = $3 where id = $1 and state <> 'ended'", [held.id, state, Date.now()]));
+  }
+
+  /**
+   * A listening session's utterance was cut: transcribed and sent after the speaker's previous one. What it needs of
+   * the session is fixed now: the session may move or end meanwhile.
+   */
+  private listened(held: Held, cut: Cut) {
+    const origin: Origin = { id: held.id, tenant: held.tenant, claim: held.claim, row: held.row };
+    const key = `${held.id}:${cut.speaker}`;
+    const job = (this.speakers.get(key) ?? Promise.resolve()).then(() => this.transcribeCut(origin, cut)).catch(error =>
+      console.error(JSON.stringify({ type: "voice_utterance_failed", session: held.id, error: safeError(error) })));
+    this.speakers.set(key, job);
+    this.pending.add(job);
+    void job.finally(() => {
+      this.pending.delete(job);
+      if (this.speakers.get(key) === job) this.speakers.delete(key);
+    });
+  }
+
+  /** A turn to transcribe on this node, or undefined after `waitMs` without one. */
+  private async slot(waitMs: number): Promise<(() => void) | undefined> {
+    const free = () => {
+      this.transcribing--;
+      this.slots.shift()?.();
+    };
+    if (this.transcribing < (this.options.transcriptionsPerNode ?? VOICE_LIMITS.transcriptionsPerNode)) {
+      this.transcribing++;
+      return free;
+    }
+    const turn = Promise.withResolvers<boolean>();
+    const wake = () => { this.transcribing++; turn.resolve(true); };
+    this.slots.push(wake);
+    const timer = setTimeout(() => {
+      const index = this.slots.indexOf(wake);
+      if (index >= 0) { this.slots.splice(index, 1); turn.resolve(false); }
+    }, waitMs);
+    const given = await turn.promise;
+    clearTimeout(timer);
+    return given ? free : undefined;
+  }
+
+  /**
+   * Transcribe a listening session's utterance and send it: the tenant's run limit first (past it the session ends,
+   * `budget`), the subject's credit held, then a fresh lease, then the provider; its usage recorded as the session's
+   * subject's; its transcript counted and sent (the webhook event in the same transaction as the count). An utterance
+   * is at most once until its transcript is written (its audio lives only in the node's memory), at least once after.
+   */
+  private async transcribeCut(origin: Origin, cut: Cut) {
+    const transcriber = this.options.transcriber;
+    if (!transcriber) return;
+    const free = await this.slot(VOICE_LIMITS.queueMs);
+    if (!free) {
+      console.error(JSON.stringify({ type: "voice_utterance_dropped", session: origin.id, reason: "queue", seconds: cut.seconds }));
+      return;
+    }
+    let done: Transcribed;
+    const { options } = origin.row;
+    const started = Date.now();
+    try {
+      try { await this.options.admit(origin.tenant); }
+      catch (error) {
+        if ((error as HttpError).status !== 402) throw error;
+        await this.endFor(origin, { reason: "budget", limit: "tenant" });
+        return;
+      }
+      // The subject's credit: what the audio costs, held before it is sent (refused: the session ends).
+      let hold: Awaited<ReturnType<VoiceCredit["hold"]>>;
+      const { credit } = this.options;
+      try {
+        hold = options.subject !== undefined && credit
+          ? await credit.hold(origin.tenant, options.subject, options.bucket ?? DEFAULT_BUCKET, transcriber.cost(cut.seconds), "voice", { session: origin.id })
+          : undefined;
+      } catch (error) {
+        if ((error as HttpError).code !== "END_USER_CREDIT") throw error;
+        const reason = (error as HttpError).details?.reason;
+        await this.endFor(origin, { reason: "budget", limit: "end_user", ...(typeof reason === "string" ? { endUserReason: reason } : {}) });
+        return;
+      }
+      const bytes = oggOpus(cut.packets);
+      try {
+        await this.options.ownership?.whenFresh();
+        done = await transcriber.transcribe({ tenant: origin.tenant, ...(options.keyScope ? { keyScope: options.keyScope } : {}) }, { bytes, header: checkedAudio(bytes) },
+          { ...(options.language ? { language: options.language } : {}), ...(options.prompt ? { prompt: options.prompt } : {}) }, AbortSignal.timeout(5 * 60_000));
+      } catch (error) {
+        await hold?.release().catch(() => {});
+        const code = (error as HttpError).code;
+        // No key any more (deleted), or no credit: nothing more can be transcribed.
+        if (code === "TRANSCRIPTION_UNAVAILABLE") await this.endFor(origin, { reason: "error", detail: "no transcription key" });
+        else if ((error as HttpError).status === 402) await this.endFor(origin, { reason: "budget", limit: "tenant" });
+        else console.error(JSON.stringify({ type: "voice_transcription_failed", session: origin.id, seconds: cut.seconds, error: safeError(error) }));
+        return;
+      }
+      // Settled with what it cost; a hold that cannot be settled expires, as a model call's does.
+      await hold?.settle(done.usage.usage.cost.total as number).catch(error =>
+        console.error(JSON.stringify({ type: "voice_credit_settle_failed", session: origin.id, error: safeError(error) })));
+    } finally { free(); }
+    const { transcript, usage } = done;
+    const identity = { ...(options.subject !== undefined ? { subject: options.subject } : {}), context: { ...options.context, voiceSession: origin.id } };
+    this.options.record(origin.tenant, { ...usage, identity, ...(options.keyScope ? { keyScope: options.keyScope } : {}) });
+    const usd = usage.usage.cost.total as number;
+    const row = await transaction(this.db, async sql => {
+      const { rows } = await sql.query(`
+        update voice_sessions set utterances = utterances + 1, speech_seconds = speech_seconds + $2, cost = cost + $3,
+          last_speech_at = greatest(coalesce(last_speech_at, 0), $4), updated_at = $5
+        where id = $1 returning *`, [origin.id, transcript.seconds, Math.round(usd * 1_000_000), cut.endedAt, Date.now()]);
+      const current = rows[0] as Row | undefined;
+      if (current && transcript.text && current.options.deliver.webhooks) {
+        await enqueueEvents(sql, [this.event(current, "voice.utterance", {
+          speakerId: cut.speaker, seq: current.utterances, text: transcript.text, language: transcript.language ?? options.language ?? null,
+          seconds: cut.seconds, startedAt: cut.startedAt, endedAt: cut.endedAt, ended: cut.ended, costUsd: usd, brain: "listen",
+        }, `voice:${origin.id}:utterance:${current.utterances}`)]);
+      }
+      return current;
+    });
+    if (row && transcript.text && row.options.deliver.webhooks) this.options.kickWebhooks?.();
+    // A browser call's page sees each utterance as it is transcribed (it needs no webhook).
+    const local = this.held.get(origin.id);
+    if (row && transcript.text) local?.media?.notify?.({ type: "utterance", speakerId: cut.speaker, seq: row.utterances, text: transcript.text, startedAt: cut.startedAt, endedAt: cut.endedAt, ended: cut.ended, brain: "listen" });
+    if (row && local) local.row = { ...local.row, last_speech_at: row.last_speech_at, utterances: row.utterances };
+    console.log(JSON.stringify({ type: "voice_utterance", session: origin.id, seq: row?.utterances, seconds: cut.seconds, billedSeconds: transcript.seconds, ended: cut.ended, empty: !transcript.text, ms: Date.now() - started }));
+  }
+
+  /** End a session from an utterance's work: under the claim if this node still holds it as it did, else as anyone. */
+  private async endFor(origin: Origin, ending: Ending) {
+    const held = this.held.get(origin.id);
+    await this.finish(held && held.claim === origin.claim ? held : undefined, origin.id, ending);
   }
 
   /** People in a session's call now (not the bot, not ignored users), when its media knows. */

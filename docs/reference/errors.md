@@ -26,7 +26,7 @@ retry.
 | --- | --- | --- |
 | 400 | `INVALID_REQUEST` | The request is malformed or invalid; the message says how |
 | 400 | `INVALID_HISTORY` | An imported history (`initialMessages`) has a message it cannot take; the message names which, and what it lacks |
-| 400 | `TRANSCRIPTION_UNAVAILABLE` | Audio was to be transcribed and the account has no OpenAI key to do it with (nor the platform's); the message says how to add one |
+| 400 | `TRANSCRIPTION_UNAVAILABLE` | Audio was to be transcribed (an upload, or a listening voice session) and the account has no OpenAI key to do it with (nor the platform's); the message says how to add one |
 | 400 | `REALTIME_UNAVAILABLE` | A voice session's realtime provider needs a key, and the account has none for it (nor the platform's); the message says how to add one |
 | 400 | `IMAGE_UNAVAILABLE` | An image was to be made and the account has no OpenAI key to do it with (nor the platform's); the message says how to add one |
 | 400 | `IMAGE_REFUSED` | OpenAI's safety system refused the request (`stage: "input"`) or the image it made (`stage: "output"`); `categories` names why. Nothing was charged |
@@ -41,6 +41,7 @@ retry.
 | 409 | `IDEMPOTENCY_IN_PROGRESS` | The first request with this Idempotency-Key is still running; retry |
 | 409 | `VOICE_SESSION_EXISTS` | The bot already has a voice session in this server (`session` names it): update or end it |
 | 409 | `VOICE_SESSION_ENDED` | The voice session ended; start a new one |
+| 409 | `VOICE_SPEAK_DISABLED` | The voice session listens only (`brain: "listen"`) and never speaks |
 | 409 | `APPLICATION_CONNECTED` | Another connection serves this agent's tools; connect with `?takeover=true` to replace it |
 | 409 | `APPLICATION_NOT_CONNECTED` | The agent's tools need its application and none is connected; connect it, or send `allowDisconnected: true` |
 | 409 | `FORK_POINT_RUNNING` | A fork's `atMessage` is in a turn that has not ended (running, or waiting on a person); fork at an earlier message, or once it ends |

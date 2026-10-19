@@ -71,9 +71,24 @@ Discord allows one voice connection per user and server: a second `POST` for the
 | `bargeIn` | a person talking over the bot stops what it is saying, unless it is the bot's own voice coming back (default `true`; or `{minMs, confirmMs, resumeMs}`, see [barge-in](#barge-in)) |
 | `voice` | the bot's voice by OpenAI's names (`alloy`, the default, `coral`, `nova`…), mapped to the provider's nearest; `realtime.voice` names the provider's own |
 | `speakers` | names by Discord user id, for the model's note of who speaks (`{"400000000000000001": "Ana"}`); PATCH it as people join |
-| `brain` | deprecated: `"realtime"` is the only one, and the default |
+| `brain` | `realtime` (the default): the model hears the call and answers; `listen`: muted, transcribed only (see [listening only](#listening-only)) |
 
 The bot speaks, so your app joins un-muted (OP 4 with `self_mute: false`): the answer's `join` says so.
+
+## Listening only
+
+A bot that only needs to hear the call (notes, captions, commands it acts on in text) takes `brain: "listen"`. Nothing
+answers: no realtime model is opened, and the bot never speaks, so your app joins muted (`join.self_mute: true`). Each
+utterance is transcribed once its speaker's turn ends (OpenAI's `gpt-transcribe`, as [`POST /v1/transcriptions`](voice.md)
+transcribes, on your OpenAI key or the platform's) and goes to your webhooks as `voice.utterance` with `brain:
+"listen"` (no `addressed`), or to the page of a browser session. Its notice says the bot listens and transcribes; it
+does not say it may speak.
+
+A listening session takes `language`, `prompt` (words to expect), `endOfTurn`, `silenceMs` and the session's limits; it
+takes none of `speak`, `bargeIn`, `voice`, `addressing`, `realtime`, `speakers` or `deliver.agent` (400), and needs
+`deliver.webhooks` on (a browser session's page gets every utterance itself). Each utterance is billed as a
+transcription (`usage.recorded` `kind: "transcription"`), held against the subject's credit first with end-user credits
+on. `DELETE …/speak` is a 409 `VOICE_SPEAK_DISABLED`.
 
 ## Keep it connected, and end it
 

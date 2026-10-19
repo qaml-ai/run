@@ -2947,9 +2947,24 @@ Discord allows one voice connection per user and server: a second `POST` for the
 | `bargeIn` | a person talking over the bot stops what it is saying, unless it is the bot's own voice coming back (default `true`; or `{minMs, confirmMs, resumeMs}`, see [barge-in](https://run.camelai.com/docs/guides/voice-calls.md#barge-in)) |
 | `voice` | the bot's voice by OpenAI's names (`alloy`, the default, `coral`, `nova`…), mapped to the provider's nearest; `realtime.voice` names the provider's own |
 | `speakers` | names by Discord user id, for the model's note of who speaks (`{"400000000000000001": "Ana"}`); PATCH it as people join |
-| `brain` | deprecated: `"realtime"` is the only one, and the default |
+| `brain` | `realtime` (the default): the model hears the call and answers; `listen`: muted, transcribed only (see [listening only](https://run.camelai.com/docs/guides/voice-calls.md#listening-only)) |
 
 The bot speaks, so your app joins un-muted (OP 4 with `self_mute: false`): the answer's `join` says so.
+
+## Listening only
+
+A bot that only needs to hear the call (notes, captions, commands it acts on in text) takes `brain: "listen"`. Nothing
+answers: no realtime model is opened, and the bot never speaks, so your app joins muted (`join.self_mute: true`). Each
+utterance is transcribed once its speaker's turn ends (OpenAI's `gpt-transcribe`, as [`POST /v1/transcriptions`](https://run.camelai.com/docs/guides/voice.md)
+transcribes, on your OpenAI key or the platform's) and goes to your webhooks as `voice.utterance` with `brain:
+"listen"` (no `addressed`), or to the page of a browser session. Its notice says the bot listens and transcribes; it
+does not say it may speak.
+
+A listening session takes `language`, `prompt` (words to expect), `endOfTurn`, `silenceMs` and the session's limits; it
+takes none of `speak`, `bargeIn`, `voice`, `addressing`, `realtime`, `speakers` or `deliver.agent` (400), and needs
+`deliver.webhooks` on (a browser session's page gets every utterance itself). Each utterance is billed as a
+transcription (`usage.recorded` `kind: "transcription"`), held against the subject's credit first with end-user credits
+on. `DELETE …/speak` is a 409 `VOICE_SPEAK_DISABLED`.
 
 ## Keep it connected, and end it
 
@@ -4023,7 +4038,7 @@ Every event is an envelope:
 | `voice.session.started` | A [voice session](https://run.camelai.com/docs/guides/voice-calls.md) connected and is listening (once) | `session`, `provider`, `guildId`, `channelId`, `botUserId`, `subject`, `metadata` |
 | `voice.session.ended` | A voice session ended; your app leaves the channel | as above, and `reason`, `limit` and `endUserReason` with `budget`, `startedAt`, `endedAt`, `utterances`, `speechSeconds`, `costUsd` |
 | `voice.session.error` | A voice session's audio failed: it reconnects at once (`restarting`), or after 3 failures in 5 minutes ends; or it needs new Discord credentials (`credentials_needed`) | the voice facts, `code` (`media_crashed`, `credentials_needed`), `detail`, `restarting`, `attempt?`, `waitMs?` |
-| `voice.utterance` | A person's utterance in a voice session, transcribed | as above, and `speakerId`, `seq`, `text`, `language`, `seconds`, `startedAt`, `endedAt`, `ended`, `costUsd`, `addressed`, `addressedBy`, `speakers?`, `brain` |
+| `voice.utterance` | A person's utterance in a voice session, transcribed | as above, and `speakerId`, `seq`, `text`, `language`, `seconds`, `startedAt`, `endedAt`, `ended`, `costUsd`, `addressed?`, `addressedBy?`, `speakers?`, `brain` |
 | `voice.speech.started` | A voice session's bot started saying an [answer](https://run.camelai.com/docs/guides/voice-calls.md#speaking) | the voice facts, `speechId`, `latencyMs`, `startedAt`, `turn?`, `brain` |
 | `voice.speech.ended` | It ended | the voice facts, `speechId`, `reason`, `by`, `seconds`, `costUsd`, `brain` |
 | `billing.balance.low` | Funded balance crosses below the alert threshold (default $2) | `balance`, `previousBalance`, `threshold` (integer micro-USD), `source` |
@@ -7475,7 +7490,7 @@ dedupe by `id`. See [Webhooks](https://run.camelai.com/docs/guides/webhooks.md).
 | `voice.session.started` | `session`, `provider`, `guildId`, `channelId`, `botUserId`, `subject`, `metadata`: a [voice session](https://run.camelai.com/docs/guides/voice-calls.md) connected (once) |
 | `voice.session.ended` | the above, `reason` (`requested`, `empty`, `idle`, `max_duration`, `budget`, `kicked`, `credentials`, `error`), `limit?` (`tenant`, `end_user`), `endUserReason?`, `startedAt`, `endedAt`, `utterances`, `speechSeconds`, `costUsd` |
 | `voice.session.error` | the voice facts, `code` (`media_crashed`, `credentials_needed`), `detail`, `restarting`, `attempt?`, `waitMs?`. `media_crashed`: the session's audio failed; it reconnects, or after 3 failures in 5 minutes ends (`voice.session.ended`, `error`). `credentials_needed`: Discord stopped taking the session's credentials; send OP 4 for the channel again and PATCH what Discord answers within `waitMs`, or it ends (`credentials`) |
-| `voice.utterance` | the above facts, `speakerId`, `seq`, `text`, `language`, `seconds`, `startedAt`, `endedAt`, `ended` (`silence`, `max`, `error`, `handoff`, `end`), `costUsd`, `addressed`, `addressedBy`, `speakers?` (everyone whose audio is in it, when people spoke at once), `brain` (`realtime`: the model answered it already) |
+| `voice.utterance` | the above facts, `speakerId`, `seq`, `text`, `language`, `seconds`, `startedAt`, `endedAt`, `ended` (`silence`, `max`, `error`, `handoff`, `end`), `costUsd`, `addressed?`, `addressedBy?` (none for a listening session), `speakers?` (everyone whose audio is in it, when people spoke at once), `brain` (`realtime`: the model answered it already; `listen`: a listening session transcribed it) |
 | `voice.speech.started` | the voice facts, `speechId`, `latencyMs` (from asking the model to the first audio out), `startedAt` (ms), `brain`, and for the answer to a turn `turn`: `path` (`realtime`) and `stagesMs` (each stage since the end of speech: `turnCommit`, `ttsFirstAudio`, `firstPacket`) |
 | `voice.speech.ended` | the voice facts, `speechId`, `reason` (`done`, `interrupted`, `error`), `by?` (`requested`, `barge_in`, `end`, `superseded`, `budget`), `seconds` (played), `costUsd` (its tokens; the session's usage already counts it), `brain` |
 | `usage.recorded` | `agentId` (null for a [transcription](https://run.camelai.com/docs/guides/voice.md) or [images](https://run.camelai.com/docs/guides/images.md) made alone), `requestId`, `subject`, `actor`, `context`, `keyScope`, `provider`, `model`, `kind` (`response`, `compaction`, `transcription`, `image`, `speech`), `input`, `output`, `cacheRead`, `cacheWrite`, `reasoning?`, `audioSeconds?` (a transcription's, or speech made), `images?` (how many images were made), `cost: {usd, source}`, `at` |
@@ -7803,7 +7818,7 @@ retry.
 | --- | --- | --- |
 | 400 | `INVALID_REQUEST` | The request is malformed or invalid; the message says how |
 | 400 | `INVALID_HISTORY` | An imported history (`initialMessages`) has a message it cannot take; the message names which, and what it lacks |
-| 400 | `TRANSCRIPTION_UNAVAILABLE` | Audio was to be transcribed and the account has no OpenAI key to do it with (nor the platform's); the message says how to add one |
+| 400 | `TRANSCRIPTION_UNAVAILABLE` | Audio was to be transcribed (an upload, or a listening voice session) and the account has no OpenAI key to do it with (nor the platform's); the message says how to add one |
 | 400 | `REALTIME_UNAVAILABLE` | A voice session's realtime provider needs a key, and the account has none for it (nor the platform's); the message says how to add one |
 | 400 | `IMAGE_UNAVAILABLE` | An image was to be made and the account has no OpenAI key to do it with (nor the platform's); the message says how to add one |
 | 400 | `IMAGE_REFUSED` | OpenAI's safety system refused the request (`stage: "input"`) or the image it made (`stage: "output"`); `categories` names why. Nothing was charged |
@@ -7818,6 +7833,7 @@ retry.
 | 409 | `IDEMPOTENCY_IN_PROGRESS` | The first request with this Idempotency-Key is still running; retry |
 | 409 | `VOICE_SESSION_EXISTS` | The bot already has a voice session in this server (`session` names it): update or end it |
 | 409 | `VOICE_SESSION_ENDED` | The voice session ended; start a new one |
+| 409 | `VOICE_SPEAK_DISABLED` | The voice session listens only (`brain: "listen"`) and never speaks |
 | 409 | `APPLICATION_CONNECTED` | Another connection serves this agent's tools; connect with `?takeover=true` to replace it |
 | 409 | `APPLICATION_NOT_CONNECTED` | The agent's tools need its application and none is connected; connect it, or send `allowDisconnected: true` |
 | 409 | `FORK_POINT_RUNNING` | A fork's `atMessage` is in a turn that has not ended (running, or waiting on a person); fork at an earlier message, or once it ends |
