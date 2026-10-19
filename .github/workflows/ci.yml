@@ -21,6 +21,8 @@ jobs:
     outputs:
       tests: ${{ steps.changes.outputs.tests || 'true' }}
       reuse: ${{ steps.changes.outputs.reuse || 'false' }}
+      binary-key: ${{ steps.binary-key.outputs.key }}
+      binary-cached: ${{ steps.binary.outputs.cache-hit }}
       shards: ${{ (github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && !(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted')) && '[1,2,3,4,5,6]' || '[1,2,3,4,5,6,7,8,9,10,11,12]' }}
       shard-count: ${{ (github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && !(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted')) && '6' || '12' }}
     steps:
@@ -31,6 +33,18 @@ jobs:
         continue-on-error: true
         run: bash scripts/ci-changes.sh
         env: { GH_TOKEN: "${{ github.token }}" }
+      # Release cached consumers immediately; a source change still builds once and shares an artifact.
+      - id: binary-key
+        env:
+          FAMILY: ${{ (github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && 'self-hosted' || 'github-hosted' }}
+          SOURCES: ${{ hashFiles('sandbox/v8-exec/Cargo.lock', 'sandbox/v8-exec/Cargo.toml', 'sandbox/v8-exec/rust-toolchain.toml', 'sandbox/v8-exec/src/**') }}
+        run: echo "key=v8-exec-binary-Linux-X64-$FAMILY-$SOURCES" >> "$GITHUB_OUTPUT"
+      - id: binary
+        uses: actions/cache/restore@v4
+        with:
+          path: sandbox/v8-exec/target/release/v8-exec
+          key: ${{ steps.binary-key.outputs.key }}
+          lookup-only: true
   checks:
     # Fail fast: each job here takes 1-4 minutes, so anything near this limit is hung.
     timeout-minutes: 15
@@ -48,7 +62,7 @@ jobs:
     # The Python SDK tests start a real runtime, whose js_exec runs on the v8-exec job's binary. Their own job, beside
     # checks: they take three minutes, the rest of checks one.
     needs: [changes, v8-exec]
-    if: needs.changes.outputs.tests == 'true'
+    if: ${{ !cancelled() && needs.changes.result == 'success' && (needs.v8-exec.result == 'success' || needs.changes.outputs.binary-cached == 'true') && needs.changes.outputs.tests == 'true' }}
     runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && vars.CI_RUNNER_LABELS || ((github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && '["blacksmith-16vcpu-ubuntu-2404"]' || '["ubuntu-latest"]')) }}
     services:
       postgres:
@@ -59,7 +73,14 @@ jobs:
         options: --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 20
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/cache/restore@v4
+        if: needs.changes.outputs.binary-cached == 'true'
+        with:
+          path: sandbox/v8-exec/target/release/v8-exec
+          key: ${{ needs.changes.outputs.binary-key }}
+          fail-on-cache-miss: true
       - uses: actions/download-artifact@v4
+        if: needs.changes.outputs.binary-cached != 'true'
         with: { name: v8-exec, path: sandbox/v8-exec/target/release }
       - run: chmod +x sandbox/v8-exec/target/release/v8-exec
       - uses: actions/setup-node@v4
@@ -82,7 +103,7 @@ jobs:
     # Forks and self-hosted runners retain twelve shards per mode and two-file concurrency.
     name: test (${{ matrix.hosting }} ${{ matrix.shard }}/${{ needs.changes.outputs.shard-count }})
     needs: [changes, v8-exec]
-    if: needs.changes.outputs.tests == 'true'
+    if: ${{ !cancelled() && needs.changes.result == 'success' && (needs.v8-exec.result == 'success' || needs.changes.outputs.binary-cached == 'true') && needs.changes.outputs.tests == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -102,7 +123,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
+      - uses: actions/cache/restore@v4
+        if: needs.changes.outputs.binary-cached == 'true'
+        with:
+          path: sandbox/v8-exec/target/release/v8-exec
+          key: ${{ needs.changes.outputs.binary-key }}
+          fail-on-cache-miss: true
       - uses: actions/download-artifact@v4
+        if: needs.changes.outputs.binary-cached != 'true'
         with: { name: v8-exec, path: sandbox/v8-exec/target/release }
       - run: chmod +x sandbox/v8-exec/target/release/v8-exec
       - run: npm ci
@@ -146,6 +174,8 @@ jobs:
         if: ${{ failure() }}
         with: { name: sim-failures, path: sim-failures/, if-no-files-found: ignore }
   v8-exec:
+    needs: changes
+    if: needs.changes.outputs.binary-cached != 'true'
     timeout-minutes: 30
     # js_exec's engine (sandbox/v8-exec), built here on x86_64 for the test shards, which run its tests
     # (seccomp included) and every js_exec suite on it; the image job builds and runs it on ARM64.
@@ -157,7 +187,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: sandbox/v8-exec/target/release/v8-exec
-          key: v8-exec-binary-${{ runner.os }}-${{ runner.arch }}-${{ runner.environment }}-${{ hashFiles('sandbox/v8-exec/Cargo.lock', 'sandbox/v8-exec/Cargo.toml', 'sandbox/v8-exec/rust-toolchain.toml', 'sandbox/v8-exec/src/**') }}
+          key: ${{ needs.changes.outputs.binary-key }}
       # The toolchain is sandbox/v8-exec/rust-toolchain.toml's; rusty_v8's prebuilt V8 library is cached with the target dir.
       - if: steps.binary.outputs.cache-hit != 'true'
         uses: actions/cache@v4
@@ -272,7 +302,8 @@ jobs:
           tags: ${{ steps.ecr.outputs.registry }}/camelai-agent-runtime:${{ steps.image.outputs.tag }}
           cache-from: type=gha,scope=image-arm64
   docs:
-    needs: v8-exec
+    needs: [changes, v8-exec]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && (needs.v8-exec.result == 'success' || needs.changes.outputs.binary-cached == 'true') }}
     timeout-minutes: 15
     runs-on: ubuntu-latest
     services:
@@ -283,7 +314,14 @@ jobs:
         options: --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 20
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/cache/restore@v4
+        if: needs.changes.outputs.binary-cached == 'true'
+        with:
+          path: sandbox/v8-exec/target/release/v8-exec
+          key: ${{ needs.changes.outputs.binary-key }}
+          fail-on-cache-miss: true
       - uses: actions/download-artifact@v4
+        if: needs.changes.outputs.binary-cached != 'true'
         with: { name: v8-exec, path: sandbox/v8-exec/target/release }
       - run: chmod +x sandbox/v8-exec/target/release/v8-exec
       - uses: actions/setup-node@v4
@@ -303,12 +341,12 @@ jobs:
         env: { RESULTS: '${{ toJSON(needs) }}' }
         run: |
           echo "$RESULTS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")'
-          echo "$RESULTS" | jq -e '.changes.result == "success" and .checks.result == "success" and .image.result == "success" and .docs.result == "success" and .["v8-exec"].result == "success"'
+          echo "$RESULTS" | jq -e '.changes.result == "success" and .checks.result == "success" and .image.result == "success" and .docs.result == "success" and (.["v8-exec"].result == "success" or .changes.outputs["binary-cached"] == "true")'
           if [ '${{ github.event_name }}' = push ] && [ '${{ github.ref }}' = refs/heads/main ]; then
             echo "$RESULTS" | jq -e '.publish.result == "success"'
           fi
           if [ '${{ needs.changes.outputs.tests }}' = true ]; then
-            echo "$RESULTS" | jq -e '[.python, .test, .sim, .["v8-exec"]] | all(.result == "success")'
+            echo "$RESULTS" | jq -e '[.python, .test, .sim] | all(.result == "success")'
           fi
       - uses: actions/checkout@v4
         if: github.event_name == 'pull_request'
