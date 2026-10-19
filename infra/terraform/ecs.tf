@@ -296,9 +296,10 @@ resource "aws_ecs_service" "runtime" {
   enable_execute_command = true
   propagate_tags         = "SERVICE"
 
+  # Startup is local migrations and HTTP binding; allow six ALB probes before failed starts count.
   deployment_minimum_healthy_percent = 100
   deployment_maximum_percent         = 200
-  health_check_grace_period_seconds  = 60
+  health_check_grace_period_seconds  = 30
   availability_zone_rebalancing      = "ENABLED"
 
   # The runtime protects its task from scale-in while turns run, and ECS waits
