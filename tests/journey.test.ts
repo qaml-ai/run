@@ -91,13 +91,18 @@ async function setup(t: T, options: { journey?: false | Partial<JourneyOptions>;
   const outbox = async () => (await db.query("select id, account_ref, body, attempts, last_error, rejected_at from journey_outbox where target = 'events' order by created_at, body->>'name', id")).rows as
     { id: string; account_ref: string | null; body: JourneyEvent; attempts: number; last_error: string | null; rejected_at: number | null }[];
   const names = async () => (await outbox()).map(row => row.body.name);
+  const added = async (act: () => Promise<unknown>) => {
+    const before = new Set((await outbox()).map(row => row.id));
+    await act();
+    return (await outbox()).filter(row => !before.has(row.id)).map(row => row.body);
+  };
   /** The touches waiting to go to the store's attribution endpoint. */
   const touches = async () => (await db.query("select body from journey_outbox where target = 'resolve' order by created_at, id")).rows.map(row => row.body as { attribution_id: string; touch: { page_host: string; page_path: string; referrer_host: string | null; campaign: Record<string, string>; occurred_at: string } });
   /** Word of a refusal waiting to go to the store's consent endpoint. */
   const refusals = async () => (await db.query("select id, account_ref, body from journey_outbox where target = 'consent' order by created_at, id")).rows.map(row => ({ id: row.id as string, column: row.account_ref as string, ...row.body as { control_id: string; account_ref: string; visitor_id: string | null; consent: string; decided_at: string; schema_version: number } }));
   /** A browser going to a console page. */
   const arrive = (path: string, headers: Record<string, string> = {}) => journey!.arrival(new Request(`http://internal${path}`, { headers: { "user-agent": CHROME, "sec-fetch-dest": "document", cookie: "camel_consent=granted", ...headers } }));
-  return { db, accounts, journey, consoleAuth, signIn, outbox, names, touches, refusals, arrive };
+  return { db, accounts, journey, consoleAuth, signIn, outbox, names, touches, refusals, arrive, added };
 }
 
 test("journey events are configured by AGENT_JOURNEY_URL and a secret, and off without them", () => {
@@ -292,20 +297,20 @@ test("accounts from before journey events were first on are not sent as new sign
 });
 
 test("is_first is the account's first token: exact for an account journey saw made, and for an older one only if it has no other", async t => {
-  const { accounts, journey, signIn, outbox } = await setup(t, { journey: { collectUnknown: true } });
-  const tokens = async () => (await outbox()).filter(row => row.body.name === "run_token_created").map(row => [row.body.properties, row.body.visitor_id]);
+  const { accounts, journey, signIn, added } = await setup(t, { journey: { collectUnknown: true } });
+  const token = async (browser?: typeof AGREED) => (await added(() => journey!.tokenCreated({ tenant: "octocat", browser }))).filter(event => event.name === "run_token_created").map(event => [event.properties, event.visitor_id]);
   await signIn();
-  await journey!.tokenCreated({ tenant: "octocat", browser: AGREED });
-  await journey!.tokenCreated({ tenant: "octocat" });
-  assert.deepEqual(await tokens(), [[{ is_first: true }, VISITOR], [{ is_first: false }, null]]);
+  // Equal timestamps must not make the random event ids decide which event this assertion sees.
+  t.mock.method(Date, "now", () => 1_792_450_800_000);
+  assert.deepEqual(await token(AGREED), [[{ is_first: true }, VISITOR]]);
+  assert.deepEqual(await token(), [[{ is_first: false }, null]]);
 
   // An older account that already had a token: its next is not its first.
   await accounts.tenantForGoogle({ sub: "google-sub-1", email: "old@elsewhere.test" });
   const old = (await accounts.db.query("select id from tenants where google_sub = 'google-sub-1'")).rows[0].id;
   await accounts.createToken(old, "earlier");
   await accounts.createToken(old, "now");
-  await journey!.tokenCreated({ tenant: old });
-  assert.deepEqual((await tokens()).at(-1), [{ is_first: false }, null]);
+  assert.deepEqual((await added(() => journey!.tokenCreated({ tenant: old }))).filter(event => event.name === "run_token_created").map(event => [event.properties, event.visitor_id]), [[{ is_first: false }, null]]);
 });
 
 test("a staff account stays internal in every later event, whatever that event knows of it", async t => {
@@ -476,7 +481,8 @@ test("a browser that comes here first is given its visitor id, and the store is 
 });
 
 test("how a browser arrived is told from its link and where it came from; a reload or a return visit is no arrival", async t => {
-  const { arrive, outbox, touches } = await setup(t);
+  const { arrive, outbox, touches, added } = await setup(t);
+  t.mock.method(Date, "now", () => 1_792_450_800_000);
   const known = { cookie: browserOf() };
   const handoff = "0c7d0a52-3f0e-4a55-8a0d-7f7a7a1b2c3d";
   // Reloading, or coming back with nothing to say where from.
@@ -494,14 +500,17 @@ test("how a browser arrived is told from its link and where it came from; a relo
     ["/console/", "https://blog.elsewhere.test/post", "other_referral"],
   ] as const) {
     // A browser the operator's site already knows is not given another id.
-    assert.deepEqual(await arrive(path, { ...known, ...(referer ? { referer } : {}) }), {}, `${path} from ${referer}`);
-    const event = (await outbox()).at(-1)!.body;
+    const events = await added(async () => {
+      assert.deepEqual(await arrive(path, { ...known, ...(referer ? { referer } : {}) }), {}, `${path} from ${referer}`);
+    });
+    assert.equal(events.length, 1);
+    const event = events[0]!;
     assert.deepEqual([event.name, event.visitor_id, event.properties], ["run_arrived", VISITOR, { entry_channel: entry, landing_path: "/console", ...(path.includes("camel_handoff") ? { handoff_id: handoff } : {}) }], `${path} from ${referer}`);
   }
   // A handoff id that is not one is no handoff.
   assert.deepEqual(await arrive("/console/?camel_handoff=not-a-uuid", known), {});
   // Our own site's link says nothing new about where the visitor came from: only other sites' touches go to the store.
-  assert.deepEqual((await touches()).map(touch => touch.touch.referrer_host), ["github.com", "www.google.co.uk", "chatgpt.com", "blog.elsewhere.test"]);
+  assert.deepEqual((await touches()).map(touch => touch.touch.referrer_host).sort(), ["blog.elsewhere.test", "chatgpt.com", "github.com", "www.google.co.uk"]);
 });
 
 test("nothing is noted, and no cookie set, for a browser that has not agreed, a program, or a page loaded ahead of time", async t => {
@@ -592,20 +601,20 @@ test("an account an operator made is told of once, with no visitor, and only whe
 });
 
 test("a new agent says how it was made and whether it is the account's first", async t => {
-  const { db, accounts, journey, signIn, outbox } = await setup(t);
+  const { db, accounts, journey, signIn, outbox, added } = await setup(t);
   const agents = async () => (await outbox()).filter(row => row.body.name === "run_agent_created").map(row => [row.body.properties, row.body.visitor_id]);
   await signIn();
-  await journey!.agentCreated({ tenant: "octocat", via: "console", browser: AGREED });
-  await journey!.agentCreated({ tenant: "octocat", via: "mcp" });
-  await journey!.agentCreated({ tenant: "octocat", via: "api" });
-  assert.deepEqual(await agents(), [[{ is_first: true, created_via: "console" }, VISITOR], [{ is_first: false, created_via: "mcp" }, null], [{ is_first: false, created_via: "api" }, null]]);
+  t.mock.method(Date, "now", () => 1_792_450_800_000);
+  for (const via of ["console", "mcp", "api"] as const) {
+    const events = await added(() => journey!.agentCreated({ tenant: "octocat", via, ...(via === "console" ? { browser: AGREED } : {}) }));
+    assert.deepEqual(events.filter(event => event.name === "run_agent_created").map(event => [event.properties, event.visitor_id]), [[{ is_first: via === "console", created_via: via }, via === "console" ? VISITOR : null]]);
+  }
   // An older account with agents already: its next is not its first. A browser that refused is not recorded.
   await accounts.tenantForGoogle({ sub: "google-sub-1", email: "old@elsewhere.test" });
   const old = (await db.query("select id from tenants where google_sub = 'google-sub-1'")).rows[0].id;
   await journey!.signedIn({ tenant: old, method: "google", surface: "console", browser: AGREED });
   await db.query("insert into agents (id, tenant, header, revision, name, type, model) values ('client_a', $1, '{}', 1, 'a', 't', 'm'), ('client_b', $1, '{}', 1, 'b', 't', 'm')", [old]);
-  await journey!.agentCreated({ tenant: old, via: "api" });
-  assert.deepEqual((await agents()).at(-1), [{ is_first: false, created_via: "api" }, null]);
+  assert.deepEqual((await added(() => journey!.agentCreated({ tenant: old, via: "api" }))).filter(event => event.name === "run_agent_created").map(event => [event.properties, event.visitor_id]), [[{ is_first: false, created_via: "api" }, null]]);
   await journey!.agentCreated({ tenant: old, via: "console", browser: { visitor: null, consent: "denied", collect: false } });
   assert.equal((await agents()).length, 4);
 });

@@ -8,8 +8,8 @@ import { fileURLToPath } from "node:url";
  * under the job's AGENT_HOSTING. Files are dealt longest first to the shard with the least
  * time so far, by their seconds in tests/timings.json, so every shard gets the same files on
  * every runner and together they run each file once. A file the table does not know counts
- * as DEFAULT_SECONDS. `test-shard.ts --plan 12` prints every shard, for twelve shards a mode (CI's
- * count, the default; `--plan 12 10` for ten inline).
+ * as DEFAULT_SECONDS. `test-shard.ts --plan 6` prints every shard, for six shards a mode
+ * (larger hosted runners; the default is twelve; `--plan 12 10` for ten inline).
  *
  * Every shard also records each file's wall time as CI runs it (TEST_CONCURRENCY files at once) in
  * test-timings/<hosting>-<index>of<count>.json (scripts/test-timings-reporter.ts), kept as the run's
@@ -26,7 +26,11 @@ const DEFAULT_SECONDS = 5;
 const RETRY_FILES = 3;
 // Per test file as well as per test: the longest cluster files (tests/cluster-fresh-lease-*) run past two minutes on a CI runner.
 // Keep CI's file concurrency independent of the shared host's CPU count.
-const TEST_ARGS = ["--experimental-strip-types", "--test", `--test-concurrency=${process.env.TEST_CONCURRENCY ?? 1}`, "--test-timeout=240000"];
+const TEST_ARGS = [
+  "--experimental-strip-types", "--test-timeout=240000",
+  ...(process.env.TEST_DATABASE_PER_FILE === "true" ? ["--import", "./scripts/test-worker-database.ts"] : []),
+  fileURLToPath(new URL("test-files.ts", import.meta.url)),
+];
 const tests = new URL("../tests/", import.meta.url);
 const timingsFile = new URL("timings.json", tests);
 const files = readdirSync(tests).filter(name => name.endsWith(".test.ts")).sort();
@@ -36,12 +40,7 @@ const inlineOnly = (file: string) => file.startsWith("sim-") || file === "sim.te
 const filesFor = (hosting: string) => files.filter(file => hosting === "inline" || !inlineOnly(file));
 
 function run(args: string[], timingsOut: string, failuresOut: string) {
-  const reporters = [
-    `--test-reporter=${process.stdout.isTTY ? "spec" : "tap"}`, "--test-reporter-destination=stdout",
-    `--test-reporter=${fileURLToPath(new URL("test-timings-reporter.ts", import.meta.url))}`, `--test-reporter-destination=${timingsOut}`,
-    `--test-reporter=${fileURLToPath(new URL("test-failures-reporter.ts", import.meta.url))}`, `--test-reporter-destination=${failuresOut}`,
-  ];
-  return spawnSync(process.execPath, [...TEST_ARGS, ...reporters, ...args], { stdio: "inherit", cwd: fileURLToPath(new URL("..", import.meta.url)) }).status ?? 1;
+  return spawnSync(process.execPath, [...TEST_ARGS, timingsOut, failuresOut, ...args], { stdio: "inherit", cwd: fileURLToPath(new URL("..", import.meta.url)) }).status ?? 1;
 }
 
 function* jsonFiles(dir: string): Generator<string> {

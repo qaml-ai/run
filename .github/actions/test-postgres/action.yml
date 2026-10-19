@@ -1,0 +1,35 @@
+name: Test Postgres
+description: Start an isolated disposable database with test-only durability settings.
+inputs:
+  image:
+    description: Postgres image available to this runner.
+    default: postgres:16-alpine
+outputs:
+  container:
+    description: Container to remove after the tests.
+    value: ${{ steps.postgres.outputs.container }}
+  port:
+    description: Loopback port of the database.
+    value: ${{ steps.postgres.outputs.port }}
+runs:
+  using: composite
+  steps:
+    - id: postgres
+      shell: bash
+      env:
+        POSTGRES_IMAGE: ${{ inputs.image }}
+      run: |
+        id=$(docker run -d --rm --tmpfs /var/lib/postgresql/data \
+          -e POSTGRES_PASSWORD=test -p 127.0.0.1::5432 "$POSTGRES_IMAGE" \
+          -c max_connections=1000 -c fsync=off -c synchronous_commit=off -c full_page_writes=off)
+        echo "container=$id" >> "$GITHUB_OUTPUT"
+        for _ in $(seq 1 60); do
+          if docker exec "$id" pg_isready -U postgres -h 127.0.0.1 >/dev/null 2>&1; then
+            address=$(docker port "$id" 5432/tcp | head -n 1)
+            echo "port=${address##*:}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          sleep 0.2
+        done
+        docker logs "$id"
+        exit 1
