@@ -213,15 +213,20 @@ export function interruption(options: Pick<VoiceOptions, "interruption">): Barge
   return { ...DEFAULT_BARGE_IN, ...options.interruption };
 }
 
-/** `bargeIn` as given: true, false, or {minMs, confirmMs, resumeMs} (barge-in on, with that timing). */
+/** `bargeIn` as given: true, false, or {minMs, confirmMs, resumeMs, backchannels} (barge-in on, with that timing). */
 function bargeInInput(value: unknown): { on: boolean; policy?: BargeInPolicy } {
   if (value === undefined) return { on: true };
   if (typeof value === "boolean") return { on: value };
-  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new HttpError(400, "bargeIn must be true, false or {minMs, confirmMs, resumeMs}");
-  only(value as Record<string, unknown>, "bargeIn", ["minMs", "confirmMs", "resumeMs"]);
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new HttpError(400, "bargeIn must be true, false or {minMs, confirmMs, resumeMs, backchannels}");
+  only(value as Record<string, unknown>, "bargeIn", ["minMs", "confirmMs", "resumeMs", "backchannels"]);
   const given = value as Record<string, unknown>;
-  const field = (name: keyof BargeInPolicy) => integer(given[name], `bargeIn.${name}`, { default: DEFAULT_BARGE_IN[name], ...BARGE_IN_LIMITS[name] });
-  return { on: true, policy: { minMs: field("minMs"), confirmMs: field("confirmMs"), resumeMs: field("resumeMs") } };
+  const field = (name: "minMs" | "confirmMs" | "resumeMs") => integer(given[name], `bargeIn.${name}`, { default: DEFAULT_BARGE_IN[name], ...BARGE_IN_LIMITS[name] });
+  const extra = given.backchannels;
+  if (extra !== undefined && (!Array.isArray(extra) || extra.length > BARGE_IN_LIMITS.backchannels || extra.some(word => typeof word !== "string" || !word.trim() || word.length > 40))) {
+    throw new HttpError(400, `bargeIn.backchannels must be at most ${BARGE_IN_LIMITS.backchannels} words or short phrases (1 to 40 characters)`);
+  }
+  const backchannels = [...new Set(((extra as string[] | undefined) ?? []).map(word => word.trim().toLowerCase()))];
+  return { on: true, policy: { minMs: field("minMs"), confirmMs: field("confirmMs"), resumeMs: field("resumeMs"), ...(backchannels.length ? { backchannels } : {}) } };
 }
 
 function text(value: unknown, name: string, pattern: RegExp, hint: string) {
@@ -970,6 +975,8 @@ export class VoiceSessions {
         } else held.media?.resume();
       },
       speechProgress: (speaker, speechMs) => { if (current()) held.guard?.progress(speaker, speechMs); },
+      // Smart turns: a turn too short to be an utterance (a cough) ends a barge-in pause it made, at once.
+      turn: event => { if (current() && event.type === "turn_end") held.guard?.ended(event.speaker, event.speechMs); },
       pcm: (speaker, pcm) => { if (current()) this.liveAudio(held, speaker, pcm); },
       drop: speaker => held.live?.get(speaker)?.stream.clear(),
       cut: cut => this.cut(held, cut),
@@ -1203,7 +1210,10 @@ export class VoiceSessions {
     // The words decide a barge-in pause this utterance made, if one is still open. An utterance that is the bot's own
     // speech coming back (echo) is still billed and sent to webhooks (marked echo, for apps to drop), but no agent hears
     // it, and no reply waits on it.
-    const echo = this.held.get(origin.id)?.guard?.heard(cut.speaker, transcript.text, true, cut.startedAt) === "echo";
+    const verdict = this.held.get(origin.id)?.guard?.heard(cut.speaker, transcript.text, true, cut.startedAt);
+    const echo = verdict === "echo";
+    // Said over the bot only to show they listen ("mm-hm"): delivered as such, and no agent hears it as a turn.
+    const backchannel = verdict === "backchannel";
     if (turn) {
       turn.mark("transcript");
       Object.assign(turn.info, { live: this.liveModel(transcript), sttModel: transcript.model });
@@ -1221,7 +1231,7 @@ export class VoiceSessions {
       if (current && transcript.text && current.options.deliver.webhooks) {
         await enqueueEvents(sql, [this.event(current, "voice.utterance", {
           speakerId: cut.speaker, seq: current.utterances, text: transcript.text, language: transcript.language ?? options.language ?? null,
-          seconds: cut.seconds, startedAt: cut.startedAt, endedAt: cut.endedAt, ended: cut.ended, costUsd: usd, ...(echo ? { echo: true } : {}),
+          seconds: cut.seconds, startedAt: cut.startedAt, endedAt: cut.endedAt, ended: cut.ended, costUsd: usd, ...(echo ? { echo: true } : {}), ...(backchannel ? { backchannel: true } : {}),
         }, `voice:${origin.id}:utterance:${current.utterances}`)]);
       }
       return current;
@@ -1231,15 +1241,15 @@ export class VoiceSessions {
     if (turn && row) turn.info.seq = row.utterances;
     // A browser call's page sees each utterance as it is transcribed (it needs no webhook).
     if (row && transcript.text) this.held.get(origin.id)?.media?.notify?.({
-      type: "utterance", speakerId: cut.speaker, seq: row.utterances, text: transcript.text, startedAt: cut.startedAt, endedAt: cut.endedAt, ended: cut.ended, ...(echo ? { echo: true } : {}),
+      type: "utterance", speakerId: cut.speaker, seq: row.utterances, text: transcript.text, startedAt: cut.startedAt, endedAt: cut.endedAt, ended: cut.ended, ...(echo ? { echo: true } : {}), ...(backchannel ? { backchannel: true } : {}),
       ...(turn ? { turnCommitMs: turn.stages().turnCommit } : {}), transcriptMs: Math.max(0, Math.round(clock().now() - cut.endedAt)),
     });
-    console.log(JSON.stringify({ type: "voice_utterance", session: origin.id, seq: row?.utterances, seconds: cut.seconds, billedSeconds: transcript.seconds, ended: cut.ended, empty: !transcript.text, ...(echo ? { echo: true } : {}), ms: Date.now() - started, live: this.liveModel(transcript), speechEndToTextMs: clock().now() - cut.endedAt }));
+    console.log(JSON.stringify({ type: "voice_utterance", session: origin.id, seq: row?.utterances, seconds: cut.seconds, billedSeconds: transcript.seconds, ended: cut.ended, empty: !transcript.text, ...(echo ? { echo: true } : {}), ...(backchannel ? { backchannel: true } : {}), ms: Date.now() - started, live: this.liveModel(transcript), speechEndToTextMs: clock().now() - cut.endedAt }));
     if (!row) return;
     const local = this.held.get(origin.id);
     if (local) local.row = { ...local.row, last_speech_at: row.last_speech_at, utterances: row.utterances };
     const agent = row.options.deliver.agent;
-    if (!transcript.text || echo) return;
+    if (!transcript.text || echo || backchannel) return;
     // A reply the session does not speak itself is the app's (POST …/speak) or a prompt's (speak): the turn waits for it.
     if (turn && !(agent && row.options.agentReplies && this.options.submitStreaming) && this.held.get(origin.id)?.claim === origin.claim) this.waitingTurns.wait(origin.id, turn);
     if (!agent) return;

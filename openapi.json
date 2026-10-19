@@ -1032,6 +1032,13 @@
               "costUsd": {
                 "type": "number"
               },
+              "backchannel": {
+                "type": "boolean",
+                "enum": [
+                  true
+                ],
+                "description": "Present when it was said over the bot and was only a backchannel (mm-hm, yeah, ok…): the bot went on. It is not sent to deliver.agent and nothing replies to it"
+              },
               "echo": {
                 "type": "boolean",
                 "enum": [
@@ -9255,6 +9262,12 @@
               },
               "resumeMs": {
                 "type": "number"
+              },
+              "backchannels": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
               }
             },
             "required": [
@@ -9550,12 +9563,24 @@
                     "minimum": 500,
                     "maximum": 10000,
                     "description": "The longest pause (ms): then it stops if they are still talking, else goes on. Default 3000"
+                  },
+                  "backchannels": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "description": "More words or short phrases that only show someone listens, beyond those built in (mm-hm, yeah, ok, sí, ja, 嗯, はい… in about 20 languages): said over the bot, it goes on",
+                    "example": [
+                      "bet",
+                      "word"
+                    ]
                   }
                 },
                 "additionalProperties": false
               }
             ],
-            "description": "With speak: a person talking over the bot stops its speech and what it was going to say. It pauses first, and goes on if what it heard was its own words coming back through someone's speakers (echo). true, false, or the timing. Default true"
+            "description": "With speak: a person talking over the bot stops its speech and what it was going to say. It pauses first, and goes on if what it heard was its own words coming back through someone's speakers (echo), only a backchannel (mm-hm, yeah…), or a sound too short to be words (with endOfTurn smart). true, false, or the timing. Default true"
           },
           "voice": {
             "type": "string",

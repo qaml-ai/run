@@ -17,6 +17,10 @@ import { clock as nodeClock, type Clock } from "../node-context.ts";
  * 3. Without words: speech that goes on for `confirmMs` after the pause stops the bot. Echo cannot do that, because
  *    pausing silences what it echoes. At `resumeMs` the pause ends either way: the bot stops if they are still
  *    talking, and resumes if not.
+ * 4. Someone showing they listen is not taking the turn: an utterance whose words are all backchannels ("mm-hm",
+ *    "yeah", "ok", "sí", "ja", "嗯", "はい"... `BACKCHANNELS`, and the session's `backchannels`) resumes the bot, and is
+ *    not a turn of theirs either. A sound too short to be an utterance (a cough, a click) resumes it as it ends
+ *    (`ended`), rather than at `resumeMs`.
  *
  * The guard only makes decisions; the session pauses, resumes and stops. Times come from the node's clock.
  */
@@ -31,13 +35,55 @@ export type BargeInPolicy = {
   confirmMs: number;
   /** The longest pause (ms): then the bot stops if they are still talking, else goes on. */
   resumeMs: number;
+  /** More backchannels (words or short phrases), beyond BACKCHANNELS. */
+  backchannels?: string[];
 };
 
 export const DEFAULT_BARGE_IN: Readonly<BargeInPolicy> = Object.freeze({ minMs: 300, confirmMs: 1_000, resumeMs: 3_000 });
+
+/**
+ * Words people say to show they listen, not to take the turn, in the languages Smart Turn knows and a few more. Matched
+ * against a whole transcript, folded, word by word (or pair by pair); CJK, which has no spaces, as a whole or by its
+ * characters.
+ */
+export const BACKCHANNELS: readonly string[] = Object.freeze([
+  // English
+  "mm", "mmm", "mhm", "mmhm", "mm hm", "mm hmm", "uh huh", "uhhuh", "hmm", "hm", "yeah", "yea", "yep", "yup", "yes", "ok", "okay", "right", "sure",
+  "i see", "got it", "cool", "nice", "wow", "oh", "ah", "aha", "true", "exactly", "totally", "indeed", "alright", "all right", "go on", "sounds good",
+  // Spanish, Portuguese, Italian, French
+  "si", "vale", "claro", "ya", "aja", "bueno", "sim", "ta", "uhum", "isso", "certo", "beleza", "va bene", "esatto", "oui", "ouais", "d accord", "daccord", "dac", "voila", "exact", "bien sur",
+  // German, Dutch, Scandinavian
+  "ja", "genau", "jo", "stimmt", "klar", "achso", "ach so", "jawohl", "precies", "inderdaad", "klopt", "jaha",
+  // Slavic, Turkish, Finnish
+  "da", "tak", "ага", "да", "угу", "так", "evet", "tamam", "joo", "niin", "kylla",
+  // Hindi, Bengali, Marathi, Arabic, Indonesian, Vietnamese
+  "haan", "han", "accha", "achha", "theek", "ji", "हाँ", "हां", "अच्छा", "ঠিক", "হ্যাঁ", "होय", "نعم", "اه", "أيوه", "iya", "oke", "vang", "da", "u",
+  // Chinese, Japanese, Korean
+  "嗯", "对", "對", "是", "好", "哦", "はい", "うん", "ええ", "そう", "なるほど", "네", "응", "예", "그래",
+]);
+
+/** Whether all of `text` is backchannel (and there is some text): each word, or pair of words, in the lexicon. */
+export function isBackchannel(text: string, extra: readonly string[] = []) {
+  const lexicon = new Set([...BACKCHANNELS, ...extra].map(fold).filter(Boolean));
+  const heard = words(text);
+  if (!heard.length) return false;
+  // CJK has no spaces: a short run that is in the lexicon whole, or made of its one-character words.
+  if (heard.length === 1 && /[\p{sc=Han}\p{sc=Hiragana}\p{sc=Katakana}\p{sc=Hangul}]/u.test(heard[0])) {
+    return lexicon.has(heard[0]) || (heard[0].length <= 6 && [...heard[0]].every(char => lexicon.has(char)));
+  }
+  for (let i = 0; i < heard.length;) {
+    if (i + 1 < heard.length && lexicon.has(`${heard[i]} ${heard[i + 1]}`)) { i += 2; continue; }
+    if (!lexicon.has(heard[i])) return false;
+    i++;
+  }
+  return true;
+}
 export const BARGE_IN_LIMITS = Object.freeze({
   minMs: { min: 0, max: 2_000 },
   confirmMs: { min: 0, max: 5_000 },
   resumeMs: { min: 500, max: 10_000 },
+  /** More backchannels a session may name. */
+  backchannels: 50,
 });
 
 /** Speech heard within this long (ms) of now counts as still talking. */
@@ -123,7 +169,7 @@ export function echoVerdict(heard: string, spoken: readonly string[]): EchoVerdi
 /** Why a candidate stopped the bot, or why it did not. */
 export type BargeInOutcome =
   | { type: "confirmed"; why: "words" | "sustained" | "immediate"; pausedMs: number; speechMs: number }
-  | { type: "echo_rejected"; why: "echo" | "no_words" | "timeout"; pausedMs: number; speechMs: number; score?: number };
+  | { type: "echo_rejected"; why: "echo" | "no_words" | "timeout" | "backchannel" | "ended"; pausedMs: number; speechMs: number; score?: number };
 
 export type GuardHooks = {
   /** Whether the bot is saying something now (being made or playing). */
@@ -198,7 +244,7 @@ export class BargeInGuard {
    * (`final`, with the utterance's start, so an earlier utterance's late transcript is not taken for this one's). Answers
    * the verdict when it decided a candidate.
    */
-  heard(speaker: string, text: string, final: boolean, startedAt?: number): EchoVerdict["verdict"] | undefined {
+  heard(speaker: string, text: string, final: boolean, startedAt?: number): EchoVerdict["verdict"] | "backchannel" | undefined {
     const candidate = this.candidates.get(speaker);
     if (!candidate) {
       const echoedAt = this.echoed.get(speaker);
@@ -211,6 +257,12 @@ export class BargeInGuard {
     if (final) this.echoed.delete(speaker);
     // An utterance cut before this one began.
     if (startedAt !== undefined && startedAt < candidate.startedAt - 250) return undefined;
+    // Only backchannels so far: not someone taking the turn. A partial may yet go on ("yeah, but..."): it waits.
+    if (isBackchannel(text, this.policy.backchannels)) {
+      if (!final) return undefined;
+      this.release(candidate, "backchannel");
+      return "backchannel";
+    }
     const verdict = echoVerdict(text, this.hooks.spoken());
     // A partial transcript's first words may be a first guess, or the start of someone quoting the bot: it takes two
     // words or more to stop the bot, and three to resume it. The whole transcript decides at once.
@@ -226,6 +278,17 @@ export class BargeInGuard {
       return verdict.heard ? "echo" : "unsure";
     }
     return undefined;
+  }
+
+  /**
+   * A speaker's turn ended with `speechMs` of speech (turn-taking's turn_end). Too short to be an utterance (under
+   * `minUtteranceMs`, it is never transcribed: a cough, a click), it was not someone taking the turn: the bot resumes now
+   * rather than at resumeMs. A longer one waits for its words (`heard`).
+   */
+  ended(speaker: string, speechMs: number, minUtteranceMs = 300) {
+    const candidate = this.candidates.get(speaker);
+    if (!candidate || speechMs >= minUtteranceMs) return;
+    this.release(candidate, "ended");
   }
 
   /** The bot stopped for another reason (interrupt, DELETE, the session ending): no candidate is left. */
@@ -253,7 +316,7 @@ export class BargeInGuard {
   }
 
   /** Not someone talking: forgotten; playback resumes once no other candidate holds the pause. */
-  private release(candidate: Candidate, why: "echo" | "no_words" | "timeout", score?: number) {
+  private release(candidate: Candidate, why: Extract<BargeInOutcome, { type: "echo_rejected" }>["why"], score?: number) {
     this.clock.clearTimeout(candidate.timer);
     this.candidates.delete(candidate.speaker);
     if (this.candidates.size) return;
