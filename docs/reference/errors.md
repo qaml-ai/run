@@ -33,12 +33,13 @@ retry.
 | 400 | `FORK_POINT_INVALID` | A fork's `atMessage` is not an index in the agent's history, nor a request id one of its messages carries |
 | 401 | `UNAUTHORIZED` | No valid token; the message says where to create one (https://run.camelai.com/console/tokens) |
 | 402 | `SPEND_LIMIT` | A spend limit is reached: the agent's, or the account's monthly cap; or a message's audio, or an image, would cost more than the run's or agent's spend limit has left |
-| 402 | `INSUFFICIENT_CREDIT` | The account's prepaid credit is spent: no runs start and no files are stored |
-| 402 | `END_USER_CREDIT` | With [end-user credits](../guides/end-user-credits.md) on: the run's or call's end user (its subject) has nothing left in its bucket: no allowance today and no balance (`reason: "balance"`), or their daily limit is reached (`reason: "daily_limit"`). The body names `endUser` and `bucket`. Grant them credit, or wait for tomorrow's allowance |
+| 402 | `INSUFFICIENT_CREDIT` | The account's prepaid credit is spent (or a payment for it is disputed): no runs start and no files are stored |
+| 402 | `END_USER_CREDIT` | With [end-user credits](../guides/end-user-credits.md) on: the run's or call's end user (its subject) may not spend more in its bucket. The body names whose (`endUser`), which `bucket`, and why (`reason`, one of the [credit reasons](#end-user-credit-reasons)). Grant them credit, raise the limit, or wait for tomorrow's allowance |
 | 403 | `FORBIDDEN` | The token may not do this |
 | 404 | `NOT_FOUND` | No such agent, request, input or other resource for this account, or no such path at all (the message points at `/llms.txt`) |
 | 409 | `IDEMPOTENCY_CONFLICT` | The Idempotency-Key or request id was used for another request |
 | 409 | `IDEMPOTENCY_IN_PROGRESS` | The first request with this Idempotency-Key is still running; retry |
+| 409 | `INSUFFICIENT_BALANCE` | An end user's refund would return more than their balance not held by calls in flight; `refundable` in the body is the most it may return now (micro-USD). Post an adjustment to correct a balance |
 | 409 | `VOICE_SESSION_EXISTS` | The bot already has a voice session in this server (`session` names it): update or end it |
 | 409 | `VOICE_SESSION_ENDED` | The voice session ended; start a new one |
 | 409 | `VOICE_SPEAK_DISABLED` | The voice session listens only (`brain: "listen"`) and never speaks |
@@ -116,11 +117,29 @@ A run ends in one of three ways: it answered, it waits on people
 | `model_error` | `result.error` is set | The model provider refused or failed (after 3 retries for transient failures): a bad request, content refused, context overflow that compaction could not fix |
 | `output_missing` | `result.code` (with `result.error`) | A run sent with `output` ended without the model calling `final_output`: it answered in prose twice, the second time after a reminder. `text` has what it said. Send the prompt again, make the instructions say what the answer is for, or use a stronger model |
 | `output_invalid` | (the SDKs only) | The output fit the JSON Schema the runtime checked, but not the zod or pydantic schema the SDK parsed it with (a refinement or validator the JSON Schema cannot say) |
-| `spend_limit` | `result.stopped: "spend_limit"` | A spend limit stopped the turn after the response that crossed it; its tool calls ran. `result.limit` says which: `run` (the run's own `spendLimit`), `agent`, `tenant` (the monthly cap) or `credit` (prepaid credit spent). Raise that limit and send the next message |
+| `spend_limit` | `result.stopped: "spend_limit"` | A spend limit stopped the turn after the response that crossed it (its tool calls ran), or refused the run as it came to start in the queue. `result.limit` says which: `run` (the run's own `spendLimit`), `agent`, `tenant` (the monthly cap) or `credit` (prepaid credit spent). Raise that limit and send the next message |
 | `turn_limit` | `result.stopped: "turn_limit"` | The run made as many model responses (1,000 by default) or ran as long (2 hours) as its [run limits](../guides/models-and-keys.md#run-limits) allow; the turn stopped after that response's tool calls. Send another message to continue, or raise the agent's `runLimits` |
-| `end_user_credit` | `result.stopped: "spend_limit"`, `limit: "end_user"`, `reason` | The run's [end user](../guides/end-user-credits.md) ran out of credit: a model call was refused, or cut where its hold ended mid-reply (what streamed is kept). `reason` is `balance` or `daily_limit`. Not retried. Grant them credit and send the next message |
-| `runtime_error` | `outcome.error` (no `result`) | The runtime could not carry the run out: e.g. the agent was deleted, code execution failed, a queued run refused for credit |
+| `end_user_credit` | `result.stopped: "spend_limit"`, `limit: "end_user"`, `reason`, `bucket`, `endUser` | The run's [end user](../guides/end-user-credits.md) may not spend more: the run was refused as it came to start in the queue, a model call was refused, or one was cut where its hold ended mid-reply (what streamed is kept). `reason` is one of the [credit reasons](#end-user-credit-reasons). Not retried. Grant them credit and send the next message |
+| `runtime_error` | `outcome.error` (no `result`) | The runtime could not carry the run out: e.g. the agent was deleted, or code execution failed |
 | (any, with `uncertain`) | `outcome.uncertain: true` | A restart cut the run short where it could not resume (a code execution, or a turn resumed twice already): its tool calls may or may not have taken effect. Check before retrying |
+
+### End-user credit reasons
+
+When an end user's credit refuses or stops work, every path says so the same way: a 402's `code: "END_USER_CREDIT"`,
+a run's `code: "end_user_credit"` (refused as it started, stopped mid-way, or a sub-agent's notification refused as it
+landed), the `run.failed` webhook, and `voice.session.ended`'s `endUserReason` (with `limit: "end_user"`). Each carries
+`reason`, `bucket` (the bucket refused) and `endUser` (whose credit). `reason` is one of:
+
+| `reason` | Meaning | What the end user can do |
+| --- | --- | --- |
+| `balance` | Nothing is left of the bucket's free allowance today, and their paid balance has nothing left (after what calls in flight hold) | Add credit (a `grant`), or wait for tomorrow's allowance |
+| `daily_limit` | Their own daily credit limit on paid spend (`dailyLimit`, theirs or the tenant's) is reached | Wait for tomorrow, or have the limit raised |
+| `bucket_limit` | The bucket's own daily limit on paid spend (`bucketLimits`) is reached. A bucket limited to 0 spends only its free allowance, never the balance | Wait for tomorrow's allowance, or have the bucket's limit raised |
+
+The SDKs type these as `CREDIT_REASONS` (TypeScript: `CreditReason`), put them on `AgentError` (`reason`, `bucket`,
+`endUser`; Python `end_user`) and on a run's error, and `endUserCredit(errorOrRun)` (Python `end_user_credit`) reads
+them from any of these in one shape. The messages are for people and may change: branch on `code` and `reason`. More
+reasons may be added: treat one you do not know as a credit refusal of no particular kind.
 
 ### Model failures
 

@@ -342,7 +342,13 @@ with Agents() as agents:  # CAMELAI_API_KEY
 - `AgentError`: `status` (HTTP, or 0), `code` (a stable name where the runtime
   gives one: `APPLICATION_CONNECTED`, `APPLICATION_REPLACED`, `REPLAY_GAP`,
   `spend_limit`, …), `requestId`, `uncertain`, `retryAfterMs` (Python
-  `request_id`, `retry_after` in seconds).
+  `request_id`, `retry_after` in seconds). With `END_USER_CREDIT` (a 402) or
+  `end_user_credit` (a run): `reason` (one of `CREDIT_REASONS`: `balance`,
+  `daily_limit`, `bucket_limit`), `bucket` and `endUser` (Python `end_user`); see
+  [credit reasons](errors.md#end-user-credit-reasons).
+- `endUserCredit(errorOrRun)` (Python `end_user_credit`): an end user's credit
+  refusal from a thrown error, a run or its error, in one shape
+  (`{ code: "end_user_credit", reason, bucket, endUser, message }`), else undefined.
 - `RunError extends AgentError`: a failed run, with `run`. When a model call failed it,
   `run.error` also has `errorClass` (`billing`, `rate_limit`, `server`, `refusal`, `auth`,
   `timeout`, `other`), `providerStatus`, `retryable` and `model`: branch on those, not the
@@ -600,6 +606,22 @@ changing its history with `agent.client.setMetadata({ name, type })`
 (`set_metadata(name=, type=)`). SDK-created agents appear in a local Studio
 (`npm run studio`) at `/studio/agents`; Studio observes the runtime, and your
 application keeps serving its tools.
+
+## 0.22.0 (TypeScript) / 0.18.0 (Python), 2026-10-19
+
+Needs runtime 0.11.0 or later (run.camelai.com has it).
+
+- End-user credits: `bucketLimits` on `configure`, `amend` (merge allowances and bucket limits key by key; Python
+  `amend`) and a person's `update`; buckets show `paidLimit`. `ledger` takes `kind`, `from`, `to`, `bucket` and `moved`;
+  `days(id, { from, to, bucket, limit })` gives per-day totals (`freeRaw`, `paidCharged`, grants, refunds,
+  adjustments). See [End-user credits](../guides/end-user-credits.md).
+- Credit refusals in code: `AgentError.reason`, `.bucket`, `.endUser` (Python `end_user`) on every 402; a run's error
+  has `limit`, `reason`, `bucket`, `endUser`, also for a run refused as it left the queue (was `runtime_error`);
+  `CREDIT_REASONS` (`balance`, `daily_limit`, `bucket_limit`) and `endUserCredit()` (Python `end_user_credit()`). See
+  [credit reasons](errors.md#end-user-credit-reasons).
+- Voice sessions speak (`speak`, voices per speech provider, speech and transcription provider chains, smart end of
+  turn, barge-in) and may use a realtime brain (beta).
+- `dataCollection: "deny"` on an agent.
 
 ## 0.21.0 (TypeScript) / 0.17.0 (Python), 2026-10-15
 

@@ -168,6 +168,7 @@ test("a child's spend is charged to its parent when its notification lands, and 
   await r.prompt(parent, "again");
   const [, second] = await notified(r, parent, 2);
   assert.equal(second.outcome.result.stopped, "spend_limit", JSON.stringify(second.outcome));
+  assert.deepEqual([second.outcome.result.code, second.outcome.result.limit], ["spend_limit", "agent"], "coded as the agent's own limit");
   assert.equal(second.outcome.result.usage.subagentCostUsd.toFixed(2), "0.15");
   assert.equal(second.outcome.result.usage.costUsd, 0, "no model response");
   const history = (await r.call(`/v1/agents/${parent}/history`)).json.messages;

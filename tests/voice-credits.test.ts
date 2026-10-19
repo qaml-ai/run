@@ -80,7 +80,7 @@ test("each response holds of the subject's credit before it is asked for, and se
   const session = await a.voice.get("alice", created.id);
   assert.deepEqual([session.endReason, session.limit, session.endUserReason], ["budget", "end_user", "balance"]);
   const [ended] = await cluster.events("voice.session.ended");
-  assert.deepEqual([ended.data.reason, ended.data.limit, ended.data.endUserReason], ["budget", "end_user", "balance"]);
+  assert.deepEqual([ended.data.reason, ended.data.limit, ended.data.endUserReason, ended.data.bucket], ["budget", "end_user", "balance", "bot:7"]);
 });
 
 test("a response that costs nothing (cancelled before it made anything) gives its hold back", async t => {

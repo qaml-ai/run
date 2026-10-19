@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { REAL_CLOCK } from "../src/node-context.ts";
 import { Mixer } from "../src/voice/realtime/mixer.ts";
-import { realtimeCost, realtimeTranscriptionCost, realtimeVoice } from "../src/voice/realtime/provider.ts";
+import { NO_USAGE, realtimeCost, realtimeTranscriptionCost, realtimeVoice } from "../src/voice/realtime/provider.ts";
 import { NOT_ADDRESSED_HINT, realtimeInstructions } from "../src/voice/realtime/brain.ts";
 import { fakeRealtimeProvider, sleep, testBrain, tone, until, utter } from "./voice-realtime-fakes.ts";
 
@@ -39,7 +40,7 @@ test("prices: tokens at OpenAI's list price, cached input at the cached rate; tr
   // A minute of a turn-based call: 1,000 audio tokens in (300 of them cached), 200 text in, 600 audio out, 50 text out.
   const usd = realtimeCost("openai/gpt-realtime-2.1", { inputAudio: 1_000, cachedAudio: 300, inputText: 200, cachedText: 0, outputAudio: 600, outputText: 50 });
   assert.equal(Math.round(usd * 1e6), Math.round((700 * 32 + 300 * 0.4 + 200 * 4 + 600 * 64 + 50 * 24)));
-  assert.equal(realtimeCost("openai/unknown", { inputAudio: 1, cachedAudio: 0, inputText: 0, cachedText: 0, outputAudio: 0, outputText: 0 }), 0);
+  assert.throws(() => realtimeCost("openai/unknown", NO_USAGE), /has no price configured/);
   assert.equal(realtimeTranscriptionCost(60), 0.0045);
   const { provider } = fakeRealtimeProvider();
   assert.equal(realtimeVoice(provider, "coral"), "coral");
@@ -348,5 +349,137 @@ test("two people at once: one turn ends while the other talks; one answer, to bo
   await until(() => !brain.speakingNow, "played");
   await sleep(30);
   assert.equal(c.responses, 1, "not a second answer to Ana's turn");
+  brain.close();
+});
+
+
+test("Grok prices audio minutes and text items independently of token counts", () => {
+  for (const reference of ["grok/grok-voice-latest", "grok/grok-voice-3.0"]) {
+    assert.equal(realtimeCost(reference, NO_USAGE, 60), 0.08);
+    assert.equal(realtimeCost(reference, { ...NO_USAGE, inputAudio: 100_000, outputText: 9_000 }, 30, 2), 0.048);
+    assert.equal(realtimeCost(reference, NO_USAGE), 0);
+  }
+});
+
+test("Grok holds before connecting, settles wire audio and notes, and flushes unanswered input at close", async () => {
+  const settlements: number[] = [];
+  let holds = 0, releases = 0;
+  const { brain, connection, usage, logs, heard } = testBrain({ reference: "grok/grok-voice-latest", hold: async () => {
+    holds++;
+    return { settle: async usd => { settlements.push(usd); }, release: async () => { releases++; } };
+  } });
+  assert.equal(holds, 0);
+  await until(() => holds === 1 && connection(), "initial hold and connection");
+  await utter(brain, "1", 600);
+  await until(() => connection().responses === 1, "response");
+  await connection().answer("grok_1", { ms: 400, usage: { inputAudio: 900_000 } });
+  await until(() => settlements.length === 1, "settled response");
+  assert.ok(Math.abs(settlements[0] - (1 / 60 * 0.08 + 0.004)) < 1e-12);
+  connection().events.heard(connection().of("commit")[0].tag, "hello", 0.6);
+  assert.equal(heard[0].costUsd, 0, "native transcription is included");
+  await utter(brain, "2", 200, { open: true });
+  brain.close();
+  await until(() => settlements.length === 2, "close settlement");
+  const total = settlements.reduce((sum, usd) => sum + usd, 0);
+  assert.ok(Math.abs(total - (1.2 / 60 * 0.08 + 2 * 0.004)) < 1e-12);
+  assert.equal(usage.reduce((sum, record) => sum + record.costUsd, 0), total);
+  assert.equal(brain.stats.costUsd, total);
+  assert.equal(logs.find(log => log.type === "voice_realtime_stats")?.fields?.costUsd, Math.round(total * 1e6) / 1e6);
+  assert.ok(holds >= 2);
+  assert.equal(releases, 0);
+});
+
+test("Grok renews credit during input without a response and charges cancelled output", async () => {
+  const settlements: number[] = [];
+  const { brain, connection, usage } = testBrain({ reference: "grok/grok-voice-3.0", hold: async () => ({
+    settle: async usd => { settlements.push(usd); }, release: async () => {},
+  }) });
+  await until(connection, "connection");
+  await utter(brain, "1", 20_000, { open: true });
+  await until(() => settlements.length > 0, "rolling settlement");
+  // Audio sent by the provider is billable even when no response can play it.
+  connection().events.audio("cancelled", tone(400));
+  brain.close();
+  await until(() => settlements.length === 2, "final settlement");
+  assert.ok(Math.abs(settlements.reduce((sum, usd) => sum + usd, 0) - (20.4 / 60 * 0.08 + 0.004)) < 1e-12);
+  assert.equal(usage.length, 2);
+});
+
+
+test("Grok refuses to connect without credit and releases a hold acquired after close", async () => {
+  const refused = testBrain({ reference: "grok/grok-voice-latest", refuse: true });
+  await until(() => refused.budget.length === 1, "budget refusal");
+  assert.equal(refused.realtime.connections.length, 0);
+  refused.brain.close();
+  let held = false, released = false;
+  let resolve!: (hold: { settle(usd: number): Promise<void>; release(): Promise<void> }) => void;
+  const closing = testBrain({ reference: "grok/grok-voice-latest", hold: () => {
+    held = true;
+    return new Promise(done => { resolve = done; });
+  } });
+  await until(() => held, "hold requested");
+  closing.brain.close();
+  resolve({ settle: async () => { assert.fail("nothing was sent"); }, release: async () => { released = true; } });
+  await until(() => released, "pending hold released");
+  assert.equal(closing.realtime.connections.length, 0);
+});
+
+test("Grok flushes a lost connection once and keeps the replacement behind a renewed hold", async () => {
+  const settlements: number[] = [];
+  let holds = 0, releases = 0;
+  const { brain, realtime, connection, usage } = testBrain({ reference: "grok/grok-voice-latest", hold: async () => {
+    holds++;
+    return { settle: async usd => { settlements.push(usd); }, release: async () => { releases++; } };
+  } });
+  await until(connection, "first connection");
+  await utter(brain, "1", 200, { open: true });
+  const first = connection();
+  first.events.closed("error", "disconnected");
+  first.events.meter?.(60, 1);
+  await until(() => realtime.connections.length === 2, "reconnected after settlement");
+  assert.equal(holds, 2);
+  assert.equal(settlements.length, 1);
+  assert.ok(Math.abs(settlements[0] - (0.2 / 60 * 0.08 + 0.004)) < 1e-12);
+  assert.equal(usage.length, 1, "stale events ignored");
+  brain.close();
+  await until(() => releases === 1, "unused replacement hold released");
+});
+
+
+test("Grok renews idle holds and periodically settles small amounts of unanswered audio", async () => {
+  let tick!: () => void;
+  let holds = 0, releases = 0;
+  const settlements: number[] = [];
+  const { brain, connection, usage } = testBrain({ reference: "grok/grok-voice-latest", clock: {
+    ...REAL_CLOCK, setInterval: (callback, ms) => { tick = callback; return REAL_CLOCK.setInterval(callback, ms); },
+  }, hold: async () => {
+    holds++;
+    return { settle: async usd => { settlements.push(usd); }, release: async () => { releases++; } };
+  } });
+  await until(connection, "connection");
+  tick();
+  await until(() => holds === 2, "idle hold renewed");
+  assert.equal(releases, 1);
+  assert.equal(usage.length, 0, "idle time is not billed with manual turns");
+  await utter(brain, "1", 200, { open: true });
+  tick();
+  await until(() => holds === 3, "partial input settled and held again");
+  assert.ok(Math.abs(settlements[0] - (0.2 / 60 * 0.08 + 0.004)) < 1e-12);
+  brain.close();
+  await until(() => releases === 2, "final hold released");
+  assert.equal(settlements.length, 1);
+});
+
+
+test("Grok stops on an end-user credit refusal when renewing its hold", async () => {
+  let holds = 0;
+  const { brain, connection, budget } = testBrain({ reference: "grok/grok-voice-latest", hold: async () => {
+    if (holds++) throw Object.assign(new Error("No credit"), { status: 402, code: "END_USER_CREDIT", details: { reason: "balance", bucket: "default" } });
+    return { settle: async () => {}, release: async () => {} };
+  } });
+  await until(connection, "connection");
+  await utter(brain, "1", 20_000, { open: true });
+  await until(() => budget.length === 1, "renewal refusal");
+  assert.deepEqual(budget, ["end_user"]);
   brain.close();
 });

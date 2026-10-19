@@ -51,8 +51,10 @@ Every event is an envelope:
 | `voice.speech.ended` | It ended | the voice facts, `speechId`, `reason`, `by`, `seconds`, `costUsd`, `brain` |
 | `billing.balance.low` | Funded balance crosses below the alert threshold (default $2) | `balance`, `previousBalance`, `threshold` (integer micro-USD), `source` |
 | `billing.balance.depleted` | Positive balance reaches zero or below | Same balance fields |
-| `end_user.balance.low` | An [end user's](end-user-credits.md) balance falls below your `lowBalance` | `endUser`, `balance`, `previousBalance`, `threshold` (integer micro-USD) |
-| `end_user.credit.exhausted` | An end user ran out: `reason` `allowance` (a bucket's free allowance for the day is used up; their balance may still pay), `balance` (their balance reached zero, or a call was refused for it), or `daily_limit` (their paid spend reached the daily limit) | `endUser`, `reason`, `bucket`, `balance`, `day`; `allowance` or `dailyLimit` for those reasons |
+| `end_user.balance.low` | An [end user's](end-user-credits.md) balance is below their threshold (their own `lowBalance`, else yours) | `endUser`, `balance`, `previousBalance`, `threshold` (integer micro-USD), `cause` |
+| `end_user.credit.exhausted` | An end user ran out: `reason` `allowance` (a bucket's free allowance for the day is used up; their balance may still pay), `balance` (their balance reached zero, or a call was refused for it), `daily_limit` (their paid spend reached the daily limit), or `bucket_limit` (a bucket's paid spend reached its own daily limit) | `endUser`, `reason`, `bucket`, `balance`, `day`; `allowance`, `dailyLimit` or `bucketLimit` for those reasons; `cause` with `balance` |
+| `end_user.credit.granted`, `end_user.credit.refunded`, `end_user.credit.adjusted` | You posted a grant, refund or adjustment to an end user's ledger (once per entry) | `endUser`, `entryId`, `kind`, `amount` (signed as in the ledger), `key`, `reference`, `metadata`, `balance`, `previousBalance` |
+| `end_user.allowance.low` | An end user's spend in a bucket passed your `allowanceWarningPercent` of its daily allowance (off by default) | `endUser`, `bucket`, `day`, `allowance`, `allowanceSpent`, `percent` |
 
 Billing events are recorded in the transaction that changes the balance, including
 usage, storage, refunds and adjustments. Remaining below a threshold does not
@@ -61,10 +63,15 @@ One charge can emit both types. A new account with no credit emits neither.
 A threshold change can emit `billing.balance.low` with `source: "threshold_changed"`
 and no `previousBalance`; ordinary crossings have `source: "balance"`.
 
-End-user events are recorded in the transaction that moves the end user's money. Each
-fires once per crossing: `end_user.balance.low` and `end_user.credit.exhausted`
-(`balance`) again only after a grant lifts the balance back past them, `allowance` once
-per end user, bucket and UTC day, `daily_limit` once per end user and day.
+End-user events are recorded in the transaction that moves the end user's money.
+`end_user.balance.low` and `end_user.credit.exhausted` (`balance`) carry a `cause` (what
+moved the balance: `usage`, `usage_correction`, `grant`, `refund`, `adjustment`,
+`refusal`, `threshold_changed`, with the ledger `entryId`). Each fires once until it is
+re-armed: by a grant or a positive adjustment, or by any move that lifts the balance
+back past it. Refunds are silent. The exact rules are in
+[When balance events fire](end-user-credits.md#when-balance-events-fire). `allowance`,
+`bucket_limit` and `end_user.allowance.low` fire once per end user, bucket and UTC day,
+and `daily_limit` once per end user and day.
 
 - Payloads are small: ids and the key facts. Read the rest with your API key: the
   run (`GET /v1/agents/:id/requests/:requestId`, with its reply in

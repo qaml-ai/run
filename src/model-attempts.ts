@@ -2,11 +2,11 @@ import { createHash } from "node:crypto";
 import { Accounts, applyUsageRows, type Totals } from "./accounts.ts";
 import { postLedger } from "./billing.ts";
 import { databaseUnavailable, databaseRetryable, transaction, type Db } from "./db.ts";
-import { platformUsage } from "./platform-pricing.ts";
+import { platformUsage, usageMissing } from "./platform-pricing.ts";
 import { enqueueEvents } from "./webhooks.ts";
 import { clock, network } from "./node-context.ts";
 import type { AttemptAck, ModelAttemptEvent } from "./model-attempt.ts";
-import { lockEndUser, settleUsage, utcDay, type EndUserCredits } from "./end-user-credits.ts";
+import { lockEndUser, settleUsage, unmarked, utcDay, type EndUserCredits } from "./end-user-credits.ts";
 import { catalogCost, costAt, UNPRICED_COST, unpricedCost } from "./platform-pricing.ts";
 import { usageCost } from "./webhooks.ts";
 
@@ -79,10 +79,12 @@ export class ModelAttempts {
       const metered = event.endUser && this.endUsers ? await this.hold(tenant, platform, platform && catalogPriced, event) : undefined;
       if (metered && "refused" in metered) return { tracked: false, refused: metered.refused };
       const prepaid = await this.accounts.billing.mode(tenant) === "prepaid";
-      await this.db.query(`insert into model_attempts (id,tenant,agent,provider,model,kind,platform,catalog_priced,prepaid,key_hash,context,started_at,updated_at,next_check_at,end_user,end_user_bucket)
-        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12,$13,$14,$15) on conflict (id) do nothing`,
+      // The host's estimate of its input is kept: a call whose usage never comes is billed by it (`settle`).
+      const inputTokens = Number(event.estimate?.inputTokens);
+      await this.db.query(`insert into model_attempts (id,tenant,agent,provider,model,kind,platform,catalog_priced,prepaid,key_hash,context,started_at,updated_at,next_check_at,end_user,end_user_bucket,estimated_input_tokens)
+        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12,$13,$14,$15,$16) on conflict (id) do nothing`,
         [event.id, tenant, agent, event.provider, event.model, event.kind, platform, catalogPriced, prepaid, event.keyHash, JSON.stringify(event.context ?? {}), event.at, Date.now() + 300_000,
-          metered ? metered.endUser : null, metered ? metered.bucket : null]);
+          metered ? metered.endUser : null, metered ? metered.bucket : null, Number.isFinite(inputTokens) && inputTokens > 0 ? Math.min(Math.round(inputTokens), 2_000_000_000) : null]);
       const row = (await this.db.query("select tenant,agent,provider,model from model_attempts where id=$1", [event.id])).rows[0];
       if (row.tenant !== tenant || row.agent !== agent || row.provider !== event.provider || row.model !== event.model) throw new Error("Model attempt identity mismatch");
       if (!metered) return true;
@@ -156,26 +158,35 @@ export class ModelAttempts {
       // The host's report ends the call: its end user's hold goes, spent or not (an outcome still unknown is posted when
       // it is known, as the tenant's charge is).
       // The end user's row first, as everything that touches their holds locks it (end-user-credits.ts).
+      let hold: { allowance: string; paid: string } | undefined;
       if (row.end_user && !reconciled) {
         await lockEndUser(sql, tenant, row.end_user);
-        await sql.query("delete from end_user_holds where id=$1", [id]);
+        hold = (await sql.query("delete from end_user_holds where id=$1 returning allowance, paid", [id])).rows[0];
       }
       // A provider-reconciled or completed record is final. Delayed host deliveries cannot overwrite it.
       if (row.state === "settled" || (!reconciled && !completed && row.totals)) return;
       const evidence = chars > 0 || [usage.input, usage.output, usage.cacheRead, usage.cacheWrite, usage.providerCost].some(value => typeof value === "number" && value > 0);
       if (!completed && !reconciled && !evidence) return; // Unknown is not a zero-cost final result.
+      // A call that reported nothing to bill it by (its usage never came: a stream that ended between its finish and its
+      // usage), or that was cut short, is billed an estimate: the input the host estimated at its begin, and what it
+      // streamed at two characters a token. It stays `estimated` where a provider's record may correct it (OpenRouter's);
+      // on a provider with no such record, the estimate is final.
+      const missing = !reconciled && usageMissing(usage) && typeof usage.providerCost !== "number";
+      const inputTokens = Number(usage.estimatedInputTokens ?? row.estimated_input_tokens ?? 0) || 0;
+      const estimate = !reconciled && (missing || !completed) ? { chars, inputTokens, completed } : undefined;
       const pricing = row.platform && row.catalog_priced && !(reconciled && usage.providerCost === 0)
-        ? platformUsage(usage, row.provider, row.model, completed || reconciled ? undefined : { chars, inputTokens: usage.estimatedInputTokens }) : { usage, estimated: false };
-      const final = reconciled || (completed && (!pricing.estimated || typeof usage.providerCost === "number"));
+        ? platformUsage(usage, row.provider, row.model, estimate) : { usage, estimated: false };
+      const reconcilable = row.provider === "openrouter";
+      const final = reconciled || (completed && (missing ? !reconcilable : !pricing.estimated || typeof usage.providerCost === "number"));
       const quote = this.accounts.quoteModelUsage(tenant, agent, { provider: row.provider, model: row.model, kind: row.kind === "compaction" ? "compaction" : undefined, platform: row.platform, timestamp: Number(row.started_at), ...row.context, usage: pricing.usage });
       const previous = row.totals ?? zero;
       const delta = Object.fromEntries(Object.keys(zero).map(key => [key, quote.totals[key as keyof Totals] - (previous[key] ?? 0)])) as Totals;
       const amount = row.prepaid ? quote.amount : 0;
       const adjustment = amount - Number(row.charge);
-      // What the call cost its end user: raw cost as the tenant pays for it; a call cut short on a key priced as
-      // reported (the tenant's own) at the estimate of what it streamed, as a platform call would be.
-      const endUserUsage = !row.end_user || completed || reconciled || (row.platform && row.catalog_priced) ? pricing.usage
-        : platformUsage(usage, row.provider, row.model, { chars, inputTokens: usage.estimatedInputTokens }).usage;
+      // What the call cost its end user: raw cost as the tenant pays for it; an estimated call on a key priced as
+      // reported (the tenant's own, an unbilled tenant's) at the estimate of what it streamed, as a platform call would be.
+      const endUserUsage = !row.end_user || !estimate || (row.platform && row.catalog_priced) ? pricing.usage
+        : platformUsage(usage, row.provider, row.model, estimate).usage;
       // On the platform's key it is what the tenant is charged for the call (the provider's price and the cost of funding
       // it), so a markup is over the tenant's real cost, not under it.
       let endUserRaw = !row.end_user ? 0 : row.platform && endUserUsage === pricing.usage && quote.amount > 0 ? quote.amount : Math.round(usageCost(endUserUsage).usd * 1_000_000);
@@ -189,20 +200,30 @@ export class ModelAttempts {
           console.error(JSON.stringify({ type: "end_user_unpriced_model", tenant, agent, attempt: id, provider: row.provider, model: row.model, raw }));
         }
       }
+      // An estimate is never charged past what the call held (the hold grows as it streams, so this binds only where the
+      // estimate counts high); its hold gone, past what it was charged when it ended.
+      const capped = !!row.end_user && !!estimate && typeof usage.providerCost !== "number";
+      const settings = capped && hold ? (await sql.query("select markup_bps from end_user_settings where tenant=$1", [tenant])).rows[0] : undefined;
+      const held = hold ? Number(hold.allowance) + unmarked(Number(hold.paid), Number(settings?.markup_bps ?? 0)) : row.totals ? Number(row.end_user_raw) : undefined;
+      if (capped && held !== undefined) endUserRaw = Math.min(endUserRaw, held);
+      if (missing && !row.totals) {
+        console.log(JSON.stringify({ type: "model_usage_missing", tenant, agent, attempt: id, kind: row.kind, provider: row.provider, model: row.model, host: usage.providerHost ?? null,
+          completed, generation: !!row.generation_id, inputTokens, chars, platform: row.platform, billed: row.prepaid ? quote.amount : 0, ...(row.end_user ? { endUserRaw, held: held ?? null } : {}) }));
+      }
       if (row.totals && adjustment === 0 && Object.values(delta).every(value => value === 0)
         && row.state === (final ? "settled" : "estimated") && endUserRaw === Number(row.end_user_raw)) return;
       const revision = row.revision + 1;
       if (row.end_user && endUserRaw !== Number(row.end_user_raw)) {
         const posted = await settleUsage(sql, {
           tenant, endUser: row.end_user, bucket: row.end_user_bucket, day: utcDay(Number(row.started_at)), raw: endUserRaw, key: `attempt:${id}:${revision}`,
-          previous: { raw: Number(row.end_user_raw), allowance: Number(row.end_user_allowance), paid: Number(row.end_user_paid) },
-          metadata: { call: row.kind === "compaction" ? "compaction" : "response", attempt: id, provider: row.provider, model: row.model, agent, ...(row.context?.requestId ? { requestId: row.context.requestId } : {}), ...(final ? {} : { estimated: true }) },
+          previous: { raw: Number(row.end_user_raw), allowance: Number(row.end_user_allowance), paid: Number(row.end_user_paid), writtenOff: Number(row.end_user_written_off ?? 0) },
+          metadata: { call: row.kind === "compaction" ? "compaction" : "response", attempt: id, provider: row.provider, model: row.model, agent, ...(row.context?.requestId ? { requestId: row.context.requestId } : {}), ...(final && !estimate ? {} : { estimated: true }) },
         });
-        await sql.query("update model_attempts set end_user_raw=$2, end_user_allowance=$3, end_user_paid=$4 where id=$1", [id, posted.raw, posted.allowance, posted.paid]);
+        await sql.query("update model_attempts set end_user_raw=$2, end_user_allowance=$3, end_user_paid=$4, end_user_written_off=$5 where id=$1", [id, posted.raw, posted.allowance, posted.paid, posted.writtenOff]);
       }
       await applyUsageRows(sql, [{ tenant, day: quote.day, model: quote.model, ...delta }]);
       if (adjustment) {
-        await postLedger(sql, [{ tenant, kind: "usage", amount: -adjustment, key: `model-attempt:${id}:${revision}`, metadata: { attempt: id, revision, reconciled, estimated: !final, tokens: Math.round((quote.totals.cost-previous.cost)*1e6), funding: adjustment-Math.round((quote.totals.cost-previous.cost)*1e6) } }]);
+        await postLedger(sql, [{ tenant, kind: "usage", amount: -adjustment, key: `model-attempt:${id}:${revision}`, metadata: { attempt: id, revision, reconciled, estimated: !final || !!estimate, tokens: Math.round((quote.totals.cost-previous.cost)*1e6), funding: adjustment-Math.round((quote.totals.cost-previous.cost)*1e6) } }]);
         // Correct the original minute, not the recovery worker's current hour. Old minutes cannot affect a current cap.
         const minute = Math.floor(Number(row.started_at) / 60_000);
         if (minute >= Math.floor((Date.now() - 3_600_000) / 60_000)) await sql.query(`insert into credit_spend_minutes (tenant,minute,amount) values ($1,$2,greatest(0,$3::bigint))

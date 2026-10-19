@@ -31,7 +31,7 @@ test("markup rounds what the user is charged up and what it pays for down", () =
 test("settings default to off, change field by field, and refuse what is not an amount", async () => {
   const { db } = await testDatabase();
   const credits = new EndUserCredits(db);
-  assert.deepEqual(await credits.settings("a"), { enabled: false, allowances: {}, bucketLimits: {}, dailyLimit: null, markupBps: 0, lowBalance: null, updatedAt: null });
+  assert.deepEqual(await credits.settings("a"), { enabled: false, allowances: {}, bucketLimits: {}, dailyLimit: null, markupBps: 0, lowBalance: null, allowanceWarningPercent: null, updatedAt: null });
   const set = await credits.setSettings("a", { enabled: true, allowances: { builder: 50 * USD, "bot:*": USD }, markupBps: 2_500 });
   assert.equal(set.enabled, true);
   assert.deepEqual(set.allowances, { builder: 50 * USD, "bot:*": USD });

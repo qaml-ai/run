@@ -618,11 +618,18 @@ export type WebhookEvent = { id: string; created: number } & (
       /** Integer micro-USD, including negative balances. */
       balance: number; threshold: number; previousBalance?: number; source: "balance" | "threshold_changed";
     } }
-  | { type: "end_user.balance.low"; data: { endUser: string; balance: number; previousBalance: number; threshold: number } }
+  | { type: "end_user.balance.low"; data: {
+      /** `threshold`: the one that applied (the person's own lowBalance, else the tenant's). */
+      endUser: string; balance: number; previousBalance: number; threshold: number; cause: EndUserBalanceCause;
+    } }
   | { type: "end_user.credit.exhausted"; data: {
       /** allowance: a bucket's free allowance for the day is used up (the balance may still pay); balance: no credit left; daily_limit: the day's paid spend reached its limit; bucket_limit: the bucket's paid spend reached its own. */
       endUser: string; reason: "allowance" | "balance" | "daily_limit" | "bucket_limit"; bucket: string | null; balance: number; day: string; allowance?: number; dailyLimit?: number | null; bucketLimit?: number | null;
+      /** With reason balance: what moved it. */
+      cause?: EndUserBalanceCause;
     } }
+  | { type: "end_user.credit.granted" | "end_user.credit.refunded" | "end_user.credit.adjusted"; data: EndUserEntryEvent }
+  | { type: "end_user.allowance.low"; data: { endUser: string; bucket: string; day: string; allowance: number; allowanceSpent: number; percent: number } }
   | { type: "run.started"; data: RunFacts & { resumes?: number } }
   | { type: "run.completed"; data: RunFacts & { usage: RunUsage | null; servedModel?: string; stopped?: "input_required" | "spend_limit" | "turn_limit"; inputIds?: string[]; replyIndex?: number; messageCount?: number; steeredInto?: string } }
   | { type: "run.failed"; data: RunFacts & Partial<ModelFailure> & { usage: RunUsage | null; servedModel?: string; error: string; code?: string; uncertain?: boolean; steeredInto?: string } }
@@ -739,16 +746,32 @@ export interface RequestOptions {
 export interface RunRequestOptions extends RequestOptions { allowDisconnected?: boolean }
 /** Who sent a message: `id` is yours and the model may rely on it; the names are the sender's own. */
 export interface Sender { id: string; name?: string; username?: string }
+/**
+ * Why an end user's credit refused or stopped work, the same on every path (a 402 END_USER_CREDIT, a run's
+ * end_user_credit error, run.failed, voice.session.ended's endUserReason): `balance` (nothing left of the bucket's free
+ * allowance today, and no paid balance), `daily_limit` (the end user's daily credit limit), `bucket_limit` (the
+ * bucket's own daily limit on paid spend; a bucket limited to 0 spends only its allowance). More may be added: treat
+ * one you do not know as a credit refusal of no particular kind. Branch on these, never on the message.
+ */
+export const CREDIT_REASONS = ["balance", "daily_limit", "bucket_limit"] as const;
+export type CreditReason = typeof CREDIT_REASONS[number];
+
 export class AgentError extends Error {
   /** The HTTP status, or 0 for a failure that is not an HTTP response's (a run's, the connection's). */
   status: number;
   requestId?: string;
-  /** A stable name for the failure where the runtime gives one, e.g. APPLICATION_NOT_CONNECTED. */
+  /** A stable name for the failure where the runtime gives one, e.g. APPLICATION_NOT_CONNECTED, END_USER_CREDIT. */
   code?: string;
   /** The runtime could not tell whether the work took effect (a restart cut it short). */
   uncertain?: boolean;
   /** Milliseconds the runtime asked to wait before retrying (its Retry-After), for 429 and 503. */
   retryAfterMs?: number;
+  /** With code END_USER_CREDIT (a 402) or end_user_credit (a run): why its end user's credit refused it. */
+  reason?: CreditReason;
+  /** With an end user's credit refusal: the bucket refused. */
+  bucket?: string;
+  /** With an end user's credit refusal: whose credit (the subject). */
+  endUser?: string;
   constructor(message: string, status = 0, requestId?: string) { super(message); this.name = "AgentError"; this.status = status; this.requestId = requestId; }
 }
 /**
@@ -763,6 +786,7 @@ export class RunError extends AgentError {
     this.run = run;
     this.code = run.error?.code;
     if (run.error?.uncertain) this.uncertain = true;
+    Object.assign(this, creditOf(run.error ?? {}));
   }
 }
 /** What a run produced: its reply, how it stopped, the inputs it waits on and the files it wrote. */
@@ -775,8 +799,12 @@ export interface RunResult {
   stopped?: "input_required" | "spend_limit" | "turn_limit";
   /** With stopped "spend_limit": which limit stopped it (the run's own, its agent's, the tenant's monthly cap, prepaid credit, or its end user's credit: code `end_user_credit`). */
   limit?: "run" | "agent" | "tenant" | "credit" | "end_user";
-  /** With limit "end_user": why its end user's credit stopped it (`balance`: none left; `daily_limit`: the day's limit reached; `bucket_limit`: the bucket's own). */
-  reason?: "balance" | "daily_limit" | "bucket_limit";
+  /** With limit "end_user" (code `end_user_credit`): why its end user's credit stopped it (`CREDIT_REASONS`). */
+  reason?: CreditReason;
+  /** With limit "end_user": the bucket refused. */
+  bucket?: string;
+  /** With limit "end_user": whose credit (the subject). */
+  endUser?: string;
   inputs?: AgentInput[];
   replyIndex?: number;
   /** Messages in the agent's history after it. */
@@ -815,10 +843,45 @@ export interface RunToolCall {
   agentId?: string;
 }
 /** An error body's stable name: its `code`, or the prefix of its message (`APPLICATION_CONNECTED: …`). */
-function codeOf(value: { error?: unknown; code?: unknown }): { code?: string } {
-  if (typeof value.code === "string") return { code: value.code };
+function codeOf(value: { error?: unknown; code?: unknown; reason?: unknown; bucket?: unknown; endUser?: unknown }): { code?: string } & ReturnType<typeof creditOf> {
+  const credit = creditOf(value);
+  if (typeof value.code === "string") return { code: value.code, ...credit };
   const prefix = typeof value.error === "string" ? /^([A-Z][A-Z0-9_]+):/.exec(value.error)?.[1] : undefined;
   return prefix ? { code: prefix } : {};
+}
+/** An end user's credit refusal's fields, from an error body or a run's error: why, which bucket, whose. */
+function creditOf(value: { reason?: unknown; bucket?: unknown; endUser?: unknown }): { reason?: CreditReason; bucket?: string; endUser?: string } {
+  return {
+    ...(typeof value.reason === "string" ? { reason: value.reason as CreditReason } : {}),
+    ...(typeof value.bucket === "string" ? { bucket: value.bucket } : {}), ...(typeof value.endUser === "string" ? { endUser: value.endUser } : {}),
+  };
+}
+
+/** An end user's credit refusing or stopping work, in one shape however it came (`endUserCredit`). */
+export interface EndUserCreditFailure {
+  code: "end_user_credit";
+  /** Why (`CREDIT_REASONS`); a reason added later arrives as itself. */
+  reason?: CreditReason;
+  bucket?: string;
+  endUser?: string;
+  /** For people: its words may change. */
+  message: string;
+}
+/**
+ * Whether an end user's credit refused or stopped this, and why, in one shape: from an AgentError (a 402
+ * END_USER_CREDIT that refused a call: agent.run, a stateless run, transcribe, speech, images, a voice session), a
+ * RunError, a Run or its error (end_user_credit: refused as it started, or stopped mid-way). Undefined for anything else.
+ *
+ *   const credit = endUserCredit(errorOrRun);
+ *   if (credit?.reason === "bucket_limit") ...
+ */
+export function endUserCredit(value: unknown): EndUserCreditFailure | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const failure = value instanceof RunError ? value.run.error ?? value
+    : !(value instanceof AgentError) && "error" in value && value.error && typeof value.error === "object" ? value.error : value;
+  const { code, message } = failure as { code?: unknown; message?: unknown };
+  if (code !== "END_USER_CREDIT" && code !== "end_user_credit") return undefined;
+  return { code: "end_user_credit", ...creditOf(failure as Record<string, unknown>), message: typeof message === "string" ? message : "" };
 }
 /** Retry-After as milliseconds (seconds or an HTTP date), capped so a bad value cannot stall a caller. */
 function retryAfter(response: Response): number | undefined {
@@ -1122,21 +1185,66 @@ export type Micros = number;
  * How the tenant meters its end users (`endUsers.settings`). Allowances are raw cost per UTC day, by bucket, prefix
  * ("bot:*") or "*"; bucket limits, keyed the same way, are the most a bucket may charge the balance per UTC day.
  */
-export interface EndUserSettings { enabled: boolean; allowances: Record<string, Micros>; bucketLimits: Record<string, Micros>; dailyLimit: Micros | null; markupBps: number; lowBalance: Micros | null; updatedAt: number | null }
-/** One bucket's day for an end user: its allowance, spent from it (raw) and from the balance (charged), held, left, and its own limit on paid spend (null: none). */
-export interface EndUserBucketDay { bucket: string; allowance: Micros; allowanceSpent: Micros; paidSpent: Micros; held: Micros; allowanceLeft: Micros; paidLimit: Micros | null }
+export interface EndUserSettings {
+  enabled: boolean; allowances: Record<string, Micros>; bucketLimits: Record<string, Micros>; dailyLimit: Micros | null; markupBps: number;
+  /** end_user.balance.low below this (a person's own `lowBalance` over it); null: never. */
+  lowBalance: Micros | null;
+  /** end_user.allowance.low once per person, bucket and day as spend passes this percent (1–100) of the bucket's allowance; null: never. */
+  allowanceWarningPercent: number | null;
+  updatedAt: number | null;
+}
+/**
+ * What moved an end user's balance, on end_user.balance.low and end_user.credit.exhausted (reason balance). `entryId`: the
+ * ledger entry (none for refusal or threshold_changed); a person's entry ids grow, so order their events by it.
+ */
+export interface EndUserBalanceCause {
+  kind: "usage" | "usage_correction" | "grant" | "refund" | "adjustment" | "refusal" | "threshold_changed";
+  entryId?: number; entryKey?: string; requestId?: string; bucket: string | null;
+}
+/** end_user.credit.granted, .refunded, .adjusted: an entry the tenant posted (`amount` signed as in the ledger). */
+export interface EndUserEntryEvent {
+  endUser: string; entryId: number; kind: "grant" | "refund" | "adjustment"; amount: Micros; key: string; reference: string | null;
+  metadata: Record<string, unknown>; balance: Micros; previousBalance: Micros;
+}
+/**
+ * One bucket's day for an end user: its allowance, spent from it (raw) and from the balance (charged), written off (raw:
+ * cost past what was left, which the user is not charged), held, left, and its own limit on paid spend (null: none).
+ */
+export interface EndUserBucketDay { bucket: string; allowance: Micros; allowanceSpent: Micros; paidSpent: Micros; writtenOff: Micros; held: Micros; allowanceLeft: Micros; paidLimit: Micros | null }
 /** An end user as they stand: balance, what calls in flight hold, what paid spend may still take today, and today by bucket. */
 export interface EndUser {
-  id: string; enabled: boolean; balance: Micros; held: Micros; available: Micros; dailyLimit: Micros | null; markupBps: number;
-  overrides: { allowances: Record<string, Micros>; bucketLimits: Record<string, Micros>; dailyLimit: Micros | null };
+  id: string; enabled: boolean; balance: Micros; held: Micros; available: Micros; dailyLimit: Micros | null;
+  /** The low-balance threshold that applies: their own, else the tenant's; null: none. */
+  lowBalance: Micros | null;
+  markupBps: number;
+  overrides: { allowances: Record<string, Micros>; bucketLimits: Record<string, Micros>; dailyLimit: Micros | null; lowBalance: Micros | null };
   today: { day: string; paidSpent: Micros; buckets: EndUserBucketDay[] };
   createdAt: number | null; updatedAt: number | null;
 }
-/** A ledger entry: `amount` moved the balance; for usage, `raw` is the call's cost and `allowance` what the bucket's allowance covered. */
+/**
+ * A ledger entry: `amount` moved the balance; for usage, `raw` is the call's cost, `allowance` what the bucket's allowance
+ * covered, and `writtenOff` the part past what was left for it (the balance, the daily limit, the bucket's limit), not charged.
+ */
 export interface EndUserLedgerEntry {
-  id: number; kind: "grant" | "refund" | "adjustment" | "usage"; amount: Micros; raw: Micros; allowance: Micros; bucket: string | null; key: string;
+  id: number; kind: "grant" | "refund" | "adjustment" | "usage"; amount: Micros; raw: Micros; allowance: Micros; writtenOff: Micros; bucket: string | null; key: string;
   reference: string | null; metadata: Record<string, unknown>; balanceAfter: Micros; createdAt: number;
 }
+/** How `endUsers.ledger` narrows a ledger: kinds, a time range on `createdAt` (epoch ms or a Date; `to` exclusive), a bucket, only entries that moved the balance. */
+export interface EndUserLedgerQuery {
+  before?: number; limit?: number; kind?: EndUserLedgerEntry["kind"][]; from?: number | Date; to?: number | Date; bucket?: string; moved?: boolean;
+}
+/**
+ * An end user's UTC day (`endUsers.days`): by bucket, what the allowance paid (`freeRaw`, raw cost: never charged) and
+ * what the balance paid (`paidCharged`, with the markup), what was written off (`writtenOff`, raw: cost past what was
+ * left, never charged), and their totals; and what your entries moved that day, in
+ * balance units (`granted`, `refunded` as a positive amount, `adjusted` signed; `entries`: how many).
+ */
+export interface EndUserDay {
+  day: string; freeRaw: Micros; paidCharged: Micros; writtenOff: Micros; granted: Micros; refunded: Micros; adjusted: Micros; entries: number;
+  buckets: { bucket: string; freeRaw: Micros; paidCharged: Micros; writtenOff: Micros }[];
+}
+const queryOf = (values: Record<string, unknown>) => new URLSearchParams(Object.entries(values).filter(([, value]) => value !== undefined).map(([name, value]) => [name, String(value)]));
+const timeOf = (value: number | Date | undefined) => value instanceof Date ? value.getTime() : value;
 /** An entry of yours: `key` is its idempotency key (a payment's id), `reference` shown in the ledger. */
 export interface EndUserEntryInput { amount: Micros; key: string; reference?: string; metadata?: Record<string, unknown> }
 
@@ -1163,17 +1271,35 @@ export class EndUsers {
   get(id: string, options: { buckets?: string[] } = {}): Promise<EndUser> {
     return this.transport.json(`${this.path(id)}${options.buckets?.length ? `?buckets=${options.buckets.map(encodeURIComponent).join(",")}` : ""}`, this.key());
   }
-  /** End users by id, a page at a time: pass `next` as `after`. */
-  list(options: { after?: string; limit?: number } = {}): Promise<{ endUsers: { id: string; balance: Micros; createdAt: number; updatedAt: number }[]; next?: string }> {
+  /** End users by id, a page at a time: pass `next` as `after`. `belowLowBalance`: only those under the threshold that applies to them. */
+  list(options: { after?: string; limit?: number; belowLowBalance?: boolean } = {}): Promise<{ endUsers: { id: string; balance: Micros; createdAt: number; updatedAt: number }[]; next?: string }> {
     const query = new URLSearchParams(Object.entries(options).filter(([, value]) => value !== undefined).map(([name, value]) => [name, String(value)]));
     return this.transport.json(`/v1/end-users${query.size ? `?${query}` : ""}`, this.key());
   }
-  /** A person's own allowances and bucket limits (merged key by key; null removes one) and daily limit (null: the tenant's). */
-  update(id: string, overrides: { allowances?: Record<string, Micros | null>; bucketLimits?: Record<string, Micros | null>; dailyLimit?: Micros | null }): Promise<EndUser> { return this.transport.json(this.path(id), this.key(), "PATCH", overrides); }
-  /** Their ledger, newest first, a page at a time: pass `next` as `before`. */
-  ledger(id: string, options: { before?: number; limit?: number } = {}): Promise<{ entries: EndUserLedgerEntry[]; next?: number }> {
-    const query = new URLSearchParams(Object.entries(options).filter(([, value]) => value !== undefined).map(([name, value]) => [name, String(value)]));
+  /**
+   * A person's own allowances and bucket limits (merged key by key; null removes one), daily limit and low-balance
+   * threshold (null: the tenant's). A threshold set above their balance fires end_user.balance.low once.
+   */
+  update(id: string, overrides: { allowances?: Record<string, Micros | null>; bucketLimits?: Record<string, Micros | null>; dailyLimit?: Micros | null; lowBalance?: Micros | null }): Promise<EndUser> { return this.transport.json(this.path(id), this.key(), "PATCH", overrides); }
+  /**
+   * Their ledger, newest first, a page at a time: pass `next` as `before`. Narrow it by `kind` (a credit history without
+   * usage: `["grant", "refund", "adjustment"]`), a time range on `createdAt` (`to` exclusive), `bucket`, and `moved` (only
+   * entries that moved the balance).
+   */
+  ledger(id: string, options: EndUserLedgerQuery = {}): Promise<{ entries: EndUserLedgerEntry[]; next?: number }> {
+    const { kind, from, to, moved, ...rest } = options;
+    const query = queryOf({ ...rest, kind: kind?.length ? kind.join(",") : undefined, from: timeOf(from), to: timeOf(to), moved: moved ? "true" : undefined });
     return this.transport.json(`${this.path(id)}/ledger${query.size ? `?${query}` : ""}`, this.key());
+  }
+  /**
+   * Their spend and credit per UTC day, newest first, a page of `limit` days (default 31) at a time: pass `next` as `to`.
+   * Each day has what allowances paid (`freeRaw`, raw cost) and what the balance paid (`paidCharged`, with the markup),
+   * by bucket, and what your grants, refunds and adjustments moved. `from`/`to` are UTC days (YYYY-MM-DD, `to` exclusive),
+   * at most 366 apart; `bucket` keeps that bucket's spend alone, without entries.
+   */
+  days(id: string, options: { from?: string; to?: string; bucket?: string; limit?: number } = {}): Promise<{ days: EndUserDay[]; next?: string }> {
+    const query = queryOf(options);
+    return this.transport.json(`${this.path(id)}/days${query.size ? `?${query}` : ""}`, this.key());
   }
   /** Add credit (after a payment): once per `key`; the same key again returns the first entry. */
   grant(id: string, input: EndUserEntryInput) { return this.entry(id, "grant", input); }
@@ -2033,9 +2159,9 @@ export class AgentClient {
     if (!waiter) return;
     this.pending.delete(id);
     if ("error" in value) {
-      const outcome = value as { error?: string; code?: unknown; uncertain?: boolean };
+      const outcome = value as { error?: string; code?: unknown; uncertain?: boolean; reason?: unknown; bucket?: unknown; endUser?: unknown };
       waiter.reject(Object.assign(new AgentError(outcome.error ?? "Unknown failure", 0, id), {
-        ...(typeof outcome.code === "string" ? { code: outcome.code } : {}), ...(outcome.uncertain ? { uncertain: true } : {}),
+        ...(typeof outcome.code === "string" ? { code: outcome.code } : {}), ...(outcome.uncertain ? { uncertain: true } : {}), ...creditOf(outcome),
       }));
     } else waiter.resolve(value.result);
   }

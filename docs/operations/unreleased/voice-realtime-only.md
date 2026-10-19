@@ -1,7 +1,7 @@
 ### Voice: the transcribe-and-reply pipeline is removed (breaking for voice clients)
 
 A voice session either answers with the realtime model (`brain: "realtime"`, the default) or only listens (`brain:
-"listen"`: muted, each utterance transcribed and sent to webhooks, nothing answering). The pipeline released in 0.10.0,
+"listen"`: muted, each utterance transcribed and sent to webhooks, nothing answering). The pipeline released in 0.10.0 and 0.11.0,
 which sent each utterance to `deliver.agent` or your app and spoke replies through text to speech, is gone. What
 clients must change:
 

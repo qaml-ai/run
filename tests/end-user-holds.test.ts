@@ -154,29 +154,31 @@ test("a concurrent workload of holds, extensions and settlements keeps every inv
   assert.equal((await holds(db)).length, 0);
   const finalBalance = await balance(db);
   assert.equal(await ledgerSum(db), finalBalance, "the ledger sums to the balance");
-  const days = (await db.query("select bucket, allowance_spent, paid_spent from end_user_days")).rows;
+  const days = (await db.query("select bucket, allowance_spent, paid_spent, written_off from end_user_days")).rows;
   const usage = (await db.query("select bucket, sum(allowance)::bigint as allowance, sum(-amount)::bigint as paid from end_user_ledger where kind = 'usage' group by bucket")).rows;
   for (const row of days) {
     const posted = usage.find(entry => entry.bucket === row.bucket)!;
     assert.deepEqual([Number(row.allowance_spent), Number(row.paid_spent)], [Number(posted.allowance), Number(posted.paid)], `bucket ${row.bucket}: the day's counts are the ledger's`);
   }
   const paid = days.reduce((total, row) => total + Number(row.paid_spent), 0);
-  // Overruns are the only way past a limit, each by at most its own overrun (marked up).
-  const slack = Math.ceil(overrun * 1.1) + 8;
-  assert.ok(paid <= 2 * USD + slack, `paid ${paid} within the daily limit and the overruns`);
-  assert.ok(finalBalance >= -slack, `balance ${finalBalance} never below the overruns`);
-  for (const row of days) assert.ok(Number(row.allowance_spent) <= (row.bucket === "a" ? 300_000 : 100_000) + overrun, `allowance ${row.bucket} within its cap and the overruns`);
+  // Overruns pass no limit: what does not fit is written off.
+  assert.ok(overrun > 0, "some calls cost more than they held");
+  assert.ok(paid <= 2 * USD, `paid ${paid} within the daily limit`);
+  assert.ok(finalBalance >= 0, `balance ${finalBalance} never below zero`);
+  for (const row of days) assert.ok(Number(row.allowance_spent) <= (row.bucket === "a" ? 300_000 : 100_000), `allowance ${row.bucket} within its cap`);
+  const written = (await db.query("select coalesce(sum(written_off), 0)::bigint as total from end_user_ledger")).rows[0].total;
+  assert.equal(Number(written), days.reduce((total, row) => total + Number(row.written_off), 0), "the days' write-offs are the ledger's");
 });
 
 test("a lowered cost refunds at the rate it was paid at, never more than was paid, whatever the markup is now", async () => {
   const { db, service } = await credits({ markupBps: 2_500 });
   await service.post("t", "u", { kind: "grant", amount: 2 * USD, key: "pay" });
   const posted = await transaction(db, sql => settleUsage(sql, { tenant: "t", endUser: "u", bucket: "b", day: today(), raw: 500_000, key: "attempt:m:1" }));
-  assert.deepEqual(posted, { raw: 500_000, allowance: 0, paid: 625_000 });
+  assert.deepEqual(posted, { raw: 500_000, allowance: 0, paid: 625_000, writtenOff: 0 });
   // The markup dropped to 0 since: the 100,000 the cost came down by refunds what it was paid at (+25%), not 225,000.
   await service.setSettings("t", { markupBps: 0 });
   const lower = await transaction(db, sql => settleUsage(sql, { tenant: "t", endUser: "u", bucket: "b", day: today(), raw: 400_000, key: "attempt:m:2", previous: posted }));
-  assert.deepEqual(lower, { raw: 400_000, allowance: 0, paid: 500_000 });
+  assert.deepEqual(lower, { raw: 400_000, allowance: 0, paid: 500_000, writtenOff: 0 });
   // Raised to +100%: down to nothing refunds what was paid, no more.
   await service.setSettings("t", { markupBps: 10_000 });
   const none = await transaction(db, sql => settleUsage(sql, { tenant: "t", endUser: "u", bucket: "b", day: today(), raw: 0, key: "attempt:m:3", previous: lower }));
@@ -195,9 +197,13 @@ test("a refund returns at most the balance not held by calls in flight; an adjus
   await assert.rejects(service.post("t", "u", { kind: "refund", amount: 600_001, key: "re-2" }), (error: any) => error.status === 409 && error.details.refundable === 600_000);
   assert.equal((await service.post("t", "u", { kind: "refund", amount: 600_000, key: "re-3" })).entry.balanceAfter, 400_000);
   assert.equal(await balance(db), 400_000);
-  // A balance already below zero (a call's overspend) is never refunded from; an adjustment moves it either way.
+  // Usage that held nothing never takes what the call in flight holds: it is written off.
   await transaction(db, sql => settleUsage(sql, { tenant: "t", endUser: "u", bucket: "b", day: today(), raw: 500_000, key: "attempt:o:1" }));
+  assert.equal(await balance(db), 400_000);
   await assert.rejects(service.post("t", "u", { kind: "refund", amount: 1, key: "re-4" }), (error: any) => error.code === "INSUFFICIENT_BALANCE");
+  // A balance below zero (the tenant's own adjustment) is never refunded from; an adjustment moves it either way.
+  assert.equal((await service.post("t", "u", { kind: "adjustment", amount: -500_000, key: "adj-down" })).entry.balanceAfter, -100_000);
+  await assert.rejects(service.post("t", "u", { kind: "refund", amount: 1, key: "re-5" }), (error: any) => error.code === "INSUFFICIENT_BALANCE");
   assert.equal((await service.post("t", "u", { kind: "adjustment", amount: 100_000, key: "adj" })).entry.balanceAfter, 0);
 });
 
@@ -205,12 +211,12 @@ test("a corrected cost refunds the balance first, then the allowance; holds of a
   const { db, service } = await credits({ allowances: { builder: 300_000 } });
   await service.post("t", "u", { kind: "grant", amount: 2 * USD, key: "pay" });
   const posted = await transaction(db, sql => settleUsage(sql, { tenant: "t", endUser: "u", bucket: "builder", day: today(), raw: USD, key: "attempt:x:1" }));
-  assert.deepEqual(posted, { raw: USD, allowance: 300_000, paid: 700_000 });
+  assert.deepEqual(posted, { raw: USD, allowance: 300_000, paid: 700_000, writtenOff: 0 });
   const corrected = await transaction(db, sql => settleUsage(sql, { tenant: "t", endUser: "u", bucket: "builder", day: today(), raw: 400_000, key: "attempt:x:2", previous: posted }));
-  assert.deepEqual(corrected, { raw: 400_000, allowance: 300_000, paid: 100_000 });
+  assert.deepEqual(corrected, { raw: 400_000, allowance: 300_000, paid: 100_000, writtenOff: 0 });
   assert.equal(await balance(db), 2 * USD - 100_000);
   const lower = await transaction(db, sql => settleUsage(sql, { tenant: "t", endUser: "u", bucket: "builder", day: today(), raw: 100_000, key: "attempt:x:3", previous: corrected }));
-  assert.deepEqual(lower, { raw: 100_000, allowance: 100_000, paid: 0 });
+  assert.deepEqual(lower, { raw: 100_000, allowance: 100_000, paid: 0, writtenOff: 0 });
   assert.equal(Number((await db.query("select allowance_spent from end_user_days where bucket = 'builder'")).rows[0].allowance_spent), 100_000);
 
   // A hold whose call went quiet past HOLD_MS no longer counts, and the next reserve drops it.

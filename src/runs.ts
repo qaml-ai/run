@@ -43,6 +43,9 @@ const reply = (description: string, value: z.ZodType) => ({ description, content
 const runPath = z.object({ id: z.string().openapi({ description: "The run's id (run_…)" }) });
 const waitQuery = z.object({ wait: z.string().optional().openapi({ description: "Seconds to wait for the run to end (at most 60 on create, 25 here): it answers as soon as it does, else when the wait ends, still running" }) });
 
+/** A limit's fields on a run's error: which limit, and for an end user's credit why, whose and which bucket. */
+const limitFields = (result: Record<string, unknown>) => Object.fromEntries((["limit", "reason", "bucket", "endUser"] as const).flatMap(name => typeof result[name] === "string" ? [[name, result[name]]] : []));
+
 /** A run as the API shows it, from its request: what it answered, or how it failed, and its usage and tool calls. */
 export function runView(record: RequestRecord, retentionMs: number) {
   const result = (record.outcome?.result ?? {}) as Record<string, any>;
@@ -50,7 +53,7 @@ export function runView(record: RequestRecord, retentionMs: number) {
   const ended = record.state === "completed";
   const error = !ended ? null
     : outcome?.error !== undefined ? { code: /aborted/i.test(outcome.error) ? "aborted" : "runtime_error", message: outcome.error, ...(outcome.uncertain ? { uncertain: true } : {}) }
-    : typeof result.error === "string" ? { code: typeof result.code === "string" ? result.code : /aborted/i.test(result.error) ? "aborted" : "model_error", message: result.error, ...result.modelError, ...(typeof result.reason === "string" ? { reason: result.reason } : {}) }
+    : typeof result.error === "string" ? { code: typeof result.code === "string" ? result.code : /aborted/i.test(result.error) ? "aborted" : "model_error", message: result.error, ...result.modelError, ...limitFields(result) }
     : result.stopped === "spend_limit" ? { code: "spend_limit", message: "The run reached its spend limit" }
     : result.stopped === "turn_limit" ? { code: "turn_limit", message: "The run reached its limit of model responses or time" } : null;
   return {

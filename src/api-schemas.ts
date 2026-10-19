@@ -3,9 +3,16 @@ import { EVENT_TYPES } from "./webhooks.ts";
 import { END_REASONS as VOICE_END_REASONS, VOICE_LIMITS } from "./voice-sessions.ts";
 import { REALTIME_PROVIDERS } from "./voice/realtime/provider.ts";
 import { OPENAI_REALTIME } from "./voice/realtime/openai.ts";
+import { GROK_REALTIME } from "./voice/realtime/grok.ts";
 import { GEMINI_LIVE } from "./voice/realtime/gemini.ts";
 import { MIN_CONTEXT_TOKENS } from "./protocol.ts";
 import { MODEL_ERROR_CLASSES } from "./model-errors.ts";
+import { CREDIT_REASONS } from "./end-user-credits.ts";
+
+/** An end user's credit refusal's fields, the same on a 402, a run's error, run.failed and voice.session.ended. */
+const creditReason = z.enum(CREDIT_REASONS).openapi({ description: "Why an end user's credit refused or stopped it (see the errors reference): balance (no credit left: nothing of the bucket's free allowance today, and no paid balance), daily_limit (the end user's daily credit limit on paid spend), bucket_limit (the bucket's own daily limit on paid spend; a bucket limited to 0 spends only its allowance). More may be added: treat an unknown one as a credit refusal of no particular kind" });
+const creditBucket = z.string().openapi({ description: "With an end user's credit refusal: the bucket refused (builder, bot:42, default)" });
+const creditEndUser = z.string().openapi({ description: "With an end user's credit refusal: whose credit (the subject)" });
 
 const SEND_KEY = "Send {\"apiKey\": \"...\"} with the provider's API key";
 const SEND_TEXT = "Send {\"text\": \"...\"}, or attach audio to transcribe";
@@ -15,7 +22,9 @@ export const ERROR_CODES = {
   INVALID_REQUEST: "400: the request is malformed or invalid", UNAUTHORIZED: "401: no valid token", PAYMENT_REQUIRED: "402", FORBIDDEN: "403: the token may not do this",
   NOT_FOUND: "404", CONFLICT: "409", GONE: "410", TOO_LARGE: "413", RATE_LIMITED: "429: retry after Retry-After", UNAVAILABLE: "503: retry after Retry-After", DATABASE_RETRY: "503: the database refused the request for now (a conflict with another, or a statement timeout); retry after Retry-After", INTERNAL: "500",
   BUSY_AGENT_LIMIT: "429: the tenant has as many agents busy as it may (the body's busyAgents, a BusyAgents, says the limit, its usage tier and the next); retry after Retry-After",
-  SPEND_LIMIT: "402: a spend limit (the agent's, or the tenant's monthly cap) is reached", INSUFFICIENT_CREDIT: "402: the tenant's prepaid credit is spent", STORAGE_LIMIT: "507: the tenant's storage limit would be passed; the body has limit and used, in bytes",
+  SPEND_LIMIT: "402: a spend limit (the agent's, or the tenant's monthly cap) is reached", INSUFFICIENT_CREDIT: "402: the tenant's prepaid credit is spent",
+  END_USER_CREDIT: "402: the end user's credit refused the work; the body has endUser, bucket and reason (balance, daily_limit or bucket_limit)",
+  INSUFFICIENT_BALANCE: "409: a refund would return more than the end user's balance not held by calls in flight; the body has refundable (micro-USD)", STORAGE_LIMIT: "507: the tenant's storage limit would be passed; the body has limit and used, in bytes",
   IDEMPOTENCY_CONFLICT: "409: the Idempotency-Key or request id was used for another request", IDEMPOTENCY_IN_PROGRESS: "409: the first request with this Idempotency-Key is still running; retry",
   APPLICATION_CONNECTED: "409: another connection serves this agent's tools; connect with ?takeover=true to replace it",
   APPLICATION_NOT_CONNECTED: "409: this agent's tools need its application, and none is connected; connect it, or send allowDisconnected: true",
@@ -31,6 +40,10 @@ export const ApiError = z.object({
     max: z.number().int(),
     windowSeconds: z.number().int(),
   }).optional().openapi({ description: "On a rate limit's 429: the limit reached. Retry-After says when to retry" }),
+  endUser: creditEndUser.optional().openapi({ description: "With END_USER_CREDIT: whose credit refused the work (the subject)" }),
+  bucket: creditBucket.optional().openapi({ description: "With END_USER_CREDIT: the bucket refused" }),
+  reason: creditReason.optional(),
+  refundable: z.number().int().optional().openapi({ description: "With INSUFFICIENT_BALANCE: the most a refund may return now (micro-USD)" }),
 }).openapi("Error");
 export const Deleted = z.object({ deleted: z.literal(true) });
 export const SignedOut = z.object({ signedOut: z.number().int().openapi({ description: "How many console sessions ended" }) }).openapi("SignedOut");
@@ -116,7 +129,7 @@ export const KeyScope = z.object({
   })),
 }).openapi("KeyScope");
 
-const eventTypes = z.array(z.enum(EVENT_TYPES)).openapi({ description: "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.session.error, voice.utterance, voice.speech.started, voice.speech.ended, and the billing.* events" });
+const eventTypes = z.array(z.enum(EVENT_TYPES)).openapi({ description: "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.session.error, voice.utterance, voice.speech.started, voice.speech.ended, the end_user.* events and the billing.* events" });
 export const WebhookEndpointInput = z.object({
   url: z.string().openapi({ description: "An HTTPS URL that receives the events, each a POST signed per Standard Webhooks", example: "https://example.com/hooks/agents" }),
   events: eventTypes,
@@ -174,6 +187,19 @@ export const ModelFailure = z.object({
 const servedModel = z.string().optional().openapi({ description: "The model that made the run's last response, as provider/model-id" });
 const runUsage = z.object({ responses: z.number(), input: z.number(), output: z.number(), cacheRead: z.number(), cacheWrite: z.number(), costUsd: z.number() }).nullable()
   .openapi({ description: "The run's model responses on the node that ended it; null when it made none there" });
+const balanceCause = z.object({
+  kind: z.enum(["usage", "usage_correction", "grant", "refund", "adjustment", "refusal", "threshold_changed"]).openapi({ description: "What moved the balance: usage (a call's cost), usage_correction (a call's cost posted again, corrected, maybe long after the call), grant, refund or adjustment (the tenant's entries), refusal (a call refused; no entry), threshold_changed (a threshold set above the balance; no entry). Stable codes" }),
+  entryId: z.number().int().optional().openapi({ description: "The ledger entry that moved the balance. A person's entry ids grow: order their events by it" }),
+  entryKey: z.string().optional().openapi({ description: "For a grant, refund or adjustment: your key" }),
+  requestId: z.string().optional().openapi({ description: "For usage: the run's request, when there is one" }),
+  bucket: z.string().nullable(),
+}).openapi("EndUserBalanceCause");
+const endUserEntryEvent = z.object({
+  endUser: z.string(), entryId: z.number().int(), kind: z.enum(["grant", "refund", "adjustment"]),
+  amount: z.number().int().openapi({ description: "As in the ledger: what moved the balance (a refund's is negative)" }),
+  key: z.string(), reference: z.string().nullable(), metadata: z.record(z.string(), z.unknown()),
+  balance: z.number().int(), previousBalance: z.number().int(),
+});
 const voiceFacts = {
   session: z.string().openapi({ description: "The voice session (vs_…)" }), provider: z.enum(["discord", "browser"]),
   guildId: z.string(), channelId: z.string(), botUserId: z.string(),
@@ -191,7 +217,9 @@ export const WebhookEvents = {
     steeredInto: z.string().optional().openapi({ description: "A prompt sent with whileRunning: steer that a running turn took: that turn's request" }),
   }), "A run ended without an error"),
   "run.failed": envelope("run.failed", z.object({
-    ...runFacts, usage: runUsage, servedModel, error: z.string(), code: z.string().optional().openapi({ description: "The failure's name, where it has one: cancelled (a stop cancelled it before it began), aborted, model_stream_stalled, turn_limit, spend_limit, output_missing..." }), uncertain: z.boolean().optional().openapi({ description: "A restart cut it short: its effects are unknown" }), steeredInto: z.string().optional(),
+    ...runFacts, usage: runUsage, servedModel, error: z.string(), code: z.string().optional().openapi({ description: "The failure's name, where it has one: cancelled (a stop cancelled it before it began), aborted, model_stream_stalled, turn_limit, spend_limit (a spend limit or the account's credit: limit says which), end_user_credit (the end user's credit: reason, bucket and endUser say why, which and whose), output_missing... The same whether the limit refused the run as it started or stopped it mid-way. Branch on code, never on error, whose words may change" }),
+    limit: z.enum(["run", "agent", "tenant", "credit", "end_user"]).optional().openapi({ description: "With spend_limit or end_user_credit: which limit stopped it: the run's own, its agent's, the tenant's monthly cap, the account's prepaid credit, or the end user's credit" }),
+    reason: creditReason.optional(), bucket: creditBucket.optional(), endUser: creditEndUser.optional(), uncertain: z.boolean().optional().openapi({ description: "A restart cut it short: its effects are unknown" }), steeredInto: z.string().optional(),
     ...ModelFailure.partial().shape,
   }), "A run ended with an error: the runtime's, or the model's"),
   "input.requested": envelope("input.requested", z.object({
@@ -209,7 +237,8 @@ export const WebhookEvents = {
   "voice.session.ended": envelope("voice.session.ended", z.object({
     ...voiceFacts, reason: z.enum(VOICE_END_REASONS).openapi({ description: "requested: DELETE; empty: no one else in the call for emptySeconds; idle: no speech for idleMinutes; max_duration: maxMinutes passed; budget: the account's or the end user's credit ran out (limit); kicked: the bot was disconnected from the channel and no new credentials came; credentials: Discord stopped taking the session's credentials; error: the connection failed" }),
     limit: z.enum(["tenant", "end_user"]).optional().openapi({ description: "With reason budget: whose credit ran out" }),
-    endUserReason: z.string().optional().openapi({ description: "With limit end_user: why (balance, daily_limit, bucket_limit)" }),
+    endUserReason: creditReason.optional().openapi({ description: "With limit end_user: why, one of the credit reasons a run's end_user_credit has (balance, daily_limit, bucket_limit)" }),
+    bucket: creditBucket.optional().openapi({ description: "With limit end_user: the bucket refused" }),
     startedAt: z.number().nullable(), endedAt: z.number(), utterances: z.number(), speechSeconds: z.number(), costUsd: z.number(),
   }), "A voice session ended. The bot is still in the channel until your app leaves it (OP 4 with channel_id null)"),
   "voice.session.error": envelope("voice.session.error", z.object({
@@ -249,6 +278,28 @@ export const WebhookEvents = {
     seconds: z.number().openapi({ description: "Seconds of speech played" }), costUsd: z.number().openapi({ description: "What its tokens cost (the session's usage already counts it)" }),
     brain: z.literal("realtime"),
   }), "An answer ended"),
+  "end_user.balance.low": envelope("end_user.balance.low", z.object({
+    endUser: z.string(), balance: z.number().int().openapi({ description: "The balance now (charged micro-USD)" }),
+    threshold: z.number().int().openapi({ description: "The threshold that applied: the person's own lowBalance, else the tenant's" }), previousBalance: z.number().int(),
+    cause: balanceCause,
+  }), "An end user's balance is below their low-balance threshold: a debit took it there, or a debit after a grant left it there, or a threshold was set above it (cause.kind threshold_changed). See the guide's When balance events fire"),
+  "end_user.credit.exhausted": envelope("end_user.credit.exhausted", z.object({
+    endUser: z.string(), bucket: z.string().nullable().openapi({ description: "The bucket the spend or refusal was in; null for a tenant's entry that took the balance to zero" }),
+    reason: z.enum(["allowance", ...CREDIT_REASONS]).openapi({ description: "allowance: the bucket's free allowance for the day is used up (work goes on from the balance, if it may); balance, daily_limit, bucket_limit: as a credit refusal's reason (the errors reference). More may be added" }),
+    day: z.string().openapi({ description: "The UTC day, YYYY-MM-DD" }),
+    allowance: z.number().int().optional().openapi({ description: "With allowance: the bucket's allowance that day (raw micro-USD)" }),
+    dailyLimit: z.number().int().optional().openapi({ description: "With daily_limit: the end user's daily limit (charged micro-USD)" }),
+    bucketLimit: z.number().int().optional().openapi({ description: "With bucket_limit: the bucket's daily limit on paid spend (charged micro-USD)" }),
+    balance: z.number().int().openapi({ description: "The balance (charged micro-USD)" }),
+    cause: balanceCause.optional().openapi({ description: "With reason balance: what moved the balance (refusal: a call refused, no entry)" }),
+  }), "An end user's free allowance for a bucket, their balance, their daily limit or a bucket's limit ran out (once per user, bucket or limit, and day; balance: once until they are credited again or re-armed)"),
+  "end_user.credit.granted": envelope("end_user.credit.granted", endUserEntryEvent, "The tenant posted a grant to an end user's ledger (once per entry; a replayed key sends nothing)"),
+  "end_user.credit.refunded": envelope("end_user.credit.refunded", endUserEntryEvent, "The tenant posted a refund (amount negative, as in the ledger)"),
+  "end_user.credit.adjusted": envelope("end_user.credit.adjusted", endUserEntryEvent, "The tenant posted an adjustment (amount signed)"),
+  "end_user.allowance.low": envelope("end_user.allowance.low", z.object({
+    endUser: z.string(), bucket: z.string(), day: z.string(), allowance: z.number().int().openapi({ description: "The bucket's daily allowance (raw micro-USD)" }),
+    allowanceSpent: z.number().int().openapi({ description: "Spent from it today, with the call that passed the warning" }), percent: z.number().int().openapi({ description: "The tenant's allowanceWarningPercent" }),
+  }), "An end user's spend in a bucket passed the tenant's allowanceWarningPercent of its daily allowance: once per person, bucket and day"),
 };
 
 export const Model = z.object({
@@ -563,7 +614,9 @@ const RunFailure = z.object({
   code: z.string().openapi({ description: "Stable: model_error, runtime_error, output_missing, spend_limit, turn_limit, end_user_credit, aborted…" }),
   message: z.string(),
   uncertain: z.boolean().optional().openapi({ description: "The runtime could not tell whether the run's work took effect" }),
-  reason: z.enum(["balance", "daily_limit", "bucket_limit"]).optional().openapi({ description: "With end_user_credit: the subject had no credit left (balance), reached its daily limit (daily_limit), or the run's bucket reached its own daily limit on paid spend (bucket_limit)" }),
+  limit: z.enum(["run", "agent", "tenant", "credit", "end_user"]).optional().openapi({ description: "With spend_limit or end_user_credit: which limit: the run's own, its agent's, the tenant's monthly cap, the account's prepaid credit, or the end user's credit" }),
+  reason: creditReason.optional().openapi({ description: "With end_user_credit: " + "Why an end user's credit refused or stopped it (see the errors reference): balance (no credit left: nothing of the bucket's free allowance today, and no paid balance), daily_limit (the end user's daily credit limit on paid spend), bucket_limit (the bucket's own daily limit on paid spend; a bucket limited to 0 spends only its allowance). More may be added: treat an unknown one as a credit refusal of no particular kind" }),
+  bucket: creditBucket.optional(), endUser: creditEndUser.optional(),
   ...ModelFailure.partial().shape,
 }).openapi("RunFailure", { description: "errorClass, providerStatus, retryable and model are there when a model call failed the run (model_error, model_stream_stalled, model_key_invalid…)" });
 export const Run = z.object({
@@ -1135,35 +1188,41 @@ export const EndUserSettings = z.object({
   bucketLimits: bucketLimitMap("The most each bucket may charge an end user's balance per UTC day"),
   dailyLimit: micros("The most an end user's paid spend may be per UTC day (charged amounts); null: no limit").nullable(),
   markupBps: z.number().int().openapi({ description: "Added to the raw cost of paid spend, in basis points (2500: +25%)" }),
-  lowBalance: micros("end_user.balance.low fires when a balance falls below this; null: never").nullable(),
+  lowBalance: micros("end_user.balance.low fires when a balance falls below this (a person's own lowBalance over it); null: never").nullable(),
+  allowanceWarningPercent: z.number().int().nullable().openapi({ description: "end_user.allowance.low fires once per person, bucket and day as spend passes this percent (1–100) of the bucket's daily allowance; null: never" }),
   updatedAt: z.number().nullable(),
 }).openapi("EndUserSettings");
 export const EndUserSettingsInput = z.object({
   enabled: z.boolean().optional(), allowances: allowanceMap("Free allowances (replaces the current map)").optional(),
   bucketLimits: bucketLimitMap("The most each bucket may charge an end user's balance per UTC day (replaces the current map)").optional(),
   dailyLimit: z.number().int().nullable().optional(), markupBps: z.number().int().min(0).max(100_000).optional(), lowBalance: z.number().int().nullable().optional(),
-}).openapi("EndUserSettingsInput", { description: "Fields left out keep their current values; allowances and bucketLimits, when sent, replace the whole map (PATCH merges them)" });
+  allowanceWarningPercent: z.number().int().min(1).max(100).nullable().optional(),
+}).openapi("EndUserSettingsInput", { description: "Fields left out keep their current values; allowances and bucketLimits, when sent, replace the whole map (PATCH merges them). Only the fields sent are written, so concurrent writers never undo each other's other fields" });
 export const EndUserSettingsPatch = z.object({
   enabled: z.boolean().optional(),
   allowances: z.record(z.string(), z.number().int().nonnegative().nullable()).optional().openapi({ description: "Merged into the allowances key by key; null removes a key" }),
   bucketLimits: z.record(z.string(), z.number().int().nonnegative().nullable()).optional().openapi({ description: "Merged into the bucket limits key by key; null removes a key" }),
   dailyLimit: z.number().int().nullable().optional(), markupBps: z.number().int().min(0).max(100_000).optional(), lowBalance: z.number().int().nullable().optional(),
-}).openapi("EndUserSettingsPatch", { description: "Only what is sent changes: allowances and bucketLimits key by key" });
+  allowanceWarningPercent: z.number().int().min(1).max(100).nullable().optional(),
+}).openapi("EndUserSettingsPatch", { description: "Only what is sent changes: allowances and bucketLimits key by key, merged into the map as it stands when the write lands, so concurrent PATCHes of different fields or keys all keep their changes" });
 export const EndUserBucketDay = z.object({
   bucket: z.string(), allowance: micros("The bucket's allowance today (raw cost)"), allowanceSpent: micros("Spent from it today (raw cost)"),
-  paidSpent: micros("Charged to the balance today for this bucket"), held: micros("Held for calls in flight (allowance and balance)"),
+  paidSpent: micros("Charged to the balance today for this bucket"),
+  writtenOff: micros("Cost past what was left for this bucket today (the balance, the daily limit, the bucket's limit), raw: not charged to the user; the tenant bears it"),
+  held: micros("Held for calls in flight (allowance and balance)"),
   allowanceLeft: micros("Left of the allowance today, after holds"),
   paidLimit: micros("The bucket's own daily limit on paid spend (charged); null: none").nullable(),
 });
 export const EndUser = z.object({
   id: z.string().openapi({ description: "The end user: the subject of the agents and calls that spend for them" }),
   enabled: z.boolean().openapi({ description: "Whether the tenant meters its end users" }),
-  balance: micros("Paid credit left (charged units); slightly negative only by the documented overspend tolerance"),
+  balance: micros("Paid credit left (charged units); usage never takes it below zero (a negative adjustment of yours may)"),
   held: micros("Of the balance, what calls in flight hold"),
   available: micros("What paid spend may still take today: the balance less holds, within the daily limit"),
   dailyLimit: micros("The daily limit on paid spend that applies (the user's own, else the tenant's); null: none").nullable(),
+  lowBalance: micros("The low-balance threshold that applies (the user's own, else the tenant's); null: none").nullable(),
   markupBps: z.number().int(),
-  overrides: z.object({ allowances: z.record(z.string(), z.number().int()), bucketLimits: z.record(z.string(), z.number().int()), dailyLimit: z.number().int().nullable() }).openapi({ description: "The user's own allowances, bucket limits and daily limit, over the tenant's" }),
+  overrides: z.object({ allowances: z.record(z.string(), z.number().int()), bucketLimits: z.record(z.string(), z.number().int()), dailyLimit: z.number().int().nullable(), lowBalance: z.number().int().nullable() }).openapi({ description: "The user's own allowances, bucket limits, daily limit and low-balance threshold, over the tenant's" }),
   today: z.object({ day: z.string(), paidSpent: micros("Charged to the balance today, every bucket"), buckets: z.array(EndUserBucketDay) }),
   createdAt: z.number().nullable().openapi({ description: "null: never metered or credited yet" }), updatedAt: z.number().nullable(),
 }).openapi("EndUser");
@@ -1173,6 +1232,7 @@ export const EndUserUpdate = z.object({
   allowances: z.record(z.string(), z.number().int().nonnegative().nullable()).optional().openapi({ description: "Merged into the user's own allowances key by key; null removes a key" }),
   bucketLimits: z.record(z.string(), z.number().int().nonnegative().nullable()).optional().openapi({ description: "Merged into the user's own bucket limits key by key; null removes a key" }),
   dailyLimit: z.number().int().nonnegative().nullable().optional().openapi({ description: "The user's own daily limit on paid spend; null: the tenant's" }),
+  lowBalance: z.number().int().nonnegative().nullable().optional().openapi({ description: "The user's own low-balance threshold (end_user.balance.low); null: the tenant's. Set above their balance, it fires once with cause threshold_changed" }),
 }).openapi("EndUserUpdate");
 export const EndUserEntryInput = z.object({
   kind: z.enum(["grant", "refund", "adjustment"]).openapi({ description: "grant: adds amount (a payment, a gift); refund: takes amount back (money returned to the user), at most the balance calls in flight do not hold (else 409 INSUFFICIENT_BALANCE); adjustment: moves the balance by a signed amount" }),
@@ -1186,6 +1246,7 @@ export const EndUserLedgerEntry = z.object({
   kind: z.enum(["grant", "refund", "adjustment", "usage"]),
   amount: micros("What moved the balance: positive adds credit, negative spends it"),
   raw: micros("usage: the call's raw cost"), allowance: micros("usage: the part of the raw cost the bucket's allowance covered"),
+  writtenOff: micros("usage: the part of the raw cost past what was left for the call (the balance, the daily limit, the bucket's limit), not charged to the user; the tenant bears it"),
   bucket: z.string().nullable(), key: z.string(), reference: z.string().nullable(),
   metadata: z.record(z.string(), z.unknown()).openapi({ description: "usage: the call (kind, provider, model, agent, requestId, markupBps)" }),
   balanceAfter: micros("The balance after this entry"), createdAt: z.number(),
@@ -1195,6 +1256,25 @@ export const EndUserLedger = z.object({
   entries: z.array(EndUserLedgerEntry).openapi({ description: "Newest first" }),
   next: z.number().int().optional().openapi({ description: "Pass as `before` for the next page" }),
 }).openapi("EndUserLedger");
+const DayBucket = z.object({
+  bucket: z.string(),
+  freeRaw: micros("What the bucket's allowance paid that day, in raw cost (never charged)"),
+  paidCharged: micros("What the balance paid for the bucket that day, charged with the markup"),
+  writtenOff: micros("Cost past what was left for the bucket that day (the balance, the daily limit, the bucket's limit), raw: not charged; the tenant bears it"),
+});
+export const EndUserDay = z.object({
+  day: z.string().openapi({ description: "The UTC day, YYYY-MM-DD. A call counts on the day it began; an entry on the day it was posted" }),
+  freeRaw: micros("What allowances paid that day, every bucket (raw cost)"), paidCharged: micros("What the balance paid that day, every bucket (charged)"),
+  writtenOff: micros("What was written off that day, every bucket (raw cost)"),
+  granted: micros("Credit the tenant granted that day (balance units)"), refunded: micros("Credit the tenant refunded that day, as a positive amount (balance units)"),
+  adjusted: micros("What the tenant's adjustments moved the balance that day, signed (balance units)"),
+  entries: z.number().int().openapi({ description: "How many grants, refunds and adjustments were posted that day" }),
+  buckets: z.array(DayBucket).openapi({ description: "Spend by bucket, by name; buckets that spent nothing that day are left out" }),
+}).openapi("EndUserDay");
+export const EndUserDays = z.object({
+  days: z.array(EndUserDay).openapi({ description: "Newest first; days with no spend and no entries are left out" }),
+  next: z.string().optional().openapi({ description: "More days are in the range: pass as `to` for the next page" }),
+}).openapi("EndUserDays");
 export const BillingAlertChoices = z.object({ low: z.boolean(), depleted: z.boolean(), problems: z.boolean(), receipts: z.boolean() });
 export const BillingRecipient = z.object({ id: z.uuid(), email: z.email(), status: z.enum(["pending", "verified", "bounced", "unsubscribed"]), events: BillingAlertChoices });
 export const BillingAlerts = z.object({ threshold: micros("Low-balance threshold"), emailEnabled: z.boolean(), recipients: z.array(BillingRecipient) });
@@ -1313,9 +1393,9 @@ const VoiceSpeechProviders = z.strictObject({
   voices: z.record(z.string(), z.string()).optional().openapi({ description: "The voice for each provider, by provider: an ElevenLabs voice id, a Cartesia voice id (required for cartesia), an Aura voice (aura-2-thalia-en), an OpenAI voice (else `voice`)", example: { elevenlabs: "21m00Tcm4TlvDq8ikWAM", openai: "coral" } }),
 }).openapi("VoiceSpeechProviders");
 const VoiceRealtime = z.strictObject({
-  provider: z.enum(REALTIME_PROVIDERS).optional().openapi({ description: "The speech-to-speech provider, one of the runtime's (AGENT_VOICE_REALTIME): openai (OpenAI Realtime, your OpenAI key) or gemini (Gemini Live, your google key). Default the runtime's first" }),
-  model: z.string().optional().openapi({ description: `The model: openai ${OPENAI_REALTIME.models.join(", ")} (default ${OPENAI_REALTIME.defaultModel}); gemini ${GEMINI_LIVE.models.join(", ")}`, example: OPENAI_REALTIME.defaultModel }),
-  voice: z.string().optional().openapi({ description: `The provider's voice: openai ${OPENAI_REALTIME.voices.join(", ")}; gemini ${GEMINI_LIVE.voices.join(", ")}. Default the session's voice where the model has it, else the nearest (OpenAI: nova → marin, onyx → cedar, fable → ballad; Gemini: alloy → Aoede, coral → Kore, onyx → Charon…)`, example: "marin" }),
+  provider: z.enum(REALTIME_PROVIDERS).optional().openapi({ description: "The speech-to-speech provider, one of the runtime's (AGENT_VOICE_REALTIME): openai (OpenAI Realtime, your OpenAI key), gemini (Gemini Live, your google key), or grok (xAI Voice Agent, your xai key). Default the runtime's first" }),
+  model: z.string().optional().openapi({ description: `The model: openai ${OPENAI_REALTIME.models.join(", ")} (default ${OPENAI_REALTIME.defaultModel}); gemini ${GEMINI_LIVE.models.join(", ")}; grok ${GROK_REALTIME.models.join(", ")} (default ${GROK_REALTIME.defaultModel})`, example: OPENAI_REALTIME.defaultModel }),
+  voice: z.string().optional().openapi({ description: `The provider's voice: openai ${OPENAI_REALTIME.voices.join(", ")}; gemini ${GEMINI_LIVE.voices.join(", ")}; grok ${GROK_REALTIME.voices.join(", ")}. Default the session's voice where the model has it, else the nearest (OpenAI: nova → marin, onyx → cedar, fable → ballad; Gemini: alloy → Aoede, coral → Kore, onyx → Charon…; Grok: alloy → sal, coral → ara, onyx → leo…)`, example: "marin" }),
   instructions: z.string().max(8_000).optional().openapi({ description: "The bot's persona and instructions, before the call's own rules (who speaks, short spoken answers, ask_agent, stay_silent): the voice and the agent stay one character" }),
   transcribe: z.boolean().optional().openapi({ description: "Transcribe what people say (gpt-transcribe, billed as transcription): voice.utterance gets their words, and addressing.names can address the bot. Default true" }),
   speculative: z.boolean().optional().openapi({ description: "With endOfTurn smart: begin the answer when the turn is likely over, and play it once the turn ends (taken back, unheard, if they go on). Default true" }),
@@ -1381,7 +1461,7 @@ export const VoiceSession = z.object({
   discord: z.object(voiceDiscord).openapi({ description: "For a browser session: its own ids (guildId the session's), not Discord's" }),
   state: z.enum(["connecting", "live", "reconnecting", "ended"]).openapi({ description: "connecting: not yet listening; live: listening; reconnecting: the connection dropped or moves (between nodes, or waiting for new credentials); ended" }),
   endReason: z.enum(VOICE_END_REASONS).nullable(),
-  limit: z.enum(["tenant", "end_user"]).optional(), endUserReason: z.string().optional(),
+  limit: z.enum(["tenant", "end_user"]).optional(), endUserReason: creditReason.optional(),
   deliver: z.object({ agent: z.string().optional(), webhooks: z.boolean() }),
   subject: z.string().optional(), bucket: z.string().optional(), context: z.record(z.string(), z.unknown()).optional(), keyScope: z.string().optional(),
   language: z.string().optional(), prompt: z.string().optional(),

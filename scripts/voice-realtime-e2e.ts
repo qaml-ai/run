@@ -4,7 +4,7 @@
  * speech to the first packet out, as voice_turn_latency times a turn. No database, Discord or camelRun node:
  * only what sits between the media plane and the model.
  *
- *   OPENAI_API_KEY=… node --experimental-strip-types scripts/voice-realtime-e2e.ts [--provider openai|gemini] [--speakers 1|2|3] [--overlap]
+ *   OPENAI_API_KEY=… node --experimental-strip-types scripts/voice-realtime-e2e.ts [--provider openai|gemini|grok] [--speakers 1|2|3] [--overlap]
  *        [--commit-ms 580] [--speculative] [--agent] [--model gpt-realtime-2.1] [--repeat 2] [--only id,id] [--out report.json]
  *        [--clips <dir>]
  *
@@ -12,7 +12,7 @@
  * ~/.cache/camelrun-voice-realtime-e2e as `<id>.pcm` (24 kHz mono 16-bit). `--clips <dir>` reads `<id>.pcm` files from
  * there instead (recorded speech, say).
  *
- * Gemini Live (`--provider gemini`) takes GEMINI_API_KEY. Without the key, `--fake <ms>` stands in for the provider: its first audio comes <ms> after each response is
+ * Grok (`--provider grok`) takes XAI_API_KEY. Gemini Live (`--provider gemini`) takes GEMINI_API_KEY. Without the key, `--fake <ms>` stands in for the provider: its first audio comes <ms> after each response is
  * asked for, then audio at twice real time. That measures our own part only (mixing, commits, playback start).
  *
  * - Turns end as our Smart Turn ends them: the cut comes `--commit-ms` after the clip's last loud frame (580: the
@@ -28,6 +28,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { RealtimeBrain, ASK_AGENT, STAY_SILENT, realtimeInstructions, type BrainHooks } from "../src/voice/realtime/brain.ts";
 import { openaiRealtime } from "../src/voice/realtime/openai.ts";
+import { grokRealtime } from "../src/voice/realtime/grok.ts";
 import { geminiLive } from "../src/voice/realtime/gemini.ts";
 import { NO_USAGE, type RealtimeConnection, type RealtimeEvents, type RealtimeProvider } from "../src/voice/realtime/provider.ts";
 import { Floor } from "../src/voice/turns/floor.ts";
@@ -42,11 +43,11 @@ const value = (name: string, fallback?: string) => { const at = args.indexOf(`--
 const speakers = Number(value("speakers", "1"));
 const commitMs = Number(value("commit-ms", "580"));
 const repeat = Number(value("repeat", "2"));
-const providerId = value("provider", "openai") as "openai" | "gemini";
-const model = value("model", providerId === "gemini" ? process.env.GEMINI_LIVE_MODEL ?? "gemini-3.8-live" : process.env.OPENAI_REALTIME_MODEL ?? "gpt-realtime-2.1")!;
+const providerId = value("provider", "openai") as "openai" | "gemini" | "grok";
+const model = value("model", providerId === "grok" ? "grok-voice-latest" : providerId === "gemini" ? process.env.GEMINI_LIVE_MODEL ?? "gemini-3.8-live" : process.env.OPENAI_REALTIME_MODEL ?? "gpt-realtime-2.1")!;
 const fakeMs = value("fake") === undefined ? undefined : Number(value("fake"));
 const only = (value("only") ?? "").split(",").filter(Boolean);
-const keyName = providerId === "gemini" ? "GEMINI_API_KEY" : "OPENAI_API_KEY";
+const keyName = providerId === "grok" ? "XAI_API_KEY" : providerId === "gemini" ? "GEMINI_API_KEY" : "OPENAI_API_KEY";
 const key = process.env[keyName];
 if (!key && fakeMs === undefined) { console.error(`${keyName} is not set: pass --fake <ms> to time our own part with a stand-in provider`); process.exit(2); }
 
@@ -152,13 +153,13 @@ type Sample = { clip: string; speaker: string; firstPacketMs?: number; afterComm
 async function run() {
   const clips = await loadClips();
   if (!clips.length) { console.error("No clips: --only names none, or --clips has no <id>.pcm"); process.exit(2); }
-  const provider = fakeMs !== undefined ? fakeProvider(fakeMs) : providerId === "gemini" ? geminiLive() : openaiRealtime();
+  const provider = fakeMs !== undefined ? fakeProvider(fakeMs) : providerId === "grok" ? grokRealtime() : providerId === "gemini" ? geminiLive() : openaiRealtime();
   let costUsd = 0, talkMs = 0, botMs = 0;
   const started = performance.now();
   const turns = new Map<string, Sample>();
   const hooks: BrainHooks = {
     connect: events => provider.connect({
-      model, voice: providerId === "gemini" ? "Aoede" : "marin", transcribe: flag("transcribe"),
+      model, voice: providerId === "grok" ? "ara" : providerId === "gemini" ? "Aoede" : "marin", transcribe: flag("transcribe"),
       instructions: realtimeInstructions(`You are a friendly assistant in a voice call. Answer in one or two short sentences.${flag("agent") ? " For bookings, reminders or facts, always ask the agent first." : ""}`, { agent: flag("agent"), group: speakers > 1 }),
       tools: [...flag("agent") ? [ASK_AGENT] : [], STAY_SILENT],
     }, { apiKey: key ?? "fake" }, events),

@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { EndUserCredits } from "../src/end-user-credits.ts";
+import type { VoiceCredit } from "../src/voice-sessions.ts";
 import type { HttpError } from "../src/http.ts";
 import { AGENT, discordGrant, sleep, speak, until, voiceCluster } from "./voice-fakes.ts";
 import { fakeRealtimeProvider } from "./voice-realtime-fakes.ts";
@@ -190,4 +192,78 @@ test("a session on Gemini Live: its provider's voices and model, the google key"
   assert.deepEqual(created.realtime, { provider: "gemini", model: "gemini-3.8-live", voice: "Kore", transcribe: true, speculative: true });
   assert.ok(keys.includes("google"), "Gemini runs on the tenant's google key");
   await a.voice.end("alice", created.id);
+});
+
+test("a session on Grok: its provider's voices and model, the xai key", async t => {
+  const realtime = fakeRealtimeProvider();
+  const keys: string[] = [];
+  const { grokRealtime } = await import("../src/voice/realtime/grok.ts");
+  const grok = grokRealtime({ baseUrl: "http://127.0.0.1:9" });
+  const cluster = await voiceCluster(t, {
+    realtime: {
+      providers: { openai: realtime.provider, grok: { ...grok, connect: realtime.provider.connect } },
+      key: async (_tenant, _scope, provider) => { keys.push(provider); return { apiKey: "fixture", platform: true }; },
+    },
+  });
+  const a = await cluster.node("http://a");
+  await assert.rejects(a.voice.create("alice", { discord: discordGrant(), brain: "realtime", realtime: { provider: "grok", voice: "marin" } }), (error: HttpError) => error.status === 400 && /ara/.test(error.message));
+  const created = await a.voice.create("alice", { discord: discordGrant(), brain: "realtime", voice: "coral", realtime: { provider: "grok" } });
+  assert.deepEqual(created.realtime, { provider: "grok", model: "grok-voice-latest", voice: "ara", transcribe: true, speculative: true });
+  assert.ok(keys.includes("xai"), "Grok runs on the tenant's xai key");
+  await a.voice.end("alice", created.id);
+});
+
+
+test("a provider's supported but unpriced model is refused before opening a session", async t => {
+  const realtime = fakeRealtimeProvider();
+  const cluster = await realtimeCluster(t, { realtime: {
+    providers: { openai: { ...realtime.provider, models: ["unpriced"], defaultModel: "unpriced" } },
+    key: async () => ({ apiKey: "fixture", platform: true }),
+  } });
+  const a = await cluster.node("http://a");
+  for (const model of [undefined, "unpriced"]) {
+    await assert.rejects(a.voice.create("alice", { discord: discordGrant(), brain: "realtime", realtime: { model } }),
+      (error: HttpError) => error.status === 400 && error.code === "REALTIME_UNPRICED" && /openai\/unpriced.*no price/.test(error.message));
+  }
+  assert.equal(realtime.connections.length, 0);
+  assert.equal(Number((await cluster.db.query("select count(*) as count from voice_sessions")).rows[0].count), 0);
+});
+
+test("Grok speech usage settles the end user's real credit ledger and releases its connection hold", async t => {
+  const realtime = fakeRealtimeProvider();
+  const { grokRealtime } = await import("../src/voice/realtime/grok.ts");
+  let credits: EndUserCredits;
+  const credit: VoiceCredit = { refusal: (...args) => credits.refusal(...args), hold: (...args) => credits.hold(...args) };
+  const cluster = await voiceCluster(t, { credit, realtime: {
+    providers: { grok: { ...grokRealtime(), connect: realtime.provider.connect } },
+    key: async () => ({ apiKey: "fixture", platform: true }),
+  } });
+  credits = new EndUserCredits(cluster.db);
+  await credits.setSettings("alice", { enabled: true, allowances: { "*": 0 } });
+  await credits.post("alice", "ada", { kind: "grant", amount: 1_000_000, key: "fixture-grant" });
+  const a = await cluster.node("http://a");
+  const grant = discordGrant();
+  const created = await a.voice.create("alice", { discord: grant, brain: "realtime", realtime: { provider: "grok" }, subject: "ada", bucket: "bot:7", silenceMs: 200 });
+  const media = await until(() => cluster.fake.open().find(open => open.credentials.sessionId === grant.sessionId), "media");
+  media.others = [ANA];
+  media.handlers.ready();
+  const model = await until(() => realtime.connections[0], "model after credit hold");
+  assert.equal(Number((await cluster.db.query("select count(*) as count from end_user_holds")).rows[0].count), 1);
+  speak(media, ANA, 0.6);
+  await until(() => model.responses === 1, "response");
+  await model.answer("grok_1", { ms: 400, usage: { inputAudio: 500_000 } });
+  const expected = Math.round((model.of("append").reduce((sum, item) => sum + item.bytes, 0) / 48_000 / 60 * 0.08 + 0.4 / 60 * 0.08 + 0.004) * 1e6);
+  await until(async () => (await credits.ledger("alice", "ada")).entries.some(entry => entry.kind === "usage"), "ledger settlement");
+  const speech = cluster.usage.find(entry => entry.usage.kind === "speech")!.usage;
+  assert.equal(speech.provider, "grok");
+  assert.equal(speech.model, "grok-voice-latest");
+  assert.equal(speech.platform, true);
+  assert.equal(speech.identity?.subject, "ada");
+  assert.equal(Math.round(speech.usage.cost.total * 1e6), expected);
+  await a.voice.end("alice", created.id);
+  await until(async () => Number((await cluster.db.query("select count(*) as count from end_user_holds")).rows[0].count) === 0, "all holds settled or released");
+  const entries = (await credits.ledger("alice", "ada")).entries.filter(entry => entry.kind === "usage");
+  assert.equal(entries.reduce((sum, entry) => sum + entry.raw, 0), expected);
+  assert.ok(entries.every(entry => entry.bucket === "bot:7"));
+  await until(async () => Math.round((await a.voice.get("alice", created.id)).costUsd * 1e6) === expected, "session cost");
 });

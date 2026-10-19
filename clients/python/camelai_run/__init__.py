@@ -26,12 +26,12 @@ import uuid
 import httpx
 
 # pyproject.toml's version; tests/python_sdk.py checks they match.
-__version__ = "0.17.0"
+__version__ = "0.18.0"
 
 __all__ = [
     "Agents", "Agent", "Run", "RunInput", "InputDetail", "Mount", "WorkspaceMount", "RunStream", "StreamPart", "Runs", "StatelessRunStream",
     "tool", "Tool", "ToolContext", "InputRequired", "RuntimeIdentity", "identity_from_claims", "spawn_agent", "SpawnAgent", "agent_notice",
-    "AgentError", "RunError",
+    "AgentError", "RunError", "CREDIT_REASONS", "EndUserCreditFailure", "end_user_credit",
     "AgentRuntime", "AgentClient", "AgentFiles", "Download", "Volume", "Telemetry", "Transcriptions", "Images", "EndUsers", "Voice", "DEFAULT_URL",
     "serve_tools", "verify_runtime_token", "verify_file_url", "RuntimeTokenError", "TestRuntime", "verify_webhook", "WebhookVerificationError",
 ]
@@ -52,16 +52,43 @@ def _env(*names):
     return next((os.environ[name] for name in names if os.environ.get(name)), None)
 
 
+# Why an end user's credit refused or stopped work, the same on every path (a 402 END_USER_CREDIT, a run's
+# end_user_credit error, run.failed, voice.session.ended's endUserReason): "balance" (nothing left of the bucket's free
+# allowance today, and no paid balance), "daily_limit" (the end user's daily credit limit), "bucket_limit" (the bucket's
+# own daily limit on paid spend; a bucket limited to 0 spends only its allowance). More may be added: treat one you do
+# not know as a credit refusal of no particular kind. Branch on these, never on the message.
+CREDIT_REASONS = ("balance", "daily_limit", "bucket_limit")
+
+
 class AgentError(RuntimeError):
     """`status` is the HTTP status (0 for a run's or the connection's failure); `code` a stable name for the
-    failure where the runtime gives one; `uncertain` that nobody can tell whether the work took effect."""
+    failure where the runtime gives one; `uncertain` that nobody can tell whether the work took effect. With code
+    END_USER_CREDIT (a 402) or end_user_credit (a run): `reason` (one of CREDIT_REASONS), `bucket` and `end_user`."""
 
-    def __init__(self, message, status=0, request_id=None, retry_after=None, code=None, uncertain=False):
+    def __init__(self, message, status=0, request_id=None, retry_after=None, code=None, uncertain=False, reason=None, bucket=None, end_user=None):
         super().__init__(message)
         self.status, self.request_id = status, request_id
         # Seconds the runtime asked to wait before retrying (its Retry-After), for 429 and 503.
         self.retry_after = retry_after
         self.code, self.uncertain = code, uncertain
+        self.reason, self.bucket, self.end_user = reason, bucket, end_user
+
+
+def _credit_of(value):
+    """An end user's credit refusal's fields, from an error body or a run's error, as AgentError's keywords."""
+    value = value or {}
+    return {name: value[key] for name, key in (("reason", "reason"), ("bucket", "bucket"), ("end_user", "endUser")) if isinstance(value.get(key), str)}
+
+
+def _failure(response):
+    """A failed response as the AgentError it is: its message, status, Retry-After, code and credit refusal's fields."""
+    try:
+        value = response.json()
+    except ValueError:
+        value = {}
+    if not isinstance(value, dict):
+        value = {}
+    return AgentError(value.get("error") or f"HTTP {response.status_code}", response.status_code, retry_after=_retry_after(response), code=_code(value), **_credit_of(value))
 
 
 class RunError(AgentError):
@@ -70,8 +97,40 @@ class RunError(AgentError):
 
     def __init__(self, run):
         super().__init__(run.error["message"] if run.error else "The run failed", request_id=run.id,
-                         code=run.error and run.error["code"], uncertain=bool(run.error and run.error.get("uncertain")))
+                         code=run.error and run.error["code"], uncertain=bool(run.error and run.error.get("uncertain")), **_credit_of(run.error))
         self.run = run
+
+
+@dataclass
+class EndUserCreditFailure:
+    """An end user's credit refusing or stopping work, in one shape however it came (end_user_credit)."""
+    reason: str | None
+    bucket: str | None
+    end_user: str | None
+    # For people: its words may change.
+    message: str
+    code: str = "end_user_credit"
+
+
+def end_user_credit(value):
+    """Whether an end user's credit refused or stopped this, and why: an EndUserCreditFailure from an AgentError (a 402
+    END_USER_CREDIT: agent.run, a stateless run, transcribe, speech, images, a voice session), a RunError, a Run or its
+    error dict (end_user_credit: refused as it started, or stopped mid-way); None for anything else.
+
+        credit = end_user_credit(error_or_run)
+        if credit and credit.reason == "bucket_limit": ...
+    """
+    if isinstance(value, RunError) and value.run.error:
+        value = value.run.error
+    if isinstance(value, AgentError):
+        if value.code not in ("END_USER_CREDIT", "end_user_credit"):
+            return None
+        return EndUserCreditFailure(value.reason, value.bucket, value.end_user, str(value))
+    error = getattr(value, "error", value)
+    if not isinstance(error, dict) or error.get("code") not in ("END_USER_CREDIT", "end_user_credit"):
+        return None
+    fields = _credit_of(error)
+    return EndUserCreditFailure(fields.get("reason"), fields.get("bucket"), fields.get("end_user"), error.get("message") or error.get("error") or "")
 
 
 @dataclass
@@ -461,7 +520,7 @@ def _json_of(response):
             value = response.json()
         except ValueError:
             value = {}
-        raise AgentError(value.get("error", f"HTTP {response.status_code}"), response.status_code, retry_after=_retry_after(response), code=_code(value))
+        raise AgentError(value.get("error", f"HTTP {response.status_code}"), response.status_code, retry_after=_retry_after(response), code=_code(value), **_credit_of(value))
     return response.json()
 
 
@@ -819,7 +878,7 @@ class AgentRuntime(_RuntimeCalls):
         """A multipart POST with the API key (a transcription's audio), not retried: its answer."""
         response = await self.http.post(self.base + path, data=fields, files=[file], headers={"Authorization": f"Bearer {self._operator()}"}, timeout=_TRANSCRIPTION_TIMEOUT)
         if not response.is_success:
-            raise AgentError(_error(response), response.status_code)
+            raise _failure(response)
         return response.json()
 
     async def _rest(self, method, path, body=None, *, retry=True, headers=None, timeout=None, then=None, missing=_DEFAULT):
@@ -1059,6 +1118,18 @@ class Images:
         return self._runtime._rest("POST", "/v1/images", body, retry=False, timeout=_IMAGES_TIMEOUT)
 
 
+def _epoch_ms(value):
+    """A time as epoch milliseconds: an int as it is, a datetime (naive: UTC) converted."""
+    if isinstance(value, datetime):
+        return int((value if value.tzinfo else value.replace(tzinfo=timezone.utc)).timestamp() * 1000)
+    return value
+
+
+def _day(value):
+    """A UTC day as YYYY-MM-DD: a string as it is, a date or datetime formatted."""
+    return value.strftime("%Y-%m-%d") if hasattr(value, "strftime") else value
+
+
 class EndUsers:
     """Your users' credit (runtime.end_users, agents.end_users). Agents and calls with a `subject` spend that person's credit,
     from their bucket's daily allowance first, then their balance (with your markup), within their daily limit; a run that
@@ -1077,26 +1148,29 @@ class EndUsers:
         return f"/v1/end-users/{quote(end_user, safe='')}"
 
     def settings(self):
-        """How the tenant meters its end users: {"enabled", "allowances", "bucketLimits", "dailyLimit", "markupBps", "lowBalance", "updatedAt"}."""
+        """How the tenant meters its end users: {"enabled", "allowances", "bucketLimits", "dailyLimit", "markupBps", "lowBalance", "allowanceWarningPercent", "updatedAt"}."""
         return self._runtime._rest("GET", "/v1/end-user-settings")
 
-    def configure(self, *, enabled=None, allowances=None, bucket_limits=None, daily_limit=_DEFAULT, markup_bps=None, low_balance=_DEFAULT):
+    def configure(self, *, enabled=None, allowances=None, bucket_limits=None, daily_limit=_DEFAULT, markup_bps=None, low_balance=_DEFAULT, allowance_warning_percent=_DEFAULT):
         """Change the settings; what is left out keeps its value. `allowances`: raw cost per UTC day by bucket ("builder"), prefix
         ("bot:*") or "*", replacing the map; `bucket_limits`: the most each bucket may charge a person's balance a day, keyed
         the same way, replacing the map (0: the bucket spends its allowance only); `daily_limit`: the most a person's paid spend may be a day (None: no limit);
-        `markup_bps`: added to paid spend (2500 is +25%); `low_balance`: end_user.balance.low fires below it (None: never).
-        A changed allowance keeps what was spent today."""
+        `markup_bps`: added to paid spend (2500 is +25%); `low_balance`: end_user.balance.low fires below it (None: never);
+        `allowance_warning_percent`: end_user.allowance.low fires once per person, bucket and day past this percent of the
+        bucket's allowance (None: never). A changed allowance keeps what was spent today."""
         body = {**({"enabled": enabled} if enabled is not None else {}), **({"allowances": allowances} if allowances is not None else {}),
                 **({"bucketLimits": bucket_limits} if bucket_limits is not None else {}), **({"dailyLimit": daily_limit} if daily_limit is not _DEFAULT else {}), **({"markupBps": markup_bps} if markup_bps is not None else {}),
-                **({"lowBalance": low_balance} if low_balance is not _DEFAULT else {})}
+                **({"lowBalance": low_balance} if low_balance is not _DEFAULT else {}),
+                **({"allowanceWarningPercent": allowance_warning_percent} if allowance_warning_percent is not _DEFAULT else {})}
         return self._runtime._rest("PUT", "/v1/end-user-settings", body)
 
-    def amend(self, *, enabled=None, allowances=None, bucket_limits=None, daily_limit=_DEFAULT, markup_bps=None, low_balance=_DEFAULT):
+    def amend(self, *, enabled=None, allowances=None, bucket_limits=None, daily_limit=_DEFAULT, markup_bps=None, low_balance=_DEFAULT, allowance_warning_percent=_DEFAULT):
         """Change only what is sent: `allowances` and `bucket_limits` are merged key by key (a key set to None is removed),
         unlike configure, which replaces a map it is sent."""
         body = {**({"enabled": enabled} if enabled is not None else {}), **({"allowances": allowances} if allowances is not None else {}),
                 **({"bucketLimits": bucket_limits} if bucket_limits is not None else {}), **({"dailyLimit": daily_limit} if daily_limit is not _DEFAULT else {}),
-                **({"markupBps": markup_bps} if markup_bps is not None else {}), **({"lowBalance": low_balance} if low_balance is not _DEFAULT else {})}
+                **({"markupBps": markup_bps} if markup_bps is not None else {}), **({"lowBalance": low_balance} if low_balance is not _DEFAULT else {}),
+                **({"allowanceWarningPercent": allowance_warning_percent} if allowance_warning_percent is not _DEFAULT else {})}
         return self._runtime._rest("PATCH", "/v1/end-user-settings", body)
 
     def get(self, end_user, *, buckets=None):
@@ -1105,21 +1179,39 @@ class EndUsers:
         query = f"?buckets={','.join(quote(bucket, safe='') for bucket in buckets)}" if buckets else ""
         return self._runtime._rest("GET", self._path(end_user) + query)
 
-    def list(self, *, after=None, limit=None):
-        """End users by id, a page at a time: {"endUsers": [{"id", "balance", ...}], "next"?}; pass next as `after`."""
-        query = urlencode({key: value for key, value in (("after", after), ("limit", limit)) if value is not None})
+    def list(self, *, after=None, limit=None, below_low_balance=None):
+        """End users by id, a page at a time: {"endUsers": [{"id", "balance", ...}], "next"?}; pass next as `after`.
+        `below_low_balance=True`: only those under the low-balance threshold that applies to them (an auto top-up sweep)."""
+        query = urlencode({key: value for key, value in (("after", after), ("limit", limit), ("belowLowBalance", "true" if below_low_balance else None)) if value is not None})
         return self._runtime._rest("GET", "/v1/end-users" + (f"?{query}" if query else ""))
 
-    def update(self, end_user, *, allowances=None, bucket_limits=None, daily_limit=_DEFAULT):
-        """A person's own allowances and bucket limits (merged key by key; a key set to None is removed) and daily limit (None: the tenant's)."""
-        body = {**({"allowances": allowances} if allowances is not None else {}), **({"bucketLimits": bucket_limits} if bucket_limits is not None else {}), **({"dailyLimit": daily_limit} if daily_limit is not _DEFAULT else {})}
+    def update(self, end_user, *, allowances=None, bucket_limits=None, daily_limit=_DEFAULT, low_balance=_DEFAULT):
+        """A person's own allowances and bucket limits (merged key by key; a key set to None is removed), daily limit and
+        low-balance threshold (None: the tenant's). A threshold set above their balance fires end_user.balance.low once."""
+        body = {**({"allowances": allowances} if allowances is not None else {}), **({"bucketLimits": bucket_limits} if bucket_limits is not None else {}),
+                **({"dailyLimit": daily_limit} if daily_limit is not _DEFAULT else {}), **({"lowBalance": low_balance} if low_balance is not _DEFAULT else {})}
         return self._runtime._rest("PATCH", self._path(end_user), body)
 
-    def ledger(self, end_user, *, before=None, limit=None):
+    def ledger(self, end_user, *, before=None, limit=None, kind=None, from_=None, to=None, bucket=None, moved=None):
         """Their ledger, newest first: {"entries": [...], "next"?}; pass next as `before`. Usage entries carry the call's raw
-        cost ("raw"), what the bucket's allowance covered ("allowance") and what the balance paid ("amount", negative)."""
-        query = urlencode({key: value for key, value in (("before", before), ("limit", limit)) if value is not None})
+        cost ("raw"), what the bucket's allowance covered ("allowance") and what the balance paid ("amount", negative).
+        Narrow it by `kind` (a list: ["grant", "refund", "adjustment"] is the credit history without usage), a time range on
+        createdAt (`from_`, `to` exclusive: epoch ms or a datetime), `bucket`, and `moved=True` (only entries that moved
+        the balance)."""
+        query = urlencode({key: value for key, value in (
+            ("before", before), ("limit", limit), ("kind", ",".join(kind) if kind else None), ("from", _epoch_ms(from_)), ("to", _epoch_ms(to)),
+            ("bucket", bucket), ("moved", "true" if moved else None)) if value is not None})
         return self._runtime._rest("GET", self._path(end_user) + "/ledger" + (f"?{query}" if query else ""))
+
+    def days(self, end_user, *, from_=None, to=None, bucket=None, limit=None):
+        """Their spend and credit per UTC day, newest first: {"days": [{"day", "freeRaw", "paidCharged", "writtenOff", "granted",
+        "refunded", "adjusted", "entries", "buckets": [{"bucket", "freeRaw", "paidCharged", "writtenOff"}]}], "next"?}; pass next
+        as `to`. freeRaw is what allowances paid (raw cost), paidCharged what the balance paid (with the markup), writtenOff
+        the cost past what was left (raw, never charged); the rest is what your entries
+        moved, in balance units. `from_`/`to` are UTC days (YYYY-MM-DD strings or dates, `to` exclusive), at most 366 apart;
+        `bucket` keeps that bucket's spend alone, without entries; `limit`: days a page (default 31)."""
+        query = urlencode({key: value for key, value in (("from", _day(from_)), ("to", _day(to)), ("bucket", bucket), ("limit", limit)) if value is not None})
+        return self._runtime._rest("GET", self._path(end_user) + "/days" + (f"?{query}" if query else ""))
 
     def grant(self, end_user, *, amount, key, reference=None, metadata=None):
         """Add credit (after a payment), once per `key` (the payment's id): {"entry", "replayed"}."""
@@ -1817,7 +1909,7 @@ class AgentClient(_AgentCalls):
         if future and not future.done():
             if "error" in value:
                 future.set_exception(AgentError(value["error"], request_id=request_id, code=value.get("code") if isinstance(value.get("code"), str) else None,
-                                                uncertain=bool(value.get("uncertain"))))
+                                                uncertain=bool(value.get("uncertain")), **_credit_of(value)))
             else:
                 future.set_result(value.get("result"))
 
@@ -2234,10 +2326,15 @@ class InputDetail(TypedDict):
     origin: NotRequired[str]
 
 
+def _limit_of(value):
+    """A limit's fields on a run's error, as the runtime names them: which limit, and for an end user's credit why, which bucket and whose."""
+    return {key: value[key] for key in ("limit", "reason", "bucket", "endUser") if isinstance(value.get(key), str)}
+
+
 def _run_of(request_id, result, output, make_input):
     """A run from an agent's prompt result: its status, text, output (parsed by a pydantic model) and inputs (make_input of each)."""
     result = result or {}
-    error = ({"code": result.get("code") or "model_error", "message": result["error"], **(result.get("modelError") or {})} if result.get("error")
+    error = ({"code": result.get("code") or "model_error", "message": result["error"], **(result.get("modelError") or {}), **_limit_of(result)} if result.get("error")
              else {"code": "spend_limit", "message": "The agent reached its spend limit; raise it (spend_limit) to go on"} if result.get("stopped") == "spend_limit"
              else {"code": "turn_limit", "message": "The run reached its limit of model responses or time; send another message to continue"} if result.get("stopped") == "turn_limit" else None)
     # The runtime checked the output against the JSON Schema; a pydantic model parses it too (validators, types).
@@ -2388,7 +2485,7 @@ def _outcome_run(request_id, outcome, output, make_input):
     """A run from a request's outcome: its result, or the runtime's error ({"error", "code"?, "uncertain"?})."""
     if "error" in outcome:
         code = outcome.get("code") if isinstance(outcome.get("code"), str) else None
-        return Run(request_id, "failed", error={"code": code or "runtime_error", "message": outcome["error"], **({"uncertain": True} if outcome.get("uncertain") else {})})
+        return Run(request_id, "failed", error={"code": code or "runtime_error", "message": outcome["error"], **({"uncertain": True} if outcome.get("uncertain") else {}), **_limit_of(outcome)})
     return _run_of(request_id, outcome.get("result"), output, make_input)
 
 

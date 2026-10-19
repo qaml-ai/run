@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import secrets
 import subprocess
@@ -23,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "clients" / "python"))
 from camelai_run import AgentClient, _answer_for, _origin, AgentError, AgentRuntime, Agents, RunError, Runs, RuntimeTokenError, TestRuntime, ToolContext, WebhookVerificationError, agent_notice, spawn_agent, _answer_mcp, _tool_context, serve_tools, tool, verify_file_url, verify_runtime_token, verify_webhook
 from camelai_run import sync
+from camelai_run import CREDIT_REASONS, EndUserCreditFailure, _run_of, end_user_credit
 from camelai_run.projects import Projects, file_bytes, publish_tool
 
 DATABASE_URL = os.environ.get("AGENT_TEST_DATABASE_URL", "postgres://postgres:test@127.0.0.1:55432/postgres")
@@ -1176,12 +1178,31 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(AgentError) as refused:
             await agent.run("again")
         self.assertEqual(refused.exception.code, "END_USER_CREDIT")
+        self.assertEqual((refused.exception.reason, refused.exception.bucket, refused.exception.end_user), ("balance", "bot:7", "person"))
+        self.assertEqual(end_user_credit(refused.exception), EndUserCreditFailure("balance", "bot:7", "person", str(refused.exception)))
+        # A run stopped mid-way, or refused as it left the queue: its error has the same fields, by code.
+        stopped = _run_of("r1", {"error": "words that may change", "stopped": "spend_limit", "code": "end_user_credit", "limit": "end_user", "reason": "bucket_limit", "bucket": "bot:7", "endUser": "person"}, None, lambda value: value)
+        self.assertEqual((stopped.status, stopped.error["code"], stopped.error["reason"], stopped.error["bucket"], stopped.error["endUser"], stopped.error["limit"]), ("failed", "end_user_credit", "bucket_limit", "bot:7", "person", "end_user"))
+        self.assertEqual(end_user_credit(stopped).reason, "bucket_limit")
+        self.assertEqual(end_user_credit(RunError(stopped)).bucket, "bot:7")
+        self.assertIsNone(end_user_credit(AgentError("busy", 429, code="RATE_LIMITED")))
+        self.assertEqual(CREDIT_REASONS, ("balance", "daily_limit", "bucket_limit"))
         self.assertEqual((await end_users.list())["endUsers"][0]["id"], "person")
+        # The credit history without usage, and the day's totals: the run's usage (allowance-paid) and the two entries.
+        history = await end_users.ledger("person", kind=["grant", "adjustment"], from_=datetime.now(timezone.utc) - timedelta(days=1))
+        self.assertEqual([entry["key"] for entry in history["entries"]], ["zero", "pi_1"])
+        self.assertEqual([entry["key"] for entry in (await end_users.ledger("person", moved=True, kind=["usage"]))["entries"]], [])
+        days = (await end_users.days("person", to=datetime.now(timezone.utc).date() + timedelta(days=1)))["days"]
+        self.assertEqual((len(days), days[0]["granted"], days[0]["entries"], days[0]["buckets"][0]["bucket"], days[0]["buckets"][0]["freeRaw"]), (1, 500_000, 2, "bot:7", 10_550))
+        own = await end_users.update("person", low_balance=1_000_000)
+        self.assertEqual((own["lowBalance"], own["overrides"]["lowBalance"]), (1_000_000, 1_000_000))
+        self.assertEqual([user["id"] for user in (await end_users.list(below_low_balance=True))["endUsers"]], ["person"])
+        self.assertEqual((await end_users.amend(allowance_warning_percent=80))["allowanceWarningPercent"], 80)
 
         def synchronous():
             with sync.AgentRuntime(url=self.url, api_key=self.token) as runtime:
-                return runtime.end_users.get("person")["balance"], runtime.end_users.settings()["enabled"]
-        self.assertEqual(await asyncio.to_thread(synchronous), (0, True))
+                return runtime.end_users.get("person")["balance"], runtime.end_users.settings()["enabled"], len(runtime.end_users.days("person", limit=1)["days"])
+        self.assertEqual(await asyncio.to_thread(synchronous), (0, True, 1))
 
     async def test_volumes_files_snapshots_and_mounts(self):
         created = await self.runtime.create_volume(name="shared docs")

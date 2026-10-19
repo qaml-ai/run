@@ -26,7 +26,7 @@ test("an end user's allowance pays first, then their balance; out of both, the t
 
   const run = await r.prompt(id, "go");
   const result = run.outcome.result;
-  assert.deepEqual([result.stopped, result.code, result.limit, result.reason], ["spend_limit", "end_user_credit", "end_user", "balance"], JSON.stringify(result));
+  assert.deepEqual([result.stopped, result.code, result.limit, result.reason, result.bucket, result.endUser], ["spend_limit", "end_user_credit", "end_user", "balance", "builder", "person"], JSON.stringify(result));
   assert.match(result.error, /out of credit|too little credit/);
   const entries = await usage(r, "person");
   assert.equal(entries.length, r.model.bodies.length, "each response the provider made is posted once");
@@ -165,10 +165,10 @@ test("concurrent replies for one end user share their credit: their holds never 
   assert.ok(held <= 40_000, `${held} held of 40000`);
   release();
   const runs = await Promise.all(agents.map((agent, index) => settled(r, `/v1/agents/${agent}/requests/${accepted[index].json.id}`)));
-  // Refused at its model call (a result, code end_user_credit), or as its run started, when the others' holds already
-  // took what there was (an error, no result): either way before the provider was asked.
-  const refused = runs.filter(run => run.outcome.result?.code === "end_user_credit" || (!run.outcome.result && /out of credit|too little credit/.test(run.outcome.error ?? "")));
-  assert.ok(runs.every(run => run.outcome.result || run.outcome.error), JSON.stringify({ outcomes: runs.map(run => run.outcome), logs: r.logs.filter(line => /error|failed|refused/i.test(line)).slice(-30) }));
+  // Refused at its model call, or as its run started, when the others' holds already took what there was: either way
+  // before the provider was asked, and coded alike (end_user_credit, with why), whatever the words.
+  const refused = runs.filter(run => run.outcome.result?.code === "end_user_credit" && run.outcome.result.reason === "balance" && run.outcome.result.endUser === "shared");
+  assert.ok(runs.every(run => run.outcome.result), JSON.stringify({ outcomes: runs.map(run => run.outcome), logs: r.logs.filter(line => /error|failed|refused/i.test(line)).slice(-30) }));
   assert.ok(reached < 4 && refused.length === 4 - reached, `${reached} calls made, ${refused.length} refused: ${JSON.stringify(runs.map(run => run.outcome))}`);
   const person = (await r.call("/v1/end-users/shared")).json;
   assert.deepEqual([person.balance, person.held], [40_000 - reached * 10_000, 0]);
@@ -192,10 +192,22 @@ test("the TypeScript SDK: endUsers configure, grant, get and ledger; an agent's 
   assert.deepEqual(entries.map(entry => [entry.kind, entry.bucket, entry.raw]), [["usage", "bot:1", 10_000], ["usage", "bot:1", 10_000]]);
   await agents.endUsers.adjust("owner", { amount: -owner.balance, key: "zero" });
   await agents.endUsers.update("owner", { allowances: { "bot:1": 0 } });
-  await assert.rejects(agent.run("three"), (error: any) => error.code === "END_USER_CREDIT" && error.status === 402);
+  const { endUserCredit } = await import("../clients/typescript.ts");
+  await assert.rejects(agent.run("three"), (error: any) => {
+    assert.deepEqual([error.status, error.code, error.reason, error.bucket, error.endUser], [402, "END_USER_CREDIT", "balance", "bot:1", "owner"]);
+    assert.deepEqual(endUserCredit(error), { code: "end_user_credit", reason: "balance", bucket: "bot:1", endUser: "owner", message: error.message });
+    return true;
+  });
+  // A stateless run refused at submit: the same fields.
+  await assert.rejects(agents.run({ input: "refused", subject: "owner", bucket: "bot:1" }), (error: any) => error.code === "END_USER_CREDIT" && error.reason === "balance" && error.bucket === "bot:1");
   // A stateless run spends from its own bucket.
   await agents.endUsers.update("owner", { allowances: { "bot:1": null } });
   const run = await agents.run({ input: "four", subject: "owner", bucket: "bot:2", throwOnError: false });
   assert.equal(run.error, null);
   assert.deepEqual((await agents.endUsers.list()).endUsers.map(user => user.id), ["owner"]);
+  // A person's own low-balance threshold, and the sweep of those under theirs.
+  const own = await agents.endUsers.update("owner", { lowBalance: 1_000_000 });
+  assert.deepEqual([own.lowBalance, own.overrides.lowBalance], [1_000_000, 1_000_000]);
+  assert.deepEqual((await agents.endUsers.list({ belowLowBalance: true })).endUsers.map(user => user.id), ["owner"]);
+  assert.equal((await agents.endUsers.amend({ allowanceWarningPercent: 80 })).allowanceWarningPercent, 80);
 });

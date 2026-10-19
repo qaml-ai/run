@@ -63,7 +63,7 @@ export type RequestRecord = {
   /** The runtime's own: a sub-agent's notification or message (its text and notice), kept once it begins so a next owner can land it. */
   notice?: unknown;
   /** The runtime's own: the notification's turn was refused (a spend limit, the wake cap) as it landed, so no owner asks the model. */
-  landOnly?: { stopped: string; message: string };
+  landOnly?: { stopped: string; message: string; code?: string; limit?: string; reason?: string; bucket?: string; endUser?: string };
   /** When the agent was stopped (aborted) while this run was going: it ends as aborted, and no node resumes it. */
   abortedAt?: number;
   /** The runtime's own: an ended run whose webhook event (`run.completed` or `run.failed`) is not written yet. */

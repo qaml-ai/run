@@ -18,7 +18,7 @@ import { DEFAULT_ADDRESSING, Floor, type AddressingPolicy } from "./voice/turns/
 import { BARGE_IN_LIMITS, DEFAULT_BARGE_IN, type BargeInPolicy } from "./voice/echo-guard.ts";
 import type { TurnModels } from "./voice/turns/inference.ts";
 import { RealtimeBrain, ASK_AGENT, STAY_SILENT, realtimeInstructions, type BrainHooks } from "./voice/realtime/brain.ts";
-import { REALTIME_TRANSCRIPTION, realtimeVoice, type RealtimeProvider, type RealtimeProviderId } from "./voice/realtime/provider.ts";
+import { REALTIME_PRICES, REALTIME_PROVIDERS, REALTIME_TRANSCRIPTION, realtimeVoice, type RealtimeProvider, type RealtimeProviderId } from "./voice/realtime/provider.ts";
 
 /**
  * Voice sessions: calls camelRun holds for a tenant's bot. Joining a voice channel is the one step that needs the bot's
@@ -98,7 +98,8 @@ export type VoiceState = "connecting" | "live" | "reconnecting" | "ended";
 export const END_REASONS = ["requested", "empty", "idle", "max_duration", "budget", "kicked", "credentials", "error"] as const;
 export type EndReason = typeof END_REASONS[number];
 /** Why a session ended, with what the reason needs: which limit for `budget`, a short detail for `error`. */
-export type Ending = { reason: EndReason; limit?: "tenant" | "end_user"; endUserReason?: string; detail?: string };
+/** How a session ended; with reason budget, whose credit (`limit`), and for an end user's why (one of CREDIT_REASONS) and which bucket. */
+export type Ending = { reason: EndReason; limit?: "tenant" | "end_user"; endUserReason?: string; bucket?: string; detail?: string };
 
 /** A session's settings, as created (and some patched): stored as they are read back. */
 export type VoiceOptions = {
@@ -556,6 +557,7 @@ export class VoiceSessions {
     if (!provider) throw new HttpError(400, `realtime.provider must be one of this runtime's: ${Object.keys(providers).join(", ")}`);
     const model = given.model === undefined ? provider.defaultModel : given.model;
     if (typeof model !== "string" || !provider.models.includes(model)) throw new HttpError(400, `realtime.model must be one of ${provider.models.join(", ")}`);
+    if (!REALTIME_PRICES[`${provider.id}/${model}`]) throw new HttpError(400, `Realtime model ${provider.id}/${model} has no price configured`, "REALTIME_UNPRICED");
     if (given.voice !== undefined && (typeof given.voice !== "string" || !provider.voices.includes(given.voice))) throw new HttpError(400, `realtime.voice must be one of ${provider.id}'s: ${provider.voices.join(", ")}`);
     const instructions = given.instructions === undefined ? undefined : text(given.instructions, "realtime.instructions", new RegExp(`^[\\s\\S]{1,${VOICE_LIMITS.realtimeInstructionsChars}}$`), `at most ${VOICE_LIMITS.realtimeInstructionsChars} characters`);
     for (const flag of ["transcribe", "speculative"] as const) if (given[flag] !== undefined && typeof given[flag] !== "boolean") throw new HttpError(400, `realtime.${flag} must be true or false`);
@@ -1082,8 +1084,8 @@ export class VoiceSessions {
           : undefined;
       } catch (error) {
         if ((error as HttpError).code !== "END_USER_CREDIT") throw error;
-        const reason = (error as HttpError).details?.reason;
-        await this.endFor(origin, { reason: "budget", limit: "end_user", ...(typeof reason === "string" ? { endUserReason: reason } : {}) });
+        const { reason, bucket } = (error as HttpError).details ?? {};
+        await this.endFor(origin, { reason: "budget", limit: "end_user", ...(typeof reason === "string" ? { endUserReason: reason } : {}), ...(typeof bucket === "string" ? { bucket } : {}) });
         return;
       }
       const bytes = oggOpus(cut.packets);
@@ -1175,7 +1177,7 @@ export class VoiceSessions {
         where id = $1 and state <> 'ended' returning *`, [id, ending.reason, now, JSON.stringify({ ...options, ...(ending.limit || ending.endUserReason ? { ending } : {}) })]);
       const row = rows[0] as Row | undefined;
       if (row?.options.deliver.webhooks) await enqueueEvents(sql, [this.event(row, "voice.session.ended", {
-        reason: ending.reason, ...(ending.limit ? { limit: ending.limit } : {}), ...(ending.endUserReason ? { endUserReason: ending.endUserReason } : {}),
+        reason: ending.reason, ...(ending.limit ? { limit: ending.limit } : {}), ...(ending.endUserReason ? { endUserReason: ending.endUserReason } : {}), ...(ending.bucket ? { bucket: ending.bucket } : {}),
         startedAt: num(row.started_at), endedAt: now, utterances: row.utterances, speechSeconds: row.speech_seconds, costUsd: Number(row.cost) / 1_000_000,
       }, `voice:${id}:ended`)]);
       return row;
@@ -1201,6 +1203,7 @@ export class VoiceSessions {
     const realtime = options().realtime!;
     const provider = this.options.realtime?.providers[realtime.provider];
     if (!provider) throw new Error(`Realtime provider ${realtime.provider} is not enabled on this runtime`);
+    if (!REALTIME_PRICES[`${provider.id}/${realtime.model}`]) throw new Error(`Realtime model ${provider.id}/${realtime.model} has no price configured`);
     const credentials = await this.options.realtime!.key(held.tenant, options().keyScope, provider.key);
     if (!credentials) throw new Error(`No ${provider.key} key for a realtime brain`);
     const agent = options().deliver.agent;
@@ -1257,8 +1260,8 @@ export class VoiceSessions {
         const { subject, bucket } = options();
         return subject !== undefined && this.options.credit ? this.options.credit.hold(held.tenant, subject, bucket ?? DEFAULT_BUCKET, usd, "voice_realtime", { session: held.id }) : undefined;
       },
-      budget: (limit, endUserReason) => {
-        void this.finish(this.held.get(held.id) === held ? held : undefined, held.id, { reason: "budget", limit, ...(endUserReason ? { endUserReason } : {}) })
+      budget: (limit, endUserReason, bucket) => {
+        void this.finish(this.held.get(held.id) === held ? held : undefined, held.id, { reason: "budget", limit, ...(endUserReason ? { endUserReason } : {}), ...(bucket ? { bucket } : {}) })
           .catch(error => console.error(JSON.stringify({ type: "voice_finish_failed", session: held.id, error: safeError(error) })));
       },
       usage: ({ usage, costUsd, audioSeconds }) => {

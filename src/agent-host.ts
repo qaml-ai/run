@@ -29,6 +29,7 @@ import { observeTurns, recordCodeExecution } from "./metrics.ts";
 import { fitImage, fits, type Fitted } from "./inspect.ts";
 import { imageHeader } from "./image-header.ts";
 import { clock } from "./node-context.ts";
+import { usageMissing } from "./platform-pricing.ts";
 
 /** How often an agent reads back from its log what its history backlog could not hold (see `index`). */
 const LAG_READ_MS = 60_000;
@@ -101,6 +102,16 @@ export function openCalls(messages: AgentMessage[]): ToolCall[] {
 }
 
 /**
+ * A limit's stop as a run's result carries it: its code (its own, else the kind of stop), and the limit, reason, bucket
+ * and end user where it names them.
+ */
+const stopFields = (stop: Partial<RunStop>) => ({
+  code: stop.code ?? stop.stopped,
+  ...(stop.limit ? { limit: stop.limit } : {}), ...(stop.reason ? { reason: stop.reason } : {}),
+  ...(stop.bucket ? { bucket: stop.bucket } : {}), ...(stop.endUser ? { endUser: stop.endUser } : {}),
+});
+
+/**
  * One agent: its Pi loop, working-set transcript, compaction and retries. It runs
  * in its own process (agent-child.ts) or inline in a worker hosting many agents.
  */
@@ -114,14 +125,14 @@ export function createAgentHost(hostIO: HostIO) {
   let busy = false;
   let active: AbortController | undefined;
   /** Why the current run ended early: a spend limit, tool calls waiting on a person's input, or a hand-off (its node is leaving). */
-  let stopped: { stopped: RunStop["stopped"] | "input_required"; error?: string; code?: string; limit?: RunStop["limit"]; reason?: string } | undefined;
+  let stopped: { stopped: RunStop["stopped"] | "input_required"; error?: string; code?: string; limit?: RunStop["limit"]; reason?: string; bucket?: string; endUser?: string } | undefined;
   /**
    * A model call its end user's credit refused (before it was made) or cut (where its hold ran out, as it streamed):
    * the running turn stops there, as at a spend limit, and is not retried.
    */
   const creditStop = (refused: CreditStop) => {
     if (!busy || stopped) return;
-    stopped = { stopped: "spend_limit", error: refused.message, code: END_USER_CREDIT, limit: "end_user", reason: refused.reason };
+    stopped = { stopped: "spend_limit", error: refused.message, code: END_USER_CREDIT, limit: "end_user", reason: refused.reason, bucket: refused.bucket, endUser: refused.endUser };
     io.emit({ type: "spend_limit_reached", message: refused.message });
   };
   /** Messages a compaction folded into the summary during the current run, still in Pi's live state. */
@@ -380,7 +391,9 @@ export function createAgentHost(hostIO: HostIO) {
       const outcome = await runCompaction({
         // The summarizer reads messages as the model does, senders included; rendering keeps their count, so the cut still indexes the context.
         context: renderMessages(context), offset, previous, model: config.model, apiKey: perCall() ? () => io.modelAuth() : apiKey, signal, keepRecentTokens, modelHeaders: config.modelHeaders, dataCollection: config.dataCollection, gate, outbound: io.modelOutbound, attempt: io.modelAttempt,
-        onResponse: message => io.emit({ type: "compaction_usage", provider: message.provider, model: message.model, usage: message.usage, timestamp: message.timestamp, ...flag }),
+        // A summary whose usage never came is billed at the estimate of what it wrote (`chars`) and read.
+        onResponse: message => io.emit({ type: "compaction_usage", provider: message.provider, model: message.model, usage: message.usage, timestamp: message.timestamp,
+          ...(usageMissing(message.usage) ? { chars: message.content.length ? JSON.stringify(message.content).length : 0 } : {}), ...flag }),
       });
       if ("skipped" in outcome) {
         io.emit({ type: "compaction_end", reason, skipped: outcome.skipped, ...flag });
@@ -946,7 +959,7 @@ export function createAgentHost(hostIO: HostIO) {
             stopped = { stopped: "handoff" };
             return { action: "end" };
           }
-          stopped = { stopped: limit.stopped, error: limit.message, code: limit.code ?? limit.stopped, ...(limit.limit ? { limit: limit.limit } : {}), ...(limit.reason ? { reason: limit.reason } : {}) };
+          stopped = { stopped: limit.stopped, error: limit.message, ...stopFields(limit) };
           io.emit({ type: `${limit.stopped}_reached`, message: limit.message });
           return { action: "end" };
         },
@@ -1063,9 +1076,9 @@ export function createAgentHost(hostIO: HostIO) {
       if (method === "continue" && params?.aborted) return await abortedBeforeLoop();
       // A notification's turn the runtime refused as it landed (a cap), resumed here: closed without the model.
       if (method === "continue" && params?.landOnly) {
-        const { stopped: why, message: said } = params.landOnly as { stopped: string; message: string };
+        const { stopped: why, message: said } = params.landOnly as RunStop;
         const done = await abortedBeforeLoop();
-        return { ...done, error: said, code: why, stopped: why };
+        return { ...done, error: said, stopped: why, ...stopFields(params.landOnly) };
       }
       if (method === "prompt") await useOutput(params.output?.schema);
       if (method === "execute") {
@@ -1117,8 +1130,8 @@ export function createAgentHost(hostIO: HostIO) {
             io.emit({ type: "message_end", message });
           }
           await transcript.setActive(false);
-          const { stopped: why, message: said } = params.landOnly as { stopped: string; message: string };
-          return { messages: transcript.total, error: said, code: why, stopped: why };
+          const { stopped: why, message: said } = params.landOnly as RunStop;
+          return { messages: transcript.total, error: said, stopped: why, ...stopFields(params.landOnly) };
         }
         // Images enter the transcript as requests carry them: scaled down once here, not on every request after.
         const messages = await fittedImages(promptMessages!);

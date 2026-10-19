@@ -150,10 +150,11 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     voice: {
       enabled: env.AGENT_VOICE === "true",
       // The speech-to-speech providers sessions answer with (src/voice/realtime): AGENT_VOICE_REALTIME lists them
-      // ("openai", "gemini"; a session takes the first unless it names another); unset, OpenAI. AGENT_OPENAI_REALTIME_URL
-      // and AGENT_GEMINI_LIVE_URL dial other addresses (a proxy, a test's fake).
+      // ("openai", "gemini", "grok"; a session takes the first unless it names another); unset, OpenAI.
+      // AGENT_OPENAI_REALTIME_URL, AGENT_GEMINI_LIVE_URL and AGENT_GROK_REALTIME_URL dial other addresses (a proxy, a
+      // test's fake).
       realtime: list(env.AGENT_VOICE_REALTIME).length ? list(env.AGENT_VOICE_REALTIME) : ["openai"],
-      realtimeUrl: env.AGENT_OPENAI_REALTIME_URL || undefined, geminiLiveUrl: env.AGENT_GEMINI_LIVE_URL || undefined,
+      realtimeUrl: env.AGENT_OPENAI_REALTIME_URL || undefined, geminiLiveUrl: env.AGENT_GEMINI_LIVE_URL || undefined, grokRealtimeUrl: env.AGENT_GROK_REALTIME_URL || undefined,
       // Where each text-to-speech provider (POST /v1/speech) is dialled, when not its own address (a proxy, a test's fake).
       endpoints: { deepgram: env.AGENT_DEEPGRAM_URL, elevenlabs: env.AGENT_ELEVENLABS_URL, cartesia: env.AGENT_CARTESIA_URL },
       perTenant: Number(env.AGENT_VOICE_SESSIONS_PER_TENANT ?? 10), perNode: Number(env.AGENT_VOICE_SESSIONS_PER_NODE ?? 200),
