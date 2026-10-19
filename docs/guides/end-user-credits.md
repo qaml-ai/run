@@ -87,6 +87,13 @@ after the next `configure` that sends the map. To change some keys and keep the 
 changes, maps merge key by key, and `null` removes a key. A person's own overrides merge
 the same way (`endUsers.update`).
 
+Several writers (each server node as it starts, an admin tool, a script) may change the
+settings at once. Each write changes only the fields it sends, and a `PATCH` merges its keys
+into the map as it stands when the write lands, so writes to different fields or keys all
+keep their changes. Of two writes to the same field or key, the later wins. So give each
+writer its own fields and keys and have it `PATCH` only those: a node that `configure`s with
+the whole `allowances` map replaces keys another writer added to it.
+
 ## Pay as you go: an example
 
 A person buys credit with Stripe; their builder agent and their bots spend it.

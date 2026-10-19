@@ -191,6 +191,10 @@ export class EndUserCredits {
   /**
    * Change the tenant's settings: fields left out keep their current values. `allowances` and `bucketLimits`, when given,
    * replace the whole map (PUT); with `merge` (PATCH) they are merged into it key by key, a key set to null removed.
+   *
+   * One statement writes only the columns sent, and merges a PATCH's keys into the map as the row stands when the write
+   * takes it (never as read before), so concurrent writers (several nodes, an admin tool, a script) never undo each
+   * other's fields or keys: of two writes to the same field or key, the later one wins.
    */
   async setSettings(tenant: string, input: Record<string, unknown>, { merge = false } = {}): Promise<EndUserSettings> {
     const known = ["enabled", "allowances", "bucketLimits", "dailyLimit", "markupBps", "lowBalance"];
@@ -204,19 +208,41 @@ export class EndUserCredits {
     if (input.markupBps !== undefined && (typeof input.markupBps !== "number" || !Number.isSafeInteger(input.markupBps) || input.markupBps < 0 || input.markupBps > 100_000)) {
       throw new HttpError(400, "markupBps must be an integer from 0 to 100000 (basis points: 2500 is +25%)");
     }
-    const current = await this.settings(tenant);
-    const next = {
-      enabled: input.enabled as boolean | undefined ?? current.enabled,
-      allowances: allowances === undefined ? current.allowances : merge ? mergeKeys(current.allowances, allowances, "allowance") : allowances as Allowances,
-      bucketLimits: bucketLimits === undefined ? current.bucketLimits : merge ? mergeKeys(current.bucketLimits, bucketLimits, "bucket limit") : bucketLimits as Allowances,
-      dailyLimit: dailyLimit === undefined ? current.dailyLimit : dailyLimit, markupBps: input.markupBps as number | undefined ?? current.markupBps,
-      lowBalance: lowBalance === undefined ? current.lowBalance : lowBalance,
+    // An insert (no row yet) takes the defaults for what was not sent; an update sets only what was. A map's keys merge
+    // in SQL: `(column || set) - removed`. Postgres takes the row before evaluating the update, so a writer queued behind
+    // another merges into what that one wrote.
+    const params: unknown[] = [tenant, Date.now()];
+    const param = (value: unknown) => `$${params.push(value)}`;
+    const sets: string[] = [], limits: string[] = [];
+    const values: Record<string, string> = { enabled: "false", allowances: "'{}'::jsonb", bucket_limits: "'{}'::jsonb", daily_limit: "null", markup_bps: "0", low_balance: "null" };
+    const column = (name: string, value: unknown) => {
+      values[name] = param(value);
+      sets.push(`${name} = excluded.${name}`);
     };
+    const map = (name: string, given: Record<string, number | null> | undefined) => {
+      if (!given) return;
+      const set = JSON.stringify(Object.fromEntries(Object.entries(given).filter(([, amount]) => amount !== null)));
+      if (!merge) return column(name, set);
+      const removed = Object.keys(given).filter(key => given[key] === null);
+      values[name] = `${param(set)}::jsonb`;
+      const merged = `(s.${name} || ${values[name]}) - ${param(removed)}::text[]`;
+      sets.push(`${name} = ${merged}`);
+      limits.push(`(select count(*) from jsonb_object_keys(${merged})) <= 100`);
+    };
+    if (input.enabled !== undefined) column("enabled", input.enabled);
+    map("allowances", allowances);
+    map("bucket_limits", bucketLimits);
+    if (dailyLimit !== undefined) column("daily_limit", dailyLimit);
+    if (input.markupBps !== undefined) column("markup_bps", input.markupBps);
+    if (lowBalance !== undefined) column("low_balance", lowBalance);
+    const names = Object.keys(values);
     const row = (await this.db.query(`
-      insert into end_user_settings (tenant, enabled, allowances, bucket_limits, daily_limit, markup_bps, low_balance, updated_at) values ($1, $2, $3, $4, $5, $6, $7, $8)
-      on conflict (tenant) do update set enabled = excluded.enabled, allowances = excluded.allowances, bucket_limits = excluded.bucket_limits, daily_limit = excluded.daily_limit,
-        markup_bps = excluded.markup_bps, low_balance = excluded.low_balance, updated_at = excluded.updated_at
-      returning *`, [tenant, next.enabled, JSON.stringify(next.allowances), JSON.stringify(next.bucketLimits), next.dailyLimit, next.markupBps, next.lowBalance, Date.now()])).rows[0];
+      insert into end_user_settings as s (tenant, ${names.join(", ")}, updated_at) values ($1, ${names.map(name => values[name]).join(", ")}, $2)
+      on conflict (tenant) do update set ${[...sets, "updated_at = excluded.updated_at"].join(", ")}
+      ${limits.length ? `where ${limits.join(" and ")}` : ""}
+      returning *`, params)).rows[0];
+    // No row: the row is there, and a PATCH would take one of its maps past 100 keys. Nothing was written.
+    if (!row) throw new HttpError(400, "At most 100 keys in allowances, and 100 in bucketLimits");
     return settingsView(row);
   }
 
