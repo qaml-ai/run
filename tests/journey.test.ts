@@ -298,7 +298,7 @@ test("accounts from before journey events were first on are not sent as new sign
 
 test("is_first is the account's first token: exact for an account journey saw made, and for an older one only if it has no other", async t => {
   const { accounts, journey, signIn, added } = await setup(t, { journey: { collectUnknown: true } });
-  const token = async (browser?: typeof AGREED) => (await added(() => journey!.tokenCreated({ tenant: "octocat", browser }))).map(event => [event.properties, event.visitor_id]);
+  const token = async (browser?: typeof AGREED) => (await added(() => journey!.tokenCreated({ tenant: "octocat", browser }))).filter(event => event.name === "run_token_created").map(event => [event.properties, event.visitor_id]);
   await signIn();
   // Equal timestamps must not make the random event ids decide which event this assertion sees.
   t.mock.method(Date, "now", () => 1_792_450_800_000);
@@ -310,7 +310,7 @@ test("is_first is the account's first token: exact for an account journey saw ma
   const old = (await accounts.db.query("select id from tenants where google_sub = 'google-sub-1'")).rows[0].id;
   await accounts.createToken(old, "earlier");
   await accounts.createToken(old, "now");
-  assert.deepEqual((await added(() => journey!.tokenCreated({ tenant: old }))).map(event => [event.properties, event.visitor_id]), [[{ is_first: false }, null]]);
+  assert.deepEqual((await added(() => journey!.tokenCreated({ tenant: old }))).filter(event => event.name === "run_token_created").map(event => [event.properties, event.visitor_id]), [[{ is_first: false }, null]]);
 });
 
 test("a staff account stays internal in every later event, whatever that event knows of it", async t => {
@@ -607,14 +607,14 @@ test("a new agent says how it was made and whether it is the account's first", a
   t.mock.method(Date, "now", () => 1_792_450_800_000);
   for (const via of ["console", "mcp", "api"] as const) {
     const events = await added(() => journey!.agentCreated({ tenant: "octocat", via, ...(via === "console" ? { browser: AGREED } : {}) }));
-    assert.deepEqual(events.map(event => [event.properties, event.visitor_id]), [[{ is_first: via === "console", created_via: via }, via === "console" ? VISITOR : null]]);
+    assert.deepEqual(events.filter(event => event.name === "run_agent_created").map(event => [event.properties, event.visitor_id]), [[{ is_first: via === "console", created_via: via }, via === "console" ? VISITOR : null]]);
   }
   // An older account with agents already: its next is not its first. A browser that refused is not recorded.
   await accounts.tenantForGoogle({ sub: "google-sub-1", email: "old@elsewhere.test" });
   const old = (await db.query("select id from tenants where google_sub = 'google-sub-1'")).rows[0].id;
   await journey!.signedIn({ tenant: old, method: "google", surface: "console", browser: AGREED });
   await db.query("insert into agents (id, tenant, header, revision, name, type, model) values ('client_a', $1, '{}', 1, 'a', 't', 'm'), ('client_b', $1, '{}', 1, 'b', 't', 'm')", [old]);
-  assert.deepEqual((await added(() => journey!.agentCreated({ tenant: old, via: "api" }))).map(event => [event.properties, event.visitor_id]), [[{ is_first: false, created_via: "api" }, null]]);
+  assert.deepEqual((await added(() => journey!.agentCreated({ tenant: old, via: "api" }))).filter(event => event.name === "run_agent_created").map(event => [event.properties, event.visitor_id]), [[{ is_first: false, created_via: "api" }, null]]);
   await journey!.agentCreated({ tenant: old, via: "console", browser: { visitor: null, consent: "denied", collect: false } });
   assert.equal((await agents()).length, 4);
 });
