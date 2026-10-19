@@ -379,8 +379,9 @@ await agents.voice.create({
 });
 ```
 
-It is off unless the runtime lists a provider in `AGENT_VOICE_REALTIME` (`openai`), and the account has a key for it
-(your OpenAI key under Models & keys, else the platform's; 400 `REALTIME_UNAVAILABLE` without one). The session speaks:
+It is off unless the runtime lists a provider in `AGENT_VOICE_REALTIME` (`openai`, `gemini`), and the account has a key
+for it (your OpenAI key, or your `google` key for Gemini, under Models & keys, else the platform's; 400
+`REALTIME_UNAVAILABLE` without one). The session speaks:
 `speak` may be left out, and your app joins un-muted.
 
 How it works:
@@ -410,10 +411,18 @@ How it works:
 - **One character.** `realtime.instructions` (at most 8,000 characters) is the bot's persona, before the call's own
   rules (short spoken answers, names, ask_agent, stay_silent). Give it the same persona as the agent.
 
-`realtime` takes `provider` (`openai`), `model` (`gpt-realtime-2.1`, the default, or `gpt-realtime-2.1-mini`), `voice`
-(the model's: `alloy`, `ash`, `ballad`, `coral`, `echo`, `sage`, `shimmer`, `verse`, `marin`, `cedar`; default the
-session's `voice`, or the nearest: `nova` → `marin`, `onyx` → `cedar`, `fable` → `ballad`), `instructions`,
-`transcribe` (default true: what people say is transcribed, for `names` and for `voice.utterance`) and `speculative`.
+`realtime` takes `provider` (`openai` or `gemini`; default the runtime's first), `model` (OpenAI: `gpt-realtime-2.1`, the
+default, or `gpt-realtime-2.1-mini`; Gemini: `gemini-3.8-live`), `voice` (the model's. OpenAI: `alloy`, `ash`, `ballad`,
+`coral`, `echo`, `sage`, `shimmer`, `verse`, `marin`, `cedar`; Gemini: its prebuilt voices, `Kore`, `Aoede`, `Leda`,
+`Puck`, `Charon`… Default the session's `voice`, or the nearest: OpenAI `nova` → `marin`, `onyx` → `cedar`, `fable` →
+`ballad`; Gemini `coral` → `Kore`, `alloy` → `Aoede`, `onyx` → `Charon`…), `instructions`, `transcribe` (default true:
+what people say is transcribed, for `names` and for `voice.utterance`) and `speculative`.
+
+The providers differ where their APIs do. Gemini Live hears a turn as one activity (a change of speaker inside it is a
+note in its context), transcribes it only once it is asked to answer (a turn that only its words could address is
+answered at once, and taken back before it is heard if they do not name the bot), cannot drop audio once sent (echo
+the guard rejects stays in its context), and is told how much of a cut-off answer was heard rather than having it
+truncated.
 
 What changes for your app: `voice.utterance` still comes for each person's speech (with `brain: "realtime"`; with
 `transcribe`), but the model has answered it already, so your app should not. `POST …/speak` is refused (409
@@ -449,8 +458,8 @@ A realtime brain is billed by the tokens its model uses, at the provider's list 
 answer is a `usage.recorded` with `kind: "speech"`, the model as `model`, its tokens in `input` and `output` (`cacheRead`
 for cached ones) and `audioSeconds` of audio made. Each answer bills the conversation so far again (mostly cached, at a
 tenth or less of the price), so a minute costs more as a call goes on. A conversational minute (people talk half of
-it, the bot a third) is about $0.05 on `gpt-realtime-2.1` and $0.02 on `gpt-realtime-2.1-mini`, against $0.015-0.02
-for the cascade. What people say is transcribed (`transcribe`) at the transcription price, as `kind: "transcription"`.
+it, the bot a third) is about $0.05 on `gpt-realtime-2.1`, $0.02 on `gpt-realtime-2.1-mini` and $0.02-0.035 on
+`gemini-3.8-live` (measured), against $0.015-0.02 for the cascade. What people say is transcribed (`transcribe`) at the transcription price, as `kind: "transcription"`.
 With end-user credits, each answer holds $0.05 of the subject's credit before it is asked for and settles at what it
 cost.
 

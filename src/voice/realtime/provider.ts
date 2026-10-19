@@ -97,12 +97,15 @@ export interface RealtimeProvider {
   readonly id: RealtimeProviderId;
   readonly models: readonly string[];
   readonly defaultModel: string;
-  /** Its voices. */
+  /** Its voices, and the nearest of them to a session's voice (OpenAI's names) where the names differ. */
   readonly voices: readonly string[];
+  readonly voiceFor?: Readonly<Record<string, string>>;
+  /** Its transcript of a turn comes only once it is asked to answer (Gemini): addressing by name decides after. */
+  readonly wordsAfterAnswer?: boolean;
   connect(config: RealtimeConfig, credentials: { apiKey: string }, events: RealtimeEvents): RealtimeConnection;
 }
 
-export const REALTIME_PROVIDERS = ["openai"] as const;
+export const REALTIME_PROVIDERS = ["openai", "gemini"] as const;
 export type RealtimeProviderId = typeof REALTIME_PROVIDERS[number];
 
 /** Micro-USD per million tokens, by kind; `transcriptionPerMinute` is micro-USD per minute of input transcribed. */
@@ -115,6 +118,9 @@ export type RealtimePrice = { inputText: number; cachedText: number; outputText:
 export const REALTIME_PRICES: Readonly<Record<string, RealtimePrice>> = Object.freeze({
   "openai/gpt-realtime-2.1": { inputText: micros(4), cachedText: micros(0.4), outputText: micros(24), inputAudio: micros(32), cachedAudio: micros(0.4), outputAudio: micros(64) },
   "openai/gpt-realtime-2.1-mini": { inputText: micros(0.6), cachedText: micros(0.06), outputText: micros(2.4), inputAudio: micros(10), cachedAudio: micros(0.3), outputAudio: micros(20) },
+  // ai.google.dev/gemini-api/docs/pricing (2026-10-18): no cached price is listed, so cached tokens are billed in full;
+  // thoughts are output text.
+  "gemini/gemini-3.8-live": { inputText: micros(0.75), cachedText: micros(0.75), outputText: micros(4.5), inputAudio: micros(3), cachedAudio: micros(3), outputAudio: micros(12) },
 });
 /** The input transcription's model, and its price per minute (gpt-transcribe, as POST /v1/transcriptions bills it). */
 export const REALTIME_TRANSCRIPTION = Object.freeze({ model: "gpt-transcribe", perMinute: micros(0.0045) });
@@ -142,6 +148,6 @@ export function realtimeTranscriptionCost(seconds: number): number {
 export const REALTIME_VOICE_FOR: Readonly<Record<string, string>> = Object.freeze({ nova: "marin", onyx: "cedar", fable: "ballad" });
 export function realtimeVoice(provider: RealtimeProvider, voice: string): string {
   if (provider.voices.includes(voice)) return voice;
-  const near = REALTIME_VOICE_FOR[voice];
+  const near = provider.voiceFor?.[voice] ?? REALTIME_VOICE_FOR[voice];
   return near && provider.voices.includes(near) ? near : provider.voices[0];
 }

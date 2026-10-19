@@ -4,10 +4,10 @@
  * end of speech to the first packet out, as voice_turn_latency times a turn. No database, Discord or camelRun node:
  * only what sits between the media plane and the model.
  *
- *   OPENAI_API_KEY=… node --experimental-strip-types scripts/voice-realtime-e2e.ts [--speakers 1|2|3] [--overlap]
+ *   OPENAI_API_KEY=… node --experimental-strip-types scripts/voice-realtime-e2e.ts [--provider openai|gemini] [--speakers 1|2|3] [--overlap]
  *        [--commit-ms 580] [--speculative] [--agent] [--model gpt-realtime-2.1] [--repeat 2] [--only id,id] [--out report.json]
  *
- * Without OPENAI_API_KEY, `--fake <ms>` stands in for the provider: its first audio comes <ms> after each response is
+ * Gemini Live (`--provider gemini`) takes GEMINI_API_KEY. Without the key, `--fake <ms>` stands in for the provider: its first audio comes <ms> after each response is
  * asked for, then audio at twice real time. That measures our own part only (mixing, commits, playback start).
  *
  * - Turns end as our Smart Turn ends them: the cut comes `--commit-ms` after the clip's last loud frame (580: the
@@ -23,6 +23,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { RealtimeBrain, ASK_AGENT, STAY_SILENT, realtimeInstructions, type BrainHooks } from "../src/voice/realtime/brain.ts";
 import { openaiRealtime } from "../src/voice/realtime/openai.ts";
+import { geminiLive } from "../src/voice/realtime/gemini.ts";
 import { NO_USAGE, type RealtimeConnection, type RealtimeEvents, type RealtimeProvider } from "../src/voice/realtime/provider.ts";
 import { Floor } from "../src/voice/turns/floor.ts";
 import { buffered, opusFromPcm } from "../src/voice-audio.ts";
@@ -34,11 +35,13 @@ const value = (name: string, fallback?: string) => { const at = args.indexOf(`--
 const speakers = Number(value("speakers", "1"));
 const commitMs = Number(value("commit-ms", "580"));
 const repeat = Number(value("repeat", "2"));
-const model = value("model", process.env.OPENAI_REALTIME_MODEL ?? "gpt-realtime-2.1")!;
+const providerId = value("provider", "openai") as "openai" | "gemini";
+const model = value("model", providerId === "gemini" ? process.env.GEMINI_LIVE_MODEL ?? "gemini-3.8-live" : process.env.OPENAI_REALTIME_MODEL ?? "gpt-realtime-2.1")!;
 const fakeMs = value("fake") === undefined ? undefined : Number(value("fake"));
 const only = (value("only") ?? "").split(",").filter(Boolean);
-const key = process.env.OPENAI_API_KEY;
-if (!key && fakeMs === undefined) { console.error("OPENAI_API_KEY is not set: pass --fake <ms> to time our own part with a stand-in provider"); process.exit(2); }
+const keyName = providerId === "gemini" ? "GEMINI_API_KEY" : "OPENAI_API_KEY";
+const key = process.env[keyName];
+if (!key && fakeMs === undefined) { console.error(`${keyName} is not set: pass --fake <ms> to time our own part with a stand-in provider`); process.exit(2); }
 
 const BYTES_PER_MS = 48;
 const NAMES = ["Ana", "Ben", "Cy"];
@@ -115,13 +118,13 @@ type Sample = { clip: string; speaker: string; firstPacketMs?: number; afterComm
 async function run() {
   const clips = loadClips();
   if (!clips.length) { console.error("No clips: run `npm run bakeoff:voice` once to make them (~/.cache/camelrun-voice-bakeoff)"); process.exit(2); }
-  const provider = fakeMs !== undefined ? fakeProvider(fakeMs) : openaiRealtime();
+  const provider = fakeMs !== undefined ? fakeProvider(fakeMs) : providerId === "gemini" ? geminiLive() : openaiRealtime();
   let costUsd = 0, talkMs = 0, botMs = 0;
   const started = performance.now();
   const turns = new Map<string, Sample>();
   const hooks: BrainHooks = {
     connect: events => provider.connect({
-      model, voice: "marin", transcribe: false,
+      model, voice: providerId === "gemini" ? "Aoede" : "marin", transcribe: flag("transcribe"),
       instructions: realtimeInstructions(`You are a friendly assistant in a voice call. Answer in one or two short sentences.${flag("agent") ? " For bookings, reminders or facts, always ask the agent first." : ""}`, { agent: flag("agent"), group: speakers > 1 }),
       tools: [...flag("agent") ? [ASK_AGENT] : [], STAY_SILENT],
     }, { apiKey: key ?? "fake" }, events),
@@ -132,8 +135,9 @@ async function run() {
     turn: () => {}, heard: () => {},
     spoke: event => {
       if (event.type !== "started" || !event.turn) return;
-      const sample = [...turns.values()].find(entry => entry.firstPacketMs === undefined);
-      if (!sample) return;
+      // The answer is to the latest turn (an earlier one it was not to stays unanswered).
+      const sample = [...turns.values()].at(-1);
+      if (!sample || sample.firstPacketMs !== undefined) return;
       const stages = event.turn.stages();
       sample.firstPacketMs = stages.firstPacket;
       if (stages.ttsFirstAudio !== undefined && stages.turnCommit !== undefined) sample.afterCommitMs = stages.ttsFirstAudio - stages.turnCommit;
@@ -144,7 +148,7 @@ async function run() {
     log: (type, fields) => { if (type.includes("failed") || type.includes("warning") || type.includes("lost")) console.error(type, JSON.stringify(fields ?? {})); },
   };
   const brain = new RealtimeBrain({
-    session: "vs_e2e00000000000000000000", tenant: "e2e", reference: `openai/${model}`, floor: new Floor({ mode: "always" }),
+    session: "vs_e2e00000000000000000000", tenant: "e2e", reference: `${providerId}/${model}`, floor: new Floor({ mode: "always" }), ...(provider.wordsAfterAnswer ? { wordsAfterAnswer: true } : {}),
     speculative: flag("speculative"), transcribed: false, bargeIn: { minMs: 300, confirmMs: 1_000, resumeMs: 3_000 },
   }, hooks);
   await sleep(1_500);
@@ -205,7 +209,7 @@ async function run() {
   const firsts = spoken.map(sample => sample.firstPacketMs).filter((v): v is number => v !== undefined);
   const afters = spoken.map(sample => sample.afterCommitMs).filter((v): v is number => v !== undefined);
   const report = {
-    provider: fakeMs !== undefined ? `fake(${fakeMs} ms)` : `openai/${model}`, speakers, overlap: flag("overlap"), speculative: flag("speculative"), agent: flag("agent"), commitMs,
+    provider: fakeMs !== undefined ? `fake(${fakeMs} ms)` : `${providerId}/${model}`, speakers, overlap: flag("overlap"), speculative: flag("speculative"), agent: flag("agent"), commitMs,
     turns: spoken.length, spoken: firsts.length,
     firstPacketMs: { p50: pct(firsts, 0.5), p90: pct(firsts, 0.9) },
     firstAudioAfterCommitMs: { p50: pct(afters, 0.5), p90: pct(afters, 0.9) },

@@ -9411,7 +9411,8 @@
               "provider": {
                 "type": "string",
                 "enum": [
-                  "openai"
+                  "openai",
+                  "gemini"
                 ]
               },
               "model": {
@@ -9834,18 +9835,19 @@
           "provider": {
             "type": "string",
             "enum": [
-              "openai"
+              "openai",
+              "gemini"
             ],
-            "description": "The speech-to-speech provider, one of the runtime's (AGENT_VOICE_REALTIME). Default its first: openai"
+            "description": "The speech-to-speech provider, one of the runtime's (AGENT_VOICE_REALTIME): openai (OpenAI Realtime, your OpenAI key) or gemini (Gemini Live, your google key). Default the runtime's first"
           },
           "model": {
             "type": "string",
-            "description": "The model: gpt-realtime-2.1, gpt-realtime-2.1-mini. Default gpt-realtime-2.1",
+            "description": "The model: openai gpt-realtime-2.1, gpt-realtime-2.1-mini (default gpt-realtime-2.1); gemini gemini-3.8-live",
             "example": "gpt-realtime-2.1"
           },
           "voice": {
             "type": "string",
-            "description": "The provider's voice: alloy, ash, ballad, coral, echo, sage, shimmer, verse, marin, cedar (OpenAI). Default the session's voice where the model has it, else the nearest (nova → marin, onyx → cedar, fable → ballad)",
+            "description": "The provider's voice: openai alloy, ash, ballad, coral, echo, sage, shimmer, verse, marin, cedar; gemini Kore, Aoede, Leda, Zephyr, Puck, Charon, Fenrir, Orus, Callirrhoe, Autonoe, Enceladus, Iapetus, Umbriel, Algieba, Despina, Erinome, Algenib, Rasalgethi, Laomedeia, Achernar, Alnilam, Schedar, Gacrux, Pulcherrima, Achird, Zubenelgenubi, Vindemiatrix, Sadachbia, Sadaltager, Sulafat. Default the session's voice where the model has it, else the nearest (OpenAI: nova → marin, onyx → cedar, fable → ballad; Gemini: alloy → Aoede, coral → Kore, onyx → Charon…)",
             "example": "marin"
           },
           "instructions": {

@@ -130,6 +130,7 @@ export function testBrain(options: Partial<BrainOptions> & { addressing?: Partia
   const brain = new RealtimeBrain({
     session: "vs_000000000000000000000001", tenant: "alice", reference: "openai/gpt-realtime-2.1", floor: new Floor(options.addressing ?? {}),
     speculative: options.speculative ?? false, transcribed: options.transcribed ?? true, ...(options.bargeIn ? { bargeIn: options.bargeIn } : {}),
+    ...(options.wordsAfterAnswer ? { wordsAfterAnswer: true } : {}),
   }, {
     connect: events => realtime.provider.connect(config, { apiKey: "fixture" }, events),
     player: () => playback.player, resumeMedia: () => playback.resume(), humans: () => state.humans, name: speaker => names[speaker] ?? speaker,

@@ -3,6 +3,7 @@ import { EVENT_TYPES } from "./webhooks.ts";
 import { END_REASONS as VOICE_END_REASONS, VOICE_LIMITS } from "./voice-sessions.ts";
 import { BRAINS, REALTIME_PROVIDERS } from "./voice/realtime/provider.ts";
 import { OPENAI_REALTIME } from "./voice/realtime/openai.ts";
+import { GEMINI_LIVE } from "./voice/realtime/gemini.ts";
 import { MIN_CONTEXT_TOKENS } from "./protocol.ts";
 import { MODEL_ERROR_CLASSES } from "./model-errors.ts";
 
@@ -1328,9 +1329,9 @@ const VoiceSpeechProviders = z.strictObject({
   voices: z.record(z.string(), z.string()).optional().openapi({ description: "The voice for each provider, by provider: an ElevenLabs voice id, a Cartesia voice id (required for cartesia), an Aura voice (aura-2-thalia-en), an OpenAI voice (else `voice`)", example: { elevenlabs: "21m00Tcm4TlvDq8ikWAM", openai: "coral" } }),
 }).openapi("VoiceSpeechProviders");
 const VoiceRealtime = z.strictObject({
-  provider: z.enum(REALTIME_PROVIDERS).optional().openapi({ description: "The speech-to-speech provider, one of the runtime's (AGENT_VOICE_REALTIME). Default its first: openai" }),
-  model: z.string().optional().openapi({ description: `The model: ${OPENAI_REALTIME.models.join(", ")}. Default ${OPENAI_REALTIME.defaultModel}`, example: OPENAI_REALTIME.defaultModel }),
-  voice: z.string().optional().openapi({ description: `The provider's voice: ${OPENAI_REALTIME.voices.join(", ")} (OpenAI). Default the session's voice where the model has it, else the nearest (nova → marin, onyx → cedar, fable → ballad)`, example: "marin" }),
+  provider: z.enum(REALTIME_PROVIDERS).optional().openapi({ description: "The speech-to-speech provider, one of the runtime's (AGENT_VOICE_REALTIME): openai (OpenAI Realtime, your OpenAI key) or gemini (Gemini Live, your google key). Default the runtime's first" }),
+  model: z.string().optional().openapi({ description: `The model: openai ${OPENAI_REALTIME.models.join(", ")} (default ${OPENAI_REALTIME.defaultModel}); gemini ${GEMINI_LIVE.models.join(", ")}`, example: OPENAI_REALTIME.defaultModel }),
+  voice: z.string().optional().openapi({ description: `The provider's voice: openai ${OPENAI_REALTIME.voices.join(", ")}; gemini ${GEMINI_LIVE.voices.join(", ")}. Default the session's voice where the model has it, else the nearest (OpenAI: nova → marin, onyx → cedar, fable → ballad; Gemini: alloy → Aoede, coral → Kore, onyx → Charon…)`, example: "marin" }),
   instructions: z.string().max(8_000).optional().openapi({ description: "The bot's persona and instructions, before the call's own rules (who speaks, short spoken answers, ask_agent, stay_silent): the voice and the agent stay one character" }),
   transcribe: z.boolean().optional().openapi({ description: "Transcribe what people say (gpt-transcribe, billed as transcription): voice.utterance gets their words, and addressing.names can address the bot. Default true" }),
   speculative: z.boolean().optional().openapi({ description: "With endOfTurn smart: begin the answer when the turn is likely over, and play it once the turn ends (taken back, unheard, if they go on). Default true" }),

@@ -48,6 +48,8 @@ export const REALTIME_LIMITS = Object.freeze({
   reconnects: 3, reconnectWindowMs: 5 * 60_000,
   /** Lines of what was said kept in memory, to brief a new connection after a reconnect. */
   historyLines: 20,
+  /** The longest an answer waits for the floor (someone else mid-turn, the answer before it still playing). */
+  waitMs: 8_000,
   /** The model's audio is about this long, for the playback buffer's start (it comes faster than real time). */
   expectedMs: 3_000,
 });
@@ -127,6 +129,11 @@ export type BrainOptions = {
   speculative: boolean;
   /** Inputs are transcribed (the provider's `heard`), so names can address the bot. */
   transcribed: boolean;
+  /**
+   * The provider transcribes a turn only once it is asked to answer (Gemini): a turn only its words could address is
+   * answered at once, told it may not be for the bot, and taken back before it is heard if its words say it was not.
+   */
+  wordsAfterAnswer?: boolean;
   clock?: Clock;
 };
 
@@ -193,7 +200,7 @@ export class RealtimeBrain {
   /** The response being made or played, the one before it still playing, and a response waiting for the floor. */
   private current?: Response;
   private playing?: Response;
-  private waitingRespond?: { speaker?: string; turn?: TurnClock; instructions?: string };
+  private waitingRespond?: { speaker?: string; turn?: TurnClock; instructions?: string; at?: number };
   private keys = 0;
   /** Committed input since the last response: a turn with nothing new is not answered. */
   private fresh = false;
@@ -518,6 +525,22 @@ export class RealtimeBrain {
     const standing = floor.standing(speaker, humans);
     let addressed: Addressed | undefined;
     if (standing) addressed = floor.decide(speaker, "", humans);
+    else if (this.options.transcribed && floor.policy.names.length && turn && this.options.wordsAfterAnswer) {
+      this.respond({ speaker, turn: clock, instructions: NOT_ADDRESSED_HINT });
+      turn.deciding = true;
+      const text = await this.words(turn);
+      if (this.closed) return;
+      turn.addressed = text === undefined ? this.standing(speaker) : floor.decide(speaker, text, humans);
+      for (const heard of turn.unsent?.splice(0) ?? []) this.hooks.heard({ ...heard, addressed: turn.addressed });
+      this.turns.delete(speaker);
+      if (text === undefined || turn.addressed.addressed) return;
+      // Not the bot's: its answer is taken back, unheard (or not asked for, if it was still waiting).
+      this.stats.unaddressed++;
+      if (this.waitingRespond?.turn === clock) { this.waitingRespond = undefined; clock.end("no_reply"); }
+      const current = this.current;
+      if (current?.turn === clock && !current.played && !current.cancelled) this.cancel(current, "superseded", 0);
+      return;
+    }
     else if (this.options.transcribed && floor.policy.names.length && turn) {
       // Only its words can say: wait (briefly) for its transcript.
       turn.deciding = true;
@@ -559,7 +582,7 @@ export class RealtimeBrain {
     if (busy) {
       // One waits at most: a newer turn's replaces it (the model hears both).
       this.waitingRespond?.turn?.end("no_reply");
-      this.waitingRespond = request;
+      this.waitingRespond = { ...request, at: this.clock.now() };
       return;
     }
     // One waiting is answered by this one too: the model hears everything so far.
@@ -606,8 +629,10 @@ export class RealtimeBrain {
       if (current.audio.bytes) this.play(current);
     }
     if (this.waitingRespond && !(this.current && !this.current.done)) {
-      const request = this.waitingRespond;
+      const { at, ...request } = this.waitingRespond;
       this.waitingRespond = undefined;
+      // An answer that waited too long would answer what is no longer being talked about: the next turn will be.
+      if (at !== undefined && this.clock.now() - at > REALTIME_LIMITS.waitMs) { request.turn?.end("no_reply"); return; }
       this.ask({ ...request, held: false, speculative: false });
     }
   }

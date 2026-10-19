@@ -1769,6 +1769,7 @@ export class VoiceSessions {
     const policy = interruption(options());
     return new RealtimeBrain({
       session: held.id, tenant: held.tenant, reference: `${provider.id}/${realtime.model}`, floor: held.floor, transcribed: realtime.transcribe,
+      ...(provider.wordsAfterAnswer ? { wordsAfterAnswer: true } : {}),
       speculative: realtime.speculative && options().endOfTurn?.mode === "smart" && !!this.options.turnModels,
       ...(options().bargeIn !== false ? { bargeIn: policy } : {}),
     }, hooks);
