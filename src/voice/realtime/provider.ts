@@ -105,7 +105,7 @@ export interface RealtimeProvider {
   connect(config: RealtimeConfig, credentials: { apiKey: string }, events: RealtimeEvents): RealtimeConnection;
 }
 
-export const REALTIME_PROVIDERS = ["openai", "gemini"] as const;
+export const REALTIME_PROVIDERS = ["openai", "gemini", "grok"] as const;
 export type RealtimeProviderId = typeof REALTIME_PROVIDERS[number];
 
 /** Micro-USD per million tokens, by kind; `transcriptionPerMinute` is micro-USD per minute of input transcribed. */

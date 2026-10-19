@@ -30,14 +30,31 @@ const BYTES_PER_MS = 48;
 const BENIGN = new Set(["response_cancel_not_active"]);
 
 export function openaiRealtime(options: { baseUrl?: string; socket?: SocketFactory } = {}): RealtimeProvider {
-  const { baseUrl = "https://api.openai.com/v1" } = options;
-  const socket = options.socket ?? openSocket;
-  return {
+  return openaiCompatibleRealtime({
     id: "openai", key: "openai",
     models: OPENAI_REALTIME.models, defaultModel: OPENAI_REALTIME.defaultModel, voices: OPENAI_REALTIME.voices,
+  }, { ...options, baseUrl: options.baseUrl ?? "https://api.openai.com/v1" });
+}
+
+type RealtimeProtocol = {
+  session?: (config: RealtimeConfig) => unknown;
+  legacyAudioEvents?: boolean;
+  /** Input transcripts are included in the voice service, without a separate transcription charge. */
+  nativeTranscription?: boolean;
+  redact?: (text: string) => string;
+};
+
+/** The OpenAI wire protocol, with a provider's session fields and optional older audio event names. */
+export function openaiCompatibleRealtime(
+  provider: Omit<RealtimeProvider, "connect">,
+  options: RealtimeProtocol & { baseUrl: string; socket?: SocketFactory },
+): RealtimeProvider {
+  const socket = options.socket ?? openSocket;
+  return {
+    ...provider,
     connect(config, credentials, events) {
-      const url = `${wsBase(baseUrl)}/realtime?model=${encodeURIComponent(config.model)}`;
-      return new OpenAIRealtime(socket(url, { Authorization: `Bearer ${credentials.apiKey}` }), config, events);
+      const url = `${wsBase(options.baseUrl)}/realtime?model=${encodeURIComponent(config.model)}`;
+      return new OpenAIRealtime(socket(url, { Authorization: `Bearer ${credentials.apiKey}` }), config, events, options);
     },
   };
 }
@@ -46,6 +63,8 @@ class OpenAIRealtime implements RealtimeConnection {
   private readonly socket: Socket;
   private readonly events: RealtimeEvents;
   private readonly instructions: string;
+  private readonly legacyAudioEvents: boolean;
+  private readonly redact: (text: string) => string;
   private open = false;
   private ready = false;
   private ended = false;
@@ -64,25 +83,15 @@ class OpenAIRealtime implements RealtimeConnection {
   private cancelOnCreate = false;
   private readonly timer: ReturnType<typeof setTimeout>;
 
-  constructor(socket: Socket, config: RealtimeConfig, events: RealtimeEvents) {
+  constructor(socket: Socket, config: RealtimeConfig, events: RealtimeEvents, options: RealtimeProtocol) {
     this.socket = socket;
-    this.events = events;
+    this.events = options.nativeTranscription ? {
+      ...events, heard: (tag, text) => { if (config.transcribe) events.heard(tag, text, 0); },
+    } : events;
     this.instructions = config.instructions;
-    const prompt = [config.prompt].filter(Boolean).join("\n");
-    this.queue.push(JSON.stringify({
-      type: "session.update",
-      session: {
-        type: "realtime", model: config.model, instructions: config.instructions, output_modalities: ["audio"],
-        audio: {
-          input: {
-            format: { type: "audio/pcm", rate: 24_000 }, turn_detection: null,
-            ...(config.transcribe ? { transcription: { model: REALTIME_TRANSCRIPTION.model, ...(config.language ? { language: config.language } : {}), ...(prompt ? { prompt } : {}) } } : {}),
-          },
-          output: { format: { type: "audio/pcm", rate: 24_000 }, voice: config.voice },
-        },
-        ...(config.tools.length ? { tools: config.tools.map(tool => ({ type: "function", ...tool })), tool_choice: "auto" } : {}),
-      },
-    }));
+    this.redact = options.redact ?? (text => text);
+    this.legacyAudioEvents = options.legacyAudioEvents ?? false;
+    this.queue.push(JSON.stringify({ type: "session.update", session: options.session ? options.session(config) : openaiSession(config) }));
     this.timer = setTimeout(() => { if (!this.ready) this.fail("The realtime connection did not open in time"); }, OPENAI_REALTIME.connectTimeoutMs);
     this.timer.unref?.();
     socket.onopen = () => {
@@ -174,7 +183,8 @@ class OpenAIRealtime implements RealtimeConnection {
 
   private message(event: any) {
     if (!event || typeof event.type !== "string" || this.ended) return;
-    switch (event.type) {
+    const type = this.legacyAudioEvents ? ({ "response.audio.delta": "response.output_audio.delta", "response.audio_transcript.delta": "response.output_audio_transcript.delta" } as Record<string, string>)[event.type] ?? event.type : event.type;
+    switch (type) {
       case "session.updated":
         if (!this.ready) { this.ready = true; clearTimeout(this.timer); this.events.ready(); }
         return;
@@ -208,7 +218,7 @@ class OpenAIRealtime implements RealtimeConnection {
         if (this.active === response.id) this.active = undefined;
         const status = ["completed", "cancelled", "failed", "incomplete"].includes(response.status) ? response.status : "failed";
         const error = response.status_details?.error?.message ?? response.status_details?.reason;
-        this.events.responseDone(response.id, { status, usage: usageOf(response.usage), ...(status === "failed" && error ? { error: String(error).slice(0, 200) } : {}) });
+        this.events.responseDone(response.id, { status, usage: usageOf(response.usage), ...(status === "failed" && error ? { error: this.redact(String(error)).slice(0, 200) } : {}) });
         return;
       }
       case "input_audio_buffer.committed": {
@@ -232,7 +242,7 @@ class OpenAIRealtime implements RealtimeConnection {
       case "error": {
         const code = String(event.error?.code ?? event.error?.type ?? "error");
         if (BENIGN.has(code)) return;
-        this.events.warning(code, String(event.error?.message ?? "").slice(0, 300));
+        this.events.warning(this.redact(code), this.redact(String(event.error?.message ?? "")).slice(0, 300));
         return;
       }
     }
@@ -247,5 +257,20 @@ export function usageOf(usage: any): RealtimeUsage {
   return {
     inputText: n(input.text_tokens), inputAudio: n(input.audio_tokens), cachedText: n(cached.text_tokens), cachedAudio: n(cached.audio_tokens),
     outputText: n(output.text_tokens), outputAudio: n(output.audio_tokens),
+  };
+}
+
+function openaiSession(config: RealtimeConfig) {
+  const prompt = [config.prompt].filter(Boolean).join("\n");
+  return {
+    type: "realtime", model: config.model, instructions: config.instructions, output_modalities: ["audio"],
+    audio: {
+      input: {
+        format: { type: "audio/pcm", rate: 24_000 }, turn_detection: null,
+        ...(config.transcribe ? { transcription: { model: REALTIME_TRANSCRIPTION.model, ...(config.language ? { language: config.language } : {}), ...(prompt ? { prompt } : {}) } } : {}),
+      },
+      output: { format: { type: "audio/pcm", rate: 24_000 }, voice: config.voice },
+    },
+    ...(config.tools.length ? { tools: config.tools.map(tool => ({ type: "function", ...tool })), tool_choice: "auto" } : {}),
   };
 }

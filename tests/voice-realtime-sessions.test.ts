@@ -168,3 +168,22 @@ test("a session on Gemini Live: its provider's voices and model, the google key"
   assert.ok(keys.includes("google"), "Gemini runs on the tenant's google key");
   await a.voice.end("alice", created.id);
 });
+
+test("a session on Grok: its provider's voices and model, the xai key", async t => {
+  const realtime = fakeRealtimeProvider();
+  const keys: string[] = [];
+  const { grokRealtime } = await import("../src/voice/realtime/grok.ts");
+  const grok = grokRealtime({ baseUrl: "http://127.0.0.1:9" });
+  const cluster = await voiceCluster(t, {
+    realtime: {
+      providers: { openai: realtime.provider, grok: { ...grok, connect: realtime.provider.connect } },
+      key: async (_tenant, _scope, provider) => { keys.push(provider); return { apiKey: "fixture", platform: true }; },
+    },
+  });
+  const a = await cluster.node("http://a");
+  await assert.rejects(a.voice.create("alice", { discord: discordGrant(), brain: "realtime", realtime: { provider: "grok", voice: "marin" } }), (error: HttpError) => error.status === 400 && /ara/.test(error.message));
+  const created = await a.voice.create("alice", { discord: discordGrant(), brain: "realtime", voice: "coral", realtime: { provider: "grok" } });
+  assert.deepEqual(created.realtime, { provider: "grok", model: "grok-voice-latest", voice: "ara", transcribe: true, speculative: true });
+  assert.ok(keys.includes("xai"), "Grok runs on the tenant's xai key");
+  await a.voice.end("alice", created.id);
+});
