@@ -185,9 +185,9 @@ jobs:
     services:
       postgres:
         # Hosted runners have a Docker Hub pull-limit exemption; ECR Public can throttle them.
-        image: postgres:16-alpine
+        image: ${{ matrix.arch == 'amd64' && github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && 'public.ecr.aws/docker/library/postgres:16-alpine' || 'postgres:16-alpine' }}
         env: { POSTGRES_PASSWORD: test }
-        ports: ["5432:5432"]
+        ports: ["127.0.0.1::5432"]
         options: --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 20
     steps:
       - uses: actions/checkout@v4
@@ -210,7 +210,7 @@ jobs:
           mkdir -p /tmp/ci-tenants && chmod 755 /tmp/ci-tenants
           echo '{"tenants":{"ci":{"tokenSha256":"'"$(printf %s ci-boot-token-at-least-32-characters | sha256sum | cut -d' ' -f1)"'"}}}' > /tmp/ci-tenants/tenants.json
           docker run -d --name runtime --network host -v /tmp/ci-tenants:/etc/agent-runtime:ro -e AGENT_TENANTS_FILE=/etc/agent-runtime/tenants.json \
-            -e AGENT_SESSION_SECRET=ci-boot-session-secret-at-least-32-chars -e AGENT_DATABASE_URL=postgres://postgres:test@127.0.0.1:5432/postgres agent-runtime:ci
+            -e AGENT_SESSION_SECRET=ci-boot-session-secret-at-least-32-chars -e AGENT_DATABASE_URL=postgres://postgres:test@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/postgres agent-runtime:ci
           for _ in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8790/healthz; then
               docker logs runtime 2>&1 | grep '"type":"listening"' | grep -q '"sandbox":{"mode":"isolated"' && exit 0
@@ -224,7 +224,7 @@ jobs:
       # then js_exec end to end (a v8-exec process with a uid of its own, the launcher's filter and its own),
       # and every confined process killed, with js_exec and parsing still serving.
       - run: node --experimental-strip-types --disable-warning=ExperimentalWarning tests/image-isolation.ts
-        env: { IMAGE: "agent-runtime:ci", DATABASE_URL: "postgres://postgres:test@127.0.0.1:5432/postgres" }
+        env: { IMAGE: "agent-runtime:ci", DATABASE_URL: "postgres://postgres:test@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/postgres" }
       # And the image's v8-exec on ARM64, seccomp included, as the node user.
       - run: docker run --rm --user node --entrypoint node -v "$PWD:/w:ro" -w /w agent-runtime:ci --experimental-strip-types --disable-warning=ExperimentalWarning --test --test-timeout=300000 tests/v8-exec.test.ts
   publish:
