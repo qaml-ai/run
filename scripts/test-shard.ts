@@ -27,7 +27,10 @@ const RETRY_FILES = 3;
 // Per test file as well as per test: the longest cluster files (tests/cluster-fresh-lease-*) run past two minutes on a CI runner.
 // Keep CI's file concurrency independent of the shared host's CPU count.
 const TEST_ARGS = [
-  ...(process.env.TEST_DATABASE_PER_FILE === "true" ? ["--import", "./scripts/test-worker-database.ts"] : []),"--experimental-strip-types", "--test", `--test-concurrency=${process.env.TEST_CONCURRENCY ?? 1}`, "--test-timeout=240000"];
+  "--experimental-strip-types", "--test-timeout=240000",
+  ...(process.env.TEST_DATABASE_PER_FILE === "true" ? ["--import", "./scripts/test-worker-database.ts"] : []),
+  fileURLToPath(new URL("test-files.ts", import.meta.url)),
+];
 const tests = new URL("../tests/", import.meta.url);
 const timingsFile = new URL("timings.json", tests);
 const files = readdirSync(tests).filter(name => name.endsWith(".test.ts")).sort();
@@ -37,12 +40,7 @@ const inlineOnly = (file: string) => file.startsWith("sim-") || file === "sim.te
 const filesFor = (hosting: string) => files.filter(file => hosting === "inline" || !inlineOnly(file));
 
 function run(args: string[], timingsOut: string, failuresOut: string) {
-  const reporters = [
-    `--test-reporter=${process.stdout.isTTY ? "spec" : "tap"}`, "--test-reporter-destination=stdout",
-    `--test-reporter=${fileURLToPath(new URL("test-timings-reporter.ts", import.meta.url))}`, `--test-reporter-destination=${timingsOut}`,
-    `--test-reporter=${fileURLToPath(new URL("test-failures-reporter.ts", import.meta.url))}`, `--test-reporter-destination=${failuresOut}`,
-  ];
-  return spawnSync(process.execPath, [...TEST_ARGS, ...reporters, ...args], { stdio: "inherit", cwd: fileURLToPath(new URL("..", import.meta.url)) }).status ?? 1;
+  return spawnSync(process.execPath, [...TEST_ARGS, timingsOut, failuresOut, ...args], { stdio: "inherit", cwd: fileURLToPath(new URL("..", import.meta.url)) }).status ?? 1;
 }
 
 function* jsonFiles(dir: string): Generator<string> {
