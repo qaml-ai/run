@@ -128,7 +128,7 @@ export const KeyScope = z.object({
   })),
 }).openapi("KeyScope");
 
-const eventTypes = z.array(z.enum(EVENT_TYPES)).openapi({ description: "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.session.error, voice.utterance, voice.speech.started, voice.speech.ended, and the billing.* events" });
+const eventTypes = z.array(z.enum(EVENT_TYPES)).openapi({ description: "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.session.error, voice.utterance, voice.speech.started, voice.speech.ended, the end_user.* events and the billing.* events" });
 export const WebhookEndpointInput = z.object({
   url: z.string().openapi({ description: "An HTTPS URL that receives the events, each a POST signed per Standard Webhooks", example: "https://example.com/hooks/agents" }),
   events: eventTypes,
@@ -186,6 +186,19 @@ export const ModelFailure = z.object({
 const servedModel = z.string().optional().openapi({ description: "The model that made the run's last response, as provider/model-id" });
 const runUsage = z.object({ responses: z.number(), input: z.number(), output: z.number(), cacheRead: z.number(), cacheWrite: z.number(), costUsd: z.number() }).nullable()
   .openapi({ description: "The run's model responses on the node that ended it; null when it made none there" });
+const balanceCause = z.object({
+  kind: z.enum(["usage", "usage_correction", "grant", "refund", "adjustment", "refusal", "threshold_changed"]).openapi({ description: "What moved the balance: usage (a call's cost), usage_correction (a call's cost posted again, corrected, maybe long after the call), grant, refund or adjustment (the tenant's entries), refusal (a call refused; no entry), threshold_changed (a threshold set above the balance; no entry). Stable codes" }),
+  entryId: z.number().int().optional().openapi({ description: "The ledger entry that moved the balance. A person's entry ids grow: order their events by it" }),
+  entryKey: z.string().optional().openapi({ description: "For a grant, refund or adjustment: your key" }),
+  requestId: z.string().optional().openapi({ description: "For usage: the run's request, when there is one" }),
+  bucket: z.string().nullable(),
+}).openapi("EndUserBalanceCause");
+const endUserEntryEvent = z.object({
+  endUser: z.string(), entryId: z.number().int(), kind: z.enum(["grant", "refund", "adjustment"]),
+  amount: z.number().int().openapi({ description: "As in the ledger: what moved the balance (a refund's is negative)" }),
+  key: z.string(), reference: z.string().nullable(), metadata: z.record(z.string(), z.unknown()),
+  balance: z.number().int(), previousBalance: z.number().int(),
+});
 const voiceFacts = {
   session: z.string().openapi({ description: "The voice session (vs_…)" }), provider: z.enum(["discord", "browser"]),
   guildId: z.string(), channelId: z.string(), botUserId: z.string(),
@@ -271,8 +284,9 @@ export const WebhookEvents = {
   }), "A speech ended"),
   "end_user.balance.low": envelope("end_user.balance.low", z.object({
     endUser: z.string(), balance: z.number().int().openapi({ description: "The balance now (charged micro-USD)" }),
-    threshold: z.number().int().openapi({ description: "The tenant's lowBalance" }), previousBalance: z.number().int(),
-  }), "An end user's balance fell below the tenant's lowBalance (once, until it rises past it again)"),
+    threshold: z.number().int().openapi({ description: "The threshold that applied: the person's own lowBalance, else the tenant's" }), previousBalance: z.number().int(),
+    cause: balanceCause,
+  }), "An end user's balance is below their low-balance threshold: a debit took it there, or a debit after a grant left it there, or a threshold was set above it (cause.kind threshold_changed). See the guide's When balance events fire"),
   "end_user.credit.exhausted": envelope("end_user.credit.exhausted", z.object({
     endUser: z.string(), bucket: z.string().nullable().openapi({ description: "The bucket the spend or refusal was in; null for a tenant's entry that took the balance to zero" }),
     reason: z.enum(["allowance", ...CREDIT_REASONS]).openapi({ description: "allowance: the bucket's free allowance for the day is used up (work goes on from the balance, if it may); balance, daily_limit, bucket_limit: as a credit refusal's reason (the errors reference). More may be added" }),
@@ -281,7 +295,15 @@ export const WebhookEvents = {
     dailyLimit: z.number().int().optional().openapi({ description: "With daily_limit: the end user's daily limit (charged micro-USD)" }),
     bucketLimit: z.number().int().optional().openapi({ description: "With bucket_limit: the bucket's daily limit on paid spend (charged micro-USD)" }),
     balance: z.number().int().openapi({ description: "The balance (charged micro-USD)" }),
-  }), "An end user's free allowance for a bucket, their balance, their daily limit or a bucket's limit ran out (once per user, bucket or limit, and day; balance: once until they are credited again)"),
+    cause: balanceCause.optional().openapi({ description: "With reason balance: what moved the balance (refusal: a call refused, no entry)" }),
+  }), "An end user's free allowance for a bucket, their balance, their daily limit or a bucket's limit ran out (once per user, bucket or limit, and day; balance: once until they are credited again or re-armed)"),
+  "end_user.credit.granted": envelope("end_user.credit.granted", endUserEntryEvent, "The tenant posted a grant to an end user's ledger (once per entry; a replayed key sends nothing)"),
+  "end_user.credit.refunded": envelope("end_user.credit.refunded", endUserEntryEvent, "The tenant posted a refund (amount negative, as in the ledger)"),
+  "end_user.credit.adjusted": envelope("end_user.credit.adjusted", endUserEntryEvent, "The tenant posted an adjustment (amount signed)"),
+  "end_user.allowance.low": envelope("end_user.allowance.low", z.object({
+    endUser: z.string(), bucket: z.string(), day: z.string(), allowance: z.number().int().openapi({ description: "The bucket's daily allowance (raw micro-USD)" }),
+    allowanceSpent: z.number().int().openapi({ description: "Spent from it today, with the call that passed the warning" }), percent: z.number().int().openapi({ description: "The tenant's allowanceWarningPercent" }),
+  }), "An end user's spend in a bucket passed the tenant's allowanceWarningPercent of its daily allowance: once per person, bucket and day"),
 };
 
 export const Model = z.object({
@@ -1175,19 +1197,22 @@ export const EndUserSettings = z.object({
   bucketLimits: bucketLimitMap("The most each bucket may charge an end user's balance per UTC day"),
   dailyLimit: micros("The most an end user's paid spend may be per UTC day (charged amounts); null: no limit").nullable(),
   markupBps: z.number().int().openapi({ description: "Added to the raw cost of paid spend, in basis points (2500: +25%)" }),
-  lowBalance: micros("end_user.balance.low fires when a balance falls below this; null: never").nullable(),
+  lowBalance: micros("end_user.balance.low fires when a balance falls below this (a person's own lowBalance over it); null: never").nullable(),
+  allowanceWarningPercent: z.number().int().nullable().openapi({ description: "end_user.allowance.low fires once per person, bucket and day as spend passes this percent (1–100) of the bucket's daily allowance; null: never" }),
   updatedAt: z.number().nullable(),
 }).openapi("EndUserSettings");
 export const EndUserSettingsInput = z.object({
   enabled: z.boolean().optional(), allowances: allowanceMap("Free allowances (replaces the current map)").optional(),
   bucketLimits: bucketLimitMap("The most each bucket may charge an end user's balance per UTC day (replaces the current map)").optional(),
   dailyLimit: z.number().int().nullable().optional(), markupBps: z.number().int().min(0).max(100_000).optional(), lowBalance: z.number().int().nullable().optional(),
+  allowanceWarningPercent: z.number().int().min(1).max(100).nullable().optional(),
 }).openapi("EndUserSettingsInput", { description: "Fields left out keep their current values; allowances and bucketLimits, when sent, replace the whole map (PATCH merges them). Only the fields sent are written, so concurrent writers never undo each other's other fields" });
 export const EndUserSettingsPatch = z.object({
   enabled: z.boolean().optional(),
   allowances: z.record(z.string(), z.number().int().nonnegative().nullable()).optional().openapi({ description: "Merged into the allowances key by key; null removes a key" }),
   bucketLimits: z.record(z.string(), z.number().int().nonnegative().nullable()).optional().openapi({ description: "Merged into the bucket limits key by key; null removes a key" }),
   dailyLimit: z.number().int().nullable().optional(), markupBps: z.number().int().min(0).max(100_000).optional(), lowBalance: z.number().int().nullable().optional(),
+  allowanceWarningPercent: z.number().int().min(1).max(100).nullable().optional(),
 }).openapi("EndUserSettingsPatch", { description: "Only what is sent changes: allowances and bucketLimits key by key, merged into the map as it stands when the write lands, so concurrent PATCHes of different fields or keys all keep their changes" });
 export const EndUserBucketDay = z.object({
   bucket: z.string(), allowance: micros("The bucket's allowance today (raw cost)"), allowanceSpent: micros("Spent from it today (raw cost)"),
@@ -1204,8 +1229,9 @@ export const EndUser = z.object({
   held: micros("Of the balance, what calls in flight hold"),
   available: micros("What paid spend may still take today: the balance less holds, within the daily limit"),
   dailyLimit: micros("The daily limit on paid spend that applies (the user's own, else the tenant's); null: none").nullable(),
+  lowBalance: micros("The low-balance threshold that applies (the user's own, else the tenant's); null: none").nullable(),
   markupBps: z.number().int(),
-  overrides: z.object({ allowances: z.record(z.string(), z.number().int()), bucketLimits: z.record(z.string(), z.number().int()), dailyLimit: z.number().int().nullable() }).openapi({ description: "The user's own allowances, bucket limits and daily limit, over the tenant's" }),
+  overrides: z.object({ allowances: z.record(z.string(), z.number().int()), bucketLimits: z.record(z.string(), z.number().int()), dailyLimit: z.number().int().nullable(), lowBalance: z.number().int().nullable() }).openapi({ description: "The user's own allowances, bucket limits, daily limit and low-balance threshold, over the tenant's" }),
   today: z.object({ day: z.string(), paidSpent: micros("Charged to the balance today, every bucket"), buckets: z.array(EndUserBucketDay) }),
   createdAt: z.number().nullable().openapi({ description: "null: never metered or credited yet" }), updatedAt: z.number().nullable(),
 }).openapi("EndUser");
@@ -1215,6 +1241,7 @@ export const EndUserUpdate = z.object({
   allowances: z.record(z.string(), z.number().int().nonnegative().nullable()).optional().openapi({ description: "Merged into the user's own allowances key by key; null removes a key" }),
   bucketLimits: z.record(z.string(), z.number().int().nonnegative().nullable()).optional().openapi({ description: "Merged into the user's own bucket limits key by key; null removes a key" }),
   dailyLimit: z.number().int().nonnegative().nullable().optional().openapi({ description: "The user's own daily limit on paid spend; null: the tenant's" }),
+  lowBalance: z.number().int().nonnegative().nullable().optional().openapi({ description: "The user's own low-balance threshold (end_user.balance.low); null: the tenant's. Set above their balance, it fires once with cause threshold_changed" }),
 }).openapi("EndUserUpdate");
 export const EndUserEntryInput = z.object({
   kind: z.enum(["grant", "refund", "adjustment"]).openapi({ description: "grant: adds amount (a payment, a gift); refund: takes amount back (money returned to the user), at most the balance calls in flight do not hold (else 409 INSUFFICIENT_BALANCE); adjustment: moves the balance by a signed amount" }),

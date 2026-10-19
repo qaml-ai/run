@@ -21,6 +21,7 @@ model-written code in a sandbox, and wakes agents when there is work.
    - [Voice calls](guides/voice-calls.md): Discord voice calls camelRun listens to for your bot, utterances to webhooks or an agent
    - [Images](guides/images.md): making and editing images with POST /v1/images
    - [End-user credits](guides/end-user-credits.md): charging your own users, with a balance and daily allowances per person
+   - [Auto top-up on end-user credits](guides/end-user-auto-top-up.md): topping a person up from their saved card when their balance runs low, on balance events
    - [Agents for many users](guides/multi-user.md): per-user agents, identity, spend
    - [Webhooks](guides/webhooks.md): run and input events, signatures, delivery
    - [Observability](guides/observability.md): OpenTelemetry traces in LangSmith, Langfuse, Honeycomb, Datadog or any OTLP backend

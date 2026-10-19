@@ -205,4 +205,9 @@ test("the TypeScript SDK: endUsers configure, grant, get and ledger; an agent's 
   const run = await agents.run({ input: "four", subject: "owner", bucket: "bot:2", throwOnError: false });
   assert.equal(run.error, null);
   assert.deepEqual((await agents.endUsers.list()).endUsers.map(user => user.id), ["owner"]);
+  // A person's own low-balance threshold, and the sweep of those under theirs.
+  const own = await agents.endUsers.update("owner", { lowBalance: 1_000_000 });
+  assert.deepEqual([own.lowBalance, own.overrides.lowBalance], [1_000_000, 1_000_000]);
+  assert.deepEqual((await agents.endUsers.list({ belowLowBalance: true })).endUsers.map(user => user.id), ["owner"]);
+  assert.equal((await agents.endUsers.amend({ allowanceWarningPercent: 80 })).allowanceWarningPercent, 80);
 });

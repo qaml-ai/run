@@ -50,7 +50,8 @@ test("a refund to zero is silent: no balance.low, no credit.exhausted (nothing t
   assert.equal((await events(db)).filter(event => event.type === "end_user.credit.exhausted" && event.reason === "balance").length, 0);
   await credits.post("t", "u", { kind: "grant", amount: 3 * USD, key: "pay-2" });
   await spend(credits, "default", 3 * USD);
-  assert.deepEqual((await events(db)).slice(before).map(event => [event.type, event.reason ?? null]), [["end_user.balance.low", null], ["end_user.credit.exhausted", "balance"]], "re-armed by the grant");
+  // Both in one transaction, in the same millisecond: in either order.
+  assert.deepEqual((await events(db)).slice(before).map(event => [event.type, event.reason ?? null]).sort(), [["end_user.balance.low", null], ["end_user.credit.exhausted", "balance"]], "re-armed by the grant");
 });
 
 test("credit.exhausted says why: a bucket's allowance used up (once a day), the balance at zero (once until credited), the daily limit (once a day)", async () => {

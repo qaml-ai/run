@@ -1194,6 +1194,10 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([entry["key"] for entry in (await end_users.ledger("person", moved=True, kind=["usage"]))["entries"]], [])
         days = (await end_users.days("person", to=datetime.now(timezone.utc).date() + timedelta(days=1)))["days"]
         self.assertEqual((len(days), days[0]["granted"], days[0]["entries"], days[0]["buckets"][0]["bucket"], days[0]["buckets"][0]["freeRaw"]), (1, 500_000, 2, "bot:7", 10_550))
+        own = await end_users.update("person", low_balance=1_000_000)
+        self.assertEqual((own["lowBalance"], own["overrides"]["lowBalance"]), (1_000_000, 1_000_000))
+        self.assertEqual([user["id"] for user in (await end_users.list(below_low_balance=True))["endUsers"]], ["person"])
+        self.assertEqual((await end_users.amend(allowance_warning_percent=80))["allowanceWarningPercent"], 80)
 
         def synchronous():
             with sync.AgentRuntime(url=self.url, api_key=self.token) as runtime:
