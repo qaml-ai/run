@@ -22,8 +22,8 @@ jobs:
     outputs:
       tests: ${{ steps.changes.outputs.tests || 'true' }}
       reuse: ${{ steps.changes.outputs.reuse || 'false' }}
-      shards: ${{ (github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && !(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted')) && '[1,2]' || '[1,2,3,4,5,6,7,8,9,10,11,12]' }}
-      shard-count: ${{ (github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && !(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted')) && '2' || '12' }}
+      shards: ${{ (github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && !(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted')) && '[1,2,3,4]' || '[1,2,3,4,5,6,7,8,9,10,11,12]' }}
+      shard-count: ${{ (github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && !(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted')) && '4' || '12' }}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
@@ -38,9 +38,7 @@ jobs:
     runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && vars.CI_RUNNER_LABELS || ((github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && '["blacksmith-16vcpu-ubuntu-2404"]' || '["ubuntu-latest"]')) }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: npm }
-      - run: npm ci
+      - uses: ./.github/actions/node-dependencies
       - run: npm run typecheck
       - run: npm run test:ui
       - run: npm run build:console && npm run build
@@ -50,33 +48,40 @@ jobs:
     needs: changes
     if: needs.changes.outputs.tests == 'true'
     runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && vars.CI_RUNNER_LABELS || ((github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && '["blacksmith-16vcpu-ubuntu-2404"]' || '["ubuntu-latest"]')) }}
-    services:
-      postgres:
-        # Hosted runners have a Docker Hub pull-limit exemption; ECR Public can throttle them.
-        image: ${{ github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && 'public.ecr.aws/docker/library/postgres:16-alpine' || 'postgres:16-alpine' }}
-        env: { POSTGRES_PASSWORD: test }
-        ports: ["127.0.0.1::5432"]
-        options: --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 20
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/v8-exec
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: npm }
+      - name: Start test Postgres
+        id: postgres
+        uses: ./.github/actions/test-postgres
+        with:
+          image: ${{ github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && 'public.ecr.aws/docker/library/postgres:16-alpine' || 'postgres:16-alpine' }}
+      - uses: ./.github/actions/node-dependencies
       - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-      - run: npm ci
+        id: python
+        with: { python-version: "3.12", cache: pip, cache-dependency-path: clients/python/requirements.txt }
+      # Venv scripts contain absolute paths; only reuse on this workspace and exact Python version.
+      - uses: actions/cache@v4
+        id: python-dependencies
+        with:
+          path: .venv
+          key: python-venv-${{ runner.os }}-${{ runner.arch }}-${{ steps.python.outputs.python-version }}-${{ github.workspace }}-${{ hashFiles('clients/python/requirements.txt') }}
       - name: Isolate Python dependencies per checkout
         run: |
-          python -m venv .venv
+          if [ '${{ steps.python-dependencies.outputs.cache-hit }}' != true ]; then python -m venv .venv; fi
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
-      - run: pip install -r clients/python/requirements.txt
+      - if: steps.python-dependencies.outputs.cache-hit != 'true'
+        run: pip install -r clients/python/requirements.txt
       - run: npm run test:python
         env:
-          AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/postgres
+          AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:${{ steps.postgres.outputs.port }}/postgres
+      - name: Stop test Postgres
+        if: always() && steps.postgres.outputs.container != ''
+        run: docker rm -f '${{ steps.postgres.outputs.container }}'
   test:
     # A shard takes 3-4 minutes, and a flaky file's rerun a few more (scripts/test-shard.ts).
     timeout-minutes: 15
-    # Duration-balanced files, two shards per mode; larger runners run 16 files at once.
+    # Duration-balanced files, four shards per mode; larger runners run 16 files at once.
     # Forks and self-hosted runners retain twelve shards per mode and two-file concurrency.
     name: test (${{ matrix.hosting }} ${{ matrix.shard }}/${{ needs.changes.outputs.shard-count }})
     needs: changes
@@ -91,16 +96,8 @@ jobs:
       AGENT_HOSTING: ${{ matrix.hosting }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: npm }
+      - uses: ./.github/actions/node-dependencies
       - uses: ./.github/actions/v8-exec
-      - uses: actions/cache@v4
-        id: dependencies
-        with:
-          path: node_modules
-          key: node-modules-${{ runner.os }}-${{ runner.arch }}-22-${{ hashFiles('package-lock.json', 'package.json', '.npmrc') }}
-      - if: steps.dependencies.outputs.cache-hit != 'true'
-        run: npm ci
       - name: Start test Postgres
         id: postgres
         uses: ./.github/actions/test-postgres
@@ -128,9 +125,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: npm }
-      - run: npm ci
+      - uses: ./.github/actions/node-dependencies
       - name: fixed seeds, twice each
         run: npm run -s sim -- --seeds 1-10 --twice --jobs "$(nproc)"
       - uses: actions/upload-artifact@v4
@@ -153,9 +148,8 @@ jobs:
         options: --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 20
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: npm }
-      - run: npm ci && npm run build:console
+      - uses: ./.github/actions/node-dependencies
+      - run: npm run build:console
       - uses: docker/setup-buildx-action@v3
         with: { driver-opts: "image=mirror.gcr.io/moby/buildkit:buildx-stable-1" }
       # Layers are cached across runs, so only changed stages (usually just src) rebuild.
@@ -214,10 +208,9 @@ jobs:
       - if: steps.image.outputs.pushed != 'true'
         uses: actions/checkout@v4
       - if: steps.image.outputs.pushed != 'true'
-        uses: actions/setup-node@v4
-        with: { node-version: 22, cache: npm }
+        uses: ./.github/actions/node-dependencies
       - if: steps.image.outputs.pushed != 'true'
-        run: npm ci && npm run build:console
+        run: npm run build:console
       - if: steps.image.outputs.pushed != 'true'
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
@@ -236,21 +229,21 @@ jobs:
   docs:
     timeout-minutes: 15
     runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && vars.CI_RUNNER_LABELS || ((github.ref == 'refs/heads/main' || github.event.pull_request.head.repo.full_name == github.repository) && '["blacksmith-16vcpu-ubuntu-2404"]' || '["ubuntu-latest"]')) }}
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env: { POSTGRES_PASSWORD: test }
-        ports: ["127.0.0.1::5432"]
-        options: --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 20
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/v8-exec
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: npm }
-      - run: npm ci
+      - name: Start test Postgres
+        id: postgres
+        uses: ./.github/actions/test-postgres
+        with:
+          image: postgres:16-alpine
+      - uses: ./.github/actions/node-dependencies
       - run: node --experimental-strip-types --test scripts/ci-changes.test.ts scripts/test-files.test.ts tests/docs.test.ts tests/openapi.test.ts tests/openapi-sources.test.ts
         env:
-          AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/postgres
+          AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:${{ steps.postgres.outputs.port }}/postgres
+      - name: Stop test Postgres
+        if: always() && steps.postgres.outputs.container != ''
+        run: docker rm -f '${{ steps.postgres.outputs.container }}'
   ci:
     name: CI success
     timeout-minutes: 5

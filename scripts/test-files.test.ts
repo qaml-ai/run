@@ -32,8 +32,8 @@ test("ordered files keep failure reporting, timings and independent file timeout
     assert.match(timed.stdout, /testTimeoutFailure|timed out/);
     assert.equal(readFileSync(join(dir, "failed"), "utf8"), "slow.test.mjs\n");
     // Together these exceed the deadline; each file has its own timer.
-    const separate = ["one", "two"].map(name => write(name, 'test("slow", async () => new Promise(resolve => setTimeout(resolve, 600)));'));
-    const passed = invoke(separate, 1_000);
+    const separate = ["one", "two"].map(name => write(name, 'test("slow", async () => new Promise(resolve => setTimeout(resolve, 1_200)));'));
+    const passed = invoke(separate, 2_000);
     assert.equal(passed.status, 0, passed.stdout + passed.stderr);
     assert.match(passed.stdout, /# pass 2/);
   } finally { rmSync(dir, { recursive: true, force: true }); }

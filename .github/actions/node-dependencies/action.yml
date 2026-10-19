@@ -1,0 +1,15 @@
+name: Node dependencies
+description: Install Node and restore lockfile-keyed dependencies, installing only on a miss.
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with: { node-version: 22, cache: npm }
+    - uses: actions/cache@v4
+      id: dependencies
+      with:
+        path: node_modules
+        key: node-modules-${{ runner.os }}-${{ runner.arch }}-22-${{ hashFiles('package-lock.json', 'package.json', '.npmrc') }}
+    - if: steps.dependencies.outputs.cache-hit != 'true'
+      shell: bash
+      run: npm ci

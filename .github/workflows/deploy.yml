@@ -50,10 +50,9 @@ jobs:
             echo "build=true" >> "$GITHUB_OUTPUT"
           fi
       - if: steps.image.outputs.build == 'true'
-        uses: actions/setup-node@v4
-        with: { node-version: 22, cache: npm }
+        uses: ./.github/actions/node-dependencies
       - if: steps.image.outputs.build == 'true'
-        run: npm ci && npm run build:console
+        run: npm run build:console
       - if: steps.image.outputs.build == 'true'
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2

@@ -14,8 +14,7 @@ if (process.argv[1]?.endsWith(".test.ts")) {
   try {
     await admin.query(`create role ${database} login superuser password 'test'`);
     await admin.query(`create database ${database} owner ${database}`);
-  }
-  finally { await admin.end(); }
+  } finally { await admin.end(); }
   url.pathname = `/${database}`;
   url.username = database;
   url.password = "test";

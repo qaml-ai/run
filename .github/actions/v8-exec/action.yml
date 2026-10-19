@@ -7,7 +7,7 @@ runs:
       id: binary
       with:
         path: sandbox/v8-exec/target/release/v8-exec
-        key: v8-exec-binary-${{ runner.os }}-${{ runner.arch }}-${{ runner.environment }}-${{ hashFiles('sandbox/v8-exec/Cargo.lock', 'sandbox/v8-exec/Cargo.toml', 'sandbox/v8-exec/rust-toolchain.toml', 'sandbox/v8-exec/src/**') }}
+        key: v8-exec-binary-${{ runner.os }}-${{ runner.arch }}-${{ runner.environment }}-${{ hashFiles('sandbox/v8-exec/**', '!sandbox/v8-exec/target/**') }}
     - if: steps.binary.outputs.cache-hit != 'true'
       uses: actions/cache@v4
       with:
