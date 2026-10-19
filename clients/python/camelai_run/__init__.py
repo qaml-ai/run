@@ -1265,7 +1265,7 @@ class Voice:
         """Start a session from `discord`: {"guildId", "channelId", "userId" (the bot), "sessionId" (its
         VOICE_STATE_UPDATE), "endpoint", "token" (VOICE_SERVER_UPDATE)}. `subject` pays (its `bucket` with end-user
         credits on). A realtime speech-to-speech model hears the call and answers aloud, asking `agent` (ask_agent) for
-        anything beyond talk; `realtime` ({"provider", "model", "voice", "instructions", "transcribe", "speculative"})
+        anything beyond talk; `realtime` ({"provider", "model", "voice", "publicOwnerId", "instructions", "transcribe", "speculative"})
         sets it up, `voice` (OpenAI's names: alloy, coral…) maps to the provider's nearest voice, and `speakers`
         ({user_id: name}) names who speaks. voice.* events go to your webhooks (`webhooks`, default True). `silence_ms`
         (default 800) ends a turn; `max_minutes` (240), `idle_minutes` (30) and `empty_seconds` (60) end the session.

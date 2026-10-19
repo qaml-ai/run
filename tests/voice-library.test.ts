@@ -11,7 +11,7 @@ const shared = {
   public_owner_id: "owner", private_data: "never returned",
 };
 const expected = { provider: "elevenlabs", id: "cat_voice", name: "Cat", description: "A playful character",
-  labels: { accent: "american", age: "young", gender: "female", use_case: "characters_animation" }, previewUrl: "https://example.com/cat.mp3", category: "professional" };
+  labels: { accent: "american", age: "young", gender: "female", use_case: "characters_animation" }, publicOwnerId: "owner", previewUrl: "https://example.com/cat.mp3", category: "professional" };
 
 function app(key?: ApiContext["voiceLibraryKey"]) {
   return api({
@@ -59,7 +59,7 @@ test("voice search defaults, missing optional metadata and empty results", async
     assert.equal(new URL(url).searchParams.get("page_size"), "10");
     return Response.json({ voices: calls++ ? [] : [{ voice_id: "minimal", name: "Minimal" }] });
   };
-  assert.deepEqual(await searchVoices(input, async () => "fixture", request), { voices: [{ provider: "elevenlabs", id: "minimal", name: "Minimal", description: null, labels: {}, previewUrl: null, category: null }] });
+  assert.deepEqual(await searchVoices(input, async () => "fixture", request), { voices: [{ provider: "elevenlabs", id: "minimal", name: "Minimal", description: null, labels: {}, publicOwnerId: null, previewUrl: null, category: null }] });
   assert.deepEqual(await searchVoices(input, async () => "fixture", request), { voices: [] });
 });
 

@@ -10025,6 +10025,9 @@
               "voice": {
                 "type": "string"
               },
+              "publicOwnerId": {
+                "type": "string"
+              },
               "instructions": {
                 "type": "string"
               },
@@ -10403,6 +10406,11 @@
       "VoiceRealtime": {
         "type": "object",
         "properties": {
+          "publicOwnerId": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9_-]{1,128}$",
+            "description": "ElevenLabs library public owner ID from voices.search; retained with the selected voice for direct account addition"
+          },
           "provider": {
             "type": "string",
             "enum": [
@@ -18510,6 +18518,12 @@
                               "type": "string"
                             }
                           },
+                          "publicOwnerId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
                           "previewUrl": {
                             "type": [
                               "string",
@@ -18529,6 +18543,7 @@
                           "name",
                           "description",
                           "labels",
+                          "publicOwnerId",
                           "previewUrl",
                           "category"
                         ]

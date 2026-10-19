@@ -1396,7 +1396,7 @@ export interface VoiceSessionInput {
   idempotencyKey?: string;
 }
 /** A realtime brain's settings: OpenAI Realtime, Gemini Live, or ElevenLabs Agents (voice_id). */
-export type VoiceRealtime = { provider: "openai" | "gemini" | "elevenlabs"; model: string; voice: string; instructions?: string; transcribe: boolean; speculative: boolean };
+export type VoiceRealtime = { provider: "openai" | "gemini" | "elevenlabs"; model: string; voice: string; publicOwnerId?: string; instructions?: string; transcribe: boolean; speculative: boolean };
 /** How a voice session ends each speaker's turn (`endOfTurn`). */
 export type VoiceEndOfTurn = { mode: "smart" | "silence"; commitMs: number; threshold: number; maxSilenceMs: number };
 export interface VoiceSession {
@@ -1441,7 +1441,7 @@ export interface VoiceSearchOptions {
 }
 export interface LibraryVoice {
   provider: VoiceSearchOptions["provider"]; id: string; name: string; description: string | null;
-  labels: Record<string, string>; previewUrl: string | null; category: string | null;
+  labels: Record<string, string>; publicOwnerId: string | null; previewUrl: string | null; category: string | null;
 }
 /** Voice library discovery (`runtime.voices`, `agents.voices`). */
 export class Voices {

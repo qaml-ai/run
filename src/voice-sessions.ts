@@ -139,7 +139,7 @@ export type VoiceOptions = {
   speakers?: Record<string, string>;
 };
 export type RealtimeOptions = {
-  provider: RealtimeProviderId; model: string; voice: string;
+  provider: RealtimeProviderId; model: string; voice: string; publicOwnerId?: string;
   /** The bot's persona and instructions, before the call's rules. */
   instructions?: string;
   /** Inputs transcribed (names address the bot; voice.utterance has text). */
@@ -551,7 +551,7 @@ export class VoiceSessions {
     const providers = this.options.realtime?.providers ?? {};
     if (!Object.keys(providers).length) throw new HttpError(404, "Voice sessions need a realtime provider, and this runtime has none (AGENT_VOICE_REALTIME)");
     const given = input.realtime === undefined ? {} : object(input.realtime, "realtime");
-    only(given, "realtime", ["provider", "model", "voice", "instructions", "transcribe", "speculative"]);
+    only(given, "realtime", ["provider", "model", "voice", "publicOwnerId", "instructions", "transcribe", "speculative"]);
     const id = (given.provider ?? Object.keys(providers)[0]) as string;
     const provider = providers[id as RealtimeProviderId];
     if (!provider) throw new HttpError(400, `realtime.provider must be one of this runtime's: ${Object.keys(providers).join(", ")}`);
@@ -559,10 +559,12 @@ export class VoiceSessions {
     if (typeof model !== "string" || !provider.models.includes(model)) throw new HttpError(400, `realtime.model must be one of ${provider.models.join(", ")}`);
     if (!realtimePrice(`${provider.id}/${model}`)) throw new HttpError(400, `Realtime model ${provider.id}/${model} has no price configured`, "REALTIME_UNPRICED");
     if (given.voice !== undefined && (typeof given.voice !== "string" || !(provider.customVoices ? /^[a-zA-Z0-9_-]{1,100}$/.test(given.voice) : provider.voices.includes(given.voice)))) throw new HttpError(400, `realtime.voice must be one of ${provider.id}'s: ${provider.voices.join(", ")}`);
+    if (given.publicOwnerId !== undefined && (provider.id !== "elevenlabs" || typeof given.publicOwnerId !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(given.publicOwnerId))) throw new HttpError(400, "realtime.publicOwnerId must be an ElevenLabs public owner ID");
     const instructions = given.instructions === undefined ? undefined : text(given.instructions, "realtime.instructions", new RegExp(`^[\\s\\S]{1,${VOICE_LIMITS.realtimeInstructionsChars}}$`), `at most ${VOICE_LIMITS.realtimeInstructionsChars} characters`);
     for (const flag of ["transcribe", "speculative"] as const) if (given[flag] !== undefined && typeof given[flag] !== "boolean") throw new HttpError(400, `realtime.${flag} must be true or false`);
     return {
       provider: provider.id, model, voice: given.voice !== undefined && !provider.customVoices ? given.voice as string : realtimeVoice(provider, (given.voice as string | undefined) ?? voice),
+      ...(given.publicOwnerId !== undefined ? { publicOwnerId: given.publicOwnerId as string } : {}),
       ...(instructions ? { instructions } : {}), transcribe: given.transcribe !== false, speculative: !provider.ownsTurns && given.speculative !== false,
     };
   }
@@ -1210,7 +1212,7 @@ export class VoiceSessions {
     const submit = agent && this.options.submitStreaming ? this.options.submitStreaming : undefined;
     const identity = () => ({ ...(options().subject !== undefined ? { subject: options().subject } : {}), context: { ...options().context, voiceSession: held.id } });
     const config = {
-      model: realtime.model, voice: realtime.voice, transcribe: realtime.transcribe,
+      model: realtime.model, voice: realtime.voice, publicOwnerId: realtime.publicOwnerId, transcribe: realtime.transcribe,
       instructions: realtimeInstructions(realtime.instructions, { agent: !!submit, group: held.row.provider !== "browser" }),
       tools: [...submit ? [ASK_AGENT] : [], STAY_SILENT],
       ...(options().language ? { language: options().language } : {}), ...(options().prompt ? { prompt: options().prompt } : {}),

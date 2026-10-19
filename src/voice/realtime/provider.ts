@@ -19,6 +19,8 @@ export type RealtimeConfig = {
   model: string;
   /** The provider's voice. */
   voice: string;
+  /** ElevenLabs library owner, when known from voice search. */
+  publicOwnerId?: string;
   instructions: string;
   tools: RealtimeTool[];
   /** Transcribe what people say (each committed item), for addressing by name and voice.utterance. */

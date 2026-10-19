@@ -13,7 +13,7 @@ export const VoiceSearchInput = z.object({
 export const LibraryVoice = z.object({
   provider: z.enum(["elevenlabs", "grok", "openai", "gemini"]), id: z.string(), name: z.string(),
   description: z.string().nullable(), labels: z.record(z.string(), z.string()),
-  previewUrl: z.string().nullable(), category: z.string().nullable(),
+  publicOwnerId: z.string().nullable(), previewUrl: z.string().nullable(), category: z.string().nullable(),
 });
 export const VoiceSearchResult = z.object({ voices: z.array(LibraryVoice) });
 export type VoiceSearch = z.infer<typeof VoiceSearchInput>;
@@ -24,7 +24,7 @@ export async function searchVoices(input: VoiceSearch, key: () => Promise<string
   if (input.provider !== "elevenlabs") {
     const definitions = { grok: GROK_REALTIME, openai: OPENAI_REALTIME, gemini: GEMINI_LIVE };
     const voices = input.category ? [] : definitions[input.provider].voices.filter(id => id.toLowerCase().includes(input.q.toLowerCase())).slice(0, limit);
-    return { voices: voices.map(id => ({ provider: input.provider, id, name: id, description: null, labels: {}, previewUrl: null, category: null })) };
+    return { voices: voices.map(id => ({ provider: input.provider, id, name: id, description: null, labels: {}, publicOwnerId: null, previewUrl: null, category: null })) };
   }
   const apiKey = await key();
   if (!apiKey) throw new HttpError(400, "Voice search needs an ElevenLabs key: add one under Models & keys", "VOICE_SEARCH_UNAVAILABLE");
@@ -40,7 +40,7 @@ export async function searchVoices(input: VoiceSearch, key: () => Promise<string
       provider: "elevenlabs", id: voice.voice_id, name: voice.name,
       description: voice.description ?? null,
       labels: Object.fromEntries(["accent", "age", "gender", "use_case"].flatMap(label => typeof voice[label] === "string" ? [[label, voice[label]]] : [])),
-      previewUrl: voice.preview_url ?? null, category: voice.category ?? null,
+      publicOwnerId: voice.public_owner_id ?? null, previewUrl: voice.preview_url ?? null, category: voice.category ?? null,
     }));
     return VoiceSearchResult.parse({ voices });
   } catch {
