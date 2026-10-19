@@ -556,6 +556,8 @@ export class RealtimeBrain {
       this.waitingRespond = request;
       return;
     }
+    // One waiting is answered by this one too: the model hears everything so far.
+    if (this.waitingRespond) { this.waitingRespond.turn?.end("no_reply"); this.waitingRespond = undefined; }
     this.ask({ ...request, held: false, speculative: false });
   }
 

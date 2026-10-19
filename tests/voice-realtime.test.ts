@@ -295,3 +295,22 @@ test("the money: a refused admission cancels the response and ends the session (
   assert.ok(connection().of("cancel").length >= 1);
   brain.close();
 });
+
+test("two people at once: one turn ends while the other talks; one answer, to both, once both are done", async () => {
+  const { brain, connection } = testBrain({ humans: 2 });
+  brain.speechStart("1");
+  brain.pcm("1", tone(300));
+  brain.speechStart("2");
+  brain.pcm("2", tone(200));
+  brain.cut({ speaker: "1", packets: [], seconds: 0.3, startedAt: Date.now() - 300, endedAt: Date.now(), ended: "silence", live: true });
+  const c = connection();
+  assert.equal(c.responses, 0, "Ben is still talking");
+  brain.pcm("2", tone(200));
+  brain.cut({ speaker: "2", packets: [], seconds: 0.4, startedAt: Date.now() - 400, endedAt: Date.now(), ended: "silence", live: true });
+  assert.equal(c.responses, 1);
+  await c.answer("r1", { ms: 60 });
+  await until(() => !brain.speakingNow, "played");
+  await sleep(30);
+  assert.equal(c.responses, 1, "not a second answer to Ana's turn");
+  brain.close();
+});
