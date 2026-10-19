@@ -511,24 +511,20 @@ export class VoiceSessions {
     const language = languageInput(input.language);
     if (input.brain !== undefined && input.brain !== "realtime" && input.brain !== "listen") throw new HttpError(400, "brain must be realtime (the default) or listen");
     const listen = input.brain === "listen";
-    if (listen) {
-      // Muted: nothing answers, so nothing of answering applies.
-      const answering = ["speak", "bargeIn", "voice", "addressing", "realtime", "speakers"].find(key => input[key] !== undefined);
-      if (answering) throw new HttpError(400, `${answering} is for a session that answers (brain realtime): a listening session only transcribes`);
-      if (agent) throw new HttpError(400, "deliver.agent is for a session that answers (brain realtime): a listening session sends its utterances to webhooks");
-      // A browser session's socket gets every utterance itself.
-      if (!webhooks && !socket) throw new HttpError(400, "A listening session sends its utterances to webhooks: leave deliver.webhooks on");
-    }
+    // A browser session's socket gets every utterance itself.
+    if (listen && !webhooks && !socket) throw new HttpError(400, "A listening session sends its utterances to webhooks: leave deliver.webhooks on");
+    // Muted, nothing answers: answering's settings (speak, bargeIn, voice, addressing, realtime, speakers,
+    // deliver.agent) are taken and ignored, so a client that sends them anyway still gets the muted session it asked for.
     // A realtime session speaks: `speak: true` (from before) is taken and changes nothing.
-    if (input.speak !== undefined && input.speak !== true) throw new HttpError(400, "speak can only be true (a realtime session speaks), or left out; brain listen is a muted session");
+    if (!listen && input.speak !== undefined && input.speak !== true) throw new HttpError(400, "speak can only be true (a realtime session speaks), or left out; brain listen is a muted session");
     const prompt = input.prompt === undefined ? undefined : text(input.prompt, "prompt", new RegExp(`^[\\s\\S]{1,${VOICE_LIMITS.promptChars}}$`), `at most ${VOICE_LIMITS.promptChars} characters`);
-    const bargeIn = bargeInInput(input.bargeIn);
-    const voice = input.voice === undefined ? DEFAULT_VOICE : text(input.voice, "voice", VOICE_NAME, "a voice's name, such as alloy, coral or verse");
+    const bargeIn = listen ? { on: false } : bargeInInput(input.bargeIn);
+    const voice = listen || input.voice === undefined ? DEFAULT_VOICE : text(input.voice, "voice", VOICE_NAME, "a voice's name, such as alloy, coral or verse");
     const notice = input.notice === undefined ? listen ? LISTENING_NOTICE : DEFAULT_NOTICE : text(input.notice, "notice", new RegExp(`^[\\s\\S]{1,${VOICE_LIMITS.noticeChars}}$`), `at most ${VOICE_LIMITS.noticeChars} characters`);
     const realtime = listen ? undefined : this.realtimeInput(input, voice);
-    const speakers = speakersInput(input.speakers);
+    const speakers = listen ? undefined : speakersInput(input.speakers);
     const common = {
-      deliver: { ...(agent ? { agent } : {}), webhooks },
+      deliver: { ...(agent && !listen ? { agent } : {}), webhooks },
       ...(identity?.subject !== undefined ? { subject: identity.subject } : {}), ...(bucket ? { bucket } : {}),
       ...(identity?.context ? { context: identity.context } : {}), ...(keyScope ? { keyScope } : {}),
       ...(language ? { language } : {}), ...(prompt ? { prompt } : {}),

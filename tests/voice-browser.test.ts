@@ -118,4 +118,17 @@ test("a voice session from a browser: its socket (on any node) carries the page'
   await until(async () => (await call(bases[0], "GET", `/v1/voice/sessions/${id}`)).json.endReason === "empty", "the session to end, empty", 20_000);
   // A Discord session still needs discord.
   assert.equal((await call(bases[0], "POST", "/v1/voice/sessions", { deliver: { webhooks: false } })).status, 400);
+
+  // A live voice test as camel-bots makes one: listening (brain listen, no webhooks: the page gets every utterance),
+  // and talking (its persona, voice, barge-in and names).
+  const common = { subject: "owner-1", context: { bot: "7", preview: true }, metadata: { preview: true, botId: "7" }, emptySeconds: 300, maxMinutes: 30, silenceMs: 600, language: "en", prompt: "Mochi, camel" };
+  const listening = await call(bases[0], "POST", "/v1/voice/sessions", { provider: "browser", ...common, deliver: { webhooks: false }, brain: "listen" });
+  assert.equal(listening.status, 201, JSON.stringify(listening.json));
+  assert.deepEqual([listening.json.brain, listening.json.join.self_mute], ["listen", true]);
+  const talking = await call(bases[0], "POST", "/v1/voice/sessions", {
+    provider: "browser", ...common, deliver: { webhooks: false }, voice: "coral", bargeIn: true,
+    brain: "realtime", realtime: { instructions: "You are Mochi." }, addressing: { names: ["Mochi"] },
+  });
+  assert.equal(talking.status, 201, JSON.stringify(talking.json));
+  assert.deepEqual([talking.json.brain, talking.json.join.self_mute], ["realtime", false]);
 });

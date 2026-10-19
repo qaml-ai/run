@@ -2961,7 +2961,7 @@ transcribes, on your OpenAI key or the platform's) and goes to your webhooks as 
 does not say it may speak.
 
 A listening session takes `language`, `prompt` (words to expect), `endOfTurn`, `silenceMs` and the session's limits; it
-takes none of `speak`, `bargeIn`, `voice`, `addressing`, `realtime`, `speakers` or `deliver.agent` (400), and needs
+ignores `speak`, `bargeIn`, `voice`, `addressing`, `realtime`, `speakers` and `deliver.agent` if sent, and needs
 `deliver.webhooks` on (a browser session's page gets every utterance itself). Each utterance is billed as a
 transcription (`usage.recorded` `kind: "transcription"`), held against the subject's credit first with end-user credits
 on. `DELETE …/speak` is a 409 `VOICE_SPEAK_DISABLED`.

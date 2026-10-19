@@ -1254,8 +1254,8 @@ export interface VoiceSessionInput {
   endOfTurn?: VoiceEndOfTurn["mode"] | Partial<VoiceEndOfTurn>;
   /**
    * What hears the call. `realtime` (the default): a speech-to-speech model that answers aloud (`realtime`). `listen`:
-   * muted; each utterance is transcribed after it ends and sent to webhooks, and nothing answers (it takes none of
-   * `bargeIn`, `voice`, `addressing`, `realtime`, `speakers` or `deliver.agent`; your app joins muted).
+   * muted; each utterance is transcribed after it ends and sent to webhooks, and nothing answers (`bargeIn`, `voice`,
+   * `addressing`, `realtime`, `speakers` and `deliver.agent` are ignored; your app joins muted).
    */
   brain?: "realtime" | "listen";
   /**

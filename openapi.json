@@ -9644,7 +9644,7 @@
               "realtime",
               "listen"
             ],
-            "description": "What hears the call. realtime (the default): a speech-to-speech model hears it and answers aloud (realtime). listen: muted; each utterance is transcribed after it ends (gpt-transcribe, billed as POST /v1/transcriptions) and sent to webhooks as voice.utterance, and nothing answers. A listening session takes none of speak, bargeIn, voice, addressing, realtime, speakers or deliver.agent; your app joins muted"
+            "description": "What hears the call. realtime (the default): a speech-to-speech model hears it and answers aloud (realtime). listen: muted; each utterance is transcribed after it ends (gpt-transcribe, billed as POST /v1/transcriptions) and sent to webhooks as voice.utterance, and nothing answers. A listening session ignores speak, bargeIn, voice, addressing, realtime, speakers and deliver.agent; your app joins muted"
           },
           "realtime": {
             "$ref": "#/components/schemas/VoiceRealtime"

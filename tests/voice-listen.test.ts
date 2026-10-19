@@ -10,7 +10,7 @@ import { AGENT, discordGrant, sleep, speak, until, voiceCluster } from "./voice-
 
 const ANA = "400000000000000001";
 
-test("a listening session joins muted, takes none of answering's settings, and needs a transcriber and its key", async t => {
+test("a listening session joins muted, ignores answering's settings, and needs a transcriber and its key", async t => {
   const { node, transcription } = await voiceCluster(t);
   const a = await node("http://a");
   const grant = discordGrant();
@@ -24,10 +24,17 @@ test("a listening session joins muted, takes none of answering's settings, and n
 
   const refused = async (input: Record<string, unknown>, pattern: RegExp) =>
     assert.rejects(a.voice.create("alice", { discord: discordGrant(), brain: "listen", ...input }), (error: HttpError) => error.status === 400 && pattern.test(error.message), JSON.stringify(input));
-  for (const answering of [{ speak: true }, { bargeIn: false }, { voice: "coral" }, { realtime: {} }, { speakers: { [ANA]: "Ana" } }, { addressing: { names: ["camel"] } }]) {
-    await refused(answering, /a listening session only transcribes/);
+  // Answering's settings, sent anyway (a client's join that also fits a talking bot): taken and ignored, still muted.
+  let guild = 100000000000000200n;
+  for (const answering of [{ speak: true }, { bargeIn: false }, { voice: "coral" }, { realtime: { instructions: "Be Mochi" } }, { speakers: { [ANA]: "Ana" } }, { addressing: { names: ["camel"] } }, { deliver: { agent: AGENT } }]) {
+    const session = await a.voice.create("alice", { discord: discordGrant({ guildId: String(guild++) }), brain: "listen", ...answering });
+    assert.equal(session.brain, "listen", JSON.stringify(answering));
+    assert.deepEqual(session.join, { self_mute: true, self_deaf: false });
+    assert.equal(session.realtime, undefined);
+    assert.equal(session.voice, undefined);
+    assert.equal(session.speakers, undefined);
+    assert.deepEqual(session.deliver, { webhooks: true });
   }
-  await refused({ deliver: { agent: AGENT } }, /deliver.agent is for a session that answers/);
   await refused({ deliver: { webhooks: false } }, /leave deliver.webhooks on/);
   await assert.rejects(a.voice.create("alice", { discord: discordGrant(), brain: "cascade" }), (error: HttpError) => error.status === 400 && /realtime \(the default\) or listen/.test(error.message));
   assert.equal(transcription.calls.length, 0);
@@ -83,4 +90,22 @@ test("a listening session whose tenant may not spend ends (budget) at its next u
   await sleep(50);
   assert.equal(transcription.calls.length, 0);
   assert.equal((await a.voice.get("alice", created.id)).state, "ended");
+});
+
+test("camel-bots' Discord joins as it sends them: a talking bot's realtime session, a listening bot's (and its fallback without brain)", async t => {
+  const { node } = await voiceCluster(t);
+  const a = await node("http://a");
+  const common = { subject: "owner-1", bucket: "bot-7", context: { bot: "7" }, metadata: { botId: "7", app: "1", guild: "100000000000000301" }, ignoreUserIds: ["400000000000000009"], notice: "<@{bot}> is listening.", silenceMs: 600, language: "en", prompt: "Mochi, camel" };
+  const talking = await a.voice.create("alice", {
+    discord: discordGrant({ guildId: "100000000000000301" }), ...common, voice: "coral", bargeIn: false,
+    brain: "realtime", realtime: { instructions: "You are Mochi." }, deliver: { agent: AGENT }, speakers: { [ANA]: "Ana" }, addressing: { names: ["Mochi"] },
+  });
+  assert.deepEqual([talking.brain, talking.join.self_mute, talking.deliver.agent, talking.bargeIn], ["realtime", false, AGENT, false]);
+  const listening = await a.voice.create("alice", { discord: discordGrant({ guildId: "100000000000000302" }), ...common, brain: "listen" });
+  assert.deepEqual([listening.brain, listening.join.self_mute], ["listen", true]);
+  // Its fallback (for a camelRun without brain listen) is a talking session here: it is only sent after a 400.
+  const fallback = await a.voice.create("alice", { discord: discordGrant({ guildId: "100000000000000303" }), ...common });
+  assert.equal(fallback.brain, "realtime");
+  // ctx.voice.stop.
+  assert.deepEqual(await a.voice.stopSpeaking("alice", talking.id).catch(() => ({ stopped: "moving" })), { stopped: 0 });
 });
