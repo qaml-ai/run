@@ -1396,7 +1396,7 @@ export interface VoiceSessionInput {
   idempotencyKey?: string;
 }
 /** A realtime brain's settings: OpenAI Realtime, Gemini Live, or ElevenLabs Agents (voice_id). */
-export type VoiceRealtime = { provider: "openai" | "gemini" | "elevenlabs"; model: string; voice: string; instructions?: string; transcribe: boolean; speculative: boolean };
+export type VoiceRealtime = { provider: "openai" | "gemini" | "elevenlabs"; model: string; voice: string; publicOwnerId?: string; instructions?: string; transcribe: boolean; speculative: boolean };
 /** How a voice session ends each speaker's turn (`endOfTurn`). */
 export type VoiceEndOfTurn = { mode: "smart" | "silence"; commitMs: number; threshold: number; maxSilenceMs: number };
 export interface VoiceSession {
@@ -1432,6 +1432,27 @@ export type VoiceSessionCreated = VoiceSession & {
 };
 /** An ended session, and the OP 4 your gateway sends to leave the channel (ending stops the listening, not the bot's presence). */
 export type VoiceSessionEnded = VoiceSession & { leave: { op: 4; d: { guild_id: string; channel_id: null; self_mute: boolean; self_deaf: boolean } } };
+
+export interface VoiceSearchOptions {
+  provider: "elevenlabs" | "grok" | "openai" | "gemini";
+  q?: string;
+  category?: "professional" | "famous" | "high_quality";
+  limit?: number;
+}
+export interface LibraryVoice {
+  provider: VoiceSearchOptions["provider"]; id: string; name: string; description: string | null;
+  labels: Record<string, string>; publicOwnerId: string | null; previewUrl: string | null; category: string | null;
+}
+/** Voice library discovery (`runtime.voices`, `agents.voices`). */
+export class Voices {
+  private readonly transport: Transport;
+  private readonly key: () => string;
+  constructor(transport: Transport, key: () => string) { this.transport = transport; this.key = key; }
+  search(options: VoiceSearchOptions): Promise<{ voices: LibraryVoice[] }> {
+    const query = new URLSearchParams(Object.entries(options).flatMap(([name, value]) => value === undefined ? [] : [[name, String(value)]]));
+    return this.transport.json(`/v1/voices/search?${query}`, this.key());
+  }
+}
 
 /**
  * Voice calls the runtime holds for your bot (`runtime.voice`, `agents.voice`). Your app joins the voice channel on its
@@ -1505,6 +1526,7 @@ export class AgentRuntime {
   readonly endUsers: EndUsers;
   /** Voice calls held for your bot: `create`, `get`, `list`, `update`, `end`. */
   readonly voice: Voice;
+  readonly voices: Voices;
   constructor(options: RuntimeOptions = {}) {
     this.options = options; this.transport = new Transport(options);
     this.endUsers = new EndUsers(this.transport, () => this.operator());
@@ -1512,6 +1534,7 @@ export class AgentRuntime {
     this.transcriptions = new Transcriptions(this.transport, () => this.operator());
     this.images = new Images(this.transport, () => this.operator());
     this.voice = new Voice(this.transport, () => this.operator());
+    this.voices = new Voices(this.transport, () => this.operator());
   }
   /**
    * The agent for `key`: made if there is none, set to `options` if it differs. Returns its credentials;

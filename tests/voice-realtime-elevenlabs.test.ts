@@ -358,16 +358,17 @@ test("ElevenLabs retries network failures and preserves their stage", async t =>
   assert.match(String(state.logs.find(log => log.type === "voice_realtime_lost")!.fields?.detail), /list agents: fetch failed/);
 });
 
-test("ElevenLabs adds shared voices once per credential, uses returned IDs, and reuses account copies after restart", async t => {
+test("ElevenLabs resolves library IDs independently of name search, uses returned IDs, and reuses account copies after restart", async t => {
   const fake = await fakeElevenLabs(t);
   const owned: { voice_id: string; sharing: { original_voice_id: string } }[] = [];
   const adds: string[] = [];
   const request: typeof fetch = async (url, init) => {
     const path = new URL(String(url));
     if (path.pathname === "/v2/voices") return Response.json({ voices: owned, has_more: false });
-    if (path.pathname === "/v1/shared-voices") {
-      const id = path.searchParams.get("search")!;
-      return Response.json({ voices: [{ voice_id: id, public_owner_id: "public_owner", name: "Shared voice" }], has_more: false });
+    if (path.pathname === "/v1/shared-voices") throw new Error("ID must not be used as library search text");
+    if (path.pathname === `/v1/voices/${config.voice}`) {
+      assert.equal(path.search, "");
+      return Response.json({ voice_id: config.voice, sharing: { public_owner_id: "public_owner" }, name: "Shared voice" });
     }
     if (path.pathname.startsWith("/v1/voices/add/")) {
       assert.equal(init?.method, "POST");
@@ -425,4 +426,51 @@ test("ElevenLabs malformed error bodies keep HTTP status and diagnostics are cap
     else if (body.includes("invalid_configuration")) assert.equal(detail.length, 300);
     else assert.match(detail, /validation: invalid value$/);
   }
+});
+
+
+test("ElevenLabs imports a known public owner directly and verifies account access after an add race", async t => {
+  for (const race of [false, true]) {
+    const fake = await fakeElevenLabs(t, { existing: true });
+    const { got, events } = recorder();
+    let added = false;
+    let lists = 0;
+    const provider = elevenlabsAgents({ baseUrl: fake.base, fetch: async (url, init) => {
+      const path = new URL(String(url));
+      if (path.pathname === "/v2/voices") {
+        lists++;
+        if (added && path.searchParams.has("next_page_token")) return Response.json({ voices: [{ voice_id: "account_copy", sharing: { original_voice_id: config.voice } }], has_more: false });
+        return Response.json({ voices: [], has_more: added, ...(added ? { next_page_token: "second" } : {}) });
+      }
+      if (path.pathname === `/v1/voices/add/known_owner/${config.voice}`) {
+        assert.equal(init?.method, "POST");
+        assert.deepEqual(JSON.parse(String(init?.body)), { new_name: config.voice });
+        added = true;
+        return race ? Response.json({ detail: { status: "voice_already_added" } }, { status: 400 }) : Response.json({ voice_id: "account_copy" });
+      }
+      assert.ok(!path.pathname.startsWith("/v1/voices/") && path.pathname !== "/v1/shared-voices", "known owner needs no discovery");
+      return fetch(url, init);
+    } });
+    const connection = provider.connect({ ...config, publicOwnerId: "known_owner" }, { apiKey: "tenant-key" }, events);
+    t.after(() => connection.close());
+    await until(() => got.some(event => event.type === "ready"), "known owner ready");
+    assert.equal(fake.seen.events[0].conversation_config_override.tts.voice_id, "account_copy");
+    assert.equal(lists, race ? 3 : 1);
+  }
+});
+
+test("ElevenLabs refuses failed shared additions without verified account access", async t => {
+  const fake = await fakeElevenLabs(t, { existing: true });
+  const { got, events } = recorder();
+  const provider = elevenlabsAgents({ baseUrl: fake.base, fetch: async (url, init) => {
+    const path = new URL(String(url));
+    if (path.pathname === "/v2/voices") return Response.json({ voices: [], has_more: false });
+    if (path.pathname.startsWith("/v1/voices/add/")) return Response.json({ detail: { status: "voice_limit_reached" } }, { status: 400 });
+    return fetch(url, init);
+  } });
+  const connection = provider.connect({ ...config, publicOwnerId: "known_owner" }, { apiKey: "tenant-key" }, events);
+  t.after(() => connection.close());
+  await until(() => got.some(event => event.type === "closed"), "add rejected");
+  assert.match(got.find(event => event.type === "closed")!.detail, /add shared voice.*voice_limit_reached/);
+  assert.equal(fake.seen.urls.length, 0);
 });

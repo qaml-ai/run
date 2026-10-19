@@ -37,13 +37,15 @@ async function open(url: string) {
 
 test("a voice session from a browser: its socket (on any node) carries the page's speech in and the bot's out, and the session's events", { timeout: 120_000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), "agent-voice-browser-"));
-  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
+  const nodes: RuntimeNode[] = [];
+  t.after(async () => {
+    for (const node of nodes) await node.close().catch(() => {});
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  });
   writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(token), apiKeys: { openrouter: "fixture-key", openai: "tenant-openai-key" } } } }));
   // OpenAI's Realtime API: each turn is heard as "hello there", and answered with 0.4 s of speech.
   const openai = await fakeOpenAIRealtime(t, { transcript: () => "hello there" });
   const { url: databaseUrl } = await testDatabase();
-  const nodes: RuntimeNode[] = [];
-  t.after(async () => { for (const node of nodes) await node.close().catch(() => {}); });
   const secretsKey = randomBytes(32).toString("hex");
   const bases: string[] = [];
   for (let index = 0; index < 2; index++) bases.push(await onFreePort(async port => {

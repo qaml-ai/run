@@ -1243,6 +1243,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       record: (tenant, usage) => accounts.recordUsage(tenant, "", usage),
     },
     // Speech made alone (POST /v1/speech), as a voice session makes it.
+    voiceLibraryKey: async tenant => (await providerKey(tenant, undefined, "elevenlabs"))?.apiKey,
     speech: { synthesizer, admit: admitAlone, record: (tenant, usage) => accounts.recordUsage(tenant, "", usage) },
     images: {
       imager, outbound: outbound.withoutOrigins(),

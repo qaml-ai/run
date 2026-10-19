@@ -2871,6 +2871,60 @@ for training). See [Account data](https://run.camelai.com/docs/operations/privac
   `POST /v1/speech` (above).
 - **Audio in `initialMessages`.** Transcribe it first with `POST /v1/transcriptions` and import the text.
 
+## Find a character voice
+
+`GET /v1/voices/search?provider=elevenlabs&q=cat&category=professional&limit=10`
+uses your tenant token, as the other `/v1` endpoints do. `provider` is required;
+`q` defaults to an empty search, `limit` is 1–30 (default 10), and `category` is
+optional (`professional`, `famous`, or `high_quality`). Every call fetches fresh
+metadata; responses use `Cache-Control: no-store` and the normal API request rate limit applies.
+
+```ts
+const { voices } = await agents.voices.search({ provider: "elevenlabs", q: "cat", limit: 10 });
+```
+
+```python
+result = await agents.voices.search(provider="elevenlabs", q="cat", limit=10)
+# Synchronous SDK: result = agents.voices.search(provider="elevenlabs", q="cat", limit=10)
+```
+
+Both SDKs also expose `runtime.voices.search`. The response is `{ voices: [...] }`.
+Each voice has `provider`, `id`, `name`, `description`, `labels` (available
+`accent`, `age`, `gender`, `use_case`), `publicOwnerId`, `previewUrl`, and `category`. Missing
+metadata is `null`, missing labels are omitted. Save `id` as the session's
+`realtime.voice` with an ElevenLabs realtime model, and retain `publicOwnerId` as
+`realtime.publicOwnerId` when supplied. camelBots voice settings should keep both
+values and forward them when starting or updating a call. Search also accepts
+`provider=grok|openai|gemini`, returning the runtime's fixed voice definitions
+filtered by `q` without a provider key; library categories match none of these.
+
+ElevenLabs search uses the same credential resolution as speech: your saved
+ElevenLabs key, the tenant file's key, else `platformKeys.elevenlabs` where your
+account can use platform keys. Existing platform credit checks apply. There is
+no new configuration. Keys and upstream error bodies are never returned or logged.
+A missing key returns `400 VOICE_SEARCH_UNAVAILABLE`; an upstream failure returns
+`502 VOICE_SEARCH_FAILED`.
+
+The upstream [shared voice library API](https://elevenlabs.io/docs/api-reference/voices/voice-library/get-shared)
+receives `search`, `category` when supplied, and `page_size`. This implements the
+server-side discovery described in [camel-bots' authoring guide](https://github.com/qaml-ai/camel-bots/blob/main/docs/guides.md).
+
+[Agents overrides](https://elevenlabs.io/docs/eleven-agents/customization/personalization/overrides)
+select a voice but do not document granting account access to an unadded shared
+voice. The realtime provider therefore checks the account's
+[available voices](https://elevenlabs.io/docs/api-reference/voices/search) before
+opening a conversation. If the exact ID is missing, it uses the saved public
+owner, or retrieves sharing metadata by the exact ID via
+[Get voice](https://elevenlabs.io/docs/api-reference/voices/get), and [adds the shared voice](https://elevenlabs.io/docs/api-reference/voices/voice-library/share),
+using the returned account voice ID for the override. Account copies with a
+different ID are recognized by `sharing.original_voice_id`, across account pages. Concurrent starts on one
+node share only the in-flight check/add; later starts recheck the account, so an
+already-added voice is not added again. An add failure is accepted only when a
+fresh account lookup confirms another request added it. The library `search` parameter filters text, so voice IDs are never passed as
+search text during import. Search itself never adds voices. The ElevenLabs account must allow library API access and have permission
+to add voices; this behavior has mocked coverage and needs a live account check
+before rollout.
+
 ---
 
 <!-- https://run.camelai.com/docs/guides/voice-calls.md -->

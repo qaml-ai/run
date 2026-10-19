@@ -286,9 +286,12 @@ test("an ElevenLabs session accepts library voice ids, maps OpenAI names, disabl
     },
   });
   const a = await cluster.node("http://a");
-  const created = await a.voice.create("alice", { discord: discordGrant(), brain: "realtime", realtime: { provider: "elevenlabs", voice: "cartoon_voice_id" } });
-  assert.deepEqual(created.realtime, { provider: "elevenlabs", model: ELEVENLABS_AGENTS.defaultModel, voice: "cartoon_voice_id", transcribe: true, speculative: false });
+  const created = await a.voice.create("alice", { discord: discordGrant(), brain: "realtime", realtime: { provider: "elevenlabs", voice: "cartoon_voice_id", publicOwnerId: "library_owner" } });
+  assert.deepEqual(created.realtime, { provider: "elevenlabs", model: ELEVENLABS_AGENTS.defaultModel, voice: "cartoon_voice_id", publicOwnerId: "library_owner", transcribe: true, speculative: false });
   assert.ok(keys.includes("elevenlabs"));
+  const connected = await until(() => realtime.connections[0], "ElevenLabs config");
+  assert.equal(connected.config.publicOwnerId, "library_owner");
+  for (const publicOwnerId of ["", "invalid owner", 42]) await assert.rejects(a.voice.create("alice", { discord: discordGrant(), realtime: { provider: "elevenlabs", publicOwnerId } }), (error: HttpError) => error.status === 400);
   await a.voice.end("alice", created.id);
   const mapped = await a.voice.create("alice", { discord: discordGrant(), brain: "realtime", realtime: { provider: "elevenlabs", voice: "coral" } });
   assert.equal(mapped.realtime?.voice, ELEVENLABS_AGENTS.voice);

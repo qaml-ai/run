@@ -70,43 +70,37 @@ export function elevenlabsAgents(options: { baseUrl?: string; socket?: SocketFac
       if (page.has_more && !token) throw new ElevenLabsFailure("list voices", "no next page token", false);
     } while (token);
   }
-  async function resolveVoice(apiKey: string, voice: string): Promise<string> {
+  async function resolveVoice(apiKey: string, voice: string, publicOwnerId?: string): Promise<string> {
     const owned = await accountVoice(apiKey, voice);
     if (owned) return owned;
-    let page = 0;
-    do {
-      const query = new URLSearchParams({ search: voice, page_size: "100", page: String(page++) });
-      const shared = await api(apiKey, "find shared voice", `/v1/shared-voices?${query}`);
-      const found = shared.voices?.find((item: any) => item.voice_id === voice);
-      if (typeof found?.public_owner_id === "string") {
-        try {
-          const added = await api(apiKey, "add shared voice", `/v1/voices/add/${encodeURIComponent(found.public_owner_id)}/${encodeURIComponent(voice)}`, { new_name: found.name || voice });
-          if (typeof added.voice_id !== "string") throw new ElevenLabsFailure("add shared voice", "no voice id returned", false);
-          return added.voice_id;
-        } catch (error) {
-          // Another node may have added this voice after our account lookup.
-          if (error instanceof ElevenLabsFailure && error.status === 409) {
-            const added = await accountVoice(apiKey, voice);
-            if (added) return added;
-          }
-          throw error;
-        }
-      }
-      if (!shared.has_more) break;
-    } while (true);
-    throw new ElevenLabsFailure("find shared voice", "voice is unavailable to this account and was not found in the shared library", false);
+    // Exact ID lookup exposes sharing.public_owner_id; shared-voices search is text, not an ID filter.
+    // https://elevenlabs.io/docs/api-reference/voices/get
+    // https://elevenlabs.io/docs/api-reference/voices/voice-library/share
+    const shared = publicOwnerId ? undefined : await api(apiKey, "get voice", `/v1/voices/${encodeURIComponent(voice)}`);
+    const owner = publicOwnerId ?? shared?.sharing?.public_owner_id;
+    if (typeof owner !== "string" || !owner) throw new ElevenLabsFailure("find shared voice", "voice has no public owner; supply realtime.publicOwnerId from voice search", false);
+    try {
+      const added = await api(apiKey, "add shared voice", `/v1/voices/add/${encodeURIComponent(owner)}/${encodeURIComponent(voice)}`, { new_name: shared?.name || voice });
+      if (typeof added.voice_id !== "string") throw new ElevenLabsFailure("add shared voice", "no voice id returned", false);
+      return added.voice_id;
+    } catch (error) {
+      // Another node may have added it while this request was in flight. Only verified access makes that a success.
+      const added = await accountVoice(apiKey, voice);
+      if (added) return added;
+      throw error;
+    }
   }
-  function ensureVoice(apiKey: string, voice: string) {
-    const identity = `${createHash("sha256").update(apiKey).digest("hex")}:${voice}`;
+  function ensureVoice(apiKey: string, voice: string, publicOwnerId?: string) {
+    const identity = `${createHash("sha256").update(apiKey).digest("hex")}:${voice}:${publicOwnerId ?? ""}`;
     let pending = voices.get(identity);
     if (!pending) {
-      pending = resolveVoice(apiKey, voice);
+      pending = resolveVoice(apiKey, voice, publicOwnerId);
       voices.set(identity, pending);
-      void pending.catch(() => voices.delete(identity));
+      void pending.finally(() => voices.delete(identity)).catch(() => {});
     }
     return pending;
   }
-  async function resolveAgent(apiKey: string, sessionVoice: string): Promise<string> {
+  async function resolveAgent(apiKey: string, sessionVoice: string, publicOwnerId?: string): Promise<string> {
     let cursor: string | undefined;
     do {
       const query = new URLSearchParams({ search: ELEVENLABS_AGENTS.name, page_size: "100", ...(cursor ? { cursor } : {}) });
@@ -116,7 +110,7 @@ export function elevenlabsAgents(options: { baseUrl?: string; socket?: SocketFac
       cursor = page.has_more ? page.next_cursor : undefined;
       if (page.has_more && !cursor) throw new ElevenLabsFailure("list agents", "no next cursor", false);
     } while (cursor);
-    const voice = await ensureVoice(apiKey, sessionVoice);
+    const voice = await ensureVoice(apiKey, sessionVoice, publicOwnerId);
     const created = await api(apiKey, "create agent", "/v1/convai/agents/create", {
       name: ELEVENLABS_AGENTS.name,
       conversation_config: {
@@ -146,13 +140,13 @@ export function elevenlabsAgents(options: { baseUrl?: string; socket?: SocketFac
       const identity = createHash("sha256").update(apiKey).digest("hex");
       let agent = agents.get(identity);
       if (!agent) {
-        agent = resolveAgent(apiKey, config.voice);
+        agent = resolveAgent(apiKey, config.voice, config.publicOwnerId);
         agents.set(identity, agent);
         void agent.catch(() => agents.delete(identity));
       }
       return new ElevenLabs(events, options.now ?? (() => performance.now()), async () => {
         const agentId = await agent;
-        config = { ...config, voice: await ensureVoice(apiKey, config.voice) };
+        config = { ...config, voice: await ensureVoice(apiKey, config.voice, config.publicOwnerId) };
         const signed = await api(apiKey, "signed URL", `/v1/convai/conversation/get-signed-url?agent_id=${encodeURIComponent(agentId)}`);
         if (typeof signed.signed_url !== "string") throw new ElevenLabsFailure("signed URL", "no signed URL returned", false);
         try { return { socket: socket(signed.signed_url, {}), config }; }
