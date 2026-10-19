@@ -8628,7 +8628,7 @@
             ]
           }
         },
-        "description": "Fields left out keep their current values; allowances and bucketLimits, when sent, replace the whole map (PATCH merges them)"
+        "description": "Fields left out keep their current values; allowances and bucketLimits, when sent, replace the whole map (PATCH merges them). Only the fields sent are written, so concurrent writers never undo each other's other fields"
       },
       "EndUserSettingsPatch": {
         "type": "object",
@@ -8676,7 +8676,7 @@
             ]
           }
         },
-        "description": "Only what is sent changes: allowances and bucketLimits key by key"
+        "description": "Only what is sent changes: allowances and bucketLimits key by key, merged into the map as it stands when the write lands, so concurrent PATCHes of different fields or keys all keep their changes"
       },
       "EndUserList": {
         "type": "object",
