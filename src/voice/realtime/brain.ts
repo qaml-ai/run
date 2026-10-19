@@ -621,7 +621,7 @@ export class RealtimeBrain {
     response.audio.end();
     response.playback?.stop();
     if (!response.done) this.connection?.cancel();
-    if (response.audio.bytes || response.played) this.connection?.truncate(heardMs);
+    if (response.id && (response.audio.bytes || response.played)) this.connection?.truncate(response.id, heardMs);
     if (!response.played) response.turn?.end(why === "resume" || why === "superseded" ? "interrupted" : why === "budget" ? "error" : "interrupted");
     if (this.current === response && response.done) this.current = undefined;
   }
@@ -772,6 +772,9 @@ export class RealtimeBrain {
     this.candidates.clear();
     this.hooks.log("voice_barge_in_confirmed", { ...withoutType(outcome), brain: "realtime", heardMs: Math.round(heardMs), generatedMs: Math.round(generatedMs) });
     this.cancel(response, "barge_in", heardMs);
+    // What it was about to say next (an answer being made after this one) waits for their turn too.
+    const next = this.current;
+    if (next && next !== response && !next.played && !next.cancelled) this.cancel(next, "barge_in", 0);
     this.hooks.resumeMedia();
   }
 }

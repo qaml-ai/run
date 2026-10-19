@@ -124,8 +124,9 @@ test("a response: audio, its transcript, a tool call, and its usage; a cancel be
   assert.equal((got.find(event => event.type === "done") as any).status, "cancelled");
   assert.deepEqual(got.find(event => event.type === "tool"), { type: "tool", response: "resp_2", id: "call_1", name: "ask_agent", args: { request: "weather" } });
   assert.deepEqual(got.filter(event => event.type === "warning"), [{ type: "warning", code: "invalid_value", message: "bad voice" }], "a lost race is not a warning");
-  connection.truncate(1_234);
-  connection.truncate(0);
+  connection.truncate("resp_2", 1_234);
+  connection.truncate("resp_1", 500);
+  connection.truncate("resp_2", 0);
   connection.toolResult("call_1", "{\"reply\":\"sunny\"}");
   await until(() => fake.seen.events.some(event => event.type === "conversation.item.create" && event.item.type === "function_call_output"), "the result");
   const tail = fake.seen.events.slice(-3);

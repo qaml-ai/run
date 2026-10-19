@@ -81,10 +81,10 @@ export interface RealtimeConnection {
   /** Stop the response being made, if one is. */
   cancel(): void;
   /**
-   * People heard only `heardMs` of the last response's audio (barge-in): its item is cut there, so the model's history
-   * holds what was played and not the rest. 0 removes the item.
+   * People heard only `heardMs` of a response's audio (barge-in): its item is cut there, so the model's history holds
+   * what was played and not the rest. 0 removes the item.
    */
-  truncate(heardMs: number): void;
+  truncate(response: string, heardMs: number): void;
   /** A tool call's result, as the model reads it. */
   toolResult(callId: string, output: string): void;
   close(): void;

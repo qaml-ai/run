@@ -244,7 +244,7 @@ test("speculative: the answer begins at likely_end, held; a resume takes it back
   assert.equal(playback.plays.length, 0, "held until the turn ends");
   // They go on: it is cancelled and its item removed (0 ms heard).
   brain.turnEvent({ type: "resume", speaker: "1", at: Date.now() });
-  assert.deepEqual(c.of("truncate"), [{ type: "truncate", heardMs: 0 }]);
+  assert.deepEqual(c.of("truncate"), [{ type: "truncate", response: "r1", heardMs: 0 }]);
   assert.equal(brain.stats.speculativeDiscarded, 1);
   brain.pcm("1", tone(300));
   brain.turnEvent({ type: "likely_end", speaker: "1", at: Date.now(), probability: 0.9, silenceMs: 200 });

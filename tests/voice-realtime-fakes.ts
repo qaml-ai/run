@@ -18,7 +18,7 @@ export async function until<V>(check: () => V | Promise<V>, what: string, timeou
 /** What a fake realtime connection was asked, in order. */
 export type Sent =
   | { type: "append"; bytes: number } | { type: "commit"; tag: string; ms: number } | { type: "discard" } | { type: "note"; text: string }
-  | { type: "respond"; instructions?: string } | { type: "cancel" } | { type: "truncate"; heardMs: number } | { type: "tool_result"; callId: string; output: string } | { type: "close" };
+  | { type: "respond"; instructions?: string } | { type: "cancel" } | { type: "truncate"; response: string; heardMs: number } | { type: "tool_result"; callId: string; output: string } | { type: "close" };
 
 /**
  * A realtime connection without a provider: it records what the brain asks (appends folded into one entry per run),
@@ -49,7 +49,7 @@ export class FakeConnection implements RealtimeConnection {
   note(text: string) { this.sent.push({ type: "note", text }); }
   respond(options: { instructions?: string } = {}) { this.responses++; this.sent.push({ type: "respond", ...(options.instructions ? { instructions: options.instructions } : {}) }); }
   cancel() { this.sent.push({ type: "cancel" }); }
-  truncate(heardMs: number) { this.sent.push({ type: "truncate", heardMs: Math.round(heardMs) }); }
+  truncate(response: string, heardMs: number) { this.sent.push({ type: "truncate", response, heardMs: Math.round(heardMs) }); }
   toolResult(callId: string, output: string) { this.sent.push({ type: "tool_result", callId, output }); }
   close() { this.sent.push({ type: "close" }); }
   of<T extends Sent["type"]>(type: T) { return this.sent.filter((entry): entry is Extract<Sent, { type: T }> => entry.type === type); }

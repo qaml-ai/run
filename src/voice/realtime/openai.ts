@@ -57,7 +57,8 @@ class OpenAIRealtime implements RealtimeConnection {
   private readonly tags = new Map<string, string>();
   /** The response being made, and the audio item of the last response that had one. */
   private active?: string;
-  private lastAudioItem?: string;
+  /** Each response's audio item, by response id (the last few). */
+  private readonly audioItems = new Map<string, string>();
   /** Responses asked for and not yet begun; a cancel that comes first is sent as the response begins. */
   private asked = 0;
   private cancelOnCreate = false;
@@ -130,12 +131,12 @@ class OpenAIRealtime implements RealtimeConnection {
     else if (this.asked) this.cancelOnCreate = true;
   }
 
-  truncate(heardMs: number) {
-    const item = this.lastAudioItem;
+  truncate(response: string, heardMs: number) {
+    const item = this.audioItems.get(response);
     if (!item) return;
     if (heardMs <= 0) {
       this.send({ type: "conversation.item.delete", item_id: item });
-      this.lastAudioItem = undefined;
+      this.audioItems.delete(response);
     } else this.send({ type: "conversation.item.truncate", item_id: item, content_index: 0, audio_end_ms: Math.round(heardMs) });
   }
 
@@ -149,6 +150,11 @@ class OpenAIRealtime implements RealtimeConnection {
     clearTimeout(this.timer);
     try { this.socket.close(); } catch { /* closed already */ }
     this.events.closed("requested");
+  }
+
+  private audioItem(response: string, item: string) {
+    this.audioItems.set(response, item);
+    while (this.audioItems.size > 8) this.audioItems.delete(this.audioItems.keys().next().value!);
   }
 
   private send(message: unknown) {
@@ -180,11 +186,11 @@ class OpenAIRealtime implements RealtimeConnection {
         if (this.cancelOnCreate) { this.cancelOnCreate = false; this.send({ type: "response.cancel" }); }
         return;
       case "response.output_item.added":
-        if (event.item?.type === "message" && event.item.role === "assistant") this.lastAudioItem = event.item.id;
+        if (event.item?.type === "message" && event.item.role === "assistant" && event.response_id) this.audioItem(event.response_id, event.item.id);
         return;
       case "response.output_audio.delta":
         if (typeof event.delta === "string" && event.delta) {
-          if (event.item_id) this.lastAudioItem = event.item_id;
+          if (event.item_id && event.response_id) this.audioItem(event.response_id, event.item_id);
           this.events.audio(event.response_id, Buffer.from(event.delta, "base64"));
         }
         return;
