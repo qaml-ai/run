@@ -18,9 +18,9 @@ export type TurnStage = typeof TURN_STAGES[number];
  * How the reply came: the session spoke the agent's reply (`agent_reply`), a prompt's `speak` did (`prompt_speak`), or
  * the app asked to speak (`speak`, POST …/speak) soon after the transcript went out.
  */
-export type TurnPath = "agent_reply" | "prompt_speak" | "speak";
-/** spoken: its first audio went out. Otherwise why not. */
-export type TurnOutcome = "spoken" | "no_reply" | "interrupted" | "error" | "empty";
+export type TurnPath = "agent_reply" | "prompt_speak" | "speak" | "realtime";
+/** spoken: its first audio went out. Otherwise why not (silent: a realtime brain chose not to answer, stay_silent). */
+export type TurnOutcome = "spoken" | "no_reply" | "interrupted" | "error" | "empty" | "silent";
 
 /** Each stage's metric: ms from the end of speech. */
 const METRICS: Record<TurnStage, string> = {
@@ -32,7 +32,11 @@ const METRICS: Record<TurnStage, string> = {
  * What the line says of the turn. `ttsProvider`/`ttsModel` are who made its reply's first audio (through a chain of
  * providers, the member that served it, not the session's default), set by `spokenBy`.
  */
-export type TurnInfo = { session: string; tenant: string; seq?: number; live?: boolean; sttModel?: string; ttsProvider?: string; ttsModel?: string };
+export type TurnInfo = {
+  session: string; tenant: string; seq?: number; live?: boolean; sttModel?: string; ttsProvider?: string; ttsModel?: string;
+  /** A realtime brain's turn: its response began at likely_end (`speculative`), and it asked the agent (`askAgent`). */
+  speculative?: boolean; askAgent?: boolean;
+};
 
 export class TurnClock {
   readonly speechEnd: number;
@@ -102,13 +106,16 @@ export function turnLatencyLine(turn: TurnClock, outcome: TurnOutcome) {
     metrics.VoiceLlmMs = ms(between(stages.delivered !== undefined ? "delivered" : "transcript", "llmFirstToken"));
     metrics.VoiceTtsMs = ms(between("firstPiece", "ttsFirstAudio"));
     metrics.VoicePlayoutMs = ms(between("ttsFirstAudio", "firstPacket"));
+    // A realtime brain: from the turn's commit (or its confirmation, for a response begun early) to the model's first audio.
+    if (turn.path === "realtime") metrics.VoiceRealtimeMs = ms(between("turnCommit", "ttsFirstAudio"));
   } else metrics.VoiceFirstPacketMs = undefined;
-  const { session, tenant, seq, live, sttModel, ttsProvider, ttsModel } = turn.info;
+  const { session, tenant, seq, live, sttModel, ttsProvider, ttsModel, speculative, askAgent } = turn.info;
   return metricLine("voice_turn_latency", {
     dimensions: { Path: turn.path ?? "none" }, rollups: [[], ["Path"]], metrics,
     properties: {
       session, tenant, outcome, ...(seq !== undefined ? { seq } : {}), ...(live !== undefined ? { live } : {}),
-      ...(sttModel ? { sttModel } : {}), ...(ttsProvider ? { ttsProvider } : {}), ...(ttsModel ? { ttsModel } : {}), stagesMs: stages,
+      ...(sttModel ? { sttModel } : {}), ...(ttsProvider ? { ttsProvider } : {}), ...(ttsModel ? { ttsModel } : {}),
+      ...(speculative !== undefined ? { speculative } : {}), ...(askAgent ? { askAgent } : {}), stagesMs: stages,
     },
   });
 }
