@@ -214,11 +214,12 @@ export const WebhookEvents = {
   }), "A voice session ended. The bot is still in the channel until your app leaves it (OP 4 with channel_id null)"),
   "voice.session.error": envelope("voice.session.error", z.object({
     ...voiceFacts,
-    code: z.enum(["media_crashed"]).openapi({ description: "media_crashed: the session's audio processing failed (its worker crashed, ran out of memory or stopped answering); speech it was saying ended, and what people were saying but had not finished may be lost" }),
+    code: z.enum(["media_crashed", "credentials_needed"]).openapi({ description: "media_crashed: the session's audio processing failed (its worker crashed, ran out of memory or stopped answering); speech it was saying ended, and what people were saying but had not finished may be lost. credentials_needed: Discord no longer takes the session's voice credentials (close 4006 and the like: its voice session ended, as after a move between nodes); send OP 4 for the same channel again on your gateway, and PATCH the session with what Discord answers (sessionId, endpoint, token) within waitMs, or it ends (voice.session.ended, reason credentials)" }),
     detail: z.string().openapi({ description: "What failed, briefly: no audio, text or credentials" }),
-    restarting: z.boolean().openapi({ description: "true: the session reconnects at once and goes on. false: it failed too often (3 times in 5 minutes) and ends (voice.session.ended, reason error, follows)" }),
-    attempt: z.number().openapi({ description: "Failures in the last 5 minutes, this one included" }),
-  }), "A voice session's audio failed: it reconnects, or (failing again and again) ends"),
+    restarting: z.boolean().openapi({ description: "true: the session goes on (media_crashed: it reconnects at once; credentials_needed: once new credentials come). false: it failed too often (3 times in 5 minutes) and ends (voice.session.ended, reason error, follows)" }),
+    attempt: z.number().optional().openapi({ description: "media_crashed: failures in the last 5 minutes, this one included" }),
+    waitMs: z.number().optional().openapi({ description: "credentials_needed: how long the session waits for new credentials" }),
+  }), "A voice session's audio failed, or it needs new Discord credentials: it reconnects, or ends"),
   "voice.utterance": envelope("voice.utterance", z.object({
     ...voiceFacts,
     speakerId: z.string().openapi({ description: "The Discord user who spoke" }),

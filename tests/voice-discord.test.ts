@@ -82,6 +82,59 @@ test("a dropped voice socket is resumed with the same credentials; a kick or ref
   assert.equal(seen.lost[1].reason, "credentials");
 });
 
+test("a handoff drops the voice socket, so the next node identifies with the same credentials; ending closes it, which ends Discord's voice session", async t => {
+  const voice = await fakeDiscordVoice(t);
+  const grant = discordGrant({ endpoint: voice.endpoint });
+  const first = connect(grant);
+  await until(() => first.seen.ready === 1, "ready");
+  first.connection.close("handoff");
+  await until(() => voice.clientCloses.length === 1, "the socket to go");
+  assert.equal(voice.clientCloses[0], 1006, "dropped: no close frame, the voice session stays");
+
+  // The next node, with the same credentials, as a handoff gives them.
+  const second = connect(grant);
+  await until(() => second.seen.ready === 1, "ready on the next node");
+  assert.equal(voice.identifies.length, 2);
+  assert.equal(second.seen.lost.length, 0);
+
+  // The session ending closes normally, and Discord ends its voice session: those credentials are done.
+  second.connection.close();
+  await until(() => voice.clientCloses.length === 2, "the close");
+  assert.equal(voice.clientCloses[1], 1000);
+  const third = connect(grant);
+  t.after(() => third.connection.close());
+  await until(() => third.seen.lost.length === 1, "refused");
+  assert.deepEqual(third.seen.lost[0], { reason: "credentials", detail: "close 4006" });
+});
+
+test("a session handed to another node goes on with the same credentials; credentials Discord stops taking ask the app for new ones", async t => {
+  const voice = await fakeDiscordVoice(t);
+  const { node, events } = await voiceCluster(t, { transports: { discord: discordVoice() }, endpoints: /^127\.0\.0\.1$/ });
+  const a = await node("http://a");
+  const b = await node("http://b");
+  const grant = discordGrant({ endpoint: voice.endpoint });
+  const created = await a.voice.create("alice", { discord: grant });
+  await until(async () => (await a.voice.get("alice", created.id)).state === "live", "live on a");
+  // a drains: it lets the call go, and b takes it.
+  await a.voice.release();
+  await b.voice.scan();
+  await until(() => b.voice.holds(created.id) && voice.identifies.length === 2, "b to identify");
+  await until(async () => (await b.voice.get("alice", created.id)).state === "live", "live on b");
+  assert.equal(voice.clientCloses[0], 1006, "a dropped its socket rather than ending the voice session");
+  assert.equal((await events("voice.session.error")).length, 0);
+
+  // Discord no longer takes the credentials (its voice session ended): the app is told to get new ones, at once.
+  voice.close(4006);
+  const [error] = await until(async () => { const found = await events("voice.session.error"); return found.length && found; }, "the event");
+  assert.equal(error.data.code, "credentials_needed");
+  assert.equal(error.data.restarting, true);
+  assert.equal(error.data.waitMs, 15_000);
+  // New credentials (the app's PATCH after OP 4 again): connected and live again.
+  await b.voice.update("alice", created.id, { discord: { sessionId: "rejoined", token: "rejoined-token" } });
+  await until(() => voice.identifies.at(-1)?.token === "rejoined-token", "identified with the new credentials");
+  await until(async () => (await b.voice.get("alice", created.id)).state === "live", "live again");
+});
+
 test("a session on the Discord transport: the call's speech becomes utterances", async t => {
   const voice = await fakeDiscordVoice(t);
   const { node, events } = await voiceCluster(t, { transports: { discord: discordVoice() }, endpoints: /^127\.0\.0\.1$/ });

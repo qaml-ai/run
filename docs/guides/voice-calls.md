@@ -81,6 +81,13 @@ await agents.voice.update(session.id, { discord: { endpoint: voiceServer.endpoin
 send the next one) and `token`, and `ignoreUserIds` and `metadata`. A session whose connection was refused (the bot was
 disconnected or kicked, or Discord stopped taking its credentials) waits 15 seconds for new ones, then ends.
 
+When Discord stops taking the credentials (its voice session ended), only your gateway can get new ones, so camelRun
+says so at once: `voice.session.error` with `code: "credentials_needed"` (and `waitMs`, how long it waits). Send OP 4
+for the same channel again, and forward what Discord answers (`VOICE_STATE_UPDATE`'s `session_id`,
+`VOICE_SERVER_UPDATE`'s `endpoint` and `token`) with a PATCH: the session reconnects and goes on. A session moving
+between camelRun's nodes keeps its credentials: the node letting it go drops its voice socket rather than closing it,
+which would end Discord's voice session.
+
 To leave, end the session and send the answer's `leave` on your gateway: ending stops the listening, and only your
 gateway can take the bot out of the channel.
 

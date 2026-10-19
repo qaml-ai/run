@@ -363,7 +363,9 @@ export class DiscordVoice implements VoiceConnection {
     recordDaveRoster(strangers.length);
     this.handlers.diagnostic("dave_roster", { strangers: strangers.length, drops: this.rosterDrops.length });
     if (this.rosterDrops.length > MAX_ROSTER_DROPS) { this.fail("error", "dave_roster"); return; }
-    // The two dispatches again: the library opens a new voice socket, identifies, and joins a new DAVE group.
+    // The two dispatches again: the library opens a new voice socket, identifies, and joins a new DAVE group. The old
+    // socket is dropped first, not closed (a normal close ends the voice session, and the identify would be refused).
+    dropSocket(this.connection);
     this.feed();
   }
 
@@ -485,7 +487,7 @@ export class DiscordVoice implements VoiceConnection {
     return this.membersKnown ? [...members] : undefined;
   }
 
-  close() {
+  close(how: "handoff" | "end" = "end") {
     if (this.closed) return;
     this.closed = true;
     this.roster.close();
@@ -493,6 +495,16 @@ export class DiscordVoice implements VoiceConnection {
     this.early.clear();
     this.jitter.close();
     for (const stream of this.connection.receiver.subscriptions.values()) stream.destroy();
+    // The library closes its voice gateway socket with 1000, which ends the voice session at Discord: the next node's
+    // identify with the same session id and token is refused (4006, session no longer valid). Handing off, the socket
+    // is dropped instead, as a lost connection is, and Discord keeps the session for the node that takes the call.
+    if (how === "handoff") dropSocket(this.connection);
     this.connection.destroy();
   }
+}
+
+/** Drop a connection's voice gateway socket without a close frame (its TCP connection ends: 1006 at Discord). */
+function dropSocket(connection: DiscordConnection) {
+  const state = connection.state as { networking?: { state: { ws?: { ws?: { terminate?(): void } } } } };
+  try { state.networking?.state.ws?.ws?.terminate?.(); } catch { /* already closed */ }
 }
