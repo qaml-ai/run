@@ -177,8 +177,8 @@ packet). The dimension is `Path` (`realtime`). The properties carry `ttsProvider
 and model), `speculative` and `askAgent`. A turn that never reaches audio (no answer, `stay_silent`, barge-in, error)
 logs its marks with `outcome`, but publishes no `VoiceFirstPacketMs`.
 
-In CloudWatch, the `${name}-launch` dashboard gets a Voice row: p50, p95 and p99 of `VoiceFirstPacketMs`, and p95 of
-each stage, stacked. A `voice_turn_latency_p95` alarm fires when p95 `VoiceFirstPacketMs` exceeds
+In CloudWatch, the `${name}-voice` dashboard (infra/terraform/voice.tf) shows p50, p95 and p99 of
+`VoiceFirstPacketMs`, p95 of each stage, and where the time goes (turn commit, the realtime model, playout), stacked. A `voice_turn_latency_p95` alarm fires when p95 `VoiceFirstPacketMs` exceeds
 `var.voice_latency_p95_alarm_ms` (2,500 by default) in 3 of 4 15-minute periods, with at least 20 turns, and goes to
 the alerts topic. The voice load test asserts the same stages exist, so a code path that loses a mark fails CI.
 
