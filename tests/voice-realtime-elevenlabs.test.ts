@@ -413,7 +413,7 @@ test("ElevenLabs websocket open and init failures retain stage and redact signed
 });
 
 test("ElevenLabs malformed error bodies keep HTTP status and diagnostics are capped at 300 characters", async t => {
-  for (const body of ["not json", JSON.stringify({ detail: { status: "invalid_configuration", message: "bad value ".repeat(100) } })]) {
+  for (const body of ["not json", JSON.stringify({ detail: [null] }), JSON.stringify({ detail: { status: "invalid_configuration", message: "bad value ".repeat(100) } })]) {
     const { got, events } = recorder();
     const connection = elevenlabsAgents({ fetch: async () => new Response(body, { status: 422 }) }).connect(config, { apiKey: "tenant-key" }, events);
     t.after(() => connection.close());
@@ -422,6 +422,7 @@ test("ElevenLabs malformed error bodies keep HTTP status and diagnostics are cap
     assert.match(detail, /list agents \(HTTP 422\):/);
     assert.ok(detail.length <= 300);
     if (body === "not json") assert.match(detail, /request failed$/);
-    else assert.equal(detail.length, 300);
+    else if (body.includes("invalid_configuration")) assert.equal(detail.length, 300);
+    else assert.match(detail, /validation: invalid value$/);
   }
 });

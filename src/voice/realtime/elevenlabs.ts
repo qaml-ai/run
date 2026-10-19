@@ -48,7 +48,7 @@ export function elevenlabsAgents(options: { baseUrl?: string; socket?: SocketFac
         const error = await response.json().catch(() => undefined);
         const detail = error?.detail;
         const message = Array.isArray(detail)
-          ? detail.map(item => `${Array.isArray(item.loc) ? item.loc.join(".") : "validation"}: ${item.msg ?? "invalid value"}`).join("; ")
+          ? detail.map(item => `${Array.isArray(item?.loc) ? item.loc.join(".") : "validation"}: ${item?.msg ?? "invalid value"}`).join("; ")
           : typeof detail === "string" ? detail : [detail?.status, detail?.message].filter(value => typeof value === "string").join(": ");
         throw new ElevenLabsFailure(stage, message || "request failed", response.status >= 500, response.status);
       }
