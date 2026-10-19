@@ -18,7 +18,7 @@ works and prints the scoreboard; it does not yet fail on a score.
 
 Real: `VoiceSessions`, the `Segmenter` (cuts, quiet threshold, silence timer), transcription and speech queues,
 barge-in, `SpokenReply`, the playback jitter buffer (`buffered`), the webhook outbox and its sender (at the runtime's
-default interval, 5 s), a real Postgres.
+default interval, 5 s, kicked as each voice event commits, as src/node.ts does), a real Postgres.
 
 Faked:
 
@@ -47,7 +47,7 @@ call, each varying by 25%. These are assumptions, not measurements: the `openai`
 | `bots-say` | camel-bots bot code today: `voice.utterance` webhook, the speech handler, `ctx.ai` (whole answer), `ctx.reply` spoken with `POST …/speak` |
 | `bots-agent` | camel-bots bot answering with its agent: webhook, prompt with `speak: {session}`, spoken sentence by sentence as written |
 | `run-agent` | camelRun alone: `deliver.agent` with `speak: {agentReplies: true}`, no webhook hop |
-| `bots-agent@push` | what-if: `bots-agent` with the webhook sender running every 50 ms (voice events sent at once) |
+| `bots-agent@poll` | `bots-agent` as before #230: voice events wait for the webhook sender's next run (every 5 s) instead of being sent as they commit |
 
 To add one (a session option another change adds, a new turn-taking mode), add it to `PIPELINES` with its `session`
 settings.
@@ -82,7 +82,17 @@ transcriptMs, deliveredMs, llmFirstTokenMs, ttsFirstAudioMs, firstPacketMs), eac
 
 With `VOICE_EVAL_PROFILE=instant` (providers take no time), run-agent answers in 1048 ms (p50): the cut alone.
 
-What it shows:
+After #230 (voice events kick the webhook sender; main at a3769d0, same settings): camel-bots' pipelines answer
+about 1 s sooner at p50 and 4 s sooner at p95. `bots-agent@poll` is `bots-agent` without the kick, as before.
+
+| pipeline | latency p50 | p95 | deliveredMs p50 (p95) |
+|---|---|---|---|
+| bots-say | 2930 | 3918 | 1540 (1643) |
+| bots-agent | 2860 | 3075 | 1533 (1658) |
+| run-agent | 2728 | 2912 | 1531 (1654) |
+| bots-agent@poll | 3839 | 6860 | 2475 (5425) |
+
+What it shows (the first baseline):
 
 - **The cut takes 1,000 ms, not 800** (turnCommitMs): the silence timer restarts at each quiet packet a client sends
   after speech, so its 200 ms of hangover is added to `silenceMs`.

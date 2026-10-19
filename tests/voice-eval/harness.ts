@@ -71,13 +71,15 @@ export type Pipeline = {
   webhookIntervalMs: number;
   /** Session settings on top of the eval's (silenceMs, bargeIn…). */
   session?: Record<string, unknown>;
+  /** false: voice events wait for the sender's next run, as before the outbox was kicked for them (#230). */
+  kick?: boolean;
 };
 
 export const PIPELINES: Pipeline[] = [
   { name: "bots-say", path: "bots-say", webhookIntervalMs: 5_000, description: "camel-bots bot code: webhook, ctx.ai, ctx.reply spoken" },
   { name: "bots-agent", path: "bots-agent", webhookIntervalMs: 5_000, description: "camel-bots bot agent: webhook, prompt with speak (streamed)" },
   { name: "run-agent", path: "run-agent", webhookIntervalMs: 5_000, description: "camelRun deliver.agent + agentReplies (no app hop)" },
-  { name: "bots-agent@push", path: "bots-agent", webhookIntervalMs: 50, description: "what-if: bots-agent with voice webhooks sent at once" },
+  { name: "bots-agent@poll", path: "bots-agent", webhookIntervalMs: 5_000, kick: false, description: "before #230: bots-agent with voice webhooks waiting for the 5 s sender" },
 ];
 
 const TENANT = "alice";
@@ -478,6 +480,8 @@ export async function runPipeline(options: EvalOptions): Promise<PipelineRun> {
     db, accounts, node: "http://eval", ownership, transports: { discord: transport.transport },
     admit: async () => {}, agentOwned: async agent => agent === AGENT, transcriber, synthesizer, canTranscribe: async () => true,
     record: () => {}, submit: async () => ({}), perTenant: () => 1_000, perNode: 1_000,
+    // As src/node.ts: a voice event committed sends the outbox at once (a pipeline with kick: false waits for the sender).
+    ...(pipeline.kick === false ? {} : { kickWebhooks: () => webhooks.kick() }),
     // camelRun's agent (run-agent): it answers what names the bot, as the bot code would.
     async *submitStreaming(_agent, _tenant, request) {
       const params = request.params as { text: string; from: { id: string }; metadata: { voiceSession: string } };
