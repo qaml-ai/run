@@ -1,4 +1,4 @@
-import { messageJson, openSocket, wsBase, type Socket, type SocketFactory } from "../../voice-providers/socket.ts";
+import { closeDetail, messageJson, openSocket, wsBase, type Socket, type SocketFactory } from "../../voice-providers/socket.ts";
 import { NO_USAGE, type RealtimeConfig, type RealtimeConnection, type RealtimeEvents, type RealtimeProvider, type RealtimeUsage } from "./provider.ts";
 
 /**
@@ -94,7 +94,7 @@ class GeminiLive implements RealtimeConnection {
     };
     socket.onmessage = event => this.message(messageJson(event.data));
     socket.onerror = () => this.fail("The realtime connection failed");
-    socket.onclose = event => this.fail(`The realtime connection closed${event?.code ? ` (${event.code})` : ""}`);
+    socket.onclose = event => this.fail(closeDetail(event));
   }
 
   get pendingMs() { return this.bytes / BYTES_PER_MS; }

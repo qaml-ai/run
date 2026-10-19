@@ -190,3 +190,17 @@ test("the brain with a provider that transcribes only once asked to answer: answ
   assert.equal(c.of("cancel").length, 1, "not taken back");
   brain.close();
 });
+
+test("Gemini's close reason (its error: a bad key, a model not found) is in the failure's detail, keys taken out", async t => {
+  const server = createServer();
+  const sockets = new WebSocketServer({ server });
+  sockets.on("connection", ws => ws.close(1007, "API key not valid. Please pass a valid API key. AIzaSyFAKEFAKEFAKEFAKEFAKE"));
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => { for (const ws of sockets.clients) ws.terminate(); server.close(); });
+  const { got, events } = recorder();
+  geminiLive({ baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}` })
+    .connect({ model: "gemini-3.8-live", voice: "Kore", instructions: "Be Mochi.", transcribe: false, tools: [] }, { apiKey: "k" }, events);
+  await until(() => got.some(event => event.type === "closed"), "closed");
+  assert.deepEqual(got.find(event => event.type === "closed"),
+    { type: "closed", reason: "error", detail: "The realtime connection closed (1007: API key not valid. Please pass a valid API key. [redacted])" });
+});
