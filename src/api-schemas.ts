@@ -224,6 +224,8 @@ export const WebhookEvents = {
     startedAt: z.number(), endedAt: z.number(),
     ended: z.enum(["silence", "max", "error", "handoff", "end"]).openapi({ description: "Why it ended: silenceMs without speech; cut at 30 seconds (the speech goes on in the next); the speaker's stream broke; the session moved to another node; the session ended" }),
     costUsd: z.number(),
+    addressed: z.boolean().openapi({ description: "Whether the turn was the bot's (addressing); true with addressing mode always" }),
+    addressedBy: z.enum(["always", "alone", "named", "conversation", "not_addressed"]).openapi({ description: "Why: always (mode); alone (no one else in the call); named (it said one of names); conversation (the bot was talking with its speaker); not_addressed" }),
     backchannel: z.literal(true).optional().openapi({ description: "Present when it was said over the bot and was only a backchannel (mm-hm, yeah, ok…): the bot went on. It is not sent to deliver.agent and nothing replies to it" }),
     echo: z.literal(true).optional().openapi({ description: "Present when barge-in judged it the bot's own speech coming back through the speaker's speakers (its words are the bot's, in order). It is not sent to deliver.agent and nothing replies to it; drop it unless you want it" }),
   }), "A person's utterance in a voice session, transcribed"),
@@ -241,7 +243,7 @@ export const WebhookEvents = {
     ...voiceFacts, speechId: z.string(),
     reply: z.object({ agent: z.string(), requestId: z.string() }).optional(),
     reason: z.enum(["done", "interrupted", "error"]).openapi({ description: "done: said whole; interrupted: cut short or never started (by); error: speech could not be made or played" }),
-    by: z.enum(["interrupt", "requested", "barge_in", "end", "handoff", "budget"]).optional().openapi({ description: "With interrupted: a speech asked with interrupt; DELETE …/speak; a person started talking (bargeIn); the session ended or moved; credit ran out" }),
+    by: z.enum(["interrupt", "requested", "barge_in", "end", "handoff", "budget", "superseded"]).optional().openapi({ description: "With interrupted: a speech asked with interrupt; DELETE …/speak; a person started talking (bargeIn); the session ended or moved; credit ran out; a newer turn's reply took the place of this one, not yet heard (agentReplies)" }),
     seconds: z.number().openapi({ description: "Seconds of speech made (and billed)" }), costUsd: z.number(),
   }), "A speech ended"),
 };
@@ -1356,6 +1358,11 @@ export const VoiceSessionInput = z.strictObject({
   voice: z.string().optional().openapi({ description: "With speak: the voice speech is made in (OpenAI's: alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, verse…). Default alloy", example: "coral" }),
   transcription: VoiceTranscription.optional(),
   speech: VoiceSpeechProviders.optional(),
+  addressing: z.strictObject({
+    mode: z.enum(["always", "addressed"]).optional().openapi({ description: "always: every turn goes to deliver.agent (and is answered); addressed: only turns that name the bot (names), come from someone it is talking with (conversationMs), or are said with no one else in the call. Default addressed when names are given, else always" }),
+    names: z.array(z.string()).max(20).optional().openapi({ description: "The bot's names (wake words), matched as words anywhere in a turn, near misses of long names included", example: ["camel", "hey camel"] }),
+    conversationMs: range(VOICE_LIMITS.conversationMs, "milliseconds", "How long after the bot answers someone (or they name it) their turns are still its (default 20000)"),
+  }).optional().openapi({ description: "Which turns are the bot's in a group call. Others still go to webhooks (voice.utterance's addressed: false), and to the agent as context with the next turn that is the bot's" }),
   endOfTurn: z.union([z.enum(["smart", "silence"]), z.strictObject({
     mode: z.enum(["smart", "silence"]).optional().openapi({ description: "smart: a speaker's turn ends when a turn-detection model (Smart Turn, on their audio) judges them done at a pause, with speech found by a VAD (Silero), not by loudness; silence: after silenceMs of quiet. Default smart where the runtime has the models" }),
     commitMs: range(VOICE_LIMITS.commitMs, "milliseconds", "smart: silence after which a turn the model calls complete ends"),
@@ -1383,6 +1390,7 @@ export const VoiceSession = z.object({
   silenceMs: z.number(), maxMinutes: z.number(), idleMinutes: z.number(), emptySeconds: z.number(),
   ignoreUserIds: z.array(z.string()), metadata: z.record(z.string(), z.unknown()), notice: z.string(),
   speak: z.boolean(), bargeIn: z.boolean(), voice: z.string(),
+  addressing: z.object({ mode: z.enum(["always", "addressed"]), names: z.array(z.string()), conversationMs: z.number(), contextTurns: z.number(), contextMs: z.number() }).openapi({ description: "Which turns are the bot's (addressing)" }),
   interruption: z.object({ minMs: z.number(), confirmMs: z.number(), resumeMs: z.number(), backchannels: z.array(z.string()).optional() }).optional().openapi({ description: "With speak and bargeIn: the barge-in timing in use" }),
   agentReplies: z.boolean().openapi({ description: "The session speaks deliver.agent's replies (speak: {agentReplies: true})" }),
   transcription: VoiceTranscription.optional(), speech: VoiceSpeechProviders.optional(),

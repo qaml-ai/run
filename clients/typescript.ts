@@ -653,7 +653,7 @@ export type WebhookEvent = { id: string; created: number } & (
   | { type: "voice.speech.ended"; data: VoiceFacts & {
       speechId: string; reason: "done" | "interrupted" | "error"; reply?: VoiceReply;
       /** With interrupted: an interrupting speech, stopSpeaking, a person talking (bargeIn), the session ending or moving, credit running out. */
-      by?: "interrupt" | "requested" | "barge_in" | "end" | "handoff" | "budget";
+      by?: "interrupt" | "requested" | "barge_in" | "end" | "handoff" | "budget" | "superseded";
       seconds: number; costUsd: number;
     } });
 /** A piece of an agent's reply a session speaks (speak: {agentReplies: true}): the agent and its run. */
@@ -680,6 +680,8 @@ export type VoiceUtterance = VoiceFacts & {
   costUsd: number;
   /** Said over the bot: its own words coming back (echo), or only a backchannel ("mm-hm"). Neither reaches deliver.agent. */
   echo?: true; backchannel?: true;
+  /** Whether it was the bot's turn (`addressing`), and why: always (mode), alone, named, conversation, or not_addressed. */
+  addressed: boolean; addressedBy: "always" | "alone" | "named" | "conversation" | "not_addressed";
 };
 
 /**
@@ -1234,6 +1236,12 @@ export interface VoiceSessionInput {
    * `backchannels`) also lets it go on, as does, with endOfTurn smart, a sound too short to be words. Default true.
    */
   bargeIn?: boolean | { minMs?: number; confirmMs?: number; resumeMs?: number; backchannels?: string[] };
+  /**
+   * Which turns are the bot's in a group call (default every one): with `names` (its wake words) or `mode: "addressed"`,
+   * turns that name it, come from someone it is talking with (within `conversationMs`, default 20 s), or are said with
+   * no one else in the call. Others still reach webhooks (`addressed: false`), and the agent as context with the next.
+   */
+  addressing?: { mode?: "always" | "addressed"; names?: string[]; conversationMs?: number };
   /** With speak: the voice speech is made in (OpenAI's: alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, verse…). Default alloy. */
   voice?: string;
   /**
@@ -1271,6 +1279,7 @@ export interface VoiceSession {
   speak: boolean; bargeIn: boolean; voice: string; agentReplies: boolean;
   /** With speak and bargeIn: the barge-in timing in use. */
   interruption?: { minMs: number; confirmMs: number; resumeMs: number; backchannels?: string[] };
+  addressing: { mode: "always" | "addressed"; names: string[]; conversationMs: number; contextTurns: number; contextMs: number };
   transcription?: { providers?: string[]; keyterms?: string[] }; speech?: { providers?: string[]; voices?: Record<string, string> };
   endOfTurn: VoiceEndOfTurn;
   utterances: number; speechSeconds: number;
