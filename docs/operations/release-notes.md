@@ -11,6 +11,60 @@ Changes on main since the last tag are in [unreleased/](unreleased/), a file for
 any order never conflict here), gathered into a version's notes when it is tagged: `npm run release-notes` shows them
 together, and `npm run release-notes -- <version>` writes them here and removes the files.
 
+## 0.11.1 (runtime-v0.11.1, 2026-10-19)
+
+End-user balance events for auto top-up and receipts, the Grok realtime voice provider, and concurrent index migrations for credit history. The TypeScript SDK 0.22.1 and Python SDK 0.18.1 use it ([SDK reference](../reference/sdk.md)).
+
+**Before upgrading a self-hosted runtime:** migrations 075 and 076 run on start. Migration 075 builds the partial
+`end_user_ledger_entries` index concurrently: it scans the whole ledger once while writes continue. The first new
+node waits for the build before serving (up to 10 minutes); other starting nodes wait for the migration lock, and
+nodes already running keep serving. Keep them available while the new nodes migrate. A file marked
+`-- migrate: concurrently` now runs outside the migrations' transaction under a session advisory lock, between the
+files before and after it. Runners poll for that lock without holding a blocking snapshot; an interrupted build's
+invalid index is dropped and rebuilt on the next start. Migration 076 adds nullable or constant-default columns for
+balance thresholds and allowance warnings without rewriting rows. Realtime voice stays opt-in; Grok needs `grok` in
+`AGENT_VOICE_REALTIME` and an `xai` provider key (see [configuration](configuration.md)).
+
+### Concurrent index migrations; an index for end users' credit history
+
+- A migration whose first line is `-- migrate: concurrently` builds its indexes with `CREATE INDEX CONCURRENTLY`,
+  outside the migrations' transaction, so a large table keeps taking writes while it builds
+  ([architecture](architecture.md)). The runners' lock is now taken by polling, so a node waiting for it holds no
+  snapshot that a concurrent build would wait for.
+- Migration 075 builds `end_user_ledger_entries`, a partial index on `end_user_ledger (tenant, end_user, id)` for
+  entries other than usage, that way: a person's credit history (`ledger?kind=grant,refund,adjustment`) and the entries
+  in `GET /v1/end-users/{id}/days` read from their few entries however much usage they have. The first node of the
+  release to start builds it before it serves; the build reads the whole ledger once.
+
+### End-user balance events for auto top-up and receipts
+
+- A person's own low-balance threshold: `PATCH /v1/end-users/{id} {"lowBalance"}` (null: the tenant's), shown in
+  `GET /v1/end-users/{id}` as `lowBalance` and `overrides.lowBalance`. `GET /v1/end-users?belowLowBalance=true` lists
+  the people under theirs. Migration 076 adds columns (nullable, or with constant defaults) and rewrites no rows.
+- `end_user.balance.low` and `end_user.credit.exhausted` (`balance`) carry a `cause`: `usage`, `usage_correction`,
+  `grant`, `refund`, `adjustment`, `refusal` or `threshold_changed`, with the ledger `entryId` (which orders a
+  person's events), the tenant's `entryKey` and the run's `requestId`.
+- Re-arm rules, now written down: a grant or a positive adjustment that leaves the balance short re-arms the event,
+  so the first debit after a top-up that left someone under their threshold fires `balance.low` again. Setting a
+  threshold above someone's balance fires it once (`threshold_changed`). Refunds stay silent. See
+  [When balance events fire](../guides/end-user-credits.md#when-balance-events-fire).
+- New events: `end_user.credit.granted`, `end_user.credit.refunded`, `end_user.credit.adjusted` (once per entry the
+  tenant posts) and `end_user.allowance.low` (spend past the tenant's new `allowanceWarningPercent` of a bucket's daily
+  allowance, once per person, bucket and day; off by default).
+- A new guide: [Auto top-up on end-user credits](../guides/end-user-auto-top-up.md). The SDKs take `lowBalance` on
+  `endUsers.update`, `belowLowBalance` on `list` and `allowanceWarningPercent` on `configure`/`amend`, and type the
+  new events.
+
+### Grok realtime voice provider
+
+- Realtime voice sessions can choose `brain: "realtime"` with `realtime: {provider: "grok"}`, using `grok-voice-latest` by default (also
+  `grok-voice-3.0`). Grok uses the shared OpenAI-compatible protocol, native transcripts and xAI voices; session
+  voices are mapped to the nearest xAI voice. Turn-taking stays with camelRun and only its function tools are enabled.
+- Enable `grok` in `AGENT_VOICE_REALTIME`; the provider uses the tenant's `xai` key, set through
+  `PUT /v1/providers/xai/key`, or `platformKeys.xai`. `AGENT_GROK_REALTIME_URL` overrides the endpoint for a proxy or
+  test. Usage settles against credit holds, and unpriced realtime models are refused. See
+  [configuration](configuration.md).
+
 ## 0.11.0 (runtime-v0.11.0, 2026-10-19)
 
 Voice sessions that speak (speech providers, a realtime brain in beta, browser calls, turn-taking and latency work), POST /v1/speech, and end-user credits ready for a credit page: per-bucket paid limits, refunds that never overdraw, write-offs past a call's hold, one reason code on every refusal path, ledger filters and per-day totals. The TypeScript SDK 0.22.0 and Python SDK 0.18.0 use it ([SDK reference](../reference/sdk.md)).
