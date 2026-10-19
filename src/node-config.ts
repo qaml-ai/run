@@ -157,7 +157,7 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
       // AGENT_VOICE_LIVE_TRANSCRIPTION says), AGENT_VOICE_TTS speaks (e.g. "elevenlabs,openai"; unset: OpenAI alone).
       stt: list(env.AGENT_VOICE_STT), tts: list(env.AGENT_VOICE_TTS),
       // Speech-to-speech brains a session may ask for (brain: "realtime"; src/voice/realtime): AGENT_VOICE_REALTIME lists
-      // the providers ("openai", "gemini", "grok"); unset, none is offered. AGENT_OPENAI_REALTIME_URL,
+      // the providers ("openai", "gemini", "grok", "elevenlabs"); unset, none is offered. AGENT_OPENAI_REALTIME_URL,
       // AGENT_GEMINI_LIVE_URL and AGENT_GROK_REALTIME_URL dial other addresses (a proxy, a test's fake).
       realtime: list(env.AGENT_VOICE_REALTIME), realtimeUrl: env.AGENT_OPENAI_REALTIME_URL || undefined, geminiLiveUrl: env.AGENT_GEMINI_LIVE_URL || undefined, grokRealtimeUrl: env.AGENT_GROK_REALTIME_URL || undefined,
       // Where each speech provider is dialled, when not its own address (a proxy, a test's fake).

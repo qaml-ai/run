@@ -8,7 +8,7 @@ import { TurnClock } from "../latency.ts";
 import type { Addressed, Floor } from "../turns/floor.ts";
 import type { TurnEvent } from "../turns/turn-taker.ts";
 import { Mixer } from "./mixer.ts";
-import { NO_USAGE, REALTIME_PRICES, realtimeCost, realtimeTranscriptionCost, type RealtimeConnection, type RealtimeEvents, type RealtimeTool, type RealtimeUsage } from "./provider.ts";
+import { NO_USAGE, realtimePrice, realtimeCost, realtimeTranscriptionCost, type RealtimeConnection, type RealtimeEvents, type RealtimeTool, type RealtimeUsage } from "./provider.ts";
 
 /**
  * A voice session's realtime brain (`brain: "realtime"`): a speech-to-speech model hears the call and answers aloud,
@@ -17,7 +17,8 @@ import { NO_USAGE, REALTIME_PRICES, realtimeCost, realtimeTranscriptionCost, typ
  * - **Audio in.** Each speaker's PCM (the media's live stream) is mixed into one (Mixer). Whenever who speaks changes,
  *   the input so far is committed as its own item and a note names who speaks next ("[Ana]"), so the model knows who
  *   said what. Echo the guard rejected, and sounds too short to be turns, are dropped rather than committed.
- * - **Turns are ours.** The provider's turn detection is off. A turn ends when the session's segmenter cuts it (Smart
+ * - **Turns are ours** unless the provider declares ownsTurns (ElevenLabs): then cuts count activity, the provider
+ *   starts responses, and speculative commits are disabled. Otherwise the provider's turn detection is off. A turn ends when the session's segmenter cuts it (Smart
  *   Turn at a pause, or silence); the brain commits and asks for a response. With smart turns it asks at `likely_end`
  *   already (speculative), and holds the audio until the turn ends: a `resume` cancels it, unheard. While someone else
  *   is mid-turn the response waits for them (one floor).
@@ -141,6 +142,8 @@ export type BrainOptions = {
    * answered at once, told it may not be for the bot, and taken back before it is heard if its words say it was not.
    */
   wordsAfterAnswer?: boolean;
+  /** Server VAD owns turns; local cuts only count activity. */
+  ownsTurns?: boolean;
   clock?: Clock;
   /** ask_agent's waits (tests). */
   limits?: { askAgentMs?: number; askAgentLateMs?: number };
@@ -230,7 +233,7 @@ export class RealtimeBrain {
     this.hooks = hooks;
     this.clock = options.clock ?? nodeClock();
     this.mixer = new Mixer((pcm, speakers) => this.input(pcm, speakers), { clock: this.clock });
-    if (!REALTIME_PRICES[options.reference]) throw new Error(`Realtime model ${options.reference} has no price configured`);
+    if (!realtimePrice(options.reference)) throw new Error(`Realtime model ${options.reference} has no price configured`);
     this.open();
     if (this.metered) {
       // Flush quiet calls too, and replace their holds before the credit service expires them.
@@ -239,7 +242,7 @@ export class RealtimeBrain {
     }
   }
 
-  private get metered() { return "perMinute" in REALTIME_PRICES[this.options.reference]; }
+  private get metered() { return "perMinute" in realtimePrice(this.options.reference)!; }
 
   /** Who makes a turn's audio, as voice_turn_latency names it: the provider and its model. */
   private ttsInfo() {
@@ -256,7 +259,7 @@ export class RealtimeBrain {
     this.echoed.delete(speaker);
     // Someone talks before the answer is heard: it waits for them (their turn may change what it should be).
     const current = this.current;
-    if (current && !current.played && !current.done && !current.tool) current.held = true;
+    if (!this.options.ownsTurns && current && !current.played && !current.done && !current.tool) current.held = true;
   }
 
   /** A speaker's audio as they speak (24 kHz mono PCM). */
@@ -278,7 +281,7 @@ export class RealtimeBrain {
 
   /** Turn-taking's events (smart end of turn). */
   turnEvent(event: TurnEvent) {
-    if (this.closed) return;
+    if (this.closed || this.options.ownsTurns) return;
     if (event.type === "turn_end") this.guard?.ended(event.speaker, event.speechMs);
     if (event.type === "likely_end") this.likelyEnd(event.speaker, event.at - event.silenceMs);
     if (event.type === "resume") this.resumed(event.speaker);
@@ -292,6 +295,11 @@ export class RealtimeBrain {
     this.mixer.flush();
     this.mixer.quiet(speaker);
     if (cut.ended === "handoff" || cut.ended === "end") return;
+    if (this.options.ownsTurns) {
+      this.stats.turns++;
+      this.turnDone(speaker, cut);
+      return;
+    }
     const echoed = this.echoed.delete(speaker);
     if (echoed) {
       // The bot's own voice through someone's speakers: not a turn.
@@ -375,6 +383,7 @@ export class RealtimeBrain {
     }
     for (const turn of this.turns.values()) for (const wake of turn.waiters) wake();
     this.connection?.close();
+    this.generation++;
     if (this.metered) this.flushMeter();
     const { costUsd, ...counts } = this.stats;
     this.hooks.log("voice_realtime_stats", { ...counts, costUsd: Math.round(costUsd * 1_000_000) / 1_000_000 });
@@ -398,6 +407,8 @@ export class RealtimeBrain {
       if (this.history.length) this.connection.note(`[Earlier in this call]\n${this.history.map(line => `${line.who}: ${line.text}`).join("\n")}`);
       this.segment = undefined;
       this.lastLabel = undefined;
+      this.lastSpeaker = undefined;
+      this.providerTurn = undefined;
     };
     if (this.metered) {
       this.meteredHold ??= this.creditHold();
@@ -456,9 +467,26 @@ export class RealtimeBrain {
     const live = () => !this.closed && generation === this.generation;
     return {
       ready: () => { if (live()) this.hooks.log("voice_realtime_ready"); },
-      meter: (seconds, textInputs) => { if (live() && this.metered) this.meter(seconds, textInputs); },
+      // close() may report its final billable interval after playback has stopped.
+      meter: (seconds, textInputs) => { if (generation === this.generation && this.metered) this.meter(seconds, textInputs); },
       // Responses are asked for one at a time (each after the one before is done): this is the one asked for last.
-      responseStarted: id => { if (live() && this.current && !this.current.id) this.current.id = id; },
+      responseStarted: id => {
+        if (!live()) return;
+        if (this.options.ownsTurns) {
+          const speaker = this.segment?.first ?? this.lastSpeaker;
+          if (!this.providerTurn && this.segment) this.providerTurn = new TurnClock(this.segment.endedAt, { session: this.options.session, tenant: this.options.tenant, ...this.ttsInfo(), speculative: false }).via("realtime");
+          const response = this.response({ speaker, turn: this.providerTurn && !this.providerTurn.ended ? this.providerTurn : undefined });
+          response.id = id;
+          this.current = response;
+          this.stats.responses++;
+          this.reserve(response);
+        } else if (this.current && !this.current.id) this.current.id = id;
+      },
+      interrupted: () => {
+        if (!live()) return;
+        this.interrupt({ type: "confirmed", why: "immediate", pausedMs: 0, speechMs: 0 });
+        this.stopSpeaking();
+      },
       audio: (id, pcm) => {
         if (!live()) return;
         const response = this.byId(id);
@@ -473,7 +501,19 @@ export class RealtimeBrain {
       },
       toolCall: call => { if (live()) this.tool(call); },
       responseDone: (id, outcome) => { if (live()) this.responseDone(id, outcome); },
-      heard: (tag, text, seconds) => { if (live()) this.heardItem(tag, text, seconds); },
+      heard: (tag, text, seconds) => {
+        if (!live()) return;
+        if (this.options.ownsTurns) {
+          const segment = this.segment;
+          this.segment = undefined;
+          if (!segment) return;
+          this.lastSpeaker = segment.first;
+          this.providerTurn = new TurnClock(segment.endedAt, { session: this.options.session, tenant: this.options.tenant, ...this.ttsInfo(), speculative: false }).via("realtime").mark("turnCommit");
+          this.stats.inputSeconds += seconds;
+          this.remember(this.hooks.name(segment.first), text);
+          if (this.options.transcribed) this.hooks.heard({ speaker: segment.first, speakers: [...segment.speakers], text, seconds, costUsd: 0, startedAt: segment.startedAt, endedAt: segment.endedAt });
+        } else this.heardItem(tag, text, seconds);
+      },
       // The provider's own words about what it refused (no audio or transcript in them).
       warning: (code, detail) => { if (live()) this.hooks.log("voice_realtime_warning", { errorCode: code, detail: detail.slice(0, 200) }); },
       closed: (reason, detail) => { if (reason !== "requested" && live()) this.lost(detail ?? "closed"); },
@@ -507,15 +547,20 @@ export class RealtimeBrain {
 
   // Input ----------------------------------------------------------------------------
 
-  /** Mixed audio from `speakers`: a new speaker closes the segment so far, and a note names who speaks next. */
+  private lastSpeaker?: string;
+  private providerTurn?: TurnClock;
+
+  /** Mixed audio: manual providers commit speaker changes; server VAD gets labels around one stream. */
   private input(pcm: Uint8Array, speakers: string[]) {
     const connection = this.connection;
     if (!connection) return;
     const now = this.clock.now();
     const segment = this.segment;
     if (!segment || speakers.some(speaker => !segment.speakers.has(speaker))) {
-      if (segment) this.commitSegment();
-      this.segment = { tag: `t${++this.tags}`, speakers: new Set(speakers), first: speakers[0], startedAt: now, endedAt: now };
+      if (segment && !this.options.ownsTurns) this.commitSegment();
+      this.segment = this.options.ownsTurns && segment ? { ...segment, speakers: new Set([...segment.speakers, ...speakers]) } : { tag: `t${++this.tags}`, speakers: new Set(speakers), first: speakers[0], startedAt: now, endedAt: now };
+    }
+    if (this.options.ownsTurns || this.segment !== segment) {
       const label = speakers.length === 1 ? `[${this.hooks.name(speakers[0])}]` : `[${speakers.map(speaker => this.hooks.name(speaker)).join(" and ")}, at once]`;
       if (label !== this.lastLabel) { connection.note(label); this.lastLabel = label; }
     }
@@ -656,6 +701,7 @@ export class RealtimeBrain {
   /** Answer: now, or once the floor is free and the response before has finished. */
   private respond(request: { speaker?: string; turn?: TurnClock; instructions?: string }) {
     if (this.closed) return;
+    if (this.options.ownsTurns) { this.connection?.respond(request.instructions ? { instructions: request.instructions } : {}); return; }
     const busy = (this.current && !this.current.done) || [...this.speaking].length > 0;
     if (busy) {
       // One waits at most: a newer turn's replaces it (the model hears both).
@@ -677,6 +723,10 @@ export class RealtimeBrain {
     this.lastLabel = undefined;
     this.stats.responses++;
     connection.respond(request.instructions ? { instructions: request.instructions } : {});
+    this.reserve(response);
+  }
+
+  private reserve(response: Response) {
     if (this.metered) return;
     // The money is checked alongside, not before: a refusal cancels it (nothing is heard), and ends the session.
     response.hold = (async () => {

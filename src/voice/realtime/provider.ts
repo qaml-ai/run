@@ -5,7 +5,7 @@ import { micros } from "../../pricing.ts";
  * brain"). The session's media plane, turn-taking, addressing and echo guard stay in front of it
  * (src/voice/realtime/brain.ts): the model hears the call's audio mixed into one stream, with a text item naming who
  * speaks each time that changes, and it answers aloud only when the brain asks it to (manual commits; the provider's
- * own turn detection is off). Its audio plays on the session's connection like any speech.
+ * own turn detection is off, except providers with ownsTurns). Its audio plays on the session's connection like any speech.
  *
  * A provider is a connection factory. The connection's verbs are what the brain needs, not one vendor's events, so
  * Gemini Live (activityStart/activityEnd, clientContent) can be a second implementation of the same interface.
@@ -46,6 +46,8 @@ export interface RealtimeEvents {
   ready(): void;
   /** Billable audio seconds and text input items, as they cross the provider connection. */
   meter?(audioSeconds: number, textInputs: number): void;
+  /** The provider detected barge-in: stop buffered playback too. */
+  interrupted?(): void;
   /** A response began (`respond`), or the provider began one itself. */
   responseStarted(response: string): void;
   /** Audio of a response, as it is made. */
@@ -104,10 +106,14 @@ export interface RealtimeProvider {
   readonly voiceFor?: Readonly<Record<string, string>>;
   /** Its transcript of a turn comes only once it is asked to answer (Gemini): addressing by name decides after. */
   readonly wordsAfterAnswer?: boolean;
+  /** The provider owns VAD and starts responses without manual commits. */
+  readonly ownsTurns?: boolean;
+  /** Accept voice ids outside the prebuilt list. */
+  readonly customVoices?: boolean;
   connect(config: RealtimeConfig, credentials: { apiKey: string }, events: RealtimeEvents): RealtimeConnection;
 }
 
-export const REALTIME_PROVIDERS = ["openai", "gemini", "grok"] as const;
+export const REALTIME_PROVIDERS = ["openai", "gemini", "grok", "elevenlabs"] as const;
 export type RealtimeProviderId = typeof REALTIME_PROVIDERS[number];
 
 /** Micro-USD per million tokens, or per minute of audio and per text input item. */
@@ -128,12 +134,33 @@ export const REALTIME_PRICES: Readonly<Record<string, RealtimePrice>> = Object.f
   // thoughts are output text.
   "gemini/gemini-3.8-live": { inputText: micros(0.75), cachedText: micros(0.75), outputText: micros(4.5), inputAudio: micros(3), cachedAudio: micros(3), outputAudio: micros(12) },
 });
+/**
+ * https://elevenlabs.io/pricing/agents and
+ * https://elevenlabs.io/docs/help-center/product/eleven-agents/how-much-does-eleven-agents-cost (2026-10-19):
+ * Agents bills connection minutes; Gemini 2.5 Flash Lite is billed separately. Configure the call-minute rate
+ * and the model's estimated minute cost from the agent's Detailed costs panel. These are runtime settings,
+ * not public rate defaults. Full connection duration is charged; silence discounts are not inferred locally.
+ */
+export function realtimePrice(reference: string, env = process.env): RealtimePrice | undefined {
+  if (reference !== "elevenlabs/gemini-2.5-flash-lite") return REALTIME_PRICES[reference];
+  const names = ["AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD", "AGENT_PRICE_ELEVENLABS_LLM_MINUTE_USD"] as const;
+  const rates = names.map(name => {
+    const raw = env[name];
+    if (raw === undefined || raw === "") return undefined;
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value <= 0 || !Number.isSafeInteger(micros(value)) || micros(value) <= 0) throw new Error(`${name} must be a positive number of USD`);
+    return micros(value);
+  });
+  if (rates.some(rate => rate === undefined)) return undefined;
+  return { perMinute: rates[0]! + rates[1]!, perTextInput: 0 };
+}
+
 /** The input transcription's model, and its price per minute (gpt-transcribe, as POST /v1/transcriptions bills it). */
 export const REALTIME_TRANSCRIPTION = Object.freeze({ model: "gpt-transcribe", perMinute: micros(0.0045) });
 
 /** What tokens or metered audio and text items cost (USD) at `reference`'s list price. */
 export function realtimeCost(reference: string, usage: RealtimeUsage, audioSeconds = 0, textInputs = 0): number {
-  const price = REALTIME_PRICES[reference];
+  const price = realtimePrice(reference);
   if (!price) throw new Error(`Realtime model ${reference} has no price configured`);
   if ("perMinute" in price) return (Math.max(0, audioSeconds) * price.perMinute / 60 + Math.max(0, textInputs) * price.perTextInput) / 1_000_000;
   // Cached tokens are counted within input: billed at the cached rate, the rest at the full one.
@@ -154,6 +181,7 @@ export function realtimeTranscriptionCost(seconds: number): number {
  */
 export const REALTIME_VOICE_FOR: Readonly<Record<string, string>> = Object.freeze({ nova: "marin", onyx: "cedar", fable: "ballad" });
 export function realtimeVoice(provider: RealtimeProvider, voice: string): string {
+  if (provider.customVoices) return provider.voiceFor?.[voice] ?? voice;
   if (provider.voices.includes(voice)) return voice;
   const near = provider.voiceFor?.[voice] ?? REALTIME_VOICE_FOR[voice];
   return near && provider.voices.includes(near) ? near : provider.voices[0];

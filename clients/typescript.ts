@@ -1406,8 +1406,8 @@ export interface VoiceSessionInput {
   /** An Idempotency-Key: the same key answers the same session. */
   idempotencyKey?: string;
 }
-/** A realtime brain's settings: `gpt-realtime-2.1` (or `-mini`), a voice of the model's (marin, cedar, coral…). */
-export type VoiceRealtime = { provider: "openai" | "gemini"; model: string; voice: string; instructions?: string; transcribe: boolean; speculative: boolean };
+/** A realtime brain's settings: OpenAI Realtime, Gemini Live, or ElevenLabs Agents (voice_id). */
+export type VoiceRealtime = { provider: "openai" | "gemini" | "elevenlabs"; model: string; voice: string; instructions?: string; transcribe: boolean; speculative: boolean };
 /** How a voice session ends each speaker's turn (`endOfTurn`). */
 export type VoiceEndOfTurn = { mode: "smart" | "silence"; commitMs: number; threshold: number; maxSilenceMs: number };
 export interface VoiceSession {
