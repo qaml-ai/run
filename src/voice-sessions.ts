@@ -1209,7 +1209,7 @@ export class VoiceSessions {
       if (live.stream.closed) { clearTimeout(live.idle); held.live!.delete(cut.speaker); }
     }
     // A session that speaks times the turn, from the end of speech to its reply's first audio.
-    const turn = held.speech ? new TurnClock(cut.endedAt, { session: held.id, tenant: held.tenant, ...(this.options.synthesizer ? { ttsModel: this.options.synthesizer.model } : {}) }).mark("turnCommit") : undefined;
+    const turn = held.speech ? new TurnClock(cut.endedAt, { session: held.id, tenant: held.tenant }).mark("turnCommit") : undefined;
     const job = (this.speakers.get(key) ?? Promise.resolve()).then(() => this.utterance(origin, cut, committed, turn)).catch(error =>
       console.error(JSON.stringify({ type: "voice_utterance_failed", session: held.id, error: safeError(error) })));
     this.speakers.set(key, job);
@@ -1538,6 +1538,10 @@ export class VoiceSessions {
   private speechEffects(held: Held) {
     const synthesizer = this.options.synthesizer!;
     const options = () => held.row.options;
+    // Who made a speech's audio, for its log lines: the chain's member that served, else (once its key was had) the
+    // built-in provider; nothing when no provider began.
+    const madeBy = (platform: boolean | undefined, served?: Served) => served ? { provider: served.provider, model: served.model }
+      : platform !== undefined ? { provider: synthesizer.provider, model: synthesizer.model } : {};
     const write = (type: "voice.speech.started" | "voice.speech.ended", item: SpeechItem, data: Record<string, unknown>, counts?: { seconds: number; costUsd: number }) =>
       transaction(this.db, async sql => {
         const { rows } = counts
@@ -1564,19 +1568,19 @@ export class VoiceSessions {
         estimate: (text: string) => synthesizer.estimate(text, options().speech?.providers),
         cost: (who: Served, made: { characters: number; seconds: number }) => synthesizer.costOf(`${who.provider}/${who.model}`, made),
       } : {}),
-      started: (item: SpeechItem, latencyMs: number, turn?: TurnClock) => {
+      started: (item: SpeechItem, latencyMs: number, turn?: TurnClock, platform?: boolean, served?: Served) => {
         if (item.reply && held.reply?.requestId === item.reply.requestId) held.reply.heard = true;
         const startedAt = Date.now();
         // The turn this speech answers, when it is that turn's first audio: its stages (ms since the end of speech).
         const answers = turn ? { turn: { ...(turn.info.seq !== undefined ? { seq: turn.info.seq } : {}), path: turn.path ?? null, stagesMs: turn.stages() } } : {};
-        console.log(JSON.stringify({ type: "voice_speech_started", session: held.id, speech: item.id, latencyMs }));
+        console.log(JSON.stringify({ type: "voice_speech_started", session: held.id, speech: item.id, latencyMs, ...madeBy(platform, served) }));
         held.media?.notify?.({ type: "speech", state: "started", speechId: item.id, latencyMs, startedAt, ...(item.reply ? { reply: item.reply } : {}), ...answers });
         void write("voice.speech.started", item, { latencyMs, startedAt, ...answers });
       },
       ended: (item: SpeechItem, ending: SpeechEnding, platform: boolean | undefined, served?: Served) => {
         const { subject, context, keyScope } = options();
         held.media?.notify?.({ type: "speech", state: "ended", speechId: item.id, reason: ending.reason, ...(ending.by ? { by: ending.by } : {}), seconds: ending.seconds });
-        console.log(JSON.stringify({ type: "voice_speech_ended", session: held.id, speech: item.id, reason: ending.reason, ...(ending.by ? { by: ending.by } : {}), seconds: ending.seconds, ...(ending.error ? { error: ending.error } : {}) }));
+        console.log(JSON.stringify({ type: "voice_speech_ended", session: held.id, speech: item.id, reason: ending.reason, ...(ending.by ? { by: ending.by } : {}), seconds: ending.seconds, ...madeBy(platform, served), ...(ending.error ? { error: ending.error } : {}) }));
         if (ending.seconds > 0) {
           this.options.record(held.tenant, {
             provider: served?.provider ?? synthesizer.provider, model: served?.model ?? synthesizer.model, usage: { cost: { total: ending.costUsd } }, platform: !!platform, kind: "speech",

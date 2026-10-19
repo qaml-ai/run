@@ -5,6 +5,7 @@ import { writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setMetricSink } from "../src/metrics.ts";
 import { nodeConfig } from "../src/node-config.ts";
 import { createNode, nodeDeps, type RuntimeNode } from "../src/node.ts";
 import { Synthesizer } from "../src/speech.ts";
@@ -22,11 +23,15 @@ test("a session names its speech providers: Deepgram transcribes as people speak
   writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(token), apiKeys: { openrouter: "fixture-key", openai: "tenant-openai-key", deepgram: "tenant-deepgram-key", elevenlabs: "tenant-xi-key" } } } }));
   // Deepgram (streaming STT) and ElevenLabs (TTS) on one fake server; OpenAI's batch transcription must not be used.
   const spoken: { url: string; key: string; body: any }[] = [];
+  // ElevenLabs refuses while this is set (the chain then fails over to OpenAI, whose speech is counted here).
+  let elevenDown = false, openaiSpoken = 0;
   let batch = 0;
   const { server, sockets, base: fakes } = await listening(t, async (req, res) => {
     let body = "";
     for await (const chunk of req) body += chunk;
     if (req.url?.endsWith("/audio/transcriptions")) { batch++; res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ text: "batch", usage: { type: "duration", seconds: 1 } })); return; }
+    if (req.url?.startsWith("/v1/text-to-speech/") && elevenDown) { res.writeHead(500).end("{}"); return; }
+    if (req.url?.endsWith("/audio/speech")) { openaiSpoken++; res.writeHead(200, { "Content-Type": "audio/pcm" }).end(Buffer.alloc(24_000, 7)); return; }
     if (req.url?.startsWith("/v1/text-to-speech/")) {
       spoken.push({ url: req.url, key: String(req.headers["xi-api-key"]), body: JSON.parse(body) });
       res.writeHead(200, { "Content-Type": "audio/pcm" }).end(Buffer.alloc(24_000, 7));
@@ -35,6 +40,16 @@ test("a session names its speech providers: Deepgram transcribes as people speak
     res.writeHead(404).end();
   });
   const deepgram = fakeDeepgram(server, sockets, () => "Book the meeting with Miguel.");
+  // Each turn's latency line, and the speech log lines: they name the provider and model that spoke, not the default.
+  const turns: any[] = [];
+  setMetricSink(line => { const parsed = JSON.parse(line); if (parsed.type === "voice_turn_latency") turns.push(parsed); });
+  t.after(() => setMetricSink());
+  const speechLogs: any[] = [];
+  const log = console.log;
+  t.mock.method(console, "log", (...args: unknown[]) => {
+    if (typeof args[0] === "string" && args[0].startsWith('{"type":"voice_speech_')) speechLogs.push(JSON.parse(args[0]));
+    else log(...args);
+  });
   const { url: databaseUrl } = await testDatabase();
   const fake = fakeTransport();
   let node: RuntimeNode | undefined;
@@ -98,6 +113,12 @@ test("a session names its speech providers: Deepgram transcribes as people speak
   assert.equal(spoken[0].url, "/v1/text-to-speech/voice-x/stream?output_format=pcm_24000");
   assert.equal(spoken[0].key, "tenant-xi-key");
   assert.deepEqual(spoken[0].body, { text: "Booked for three.", model_id: "eleven_flash_v2_5", language_code: "en" });
+  // The turn it answered (speak after the utterance) says ElevenLabs spoke; so do its speech lines.
+  await until(() => turns.length === 1, "the turn's line");
+  assert.deepEqual([turns[0].outcome, turns[0].Path, turns[0].ttsProvider, turns[0].ttsModel], ["spoken", "speak", "elevenlabs", "eleven_flash_v2_5"]);
+  const firstSpeech = speechLogs.filter(line => line.speech === said.json.speechId);
+  assert.deepEqual(firstSpeech.filter(line => line.type !== "voice_speech_queued").map(line => [line.type, line.provider, line.model]),
+    [["voice_speech_started", "elevenlabs", "eleven_flash_v2_5"], ["voice_speech_ended", "elevenlabs", "eleven_flash_v2_5"]]);
 
   // A speech's own voices win over the session's, for that speech alone; a provider it doesn't know is refused.
   const unknownVoice = await call("POST", `/v1/voice/sessions/${id}/speak`, { text: "Hi.", voices: { polly: "Joanna" } });
@@ -119,6 +140,18 @@ test("a session names its speech providers: Deepgram transcribes as people speak
   }, "usage");
   assert.deepEqual(usage.filter(day => day.kind === "transcription").map(day => day.model), ["deepgram/nova-3"]);
   assert.deepEqual(usage.filter(day => day.kind === "speech").map(day => day.model), ["elevenlabs/eleven_flash_v2_5"]);
+
+  // ElevenLabs down: the chain fails over to OpenAI, and the turn and speech lines say OpenAI spoke.
+  elevenDown = true;
+  speak(connection, "400000000000000004", 0.6);
+  await until(async () => (await call("GET", `/v1/voice/sessions/${id}`)).json.utterances === 2, "the second utterance");
+  const fallback = await call("POST", `/v1/voice/sessions/${id}/speak`, { text: "Booked for four." });
+  assert.equal(fallback.status, 202, JSON.stringify(fallback.json));
+  await until(() => turns.length === 2 && openaiSpoken === 1 && !connection.playing, "the fallback's turn");
+  assert.deepEqual([turns[1].outcome, turns[1].ttsProvider, turns[1].ttsModel], ["spoken", "openai", "gpt-4o-mini-tts"]);
+  await until(() => speechLogs.some(line => line.type === "voice_speech_ended" && line.speech === fallback.json.speechId), "the fallback's end");
+  assert.deepEqual(speechLogs.filter(line => line.speech === fallback.json.speechId && line.type !== "voice_speech_queued").map(line => [line.type, line.provider, line.model]),
+    [["voice_speech_started", "openai", "gpt-4o-mini-tts"], ["voice_speech_ended", "openai", "gpt-4o-mini-tts"]]);
 });
 
 test("billing: a live transcript is priced by the provider that served it; speech by its provider's unit", async () => {

@@ -28,7 +28,11 @@ const METRICS: Record<TurnStage, string> = {
   firstPiece: "VoiceFirstPieceMs", ttsFirstAudio: "VoiceTtsFirstAudioMs", firstPacket: "VoiceFirstPacketMs",
 };
 
-export type TurnInfo = { session: string; tenant: string; seq?: number; live?: boolean; sttModel?: string; ttsModel?: string };
+/**
+ * What the line says of the turn. `ttsProvider`/`ttsModel` are who made its reply's first audio (through a chain of
+ * providers, the member that served it, not the session's default), set by `spokenBy`.
+ */
+export type TurnInfo = { session: string; tenant: string; seq?: number; live?: boolean; sttModel?: string; ttsProvider?: string; ttsModel?: string };
 
 export class TurnClock {
   readonly speechEnd: number;
@@ -48,6 +52,12 @@ export class TurnClock {
   /** `stage` happened now (or `at`); a stage already marked keeps its first time. */
   mark(stage: TurnStage, at = clock().now()) {
     if (this.outcome === undefined) this.marks[stage] ??= at;
+    return this;
+  }
+
+  /** The provider and model that made the reply's audio: the first piece's (a later piece's do not replace them). */
+  spokenBy(provider: string, model: string) {
+    if (this.outcome === undefined && this.info.ttsProvider === undefined) Object.assign(this.info, { ttsProvider: provider, ttsModel: model });
     return this;
   }
 
@@ -93,12 +103,12 @@ export function turnLatencyLine(turn: TurnClock, outcome: TurnOutcome) {
     metrics.VoiceTtsMs = ms(between("firstPiece", "ttsFirstAudio"));
     metrics.VoicePlayoutMs = ms(between("ttsFirstAudio", "firstPacket"));
   } else metrics.VoiceFirstPacketMs = undefined;
-  const { session, tenant, seq, live, sttModel, ttsModel } = turn.info;
+  const { session, tenant, seq, live, sttModel, ttsProvider, ttsModel } = turn.info;
   return metricLine("voice_turn_latency", {
     dimensions: { Path: turn.path ?? "none" }, rollups: [[], ["Path"]], metrics,
     properties: {
       session, tenant, outcome, ...(seq !== undefined ? { seq } : {}), ...(live !== undefined ? { live } : {}),
-      ...(sttModel ? { sttModel } : {}), ...(ttsModel ? { ttsModel } : {}), stagesMs: stages,
+      ...(sttModel ? { sttModel } : {}), ...(ttsProvider ? { ttsProvider } : {}), ...(ttsModel ? { ttsModel } : {}), stagesMs: stages,
     },
   });
 }
