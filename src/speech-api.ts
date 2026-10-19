@@ -63,8 +63,9 @@ function wavHeader(rate: number) {
 export async function speechRequest(service: SpeechService, tenant: string, request: SpeechRequest, signal: AbortSignal) {
   const { synthesizer } = service;
   await service.admit(tenant);
-  // Through a chain of providers when the request names one; else OpenAI.
-  const providers = request.choice?.providers;
+  // Through a chain of providers when the request names one, or names voices of providers other than OpenAI (those, in
+  // the order given, then OpenAI); else OpenAI.
+  const providers = request.choice?.providers ?? voicedProviders(request.choice?.voices);
   if (providers?.length && !synthesizer.options.chain) throw new HttpError(404, "Speech providers other than OpenAI are not enabled on this runtime");
   const chain = synthesizer.options.chain && providers?.length ? synthesizer.options.chain : undefined;
   let credentials: Awaited<ReturnType<Synthesizer["credentials"]>> | undefined, served: Served | undefined;
@@ -77,7 +78,7 @@ export async function speechRequest(service: SpeechService, tenant: string, requ
   signal.addEventListener("abort", stop, { once: true });
   const input = { text: request.text, voice: request.voice, ...(request.instructions ? { instructions: request.instructions } : {}), ...(request.language ? { language: request.language } : {}) };
   const source = chain
-    ? synthesizer.speak({ tenant, ...(request.keyScope ? { keyScope: request.keyScope } : {}) }, request.choice ?? {}, input, abort.signal, who => { served = who; })
+    ? synthesizer.speak({ tenant, ...(request.keyScope ? { keyScope: request.keyScope } : {}) }, { ...request.choice, ...(providers ? { providers } : {}) }, input, abort.signal, who => { served = who; })
     : synthesizer.stream(input, credentials!, abort.signal);
   const iterator = source[Symbol.asyncIterator]();
   let samples = 0, settled = false;
@@ -180,4 +181,11 @@ function voicesInput(value: unknown): Record<string, string> | undefined {
     if (typeof voice !== "string" || !/^[A-Za-z0-9._-]{1,64}$/.test(voice)) throw new HttpError(400, `speech.voices.${provider} must be that provider's voice id or name`);
   }
   return Object.keys(voices).length ? voices as Record<string, string> : undefined;
+}
+
+/** The providers a request's `speech.voices` names, in its order and then OpenAI's, when any is not OpenAI; else none. */
+function voicedProviders(voices: Record<string, string> | undefined): string[] | undefined {
+  const named = Object.keys(voices ?? {});
+  if (!named.some(provider => provider !== "openai")) return undefined;
+  return [...new Set([...named, "openai"])].map(provider => ttsReference(provider));
 }

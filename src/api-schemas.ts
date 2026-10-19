@@ -1387,7 +1387,7 @@ const range = (limits: { default: number; min: number; max: number }, unit: stri
   z.number().int().min(limits.min).max(limits.max).optional().openapi({ description: `${what}, in ${unit}: ${limits.min} to ${limits.max}, default ${limits.default}` });
 const VoiceSpeechProviders = z.strictObject({
   providers: z.array(z.string()).min(1).max(5).optional().openapi({
-    description: "Text-to-speech providers to try in order, each <provider> or <provider>/<model>: elevenlabs (eleven_flash_v2_5), cartesia (sonic-3), deepgram (aura-2), openai (gpt-4o-mini-tts). One without a key is skipped; one that fails before its first audio is passed over. Default: OpenAI",
+    description: "Text-to-speech providers to try in order, each <provider> or <provider>/<model>: elevenlabs (eleven_flash_v2_5), cartesia (sonic-3), deepgram (aura-2), openai (gpt-4o-mini-tts). One without a key is skipped; one that fails before its first audio is passed over. Default: the providers voices names (in its order, then OpenAI), else OpenAI",
     example: ["elevenlabs", "openai"],
   }),
   voices: z.record(z.string(), z.string()).optional().openapi({ description: "The voice for each provider, by provider: an ElevenLabs voice id, a Cartesia voice id (required for cartesia), an Aura voice (aura-2-thalia-en), an OpenAI voice (else `voice`)", example: { elevenlabs: "21m00Tcm4TlvDq8ikWAM", openai: "coral" } }),

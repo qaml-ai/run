@@ -21,8 +21,8 @@ clients must change:
   `contextMs`; `brain` is `realtime` or `listen`, and `bargeIn` and `voice` are shown for realtime sessions only.
 - A session made before this change, still live when the runtime is upgraded, ends (`voice.session.ended` with
   `reason: "error"`; logged as `brain_removed`).
-- `POST /v1/speech` speaks through OpenAI unless the request names `speech.providers`: there is no runtime default
-  chain any more.
+- `POST /v1/speech` has no runtime default chain any more: it speaks through the providers the request names
+  (`speech.providers`, else those `speech.voices` names, in its order, then OpenAI), else OpenAI.
 - Operators: `AGENT_VOICE_TTS`, `AGENT_VOICE_STT`, `AGENT_VOICE_LIVE_TRANSCRIPTION`, `AGENT_VOICE_LIVE_MODEL`,
   `AGENT_VOICE_LIVE_DELAY`, `AGENT_PRICE_LIVE_TRANSCRIPTION_USD`, `AGENT_SONIOX_URL` and `AGENT_ASSEMBLYAI_URL` are no
   longer read, and `AGENT_SPEECH_PRICES` takes `tts` only. Soniox and AssemblyAI keys are no longer offered (`PUT

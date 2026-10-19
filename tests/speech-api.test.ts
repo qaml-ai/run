@@ -85,7 +85,7 @@ test("POST /v1/speech: OpenAI by default, streamed as made (pcm or wav), billed 
   assert.equal((await noKey.json() as any).code, "SPEECH_UNAVAILABLE");
 });
 
-test("POST /v1/speech through a chain of providers it names: the first with a key serves, and says so", async t => {
+test("POST /v1/speech through a chain of providers it names (or whose voices it names): the first with a key serves, and says so", async t => {
   const root = await mkdtemp(join(tmpdir(), "agent-speech-chain-"));
   t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
   writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(token), apiKeys: { openrouter: "fixture-key", openai: "tenant-openai-key", elevenlabs: "tenant-eleven-key" } } } }));
@@ -123,4 +123,14 @@ test("POST /v1/speech through a chain of providers it names: the first with a ke
   assert.equal((await response.arrayBuffer()).byteLength, 4_800);
   assert.match(asked[0].url, /^\/v1\/text-to-speech\/voice-123\/stream/);
   assert.equal(asked[0].key, "tenant-eleven-key");
+
+  // No providers, but voices for them (a voice preview): those providers in that order, then OpenAI.
+  const voiced = await fetch(`${base}/v1/speech`, {
+    method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ text: "A preview.", voice: "coral", speech: { voices: { elevenlabs: "voice-456", openai: "coral" } } }),
+  });
+  assert.equal(voiced.status, 200, await voiced.clone().text());
+  assert.match(voiced.headers.get("x-speech-model")!, /^elevenlabs\//);
+  await voiced.arrayBuffer();
+  assert.match(asked[1].url, /^\/v1\/text-to-speech\/voice-456\/stream/);
 });

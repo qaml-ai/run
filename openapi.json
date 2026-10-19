@@ -5962,7 +5962,7 @@
             },
             "minItems": 1,
             "maxItems": 5,
-            "description": "Text-to-speech providers to try in order, each <provider> or <provider>/<model>: elevenlabs (eleven_flash_v2_5), cartesia (sonic-3), deepgram (aura-2), openai (gpt-4o-mini-tts). One without a key is skipped; one that fails before its first audio is passed over. Default: OpenAI",
+            "description": "Text-to-speech providers to try in order, each <provider> or <provider>/<model>: elevenlabs (eleven_flash_v2_5), cartesia (sonic-3), deepgram (aura-2), openai (gpt-4o-mini-tts). One without a key is skipped; one that fails before its first audio is passed over. Default: the providers voices names (in its order, then OpenAI), else OpenAI",
             "example": [
               "elevenlabs",
               "openai"

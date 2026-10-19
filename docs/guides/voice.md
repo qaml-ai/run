@@ -120,7 +120,8 @@ By default speech is made with OpenAI's `gpt-4o-mini-tts` in `voice` (`alloy`, `
 or the platform's: without one it is a 400 (`SPEECH_UNAVAILABLE`), and text OpenAI refuses is a 400 too. `speech:
 {providers, voices}` names providers to try in order instead, each `<provider>` (its default model) or
 `<provider>/<model>`, on your key for it (`PUT /v1/providers/<provider>/key`, or a key scope's), else the platform's; one
-with no key is skipped:
+with no key is skipped. Without `providers`, `voices` that name a provider other than OpenAI choose them: those
+providers in the order given, then OpenAI (`{"voices": {"elevenlabs": "…", "openai": "coral"}}` speaks with ElevenLabs):
 
 | Provider | Default model | Voice (`speech.voices.<provider>`) |
 | --- | --- | --- |
