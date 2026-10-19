@@ -516,17 +516,17 @@ export class RealtimeBrain {
       },
       // The provider's own words about what it refused (no audio or transcript in them).
       warning: (code, detail) => { if (live()) this.hooks.log("voice_realtime_warning", { errorCode: code, detail: detail.slice(0, 200) }); },
-      closed: (reason, detail) => { if (reason !== "requested" && live()) this.lost(detail ?? "closed"); },
+      closed: (reason, detail, options) => { if (reason !== "requested" && live()) this.lost(detail ?? "closed", options?.retryable); },
     };
   }
 
   /** The connection dropped: reconnect (a new conversation, briefed with what was said), a few times at most. */
-  private lost(detail: string) {
+  private lost(detail: string, retryable = true) {
     if (this.metered) { this.generation++; this.connection = undefined; this.flushMeter(); }
     const now = this.clock.now();
     this.reconnects = [...this.reconnects.filter(at => now - at < REALTIME_LIMITS.reconnectWindowMs), now];
-    const retrying = this.reconnects.length <= REALTIME_LIMITS.reconnects;
-    this.hooks.log("voice_realtime_lost", { detail: detail.slice(0, 200), attempt: this.reconnects.length, retrying });
+    const retrying = retryable && this.reconnects.length <= REALTIME_LIMITS.reconnects;
+    this.hooks.log("voice_realtime_lost", { detail: detail.slice(0, 300), attempt: this.reconnects.length, retrying });
     for (const response of [this.current, this.playing]) {
       if (!response || response.done) continue;
       response.done = true;

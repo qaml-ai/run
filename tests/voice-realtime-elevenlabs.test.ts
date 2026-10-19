@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -12,6 +13,37 @@ import { sleep, testBrain, tone, until, utter } from "./voice-realtime-fakes.ts"
 process.env.AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD = "1";
 process.env.AGENT_PRICE_ELEVENLABS_LLM_MINUTE_USD = "2";
 
+// Emitted subset of https://elevenlabs.io/docs/api-reference/agents/create and
+// https://api.elevenlabs.io/openapi.json (2026-10-19). Strict objects catch misspelled fields.
+const parameters = z.object({
+  type: z.literal("object"), required: z.array(z.string()).optional(),
+  properties: z.record(z.string(), z.object({ type: z.literal("string"), description: z.string() }).strict()),
+}).strict();
+const createAgentSchema = z.object({
+  name: z.string(),
+  conversation_config: z.object({
+    agent: z.object({ first_message: z.string(), language: z.string(), prompt: z.object({
+      prompt: z.string(), llm: z.literal("gemini-2.5-flash-lite"), temperature: z.number().min(0).max(1),
+      tools: z.array(z.object({ type: z.literal("client"), name: z.string(), description: z.string(), parameters,
+        expects_response: z.boolean(), response_timeout_secs: z.number().int().min(1).max(120),
+        interruption_mode: z.enum(["allow", "disable_during_tool", "disable_during_tool_and_turn"]),
+        pre_tool_speech: z.enum(["auto", "force", "off"]),
+      }).strict()),
+    }).strict() }).strict(),
+    asr: z.object({ user_input_audio_format: z.literal("pcm_16000") }).strict(),
+    tts: z.object({ voice_id: z.string(), model_id: z.literal("eleven_flash_v2_5"), agent_output_audio_format: z.literal("pcm_24000") }).strict(),
+    turn: z.object({ turn_eagerness: z.enum(["patient", "normal", "eager"]), turn_timeout: z.number(), silence_end_call_timeout: z.number() }).strict(),
+    conversation: z.object({ client_events: z.array(z.enum(["conversation_initiation_metadata", "ping", "audio", "interruption", "user_transcript", "agent_response", "client_tool_call", "agent_response_complete", "client_error"])) }).strict(),
+  }).strict(),
+  platform_settings: z.object({
+    auth: z.object({ enable_auth: z.boolean() }).strict(), privacy: z.object({ record_voice: z.boolean() }).strict(),
+    overrides: z.object({ conversation_config_override: z.object({
+      agent: z.object({ prompt: z.object({ prompt: z.boolean() }).strict(), first_message: z.boolean(), language: z.boolean() }).strict(),
+      tts: z.object({ voice_id: z.boolean() }).strict(),
+    }).strict() }).strict(),
+  }).strict(),
+}).strict();
+
 async function fakeElevenLabs(t: { after(fn: () => unknown): void }, options: { existing?: boolean; fail?: boolean } = {}) {
   const seen = { requests: [] as { url: string; key: string; body: any }[], events: [] as any[], urls: [] as string[] };
   const connections: WebSocket[] = [];
@@ -24,6 +56,7 @@ async function fakeElevenLabs(t: { after(fn: () => unknown): void }, options: { 
     res.setHeader("Content-Type", "application/json");
     if (options.fail) { res.writeHead(401).end('{"detail":"never logged"}'); return; }
     if (req.url?.startsWith("/v1/convai/agents?")) res.end(JSON.stringify({ agents: options.existing ? [{ name: ELEVENLABS_AGENTS.name, agent_id: "agent_test" }] : [], has_more: false }));
+    else if (req.url?.startsWith("/v2/voices?")) res.end(JSON.stringify({ voices: [ELEVENLABS_AGENTS.voice, "character_voice", "another_voice", "marin"].map(voice_id => ({ voice_id })), has_more: false }));
     else if (req.url === "/v1/convai/agents/create") res.end('{"agent_id":"agent_test"}');
     else res.end(JSON.stringify({ signed_url: `${base.replace(/^http/, "ws")}/v1/convai/conversation?agent_id=agent_test&conversation_signature=private` }));
   });
@@ -71,7 +104,9 @@ test("ElevenLabs provisions once per credential, authenticates with signed URLs,
   const creates = fake.seen.requests.filter(r => r.url.endsWith("agents/create"));
   assert.equal(creates.length, 1);
   const body = creates[0].body;
+  createAgentSchema.parse(body);
   assert.equal(body.name, ELEVENLABS_AGENTS.name);
+  assert.equal(body.conversation_config.tts.voice_id, config.voice, "creation uses the requested voice, without depending on Jessica access");
   assert.equal(body.conversation_config.agent.prompt.llm, ELEVENLABS_AGENTS.defaultModel);
   assert.deepEqual(body.conversation_config.agent.prompt.tools.map(({ name, description, parameters, type, expects_response }: any) => ({ name, description, parameters, type, expects_response })),
     [ASK_AGENT, STAY_SILENT].map(tool => ({ ...tool, type: "client", expects_response: true })));
@@ -176,7 +211,7 @@ test("ElevenLabs close and protocol errors carry redacted reasons; provisioning 
   await until(() => a.got.some(e => e.type === "ready"), "ready");
   fake.connections[0].close(1008, "Invalid sk_fake_elevenlabs_key and sk-openaiFakeKey123");
   await until(() => a.got.some(e => e.type === "closed"), "closed");
-  assert.equal(a.got.find(e => e.type === "closed")!.detail, "The realtime connection closed (1008: Invalid [redacted] and [redacted])");
+  assert.equal(a.got.find(e => e.type === "closed")!.detail, "ElevenLabs Agents session: The realtime connection closed (1008: Invalid [redacted] and [redacted])");
   const b = recorder();
   elevenlabsAgents({ baseUrl: fake.base }).connect(config, { apiKey: "key" }, b.events);
   await until(() => b.got.some(e => e.type === "ready"), "second ready");
@@ -188,7 +223,7 @@ test("ElevenLabs close and protocol errors carry redacted reasons; provisioning 
   elevenlabsAgents({ baseUrl: failed.base }).connect(config, { apiKey: "key" }, c.events);
   await until(() => c.got.some(e => e.type === "closed"), "provision failure");
   assert.equal(c.got[0].reason, "error");
-  assert.equal(c.got[0].detail, "ElevenLabs Agents provisioning or authentication failed");
+  assert.equal(c.got[0].detail, "ElevenLabs Agents list agents (HTTP 401): never logged");
 });
 
 
@@ -279,4 +314,115 @@ test("ElevenLabs lost connections settle once and reconnect behind a renewed hol
   state.brain.close();
   await until(() => settlements.length === 2, "replacement settled");
   assert.equal(settlements.reduce((sum, cost) => sum + cost, 0), realtimeCost("elevenlabs/gemini-2.5-flash-lite", NO_USAGE, 0.2));
+});
+
+for (const stage of ["list agents", "create agent", "signed URL"]) {
+  for (const status of [400, 401, 403, 422, 429, 500, 503]) test(`ElevenLabs ${stage} HTTP ${status}: diagnostics and retry policy reach the brain`, async t => {
+    let attempts = 0;
+    const fake = await fakeElevenLabs(t);
+    const provider = elevenlabsAgents({ baseUrl: fake.base, fetch: async (url, init) => {
+      const path = String(url);
+      const fail = stage === "list agents" ? path.includes("/agents?") : stage === "create agent" ? path.endsWith("agents/create") : path.includes("get-signed-url?");
+      if (!fail) return fetch(url, init);
+      attempts++;
+      return Response.json({ detail: status === 422
+        ? [{ loc: ["body", "conversation_config", "agent", "prompt", "tools", 0, "parameters"], msg: "Invalid tool schema" }]
+        : { status: "invalid_configuration", message: "Cannot start: sk_fixture_secret123 https://example.com?s=short " + "x".repeat(40) + " " + "fixture" } }, { status });
+    } });
+    const state = testBrain({ provider, reference: "elevenlabs/gemini-2.5-flash-lite", ownsTurns: true });
+    t.after(() => state.brain.close());
+    await until(() => state.logs.some(log => log.type === "voice_realtime_lost" && log.fields?.retrying === false), "gave up");
+    const lost = state.logs.filter(log => log.type === "voice_realtime_lost");
+    assert.equal(attempts, status >= 500 ? 4 : 1);
+    assert.equal(lost.length, attempts);
+    for (const log of lost) {
+      const detail = String(log.fields?.detail);
+      assert.ok(detail.startsWith(`ElevenLabs Agents ${stage} (HTTP ${status}):`));
+      assert.ok(detail.length <= 300);
+      if (status === 422) assert.match(detail, /body.conversation_config.agent.prompt.tools.0.parameters: Invalid tool schema/);
+      else {
+        assert.match(detail, /invalid_configuration: Cannot start:/);
+        assert.doesNotMatch(detail, /sk_fixture|example.com|x{40}|fixture/);
+      }
+    }
+  });
+}
+
+test("ElevenLabs retries network failures and preserves their stage", async t => {
+  let attempts = 0;
+  const provider = elevenlabsAgents({ fetch: async () => { attempts++; throw new TypeError("fetch failed"); } });
+  const state = testBrain({ provider, reference: "elevenlabs/gemini-2.5-flash-lite", ownsTurns: true });
+  t.after(() => state.brain.close());
+  await until(() => state.logs.filter(log => log.type === "voice_realtime_lost").length === 4, "network retries");
+  assert.equal(attempts, 4);
+  assert.match(String(state.logs.find(log => log.type === "voice_realtime_lost")!.fields?.detail), /list agents: fetch failed/);
+});
+
+test("ElevenLabs adds shared voices once per credential, uses returned IDs, and reuses account copies after restart", async t => {
+  const fake = await fakeElevenLabs(t);
+  const owned: { voice_id: string; sharing: { original_voice_id: string } }[] = [];
+  const adds: string[] = [];
+  const request: typeof fetch = async (url, init) => {
+    const path = new URL(String(url));
+    if (path.pathname === "/v2/voices") return Response.json({ voices: owned, has_more: false });
+    if (path.pathname === "/v1/shared-voices") {
+      const id = path.searchParams.get("search")!;
+      return Response.json({ voices: [{ voice_id: id, public_owner_id: "public_owner", name: "Shared voice" }], has_more: false });
+    }
+    if (path.pathname.startsWith("/v1/voices/add/")) {
+      assert.equal(init?.method, "POST");
+      assert.deepEqual(JSON.parse(String(init?.body)), { new_name: "Shared voice" });
+      const original = path.pathname.split("/").at(-1)!;
+      adds.push(original);
+      const voice_id = `account_${original}`;
+      owned.push({ voice_id, sharing: { original_voice_id: original } });
+      return Response.json({ voice_id });
+    }
+    return fetch(url, init);
+  };
+  for (let restart = 0; restart < 2; restart++) {
+    const provider = elevenlabsAgents({ baseUrl: fake.base, fetch: request });
+    const sessions = [recorder(), recorder()];
+    const connections = sessions.map(session => provider.connect(config, { apiKey: "tenant-key" }, session.events));
+    t.after(() => connections.forEach(connection => connection.close()));
+    await until(() => sessions.every(session => session.got.some(event => event.type === "ready")), "shared voices ready");
+  }
+  assert.deepEqual(adds, [config.voice]);
+  assert.ok(fake.seen.requests.filter(request => request.url.endsWith("agents/create")).every(request => request.body.conversation_config.tts.voice_id === `account_${config.voice}`));
+  assert.ok(fake.seen.events.filter(event => event.type === "conversation_initiation_client_data").every(event => event.conversation_config_override.tts.voice_id === `account_${config.voice}`));
+});
+
+test("ElevenLabs websocket open and init failures retain stage and redact signed URLs", async t => {
+  for (const stage of ["websocket open", "init"]) {
+    const fake = await fakeElevenLabs(t, { existing: true });
+    const { got, events } = recorder();
+    let ws: any;
+    const provider = elevenlabsAgents({ baseUrl: fake.base, socket: () => {
+      ws = { readyState: 0, send() {}, close() {} };
+      return ws;
+    } });
+    const connection = provider.connect(config, { apiKey: "tenant-key" }, events);
+    t.after(() => connection.close());
+    await until(() => !!ws?.onopen, "socket handlers");
+    if (stage === "init") ws.onopen();
+    ws.onclose({ code: 1008, reason: "invalid tenant-key wss://example.com?signature=short" });
+    const closed = got.find(event => event.type === "closed")!;
+    assert.match(closed.detail, new RegExp(`ElevenLabs Agents ${stage}:`));
+    assert.doesNotMatch(closed.detail, /tenant-key|example.com|signature=short/);
+  }
+});
+
+test("ElevenLabs malformed error bodies keep HTTP status and diagnostics are capped at 300 characters", async t => {
+  for (const body of ["not json", JSON.stringify({ detail: [null] }), JSON.stringify({ detail: { status: "invalid_configuration", message: "bad value ".repeat(100) } })]) {
+    const { got, events } = recorder();
+    const connection = elevenlabsAgents({ fetch: async () => new Response(body, { status: 422 }) }).connect(config, { apiKey: "tenant-key" }, events);
+    t.after(() => connection.close());
+    await until(() => got.some(event => event.type === "closed"), "failure");
+    const detail = got.find(event => event.type === "closed")!.detail;
+    assert.match(detail, /list agents \(HTTP 422\):/);
+    assert.ok(detail.length <= 300);
+    if (body === "not json") assert.match(detail, /request failed$/);
+    else if (body.includes("invalid_configuration")) assert.equal(detail.length, 300);
+    else assert.match(detail, /validation: invalid value$/);
+  }
 });

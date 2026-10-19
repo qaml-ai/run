@@ -62,8 +62,8 @@ export interface RealtimeEvents {
   heard(tag: string, text: string, seconds: number): void;
   /** Something went wrong that did not end the connection (an event refused): logged. */
   warning(code: string, message: string): void;
-  /** The connection ended: closed by us (`requested`), or not (the provider's limit, a network failure). */
-  closed(reason: "requested" | "error", detail?: string): void;
+  /** The connection ended. Providers may mark configuration/authentication failures non-retryable. */
+  closed(reason: "requested" | "error", detail?: string, options?: { retryable: boolean }): void;
 }
 
 export interface RealtimeConnection {

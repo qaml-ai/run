@@ -1,6 +1,6 @@
 import { performance } from "node:perf_hooks";
 import { createHash } from "node:crypto";
-import { closeDetail, messageJson, openSocket, type Socket, type SocketFactory } from "../../voice-providers/socket.ts";
+import { closeDetail, redactDetail, messageJson, openSocket, type Socket, type SocketFactory } from "../../voice-providers/socket.ts";
 import { Resampler24To16 } from "../turns/features.ts";
 import { ASK_AGENT, STAY_SILENT } from "./brain.ts";
 import { NO_USAGE, type RealtimeConfig, type RealtimeConnection, type RealtimeEvents, type RealtimeProvider } from "./provider.ts";
@@ -37,26 +37,87 @@ export function elevenlabsAgents(options: { baseUrl?: string; socket?: SocketFac
   const socket = options.socket ?? openSocket;
   // Per node lifetime, one single-flight resolution per credential (platform or tenant). No TTL or raw keys retained.
   const agents = new Map<string, Promise<string>>();
-  async function api(apiKey: string, path: string, body?: unknown) {
-    const response = await request(`${base}/v1/convai/${path}`, {
-      headers: { "xi-api-key": apiKey, "Content-Type": "application/json" },
-      ...(body ? { method: "POST", body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(ELEVENLABS_AGENTS.connectTimeoutMs),
-    });
-    // Provider bodies may contain sensitive request values; only the status is safe to report.
-    if (!response.ok) throw new Error(`ElevenLabs Agents request failed (${response.status})`);
-    return response.json();
+  const voices = new Map<string, Promise<string>>();
+  async function api(apiKey: string, stage: string, path: string, body?: unknown) {
+    try {
+      const response = await request(`${base}${path}`, {
+        headers: { "xi-api-key": apiKey, "Content-Type": "application/json" },
+        ...(body ? { method: "POST", body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(ELEVENLABS_AGENTS.connectTimeoutMs),
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => undefined);
+        const detail = error?.detail;
+        const message = Array.isArray(detail)
+          ? detail.map(item => `${Array.isArray(item?.loc) ? item.loc.join(".") : "validation"}: ${item?.msg ?? "invalid value"}`).join("; ")
+          : typeof detail === "string" ? detail : [detail?.status, detail?.message].filter(value => typeof value === "string").join(": ");
+        throw new ElevenLabsFailure(stage, message || "request failed", response.status >= 500, response.status);
+      }
+      return await response.json();
+    } catch (error) {
+      const failure = error instanceof ElevenLabsFailure ? error : new ElevenLabsFailure(stage, error instanceof Error ? error.message : "network error", error instanceof TypeError || (error instanceof Error && ["TimeoutError", "AbortError"].includes(error.name)));
+      failure.message = redactDetail(failure.message, 300, [apiKey]);
+      throw failure;
+    }
   }
-  async function resolveAgent(apiKey: string): Promise<string> {
+  async function accountVoice(apiKey: string, voice: string): Promise<string | undefined> {
+    let token: string | undefined;
+    do {
+      const query = new URLSearchParams({ page_size: "100", ...(token ? { next_page_token: token } : {}) });
+      const page = await api(apiKey, "list voices", `/v2/voices?${query}`);
+      const found = page.voices?.find((item: any) => item.voice_id === voice || item.sharing?.original_voice_id === voice);
+      if (typeof found?.voice_id === "string") return found.voice_id;
+      token = page.has_more ? page.next_page_token : undefined;
+      if (page.has_more && !token) throw new ElevenLabsFailure("list voices", "no next page token", false);
+    } while (token);
+  }
+  async function resolveVoice(apiKey: string, voice: string): Promise<string> {
+    const owned = await accountVoice(apiKey, voice);
+    if (owned) return owned;
+    let page = 0;
+    do {
+      const query = new URLSearchParams({ search: voice, page_size: "100", page: String(page++) });
+      const shared = await api(apiKey, "find shared voice", `/v1/shared-voices?${query}`);
+      const found = shared.voices?.find((item: any) => item.voice_id === voice);
+      if (typeof found?.public_owner_id === "string") {
+        try {
+          const added = await api(apiKey, "add shared voice", `/v1/voices/add/${encodeURIComponent(found.public_owner_id)}/${encodeURIComponent(voice)}`, { new_name: found.name || voice });
+          if (typeof added.voice_id !== "string") throw new ElevenLabsFailure("add shared voice", "no voice id returned", false);
+          return added.voice_id;
+        } catch (error) {
+          // Another node may have added this voice after our account lookup.
+          if (error instanceof ElevenLabsFailure && error.status === 409) {
+            const added = await accountVoice(apiKey, voice);
+            if (added) return added;
+          }
+          throw error;
+        }
+      }
+      if (!shared.has_more) break;
+    } while (true);
+    throw new ElevenLabsFailure("find shared voice", "voice is unavailable to this account and was not found in the shared library", false);
+  }
+  function ensureVoice(apiKey: string, voice: string) {
+    const identity = `${createHash("sha256").update(apiKey).digest("hex")}:${voice}`;
+    let pending = voices.get(identity);
+    if (!pending) {
+      pending = resolveVoice(apiKey, voice);
+      voices.set(identity, pending);
+      void pending.catch(() => voices.delete(identity));
+    }
+    return pending;
+  }
+  async function resolveAgent(apiKey: string, sessionVoice: string): Promise<string> {
     let cursor: string | undefined;
     do {
       const query = new URLSearchParams({ search: ELEVENLABS_AGENTS.name, page_size: "100", ...(cursor ? { cursor } : {}) });
-      const page = await api(apiKey, `agents?${query}`);
+      const page = await api(apiKey, "list agents", `/v1/convai/agents?${query}`);
       const found = page.agents?.find((agent: any) => agent.name === ELEVENLABS_AGENTS.name);
       if (typeof found?.agent_id === "string") return found.agent_id;
       cursor = page.has_more ? page.next_cursor : undefined;
-      if (page.has_more && !cursor) throw new Error("ElevenLabs Agents list has no next cursor");
+      if (page.has_more && !cursor) throw new ElevenLabsFailure("list agents", "no next cursor", false);
     } while (cursor);
-    const created = await api(apiKey, "agents/create", {
+    const voice = await ensureVoice(apiKey, sessionVoice);
+    const created = await api(apiKey, "create agent", "/v1/convai/agents/create", {
       name: ELEVENLABS_AGENTS.name,
       conversation_config: {
         agent: { first_message: "", language: "en", prompt: {
@@ -66,7 +127,7 @@ export function elevenlabsAgents(options: { baseUrl?: string; socket?: SocketFac
             response_timeout_secs: 60, interruption_mode: "allow", pre_tool_speech: tool.name === ASK_AGENT.name ? "force" : "off" })),
         } },
         asr: { user_input_audio_format: "pcm_16000" },
-        tts: { voice_id: ELEVENLABS_AGENTS.voice, model_id: "eleven_flash_v2_5", agent_output_audio_format: "pcm_24000" },
+        tts: { voice_id: voice, model_id: "eleven_flash_v2_5", agent_output_audio_format: "pcm_24000" },
         turn: { turn_eagerness: "normal", turn_timeout: 7, silence_end_call_timeout: -1 },
         conversation: { client_events: ["conversation_initiation_metadata", "ping", "audio", "interruption", "user_transcript", "agent_response", "client_tool_call", "agent_response_complete", "client_error"] },
       },
@@ -75,7 +136,7 @@ export function elevenlabsAgents(options: { baseUrl?: string; socket?: SocketFac
         overrides: { conversation_config_override: { agent: { prompt: { prompt: true }, first_message: true, language: true }, tts: { voice_id: true } } },
       },
     });
-    if (typeof created.agent_id !== "string") throw new Error("ElevenLabs Agents creation returned no agent id");
+    if (typeof created.agent_id !== "string") throw new ElevenLabsFailure("create agent", "no agent id returned", false);
     return created.agent_id;
   }
   return {
@@ -85,18 +146,30 @@ export function elevenlabsAgents(options: { baseUrl?: string; socket?: SocketFac
       const identity = createHash("sha256").update(apiKey).digest("hex");
       let agent = agents.get(identity);
       if (!agent) {
-        agent = resolveAgent(apiKey);
+        agent = resolveAgent(apiKey, config.voice);
         agents.set(identity, agent);
         void agent.catch(() => agents.delete(identity));
       }
-      return new ElevenLabs(config, events, options.now ?? (() => performance.now()), async () => {
+      return new ElevenLabs(events, options.now ?? (() => performance.now()), async () => {
         const agentId = await agent;
-        const signed = await api(apiKey, `conversation/get-signed-url?agent_id=${encodeURIComponent(agentId)}`);
-        if (typeof signed.signed_url !== "string") throw new Error("ElevenLabs Agents returned no signed URL");
-        return socket(signed.signed_url, {});
-      });
+        config = { ...config, voice: await ensureVoice(apiKey, config.voice) };
+        const signed = await api(apiKey, "signed URL", `/v1/convai/conversation/get-signed-url?agent_id=${encodeURIComponent(agentId)}`);
+        if (typeof signed.signed_url !== "string") throw new ElevenLabsFailure("signed URL", "no signed URL returned", false);
+        try { return { socket: socket(signed.signed_url, {}), config }; }
+        catch { throw new ElevenLabsFailure("websocket open", "could not create socket", false); }
+      }, detail => redactDetail(detail, 300, [apiKey]));
     },
   };
+}
+
+class ElevenLabsFailure extends Error {
+  readonly retryable: boolean;
+  readonly status?: number;
+  constructor(stage: string, detail: string, retryable: boolean, status?: number) {
+    super(`ElevenLabs Agents ${stage}${status ? ` (HTTP ${status})` : ""}: ${detail}`);
+    this.retryable = retryable;
+    this.status = status;
+  }
 }
 
 class ElevenLabs implements RealtimeConnection {
@@ -112,29 +185,34 @@ class ElevenLabs implements RealtimeConnection {
   private meteredAt?: number;
   private readonly now: () => number;
   private readonly resampler = new Resampler24To16();
-  private readonly timer: ReturnType<typeof setTimeout>;
+  private timer?: ReturnType<typeof setTimeout>;
   private silence?: ReturnType<typeof setInterval>;
   private readonly calls = new Map<string, string>();
   private suppressed = false;
+  private stage = "provisioning";
+  private readonly redact: (detail: string) => string;
 
-  constructor(config: RealtimeConfig, events: RealtimeEvents, now: () => number, connect: () => Promise<Socket>) {
+  constructor(events: RealtimeEvents, now: () => number, connect: () => Promise<{ socket: Socket; config: RealtimeConfig }>, redact: (detail: string) => string) {
     this.events = events;
+    this.redact = redact;
     this.now = now;
-    this.timer = setTimeout(() => this.fail("The realtime connection did not open in time"), ELEVENLABS_AGENTS.connectTimeoutMs);
-    this.timer.unref?.();
-    void connect().then(socket => {
+    void connect().then(({ socket, config }) => {
       if (this.ended) { socket.close(); return; }
       this.socket = socket;
+      this.stage = "websocket open";
+      this.timer = setTimeout(() => this.fail(`ElevenLabs Agents ${this.stage}: timed out`), ELEVENLABS_AGENTS.connectTimeoutMs);
+      this.timer.unref?.();
       socket.onopen = () => {
         this.meteredAt = this.now();
-        socket.send(JSON.stringify({ type: "conversation_initiation_client_data", conversation_config_override: {
+        this.stage = "init";
+        try { socket.send(JSON.stringify({ type: "conversation_initiation_client_data", conversation_config_override: {
           agent: { prompt: { prompt: config.instructions }, first_message: "", language: config.language ?? "en" }, tts: { voice_id: config.voice },
-        } }));
+        } })); } catch { this.fail("ElevenLabs Agents init: could not send client data", false); }
       };
       socket.onmessage = event => this.message(messageJson(event.data));
-      socket.onerror = () => this.fail("The realtime connection failed");
-      socket.onclose = event => this.fail(closeDetail(event));
-    }).catch(() => this.fail("ElevenLabs Agents provisioning or authentication failed"));
+      socket.onerror = () => this.fail(`ElevenLabs Agents ${this.stage}: connection failed`);
+      socket.onclose = event => this.fail(`ElevenLabs Agents ${this.stage}: ${closeDetail({ code: event?.code, reason: this.redact(event?.reason ?? "") })}`, !event?.code || ![1000, 1008].includes(event.code));
+    }).catch(error => this.fail(error instanceof ElevenLabsFailure ? error.message : "ElevenLabs Agents provisioning: unexpected failure", error instanceof ElevenLabsFailure ? error.retryable : false));
   }
 
   get pendingMs() { return this.bytes / 48; }
@@ -177,8 +255,8 @@ class ElevenLabs implements RealtimeConnection {
     else if (this.queue.length < 500) this.queue.push(message);
     else this.fail("ElevenLabs Agents input queue overflow");
   }
-  private fail(detail: string) { this.end("error", detail); }
-  private end(reason: "requested" | "error", detail?: string) {
+  private fail(detail: string, retryable = true) { this.end("error", this.redact(detail), retryable); }
+  private end(reason: "requested" | "error", detail?: string, retryable = true) {
     if (this.ended) return;
     this.meter();
     this.ended = true;
@@ -186,7 +264,7 @@ class ElevenLabs implements RealtimeConnection {
     clearInterval(this.silence);
     this.queue = [];
     try { this.socket?.close(); } catch { /* closed already */ }
-    this.events.closed(reason, detail);
+    this.events.closed(reason, detail, { retryable });
   }
   private meter() {
     if (this.meteredAt === undefined) return;
@@ -210,10 +288,11 @@ class ElevenLabs implements RealtimeConnection {
       case "conversation_initiation_metadata": {
         const metadata = event.conversation_initiation_metadata_event;
         if (metadata?.user_input_audio_format !== "pcm_16000" || metadata?.agent_output_audio_format !== "pcm_24000") {
-          this.fail("ElevenLabs Agents negotiated an unsupported audio format"); return;
+          this.fail("ElevenLabs Agents init: negotiated an unsupported audio format", false); return;
         }
         if (this.ready) return;
         this.ready = true;
+        this.stage = "session";
         clearTimeout(this.timer);
         for (const message of this.queue.splice(0)) this.socket!.send(message);
         // Discord streams stop at silence. Keep the provider's VAD clock running between speakers' packets.
@@ -252,7 +331,7 @@ class ElevenLabs implements RealtimeConnection {
         this.finish("completed");
         break;
       }
-      case "client_error": this.fail(closeDetail({ code: event.error_event?.code, reason: event.error_event?.message ?? event.error_event?.error_name })); break;
+      case "client_error": this.fail(`ElevenLabs Agents ${this.stage}: ${closeDetail({ code: event.error_event?.code, reason: this.redact(String(event.error_event?.message ?? event.error_event?.error_name ?? "")) })}`, event.error_event?.code >= 500); break;
     }
   }
 }
