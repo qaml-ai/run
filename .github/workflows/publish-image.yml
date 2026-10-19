@@ -35,6 +35,7 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
+          build-args: BASE_REGISTRY=mirror.gcr.io/library
           platforms: linux/amd64,linux/arm64
           provenance: false
           push: true
