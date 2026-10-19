@@ -169,7 +169,9 @@ variable "runtime_env" {
     AGENT_VOICE_TTS = "elevenlabs,openai"
     # Smart end of turn (Silero VAD + Smart Turn, run#240/#254) for every voice session; ~190 MB and one Smart Turn thread per node.
     AGENT_VOICE_TURN_MODELS = "true"
-    GITHUB_ORG              = "qaml-ai"
+    # Realtime voice brain (brain: "realtime", run#265, beta): Gemini Live on platformKeys.google unless the tenant brings a key.
+    AGENT_VOICE_REALTIME = "gemini"
+    GITHUB_ORG           = "qaml-ai"
     # Anyone with a GitHub account may sign in to the console. Their tenant is prepaid: platform keys only
     # against its credit, with the free limits (the Free usage tier, AGENT_FREE_HOURLY_SPEND_USD) until it buys some.
     AGENT_OPEN_SIGNUP = "true"
