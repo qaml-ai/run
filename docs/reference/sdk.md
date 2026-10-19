@@ -610,6 +610,22 @@ changing its history with `agent.client.setMetadata({ name, type })`
 (`npm run studio`) at `/studio/agents`; Studio observes the runtime, and your
 application keeps serving its tools.
 
+## 0.22.0 (TypeScript) / 0.18.0 (Python), 2026-10-19
+
+Needs runtime 0.11.0 or later (run.camelai.com has it).
+
+- End-user credits: `bucketLimits` on `configure`, `amend` (merge allowances and bucket limits key by key; Python
+  `amend`) and a person's `update`; buckets show `paidLimit`. `ledger` takes `kind`, `from`, `to`, `bucket` and `moved`;
+  `days(id, { from, to, bucket, limit })` gives per-day totals (`freeRaw`, `paidCharged`, grants, refunds,
+  adjustments). See [End-user credits](../guides/end-user-credits.md).
+- Credit refusals in code: `AgentError.reason`, `.bucket`, `.endUser` (Python `end_user`) on every 402; a run's error
+  has `limit`, `reason`, `bucket`, `endUser`, also for a run refused as it left the queue (was `runtime_error`);
+  `CREDIT_REASONS` (`balance`, `daily_limit`, `bucket_limit`) and `endUserCredit()` (Python `end_user_credit()`). See
+  [credit reasons](errors.md#end-user-credit-reasons).
+- Voice sessions speak (`speak`, voices per speech provider, speech and transcription provider chains, smart end of
+  turn, barge-in) and may use a realtime brain (beta).
+- `dataCollection: "deny"` on an agent.
+
 ## 0.21.0 (TypeScript) / 0.17.0 (Python), 2026-10-15
 
 Needs runtime 0.10.0 or later (run.camelai.com has it).

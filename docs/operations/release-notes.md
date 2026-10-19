@@ -11,6 +11,393 @@ Changes on main since the last tag are in [unreleased/](unreleased/), a file for
 any order never conflict here), gathered into a version's notes when it is tagged: `npm run release-notes` shows them
 together, and `npm run release-notes -- <version>` writes them here and removes the files.
 
+## 0.11.0 (runtime-v0.11.0, 2026-10-19)
+
+Voice sessions that speak (speech providers, a realtime brain in beta, browser calls, turn-taking and latency work), POST /v1/speech, and end-user credits ready for a credit page: per-bucket paid limits, refunds that never overdraw, write-offs past a call's hold, one reason code on every refusal path, ledger filters and per-day totals. The TypeScript SDK 0.22.0 and Python SDK 0.18.0 use it ([SDK reference](../reference/sdk.md)).
+
+**Before upgrading a self-hosted runtime:** migrations 071 to 074 run on start (voice speech counts, per-bucket limits, model attempts' input estimates, end-user write-offs). Voice stays off unless `AGENT_VOICE=true`; the realtime brain is off by default. A queued run refused for a limit now ends with a coded result (`end_user_credit` or `spend_limit`) instead of `outcome.error` text, and the account's prepaid-credit 402s say `INSUFFICIENT_CREDIT` (they said `PAYMENT_REQUIRED`).
+
+### End-user credits: credit history and per-day totals
+
+A tenant's credit page no longer has to read usage rows
+([guide](../guides/end-user-credits.md#the-ledger)):
+
+- `GET /v1/end-users/{id}/ledger` takes `kind` (comma-separated: `grant`, `refund`, `adjustment`, `usage`), `from` and
+  `to` (a range on `createdAt`, `to` exclusive), `bucket` and `moved=true` (only entries that moved the balance),
+  combined with each other and with `before`/`limit`. Bad values are a 400.
+- `GET /v1/end-users/{id}/days?from=&to=&bucket=&limit=`: a person's UTC days, newest first, paged by `next` (pass as
+  `to`): per bucket, what allowances paid (`freeRaw`, raw cost) and what the balance paid (`paidCharged`, with the
+  markup), and per day what the tenant's grants, refunds and adjustments moved. One query over the per-day spend rows and
+  the person's own entries.
+- SDKs: `endUsers.ledger(id, { kind, from, to, bucket, moved })` and `endUsers.days(id, { from, to, bucket, limit })`;
+  Python `end_users.ledger(id, kind=, from_=, to=, bucket=, moved=)` and `end_users.days(id, from_=, to=, bucket=, limit=)`.
+
+No migration.
+
+### End-user credit: one reason code on every path
+
+- A refusal or stop for an end user's credit says why the same way everywhere: `reason` (`balance`, `daily_limit`,
+  `bucket_limit`), `bucket` and `endUser`, defined once in [Errors](../reference/errors.md#end-user-credit-reasons).
+- A run refused as it comes to start in the queue now fails with a coded result, as one stopped mid-way does:
+  `code: "end_user_credit"`, `stopped: "spend_limit"`, `limit: "end_user"`, `reason`, `bucket`, `endUser` (it was
+  `outcome.error` text alone, `runtime_error` in the SDKs). The agent's or tenant's spend limit and spent prepaid
+  credit refusing a queued run likewise give `code: "spend_limit"` with `limit` (`agent`, `tenant`, `credit`).
+- A run stopped mid-way carries `bucket` and `endUser` too; a sub-agent's notification refused for credit as it lands
+  ends its turn as `end_user_credit` with its reason (it read as the agent's own `spend_limit`).
+- `run.failed` carries `limit`, `reason`, `bucket` and `endUser` with its `code`. `voice.session.ended` adds `bucket`
+  beside `endUserReason`, which is now one of the reasons. `GET /v1/runs/{id}`'s error carries them as well.
+- The account's prepaid-credit 402s say `INSUFFICIENT_CREDIT` (they said `PAYMENT_REQUIRED`).
+- OpenAPI: the `Error` body declares `endUser`, `bucket`, `reason` and `refundable`; `END_USER_CREDIT` and
+  `INSUFFICIENT_BALANCE` are listed codes; `end_user.balance.low` and `end_user.credit.exhausted` are documented events.
+- SDKs: `AgentError` has `reason`, `bucket` and `endUser` (Python `end_user`) from any 402 (runs, stateless runs,
+  transcriptions, speech, images, voice sessions); a run's error has `limit`, `reason`, `bucket`, `endUser`;
+  `CREDIT_REASONS`, and `endUserCredit()` (Python `end_user_credit()`) to read them from an error or a run in one shape.
+
+### End-user credits: per-bucket limits, refunds and fixes
+
+- `bucketLimits` (the tenant's in `/v1/end-user-settings`, and each person's own in `PATCH /v1/end-users/{id}`), keyed
+  as allowances are (`"bot:*"`), cap what one bucket may charge a person's balance per UTC day, holds included; 0 keeps
+  a bucket to its free allowance. Past it, work is refused with reason `bucket_limit`, and `end_user.credit.exhausted`
+  says so once per person, bucket and day (with `bucketLimit`). `GET /v1/end-users/{id}` shows each bucket's
+  `paidLimit`. `PATCH /v1/end-user-settings` merges allowances and bucket limits key by key (SDK `endUsers.amend`). Migration 072.
+- A refund entry returns at most the balance calls in flight do not hold (409 `INSUFFICIENT_BALANCE`, with
+  `refundable`); a lowered cost is refunded at the rate it was paid, never more. A refund crosses the balance-low and
+  out-of-credit thresholds silently.
+- A model with no price is never free to end users: it holds and settles at the catalog's price, else a mid-range one,
+  and logs `end_user_unpriced_model`. The markup applies over what a call costs the tenant on the platform's key.
+- A queued run's start is checked against its own bucket, and runs that name no bucket (a schedule's, a notification's)
+  spend from the agent's last one, not `default` (#167, #179).
+- Holds size by what a call is likely to cost (cached input included), are renewed while a reply streams slowly, and a
+  call that began before midnight UTC spends from the day it began (#182).
+
+### End-user settings: concurrent writers keep each other's changes
+
+- `PUT` and `PATCH /v1/end-user-settings` now write only the fields they send, in one statement, and a `PATCH` merges
+  its `allowances` and `bucketLimits` keys into the map as it stands when the write lands. Before, each write read the
+  row and wrote every field back, so a write that overlapped another (a node's `configure` at start while an operator
+  changed `markupBps`, two `PATCH`es adding different keys) could silently undo it. See
+  [End-user credits](../guides/end-user-credits.md#turn-it-on).
+
+### End-user credits: costs past a call's hold are written off, never charged past a limit
+
+A call that cost more than it held used to be charged in full to its end user's balance, past the bucket's paid limit
+(a bot at `0` too), past the daily limit, and below zero. Settlement now charges at most what is left for the call (the
+balance, the daily limit and the bucket's limit, less what other calls in flight hold), on the day its cost posts to.
+The rest is written off: the tenant bears it, and the person is never charged it later
+([guide](../guides/end-user-credits.md#costs-past-a-calls-hold-written-off)).
+
+- `writtenOff` (raw micro-USD) on usage ledger entries, per bucket in `GET /v1/end-users/{id}` (`today.buckets`) and
+  per bucket and day in `GET /v1/end-users/{id}/days`.
+- A correction down takes back the write-off first, then refunds the balance, then the allowance; one up is capped the
+  same way.
+- The limit that capped a charge fires `end_user.credit.exhausted` once per day, as a refused call would (a bucket
+  limit of `0` now fires `bucket_limit`). Each write-off logs `end_user_written_off`.
+- Web searches, page fetches, tool searches, transcriptions and images settle the same way.
+
+Migration `074_end_user_written_off.sql` adds three columns with a default of 0.
+
+### A node short of memory starts no agents; work it cannot take goes to a peer
+
+`AGENT_MEMORY_HIGH_BYTES` (unset by default; the hosted runtime sets about two thirds of its task's memory): above
+it, a node starts no agent and takes no orphaned work, so inline agents cannot grow a node into its OOM kill. A run
+the node refuses for its own limits (`AGENT_MAX_AGENTS`, or memory) is handed to a live peer instead of retrying where
+there is no room. See [Persistence](persistence.md).
+
+### Ops dashboard
+
+- The team's admin site is now the ops dashboard, at https://run.camelai.com/ops, with Growth, Usage, Revenue and
+  Health tabs and the earlier reports under Journeys. `AGENT_ADMIN_URL` (e.g. `https://run.camelai.com/ops`: https, a
+  hostname, and no path or `/ops` or `/admin`) says where it is; under a path, the hostname may be one of the
+  runtime's own. Only the path (308 to it with a slash) and the paths under it are the site's; everything else on the
+  hostname is the runtime's. The page's scripts and styles load from `/console/assets/`, and every data request needs
+  Cloudflare Access's token, as before. `AGENT_ADMIN_HOST` still names a hostname of its own; setting both fails the
+  start, as does a runtime hostname without a path. See [Ops dashboard](admin-analytics.md).
+- New read-only endpoints under the site's path, each for `?days=` UTC days (1 to 365) and logged with the viewer's
+  email: `GET /api/growth` (sign-ups, activation, weekly active and returning accounts, the funnel, weekly cohorts),
+  `GET /api/acquisition` (where sign-ups came from, from the journey store's `journeys` report), `GET /api/usage`
+  (model responses, models, features, integrations, top accounts and agents, with admin tenants such as camelBot
+  kept apart from self-serve accounts), `GET /api/account?tenant=` (one account), `GET /api/revenue` (purchases,
+  refunds, credit held, free credit, with free credit counted as spent first), `GET /api/health` (the platform's
+  provider spend and a projection of the month, and checks of the runtime's queues and jobs) and `GET /api/me`.
+  `/api/stats`, `/api/product-signals`, `/api/activity-trend` and `POST /api/report` are unchanged.
+- The account drill-down shows each live agent's setup and the first 1,500 characters of its system prompt, with what
+  looks like a credential hidden, and its MCP servers by host only. The dashboard's API refuses cross-site requests
+  (`Sec-Fetch-Site`), takes only Access tokens with an expiry, and runs at most two of its reads at once per node. Each view is logged as `admin_account_viewed` with the viewer and the tenant
+  ([privacy](privacy.md#the-ops-dashboard)).
+- `AGENT_ADMIN_EMAILS` (Terraform `admin_emails`, kept in the deployment's tfvars) names the admins: anyone else
+  Cloudflare Access signs in gets a 403 for all of the site, logged as `admin_site_refused`. It is a second lock beside
+  the Access policy, which should list the same addresses. Unset, whoever the policy admits may use the site.
+- The dashboard leaves out staff: accounts journey events marked internal, and accounts whose Google or password
+  address is at one of `AGENT_JOURNEY_INTERNAL_EMAIL_DOMAINS`, which the site reads even where journey events are off.
+- Hosted: Terraform's `admin_hostname` is now `run.camelai.com` and the new `admin_path` is `/ops`, passed as
+  `AGENT_ADMIN_URL`. On a runtime hostname `admin.tf` makes no certificate or DNS record, so applying removes
+  `admin.camelai.dev`'s, and that address stops resolving; a plan with a runtime hostname and an empty `admin_path`
+  fails. Add `run.camelai.com`, path `ops`, to the "camelRun admin" Access application first, and remove
+  `admin.camelai.dev` from it afterwards. An image from before this change refuses to start with the new settings,
+  and the deployment circuit breaker rolls it back ([deployment](admin-analytics.md#deployment)).
+
+### Speech on its own: POST /v1/speech
+
+- `POST /v1/speech` makes speech from text, in the voice a voice session would speak it in, and streams it back as it
+  is made (`pcm`, 24 kHz mono 16-bit, or `wav`). It is billed as a session's speech is, per second made, against an
+  end user's credit with `subject`. See [Voice and audio](../guides/voice.md#speech-on-its-own).
+
+### Voice: in a group call, the bot answers the turns that are its own
+
+- `addressing: {names, mode, conversationMs}` (src/voice/turns/floor.ts): with `names` (wake words), a turn is the
+  bot's when it names it (near misses of long names, phrases, CJK without spaces), when its speaker is in a
+  conversation with the bot (it answered them, or they named it, within `conversationMs`, 20 s; someone else naming it
+  moves the conversation to them), or when no one else is in the call. Rules, not a model: language models pick a
+  multi-party addressee near chance. `mode: "always"` (the default without names) is as before.
+- The other turns still reach webhooks: `voice.utterance` has `addressed` and `addressedBy`. The agent gets them as
+  context with the next turn that is the bot's. Prompt metadata has `addressedBy` when it is not `always`.
+- With `agentReplies`, one reply at a time: a reply not yet heard when a newer turn's reply starts is taken back
+  (`voice.speech.ended` `by: "superseded"`, log `voice_reply_superseded`), so rapid-fire turns get one answer.
+
+### Voice: packets in order, losses concealed, speech that ends cleanly
+
+- Each speaker's RTP packets go through a jitter buffer before decryption (`src/voice/jitter.ts`). In-order packets
+  pass at once. A reordered packet is put back in order, and the buffer waits at most 60 ms (3 packets) for a missing
+  one. A packet that arrives later than that is dropped.
+- Lost packets (1-3 in a row) are concealed with libopus PLC in the audio streamed to live transcription, so its
+  timing holds and the decoder does not jump. What is transcribed after the cut is still the packets as they came.
+- Every speech ends with Discord's five silence frames, stopped ones included: before, an interrupt (barge-in, a new
+  speech that interrupts, DELETE) cut the audio mid-frame and sent none, and a speech that ended on its own sent four.
+  Speaking (op 5) is cleared after each one.
+
+### Voice: a backchannel over the bot lets it go on
+
+- Barge-in's echo guard also lets the bot go on when what was said over it is only a backchannel ("mm-hm", "yeah",
+  "ok", "sí", "vale", "ja", "oui", "да", "haan", "嗯", "はい", "네"… about 20 languages; `BACKCHANNELS` in
+  src/voice/echo-guard.ts), so a group's murmurs do not stop it. A partial transcript that is only a backchannel waits
+  (it may go on: "yeah, but…" stops it). A backchannel judged so is not a turn: it never reaches `deliver.agent`, and
+  its `voice.utterance` has `backchannel: true`. `bargeIn.backchannels` adds a session's own (up to 50); sessions show
+  them in `interruption`.
+- With `endOfTurn: smart`, a turn that ends with less speech than an utterance needs (300 ms: a cough, a click) ends
+  the pause it made at once, not at `resumeMs`. Two people over the bot still hold one pause until both are decided.
+- Logs: `voice_barge_in_echo_rejected` has `why: "backchannel"` and `why: "ended"`.
+
+### Voice: barge-in ignores the bot's own voice coming back
+
+- A person on laptop speakers without headphones sent the bot's speech back into the call, and barge-in stopped every
+  reply about a second in. Barge-in now pauses first and checks (`src/voice/echo-guard.ts`):
+  - After `minMs` (300) of speech over the bot, the media pauses playback at once, in its worker. The speech is kept.
+  - The utterance's words (live partials, else its transcript) are compared with what the bot is saying and just said:
+    matching words in the bot's order (60% or more, allowing small slips) is echo. Echo, or no words, **resumes** where
+    it paused. Anyone else's words **stop** it (`by: "barge_in"`).
+  - Speech going on for `confirmMs` (1000) after the pause stops it without the words (echo stops with the bot).
+    `resumeMs` (3000) is the longest pause: it then stops if they are still talking, else resumes.
+- `bargeIn` takes `true | false | {minMs, confirmMs, resumeMs}`; `confirmMs: 0` is the old behaviour (stop at
+  `minMs`, no pause). Sessions show `interruption`. Existing sessions get the defaults.
+- An utterance judged echo is not delivered to `deliver.agent` (no agent reply, no turn waits on it). Its
+  `voice.utterance` webhook (and a browser page's `utterance`) is still sent, with `echo: true`.
+- Sounds under `minMs` (a click, a cough) no longer stop the bot.
+- Logs `voice_barge_in_candidate`, `voice_barge_in_confirmed` and `voice_barge_in_echo_rejected` (`why`, `pausedMs`,
+  `speechMs`, `score`; never the words); metric `voice_barge_in` (`VoiceBargeIns`, `VoiceBargeInPausedMs` by `Outcome`
+  and `Why`). `speech_played` has `heldMs.paused`.
+- Media protocol: `resume` (control to media), and `barge_in` and `speech_progress` (media to control).
+
+### Voice: calls from a browser
+
+- `POST /v1/voice/sessions` takes `provider: "browser"`: a call from a web page, no Discord, through the same
+  pipeline. The answer's `browser.url` and `browser.token` open its WebSocket (Opus or PCM in, the bot's speech out as
+  Opus or PCM, and the session's utterance and speech events). Any node accepts the socket and relays it to the node
+  holding the session. See [Voice calls](../guides/voice-calls.md#from-a-browser).
+- `POST /v1/voice/sessions/{id}/browser-token` makes another token. A browser session may deliver to neither webhooks
+  nor an agent.
+- `ws` moves from devDependencies to dependencies (it was already installed, through @discordjs/voice).
+
+### Voice: DAVE's group checked against the call
+
+- After each transition of a voice connection's DAVE group, a member Discord's voice server never named (past 5 s)
+  drops the connection, which joins again with a new group; a fourth drop in 5 minutes ends the session (`error`,
+  `dave_roster`). davey 0.1.12 does not check a Welcome's roster (the check behind CVE-2026-104480). Metric
+  `VoiceDaveRosterDrops`; log line `voice_dave_roster`.
+- A retiring node releases its voice sessions before telling peers they are free, so a peer's scan takes them at once.
+
+### Voice: a session moving between nodes keeps its Discord credentials
+
+- A node letting a voice session go (draining, retiring, fenced) drops its Discord voice socket instead of closing it.
+  A normal close (1000) ended Discord's voice session, so the node that took the call next was refused (4006, session
+  no longer valid) and the session ended with `credentials` after 15 s. The DAVE roster check's rejoin drops its old
+  socket the same way.
+- When Discord stops taking a session's credentials, `voice.session.error` (`code: "credentials_needed"`, `waitMs`)
+  goes out at once: the app sends OP 4 for the channel again and PATCHes what Discord answers, and the session goes on.
+
+### Voice: replies sooner after people stop talking
+
+- The speech provider's connection is opened when someone starts talking in a session that speaks, so the reply's
+  speech does not wait to connect (about 90-180 ms saved on a cold connection).
+- Live transcription, off by default (`AGENT_VOICE_LIVE_TRANSCRIPTION=true`): each speaker's audio streams to
+  OpenAI's Realtime transcription (`wss://…/v1/realtime?intent=transcription`, `gpt-live-transcribe`, turn detection
+  off) and each cut commits it. Measured live, it brought the text at most ~200 ms sooner than transcribing after the
+  cut (sometimes later, on short utterances), at $0.017 a minute against $0.0045, so it stays off. A stream that fails
+  (or a key scope with its own address) falls back to transcribing after the cut; `voice.utterance` is unchanged.
+  `AGENT_VOICE_LIVE_MODEL`, `AGENT_VOICE_LIVE_DELAY` choose the model and its delay; `AGENT_PRICE_LIVE_TRANSCRIPTION_USD`
+  its price. Logs: `voice_utterance` has `live` and `speechEndToTextMs`; `voice_live_transcription_failed` marks a
+  fallback.
+- `scripts/voice-check.ts` measures it: `speechEndToText` (after the cut, and per live model), each utterance's
+  timing, `cutsAtSilenceMs` (how a sentence with pauses is cut at 500, 600 and 800 ms) and `warmMs`.
+
+### Voice: each session's audio in a worker of its own
+
+- A voice session's audio work (the Discord connection, DAVE, Opus, cutting utterances, playing speech) runs in a media
+  worker thread, one per session by default, supervised by the node (`src/voice/media-host.ts`). A crash, a heap that
+  runs out or a worker that stops answering for 5 s ends that session's audio alone: the session sends
+  `voice.session.error` (`code: "media_crashed"`, `restarting`, `attempt`) and reconnects in a fresh worker. After 3
+  failures in 5 minutes it ends (`error`). Agent turns, and every other session, are untouched.
+- `AGENT_VOICE_ISOLATION=inline` keeps the audio on the node's thread, as before. `AGENT_VOICE_SESSIONS_PER_WORKER`,
+  `AGENT_VOICE_WORKERS` (16) and `AGENT_VOICE_WORKER_MAX_MB` (256) size it ([Configuration](configuration.md)).
+- New event `voice.session.error`; apps that select every voice event should handle it, or ignore it.
+- Logs and metrics: `voice_worker_crashed` (`VoiceWorkerCrashes`, `VoiceWorkerCrashSessions`), `voice_media_crashed`
+  per session.
+
+### Voice: Opus without opusscript's wrapper, which corrupted memory and crashed the node
+
+opusscript 0.1.1's JavaScript wrapper views each codec's PCM buffer at twice its address and size, so it wrote over
+other codecs' memory, and its views detached when the WebAssembly memory grew. A busy node's codecs then trapped
+("memory access out of bounds"), and one trap, in a decoder freed from a silence timer, ended the process. The runtime
+now drives opusscript's libopus build itself (`src/opus.ts`): buffers allocated whole and viewed afresh on each call,
+`delete` idempotent and never throwing, a codec that traps broken on its own (its module retired for new codecs). A
+speaker whose decoder breaks has their utterance cut there and gets a new decoder; nothing in a speaker's audio path
+or the silence timer can throw to the process.
+
+### Voice: a smart turn's transcript is made while the turn waits to be sure
+
+- With `endOfTurn: smart` and live transcription, a turn Smart Turn calls complete (`likely_end`, ~250 ms after the
+  last word) commits its speaker's live stream then, so the transcript is made while the turn waits out `commitMs`. A
+  speaker who goes on (`resume`) is committed again at the cut, and the parts are one transcript (billed as one; if
+  either fails, the utterance is transcribed whole, as before). Silence after it is cleared, not sent.
+- Measured with a 400 ms commit: the transcript ~235 ms sooner (729 ms from the last speech, against ~960 ms).
+- `voice_turn_stats` when a session is let go: turns, likely ends, resumes and `discardRate` (likely ends spoken past:
+  what speculative work started at likely_end would throw away), and the floor's counts.
+
+### Voice: a realtime brain (beta), off by default
+
+- A voice session may have `brain: "realtime"` (`"cascade"`, today's pipeline, is the default): a speech-to-speech
+  model (OpenAI Realtime, `gpt-realtime-2.1` or `-mini`, or Gemini Live, `gemini-3.8-live`, each over a server-side
+  WebSocket) hears the call and answers aloud,
+  asking `deliver.agent` for anything beyond talk (`ask_agent`), and staying quiet when people talk to each other
+  (`stay_silent`). See [Voice calls](../guides/voice-calls.md#realtime-brain-beta). Nothing changes for sessions that
+  do not ask for it.
+- It is offered only where `AGENT_VOICE_REALTIME` lists a provider (`openai`, `gemini`); unset, `brain: "realtime"` is
+  refused (404). `AGENT_OPENAI_REALTIME_URL` and `AGENT_GEMINI_LIVE_URL` dial other addresses. The tenant's key for the
+  provider is used (`openai`, `google`), else the platform's.
+- Our media plane, Smart Turn, addressing and echo guard stay in front of the model: the call's per-speaker audio is
+  mixed, with a note naming who speaks at each change (`speakers` names them); turns are committed by us (the
+  provider's turn detection is off), with the answer begun at Smart Turn's likely end and held until the turn ends; a
+  barge-in cancels the answer and truncates its item at what was heard.
+- Billing: each answer's tokens at list price, as `usage.recorded` `kind: "speech"` (the model as `model`), and the
+  inputs' transcripts (`gpt-transcribe`) as transcriptions; end-user credits hold $0.05 before each answer.
+- Logs and metrics: `voice_turn_latency` with `Path=realtime` (and `VoiceRealtimeMs`, commit to the model's first
+  audio), `voice_realtime_stats` and the `voice_realtime` metric line per session (turns, answers, ask_agent,
+  stay_silent, barge-ins, speculation taken back), `voice_realtime_ask_agent` (`VoiceRealtimeAskAgentMs` by outcome).
+  No words are logged.
+- `scripts/voice-realtime-e2e.ts` measures it end to end on the bake-off's clips (one-on-one, 2-3 speakers,
+  overlapping), against OpenAI (`OPENAI_API_KEY`) or Gemini (`--provider gemini`, `GEMINI_API_KEY`), or a stand-in
+  provider (`--fake <ms>`). Gemini Live, measured through it: 0.89-0.92 s from the end of speech to the first packet
+  with speculation, 1.35 s without (commit at Smart Turn's median 580 ms).
+
+### A speech can name its voice for each speech provider
+
+- `POST /v1/voice/sessions/{id}/speak` takes `voices`: this speech's voice for each speech provider, by provider
+  (`{"elevenlabs": "<voice id>", "openai": "fable"}`). It wins over the session's `speech.voices` for that speech
+  alone. Before, a speech's `voice` reached OpenAI only, so a session speaking through ElevenLabs could not change
+  voice for one speech.
+- SDKs: TypeScript `voice.speak(id, { voices })`; Python `speak(..., voices=…)`.
+
+### Voice sessions can speak
+
+- A session made with `speak: true` (its app joins un-muted: the answer's `join` says so) takes
+  `POST /v1/voice/sessions/{id}/speak` `{text, voice?, instructions?, interrupt?}` (202, `speechId`, `position`) and
+  `DELETE …/speak` (stop and clear). Speech is made with OpenAI's `gpt-4o-mini-tts`, streamed as PCM and encoded to
+  20 ms Opus as it comes, so it starts playing before it is all made; one at a time per session, at most 20 waiting.
+  `bargeIn` (default on) stops the bot when a person starts talking; `voice` sets the session's voice.
+- Events `voice.speech.started` (`latencyMs`) and `voice.speech.ended` (`reason`: `done`, `interrupted` with `by`, or
+  `error`; `seconds`, `costUsd`). Usage `kind: "speech"` at $0.015 a minute of speech made (`AGENT_PRICE_SPEECH_USD`),
+  per second; end-user credits hold and settle it as transcription; running out ends the session (`budget`).
+- Speech plays through a jitter buffer: it starts after 0.2 s of audio when OpenAI's stream comes at least 1.5x faster
+  than it plays (measured over its first 100 ms), else after 1 s; after running dry it resumes with 1 s buffered,
+  doubling at each further stall (to 4 s). The `speech_played` diagnostic has `startMs` (asked to first packet),
+  `waitedMs` (refilling after stalls) and `gapMs` (silence inside the speech).
+- Any node takes a speak request and passes it to the node holding the call.
+- `speak: {agentReplies: true}` with `deliver.agent`: the session speaks the agent's reply to each utterance as it is
+  written, sentence by sentence (streamed from the agent's node), markdown, links' addresses and code left out, at most
+  400 characters; its speech events carry `reply: {agent, requestId}`. Barge-in stops the rest of a reply.
+- A prompt's `speak: {session, voice?, interrupt?}` (`POST /v1/agents/{id}/prompt`, and agent clients' `prompt`/`submit`):
+  its run's reply is spoken in one of the tenant's sessions that speak, as `agentReplies` speaks one, without
+  `deliver.agent`, so an app can choose per utterance whether and which agent answers. Checked before the prompt is
+  taken (404 unknown session, 409 `VOICE_SPEAK_DISABLED` or `VOICE_SESSION_ENDED`). A tenant key may name any of its
+  sessions; an agent's own token only sessions whose `subject` is its agent's (else 403 `VOICE_SPEAK_FORBIDDEN`, also
+  for an agent with no subject). The session's node follows the run
+  on the agent's node (`/internal/agents/{id}/follow`, `/internal/voice/sessions/{id}/reply`).
+- DAVE's send path: a Welcome into a group with a member the voice gateway never named is refused at once (opcode 31,
+  then welcomed again), around @discordjs/voice's handling, as libdave checks it; speech goes out only while the group
+  is ready and every member named.
+- SDKs: `agents.voice.speak` and `stopSpeaking` (Python `speak`, `stop_speaking`); `speak`, `bargeIn` and `voice` on
+  `create`. `scripts/voice-check.ts` now also has the listener speak and the other bot hear it (with `OPENAI_API_KEY`,
+  OpenAI's speech, transcribed back; else a tone). Migration 071.
+
+### Voice sessions choose their speech providers
+
+- **Transcription chain.** `transcription: {providers, keyterms}` on `POST /v1/voice/sessions` streams speech to
+  text as people speak through the named providers, tried in order:
+  - Deepgram `nova-3`
+  - Deepgram Flux `flux-general-en`: it detects turns itself, and its turn events go to the turn taker
+  - Soniox `stt-rt-v3`
+  - AssemblyAI Universal Streaming
+  - OpenAI `gpt-live-transcribe`
+- **Mid-utterance failover.** An utterance's audio is kept until its transcript arrives. If a provider drops, errs, or
+  has not answered 3 s after the cut, the next provider gets the whole utterance. When all fail, the utterance is
+  transcribed after it ends (OpenAI's `gpt-transcribe`, then the Azure deployment). OpenAI's live stream now carries
+  prior-turn context: what was just said prompts the next utterance.
+- **Speech chain.** `speech: {providers, voices}` speaks through ElevenLabs `eleven_flash_v2_5`, Cartesia `sonic-3`,
+  Deepgram `aura-2` or OpenAI, each provider with its own voice. A provider that fails or is slow (3 s) before its first
+  audio (silence does not count) is passed over for the next.
+- **Runtime defaults.** `AGENT_VOICE_STT` and `AGENT_VOICE_TTS` set the chains a session gets when it names none
+  ([configuration](configuration.md)).
+- **Keys.** New key providers `deepgram`, `soniox`, `assemblyai`, `elevenlabs` and `cartesia` (`PUT
+  /v1/providers/<id>/key`, `kind: "speech"`), plus `platformKeys.<id>` for the platform's.
+- **Billing.** Each provider is billed at its list price, passed through (`src/voice-providers/prices.ts`,
+  `AGENT_SPEECH_PRICES`): STT per second streamed, TTS per character. Usage records name the provider and model that
+  served ([billing](billing.md)).
+- **SDKs.** TypeScript `voice.create({ transcription, speech })`; Python `create(transcription=…, speech=…)`.
+
+### Voice: no dead air between sentences; a reply's first audio at its first clause
+
+- A session's next speech is made while the one before it plays, once that one is all made. A spoken reply no longer
+  waits on a provider round trip between sentences: measured with a 300 ms first byte, the silence between sentences
+  went from 322-343 ms to 22-26 ms. A speech made ahead and then stopped ends `interrupted`, billed for what was made.
+- A reply's first piece goes as soon as a clause of it is whole (a comma, semicolon, colon or dash, at 24 characters
+  or more, with more after it). The pieces after it are whole sentences.
+
+### Voice: turn latency, measured stage by stage; utterance webhooks without the poll
+
+- Each turn in a session that speaks writes one `voice_turn_latency` line: the time from the end of speech to the
+  turn's commit, the final transcript, the agent's first token, the first piece queued, TTS's first audio and the first
+  Opus packet out (`VoiceFirstPacketMs`, the headline), with `Path` `agent_reply`, `prompt_speak` or `speak` (the app's
+  `POST …/speak` within 30 s of a transcript). Stages are as `src/voice/latency.ts` documents them.
+- Tofu adds a `<name>-voice` dashboard and the `<name>-voice-turn-latency-p95` alarm (`voice_latency_p95_alarm_ms`,
+  2,500 by default, in 3 of 4 15-minute periods with at least 20 spoken turns).
+- `voice.utterance` webhooks are sent as soon as they are written, rather than at the outbox's next scan (every 5 s by
+  default), which saved 2.5 s on average before an app could answer aloud.
+
+### Voice: turns end when people are done talking, not after a fixed silence
+
+- Voice sessions take `endOfTurn`: `smart` (the default where the runtime has the models) finds speech with Silero VAD
+  and, at each pause, asks Pipecat's Smart Turn whether the speaker is done: done, the turn ends at `commitMs` (500 ms)
+  of silence; mid-thought, they get up to `maxSilenceMs` (1.4 s). `silence` is the energy segmenter as before
+  (`silenceMs`). `threshold`, `commitMs`, `maxSilenceMs` tune it per session; sessions show `endOfTurn`.
+- Measured (`scripts/voice-turns-eval.ts`, 920 labelled turns, 23 languages): turns end 580 ms after the last word
+  (median, against 816 ms), mid-thought pauses are held 87% of the time (against 1%), and noise is not speech.
+- The models run in worker threads (src/voice/turns, onnxruntime-node on the CPU): about 40 ms of CPU per pause and
+  0.1 core of VAD for 80 people talking at once, at most two threads (one Smart Turn thread by default; past its
+  short queue a check is refused and the turn ends on silence), ~115 MB idle and ~190 MB working set. **Off unless
+  the operator sets `AGENT_VOICE_TURN_MODELS=true`**: without it nothing is loaded, every session ends turns on
+  silence and `smart` is refused. `AGENT_VOICE_TURN_WORKERS` sets the Smart Turn threads (default 1). onnxruntime's
+  usage telemetry is off (`ORT_DISABLE_TELEMETRY`). Logs:
+  `voice_turn_models_failed` (they did not load), `voice_turn_models_exited` (a thread died; it restarts).
+
 ## 0.10.0 (runtime-v0.10.0, 2026-10-15)
 
 End-user credits (a tenant's own users as billing subjects: balances, daily allowances by bucket, markup and daily
