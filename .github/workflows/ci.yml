@@ -1,4 +1,5 @@
 name: CI
+# Baseline for the CI efficiency measurements.
 on:
   push: { branches: [main] }
   pull_request:
