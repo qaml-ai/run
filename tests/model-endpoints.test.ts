@@ -145,7 +145,9 @@ test("a Codex model on a tenant's endpoint gets the ChatGPT backend's own reques
     responses([message("42.")], { input_tokens: 265_000, output_tokens: 10 }),
   ][index] ?? responses([message("Summary: the user asked for products.")]));
   const r = await runtime(t, () => ({ role: "assistant", content: "platform model" }), {}, tenantsWith(endpoint.url));
-  const agent = (await r.call("/v1/agents", { body: { model: "chiridion/openai-codex/gpt-5.5", thinkingLevel: "high" } })).json.id;
+  assert.equal((await r.call("/v1/end-user-settings", { method: "PATCH", body: { enabled: true } })).status, 200);
+  // No allowance or balance: subscription responses and their compaction still run.
+  const agent = (await r.call("/v1/agents", { body: { model: "chiridion/openai-codex/gpt-5.5", thinkingLevel: "high", subject: "subscription-person" } })).json.id;
   assert.equal((await r.prompt(agent, "6 times 7?")).outcome.result.reply, "42.");
 
   // The Codex Responses API at <endpoint>/openai-codex, over SSE, stateless, as Pi's Codex client sends it.
@@ -173,6 +175,11 @@ test("a Codex model on a tenant's endpoint gets the ChatGPT backend's own reques
   const rows = usage.days.filter((entry: any) => entry.model === "chiridion/openai-codex/gpt-5.5");
   assert.ok(rows.some((entry: any) => entry.kind === "compaction") && rows.every((entry: any) => entry.cost === 0 && entry.platformCost === 0), JSON.stringify(usage));
   assert.ok(rows.reduce((sum: number, entry: any) => sum + entry.input, 0) >= 265_010, JSON.stringify(usage));
+  const person = (await r.call("/v1/end-users/subscription-person")).json;
+  assert.equal(person.balance, 0);
+  assert.equal(person.held, 0);
+  assert.ok(person.today.buckets.every((bucket: any) => bucket.allowanceSpent === 0 && bucket.paidSpent === 0));
+  assert.equal((await r.call("/v1/end-users/subscription-person/ledger")).json.entries.length, 0);
 
   // No retries in Pi's Codex client either: an error is one request.
   failing = true;

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { Accounts, applyUsageRows, type Totals } from "./accounts.ts";
 import { postLedger } from "./billing.ts";
 import { databaseUnavailable, databaseRetryable, transaction, type Db } from "./db.ts";
-import { platformUsage, usageMissing } from "./platform-pricing.ts";
+import { isSubscriptionProvider, platformUsage, usageMissing } from "./platform-pricing.ts";
 import { enqueueEvents } from "./webhooks.ts";
 import { clock, network } from "./node-context.ts";
 import type { AttemptAck, ModelAttemptEvent } from "./model-attempt.ts";
@@ -109,6 +109,8 @@ export class ModelAttempts {
    * Undefined: the tenant does not meter its end users.
    */
   private async hold(tenant: string, platform: boolean, catalog: boolean, event: Extract<ModelAttemptEvent, { type: "begin" }>): Promise<Metered | { refused: NonNullable<AttemptAck["refused"]> } | undefined> {
+    // The connected ChatGPT plan pays for this call, including through a tenant's gateway.
+    if (isSubscriptionProvider(event.provider)) return undefined;
     const { endUser, estimate } = event;
     // A model the catalog lacks holds at a mid-range price, never the dearest it may be billed at: a hold that size would
     // refuse everyone on a small allowance. What it cost is what settles (`settle`).
@@ -185,14 +187,15 @@ export class ModelAttempts {
       const adjustment = amount - Number(row.charge);
       // What the call cost its end user: raw cost as the tenant pays for it; an estimated call on a key priced as
       // reported (the tenant's own, an unbilled tenant's) at the estimate of what it streamed, as a platform call would be.
-      const endUserUsage = !row.end_user || !estimate || (row.platform && row.catalog_priced) ? pricing.usage
+      const billableEndUser = row.end_user && !isSubscriptionProvider(row.provider);
+      const endUserUsage = !billableEndUser || !estimate || (row.platform && row.catalog_priced) ? pricing.usage
         : platformUsage(usage, row.provider, row.model, estimate).usage;
       // On the platform's key it is what the tenant is charged for the call (the provider's price and the cost of funding
       // it), so a markup is over the tenant's real cost, not under it.
-      let endUserRaw = !row.end_user ? 0 : row.platform && endUserUsage === pricing.usage && quote.amount > 0 ? quote.amount : Math.round(usageCost(endUserUsage).usd * 1_000_000);
+      let endUserRaw = !billableEndUser ? 0 : row.platform && endUserUsage === pricing.usage && quote.amount > 0 ? quote.amount : Math.round(usageCost(endUserUsage).usd * 1_000_000);
       // A call on a model with no price (and no cost the provider reported) is not free to its end user: it costs what
       // the catalog says for the model, else a mid-range price (`unpricedCost`), and is said, for the tenant to price it.
-      if (row.end_user && endUserRaw === 0 && typeof endUserUsage.providerCost !== "number") {
+      if (billableEndUser && endUserRaw === 0 && typeof endUserUsage.providerCost !== "number") {
         const unpriced = unpricedCost(row.provider, row.model);
         const raw = unpriced ? Math.round(costAt(unpriced, endUserUsage) * 1_000_000) : 0;
         if (raw > 0) {
@@ -202,7 +205,7 @@ export class ModelAttempts {
       }
       // An estimate is never charged past what the call held (the hold grows as it streams, so this binds only where the
       // estimate counts high); its hold gone, past what it was charged when it ended.
-      const capped = !!row.end_user && !!estimate && typeof usage.providerCost !== "number";
+      const capped = !!billableEndUser && !!estimate && typeof usage.providerCost !== "number";
       const settings = capped && hold ? (await sql.query("select markup_bps from end_user_settings where tenant=$1", [tenant])).rows[0] : undefined;
       const held = hold ? Number(hold.allowance) + unmarked(Number(hold.paid), Number(settings?.markup_bps ?? 0)) : row.totals ? Number(row.end_user_raw) : undefined;
       if (capped && held !== undefined) endUserRaw = Math.min(endUserRaw, held);

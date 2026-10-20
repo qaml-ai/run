@@ -6,6 +6,11 @@ type Usage = { input?: number; output?: number; cacheRead?: number; cacheWrite?:
 
 const count = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
 
+/** ChatGPT subscription calls, direct or through a tenant endpoint, have no per-token credit charge. */
+export function isSubscriptionProvider(provider: string): boolean {
+  return provider === "openai-codex" || provider.endsWith("/openai-codex");
+}
+
 /** The catalog's model, a routing variant (`…:nitro`) priced as its base. */
 function catalogModel(provider: string, id: string): Model<Api> | undefined {
   return getModel(provider, id) ?? getModel(provider, id.replace(/:[a-z]+$/, ""));

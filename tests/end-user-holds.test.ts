@@ -325,6 +325,59 @@ test("a failed call with no output releases its hold; one without an end user is
   assert.equal((await db.query("select count(*)::int as n from end_user_ledger where kind = 'usage'")).rows[0].n, 0);
 });
 
+test("ChatGPT subscription attempts hold and charge no end-user credit, including through an endpoint", async t => {
+  const { db, service, attempts } = await attemptsFixture();
+  await service.setSettings("payg", { enabled: true, allowances: { b: USD }, markupBps: 2_000 });
+  await service.post("payg", "person", { kind: "grant", amount: USD, key: "pay" });
+  const errors = t.mock.method(console, "error", () => {});
+  for (const provider of ["openai-codex", "gateway/openai-codex"]) {
+    for (const kind of ["response", "compaction"] as const) {
+      for (const usage of [
+        { input: 1_000, output: 100, cost: { total: 0 } },
+        { input: 1_000, output: 100, cost: { total: 0.1 }, providerCost: 0.1 },
+        {}, // Missing usage must not turn a subscription call into a paid estimate.
+      ]) {
+        const id = randomUUID();
+        const ack = attemptAck(await attempts.event("payg", "agent", false, false, { type: "begin", id, provider, model: "gpt-6-luna", kind, at: Date.now(), keyHash,
+          estimate: { inputTokens: 1_000, maxOutputTokens: 4_000, rates: { input: 0, output: 0 } }, endUser: { id: "person", bucket: "b" } }));
+        assert.deepEqual(ack, { tracked: true });
+        assert.equal((await holds(db)).length, 0);
+        assert.deepEqual(attemptAck(await attempts.event("payg", "agent", false, false, { type: "progress", id, chars: 20_000 })), { tracked: true });
+        await attempts.event("payg", "agent", false, false, { type: "finish", id, usage, chars: 20_000, completed: true });
+        await attempts.event("payg", "agent", false, false, { type: "finish", id, usage, chars: 20_000, completed: true });
+        const row = (await db.query("select end_user_raw, end_user_allowance, end_user_paid, charge, state from model_attempts where id=$1", [id])).rows[0];
+        assert.deepEqual([Number(row.end_user_raw), Number(row.end_user_allowance), Number(row.end_user_paid), Number(row.charge), row.state], [0, 0, 0, 0, "settled"]);
+      }
+    }
+  }
+  const person = await service.get("payg", "person", ["b"]);
+  assert.equal(person.balance, USD);
+  assert.equal(person.held, 0);
+  assert.equal(person.today.buckets[0].allowanceSpent, 0);
+  assert.equal(person.today.buckets[0].paidSpent, 0);
+  assert.equal((await service.ledger("payg", "person")).entries.filter(entry => entry.kind === "usage").length, 0);
+  assert.equal(errors.mock.calls.length, 0, "subscription calls never raise the fallback alarm");
+  // A person with neither allowance nor balance is never refused at begin.
+  await service.update("payg", "empty", { allowances: { b: 0 } });
+  assert.deepEqual(attemptAck(await attempts.event("payg", "agent", false, false, { type: "begin", id: randomUUID(), provider: "gateway/openai-codex", model: "gpt-6-luna", kind: "response", at: Date.now(), keyHash, endUser: { id: "empty", bucket: "b" } })), { tracked: true });
+});
+
+test("a subscription attempt begun before the exemption releases its hold and settles at zero", async t => {
+  const { db, service, attempts } = await attemptsFixture();
+  const id = randomUUID();
+  await service.post("payg", "person", { kind: "grant", amount: USD, key: "pay" });
+  await attempts.event("payg", "agent", false, false, { type: "begin", id, provider: "gateway/openai-codex", model: "gpt-6-luna", kind: "response", at: Date.now(), keyHash });
+  // Recreate the persisted payer and hold an earlier runtime would have left.
+  await db.query("update model_attempts set end_user='person', end_user_bucket='b' where id=$1", [id]);
+  await service.reserve("payg", "person", "b", { id, want: 100_000, min: 1 });
+  const errors = t.mock.method(console, "error", () => {});
+  await attempts.event("payg", "agent", false, false, { type: "finish", id, usage: { input: 1_000, output: 100, cost: { total: 0 } }, chars: 200, completed: true });
+  assert.equal((await holds(db)).length, 0);
+  assert.equal((await service.get("payg", "person")).balance, USD);
+  assert.equal((await service.ledger("payg", "person")).entries.filter(entry => entry.kind === "usage").length, 0);
+  assert.equal(errors.mock.calls.length, 0);
+});
+
 test("a model with no price is never free to its end user, nor refused for it: it holds and settles at the catalog's or a mid-range price, and is said", async () => {
   const { db, service, attempts } = await attemptsFixture();
   await service.post("payg", "person", { kind: "grant", amount: USD, key: "pay" });

@@ -3925,7 +3925,10 @@ of that. A call
 on a model with no price (one of your [own models](https://run.camelai.com/docs/guides/custom-models.md) declared without
 `pricing`) is never free to them: it is charged at the catalog's price for the model,
 else a mid-range price ($3 in, $15 out a million tokens), and logged as `end_user_unpriced_model`. Declare its
-pricing to charge your own.
+pricing to charge your own. ChatGPT subscription models (`openai-codex`), including through
+your model endpoint, use the connected ChatGPT plan: their model calls hold and spend no
+end-user credit or allowance, and can run with no end-user credit. Other billable work
+the agent performs (such as images or web search) is still metered.
 
 Changing an allowance or a limit never resets what was spent today: spend is kept
 per day and bucket, and the allowance is only the cap. Raise a bucket from $40 to $60

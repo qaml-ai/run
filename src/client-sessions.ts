@@ -1619,7 +1619,7 @@ export class ClientSessions {
           const turn = await this.turnLimit(session);
           if (turn) return { stopped: "turn_limit" as const, message: turn };
           // Its end user has nothing left for its next model request: stopped here, rather than refused at the request.
-          const payer = this.payer(session, this.runningRun(session));
+          const payer = this.modelPayer(session, this.runningRun(session));
           const broke = payer && await this.options.endUsers?.refusal(session.header.tenant, payer.id, payer.bucket);
           if (broke) return { stopped: "spend_limit" as const, message: broke.message, limit: "end_user" as const, code: END_USER_CREDIT, reason: broke.reason, bucket: broke.bucket, endUser: broke.endUser };
           // This node is leaving: the turn stops at this step boundary, and its next owner continues it (`park`).
@@ -1633,7 +1633,7 @@ export class ClientSessions {
           const run = this.runningRun(session);
           const { identity, keyScope } = session.header;
           // Who pays is the runtime's to say, never the host's: the agent's subject, from its run's bucket.
-          const payer = event.type === "begin" ? this.payer(session, run) : undefined;
+          const payer = event.type === "begin" ? this.modelPayer(session, run) : undefined;
           const { endUser: _given, ...asked } = event as Extract<typeof event, { type: "begin" }>;
           const scoped = event.type === "begin" ? { ...asked, ...(payer ? { endUser: payer } : {}), context: { ...(run ? { requestId: run.id, actor: run.actor } : {}), ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) } } : event;
           const tracked = await this.options.modelAttempt?.(session.header.tenant, session.header.id, !!session.platformKey, !!session.catalogPriced, scoped) ?? false;
@@ -4919,6 +4919,11 @@ export class ClientSessions {
     })().catch(() => { /* The fault is reported to every later request. */ });
   }
 
+  /** A connected ChatGPT subscription needs no end-user credit to start or continue model calls. */
+  private modelPayer(session: Session, run: RequestRecord | undefined): { id: string; bucket: string } | undefined {
+    return session.header.config.model.api === "openai-codex-responses" ? undefined : this.payer(session, run);
+  }
+
   /**
    * Who pays for the agent's work, and from which bucket: its subject (an end user of the tenant's), from the running
    * run's own bucket, else the agent's, else the default. Undefined for an agent with no subject: its tenant pays.
@@ -5143,7 +5148,7 @@ export class ClientSessions {
       const limited = agent ? refused(agent, "SPEND_LIMIT", "agent") : refused(await this.options.spendLimit?.(tenant), "SPEND_LIMIT", "tenant");
       if (limited) return limited;
       // Its end user has nothing left in the run's bucket.
-      const payer = this.payer(session, bucket ? { bucket } as RequestRecord : undefined);
+      const payer = this.modelPayer(session, bucket ? { bucket } as RequestRecord : undefined);
       const broke = payer && await this.options.endUsers?.refusal(tenant, payer.id, payer.bucket);
       return broke ? creditError(broke) : undefined;
     }
