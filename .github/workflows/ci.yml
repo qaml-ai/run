@@ -1,3 +1,4 @@
+# Keep every main commit eligible for the completed-CI deploy trigger.
 name: CI
 # Baseline for the CI efficiency measurements.
 on:
