@@ -44,6 +44,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/node-dependencies
+      - name: Test ECS deployment rollback handling (offline)
+        run: python3 infra/test-ecs-deploy.py
       - run: npm run typecheck
       - run: npm run test:ui
       - run: npm run build:console && npm run build
