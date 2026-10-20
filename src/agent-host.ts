@@ -1036,7 +1036,7 @@ export function createAgentHost(hostIO: HostIO) {
             // Summaries share credential/network gates but not the run's output
             // schema, temperature or max-output settings.
             summaryStream,
-            contextWindow: compactionModel().contextWindow,
+            get contextWindow() { return compactionModel().contextWindow; },
             onSummary: message => io.emit({ type: "compaction_usage", provider: message.provider,
               model: message.model, usage: message.usage, timestamp: message.timestamp, durable: true }),
             onCompaction: async ({ summary, keptMessages, at }) => {
