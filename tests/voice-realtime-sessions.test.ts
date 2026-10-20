@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EndUserCredits } from "../src/end-user-credits.ts";
 import type { VoiceCredit } from "../src/voice-sessions.ts";
-import type { HttpError } from "../src/http.ts";
+import { HttpError } from "../src/http.ts";
 import { AGENT, discordGrant, sleep, speak, until, voiceCluster } from "./voice-fakes.ts";
 import { fakeRealtimeProvider } from "./voice-realtime-fakes.ts";
 
@@ -149,6 +149,64 @@ test("ask_agent in a session: the agent's run is prompted (from the speaker), an
   assert.deepEqual(cluster.asked[0].request.params.from, { id: ANA });
   assert.equal((cluster.asked[0].request.params.metadata as Record<string, string>).via, "realtime");
   assert.deepEqual(JSON.parse(model.of("tool_result")[0].output), { reply: "It is sunny, 18 degrees." });
+  await a.voice.end("alice", created.id);
+});
+
+test("ask_agent whose agent's host stops under it (its node retiring) asks once more, by the same id, and the reply is spoken", async t => {
+  for (const [stopped, again, reply] of [
+    [new Error("Agent stopped"), undefined, { reply: "It is sunny, 18 degrees." }],
+    [new HttpError(502, "Agent stopped"), undefined, { reply: "It is sunny, 18 degrees." }],
+    // Stopped twice: the voice turn says it could not, as for any failure; anything else is not asked again.
+    [new Error("Agent stopped"), new Error("Agent stopped"), { error: "The agent could not do it just now." }],
+    [new Error("Agent is busy"), undefined, { error: "The agent could not do it just now." }],
+  ] as const) {
+    const asked: string[] = [];
+    let failures = [stopped, again].filter(Boolean) as Error[];
+    const cluster = await voiceCluster(t, {
+      playEveryMs: 2, askAgentRetryMs: 10,
+      submitStreaming: async function* (_agent, _tenant, request) {
+        asked.push(request.id);
+        const failure = failures.shift();
+        if (failure) throw failure;
+        yield "It is sunny, 18 degrees.";
+      },
+    });
+    const a = await cluster.node("http://a");
+    const grant = discordGrant();
+    const created = await a.voice.create("alice", { discord: grant, deliver: { agent: AGENT }, silenceMs: 200 });
+    const connection = await until(() => cluster.fake.open().find(open => open.credentials.sessionId === grant.sessionId), "the connection");
+    connection.others = [ANA];
+    connection.handlers.ready();
+    await until(async () => (await a.voice.get("alice", created.id)).state === "live", "live");
+    const model = await until(() => cluster.realtime.connections[0], "the model");
+    speak(connection, ANA, 0.5);
+    await until(() => model.responses === 1, "asked");
+    await model.answer("resp_1", { ms: 100, said: "Let me check.", tool: { id: "call_1", name: "ask_agent", args: { request: "Weather in Austin" } } });
+    await until(() => model.responses === 2, "the answer asked for");
+    assert.deepEqual(JSON.parse(model.of("tool_result")[0].output), reply, stopped.message);
+    assert.equal(asked.length, stopped.message === "Agent stopped" ? 2 : 1, stopped.message);
+    assert.equal(new Set(asked).size, 1, "the same request id each time");
+    failures = [];
+    await a.voice.end("alice", created.id);
+  }
+});
+
+test("ask_agent without a request is answered to the model, not sent to the agent", async t => {
+  const cluster = await realtimeCluster(t);
+  const a = await cluster.node("http://a");
+  const grant = discordGrant();
+  const created = await a.voice.create("alice", { discord: grant, deliver: { agent: AGENT }, silenceMs: 200 });
+  const connection = await until(() => cluster.fake.open().find(open => open.credentials.sessionId === grant.sessionId), "the connection");
+  connection.others = [ANA];
+  connection.handlers.ready();
+  await until(async () => (await a.voice.get("alice", created.id)).state === "live", "live");
+  const model = await until(() => cluster.realtime.connections[0], "the model");
+  speak(connection, ANA, 0.5);
+  await until(() => model.responses === 1, "asked");
+  await model.answer("resp_1", { ms: 100, said: "Let me check.", tool: { id: "call_1", name: "ask_agent", args: { request: " " } } });
+  await until(() => model.responses === 2, "the answer asked for");
+  assert.equal(cluster.asked.length, 0);
+  assert.match(JSON.parse(model.of("tool_result")[0].output).error, /needs a request/);
   await a.voice.end("alice", created.id);
 });
 
