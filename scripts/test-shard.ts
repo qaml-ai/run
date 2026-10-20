@@ -37,7 +37,7 @@ const files = readdirSync(tests).filter(name => name.endsWith(".test.ts")).sort(
 // The simulator hosts its nodes inline whatever AGENT_HOSTING says (tests/sim/sim.ts), so its files would only
 // run twice the same way: they run in the inline shards alone.
 const inlineOnly = (file: string) => file.startsWith("sim-") || file === "sim.test.ts";
-const filesFor = (hosting: string) => files.filter(file => hosting === "inline" || !inlineOnly(file));
+const filesFor = (hosting: string) => files.filter(file => process.env.TEST_MODE_MEASURE_ALL === "true" || hosting === "inline" || !inlineOnly(file));
 
 function run(args: string[], timingsOut: string, failuresOut: string) {
   return spawnSync(process.execPath, [...TEST_ARGS, timingsOut, failuresOut, ...args], { stdio: "inherit", cwd: fileURLToPath(new URL("..", import.meta.url)) }).status ?? 1;

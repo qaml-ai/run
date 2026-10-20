@@ -121,9 +121,10 @@ jobs:
           node --experimental-strip-types scripts/test-mode-instrument.ts
           mkdir -p test-timings/branches
           echo "TEST_MODE_TRACE_DIR=$PWD/test-timings/branches" >> "$GITHUB_ENV"
-          echo "NODE_OPTIONS=--import=$PWD/scripts/test-mode-owner.ts" >> "$GITHUB_ENV"
       - run: npm run test:shard -- ${{ matrix.shard }}/${{ needs.changes.outputs.shard-count }}
         env:
+          TEST_MODE_MEASURE_ALL: ${{ inputs.measure_modes == true && 'true' || 'false' }}
+          NODE_OPTIONS: ${{ inputs.measure_modes == true && '--import=./scripts/test-mode-owner.ts' || '' }}
           TEST_DATABASE_PER_FILE: "true"
           TEST_CONCURRENCY: ${{ (github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted')) && '2' || ((inputs.measure_modes == true || github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && '8' || '2') }}
           AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:${{ steps.postgres.outputs.port }}/postgres
