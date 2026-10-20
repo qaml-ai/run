@@ -128,6 +128,8 @@ export type NodeDeps = {
   sandbox: Record<string, unknown>;
   /** This task's private address on ECS, where peers reach it. */
   address?: string;
+  /** Production cgroup counters; absent for simulations and in-process test nodes. */
+  readCgroupMemory?: typeof cgroupMemory;
   /**
    * On ECS, a check of whether a newer deployment of this task's service has replaced it (undefined off ECS). Looked up
    * once the node has started listening, so an ECS metadata fetch never delays that.
@@ -196,7 +198,7 @@ export async function nodeDeps(config: NodeConfig): Promise<NodeDeps> {
   const db = await databaseFromEnvironment(env);
   const address = await taskAddress(env);
   return {
-    tenants, secrets, db, listen: handlers => listenFromEnvironment(handlers, env), sandbox, address, codeExecutor,
+    tenants, secrets, db, listen: handlers => listenFromEnvironment(handlers, env), sandbox, address, codeExecutor, readCgroupMemory: cgroupMemory,
     supersession: () => supersession(env), managedDiscord: () => managedDiscordSecrets(env),
   };
 }
@@ -1391,7 +1393,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   const loadTimer = setInterval(() => {
     if (loadReading) return;
     loadReading = true;
-    void cgroupMemory().then(cgroup => {
+    void (deps.readCgroupMemory?.() ?? Promise.resolve({})).then(cgroup => {
       const memory = process.memoryUsage();
       const media = voiceHost?.stats();
       console.log(nodeLoadLine({
