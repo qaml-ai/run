@@ -70,8 +70,16 @@ The storage tests also run against S3 with `AGENT_TEST_S3_BUCKET=<bucket>`.
 
 Every main commit's CI (`.github/workflows/ci.yml`) is its deploy gate: Deploy (`deploy.yml`) rolls the commit out
 once all of CI passes, from the image CI's `publish` job already pushed. The gate is typecheck, builds and UI tests
-(`checks`), the Python SDK (`python`), the whole suite in both hosting modes (`test`: twelve shards each), the
-simulator's fixed seeds (`sim`) and the ARM64 image (`image`). Fifty fresh simulator seeds run beside it on every
+(`checks`), the Python SDK (`python`), the whole suite in both hosting modes (`test`: five shards each on
+Blacksmith, twelve on standard runners), docs and API tests (`docs`), the simulator's fixed seeds (`sim`)
+and both image architectures (`image`). Ready same-repository PRs use Blacksmith; draft and fork PRs use
+standard GitHub runners, including native ARM64. Marking a draft ready starts a new CI run.
+
+On main, `scripts/ci-changes.sh` can prove that a successful same-repository PR run tested this exact
+merge tree. Only that proof skips checks, Python, test shards, fixed seeds, image smoke tests and docs;
+`publish` must still succeed before `CI success` passes. Missing artifacts, API errors, a changed tree
+or a changed PR head run the checks normally. Superseded PR and branch runs are cancelled; each main
+SHA runs independently so Deploy receives its completed CI event. Fifty fresh simulator seeds run beside it on every
 main commit (`sim-seeds.yml`): a seed that finds something new turns that run red without holding the deploy back.
 
 The shards are balanced by `tests/timings.json`. Each shard records its files' times as a `test-timings-*`
