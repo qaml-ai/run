@@ -1384,10 +1384,12 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   // Load for autoscaling, as a CloudWatch metric extracted from the log line.
   const loadTimer = setInterval(() => {
     const memory = process.memoryUsage();
+    const media = voiceHost?.stats();
     console.log(nodeLoadLine({
       hostedAgents: supervisor.agents.size, sessions: clients.sessions.size, volumes: volumes.size, runningTurns: clients.inFlight(), rssBytes: memory.rss,
       watchers: clients.watchers, dbConnections: db.totalCount, dbIdle: db.idleCount, dbWaiting: db.waitingCount,
       heapUsedBytes: memory.heapUsed, heapTotalBytes: memory.heapTotal, externalBytes: memory.external, arrayBuffersBytes: memory.arrayBuffers,
+      ...(media ? { voiceSessions: media.sessions, voiceWorkers: media.workers, voiceWorkerBytes: media.memoryMb * 1_048_576 } : {}),
     }, config.serviceName, { node, retiring: retiringSince !== undefined }));
     // Every node reports the shared outboxes' backlog: read it with Maximum.
     void webhooks.backlog().then(backlog => console.log(webhookBacklogLine(backlog)))

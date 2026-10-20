@@ -141,14 +141,17 @@ export class TaskProtection {
  * connections, idle ones, and queries waiting for one. `heapUsedBytes`,
  * `heapTotalBytes`, `externalBytes`, `arrayBuffersBytes`: the V8 heap and native
  * buffer memory inside `rssBytes`, to tell live objects from memory kept after use.
+ * `voiceSessions`, `voiceWorkers`, `voiceWorkerBytes`: voice media workers, the
+ * sessions in them, and their heaps and buffers (also inside `rssBytes`).
  */
 export type NodeLoad = {
   hostedAgents: number; sessions: number; volumes: number; runningTurns: number; rssBytes: number;
   watchers?: number; dbConnections?: number; dbIdle?: number; dbWaiting?: number;
   heapUsedBytes?: number; heapTotalBytes?: number; externalBytes?: number; arrayBuffersBytes?: number;
+  voiceSessions?: number; voiceWorkers?: number; voiceWorkerBytes?: number;
 };
-const OPTIONAL_LOAD = ["watchers", "dbConnections", "dbIdle", "dbWaiting"] as const;
-const OPTIONAL_BYTES = ["heapUsedBytes", "heapTotalBytes", "externalBytes", "arrayBuffersBytes"] as const;
+const OPTIONAL_LOAD = ["watchers", "dbConnections", "dbIdle", "dbWaiting", "voiceSessions", "voiceWorkers"] as const;
+const OPTIONAL_BYTES = ["heapUsedBytes", "heapTotalBytes", "externalBytes", "arrayBuffersBytes", "voiceWorkerBytes"] as const;
 
 /**
  * A `node_load` log line in CloudWatch Embedded Metric Format: CloudWatch Logs
