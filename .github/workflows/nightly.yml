@@ -15,6 +15,36 @@ permissions:
   contents: read
 concurrency: { group: nightly, cancel-in-progress: false }
 jobs:
+  hosting:
+    name: full hosting (${{ matrix.hosting }} ${{ matrix.shard }}/5)
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        hosting: [inline, process]
+        shard: [1, 2, 3, 4, 5]
+    env:
+      AGENT_HOSTING: ${{ matrix.hosting }}
+      TEST_MODE_SCOPE: full
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/node-dependencies
+      - uses: ./.github/actions/v8-exec
+      - name: Start test Postgres
+        id: postgres
+        uses: ./.github/actions/test-postgres
+      - run: npm run test:shard -- ${{ matrix.shard }}/5
+        env:
+          TEST_DATABASE_PER_FILE: "true"
+          TEST_CONCURRENCY: "8"
+          AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:${{ steps.postgres.outputs.port }}/postgres
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with: { name: "nightly-test-timings-${{ matrix.hosting }}-${{ matrix.shard }}", path: test-timings/, retention-days: 14 }
+      - name: Stop test Postgres
+        if: always() && steps.postgres.outputs.container != ''
+        run: docker rm -f '${{ steps.postgres.outputs.container }}'
   properties:
     runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
     timeout-minutes: 90

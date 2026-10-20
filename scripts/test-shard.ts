@@ -1,3 +1,4 @@
+import { allTestFiles, sensitiveFiles } from "./test-mode-files.ts";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -5,7 +6,8 @@ import { fileURLToPath } from "node:url";
 
 /**
  * CI runs the suite in shards, one job each: `test-shard.ts 2/4` runs the second of four
- * under the job's AGENT_HOSTING. Files are dealt longest first to the shard with the least
+ * under the job's AGENT_HOSTING. TEST_MODE_SCOPE=full (default) runs every file in either
+ * mode; sensitive retains only tests/mode-sensitive.json in process hosting, with a static dependency guard. Files are dealt longest first to the shard with the least
  * time so far, by their seconds in tests/timings.json, so every shard gets the same files on
  * every runner and together they run each file once. A file the table does not know counts
  * as DEFAULT_SECONDS. `test-shard.ts --plan 6` prints every shard, for six shards a mode
@@ -33,11 +35,10 @@ const TEST_ARGS = [
 ];
 const tests = new URL("../tests/", import.meta.url);
 const timingsFile = new URL("timings.json", tests);
-const files = readdirSync(tests).filter(name => name.endsWith(".test.ts")).sort();
-// The simulator hosts its nodes inline whatever AGENT_HOSTING says (tests/sim/sim.ts), so its files would only
-// run twice the same way: they run in the inline shards alone.
-const inlineOnly = (file: string) => file.startsWith("sim-") || file === "sim.test.ts";
-const filesFor = (hosting: string) => files.filter(file => process.env.TEST_MODE_MEASURE_ALL === "true" || hosting === "inline" || !inlineOnly(file));
+const files = allTestFiles;
+const scope = process.env.TEST_MODE_SCOPE ?? "full";
+if (!["full", "sensitive"].includes(scope)) throw new Error("TEST_MODE_SCOPE must be full or sensitive");
+const filesFor = (hosting: string) => hosting === "process" && scope === "sensitive" ? sensitiveFiles(false) : files;
 
 function run(args: string[], timingsOut: string, failuresOut: string) {
   return spawnSync(process.execPath, [...TEST_ARGS, timingsOut, failuresOut, ...args], { stdio: "inherit", cwd: fileURLToPath(new URL("..", import.meta.url)) }).status ?? 1;

@@ -29,11 +29,15 @@ jobs:
     outputs:
       tests: ${{ steps.changes.outputs.tests || 'true' }}
       reuse: ${{ steps.changes.outputs.reuse || 'false' }}
-      shards: ${{ (inputs.measure_modes == true || github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && !(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted')) && '[1,2,3,4,5]' || '[1,2,3,4,5,6,7,8,9,10,11,12]' }}
-      shard-count: ${{ (inputs.measure_modes == true || github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && !(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted')) && '5' || '12' }}
+      test-matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
+      - id: matrix
+        env:
+          SHARDS: ${{ (inputs.measure_modes == true || github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && !(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted')) && '5' || '12' }}
+          FULL: ${{ inputs.measure_modes == true && '--full' || '' }}
+        run: echo "matrix=$(node --experimental-strip-types scripts/test-mode-matrix.ts "$SHARDS" $FULL)" >> "$GITHUB_OUTPUT"
       - id: changes
         # API, artifact or git uncertainty always runs the full suite.
         continue-on-error: true
@@ -51,6 +55,7 @@ jobs:
       - uses: ./.github/actions/node-dependencies
       - name: Test ECS deployment rollback handling (offline)
         run: python3 infra/test-ecs-deploy.py
+      - run: node --experimental-strip-types --test scripts/test-mode-files.test.ts scripts/test-mode-matrix.test.ts scripts/test-mode-owner.test.ts
       - run: npm run typecheck
       - run: npm run test:ui
       - run: npm run build:console && npm run build
@@ -93,19 +98,18 @@ jobs:
   test:
     # Bound a hung shard while allowing the flaky-file rerun (scripts/test-shard.ts).
     timeout-minutes: 15
-    # Duration-balanced files, five shards per mode; larger runners run eight files at once.
+    # Full inline suite plus conservative process-sensitive files; eight files at once on larger runners.
     # Drafts, forks and self-hosted runners retain twelve shards per mode and two-file concurrency.
-    name: test (${{ matrix.hosting }} ${{ matrix.shard }}/${{ needs.changes.outputs.shard-count }})
+    name: test (${{ matrix.hosting }} ${{ matrix.shard }}/${{ matrix.count }})
     needs: changes
     if: needs.changes.outputs.tests == 'true'
     strategy:
       fail-fast: false
-      matrix:
-        hosting: [process, inline]
-        shard: ${{ fromJSON(needs.changes.outputs.shards) }}
+      matrix: ${{ fromJSON(needs.changes.outputs.test-matrix) }}
     runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && vars.CI_RUNNER_LABELS || ((inputs.measure_modes == true || github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && '["blacksmith-16vcpu-ubuntu-2404"]' || '["ubuntu-latest"]')) }}
     env:
       AGENT_HOSTING: ${{ matrix.hosting }}
+      TEST_MODE_SCOPE: ${{ matrix.scope }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/node-dependencies
@@ -121,13 +125,15 @@ jobs:
           node --experimental-strip-types scripts/test-mode-instrument.ts
           mkdir -p test-timings/branches
           echo "TEST_MODE_TRACE_DIR=$PWD/test-timings/branches" >> "$GITHUB_ENV"
-      - run: npm run test:shard -- ${{ matrix.shard }}/${{ needs.changes.outputs.shard-count }}
+      - run: npm run test:shard -- ${{ matrix.shard }}/${{ matrix.count }}
         env:
-          TEST_MODE_MEASURE_ALL: ${{ inputs.measure_modes == true && 'true' || 'false' }}
           NODE_OPTIONS: ${{ inputs.measure_modes == true && format('--import={0}/scripts/test-mode-owner.ts', github.workspace) || '' }}
           TEST_DATABASE_PER_FILE: "true"
           TEST_CONCURRENCY: ${{ (github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted')) && '2' || ((inputs.measure_modes == true || github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && '8' || '2') }}
           AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:${{ steps.postgres.outputs.port }}/postgres
+      - name: Require attributed branch traces
+        if: inputs.measure_modes == true
+        run: test "$(find test-timings/branches -name '*.jsonl' | wc -l)" -gt 0
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with: { name: "test-timings-${{ matrix.hosting }}-${{ matrix.shard }}", path: test-timings/, retention-days: 14, if-no-files-found: ignore }

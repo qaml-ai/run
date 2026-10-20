@@ -1,0 +1,176 @@
+{
+  "files": 267,
+  "static": 225,
+  "dynamic": 150,
+  "area": 10,
+  "historical": 7,
+  "selected": 225,
+  "runs": {
+    "before": {
+      "inline": {
+        "files": 267,
+        "seconds": 2507.4,
+        "firstFailures": []
+      },
+      "process": {
+        "files": 257,
+        "seconds": 2688.8,
+        "firstFailures": []
+      }
+    },
+    "trace": {
+      "inline": {
+        "files": 267,
+        "seconds": 3238.2,
+        "firstFailures": []
+      },
+      "process": {
+        "files": 267,
+        "seconds": 3686.9,
+        "firstFailures": []
+      }
+    }
+  },
+  "jobTimes": {
+    "before": {
+      "jobs": [
+        {
+          "name": "test (inline 1/5)",
+          "conclusion": "success",
+          "jobSeconds": 109.0,
+          "testSeconds": 86.0
+        },
+        {
+          "name": "test (inline 5/5)",
+          "conclusion": "success",
+          "jobSeconds": 74.0,
+          "testSeconds": 58.0
+        },
+        {
+          "name": "test (process 3/5)",
+          "conclusion": "success",
+          "jobSeconds": 87.0,
+          "testSeconds": 72.0
+        },
+        {
+          "name": "test (inline 4/5)",
+          "conclusion": "success",
+          "jobSeconds": 81.0,
+          "testSeconds": 65.0
+        },
+        {
+          "name": "test (process 2/5)",
+          "conclusion": "success",
+          "jobSeconds": 111.0,
+          "testSeconds": 93.0
+        },
+        {
+          "name": "test (process 4/5)",
+          "conclusion": "success",
+          "jobSeconds": 79.0,
+          "testSeconds": 63.0
+        },
+        {
+          "name": "test (process 1/5)",
+          "conclusion": "success",
+          "jobSeconds": 99.0,
+          "testSeconds": 84.0
+        },
+        {
+          "name": "test (inline 3/5)",
+          "conclusion": "success",
+          "jobSeconds": 90.0,
+          "testSeconds": 71.0
+        },
+        {
+          "name": "test (process 5/5)",
+          "conclusion": "success",
+          "jobSeconds": 77.0,
+          "testSeconds": 62.0
+        },
+        {
+          "name": "test (inline 2/5)",
+          "conclusion": "success",
+          "jobSeconds": 104.0,
+          "testSeconds": 87.0
+        }
+      ],
+      "jobMinutes": 15.18,
+      "testStepMinutes": 12.35,
+      "slowestJobSeconds": 111.0,
+      "slowestTestStepSeconds": 93.0,
+      "testWindowSeconds": 111.0,
+      "ciUntilUpdatedSeconds": 146.0
+    },
+    "trace": {
+      "jobs": [
+        {
+          "name": "test (inline 5/5)",
+          "conclusion": "success",
+          "jobSeconds": 115.0,
+          "testSeconds": 90.0
+        },
+        {
+          "name": "test (process 4/5)",
+          "conclusion": "success",
+          "jobSeconds": 185.0,
+          "testSeconds": 162.0
+        },
+        {
+          "name": "test (inline 4/5)",
+          "conclusion": "success",
+          "jobSeconds": 89.0,
+          "testSeconds": 68.0
+        },
+        {
+          "name": "test (process 2/5)",
+          "conclusion": "success",
+          "jobSeconds": 180.0,
+          "testSeconds": 157.0
+        },
+        {
+          "name": "test (process 5/5)",
+          "conclusion": "success",
+          "jobSeconds": 185.0,
+          "testSeconds": 160.0
+        },
+        {
+          "name": "test (inline 1/5)",
+          "conclusion": "success",
+          "jobSeconds": 116.0,
+          "testSeconds": 95.0
+        },
+        {
+          "name": "test (inline 2/5)",
+          "conclusion": "success",
+          "jobSeconds": 113.0,
+          "testSeconds": 91.0
+        },
+        {
+          "name": "test (process 3/5)",
+          "conclusion": "success",
+          "jobSeconds": 145.0,
+          "testSeconds": 123.0
+        },
+        {
+          "name": "test (process 1/5)",
+          "conclusion": "success",
+          "jobSeconds": 113.0,
+          "testSeconds": 89.0
+        },
+        {
+          "name": "test (inline 3/5)",
+          "conclusion": "success",
+          "jobSeconds": 129.0,
+          "testSeconds": 108.0
+        }
+      ],
+      "jobMinutes": 22.83,
+      "testStepMinutes": 19.05,
+      "slowestJobSeconds": 185.0,
+      "slowestTestStepSeconds": 162.0,
+      "testWindowSeconds": 186.0,
+      "ciUntilUpdatedSeconds": 260.0
+    }
+  }
+}
