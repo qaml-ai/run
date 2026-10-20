@@ -86,3 +86,22 @@ test("provider audio before its transcript consumes the endpoint only once", asy
   await until(() => state.spoke.filter(e => e.type === "ended").length === 2, "second audio ended");
   assert.equal(spoken().length, 1);
 });
+
+test("dropping a short utterance discards its held speculative answer", async t => {
+  const { spoken } = metrics(t);
+  const state = testBrain({ speculative: true });
+  t.after(() => state.brain.close());
+  await utter(state.brain, "1", 200, { open: true });
+  state.brain.turnEvent({ type: "likely_end", speaker: "1", at: Date.now(), silenceMs: 200, probability: 1 });
+  const c = state.connection();
+  await c.answer("stale", { ms: 100 });
+  assert.equal(state.playback.plays.length, 0, "speculative audio is held");
+  state.brain.drop("1");
+  assert.equal(state.brain.stats.speculativeDiscarded, 1);
+  assert.equal(c.of("truncate")[0].response, "stale");
+  await utter(state.brain, "1", 300);
+  assert.equal(c.responses, 2, "a new turn asks for a new response");
+  await c.answer("fresh", { ms: 100 });
+  await until(() => spoken().length === 1, "only the new answer played");
+  assert.equal(spoken()[0].speculative, false);
+});

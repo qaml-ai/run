@@ -268,6 +268,7 @@ export class RealtimeBrain {
   /** A speaker's utterance was too short to keep (a cough): its audio is dropped, and what it held goes on. */
   drop(speaker: string) {
     if (this.closed) return;
+    this.resumed(speaker);
     this.speaking.delete(speaker);
     this.mixer.flush();
     this.mixer.quiet(speaker);
