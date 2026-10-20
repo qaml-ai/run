@@ -355,7 +355,11 @@ test("ElevenLabs connection minutes settle speech usage and the end-user ledger 
   assert.ok(speech.length > 0);
   assert.ok(speech.every(entry => entry.provider === "elevenlabs" && entry.model === "gemini-2.5-flash-lite" && entry.platform && entry.identity?.subject === "ada"));
   assert.equal(Math.round(speech.reduce((sum, entry) => sum + entry.usage.cost.total, 0) * 1e6), expected);
-  const entries = (await credits.ledger("alice", "ada")).entries.filter(entry => entry.kind === "usage");
+  // A hold can briefly be absent between metering slices; wait for the final durable settlement.
+  const entries = await until(async () => {
+    const usage = (await credits.ledger("alice", "ada")).entries.filter(entry => entry.kind === "usage");
+    return usage.reduce((sum, entry) => sum + entry.raw, 0) === expected && usage;
+  }, "all ElevenLabs connection usage settled");
   assert.equal(entries.reduce((sum, entry) => sum + entry.raw, 0), expected);
   assert.ok(entries.every(entry => entry.bucket === "bot:7"));
   await until(async () => Math.round((await a.voice.get("alice", created.id)).costUsd * 1e6) === expected, "session cost");
