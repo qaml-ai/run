@@ -196,16 +196,34 @@ and the RDS instance also have deletion protection in AWS.
 
   A turn cut short by a crash or a SIGKILL is resumed by the agent's next owner.
 - **Deployments** are rolling: `minimumHealthyPercent` 100 and `maximumPercent`
-  200. The circuit breaker rolls back automatically if new tasks never pass
-  `/healthz`. It counts failed task launches, not time, so old tasks that stay
-  protected for hours never trip it. Deployment alarms cover a release that passes `/healthz` but fails
+  300 (room for a new generation while an older one still has protected turns).
+  The startup health-check grace period is 30 s. The circuit breaker rolls back automatically if new tasks never pass
+  `/healthz`. It counts task launch/health failures, not elapsed time, so waiting on healthy protected
+  old tasks alone never trips it. Startup grace suppresses early unhealthy-task replacement, not launch
+  failures. Automatic rollback requires a previous deployment in `COMPLETED` state
+  ([AWS failure detection](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/deployment-failure-detection.html)). Deployment alarms cover a release that passes `/healthz` but fails
   requests: `-target-5xx` or `-unhealthy-hosts` going off while a deployment is in progress rolls it back
   too (`ecs.tf`, `alarms`). The target group checks `/healthz` every 5 s: a new task serves after two
   passes, a task is taken out after three failures. A deployment's `rolloutState` stays
   `IN_PROGRESS` until its last old task is gone: up to `AGENT_RETIRE_MAX_MS`
   (20 min) + 65 s + 120 s, usually the longest step in flight. The runtime notices a newer deployment and retires
-  itself once idle. Don't make CI wait on `services-stable` or on
-  `rolloutState = COMPLETED`; wait as `ecs-deploy.sh` does.
+  itself once idle. `ecs-deploy.sh` first waits up to 30 minutes for the service's desired count of new
+  healthy targets, then waits for the requested revision's `rolloutState = COMPLETED`, with a 45-minute
+  total deadline including retirement and the deployment-alarm bake window. A rollback, failed state,
+  missing deployment, API error or timeout exits nonzero and fails Deploy. It never reissues an update
+  to counter a rollback. `services-stable` alone is insufficient: the previous revision can become stable
+  after rollback. Deploy has a 60-minute job timeout, including image preparation and public health checks.
+
+  **Guarded apply scope:** this stack has only `aws_ecs_service.runtime`, already configured with
+  `deployment_circuit_breaker { enable = true, rollback = true }`. The deployment-script hardening changes
+  no Terraform resources and needs no apply. Offline validation does not establish production drift.
+
+  **camel-bots gateway interaction (separate stack):** its start-before-stop deployment uses 100/200 percent
+  and a 60 s health-check grace period. Its leased gateways hand connections between overlapping tasks;
+  draining tasks save Discord sessions and release leases for peers to resume, while crashed owners require
+  heartbeat expiry. ECS rollback does not restore application leases or undo database changes. Keep capacity
+  for overlap and allow startup grace; the breaker observes task/target health, not successful Discord lease
+  handover. This runtime stack does not manage camel-bots gateway resources.
 
 [tsp]: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-scale-in-protection.html
 [hc]: https://repost.aws/knowledge-center/elb-ecs-tasks-improperly-replaced

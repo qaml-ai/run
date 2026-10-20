@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Deploy the runtime to the ECS service (infra/terraform/ecs.tf): build and push
 # the image from this checkout, register a new task definition revision with it,
-# roll the service, and wait until the new tasks are healthy.
+# roll the service, and wait until that deployment completes successfully.
 # Usage: infra/ecs-deploy.sh           build and push this checkout, then deploy it
 #        infra/ecs-deploy.sh <tag>     deploy an image already in ECR (no build)
 #
@@ -9,17 +9,13 @@
 # so settings Terraform changed (environment, secrets, cpu/memory) ship with the
 # next deploy. To ship a settings change alone, redeploy the running tag.
 #
-# Rolling: ECS starts new tasks first (maximumPercent 200) and waits for them to
-# pass /healthz. This script returns then: every new task is healthy in the
-# target group. Old tasks retire in the background, once the new ones run and
-# have joined (they serve until then). A task running turns
-# protects itself from being stopped, and ECS waits for that protection to end,
-# for its turns to reach a step boundary and move to a new task, up to
-# AGENT_RETIRE_MAX_MS (default 20 min). Each old task is then deregistered
-# (65 s on the ALB), gets SIGTERM, and has 120 s to drain. The service's
-# rolloutState stays IN_PROGRESS until the last one is gone. A rollout whose
-# new tasks fail is rolled back automatically (circuit breaker); this script
-# then fails.
+# Rolling: ECS starts new tasks first (maximumPercent 300) and waits for them to
+# pass /healthz. Old tasks then retire once their protected turns reach a step
+# boundary (AGENT_RETIRE_MAX_MS, default 20 min), followed by ALB deregistration
+# (65 s) and SIGTERM draining (120 s). Deployment alarms can still roll back
+# during this time and their bake window. Wait for this revision to COMPLETED,
+# not just healthy targets or services-stable (which can mean a rollback won).
+# Failure only exits: never resubmit the failed revision or undo ECS's rollback.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/.." && pwd)
@@ -82,17 +78,27 @@ echo "$arn"
 echo "==> Rolling $service"
 aws ecs update-service --cluster "$cluster" --service "$service" --task-definition "$arn" >/dev/null
 
-# Wait for the new deployment's tasks, not for the old ones to stop.
+# First wait for the new deployment's tasks, then its completed rollout.
+# Leave time for protected turns, draining and the deployment-alarm bake window.
+completion_deadline=$((SECONDS + 2700))
+check_deployment() {
+  local snapshot
+  snapshot=$(aws ecs describe-services --cluster "$cluster" --services "$service" \
+    --query 'services[0].[desiredCount, deployments[?status==`PRIMARY`] | [0].[id,taskDefinition,rolloutState]][]' --output text)
+  read -r desired deployment primary rollout <<<"$(tr '\n' ' ' <<<"$snapshot")"
+  if [[ "$primary" != "$arn" ]]; then
+    echo "::error::rolled back: the primary deployment is $primary (circuit breaker/alarm or external deployment); expected $arn" >&2
+    exit 1
+  fi
+  [[ "$rollout" != FAILED ]] || { echo "::error::rollout failed: $arn" >&2; exit 1; }
+  [[ "$rollout" == IN_PROGRESS || "$rollout" == COMPLETED ]] || {
+    echo "::error::missing or unexpected rollout state: $rollout" >&2; exit 1;
+  }
+}
 tg=$(aws elbv2 describe-target-groups --names "$NAME" --query 'TargetGroups[0].TargetGroupArn' --output text)
 deadline=$((SECONDS + 1800))
 while :; do
-  read -r deployment primary rollout desired <<<"$(aws ecs describe-services --cluster "$cluster" --services "$service" \
-    --query 'services[0].deployments[?status==`PRIMARY`] | [0].[id,taskDefinition,rolloutState,desiredCount]' --output text)"
-  if [[ "$primary" != "$arn" ]]; then
-    echo "rolled back: the primary deployment is $primary (circuit breaker)" >&2
-    exit 1
-  fi
-  [[ "$rollout" != FAILED ]] || { echo "rollout failed" >&2; exit 1; }
+  check_deployment
 
   # IPs of this deployment's running tasks, and of healthy targets.
   tasks=$(aws ecs list-tasks --cluster "$cluster" --started-by "$deployment" --desired-status RUNNING --query taskArns --output text)
@@ -110,9 +116,18 @@ while :; do
   ((SECONDS < deadline)) || { echo "new tasks not healthy after 30 minutes" >&2; exit 1; }
   sleep 5
 done
-echo "deployed: $image"
-echo "old tasks retire in the background; follow with:"
-echo "  aws ecs describe-services --region $REGION --cluster $cluster --services $service --query 'services[0].deployments[].[status,rolloutState,runningCount,taskDefinition]'"
+# Healthy targets are only the readiness gate. ECS can still roll back while
+# protected old tasks retire or deployment alarms bake. Do not update-service here.
+while :; do
+  check_deployment
+  [[ "$rollout" == COMPLETED ]] && break
+  ((SECONDS < completion_deadline)) || {
+    echo "::error::deployment did not complete after 45 minutes; ECS remains in control: $arn" >&2
+    exit 1
+  }
+  echo "waiting for deployment completion: $deployment ($rollout)"
+  sleep 5
+done
 
 # Through Cloudflare to the ALB: the ALB admits only Cloudflare's addresses (infra/terraform/alb.tf).
 # Retried: right after a rollout, old tasks are still deregistering, and one request may meet a connection the ALB had
@@ -124,3 +139,8 @@ for attempt in 1 2 3 4 5; do
   echo " (attempt $attempt failed; retrying in 5 s)" >&2
   sleep 5
 done
+
+# Check once more after the public smoke, before reporting success.
+check_deployment
+[[ "$rollout" == COMPLETED ]] || { echo "::error::deployment no longer completed: $arn" >&2; exit 1; }
+echo "deployed: $image ($arn, rollout COMPLETED)"
