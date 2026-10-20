@@ -173,9 +173,15 @@ A `TurnClock` follows one turn, from its cut to the first audio of the model's a
 Each finished turn writes one EMF line, `voice_turn_latency`. Each stage is a metric in ms, from `speechEnd`:
 `VoiceTurnCommitMs`, `VoiceTtsFirstAudioMs` and `VoiceFirstPacketMs` (= end of speech to first audio, the headline).
 There are deltas too: `VoiceRealtimeMs` (commit to the model's first audio) and `VoicePlayoutMs` (first audio to first
-packet). The dimension is `Path` (`realtime`). The properties carry `ttsProvider` and `ttsModel` (the realtime provider
-and model), `speculative` and `askAgent`. A turn that never reaches audio (no answer, `stay_silent`, barge-in, error)
-logs its marks with `outcome`, but publishes no `VoiceFirstPacketMs`.
+packet). `VoiceFirstPacketMs` measures direct answers, including filler before `ask_agent`; tool continuations and
+late replies never inherit the original turn clock. A turn that never reaches audio (no answer, `stay_silent`,
+barge-in, error) logs its marks with `outcome`, but publishes no `VoiceFirstPacketMs`.
+
+The corrected series uses `Path=realtime, Answer=direct` under `ServiceName`, with an additional `Provider` rollup
+for provider comparisons. Existing aggregate rollups remain for dashboards; the alarm uses the corrected series to
+avoid mixing historical samples. `ttsModel` stays a log property to keep metric cardinality small, alongside
+`ttsProvider`, `speculative` and `askAgent`. Agent execution time is `VoiceAskAgentMs` (formerly
+`VoiceRealtimeAskAgentMs`), with aggregate, `Provider` and `Outcome` rollups; it includes timeouts and failures.
 
 In CloudWatch, the `${name}-voice` dashboard (infra/terraform/voice.tf) shows p50, p95 and p99 of
 `VoiceFirstPacketMs`, p95 of each stage, and where the time goes (turn commit, the realtime model, playout), stacked. A `voice_turn_latency_p95` alarm fires when p95 `VoiceFirstPacketMs` exceeds
