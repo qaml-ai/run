@@ -12,10 +12,12 @@ heap, RSS, voice workers, and visible cgroup current/high-water memory every fiv
 seconds. The default remains 60 seconds and outbox polling stays at 60 seconds.
 The cgroup may include helper processes; do not interpret it as just the Node heap.
 
-Keep the existing protected ECS rollout for the initial instrumentation deploy:
-the current retirement code waits for a full replacement fleet, so a one-task
-surge limit can stall and eventually retire several old nodes together. Stage
-Pi eligibility one agent at a time instead. Wait for the exact revision to reach
+Keep the existing protected ECS rollout for the initial instrumentation deploy.
+The current retirement check uses the primary deployment's desired count, which
+can be smaller than the service's final desired count during a rollout. Old nodes
+can therefore retire before the full replacement fleet is ready; a one-task
+surge limit is not validated for this retirement behavior. Stage Pi eligibility
+one agent at a time instead. Wait for the exact revision to reach
 `COMPLETED`, including graceful retirement, before adding another agent. Observe
 at least 30 minutes of actual activity per stage, including voice where relevant.
 Stop expansion on request failures or sustained memory growth; roll back the
