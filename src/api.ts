@@ -28,7 +28,7 @@ import { definitionRoutes } from "./definitions-api.ts";
 import { runRoutes, type RunsContext } from "./runs.ts";
 import { endUserRoutes } from "./end-users-api.ts";
 import { bucketInput, DEFAULT_BUCKET, type EndUserCredits } from "./end-user-credits.ts";
-import { searchVoices, VoiceSearchInput, VoiceSearchResult } from "./voice-library.ts";
+import { getVoice, VoiceLookupInput, VoiceLookupResult, searchVoices, VoiceSearchInput, VoiceSearchResult } from "./voice-library.ts";
 import { voiceRoutes } from "./voice-api.ts";
 import type { VoiceSessions } from "./voice-sessions.ts";
 import type { ClientEvent, RequestRecord, TurnSnapshot } from "../shared/client-protocol.ts";
@@ -1243,6 +1243,18 @@ export function api(context: ApiContext) {
   }), async c => {
     const input = parse(VoiceSearchInput, c.req.query());
     return json(c, 200, await searchVoices(input, () => context.voiceLibraryKey?.(c.var.principal.tenant) ?? accounts.apiKey(c.var.principal.tenant, "elevenlabs")));
+  });
+  route(createRoute({
+    method: "get", path: "/v1/voices/{provider}/{id}", request: { params: VoiceLookupInput },
+    responses: {
+      200: reply("Exact voice metadata and usability; read-only, fetched fresh", VoiceLookupResult),
+      400: reply("Invalid provider/ID or VOICE_LOOKUP_UNAVAILABLE (no ElevenLabs key)", schema.ApiError),
+      404: reply("VOICE_NOT_FOUND: unknown or unavailable voice", schema.ApiError),
+      502: reply("VOICE_LOOKUP_FAILED: provider failure; details are sanitized", schema.ApiError),
+    },
+  }), async c => {
+    const input = parse(VoiceLookupInput, c.req.param());
+    return json(c, 200, await getVoice(input, () => context.voiceLibraryKey?.(c.var.principal.tenant) ?? accounts.apiKey(c.var.principal.tenant, "elevenlabs")));
   });
   voiceRoutes(route, () => context.voice);
 

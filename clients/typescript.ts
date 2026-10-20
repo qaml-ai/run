@@ -1443,11 +1443,16 @@ export interface LibraryVoice {
   provider: VoiceSearchOptions["provider"]; id: string; name: string; description: string | null;
   labels: Record<string, string>; publicOwnerId: string | null; previewUrl: string | null; category: string | null;
 }
+export type VoiceLookupResult = LibraryVoice & { usable: boolean; reason: string };
 /** Voice library discovery (`runtime.voices`, `agents.voices`). */
 export class Voices {
   private readonly transport: Transport;
   private readonly key: () => string;
   constructor(transport: Transport, key: () => string) { this.transport = transport; this.key = key; }
+  /** Check an exact voice ID without adding it to the provider account. */
+  get(provider: VoiceSearchOptions["provider"], id: string): Promise<VoiceLookupResult> {
+    return this.transport.json(`/v1/voices/${encodeURIComponent(provider)}/${encodeURIComponent(id)}`, this.key());
+  }
   search(options: VoiceSearchOptions): Promise<{ voices: LibraryVoice[] }> {
     const query = new URLSearchParams(Object.entries(options).flatMap(([name, value]) => value === undefined ? [] : [[name, String(value)]]));
     return this.transport.json(`/v1/voices/search?${query}`, this.key());

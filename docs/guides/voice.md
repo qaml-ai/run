@@ -219,6 +219,39 @@ no new configuration. Keys and upstream error bodies are never returned or logge
 A missing key returns `400 VOICE_SEARCH_UNAVAILABLE`; an upstream failure returns
 `502 VOICE_SEARCH_FAILED`.
 
+### Check a saved voice ID
+
+`GET /v1/voices/{provider}/{id}` checks an exact, case-sensitive ID before saving
+voice settings. It uses the same tenant authentication and credential resolution
+as search, fetches fresh metadata, and returns `Cache-Control: no-store`.
+
+```ts
+const voice = await agents.voices.get("elevenlabs", savedVoiceId);
+if (!voice.usable) throw new Error(voice.reason);
+```
+
+```python
+voice = await agents.voices.get("elevenlabs", saved_voice_id)
+# Synchronous SDK: voice = agents.voices.get("elevenlabs", saved_voice_id)
+```
+
+Also available as `runtime.voices.get`. The response is the voice object above
+with `usable: boolean` and a human-readable `reason`. ElevenLabs account voices
+(including copies with `sharing.original_voice_id`) are usable; otherwise the
+exact [voice metadata API](https://elevenlabs.io/docs/api-reference/voices/get)
+must supply a public owner for library import, with sharing enabled and no
+expired retirement date. Disabled or retired shared voices and voices without
+a public owner return `usable: false` with a reason. This check only reads:
+it does not add a voice, evict one, or synthesize audio. Import at session start
+can still fail because of account permissions, subscription limits, or a later
+provider change. Keep `publicOwnerId` with the selected ID as described above.
+
+Unknown IDs return `404 VOICE_NOT_FOUND`. Missing credentials return
+`400 VOICE_LOOKUP_UNAVAILABLE`; provider authentication, rate-limit, transport,
+and malformed-response failures return `502 VOICE_LOOKUP_FAILED`, without
+upstream error details. For `grok`, `openai`, and `gemini`, exact IDs are checked
+against the fixed lists without a provider key; unknown IDs return 404.
+
 The upstream [shared voice library API](https://elevenlabs.io/docs/api-reference/voices/voice-library/get-shared)
 receives `search`, `category` when supplied, and `page_size`. This implements the
 server-side discovery described in [camel-bots' authoring guide](https://github.com/qaml-ai/camel-bots/blob/main/docs/guides.md).

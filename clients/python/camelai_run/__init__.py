@@ -1237,6 +1237,10 @@ class Voices:
     def __init__(self, runtime):
         self._runtime = runtime
 
+    def get(self, provider, id):
+        """Check an exact voice ID: voice metadata, usable and reason. Does not add voices."""
+        return self._runtime._rest("GET", "/v1/voices/" + quote(provider, safe="") + "/" + quote(id, safe=""))
+
     def search(self, *, provider, q=None, category=None, limit=None):
         """Find voices by text; limit is 1 to 30 (default 10). No library results are cached."""
         query = urlencode({key: value for key, value in {"provider": provider, "q": q, "category": category, "limit": limit}.items() if value is not None})

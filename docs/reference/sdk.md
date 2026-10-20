@@ -22,6 +22,15 @@ pip install camelai-run       # Python 3.11+; "camelai-run[server]" for serve_to
 The public types need nothing else installed: messages and events are declared
 in the SDK (`Message`, `AgentEvent`, `AssistantMessage`, …).
 
+## Voice discovery
+
+Both `agents.voices` and `runtime.voices` expose `search({ provider, q?, category?, limit? })`
+in TypeScript (`search(provider=..., q=..., category=..., limit=...)` in Python)
+and `get(provider, id)` in both languages. `get` returns voice metadata plus
+`usable` and `reason`, checking a saved exact ID without adding it to an account.
+Python supports async and synchronous clients. See [voice discovery](../guides/voice.md#check-a-saved-voice-id)
+for responses, credentials, and errors.
+
 ## Agents
 
 ```ts

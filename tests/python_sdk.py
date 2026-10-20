@@ -1774,6 +1774,34 @@ class VersionTest(unittest.TestCase):
 
 
 class VoiceLibraryTest(unittest.IsolatedAsyncioTestCase):
+    async def test_get_async_and_sync(self):
+        seen = []
+
+        def handle(request):
+            seen.append(request)
+            return httpx.Response(200, json={"id": "cat & kitten?", "usable": True, "reason": "Available"})
+
+        runtime = AgentRuntime(url="https://runtime.example", api_key="tenant-token")
+        await runtime.http.aclose()
+        runtime.http = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+        try:
+            result = await runtime.voices.get("elevenlabs", "cat & kitten?")
+            self.assertTrue(result["usable"])
+        finally:
+            await runtime.http.aclose()
+        runtime = sync.AgentRuntime(url="https://runtime.example", api_key="tenant-token")
+        runtime.http.close()
+        runtime.http = httpx.Client(transport=httpx.MockTransport(handle))
+        try:
+            self.assertTrue(runtime.voices.get("elevenlabs", "cat & kitten?")["usable"])
+        finally:
+            runtime.http.close()
+        self.assertEqual(len(seen), 2)
+        for request in seen:
+            self.assertEqual(request.method, "GET")
+            self.assertEqual(request.url.raw_path, b"/v1/voices/elevenlabs/cat%20%26%20kitten%3F")
+            self.assertEqual(request.headers["Authorization"], "Bearer tenant-token")
+
     async def test_search_async_and_sync(self):
         seen = []
 
