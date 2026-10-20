@@ -61,6 +61,9 @@ export type SupervisorOptions = {
   historyBacklogBytes?: number;
   /** Execution engine requested for safe, idle sessions. Existing active legacy turns defer migration. */
   engine?: AgentEngine;
+  /** Exact operator-selected canary IDs; all other sessions use the default engine. */
+  piCanaryAgents?: ReadonlySet<string>;
+  piCanaryTenants?: ReadonlySet<string>;
   /** Shared Pi records use the same database and ownership claim as the session. */
   db?: Db;
 };
@@ -231,7 +234,8 @@ export class AgentSupervisor {
         const log = storage ? storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id), claim) : fileAppendLog<TranscriptRecord>(transcriptPath(directory));
         const transcript = bridge.committing ? committing(log, bridge.committing) : log;
         const location = { sessionId: id, directory, ...(this.options.db ? { db: this.options.db } : {}) };
-        const needsPi = this.engine === "pi-durable" || await hasPiStorage(location);
+        const engine = this.options.piCanaryAgents?.has(id) || (config.tenant !== undefined && this.options.piCanaryTenants?.has(config.tenant)) ? "pi-durable" : this.engine;
+        const needsPi = engine === "pi-durable" || await hasPiStorage(location);
         if (needsPi && storage && !this.options.db) throw new Error("Pi durable shared storage requires the supervisor database");
         const durable = needsPi ? await openPiStorage({ ...location, ...(claim ? { claim } : {}), committing: async (entry, sql) => {
           if (bridge.nativeCommitting) await bridge.nativeCommitting(entry)?.(sql);
@@ -243,14 +247,14 @@ export class AgentSupervisor {
         } }) : undefined;
         let release: (() => void) | undefined;
         try {
-          if (durable && this.engine === "pi-durable" && !await loadLegacyMigration(durable)) {
+          if (durable && engine === "pi-durable" && !await loadLegacyMigration(durable)) {
             const previous = this.migrating;
             this.migrating = new Promise<void>(resolve => { release = resolve; });
             await previous;
           }
           if (pending.cancelled) throw new Error("Agent stopped");
           hosted();
-          const init = { ...config, engine: this.engine, id, directory, tools: bridge.definitions };
+          const init = { ...config, engine, id, directory, tools: bridge.definitions };
           return this.hosting === "inline" ? await this.startInline(id, init, bridge, transcript, durable) : await this.startProcess(id, directory, init, bridge, transcript, durable);
         } catch (error) { await durable?.close(BACKGROUND_CONTEXT); await transcript.close(); throw error; }
         finally { release?.(); }

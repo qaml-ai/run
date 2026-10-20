@@ -1,8 +1,7 @@
 # Pi durable sessions
 
-The runtime has a local, opt-in replacement backed by `@earendil-works/pi-durable`
-1.3.0. The default remains the current pi-agent-core runtime (`legacy`). No
-production deployment or migration has been performed.
+The runtime has an opt-in replacement backed by `@earendil-works/pi-durable`
+1.3.0. The default remains the current pi-agent-core runtime (`legacy`). The code is deployed with Pi disabled; activation and migration are separate rollout steps.
 
 ```sh
 AGENT_ENGINE=pi-durable npm start
@@ -11,6 +10,21 @@ AGENT_ENGINE=pi-durable npm start
 Both `AGENT_HOSTING=inline` and `process` are supported. The choice applies when a
 host opens; already awake hosts retain their engine. Setting `AGENT_ENGINE=legacy`
 selects the current runtime again.
+
+## Canary before cutover
+
+Keep `AGENT_ENGINE=legacy` and set `AGENT_PI_CANARY_AGENTS` or
+`AGENT_PI_CANARY_TENANTS` to comma-separated exact IDs chosen by the operator.
+Apply the same allowlist on every node. Selected sessions use Pi on their next
+host open; every other session keeps the default engine. Existing active hosts
+finish on their current engine. These settings cannot be changed by tenants.
+
+Exercise a new session and an existing idle session, check retained history and
+request IDs, tools, human-input resume, and cross-node reload. Observe memory,
+CPU, latency and errors before broadening the cohort. Removing an ID reopens it
+on the default engine and uses the documented rollback path. Once the canary is
+accepted, `AGENT_ENGINE=pi-durable` selects Pi fleet-wide; keep the old engine and
+migration support while deferred sessions or rollback needs remain.
 
 ## Ownership of state
 
