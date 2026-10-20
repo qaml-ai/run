@@ -40,6 +40,8 @@ test("model and run errors are sorted into a few classes", () => {
   assert.equal(errorClass("Rate limit exceeded for model"), "rate_limit");
   assert.equal(errorClass("Overloaded"), "overloaded");
   assert.equal(errorClass("prompt is too long: 250000 tokens > 200000 maximum"), "context_overflow");
+  // OpenRouter refusing a request's image content (a 413 within milliseconds): its own class, not other.
+  assert.equal(errorClass('413 {"message":"Downloaded image content cannot exceed 30MB","code":413}'), "image_limit");
   assert.equal(errorClass("401 Unauthorized: invalid x-api-key"), "auth");
   assert.equal(errorClass("402 Insufficient credits"), "billing");
   // OpenRouter's refusal when the platform account cannot reserve a response's max_tokens (the billing-errors alarm).
