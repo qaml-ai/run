@@ -4,7 +4,7 @@ Draft branch `deploy-boot-speed`, baseline `aba52e72b83e`. Production access was
 
 ## Production baseline
 
-Latest [Deploy run](https://github.com/qaml-ai/run/actions/runs/39354435259): the `infra/ecs-deploy.sh` step took **84 seconds**, versus **113 seconds** in the [previous run](https://github.com/qaml-ai/run/actions/runs/39338146194). This sample does not consistently reproduce the reported ~140 seconds. The job itself took 98 seconds (runner/job overhead is separate).
+Latest [Deploy run](https://github.com/qaml-ai/run/actions/runs/39354435259): the `infra/ecs-deploy.sh` step took **84 seconds**, versus **113 seconds** in the [previous run](https://github.com/qaml-ai/run/actions/runs/39338146194). This sample does not consistently reproduce the reported ~140 seconds. The job API timestamps span 101 seconds (runner/job overhead is separate).
 
 All times below are seconds since each task's `createdAt`. Raw, sanitized observations are in `production-before.json`.
 
@@ -25,7 +25,7 @@ Startup inspection: `nodeDeps` loads tenants/secrets, checks the V8/parser sandb
 - The node creates a deferred model host; workers first start after the HTTP socket binds, or on an earlier voice client if one exists. Model readiness includes both Silero and Smart Turn. Model failure keeps the existing restart/backoff policy.
 - Cold inference uses the existing bounded timeouts (VAD 500 ms, end-of-turn 1 s) and TurnTaker's level/silence fallback; a session is not rejected because its models are warming. Subsequent calls use the loaded models without recreating the session. Explicit smart mode stays enabled while temporarily unavailable. Models disabled by configuration still retain their previous behavior.
 - Migrations, sandbox validation, and cluster/storage prerequisites remain before HTTP binding. No early unconditional health endpoint bypasses those prerequisites.
-- `startup_stage` logs contain only stage names, elapsed milliseconds and process uptime. `listening` gains uptime. Voice workers report individual model loading times. These allow an approved rollout to distinguish imports/process setup, secrets, migrations, sandbox checks, storage, ownership, notifications, managed Discord configuration and model loading.
+- `startup_stage` diagnostics go to stderr (preserving stdout's initial listening record) and contain only stage names, elapsed milliseconds and process uptime. `listening` gains uptime. Voice workers report individual model loading times. These allow an approved rollout to distinguish imports/process setup, secrets, migrations, sandbox checks, storage, ownership, notifications, managed Discord configuration and model loading.
 - Production dependencies install and prune in their own Docker stage. Runtime gets only that dependency tree; development dependencies and compiler stages were **already excluded**. Remove dependency source maps, type declarations, and ONNX build/header metadata, preserving executable code/native binaries/licenses. Both architecture image CI jobs now execute real VAD and Smart Turn inference from the pruned image.
 
 ## Local measurements
