@@ -1,5 +1,6 @@
 import { END_USER_CREDIT, type AttemptAck, type ModelAttemptHook } from "./model-attempt.ts";
 import { bucketInput, creditError, DEFAULT_BUCKET, MICROS, type CreditHold, type EndUserCredits } from "./end-user-credits.ts";
+import { durableEntryMessages } from "./pi-durable/agent.ts";
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import type { ServerResponse } from "node:http";
 import { Hono, type Context } from "hono";
@@ -675,6 +676,8 @@ export type DefinitionConfig = { id: string; revision: number; config: Pick<Agen
 export type UsageRecord = {
   provider?: string; model?: string; usage: any; timestamp?: number; kind?: "turn" | "compaction" | "transcription" | "image" | "speech"; platform?: boolean; searches?: number; renders?: number; toolSearch?: boolean; toolSearches?: number;
   transcriptions?: number; audioSeconds?: number; images?: number; speeches?: number;
+  /** Already persisted beside a Pi journal response. */
+  durableReceipt?: boolean;
   /** For a model response: the run it was in, who acted in it, whom the agent acts for, and its key scope (for usage webhooks). */
   requestId?: string; actor?: string; identity?: AgentIdentity; keyScope?: string;
 };
@@ -877,7 +880,7 @@ export class ClientSessions {
     // turn it left open is settled in the transcript first, as the agent's next start would, so the run is never seen to
     // end before its turn has (a fork, a history page). A failed write fails the load, which leaves the run to the next.
     if (decisions.some(({ request, decision }) => (decision === "aborted" || decision === "uncertain") && resumable(request)) && !decisions.some(({ decision }) => decision === "resume")) {
-      await this.supervisor.closeTurn(id, claim);
+      await this.closeTurn(session);
     }
     for (const { request, decision } of decisions) {
       if (decision === "queued") queued.push(request);
@@ -1649,12 +1652,15 @@ export class ClientSessions {
         lease: () => this.leased(session),
         background: event => this.backgroundEvent(session, event),
         committing: record => this.spendEffect(session, record),
+        nativeCommitting: entry => this.nativeUsageEffect(session, entry),
         history: {
           // One whose create failed before writing its row begins it now, and is indexed from its log.
           indexed: async () => (await this.historyIndex.indexed(id)) ?? (await this.historyIndex.begin(id), 0),
           write: chunk => this.historyIndex.write(id, session.claim, chunk),
         },
       }, session.claim));
+      // Init can recover native responses through committing without emitting their old message_end events.
+      await this.refreshSpend(session);
       // Bootstrap history has been imported into the transcript; keep only one authority.
       if (session.header.config.initialMessages !== undefined) {
         delete session.header.config.initialMessages;
@@ -3293,7 +3299,7 @@ export class ClientSessions {
     // Its children's rows go with it; a child's own row stays for its parent, whose next sweep hears it is gone.
     await sql.query("delete from agent_children where parent = $1", [id]);
     await this.storage.removeLog(this.journalKey(id));
-    await this.supervisor.purge(id);
+    await this.supervisor.purge(id, sql);
     await this.historyIndex.remove(id, sql);
     await deleteTail(sql, id, [this.journalKey(id), AgentSupervisor.transcriptKey(id)]);
   }
@@ -3705,7 +3711,10 @@ export class ClientSessions {
       const indexed = await this.historyIndex.indexed(id);
       const reported = "unloaded" in session ? await this.historyIndex.reported(id) : Math.max(0, ...[...session.requests.values()].map(record => Number((record.outcome?.result as { messages?: unknown } | undefined)?.messages) || 0));
       const orphaned = "unloaded" in session && !!(await this.db.query("select 1 from agents where id = $1 and pending_runs", [id])).rowCount;
-      if (tail === null || indexed === undefined || indexed < reported || orphaned) tail = await this.supervisor.backlog(id, indexed ?? 0);
+      // A Pi response may have committed just before its legacy projection and run outcome failed. Neither
+      // reported nor pending_runs then reveals that tail; a cold read must also consult the native journal.
+      const durable = await this.supervisor.hasDurableHistory(id);
+      if (tail === null || indexed === undefined || indexed < reported || orphaned || durable) tail = await this.supervisor.backlog(id, indexed ?? 0);
     }
     return this.historyIndex.page(id, { before, limit }, tail ?? undefined);
   }
@@ -4568,7 +4577,8 @@ export class ClientSessions {
           const run = { requestId: record.id, ...(record.actor ? { actor: record.actor } : {}), ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) };
           if (billed(event?.type === "message_end" ? event.message : undefined)) {
             const usage = this.responseUsage(session, event.message);
-            this.options.onUsage?.(session.header.tenant, id, { ...event.message, usage, ...run, provider: via + event.message.provider, platform: !!session.platformKey });
+            this.options.onUsage?.(session.header.tenant, id, { ...event.message, usage, ...run, provider: via + event.message.provider, platform: !!session.platformKey,
+              ...(event.durable && this.supervisor.options.db ? { durableReceipt: true } : {}) });
             // Its spend was written with the transcript record (`spendEffect`).
             this.counted(session, responseCost(usage));
             this.tally(session, record.id, usage);
@@ -4830,7 +4840,7 @@ export class ClientSessions {
     // A model turn that began and ends with no host (a resumed one whose agent failed to start, or one whose agent is gone):
     // the turn it left open is settled first, as at a load. A failed write gives the session up, and the run to the next load.
     if (resumable(record) && !this.supervisor.agents.has(session.header.id)) {
-      try { await this.supervisor.closeTurn(session.header.id, session.claim); }
+      try { await this.closeTurn(session); }
       catch (error) { this.fail(session, error, "transcript"); return; }
       if (this.closed || session.fault || session.leaving || session.requests.get(record.id)?.state !== "running") return;
     }
@@ -4995,6 +5005,32 @@ export class ClientSessions {
     return session.spend;
   }
 
+  /** Close a stopped turn through the same spend transaction as its host's transcript writes. */
+  private async closeTurn(session: Session) {
+    await this.spendOf(session);
+    // A load can settle the old turn before ensureStarted initializes the pricing of recovered responses.
+    if (session.spend && (session.platformKey === undefined || session.catalogPriced === undefined) && await this.supervisor.hasDurableHistory(session.header.id)) {
+      const [{ platform }, priced] = await Promise.all([
+        this.apiKey(session, session.header.config.model.provider, session.header.keyScope),
+        this.options.catalogPriced?.(session.header.tenant),
+      ]);
+      session.platformKey = platform;
+      session.catalogPriced = !!priced;
+    }
+    const closed = await this.supervisor.closeTurn(session.header.id, session.claim, record => this.spendEffect(session, record));
+    // Recovered messages have no live message_end event to count them in memory. Read the committed ledger instead;
+    // a retry or a second close finds the same native cursor and cannot charge the response twice.
+    await this.refreshSpend(session);
+    return closed;
+  }
+
+  private async refreshSpend(session: Session) {
+    if (!session.spend) return;
+    session.spend = undefined;
+    const spend = await this.spendOf(session);
+    if (spend) spend.spent += session.unwritten ?? 0;
+  }
+
   /**
    * A response's usage as it is billed: on a platform key of a tenant that pays for it, priced from the runtime's catalog,
    * never from the agent's stored model; one that reported no usage, or was cut short, is charged an estimate (the
@@ -5028,8 +5064,10 @@ export class ClientSessions {
     const usage = this.billable(session, event.usage, event.provider, event.model, usageMissing(event.usage) ? { chars: Number(event.chars) || 0, completed: true } : undefined);
     // Responses through the tenant's own endpoint count under it: `chiridion/openrouter/<model>`.
     const via = this.endpoint(session) ? `${session.header.config.model.provider}/` : "";
-    this.options.onUsage?.(session.header.tenant, session.header.id, { ...event, usage, ...run, provider: via + event.provider, kind: "compaction", platform: !!session.platformKey });
-    this.spent(session, responseCost(usage));
+    this.options.onUsage?.(session.header.tenant, session.header.id, { ...event, usage, ...run, provider: via + event.provider, kind: "compaction", platform: !!session.platformKey,
+      ...(event.durable && this.supervisor.options.db ? { durableReceipt: true } : {}) });
+    if (event.durable && this.supervisor.options.db) this.counted(session, responseCost(usage));
+    else this.spent(session, responseCost(usage));
     return usage;
   }
 
@@ -5071,6 +5109,30 @@ export class ClientSessions {
    * never lost apart from the history it paid for: a new owner reads what the history it loads cost. Only the owner
    * writes, and an increment for a limit replaced since (`set_at`) is dropped: a new limit counts from zero.
    */
+  private nativeUsageEffect(session: Session, entry: import("@earendil-works/pi-durable").EntryRecord): CommitEffect | undefined {
+    const summary = entry.kind === "camel.compaction.usage" ? (entry.data as any)?.message : undefined;
+    const message = summary ?? durableEntryMessages(entry).find(item => billed(item.message))?.message;
+    if (!message || !billed(message)) return undefined;
+    const usage = this.responseUsage(session, message, true);
+    const via = this.endpoint(session) ? `${session.header.config.model.provider}/` : "";
+    const request = [...session.running.values()].find(record => RUN_METHODS.includes(record.method));
+    const { identity, keyScope } = session.header;
+    const payload: UsageRecord = { usage, provider: via + (message as any).provider, model: (message as any).model,
+      timestamp: message.timestamp, platform: !!session.platformKey, kind: summary ? "compaction" : "turn",
+      ...(request ? { requestId: request.id, ...(request.actor ? { actor: request.actor } : {}) } : {}),
+      ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) };
+    const spend = this.spendWrite(session, responseCost(usage));
+    // The current runtime already charges tracked attempts durably, including end-user holds.
+    if (usage.billingAttemptId) return spend;
+    return async sql => {
+      if (!sql) { await spend?.(); return; }
+      const inserted = await sql.query(`insert into pi_usage_receipts (session_id, entry_id, tenant, message)
+        values ($1, $2, $3, $4::jsonb) on conflict do nothing returning entry_id`,
+        [session.header.id, entry.id, session.header.tenant, JSON.stringify(payload)]);
+      if (inserted.rowCount) await spend?.(sql);
+    };
+  }
+
   private spendEffect(session: Session, record: TranscriptRecord): CommitEffect | undefined {
     if (!session.spend) return undefined;
     const message = record.t === "message" ? record.message : undefined;

@@ -160,15 +160,15 @@ export class Billing {
   }
 
   /** Admin tenants are billed as their entry says (unbilled by default); tenants created by sign-in as their row says. */
-  async mode(tenant: string): Promise<BillingMode> {
-    return this.tenants.billing(tenant) ?? (await this.row(tenant)).mode;
+  async mode(tenant: string, sql?: Sql): Promise<BillingMode> {
+    return this.tenants.billing(tenant) ?? (await this.row(tenant, sql)).mode;
   }
 
   /** A self-serve tenant's billing mode and the limits set for it (`tenants.limits`), re-read at most every minute. */
-  private async row(tenant: string) {
+  private async row(tenant: string, sql: Sql = this.db) {
     const cached = this.modes.get(tenant);
     if (cached && cached.until > Date.now()) return cached;
-    const row = (await this.db.query("select billing, limits from tenants where id = $1", [tenant])).rows[0];
+    const row = (await sql.query("select billing, limits from tenants where id = $1", [tenant])).rows[0];
     const set = (key: string) => Number.isSafeInteger(row?.limits?.[key]) ? { [key]: row.limits[key] as number } : {};
     const entry: { mode: BillingMode; maxStorageBytes?: number; agentCreatesPerMinute?: number; runsPerMinute?: number; maxRunResponses?: number; maxRunSeconds?: number; codeCpuMs?: number; codeMaxTimeoutMs?: number; codeConcurrency?: number; until: number } = {
       mode: (row?.billing === "prepaid" ? "prepaid" : "none") as BillingMode, ...set("maxStorageBytes"), ...set("agentCreatesPerMinute"), ...set("runsPerMinute"),

@@ -15,9 +15,14 @@ export interface CompactionState {
   at: number;
 }
 
+/** A model message's stable location in Pi's durable journal, also kept with its projection. */
+export type PiMessageCursor = { entryId: number; index: number };
+
 /** Native Pi messages, appended as each one ends; never re-serialized per delta. */
 export type TranscriptRecord =
-  | { t: "message"; message: AgentMessage }
+  | { t: "message"; message: AgentMessage; pi?: PiMessageCursor }
+  /** Native execution records already projected, including intentionally suppressed abort results. */
+  | { t: "pi"; cursor: PiMessageCursor }
   /** Drops the latest message: a provider error that was retried. */
   | { t: "retract" }
   | { t: "turn"; active: boolean }
@@ -42,6 +47,13 @@ export type TranscriptRecord =
 
 /** Read an agent's full history from a single-host directory. */
 export async function readTranscript(directory: string): Promise<AgentMessage[]> {
+  const { openPiJournalReader } = await import("./pi-durable/storage.ts");
+  const reader = await openPiJournalReader({ sessionId: "local", directory });
+  if (reader) try {
+    const { nativeTranscriptRecords } = await import("./pi-durable/transcript.ts");
+    const records = await nativeTranscriptRecords(reader);
+    if (records) return historyOf(records);
+  } finally { await reader.close((await import("@earendil-works/chord/context")).BACKGROUND_CONTEXT); }
   return historyOf(await fileAppendLog<TranscriptRecord>(transcriptPath(directory)).read());
 }
 
@@ -50,7 +62,7 @@ export async function readTranscriptLog(log: AppendLog<TranscriptRecord>): Promi
   return historyOf(await log.read());
 }
 
-function historyOf(records: TranscriptRecord[]): AgentMessage[] {
+export function historyOf(records: TranscriptRecord[]): AgentMessage[] {
   let messages: AgentMessage[] = [];
   for (const record of records) {
     if (record.t === "message") messages.push(record.message);
@@ -67,6 +79,12 @@ function historyOf(records: TranscriptRecord[]): AgentMessage[] {
  */
 export interface Backlog { from: number; kept: number; messages: AgentMessage[]; sizes: number[]; bytes: number; turns: number[] }
 
+/** An owner's reduced transcript for initializing an agent process, rather than sending its entire log over IPC. */
+export type TranscriptSnapshot = Pick<Transcript, "context" | "total" | "compaction" | "system" | "updates" | "active" | "turnStart" | "awaiting" | "backlog" | "piCursor"> & {
+  requests: string[];
+  calls: [string, number][];
+};
+
 /** The most a backlog holds in memory by default; past it, what it holds is left to the log. */
 export const BACKLOG_BYTES = 8_000_000;
 
@@ -77,8 +95,9 @@ function userTurns(from: number, messages: AgentMessage[]) {
 
 /**
  * The agent's working set: the latest compaction summary plus the messages after
- * its cut. Earlier messages stay in the log (for history) but not in memory, so an
- * agent's memory and load time stop growing with its age.
+ * its cut. Earlier messages stay in the log (for history) but not in memory, so
+ * message bodies retained between runs do not grow with its age. Reload still scans the log; request and call IDs
+ * are retained for deduplication and call identity even after their messages have been compacted.
  */
 /** The request a user message was sent by, if it names one. */
 const requestOf = (message: AgentMessage) => message.role === "user" ? (message as { requestId?: string }).requestId : undefined;
@@ -111,6 +130,8 @@ export class Transcript {
   requests = new Set<string>();
   /** Each tool call id, and the index of the latest assistant message that made a call with it, over the whole log. */
   calls = new Map<string, number>();
+  /** The latest native Pi message copied to this transcript; survives retractions. */
+  piCursor?: PiMessageCursor;
   /** What the history index lacks, kept while this transcript is written; undefined when nothing indexes it. */
   backlog?: Backlog;
   readonly log: AppendLog<TranscriptRecord>;
@@ -157,13 +178,28 @@ export class Transcript {
     return view;
   }
 
+  async hasRequest(requestId: string) { return this.requests.has(requestId); }
+
   async load() {
-    for (const record of await this.log.read()) this.apply(record);
+    if (this.log.replay) await this.log.replay(record => this.apply(record));
+    else for (const record of await this.log.read()) this.apply(record);
+  }
+
+  snapshot(): TranscriptSnapshot {
+    const { context, total, compaction, system, updates, active, turnStart, awaiting, backlog, piCursor } = this;
+    return { context, total, compaction, system, updates, active, turnStart, awaiting, backlog, ...(piCursor ? { piCursor } : {}), requests: [...this.requests], calls: [...this.calls] };
+  }
+
+  restore({ requests, calls, ...state }: TranscriptSnapshot) {
+    Object.assign(this, state);
+    this.requests = new Set(requests);
+    this.calls = new Map(calls);
   }
 
   apply(record: TranscriptRecord) {
     const backlog = this.backlog;
     if (record.t === "message") {
+      if (record.pi) this.piCursor = record.pi;
       if (backlog && this.total >= backlog.kept + backlog.messages.length) {
         const size = JSON.stringify(record.message).length;
         backlog.messages.push(record.message);
@@ -178,6 +214,7 @@ export class Transcript {
       for (const id of callsOf(record.message)) this.calls.set(id, this.total - 1);
       if (record.message.role === "toolResult") this.awaiting = this.awaiting.filter(id => id !== (record.message as { toolCallId: string }).toolCallId);
     }
+    else if (record.t === "pi") this.piCursor = record.cursor;
     else if (record.t === "retract") {
       const popped = this.context.pop();
       if (popped) {
@@ -236,7 +273,7 @@ export class Transcript {
   failed?: unknown;
 
   /** Run `job` on the commit line, once every earlier commit has settled; none runs after a failed write. */
-  private enqueue<T>(job: () => Promise<T>): Promise<T> {
+  protected enqueue<T>(job: () => Promise<T>): Promise<T> {
     const run = this.line.then(() => {
       if (this.failed !== undefined) throw this.failed;
       return job();
@@ -261,7 +298,13 @@ export class Transcript {
     });
   }
 
-  push(message: AgentMessage) { return this.append([message]); }
+  push(message: AgentMessage, pi?: PiMessageCursor) {
+    if (!pi) return this.append([message]);
+    return this.commit(() => {
+      const leading = !this.system ? this.pin?.() : undefined;
+      return [...(leading ? [{ t: "system" as const, message: leading, leading: true as const }] : []), { t: "message" as const, message, pi }];
+    });
+  }
   append(messages: AgentMessage[]) {
     return this.commit(() => {
       const leading = !this.system && messages.length ? this.pin?.() : undefined;
@@ -321,6 +364,9 @@ const forkRefused = (status: number, code: string, message: string) => Object.as
  * whose tool calls have no results yet, is refused (409 FORK_POINT_RUNNING).
  */
 export function forkCut(records: TranscriptRecord[], at?: number | string): ForkCut {
+  // Native IDs belong to the source's store. A fork gets a new Pi namespace and its own projection cursor.
+  records = records.filter(record => record.t !== "pi").map(record => record.t === "message" && record.pi
+    ? { t: "message", message: record.message } : record);
   const replay = new Transcript(undefined as never);
   // After each record: how many messages the history had, and whether no turn was running or waiting on input.
   const states = records.map(record => { replay.apply(record); return { total: replay.total, settled: !replay.active && !replay.awaiting.length }; });

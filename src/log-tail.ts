@@ -34,6 +34,10 @@ export function postgresTail(db: Db, options: { retryMs?: number; unfenced?: boo
     if (!claim && !options.unfenced) throw new Error(`A write to ${key} needs its owner's claim`);
   };
   return {
+    async bytes(key) {
+      const { rows } = await db.query("select coalesce(sum(octet_length(body)), 0) as bytes from log_records where log_key = $1", [key]);
+      return Number(rows[0].bytes);
+    },
     async rows(key) {
       return (await db.query("select seq, snapshot, body, blob from log_records where log_key = $1 order by seq", [key])).rows;
     },

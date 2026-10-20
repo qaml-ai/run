@@ -1,3 +1,5 @@
+import { durableEntryMessages } from "./pi-durable/agent.ts";
+import { NativeTranscript, nativeTranscriptRecords } from "./pi-durable/transcript.ts";
 import { mkdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { once } from "node:events";
@@ -10,7 +12,7 @@ import { searchQuery, searchTools } from "./tool-search.ts";
 import { jsonWithinLimit, SANDBOX_LIMITS } from "./limits.ts";
 import type { Storage } from "../shared/storage.ts";
 import { fileAppendLog, type AppendLog, type CommitEffect } from "../shared/append-log.ts";
-import { readTranscript, readTranscriptLog, Transcript, transcriptPath, type TranscriptRecord } from "./transcript.ts";
+import { historyOf, Transcript, transcriptPath, type TranscriptRecord } from "./transcript.ts";
 import type { HistoryChunk } from "./history-pages.ts";
 import type { Claim } from "./ownership.ts";
 import { createAgentHost, HISTORY_FLUSH_MS } from "./agent-host.ts";
@@ -18,6 +20,13 @@ import type { CodeExecutor } from "./codemode.ts";
 import type { Outbound } from "./outbound.ts";
 import { buggify } from "./buggify.ts";
 import { closeInterruptedTurn } from "./history.ts";
+import type { Db, Sql } from "./db.ts";
+import type { Storage as PiStorage } from "@earendil-works/pi-durable";
+import { agentEngine, type AgentEngine } from "./pi-durable/config.ts";
+import { deletePiStorage, hasPiStorage, openPiJournalReader, openPiStorage, purgePiStorage, storageRequest } from "./pi-durable/storage.ts";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { projectPiRecords, projectPiTranscript, reconcilePiTranscript } from "./pi-durable/projection.ts";
+import { LEGACY_CONVERSATION_ID, loadLegacyMigration } from "./pi-durable/migration.ts";
 
 /**
  * How agents run. "process": each agent is its own Node process (strong memory
@@ -26,7 +35,7 @@ import { closeInterruptedTurn } from "./history.ts";
  * processes either way (confined by agent-launcher when it started the runtime).
  */
 export type Hosting = "process" | "inline";
-type Common = { bridge: ToolBridge; calls: Set<AbortController>; listeners: Set<(event: any) => void>; transcript: AppendLog<TranscriptRecord> };
+type Common = { bridge: ToolBridge; calls: Set<AbortController>; listeners: Set<(event: any) => void>; transcript: AppendLog<TranscriptRecord>; durable?: PiStorage };
 /** An agent process's js_exec turns (`codeSlot`), by its id for them: waiting (`release` unset) or held. */
 type CodeSlots = Map<string, { controller: AbortController; release?: () => void }>;
 type ProcessHandle = Common & { kind: "process"; child: ChildProcess; rpc: Rpc; slots: CodeSlots; watchdog?: NodeJS.Timeout };
@@ -50,6 +59,10 @@ export type SupervisorOptions = {
   modelOutbound?: Outbound;
   /** The history backlog's bound for inline agents (agent processes get it in `agentEnv`). */
   historyBacklogBytes?: number;
+  /** Execution engine requested for safe, idle sessions. Existing active legacy turns defer migration. */
+  engine?: AgentEngine;
+  /** Shared Pi records use the same database and ownership claim as the session. */
+  db?: Db;
 };
 
 export class AgentSupervisor {
@@ -63,6 +76,8 @@ export class AgentSupervisor {
   private readonly unhosted = new Map<string, Set<{ cancelled: boolean; settled: Promise<void> }>>();
   /** Turns being closed without their agent (`closeTurn`): the latest close of each, which the next one and a start wait for. */
   private readonly closing = new Map<string, Promise<void>>();
+  /** Large first imports materialize legacy archives. Only one runs per node at a time. */
+  private migrating: Promise<void> = Promise.resolve();
   readonly root: string;
   readonly options: SupervisorOptions;
   /**
@@ -78,18 +93,34 @@ export class AgentSupervisor {
   }
 
   get hosting(): Hosting { return this.options.hosting ?? "process"; }
+  get engine(): AgentEngine { return this.options.engine ?? agentEngine(process.env.AGENT_ENGINE); }
 
   static transcriptKey(id: string) { return `sessions/${id}/transcript`; }
 
+  private piLocation(id: string) { return { sessionId: id, directory: resolve(join(this.root, id)), ...(this.options.db ? { db: this.options.db } : {}) }; }
+
+  /** Cold history may have committed native messages newer than its legacy index or last reported run. */
+  async hasDurableHistory(id: string): Promise<boolean> {
+    const journal = await openPiJournalReader(this.piLocation(id));
+    await journal?.close(BACKGROUND_CONTEXT);
+    return !!journal;
+  }
+
   /** An agent's full history without its process. */
   async history(id: string) {
-    if (!this.options.storage) return readTranscript(resolve(join(this.root, id)));
-    return readTranscriptLog(this.options.storage.log(AgentSupervisor.transcriptKey(id)));
+    return historyOf(await this.records(id));
   }
 
   /** An agent's transcript records as its log holds them, read beside a live owner without writing. */
   async records(id: string): Promise<TranscriptRecord[]> {
-    return (this.options.storage ? this.options.storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id)) : fileAppendLog<TranscriptRecord>(transcriptPath(resolve(join(this.root, id))))).read();
+    const log = this.options.storage ? this.options.storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id)) : fileAppendLog<TranscriptRecord>(transcriptPath(resolve(join(this.root, id))));
+    const journal = await openPiJournalReader(this.piLocation(id));
+    try {
+      const native = journal ? await nativeTranscriptRecords(journal) : undefined;
+      if (native) return native;
+      const records = await log.read();
+      return journal ? await projectPiRecords(records, journal, LEGACY_CONVERSATION_ID) : records;
+    } finally { await journal?.close(BACKGROUND_CONTEXT); await log.close(); }
   }
 
   /** Start a new agent's transcript as `records` (a fork's), under its owner's `claim`, before it is started. */
@@ -105,35 +136,48 @@ export class AgentSupervisor {
    * starting it: for a run ended with no host to end it (one past its resumes, or stopped before its node was lost). The
    * same records the agent's next start would write, written before the run is seen to end. Whether there was a turn to settle.
    */
-  async closeTurn(id: string, claim?: Claim): Promise<boolean> {
+  async closeTurn(id: string, claim?: Claim, committing?: (record: TranscriptRecord) => CommitEffect | undefined): Promise<boolean> {
     if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id)) throw new Error("Invalid agent id");
     // One at a time per agent, each reading the transcript as the one before left it: two closes of one turn (a load's and
     // a run's, or two loads') never both answer its open calls. Across nodes, the owner's claim fences the write instead.
-    const current = (this.closing.get(id) ?? Promise.resolve()).then(() => this.closeTurnNow(id, claim));
+    const current = (this.closing.get(id) ?? Promise.resolve()).then(() => this.closeTurnNow(id, claim, committing));
     const settled = current.then(() => {}, () => {});
     this.closing.set(id, settled);
     try { return await current; }
     finally { if (this.closing.get(id) === settled) this.closing.delete(id); }
   }
 
-  private async closeTurnNow(id: string, claim?: Claim): Promise<boolean> {
+  private async closeTurnNow(id: string, claim?: Claim, effect?: (record: TranscriptRecord) => CommitEffect | undefined): Promise<boolean> {
     await this.stopping.get(id);
     // A running agent's host writes its own transcript.
     if (this.agents.has(id) || this.starting.has(id)) throw new Error("Agent is running");
     const log = this.options.storage ? this.options.storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id), claim) : fileAppendLog<TranscriptRecord>(transcriptPath(resolve(join(this.root, id))));
     try {
-      const transcript = new Transcript(log);
+      const durable = await hasPiStorage(this.piLocation(id)) ? await openPiStorage({ ...this.piLocation(id), ...(claim ? { claim } : {}) }) : undefined;
+      try {
+        const native = durable ? await NativeTranscript.open(durable) : undefined;
+        if (native) {
+          await reconcilePiTranscript(native, durable!, LEGACY_CONVERSATION_ID);
+          return await closeInterruptedTurn(native);
+        }
+      } finally { await durable?.close(BACKGROUND_CONTEXT); }
+      const transcript = new Transcript(effect ? committing(log, effect) : log);
       await transcript.load();
+      const journal = await openPiJournalReader(this.piLocation(id));
+      try { if (journal) await reconcilePiTranscript(transcript, journal, LEGACY_CONVERSATION_ID); }
+      finally { await journal?.close(BACKGROUND_CONTEXT); }
       return await closeInterruptedTurn(transcript);
     } finally { await log.close(); }
   }
 
-  /** Delete a stopped agent's transcript and local directory. */
-  async purge(id: string) {
+  /** Delete a stopped agent's native journal, transcript and local directory. Reuse a caller's purge transaction. */
+  async purge(id: string, sql?: Sql) {
     if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id)) throw new Error("Invalid agent id");
     await this.stopping.get(id);
     if (this.agents.has(id) || this.starting.has(id)) throw new Error("Agent is running");
     await this.options.storage?.removeLog(AgentSupervisor.transcriptKey(id));
+    if (sql) await deletePiStorage(sql, id);
+    else if (this.options.db) await purgePiStorage(this.options.db, id);
     await rm(resolve(join(this.root, id)), { recursive: true, force: true });
   }
 
@@ -183,19 +227,40 @@ export class AgentSupervisor {
         // owner that is gone, and whoever loads the agent next would take it for theirs while it is still starting.
         if (pending.cancelled) throw new Error("Agent stopped");
         // From here until the host is in `agents`, nothing waits: a stop finds the host there.
-        hosted();
         const storage = this.options.storage;
         const log = storage ? storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id), claim) : fileAppendLog<TranscriptRecord>(transcriptPath(directory));
         const transcript = bridge.committing ? committing(log, bridge.committing) : log;
-        const init = { ...config, id, directory, tools: bridge.definitions };
-        return this.hosting === "inline" ? await this.startInline(id, init, bridge, transcript) : await this.startProcess(id, directory, init, bridge, transcript);
+        const location = { sessionId: id, directory, ...(this.options.db ? { db: this.options.db } : {}) };
+        const needsPi = this.engine === "pi-durable" || await hasPiStorage(location);
+        if (needsPi && storage && !this.options.db) throw new Error("Pi durable shared storage requires the supervisor database");
+        const durable = needsPi ? await openPiStorage({ ...location, ...(claim ? { claim } : {}), committing: async (entry, sql) => {
+          if (bridge.nativeCommitting) await bridge.nativeCommitting(entry)?.(sql);
+          else for (const item of durableEntryMessages(entry)) await bridge.committing?.({ t: "message", message: item.message, pi: item.cursor })?.(sql);
+          if (entry.kind === "camel.host.record") {
+            const record = (entry.data as { record?: TranscriptRecord } | undefined)?.record;
+            if (record) await bridge.committing?.(record)?.(sql);
+          }
+        } }) : undefined;
+        let release: (() => void) | undefined;
+        try {
+          if (durable && this.engine === "pi-durable" && !await loadLegacyMigration(durable)) {
+            const previous = this.migrating;
+            this.migrating = new Promise<void>(resolve => { release = resolve; });
+            await previous;
+          }
+          if (pending.cancelled) throw new Error("Agent stopped");
+          hosted();
+          const init = { ...config, engine: this.engine, id, directory, tools: bridge.definitions };
+          return this.hosting === "inline" ? await this.startInline(id, init, bridge, transcript, durable) : await this.startProcess(id, directory, init, bridge, transcript, durable);
+        } catch (error) { await durable?.close(BACKGROUND_CONTEXT); await transcript.close(); throw error; }
+        finally { release?.(); }
       } finally { this.starting.delete(id); }
     } finally { hosted(); }
   }
 
-  private async startProcess(id: string, directory: string, init: AgentConfig, bridge: ToolBridge, transcript: AppendLog<TranscriptRecord>) {
+  private async startProcess(id: string, directory: string, init: AgentConfig, bridge: ToolBridge, transcript: AppendLog<TranscriptRecord>, durable?: PiStorage) {
     const { child, rpc } = childProcess("./agent-child.ts", directory, this.options.runtime, true, id, this.options.agentEnv);
-    const handle: ProcessHandle = { kind: "process", bridge, child, rpc, calls: new Set(), listeners: new Set(), transcript, slots: new Map() };
+    const handle: ProcessHandle = { kind: "process", bridge, child, rpc, calls: new Set(), listeners: new Set(), transcript, durable, slots: new Map() };
     this.agents.set(id, handle);
     this.starting.delete(id);
     const cleanup = () => {
@@ -205,6 +270,7 @@ export class AgentSupervisor {
       for (const slot of handle.slots.keys()) this.releaseSlot(handle, slot);
       if (this.agents.get(id) === handle) this.agents.delete(id);
       void handle.transcript.close();
+      void handle.durable?.close(BACKGROUND_CONTEXT);
     };
     child.once("exit", cleanup);
     child.once("error", cleanup);
@@ -212,6 +278,11 @@ export class AgentSupervisor {
     rpc.handler = async (method, params) => {
       if (method === "cancel-tools") return this.cancelTools(handle);
       if (method === "transcript") return this.transcriptRequest(handle, params);
+      if (method === "pi-storage") {
+        if (params?.method === "available") return !!handle.durable;
+        if (!handle.durable) throw new Error("Pi storage is not open");
+        return storageRequest(handle.durable, params);
+      }
       if (method === "run-limit") return (await handle.bridge.runLimit?.()) ?? null;
       if (method === "search") return this.search(handle, params);
       if (method === "file") return this.file(handle, params);
@@ -225,7 +296,7 @@ export class AgentSupervisor {
       if (method !== "tool") throw new Error("Unknown tool");
       return this.dispatchTool(handle, params);
     };
-    const timeout = setTimeout(() => { rpc.close("Agent initialization timed out"); child.kill("SIGKILL"); }, 30_000);
+    const timeout = setTimeout(() => { rpc.close("Agent initialization timed out"); child.kill("SIGKILL"); }, init.engine === "pi-durable" ? 120_000 : 30_000);
     try {
       const result = await rpc.request("init", init);
       this.watch(id, handle);
@@ -320,25 +391,40 @@ export class AgentSupervisor {
     const log = this.options.storage ? this.options.storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id)) : fileAppendLog<TranscriptRecord>(transcriptPath(resolve(join(this.root, id))));
     // Unbounded: this backlog is read for one page, not kept.
     const transcript = new Transcript(log, from, Infinity);
-    await transcript.load();
-    return transcript.backlog!;
+    const journal = await openPiJournalReader(this.piLocation(id));
+    try {
+      const native = journal ? await nativeTranscriptRecords(journal) : undefined;
+      if (native) for (const record of native) transcript.apply(record);
+      else {
+        await transcript.load();
+        if (journal) await projectPiTranscript(transcript, journal, LEGACY_CONVERSATION_ID);
+      }
+      return transcript.backlog!;
+    } finally { await journal?.close(BACKGROUND_CONTEXT); await log.close(); }
   }
 
   /** An agent process's transcript operations. Appends are applied before the first await, so they keep IPC order. */
-  private transcriptRequest(handle: Handle, params: { op: string; records?: TranscriptRecord[]; durable?: boolean }) {
+  private async transcriptRequest(handle: Handle, params: { op: string; records?: TranscriptRecord[]; durable?: boolean; indexed?: number | null; bound?: number; maxBytes?: number }) {
     const log = handle.transcript;
+    if (params.op === "load") {
+      const transcript = new Transcript(log, params.indexed ?? undefined, params.bound);
+      await transcript.load();
+      return transcript.snapshot();
+    }
+    if (params.op === "read-bounded") return (await log.readBounded?.(params.maxBytes!)) ?? null;
     if (params.op === "read") return log.read();
     if (params.op === "append") { for (const record of params.records ?? []) log.append(record); return log.flush(params.durable).then(() => null); }
     if (params.op === "rewrite") return log.rewrite(() => params.records ?? []).then(() => null);
     throw new Error("Unknown transcript operation");
   }
 
-  private async startInline(id: string, init: AgentConfig, bridge: ToolBridge, transcript: AppendLog<TranscriptRecord>) {
+  private async startInline(id: string, init: AgentConfig, bridge: ToolBridge, transcript: AppendLog<TranscriptRecord>, durable?: PiStorage) {
     const stopped = Promise.withResolvers<never>();
     stopped.promise.catch(() => {});
-    const handle = { kind: "inline", bridge, calls: new Set(), listeners: new Set(), stop: stopped.reject, stopped: stopped.promise, transcript } as unknown as InlineHandle;
+    const handle = { kind: "inline", bridge, calls: new Set(), listeners: new Set(), stop: stopped.reject, stopped: stopped.promise, transcript, durable } as unknown as InlineHandle;
     handle.host = createAgentHost({
       transcript,
+      piStorage: async () => durable,
       emit: event => this.dispatchEvent(handle, event, true),
       tool: (name, args, call) => this.dispatchTool(handle, { name, args: structuredClone(args), ...call }),
       cancelTools: async () => this.cancelTools(handle),
@@ -456,6 +542,7 @@ export class AgentSupervisor {
     }
     // Unloading compacts the transcript's tail into Storage.
     await handle.transcript.close();
+    await handle.durable?.close(BACKGROUND_CONTEXT);
   }
 
   async close() {
@@ -468,10 +555,12 @@ export class AgentSupervisor {
 function committing<T>(log: AppendLog<T>, effect: (record: T) => CommitEffect | undefined): AppendLog<T> {
   return {
     read: () => log.read(),
+    ...(log.readBounded ? { readBounded: (maxBytes: number) => log.readBounded!(maxBytes) } : {}),
+    ...(log.replay ? { replay: (apply: (record: T) => void) => log.replay!(apply) } : {}),
     append: record => log.append(record, effect(record)),
     flush: durable => log.flush(durable),
     rewrite: snapshot => log.rewrite(snapshot),
     get appendedSinceRewrite() { return log.appendedSinceRewrite; },
-    close: () => log.close(),
+    close: discard => log.close(discard),
   };
 }

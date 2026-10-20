@@ -9,6 +9,7 @@ import { v8Settings } from "./v8-exec.ts";
 import { BACKLOG_BYTES } from "./transcript.ts";
 import { agentProcessEnv } from "./rpc.ts";
 import { MULTI_AGENT_LIMITS } from "./multi-agent.ts";
+import { agentEngine } from "./pi-durable/config.ts";
 
 /**
  * A node's settings, read from its environment once and checked before anything starts. `createNode` (node.ts) reads
@@ -61,6 +62,7 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
   const wakesPerHour = positiveSetting("AGENT_WAKES_PER_HOUR", MULTI_AGENT_LIMITS.wakesPerHour);
   const hosting = (env.AGENT_HOSTING ?? "process") as Hosting;
   if (!["process", "inline"].includes(hosting)) throw new Error("AGENT_HOSTING must be process or inline");
+  const engine = agentEngine(env.AGENT_ENGINE);
   const toolTimeoutMs = Number(env.AGENT_TOOL_TIMEOUT_MS ?? 15_000);
   if (!Number.isInteger(toolTimeoutMs) || toolTimeoutMs < 1 || toolTimeoutMs > 15 * 60_000) throw new Error("AGENT_TOOL_TIMEOUT_MS must be an integer between 1 and 900000");
   // The most one run of a self-serve tenant's agents may take, whatever its agent sets (runLimits): model responses, and
@@ -104,7 +106,7 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     publicUrlSet: !!env.AGENT_PUBLIC_URL,
     // Where browsers reach the runtime, as browser tokens say: AGENT_PUBLIC_URL unless set; empty for none.
     browserUrl: env.AGENT_BROWSER_URL?.replace(/\/+$/, ""),
-    maxAgents, memoryHighBytes, maxAgentsPerTenant, maxDefinitionsPerTenant, drainMs, retireMaxMs, orphanMs, childSweepMs, wakesPerHour, hosting, toolTimeoutMs, runLimits, streamTimeouts, runRetentionSeconds, idleMs,
+    maxAgents, memoryHighBytes, maxAgentsPerTenant, maxDefinitionsPerTenant, drainMs, retireMaxMs, orphanMs, childSweepMs, wakesPerHour, hosting, engine, toolTimeoutMs, runLimits, streamTimeouts, runRetentionSeconds, idleMs,
     leaseTtlMs: Number(env.AGENT_LEASE_TTL_MS ?? 90_000),
     runtime: env.AGENT_RUNTIME,
     serviceName: env.AGENT_SERVICE_NAME,

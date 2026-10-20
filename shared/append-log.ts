@@ -19,6 +19,10 @@ export type CommitEffect = (sql?: Sql) => Promise<void>;
 export interface AppendLog<T> {
   /** Every record since the last rewrite. A torn final record from a crash is dropped. */
   read(): Promise<T[]>;
+  /** Refuse oversized input before materializing it. Undefined means the bound cannot be met. */
+  readBounded?(maxBytes: number): Promise<T[] | undefined>;
+  /** Replay records without retaining the whole log. Earlier records may have been applied if reading fails. */
+  replay?(apply: (record: T) => void): Promise<void>;
   /** Buffer a record; it is written by the next `flush`, with `effect` (see `CommitEffect`). */
   append(record: T, effect?: CommitEffect): void;
   /** Write buffered records. `durable` waits for them to reach stable storage. */
@@ -96,7 +100,68 @@ export function fileAppendLog<T>(path: string): AppendLog<T> {
     }
     return handle;
   };
+  const replay = async (apply: (record: T) => void) => {
+    let file: FileHandle;
+    try { file = await open(path, "r"); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+    const stream = file.createReadStream({ encoding: "utf8" });
+    let pending = "", line = 0;
+    let corrupt: Error | undefined;
+    const consume = (text: string) => {
+      line++;
+      if (!text) return;
+      // As with read(), only the last non-empty record may be torn, even if blank lines follow it.
+      if (corrupt) throw corrupt;
+      let record: T;
+      try { record = JSON.parse(text); }
+      catch (error) { corrupt = new Error(`Corrupt append log record ${line} in ${path}: ${(error as Error).message}`); return; }
+      apply(record);
+    };
+    try {
+      for await (const chunk of stream) {
+        pending += chunk;
+        let start = 0;
+        for (let end = pending.indexOf("\n"); end >= 0; end = pending.indexOf("\n", start)) {
+          consume(pending.slice(start, end));
+          start = end + 1;
+        }
+        pending = pending.slice(start);
+      }
+      if (pending) consume(pending);
+    } finally { stream.destroy(); }
+  };
   return {
+    replay,
+    async readBounded(maxBytes) {
+      if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) throw new RangeError("Invalid log read bound");
+      let file: FileHandle;
+      try { file = await open(path, "r"); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
+      try {
+        const { size } = await file.stat();
+        if (size > maxBytes) return undefined;
+        // Reading one extra byte detects growth without an unbounded readFile allocation.
+        const buffer = Buffer.alloc(Math.min(size + 1, maxBytes + 1));
+        let used = 0;
+        while (used < buffer.length) {
+          const { bytesRead } = await file.read(buffer, used, buffer.length - used, used);
+          if (!bytesRead) break;
+          used += bytesRead;
+        }
+        if (used > size || used > maxBytes) return undefined;
+        const records: T[] = [];
+        const lines = buffer.toString("utf8", 0, used).split("\n");
+        for (let index = 0; index < lines.length; index++) {
+          if (!lines[index]) continue;
+          try { records.push(JSON.parse(lines[index])); }
+          catch (error) {
+            if (lines.slice(index + 1).every(line => !line)) break;
+            throw new Error(`Corrupt append log record ${index + 1} in ${path}: ${(error as Error).message}`);
+          }
+        }
+        return records;
+      } finally { await file.close(); }
+    },
     async read() {
       let text: string;
       try { text = await readFile(path, "utf8"); }

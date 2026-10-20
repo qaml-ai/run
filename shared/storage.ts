@@ -254,6 +254,8 @@ export interface TailRow { seq: number; snapshot: boolean; body: string | null; 
 export interface LogTail {
   /** The log's rows in seq order. */
   rows(key: string): Promise<TailRow[]>;
+  /** Size of inline row bodies without downloading them; for bounded migration reads. */
+  bytes?(key: string): Promise<number>;
   last(key: string): Promise<number | undefined>;
   /**
    * Insert rows; false when `claim` is no longer current (or another writer took a seq). `effects` run in the same
@@ -418,32 +420,50 @@ export function segmentLog<T>(store: SegmentStore, key: string, tail: LogTail, c
     if (tailRecords >= TAIL_RECORDS || tailBytes >= TAIL_BYTES || buggify("storage.compact.now")) void serialize(compact).catch(() => {});
   };
 
+  const read = async (maxBytes?: number): Promise<T[] | undefined> => {
+    // The tail first: a compaction between the two reads then shows up in Storage, never in neither.
+    let rows: TailRow[], listing: Listing, records: T[];
+    for (let attempt = 1; ; attempt++) {
+      if (maxBytes !== undefined) {
+        if (!tail.bytes || await tail.bytes(key) > maxBytes) return undefined;
+      }
+      rows = await tail.rows(key);
+      listing = await store.list();
+      if (maxBytes !== undefined) {
+        // Count all immutable objects conservatively, including obsolete snapshots.
+        // Blob bodies must be sized before downloading; unknown sizes defer migration.
+        if (!listing.bytes) return undefined;
+        const names = [...listing.snapshots.map(n => `snapshot-${segmentName(n)}`), ...listing.segments.map(segmentName),
+          ...rows.filter(row => row.blob).map(row => `blob-${row.blob}`)];
+        if (names.some(name => !listing.bytes!.has(name))) return undefined;
+        const bytes = [...new Set(names)].reduce((sum, name) => sum + listing.bytes!.get(name)!, 0)
+          + rows.reduce((sum, row) => sum + Buffer.byteLength(row.body ?? ""), 0);
+        if (bytes > maxBytes) return undefined;
+      }
+      // A compaction elsewhere may fold and delete what was listed: read and bound again.
+      try { records = await stored(listing); break; }
+      catch (error) { if (attempt >= 3) throw error; }
+    }
+    const through = covered(listing);
+    tailRecords = rows.length;
+    tailBytes = 0;
+    for (const row of rows) {
+      tailBytes += row.body?.length ?? 0;
+      if (row.seq <= through) continue;
+      const parsed = JSON.parse(await body(row));
+      if (row.snapshot) records = parsed;
+      else records.push(parsed);
+    }
+    if (!retrying) next = Math.max(through, rows.at(-1)?.seq ?? -1) + 1;
+    return records;
+  };
+
   return {
     // Serialized with writes, so a read beside a live writer never moves its position back.
-    read: () => serialize(async () => {
-      // The tail first: a compaction between the two reads then shows up in Storage, never in neither.
-      let rows: TailRow[], listing: Listing, records: T[];
-      for (let attempt = 1; ; attempt++) {
-        rows = await tail.rows(key);
-        listing = await store.list();
-        // A compaction elsewhere (this log's owner, when this reader is not it) may fold and delete what was listed: read again.
-        try { records = await stored(listing); break; }
-        catch (error) { if (attempt >= 3) throw error; }
-      }
-      const through = covered(listing);
-      // Rows at or below `through` are left by a compaction that stopped before deleting them.
-      tailRecords = rows.length;
-      tailBytes = 0;
-      for (const row of rows) {
-        tailBytes += row.body?.length ?? 0;
-        if (row.seq <= through) continue;
-        const parsed = JSON.parse(await body(row));
-        if (row.snapshot) records = parsed;
-        else records.push(parsed);
-      }
-      // A batch being retried goes where it may have landed already, not after itself.
-      if (!retrying) next = Math.max(through, rows.at(-1)?.seq ?? -1) + 1;
-      return records;
+    read: () => serialize(async () => (await read())!),
+    readBounded: maxBytes => serialize(async () => {
+      if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) throw new RangeError("Invalid log read bound");
+      return read(maxBytes);
     }),
     append(record, effect) {
       if (closing) throw new Error("Append log closed");
