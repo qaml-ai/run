@@ -191,6 +191,9 @@ export function safeName(name: unknown, fallback = "file"): string {
   return stem + extension;
 }
 
+/** What an inline image becomes in a model request past its image budget (agent-host.ts `hydrate`). */
+export const IMAGE_PAST_BUDGET = "[image omitted from earlier in the conversation]";
+
 /**
  * The text a file block becomes when it is not shown natively; an audio file's transcript with it. (A model that hears
  * audio could be given the sound instead, where `nativeBlock` would say so; none is yet.)

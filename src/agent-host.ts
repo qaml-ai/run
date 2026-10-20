@@ -24,7 +24,7 @@ import { MODEL_INTERRUPTED, modelFailure, retriesModelError } from "./model-erro
 import { forcedToolChoice } from "./tool-choice.ts";
 import { filesRefused, schemaAccepts } from "./tool-policy.ts";
 import { callSettings } from "./pi-catalog.ts";
-import { describeFile, documentPayload, FILE_LIMITS, nativeBlock, unseen, validFileRef, type FileRef } from "./files.ts";
+import { describeFile, documentPayload, FILE_LIMITS, IMAGE_PAST_BUDGET, nativeBlock, unseen, validFileRef, type FileRef } from "./files.ts";
 import { CHUNK_BYTES, chunksOf, type HistoryChunk } from "./history-pages.ts";
 import { observeTurns, recordCodeExecution } from "./metrics.ts";
 import { fitImage, fits, type Fitted } from "./inspect.ts";
@@ -47,6 +47,8 @@ const FORCED_OUTPUT_REQUESTS = 3;
 
 /** Images one agent scales down at once for its requests (`fitImage`). */
 const FIT_CONCURRENCY = 2;
+/** Files one model request reads at once, newest first, within its image budget (`hydrate`). */
+const READ_AHEAD = 8;
 /** A direct call's arguments, as Pi checks them; ones naming a file for a tool that takes none are refused saying so. */
 const checkedArguments: typeof validateToolArguments = (tool, call) => {
   try { return validateToolArguments(tool, call); } catch (error) {
@@ -706,41 +708,82 @@ export function createAgentHost(hostIO: HostIO) {
   /**
    * The model request's files: the transcript keeps references, and each becomes a line naming it
    * plus, where the model can take it, its bytes as a native block. The same references always
-   * give the same request, so the provider's cached prefix holds. Past the request's file budget,
-   * older files are named but not shown. Every image, referenced or inline, is within what any
-   * provider takes in a request of many images (`fitImage`).
+   * give the same request, so the provider's cached prefix holds. Every image, referenced or inline,
+   * is within what any provider takes in a request of many images (`fitImage`).
+   *
+   * One budget covers every image the request carries, inline (a prompt's, a tool result's) or from a file, sized as
+   * sent (base64, after scaling down): the newest first, at most `requestImages` of at most `requestImageBase64Bytes`
+   * in all. Once one is past it, so is every older one: a referenced file is named but not shown, an inline image becomes
+   * `IMAGE_PAST_BUDGET`. Otherwise a history full of images is refused on every turn (OpenRouter's 413 past 30 MB of
+   * image content). PDFs have their own budget, `requestFileBytes` (as stored), past which older ones are named.
    */
   async function hydrate(messages: Message[]): Promise<Message[]> {
     documents = false;
-    const shown = new Set<FileRef>();
-    let bytes = 0;
-    for (let index = messages.length - 1; index >= 0; index--) {
-      const content = messages[index].content;
+    const fitted = await fittedImages(messages, false);
+    // What each block shown sends: a file's bytes (or why it is not shown), and the inline images within the budget.
+    const sent = new Map<FileRef, Hydrated | Error>();
+    const keptInline = new Set<string>();
+    let images = 0, imageBytes = 0, imagesFull = false, documentBytes = 0;
+    const fitsBudget = (bytes: number) => {
+      if (!imagesFull && images < FILE_LIMITS.requestImages && imageBytes + bytes <= FILE_LIMITS.requestImageBase64Bytes) {
+        images++; imageBytes += bytes;
+        return true;
+      }
+      imagesFull = true;
+      return false;
+    };
+    type Inline = { type: "image"; data: string; mimeType: string };
+    const blocks: { block: FileRef | Inline; key: string }[] = [];
+    for (let index = fitted.length - 1; index >= 0; index--) {
+      const content = fitted[index].content;
       if (!Array.isArray(content)) continue;
-      for (let block = content.length - 1; block >= 0; block--) {
-        const ref = content[block] as unknown as FileRef;
-        if (ref.type !== "file" || !nativeBlock(ref, config.model) || bytes + ref.size > FILE_LIMITS.requestFileBytes || shown.size >= FILE_LIMITS.requestImages) continue;
-        shown.add(ref);
-        bytes += ref.size;
+      for (let at = content.length - 1; at >= 0; at--) {
+        const block = content[at] as unknown as FileRef | Inline;
+        if (block.type === "image" || block.type === "file" && nativeBlock(block, config.model)) blocks.push({ block, key: `${index}:${at}` });
       }
     }
-    return Promise.all((await fittedImages(messages, false)).map(async message => {
-      if (!Array.isArray(message.content) || !message.content.some(block => (block.type as string) === "file")) return message;
+    // Files are read newest first, a few ahead at once, from the host's cache when an earlier request read them: past the
+    // image budget, older images are not read at all. One read per file's content, however often the request names it.
+    const reads = new Map<string, Promise<Hydrated | Error>>();
+    const read = (ref: FileRef) => {
+      const key = ref.chunks.join("");
+      let pending = reads.get(key);
+      if (!pending) reads.set(key, pending = fileData(ref).catch(error => error instanceof Error ? error : new Error(errorText(error))));
+      return pending;
+    };
+    for (const [position, { block, key }] of blocks.entries()) {
+      if (block.type === "image") {
+        if (block.mimeType === "application/pdf" || fitsBudget(block.data.length)) keptInline.add(key);
+        continue;
+      }
+      const kind = nativeBlock(block, config.model);
+      if (kind === "document") {
+        if (documentBytes + block.size > FILE_LIMITS.requestFileBytes) continue;
+        documentBytes += block.size;
+      } else if (imagesFull) continue;
+      for (const { block: next } of blocks.slice(position + 1, position + READ_AHEAD)) if (next.type === "file") void read(next);
+      const data = await read(block);
+      if (kind === "image" && !(data instanceof Error) && "data" in data && !fitsBudget(data.data.length)) continue;
+      sent.set(block, data);
+    }
+    return fitted.map((message, index) => {
+      const past = (block: { type: string }, at: number) => block.type === "image" && !keptInline.has(`${index}:${at}`);
+      if (!Array.isArray(message.content) || !message.content.some((block, at) => (block.type as string) === "file" || past(block, at))) return message;
       const content: unknown[] = [];
-      for (const block of message.content as unknown as (FileRef | { type: string })[]) {
+      for (const [at, block] of (message.content as unknown as (FileRef | { type: string })[]).entries()) {
+        if (past(block, at)) { content.push({ type: "text", text: IMAGE_PAST_BUDGET }); continue; }
         if (block.type !== "file") { content.push(block); continue; }
         const ref = block as FileRef;
-        const kind = shown.has(ref) ? nativeBlock(ref, config.model) : undefined;
-        if (!kind) { content.push({ type: "text", text: describeFile(ref, unseen(ref, config.model) ?? (nativeBlock(ref, config.model) ? "not shown, as this request holds too many files; read it to view it" : undefined)) }); continue; }
-        try {
-          const data = await fileData(ref);
-          if ("omitted" in data) { content.push({ type: "text", text: describeFile(ref, `image omitted: ${data.omitted}`) }); continue; }
-          content.push({ type: "text", text: describeFile(ref) }, { type: "image", data: data.data, mimeType: data.mimeType ?? (kind === "image" && ref.media?.kind === "image" ? ref.media.mimeType : "application/pdf") });
-          if (kind === "document") documents = true;
-        } catch (error) { content.push({ type: "text", text: describeFile(ref, `could not be read (${errorText(error)})`) }); }
+        const kind = nativeBlock(ref, config.model);
+        const data = sent.get(ref);
+        if (!kind || !data) { content.push({ type: "text", text: describeFile(ref, unseen(ref, config.model) ?? (kind ? `not shown, as this request holds too many ${kind === "image" ? "images" : "files"}; read it to view it` : undefined)) }); continue; }
+        if (data instanceof Error) { content.push({ type: "text", text: describeFile(ref, `could not be read (${errorText(data)})`) }); continue; }
+        if ("omitted" in data) { content.push({ type: "text", text: describeFile(ref, `image omitted: ${data.omitted}`) }); continue; }
+        content.push({ type: "text", text: describeFile(ref) }, { type: "image", data: data.data, mimeType: data.mimeType ?? (kind === "image" && ref.media?.kind === "image" ? ref.media.mimeType : "application/pdf") });
+        if (kind === "document") documents = true;
       }
       return { ...message, content } as Message;
-    }));
+    });
   }
 
   /**

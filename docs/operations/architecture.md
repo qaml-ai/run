@@ -268,7 +268,8 @@ dimension sets listed:
 | `tool_credential_exchange` | a tool server's credential is fetched from a tenant's exchange (auth `exchange`), or the server refuses one (`rejected`); never the credential | `CredentialExchanges`, `CredentialExchangeMs` | `Outcome` (fetched, unreachable, blocked, timeout, unavailable, refused, invalid_response, expired, rejected), `Tenant` |
 
 `ErrorClass` is one of rate_limit, overloaded, context_overflow, auth, billing, refusal, timeout,
-stream_stalled, provider_5xx, network, runtime_restart, exception, other (none for a success). A run's
+stream_stalled, provider_5xx, network, runtime_restart, image_limit (a provider refusing a request's image
+content, e.g. OpenRouter's 413 past 30 MB), exception, other (none for a success). A run's
 `error.errorClass` is the same classification in the API's fewer classes (`src/model-errors.ts`). A failed
 tool call also logs `tool_failed` with the tool's name, the tenant and the error's class
 (js_exec's as for `code_execution`), never its text (not a metric). Run events exist

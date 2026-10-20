@@ -67,6 +67,9 @@ const CLASSES: [string, RegExp][] = [
   // The runtime's own timeout on a model stream that went quiet (model-stream.ts), ahead of the timeouts providers report.
   ["stream_stalled", /^Model stream stalled/],
   // The model declined, or the provider's safety filter stopped it (pi-ai's words for each provider's stop reason).
+  // A request carrying more image content than the provider takes (OpenRouter's 413 past 30 MB): the request's image
+  // budget (agent-host.ts `hydrate`) is meant to keep under it, so one is a bug of ours, as reasoning_replay is.
+  ["image_limit", /image content cannot exceed|too many images|images? (is |are )?too (large|big)/i],
   ["refusal", /^The model refused|content.?filter|^Provider stopped with: (sensitive|guardrail|content_filtered)/i],
   // A provider's 402, and a quota or budget used up, which some providers send as a 429: what pi-ai never retries.
   ["billing", /^402\b|\(402\)|insufficient_quota|quota exceeded|out of budget|usage limit (reached|exceeded)|UsageLimitError|subscription_sharing_usage_limit_exceeded/i],

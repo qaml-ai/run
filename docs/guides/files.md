@@ -40,7 +40,7 @@ itself where the model can take it:
 | --- | --- | --- |
 | Images (PNG, JPEG, GIF, WebP) | models with image input | 5 MiB and 8,000 px a side each |
 | PDFs | Anthropic, Google, OpenAI and OpenRouter models with image input | 16 MiB and 100 pages each |
-| Per model request | | 24 MiB and 100 files shown; older files past that are named only |
+| Per model request | | The newest 100 images, up to 20 MiB as sent, and 24 MiB of PDFs shown; older ones past that are named only |
 
 An image goes to the model at most 1,568 px a side: a larger one is scaled down
 in the request (keeping its shape; the file itself is unchanged), as Anthropic

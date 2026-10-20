@@ -141,7 +141,7 @@ reading them and sending them input do not count; only runs do.
 | An upload's whole request | 15 minutes (other requests: 30 s without progress in the SDKs) |
 | Image the model sees natively | 5 MiB and 8,000 pixels a side (larger ones are described in text); sent at most 1,568 pixels a side, scaled down in the request |
 | PDF the model sees natively | 16 MiB and 100 pages |
-| Files in one model request | 24 MiB and 100 images; older files past that are described in text |
+| Files in one model request | Images, inline or from files: the newest 100, up to 20 MiB as sent (base64, after scaling down); PDFs: 24 MiB. Older ones past that are described in text |
 | Parsing an untrusted file for its text | 32 MiB in, 10 s, 1,000,000 characters out |
 | Files a run lists in its outcome | 100 written (`files`), 20 presented (`presented`) |
 | Signed links (`POST …/links`) | `expiresIn` 1 to 86,400 s, default 900 |
