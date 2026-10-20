@@ -64,9 +64,9 @@ async function provider(t: { after(fn: () => Promise<void>): void }, options: { 
   return { requests, model, release, state, chat: () => requests.filter(body => !isSummarization(body)), summarizations: () => requests.filter(isSummarization) };
 }
 
-async function fixture(t: { after(fn: () => Promise<void>): void }) {
+async function fixture(t: { after(fn: () => Promise<void>): void }, engine?: "legacy" | "pi-durable") {
   const root = await mkdtemp(join(tmpdir(), "compaction-test-"));
-  const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined });
+  const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, engine });
   t.after(async () => { await supervisor.close(); await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); });
   return supervisor;
 }
@@ -694,4 +694,20 @@ test("compaction persists each summary attempt and settles before reporting usag
   const rows=(await db.query("select kind,state from model_attempts")).rows;
   assert.equal(rows.length,reported);assert.ok(rows.every(row=>row.kind==="compaction" && row.state==="settled"));
   assert.equal(Number((await db.query("select sum(responses) n from usage")).rows[0].n),reported);
+});
+
+
+test("Pi applies a lowered context limit to an already loaded host", async t => {
+  const fake = await provider(t);
+  const supervisor = await fixture(t, "pi-durable");
+  await supervisor.start("live-pi-context", { model: fake.model(128000), apiKey: "fixture", codeMode: false }, bridge);
+  await supervisor.request("live-pi-context", "prompt", { text: "Before the limit changes" });
+  await supervisor.request("live-pi-context", "configure", { runLimits: { contextTokens: 20000 } });
+  for (let index = 0; index < 4; index++) {
+    const result = await supervisor.request("live-pi-context", "prompt", { text: `live-context-${index} ${"x".repeat(30000)}` });
+    assert.equal(result.error, null);
+  }
+  assert.ok(fake.summarizations().length > 0, "the new limit compacts without restarting the host");
+  assert.equal((await supervisor.request("live-pi-context", "status")).compacted, true);
+  assert.equal((await supervisor.request("live-pi-context", "history")).messages.length, 10);
 });

@@ -16,6 +16,7 @@ function stream(message: AssistantMessage) {
 test("native compaction owns cuts, bounds retained context and preserves full history and request identity", async t => {
   const storage = new MemoryStorage();
   let generations = 0, summaries = 0, compactions = 0, tools = 0;
+  let contextWindow = 32768;
   const requests: any[] = [];
   const agent = await DurableAgent.create({
     initialState: { model: { ...model, contextWindow: 32768 }, messages: [{ role: "system", content: "", sections: { application: "Keep the customer instructions intact." }, timestamp: 1 }], tools: [{ name: "read", label: "Read", description: "Read", parameters: { type: "object", properties: {} },
@@ -25,9 +26,11 @@ test("native compaction owns cuts, bounds retained context and preserves full hi
       requests.push(structuredClone(view));
       const content = generations < 40 ? [fauxToolCall("read", {}, { id: `read-${generations}` })] : "Finished";
       generations++;
+      // An already loaded agent can lower its context limit between requests.
+      contextWindow = 8192;
       return stream({ ...fauxAssistantMessage(content, { stopReason: typeof content === "string" ? "stop" : "toolUse" }), provider: model.provider, model: model.id });
     },
-    durable: { storage, nativeCompaction: true, contextWindow: 8192,
+    durable: { storage, nativeCompaction: true, get contextWindow() { return contextWindow; },
       summaryStream: () => { summaries++; return stream({ ...fauxAssistantMessage("Retain the task identifier and continue reading."), provider: model.provider, model: model.id }); },
       onCompaction: state => { compactions++; assert.ok(state.keptMessages < 20); assert.ok(state.summary.length); },
     },
@@ -38,7 +41,7 @@ test("native compaction owns cuts, bounds retained context and preserves full hi
   assert.equal(tools, 40);
   assert.ok(requests.every(view => getCurrentSystemMessage(view.messages)?.sections?.application === "Keep the customer instructions intact."), "application instructions survive every request and native compaction");
   assert.ok(compactions > 2);
-  assert.ok(Math.max(...requests.map(view => JSON.stringify(view).length)) < 8192 * 4, "native compaction respects the configured window below the model maximum");
+  assert.ok(Math.max(...requests.map(view => JSON.stringify(view).length)) < 8192 * 4, "native compaction follows a lowered live context window below the model maximum");
   assert.equal(summaries, compactions, "blocking compaction does not discard speculative summaries");
   const entries = await storage.scanEntries({ conversationId: agent.conversationId, order: "ascending" }, 1000, undefined, BACKGROUND_CONTEXT);
   assert.equal(entries.items.filter(entry => entry.kind === "camel.compaction.usage").length, summaries, "every summary response has a durable accounting source");

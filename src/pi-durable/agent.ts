@@ -228,11 +228,11 @@ export class DurableAgent {
         return result;
       },
     };
-    const window = Math.min(agent.state.model.contextWindow, options.durable.contextWindow ?? Infinity);
+    const window = () => Math.min(agent.state.model.contextWindow, options.durable.contextWindow ?? Infinity);
     agent.harness = await Harness.open(options.durable.storage, { registry, models: models as unknown as HarnessOptions["models"],
       settings: { compaction: { enabled: options.durable.nativeCompaction ?? false,
-        reserveTokens: Math.min(16_384, Math.floor(window * 0.15)),
-        keepRecentTokens: Math.min(20_000, Math.floor(window * 0.25)), backgroundTokens: 0 },
+        get reserveTokens() { return Math.min(16_384, Math.floor(window() * 0.15)); },
+        get keepRecentTokens() { return Math.min(20_000, Math.floor(window() * 0.25)); }, backgroundTokens: 0 },
         retry: { enabled: false }, toolExecution: options.toolExecution ?? "parallel",
         steeringMode: agent.steeringMode, followUpMode: agent.followUpMode, contextRetentionMs: 0 },
     }, context);
@@ -443,9 +443,16 @@ export class DurableAgent {
 
   private async checkpointContext(messages: AgentMessage[]) {
     const model = contextMessages(messages);
-    await this.conversation.commit(tx => tx.appendEntry(this.conversation.id, {
-      kind: "camel.legacy.context", head: "self", model: structuredClone(model) as never,
-    }), context);
+    await this.conversation.commit(async tx => {
+      // Keep message boundaries: Pi cannot select a compaction cut inside one
+      // entry containing the whole previous conversation.
+      await tx.appendEntry(this.conversation.id, {
+        kind: "camel.legacy.context", head: "self", model: structuredClone(model.slice(0, 1)) as never,
+      });
+      for (const message of model.slice(1)) await tx.appendEntry(this.conversation.id, {
+        kind: "camel.context.message", model: [structuredClone(message)] as never,
+      });
+    }, context);
     if (this.options.durable.nativeCompaction) this.originalInputs.clear();
   }
 
