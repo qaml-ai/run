@@ -1,4 +1,5 @@
 import { END_USER_CREDIT, type CreditStop, type ModelAttemptHook } from "./model-attempt.ts";
+import { NativeTranscript } from "./pi-durable/transcript.ts";
 import { mkdir } from "node:fs/promises";
 import { Agent, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
 import { convertToLlm } from "./pi-harness/messages.ts";
@@ -14,7 +15,7 @@ import { applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS,
 import { renderMessages, senderInput, stamp, type MessageSource } from "./sender.ts";
 import type { SearchHit, SearchQuery } from "./tool-search.ts";
 import type { AppendLog } from "../shared/append-log.ts";
-import { Transcript, readTranscriptLog, summaryMessage, type Backlog, type CompactionState, type TranscriptRecord } from "./transcript.ts";
+import { Transcript, readTranscriptLog, summaryMessage, type Backlog, type CompactionState, type TranscriptRecord, type TranscriptSnapshot } from "./transcript.ts";
 import { boundedContext, closeInterruptedTurn, importedHistory, interruptedTurnRepairs, validateInitialMessages, validateUserMessages } from "./history.ts";
 import { backgroundTokens, compactionNeed, compactionSettings, contextTokens, explicitKeyStream, messagesTokens, modelKeyFailure, runCompaction, type ModelGate } from "./compaction.ts";
 import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
@@ -30,6 +31,11 @@ import { fitImage, fits, type Fitted } from "./inspect.ts";
 import { imageHeader } from "./image-header.ts";
 import { clock } from "./node-context.ts";
 import { usageMissing } from "./platform-pricing.ts";
+import type { Storage as PiStorage } from "@earendil-works/pi-durable";
+import type { DurableAgent } from "./pi-durable/agent.ts";
+import type { AgentEngine } from "./pi-durable/config.ts";
+import { importLegacyTranscript, readMigrationRecords, LegacyMigrationDeferred, loadLegacyMigration, type LegacyMigrationMetadata } from "./pi-durable/migration.ts";
+import { reconcilePiTranscript } from "./pi-durable/projection.ts";
 
 /** How often an agent reads back from its log what its history backlog could not hold (see `index`). */
 const LAG_READ_MS = 60_000;
@@ -64,6 +70,10 @@ export interface HostIO {
   runLimit(): Promise<RunStop | undefined>;
   /** The agent's transcript, which its supervisor writes. */
   transcript: AppendLog<TranscriptRecord>;
+  /** Process hosting reduces the log on its owner before crossing IPC; inline hosting replays it here. */
+  loadTranscript?(indexed: number | null, bound?: number): Promise<TranscriptSnapshot>;
+  /** Native Pi storage stays on the supervisor under the session's ownership claim. */
+  piStorage?(): Promise<PiStorage | undefined>;
   /** `tools.search`, answered by the supervisor (which holds the rerankers); without it, code searches here. */
   search?(query: SearchQuery): Promise<SearchHit[]>;
   /** A file reference's bytes as base64, read by the supervisor: the agent holds no storage access. */
@@ -118,6 +128,9 @@ const stopFields = (stop: Partial<RunStop>) => ({
 export function createAgentHost(hostIO: HostIO) {
   let agent: Agent | undefined;
   let config: AgentConfig;
+  let engine: AgentEngine = "legacy";
+  let durableAgent: DurableAgent | undefined;
+  let migration: { state: "migrated" | "existing" | "deferred"; reason?: string } | undefined;
   // Each turn's outcome, timing and model and tool counts, as metrics (metrics.ts), from what the host emits.
   const turns = observeTurns(() => config?.model && { provider: config.model.provider, id: config.model.id }, Date.now, () => config?.tenant);
   const io: HostIO = { ...hostIO, emit: event => { turns.event(event); hostIO.emit(event); } };
@@ -352,7 +365,7 @@ export function createAgentHost(hostIO: HostIO) {
    * with the whole context meanwhile, and the summary takes over once it is written. `messages` are Pi's live state.
    */
   function compactInBackground(messages = agent?.state.messages) {
-    if (compacting || !messages || !config.apiKey || transcript.failed !== undefined || !measure(messages).need) return;
+    if (durableAgent || compacting || !messages || !config.apiKey || transcript.failed !== undefined || !measure(messages).need) return;
     startCompaction("threshold", true).done.catch(() => {});
   }
 
@@ -789,6 +802,7 @@ export function createAgentHost(hostIO: HostIO) {
       // Its end user's credit refused it: asking again would be refused again.
       if (stopped?.code === END_USER_CREDIT) return;
       if (isContextOverflow(last, config.model.contextWindow)) {
+        if (durableAgent) return;
         if (overflowHandled) return;
         overflowHandled = true;
         await transcript.retract();
@@ -845,10 +859,29 @@ export function createAgentHost(hostIO: HostIO) {
       // Messages the history index lacks are kept from here, as the log is read: all of them for an agent never indexed.
       // One whose index cannot be read now (null) is left for the next start.
       const indexed = io.history ? await io.history.indexed().catch(() => null) : null;
-      transcript = new Transcript(io.transcript, indexed ?? undefined, io.historyBacklogBytes);
-      // What the model saw first stays first: a mount or tool change after the first message is appended, not rebuilt into it.
+      const piStorage = await io.piStorage?.();
+      const native = piStorage ? await NativeTranscript.open(piStorage, indexed ?? undefined, io.historyBacklogBytes) : undefined;
+      if (native && config.engine === "pi-durable") transcript = native;
+      else {
+        if (native) {
+          // Materialize a rollback once, before the old engine takes ownership.
+          const records = await native.log.read();
+          await io.transcript.rewrite(() => records);
+          await native.disable();
+        }
+        transcript = new Transcript(io.transcript, indexed ?? undefined, io.historyBacklogBytes);
+        transcript.pin = () => agent ? leading() : undefined;
+        if (io.loadTranscript) transcript.restore(await io.loadTranscript(indexed, io.historyBacklogBytes));
+        else await transcript.load();
+      }
+      const migrated = piStorage ? await loadLegacyMigration(piStorage) : undefined;
+      const canMigrate = !transcript.active && !transcript.awaiting.length;
+      if (piStorage && migrated) {
+        // The native journal commits before its history projection. Each copied message carries
+        // its cursor in that same record, so a torn append is safe to copy again after reopen.
+        await reconcilePiTranscript(transcript, piStorage, migrated.conversationId);
+      }
       transcript.pin = () => agent ? leading() : undefined;
-      await transcript.load();
       let recovered = false;
       let resume: { continue: true } | { finished: { messages: number; error: string | null; reply?: string; stopped?: string; output?: unknown } } | undefined;
       if (transcript.active && transcript.awaiting.length) {
@@ -916,7 +949,12 @@ export function createAgentHost(hostIO: HostIO) {
       const stream = explicitKeyStream(() => perCall() ? io.modelAuth() : undefined, () => config.modelHeaders, gate,
         (model, reasoning) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts),
         stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: config.model.provider, model: config.model.id }), io.modelOutbound, io.modelAttempt, creditStop);
-      agent = new Agent({
+      const summaryAttempt: ModelAttemptHook | undefined = io.modelAttempt && (event => io.modelAttempt!(
+        event.type === "begin" ? { ...event, kind: "compaction" } : event));
+      const summaryStream = explicitKeyStream(() => perCall() ? io.modelAuth() : undefined, () => config.modelHeaders, gate,
+        (model, reasoning) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts),
+        stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: config.model.provider, model: config.model.id }), io.modelOutbound, summaryAttempt, creditStop);
+      const agentOptions: ConstructorParameters<typeof Agent>[0] = {
         initialState: {
           model: config.model,
           tools, messages: [leading(tools.map(toToolDeclaration)), ...transcript.view()],
@@ -965,7 +1003,67 @@ export function createAgentHost(hostIO: HostIO) {
         },
         sessionId: config.id,
         toolExecution: "parallel",
-      });
+      };
+      let conversion: LegacyMigrationMetadata | undefined = migrated;
+      let migrationRecords: TranscriptRecord[] | undefined;
+      if (config.engine === "pi-durable" && piStorage && !conversion && canMigrate) {
+        try {
+          migrationRecords = await readMigrationRecords(transcript.log);
+          const imported = await importLegacyTranscript({ storage: piStorage, sessionId: config.id,
+            records: migrationRecords, leadingSystem: leading(tools.map(toToolDeclaration)) });
+          conversion = imported;
+          migration = { state: "migrated" };
+        } catch (error) {
+          if (!(error instanceof LegacyMigrationDeferred)) throw error;
+          migration = { state: "deferred", reason: error.reason };
+        }
+      } else if (config.engine === "pi-durable" && !conversion) migration = { state: "deferred", reason: transcript.awaiting.length ? "awaiting" : "active" };
+      let adoptionDeferred = false;
+      if (piStorage && conversion && config.engine === "pi-durable" && !(transcript instanceof NativeTranscript)) {
+        try {
+          transcript = await NativeTranscript.adopt(piStorage, transcript, indexed ?? undefined, io.historyBacklogBytes, agentOptions.initialState?.messages, migrationRecords);
+        } catch (error) {
+          if (!(error instanceof LegacyMigrationDeferred)) throw error;
+          migration = { state: "deferred", reason: error.reason };
+          adoptionDeferred = true;
+        }
+      }
+      if (piStorage && conversion && !adoptionDeferred) {
+        const { DurableAgent } = await import("./pi-durable/agent.ts");
+        if (config.engine === "pi-durable") {
+          durableAgent = await DurableAgent.create({ ...agentOptions, durable: {
+            storage: piStorage, conversationId: conversion.conversationId, cursor: transcript.piCursor, nativeCompaction: true,
+            // Summaries share credential/network gates but not the run's output
+            // schema, temperature or max-output settings.
+            summaryStream,
+            contextWindow: compactionModel().contextWindow,
+            onSummary: message => io.emit({ type: "compaction_usage", provider: message.provider,
+              model: message.model, usage: message.usage, timestamp: message.timestamp, durable: true }),
+            onCompaction: async ({ summary, keptMessages, at }) => {
+              const cut = transcript.total - keptMessages;
+              if (cut < transcript.offset || cut > transcript.total) throw new Error("Native compaction is outside the host working set");
+              if (transcript.compaction?.cut === cut && transcript.compaction.summary === summary && transcript.compaction.at === at) return;
+              const offset = transcript.offset;
+              const state = { summary, cut, tokensBefore: contextTokens(transcript.view()), at };
+              await transcript.compact(state, transcript.compaction, changes => getCurrentSystemMessage([leading(tools.map(toToolDeclaration)), ...changes]));
+              io.emit({ type: "compaction_end", reason: "threshold", tokensBefore: state.tokensBefore,
+                keptMessages, summarizedMessages: cut - offset });
+            },
+          } });
+          const cursor = await durableAgent.discardInterruptedRun();
+          if (cursor) await transcript.commit(() => [{ t: "pi", cursor }]);
+          agent = durableAgent as unknown as Agent;
+          engine = "pi-durable";
+          migration ??= { state: "existing" };
+        } else {
+          // Rollback keeps the native history projection, retires pending execution, then uses the legacy loop.
+          const paused = await DurableAgent.create({ ...agentOptions, durable: { storage: piStorage, conversationId: conversion.conversationId } });
+          const cursor = await paused.discardInterruptedRun();
+          if (cursor) await transcript.commit(() => [{ t: "pi", cursor }]);
+          await paused.close();
+          agent = new Agent(agentOptions);
+        }
+      } else agent = new Agent(agentOptions);
       agent.subscribe(async event => {
         if ((event.type === "message_start" || event.type === "message_update" || event.type === "message_end") && event.message.role === "system") {
           // Pi declares a tool set that no longer matches the context's; it stays in place like the runtime's own changes.
@@ -981,7 +1079,7 @@ export function createAgentHost(hostIO: HostIO) {
         if (event.type === "message_end" && event.message.role === "user") steers = steers.filter(steer => steer.message !== event.message);
         if (event.type === "message_end" && !(event.message.role === "toolResult" && (event.message.details as { inputRequired?: boolean } | undefined)?.inputRequired)) {
           // One durable append per finished message. Streaming deltas are never persisted.
-          try { await transcript.push(event.message); }
+          try { await transcript.push(event.message, (event as unknown as { durable?: import("./transcript.ts").PiMessageCursor }).durable); }
           catch (error) { agent!.abort(); throw error; }
           void index();
         }
@@ -994,10 +1092,10 @@ export function createAgentHost(hostIO: HostIO) {
       // A configuration changed elsewhere (another node, or while this agent was stopped) applies from here.
       await declareConfiguration();
       void index();
-      return { pid: process.pid, recovered, messages: transcript.total, ...(resume ? { resume } : {}), ...(!recovered && config.resume ? endedTurn() : {}) };
+      return { pid: process.pid, engine, ...(migration ? { migration } : {}), recovered, messages: transcript.total, ...(resume ? { resume } : {}), ...(!recovered && config.resume ? endedTurn() : {}) };
     }
     if (!agent) throw new Error("Agent is not initialized");
-    if (method === "status") return { pid: process.pid, busy, messages: transcript.total, contextMessages: transcript.context.length, compacted: !!transcript.compaction };
+    if (method === "status") return { pid: process.pid, engine, ...(migration ? { migration } : {}), busy, messages: transcript.total, contextMessages: transcript.context.length, compacted: !!transcript.compaction };
     if (method === "configure") {
       if (busy) throw new Error("Agent is busy");
       if (params.systemPrompt !== undefined) config.systemPrompt = params.systemPrompt ?? undefined;
@@ -1062,7 +1160,7 @@ export function createAgentHost(hostIO: HostIO) {
     if (busy) throw new Error("Agent is busy");
     if (transcript.failed !== undefined) throw new Error(`${PERSISTENCE_FAILED}: ${String(transcript.failed)}`);
     // A prompt a turn took as a steer before the node running it stopped: it is in the history already, compacted or not.
-    if (method === "prompt" && params.requestId && transcript.requests.has(params.requestId)) {
+    if (method === "prompt" && params.requestId && await transcript.hasRequest(params.requestId)) {
       return { messages: transcript.total, error: null, taken: true };
     }
     const promptMessages = method === "prompt" ? userMessages(params) : undefined;
@@ -1306,6 +1404,8 @@ export function createAgentHost(hostIO: HostIO) {
     active?.abort();
     agent?.abort();
     compacting?.controller.abort();
+    await io.cancelTools();
+    await durableAgent?.close();
     if (flushMs > 0) await Promise.race([index(true), clock().sleep(flushMs)]);
     await transcript?.log.close();
   }

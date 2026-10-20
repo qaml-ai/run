@@ -102,3 +102,42 @@ test("calls awaiting human input stay open across a reload, and leave the wait o
     assert.deepEqual(reloaded.awaiting, []);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+test("streamed transcript initialization transfers only reduced state while preserving compacted request and call identity", async t => {
+  const root = await mkdtemp(join(tmpdir(), "transcript-snapshot-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const log = fileAppendLog<TranscriptRecord>(join(root, "transcript.jsonl"));
+  const source = new Transcript(log);
+  await source.append([
+    { role: "user", content: "old ".repeat(100_000), timestamp: 1, requestId: "taken" } as AgentMessage,
+    { role: "assistant", content: [{ type: "toolCall", id: "old-call", name: "read", arguments: {} }], timestamp: 2 } as AgentMessage,
+    { role: "toolResult", toolCallId: "old-call", toolName: "read", content: [{ type: "text", text: "old result" }], timestamp: 3 } as AgentMessage,
+  ]);
+  await source.compact({ summary: "old summary", cut: 3, tokensBefore: 100_000, at: 4 }, undefined, () => undefined);
+  await source.setActive(true);
+  await source.append([
+    { role: "user", content: "new", timestamp: 5 },
+    { role: "assistant", content: [{ type: "toolCall", id: "waiting", name: "ask", arguments: {} }], timestamp: 6 } as AgentMessage,
+  ]);
+  await source.await(["waiting"]);
+  const reloaded = new Transcript({ ...log, read: async () => { throw new Error("must not materialize the log"); } }, 3);
+  await reloaded.load();
+  const snapshot = JSON.parse(JSON.stringify(reloaded.snapshot())); // JSON IPC, not structured clone
+  assert.ok(JSON.stringify(snapshot).length < 2000, "the archived message body never crosses IPC");
+  const restored = new Transcript(log, 3);
+  restored.restore(snapshot);
+  assert.deepEqual(restored.view(), source.view());
+  assert.equal(restored.total, 5);
+  assert.equal(restored.active, true);
+  assert.equal(restored.turnStart, 3);
+  assert.deepEqual(restored.awaiting, ["waiting"]);
+  assert.ok(restored.requests.has("taken"));
+  assert.equal(restored.calls.get("old-call"), 1);
+  assert.equal(restored.calls.get("waiting"), 4);
+  assert.equal(restored.backlog!.from, 3);
+  assert.equal(restored.backlog!.messages.length, 2);
+  await restored.push({ role: "toolResult", toolCallId: "waiting", toolName: "ask", content: [{ type: "text", text: "answer" }], timestamp: 7 } as AgentMessage);
+  assert.equal(restored.total, 6);
+  assert.deepEqual(restored.awaiting, []);
+  await log.close();
+});

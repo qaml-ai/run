@@ -259,11 +259,12 @@ test("compaction summaries bill their tokens and cost to the tenant, apart from 
 
 test("a prompt or tool change on an agent with history is appended after the cached prefix, and reloads and compaction keep it", async t => {
   const fake = await provider(t);
+  const { db } = await testDatabase();
   const root = await mkdtemp(join(tmpdir(), "configure-cache-"));
   const storage = fileStorage(join(root, "state"));
   const nodes: AgentSupervisor[] = [];
   const node = (name: string) => {
-    const supervisor = new AgentSupervisor(join(root, name), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, storage });
+    const supervisor = new AgentSupervisor(join(root, name), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, storage, db });
     nodes.push(supervisor);
     return supervisor;
   };
@@ -425,9 +426,10 @@ test("past the threshold, the next turn starts at once with the whole context wh
 
 test("messages appended while a background summary is made follow its cut: the summary replaces only the prefix it covered", async t => {
   const fake = await provider(t, { gated: true });
+  const { db } = await testDatabase();
   const root = await mkdtemp(join(tmpdir(), "compaction-concurrent-"));
   const storage = fileStorage(join(root, "state"));
-  const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, storage });
+  const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, storage, db });
   t.after(async () => { await supervisor.close(); await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); });
   const background = await nearLimit(t, fake, supervisor, "concurrent");
   const summarizing = (await supervisor.request("concurrent", "status")).messages;
@@ -494,7 +496,7 @@ test("a node lost mid-compaction cannot write its summary: the next owner serves
   const storage = memoryStorage(postgresTail(db));
   const root = await mkdtemp(join(tmpdir(), "compaction-failover-"));
   const owners = [new Ownership(db, { node: "http://a" }), new Ownership(db, { node: "http://b" })];
-  const [a, b] = ["a", "b"].map(name => new AgentSupervisor(join(root, name), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, storage }));
+  const [a, b] = ["a", "b"].map(name => new AgentSupervisor(join(root, name), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, storage, db }));
   for (const owner of owners) await owner.start();
   t.after(async () => {
     fake.release();

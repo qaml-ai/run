@@ -24,6 +24,24 @@ if (process.env.AGENT_TEST_S3_BUCKET) {
 }
 
 for (const [name, open] of backends) {
+  test(`${name} storage: bounded reads accept small logs and defer oversized logs without mutation`, async t => {
+    const storage = await open(t);
+    const key = `bounded/${randomUUID()}`;
+    const log = storage.log<{ text: string }>(key);
+    log.append({ text: "saved" });
+    await log.flush(true);
+    assert.deepEqual(await log.readBounded!(4096), [{ text: "saved" }]);
+    log.append({ text: "x".repeat(8192) });
+    await log.flush(true);
+    assert.equal(await log.readBounded!(4096), undefined);
+    assert.equal((await log.read()).length, 2);
+    await log.close();
+    const reopened = storage.log<{ text: string }>(key);
+    assert.equal(await reopened.readBounded!(4096), undefined, "also applies after tail compaction");
+    assert.equal((await reopened.read()).length, 2);
+    await reopened.close();
+  });
+
   test(`${name} storage: blobs are immutable: writing an existing key keeps the first bytes`, async t => {
     const storage = await open(t);
     assert.equal(await storage.readBlob("chunks/t/ab/abc"), undefined);

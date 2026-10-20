@@ -292,6 +292,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   const outbound = outboundFromEnvironment(env);
   const supervisor = new AgentSupervisor(join(root, "sessions"), {
     runtime: config.runtime, maxAgents, ...(config.memoryHighBytes ? { memoryHighBytes: config.memoryHighBytes } : {}), hosting, ...(distributed ? { storage } : {}), ...(deps.codeExecutor ? { codeExecutor: deps.codeExecutor } : {}),
+    engine: config.engine, db,
     agentEnv: config.agentEnv, historyBacklogBytes: config.historyBacklogBytes, modelOutbound: outbound,
   });
   const model = configuredModel(env);
@@ -302,6 +303,8 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   // Credit is bought through Stripe Checkout when Stripe is configured (AGENT_STRIPE_SECRET_ARN, or STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET).
   const stripe = secrets.stripe && new Stripe({ ...secrets.stripe, ...config.stripe });
   const accounts = new Accounts({ tenants, db, secretsKey: secrets.secretsKey, pricing, publicUrl, stripe, maxAgentsPerTenant, ...(secrets.azureOpenAI ? { azureOpenAI: secrets.azureOpenAI } : {}) });
+  // Recover committed fallback Pi usage before serving model work.
+  await accounts.flushUsage();
   // Busy agents per tenant, counted across the fleet: each tenant's own maxAgents, its usage tier, or AGENT_MAX_AGENTS_PER_TENANT.
   const busyAgents = new BusyAgents({ db, ownership, limitFor: (tenant, sql) => accounts.billing.busyLimit(tenant, sql) });
   accounts.billing.autoTopup?.start();

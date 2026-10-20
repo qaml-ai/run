@@ -105,6 +105,7 @@ export async function runtime(t: T, respond: (body: any, index: number) => objec
     env: {
       PATH: process.env.PATH, HOME: root, AGENT_DATA_DIR: root, AGENT_DATABASE_URL: databaseUrl, PORT: "0", HOST: "127.0.0.1",
       ...(process.env.AGENT_HOSTING ? { AGENT_HOSTING: process.env.AGENT_HOSTING } : {}),
+      ...(process.env.AGENT_ENGINE ? { AGENT_ENGINE: process.env.AGENT_ENGINE } : {}),
       AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_SESSION_SECRET: "server-test-session-secret-with-32-chars",
       AGENT_SECRETS_KEY: randomBytes(32).toString("hex"), AGENT_PUBLIC_URL: "https://agents.example.test",
       AGENT_PROVIDER: "openrouter", AGENT_MODEL: "openai/gpt-4o-mini", AGENT_BASE_URL: model.url, AGENT_SCHEDULER_INTERVAL_MS: "200", ...env,

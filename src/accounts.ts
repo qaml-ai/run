@@ -72,6 +72,8 @@ export class Accounts {
   private unflushed: Batch[] = [];
   private flushes: Promise<void> = Promise.resolve();
   private usageTimer?: ReturnType<typeof setTimeout>;
+  private durableUsageVersion = 0;
+  private flushedDurableUsageVersion = 0;
   readonly billing: Billing;
   /** This UTC month's spend per tenant, as last read plus what this node recorded since. */
   private readonly spend = new Map<string, { month: string; cost: number; until: number }>();
@@ -383,6 +385,12 @@ export class Accounts {
   recordUsage(tenant: string, agent: string, message: UsageRecord) {
     // The durable attempt transaction already wrote these totals and the charge.
     if (message.usage?.billingAttemptId) return;
+    if (message.durableReceipt) {
+      this.durableUsageVersion++;
+      this.spend.delete(tenant);
+      this.scheduleFlush();
+      return;
+    }
     this.collectUsage(this.pending, tenant, agent, message);
     this.scheduleFlush();
   }
@@ -504,6 +512,7 @@ export class Accounts {
   }
 
   private async flushPending() {
+    const durableVersion = this.durableUsageVersion;
     if (this.usageTimer) { clearTimeout(this.usageTimer); this.usageTimer = undefined; }
     if (this.pending.usage.size || this.pending.charges.size || this.pending.events.length) {
       this.unflushed.push(this.pending);
@@ -514,6 +523,8 @@ export class Accounts {
         await this.apply(this.unflushed[0]);
         this.unflushed.shift();
       }
+      await this.flushReceipts();
+      this.flushedDurableUsageVersion = durableVersion;
     } catch (error) {
       // Retry later even if nothing new is recorded.
       this.scheduleFlush();
@@ -521,7 +532,28 @@ export class Accounts {
     }
   }
 
-  private async apply({ id, usage, charges, events }: Batch) {
+  private async flushReceipts() {
+    // Concurrent nodes claim disjoint rows. Consumption, usage totals, prepaid
+    // debits and webhook events either all commit or all remain retryable.
+    for (;;) {
+      const result = await transaction(this.db, async sql => {
+        const { rows } = await sql.query(`select session_id, entry_id, tenant, message from pi_usage_receipts
+          where not accounted order by created_at, session_id, entry_id limit 100 for update skip locked`);
+        if (!rows.length) return { count: 0, tenants: [] as string[] };
+        const pending = batch();
+        for (const row of rows) this.collectUsage(pending, row.tenant, row.session_id, row.message);
+        await this.apply(pending, sql);
+        for (const row of rows) await sql.query("update pi_usage_receipts set accounted = true where session_id = $1 and entry_id = $2", [row.session_id, row.entry_id]);
+        for (const row of rows) this.spend.delete(row.tenant);
+        return { count: rows.length, tenants: [...pending.charges.keys()] };
+      });
+      // Notify automatic funding only after the accounting transaction commits.
+      await this.billing.autoTopup?.balanceChanged(result.tenants);
+      if (result.count < 100) return;
+    }
+  }
+
+  private async apply({ id, usage, charges, events }: Batch, existing?: Sql) {
     const rows = [...usage].map(([key, totals]) => {
       const [tenant, day, model] = JSON.parse(key);
       return { tenant, day, model, ...totals };
@@ -529,7 +561,7 @@ export class Accounts {
     const billed: UsageCharge[] = [];
     for (const [tenant, charge] of charges) {
       const amount = this.amount(charge);
-      if (amount > 0 && await this.billing.mode(tenant) === "prepaid") {
+      if (amount > 0 && await this.billing.mode(tenant, existing) === "prepaid") {
         billed.push({ tenant, amount, metadata: {
           tokens: Math.round(charge.platformCost * MICROS), activeMs: Math.round(charge.activeMs),
           ...(charge.fundingCost ? { funding: Math.round((charge.platformCost + charge.fundingCost) * MICROS) - Math.round(charge.platformCost * MICROS) } : {}),
@@ -541,15 +573,17 @@ export class Accounts {
         } });
       }
     }
-    await transaction(this.db, async sql => {
+    const commit = async (sql: Sql) => {
       if (!(await sql.query("insert into usage_flushes (id) values ($1) on conflict (id) do nothing returning id", [id])).rowCount) return;
       await applyUsageRows(sql, rows);
       await accrueUsage(sql, billed);
       // Only tenants with an endpoint that selects usage keep their events.
       await enqueueEvents(sql, events);
-    });
+    };
+    if (existing) await commit(existing);
+    else await transaction(this.db, commit);
     this.billing.invalidate(charges.keys());
-    await this.billing.autoTopup?.balanceChanged(charges.keys());
+    if (!existing) await this.billing.autoTopup?.balanceChanged(charges.keys());
   }
 
   /** The tenant's model spend this UTC month, turns and compaction, read from the database at most every few seconds. */
@@ -582,6 +616,9 @@ export class Accounts {
 
   /** Why the tenant may not start or continue model work: a reached monthly cap (a message, for 402), or spent or rate-limited prepaid credit. */
   async runLimit(tenant: string): Promise<string | HttpError | undefined> {
+    // A response already paid from durable storage counts before admitting
+    // another model step, even if the periodic accounting flush has not run.
+    if (this.flushedDurableUsageVersion !== this.durableUsageVersion) await this.flushUsage();
     return await this.spendLimit(tenant) ?? await this.billing.creditLimit(tenant);
   }
 

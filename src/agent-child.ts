@@ -4,6 +4,7 @@ import { createAgentHost } from "./agent-host.ts";
 import { setMetricService, setMetricSink } from "./metrics.ts";
 import type { AppendLog } from "../shared/append-log.ts";
 import type { TranscriptRecord } from "./transcript.ts";
+import { remotePiStorage } from "./pi-durable/storage.ts";
 
 // One agent in its own process: the host's I/O goes over IPC to the supervisor.
 // Its stdout is not kept: metric lines (metrics.ts) go to stderr, which the node's log keeps.
@@ -25,6 +26,8 @@ const host = createAgentHost({
   lease: () => rpc.request("lease"),
   history: { indexed: () => rpc.request("history", { op: "indexed" }), write: chunk => rpc.request("history", { op: "write", chunk }), read: from => rpc.request("history", { op: "read", from }) },
   transcript: remoteTranscript(rpc),
+  loadTranscript: (indexed, bound) => rpc.request("transcript", { op: "load", indexed, bound }),
+  piStorage: async () => await rpc.request("pi-storage", { method: "available" }) ? remotePiStorage(request => rpc.request("pi-storage", request)) : undefined,
   // This process's environment is the node's settings for it (agentProcessEnv).
   ...(Number(process.env.AGENT_HISTORY_BACKLOG_BYTES) ? { historyBacklogBytes: Number(process.env.AGENT_HISTORY_BACKLOG_BYTES) } : {}),
 });
@@ -46,6 +49,7 @@ function remoteTranscript(rpc: Rpc): AppendLog<TranscriptRecord> {
   let appended = 0;
   return {
     read: () => rpc.request("transcript", { op: "read" }),
+    readBounded: async maxBytes => (await rpc.request("transcript", { op: "read-bounded", maxBytes })) ?? undefined,
     append(record) { buffer.push(record); appended++; },
     flush(durable) {
       const records = buffer;
