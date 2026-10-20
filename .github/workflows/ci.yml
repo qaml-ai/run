@@ -5,6 +5,11 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
+    inputs:
+      measure_modes:
+        description: "Full dual-mode baseline with per-file hosting branch traces"
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -110,6 +115,13 @@ jobs:
         uses: ./.github/actions/test-postgres
         with:
           image: ${{ github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && 'public.ecr.aws/docker/library/postgres:16-alpine' || 'postgres:16-alpine' }}
+      - name: Instrument hosting branches (measurement only)
+        if: inputs.measure_modes == true
+        run: |
+          node --experimental-strip-types scripts/test-mode-instrument.ts
+          mkdir -p test-timings/branches
+          echo "TEST_MODE_TRACE_DIR=$PWD/test-timings/branches" >> "$GITHUB_ENV"
+          echo "NODE_OPTIONS=--import=$PWD/scripts/test-mode-owner.ts" >> "$GITHUB_ENV"
       - run: npm run test:shard -- ${{ matrix.shard }}/${{ needs.changes.outputs.shard-count }}
         env:
           TEST_DATABASE_PER_FILE: "true"
