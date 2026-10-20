@@ -63,6 +63,8 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
   const hosting = (env.AGENT_HOSTING ?? "process") as Hosting;
   if (!["process", "inline"].includes(hosting)) throw new Error("AGENT_HOSTING must be process or inline");
   const engine = agentEngine(env.AGENT_ENGINE);
+  const piCanaryAgents = new Set(list(env.AGENT_PI_CANARY_AGENTS));
+  const piCanaryTenants = new Set(list(env.AGENT_PI_CANARY_TENANTS));
   const toolTimeoutMs = Number(env.AGENT_TOOL_TIMEOUT_MS ?? 15_000);
   if (!Number.isInteger(toolTimeoutMs) || toolTimeoutMs < 1 || toolTimeoutMs > 15 * 60_000) throw new Error("AGENT_TOOL_TIMEOUT_MS must be an integer between 1 and 900000");
   // The most one run of a self-serve tenant's agents may take, whatever its agent sets (runLimits): model responses, and
@@ -106,7 +108,7 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     publicUrlSet: !!env.AGENT_PUBLIC_URL,
     // Where browsers reach the runtime, as browser tokens say: AGENT_PUBLIC_URL unless set; empty for none.
     browserUrl: env.AGENT_BROWSER_URL?.replace(/\/+$/, ""),
-    maxAgents, memoryHighBytes, maxAgentsPerTenant, maxDefinitionsPerTenant, drainMs, retireMaxMs, orphanMs, childSweepMs, wakesPerHour, hosting, engine, toolTimeoutMs, runLimits, streamTimeouts, runRetentionSeconds, idleMs,
+    maxAgents, memoryHighBytes, maxAgentsPerTenant, maxDefinitionsPerTenant, drainMs, retireMaxMs, orphanMs, childSweepMs, wakesPerHour, hosting, engine, piCanaryAgents, piCanaryTenants, toolTimeoutMs, runLimits, streamTimeouts, runRetentionSeconds, idleMs,
     leaseTtlMs: Number(env.AGENT_LEASE_TTL_MS ?? 90_000),
     runtime: env.AGENT_RUNTIME,
     serviceName: env.AGENT_SERVICE_NAME,
