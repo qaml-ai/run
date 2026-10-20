@@ -126,7 +126,8 @@ export class TurnTaker {
     else if (atMs - s.lastFrameAt > TURN_LIMITS.resetMs) { s.context.fill(0); s.state.fill(0); s.pendingLength = 0; }
     this.keep(s, pcm, atMs);
     s.lastFrameAt = atMs;
-    // Into 512-sample chunks, each stamped with when its last sample was heard.
+    // Into 512-sample chunks, each stamped with when its last sample was heard, in whole ms: a frame need not be a
+    // multiple of 16 samples (a 2.5 ms Opus frame is 40), and a turn's times end up in bigint columns (voice_sessions).
     const frameMs = pcm.length / (TURN_LIMITS.rate / 1_000);
     for (let i = 0; i < pcm.length;) {
       const take = Math.min(pcm.length - i, TURN_LIMITS.chunk - s.pendingLength);
@@ -139,7 +140,7 @@ export class TurnTaker {
         input.set(s.pending, TURN_LIMITS.context);
         s.context = input.slice(input.length - TURN_LIMITS.context);
         s.pendingLength = 0;
-        s.chunks.push({ input, endAt: atMs - frameMs * (pcm.length - i) / pcm.length });
+        s.chunks.push({ input, endAt: Math.round(atMs - frameMs * (pcm.length - i) / pcm.length) });
       }
     }
     this.pump(s);

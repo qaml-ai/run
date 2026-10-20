@@ -36,6 +36,9 @@ import { NO_USAGE, realtimePrice, realtimeCost, realtimeTranscriptionCost, type 
  * Nothing the people or the model say is logged: logs carry counts, timings and lengths.
  */
 
+/** An ask_agent call with no request: answered to the model, never sent to the agent nor counted as its failure. */
+const EMPTY_REQUEST = new Error("empty request");
+
 export const REALTIME_LIMITS = Object.freeze({
   /** How long ask_agent waits for the agent's reply before the model is told it is still working. */
   askAgentMs: 45_000,
@@ -893,16 +896,17 @@ export class RealtimeBrain {
     }, limits.askAgentMs);
     const timer = this.clock.setTimeout(() => abort.abort(new Error("timeout")), limits.askAgentLateMs);
     void (async () => {
-      let reply: string | undefined, outcome: "ok" | "late" | "timeout" | "error";
+      let reply: string | undefined, outcome: "ok" | "late" | "timeout" | "error" | "empty";
       try {
-        if (!request.trim()) throw new Error("empty request");
+        // A call without a request (the model's slip, not the agent's failure): the model is told to say what to ask.
+        if (!request.trim()) throw EMPTY_REQUEST;
         reply = (await this.hooks.askAgent!(request, speaker, abort.signal)).trim().slice(0, REALTIME_LIMITS.agentReplyChars);
         outcome = late ? "late" : "ok";
       } catch (error) {
         const timedOut = abort.signal.aborted && !this.closed;
-        outcome = timedOut ? "timeout" : "error";
-        this.stats.askAgentFailed++;
-        if (!timedOut && !this.closed) this.hooks.log("voice_realtime_ask_agent_failed", { error: safeError(error) });
+        outcome = error === EMPTY_REQUEST ? "empty" : timedOut ? "timeout" : "error";
+        if (outcome !== "empty") this.stats.askAgentFailed++;
+        if (outcome === "error" && !this.closed) this.hooks.log("voice_realtime_ask_agent_failed", { error: safeError(error) });
       } finally {
         this.clock.clearTimeout(waiting);
         this.clock.clearTimeout(timer);
@@ -918,7 +922,7 @@ export class RealtimeBrain {
       if (this.closed || this.connection !== connection) return;
       const said = reply || "(The agent did this, and wrote nothing back.)";
       if (!late) {
-        connection.toolResult(call.id, JSON.stringify(reply !== undefined ? { reply: said } : { error: "The agent could not do it just now." }));
+        connection.toolResult(call.id, JSON.stringify(reply !== undefined ? { reply: said } : { error: outcome === "empty" ? "ask_agent needs a request: call it again with what to ask the agent." : "The agent could not do it just now." }));
         this.respond({ ...(speaker ? { speaker } : {}) });
         return;
       }

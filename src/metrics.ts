@@ -112,7 +112,30 @@ export function safeError(error: unknown): string {
     typeof status === "number" && Number.isInteger(status) ? String(status) : undefined,
     typeof code === "number" || typeof code === "string" && /^[\w.-]{1,40}$/.test(code) ? String(code) : undefined,
   ].filter(Boolean);
-  return `${errorClass(message)}${facts.length ? ` ${facts.join(" ")}` : ""} (${message.length} chars)`;
+  const pg = postgresFacts(error, message);
+  return `${errorClass(message)}${facts.length ? ` ${facts.join(" ")}` : ""}${pg ? ` ${pg}` : ""} (${message.length} chars)`;
+}
+
+const IDENTIFIER = /^[\w.$-]{1,63}$/;
+
+/**
+ * What a Postgres error (node-postgres' DatabaseError) says about where it failed, never what value: the type named in
+ * its message ("invalid input syntax for type bigint: ...", "... is out of range for type integer"), the query parameter
+ * its `where` names ("unnamed portal parameter $2 = '...'"), the server routine,
+ * and the table, column, type and constraint fields. Its detail, and the rest of its message and `where`, can hold the
+ * value, so they stay out.
+ */
+function postgresFacts(error: unknown, message: string): string | undefined {
+  if (typeof error !== "object" || !error) return undefined;
+  const { code, severity, routine, where, table, column, dataType, constraint } = error as Record<string, unknown>;
+  if (typeof code !== "string" || !/^[0-9A-Z]{5}$/.test(code) || typeof severity !== "string") return undefined;
+  const named = (key: string, value: unknown) => typeof value === "string" && IDENTIFIER.test(value) ? `${key}=${value}` : undefined;
+  const facts = [
+    named("type", (/^invalid input syntax for type (\w+)/.exec(message) ?? / out of range for type (\w+)$/.exec(message))?.[1]),
+    named("param", typeof where === "string" ? /\bparameter \$(\d{1,4})\b/.exec(where)?.[1] : undefined),
+    named("routine", routine), named("table", table), named("column", column), named("dataType", dataType), named("constraint", constraint),
+  ].filter(Boolean);
+  return facts.length ? `pg[${facts.join(" ")}]` : undefined;
 }
 
 const CODE_CLASSES: [string, RegExp][] = [

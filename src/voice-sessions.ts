@@ -386,6 +386,8 @@ export interface VoiceSessionsOptions {
   record(tenant: string, usage: UsageRecord): void;
   /** Submit a prompt to an agent wherever it is served, yielding the text its run writes as it is written (ask_agent); without it, no ask_agent. */
   submitStreaming?(agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }, signal: AbortSignal): AsyncIterable<string>;
+  /** How long ask_agent waits before asking again when the agent's host stopped under it (ASK_AGENT_RETRY_MS). */
+  askAgentRetryMs?: number;
   /**
    * The node's turn-taking models (src/voice/turns: Silero VAD, Smart Turn), for sessions whose endOfTurn is smart (the
    * default when given); without them, sessions end turns on silence.
@@ -416,6 +418,22 @@ export interface VoiceSessionsOptions {
    * thread (`inlineMedia`).
    */
   media?(transport: VoiceTransport, provider: typeof VOICE_PROVIDERS[number]): MediaFactory;
+}
+
+/**
+ * How long ask_agent waits before asking a second time when the agent's host stopped under its request: long enough
+ * for the node giving it up to release it (stop, interrupt, unload), so the next ask finds its new owner.
+ */
+export const ASK_AGENT_RETRY_MS = 1_000;
+
+/**
+ * Whether ask_agent's request failed because the agent left the node serving it: its host stopped ("Agent stopped",
+ * here or relayed by its owner as a 502) as the node retired or handed it off, or the owner asked no longer has it.
+ */
+export function agentMoved(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : "";
+  const status = (error as { status?: unknown } | undefined)?.status;
+  return message === "Agent stopped" && (status === undefined || status === 502) || status === 404 && message === "Unknown agent";
 }
 
 /** What an utterance's work needs of its session, fixed when it was cut: the session may move or end meanwhile. */
@@ -1116,7 +1134,7 @@ export class VoiceSessions {
       const { rows } = await sql.query(`
         update voice_sessions set utterances = utterances + 1, speech_seconds = speech_seconds + $2, cost = cost + $3,
           last_speech_at = greatest(coalesce(last_speech_at, 0), $4), updated_at = $5
-        where id = $1 returning *`, [origin.id, transcript.seconds, Math.round(usd * 1_000_000), cut.endedAt, Date.now()]);
+        where id = $1 returning *`, [origin.id, transcript.seconds, Math.round(usd * 1_000_000), Math.round(cut.endedAt), Date.now()]);
       const current = rows[0] as Row | undefined;
       if (current && transcript.text && current.options.deliver.webhooks) {
         await enqueueEvents(sql, [this.event(current, "voice.utterance", {
@@ -1246,14 +1264,24 @@ export class VoiceSessions {
         askAgent: async (request: string, speaker: string | undefined, signal: AbortSignal) => {
           const id = `voice_${held.id.slice(3)}_ask_${Date.now().toString(36)}${++asks}`;
           const name = speaker ? options().speakers?.[speaker] : undefined;
-          let text = "";
-          for await (const piece of submit(agent!, held.tenant, {
+          const body = {
             id, method: "prompt",
             params: {
               text: `[A request from your voice in a live voice call${name ? `, asked by ${name}` : ""}. Do what it needs with your tools first; then answer in one to three plain spoken sentences (no markdown, lists, links or emoji), since your reply is read aloud]\n${request}`,
               ...(speaker ? { from: { id: speaker, ...(name ? { name } : {}) } } : {}), metadata: { voiceSession: held.id, via: "realtime" }, allowDisconnected: true,
             },
-          }, signal)) text += piece;
+          };
+          let text = "";
+          try {
+            for await (const piece of submit(agent!, held.tenant, body, signal)) text += piece;
+          } catch (error) {
+            // The agent's host stopped under the request (its node retiring or handing it off, as in a rollout): asked
+            // once more, by the same id, it reaches the agent's next owner, which runs it (or answers it, if it ran).
+            if (text || signal.aborted || !agentMoved(error)) throw error;
+            log("voice_realtime_ask_agent_retry", { error: safeError(error) });
+            await clock().sleep(this.options.askAgentRetryMs ?? ASK_AGENT_RETRY_MS, { signal });
+            for await (const piece of submit(agent!, held.tenant, body, signal)) text += piece;
+          }
           return text;
         },
       } : {}),
@@ -1277,7 +1305,7 @@ export class VoiceSessions {
       },
       // A turn keeps the session from idling, and counts as an utterance when nothing transcribes it.
       turn: ({ endedAt }) => {
-        void write(`update voice_sessions set last_speech_at = greatest(coalesce(last_speech_at, 0), $2)${realtime.transcribe ? "" : ", utterances = utterances + 1"}, updated_at = $3 where id = $1 returning *`, [endedAt, Date.now()]);
+        void write(`update voice_sessions set last_speech_at = greatest(coalesce(last_speech_at, 0), $2)${realtime.transcribe ? "" : ", utterances = utterances + 1"}, updated_at = $3 where id = $1 returning *`, [Math.round(endedAt), Date.now()]);
       },
       heard: heard => {
         const { keyScope } = options();

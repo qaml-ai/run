@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { errorClass, safeError } from "../src/metrics.ts";
+import pg from "pg";
 import { HttpError } from "../src/http.ts";
 
 /**
@@ -108,6 +109,22 @@ test("safeError keeps an error's class, name, status and code, and only the leng
   assert.equal(safeError(Object.assign(new Error("x"), { code: "a code with spaces and someone@example.com" })), "other Error (1 chars)");
   assert.equal(safeError("overloaded"), "overloaded (10 chars)");
   assert.equal(safeError(undefined), `${errorClass("undefined")} (9 chars)`);
+});
+
+test("safeError keeps where a Postgres error failed (type, parameter, routine, table, column, constraint), never the value", () => {
+  const bigint = Object.assign(new pg.DatabaseError(`invalid input syntax for type bigint: "1760922345678.5"`, 143, "error"), {
+    severity: "ERROR", code: "22P02", where: "unnamed portal parameter $2 = '...'", routine: "scanint8", detail: "someone@example.com",
+  });
+  assert.equal(safeError(bigint), "other error 22P02 pg[type=bigint param=2 routine=scanint8] (55 chars)");
+  const range = Object.assign(new pg.DatabaseError(`value "99999999999" is out of range for type integer`, 100, "error"), { severity: "ERROR", code: "22003", routine: "pg_strtoint32" });
+  assert.equal(safeError(range), "other error 22003 pg[type=integer routine=pg_strtoint32] (52 chars)");
+  const unique = Object.assign(new pg.DatabaseError(`duplicate key value violates unique constraint "voice_sessions_live"`, 100, "error"), {
+    severity: "ERROR", code: "23505", table: "voice_sessions", constraint: "voice_sessions_live", detail: "Key (tenant)=(someone@example.com) already exists.",
+  });
+  assert.equal(safeError(unique), "other error 23505 pg[table=voice_sessions constraint=voice_sessions_live] (68 chars)");
+  // Fields that are not identifiers stay out; an error that is not Postgres' gets nothing more.
+  assert.equal(safeError(Object.assign(new pg.DatabaseError("x", 1, "error"), { severity: "ERROR", code: "22P02", column: "a value with spaces" })), "other error 22P02 (1 chars)");
+  assert.equal(safeError(Object.assign(new Error("x"), { code: "22P02", routine: "scanint8" })), "other Error 22P02 (1 chars)");
 });
 
 test("an agent process's stderr reaches the log only through childStderr, which keeps its own lines and reduces anything else to its name, class, place and size", async () => {

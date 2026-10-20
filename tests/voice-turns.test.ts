@@ -243,6 +243,26 @@ test("a short click is not a turn, and a turn longer than maxTurnMs is cut (max)
   assert.equal(reasons[0], "max");
 });
 
+test("a turn's times are whole ms when frames are not a multiple of 16 samples (2.5 ms Opus frames), as voice_sessions stores them", async () => {
+  // Fractional chunk stamps made a cut end at, say, 1760922345678.5, which last_speech_at (bigint) refused: 22P02.
+  const clock = new SimClock();
+  clock.time = 1_760_922_345_000;
+  const turns = new TurnTaker({}, { models: fakeModels(() => 0.9).models, clock });
+  const events = recorder(turns, () => 0);
+  // A sender whose Opus frames are 2.5 ms (40 samples at 16 kHz): a 512-sample chunk ends half a ms into one.
+  const pcm = tone(1_000);
+  for (let at = 0; at + 320 <= pcm.length; at += 320) {
+    clock.advance(clock.now() + 20);
+    for (let frame = at; frame < at + 320; frame += 40) turns.frame("fay", pcm.subarray(frame, frame + 40), clock.now());
+    await settle();
+  }
+  await wait(clock, 2_000);
+  assert.deepEqual(events.map(event => event.type), ["speech_start", "likely_end", "turn_end"]);
+  const end = events[2] as Extract<TurnEvent, { type: "turn_end" }>;
+  // What the segmenter (src/voice/turns/segmenter.ts) cuts with: startedAt, and at - silenceMs as endedAt.
+  for (const value of [...events.map(event => event.at), end.startedAt, end.silenceMs, end.at - end.silenceMs]) assert.ok(Number.isInteger(value), `${value} is not whole ms`);
+});
+
 test("recorded turns end as they should through the real models: complete ones fast, incomplete ones held", { timeout: 120_000 }, async t => {
   const host = startTurnModels({ eotWorkers: 1 });
   t.after(() => host.close());
