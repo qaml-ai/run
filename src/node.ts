@@ -1403,7 +1403,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
         ...cgroup,
         ...(media ? { voiceSessions: media.sessions, voiceWorkers: media.workers, voiceWorkerBytes: media.memoryMb * 1_048_576 } : {}),
       }, config.serviceName, { node, retiring: retiringSince !== undefined }));
-    }).catch(error => console.error(JSON.stringify({ type: "node_load_failed", error: errorText(error) })))
+    }).catch(error => console.error(JSON.stringify({ type: "node_load_failed", error: safeError(error) })))
       .finally(() => { loadReading = false; });
     // Every node reports the shared outboxes' backlog: read it with Maximum.
     // Keep database polling at once a minute even during high-frequency memory sampling.
