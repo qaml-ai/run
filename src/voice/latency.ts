@@ -77,8 +77,8 @@ export class TurnClock {
 /**
  * The line a turn writes: each stage since the end of speech (`Voice<Stage>Ms`). For a spoken turn there are also the
  * stages' own lengths: the model (the turn's commit, or its confirmation for a response begun early, to its first
- * audio) and playout (first audio to first packet). Published by Path, under ServiceName. Only a spoken turn has
- * VoiceFirstPacketMs, the headline: end of speech to first audio out.
+ * audio) and playout (first audio to first packet). Published by Path, under ServiceName. Only a directly spoken response (including filler before ask_agent) has
+ * VoiceFirstPacketMs, the headline: end of speech to first audio out. Tool continuations have no turn clock.
  */
 export function turnLatencyLine(turn: TurnClock, outcome: TurnOutcome) {
   const stages = turn.stages();
@@ -92,7 +92,8 @@ export function turnLatencyLine(turn: TurnClock, outcome: TurnOutcome) {
   } else metrics.VoiceFirstPacketMs = undefined;
   const { session, tenant, ttsProvider, ttsModel, speculative, askAgent } = turn.info;
   return metricLine("voice_turn_latency", {
-    dimensions: { Path: turn.path ?? "none" }, rollups: [[], ["Path"]], metrics,
+    dimensions: { Path: turn.path ?? "none", Answer: "direct", ...(ttsProvider ? { Provider: ttsProvider } : {}) },
+    rollups: [[], ["Path"], ["Path", "Answer"], ...(ttsProvider ? [["Path", "Answer", "Provider"]] : [])], metrics,
     properties: {
       session, tenant, outcome, ...(ttsProvider ? { ttsProvider } : {}), ...(ttsModel ? { ttsModel } : {}),
       ...(speculative !== undefined ? { speculative } : {}), ...(askAgent ? { askAgent } : {}), stagesMs: stages,

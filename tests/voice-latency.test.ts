@@ -33,7 +33,9 @@ test("a turn's line: each stage in ms since the end of speech, the stages' own l
   assert.deepEqual(line.stagesMs, { turnCommit: 800, ttsFirstAudio: 1_500, firstPacket: 1_700 });
   assert.deepEqual([line.VoiceFirstPacketMs, line.VoiceRealtimeMs, line.VoicePlayoutMs, line.VoiceTurns], [1_700, 700, 200, 1]);
   const metrics = line._aws.CloudWatchMetrics[0];
-  assert.deepEqual(metrics.Dimensions, [[], ["Path"]]);
+  assert.deepEqual(metrics.Dimensions, [[], ["Path"], ["Path", "Answer"], ["Path", "Answer", "Provider"]]);
+  assert.equal(line.Answer, "direct");
+  assert.equal(line.Provider, "openai");
   assert.equal(metrics.Metrics.find((metric: any) => metric.Name === "VoiceFirstPacketMs").Unit, "Milliseconds");
 
   // A turn that never reached audio publishes no headline.

@@ -409,6 +409,7 @@ export class RealtimeBrain {
       this.lastLabel = undefined;
       this.lastSpeaker = undefined;
       this.providerTurn = undefined;
+      this.providerAnswered = undefined;
     };
     if (this.metered) {
       this.meteredHold ??= this.creditHold();
@@ -474,8 +475,11 @@ export class RealtimeBrain {
         if (!live()) return;
         if (this.options.ownsTurns) {
           const speaker = this.segment?.first ?? this.lastSpeaker;
-          if (!this.providerTurn && this.segment) this.providerTurn = new TurnClock(this.segment.endedAt, { session: this.options.session, tenant: this.options.tenant, ...this.ttsInfo(), speculative: false }).via("realtime");
-          const response = this.response({ speaker, turn: this.providerTurn && !this.providerTurn.ended ? this.providerTurn : undefined });
+          const segment = this.segment !== this.providerAnswered ? this.segment : undefined;
+          const turn = this.providerTurn ?? (segment ? new TurnClock(segment.endedAt, { session: this.options.session, tenant: this.options.tenant, ...this.ttsInfo(), speculative: false }).via("realtime") : undefined);
+          this.providerTurn = undefined;
+          this.providerAnswered = this.segment;
+          const response = this.response({ speaker, turn: turn && !turn.ended ? turn : undefined });
           response.id = id;
           this.current = response;
           this.stats.responses++;
@@ -508,7 +512,11 @@ export class RealtimeBrain {
           this.segment = undefined;
           if (!segment) return;
           this.lastSpeaker = segment.first;
-          this.providerTurn = new TurnClock(segment.endedAt, { session: this.options.session, tenant: this.options.tenant, ...this.ttsInfo(), speculative: false }).via("realtime").mark("turnCommit");
+          if (segment !== this.providerAnswered) {
+            this.providerTurn?.end("no_reply");
+            this.providerTurn = new TurnClock(segment.endedAt, { session: this.options.session, tenant: this.options.tenant, ...this.ttsInfo(), speculative: false }).via("realtime").mark("turnCommit");
+          }
+          this.providerAnswered = undefined;
           this.stats.inputSeconds += seconds;
           this.remember(this.hooks.name(segment.first), text);
           if (this.options.transcribed) this.hooks.heard({ speaker: segment.first, speakers: [...segment.speakers], text, seconds, costUsd: 0, startedAt: segment.startedAt, endedAt: segment.endedAt });
@@ -549,6 +557,7 @@ export class RealtimeBrain {
 
   private lastSpeaker?: string;
   private providerTurn?: TurnClock;
+  private providerAnswered?: Segment;
 
   /** Mixed audio: manual providers commit speaker changes; server VAD gets labels around one stream. */
   private input(pcm: Uint8Array, speakers: string[]) {
@@ -831,7 +840,7 @@ export class RealtimeBrain {
     response.costUsd = costUsd;
     response.audio.end();
     this.settle(response, costUsd);
-    if (!response.audio.bytes && !response.tool) response.turn?.end(response.silent ? "silent" : response.cancelled ? "interrupted" : outcome.status === "failed" ? "error" : "no_reply");
+    if (!response.audio.bytes) response.turn?.end(response.silent ? "silent" : response.cancelled ? "interrupted" : outcome.status === "failed" ? "error" : "no_reply");
     // Done making: one with audio left to play stays current until it has played (or is held, until it may).
     if (this.current === response && (response.cancelled || !response.audio.bytes)) this.current = undefined;
     this.release();
@@ -869,8 +878,6 @@ export class RealtimeBrain {
     }
     const request = typeof call.args.request === "string" ? call.args.request.slice(0, 4_000) : "";
     const speaker = response?.speaker;
-    // A turn whose first audio has not gone out yet (no filler) ends with the answer's.
-    const turn = response?.turn && !response.turn.ended ? response.turn : undefined;
     const abort = new AbortController();
     this.agentCalls.add(abort);
     const limits = { ...REALTIME_LIMITS, ...this.options.limits };
@@ -881,7 +888,7 @@ export class RealtimeBrain {
       if (this.closed || this.connection !== connection) return;
       late = true;
       connection.toolResult(call.id, JSON.stringify({ pending: "The agent is still working on it. Say it is taking a moment and you will tell them when it is done." }));
-      this.respond({ ...(speaker ? { speaker } : {}), ...(turn && !turn.ended ? { turn } : {}) });
+      this.respond({ ...(speaker ? { speaker } : {}) });
     }, limits.askAgentMs);
     const timer = this.clock.setTimeout(() => abort.abort(new Error("timeout")), limits.askAgentLateMs);
     void (async () => {
@@ -904,14 +911,14 @@ export class RealtimeBrain {
       const ms = Math.round(this.clock.now() - started);
       this.hooks.log("voice_realtime_tool", { tool: "ask_agent", outcome, ms, requestChars: request.length, ...(reply !== undefined ? { replyChars: reply.length } : {}) });
       writeMetricLine(metricLine("voice_realtime_ask_agent", {
-        dimensions: { Outcome: outcome }, rollups: [["Outcome"]], metrics: { VoiceRealtimeAskAgentMs: [ms, "Milliseconds"] },
+        dimensions: { Provider: this.ttsInfo().ttsProvider, Outcome: outcome }, rollups: [[], ["Provider"], ["Outcome"]], metrics: { VoiceAskAgentMs: [ms, "Milliseconds"] },
         properties: { session: this.options.session, tenant: this.options.tenant },
       }));
       if (this.closed || this.connection !== connection) return;
       const said = reply || "(The agent did this, and wrote nothing back.)";
       if (!late) {
         connection.toolResult(call.id, JSON.stringify(reply !== undefined ? { reply: said } : { error: "The agent could not do it just now." }));
-        this.respond({ ...(speaker ? { speaker } : {}), ...(turn && !turn.ended ? { turn } : {}) });
+        this.respond({ ...(speaker ? { speaker } : {}) });
         return;
       }
       // The call was answered already ("still working"): the reply comes as a note, and is said now.
