@@ -1,3 +1,4 @@
+import { startupStage } from "./startup.ts";
 import { ModelAttempts } from "./model-attempts.ts";
 import { bucketInput, EndUserCredits } from "./end-user-credits.ts";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
@@ -102,7 +103,7 @@ import { inlineMedia, type MediaFactory } from "./voice/media.ts";
 import { browserVoice, type BrowserTransport } from "./voice-browser.ts";
 import { WebSocket, WebSocketServer } from "ws";
 import type { Duplex } from "node:stream";
-import { hostClient, startTurnModels, type TurnModels, type TurnModelsHost } from "./voice/turns/inference.ts";
+import { deferredTurnModels, hostClient, startTurnModels, type TurnModels } from "./voice/turns/inference.ts";
 import { buggify } from "./buggify.ts";
 import { sometimes } from "./assert.ts";
 
@@ -161,20 +162,18 @@ export type NodeDeps = {
 type RuntimeSecrets = Awaited<ReturnType<typeof runtimeSecrets>>;
 type ManagedDiscordSecrets = NonNullable<Awaited<ReturnType<typeof managedDiscordSecrets>>>;
 
-/** Derives client session tokens. It must stay stable, or re-provisioning returns tokens that no longer verify. */
-/** The node's turn-taking models, loaded; undefined (and logged) when they cannot be: sessions then end turns on silence. */
-async function startNodeTurnModels(eotWorkers: number | undefined): Promise<TurnModelsHost | undefined> {
-  const host = startTurnModels({ ...(eotWorkers ? { eotWorkers } : {}), onExit: code => console.error(JSON.stringify({ type: "voice_turn_models_exited", exitCode: code })) });
-  try {
-    await host.ready;
+/** The models warm after listening. While loading or unavailable, inference falls back to silence. */
+function startNodeTurnModels(eotWorkers: number | undefined) {
+  return deferredTurnModels(() => {
+    const host = startTurnModels({ ...(eotWorkers ? { eotWorkers } : {}), onExit: code => console.error(JSON.stringify({ type: "voice_turn_models_exited", exitCode: code })) });
+    void startupStage("voice_turn_models", () => host.ready).catch(error => {
+      console.error(JSON.stringify({ type: "voice_turn_models_failed", error: safeError(error) }));
+    });
     return host;
-  } catch (error) {
-    console.error(JSON.stringify({ type: "voice_turn_models_failed", error: safeError(error) }));
-    await host.close().catch(() => {});
-    return undefined;
-  }
+  });
 }
 
+/** Derives client session tokens. It must stay stable, or re-provisioning returns tokens that no longer verify. */
 function sessionSecretOf(secrets: RuntimeSecrets) {
   const secret = secrets.sessionSecret;
   if (!secret || secret.length < 32) throw new Error("Set AGENT_SESSION_SECRET (or AGENT_SESSION_SECRET_ARN) to at least 32 random characters");
@@ -185,15 +184,15 @@ function sessionSecretOf(secrets: RuntimeSecrets) {
 export async function nodeDeps(config: NodeConfig): Promise<NodeDeps> {
   const { env } = config;
   // Tenants (operator token hashes and provider keys) come from AGENT_TENANTS_FILE or AGENT_TENANTS_SECRET_ARN.
-  const tenants = await tenantsFromEnvironment(env);
-  const secrets = await runtimeSecrets(env);
+  const tenants = await startupStage("tenants", () => tenantsFromEnvironment(env));
+  const secrets = await startupStage("secrets", () => runtimeSecrets(env));
   sessionSecretOf(secrets);
   // Fails startup if js_exec or file parsing does not work, or if isolation is required but absent.
   // The node's js_exec runner, which inline agents use (agent processes start their own, from agentEnv).
   const codeExecutor = new V8Exec(config.v8);
-  const sandbox = await checkSandbox({ executor: codeExecutor, required: config.sandboxRequired });
-  const db = await databaseFromEnvironment(env);
-  const address = await taskAddress(env);
+  const sandbox = await startupStage("sandbox", () => checkSandbox({ executor: codeExecutor, required: config.sandboxRequired }));
+  const db = await startupStage("database", () => databaseFromEnvironment(env));
+  const address = await startupStage("task_address", () => taskAddress(env));
   return {
     tenants, secrets, db, listen: handlers => listenFromEnvironment(handlers, env), sandbox, address, codeExecutor,
     supersession: () => supersession(env), managedDiscord: () => managedDiscordSecrets(env),
@@ -257,7 +256,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     console.error(JSON.stringify({ type: "tool_search_not_configured", reason: "no platformKeys.openrouter in the tenants file and no AGENT_TOOL_SEARCH_API_KEY; tools.search ranks by keywords until one is set" }));
   }
   // Control plane: coordination and small mutable state in Postgres.
-  await migrate(db);
+  await startupStage("migrations", () => migrate(db));
   // Data plane: logs and blobs in local files by default, or shared storage (S3) so any node can serve any agent.
   // Shared logs keep their recent records in Postgres until they are compacted into Storage.
   const storageDescriptor = storageFromEnvironment(root, env);
@@ -265,13 +264,13 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   // What each agent, volume and tenant stores is tracked as objects are written and deleted, for the storage charge.
   const storageUsage = new StorageUsage(db);
   const tail = postgresTail(db, { retryMs: leaseTtlMs });
-  const storage = deps.storage ? await deps.storage(tail, storageUsage.meter) : await openStorage(storageDescriptor, tail, storageUsage.meter);
+  const storage = await startupStage("storage", async () => deps.storage ? deps.storage(tail, storageUsage.meter) : openStorage(storageDescriptor, tail, storageUsage.meter));
   // Storage given to the node is shared, as S3 is.
   const distributed = !!deps.storage || storageDescriptor.kind === "s3" || !!(storageDescriptor.kind === "file" && storageDescriptor.shared);
   const node = nodeUrl(env, port, deps.address);
   // A peer whose heartbeat is late and whose address no longer accepts connections has died: its actors are freed at once.
   const ownership = new Ownership(db, { node, ttlMs: leaseTtlMs, alive: peer => probeNode(peer) });
-  await ownership.start();
+  await startupStage("ownership", () => ownership.start());
   // Local files are this host's alone: a second node on the same database would serve agents and volumes whose
   // logs it cannot see, with nothing to fence its writes. Wait out a peer that may have just died, then refuse.
   if (!distributed) {
@@ -872,7 +871,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   // Voice calls held for tenants' bots, one node each (src/voice-sessions.ts), when voice is on. Discord's voice library
   // is loaded only then: it brings a native module (DAVE's).
   // Turn-taking's models, in worker threads; a node that cannot load them ends turns on silence.
-  const turnHost = !deps.voiceTurnModels && config.voice.enabled && config.voice.turnModels ? await startNodeTurnModels(config.voice.turnWorkers) : undefined;
+  const turnHost = !deps.voiceTurnModels && config.voice.enabled && config.voice.turnModels ? startNodeTurnModels(config.voice.turnWorkers) : undefined;
   const turnModels = deps.voiceTurnModels ?? (turnHost && hostClient(turnHost));
   // Each session's audio (its connection, DAVE, Opus, cutting utterances, playing speech) runs in a media worker unless
   // AGENT_VOICE_ISOLATION=inline: a crash there ends that session's audio alone, which restarts (src/voice/media-host.ts).
@@ -927,7 +926,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   });
   // An agent loaded on another node: this node's idle watchers of it end, and reconnect to that node.
   // A tenant's webhook endpoints changed on some node: read them again at its next run.
-  const loads = await deps.listen({
+  const loads = await startupStage("notifications", () => deps.listen({
     agent_runtime_loaded: payload => {
       const [from, agent] = payload.split(" ");
       if (from !== node && agent) clients.loadedElsewhere(agent);
@@ -938,7 +937,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     [ORPHANS_CHANNEL]: payload => { if (orphanMs && payload.split(" ")[0] !== node) void clients.resumeSoon(); },
     // A voice session changed or was released on some node.
     [VOICE_CHANNEL]: payload => voice?.heard(payload),
-  });
+  }));
   voice?.start(config.schedulerIntervalMs);
   // A dead peer's agents are free: sweep for them here, and tell the other nodes to.
   ownership.onReaped(() => {
@@ -959,7 +958,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   scheduler.start(config.schedulerIntervalMs);
   // Email channels, when the runtime has a domain SES receives for: mail arrives through SNS at one shared route.
   const emailOptions: EmailOptions | undefined = config.email && { db, ...config.email };
-  const managedDiscordConfig = await deps.managedDiscord?.();
+  const managedDiscordConfig = await startupStage("managed_discord_config", async () => deps.managedDiscord?.());
   const managedDiscord = managedDiscordConfig ? new ManagedDiscord({
     ...managedDiscordConfig, db, consoleAuth, channels: () => channels, ownership, node, publicUrl,
     apiUrl: config.channelApis.discord,
@@ -1367,7 +1366,9 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       server.off("error", failed);
       // Without AGENT_PUBLIC_URL the issuer is where this node listens: known only now when PORT is 0.
       if (!config.publicUrlSet) signer.issuer = links.publicUrl = origins.canonical = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
-      console.log(JSON.stringify({ type: "listening", address: server.address(), node, tenants: tenants.source, hosting, storage: deps.storage ? "given" : storageDescriptor.kind, github: github ? (github.open ? "open" : "org") : false, google: !!google, accountEmail: accountMailSettings?.provider ?? false, keyStorage: accounts.canStoreKeys, sandbox, toolSearch: rerankers.length ? rerankers.map(stage => stage.kind).join(",") : "keyword", stripe: stripe ? (stripe.live ? "live" : "test") : false }));
+      console.log(JSON.stringify({ type: "listening", uptimeMs: Math.round(process.uptime() * 1_000), address: server.address(), node, tenants: tenants.source, hosting, storage: deps.storage ? "given" : storageDescriptor.kind, github: github ? (github.open ? "open" : "org") : false, google: !!google, accountEmail: accountMailSettings?.provider ?? false, keyStorage: accounts.canStoreKeys, sandbox, toolSearch: rerankers.length ? rerankers.map(stage => stage.kind).join(",") : "keyword", stripe: stripe ? (stripe.live ? "live" : "test") : false }));
+      // Workers start after the socket is bound; early calls retain the normal silence fallback.
+      turnHost?.warm();
       resolve(server.address() as AddressInfo);
     });
     // As soon as it listens, as before: whether a newer deployment replaced this task (ECS only).

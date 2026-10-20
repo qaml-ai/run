@@ -1,8 +1,9 @@
+import { MessageChannel } from "node:worker_threads";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { logMel, Resampler24To16, WHISPER } from "../src/voice/turns/features.ts";
-import { clientFrom, startTurnModels, TurnModelsUnavailable, type TurnModels } from "../src/voice/turns/inference.ts";
+import { deferredTurnModels, hostClient, clientFrom, startTurnModels, TurnModelsUnavailable, type TurnModels } from "../src/voice/turns/inference.ts";
 import { TurnTaker, type TurnClock, type TurnEvent, type TurnPolicy } from "../src/voice/turns/turn-taker.ts";
 
 /**
@@ -293,4 +294,52 @@ test("the models' worker dying fails pending calls at once, and it is started ag
   const again = clientFrom(host.port());
   assert.ok((await again.endOfTurn(wav16("eng-c-0187c333.wav"))) > 0.5);
   again.close();
+});
+
+test("deferred models do no work before warming, share the first load, and stay closed", async () => {
+  let starts = 0, closes = 0;
+  const { port1, port2 } = new MessageChannel();
+  const loaded = Promise.withResolvers<void>();
+  const host = deferredTurnModels(() => {
+    starts++;
+    return { port: () => port1, ready: loaded.promise, thread: undefined, async close() { closes++; port1.close(); port2.close(); } };
+  });
+  assert.equal(starts, 0);
+  assert.equal(host.thread, undefined);
+  host.warm();
+  assert.equal(starts, 1);
+  assert.equal(host.port(), port1);
+  host.warm();
+  let ready = false;
+  void host.ready.then(() => { ready = true; });
+  await settle();
+  assert.equal(ready, false, "loading is asynchronous");
+  loaded.resolve();
+  await host.ready;
+  await host.close();
+  host.warm();
+  assert.equal(starts, 1);
+  assert.equal(closes, 1);
+  await assert.rejects(host.ready, TurnModelsUnavailable);
+  const unused = deferredTurnModels(() => { throw new Error("must never start after close"); });
+  await unused.close();
+  unused.warm();
+  const port = unused.port();
+  port.close();
+  await assert.rejects(unused.ready, TurnModelsUnavailable);
+});
+
+test("a cold model client has a bounded fallback, then recovers without recreating the voice session", async t => {
+  const host = deferredTurnModels(() => startTurnModels());
+  t.after(() => host.close());
+  const client = hostClient(host);
+  t.after(() => client.close());
+  // This is the first voice frame: no warm-up was awaited. Slow model loads may time out,
+  // which TurnTaker catches and handles by level/silence (covered above).
+  try { await client.vad(new Float32Array(576), new Float32Array(256)); }
+  catch (error) { assert.ok(error instanceof TurnModelsUnavailable); }
+  await host.ready;
+  const answer = await client.vad(new Float32Array(576), new Float32Array(256));
+  assert.ok(answer.probability < 0.5);
+  assert.equal(typeof await client.endOfTurn(new Int16Array(16_000)), "number");
 });

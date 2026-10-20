@@ -1,0 +1,394 @@
+{
+  "environment": "local Docker ARM64, 1 CPU / 2 GiB, warm layers, disposable local PostgreSQL; no AWS/provider calls",
+  "images": {
+    "before": {
+      "tag": "camelrun-boot:baseline",
+      "bytes": 521218356
+    },
+    "after": {
+      "tag": "camelrun-boot:after",
+      "bytes": 462405404
+    }
+  },
+  "medianListeningUptimeMs": {
+    "before": 2280,
+    "after": 2075
+  },
+  "trials": [
+    {
+      "trial": 1,
+      "variant": "before",
+      "listeningUptimeMs": 1495,
+      "observedContainerToListeningMs": 1847,
+      "stages": []
+    },
+    {
+      "trial": 1,
+      "variant": "after",
+      "listeningUptimeMs": 1398,
+      "observedContainerToListeningMs": 1613,
+      "stages": [
+        {
+          "type": "startup_stage",
+          "stage": "tenants",
+          "ms": 1,
+          "uptimeMs": 1193
+        },
+        {
+          "type": "startup_stage",
+          "stage": "secrets",
+          "ms": 0,
+          "uptimeMs": 1193
+        },
+        {
+          "type": "startup_stage",
+          "stage": "sandbox",
+          "ms": 122,
+          "uptimeMs": 1316
+        },
+        {
+          "type": "startup_stage",
+          "stage": "database",
+          "ms": 0,
+          "uptimeMs": 1316
+        },
+        {
+          "type": "startup_stage",
+          "stage": "task_address",
+          "ms": 0,
+          "uptimeMs": 1316
+        },
+        {
+          "type": "startup_stage",
+          "stage": "migrations",
+          "ms": 20,
+          "uptimeMs": 1338
+        },
+        {
+          "type": "startup_stage",
+          "stage": "ownership",
+          "ms": 2,
+          "uptimeMs": 1341
+        },
+        {
+          "type": "startup_stage",
+          "stage": "voice_vad",
+          "ms": 27,
+          "uptimeMs": 1517
+        },
+        {
+          "type": "startup_stage",
+          "stage": "voice_smart_turn",
+          "ms": 44,
+          "uptimeMs": 1606
+        },
+        {
+          "type": "startup_stage",
+          "stage": "voice_turn_models",
+          "ms": 208,
+          "uptimeMs": 1607
+        }
+      ]
+    },
+    {
+      "trial": 2,
+      "variant": "before",
+      "listeningUptimeMs": 1790,
+      "observedContainerToListeningMs": 2163,
+      "stages": []
+    },
+    {
+      "trial": 2,
+      "variant": "after",
+      "listeningUptimeMs": 1988,
+      "observedContainerToListeningMs": 2494,
+      "stages": [
+        {
+          "type": "startup_stage",
+          "stage": "tenants",
+          "ms": 6,
+          "uptimeMs": 1486
+        },
+        {
+          "type": "startup_stage",
+          "stage": "secrets",
+          "ms": 0,
+          "uptimeMs": 1487
+        },
+        {
+          "type": "startup_stage",
+          "stage": "sandbox",
+          "ms": 222,
+          "uptimeMs": 1712
+        },
+        {
+          "type": "startup_stage",
+          "stage": "database",
+          "ms": 1,
+          "uptimeMs": 1713
+        },
+        {
+          "type": "startup_stage",
+          "stage": "task_address",
+          "ms": 1,
+          "uptimeMs": 1714
+        },
+        {
+          "type": "startup_stage",
+          "stage": "migrations",
+          "ms": 123,
+          "uptimeMs": 1844
+        },
+        {
+          "type": "startup_stage",
+          "stage": "ownership",
+          "ms": 14,
+          "uptimeMs": 1859
+        },
+        {
+          "type": "startup_stage",
+          "stage": "voice_vad",
+          "ms": 40,
+          "uptimeMs": 2162
+        },
+        {
+          "type": "startup_stage",
+          "stage": "voice_smart_turn",
+          "ms": 34,
+          "uptimeMs": 2273
+        },
+        {
+          "type": "startup_stage",
+          "stage": "voice_turn_models",
+          "ms": 284,
+          "uptimeMs": 2274
+        }
+      ]
+    },
+    {
+      "trial": 3,
+      "variant": "before",
+      "listeningUptimeMs": 2501,
+      "observedContainerToListeningMs": 3386,
+      "stages": []
+    },
+    {
+      "trial": 3,
+      "variant": "after",
+      "listeningUptimeMs": 2406,
+      "observedContainerToListeningMs": 3024,
+      "stages": [
+        {
+          "type": "startup_stage",
+          "stage": "tenants",
+          "ms": 2,
+          "uptimeMs": 1324
+        },
+        {
+          "type": "startup_stage",
+          "stage": "secrets",
+          "ms": 1,
+          "uptimeMs": 1325
+        },
+        {
+          "type": "startup_stage",
+          "stage": "sandbox",
+          "ms": 163,
+          "uptimeMs": 1489
+        },
+        {
+          "type": "startup_stage",
+          "stage": "database",
+          "ms": 3,
+          "uptimeMs": 1493
+        },
+        {
+          "type": "startup_stage",
+          "stage": "task_address",
+          "ms": 0,
+          "uptimeMs": 1493
+        },
+        {
+          "type": "startup_stage",
+          "stage": "migrations",
+          "ms": 422,
+          "uptimeMs": 1916
+        },
+        {
+          "type": "startup_stage",
+          "stage": "ownership",
+          "ms": 53,
+          "uptimeMs": 1970
+        },
+        {
+          "type": "startup_stage",
+          "stage": "voice_vad",
+          "ms": 33,
+          "uptimeMs": 2595
+        },
+        {
+          "type": "startup_stage",
+          "stage": "voice_smart_turn",
+          "ms": 29,
+          "uptimeMs": 2712
+        },
+        {
+          "type": "startup_stage",
+          "stage": "voice_turn_models",
+          "ms": 306,
+          "uptimeMs": 2714
+        }
+      ]
+    },
+    {
+      "trial": 4,
+      "variant": "before",
+      "listeningUptimeMs": 2411,
+      "observedContainerToListeningMs": 3237,
+      "stages": []
+    },
+    {
+      "trial": 4,
+      "variant": "after",
+      "listeningUptimeMs": 2400,
+      "observedContainerToListeningMs": 3099,
+      "stages": [
+        {
+          "type": "startup_stage",
+          "stage": "tenants",
+          "ms": 3,
+          "uptimeMs": 1394
+        },
+        {
+          "type": "startup_stage",
+          "stage": "secrets",
+          "ms": 0,
+          "uptimeMs": 1395
+        },
+        {
+          "type": "startup_stage",
+          "stage": "sandbox",
+          "ms": 235,
+          "uptimeMs": 1630
+        },
+        {
+          "type": "startup_stage",
+          "stage": "database",
+          "ms": 1,
+          "uptimeMs": 1632
+        },
+        {
+          "type": "startup_stage",
+          "stage": "task_address",
+          "ms": 1,
+          "uptimeMs": 1633
+        },
+        {
+          "type": "startup_stage",
+          "stage": "migrations",
+          "ms": 438,
+          "uptimeMs": 2075
+        },
+        {
+          "type": "startup_stage",
+          "stage": "ownership",
+          "ms": 29,
+          "uptimeMs": 2105
+        },
+        {
+          "type": "startup_stage",
+          "stage": "voice_vad",
+          "ms": 27,
+          "uptimeMs": 2491
+        },
+        {
+          "type": "startup_stage",
+          "stage": "voice_smart_turn",
+          "ms": 43,
+          "uptimeMs": 2593
+        },
+        {
+          "type": "startup_stage",
+          "stage": "voice_turn_models",
+          "ms": 193,
+          "uptimeMs": 2594
+        }
+      ]
+    },
+    {
+      "trial": 5,
+      "variant": "before",
+      "listeningUptimeMs": 2280,
+      "observedContainerToListeningMs": 3023,
+      "stages": []
+    },
+    {
+      "trial": 5,
+      "variant": "after",
+      "listeningUptimeMs": 2075,
+      "observedContainerToListeningMs": 2755,
+      "stages": [
+        {
+          "type": "startup_stage",
+          "stage": "tenants",
+          "ms": 2,
+          "uptimeMs": 1360
+        },
+        {
+          "type": "startup_stage",
+          "stage": "secrets",
+          "ms": 0,
+          "uptimeMs": 1360
+        },
+        {
+          "type": "startup_stage",
+          "stage": "sandbox",
+          "ms": 192,
+          "uptimeMs": 1554
+        },
+        {
+          "type": "startup_stage",
+          "stage": "database",
+          "ms": 0,
+          "uptimeMs": 1554
+        },
+        {
+          "type": "startup_stage",
+          "stage": "task_address",
+          "ms": 0,
+          "uptimeMs": 1554
+        },
+        {
+          "type": "startup_stage",
+          "stage": "migrations",
+          "ms": 268,
+          "uptimeMs": 1824
+        },
+        {
+          "type": "startup_stage",
+          "stage": "ownership",
+          "ms": 16,
+          "uptimeMs": 1841
+        },
+        {
+          "type": "startup_stage",
+          "stage": "voice_vad",
+          "ms": 35,
+          "uptimeMs": 2206
+        },
+        {
+          "type": "startup_stage",
+          "stage": "voice_smart_turn",
+          "ms": 25,
+          "uptimeMs": 2297
+        },
+        {
+          "type": "startup_stage",
+          "stage": "voice_turn_models",
+          "ms": 220,
+          "uptimeMs": 2298
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,616 @@
+{
+  "observedAt": "2026-10-20T14:41:39.209090+00:00",
+  "tasks": [
+    {
+      "arn": "arn:aws:ecs:us-west-2:904534089871:task/camelai-agent-runtime/282ccca90dc4412e8df06ff10067e2cc",
+      "created": 1792460295.996,
+      "pullStart": 1792460310.821,
+      "pullEnd": 1792460319.674,
+      "ecsStarted": 1792460331.873,
+      "image": "904534089871.dkr.ecr.us-west-2.amazonaws.com/camelai-agent-runtime:aba52e72b83e",
+      "startup": [
+        {
+          "timestamp": 1792460325854,
+          "type": "listening"
+        }
+      ],
+      "seconds": {
+        "pullStart": 14.825,
+        "pullEnd": 23.678,
+        "ecsStarted": 35.877,
+        "listening": 29.858
+      }
+    },
+    {
+      "arn": "arn:aws:ecs:us-west-2:904534089871:task/camelai-agent-runtime/448cbd69871b4d7bbe8cec191bc9dde6",
+      "created": 1792460295.996,
+      "pullStart": 1792460311.123,
+      "pullEnd": 1792460318.21,
+      "ecsStarted": 1792460332.476,
+      "image": "904534089871.dkr.ecr.us-west-2.amazonaws.com/camelai-agent-runtime:aba52e72b83e",
+      "startup": [
+        {
+          "timestamp": 1792460323140,
+          "type": "listening"
+        }
+      ],
+      "seconds": {
+        "pullStart": 15.127,
+        "pullEnd": 22.214,
+        "ecsStarted": 36.48,
+        "listening": 27.144
+      }
+    },
+    {
+      "arn": "arn:aws:ecs:us-west-2:904534089871:task/camelai-agent-runtime/495370c5722e49ecb7371e41c99f838e",
+      "created": 1792460274.292,
+      "pullStart": 1792460286.218,
+      "pullEnd": 1792460294.351,
+      "ecsStarted": 1792460309.454,
+      "image": "904534089871.dkr.ecr.us-west-2.amazonaws.com/camelai-agent-runtime:aba52e72b83e",
+      "startup": [
+        {
+          "timestamp": 1792460298708,
+          "type": "listening"
+        }
+      ],
+      "seconds": {
+        "pullStart": 11.926,
+        "pullEnd": 20.059,
+        "ecsStarted": 35.162,
+        "listening": 24.416
+      }
+    }
+  ],
+  "service": {
+    "deployments": [
+      {
+        "id": "ecs-svc/2842855722375259120",
+        "status": "PRIMARY",
+        "taskDefinition": "arn:aws:ecs:us-west-2:904534089871:task-definition/camelai-agent-runtime:497",
+        "desiredCount": 3,
+        "pendingCount": 0,
+        "runningCount": 3,
+        "failedTasks": 0,
+        "createdAt": 1792460257.364,
+        "updatedAt": 1792460447.612,
+        "launchType": "FARGATE",
+        "platformVersion": "1.4.0",
+        "platformFamily": "Linux",
+        "networkConfiguration": {
+          "awsvpcConfiguration": {
+            "subnets": [
+              "subnet-054402e5cfd3fb0d2",
+              "subnet-03491ad99e4876ae2",
+              "subnet-019cc7dbbe44518d8",
+              "subnet-09d354d571eba09e1"
+            ],
+            "securityGroups": [
+              "sg-0b478bd9c23b1675e"
+            ],
+            "assignPublicIp": "ENABLED"
+          }
+        },
+        "rolloutState": "COMPLETED",
+        "rolloutStateReason": "ECS deployment ecs-svc/2842855722375259120 completed."
+      }
+    ],
+    "events": [
+      {
+        "id": "60a4ed91-fd58-4623-9083-4dd42666f832",
+        "createdAt": 1792503702.752,
+        "message": "(service camelai-agent-runtime) has reached a steady state."
+      },
+      {
+        "id": "708094f4-270e-4f91-b0f6-e78ac3e24e21",
+        "createdAt": 1792482094.255,
+        "message": "(service camelai-agent-runtime) has reached a steady state."
+      },
+      {
+        "id": "cdeadfe7-8122-4759-a54c-1fe2be59a263",
+        "createdAt": 1792460447.62,
+        "message": "(service camelai-agent-runtime) has reached a steady state."
+      },
+      {
+        "id": "73febaca-da14-4ecc-8ad5-e8f930e7c0ee",
+        "createdAt": 1792460447.619,
+        "message": "(service camelai-agent-runtime) (deployment ecs-svc/2842855722375259120) deployment completed."
+      },
+      {
+        "id": "752baa8d-7afc-4977-a823-9adff07d3aae",
+        "createdAt": 1792460386.354,
+        "message": "(service camelai-agent-runtime, taskSet ecs-svc/3293775852331258959) has begun draining connections on 2 tasks."
+      },
+      {
+        "id": "aa7f7102-7ac2-4a19-810e-e82231586823",
+        "createdAt": 1792460386.349,
+        "message": "(service camelai-agent-runtime) deregistered 2 targets in (target-group arn:aws:elasticloadbalancing:us-west-2:904534089871:targetgroup/camelai-agent-runtime/2c2df3014cd7b999)"
+      },
+      {
+        "id": "a40047ff-3823-4192-8031-d223ccac71b6",
+        "createdAt": 1792460376.861,
+        "message": "(service camelai-agent-runtime) has stopped 2 running tasks: (task a0a9af8ba84246b1a3d3060038151211) (task 8178d2140ad9499d8a60cfedb5a4a0b1)."
+      },
+      {
+        "id": "737f3aa7-79cd-47e8-9fce-729822ba64c6",
+        "createdAt": 1792460366.294,
+        "message": "(service camelai-agent-runtime, taskSet ecs-svc/3293775852331258959) has begun draining connections on 1 tasks."
+      },
+      {
+        "id": "f621c299-7386-458c-9229-8b16b4800be1",
+        "createdAt": 1792460366.287,
+        "message": "(service camelai-agent-runtime) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-west-2:904534089871:targetgroup/camelai-agent-runtime/2c2df3014cd7b999)"
+      },
+      {
+        "id": "f743281e-b738-4419-a13f-9d707081a523",
+        "createdAt": 1792460355.165,
+        "message": "(service camelai-agent-runtime) has stopped 1 running tasks: (task 327bd31f450d44658454fc65b288ce57)."
+      },
+      {
+        "id": "77e36f4b-ce06-4370-aea7-6195554ff3d5",
+        "createdAt": 1792460325.528,
+        "message": "(service camelai-agent-runtime) registered 2 targets in (target-group arn:aws:elasticloadbalancing:us-west-2:904534089871:targetgroup/camelai-agent-runtime/2c2df3014cd7b999)"
+      },
+      {
+        "id": "8a44dfd4-69fc-4307-a4ae-ae538edfa971",
+        "createdAt": 1792460304.784,
+        "message": "(service camelai-agent-runtime) registered 1 targets in (target-group arn:aws:elasticloadbalancing:us-west-2:904534089871:targetgroup/camelai-agent-runtime/2c2df3014cd7b999)"
+      },
+      {
+        "id": "12b96e53-b535-4d33-9d93-9aca42258f1c",
+        "createdAt": 1792460296.072,
+        "message": "(service camelai-agent-runtime) has started 2 tasks: (task 282ccca90dc4412e8df06ff10067e2cc) (task 448cbd69871b4d7bbe8cec191bc9dde6)."
+      },
+      {
+        "id": "9294ea18-7e1c-4ba9-8a7a-7e88d89c1f4f",
+        "createdAt": 1792460274.337,
+        "message": "(service camelai-agent-runtime) has started 1 tasks: (task 495370c5722e49ecb7371e41c99f838e)."
+      },
+      {
+        "id": "242ffdb5-ae26-4b98-b18e-d12ed6000251",
+        "createdAt": 1792450712.713,
+        "message": "(service camelai-agent-runtime) has reached a steady state."
+      },
+      {
+        "id": "39a9ac96-4bc7-4b48-ad25-f54c937737fc",
+        "createdAt": 1792450712.712,
+        "message": "(service camelai-agent-runtime) (deployment ecs-svc/3293775852331258959) deployment completed."
+      },
+      {
+        "id": "c36a9b8e-2b8e-4335-aefb-87e429b67fc1",
+        "createdAt": 1792450659.852,
+        "message": "(service camelai-agent-runtime, taskSet ecs-svc/3230597829323666518) has begun draining connections on 1 tasks."
+      },
+      {
+        "id": "7a23f218-7adb-4211-a174-5ddfb426485d",
+        "createdAt": 1792450659.847,
+        "message": "(service camelai-agent-runtime) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-west-2:904534089871:targetgroup/camelai-agent-runtime/2c2df3014cd7b999)"
+      },
+      {
+        "id": "996f4882-7150-4e20-a672-46456166ddc7",
+        "createdAt": 1792450650.285,
+        "message": "(service camelai-agent-runtime) has stopped 1 running tasks: (task 75b2cf65800f4cfaa38e51376cf75df1)."
+      },
+      {
+        "id": "58bc9a5b-e7dc-4623-affb-be95fb28bda9",
+        "createdAt": 1792450650.227,
+        "message": "(service camelai-agent-runtime, taskSet ecs-svc/3230597829323666518) has begun draining connections on 1 tasks."
+      },
+      {
+        "id": "e50fb171-ebf8-468b-ba4f-6710626612e8",
+        "createdAt": 1792450650.222,
+        "message": "(service camelai-agent-runtime) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-west-2:904534089871:targetgroup/camelai-agent-runtime/2c2df3014cd7b999)"
+      },
+      {
+        "id": "f36861c2-d899-4fdb-978b-0c2a0a07e7d1",
+        "createdAt": 1792450640.416,
+        "message": "(service camelai-agent-runtime) has stopped 1 running tasks: (task 4a8cd0bf67a849f88572822e6ffdca97)."
+      },
+      {
+        "id": "d4a32d7a-b32e-4f55-b9f9-677b6ec8943a",
+        "createdAt": 1792450640.378,
+        "message": "(service camelai-agent-runtime) was unable to reach steady state because (taskSet ecs-svc/3230597829323666518) was unable to scale in due to (reason 1 tasks under protection)"
+      },
+      {
+        "id": "e764ac0a-fe49-4be1-9eeb-5ab276eaad41",
+        "createdAt": 1792450620.252,
+        "message": "(service camelai-agent-runtime, taskSet ecs-svc/3230597829323666518) has begun draining connections on 1 tasks."
+      },
+      {
+        "id": "b21fe513-9f41-4c1c-9e33-4fab97ba2c45",
+        "createdAt": 1792450620.247,
+        "message": "(service camelai-agent-runtime) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-west-2:904534089871:targetgroup/camelai-agent-runtime/2c2df3014cd7b999)"
+      },
+      {
+        "id": "de851437-083c-4deb-9a70-d2d558982c59",
+        "createdAt": 1792450610.114,
+        "message": "(service camelai-agent-runtime) has stopped 1 running tasks: (task 09d80fa310404a7c90f9b38296d29f2f)."
+      },
+      {
+        "id": "2c4cf3a2-6451-4cae-91ba-60f671357dd5",
+        "createdAt": 1792450589.624,
+        "message": "(service camelai-agent-runtime) registered 2 targets in (target-group arn:aws:elasticloadbalancing:us-west-2:904534089871:targetgroup/camelai-agent-runtime/2c2df3014cd7b999)"
+      },
+      {
+        "id": "f7fa923b-e3af-44ca-a483-dcb564db2ab1",
+        "createdAt": 1792450559.257,
+        "message": "(service camelai-agent-runtime) has started 2 tasks: (task 8178d2140ad9499d8a60cfedb5a4a0b1) (task a0a9af8ba84246b1a3d3060038151211)."
+      },
+      {
+        "id": "865da417-18c8-4ee3-b4fd-e7ac50fcc357",
+        "createdAt": 1792450558.583,
+        "message": "(service camelai-agent-runtime) registered 1 targets in (target-group arn:aws:elasticloadbalancing:us-west-2:904534089871:targetgroup/camelai-agent-runtime/2c2df3014cd7b999)"
+      },
+      {
+        "id": "c751c67f-2953-4cd8-b319-fd04cc5071f4",
+        "createdAt": 1792450518.197,
+        "message": "(service camelai-agent-runtime) has started 1 tasks: (task 327bd31f450d44658454fc65b288ce57)."
+      },
+      {
+        "id": "4e982d77-9fd1-40b4-b0fc-a11de346f390",
+        "createdAt": 1792447664.679,
+        "message": "(service camelai-agent-runtime) has reached a steady state."
+      },
+      {
+        "id": "9032b3c2-36bc-4d5a-9e62-694f9ac5b96c",
+        "createdAt": 1792447664.678,
+        "message": "(service camelai-agent-runtime) (deployment ecs-svc/3230597829323666518) deployment completed."
+      },
+      {
+        "id": "b9ceb042-ea5c-4a0a-86cc-24417e7be908",
+        "createdAt": 1792447603.384,
+        "message": "(service camelai-agent-runtime, taskSet ecs-svc/8744217187993168426) has begun draining connections on 1 tasks."
+      },
+      {
+        "id": "048d4f6c-c4e0-49c7-b2b4-591e5e8f73e6",
+        "createdAt": 1792447603.378,
+        "message": "(service camelai-agent-runtime) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-west-2:904534089871:targetgroup/camelai-agent-runtime/2c2df3014cd7b999)"
+      },
+      {
+        "id": "51aa1165-c188-430f-b672-dbd5ee02cb4d",
+        "createdAt": 1792447593.367,
+        "message": "(service camelai-agent-runtime) has stopped 1 running tasks: (task 9260a8ed4384495d851ebb9d79df9e8c)."
+      },
+      {
+        "id": "add01aa2-2bc7-499a-9b95-ad0736bea3a6",
+        "createdAt": 1792447582.154,
+        "message": "(service camelai-agent-runtime) was unable to reach steady state because (taskSet ecs-svc/8744217187993168426) was unable to scale in due to (reason 1 tasks under protection)"
+      },
+      {
+        "id": "6c73126d-98f7-4ac8-a30e-c234b05eeca7",
+        "createdAt": 1792447582.135,
+        "message": "(service camelai-agent-runtime, taskSet ecs-svc/8744217187993168426) has begun draining connections on 1 tasks."
+      },
+      {
+        "id": "d0dedad6-71b0-42f3-b7ac-01c8f2f552c4",
+        "createdAt": 1792447582.13,
+        "message": "(service camelai-agent-runtime) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-west-2:904534089871:targetgroup/camelai-agent-runtime/2c2df3014cd7b999)"
+      },
+      {
+        "id": "3c336f7a-b62e-43d9-aa34-5210d467345b",
+        "createdAt": 1792447572.714,
+        "message": "(service camelai-agent-runtime) has stopped 1 running tasks: (task fa4c3a267b0743ad86458b077f29cb93)."
+      },
+      {
+        "id": "793b29a7-8624-496d-bcd6-5182400f7cf3",
+        "createdAt": 1792447572.674,
+        "message": "(service camelai-agent-runtime) was unable to reach steady state because (taskSet ecs-svc/8744217187993168426) was unable to scale in due to (reason 1 tasks under protection)"
+      },
+      {
+        "id": "9911449f-9665-4cae-bea4-dafd53868ff7",
+        "createdAt": 1792447562.467,
+        "message": "(service camelai-agent-runtime, taskSet ecs-svc/8744217187993168426) has begun draining connections on 1 tasks."
+      },
+      {
+        "id": "637ebca2-5f20-4f82-868f-c6b28a4189f6",
+        "createdAt": 1792447562.461,
+        "message": "(service camelai-agent-runtime) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-west-2:904534089871:targetgroup/camelai-agent-runtime/2c2df3014cd7b999)"
+      },
+      {
+        "id": "59701cfb-1c6e-48cc-a42b-33c0410078e7",
+        "createdAt": 1792447552.246,
+        "message": "(service camelai-agent-runtime) has stopped 1 running tasks: (task 307bd4426f7c4e5ca1b7e1cae2cbfd95)."
+      },
+      {
+        "id": "717f058b-2e5b-472d-ad41-aea006620653",
+        "createdAt": 1792447521.714,
+        "message": "(service camelai-agent-runtime) registered 2 targets in (target-group arn:aws:elasticloadbalancing:us-west-2:904534089871:targetgroup/camelai-agent-runtime/2c2df3014cd7b999)"
+      },
+      {
+        "id": "8c5cc354-7655-4fd1-a634-64cab221acf5",
+        "createdAt": 1792447501.261,
+        "message": "(service camelai-agent-runtime) registered 1 targets in (target-group arn:aws:elasticloadbalancing:us-west-2:904534089871:targetgroup/camelai-agent-runtime/2c2df3014cd7b999)"
+      },
+      {
+        "id": "1d647ac6-3ce2-495d-afcd-bfb97cdf4b3e",
+        "createdAt": 1792447491.202,
+        "message": "(service camelai-agent-runtime) has started 2 tasks: (task 4a8cd0bf67a849f88572822e6ffdca97) (task 75b2cf65800f4cfaa38e51376cf75df1)."
+      },
+      {
+        "id": "1145f385-00a0-4c2b-aef0-fae2a430df2f",
+        "createdAt": 1792447460.328,
+        "message": "(service camelai-agent-runtime) has started 1 tasks: (task 09d80fa310404a7c90f9b38296d29f2f)."
+      },
+      {
+        "id": "a33d67b8-5721-46ec-ba97-334972c6b51b",
+        "createdAt": 1792447203.359,
+        "message": "(service camelai-agent-runtime) has reached a steady state."
+      },
+      {
+        "id": "c1d9b56f-ad43-44eb-82e4-4bbbb54d5332",
+        "createdAt": 1792447203.358,
+        "message": "(service camelai-agent-runtime) (deployment ecs-svc/8744217187993168426) deployment completed."
+      },
+      {
+        "id": "21cad1ed-2b9f-4d66-886c-e420a4a0227f",
+        "createdAt": 1792447141.77,
+        "message": "(service camelai-agent-runtime, taskSet ecs-svc/5738311230719856340) has begun draining connections on 1 tasks."
+      },
+      {
+        "id": "bc43c6ac-42b2-46ee-ab11-13660b06d18e",
+        "createdAt": 1792447141.761,
+        "message": "(service camelai-agent-runtime) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-west-2:904534089871:targetgroup/camelai-agent-runtime/2c2df3014cd7b999)"
+      },
+      {
+        "id": "3c7744ca-c3cc-4200-b563-afe60c5e06e8",
+        "createdAt": 1792447131.401,
+        "message": "(service camelai-agent-runtime) has stopped 1 running tasks: (task ac9141ba900d47e39667207b30aa8ef2)."
+      },
+      {
+        "id": "d80a83a2-260a-424c-9185-60bbb92e9464",
+        "createdAt": 1792447131.335,
+        "message": "(service camelai-agent-runtime, taskSet ecs-svc/2061821444931869684) has begun draining connections on 1 tasks."
+      },
+      {
+        "id": "8eb36374-913c-4511-b4bc-149233777238",
+        "createdAt": 1792447131.33,
+        "message": "(service camelai-agent-runtime) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-west-2:904534089871:targetgroup/camelai-agent-runtime/2c2df3014cd7b999)"
+      },
+      {
+        "id": "b39f0a5f-b218-406a-b190-0c81675af1d6",
+        "createdAt": 1792447120.901,
+        "message": "(service camelai-agent-runtime) has stopped 1 running tasks: (task 9f3f0dfe96564fdf928f8c81123ed8de)."
+      },
+      {
+        "id": "3463396c-066e-4ef5-a66a-61a6e24af449",
+        "createdAt": 1792447080.07,
+        "message": "(service camelai-agent-runtime) registered 1 targets in (target-group arn:aws:elasticloadbalancing:us-west-2:904534089871:targetgroup/camelai-agent-runtime/2c2df3014cd7b999)"
+      },
+      {
+        "id": "9ca070d7-fdb3-42ea-a74f-82800a53c56d",
+        "createdAt": 1792447070.384,
+        "message": "(service camelai-agent-runtime, taskSet ecs-svc/2061821444931869684) has begun draining connections on 1 tasks."
+      },
+      {
+        "id": "b8517629-1964-4a32-a148-a8b4ed2d9e51",
+        "createdAt": 1792447070.379,
+        "message": "(service camelai-agent-runtime) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-west-2:904534089871:targetgroup/camelai-agent-runtime/2c2df3014cd7b999)"
+      },
+      {
+        "id": "5ac7c899-8fd5-4543-b518-18ed35901ded",
+        "createdAt": 1792447070.332,
+        "message": "(service camelai-agent-runtime) registered 1 targets in (target-group arn:aws:elasticloadbalancing:us-west-2:904534089871:targetgroup/camelai-agent-runtime/2c2df3014cd7b999)"
+      },
+      {
+        "id": "6704154a-0584-4636-908e-4bef0fe25e60",
+        "createdAt": 1792447059.112,
+        "message": "(service camelai-agent-runtime) has stopped 1 running tasks: (task 980af59f656d4ba79d27e9f2b4f4dd73)."
+      },
+      {
+        "id": "7296976b-9483-4660-855d-b92072f06b5d",
+        "createdAt": 1792447040.301,
+        "message": "(service camelai-agent-runtime) has started 2 tasks: (task 9260a8ed4384495d851ebb9d79df9e8c) (task fa4c3a267b0743ad86458b077f29cb93)."
+      },
+      {
+        "id": "695b2588-c109-4d3c-b3f1-92299e2710b5",
+        "createdAt": 1792447008.39,
+        "message": "(service camelai-agent-runtime) registered 1 targets in (target-group arn:aws:elasticloadbalancing:us-west-2:904534089871:targetgroup/camelai-agent-runtime/2c2df3014cd7b999)"
+      },
+      {
+        "id": "37b7bbf4-9bd2-4d2c-bc6d-aa19c9dfb2f2",
+        "createdAt": 1792446978.787,
+        "message": "(service camelai-agent-runtime) has started 1 tasks: (task 307bd4426f7c4e5ca1b7e1cae2cbfd95)."
+      },
+      {
+        "id": "8d912e6f-4cc6-4afe-b498-459ec74267bb",
+        "createdAt": 1792446916.088,
+        "message": "(service camelai-agent-runtime, taskSet ecs-svc/2061821444931869684) has begun draining connections on 1 tasks."
+      },
+      {
+        "id": "c0e90b28-c200-435e-b639-b9c77350507d",
+        "createdAt": 1792446916.084,
+        "message": "(service camelai-agent-runtime) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-west-2:904534089871:targetgroup/camelai-agent-runtime/2c2df3014cd7b999)"
+      },
+      {
+        "id": "c208e461-01eb-4bca-8225-d75c943efce7",
+        "createdAt": 1792446905.747,
+        "message": "(service camelai-agent-runtime) has stopped 1 running tasks: (task 51eca7b2e186455898a5e5a4535467bc)."
+      },
+      {
+        "id": "21c046cd-4fae-4315-9464-90da52ca0dce",
+        "createdAt": 1792446884.55,
+        "message": "(service camelai-agent-runtime, taskSet ecs-svc/5738311230719856340) has begun draining connections on 1 tasks."
+      },
+      {
+        "id": "29504097-d5bd-4a1f-8450-989f06bc1879",
+        "createdAt": 1792446884.545,
+        "message": "(service camelai-agent-runtime) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-west-2:904534089871:targetgroup/camelai-agent-runtime/2c2df3014cd7b999)"
+      },
+      {
+        "id": "b395da83-e4ae-496c-9866-b4c51b883b55",
+        "createdAt": 1792446874.544,
+        "message": "(service camelai-agent-runtime) has stopped 1 running tasks: (task 80c6a1855fda46a49cd892e7422f267c)."
+      },
+      {
+        "id": "67585284-a532-406a-a04e-6082fe67edfe",
+        "createdAt": 1792446854.578,
+        "message": "(service camelai-agent-runtime, taskSet ecs-svc/5738311230719856340) has begun draining connections on 1 tasks."
+      },
+      {
+        "id": "324e7e33-3fab-4a2a-93a1-e7fdc892cfb4",
+        "createdAt": 1792446854.573,
+        "message": "(service camelai-agent-runtime) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-west-2:904534089871:targetgroup/camelai-agent-runtime/2c2df3014cd7b999)"
+      },
+      {
+        "id": "b1ec13d3-f5f6-4462-b204-6a4f06e008af",
+        "createdAt": 1792446854.525,
+        "message": "(service camelai-agent-runtime) registered 1 targets in (target-group arn:aws:elasticloadbalancing:us-west-2:904534089871:targetgroup/camelai-agent-runtime/2c2df3014cd7b999)"
+      },
+      {
+        "id": "ad0a3b4a-d9d0-48ea-9a7f-4588a8d8c472",
+        "createdAt": 1792446843.999,
+        "message": "(service camelai-agent-runtime) has stopped 1 running tasks: (task a3797f4875da48e081f483504ba3b9cb)."
+      },
+      {
+        "id": "0254ace6-8edb-465a-b33a-7cbc7bd29892",
+        "createdAt": 1792446823.521,
+        "message": "(service camelai-agent-runtime) registered 1 targets in (target-group arn:aws:elasticloadbalancing:us-west-2:904534089871:targetgroup/camelai-agent-runtime/2c2df3014cd7b999)"
+      },
+      {
+        "id": "f40908a5-bf45-48f0-b7e4-fe84af0123cc",
+        "createdAt": 1792446796.212,
+        "message": "(service camelai-agent-runtime) has started 2 tasks: (task 51eca7b2e186455898a5e5a4535467bc) (task 980af59f656d4ba79d27e9f2b4f4dd73)."
+      },
+      {
+        "id": "2c14a4ba-2978-4cd3-8320-3a7e036cc549",
+        "createdAt": 1792446793.891,
+        "message": "(service camelai-agent-runtime) registered 1 targets in (target-group arn:aws:elasticloadbalancing:us-west-2:904534089871:targetgroup/camelai-agent-runtime/2c2df3014cd7b999)"
+      },
+      {
+        "id": "c50370c9-9f02-46fa-8dd8-30d1900c5d35",
+        "createdAt": 1792446763.426,
+        "message": "(service camelai-agent-runtime) has started 1 tasks: (task 9f3f0dfe96564fdf928f8c81123ed8de)."
+      },
+      {
+        "id": "4c19b0ed-1de4-4d8d-a706-e2697ec97608",
+        "createdAt": 1792446258.92,
+        "message": "(service camelai-agent-runtime) has reached a steady state."
+      },
+      {
+        "id": "1159a8dd-e333-4112-869c-adbc9a81441a",
+        "createdAt": 1792446258.918,
+        "message": "(service camelai-agent-runtime) (deployment ecs-svc/5738311230719856340) deployment completed."
+      },
+      {
+        "id": "2d65b9a4-f1b0-4d6d-8549-479d0f855ff7",
+        "createdAt": 1792446167.643,
+        "message": "(service camelai-agent-runtime, taskSet ecs-svc/3021647446253152559) has begun draining connections on 1 tasks."
+      },
+      {
+        "id": "8aa812bd-db5c-4763-81ba-051a7997a751",
+        "createdAt": 1792446167.639,
+        "message": "(service camelai-agent-runtime) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-west-2:904534089871:targetgroup/camelai-agent-runtime/2c2df3014cd7b999)"
+      },
+      {
+        "id": "e6df854d-554a-4945-9cac-2a6be315a42a",
+        "createdAt": 1792446166.135,
+        "message": "(service camelai-agent-runtime) has stopped 1 running tasks: (task 80cfc94bc28144cc845ef548de38bc24)."
+      },
+      {
+        "id": "dcc4ca1c-a07f-4713-8f62-7aab56587f2a",
+        "createdAt": 1792446136.285,
+        "message": "(service camelai-agent-runtime) was unable to reach steady state because (taskSet ecs-svc/3021647446253152559) was unable to scale in due to (reason 1 tasks under protection)"
+      },
+      {
+        "id": "17b69b83-078f-4027-b553-edee5be231b4",
+        "createdAt": 1792446136.264,
+        "message": "(service camelai-agent-runtime, taskSet ecs-svc/3021647446253152559) has begun draining connections on 1 tasks."
+      },
+      {
+        "id": "0388d163-b5f2-4263-8324-5badd187e432",
+        "createdAt": 1792446136.259,
+        "message": "(service camelai-agent-runtime) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-west-2:904534089871:targetgroup/camelai-agent-runtime/2c2df3014cd7b999)"
+      },
+      {
+        "id": "cff60ef5-9684-46c0-b3a9-e09f87fe9617",
+        "createdAt": 1792446126.643,
+        "message": "(service camelai-agent-runtime) has stopped 1 running tasks: (task 5736fe1f98bb4616a7145212e37953c1)."
+      },
+      {
+        "id": "14c9c472-cd9c-45ae-b22f-b866c1073843",
+        "createdAt": 1792446126.584,
+        "message": "(service camelai-agent-runtime) was unable to reach steady state because (taskSet ecs-svc/3021647446253152559) was unable to scale in due to (reason 1 tasks under protection)"
+      },
+      {
+        "id": "0a11fef9-d5d3-4766-89db-eb1139909f4f",
+        "createdAt": 1792446105.032,
+        "message": "(service camelai-agent-runtime) was unable to reach steady state because (taskSet ecs-svc/3021647446253152559) was unable to scale in due to (reason 2 tasks under protection)"
+      },
+      {
+        "id": "a525a4a4-019e-4880-9637-18679a790b95",
+        "createdAt": 1792446065.159,
+        "message": "(service camelai-agent-runtime, taskSet ecs-svc/3021647446253152559) has begun draining connections on 1 tasks."
+      },
+      {
+        "id": "e8119f08-0d4a-4f9f-957a-4e89bd924b7a",
+        "createdAt": 1792446065.154,
+        "message": "(service camelai-agent-runtime) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-west-2:904534089871:targetgroup/camelai-agent-runtime/2c2df3014cd7b999)"
+      },
+      {
+        "id": "201059d8-d413-4555-b73a-9dc41435db8a",
+        "createdAt": 1792446063.064,
+        "message": "(service camelai-agent-runtime) has stopped 1 running tasks: (task f678581062eb4e50b0c1baf8435a0422)."
+      },
+      {
+        "id": "efc59b24-24e4-45d1-b21e-20592dd9e818",
+        "createdAt": 1792446054.22,
+        "message": "(service camelai-agent-runtime) registered 2 targets in (target-group arn:aws:elasticloadbalancing:us-west-2:904534089871:targetgroup/camelai-agent-runtime/2c2df3014cd7b999)"
+      },
+      {
+        "id": "db663e32-8a9b-4bac-9438-2796cf97aa80",
+        "createdAt": 1792446012.316,
+        "message": "(service camelai-agent-runtime) registered 1 targets in (target-group arn:aws:elasticloadbalancing:us-west-2:904534089871:targetgroup/camelai-agent-runtime/2c2df3014cd7b999)"
+      },
+      {
+        "id": "1fa2ef4d-8565-4bf3-ab63-379cd7e95f44",
+        "createdAt": 1792446005.537,
+        "message": "(service camelai-agent-runtime) has started 2 tasks: (task a3797f4875da48e081f483504ba3b9cb) (task ac9141ba900d47e39667207b30aa8ef2)."
+      },
+      {
+        "id": "f3f098b0-2b9c-44f8-935f-0f83580b305f",
+        "createdAt": 1792445982.013,
+        "message": "(service camelai-agent-runtime) has started 1 tasks: (task 80c6a1855fda46a49cd892e7422f267c)."
+      },
+      {
+        "id": "a3d6fd2b-5416-4aa9-955a-c0ff40491a91",
+        "createdAt": 1792445418.819,
+        "message": "(service camelai-agent-runtime) has reached a steady state."
+      },
+      {
+        "id": "b8b8ddbc-4715-4026-b4cb-4705c4811985",
+        "createdAt": 1792445418.818,
+        "message": "(service camelai-agent-runtime) (deployment ecs-svc/3021647446253152559) deployment completed."
+      },
+      {
+        "id": "88daa51e-9f95-4e15-bd78-6d1849d529c1",
+        "createdAt": 1792445366.98,
+        "message": "(service camelai-agent-runtime, taskSet ecs-svc/7710193977244840484) has begun draining connections on 1 tasks."
+      },
+      {
+        "id": "33c45b0b-d941-4bf9-b7f6-2c21dc1add6c",
+        "createdAt": 1792445366.975,
+        "message": "(service camelai-agent-runtime) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:us-west-2:904534089871:targetgroup/camelai-agent-runtime/2c2df3014cd7b999)"
+      },
+      {
+        "id": "9a6853a5-af41-4398-a00b-2dcfef9fd8be",
+        "createdAt": 1792445357.007,
+        "message": "(service camelai-agent-runtime) has stopped 1 running tasks: (task ebd9413f22ca4c4eb8a78a9e59ee1075)."
+      }
+    ]
+  },
+  "targetHealthNow": [
+    {
+      "target": "172.31.11.42",
+      "state": "healthy"
+    },
+    {
+      "target": "172.31.48.7",
+      "state": "healthy"
+    },
+    {
+      "target": "172.31.16.107",
+      "state": "healthy"
+    }
+  ],
+  "note": "ecsStarted is not exact container start; health is current, not historical"
+}

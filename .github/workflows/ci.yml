@@ -187,6 +187,11 @@ jobs:
             sleep 1
           done
           docker logs runtime; exit 1
+      # Exercise the pruned production dependency tree, including both ONNX models. No provider calls.
+      - name: Voice model cold start
+        run: |
+          docker run --rm --user node --entrypoint node -v "$PWD/tests/image-voice.ts:/app/tests/image-voice.ts:ro" \
+            agent-runtime:ci --experimental-strip-types --disable-warning=ExperimentalWarning tests/image-voice.ts
       - run: docker rm -f runtime
       # From inside a parse job: its uid, empty environment, seccomp filter and what it cannot reach;
       # then js_exec end to end (a v8-exec process with a uid of its own, the launcher's filter and its own),

@@ -1,3 +1,4 @@
+import { startupStage } from "../../startup.ts";
 import { createRequire } from "node:module";
 import { isMainThread, parentPort, Worker, workerData, type MessagePort } from "node:worker_threads";
 import { logMel, WHISPER } from "./features.ts";
@@ -32,7 +33,7 @@ if (!isMainThread && data?.role === "eot") void eot(data.model);
 
 async function host(options: Extract<Data, { role: "host" }>) {
   const runtime = ort();
-  const vad = await runtime.InferenceSession.create(options.models?.vad ?? MODELS.vad, SESSION_OPTIONS);
+  const vad = await startupStage("voice_vad", () => runtime.InferenceSession.create(options.models?.vad ?? MODELS.vad, SESSION_OPTIONS));
   const sr = new runtime.Tensor("int64", BigInt64Array.from([16_000n]), []);
   type Pending = { port: MessagePort; id: number; input: Float32Array; state: Float32Array; at: number };
   let queue: Pending[] = [];
@@ -75,12 +76,18 @@ async function host(options: Extract<Data, { role: "host" }>) {
   const count = Math.max(1, options.eotWorkers ?? 1);
   type Eot = { worker: Worker; busy: number };
   const workers: Eot[] = [];
+  const loaded: Promise<void>[] = [];
   const waiting = new Map<number, { port: MessagePort; id: number; worker: Eot }>();
   let jobs = 0;
   for (let i = 0; i < count; i++) {
     const worker = new Worker(new URL(import.meta.url), { workerData: { role: "eot", model: options.models?.eot ?? MODELS.eot } satisfies Data, resourceLimits: WORKER_LIMITS });
+    loaded.push(new Promise<void>((resolve, reject) => {
+      worker.once("message", (message: { type?: string }) => message.type === "ready" ? resolve() : reject(new Error("unexpected end-of-turn startup message")));
+      worker.once("error", reject);
+    }));
     const entry: Eot = { worker, busy: 0 };
-    worker.on("message", (done: EotDone) => {
+    worker.on("message", (done: EotDone | { type: "ready" }) => {
+      if ("type" in done) return;
       const job = waiting.get(done.job);
       if (!job) return;
       waiting.delete(done.job);
@@ -129,12 +136,14 @@ async function host(options: Extract<Data, { role: "host" }>) {
     await vad.release();
     process.exit(0);
   });
+  await Promise.all(loaded);
   parentPort!.postMessage({ type: "ready" });
 }
 
 async function eot(model: string) {
   const runtime = ort();
-  const session = await runtime.InferenceSession.create(model, SESSION_OPTIONS);
+  const session = await startupStage("voice_smart_turn", () => runtime.InferenceSession.create(model, SESSION_OPTIONS));
+  parentPort!.postMessage({ type: "ready" });
   // Jobs run one at a time, in order: a run blocks this thread.
   let chain = Promise.resolve();
   parentPort!.on("message", (job: EotJob | { type: "close" }) => {

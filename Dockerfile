@@ -33,7 +33,7 @@ COPY sandbox/v8-exec/src ./src
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked --mount=type=cache,target=/src/target,id=v8exec-$TARGETARCH \
     cargo build --release --locked --target "$(cat /triple)" && cp "target/$(cat /triple)/release/v8-exec" /v8-exec
 
-FROM ${BASE_REGISTRY}/node:22-bookworm-slim
+FROM ${BASE_REGISTRY}/node:22-bookworm-slim AS dependencies
 
 WORKDIR /app
 # Runtime dependencies only, exactly as locked; UI build tooling is in devDependencies.
@@ -46,6 +46,19 @@ RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force \
   && arch="$(node -p process.arch)" \
   && find node_modules/onnxruntime-node/bin/napi-v6 -mindepth 1 -maxdepth 1 ! -name linux -exec rm -rf {} + \
   && find node_modules/onnxruntime-node/bin/napi-v6/linux -mindepth 1 -maxdepth 1 ! -name "$arch" -exec rm -rf {} +
+
+# Install/prune in a separate stage: only the production dependency tree reaches the runtime.
+# ONNX ships headers and build metadata too; the JS binding only needs dist/ and this platform's bin/.
+RUN rm -rf node_modules/onnxruntime-node/include node_modules/onnxruntime-node/src \
+    node_modules/onnxruntime-node/script node_modules/onnxruntime-node/deps \
+    node_modules/onnxruntime-node/build node_modules/onnxruntime-node/*.tgz \
+ && find node_modules -type f \( -name '*.map' -o -name '*.d.ts' -o -name '*.d.mts' -o -name '*.d.cts' \) -delete
+
+FROM ${BASE_REGISTRY}/node:22-bookworm-slim AS runtime
+WORKDIR /app
+ENV ORT_DISABLE_TELEMETRY=1
+COPY --from=dependencies /app/node_modules ./node_modules
+COPY package.json ./package.json
 
 COPY src ./src
 COPY shared ./shared

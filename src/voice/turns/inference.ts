@@ -104,6 +104,38 @@ export type TurnModelsHost = {
 };
 
 /**
+ * No worker or model I/O until warm() (after HTTP binds), or the first voice client. Calls during loading
+ * use the normal bounded inference timeouts and TurnTaker's level/silence fallback. A failed host keeps
+ * its existing restart policy, so a temporary loading failure does not permanently disable smart turns.
+ */
+export function deferredTurnModels(start: () => TurnModelsHost): TurnModelsHost & { warm(): void } {
+  let host: TurnModelsHost | undefined, closed = false;
+  const current = () => {
+    if (closed) return undefined;
+    return host ??= start();
+  };
+  return {
+    warm() { current(); },
+    port() {
+      const active = current();
+      if (active) return active.port();
+      const { port1, port2 } = new MessageChannel();
+      port2.close();
+      return port1;
+    },
+    get ready() {
+      const active = current();
+      if (active) return active.ready;
+      const failed = Promise.reject<void>(new TurnModelsUnavailable("turn models closed"));
+      failed.catch(() => {});
+      return failed;
+    },
+    get thread() { return host?.thread; },
+    async close() { closed = true; await host?.close(); },
+  };
+}
+
+/**
  * Start the node's turn models: the host worker (Silero VAD) and its end-of-turn workers (Smart Turn). If the host
  * exits, every client's pending calls fail, and it is started again (after `restartMs`, doubling to a minute while it
  * keeps failing to start); ports given out before reach the old one, and fail: callers take a new port.

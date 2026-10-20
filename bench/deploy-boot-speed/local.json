@@ -1,0 +1,484 @@
+{
+  "environment": "local Docker ARM64, 1 CPU / 2 GiB, warm layers, disposable local PostgreSQL; no AWS/provider calls",
+  "images": {
+    "before": {
+      "tag": "camelrun-boot:baseline",
+      "bytes": 521218356
+    },
+    "after": {
+      "tag": "camelrun-boot:after",
+      "bytes": 462405503
+    }
+  },
+  "medianListeningUptimeMs": {
+    "before": 1794,
+    "after": 1797
+  },
+  "trials": [
+    {
+      "trial": 1,
+      "variant": "before",
+      "listeningUptimeMs": 1365,
+      "observedContainerToListeningMs": 1549,
+      "stages": []
+    },
+    {
+      "trial": 1,
+      "variant": "after",
+      "listeningUptimeMs": 1272,
+      "observedContainerToListeningMs": 1472,
+      "stages": [
+        {
+          "type": "startup_stage",
+          "stage": "tenants",
+          "ms": 1,
+          "uptimeMs": 1058
+        },
+        {
+          "type": "startup_stage",
+          "stage": "secrets",
+          "ms": 0,
+          "uptimeMs": 1058
+        },
+        {
+          "type": "startup_stage",
+          "stage": "sandbox",
+          "ms": 120,
+          "uptimeMs": 1178
+        },
+        {
+          "type": "startup_stage",
+          "stage": "database",
+          "ms": 0,
+          "uptimeMs": 1179
+        },
+        {
+          "type": "startup_stage",
+          "stage": "task_address",
+          "ms": 0,
+          "uptimeMs": 1179
+        },
+        {
+          "type": "startup_stage",
+          "stage": "migrations",
+          "ms": 18,
+          "uptimeMs": 1198
+        },
+        {
+          "type": "startup_stage",
+          "stage": "storage",
+          "ms": 0,
+          "uptimeMs": 1198
+        },
+        {
+          "type": "startup_stage",
+          "stage": "ownership",
+          "ms": 2,
+          "uptimeMs": 1200
+        },
+        {
+          "type": "startup_stage",
+          "stage": "notifications",
+          "ms": 37,
+          "uptimeMs": 1243
+        },
+        {
+          "type": "startup_stage",
+          "stage": "managed_discord_config",
+          "ms": 0,
+          "uptimeMs": 1243
+        },
+        {
+          "type": "startup_stage",
+          "stage": "voice_vad",
+          "ms": 75,
+          "uptimeMs": 1440
+        },
+        {
+          "type": "startup_stage",
+          "stage": "voice_smart_turn",
+          "ms": 25,
+          "uptimeMs": 1506
+        },
+        {
+          "type": "startup_stage",
+          "stage": "voice_turn_models",
+          "ms": 234,
+          "uptimeMs": 1507
+        }
+      ]
+    },
+    {
+      "trial": 2,
+      "variant": "before",
+      "listeningUptimeMs": 1465,
+      "observedContainerToListeningMs": 1718,
+      "stages": []
+    },
+    {
+      "trial": 2,
+      "variant": "after",
+      "listeningUptimeMs": 1672,
+      "observedContainerToListeningMs": 1980,
+      "stages": [
+        {
+          "type": "startup_stage",
+          "stage": "tenants",
+          "ms": 2,
+          "uptimeMs": 1364
+        },
+        {
+          "type": "startup_stage",
+          "stage": "secrets",
+          "ms": 0,
+          "uptimeMs": 1365
+        },
+        {
+          "type": "startup_stage",
+          "stage": "sandbox",
+          "ms": 143,
+          "uptimeMs": 1509
+        },
+        {
+          "type": "startup_stage",
+          "stage": "database",
+          "ms": 0,
+          "uptimeMs": 1510
+        },
+        {
+          "type": "startup_stage",
+          "stage": "task_address",
+          "ms": 0,
+          "uptimeMs": 1510
+        },
+        {
+          "type": "startup_stage",
+          "stage": "migrations",
+          "ms": 34,
+          "uptimeMs": 1566
+        },
+        {
+          "type": "startup_stage",
+          "stage": "storage",
+          "ms": 0,
+          "uptimeMs": 1567
+        },
+        {
+          "type": "startup_stage",
+          "stage": "ownership",
+          "ms": 4,
+          "uptimeMs": 1571
+        },
+        {
+          "type": "startup_stage",
+          "stage": "notifications",
+          "ms": 83,
+          "uptimeMs": 1660
+        },
+        {
+          "type": "startup_stage",
+          "stage": "managed_discord_config",
+          "ms": 0,
+          "uptimeMs": 1661
+        },
+        {
+          "type": "startup_stage",
+          "stage": "voice_vad",
+          "ms": 26,
+          "uptimeMs": 1792
+        },
+        {
+          "type": "startup_stage",
+          "stage": "voice_smart_turn",
+          "ms": 27,
+          "uptimeMs": 1881
+        },
+        {
+          "type": "startup_stage",
+          "stage": "voice_turn_models",
+          "ms": 209,
+          "uptimeMs": 1882
+        }
+      ]
+    },
+    {
+      "trial": 3,
+      "variant": "before",
+      "listeningUptimeMs": 1794,
+      "observedContainerToListeningMs": 2208,
+      "stages": []
+    },
+    {
+      "trial": 3,
+      "variant": "after",
+      "listeningUptimeMs": 1845,
+      "observedContainerToListeningMs": 2350,
+      "stages": [
+        {
+          "type": "startup_stage",
+          "stage": "tenants",
+          "ms": 12,
+          "uptimeMs": 1380
+        },
+        {
+          "type": "startup_stage",
+          "stage": "secrets",
+          "ms": 0,
+          "uptimeMs": 1381
+        },
+        {
+          "type": "startup_stage",
+          "stage": "sandbox",
+          "ms": 141,
+          "uptimeMs": 1523
+        },
+        {
+          "type": "startup_stage",
+          "stage": "database",
+          "ms": 0,
+          "uptimeMs": 1523
+        },
+        {
+          "type": "startup_stage",
+          "stage": "task_address",
+          "ms": 0,
+          "uptimeMs": 1524
+        },
+        {
+          "type": "startup_stage",
+          "stage": "migrations",
+          "ms": 126,
+          "uptimeMs": 1651
+        },
+        {
+          "type": "startup_stage",
+          "stage": "storage",
+          "ms": 0,
+          "uptimeMs": 1653
+        },
+        {
+          "type": "startup_stage",
+          "stage": "ownership",
+          "ms": 12,
+          "uptimeMs": 1667
+        },
+        {
+          "type": "startup_stage",
+          "stage": "notifications",
+          "ms": 133,
+          "uptimeMs": 1813
+        },
+        {
+          "type": "startup_stage",
+          "stage": "managed_discord_config",
+          "ms": 0,
+          "uptimeMs": 1813
+        },
+        {
+          "type": "startup_stage",
+          "stage": "voice_vad",
+          "ms": 30,
+          "uptimeMs": 2033
+        },
+        {
+          "type": "startup_stage",
+          "stage": "voice_smart_turn",
+          "ms": 35,
+          "uptimeMs": 2125
+        },
+        {
+          "type": "startup_stage",
+          "stage": "voice_turn_models",
+          "ms": 280,
+          "uptimeMs": 2126
+        }
+      ]
+    },
+    {
+      "trial": 4,
+      "variant": "before",
+      "listeningUptimeMs": 2170,
+      "observedContainerToListeningMs": 2812,
+      "stages": []
+    },
+    {
+      "trial": 4,
+      "variant": "after",
+      "listeningUptimeMs": 2175,
+      "observedContainerToListeningMs": 2695,
+      "stages": [
+        {
+          "type": "startup_stage",
+          "stage": "tenants",
+          "ms": 2,
+          "uptimeMs": 1518
+        },
+        {
+          "type": "startup_stage",
+          "stage": "secrets",
+          "ms": 1,
+          "uptimeMs": 1519
+        },
+        {
+          "type": "startup_stage",
+          "stage": "sandbox",
+          "ms": 186,
+          "uptimeMs": 1709
+        },
+        {
+          "type": "startup_stage",
+          "stage": "database",
+          "ms": 0,
+          "uptimeMs": 1715
+        },
+        {
+          "type": "startup_stage",
+          "stage": "task_address",
+          "ms": 0,
+          "uptimeMs": 1716
+        },
+        {
+          "type": "startup_stage",
+          "stage": "migrations",
+          "ms": 198,
+          "uptimeMs": 1915
+        },
+        {
+          "type": "startup_stage",
+          "stage": "storage",
+          "ms": 0,
+          "uptimeMs": 1916
+        },
+        {
+          "type": "startup_stage",
+          "stage": "ownership",
+          "ms": 19,
+          "uptimeMs": 1935
+        },
+        {
+          "type": "startup_stage",
+          "stage": "notifications",
+          "ms": 176,
+          "uptimeMs": 2145
+        },
+        {
+          "type": "startup_stage",
+          "stage": "managed_discord_config",
+          "ms": 0,
+          "uptimeMs": 2146
+        },
+        {
+          "type": "startup_stage",
+          "stage": "voice_vad",
+          "ms": 33,
+          "uptimeMs": 2292
+        },
+        {
+          "type": "startup_stage",
+          "stage": "voice_smart_turn",
+          "ms": 26,
+          "uptimeMs": 2422
+        },
+        {
+          "type": "startup_stage",
+          "stage": "voice_turn_models",
+          "ms": 247,
+          "uptimeMs": 2423
+        }
+      ]
+    },
+    {
+      "trial": 5,
+      "variant": "before",
+      "listeningUptimeMs": 2098,
+      "observedContainerToListeningMs": 2691,
+      "stages": []
+    },
+    {
+      "trial": 5,
+      "variant": "after",
+      "listeningUptimeMs": 1797,
+      "observedContainerToListeningMs": 2440,
+      "stages": [
+        {
+          "type": "startup_stage",
+          "stage": "tenants",
+          "ms": 5,
+          "uptimeMs": 1442
+        },
+        {
+          "type": "startup_stage",
+          "stage": "secrets",
+          "ms": 0,
+          "uptimeMs": 1443
+        },
+        {
+          "type": "startup_stage",
+          "stage": "sandbox",
+          "ms": 135,
+          "uptimeMs": 1593
+        },
+        {
+          "type": "startup_stage",
+          "stage": "database",
+          "ms": 0,
+          "uptimeMs": 1598
+        },
+        {
+          "type": "startup_stage",
+          "stage": "task_address",
+          "ms": 0,
+          "uptimeMs": 1601
+        },
+        {
+          "type": "startup_stage",
+          "stage": "migrations",
+          "ms": 85,
+          "uptimeMs": 1688
+        },
+        {
+          "type": "startup_stage",
+          "stage": "storage",
+          "ms": 0,
+          "uptimeMs": 1693
+        },
+        {
+          "type": "startup_stage",
+          "stage": "ownership",
+          "ms": 7,
+          "uptimeMs": 1700
+        },
+        {
+          "type": "startup_stage",
+          "stage": "notifications",
+          "ms": 51,
+          "uptimeMs": 1761
+        },
+        {
+          "type": "startup_stage",
+          "stage": "managed_discord_config",
+          "ms": 0,
+          "uptimeMs": 1762
+        },
+        {
+          "type": "startup_stage",
+          "stage": "voice_vad",
+          "ms": 30,
+          "uptimeMs": 1930
+        },
+        {
+          "type": "startup_stage",
+          "stage": "voice_smart_turn",
+          "ms": 33,
+          "uptimeMs": 2046
+        },
+        {
+          "type": "startup_stage",
+          "stage": "voice_turn_models",
+          "ms": 250,
+          "uptimeMs": 2048
+        }
+      ]
+    }
+  ]
+}
