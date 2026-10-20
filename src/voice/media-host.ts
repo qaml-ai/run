@@ -53,6 +53,8 @@ class Shard {
   /** Sessions it was given in all: a shard full once does not take new ones, so a long-lived one is not reused forever. */
   given = 0;
   lastTick = Date.now();
+  /** Its heap and other memory at its last tick, as it reported them. */
+  mb = 0;
   dead?: string;
   private readonly onDead: (shard: Shard, reason: string) => void;
 
@@ -83,6 +85,7 @@ class Shard {
   private message(message: FromMedia, maxMb: number) {
     if (message.t === "tick") {
       this.lastTick = Date.now();
+      this.mb = message.heapMb + message.externalMb;
       if (message.heapMb + message.externalMb > maxMb) this.kill(`memory ${message.heapMb + message.externalMb} MB`);
       return;
     }
@@ -151,8 +154,11 @@ export class MediaHost {
     };
   }
 
-  /** Workers running now, and the sessions in them. */
-  stats() { return { workers: this.shards.size, sessions: [...this.shards].reduce((sum, shard) => sum + shard.sessions.size, 0), crashes: this.crashes, modelPorts: this.modelPorts }; }
+  /** Workers running now, the sessions in them, and their memory at their last ticks. */
+  stats() {
+    const shards = [...this.shards];
+    return { workers: shards.length, sessions: shards.reduce((sum, shard) => sum + shard.sessions.size, 0), memoryMb: shards.reduce((sum, shard) => sum + shard.mb, 0), crashes: this.crashes, modelPorts: this.modelPorts };
+  }
 
   /** End every worker (the node is stopping: its sessions were released first). */
   async close() {

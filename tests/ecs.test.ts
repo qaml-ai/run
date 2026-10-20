@@ -201,6 +201,14 @@ test("node load reports heap and buffer memory in bytes, when the node gives the
   assert.deepEqual(metrics.slice(-4), ["heapUsedBytes", "heapTotalBytes", "externalBytes", "arrayBuffersBytes"].map(Name => ({ Name, Unit: "Bytes" })));
 });
 
+test("node load reports voice media workers, their sessions and memory, when the node runs them", () => {
+  const load = { hostedAgents: 0, sessions: 0, volumes: 0, runningTurns: 0, rssBytes: 700, voiceSessions: 2, voiceWorkers: 3, voiceWorkerBytes: 90 };
+  const line = JSON.parse(nodeLoadLine(load, "agent-runtime"));
+  const metrics = line._aws.CloudWatchMetrics[0].Metrics;
+  assert.deepEqual(metrics.slice(-3), [{ Name: "voiceSessions", Unit: "Count" }, { Name: "voiceWorkers", Unit: "Count" }, { Name: "voiceWorkerBytes", Unit: "Bytes" }]);
+  assert.equal(line.voiceWorkers, 3);
+});
+
 test("tenants load from a Secrets Manager secret, and a bad refresh keeps the last good tenants", async t => {
   const arn = "arn:aws:secretsmanager:us-west-2:123456789012:secret:agent-runtime/tenants-AbCdEf";
   let secret = JSON.stringify({ tenants: { alice: { tokenSha256: sha("alice-token"), apiKeys: { anthropic: "sk-alice" } } } });
