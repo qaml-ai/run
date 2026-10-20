@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { MemoryStorage } from "@earendil-works/pi-durable";
-import { createAssistantMessageEventStream, fauxAssistantMessage, fauxToolCall, type AssistantMessage } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, getCurrentSystemMessage, fauxAssistantMessage, fauxToolCall, type AssistantMessage } from "@earendil-works/pi-ai";
 import { DurableAgent } from "../src/pi-durable/agent.ts";
 
 const model = { id: "fixture", provider: "fixture", api: "openai-completions", name: "Fixture", reasoning: false,
@@ -18,7 +18,7 @@ test("native compaction owns cuts, bounds retained context and preserves full hi
   let generations = 0, summaries = 0, compactions = 0, tools = 0;
   const requests: any[] = [];
   const agent = await DurableAgent.create({
-    initialState: { model: { ...model, contextWindow: 32768 }, messages: [], tools: [{ name: "read", label: "Read", description: "Read", parameters: { type: "object", properties: {} },
+    initialState: { model: { ...model, contextWindow: 32768 }, messages: [{ role: "system", content: "", sections: { application: "Keep the customer instructions intact." }, timestamp: 1 }], tools: [{ name: "read", label: "Read", description: "Read", parameters: { type: "object", properties: {} },
       execute: async () => { tools++; return { content: [{ type: "text", text: "payload ".repeat(1000) }], details: null }; } }] },
     transformContext: async () => { throw new Error("The host compactor must not run"); },
     streamFn: (_model, view) => {
@@ -36,6 +36,7 @@ test("native compaction owns cuts, bounds retained context and preserves full hi
   const input = { role: "user", content: "Read all records", timestamp: 42, requestId: "stable-request", sender: { id: "person", name: "Person" } } as any;
   await agent.prompt(input);
   assert.equal(tools, 40);
+  assert.ok(requests.every(view => getCurrentSystemMessage(view.messages)?.sections?.application === "Keep the customer instructions intact."), "application instructions survive every request and native compaction");
   assert.ok(compactions > 2);
   assert.ok(Math.max(...requests.map(view => JSON.stringify(view).length)) < 8192 * 4, "native compaction respects the configured window below the model maximum");
   assert.equal(summaries, compactions, "blocking compaction does not discard speculative summaries");

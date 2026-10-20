@@ -17,8 +17,8 @@ const settled = (r: Awaited<ReturnType<typeof runtime>>, path: string) => until(
   return record.state === "completed" && record;
 }, "the run to end", 30_000);
 
-test("an end user's allowance pays first, then their balance; out of both, the turn stops and their next run is refused", async t => {
-  const r = await runtime(t, looping, { ...AT_COST, AGENT_MODEL: "openai/gpt-5.5-pro" });
+for (const engine of ["legacy", "pi-durable"]) test(`an end user's allowance pays first, then their balance; out of both, the turn stops and their next run is refused (${engine})`, async t => {
+  const r = await runtime(t, looping, { ...AT_COST, AGENT_ENGINE: engine, AGENT_MODEL: "openai/gpt-5.5-pro" });
   assert.equal((await settings(r, { allowances: { builder: 250_000 }, markupBps: 2_500 })).status, 200);
   assert.equal((await grant(r, "person", 100_000, "pay-1")).status, 201);
   const { id, token } = (await r.call("/v1/agents", { body: { subject: "person", bucket: "builder" } })).json;

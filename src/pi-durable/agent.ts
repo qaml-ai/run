@@ -1,5 +1,5 @@
 import type { AgentEvent, AgentMessage, AgentOptions, AgentState, AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
-import { createAssistantMessageEventStream, getSystemMessageText, type AssistantMessage, type ImageContent, type Message, type ToolResultMessage } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, getCurrentSystemMessage, getSystemMessageText, type AssistantMessage, type ImageContent, type Message, type ToolResultMessage } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { convertToLlm as contextMessages, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "../pi-harness/messages.ts";
 import {
@@ -137,11 +137,33 @@ export class DurableAgent {
   static async create(options: DurableAgentOptions): Promise<DurableAgent> {
     const agent = new DurableAgent(options);
     agent.installTools();
-    // The public task definition is pinned to 1.3.0. Only its post-tools policy
-    // boundary changes: Camel's finishTurn must run after every result commits,
+    // The public task definition is pinned to 1.3.0. Its preparation preserves Camel's positional system
+    // sections and complete context checkpoints; its post-tools policy
+    // boundary ensures Camel's finishTurn runs after every result commits,
     // including rejected and unavailable calls and sequential tool rounds.
     const original = GenerationTask.definition;
     const task = { definition: { ...original, phases: { ...original.phases,
+      prepare: async (...args: Parameters<typeof original.phases.prepare>) => {
+        const [record, runtime, taskContext] = args;
+        const view = await runtime.context(runtime.conversationId, taskContext);
+        const sections = getCurrentSystemMessage(view.messages)?.sections ??
+          getCurrentSystemMessage(agent.messages)?.sections ?? {};
+        // Camel owns these sections. An empty native section registry would
+        // remove application instructions and duplicate the checkpoint's tools.
+        const prepared = new Proxy(runtime, { get(target, key) {
+          if (key === "agent") return async (ctx: typeof taskContext) => ({ ...await target.agent(ctx),
+            sections: Object.entries(sections).filter(([, value]) => value !== null).map(([key, value]) =>
+              ({ key, tag: false, render: async () => value! })),
+          });
+          if (key === "context") return async (...params: Parameters<typeof runtime.context>) => {
+            const current = await target.context(...params);
+            return current.head?.kind === "camel.legacy.context" ? { ...current, head: undefined } : current;
+          };
+          const value = Reflect.get(target, key, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        } });
+        return original.phases.prepare(record, prepared, taskContext);
+      },
       tools: async (...args: Parameters<typeof original.phases.tools>) => {
         const [record, runtime, taskContext] = args;
         if (!record.state.checkpoint.pending.length) {
