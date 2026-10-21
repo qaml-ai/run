@@ -30,6 +30,8 @@ export class JournalHistory {
   private readonly base: HistoryBase;
   private readonly baseId: number;
   private lastId: number;
+  /** The read in progress: reads run one at a time, so each starts past what the one before took in. */
+  private reading: Promise<void> = Promise.resolve();
   private readonly storage: Pick<Storage, "scanEntries" | "entry">;
 
   private constructor(storage: Pick<Storage, "scanEntries" | "entry">, base: HistoryBase, baseId: number) {
@@ -62,8 +64,15 @@ export class JournalHistory {
     return history;
   }
 
-  /** Take in what the journal committed since the last read. */
-  refresh() { return this.read(this.lastId, false); }
+  /**
+   * Take in what the journal committed since the last read. Callers overlap (parallel tool calls each ask for their
+   * call's index): each read waits for the one before, as two reads from the same point would count its entries twice.
+   */
+  refresh() {
+    const next = this.reading.catch(() => {}).then(() => this.read(this.lastId, false));
+    this.reading = next;
+    return next;
+  }
 
   private async read(from: number, inclusive: boolean) {
     let cursor: Cursor | undefined;
