@@ -22,5 +22,10 @@ one agent at a time instead. Wait for the exact revision to reach
 at least 30 minutes of actual activity per stage, including voice where relevant.
 Stop expansion on request failures or sustained memory growth; roll back the
 agent allowlist before memory reaches 3 GiB. Retain the larger tasks during an
-engine rollback. These investigation settings are temporary ECS overrides,
-not changes to Terraform's default task size.
+engine rollback.
+
+Since 2026-10-21 Terraform holds the fleet-wide result: `agent_engine =
+"pi-durable"` (set `legacy` to roll back), 4 GiB tasks, the admission threshold
+at 65% of them (2.6 GiB), 5-second `node_load`, and the `-task-cgroup-memory`
+deployment alarm (cgroup memory over 3 GiB), which replaces the hand-made
+`-pi-canary-memory` alarm.
