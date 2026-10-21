@@ -186,7 +186,8 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
 /**
  * The Pi migration sweep (src/pi-sweep.ts): AGENT_PI_SWEEP is the most it may do on this node (off by default, which
  * runs nothing); the operator's mode (PUT /v1/operations/pi-sweep) chooses within that. It takes no agent while the
- * node's container memory is past AGENT_PI_SWEEP_MAX_MEMORY_BYTES (or its resident memory past AGENT_MEMORY_HIGH_BYTES),
+ * node's container memory is past AGENT_PI_SWEEP_MAX_MEMORY_BYTES (or its resident memory past AGENT_MEMORY_HIGH_BYTES), nor
+ * while its turns' p95 TimeToFirstRequestMs over 5 minutes is past AGENT_PI_SWEEP_MAX_FIRST_REQUEST_MS (0: no limit),
  * waits AGENT_PI_SWEEP_PACE_MS between agents, AGENT_PI_SWEEP_DELAY_MS after the node starts, and
  * AGENT_PI_SWEEP_REPASS_MS after a pass reaches the end before the next.
  */
@@ -201,6 +202,7 @@ function piSweepSettings(env: Record<string, string | undefined>) {
   const maxMemoryBytes = env.AGENT_PI_SWEEP_MAX_MEMORY_BYTES ? number("AGENT_PI_SWEEP_MAX_MEMORY_BYTES", 0, 1) : undefined;
   return {
     mode: mode as "off" | "dry-run" | "on", maxMemoryBytes,
+    maxFirstRequestMs: number("AGENT_PI_SWEEP_MAX_FIRST_REQUEST_MS", 8_000, 0),
     paceMs: number("AGENT_PI_SWEEP_PACE_MS", 1_000, 0), delayMs: number("AGENT_PI_SWEEP_DELAY_MS", 120_000, 0),
     repassMs: number("AGENT_PI_SWEEP_REPASS_MS", 6 * 60 * 60_000, 0),
   };

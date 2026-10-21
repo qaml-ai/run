@@ -791,6 +791,8 @@ export function createAgentHost(hostIO: HostIO) {
       transcript = await open(piStorage, indexed ?? undefined, tools.map(toToolDeclaration));
       // Each legacy session is imported once, as it is first loaded: what its imports took, for operators to follow.
       if (migration?.state !== "existing") console.log(JSON.stringify({ type: "legacy_session_imported", agent: config.id, tenant: config.tenant, ...migration }));
+      // The Pi sweep's start: the import was all it wanted. The next open recovers and configures as for any session on Pi.
+      if (config.importOnly) return { pid: process.pid, ...(migration ? { migration } : {}), recovered: false, messages: transcript.total };
       transcript.pin = () => agent ? leading() : undefined;
       let recovered = false;
       let resume: { continue: true } | { finished: { messages: number; error: string | null; reply?: string; stopped?: string; output?: unknown } } | undefined;
@@ -952,6 +954,9 @@ export function createAgentHost(hostIO: HostIO) {
       void index();
       return { pid: process.pid, ...(migration ? { migration } : {}), recovered, messages: transcript.total, ...(resume ? { resume } : {}), ...(!recovered && config.resume ? endedTurn() : {}) };
     }
+    // An import-only host (the Pi sweep's) has no agent: it answers its status and indexes its history as it is stopped.
+    if (!agent && config?.importOnly && method === "status") return { pid: process.pid, ...(migration ? { migration } : {}), busy, messages: transcript.total };
+    if (!agent && config?.importOnly && method === "historyFlush") { await index(true); return null; }
     if (!agent) throw new Error("Agent is not initialized");
     if (method === "status") return { pid: process.pid, ...(migration ? { migration } : {}), busy, messages: transcript.total, contextMessages: transcript.context.length, compacted: !!transcript.compaction };
     if (method === "configure") {

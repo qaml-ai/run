@@ -85,25 +85,34 @@ do; the operator's mode chooses within it, is read before every agent, and start
   `--restart` starts both passes again now. Migrated agents are never candidates again.
 - **Never two owners:** an agent hosted or being loaded anywhere is skipped (`skipped_hosted`).
   Opening takes the agent's ownership claim as any load does, so a node that took it in between keeps
-  it. One with runs open (`skipped_pending_runs`) is left to the orphan sweep, which loads it. A
-  request that reaches the agent while the sweep has it open is served there, and the agent stays
-  until it is idle.
+  it. One with runs open (`skipped_pending_runs`) is left to the orphan sweep, which loads it.
+- **Import only:** the sweep's start imports the session and stops its host at once. It recovers no
+  turn and writes no configuration change: the next open does that, as for any session on Pi. It
+  asks no model, bills nothing, sends no webhook and warms no tool search (whose embeddings its
+  tenant would pay for). It lists the agent's tool sources (connecting to its MCP servers) only when
+  the legacy transcript pinned no leading system message, which the import then makes from the
+  tools (`system: false`). A request that comes while the sweep's start runs waits for it, then
+  starts the agent as any request does.
 - **Read first:** the legacy transcript is read first (bounded, as the import reads it). One too large
   to copy (`skipped_size_limit`) is left for its own open, which imports it by reference after
   reading the log whole: not something to do back to back. A dry run stops there for every agent
-  (`would_migrate`, with its `records` and, where the import would find one, `from`: `active`,
+  (`would_migrate`, with its `records`, `system`, the `bytes` of the archive and `contextBytes` of the
+  context checkpoint it would write, and, where the import would find one, `from`: `active`,
   `awaiting` or `context_changed`), opening nothing and writing nothing but the sweep's own cursor.
   Sessions with a `camel.host.disabled` entry already have a host document, so the sweep leaves them
   to their next open, which adopts them.
 - **Live traffic first:** a node takes no agent while it is leaving, its database pool has a
-  request waiting, its resident memory is past `AGENT_MEMORY_HIGH_BYTES`, its container memory is past
-  `AGENT_PI_SWEEP_MAX_MEMORY_BYTES` (60% of the task), or it is full. It waits 5 s, doubling to 60 s,
+  request waiting, its turns' p95 `TimeToFirstRequestMs` over 5 minutes (the runtime's own part of a
+  turn's latency, which imports compete with; at least 10 turns) is past
+  `AGENT_PI_SWEEP_MAX_FIRST_REQUEST_MS` (8 s), its resident memory is past `AGENT_MEMORY_HIGH_BYTES`,
+  its container memory is past `AGENT_PI_SWEEP_MAX_MEMORY_BYTES` (60% of the task), or it is full. It waits 5 s, doubling to 60 s,
   and logs `pi_sweep_backoff` with the reason at most once a minute. Five failures in a row wait 60 s.
 - **Logs:** `pi_sweep_agent` (agent, tenant, `outcome`, `ms`), `pi_sweep_progress` each minute per
-  node (counts by outcome, `remaining`), `pi_sweep_pass_done` (`mode`, `remaining`), and
+  node (counts by outcome, `bytes`, `contextBytes` and `noSystem` so far, `remaining`), `pi_sweep_pass_done` (`mode`, `remaining`), and
   `pi_sweep_mode_set` when the operator changes it. A dry run's report:
 
-      filter type = "pi_sweep_agent" and mode = "dry-run" | stats count(*) by outcome
+      filter type = "pi_sweep_agent" and mode = "dry-run"
+      | stats count(*) as agents, sum(bytes) as archive, sum(contextBytes) as context by outcome, system
 
   Outcomes: `migrated` (with `from`, as `legacy_session_imported` logs it), `adopted`, `already_pi`,
   `would_migrate`, `skipped_hosted`, `skipped_pending_runs`, `skipped_size_limit`, `skipped_busy`,

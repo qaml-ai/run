@@ -133,19 +133,25 @@ export class AgentSupervisor {
   }
 
   /**
-   * What a stopped agent's next open would import, from its legacy transcript alone: its record count and how it
-   * differs from a session Pi left idle (`from`), or why it would not be imported whole. Read beside a live owner,
+   * What a stopped agent's next open would import, from its legacy transcript alone: its record count, whether it pins
+   * its leading system message (`system`: without one, the import makes it from the agent's tools), how it differs from
+   * a session Pi left idle (`from`), and `measure`d, the bytes it would write; or why it would not be imported whole. Read beside a live owner,
    * without writing or taking a claim (the Pi sweep). Refuses an oversized transcript before reading its bodies, as
    * the import does.
    */
-  async migrationPlan(id: string): Promise<{ ready: true; records: number; from?: LegacyImportShape } | { ready: false; reason: LegacyMigrationDeferred["reason"] }> {
+  async migrationPlan(id: string, options: { measure?: boolean } = {}): Promise<{ ready: true; records: number; system: boolean; from?: LegacyImportShape; bytes?: number; contextBytes?: number } | { ready: false; reason: LegacyMigrationDeferred["reason"] }> {
     if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id)) throw new Error("Invalid agent id");
     const log = this.options.storage ? this.options.storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id)) : fileAppendLog<TranscriptRecord>(transcriptPath(resolve(join(this.root, id))));
     try {
       const records = await readMigrationRecords(log);
       const { snapshot, model } = planLegacyMigration(records);
       const from = snapshot.active ? "active" : snapshot.awaiting?.length ? "awaiting" : piReorders(model) ? "context_changed" : undefined;
-      return { ready: true, records: records.length, ...(from ? { from } : {}) };
+      // What the import would write, `measure`d: the archive (the records as stored) and the context checkpoint.
+      const measured = options.measure ? {
+        bytes: records.reduce((sum, record) => sum + Buffer.byteLength(JSON.stringify(record)), 0),
+        contextBytes: model.reduce((sum, message) => sum + Buffer.byteLength(JSON.stringify(message)), 0),
+      } : {};
+      return { ready: true, records: records.length, system: !!snapshot.system, ...(from ? { from } : {}), ...measured };
     } catch (error) {
       if (error instanceof LegacyMigrationDeferred) return { ready: false, reason: error.reason };
       throw error;
