@@ -15,6 +15,11 @@ export type At = { entryId: number; index: number };
 /** The marker that starts a session's journal history: the host's history then, and where in the journal it stood. */
 export type HistoryBase = { t: "base"; total: number; through?: At; active: boolean; turnStart: number; awaiting: string[]; calls?: [string, number][] };
 
+/** The host transcript's state document and records (NativeTranscript): read, never written, here. */
+const SNAPSHOT = { kind: "camel.host.snapshot", scope: { kind: "session" as const } };
+const RECORD_KIND = "camel.host.record";
+type Snapshot = { total: number; piCursor?: At; active: boolean; turnStart: number; awaiting?: string[]; calls?: [string, number][] };
+
 const after = (a: At, b: At) => a.entryId > b.entryId || a.entryId === b.entryId && a.index > b.index;
 
 export class JournalHistory {
@@ -55,10 +60,45 @@ export class JournalHistory {
   static async open(storage: Pick<Storage, "scanEntries" | "entry">): Promise<JournalHistory | undefined> {
     const base = await JournalHistory.findBase(storage);
     if (!base) return undefined;
-    const history = new JournalHistory(storage, base.data as unknown as HistoryBase, base.id);
+    return JournalHistory.from(storage, base.data as unknown as HistoryBase, base.id);
+  }
+
+  /**
+   * The journal history of any session the host transcript wrote: its base marker's, or, without one, the host's last
+   * snapshot document's, which is where the host's history stood as its last record was written (the host writes both in
+   * one commit). Once the host transcript is no longer written, that snapshot stays where it is: a session that never
+   * loaded since needs no base marker. Undefined for a session with neither.
+   */
+  static async openAny(storage: Pick<Storage, "scanEntries" | "entry" | "findDocument" | "document">): Promise<JournalHistory | undefined> {
+    const marked = await JournalHistory.open(storage);
+    if (marked) return marked;
+    const document = await storage.findDocument(SNAPSHOT, "current", context);
+    const snapshot = document && ((await storage.document(document.id, "current", context))?.value as { snapshot?: Snapshot } | undefined)?.snapshot;
+    if (!snapshot) return undefined;
+    const last = await JournalHistory.lastRecord(storage);
+    if (last === undefined) return undefined;
+    return JournalHistory.from(storage, { t: "base", total: snapshot.total, ...(snapshot.piCursor ? { through: snapshot.piCursor } : {}), active: snapshot.active,
+      turnStart: snapshot.turnStart, awaiting: snapshot.awaiting ?? [], calls: snapshot.calls ?? [] }, last);
+  }
+
+  /** The newest host record's entry, read back from the journal's end to its host generation's start. */
+  private static async lastRecord(storage: Pick<Storage, "scanEntries">): Promise<number | undefined> {
+    let cursor: Cursor | undefined;
+    do {
+      const page = await storage.scanEntries({ conversationId, order: "descending" }, 128, cursor, context);
+      for (const entry of page.items) {
+        if (entry.kind === RECORD_KIND) return entry.id;
+        if (entry.kind === HOST_BOOTSTRAP_KIND) return entry.id;
+      }
+      cursor = page.next;
+    } while (cursor !== undefined);
+  }
+
+  private static async from(storage: Pick<Storage, "scanEntries" | "entry">, base: HistoryBase, baseId: number) {
+    const history = new JournalHistory(storage, base, baseId);
     // Native messages the base did not count yet (between its cursor and the base itself) come first.
     if (history.base.through) await history.read(history.base.through.entryId, true);
-    else await history.read(base.id, false);
+    else await history.read(baseId, false);
     return history;
   }
 
