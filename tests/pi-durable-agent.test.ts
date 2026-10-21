@@ -1,9 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { MemoryStorage } from "@earendil-works/pi-durable";
+import { MemoryStorage, type Storage } from "@earendil-works/pi-durable";
 import { createAssistantMessageEventStream, fauxAssistantMessage, fauxToolCall, type AssistantMessage } from "@earendil-works/pi-ai";
 import type { AgentMessage, AgentOptions, AgentTool } from "@earendil-works/pi-agent-core";
 import { DurableAgent, recoverDurableMessages } from "../src/pi-durable/agent.ts";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { randomUUID } from "node:crypto";
+import { openPiStorage } from "../src/pi-durable/storage.ts";
+import { testDatabase } from "./database.ts";
 import { forkCut, Transcript, type TranscriptRecord } from "../src/transcript.ts";
 
 const model = { id: "fixture", provider: "fixture", api: "openai-completions", name: "Fixture", reasoning: false, input: ["text"],
@@ -12,7 +16,7 @@ const answer = (text: string) => ({ ...fauxAssistantMessage(text), provider: mod
 const call = (...names: string[]) => ({ ...fauxAssistantMessage(names.map((name, i) => fauxToolCall(name, {}, { id: `call-${i}` })), { stopReason: "toolUse" }), provider: model.provider, model: model.id });
 const user = (text: string) => ({ role: "user" as const, content: text, timestamp: 1 });
 
-async function fixture(responses: AssistantMessage[], options: Partial<AgentOptions> = {}, supplied = new MemoryStorage()) {
+async function fixture(responses: AssistantMessage[], options: Partial<AgentOptions> = {}, supplied: Storage = new MemoryStorage()) {
   const events: any[] = [], requests: any[] = [];
   const agent = await DurableAgent.create({
     initialState: { model, messages: [], tools: [] },
@@ -194,4 +198,42 @@ test("Pi adapter close seals writes and returns even when a tool ignores cancell
   await Promise.allSettled([running]);
   assert.equal(fake.events.length, before, "late tool completions cannot emit after disposal");
   await assert.rejects(fake.agent.prompt("New"), /closed/);
+});
+
+test("Pi adapter checkpoints the host's context only when it changes, not after every run or reload", async () => {
+  const { db } = await testDatabase(), sessionId = randomUUID();
+  const open = () => openPiStorage({ sessionId, directory: "unused", db });
+  const checkpoints = async (conversationId: any) => {
+    const storage = await open();
+    let count = 0, cursor;
+    do {
+      const page = await storage.scanEntries({ conversationId }, 256, cursor, BACKGROUND_CONTEXT);
+      count += page.items.filter(entry => entry.kind === "camel.legacy.context").length;
+      cursor = page.next;
+    } while (cursor !== undefined);
+    return count;
+  };
+  const system = { role: "system", content: "Be brief.", timestamp: 0 } as AgentMessage;
+  const first = await fixture([answer("one"), answer("two")], { initialState: { model, tools: [], messages: [system] } }, await open());
+  await first.agent.prompt(user("first"));
+  const id = first.agent.conversationId;
+  assert.equal(await checkpoints(id), 1, "a new conversation takes the host's system message once");
+  // Hosts reassign an equal working set (fresh copies) after every run.
+  first.agent.state.messages = structuredClone(first.agent.state.messages);
+  await first.agent.prompt(user("second"));
+  assert.equal(await checkpoints(id), 1);
+  const kept = structuredClone(first.agent.state.messages);
+  await first.agent.close();
+
+  const reopened = await fixture([answer("three"), answer("four")], { initialState: { model, tools: [], messages: kept } }, await open());
+  await reopened.agent.prompt(user("third"));
+  assert.equal(await checkpoints(id), 1, "a reload whose Pi context matches the host's writes none");
+  const text = (message: any) => typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text).join("");
+  assert.deepEqual(reopened.requests[0].messages.map(text), ["Be brief.", "first", "one", "second", "two", "third"]);
+  // A host-side change still reaches Pi's context.
+  reopened.agent.state.messages = [...reopened.agent.state.messages, { ...user("landed without a model call"), timestamp: 99 }];
+  await reopened.agent.prompt(user("fourth"));
+  assert.equal(await checkpoints(id), 2);
+  assert.deepEqual(reopened.requests[1].messages.map(text).slice(-3), ["three", "landed without a model call", "fourth"]);
+  await reopened.agent.close();
 });
