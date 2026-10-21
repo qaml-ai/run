@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { normalizeContext, type Api, type Model } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
-import { compactionNeed, contextTokens, explicitKeyStream, runCompaction } from "../src/compaction.ts";
+import { contextTokens, explicitKeyStream } from "../src/compaction.ts";
 import { readTranscript } from "../src/transcript.ts";
 import { ClientSessions } from "../src/client-sessions.ts";
 import { Accounts } from "../src/accounts.ts";
@@ -335,7 +335,7 @@ test("model calls require the agent's explicit key and never read provider keys 
   } finally { delete process.env.OPENAI_API_KEY; }
 });
 
-test("model and summarization requests carry only the tenant's key, whatever provider credentials the host has", async t => {
+test("model requests (Pi's summaries are made the same way) carry only the tenant's key, whatever provider credentials the host has", async t => {
   const hostEnv = {
     OPENAI_API_KEY: "host-openai", OPENROUTER_API_KEY: "host-openrouter",
     ANTHROPIC_API_KEY: "host-anthropic", ANTHROPIC_OAUTH_TOKEN: "host-anthropic-oauth", ANTHROPIC_AUTH_TOKEN: "host-anthropic-bearer",
@@ -359,13 +359,10 @@ test("model and summarization requests carry only the tenant's key, whatever pro
     ].map(([provider, id, baseUrl]) => ({ ...(getModel as (provider: string, id: string) => Model<Api>)(provider, id), baseUrl }));
     const context = normalizeContext({ systemPrompt: "fixture", messages: [{ role: "user", content: "hi", timestamp: Date.now() }] });
     for (const model of models) await (await explicitKeyStream()(model, context, { apiKey: `tenant-${model.provider}`, maxRetries: 0 })).result();
-    // Compaction's summaries go through a separate pi-ai path.
-    const turns = Array.from({ length: 6 }, (_, index) => ({ role: index % 2 ? "assistant" : "user", content: index % 2 ? [{ type: "text", text: "x".repeat(4000) }] : "y".repeat(4000), timestamp: Date.now(), ...(index % 2 ? { api: models[0].api, provider: models[0].provider, model: models[0].id, stopReason: "stop", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } } : {}) })) as any[];
-    await assert.rejects(runCompaction({ context: turns, offset: 0, model: models[0], apiKey: "tenant-anthropic", keepRecentTokens: 1_000 }), /fixture|401/);
-    assert.equal(headers.length, models.length + 1);
+    assert.equal(headers.length, models.length);
     const sent = JSON.stringify(headers);
     for (const secret of Object.values(hostEnv)) assert.ok(!sent.includes(secret), `a request carried the host's ${secret}`);
-    for (const [index, model] of [...models, models[0]].entries()) {
+    for (const [index, model] of models.entries()) {
       const key = headers[index]["x-api-key"] ?? String(headers[index].authorization).replace(/^Bearer /, "");
       assert.equal(key, `tenant-${model.provider}`, `${model.provider}/${model.id}`);
     }
@@ -480,59 +477,28 @@ test("under runLimits.contextTokens, a context whose fixed part nearly fills the
   assert.ok(ended.length <= turns / 2, `${ended.length} compactions in ${turns} turns`);
 });
 
-test("the system prompt counts once: a provider's usage report already includes it, a bare estimate does not", async t => {
-  const fake = await provider(t);
-  const model = fake.model(25_000);
+test("the system prompt counts once: a provider's usage report already includes it, a bare estimate does not", () => {
   const usage = (input: number) => ({ input, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: input + 10, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } });
   const user = { role: "user", content: "next", timestamp: 1 } as any;
   const answer = { role: "assistant", content: [{ type: "text", text: "ok" }], api: "openai-completions", provider: "openai", model: "fixture", stopReason: "stop", usage: usage(15_000), timestamp: 2 } as any;
-  // 15,000 reported (system prompt included) is below the 17,500 where a 25,000 window starts compacting in the background.
+  // 15,000 reported (system prompt included): the system prompt is not added again.
   assert.equal(contextTokens([user, answer], 9_000), 15_010);
-  assert.equal(compactionNeed([user, answer], model, 9_000), undefined);
   // With no report, the estimate is all there is: the system prompt is added to it.
   assert.ok(contextTokens([user], 9_000) >= 9_000);
-  const long = [{ role: "user", content: "x".repeat(40_000), timestamp: 1 } as any];
-  assert.equal(compactionNeed(long, model), undefined, "about 10,000 estimated");
-  assert.equal(compactionNeed(long, model, 9_000), "background", "and 9,000 more for the system prompt");
 });
 
-test("a compaction whose cut keeps every message makes no summary call and writes nothing", async t => {
+test("Pi's summaries are attempts of their own kind, each settled", async t => {
+  // No usage reported: Pi decides from its estimate, which these turns exceed.
   const fake = await provider(t);
-  const context = [
-    { role: "user", content: "Remember the task code PELICAN-42.", timestamp: 1 },
-    { role: "assistant", content: [{ type: "text", text: "noted" }], api: "openai-completions", provider: "openai", model: "fixture", stopReason: "stop", timestamp: 2,
-      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } },
-    { role: "user", content: "next", timestamp: 3 },
-  ] as any[];
-  const outcome = await runCompaction({ context, offset: 0, model: fake.model(25_000), apiKey: "fixture" });
-  assert.ok("skipped" in outcome, JSON.stringify(outcome));
-  assert.equal(fake.summarizations().length, 0);
+  const supervisor = await fixture(t);
+  const events: { type: string; id: string; kind?: string }[] = [];
+  await supervisor.start("attempts", { model: fake.model(8000), apiKey: "fixture", codeMode: false }, { ...bridge, modelAttempt: async (event: any) => { events.push(event); return true; } });
+  for (let index = 0; index < 6 && !fake.summarizations().length; index++) assert.equal((await supervisor.request("attempts", "prompt", { text: turn(index) })).error, null);
+  assert.ok(fake.summarizations().length > 0, "a summary was made");
+  const summaries = events.filter(event => event.type === "begin" && event.kind === "compaction");
+  assert.equal(summaries.length, fake.summarizations().length);
+  for (const begun of summaries) assert.ok(events.some(event => event.type === "finish" && event.id === begun.id), "each summary attempt settles");
 });
-
-test("compaction persists each summary attempt and settles before reporting usage", async t => {
-  const fake = await provider(t, { usage: true });
-  const { db } = await testDatabase();
-  const account = new Accounts({ tenants: new Tenants({ read: async () => '{"tenants":{}}' }), db });
-  const { ModelAttempts } = await import("../src/model-attempts.ts");
-  const attempts = new ModelAttempts(db, account);
-  const context = [
-    { role:"user",content:"x".repeat(20000),timestamp:1 },
-    { role:"assistant",content:[{type:"text",text:"noted"}],api:"openai-completions",provider:"openai",model:"fixture",stopReason:"stop",timestamp:2,
-      usage:{input:5000,output:1,cacheRead:0,cacheWrite:0,totalTokens:5001,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}} },
-    { role:"user",content:"next",timestamp:3 },
-  ] as any[];
-  context.splice(2, 0, { ...context[0], timestamp: 3 }, { ...context[1], timestamp: 4 });
-  let reported = 0;
-  const outcome = await runCompaction({context,offset:0,model:fake.model(25000),apiKey:"fixture",keepRecentTokens:1000,
-    attempt:event=>attempts.event("tenant","agent",false,false,event),
-    onResponse:message=>{assert.ok((message.usage as any).billingAttemptId);reported++;account.recordUsage("tenant","agent",{...message,kind:"compaction"});}});
-  assert.ok("state" in outcome, JSON.stringify(outcome));assert.ok(reported>0);
-  await account.flushUsage();
-  const rows=(await db.query("select kind,state from model_attempts")).rows;
-  assert.equal(rows.length,reported);assert.ok(rows.every(row=>row.kind==="compaction" && row.state==="settled"));
-  assert.equal(Number((await db.query("select sum(responses) n from usage")).rows[0].n),reported);
-});
-
 
 test("Pi applies a lowered context limit to an already loaded host", async t => {
   const fake = await provider(t);
