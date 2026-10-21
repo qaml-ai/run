@@ -100,3 +100,19 @@ test("journal history: an entry committed after one with a later ID is still tak
   assert.equal((await history.messagesFrom(0))!.length, 1);
   assert.equal(((await history.messagesFrom(0))![0] as { stopReason: string }).stopReason, "stop");
 });
+
+test("journal history: a compaction is not history, and the response its overflow refused is taken back by its marker", async () => {
+  const overflow = { ...fauxAssistantMessage(""), stopReason: "error", errorMessage: "prompt is too long" };
+  const storage = await journal([
+    base(3),
+    { native: "pi.user", message: user("a long one") },
+    { native: "pi.assistant", message: overflow },
+    { native: "camel.compaction.usage", message: reply("summary usage") },
+    { native: "pi.compaction", message: { role: "user", content: "The conversation so far, summarized.", timestamp: 2 } },
+    { marker: { t: "retract", index: 4 } },
+    { native: "pi.assistant", message: reply("answered after the summary") },
+  ]);
+  const history = (await JournalHistory.open(storage))!;
+  assert.equal(history.total, 5, "the user message and the answer: no summary, no refused response");
+  assert.deepEqual((await history.messagesFrom(3))!.map(message => (message as { role: string }).role), ["user", "assistant"]);
+});
