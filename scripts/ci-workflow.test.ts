@@ -7,10 +7,11 @@ const workflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta
 const gate = workflow.split("      - name: Require successful checks or intentional skips\n")[1]
   .split("        run: |\n")[1].split("      - uses:")[0];
 
-function passes({ reuse = false, tests = true, event = "push", ref = "refs/heads/main", results = {} as Record<string, string> } = {}) {
+function passes({ reuse = false, tests = true, image = true, event = "push", ref = "refs/heads/main", results = {} as Record<string, string> } = {}) {
   const states = { changes: "success", checks: "success", python: "success", test: "success", sim: "success", image: "success", docs: "success", publish: "success", ...results };
   const script = gate.replaceAll("${{ needs.changes.outputs.reuse }}", String(reuse))
     .replaceAll("${{ needs.changes.outputs.tests }}", String(tests))
+    .replaceAll("${{ needs.changes.outputs.image }}", String(image))
     .replaceAll("${{ github.event_name }}", event).replaceAll("${{ github.ref }}", ref);
   assert.ok(!script.includes("${{"));
   return spawnSync("bash", ["-e", "-c", script], {
@@ -29,7 +30,7 @@ test("CI gate requires every non-reused check and main publication", () => {
 });
 
 test("proven reuse accepts only main with successful publication and intentional skips", () => {
-  const results = Object.fromEntries(["checks", "python", "test", "sim", "image", "docs"].map(job => [job, "skipped"]));
+  const results = Object.fromEntries(["checks", "python", "test", "sim", "docs"].map(job => [job, "skipped"]));
   assert.ok(passes({ reuse: true, tests: false, results }));
   assert.equal(passes({ reuse: false, tests: false, results }), false);
   assert.equal(passes({ reuse: true, tests: false, results, event: "pull_request", ref: "refs/pull/303/merge" }), false);
@@ -39,10 +40,15 @@ test("proven reuse accepts only main with successful publication and intentional
   assert.equal(passes({ reuse: true, tests: false, results: { ...results, image: "failure" } }), false);
 });
 
-test("docs-only PRs still require checks, images and docs", () => {
+test("PRs require images only when image inputs changed", () => {
   const options = { tests: false, event: "pull_request", ref: "refs/pull/303/merge", results: { python: "skipped", test: "skipped", sim: "skipped", publish: "skipped" } };
   assert.ok(passes(options));
   assert.equal(passes({ ...options, results: { ...options.results, image: "skipped" } }), false);
+  assert.ok(passes({ ...options, image: false, results: { ...options.results, image: "skipped" } }));
+  for (const result of ["failure", "cancelled"]) {
+    assert.equal(passes({ ...options, image: false, results: { ...options.results, image: result } }), false);
+  }
+  assert.equal(passes({ image: false, results: { image: "skipped" } }), false, "main always needs images");
 });
 
 

@@ -4,6 +4,7 @@ set -euo pipefail
 
 tests=true
 reuse=false
+image=true
 if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
   base=$(jq -r '.pull_request.base.sha' "$GITHUB_EVENT_PATH")
   head=$(jq -r '.pull_request.head.sha' "$GITHUB_EVENT_PATH")
@@ -16,6 +17,17 @@ allowed = lambda p: p.startswith(("infra/terraform/", "docs/", "deploy/selfhost/
 sys.exit(0 if paths and all(map(allowed, paths)) else 1)
 '; then
     tests=false
+  fi
+  # Keep this list aligned with Dockerfile COPYs, the console build, and image smoke tests.
+  # Diff with renames disabled so deletions/renames of inputs still trigger a build.
+  if git diff --no-renames --name-only -z "$base...$head" | python3 -c '
+import sys
+paths = [p for p in sys.stdin.buffer.read().decode().split("\0") if p]
+inputs = ("src/", "shared/", "sandbox/", "migrations/", "console/", "docs/", "packages/cli/", "packages/registry/public/r/", ".github/actions/")
+files = {"Dockerfile", ".dockerignore", "package.json", "package-lock.json", ".npmrc", "clients/history-formats.ts", ".github/workflows/ci.yml", "scripts/ci-changes.sh", "scripts/backfill-pins.ts", "scripts/verify-gc.ts", "scripts/check-storage.ts", "scripts/voice-check.ts", "tests/image-isolation.ts", "tests/v8-exec.test.ts"}
+sys.exit(0 if paths and not any(p in files or p.startswith(inputs) for p in paths) else 1)
+'; then
+    image=false
   fi
 elif [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; then
   # Index by immutable tree, not PR head: a rerun, rebase, or a different PR can
@@ -57,4 +69,4 @@ elif [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; the
     page=$((page + 1))
   done
 fi
-printf 'tests=%s\nreuse=%s\n' "$tests" "$reuse" >> "$GITHUB_OUTPUT"
+printf 'tests=%s\nreuse=%s\nimage=%s\n' "$tests" "$reuse" "$image" >> "$GITHUB_OUTPUT"
