@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { always, sometimes } from "../assert.ts";
+import { metricLine } from "../metrics.ts";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { Cursor, EntryId, EntryRecord, Storage } from "@earendil-works/pi-durable";
@@ -126,8 +127,12 @@ export async function checkDualRead(mode: "log" | "throw", agent: string, storag
   sometimes(report.mismatches.some(item => item.category === "retraction"), "a dual read found a response the host took back");
   const expected: Partial<Record<DualReadCategory, number>> = {};
   for (const item of report.mismatches) if (EXPECTED.includes(item.category)) expected[item.category] = (expected[item.category] ?? 0) + 1;
-  if (unexpected.length) {
-    console.error(JSON.stringify({ type: "host_transcript_dual_read_mismatch", agent, mismatches: unexpected.slice(0, 20), expected }));
-    if (mode === "throw") throw new Error(`Dual read: ${unexpected.map(item => `${item.category}: ${item.detail}`).join("; ")}`);
-  } else if (Object.keys(expected).length) console.log(JSON.stringify({ type: "host_transcript_dual_read", agent, expected }));
+  // Details hold roles, journal cursors, call ids and hash prefixes only: never a message's content.
+  const categories = [...new Set(unexpected.map(item => item.category))];
+  console.log(metricLine(unexpected.length ? "host_transcript_dual_read_mismatch" : "host_transcript_dual_read", {
+    dimensions: { Outcome: unexpected.length ? "mismatch" : "match" }, rollups: [[], ["Outcome"]],
+    metrics: { DualReadChecks: 1, DualReadMismatches: unexpected.length },
+    properties: { agent, expected, ...(unexpected.length ? { categories, mismatches: unexpected.slice(0, 20) } : {}) },
+  }));
+  if (unexpected.length && mode === "throw") throw new Error(`Dual read: ${unexpected.map(item => `${item.category}: ${item.detail}`).join("; ")}`);
 }
