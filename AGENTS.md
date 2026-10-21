@@ -23,14 +23,15 @@ npm run typecheck
   AGENT_HOSTING=inline node --experimental-strip-types --disable-warning=ExperimentalWarning --test tests/<file>.test.ts
   ```
 
-  Suites that start a server (`tests/runtime-server.ts`) need Postgres and the v8-exec build above; CI runs every
-  file in both hosting modes (`process`, the default, and `inline`).
+  Suites that start a server (`tests/runtime-server.ts`) need Postgres and the v8-exec build above; main CI runs every
+  file in both hosting modes (`process`, the default, and `inline`); PRs use `process`.
 - **Everything**: `npm test` (and `AGENT_HOSTING=inline npm test`), `npm run test:ui`, `npm run test:python`.
   After changing `/v1` routes, `npm run openapi` (tests/openapi.test.ts fails when openapi.json is stale).
-- **CI costs money; spend it once.** Every push to a ready PR runs the whole matrix on paid runners, and CI has cost
+- **CI costs money; spend it once.** Every push to a ready PR runs affected tests on paid runners, and CI has cost
   more than the AI it tests. So:
   - Run the files your change touches locally first (above), plus `npm run typecheck`. Run the full suite before you
     push a change that reaches widely.
+  - `npm run test:affected` runs import-selected tests plus smoke tests in process mode against the merge base with `origin/main`.
   - Push when the change is ready: batch fixes into one push, never push to "see what CI says", and rebase once
     rather than on every main commit.
   - Iterate on a draft PR (a draft runs only the fast checks and its changed test files); mark it ready once it

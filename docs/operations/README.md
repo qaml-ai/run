@@ -77,17 +77,29 @@ and dispatches run on Blacksmith; fork PRs use standard GitHub runners, includin
 
 A draft PR (by its state when the run starts, not the event's) runs only `checks`, `docs` and `changed tests`: the
 test files it changes, and those named after the source files it changes (`src/foo.ts` runs `tests/foo.test.ts` and
-`tests/foo-*.test.ts`, up to 40 files). A draft run never reports `CI success`, so it can be neither merged as green
-nor reused on main. Marking the PR ready for review starts the full run, as does every push to a ready PR. While
-iterating on a change, open it as a draft.
+`tests/foo-*.test.ts`, up to 40 files). A draft run never reports `CI success`. While iterating on a change, open
+it as a draft. Marking it ready starts the ready-PR checks.
 
-On main, `scripts/ci-changes.sh` can prove that a successful same-repository PR run tested this exact
-merge tree. Only that proof skips checks, Python, test shards, fixed seeds, image smoke tests and docs;
-`publish` must still succeed before `CI success` passes. Missing artifacts, API errors, a changed tree
-or a changed PR head run the checks normally. A PR merged after main moved on has a different tree, so its main
-run tests again. Superseded PR and branch runs are cancelled; each main SHA runs independently so Deploy receives
-its completed CI event. Four hundred fresh simulator seeds run every night (`sim-seeds.yml`; run it by hand for
-more): a seed that finds something new turns that run red.
+Ready PRs run five process shards, Python, fixed simulator seeds and, when image inputs change, an amd64 image
+check. `scripts/test-select.ts` follows relative TypeScript imports (including re-exports and literal dynamic
+imports) from changed files to test files. It adds five fast smoke files: agent-host, code-executor, model-errors,
+history and config. These cover host lifecycle, sandbox execution, provider errors, history and configuration in
+about ten seconds of recorded process time. `CI success` requires the selected suite to pass; it always reports
+a result on ready PRs. Simulator test files run in these process shards because their nodes host inline internally.
+
+Package files, tsconfig files, test helpers, test scripts, migrations, workflows, sandbox or Dockerfile changes run
+all test files. Changes outside the import graph, an empty diff, selector/API errors or a selection above 40% also
+run all files. PRs still use only process hosting on fallback; main and manual runs always use both modes.
+Static selection cannot see computed imports or runtime file reads, so the smoke set and full main run remain
+necessary. `npm run test:affected` uses the same selector against `git merge-base origin/main HEAD` and runs the
+files locally in process mode, including tracked working-tree edits (with the same Postgres and sandbox
+prerequisites as other runtime tests).
+
+Every main push runs the full suite, both image architectures and `publish`; no PR results are reused. On failure,
+`CI success` writes the commit SHA, associated PR and last earlier green main SHA to the job summary. It does not
+bisect automatically. Superseded PR and branch runs are cancelled; each main SHA runs independently so Deploy
+receives its completed CI event. Four hundred fresh simulator seeds run every night (`sim-seeds.yml`; run it by
+hand for more): a seed that finds something new turns that run red.
 
 Runner sizes follow job timings. The test shards and `python` are CPU-bound and keep eight vCPUs (on four, shards
 took 170-450 s instead of 115-165 s); `checks`, `docs` and `changed tests` finish within a minute on four. The fixed
