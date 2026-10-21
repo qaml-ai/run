@@ -4,25 +4,35 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { WebSocketServer, type WebSocket } from "ws";
 import { openaiRealtime, usageOf } from "../src/voice/realtime/openai.ts";
-import type { RealtimeEvents } from "../src/voice/realtime/provider.ts";
-import { sleep, tone, until } from "./voice-realtime-fakes.ts";
+import type { RealtimeConfig, RealtimeEvents } from "../src/voice/realtime/provider.ts";
+import { setMetricSink } from "../src/metrics.ts";
+import { sleep, testBrain, tone, until, utter } from "./voice-realtime-fakes.ts";
 
 /** OpenAI's Realtime API as the brain speaks to it (src/voice/realtime/openai.ts), against a fake server. */
 
-async function fakeOpenAI(t: { after(fn: () => unknown): void }) {
+/**
+ * As Azure's resource too: `refuse` answers the handshake with that HTTP status (a 429, a 404 for a deployment
+ * missing), `sessionError` answers session.update with an error instead of session.updated.
+ */
+async function fakeOpenAI(t: { after(fn: () => unknown): void }, options: { refuse?: number; sessionError?: boolean } = {}) {
   const server = createServer();
-  const sockets = new WebSocketServer({ server });
-  const seen = { urls: [] as string[], auth: [] as string[], events: [] as any[] };
+  const seen = { urls: [] as string[], auth: [] as string[], apiKeys: [] as string[], refused: 0, events: [] as any[] };
+  const sockets = new WebSocketServer({
+    server,
+    verifyClient: (_info: unknown, done: (ok: boolean, status?: number) => void) => { if (options.refuse) { seen.refused++; done(false, options.refuse); } else done(true); },
+  });
   let socket!: WebSocket;
   const connected = new Promise<void>(resolve => {
     sockets.on("connection", (ws, req) => {
       socket = ws;
       seen.urls.push(req.url ?? "");
       seen.auth.push(String(req.headers.authorization ?? ""));
+      seen.apiKeys.push(String(req.headers["api-key"] ?? ""));
       ws.on("message", data => {
         const event = JSON.parse(String(data));
         seen.events.push(event);
-        if (event.type === "session.update") ws.send(JSON.stringify({ type: "session.updated", session: event.session }));
+        if (event.type === "session.update" && options.sessionError) ws.send(JSON.stringify({ type: "error", error: { type: "invalid_request_error", code: "invalid_value", message: "The transcription deployment does not exist" } }));
+        else if (event.type === "session.update") ws.send(JSON.stringify({ type: "session.updated", session: event.session }));
         if (event.type === "input_audio_buffer.commit") ws.send(JSON.stringify({ type: "input_audio_buffer.committed", item_id: `item_${seen.events.filter(e => e.type === "input_audio_buffer.commit").length}` }));
       });
       resolve();
@@ -30,13 +40,15 @@ async function fakeOpenAI(t: { after(fn: () => unknown): void }) {
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   t.after(() => { for (const ws of sockets.clients) ws.terminate(); server.close(); });
-  return { base: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`, seen, connected, send: (event: unknown) => socket.send(JSON.stringify(event)), close: () => socket.close(1011, "server going away") };
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  return { origin, base: `${origin}/v1`, seen, connected, send: (event: unknown) => socket.send(JSON.stringify(event)), close: () => socket.close(1011, "server going away") };
 }
 
 function recorder() {
   const got: { type: string; [key: string]: unknown }[] = [];
   const events: RealtimeEvents = {
     ready: () => got.push({ type: "ready" }),
+    fallback: detail => got.push({ type: "fallback", detail }),
     responseStarted: id => got.push({ type: "started", id }),
     audio: (id, pcm) => got.push({ type: "audio", id, bytes: pcm.byteLength }),
     said: (id, text) => got.push({ type: "said", id, text }),
@@ -147,4 +159,117 @@ test("the provider closing the connection is reported (the brain reconnects); us
   await until(() => got.some(event => event.type === "closed"), "closed");
   assert.equal((got.find(event => event.type === "closed") as any).reason, "error");
   assert.deepEqual(usageOf(undefined), { inputText: 0, inputAudio: 0, cachedText: 0, cachedAudio: 0, outputText: 0, outputAudio: 0 });
+});
+
+// The platform's Azure OpenAI deployment (azure-openai.ts): tried first on the platform's key, OpenAI the fallback.
+
+const SESSION: RealtimeConfig = { model: "gpt-realtime-2.1", voice: "marin", instructions: "Be Mochi.", transcribe: true, language: "en", tools: [{ name: "stay_silent", description: "Say nothing", parameters: { type: "object", properties: {} } }] };
+const onAzure = (origin: string, transcriptionDeployment: string | undefined = "transcribe-eastus2") => ({
+  apiKey: "platform-openai-key", azure: { endpoint: origin, apiKey: "azure-key", deployment: "realtime-eastus2", ...(transcriptionDeployment ? { transcriptionDeployment } : {}) },
+});
+
+test("on the platform's key, Azure first: its GA endpoint with the deployment as model, the api-key header, its deployments in the same session", async t => {
+  const azure = await fakeOpenAI(t);
+  const openai = await fakeOpenAI(t);
+  const { got, events } = recorder();
+  const connection = openaiRealtime({ baseUrl: openai.base }).connect(SESSION, onAzure(azure.origin), events);
+  await until(() => got.some(event => event.type === "ready"), "ready");
+  assert.equal(connection.host, "azure");
+  assert.deepEqual([azure.seen.urls, azure.seen.apiKeys, azure.seen.auth], [["/openai/v1/realtime?model=realtime-eastus2"], ["azure-key"], [""]], "no OpenAI key goes to Azure");
+  const session = azure.seen.events[0].session;
+  assert.equal(session.type, "realtime");
+  assert.equal(session.model, "realtime-eastus2");
+  assert.deepEqual(session.audio.input.transcription, { model: "transcribe-eastus2", language: "en" }, "Azure's transcription names a deployment");
+  assert.deepEqual([session.audio.input.format, session.audio.input.turn_detection, session.audio.output], [{ type: "audio/pcm", rate: 24_000 }, null, { format: { type: "audio/pcm", rate: 24_000 }, voice: "marin" }]);
+  assert.deepEqual(session.tools.map((tool: { name: string }) => tool.name), ["stay_silent"]);
+  assert.equal(openai.seen.urls.length, 0);
+  assert.ok(!got.some(event => event.type === "fallback"));
+  // Audio under either family of event names Azure documents.
+  azure.send({ type: "response.created", response: { id: "resp_1" } });
+  azure.send({ type: "response.audio.delta", response_id: "resp_1", item_id: "item_a", delta: Buffer.from(tone(20)).toString("base64") });
+  azure.send({ type: "response.output_audio.delta", response_id: "resp_1", item_id: "item_a", delta: Buffer.from(tone(20)).toString("base64") });
+  await until(() => got.filter(event => event.type === "audio").length === 2, "both deltas");
+  connection.close();
+});
+
+for (const [why, options] of [["refuses the handshake (429)", { refuse: 429 }], ["has no such deployment (404)", { refuse: 404 }], ["refuses the session", { sessionError: true }]] as const) {
+  test(`Azure ${why} before the session is live: OpenAI on the platform's key, with everything sent so far`, async t => {
+    const azure = await fakeOpenAI(t, options);
+    const openai = await fakeOpenAI(t);
+    const { got, events } = recorder();
+    const connection = openaiRealtime({ baseUrl: openai.base }).connect(SESSION, onAzure(azure.origin), events);
+    // What the brain sends at once (a briefing, the call's first audio), before either host is live.
+    connection.note("[Earlier in this call]\nAna: hi");
+    connection.append(tone(200));
+    await until(() => got.some(event => event.type === "ready"), "ready on OpenAI");
+    assert.equal(connection.host, "openai");
+    assert.deepEqual(got.filter(event => event.type === "fallback").length, 1);
+    assert.deepEqual([openai.seen.urls, openai.seen.auth, openai.seen.apiKeys], [["/v1/realtime?model=gpt-realtime-2.1"], ["Bearer platform-openai-key"], [""]]);
+    await until(() => openai.seen.events.some(event => event.type === "input_audio_buffer.append"), "the audio");
+    assert.deepEqual(openai.seen.events.map(event => event.type), ["session.update", "conversation.item.create", "input_audio_buffer.append"]);
+    assert.equal(openai.seen.events[0].session.model, "gpt-realtime-2.1");
+    assert.deepEqual(openai.seen.events[0].session.audio.input.transcription, { model: "gpt-transcribe", language: "en" });
+    if ("refuse" in options) assert.equal(azure.seen.refused, 1);
+    else assert.equal(azure.seen.events[0].type, "session.update");
+    // Live on OpenAI: a commit is OpenAI's to answer.
+    assert.equal(connection.commit("t1"), true);
+    await until(() => openai.seen.events.some(event => event.type === "input_audio_buffer.commit"), "the commit");
+    assert.ok(!got.some(event => event.type === "closed"));
+    connection.close();
+  });
+}
+
+test("Azure dropping once live is reported as a lost connection (the brain reconnects), never a silent fallback", async t => {
+  const azure = await fakeOpenAI(t);
+  const openai = await fakeOpenAI(t);
+  const { got, events } = recorder();
+  openaiRealtime({ baseUrl: openai.base }).connect(SESSION, onAzure(azure.origin), events);
+  await until(() => got.some(event => event.type === "ready"), "ready");
+  azure.close();
+  await until(() => got.some(event => event.type === "closed"), "closed");
+  assert.equal((got.find(event => event.type === "closed") as any).reason, "error");
+  assert.ok(!got.some(event => event.type === "fallback"));
+  assert.equal(openai.seen.urls.length, 0);
+});
+
+test("a tenant's own key (no Azure in its credentials), and a transcribed session with no transcription deployment, stay on OpenAI", async t => {
+  const azure = await fakeOpenAI(t);
+  const openai = await fakeOpenAI(t);
+  for (const [credentials, config] of [[{ apiKey: "sk-tenant" }, SESSION], [onAzure(azure.origin, ""), SESSION]] as const) {
+    const { got, events } = recorder();
+    const connection = openaiRealtime({ baseUrl: openai.base }).connect(config, credentials, events);
+    await until(() => got.some(event => event.type === "ready"), "ready");
+    assert.equal(connection.host, "openai");
+    connection.close();
+  }
+  assert.deepEqual(openai.seen.auth, ["Bearer sk-tenant", "Bearer platform-openai-key"]);
+  assert.equal(azure.seen.urls.length, 0);
+  // Untranscribed, the same session needs no transcription deployment: Azure.
+  const { got, events } = recorder();
+  const connection = openaiRealtime({ baseUrl: openai.base }).connect({ ...SESSION, transcribe: false }, onAzure(azure.origin, ""), events);
+  await until(() => got.some(event => event.type === "ready"), "ready");
+  assert.equal(connection.host, "azure");
+  assert.equal(azure.seen.events[0].session.audio.input.transcription, undefined);
+  connection.close();
+});
+
+test("the brain logs voice_realtime_azure_fallback and names the host it ran on in the voice_realtime metric (Host: azure | openai)", async t => {
+  const lines: any[] = [];
+  setMetricSink(line => lines.push(JSON.parse(line)));
+  t.after(() => setMetricSink());
+  const openai = await fakeOpenAI(t);
+  const fallbacks: unknown[] = [];
+  for (const options of [{}, { refuse: 503 }]) {
+    const azure = await fakeOpenAI(t, options);
+    const { brain, logs } = testBrain({ provider: openaiRealtime({ baseUrl: openai.base }), credentials: onAzure(azure.origin) });
+    await until(() => logs.some(log => log.type === "voice_realtime_ready"), "ready");
+    await utter(brain, "1", 200);
+    brain.close();
+    fallbacks.push(...logs.filter(log => log.type === "voice_realtime_azure_fallback").map(log => typeof log.fields?.reason));
+    assert.equal(logs.find(log => log.type === "voice_realtime_ready")?.fields?.host, "refuse" in options ? "openai" : "azure");
+  }
+  assert.deepEqual(fallbacks, ["string"]);
+  const metrics = lines.filter(line => line.type === "voice_realtime");
+  assert.deepEqual(metrics.map(line => [line.Host, line.VoiceRealtimeAzureFallbacks]), [["azure", 0], ["openai", 1]]);
+  assert.deepEqual(metrics[0]._aws.CloudWatchMetrics[0].Dimensions.map((names: string[]) => names.filter(name => name !== "ServiceName")), [[], ["Host"]]);
 });

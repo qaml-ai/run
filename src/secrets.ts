@@ -78,7 +78,7 @@ export async function runtimeSecrets(env = process.env) {
     try { journeyReportSecret = (await read(reportArn)).trim() || undefined; }
     catch (error) { if ((error as Error).name !== "ResourceNotFoundException") throw error; journeyReportSecret = undefined; }
   }
-  // The platform's Azure OpenAI resource, for images and transcription on the platform's key (azure-openai.ts). Like
+  // The platform's Azure OpenAI resource, for images, transcription and realtime voice on the platform's key (azure-openai.ts). Like
   // Stripe's, the secret may exist before anyone stores its value: until then they stay on OpenAI.
   const azureArn = exclusive(["AGENT_AZURE_OPENAI_ENDPOINT", "AGENT_AZURE_OPENAI_API_KEY"], "AGENT_AZURE_OPENAI_SECRET_ARN");
   let azureOpenAI: AzureOpenAI | undefined;
@@ -90,7 +90,8 @@ export async function runtimeSecrets(env = process.env) {
   } else {
     azureOpenAI = azureOpenAIConfig({
       endpoint: env.AGENT_AZURE_OPENAI_ENDPOINT, apiKey: env.AGENT_AZURE_OPENAI_API_KEY,
-      imageDeployment: env.AGENT_AZURE_IMAGE_DEPLOYMENT, transcriptionDeployment: env.AGENT_AZURE_TRANSCRIPTION_DEPLOYMENT, apiVersion: env.AGENT_AZURE_OPENAI_API_VERSION, models: env.AGENT_AZURE_OPENAI_MODELS,
+      imageDeployment: env.AGENT_AZURE_IMAGE_DEPLOYMENT, transcriptionDeployment: env.AGENT_AZURE_TRANSCRIPTION_DEPLOYMENT,
+      realtimeDeployment: env.AGENT_AZURE_REALTIME_DEPLOYMENT, realtimeModels: env.AGENT_AZURE_REALTIME_MODELS, apiVersion: env.AGENT_AZURE_OPENAI_API_VERSION, models: env.AGENT_AZURE_OPENAI_MODELS,
     }, "AGENT_AZURE_OPENAI_ENDPOINT and AGENT_AZURE_OPENAI_API_KEY");
   }
   return {

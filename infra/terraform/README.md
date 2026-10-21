@@ -119,7 +119,7 @@ and the RDS instance also have deletion protection in AWS.
   - `AGENT_JOURNEY_URL`, `AGENT_JOURNEY_SECRET_ARN`, `AGENT_JOURNEY_REPORT_SECRET_ARN` and the journey cookie and
     collection settings from `journey_url` and the `journey_*` variables (`journey.tf`): journey events and the admin
     site's reports stay off until `infra/journey.sh` stores the two secrets' values;
-  - `AGENT_AZURE_OPENAI_SECRET_ARN` (images and transcription on the platform's OpenAI key go to the Azure OpenAI
+  - `AGENT_AZURE_OPENAI_SECRET_ARN` (images, transcription and realtime voice on the platform's OpenAI key go to the Azure OpenAI
     deployments once `infra/azure-openai.sh` stores the resource's endpoint and key; OpenAI is the fallback; the
     chat deployments it stores are offered as `azure/<model>`).
   - `AGENT_OPENAI_APPS_CHALLENGE` from `openai_apps_challenge`, when set: the ChatGPT plugin's domain-verification

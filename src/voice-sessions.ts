@@ -18,7 +18,7 @@ import { DEFAULT_ADDRESSING, Floor, type AddressingPolicy } from "./voice/turns/
 import { BARGE_IN_LIMITS, DEFAULT_BARGE_IN, type BargeInPolicy } from "./voice/echo-guard.ts";
 import type { TurnModels } from "./voice/turns/inference.ts";
 import { RealtimeBrain, ASK_AGENT, STAY_SILENT, realtimeInstructions, type BrainHooks } from "./voice/realtime/brain.ts";
-import { realtimePrice, REALTIME_PROVIDERS, REALTIME_TRANSCRIPTION, realtimeVoice, type RealtimeProvider, type RealtimeProviderId } from "./voice/realtime/provider.ts";
+import { realtimePrice, REALTIME_PROVIDERS, REALTIME_TRANSCRIPTION, realtimeVoice, type RealtimeCredentials, type RealtimeProvider, type RealtimeProviderId } from "./voice/realtime/provider.ts";
 
 /**
  * Voice sessions: calls camelRun holds for a tenant's bot. Joining a voice channel is the one step that needs the bot's
@@ -397,11 +397,12 @@ export interface VoiceSessionsOptions {
   credit?: VoiceCredit;
   /**
    * Realtime brains: the providers this runtime offers (AGENT_VOICE_REALTIME, else OpenAI), and the
-   * tenant's key for one (in a key scope), else the platform's; undefined when there is none.
+   * tenant's key for one (in a key scope), else the platform's (for OpenAI, with the platform's Azure deployment of `model`
+   * to try first: azure-openai.ts); undefined when there is none.
    */
   realtime?: {
     providers: Partial<Record<RealtimeProviderId, RealtimeProvider>>;
-    key(tenant: string, keyScope: string | undefined, provider: string): Promise<{ apiKey: string; platform: boolean } | undefined>;
+    key(tenant: string, keyScope: string | undefined, provider: string, model?: string): Promise<RealtimeCredentials & { platform: boolean } | undefined>;
   };
   /** Live sessions per tenant (VOICE_LIMITS.perTenant). */
   perTenant?: (tenant: string) => number;
@@ -1224,7 +1225,7 @@ export class VoiceSessions {
     const provider = this.options.realtime?.providers[realtime.provider];
     if (!provider) throw new Error(`Realtime provider ${realtime.provider} is not enabled on this runtime`);
     if (!realtimePrice(`${provider.id}/${realtime.model}`)) throw new Error(`Realtime model ${provider.id}/${realtime.model} has no price configured`);
-    const credentials = await this.options.realtime!.key(held.tenant, options().keyScope, provider.key);
+    const credentials = await this.options.realtime!.key(held.tenant, options().keyScope, provider.key, realtime.model);
     if (!credentials) throw new Error(`No ${provider.key} key for a realtime brain`);
     const agent = options().deliver.agent;
     const submit = agent && this.options.submitStreaming ? this.options.submitStreaming : undefined;

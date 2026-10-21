@@ -1,5 +1,5 @@
 import { closeDetail, messageJson, openSocket, wsBase, type Socket, type SocketFactory } from "../../voice-providers/socket.ts";
-import { NO_USAGE, REALTIME_TRANSCRIPTION, type RealtimeConfig, type RealtimeConnection, type RealtimeEvents, type RealtimeProvider, type RealtimeUsage } from "./provider.ts";
+import { NO_USAGE, REALTIME_TRANSCRIPTION, type AzureRealtime, type RealtimeConfig, type RealtimeConnection, type RealtimeEvents, type RealtimeProvider, type RealtimeUsage } from "./provider.ts";
 
 /**
  * OpenAI's Realtime API (GA) over a WebSocket, server to server: `wss://api.openai.com/v1/realtime?model=…`, the
@@ -12,6 +12,18 @@ import { NO_USAGE, REALTIME_TRANSCRIPTION, type RealtimeConfig, type RealtimeCon
  * response.create / cancel; and back response.created, response.output_item.added, response.output_audio.delta,
  * response.output_audio_transcript.delta, response.function_call_arguments.done, response.done (its usage),
  * input_audio_buffer.committed, conversation.item.input_audio_transcription.completed, error.
+ *
+ * On the platform's key, a session connects to the platform's Azure OpenAI deployment first (credentials.azure,
+ * azure-openai.ts): Azure's GA realtime endpoint, `wss://<resource>/openai/v1/realtime?model=<deployment>`, with the key
+ * as the `api-key` header (learn.microsoft.com/azure/foundry/openai/how-to/realtime-audio-websockets, "Connection and
+ * authentication"). Its events are OpenAI's GA ones (the same session.update, audio formats, function calls and
+ * response events; learn.microsoft.com/azure/foundry/openai/realtime-audio-reference), except that the input
+ * transcription's `model` names a deployment, so the session names the transcription deployment there, and the
+ * session's `model` its realtime deployment. A session that needs transcripts with no transcription deployment stays on
+ * OpenAI. When Azure refuses the handshake (a 429, a 5xx, a deployment missing: Node's WebSocket reports each as an
+ * error), answers session.update with an error, or is not live within azureConnectTimeoutMs, the connection goes on
+ * on OpenAI with the platform's key, the session and everything sent so far sent again (`fallback`, logged as
+ * voice_realtime_azure_fallback). Once live, a drop is the brain's to handle: it reconnects, which tries Azure first again.
  */
 
 export const OPENAI_REALTIME = Object.freeze({
@@ -22,6 +34,8 @@ export const OPENAI_REALTIME = Object.freeze({
   /** The least input a commit may hold (OpenAI refuses less than 100 ms). */
   minCommitMs: 100,
   connectTimeoutMs: 10_000,
+  /** How long Azure has to be live before the session goes to OpenAI instead (which then has connectTimeoutMs). */
+  azureConnectTimeoutMs: 5_000,
 });
 
 /** PCM bytes per ms: 24 kHz, 16-bit mono. */
@@ -33,7 +47,7 @@ export function openaiRealtime(options: { baseUrl?: string; socket?: SocketFacto
   return openaiCompatibleRealtime({
     id: "openai", key: "openai",
     models: OPENAI_REALTIME.models, defaultModel: OPENAI_REALTIME.defaultModel, voices: OPENAI_REALTIME.voices,
-  }, { ...options, baseUrl: options.baseUrl ?? "https://api.openai.com/v1" });
+  }, { ...options, baseUrl: options.baseUrl ?? "https://api.openai.com/v1", azure: true });
 }
 
 type RealtimeProtocol = {
@@ -44,7 +58,12 @@ type RealtimeProtocol = {
   /** Report audio duration and text input items instead of relying on response tokens for pricing. */
   metered?: boolean;
   redact?: (text: string) => string;
+  /** Connect to the platform's Azure deployment first, where the credentials name one (OpenAI's models only). */
+  azure?: boolean;
 };
+
+/** A host the connection may open on: its address and headers, and the session it is configured with. */
+type Target = { host: string; url: string; headers: Record<string, string>; session: string; timeoutMs: number };
 
 /** The OpenAI wire protocol, with a provider's session fields and optional older audio event names. */
 export function openaiCompatibleRealtime(
@@ -55,14 +74,31 @@ export function openaiCompatibleRealtime(
   return {
     ...provider,
     connect(config, credentials, events) {
-      const url = `${wsBase(options.baseUrl)}/realtime?model=${encodeURIComponent(config.model)}`;
-      return new OpenAIRealtime(socket(url, { Authorization: `Bearer ${credentials.apiKey}` }), config, events, options);
+      const session = (model: string, transcription?: string) => JSON.stringify({ type: "session.update", session: options.session ? options.session(config) : openaiSession({ ...config, model }, transcription) });
+      const own: Target = {
+        host: provider.id, url: `${wsBase(options.baseUrl)}/realtime?model=${encodeURIComponent(config.model)}`,
+        headers: { Authorization: `Bearer ${credentials.apiKey}` }, session: session(config.model), timeoutMs: OPENAI_REALTIME.connectTimeoutMs,
+      };
+      const azure = options.azure ? azureTarget(config, credentials.azure, session) : undefined;
+      return new OpenAIRealtime(socket, azure ? [azure, own] : [own], config, events, options);
     },
   };
 }
 
+/** The platform's Azure deployment, where a session may go there (a transcribed one needs a transcription deployment). */
+function azureTarget(config: RealtimeConfig, azure: AzureRealtime | undefined, session: (model: string, transcription?: string) => string): Target | undefined {
+  if (!azure || (config.transcribe && !azure.transcriptionDeployment)) return undefined;
+  return {
+    host: "azure", url: `${wsBase(azure.endpoint)}/openai/v1/realtime?model=${encodeURIComponent(azure.deployment)}`,
+    headers: { "api-key": azure.apiKey }, session: session(azure.deployment, azure.transcriptionDeployment), timeoutMs: OPENAI_REALTIME.azureConnectTimeoutMs,
+  };
+}
+
 class OpenAIRealtime implements RealtimeConnection {
-  private readonly socket: Socket;
+  private readonly dial: SocketFactory;
+  /** Where to connect, in order: the first, then each next one if the one before fails before it is live. */
+  private readonly targets: Target[];
+  private socket!: Socket;
   private readonly events: RealtimeEvents;
   private readonly instructions: string;
   private readonly legacyAudioEvents: boolean;
@@ -72,6 +108,8 @@ class OpenAIRealtime implements RealtimeConnection {
   private ready = false;
   private ended = false;
   private readonly queue: string[] = [];
+  /** Everything sent before the session is live, to send again to the next host if this one fails first. */
+  private early: string[] | undefined = [];
   private bytes = 0;
   /** Commits sent and not yet named by OpenAI (`input_audio_buffer.committed`), oldest first, by tag. */
   private readonly committing: string[] = [];
@@ -84,10 +122,11 @@ class OpenAIRealtime implements RealtimeConnection {
   /** Responses asked for and not yet begun; a cancel that comes first is sent as the response begins. */
   private asked = 0;
   private cancelOnCreate = false;
-  private readonly timer: ReturnType<typeof setTimeout>;
+  private timer?: ReturnType<typeof setTimeout>;
 
-  constructor(socket: Socket, config: RealtimeConfig, events: RealtimeEvents, options: RealtimeProtocol) {
-    this.socket = socket;
+  constructor(dial: SocketFactory, targets: Target[], config: RealtimeConfig, events: RealtimeEvents, options: RealtimeProtocol) {
+    this.dial = dial;
+    this.targets = targets;
     this.events = options.nativeTranscription ? {
       ...events, heard: (tag, text) => { if (config.transcribe) events.heard(tag, text, 0); },
     } : events;
@@ -95,16 +134,30 @@ class OpenAIRealtime implements RealtimeConnection {
     this.instructions = config.instructions;
     this.redact = options.redact ?? (text => text);
     this.legacyAudioEvents = options.legacyAudioEvents ?? false;
-    this.queue.push(JSON.stringify({ type: "session.update", session: options.session ? options.session(config) : openaiSession(config) }));
-    this.timer = setTimeout(() => { if (!this.ready) this.fail("The realtime connection did not open in time"); }, OPENAI_REALTIME.connectTimeoutMs);
+    if (targets.length < 2) this.early = undefined;
+    this.connectTo(targets[0]!);
+  }
+
+  get host() { return this.targets[0]!.host; }
+
+  /** Open the socket to `target`: its session first, then what was sent before (on a fallback). */
+  private connectTo(target: Target) {
+    this.open = false;
+    this.queue.splice(0, this.queue.length, target.session, ...this.early ?? []);
+    const socket = this.socket = this.dial(target.url, target.headers);
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => { if (!this.ready) this.fail("The realtime connection did not open in time"); }, target.timeoutMs);
     this.timer.unref?.();
+    // A socket given up on (a fallback) says nothing more.
+    const current = () => this.socket === socket;
     socket.onopen = () => {
+      if (!current()) return;
       this.open = true;
       for (const message of this.queue.splice(0)) this.transmit(message);
     };
-    socket.onmessage = event => this.message(messageJson(event.data));
-    socket.onerror = () => this.fail("The realtime connection failed");
-    socket.onclose = event => this.fail(closeDetail(event));
+    socket.onmessage = event => { if (current()) this.message(messageJson(event.data)); };
+    socket.onerror = () => { if (current()) this.fail("The realtime connection failed"); };
+    socket.onclose = event => { if (current()) this.fail(closeDetail(event)); };
   }
 
   get pendingMs() { return this.bytes / BYTES_PER_MS; }
@@ -173,6 +226,8 @@ class OpenAIRealtime implements RealtimeConnection {
   private send(message: unknown) {
     if (this.ended) return;
     const data = JSON.stringify(message);
+    // Kept only while there is a host to fall back on.
+    this.early?.push(data);
     if (this.open) this.transmit(data);
     else this.queue.push(data);
   }
@@ -187,6 +242,16 @@ class OpenAIRealtime implements RealtimeConnection {
 
   private fail(detail: string) {
     if (this.ended) return;
+    // Not live yet, with a host after this one (Azure, then OpenAI): go on there, telling no one but the log.
+    if (!this.ready && this.targets.length > 1) {
+      this.targets.shift();
+      const socket = this.socket;
+      this.events.fallback?.(this.redact(detail).slice(0, 300));
+      this.connectTo(this.targets[0]!);
+      if (this.targets.length < 2) this.early = undefined;
+      try { socket.close(); } catch { /* closed already */ }
+      return;
+    }
     this.ended = true;
     clearTimeout(this.timer);
     try { this.socket.close(); } catch { /* closed already */ }
@@ -195,10 +260,11 @@ class OpenAIRealtime implements RealtimeConnection {
 
   private message(event: any) {
     if (!event || typeof event.type !== "string" || this.ended) return;
-    const type = this.legacyAudioEvents ? ({ "response.audio.delta": "response.output_audio.delta", "response.audio_transcript.delta": "response.output_audio_transcript.delta" } as Record<string, string>)[event.type] ?? event.type : event.type;
+    // Azure documents both families of audio event names (its samples use the older ones too): either is taken there.
+    const type = this.legacyAudioEvents || this.host === "azure" ? ({ "response.audio.delta": "response.output_audio.delta", "response.audio_transcript.delta": "response.output_audio_transcript.delta" } as Record<string, string>)[event.type] ?? event.type : event.type;
     switch (type) {
       case "session.updated":
-        if (!this.ready) { this.ready = true; clearTimeout(this.timer); this.events.ready(); }
+        if (!this.ready) { this.ready = true; this.early = undefined; clearTimeout(this.timer); this.events.ready(); }
         return;
       case "response.created":
         this.asked = Math.max(0, this.asked - 1);
@@ -256,6 +322,8 @@ class OpenAIRealtime implements RealtimeConnection {
       case "error": {
         const code = String(event.error?.code ?? event.error?.type ?? "error");
         if (BENIGN.has(code)) return;
+        // Refused before it is live (its session, a deployment it names): the next host instead.
+        if (!this.ready && this.targets.length > 1) { this.fail(`${code}: ${String(event.error?.message ?? "")}`); return; }
         this.events.warning(this.redact(code), this.redact(String(event.error?.message ?? "")).slice(0, 300));
         return;
       }
@@ -274,14 +342,15 @@ export function usageOf(usage: any): RealtimeUsage {
   };
 }
 
-function openaiSession(config: RealtimeConfig) {
+/** The session OpenAI's GA protocol takes; on Azure, `model` is the realtime deployment and `transcription` the transcription one. */
+function openaiSession(config: RealtimeConfig, transcription: string = REALTIME_TRANSCRIPTION.model) {
   const prompt = [config.prompt].filter(Boolean).join("\n");
   return {
     type: "realtime", model: config.model, instructions: config.instructions, output_modalities: ["audio"],
     audio: {
       input: {
         format: { type: "audio/pcm", rate: 24_000 }, turn_detection: null,
-        ...(config.transcribe ? { transcription: { model: REALTIME_TRANSCRIPTION.model, ...(config.language ? { language: config.language } : {}), ...(prompt ? { prompt } : {}) } } : {}),
+        ...(config.transcribe ? { transcription: { model: transcription, ...(config.language ? { language: config.language } : {}), ...(prompt ? { prompt } : {}) } } : {}),
       },
       output: { format: { type: "audio/pcm", rate: 24_000 }, voice: config.voice },
     },

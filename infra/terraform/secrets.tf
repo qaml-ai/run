@@ -18,7 +18,7 @@ locals {
     # value: whoever can ask the store for reports must not be able to sign an event or an erasure.
     journey        = "Standard Webhooks secret (whsec_...) that signs journey events to the operator's analytics store. Set with infra/journey.sh."
     journey-report = "Standard Webhooks secret (whsec_...) the admin site asks the journey store's reports with. Never the journey secret's value. Set with infra/journey.sh."
-    azure-openai   = "Azure OpenAI resource for platform-key images and transcription: JSON {endpoint, apiKey, imageDeployment?, transcriptionDeployment?}. Set with infra/azure-openai.sh."
+    azure-openai   = "Azure OpenAI resource for platform-key images, transcription and realtime voice: JSON {endpoint, apiKey, imageDeployment?, transcriptionDeployment?, realtimeDeployment?}. Set with infra/azure-openai.sh."
     # Read only while discord_managed_enabled is true; empty, the integration stays off.
     discord-managed = "Managed Camel Discord application: JSON {applicationId, botToken, clientSecret, publicKey}. See docs/operations/managed-discord.md."
   }

@@ -152,7 +152,9 @@ Discord server, channel and bot ids, its settings (with the tenant's `subject`, 
 times. The voice credentials the app forwarded (session id, endpoint, token) are sealed with `AGENT_SECRETS_KEY` and
 dropped when the session ends; ended rows are deleted after 30 days, and with the account. Audio is never written
 anywhere: it streams from the owning node's memory to the session's realtime provider (OpenAI's Realtime API or Google's
-Gemini Live, on the tenant's key or the platform's), which transcribes it and answers aloud, under its API data policy;
+Gemini Live, on the tenant's key or the platform's), which transcribes it and answers aloud, under its API data policy
+(on the platform's OpenAI key, Microsoft's Azure OpenAI instead when the operator sends it there, as for transcription,
+with OpenAI only when Azure cannot take the session);
 the answer's audio is played and dropped. What was said lately is held in memory to brief a new provider connection,
 never written. A transcript lives in the `voice.utterance` webhook delivery until it is delivered (or for 3 days), and
 what the model asks `deliver.agent` (`ask_agent`) stays in that agent's history as a prompt. Logs carry ids,
