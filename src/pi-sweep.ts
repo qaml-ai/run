@@ -198,9 +198,19 @@ export class PiSweep {
   }
 }
 
-/** Kept agents with no Pi host document: what the sweep walks. `$1` is now. Pi stores document kinds as JSON text. */
+/**
+ * Kept agents with no enabled Pi host document, including canary rollbacks. `$1` is now.
+ * Pi stores document kinds as JSON text. NativeTranscript writes enabled in each base; its deltas only change
+ * snapshot fields. The address index selects the current document and the (session_id, document_id, kind, seq desc)
+ * index finds its latest base, each with limit 1, without replaying deltas. A missing base is not a disabled document.
+ */
 const LEGACY = `not a.revoked and a.purged_at is null and (a.expires_at is null or a.expires_at > $1)
-  and not exists (select 1 from pi_durable_documents d where d.session_id = a.id and d.kind = '"camel.host.snapshot"')`;
+  and coalesce((select coalesce((select r.content::jsonb ->> 'enabled' from pi_durable_document_revisions r
+        where r.session_id = d.session_id and r.document_id = d.id and r.kind = 'base'
+        order by r.seq desc limit 1), 'true')
+    from pi_durable_documents d where d.session_id = a.id and d.kind = '"camel.host.snapshot"'
+      and d.scope_kind = 'session' and d.owner_id = 0 and d.family = 0 and d.key_value = '""' and d.retired_at is null
+    order by d.created_at desc limit 1), 'false') = 'false'`;
 
 /** What a node runs: the operator's mode, but no more than its own setting allows. */
 export function effectiveMode(setting: PiSweepMode, operator: PiSweepMode): PiSweepMode {

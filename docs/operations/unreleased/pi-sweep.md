@@ -10,6 +10,12 @@ fleet within seconds without a deploy. Progress is in `pi_sweep_agent`, `pi_swee
 `pi_sweep_backoff` and `pi_sweep_pass_done` log lines. The admin health page gains an "Agents on the
 legacy engine" count.
 
+Candidates and the sweep's `remaining` count include canary rollbacks whose current host
+snapshot has `enabled: false`, as well as agents with no host snapshot. The query uses the
+document address index and latest base revision index (one row each); snapshot-only deltas
+do not change `enabled`. The import-only start adopts a disabled transcript into a new enabled
+generation, so subsequent passes leave it alone.
+
 The sweep's start only imports: the host imports the session and stops, recovering no turn and
 writing no configuration change (its next open does), warming no tool search, and listing tool
 sources only for a transcript with no leading system message. A dry run's lines carry `system`,

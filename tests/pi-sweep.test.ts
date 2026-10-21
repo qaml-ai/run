@@ -7,12 +7,15 @@ import { createServer } from "node:http";
 import { once } from "node:events";
 import type pg from "pg";
 import { fauxAssistantMessage, type Api, type Model } from "@earendil-works/pi-ai";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { memoryStorage } from "../shared/storage.ts";
 import { postgresTail } from "../src/log-tail.ts";
 import { Ownership } from "../src/ownership.ts";
 import { AgentSupervisor } from "../src/supervisor.ts";
 import { ClientSessions } from "../src/client-sessions.ts";
 import { MIGRATION_MAX_BYTES } from "../src/pi-durable/migration.ts";
+import { PostgresPiStorage } from "../src/pi-durable/storage.ts";
+import { NativeTranscript } from "../src/pi-durable/transcript.ts";
 import { effectiveMode, PiSweep, PiSweepControl, piSweepGate, type PiSweepCandidate, type PiSweepMode, type PiSweepResult } from "../src/pi-sweep.ts";
 import type { TranscriptRecord } from "../src/transcript.ts";
 import { testDatabase } from "./database.ts";
@@ -129,6 +132,65 @@ function sweeper(db: pg.Pool, sessions: ClientSessions, setting: PiSweepMode, ea
 }
 
 const finished = (db: pg.Pool, mode: "dry_run" | "on") => until(async () => (await db.query(`select ${mode}_finished_at from pi_sweep`)).rows[0][`${mode}_finished_at`] !== null, `the ${mode} pass`, 60_000);
+
+test("the sweep counts and adopts a disabled host transcript, then leaves it enabled on a second pass", { timeout: 120_000 }, async t => {
+  const { model, state } = await fixtureModel(t);
+  const { db } = await testDatabase();
+  const storage = memoryStorage(postgresTail(db));
+  const [id] = await legacyAgents(t, db, storage, model, ["rolled-back"]);
+  const pi = await node(t, db, storage, "pi");
+  const candidate = { id, tenant: "default", pendingRuns: false, owned: false };
+  assert.equal((await pi.sessions.piSweepAgent(candidate, false)).outcome, "migrated");
+
+  const durable = await PostgresPiStorage.open(db, id);
+  t.after(() => durable.close(BACKGROUND_CONTEXT));
+  const document = (await durable.findDocument({ kind: "camel.host.snapshot", scope: { kind: "session" } }, "current", BACKGROUND_CONTEXT))!;
+  const original = (await durable.document(document.id, "current", BACKGROUND_CONTEXT))!;
+  // The old engine's disable wrote a base and marker together. A later snapshot-only delta must not hide enabled.
+  await durable.commit([
+    { type: "entry", value: { id: await durable.mintId(), conversationId: 1 as never, kind: "camel.host.disabled" } },
+    { type: "document.change", id: document.id, content: { kind: "base", version: 1, value: { ...original.value, enabled: false } } },
+  ], BACKGROUND_CONTEXT);
+  await durable.commit([{ type: "document.change", id: document.id,
+    content: { kind: "delta", version: 1, ops: [["s", ["snapshot", "active"], false]] } }], BACKGROUND_CONTEXT);
+  assert.equal(await NativeTranscript.open(durable), undefined);
+
+  const control = new PiSweepControl(db, "on");
+  const { sweep, outcomes, reset } = sweeper(db, pi.sessions, "on");
+  t.after(() => sweep.stop());
+  assert.equal((await control.status()).remaining, 1);
+  assert.equal(await sweep.remaining(), 1);
+  const before = await everything(db);
+  sweep.start();
+  await finished(db, "dry_run");
+  assert.deepEqual(outcomes, { would_migrate: 1 });
+  assert.deepEqual(await everything(db), before, "the dry run leaves the disabled transcript untouched");
+
+  reset();
+  await control.set("on");
+  await finished(db, "on");
+  assert.deepEqual(outcomes, { adopted: 1 }, "importOnly adopts the existing disabled document");
+  const adopted = (await durable.document(document.id, "current", BACKGROUND_CONTEXT))!;
+  assert.equal(adopted.value.enabled, true);
+  assert.notEqual(adopted.value.generation, original.value.generation);
+  assert.equal((await NativeTranscript.open(durable))!.total, 2, "legacy history is retained");
+  assert.equal((await control.status()).remaining, 0);
+  assert.equal(await sweep.remaining(), 0);
+
+  // Enabled bases also stay enabled when the latest revision is a snapshot-only delta.
+  await durable.commit([{ type: "document.change", id: document.id,
+    content: { kind: "delta", version: 1, ops: [["s", ["snapshot", "active"], false]] } }], BACKGROUND_CONTEXT);
+  reset();
+  const enabled = await everything(db);
+  await control.set("on", true);
+  await finished(db, "on");
+  await sweep.stop();
+  assert.deepEqual(outcomes, {});
+  assert.deepEqual(await everything(db), enabled, "a second pass writes nothing");
+  assert.equal((await control.status()).remaining, 0);
+  assert.equal(pi.supervisor.agents.size, 0);
+  assert.equal(state.calls, 0, "adoption asks no model");
+});
 
 test("the sweep's dry run reports and writes nothing; on, it imports the idle agents once, and a second pass finds only those it left", { timeout: 180_000 }, async t => {
   const { model, state } = await fixtureModel(t);
