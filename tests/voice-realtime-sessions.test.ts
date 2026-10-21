@@ -69,7 +69,9 @@ test("a session stored before realtime brains (no realtime settings) ends when t
   assert.equal(ended.endReason, "error");
   assert.equal(b.voice.size, 0);
   assert.equal(cluster.realtime.connections.length, 1, "no brain was made for it");
-  assert.equal((await cluster.events("voice.session.ended")).at(-1)?.data.reason, "error");
+  const event = (await cluster.events("voice.session.ended")).at(-1)!;
+  assert.equal(event.data.reason, "error");
+  assert.equal(event.data.detail, "brain_removed");
 });
 
 test("a realtime session: the call's audio reaches the model with who speaks, its answer plays, and each is billed and sent as events", async t => {
@@ -425,4 +427,35 @@ test("ElevenLabs connection minutes settle speech usage and the end-user ledger 
   assert.equal(entries.reduce((sum, entry) => sum + entry.raw, 0), expected);
   assert.ok(entries.every(entry => entry.bucket === "bot:7"));
   await until(async () => Math.round((await a.voice.get("alice", created.id)).costUsd * 1e6) === expected, "session cost");
+});
+
+test("a mid-call realtime failure includes its classification and a privacy-safe provider error in the ended webhook", async t => {
+  const cluster = await realtimeCluster(t);
+  const a = await cluster.node("http://a");
+  const created = await a.voice.create("alice", { discord: discordGrant() });
+  const connection = await until(() => cluster.fake.open()[0], "connection");
+  connection.handlers.ready();
+  await until(async () => (await a.voice.get("alice", created.id)).state === "live", "live");
+  const model = await until(() => cluster.realtime.connections[0], "model");
+  const logs: unknown[][] = [];
+  t.mock.method(console, "log", (...args: unknown[]) => { logs.push(args); });
+  const raw = "401 voice refused: sk-secret-fixture-key user said private transcript";
+  model.events.closed("error", raw, { retryable: false });
+  const ended = await until(async () => (await cluster.events("voice.session.ended"))[0], "ended webhook");
+  assert.equal(ended.data.reason, "error");
+  assert.equal(ended.data.detail, "realtime_failed");
+  assert.equal(ended.data.error, `auth (${raw.length} chars)`);
+  assert.doesNotMatch(JSON.stringify(ended.data), /sk-secret|private transcript|voice refused/);
+  assert.doesNotMatch(JSON.stringify(logs), /sk-secret|private transcript|voice refused/);
+});
+
+test("a normal session ended webhook omits failure detail and error", async t => {
+  const cluster = await realtimeCluster(t);
+  const a = await cluster.node("http://a");
+  const created = await a.voice.create("alice", { discord: discordGrant() });
+  await a.voice.end("alice", created.id);
+  const ended = await until(async () => (await cluster.events("voice.session.ended"))[0], "ended webhook");
+  assert.equal(ended.data.reason, "requested");
+  assert.equal(Object.hasOwn(ended.data, "detail"), false);
+  assert.equal(Object.hasOwn(ended.data, "error"), false);
 });

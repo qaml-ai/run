@@ -99,7 +99,7 @@ export const END_REASONS = ["requested", "empty", "idle", "max_duration", "budge
 export type EndReason = typeof END_REASONS[number];
 /** Why a session ended, with what the reason needs: which limit for `budget`, a short detail for `error`. */
 /** How a session ended; with reason budget, whose credit (`limit`), and for an end user's why (one of CREDIT_REASONS) and which bucket. */
-export type Ending = { reason: EndReason; limit?: "tenant" | "end_user"; endUserReason?: string; bucket?: string; detail?: string };
+export type Ending = { reason: EndReason; limit?: "tenant" | "end_user"; endUserReason?: string; bucket?: string; detail?: string; error?: string };
 
 /** A session's settings, as created (and some patched): stored as they are read back. */
 export type VoiceOptions = {
@@ -1198,7 +1198,7 @@ export class VoiceSessions {
         where id = $1 and state <> 'ended' returning *`, [id, ending.reason, now, JSON.stringify({ ...options, ...(ending.limit || ending.endUserReason ? { ending } : {}) })]);
       const row = rows[0] as Row | undefined;
       if (row?.options.deliver.webhooks) await enqueueEvents(sql, [this.event(row, "voice.session.ended", {
-        reason: ending.reason, ...(ending.limit ? { limit: ending.limit } : {}), ...(ending.endUserReason ? { endUserReason: ending.endUserReason } : {}), ...(ending.bucket ? { bucket: ending.bucket } : {}),
+        reason: ending.reason, ...(ending.detail ? { detail: ending.detail } : {}), ...(ending.error ? { error: ending.error } : {}), ...(ending.limit ? { limit: ending.limit } : {}), ...(ending.endUserReason ? { endUserReason: ending.endUserReason } : {}), ...(ending.bucket ? { bucket: ending.bucket } : {}),
         startedAt: num(row.started_at), endedAt: now, utterances: row.utterances, speechSeconds: row.speech_seconds, costUsd: Number(row.cost) / 1_000_000,
       }, `voice:${id}:ended`)]);
       return row;
@@ -1341,8 +1341,8 @@ export class VoiceSessions {
           data: () => ({ speechId: spoke.id, reason: spoke.reason, ...(spoke.by ? { by: spoke.by } : {}), seconds: spoke.seconds, costUsd: spoke.costUsd }),
         });
       },
-      failed: detail => {
-        void this.finish(this.held.get(held.id) === held ? held : undefined, held.id, { reason: "error", detail })
+      failed: (detail, error) => {
+        void this.finish(this.held.get(held.id) === held ? held : undefined, held.id, { reason: "error", detail, ...(error ? { error } : {}) })
           .catch(error => console.error(JSON.stringify({ type: "voice_finish_failed", session: held.id, error: safeError(error) })));
       },
       log,
