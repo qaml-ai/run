@@ -93,6 +93,8 @@ function postgresDatabase(db: Db, sessionId: string, claim?: Claim): PgDatabase 
         async close() {}, // The supervisor, not an individual Pi session, owns the pool.
     };
 }
+/** IDs `mintId` reserves at a time. */
+const ID_BLOCK = 256;
 const idFromNumber = <I extends Id<string>>(value: number): I => {
     if (!Number.isSafeInteger(value) || value < 1) throw new Error(`Invalid durable ID: ${value}`);
     return value as I;
@@ -361,6 +363,9 @@ export class PostgresPiStorage implements Storage {
 	private readonly db: PgDatabase;
 	private readonly schema: PgSchema;
 	private nextId: number;
+	/** IDs reserved in the metadata row but not handed out yet: `mintId` takes them in order, without a transaction. */
+	private block = { next: 0, end: 0 };
+	private reserving: Promise<void> | undefined;
 	private closed = false;
 	private closing: Promise<void> | undefined;
 	private admittedReads = 0;
@@ -410,21 +415,42 @@ export class PostgresPiStorage implements Storage {
 		return seq;
 	}
 
+	/**
+	 * Hands out IDs from a block reserved in the metadata row (one fenced transaction per ID_BLOCK IDs, not per ID).
+	 * The row holds the block's end before any of it is used, so a later holder of the session, here or on another node,
+	 * starts past it and never reuses one; IDs this holder leaves unused are a gap. A block is dropped once an ID at or
+	 * past its next one was stored or reserved here (a bulk reservation, a write with its own IDs), keeping each ID
+	 * greater than every one minted or stored before.
+	 */
 	async mintId<I extends Id<string>>(): Promise<I> {
-        return (await this.mintIds(1))[0] as I;
+        this.assertOpen();
+        while (this.block.next >= this.block.end || this.block.next < this.nextId) {
+            this.reserving ??= this.reserve(ID_BLOCK).then(first => {
+                this.block = { next: Math.max(first, this.nextId), end: first + ID_BLOCK };
+            }).finally(() => { this.reserving = undefined; });
+            await this.reserving;
+            this.assertOpen();
+        }
+        const id = this.block.next++;
+        this.nextId = id + 1;
+        return id as I;
     }
 
     /** Optional Camel import extension: reserve a namespace-safe range with one durable fenced update. */
     async mintIds(count: number): Promise<number[]> {
         this.assertOpen();
         validateReservationCount(count);
-        const first = await this.db.transaction(async sql => {
+        const first = await this.reserve(count);
+        this.nextId = Math.max(this.nextId, first + count);
+        return Array.from({ length: count }, (_, index) => first + index);
+    }
+
+    private async reserve(count: number): Promise<number> {
+        return this.db.transaction(async sql => {
             const value = await sql.get<{ id: number }>(`UPDATE ${this.schema.tables.durableMetadata} SET next_id = (next_id::bigint + ?)::text WHERE session_id = $1 AND singleton = 1 RETURNING (next_id::bigint - ?) as id`, count, count);
             if (!value || !Number.isSafeInteger(value.id) || !Number.isSafeInteger(value.id + count - 1)) throw new Error("ID space is exhausted");
             return value.id;
         });
-        this.nextId = Math.max(this.nextId, first + count);
-        return Array.from({ length: count }, (_, index) => first + index);
     }
 
 	async conversation(id: ConversationId, _context: Context): Promise<ConversationRecord | undefined> {
