@@ -154,7 +154,7 @@ export function modelName(model: string) {
   return { name: parts.at(-1) || model, via: parts.slice(0, -1).join("/") };
 }
 
-export const TABS = ["growth", "usage", "revenue", "health", "journeys"] as const;
+export const TABS = ["growth", "usage", "revenue", "health", "journeys", "mcp"] as const;
 export type OpsTab = typeof TABS[number];
 export const RANGES = [7, 30, 90] as const;
 export type OpsRange = typeof RANGES[number];

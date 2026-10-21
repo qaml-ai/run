@@ -4,6 +4,7 @@ import type { Context, MiddlewareHandler } from "hono";
 import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from "jose";
 import { AdminWindowError } from "./admin-accounts.ts";
 import { adminAcquisition } from "./admin-acquisition.ts";
+import { adminMcp } from "./admin-mcp.ts";
 import { adminGrowth } from "./admin-growth.ts";
 import { adminHealth } from "./admin-health.ts";
 import { ADMIN_REPORT_PATH, ADMIN_REPORT_REQUEST_BYTES, adminReport, adminReportRequest, boundedText, type AdminReportSource } from "./admin-report.ts";
@@ -172,7 +173,8 @@ export function adminSite(options: AdminSiteOptions): MiddlewareHandler {
     if (c.req.method !== "GET" && c.req.method !== "HEAD") return c.text("Not found", 404);
     if (path === "/api/me") return c.json({ viewer: email }, 200);
     if (path === "/api/growth") return figures(c, email, "admin_growth_viewed", days => adminGrowth(options.db, { days, ...tab }));
-    if (path === "/api/acquisition") return figures(c, email, "admin_acquisition_viewed", days => adminAcquisition(options.report, { days, ...(options.fetch ? { fetch: options.fetch } : {}) }));
+    if (path === "/api/acquisition") return figures(c, email, "admin_acquisition_viewed", days => adminAcquisition(options.report, { days, db: options.db, internalDomains: options.internalDomains, ...(options.fetch ? { fetch: options.fetch } : {}) }));
+    if (path === "/api/mcp") return figures(c, email, "admin_mcp_viewed", days => adminMcp(options.db, { days, ...tab }));
     if (path === "/api/usage") return figures(c, email, "admin_usage_viewed", days => adminUsage(options.db, { days, ...tab }));
     if (path === "/api/revenue") return figures(c, email, "admin_revenue_viewed", days => adminRevenue(options.db, { days, ...tab }));
     if (path === "/api/health") return figures(c, email, "admin_health_viewed", days => adminHealth(options.db, { days, ...tab }));

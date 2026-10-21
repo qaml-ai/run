@@ -40,7 +40,7 @@ export function GrowthTab({ days, refresh, growth }: { days: OpsRange; refresh: 
         </div>
       </Section>
 
-      <Section title="Where sign-ups came from" description="The first place each new account arrived from, as the journey store recorded it.">
+      <Section title="Where sign-ups came from" description="The journey store’s first source, with a plugin label when the first OAuth grant was within one hour of sign-up.">
         <Panel title="Sources" state={acquisition.state} description={acquisition.data && <AcquisitionNote data={acquisition.data} days={days} signups={data?.tiles.signups.current} />}>
           {acquisition.data && <Acquisition data={acquisition.data} days={days} />}
         </Panel>

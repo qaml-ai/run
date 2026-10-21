@@ -1,3 +1,6 @@
+import { mcpSignupAttribution } from "./admin-mcp.ts";
+import { MCP_CLIENT_LABELS } from "./mcp-client-kind.ts";
+import type { Db } from "./db.ts";
 import { adminWindow, windowOf, type AdminWindow } from "./admin-accounts.ts";
 import { adminReport, type AdminReportSource } from "./admin-report.ts";
 
@@ -25,7 +28,7 @@ export const ADMIN_ACQUISITION_PAGES = 20;
 const PAGING_MS = 15_000;
 
 type JourneyItem = {
-  signup_at: string | null; activated_at: string | null; payments: number;
+  account_ref?: string; signup_at: string | null; activated_at: string | null; payments: number;
   acquisition: { source: string | null; medium: string | null; campaign: string | null; landing_path: string | null; capture_quality: string };
 };
 
@@ -33,13 +36,16 @@ type JourneyItem = {
  * Where the window's sign-ups came from (the admin site's Growth tab, GET /api/acquisition), from the journey store's
  * `journeys` report (src/admin-report.ts): each account active in the window, with what the store knows of its first
  * arrival (source, medium, campaign, landing page), across the operator's website and the console. Of those, the accounts
- * that signed up in the window. The runtime itself keeps none of this: it sends it to the store (src/journey.ts).
+ * that signed up in the window. A first OAuth grant within one hour overrides the source using local registration
+ * metadata, joined by journey_accounts.account_ref. Other arrival data comes from the store (src/journey.ts).
  */
-export async function adminAcquisition(source: AdminReportSource | undefined, options: { days: number | string; now?: number; fetch?: typeof fetch }): Promise<AdminAcquisition> {
+export async function adminAcquisition(source: AdminReportSource | undefined, options: { days: number | string; now?: number; fetch?: typeof fetch; db?: Db; internalDomains?: string[] }): Promise<AdminAcquisition> {
   const now = options.now ?? Date.now();
   const window = adminWindow(options.days, now);
   const base = { schema_version: 1 as const, range: windowOf(window), generated_at: new Date(now).toISOString() };
   const empty = { tracked_signups: 0, sources: [], campaigns: [], landing_pages: [], truncated: false, coverage: { first_event_at: null, last_event_at: null } as AdminAcquisition["coverage"] };
+  const plugins = new Map((options.db ? await mcpSignupAttribution(options.db, window.from, window.until, options.internalDomains) : [])
+    .filter(row => row.account_ref).map(row => [row.account_ref, row.kind]));
   const sources = new Map<string, AdminSource>(), campaigns = new Map<string, number>(), landing = new Map<string, number>();
   let cursor: string | undefined, tracked = 0, coverage = empty.coverage, pages = 0;
   const deadline = Date.now() + PAGING_MS;
@@ -56,8 +62,9 @@ export async function adminAcquisition(source: AdminReportSource | undefined, op
       if (!(signup >= window.from && signup < window.until)) continue;
       tracked++;
       const seen = item.acquisition ?? {} as JourneyItem["acquisition"];
-      const label = seen.capture_quality === "not_applicable" ? "No browser (API or MCP)" : seen.source || "Not captured";
-      const medium = seen.capture_quality === "not_applicable" ? null : seen.medium || null;
+      const plugin = item.account_ref ? plugins.get(item.account_ref) : undefined;
+      const label = plugin ? MCP_CLIENT_LABELS[plugin] : seen.capture_quality === "not_applicable" ? "No browser (API or MCP)" : seen.source || "Not captured";
+      const medium = plugin ? null : seen.capture_quality === "not_applicable" ? null : seen.medium || null;
       const key = `${label}\n${medium ?? ""}`;
       const row = sources.get(key) ?? { source: label, medium, signups: 0, activated: 0, paying: 0 };
       row.signups++;
