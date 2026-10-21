@@ -1012,9 +1012,14 @@ export function createAgentHost(hostIO: HostIO) {
             await transcript.retract();
             io.emit({ type: "message_retracted", index: await served("total", transcript.total, history => history.total) });
           }
-          const cut = transcript.total - keptMessages;
-          if (cut < transcript.offset || cut > transcript.total) throw new Error("Native compaction is outside the host working set");
-          if (transcript.compaction?.cut === cut && transcript.compaction.summary === summary && transcript.compaction.at === at) return;
+          // Pi replays its last compaction when an agent starts: one the host recorded already is in place, whatever the
+          // working set has grown to since.
+          if (transcript.compaction?.summary === summary && transcript.compaction.at === at) return;
+          const kept = transcript.total - keptMessages;
+          // A cut outside the host's working set (Pi kept more than the host holds, or counted past its end) is placed at
+          // its nearest edge rather than refusing the start: the summary stands, and the agent keeps what the host holds.
+          const cut = Math.min(Math.max(kept, transcript.offset), transcript.total);
+          if (cut !== kept) console.error(JSON.stringify({ type: "native_compaction_clamped", agent: config.id, cut: kept, offset: transcript.offset, total: transcript.total }));
           const offset = transcript.offset;
           const state = { summary, cut, tokensBefore: contextTokens(transcript.view()), at };
           await transcript.compact(state, transcript.compaction, changes => getCurrentSystemMessage([leading(tools.map(toToolDeclaration)), ...changes]));
