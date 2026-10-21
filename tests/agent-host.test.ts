@@ -11,6 +11,8 @@ import { forkCut, recordedMessages, Transcript, type TranscriptRecord } from "..
 import { fileAppendLog, type AppendLog } from "../shared/append-log.ts";
 import type { ToolDefinition } from "../src/protocol.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { SystemMessage } from "@earendil-works/pi-ai";
+import { APPLICATION, applicationInstructions } from "../src/system-prompt.ts";
 import type { Storage as PiStorage } from "@earendil-works/pi-durable";
 import { openPiJournalReader, openPiStorage } from "../src/pi-durable/storage.ts";
 import { nativeTranscriptRecords } from "../src/pi-durable/transcript.ts";
@@ -275,4 +277,23 @@ test("an abort that reaches a run before its model loop starts ends it, rather t
   assert.equal((await fake.history()).active, false);
   fake.respond(answer("Next."));
   assert.equal((await host.handle("prompt", { text: "again" })).reply, "Next.");
+});
+
+test("a conversation a later release re-keyed to the application section keeps that key: rolled back, its instructions are not declared twice", async t => {
+  const fake = await setup(t);
+  // As the release that renames the section leaves a conversation: its instructions under `application`.
+  const instructions = applicationInstructions();
+  const leading = { role: "system", content: "Runtime rules.", sections: { [APPLICATION]: instructions }, timestamp: 0 } as SystemMessage;
+  await fileAppendLog<TranscriptRecord>(fake.path).rewrite(() => [
+    { t: "system", message: leading, leading: true }, { t: "turn", active: true },
+    { t: "message", message: user("earlier") }, { t: "message", message: answer("Earlier answer.") }, { t: "turn", active: false },
+  ]);
+  const { host } = await fake.start();
+  let seen: AgentMessage[] = [];
+  fake.respond(context => { seen = context.messages as AgentMessage[]; return answer("Done."); });
+  assert.equal((await host.handle("prompt", { text: "again" })).error, null);
+  const sections = getCurrentSystemMessage(seen as never)?.sections ?? {};
+  assert.equal(sections.instructions, undefined, "no second instructions section");
+  assert.equal(sections[APPLICATION], instructions);
+  assert.equal(getSystemMessageText(getCurrentSystemMessage(seen as never)!).split(instructions).length - 1, 1, "the instructions appear once");
 });
