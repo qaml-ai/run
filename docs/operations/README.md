@@ -71,17 +71,29 @@ The storage tests also run against S3 with `AGENT_TEST_S3_BUCKET=<bucket>`.
 
 Every main commit's CI (`.github/workflows/ci.yml`) is its deploy gate: Deploy (`deploy.yml`) rolls the commit out
 once all of CI passes, from the image CI's `publish` job already pushed. The gate is typecheck, builds and UI tests
-(`checks`), the Python SDK (`python`), the whole suite in both hosting modes (`test`: five shards each on
-Blacksmith, twelve on standard runners), docs and API tests (`docs`), the simulator's fixed seeds (`sim`)
-and both image architectures (`image`). Ready same-repository PRs use Blacksmith; draft and fork PRs use
-standard GitHub runners, including native ARM64. Marking a draft ready starts a new CI run.
+(`checks`), the Python SDK (`python`), the whole suite in both hosting modes (`test`: five shards each), docs and API
+tests (`docs`), the simulator's fixed seeds (`sim`) and both image architectures (`image`). Same-repository PRs, main
+and dispatches run on Blacksmith; fork PRs use standard GitHub runners, including native ARM64.
+
+A draft PR (by its state when the run starts, not the event's) runs only `checks`, `docs` and `changed tests`: the
+test files it changes, and those named after the source files it changes (`src/foo.ts` runs `tests/foo.test.ts` and
+`tests/foo-*.test.ts`, up to 40 files). A draft run never reports `CI success`, so it can be neither merged as green
+nor reused on main. Marking the PR ready for review starts the full run, as does every push to a ready PR. While
+iterating on a change, open it as a draft.
 
 On main, `scripts/ci-changes.sh` can prove that a successful same-repository PR run tested this exact
 merge tree. Only that proof skips checks, Python, test shards, fixed seeds, image smoke tests and docs;
 `publish` must still succeed before `CI success` passes. Missing artifacts, API errors, a changed tree
-or a changed PR head run the checks normally. Superseded PR and branch runs are cancelled; each main
-SHA runs independently so Deploy receives its completed CI event. Fifty fresh simulator seeds run beside it on every
-main commit (`sim-seeds.yml`): a seed that finds something new turns that run red without holding the deploy back.
+or a changed PR head run the checks normally. A PR merged after main moved on has a different tree, so its main
+run tests again. Superseded PR and branch runs are cancelled; each main SHA runs independently so Deploy receives
+its completed CI event. Four hundred fresh simulator seeds run every night (`sim-seeds.yml`; run it by hand for
+more): a seed that finds something new turns that run red.
+
+Runner sizes follow job timings. The test shards and `python` are CPU-bound and keep eight vCPUs (on four, shards
+took 170-450 s instead of 115-165 s); `checks`, `docs` and `changed tests` finish within a minute on four. The fixed
+seeds use 16 vCPUs, and image builds keep 16 for cache misses. Deploy waits on ECS on two ARM vCPUs. `changes` and
+`CI success` stay on GitHub's runners, on the critical path: they pick a job up in one to three seconds, Blacksmith
+in seven to seventeen.
 
 The shards are balanced by `tests/timings.json`. Each shard records its files' times as a `test-timings-*`
 artifact; when shards drift apart, rebalance from a few green runs (a file's time is its mean over them):
@@ -89,7 +101,7 @@ artifact; when shards drift apart, rebalance from a few green runs (a file's tim
 ```sh
 for id in <run id>...; do gh run download $id -R qaml-ai/run -p 'test-timings-*' -D /tmp/timings/$id; done
 npm run test:shard -- --update /tmp/timings/*
-npm run test:shard -- --plan 12   # what each shard runs, and its expected seconds
+npm run test:shard -- --plan 5   # what each shard runs, and its expected seconds
 ```
 
 A shard whose failures are in at most three files runs those files once more, alone; if they pass, the shard passes
@@ -100,16 +112,9 @@ To deploy without waiting for CI (an emergency fix, or a rollback to an earlier 
 `gh workflow run deploy.yml -R qaml-ai/run --ref <branch or tag>` deploys that ref's commit, building its image if
 CI has not pushed it. A hand-run deploy skips the "production already runs a newer commit" check, so it can roll back.
 
-### Shared Azure CI
+### CI test isolation
 
-Main-branch CI and Nightly use the `azure-ci` organization runners when `CI_RUNNER_LABELS` is set to
-`["self-hosted","Linux","X64","azure-ci"]`. Delete the variable to return new jobs to GitHub-hosted runners.
-PRs and non-main dispatches always use hosted runners; ARM64 image and publishing jobs remain on native ARM hosts.
-The runner group independently restricts execution to the CI and Nightly workflow files on main. It grants access
-only to run, camel-bots and camelAI. This trusts commits pushed to main; it does not enforce code review.
-
-The pool on camel-devbox has four slots shared across the repositories, an aggregate limit of 8 vCPUs and 24 GiB,
-and higher CPU scheduling weight than the continuously running DST jobs. It reserves no cores. Every test job uses
-its own Postgres container and allocated port; Docker commands target the exact service container ID. Test shards
-run two files at a time (`TEST_CONCURRENCY`). The nightly run uses two file workers.
+Every test job uses its own Postgres container and allocated port; Docker commands target the exact service
+container ID. Blacksmith test shards run eight files at a time (`TEST_CONCURRENCY`), fork shards two. The nightly
+run uses two file workers.
 Python dependencies live in a checkout-local virtual environment. Manual CI dispatch does not trigger deployment.

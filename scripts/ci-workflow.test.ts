@@ -8,7 +8,7 @@ const gate = workflow.split("      - name: Require successful checks or intentio
   .split("        run: |\n")[1].split("      - uses:")[0];
 
 function passes({ reuse = false, tests = true, image = true, event = "push", ref = "refs/heads/main", results = {} as Record<string, string> } = {}) {
-  const states = { changes: "success", checks: "success", python: "success", test: "success", sim: "success", image: "success", docs: "success", publish: "success", ...results };
+  const states = { changes: "success", checks: "success", quick: "skipped", python: "success", test: "success", sim: "success", image: "success", docs: "success", publish: "success", ...results };
   const script = gate.replaceAll("${{ needs.changes.outputs.reuse }}", String(reuse))
     .replaceAll("${{ needs.changes.outputs.tests }}", String(tests))
     .replaceAll("${{ needs.changes.outputs.image }}", String(image))
@@ -27,6 +27,16 @@ test("CI gate requires every non-reused check and main publication", () => {
       assert.equal(passes({ results: { [job]: result } }), false, `${job}: ${result}`);
     }
   }
+  for (const result of ["success", "failure", "cancelled"]) {
+    assert.equal(passes({ results: { quick: result } }), false, `a draft's changed tests never stand for the suite: ${result}`);
+  }
+});
+
+test("drafts never report CI success, so no merge or main reuse can rest on their fast checks", () => {
+  const job = workflow.split("  ci:\n")[1];
+  assert.match(job, /if: always\(\) && needs\.changes\.outputs\.draft != 'true'\n/);
+  assert.match(workflow, /draft: \$\{\{ steps\.changes\.outputs\.draft \|\| 'false' \}\}/);
+  assert.match(workflow, /types: \[opened, synchronize, reopened, ready_for_review\]/);
 });
 
 test("proven reuse accepts only main with successful publication and intentional skips", () => {

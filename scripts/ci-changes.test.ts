@@ -11,12 +11,13 @@ const head = "b".repeat(40);
 const commit = "c".repeat(40);
 const tree = "d".repeat(40);
 
-type Options = { event?: string; paths?: string[]; apiFailure?: boolean; success?: boolean; artifact?: boolean; sameTree?: boolean; sameHead?: boolean; expired?: boolean; fork?: boolean; wrongWorkflow?: boolean; greenGate?: boolean; olderRun?: boolean; secondPage?: boolean };
+type Options = { event?: string; paths?: string[]; apiFailure?: boolean; success?: boolean; artifact?: boolean; sameTree?: boolean; sameHead?: boolean; expired?: boolean; fork?: boolean; wrongWorkflow?: boolean; greenGate?: boolean; olderRun?: boolean; secondPage?: boolean; draft?: boolean };
 
 function changes(options: Options = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ci-changes-"));
   try {
-    writeFileSync(join(dir, "event.json"), JSON.stringify({ pull_request: { base: { sha }, head: { sha: head } } }));
+    // The event says the opposite of the PR's live state: only the live state counts.
+    writeFileSync(join(dir, "event.json"), JSON.stringify({ pull_request: { base: { sha }, head: { sha: head }, number: 7, draft: !options.draft } }));
     writeFileSync(join(dir, "git"), `#!/usr/bin/env bash
 case "$1" in
   fetch) exit 0 ;;
@@ -32,6 +33,7 @@ case "$*" in
   *artifacts/43/zip*) ${options.artifact === false ? "exit 1" : `cat '${dir}/artifact.zip'`} ;;
   *artifacts\?*)
     ${options.secondPage ? `if [[ "$*" == *page=1 ]]; then echo '${JSON.stringify({ artifacts: Array.from({ length: 100 }, () => ({ ...artifact, expired: true })) })}'; else echo '${JSON.stringify({ artifacts })}'; fi` : `echo '${JSON.stringify({ artifacts })}'`} ;;
+  *pulls/7*) echo '${options.draft ? "true" : "false"}' ;;
   */jobs*) echo '${JSON.stringify({ jobs: [{ name: "CI success", conclusion: options.greenGate === false ? "failure" : "success" }] })}' ;;
   */runs/41*) echo '{"conclusion":"failure"}' ;;
   */runs/42*) echo '${JSON.stringify({ event: "pull_request", conclusion: options.success === false ? "failure" : "success", path: options.wrongWorkflow ? ".github/workflows/other.yml" : ".github/workflows/ci.yml", head_sha: head, run_attempt: 2, head_repository: { full_name: options.fork ? "someone/run" : "qaml-ai/run" } })}' ;;
@@ -84,4 +86,12 @@ test("PR images follow all Dockerfile and build inputs, including removed paths"
     assert.match(changes({ event: "pull_request", paths }), /image=false\n$/, paths.join(","));
   }
   assert.match(changes({ event: "pull_request", paths: [] }), /image=true\n$/);
+});
+
+test("drafts, by the PR's state when the run starts, run only the fast checks and the test files their change names", () => {
+  assert.equal(changes({ event: "pull_request", draft: true, paths: ["README.md"] }), "tests=false\nreuse=false\nimage=false\ndraft=true\nquick=\n");
+  const quick = changes({ event: "pull_request", draft: true, paths: ["src/model.ts", "tests/limits.test.ts", "Dockerfile", "src/nonexistent-module.ts", "docs/model.ts"] });
+  assert.match(quick, /^tests=false\nreuse=false\nimage=false\ndraft=true\nquick=tests\/limits\.test\.ts( tests\/model[-.][^ ]*\.test\.ts)+\n$/);
+  assert.ok(quick.includes(" tests/model-errors.test.ts "), "src/model.ts names tests/model-*.test.ts");
+  assert.equal(changes({ event: "pull_request", draft: false, paths: ["src/model.ts"] }), "tests=true\nreuse=false\nimage=true\n");
 });

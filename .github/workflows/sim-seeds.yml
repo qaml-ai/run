@@ -1,10 +1,9 @@
 name: Sim seeds
-# Fresh simulator seeds on every main commit, beside CI rather than in it: they explore past CI's fixed seeds
-# (ci.yml's sim job), so a seed that finds something new reports it here, in red with the commands that reproduce it,
-# without holding that commit's deploy back. Its plan, history and logs are kept as the sim-failures artifact
-# (npm run sim -- --replay <file>). Run it by hand for another 50.
+# Fresh simulator seeds every night, beyond CI's fixed seeds (ci.yml's sim job): a seed that finds something new
+# reports it here, in red with the commands that reproduce it, without holding any deploy back. Its plan, history and
+# logs are kept as the sim-failures artifact (npm run sim -- --replay <file>). Run it by hand for another 400.
 on:
-  push: { branches: [main] }
+  schedule: [{ cron: "47 6 * * *" }]
   workflow_dispatch:
 permissions:
   contents: read
@@ -13,20 +12,17 @@ concurrency:
   cancel-in-progress: false
 jobs:
   sim:
-    # Hosted: the organization runner group admits only ci.yml.
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: npm }
-      - run: npm ci
+      - uses: ./.github/actions/node-dependencies
       # Seeds are CPU-bound and deterministic: one process per vCPU.
       - name: fresh seeds
         run: |
-          from=$(( 100000 + (GITHUB_RUN_ID % 1000000) * 50 ))
-          echo "seeds $from-$((from + 49)) (rerun one: npm run sim -- --seed <n>)"
-          npm run -s sim -- --seeds $from-$((from + 49)) --jobs 4
+          from=$(( 100000 + (GITHUB_RUN_ID % 1000000) * 400 ))
+          echo "seeds $from-$((from + 399)) (rerun one: npm run sim -- --seed <n>)"
+          npm run -s sim -- --seeds $from-$((from + 399)) --jobs "$(nproc)"
       - uses: actions/upload-artifact@v4
         if: ${{ failure() }}
         with: { name: sim-failures, path: sim-failures/, if-no-files-found: ignore }
