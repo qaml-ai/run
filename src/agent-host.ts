@@ -402,13 +402,26 @@ export function createAgentHost(hostIO: HostIO) {
     console.log(metricLine(same ? "history_source" : "history_source_mismatch", {
       dimensions: { Outcome: same ? "match" : "mismatch" }, rollups: [[], ["Outcome"]],
       metrics: { HistorySourceReads: 1, HistorySourceMismatches: same ? 0 : 1 },
-      properties: { agent: config.id, field, ...(same ? {} : { host: summary(host), journal: summary(value) }) },
+      properties: { agent: config.id, field, ...(same ? {} : { host: summary(host), journal: summary(value), ...difference(host, value) }) },
     }));
     // The simulation records each: a value the journal gives otherwise is a violation of the run. Tests (the dual read in
     // `throw`) fail on it.
     always(same, "a history value the journal gives is the host transcript's");
     if (!same && io.piDualRead === "throw") throw new Error(`History from the journal: ${field} is ${JSON.stringify(summary(value))}, the host's ${JSON.stringify(summary(host))}`);
     return same ? value : host;
+  }
+
+  /**
+   * Where two lists of messages first differ, without their content: the lengths, the index, each side's role there,
+   * and the names of the fields whose values differ (for history_source_mismatch).
+   */
+  function difference(host: unknown, journal: unknown) {
+    if (!Array.isArray(host) || !Array.isArray(journal)) return {};
+    const at = host.findIndex((message, index) => JSON.stringify(message) !== JSON.stringify(journal[index]));
+    const index = at < 0 ? Math.min(host.length, journal.length) : at;
+    const left = host[index] as Record<string, unknown> | undefined, right = journal[index] as Record<string, unknown> | undefined;
+    const keys = [...new Set([...Object.keys(left ?? {}), ...Object.keys(right ?? {})])].filter(key => JSON.stringify(left?.[key]) !== JSON.stringify(right?.[key]));
+    return { lengths: [host.length, journal.length], index, roles: [left?.role ?? null, right?.role ?? null], keys };
   }
 
   /** Whether the agent's system sections are native Pi sections: its tenant is in AGENT_NATIVE_SECTIONS_TENANTS (or `*`). */
@@ -1079,7 +1092,8 @@ export function createAgentHost(hostIO: HostIO) {
       const backlog = transcript.backlog;
       // Part of it left to the log: the page reads the log instead.
       if (!backlog || backlog.kept !== backlog.from) return null;
-      const messages = await served("tail", backlog.messages, async history => await history.messagesFrom(backlog.from) ?? NOT_HELD);
+      // The journal may be ahead mid-run (Pi committed what the host has yet to record): its messages as far as the host's go.
+      const messages = await served("tail", backlog.messages, async history => (await history.messagesFrom(backlog.from))?.slice(0, backlog.messages.length) ?? NOT_HELD);
       return { from: backlog.from, messages, turns: backlog.turns };
     }
     if (method === "steer") {

@@ -429,3 +429,16 @@ test("two calls of one response that ask for their message index at once read th
   assert.equal(run.reply, "Done.");
   assert.equal(run.messages, 5);
 });
+
+test("a history tail read while Pi has committed what the host has yet to record is the host's, without a mismatch", async t => {
+  const fake = await setup(t);
+  const noIndex = { indexed: async () => 0, read: async () => { throw new Error("no log reads"); }, write: async () => 0 } as unknown as HostIO["history"];
+  let journal!: PiStorage;
+  const { host } = await fake.start({ history: noIndex, storage: storage => (journal = storage) });
+  fake.respond(answer("One."));
+  await host.handle("prompt", { text: "one" });
+  // Pi's next response is committed; the host's record of it is not written yet (its event is still on its way).
+  await journal.commit([{ type: "entry", value: { id: await journal.mintId(), conversationId: 1 as never, kind: "pi.assistant", model: [answer("Two.")] as never } }], BACKGROUND_CONTEXT);
+  const tail = await host.handle("historyTail", {});
+  assert.deepEqual(tail.messages.map((message: AgentMessage) => message.role), ["user", "assistant"]);
+});
