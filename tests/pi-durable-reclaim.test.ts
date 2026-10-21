@@ -132,7 +132,7 @@ test("stage 1 holds the claim against a first acquisition until deletion commits
   } finally { await holder.query("rollback"); holder.release(); }
 });
 
-test("after reclaim a cold agent runs, pages history, forks a retained turn, and refuses a pre-checkpoint fork", { timeout: 60_000 }, async t => {
+test("after reclaim a cold agent runs, pages history, forks a retained turn, and forks before the checkpoint from the host's history", { timeout: 60_000 }, async t => {
   const r = await runtime(t, body => ({ role: "assistant", content: `answer to ${lastUser(body)}` }),
     { AGENT_IDLE_MS: "1000", AGENT_PI_DUAL_WRITE: "1", AGENT_PI_HISTORY_SOURCE_TENANTS: "*" });
   const session = (await r.call("/v1/agents", { body: {} })).json.id as string;
@@ -162,9 +162,9 @@ test("after reclaim a cold agent runs, pages history, forks a retained turn, and
   const made = await r.call(`/v1/agents/${session}/fork`, { body: { atMessage: 3 } });
   assert.equal(made.status, 201, made.text);
   assert.equal((await r.prompt(made.json.id, "forked")).outcome.result.reply, "answer to forked");
-  const refused = await r.call(`/v1/agents/${session}/fork`, { body: { atMessage: 0 } });
-  assert.equal(refused.status, 400, refused.text);
-  assert.equal(refused.json.code, "FORK_POINT_INVALID");
+  // Before the retained head the host's cut serves the fork while the host transcript lasts.
+  const early = await r.call(`/v1/agents/${session}/fork`, { body: { atMessage: 0 } });
+  assert.equal(early.status, 201, early.text);
 });
 
 test("stage 1 honors a compaction's retained head, never its marker ID, and leaves sessions without a head alone", async () => {

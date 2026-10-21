@@ -3410,8 +3410,9 @@ export class ClientSessions {
       const indexed = (await this.historyIndex.indexed(sourceId)) ?? 0;
       const journal = await steps.time("journal", this.supervisor.journalFork(sourceId, indexed, count => this.historyIndex.messages(sourceId, count), input.atMessage))
         .catch(error => {
-          // A product refusal must reach the caller: falling back would reconstruct a fork from reclaimed context.
-          if (error instanceof ForkBeforeHead) throw error;
+          // Before the retained head the journal can't place the cut: the host's cut serves it while the host transcript
+          // lasts (reclaim has not run), as before #381.
+          if (error instanceof ForkBeforeHead) { console.log(JSON.stringify({ type: "fork_before_head_host_fallback", agent: sourceId })); return undefined; }
           console.error(JSON.stringify({ type: "history_source_unavailable", agent: sourceId, field: "fork", error: safeError(error) })); return undefined;
         });
       const host = { through: cut.through, messages: historyOf(cut.records) };
