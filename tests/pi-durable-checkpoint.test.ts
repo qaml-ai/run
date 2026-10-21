@@ -7,6 +7,7 @@ import { createServer } from "node:http";
 import { once } from "node:events";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { Cursor, EntryRecord } from "@earendil-works/pi-durable";
+import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
 import { openPiJournalReader } from "../src/pi-durable/storage.ts";
 import { LEGACY_CONVERSATION_ID } from "../src/pi-durable/migration.ts";
@@ -17,11 +18,11 @@ async function kinds(directory: string, sessionId: string) {
   try {
     let cursor: Cursor | undefined;
     do {
-      const page = await journal.scanEntries({ conversationId: LEGACY_CONVERSATION_ID, order: "ascending" }, 256, cursor);
+      const page = await journal.scanEntries({ conversationId: LEGACY_CONVERSATION_ID, order: "ascending" }, 256, cursor, context);
       for (const entry of page.items as EntryRecord[]) counts.set(entry.kind, (counts.get(entry.kind) ?? 0) + 1);
       cursor = page.next;
     } while (cursor);
-  } finally { await journal.close(); }
+  } finally { await journal.close(context); }
   return counts;
 }
 
