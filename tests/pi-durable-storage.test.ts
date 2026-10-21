@@ -406,3 +406,16 @@ test("Pi shared commits check the claim in their lock statement: a takeover wait
   await next.close(context);
   await node.close(context);
 });
+
+test("Pi shared entryIds lists a conversation's entry IDs in a range without their records, also over the agent RPC", async () => {
+  const { db } = await database;
+  const storage = await PostgresPiStorage.open(db, randomUUID());
+  const conversationId = 1 as ConversationId;
+  await storage.commit([{ type: "conversation", value: { id: conversationId } }], context);
+  const ids: number[] = [];
+  for (let i = 0; i < 5; i++) ids.push(await storage.mintId<EntryId>());
+  await storage.commit(ids.map(id => ({ type: "entry", value: { id: id as EntryId, conversationId, kind: "test", data: { big: "x".repeat(1000) } } })) as never, context);
+  assert.deepEqual(await storage.entryIds(conversationId, ids[1], ids[3]), ids.slice(1, 4));
+  const remote = remotePiStorage(request => storageRequest(storage, request)) as typeof storage;
+  assert.deepEqual(await remote.entryIds(conversationId, ids[0], ids[4]), ids);
+});

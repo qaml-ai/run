@@ -116,3 +116,19 @@ test("journal history: a compaction is not history, and the response its overflo
   assert.equal(history.total, 5, "the user message and the answer: no summary, no refused response");
   assert.deepEqual((await history.messagesFrom(3))!.map(message => (message as { role: string }).role), ["user", "assistant"]);
 });
+
+test("journal history: a refresh with nothing late reads only IDs of the recent entries, then what is new", async () => {
+  const storage = await journal([base(0), { native: "pi.user", message: user("one") }]);
+  const history = (await JournalHistory.open(storage))!;
+  const scans: { minEntryId?: number; maxEntryId?: number }[] = [];
+  let listed = 0;
+  const scan = storage.scanEntries.bind(storage);
+  storage.scanEntries = ((query: { minEntryId?: number; maxEntryId?: number }, ...rest: unknown[]) => { scans.push(query); return (scan as any)(query, ...rest); }) as typeof storage.scanEntries;
+  (storage as any).entryIds = async (_conversation: number, minId: number, maxId: number) => { listed++; return (await scan({ conversationId, order: "ascending", minEntryId: minId as EntryId, maxEntryId: maxId as EntryId }, 1000, undefined, BACKGROUND_CONTEXT)).items.map(entry => entry.id); };
+  await storage.commit([{ type: "entry", value: { id: await storage.mintId<EntryId>(), conversationId, kind: "pi.assistant", model: [reply("two")] as never } }], BACKGROUND_CONTEXT);
+  await history.refresh();
+  assert.equal(listed, 1, "the recent IDs, listed");
+  assert.equal(scans.length, 1, "one read of records: what is new");
+  assert.equal(scans[0].maxEntryId, undefined);
+  assert.equal(history.total, 2);
+});

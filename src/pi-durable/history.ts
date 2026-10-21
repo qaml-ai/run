@@ -4,6 +4,7 @@ import type { Cursor, EntryId, EntryRecord, Storage } from "@earendil-works/pi-d
 import { durableEntryMessages } from "./agent.ts";
 import { HOST_BOOTSTRAP_KIND, LEGACY_CONVERSATION_ID as conversationId } from "./migration.ts";
 import { MARKER_KIND } from "./transcript.ts";
+import { entryIds, type EntryIdLister } from "./storage.ts";
 
 /**
  * An agent's history as Pi's journal gives it (plans/host-transcript-removal.md, phase 2): the messages before the
@@ -37,9 +38,9 @@ export class JournalHistory {
   private applied = new Set<number>();
   /** Where the history's entries begin: the base's cursor's entry, or past the base. */
   private readonly startId: number;
-  private readonly storage: Pick<Storage, "scanEntries" | "entry">;
+  private readonly storage: Pick<Storage, "scanEntries" | "entry"> & Partial<EntryIdLister>;
 
-  private constructor(storage: Pick<Storage, "scanEntries" | "entry">, base: HistoryBase, baseId: number) {
+  private constructor(storage: Pick<Storage, "scanEntries" | "entry"> & Partial<EntryIdLister>, base: HistoryBase, baseId: number) {
     this.storage = storage; this.base = base; this.baseId = baseId; this.lastId = baseId;
     this.startId = base.through ? base.through.entryId : baseId + 1;
     this.total = base.total; this.active = base.active; this.turnStart = base.turnStart; this.awaiting = [...base.awaiting];
@@ -67,7 +68,7 @@ export class JournalHistory {
   }
 
   /** The journal history of a session with a base, read up to the journal's end; undefined for one without. */
-  static async open(storage: Pick<Storage, "scanEntries" | "entry">): Promise<JournalHistory | undefined> {
+  static async open(storage: Pick<Storage, "scanEntries" | "entry"> & Partial<EntryIdLister>): Promise<JournalHistory | undefined> {
     const base = await JournalHistory.findBase(storage);
     if (!base) return undefined;
     const history = new JournalHistory(storage, base.data as unknown as HistoryBase, base.id);
@@ -83,20 +84,10 @@ export class JournalHistory {
    * or skip applies to what precedes it).
    */
   async refresh() {
-    const late = (await this.entries(Math.max(this.startId, this.lastId - REORDER_WINDOW + 1))).some(entry => entry.id < this.lastId && !this.applied.has(entry.id));
+    // IDs only: the recent entries' records (a checkpoint's whole context, say) are read again only when one is late.
+    const late = (await entryIds(this.storage, conversationId, Math.max(this.startId, this.lastId - REORDER_WINDOW + 1), this.lastId)).some(id => id < this.lastId && !this.applied.has(id));
     if (late) { this.reset(); await this.read(this.startId); return; }
     await this.read(this.lastId + 1);
-  }
-
-  private async entries(from: number) {
-    const items: EntryRecord[] = [];
-    let cursor: Cursor | undefined;
-    do {
-      const page = await this.storage.scanEntries({ conversationId, order: "ascending", minEntryId: from as EntryId, maxEntryId: this.lastId as EntryId }, 256, cursor, context);
-      items.push(...page.items);
-      cursor = page.next;
-    } while (cursor !== undefined);
-    return items;
   }
 
   private async read(from: number) {

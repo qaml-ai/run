@@ -307,7 +307,7 @@ export async function deletePiStorage(sql: Sql, sessionId: string): Promise<void
     for (const table of Object.values(TABLES).reverse()) await sql.query(`delete from ${table} where session_id = $1`, [sessionId]);
 }
 
-const STORAGE_METHODS = ["commit", "mintId", "mintIds", "conversation", "scanConversations", "entry", "findLatestHeadMarker", "scanEntries", "task", "scanTasks", "submission", "scanSubmissions", "submissionByRequest", "findDocument", "document", "scanDocuments", "close"] as const;
+const STORAGE_METHODS = ["commit", "mintId", "mintIds", "entryIds", "conversation", "scanConversations", "entry", "findLatestHeadMarker", "scanEntries", "task", "scanTasks", "submission", "scanSubmissions", "submissionByRequest", "findDocument", "document", "scanDocuments", "close"] as const;
 export type PiStorageMethod = typeof STORAGE_METHODS[number];
 export type PiStorageRequest = { method: PiStorageMethod; args: unknown[]; undefinedArgs?: number[] };
 /** The supervisor is the only process that holds the database/file handle and its claim. */
@@ -322,6 +322,11 @@ export async function storageRequest(storage: Storage, request: PiStorageRequest
         for (let index = 0; index < count; index++) ids.push(await storage.mintId());
         return ids;
     }
+    if (request.method === "entryIds") {
+        const [conversationId, minId, maxId] = request.args as number[];
+        if (![conversationId, minId, maxId].every(Number.isSafeInteger)) throw new Error("Invalid Pi storage argument");
+        return entryIds(storage, conversationId as ConversationId, minId, maxId);
+    }
     const method = storage[request.method] as (...args: unknown[]) => Promise<unknown>;
     const args = [...request.args];
     for (const index of request.undefinedArgs ?? []) {
@@ -331,9 +336,28 @@ export async function storageRequest(storage: Storage, request: PiStorageRequest
     return method.apply(storage, request.method === "mintId" ? [] : [...args, BACKGROUND_CONTEXT]);
 }
 /** Contexts are process-local; the owner attaches its background context to each dispatched operation. */
+/** A storage that lists a conversation's entry IDs without reading their records (PostgresPiStorage). */
+export type EntryIdLister = { entryIds(conversationId: ConversationId, minId: number, maxId: number): Promise<number[]> };
+
+/**
+ * The IDs of a conversation's own entries from `minId` to `maxId`, in order: without their records where the storage
+ * lists them (Postgres), else read from a scan.
+ */
+export async function entryIds(storage: Pick<Storage, "scanEntries"> & Partial<EntryIdLister>, conversationId: ConversationId, minId: number, maxId: number): Promise<number[]> {
+    if (storage.entryIds) return storage.entryIds(conversationId, minId, maxId);
+    const ids: number[] = [];
+    let cursor;
+    do {
+        const page = await storage.scanEntries({ conversationId, order: "ascending", minEntryId: minId as EntryId, maxEntryId: maxId as EntryId }, 256, cursor, BACKGROUND_CONTEXT);
+        ids.push(...page.items.map(entry => entry.id));
+        cursor = page.next;
+    } while (cursor !== undefined);
+    return ids;
+}
+
 export function remotePiStorage(request: (request: PiStorageRequest) => Promise<unknown>): Storage {
     return Object.fromEntries(STORAGE_METHODS.map(method => [method, (...args: unknown[]) => {
-        if (method !== "mintId" && method !== "mintIds") args.pop();
+        if (method !== "mintId" && method !== "mintIds" && method !== "entryIds") args.pop();
         const undefinedArgs = args.flatMap((value, index) => value === undefined ? [index] : []);
         return request({ method, args, ...(undefinedArgs.length ? { undefinedArgs } : {}) });
     }])) as unknown as Storage;
@@ -765,6 +789,15 @@ export class PostgresPiStorage implements Storage {
 	}
 
 	/** Oldest first: the fork chain's segments from the root conversation forward, each up to its fork point. */
+	/** A conversation's own entry IDs from `minId` to `maxId`, in order, without reading their records (`EntryIdLister`). */
+	async entryIds(conversationId: ConversationId, minId: number, maxId: number): Promise<number[]> {
+		const rows = await this.db.all<{ id: string | number }>(
+			`SELECT id FROM ${this.schema.tables.entries} WHERE session_id = $1 AND conversation_id = ? AND id >= ? AND id <= ? ORDER BY id`,
+			conversationId, minId, maxId,
+		);
+		return rows.map(row => Number(row.id));
+	}
+
 	private async readEntriesAscending(
 		query: EntryQuery,
 		limit: number,
