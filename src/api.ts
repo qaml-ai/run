@@ -50,6 +50,7 @@ import type { AccountDeletions } from "./account-deletion.ts";
 import { exportAccount, type ExportOptions } from "./account-export.ts";
 import { Readable } from "node:stream";
 import { clientAddress, rateLimitHeaders, type RateLimits, type RateLimitState } from "./rate-limits.ts";
+import { PI_SWEEP_MODES, type PiSweepControl, type PiSweepMode } from "./pi-sweep.ts";
 
 /**
  * Tenant self-service REST API. Every console action goes through these routes,
@@ -92,6 +93,8 @@ export interface ApiContext {
   definitions?: Definitions;
   /** Tenants whose operator tokens may adjust any tenant's credit (AGENT_BILLING_ADMINS). */
   billingAdmins?: string[];
+  /** The Pi migration sweep's state and the operator's mode (`/v1/operations/pi-sweep`). */
+  piSweep?: PiSweepControl;
   /** Signs and verifies file links (`/v1/links`). */
   links?: FileLinks;
   /** Serves the URLs of files sent to tools (`/v1/files`, file-arguments.ts). */
@@ -1096,6 +1099,22 @@ export function api(context: ApiContext) {
     if (principal.via !== "operator" || !context.billingAdmins?.includes(principal.tenant)) throw new HttpError(403, "Only the platform operator can act on other tenants");
     return principal.tenant;
   };
+  // The Pi migration sweep (src/pi-sweep.ts): the platform operator's, so not part of the documented API.
+  const piSweep = (c: Context<Env>) => {
+    operatorOnly(c);
+    if (!context.piSweep) throw new HttpError(404, "The Pi sweep is not on this runtime");
+    return context.piSweep;
+  };
+  app.get("/v1/operations/pi-sweep", async c => json(c, 200, await piSweep(c).status()));
+  app.put("/v1/operations/pi-sweep", async c => {
+    const control = piSweep(c);
+    const body = await readJson(c.req.raw.body, 1024) as { mode?: unknown; restart?: unknown };
+    if (!PI_SWEEP_MODES.includes(body?.mode as PiSweepMode)) throw new HttpError(400, `mode must be one of ${PI_SWEEP_MODES.join(", ")}`);
+    if (body.restart !== undefined && typeof body.restart !== "boolean") throw new HttpError(400, "restart must be true or false");
+    const status = await control.set(body.mode as PiSweepMode, body.restart === true);
+    console.log(JSON.stringify({ type: "pi_sweep_mode_set", by: c.var.principal.tenant, mode: status.mode, restart: body.restart === true }));
+    return json(c, 200, status);
+  });
   const deletions = () => {
     if (!context.accountDeletions) throw new HttpError(404, "Account deletion is not enabled on this runtime");
     return context.accountDeletions;

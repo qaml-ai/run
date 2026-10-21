@@ -49,11 +49,7 @@ transcript is not appended during normal native operation.
 
 ## Migration and rollback
 
-Eligible sessions migrate when next opened. `AGENT_PI_SWEEP` (off by default) opens the
-remaining idle legacy sessions one at a time so they migrate without waiting for traffic: run it
-with `dry-run` first, which logs each candidate's predicted outcome (`would_migrate` or
-`deferred_<reason>`) and writes nothing, then with `on`. The admin health page counts agents still
-on the legacy engine.
+Eligible sessions migrate when next opened, or with the [migration sweep](#the-migration-sweep).
 An active legacy turn or a human wait continues on its original engine, and can
 migrate on a later idle open. Contexts that Pi would normalize differently defer
 migration rather than silently changing provider history.
@@ -88,6 +84,46 @@ generation inactive. Pending native work is retired before legacy execution.
 Keep both stores. A later opt-in creates a fresh native host generation from the
 current legacy history, including intervening legacy turns. Rollback changes no
 public IDs and does not delete the native archive.
+
+### The migration sweep
+
+`AGENT_PI_SWEEP` (Terraform `agent_pi_sweep`; `off` by default) lets each node open the remaining
+legacy agents one at a time, so they migrate without waiting for traffic. It is the most a node may
+do; the operator's mode chooses within it, is read before every agent, and starts in `dry-run`:
+
+    infra/pi-sweep.sh status      # mode, cursors, agents left on legacy
+    infra/pi-sweep.sh dry-run     # report only (the starting mode)
+    infra/pi-sweep.sh on          # migrate (needs AGENT_PI_SWEEP=on)
+    infra/pi-sweep.sh off         # every node stops before its next agent, within seconds
+
+- **Which agents:** kept (not revoked, purged or expired) and without a Pi host document, in id
+  order. Nodes take them from a shared cursor in the `pi_sweep` row, so no agent is taken twice in a
+  pass, and a restart or deploy goes on where the fleet was. Each mode has its own cursor. After a
+  pass reaches the end, the next starts from the first agent `AGENT_PI_SWEEP_REPASS_MS` later (6 h);
+  `--restart` starts both passes again now. Migrated agents are never candidates again.
+- **Never two owners:** an agent hosted or being loaded anywhere is skipped (`skipped_hosted`).
+  Opening takes the agent's ownership claim as any load does, so a node that took it in between keeps
+  it. One with runs open (`skipped_pending_runs`) or waiting on a person (`deferred_awaiting`) is
+  left for its own next open. A request that reaches the agent while the sweep has it open is served
+  there, and the agent stays until it is idle.
+- **Deferred agents:** the legacy transcript is read first (bounded, as the import reads it), and an
+  agent its open would not migrate is not opened: `deferred_active`, `deferred_context_changed`
+  (with `kind`: `failed_response`, `open_call` or `order`), `deferred_size_limit`. A dry run stops
+  there for every agent (`would_migrate`, with its record count), opening nothing and writing
+  nothing but the sweep's own cursor.
+- **Live traffic first:** a node takes no agent while it is leaving, its database pool has a
+  request waiting, its resident memory is past `AGENT_MEMORY_HIGH_BYTES`, its container memory is past
+  `AGENT_PI_SWEEP_MAX_MEMORY_BYTES` (60% of the task), or it is full. It waits 5 s, doubling to 60 s,
+  and logs `pi_sweep_backoff` with the reason at most once a minute. Five failures in a row wait 60 s.
+- **Logs:** `pi_sweep_agent` (agent, tenant, `outcome`, `ms`), `pi_sweep_progress` each minute per
+  node (counts by outcome, `remaining`), `pi_sweep_pass_done` (`mode`, `remaining`), and
+  `pi_sweep_mode_set` when the operator changes it. A dry run's report:
+
+      filter type = "pi_sweep_agent" and mode = "dry-run" | stats count(*) by outcome
+
+  Outcomes: `migrated`, `adopted`, `already_pi`, `would_migrate`, `deferred_<reason>`,
+  `skipped_hosted`, `skipped_pending_runs`, `skipped_busy`, `skipped_leaving`, `gone`,
+  `not_migrated` (a node on the legacy engine), `failed` (with `error`).
 
 ## Persistence and billing
 

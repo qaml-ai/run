@@ -185,15 +185,24 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
 }
 
 /**
- * The Pi migration sweep (`ClientSessions.piSweep`): off by default; `dry-run` reports what opening each legacy agent
- * would do, `on` opens them. Paced (AGENT_PI_SWEEP_PACE_MS between agents) and AGENT_PI_SWEEP_LIMIT agents a pass.
+ * The Pi migration sweep (src/pi-sweep.ts): AGENT_PI_SWEEP is the most it may do on this node (off by default, which
+ * runs nothing); the operator's mode (PUT /v1/operations/pi-sweep) chooses within that. It takes no agent while the
+ * node's container memory is past AGENT_PI_SWEEP_MAX_MEMORY_BYTES (or its resident memory past AGENT_MEMORY_HIGH_BYTES),
+ * waits AGENT_PI_SWEEP_PACE_MS between agents, AGENT_PI_SWEEP_DELAY_MS after the node starts, and
+ * AGENT_PI_SWEEP_REPASS_MS after a pass reaches the end before the next.
  */
 function piSweepSettings(env: Record<string, string | undefined>) {
   const mode = env.AGENT_PI_SWEEP ?? "off";
   if (!["off", "dry-run", "on"].includes(mode)) throw new Error("AGENT_PI_SWEEP must be off, dry-run or on");
-  const paceMs = Number(env.AGENT_PI_SWEEP_PACE_MS ?? 2_000);
-  const limit = Number(env.AGENT_PI_SWEEP_LIMIT ?? 500);
-  if (!Number.isInteger(paceMs) || paceMs < 0) throw new Error("AGENT_PI_SWEEP_PACE_MS must be a non-negative integer");
-  if (!Number.isInteger(limit) || limit < 1) throw new Error("AGENT_PI_SWEEP_LIMIT must be a positive integer");
-  return { mode: mode as "off" | "dry-run" | "on", paceMs, limit, delayMs: Number(env.AGENT_PI_SWEEP_DELAY_MS ?? 120_000) };
+  const number = (name: string, fallback: number, min: number) => {
+    const value = Number(env[name] ?? fallback);
+    if (!Number.isSafeInteger(value) || value < min) throw new Error(`${name} must be an integer of at least ${min}`);
+    return value;
+  };
+  const maxMemoryBytes = env.AGENT_PI_SWEEP_MAX_MEMORY_BYTES ? number("AGENT_PI_SWEEP_MAX_MEMORY_BYTES", 0, 1) : undefined;
+  return {
+    mode: mode as "off" | "dry-run" | "on", maxMemoryBytes,
+    paceMs: number("AGENT_PI_SWEEP_PACE_MS", 1_000, 0), delayMs: number("AGENT_PI_SWEEP_DELAY_MS", 120_000, 0),
+    repassMs: number("AGENT_PI_SWEEP_REPASS_MS", 6 * 60 * 60_000, 0),
+  };
 }

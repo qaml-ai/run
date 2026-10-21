@@ -14,6 +14,7 @@ import { Telemetry, TELEMETRY_CHANNEL } from "./telemetry.ts";
 import { expireIdempotencyKeys } from "./idempotency.ts";
 import { DOCS_SITE, loadDocs, loadRegistry, SKILL_PATHS } from "./docs.ts";
 import { StorageGc } from "./storage-gc.ts";
+import { PiSweep, PiSweepControl, piSweepGate } from "./pi-sweep.ts";
 import { modelHeadersInput, resolveModel, sessionConfig } from "./session-config.ts";
 import { ClientSessions, ORPHANS_CHANNEL, runSessionOf, spendInput, type RunSettings, type SessionHooks } from "./client-sessions.ts";
 import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts";
@@ -1267,6 +1268,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     },
     runPrecheck: async tenant => { await rateLimits.runsLeft(tenant); const refused = await busyAgents.check(tenant); if (refused) throw refused; },
     createRun: (tenant, params, key, run) => createAgent(tenant, params, key, undefined, undefined, run) as Promise<{ id: string; existing?: boolean }>,
+    piSweep: new PiSweepControl(db, config.piSweep.mode),
     billingAdmins: config.billingAdmins }));
   if (journey) app.route("/", journeyApp(journey, consoleAuth, c => requestClient(c).key));
   // The query goes along: a link from the operator's site says in it where the visitor came from (src/journey.ts).
@@ -1428,17 +1430,19 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   // writes created) is recorded either way, so turning it on later loses nothing.
   const storageGc = new StorageGc({ db, storage, volumes, graceMs: config.gc.graceMs, intervalMs: config.gc.intervalMs, dryRun: config.gc.dryRun });
   if (config.gc.enabled) storageGc.start(config.gc.pollMs);
-  // Retained agents still on the legacy engine, opened one at a time so they migrate to Pi (AGENT_PI_SWEEP; off by default).
-  // Once per node start, after it settles: a pass walks every candidate, `limit` at a time, and ends when none is left.
-  let piSweeping = true;
-  const piSweepTimer = config.piSweep.mode === "off" ? undefined : setTimeout(() => void (async () => {
-    let after: string | undefined;
-    while (piSweeping) {
-      const pass = await clients.piSweep({ dryRun: config.piSweep.mode === "dry-run", limit: config.piSweep.limit, paceMs: config.piSweep.paceMs, after });
-      if (pass.skipped || pass.stopped || pass.seen < config.piSweep.limit) break;
-      after = pass.last;
-    }
-  })().catch(error => console.error(JSON.stringify({ type: "pi_sweep_failed", error: safeError(error) }))), config.piSweep.delayMs);
+  // Retained agents still on the legacy engine, opened one at a time so they migrate to Pi (AGENT_PI_SWEEP, off by
+  // default; the operator's mode chooses within it). An agent only while this node has memory and database connections to
+  // spare, has room, and is not leaving: live traffic comes first.
+  const piSweep = new PiSweep({
+    db, setting: config.piSweep.mode, paceMs: config.piSweep.paceMs, repassMs: config.piSweep.repassMs,
+    sweep: (candidate, dryRun) => clients.piSweepAgent(candidate, dryRun),
+    busy: () => piSweepGate({
+      leaving: retiringSince !== undefined || clients.draining, dbWaiting: db.waitingCount, memoryHigh: supervisor.memoryHigh, full: supervisor.full,
+      maxMemoryBytes: config.piSweep.maxMemoryBytes,
+      memoryBytes: async () => (await deps.readCgroupMemory?.() as { cgroupMemoryBytes?: number } | undefined)?.cgroupMemoryBytes ?? process.memoryUsage.rss(),
+    }),
+  });
+  const piSweepTimer = config.piSweep.mode === "off" ? undefined : setTimeout(() => piSweep.start(), config.piSweep.delayMs);
   piSweepTimer?.unref();
   // Agents no node holds with work left (a dead owner's turn, runs a drain queued) are loaded by whichever node gets to them first,
   // so their runs resume even when no one reads them. A node sweeps as it starts too: in a deploy, its peers are retiring and do not.
@@ -1557,8 +1561,9 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     clearInterval(loadTimer);
     clearInterval(sweepTimer);
     clearInterval(purgeTimer);
-    piSweeping = false;
     clearTimeout(piSweepTimer);
+    // Not waited for: the agent in hand, if any, ends with the node (its load or start refused, or released with the rest).
+    void piSweep.stop();
     clearInterval(orphanTimer);
     clearInterval(childTimer);
     clearInterval(billingTimer);

@@ -115,7 +115,7 @@ variable "task_memory" {
 }
 
 variable "agent_pi_sweep" {
-  description = "AGENT_PI_SWEEP: off, dry-run (log what migrating each legacy agent would do) or on (open idle legacy agents so they migrate to Pi)"
+  description = "AGENT_PI_SWEEP: the most the Pi migration sweep may do: off, dry-run (log what migrating each legacy agent would do) or on (open idle legacy agents so they migrate to Pi). The operator's mode (infra/pi-sweep.sh) chooses within it, and starts in dry-run"
   type        = string
   default     = "off"
   validation {
