@@ -51,6 +51,7 @@ import type { Outbound } from "./outbound.ts";
 import { fileRef } from "./inspect.ts";
 import { resolve as resolveMount, type ToolContext, type WrittenFile } from "./volume-tools.ts";
 import { servedHistory } from "./pi-durable/history.ts";
+import { ForkBeforeHead } from "./pi-durable/fork.ts";
 import { HistoryIndex, type HistoryPage } from "./history-pages.ts";
 import { answerInput, argumentsHash, expiresAt, INPUT_LIMITS, inputRequests, inputView, mayAnswer, resolution, type Answer, type Input, type Inputs, type InputRow, type Responder, type RetryPlan } from "./inputs.ts";
 import { recordBillingFailure, recordHandoff, recordStart, recordWatchRefused, safeError, Steps } from "./metrics.ts";
@@ -3408,7 +3409,11 @@ export class ClientSessions {
     if (this.supervisor.readsJournal(tenant)) {
       const indexed = (await this.historyIndex.indexed(sourceId)) ?? 0;
       const journal = await steps.time("journal", this.supervisor.journalFork(sourceId, indexed, count => this.historyIndex.messages(sourceId, count), input.atMessage))
-        .catch(error => { console.error(JSON.stringify({ type: "history_source_unavailable", agent: sourceId, field: "fork", error: safeError(error) })); return undefined; });
+        .catch(error => {
+          // A product refusal must reach the caller: falling back would reconstruct a fork from reclaimed context.
+          if (error instanceof ForkBeforeHead) throw error;
+          console.error(JSON.stringify({ type: "history_source_unavailable", agent: sourceId, field: "fork", error: safeError(error) })); return undefined;
+        });
       const host = { through: cut.through, messages: historyOf(cut.records) };
       const served = servedHistory(sourceId, "fork", host, journal && { through: journal.through, messages: historyOf(journal.records) });
       if (journal && served !== host) cut = journal;
