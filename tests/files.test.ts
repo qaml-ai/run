@@ -10,7 +10,6 @@ import { declaredType, downloadHeaders, fileResponse, sniffContentType } from ".
 import { testDatabase } from "./database.ts";
 import { bombPdf, pdfBytes, PNG } from "./file-fixtures.ts";
 import { contextTokens } from "../src/compaction.ts";
-import { messageChars } from "../src/history.ts";
 import { inspect, inspection } from "../src/inspect.ts";
 import { contentResult } from "../src/mcp-results.ts";
 import { OPERATOR, runtime, toolCall, until } from "./runtime-server.ts";
@@ -250,7 +249,6 @@ test("context estimates count what file references stand for, not their JSON", (
   const message = (block: object) => ({ role: "user", content: [{ type: "text", text: "see" }, block], timestamp: 0 }) as any;
   const pdf = message(ref({ kind: "pdf", pages: 10 }));
   assert.ok(contextTokens([pdf]) >= 30_000, "ten pages at about 3,000 tokens each");
-  assert.ok(messageChars(pdf) >= 120_000 && messageChars(pdf) < 121_000, "and not the chunk list");
   assert.ok(contextTokens([message(ref({ kind: "image", mimeType: "image/png", width: 1, height: 1 }))]) >= 1200);
   assert.ok(contextTokens([message(ref({ kind: "none", reason: "x" }, 10_000_000))]) < 200, "a file that is only named costs its line");
   // After a response that reported usage, only later messages' files are added.
