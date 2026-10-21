@@ -107,6 +107,9 @@ export interface HostIO {
   history?: { indexed(): Promise<number | null>; write(chunk: HistoryChunk): Promise<number>; read(from: number): Promise<Backlog> };
 }
 
+/** The least time between an agent's dual reads in `log` mode, past its load's. */
+export const DUAL_READ_INTERVAL_MS = 10 * 60_000;
+
 /** Tools a lost node's open call to is made again on resume, not closed as unknown: each is keyed by its call (multi-agent.ts). */
 export const RERUN = ["delegate", "spawn_agent", "wait_agent", "list_agents", "send_message", "interrupt_agent"];
 
@@ -147,6 +150,8 @@ export function createAgentHost(hostIO: HostIO) {
   let transcript: Transcript;
   /** The agent's Pi storage, once loaded: the dual read reads it. */
   let journal: PiStorage | undefined;
+  /** When the dual read last ran for this agent (`DUAL_READ_INTERVAL_MS`). */
+  let lastDualRead = 0;
   /** The last system prompt hash logged for this agent (`systemPromptHash`). */
   let lastPromptHash: string | undefined;
   let busy = false;
@@ -1307,7 +1312,11 @@ export function createAgentHost(hostIO: HostIO) {
   async function handled(method: string, params: any): Promise<any> {
     try {
       const result = await handle(method, params);
-      if (io.piDualRead && journal && transcript?.failed === undefined && ["init", "prompt", "execute", "continue", "resume"].includes(method)) {
+      // In `log` (production), a check reads the session's journal since its host generation began: at load, then at
+      // most every DUAL_READ_INTERVAL_MS per agent. `throw` (tests, the simulation) checks after every run.
+      if (io.piDualRead && journal && transcript?.failed === undefined && ["init", "prompt", "execute", "continue", "resume"].includes(method) &&
+        (io.piDualRead === "throw" || method === "init" || clock().now() - lastDualRead >= DUAL_READ_INTERVAL_MS)) {
+        lastDualRead = clock().now();
         await checkDualRead(io.piDualRead, config.id, journal, transcript.awaiting, transcript.active);
       }
       return result;
