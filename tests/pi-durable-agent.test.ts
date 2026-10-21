@@ -349,3 +349,30 @@ test("Pi adapter fails a run whose generation faulted instead of ending it as an
   assert.equal(fake.agent.state.messages.at(-1)?.role, "toolResult", "no answer was made");
   assert.equal(fake.agent.state.errorMessage, "policy broke");
 });
+
+test("Pi adapter stops a model request when Pi ends the generation, not only when the host aborts the run", { timeout: 10_000 }, async () => {
+  let started!: () => void, requestSignal: AbortSignal | undefined;
+  const requested = new Promise<void>(resolve => { started = resolve; });
+  const agent = await DurableAgent.create({
+    initialState: { model, messages: [], tools: [] },
+    streamFn: (_model, _context, options) => {
+      const stream = createAssistantMessageEventStream();
+      requestSignal = options?.signal;
+      // A provider that answers only once its request is cancelled.
+      options?.signal?.addEventListener("abort", () => {
+        const aborted = { ...answer(""), stopReason: "aborted" } as AssistantMessage;
+        stream.push({ type: "error", reason: "aborted", error: aborted }); stream.end(aborted);
+      });
+      started();
+      return stream;
+    },
+    durable: { storage: new MemoryStorage() },
+  });
+  const run = agent.prompt(user("Go")).catch(() => {});
+  await requested;
+  // Pi aborts the conversation's work on its own (as a failed storage or another handle would): the host never aborts.
+  await (agent as any).conversation.abort(BACKGROUND_CONTEXT);
+  await run;
+  assert.equal(requestSignal?.aborted, true);
+  await agent.close();
+});
