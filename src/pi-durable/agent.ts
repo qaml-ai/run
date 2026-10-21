@@ -382,10 +382,11 @@ export class DurableAgent {
       // Pi commits an aborted response from its last throttled partial (`convertPartial`), which may be stale or
       // missing: the provider's own terminal message, with its usage and billing attempt, replaces it before Pi's
       // abort handler converts it, so the canceled response is in history and billed exactly once.
-      if (final.stopReason === "aborted") await this.conversation.commit(async tx => {
+      // Only for the run's own abort: a request the runtime cut (a stale lease) is classified by Pi and made again.
+      if (final.stopReason === "aborted" && signal?.aborted) await this.conversation.commit(async tx => {
         const live = await tx.doc(LiveDoc, this.conversation.id);
         if (live.generation) live.generation.message = JSON.parse(JSON.stringify(final));
-      }, context);
+      }, context).catch(error => console.error(JSON.stringify({ type: "pi_aborted_response_write_failed", error: error instanceof Error ? error.message : String(error) })));
       stream.end(final);
     })().catch(error => {
       const message = { role: "assistant", content: [], api: this.state.model.api, provider: this.state.model.provider,

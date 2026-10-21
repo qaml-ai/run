@@ -296,6 +296,8 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   const supervisor = new AgentSupervisor(join(root, "sessions"), {
     runtime: config.runtime, maxAgents, ...(config.memoryHighBytes ? { memoryHighBytes: config.memoryHighBytes } : {}), hosting, ...(distributed ? { storage } : {}), ...(deps.codeExecutor ? { codeExecutor: deps.codeExecutor } : {}),
     engine: config.engine, piCanaryAgents: config.piCanaryAgents, piCanaryTenants: config.piCanaryTenants, db,
+    // Pi's journal rides out a failover as the log tail does: for as long as the node's lease lasts.
+    piRetryMs: leaseTtlMs,
     agentEnv: config.agentEnv, historyBacklogBytes: config.historyBacklogBytes, modelOutbound: outbound,
   });
   const model = configuredModel(env);

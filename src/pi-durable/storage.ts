@@ -15,7 +15,8 @@ import { openNodeSqliteDatabase } from "@earendil-works/pi-durable/storage/sqlit
 import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 import { validKey } from "../../shared/storage.ts";
 import { underClaim, type Claim } from "../ownership.ts";
-import type { Db, Sql } from "../db.ts";
+import { databaseUnavailable, type Db, type Sql } from "../db.ts";
+import { clock } from "../node-context.ts";
 
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { apply, type Op } from "@earendil-works/chord/delta";
@@ -67,8 +68,25 @@ type PgExecutor = {
     all<T>(query: string, ...params: unknown[]): Promise<T[]>;
     run(query: string, ...params: unknown[]): Promise<void>;
 };
-type PgDatabase = PgExecutor & { transaction<T>(work: (sql: PgExecutor) => Promise<T>): Promise<T>; close(): Promise<void> };
-function postgresDatabase(db: Db, sessionId: string, claim?: Claim): PgDatabase {
+type PgDatabase = PgExecutor & { retryMs: number; transaction<T>(work: (sql: PgExecutor) => Promise<T>): Promise<T>; close(): Promise<void> };
+/**
+ * Run `work` again while the database is unreachable (a failover, a network fault), for up to `retryMs`, as the log tail
+ * repeats its appends. `settled`, given the failure, says whether the work landed anyway (its answer was lost).
+ */
+async function whileUnavailable<T>(retryMs: number, work: () => Promise<T>, settled?: () => Promise<{ value: T } | undefined>): Promise<T> {
+    const deadline = Date.now() + retryMs;
+    for (let delay = 100; ; delay = Math.min(delay * 2, 2_000)) {
+        try { return await work(); }
+        catch (error) {
+            if (!databaseUnavailable(error) || Date.now() + delay > deadline) throw error;
+            await clock().sleep(delay);
+            const landed = await whileUnavailable(Math.max(0, deadline - Date.now()), async () => settled?.());
+            if (landed) return landed.value;
+        }
+    }
+}
+
+function postgresDatabase(db: Db, sessionId: string, claim?: Claim, retryMs = 0): PgDatabase {
     const executor = (sql: Sql): PgExecutor => {
         const query = (text: string, params: unknown[]) => {
             let n = 1;
@@ -81,8 +99,14 @@ function postgresDatabase(db: Db, sessionId: string, claim?: Claim): PgDatabase 
             run: async (text: string, ...params: unknown[]) => { await query(text, params); },
         };
     };
+    const pool = executor(db);
     return {
-        ...executor(db),
+        // Reads change nothing: one the database did not answer is asked again.
+        sql: db,
+        get: (text, ...params) => whileUnavailable(retryMs, () => pool.get(text, ...params)),
+        all: (text, ...params) => whileUnavailable(retryMs, () => pool.all(text, ...params)),
+        run: (text, ...params) => whileUnavailable(retryMs, () => pool.run(text, ...params)),
+        retryMs,
         transaction: work => underClaim(db, claim, async sql => {
             // Serializes mutations by session, including separate handles on this node. Takeovers
             // wait on underClaim's ownership lock before another owner can update this metadata.
@@ -115,9 +139,9 @@ function scanStart(requested: ScanOrder | undefined, cursor: Cursor | undefined,
 const nextCursor = (id: Id<string>, order: ScanOrder): Cursor => ({ after: id, order });
 
 /** `directory` is the owning session directory; `db` selects shared indexed storage. */
-export async function openPiStorage(options: { sessionId: string; directory: string; db?: Db; claim?: Claim; committing?: PiCommitEffect }): Promise<Storage> {
+export async function openPiStorage(options: { sessionId: string; directory: string; db?: Db; claim?: Claim; committing?: PiCommitEffect; retryMs?: number }): Promise<Storage> {
     validKey(options.sessionId);
-    if (options.db) return PostgresPiStorage.open(options.db, options.sessionId, options.claim, options.committing);
+    if (options.db) return PostgresPiStorage.open(options.db, options.sessionId, options.claim, options.committing, options.retryMs);
     if (options.claim) throw new Error("A distributed Pi session needs Postgres storage");
     await mkdir(options.directory, { recursive: true, mode: 0o700 });
     const path = join(options.directory, "pi-durable.sqlite");
@@ -380,8 +404,8 @@ export class PostgresPiStorage implements Storage {
 		this.nextId = nextId;
 	}
 
-	static async open(db: Db, sessionId: string, claim?: Claim, committing?: PiCommitEffect): Promise<PostgresPiStorage> {
-        const database = postgresDatabase(db, sessionId, claim);
+	static async open(db: Db, sessionId: string, claim?: Claim, committing?: PiCommitEffect, retryMs = 0): Promise<PostgresPiStorage> {
+        const database = postgresDatabase(db, sessionId, claim, retryMs);
         await database.transaction(async sql => {
             await sql.run(`INSERT INTO ${TABLES.durableMetadata} (session_id, singleton, next_id, next_seq) VALUES ($1, 1, '2', 1) ON CONFLICT(session_id) DO NOTHING`);
         });
@@ -394,12 +418,15 @@ export class PostgresPiStorage implements Storage {
 		this.assertOpen();
 		const documentActions = this.prepareDocumentActions(writes);
 		const candidateNextId = this.candidateNextId(writes);
-		const seq = await this.db.transaction(async (transaction) => {
+		// The sequence the latest attempt took: a commit whose answer was lost is found by what it wrote at it (`landed`).
+		let attempted: Seq | undefined;
+		const seq = await whileUnavailable(this.db.retryMs, () => this.db.transaction(async (transaction) => {
 			const metadata = await transaction.get<MetadataRow>(
 				`SELECT next_id, next_seq FROM ${this.schema.tables.durableMetadata} WHERE session_id = $1 AND singleton = 1`,
 			);
 			if (metadata === undefined) throw new Error("Durable SQLite metadata is missing");
 			const committedSeq = seqFromNumber(metadata.next_seq);
+			attempted = committedSeq;
 			await this.checkGlobalIds(transaction, writes);
 			await this.checkDocumentActions(transaction, documentActions);
 			await this.applyTableWrites(transaction, writes, committedSeq);
@@ -411,9 +438,21 @@ export class PostgresPiStorage implements Storage {
 				committedSeq + 1,
 			);
 			return committedSeq;
-		});
+		}), async () => attempted !== undefined && await this.landed(writes, attempted) ? { value: attempted } : undefined);
 		this.nextId = Math.max(this.nextId, candidateNextId);
 		return seq;
+	}
+
+	/**
+	 * Whether a commit whose answer was lost landed at `seq`: a record it created exists (its IDs are its own), or, writing
+	 * only documents, one has its revision at `seq`. Unsure (a retirement alone), it did not: it runs again.
+	 */
+	private async landed(writes: readonly StorageWrite[], seq: Seq): Promise<boolean> {
+		const id = writes.map(writeId).find(value => value !== undefined);
+		if (id !== undefined) return !!await this.db.get(`SELECT 1 AS found FROM ${this.schema.tables.recordIds} WHERE session_id = $1 AND id = ?`, id);
+		const change = writes.find(write => write.type === "document.change");
+		if (change?.type !== "document.change") return false;
+		return !!await this.db.get(`SELECT 1 AS found FROM ${this.schema.tables.documentRevisions} WHERE session_id = $1 AND document_id = ? AND seq = ?`, change.id, seq);
 	}
 
 	async mintId<I extends Id<string>>(): Promise<I> {
@@ -424,11 +463,12 @@ export class PostgresPiStorage implements Storage {
     async mintIds(count: number): Promise<number[]> {
         this.assertOpen();
         validateReservationCount(count);
-        const first = await this.db.transaction(async sql => {
+        // Run again when its answer is lost: IDs the lost attempt took are skipped, never reused.
+        const first = await whileUnavailable(this.db.retryMs, () => this.db.transaction(async sql => {
             const value = await sql.get<{ id: number }>(`UPDATE ${this.schema.tables.durableMetadata} SET next_id = (next_id::bigint + ?)::text WHERE session_id = $1 AND singleton = 1 RETURNING (next_id::bigint - ?) as id`, count, count);
             if (!value || !Number.isSafeInteger(value.id) || !Number.isSafeInteger(value.id + count - 1)) throw new Error("ID space is exhausted");
             return value.id;
-        });
+        }));
         this.nextId = Math.max(this.nextId, first + count);
         return Array.from({ length: count }, (_, index) => first + index);
     }
@@ -767,7 +807,7 @@ export class PostgresPiStorage implements Storage {
 	async document(id: DocumentId, at: DocumentPoint, _context: Context): Promise<StoredDocument | undefined> {
 		this.assertOpen();
 		// The record and revision queries must observe one committed state; a commit between them can replace the base.
-		return this.db.transaction((transaction) => this.materializeDocument(transaction, id, at));
+		return whileUnavailable(this.db.retryMs, () => this.db.transaction((transaction) => this.materializeDocument(transaction, id, at)));
 	}
 
 	async scanDocuments(

@@ -162,3 +162,48 @@ test("Pi bulk ID ranges stay unique, fenced, and durable across handles and RPC"
   assert.equal(await reopened.mintId<EntryId>(), next + 2);
   await reopened.close(context);
 });
+
+test("Pi shared storage rides out a database it cannot reach: reads are asked again, and a commit whose answer was lost lands once", async () => {
+  const { db } = await database;
+  const sessionId = randomUUID();
+  // The database as a node sees it in a failover: `down` statements fail before they run; `loseCommit` lets the next
+  // commit land and then loses its answer.
+  let down = 0, loseCommit = false;
+  const lost = () => Object.assign(new Error("Connection terminated unexpectedly"), { code: "ECONNRESET" });
+  const flaky = {
+    ...db,
+    query: async (...args: Parameters<typeof db.query>) => { if (down > 0) { down--; throw lost(); } return db.query(...args); },
+    connect: async () => {
+      const client = await db.connect();
+      return { ...client, release: client.release.bind(client), on: client.on.bind(client), off: client.off.bind(client),
+        query: async (text: string, values?: unknown[]) => {
+          if (down > 0) { down--; throw lost(); }
+          const result = await client.query(text, values as never);
+          if (text === "commit" && loseCommit) { loseCommit = false; throw lost(); }
+          return result;
+        } };
+    },
+  } as unknown as typeof db;
+  const storage = await PostgresPiStorage.open(flaky, sessionId, undefined, undefined, 10_000);
+  const [conversation, entry] = await storage.mintIds(2);
+  const write = [
+    { type: "conversation" as const, value: { id: conversation as ConversationId } },
+    { type: "entry" as const, value: { id: entry as EntryId, conversationId: conversation as ConversationId, kind: "test" } },
+  ];
+  loseCommit = true;
+  const seq = await storage.commit(write as never, context);
+  const entries = (await db.query("select id from pi_durable_entries where session_id = $1", [sessionId])).rows;
+  assert.deepEqual(entries.map(row => Number(row.id)), [entry], "written once, though its answer was lost");
+  down = 3;
+  const page = await storage.scanEntries({ conversationId: conversation as ConversationId }, 10, undefined, context);
+  assert.deepEqual(page.items.map(item => item.id), [entry], "a read the database did not answer is asked again");
+  down = 2;
+  const next = await storage.commit([{ type: "entry", value: { id: await storage.mintId<EntryId>(), conversationId: conversation as ConversationId, kind: "test" } }] as never, context);
+  assert.ok(next > seq);
+  await storage.close(context);
+  // Without a retry window, it fails as before.
+  const strict = await PostgresPiStorage.open(flaky, sessionId);
+  down = 1;
+  await assert.rejects(strict.scanEntries({ conversationId: conversation as ConversationId }, 10, undefined, context), /Connection terminated/);
+  await strict.close(context);
+});

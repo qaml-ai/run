@@ -49,6 +49,8 @@ export type SupervisorOptions = {
    */
   memoryHighBytes?: number;
   storage?: Storage; hosting?: Hosting; /** How long stopping agents wait, all together, to index their settled turns (default 5 s). */ historyFlushMs?: number;
+  /** How long Pi's journal (in `db`) repeats a read or commit the database did not answer: a failover (default 0). */
+  piRetryMs?: number;
   /** An agent process is pinged this often, and killed once a ping has gone this long unanswered (default 5 s and 30 s). */
   pingMs?: number; unresponsiveMs?: number;
   /** Where inline agents run js_exec (src/codemode.ts): this process's v8-exec runner unless given. Agent processes always use their own. */
@@ -100,7 +102,7 @@ export class AgentSupervisor {
 
   static transcriptKey(id: string) { return `sessions/${id}/transcript`; }
 
-  private piLocation(id: string) { return { sessionId: id, directory: resolve(join(this.root, id)), ...(this.options.db ? { db: this.options.db } : {}) }; }
+  private piLocation(id: string) { return { sessionId: id, directory: resolve(join(this.root, id)), ...(this.options.db ? { db: this.options.db, retryMs: this.options.piRetryMs ?? 0 } : {}) }; }
 
   /**
    * Whether cold history may hold native messages its index and last reported run do not show: a canonical message
@@ -244,7 +246,7 @@ export class AgentSupervisor {
         const storage = this.options.storage;
         const log = storage ? storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id), claim) : fileAppendLog<TranscriptRecord>(transcriptPath(directory));
         const transcript = bridge.committing ? committing(log, bridge.committing) : log;
-        const location = { sessionId: id, directory, ...(this.options.db ? { db: this.options.db } : {}) };
+        const location = { sessionId: id, directory, ...(this.options.db ? { db: this.options.db, retryMs: this.options.piRetryMs ?? 0 } : {}) };
         const engine = this.options.piCanaryAgents?.has(id) || (config.tenant !== undefined && this.options.piCanaryTenants?.has(config.tenant)) ? "pi-durable" : this.engine;
         const needsPi = engine === "pi-durable" || await hasPiStorage(location);
         if (needsPi && storage && !this.options.db) throw new Error("Pi durable shared storage requires the supervisor database");
