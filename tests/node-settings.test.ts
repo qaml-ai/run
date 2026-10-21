@@ -56,3 +56,12 @@ test("the configured resume limit applies to the same run, while a clean handoff
   assert.equal(loadDecision(request, 2), "resume");
   assert.equal(loadDecision({ ...request, handedOff: { step: "model", boundaryWaitMs: 0 } }, 1), "resume");
 });
+
+test("the native sections allow-list is off unless set, trims tenant ids, and is checked before the node starts", () => {
+  for (const value of [undefined, "", "  "]) assert.deepEqual(nodeConfig({ AGENT_NATIVE_SECTIONS_TENANTS: value }).nativeSectionsTenants, []);
+  assert.deepEqual(nodeConfig({ AGENT_NATIVE_SECTIONS_TENANTS: " camel-bots, bob,camel-bots " }).nativeSectionsTenants, ["camel-bots", "bob"]);
+  assert.deepEqual(nodeConfig({ AGENT_NATIVE_SECTIONS_TENANTS: " * " }).nativeSectionsTenants, ["*"]);
+  for (const value of ["*,alice", "alice,", ",alice", "Alice", "camel_bots", "bad tenant", "a/b", "a".repeat(41)]) {
+    assert.throws(() => nodeConfig({ AGENT_NATIVE_SECTIONS_TENANTS: value }), /AGENT_NATIVE_SECTIONS_TENANTS/);
+  }
+});
