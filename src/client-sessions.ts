@@ -52,6 +52,7 @@ import { resolve as resolveMount, type ToolContext, type WrittenFile } from "./v
 import { HistoryIndex, type HistoryPage } from "./history-pages.ts";
 import { answerInput, argumentsHash, expiresAt, INPUT_LIMITS, inputRequests, inputView, mayAnswer, resolution, type Answer, type Input, type Inputs, type InputRow, type Responder, type RetryPlan } from "./inputs.ts";
 import { recordBillingFailure, recordHandoff, recordStart, recordWatchRefused, safeError, Steps } from "./metrics.ts";
+import type { PiSweepCandidate, PiSweepResult } from "./pi-sweep.ts";
 import { BackgroundSpans, inputSpans, RunSpans, type ToolSource, type Tracing } from "./telemetry.ts";
 import { newSpanId, newTraceId, parseTraceparent, sampledAt } from "./otlp.ts";
 import { agentMessage, agentsTools, childNotice, childStatus, definitionId, delegateSettings, limitsOnly, delegateTool, MULTI_AGENT_LIMITS, PARENT_KEYS, SEND_MESSAGE, startsChildren, SUBAGENT_EVENTS, type AgentTarget, type ChildNotice, type DelegateSettings } from "./multi-agent.ts";
@@ -5481,6 +5482,42 @@ export class ClientSessions {
       return true;
     } finally {
       if (claim) await ownership!.release(claim).catch(() => {});
+    }
+  }
+
+  /**
+   * One step of the Pi migration sweep (src/pi-sweep.ts): open `agent`, kept and not yet on Pi, so its legacy session
+   * is imported as its next open would import it, then let it go. Only an agent no node holds is opened: one hosted or
+   * being loaded anywhere, or with runs open (which the orphan sweep loads), is left for its own next open. Opening
+   * takes the agent's ownership claim as any load does, so a node that took it meanwhile keeps it (`skipped_hosted`).
+   * The legacy transcript is read first, bounded: one too large to copy is left for its own open
+   * (`skipped_size_limit`), which imports it by reference after reading the log whole. A dry run stops there
+   * (`would_migrate`, with what the import would find), writing nothing. A request that arrives while it is open
+   * keeps it open.
+   */
+  async piSweepAgent(agent: PiSweepCandidate, dryRun: boolean): Promise<PiSweepResult> {
+    const { id } = agent;
+    if (agent.owned || this.sessions.has(id) || this.loading.has(id)) return { outcome: "skipped_hosted" };
+    if (agent.pendingRuns) return { outcome: "skipped_pending_runs" };
+    const plan = await this.supervisor.migrationPlan(id);
+    if (!plan.ready) return { outcome: `skipped_${plan.reason}` };
+    if (dryRun) return { outcome: "would_migrate", detail: { records: plan.records, ...(plan.from ? { from: plan.from } : {}) } };
+    if (this.closed || this.draining) return { outcome: "skipped_leaving" };
+    let session: Session | undefined;
+    try { session = await this.load(id); }
+    catch (error) { if (error instanceof NotOwner) return { outcome: "skipped_hosted" }; throw error; }
+    if (!session) return { outcome: "gone" };
+    const idle = () => this.sessions.get(id) === session && !this.busy(session) && !session.running.size;
+    try {
+      // Its load found work (a request since the candidate was read): it runs here, as for any load.
+      if (!idle()) return { outcome: "skipped_busy" };
+      await this.ensureStarted(session);
+      const { migration } = await this.supervisor.request(id, "status", {}) as { migration?: { state: string; from?: string; archive?: string } };
+      if (!migration) return { outcome: "not_migrated" };
+      return { outcome: migration.state === "existing" ? "already_pi" : migration.state, ...(migration.from || migration.archive ? { detail: { ...(migration.from ? { from: migration.from } : {}), ...(migration.archive ? { archive: migration.archive } : {}) } } : {}) };
+    } finally {
+      if (idle()) await this.supervisor.stop(id).catch(() => {});
+      if (idle()) await this.unload(session);
     }
   }
 

@@ -25,7 +25,7 @@ import type { Storage as PiStorage } from "@earendil-works/pi-durable";
 import { deletePiStorage, hasPiStorage, openPiJournalReader, openPiStorage, purgePiStorage, storageRequest } from "./pi-durable/storage.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { projectPiRecords, projectPiTranscript, reconcilePiTranscript } from "./pi-durable/projection.ts";
-import { LEGACY_CONVERSATION_ID, loadLegacyMigration } from "./pi-durable/migration.ts";
+import { LEGACY_CONVERSATION_ID, LegacyMigrationDeferred, loadLegacyMigration, piReorders, planLegacyMigration, readMigrationRecords, type LegacyImportShape } from "./pi-durable/migration.ts";
 
 /**
  * How agents run. "process": each agent is its own Node process (strong memory
@@ -130,6 +130,26 @@ export class AgentSupervisor {
       const records = await log.read();
       return journal ? await projectPiRecords(records, journal, LEGACY_CONVERSATION_ID) : records;
     } finally { await journal?.close(BACKGROUND_CONTEXT); await log.close(); }
+  }
+
+  /**
+   * What a stopped agent's next open would import, from its legacy transcript alone: its record count and how it
+   * differs from a session Pi left idle (`from`), or why it would not be imported whole. Read beside a live owner,
+   * without writing or taking a claim (the Pi sweep). Refuses an oversized transcript before reading its bodies, as
+   * the import does.
+   */
+  async migrationPlan(id: string): Promise<{ ready: true; records: number; from?: LegacyImportShape } | { ready: false; reason: LegacyMigrationDeferred["reason"] }> {
+    if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id)) throw new Error("Invalid agent id");
+    const log = this.options.storage ? this.options.storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id)) : fileAppendLog<TranscriptRecord>(transcriptPath(resolve(join(this.root, id))));
+    try {
+      const records = await readMigrationRecords(log);
+      const { snapshot, model } = planLegacyMigration(records);
+      const from = snapshot.active ? "active" : snapshot.awaiting?.length ? "awaiting" : piReorders(model) ? "context_changed" : undefined;
+      return { ready: true, records: records.length, ...(from ? { from } : {}) };
+    } catch (error) {
+      if (error instanceof LegacyMigrationDeferred) return { ready: false, reason: error.reason };
+      throw error;
+    } finally { await log.close(); }
   }
 
   /** Start a new agent's transcript as `records` (a fork's), under its owner's `claim`, before it is started. */

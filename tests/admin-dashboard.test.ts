@@ -284,6 +284,8 @@ test("health says what the platform spent, for whom, and what is waiting longer 
   assert.match(check("schedules").detail, /oldest for 60 min/);
   assert.equal(check("attempts").status, "warn", "a call five hours old the provider has not confirmed");
   assert.equal(check("help").status, "ok");
+  assert.equal(check("pi_migration").status, "info");
+  assert.match(check("pi_migration").value, /^\d+ agents?$/);
   assert.equal(health.nodes.length, 1);
 });
 

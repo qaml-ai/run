@@ -28,7 +28,8 @@ they are intentionally separate from bounded host loading.
 ## Importing legacy sessions
 
 A session the legacy engine wrote (its `sessions/<id>/transcript` log) is imported
-the first time a host opens it. The import is one-way and runs once: the host reads
+the first time a host opens it, or by the
+[migration sweep](#the-migration-sweep). The import is one-way and runs once: the host reads
 the log, imports it as it stands, and from then on writes only Pi storage. Nothing
 writes the legacy log again; it is kept, and readers still read it where needed.
 
@@ -65,6 +66,48 @@ sessions on Pi as before, since that release has the Pi engine and the importer.
 It does not read a by-reference archive (`archive: "legacy-log"`): there, its
 history reads show only what followed the import until the session is back on a
 node of this release.
+
+### The migration sweep
+
+`AGENT_PI_SWEEP` (Terraform `agent_pi_sweep`; `off` by default) lets each node open the remaining
+legacy sessions one at a time, so they are imported without waiting for traffic. It is the most a node may
+do; the operator's mode chooses within it, is read before every agent, and starts in `dry-run`:
+
+    infra/pi-sweep.sh status      # mode, cursors, agents left on legacy
+    infra/pi-sweep.sh dry-run     # report only (the starting mode)
+    infra/pi-sweep.sh on          # migrate (needs AGENT_PI_SWEEP=on)
+    infra/pi-sweep.sh off         # every node stops before its next agent, within seconds
+
+- **Which agents:** kept (not revoked, purged or expired) and without a Pi host document, in id
+  order. Nodes take them from a shared cursor in the `pi_sweep` row, so no agent is taken twice in a
+  pass, and a restart or deploy goes on where the fleet was. Each mode has its own cursor. After a
+  pass reaches the end, the next starts from the first agent `AGENT_PI_SWEEP_REPASS_MS` later (6 h);
+  `--restart` starts both passes again now. Migrated agents are never candidates again.
+- **Never two owners:** an agent hosted or being loaded anywhere is skipped (`skipped_hosted`).
+  Opening takes the agent's ownership claim as any load does, so a node that took it in between keeps
+  it. One with runs open (`skipped_pending_runs`) is left to the orphan sweep, which loads it. A
+  request that reaches the agent while the sweep has it open is served there, and the agent stays
+  until it is idle.
+- **Read first:** the legacy transcript is read first (bounded, as the import reads it). One too large
+  to copy (`skipped_size_limit`) is left for its own open, which imports it by reference after
+  reading the log whole: not something to do back to back. A dry run stops there for every agent
+  (`would_migrate`, with its `records` and, where the import would find one, `from`: `active`,
+  `awaiting` or `context_changed`), opening nothing and writing nothing but the sweep's own cursor.
+  Sessions with a `camel.host.disabled` entry already have a host document, so the sweep leaves them
+  to their next open, which adopts them.
+- **Live traffic first:** a node takes no agent while it is leaving, its database pool has a
+  request waiting, its resident memory is past `AGENT_MEMORY_HIGH_BYTES`, its container memory is past
+  `AGENT_PI_SWEEP_MAX_MEMORY_BYTES` (60% of the task), or it is full. It waits 5 s, doubling to 60 s,
+  and logs `pi_sweep_backoff` with the reason at most once a minute. Five failures in a row wait 60 s.
+- **Logs:** `pi_sweep_agent` (agent, tenant, `outcome`, `ms`), `pi_sweep_progress` each minute per
+  node (counts by outcome, `remaining`), `pi_sweep_pass_done` (`mode`, `remaining`), and
+  `pi_sweep_mode_set` when the operator changes it. A dry run's report:
+
+      filter type = "pi_sweep_agent" and mode = "dry-run" | stats count(*) by outcome
+
+  Outcomes: `migrated` (with `from`, as `legacy_session_imported` logs it), `adopted`, `already_pi`,
+  `would_migrate`, `skipped_hosted`, `skipped_pending_runs`, `skipped_size_limit`, `skipped_busy`,
+  `skipped_leaving`, `gone`, `not_migrated`, `failed` (with `error`).
 
 ## Persistence and billing
 

@@ -110,6 +110,11 @@
 | `AGENT_SERVICE_NAME` | the `ServiceName` dimension on the `node_load` metrics (none when unset) |
 | `AGENT_HOSTING` | `process` (one Node process per awake agent) or `inline` (many agents per process) |
 | `AGENT_ENGINE`, `AGENT_PI_CANARY_AGENTS`, `AGENT_PI_CANARY_TENANTS` | ignored: the legacy engine they chose was removed, and every agent runs on [Pi durable](pi-durable.md). A node with any of them set logs `settings_ignored` once |
+| `AGENT_PI_SWEEP` | `off` (default), `dry-run` or `on`: the most the Pi migration sweep may do on this node. The operator's mode (`PUT /v1/operations/pi-sweep`, `infra/pi-sweep.sh`; it starts in `dry-run`) chooses within it, read before each agent, so `off` there stops every node within seconds. Each node opens one retained legacy agent at a time from a shared cursor, so it migrates as its next open would. See [Pi durable sessions](pi-durable.md#the-migration-sweep) |
+| `AGENT_PI_SWEEP_MAX_MEMORY_BYTES` | The sweep takes no agent while the node's container memory (cgroup; resident memory where there is none) is past this, nor while resident memory is past `AGENT_MEMORY_HIGH_BYTES`. Unset: only the latter. Terraform sets 60% of the task's memory |
+| `AGENT_PI_SWEEP_PACE_MS` | Milliseconds between a node's agents in the sweep (default 1000) |
+| `AGENT_PI_SWEEP_DELAY_MS` | Milliseconds after a node starts before it sweeps (default 120000) |
+| `AGENT_PI_SWEEP_REPASS_MS` | After a pass reaches the last agent, milliseconds before the next pass starts from the first (default 21600000, 6 hours) |
 | `AGENT_CODE_WORKERS_MAX` | how many js_exec executions tenants with a concurrency limit (`codeConcurrency`; self-serve ones by default) run at once on a node, together (default 16; each holds about 20 MB while it waits on tools). Executions beyond it, or beyond their tenant's limit, wait their turn within their own timeout. Admin tenants without one are bounded only by `AGENT_V8_MAX` |
 | `AGENT_V8_PRESPAWN` | v8-exec processes the runtime keeps started ahead (default 2 under `agent-launcher`, else none; agent processes under `process` hosting keep none) |
 | `AGENT_V8_MAX` | v8-exec processes running at once in the runtime process (default 64); more wait their turn |
