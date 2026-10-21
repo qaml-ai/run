@@ -5,7 +5,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { isContextOverflow } from "@earendil-works/pi-ai/utils/overflow";
 import { convertToLlm as contextMessages, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "../pi-harness/messages.ts";
 import {
-  GenerationTask, Harness, InboxDoc, LiveDoc, createRegistry,
+  GenerationTask, Harness, InboxDoc, LiveDoc, StorageRequestError, createRegistry,
   type Conversation, type ConversationId, type EntryRecord, type HarnessOptions, type RegistryReader, type RegistrySnapshot, type Storage, type TaskId,
 } from "@earendil-works/pi-durable";
 
@@ -145,7 +145,13 @@ export function summaryChunks(messages: Message[], window: number, maxTokens: nu
     `${before === undefined ? "" : `<previous-summary>\n${before}\n</previous-summary>\n\nThe summary above covers the conversation before this part. Summarize both together.\n\n`}<conversation>\n${content}\n</conversation>\n\n${prompt}` }] } as Message]);
 }
 
-/** `storage`, telling `onFailure` of a call that failed (not one its caller cancelled). */
+/** Calls whose failure always fails Pi's Session: once a write is sent, whether it landed is unknown. */
+const WRITES = new Set<PropertyKey>(["commit", "mintId", "mintIds"]);
+
+/**
+ * `storage`, telling `onFailure` of a call that failed Pi's Session, by Pi's own rule: any failed write, and a failed
+ * read unless the request was invalid (`StorageRequestError`) or its caller cancelled it. Those fail only that call.
+ */
 function storageGuard(storage: Storage, onFailure?: (error: unknown) => void): Storage {
   if (!onFailure) return storage;
   return new Proxy(storage, { get(target, key) {
@@ -153,8 +159,9 @@ function storageGuard(storage: Storage, onFailure?: (error: unknown) => void): S
     if (typeof value !== "function" || key === "close") return typeof value === "function" ? value.bind(target) : value;
     return (...args: unknown[]) => {
       const failed = (error: unknown) => {
-        const cancelled = args.some(arg => (arg as { abortSignal?: AbortSignal } | undefined)?.abortSignal?.aborted);
-        if (!cancelled) onFailure(error);
+        const exempt = !WRITES.has(key) && (error instanceof StorageRequestError ||
+          args.some(arg => (arg as { abortSignal?: AbortSignal } | undefined)?.abortSignal?.aborted));
+        if (!exempt) onFailure(error);
         throw error;
       };
       try {

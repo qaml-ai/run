@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { MemoryStorage, type Storage } from "@earendil-works/pi-durable";
+import { MemoryStorage, StorageRequestError, type Storage } from "@earendil-works/pi-durable";
 import { createAssistantMessageEventStream, fauxAssistantMessage, fauxToolCall, type AssistantMessage } from "@earendil-works/pi-ai";
 import type { AgentMessage, AgentOptions, AgentTool } from "@earendil-works/pi-agent-core";
 import { DurableAgent, recoverDurableMessages } from "../src/pi-durable/agent.ts";
@@ -375,4 +375,22 @@ test("Pi adapter stops a model request when Pi ends the generation, not only whe
   await run;
   assert.equal(requestSignal?.aborted, true);
   await agent.close();
+});
+
+test("Pi adapter reports only the storage failures that fail Pi's Session", async () => {
+  const failures: unknown[] = [];
+  const storage = new MemoryStorage();
+  const agent = await DurableAgent.create({
+    initialState: { model, messages: [], tools: [] },
+    streamFn: () => { throw new Error("Unexpected model request"); },
+    durable: { storage, onStorageFailure: error => { failures.push(error); } },
+  });
+  // An invalid read fails only that call: Pi keeps its Session, and the host keeps the agent.
+  await assert.rejects((agent as any).conversation.entries({}, 10, { bogus: true }, BACKGROUND_CONTEXT), StorageRequestError);
+  assert.deepEqual(failures, []);
+  // A failed write fails the Session, and is reported.
+  storage.commit = async () => { throw new Error("disk gone"); };
+  await assert.rejects(agent.prompt(user("Hello")));
+  assert.equal(failures.length, 1);
+  await agent.close().catch(() => {});
 });
