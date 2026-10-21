@@ -21,7 +21,6 @@ test("native compaction owns cuts, bounds retained context and preserves full hi
   const agent = await DurableAgent.create({
     initialState: { model: { ...model, contextWindow: 32768 }, messages: [{ role: "system", content: "", sections: { application: "Keep the customer instructions intact." }, timestamp: 1 }], tools: [{ name: "read", label: "Read", description: "Read", parameters: { type: "object", properties: {} },
       execute: async () => { tools++; return { content: [{ type: "text", text: "payload ".repeat(1000) }], details: null }; } }] },
-    transformContext: async () => { throw new Error("The host compactor must not run"); },
     streamFn: (_model, view) => {
       requests.push(structuredClone(view));
       const content = generations < 40 ? [fauxToolCall("read", {}, { id: `read-${generations}` })] : "Finished";
@@ -30,7 +29,7 @@ test("native compaction owns cuts, bounds retained context and preserves full hi
       contextWindow = 8192;
       return stream({ ...fauxAssistantMessage(content, { stopReason: typeof content === "string" ? "stop" : "toolUse" }), provider: model.provider, model: model.id });
     },
-    durable: { storage, nativeCompaction: true, get contextWindow() { return contextWindow; },
+    durable: { storage, get contextWindow() { return contextWindow; },
       summaryStream: () => { summaries++; return stream({ ...fauxAssistantMessage("Retain the task identifier and continue reading."), provider: model.provider, model: model.id }); },
       onCompaction: state => { compactions++; assert.ok(state.keptMessages < 20); assert.ok(state.summary.length); },
     },
@@ -61,7 +60,7 @@ test("failed native summary stops the run with an error and retains completed to
     initialState: { model, messages: [], tools: [{ name: "read", label: "read", description: "read", parameters: { type: "object" },
       execute: async () => ({ content: [{ type: "text", text: "x".repeat(10000) }], details: null }) }] },
     streamFn: () => stream({ ...fauxAssistantMessage([fauxToolCall("read", {}, { id: `read-${++calls}` })], { stopReason: "toolUse" }), provider: model.provider, model: model.id }),
-    durable: { storage, nativeCompaction: true, summaryStream: () => {
+    durable: { storage, summaryStream: () => {
       summaries++;
       return stream({ ...fauxAssistantMessage("", { stopReason: "error" }), errorMessage: "summary unavailable", provider: model.provider, model: model.id });
     } },

@@ -9,13 +9,11 @@ import {
 
 export interface DurableCursor { entryId: number; index: number }
 export interface DurableMessage { message: AgentMessage; cursor: DurableCursor }
-export type DurableAgentOptions = AgentOptions & {
+export type DurableAgentOptions = Omit<AgentOptions, "transformContext"> & {
   durable: {
     storage: Storage;
     conversationId?: ConversationId | number;
     cursor?: DurableCursor;
-    /** Pi owns context selection and summary checkpoints; no host compactor runs. */
-    nativeCompaction?: boolean;
     contextWindow?: number;
     summaryStream?: AgentOptions["streamFn"];
     onSummary?: (message: AssistantMessage) => void | Promise<void>;
@@ -82,9 +80,8 @@ export async function recoverDurableMessages(storage: Pick<Storage, "scanEntries
 }
 
 /**
- * Agent event/policy boundary around Pi's durable Harness. The runtime opts into
- * native compaction; compatibility callers can still supply their own context
- * transform. Credentials, tools and run limits remain host responsibilities.
+ * Agent event/policy boundary around Pi's durable Harness. Pi owns compaction;
+ * credentials, tools and run limits remain host responsibilities.
  */
 export class DurableAgent {
   readonly state: AgentState;
@@ -230,7 +227,7 @@ export class DurableAgent {
     };
     const window = () => Math.min(agent.state.model.contextWindow, options.durable.contextWindow ?? Infinity);
     agent.harness = await Harness.open(options.durable.storage, { registry, models: models as unknown as HarnessOptions["models"],
-      settings: { compaction: { enabled: options.durable.nativeCompaction ?? false,
+      settings: { compaction: { enabled: true,
         get reserveTokens() { return Math.min(16_384, Math.floor(window() * 0.15)); },
         get keepRecentTokens() { return Math.min(20_000, Math.floor(window() * 0.25)); }, backgroundTokens: 0 },
         retry: { enabled: false }, toolExecution: options.toolExecution ?? "parallel",
@@ -253,7 +250,7 @@ export class DurableAgent {
           if (original) agent.originalInputs.set(entry.id, { native: entry.model[0], message: original });
         }
         if (nativeKinds.has(entry.kind) && entry.model?.length) agent.advanceCursor({ entryId: entry.id, index: entry.model.length - 1 });
-        if (options.durable.nativeCompaction && entry.kind === "pi.compaction") agent.queueEvent(() => agent.adoptCompaction(entry));
+        if (entry.kind === "pi.compaction") agent.queueEvent(() => agent.adoptCompaction(entry));
         const items = durableEntryMessages(entry);
         // A waiting tool's placeholder is streamed but never enters Camel's
         // history projection. Recovery therefore omits it while live listeners
@@ -264,14 +261,14 @@ export class DurableAgent {
         for (const item of items) agent.queueEvent(() => agent.committedMessage(item));
       }
     });
-    if (options.durable.nativeCompaction) {
+    {
       const view = await agent.conversation.context(context);
       for (const entry of view.entries) if (entry.kind === "camel.user" && entry.model?.[0]?.role === "user") {
         const original = (entry.data as { message?: AgentMessage } | undefined)?.message;
         if (original) agent.originalInputs.set(entry.id, { native: entry.model[0], message: original });
       }
     }
-    const head = options.durable.nativeCompaction ? await options.durable.storage.findLatestHeadMarker(agent.conversation.id, undefined, context) : undefined;
+    const head = await options.durable.storage.findLatestHeadMarker(agent.conversation.id, undefined, context);
     if (head?.kind === "pi.compaction") {
       await agent.adoptCompaction(head);
       agent.messages = [...(await agent.conversation.context(context)).messages] as AgentMessage[];
@@ -344,7 +341,7 @@ export class DurableAgent {
       signal?.throwIfAborted();
       await this.emit({ type: "turn_start" });
       let messages = this.messages;
-      if (this.options.durable.nativeCompaction && nativeMessages) {
+      if (nativeMessages) {
         // Preserve Camel's original input metadata (sender, file refs) while Pi
         // supplies its bounded model context, including the persisted summary.
         const originals = new Map<string, AgentMessage[]>();
@@ -354,15 +351,8 @@ export class DurableAgent {
         }
         messages = nativeMessages.map(message => message.role === "user" ? originals.get(JSON.stringify(message))?.shift() ?? message : message) as AgentMessage[];
       }
-      if (!this.options.durable.nativeCompaction && this.options.transformContext) messages = await this.options.transformContext(messages, signal);
-      const retained = new Set(messages);
-      const archived = this.messages.some(message => message.role !== "system" && message.role !== "compactionSummary" && !retained.has(message));
-      // Drop archived bodies as soon as host compaction changes the working set.
+      // Pi's working context already excludes archived bodies.
       this.messages = [...messages];
-      // Native generation also holds an indexed context. Mirror a host cut into
-      // its head marker, so disabling native summarization does not leave that
-      // independent cache retaining the whole uninterrupted run.
-      if (archived && !this.options.durable.nativeCompaction) await this.checkpointContext(messages);
       const prepared = await this.options.prepareRequest?.({ context: { messages, tools: this.tools }, model: this.state.model,
         thinkingLevel: this.state.thinkingLevel }, signal);
       if (prepared?.context) messages = prepared.context.messages;
@@ -453,7 +443,7 @@ export class DurableAgent {
         kind: "camel.context.message", model: [structuredClone(message)] as never,
       });
     }, context);
-    if (this.options.durable.nativeCompaction) this.originalInputs.clear();
+    this.originalInputs.clear();
   }
 
   steer(message: AgentMessage) { this.steering.push(message); }
