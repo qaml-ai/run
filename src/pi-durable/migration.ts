@@ -80,10 +80,13 @@ export interface LegacyMigrationPlan {
 /** A session that still has old execution state stays on the old engine. No tool is replayed by an import. */
 export class LegacyMigrationDeferred extends Error {
   readonly reason: "active" | "awaiting" | "context_changed" | "size_limit";
-  constructor(reason: LegacyMigrationDeferred["reason"], detail: string) {
+  /** Which context shape Pi would change (`context_changed` only): a failed response, a call without a result, or the order. */
+  readonly kind?: "failed_response" | "open_call" | "order";
+  constructor(reason: LegacyMigrationDeferred["reason"], detail: string, kind?: LegacyMigrationDeferred["kind"]) {
     super(`Legacy session migration deferred: ${detail}`);
     this.name = "LegacyMigrationDeferred";
     this.reason = reason;
+    if (kind) this.kind = kind;
   }
 }
 
@@ -137,7 +140,7 @@ function assertCompatibleContext(messages: readonly Message[]) {
     const message = messages[index];
     if (message.role === "toolResult") continue;
     if (message.role === "assistant" && ["error", "aborted", "deferred"].includes(message.stopReason)) {
-      throw new LegacyMigrationDeferred("context_changed", "active context includes an excluded assistant response");
+      throw new LegacyMigrationDeferred("context_changed", "active context includes an excluded assistant response", "failed_response");
     }
     ordered.push(message);
     if (message.role !== "assistant") continue;
@@ -147,7 +150,7 @@ function assertCompatibleContext(messages: readonly Message[]) {
         const candidate = messages[next];
         if (candidate.role === "toolResult" && candidate.toolCallId === call.id) { result = candidate; break; }
       }
-      if (!result) throw new LegacyMigrationDeferred("context_changed", `tool call ${call.id} has no durable result`);
+      if (!result) throw new LegacyMigrationDeferred("context_changed", `tool call ${call.id} has no durable result`, "open_call");
       ordered.push(result);
     }
   }
@@ -157,7 +160,7 @@ function assertCompatibleContext(messages: readonly Message[]) {
   }
   // The same objects in the same order, compared one message at a time rather than as two context-sized strings.
   if (messages.length !== ordered.length || messages.some((message, index) => message !== ordered[index] && !same(message, ordered[index]))) {
-    throw new LegacyMigrationDeferred("context_changed", "Pi would reorder the active model context");
+    throw new LegacyMigrationDeferred("context_changed", "Pi would reorder the active model context", "order");
   }
 }
 

@@ -131,7 +131,7 @@ export class AgentSupervisor {
    * beside a live owner, without writing or taking a claim (`piSweep`'s dry run). Refuses an oversized transcript
    * before reading its bodies, as the import does.
    */
-  async migrationPlan(id: string): Promise<{ ready: true; records: number } | { ready: false; reason: LegacyMigrationDeferred["reason"] }> {
+  async migrationPlan(id: string): Promise<{ ready: true; records: number } | { ready: false; reason: LegacyMigrationDeferred["reason"]; kind?: LegacyMigrationDeferred["kind"] }> {
     if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id)) throw new Error("Invalid agent id");
     const log = this.options.storage ? this.options.storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id)) : fileAppendLog<TranscriptRecord>(transcriptPath(resolve(join(this.root, id))));
     try {
@@ -139,7 +139,7 @@ export class AgentSupervisor {
       planLegacyMigration(records);
       return { ready: true, records: records.length };
     } catch (error) {
-      if (error instanceof LegacyMigrationDeferred) return { ready: false, reason: error.reason };
+      if (error instanceof LegacyMigrationDeferred) return { ready: false, reason: error.reason, ...(error.kind ? { kind: error.kind } : {}) };
       throw error;
     } finally { await log.close(); }
   }

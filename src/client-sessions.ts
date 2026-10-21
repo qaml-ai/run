@@ -5526,7 +5526,7 @@ export class ClientSessions {
             else if (dryRun) {
               const plan = await this.supervisor.migrationPlan(row.id);
               outcome = plan.ready ? "would_migrate" : `deferred_${plan.reason}`;
-              if (plan.ready) detail = { records: plan.records };
+              detail = plan.ready ? { records: plan.records } : plan.kind ? { kind: plan.kind } : {};
             } else {
               const session = await this.load(row.id);
               if (!session) outcome = "gone";

@@ -137,18 +137,18 @@ test("commit failure leaves the source intact and no partial Pi session; ambiguo
 });
 
 test("active runs, human waits, and contexts Pi would alter defer without creating or executing anything", async () => {
-  const cases: [TranscriptRecord[], LegacyMigrationDeferred["reason"]][] = [
+  const cases: [TranscriptRecord[], LegacyMigrationDeferred["reason"], LegacyMigrationDeferred["kind"]?][] = [
     [[{ t: "turn", active: true }, { t: "message", message: user("still running") }], "active"],
     [[{ t: "message", message: assistant([call("waiting")]) }, { t: "awaiting", calls: ["waiting"] }], "awaiting"],
-    [[{ t: "message", message: assistant([call("unknown-outcome")]) }], "context_changed"],
-    [[{ t: "message", message: result("orphan") }], "context_changed"],
-    [[{ t: "message", message: assistant([{ type: "text", text: "failed" }], { stopReason: "error" }) }], "context_changed"],
-    [[{ t: "message", message: assistant([call("a"), call("b")]) }, { t: "message", message: result("b") }, { t: "message", message: result("a") }], "context_changed"],
+    [[{ t: "message", message: assistant([call("unknown-outcome")]) }], "context_changed", "open_call"],
+    [[{ t: "message", message: result("orphan") }], "context_changed", "order"],
+    [[{ t: "message", message: assistant([{ type: "text", text: "failed" }], { stopReason: "error" }) }], "context_changed", "failed_response"],
+    [[{ t: "message", message: assistant([call("a"), call("b")]) }, { t: "message", message: result("b") }, { t: "message", message: result("a") }], "context_changed", "order"],
   ];
-  for (const [source, reason] of cases) {
+  for (const [source, reason, kind] of cases) {
     const storage = new MemoryStorage();
     try {
-      await assert.rejects(importLegacyTranscript({ storage, sessionId: "defer", records: source }), error => error instanceof LegacyMigrationDeferred && error.reason === reason);
+      await assert.rejects(importLegacyTranscript({ storage, sessionId: "defer", records: source }), error => error instanceof LegacyMigrationDeferred && error.reason === reason && error.kind === kind);
       assert.equal((await storage.scanConversations({}, 10, undefined, context)).items.length, 0);
       assert.equal((await storage.scanTasks({}, 10, undefined, context)).items.length, 0);
     } finally { await storage.close(context); }
