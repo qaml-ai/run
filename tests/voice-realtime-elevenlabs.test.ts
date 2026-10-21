@@ -9,6 +9,7 @@ import { elevenlabsAgents, ELEVENLABS_AGENTS } from "../src/voice/realtime/eleve
 import { ASK_AGENT, STAY_SILENT } from "../src/voice/realtime/brain.ts";
 import { NO_USAGE, realtimeCost, realtimePrice, realtimeVoice, type RealtimeEvents } from "../src/voice/realtime/provider.ts";
 import { sleep, testBrain, tone, until, utter } from "./voice-realtime-fakes.ts";
+import { safeError } from "../src/metrics.ts";
 import { testDatabase } from "./database.ts";
 
 // Synthetic rates only; real rates are supplied privately at runtime.
@@ -333,14 +334,23 @@ for (const stage of ["list agents", "create agent", "signed URL"]) {
         ? [{ loc: ["body", "conversation_config", "agent", "prompt", "tools", 0, "parameters"], msg: "Invalid tool schema" }]
         : { status: "invalid_configuration", message: "Cannot start: sk_fixture_secret123 https://example.com?s=short " + "x".repeat(40) + " " + "fixture" } }, { status });
     } });
+    const details: string[] = [];
+    const connect = provider.connect.bind(provider);
+    provider.connect = (config, credentials, events) => connect(config, credentials, {
+      ...events, closed: (reason, detail, options) => {
+        details.push(detail ?? "");
+        events.closed(reason, detail, options);
+      },
+    });
     const state = testBrain({ provider, reference: "elevenlabs/gemini-2.5-flash-lite", ownsTurns: true });
     t.after(() => state.brain.close());
     await until(() => state.logs.some(log => log.type === "voice_realtime_lost" && log.fields?.retrying === false), "gave up");
     const lost = state.logs.filter(log => log.type === "voice_realtime_lost");
     assert.equal(attempts, status >= 500 ? 4 : 1);
     assert.equal(lost.length, attempts);
-    for (const log of lost) {
-      const detail = String(log.fields?.detail);
+    for (const [index, log] of lost.entries()) {
+      const detail = details[index];
+      assert.equal(log.fields?.detail, safeError(detail), "logs omit provider text");
       assert.ok(detail.startsWith(`ElevenLabs Agents ${stage} (HTTP ${status}):`));
       assert.ok(detail.length <= 300);
       if (status === 422) assert.match(detail, /body.conversation_config.agent.prompt.tools.0.parameters: Invalid tool schema/);
@@ -352,14 +362,14 @@ for (const stage of ["list agents", "create agent", "signed URL"]) {
   });
 }
 
-test("ElevenLabs retries network failures and preserves their stage", async t => {
+test("ElevenLabs retries network failures and logs only their privacy-safe classification", async t => {
   let attempts = 0;
   const provider = elevenlabsAgents({ fetch: async () => { attempts++; throw new TypeError("fetch failed"); } });
   const state = testBrain({ provider, reference: "elevenlabs/gemini-2.5-flash-lite", ownsTurns: true });
   t.after(() => state.brain.close());
   await until(() => state.logs.filter(log => log.type === "voice_realtime_lost").length === 4, "network retries");
   assert.equal(attempts, 4);
-  assert.match(String(state.logs.find(log => log.type === "voice_realtime_lost")!.fields?.detail), /list agents: fetch failed/);
+  assert.match(String(state.logs.find(log => log.type === "voice_realtime_lost")!.fields?.detail), /^network \(\d+ chars\)$/);
 });
 
 test("ElevenLabs resolves library IDs independently of name search, uses returned IDs, and reuses account copies after restart", async t => {

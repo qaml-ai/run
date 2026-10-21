@@ -814,6 +814,15 @@
                 ],
                 "description": "requested: DELETE; empty: no one else in the call for emptySeconds; idle: no speech for idleMinutes; max_duration: maxMinutes passed; budget: the account's or the end user's credit ran out (limit); kicked: the bot was disconnected from the channel and no new credentials came; credentials: Discord stopped taking the session's credentials; error: the connection failed"
               },
+              "detail": {
+                "type": "string",
+                "description": "Failure classification, for example realtime_failed, realtime_credit_failed, media_crashed or realtime_unavailable. Omitted on normal endings"
+              },
+              "error": {
+                "type": "string",
+                "maxLength": 300,
+                "description": "Privacy-safe provider error summary: classification and message length only, never raw provider text, credentials or user content"
+              },
               "limit": {
                 "type": "string",
                 "enum": [
