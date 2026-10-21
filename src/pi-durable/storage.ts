@@ -67,7 +67,7 @@ type PgExecutor = {
     all<T>(query: string, ...params: unknown[]): Promise<T[]>;
     run(query: string, ...params: unknown[]): Promise<void>;
 };
-type PgDatabase = PgExecutor & { transaction<T>(work: (sql: PgExecutor) => Promise<T>): Promise<T>; close(): Promise<void> };
+type PgDatabase = PgExecutor & { transaction<T>(work: (sql: PgExecutor, metadata: MetadataRow | undefined) => Promise<T>): Promise<T>; close(): Promise<void> };
 function postgresDatabase(db: Db, sessionId: string, claim?: Claim): PgDatabase {
     const executor = (sql: Sql): PgExecutor => {
         const query = (text: string, params: unknown[]) => {
@@ -85,10 +85,12 @@ function postgresDatabase(db: Db, sessionId: string, claim?: Claim): PgDatabase 
         ...executor(db),
         transaction: work => underClaim(db, claim, async sql => {
             // Serializes mutations by session, including separate handles on this node. Takeovers
-            // wait on underClaim's ownership lock before another owner can update this metadata.
-            await sql.query("select session_id from pi_durable_metadata where session_id = $1 for update", [sessionId]);
-            await sql.query("set local synchronous_commit = on");
-            return work(executor(sql));
+            // wait on underClaim's ownership lock before another owner can update this metadata. One statement locks
+            // and reads the row and turns synchronous commit on for this transaction.
+            const metadata = (await sql.query<MetadataRow>("select next_id, next_seq, set_config('synchronous_commit', 'on', true) from pi_durable_metadata where session_id = $1 for update", [sessionId])).rows[0];
+            // No row (the session's first open creates it): set_config did not run, so turn synchronous commit on here.
+            if (!metadata) await sql.query("set local synchronous_commit = on");
+            return work(executor(sql), metadata);
         }),
         async close() {}, // The supervisor, not an individual Pi session, owns the pool.
     };
@@ -393,16 +395,13 @@ export class PostgresPiStorage implements Storage {
 		this.assertOpen();
 		const documentActions = this.prepareDocumentActions(writes);
 		const candidateNextId = this.candidateNextId(writes);
-		const seq = await this.db.transaction(async (transaction) => {
-			const metadata = await transaction.get<MetadataRow>(
-				`SELECT next_id, next_seq FROM ${this.schema.tables.durableMetadata} WHERE session_id = $1 AND singleton = 1`,
-			);
-			if (metadata === undefined) throw new Error("Durable SQLite metadata is missing");
-			const committedSeq = seqFromNumber(metadata.next_seq);
+		const seq = await this.db.transaction(async (transaction, metadata) => {
+			if (metadata === undefined) throw new Error("Durable Postgres metadata is missing");
+			const committedSeq = seqFromNumber(Number(metadata.next_seq));
 			await this.checkGlobalIds(transaction, writes);
-			await this.checkDocumentActions(transaction, documentActions);
+			const existing = await this.checkDocumentActions(transaction, documentActions);
 			await this.applyTableWrites(transaction, writes, committedSeq);
-			await this.applyDocumentActions(transaction, documentActions, committedSeq);
+			await this.applyDocumentActions(transaction, documentActions, committedSeq, existing);
             for (const write of writes) if (write.type === "entry") await this.committing?.(write.value, transaction.sql);
 			await transaction.run(
 				`UPDATE ${this.schema.tables.durableMetadata} SET next_id = ?, next_seq = ? WHERE session_id = $1 AND singleton = 1`,
@@ -786,8 +785,7 @@ export class PostgresPiStorage implements Storage {
 
 	async document(id: DocumentId, at: DocumentPoint, _context: Context): Promise<StoredDocument | undefined> {
 		this.assertOpen();
-		// The record and revision queries must observe one committed state; a commit between them can replace the base.
-		return this.db.transaction((transaction) => this.materializeDocument(transaction, id, at));
+		return this.materializeDocument(this.db, id, at);
 	}
 
 	async scanDocuments(
@@ -857,34 +855,35 @@ export class PostgresPiStorage implements Storage {
 		return row === undefined ? undefined : parseJson<ConversationRecord>(row.record);
 	}
 
+	/**
+	 * A document's record, its latest base at `at` and the deltas after it, in one statement: one committed state, so a
+	 * commit cannot replace the base between them, and no transaction or metadata lock for a read.
+	 */
 	private async materializeDocument(
 		executor: PgExecutor,
 		id: DocumentId,
 		at: DocumentPoint,
 	): Promise<StoredDocument | undefined> {
-		const row = await executor.get<JsonRow>(`SELECT record FROM ${this.schema.tables.documents} WHERE session_id = $1 AND id = ?`, id);
-		if (row === undefined) return undefined;
-		const record = parseJson<DocumentRecord>(row.record);
+		const upper = at === "current" ? Number.MAX_SAFE_INTEGER : at;
+		const rows = await executor.all<JsonRow & Partial<RevisionRow>>(
+			`SELECT d.record, r.seq, r.kind, r.version, r.content FROM ${this.schema.tables.documents} d
+				LEFT JOIN LATERAL (SELECT seq FROM ${this.schema.tables.documentRevisions}
+					WHERE session_id = d.session_id AND document_id = d.id AND kind = 'base' AND seq <= ? ORDER BY seq DESC LIMIT 1) b ON true
+				LEFT JOIN ${this.schema.tables.documentRevisions} r ON r.session_id = d.session_id AND r.document_id = d.id AND r.seq >= b.seq AND r.seq <= ?
+				WHERE d.session_id = $1 AND d.id = ? ORDER BY r.seq`,
+			upper,
+			upper,
+			id,
+		);
+		if (!rows.length) return undefined;
+		const record = parseJson<DocumentRecord>(rows[0].record);
 		if (at !== "current" && isCurrentOnly(record)) {
 			throw new StorageRequestError(`Document ${id} does not retain historical content`);
 		}
 		if (!isAliveAt(record, at)) return undefined;
-		const upper = at === "current" ? Number.MAX_SAFE_INTEGER : at;
-		const base = await executor.get<RevisionRow>(
-			`SELECT seq, kind, version, content FROM ${this.schema.tables.documentRevisions}
-				WHERE session_id = $1 AND document_id = ? AND kind = 'base' AND seq <= ? ORDER BY seq DESC LIMIT 1`,
-			id,
-			upper,
-		);
-		if (base === undefined) throw new Error(`Document ${id} is missing a required base`);
+		const [base, ...tail] = rows as (JsonRow & RevisionRow)[];
+		if (base.seq === null || base.kind !== "base") throw new Error(`Document ${id} is missing a required base`);
 		let value = parseJson<JsonObject>(base.content);
-		const tail = await executor.all<RevisionRow>(
-			`SELECT seq, kind, version, content FROM ${this.schema.tables.documentRevisions}
-				WHERE session_id = $1 AND document_id = ? AND seq > ? AND seq <= ? ORDER BY seq`,
-			id,
-			base.seq,
-			upper,
-		);
 		for (const revision of tail) {
 			if (revision.kind !== "delta" || revision.version !== base.version) {
 				throw new Error(`Document ${id} crosses a stored version boundary without a base`);
@@ -974,41 +973,56 @@ export class PostgresPiStorage implements Storage {
 		return actions;
 	}
 
+	/** Checks a batch's document actions with one read of their records and latest revisions; returns the records. */
 	private async checkDocumentActions(
 		executor: PgExecutor,
 		actions: ReadonlyMap<DocumentId, DocumentAction>,
-	): Promise<void> {
+	): Promise<Map<DocumentId, DocumentRecord>> {
+		const existing = new Map<DocumentId, DocumentRecord>();
+		const versions = new Map<DocumentId, number>();
+		if (actions.size) {
+			const rows = await executor.all<JsonRow & { readonly id: number; readonly version: number | null }>(
+				`SELECT d.id, d.record, r.version FROM ${this.schema.tables.documents} d
+					LEFT JOIN LATERAL (SELECT version FROM ${this.schema.tables.documentRevisions}
+						WHERE session_id = d.session_id AND document_id = d.id ORDER BY seq DESC LIMIT 1) r ON true
+					WHERE d.session_id = $1 AND d.id = ANY(?::bigint[])`,
+				[...actions.keys()],
+			);
+			for (const row of rows) {
+				const id = idFromNumber<DocumentId>(Number(row.id));
+				existing.set(id, parseJson<DocumentRecord>(row.record));
+				if (row.version !== null) versions.set(id, row.version);
+			}
+		}
 		const liveCounts = new Map<string, number>();
 		for (const [id, action] of actions) {
 			if (action.copy !== undefined && actions.has(action.copy.id)) {
 				throw new Error(`Document copy ${id} source is changed in the copy batch`);
 			}
-			const row = await executor.get<JsonRow>(`SELECT record FROM ${this.schema.tables.documents} WHERE session_id = $1 AND id = ?`, id);
-			const existing = row === undefined ? undefined : parseJson<DocumentRecord>(row.record);
-			if (action.create === undefined && existing === undefined) throw new Error(`Unknown document: ${id}`);
-			if (action.create !== undefined && existing !== undefined) throw new Error(`Document ${id} already exists`);
-			if (existing?.retiredAt !== undefined) throw new Error(`Document ${id} is retired`);
+			const current = existing.get(id);
+			if (action.create === undefined && current === undefined) throw new Error(`Unknown document: ${id}`);
+			if (action.create !== undefined && current !== undefined) throw new Error(`Document ${id} already exists`);
+			if (current?.retiredAt !== undefined) throw new Error(`Document ${id} is retired`);
 			if (action.content?.kind === "delta") {
-				const previous = await executor.get<{ readonly version: number }>(
-					`SELECT version FROM ${this.schema.tables.documentRevisions} WHERE session_id = $1 AND document_id = ? ORDER BY seq DESC LIMIT 1`,
-					id,
-				);
+				const previous = versions.get(id);
 				if (previous === undefined) throw new Error(`Document ${id} delta has no base`);
-				if (previous.version !== action.content.version) {
+				if (previous !== action.content.version) {
 					throw new Error(`Document ${id} version transition requires a base`);
 				}
 			}
-			const record = action.create ?? existing!;
+			const record = action.create ?? current!;
 			const key = addressKey(record);
 			let live = liveCounts.get(key);
-			if (live === undefined) live = (await this.currentDocumentId(executor, record)) === undefined ? 0 : 1;
-			if (action.retire && existing !== undefined) live--;
+			// A live existing document is its address's one current incarnation; only a new one needs the address looked up.
+			if (live === undefined) live = current !== undefined ? 1 : (await this.currentDocumentId(executor, record)) === undefined ? 0 : 1;
+			if (action.retire && current !== undefined) live--;
 			if (action.create !== undefined && !action.retire) live++;
 			liveCounts.set(key, live);
 		}
 		for (const live of liveCounts.values()) {
 			if (live > 1) throw new Error("Document address already has a current incarnation");
 		}
+		return existing;
 	}
 
 	private async currentDocumentId(
@@ -1097,6 +1111,7 @@ export class PostgresPiStorage implements Storage {
 		executor: PgExecutor,
 		actions: ReadonlyMap<DocumentId, DocumentAction>,
 		seq: Seq,
+		existing: ReadonlyMap<DocumentId, DocumentRecord>,
 	): Promise<void> {
 		for (const [id, action] of actions) {
 			let content = action.content;
@@ -1143,13 +1158,7 @@ export class PostgresPiStorage implements Storage {
 					action.retire ? seq : null,
 					encodeJson(record),
 				);
-			} else {
-				const row = (await executor.get<JsonRow>(
-					`SELECT record FROM ${this.schema.tables.documents} WHERE session_id = $1 AND id = ?`,
-					id,
-				))!;
-				record = parseJson<DocumentRecord>(row.record);
-			}
+			} else record = existing.get(id)!;
 
 			if (content !== undefined) {
 				if (content.kind === "base" && isCurrentOnly(record)) {
