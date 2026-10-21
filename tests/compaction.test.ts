@@ -17,6 +17,9 @@ import { testDatabase } from "./database.ts";
 import { fileStorage, memoryStorage } from "../shared/storage.ts";
 import { postgresTail } from "../src/log-tail.ts";
 import { Ownership } from "../src/ownership.ts";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { openPiStorage } from "../src/pi-durable/storage.ts";
+import { LEGACY_CONVERSATION_ID } from "../src/pi-durable/migration.ts";
 
 type Body = { messages: { role: string; content: unknown }[] };
 const text = (body: Body) => JSON.stringify(body.messages);
@@ -513,4 +516,31 @@ test("Pi applies a lowered context limit to an already loaded host", async t => 
   assert.ok(fake.summarizations().length > 0, "the new limit compacts without restarting the host");
   assert.equal((await supervisor.request("live-pi-context", "status")).compacted, true);
   assert.equal((await supervisor.request("live-pi-context", "history")).messages.length, 10);
+});
+
+test("an agent whose journal keeps more messages after its compaction than the host's working set holds still starts", async t => {
+  const fake = await provider(t);
+  const supervisor = await fixture(t);
+  const model = fake.model(8000);
+  await supervisor.start("drifted", { model, apiKey: "fixture" }, bridge);
+  for (let index = 0; index < 5; index++) await supervisor.request("drifted", "prompt", { text: turn(index) });
+  assert.equal((await supervisor.request("drifted", "status")).compacted, true);
+  await supervisor.stop("drifted");
+  // A call that waits on a person, as camel-builder's cards do: Pi's context holds its input-required placeholder after
+  // the compaction, which the host's history never takes in.
+  const storage = await openPiStorage({ sessionId: "drifted", directory: join((supervisor as any).root, "drifted") });
+  const page = await storage.scanEntries({ conversationId: LEGACY_CONVERSATION_ID as never, order: "descending" }, 1, undefined, BACKGROUND_CONTEXT);
+  const next = page.items[0]!.id + 1000;
+  const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+  await storage.commit([
+    { type: "entry", value: { id: next, conversationId: LEGACY_CONVERSATION_ID, kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id: "ask-1", name: "ask", arguments: {} }],
+      api: "openai-completions", provider: "openai", model: "fixture", usage, stopReason: "toolUse", timestamp: 5 }] } },
+    { type: "entry", value: { id: next + 1, conversationId: LEGACY_CONVERSATION_ID, kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "ask-1", toolName: "ask",
+      content: [{ type: "text", text: "Waiting for the user's input." }], details: { inputRequired: true }, isError: false, timestamp: 6 }] } },
+  ] as never, BACKGROUND_CONTEXT);
+  await storage.close(BACKGROUND_CONTEXT);
+  const restarted = await supervisor.start("drifted", { model, apiKey: "fixture" }, bridge);
+  assert.ok(restarted.messages >= 10, "the agent started");
+  const result = await supervisor.request("drifted", "prompt", { text: "After the drift" });
+  assert.equal(result.error, null);
 });
