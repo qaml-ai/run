@@ -194,9 +194,7 @@ test("a transcript written by pi 0.87.1 loads on pi 1.0, replays its summary, to
 
 test("an imported history larger than one summarization request is summarized in chunks", async t => {
   const fake = await provider(t);
-  // The legacy compactor's. Pi sends the whole prefix in one summarization request, past this model's window: a gap
-  // to close before the legacy engine goes (docs/operations/pi-durable.md).
-  const supervisor = await fixture(t, "legacy");
+  const supervisor = await fixture(t);
   const initialMessages = Array.from({ length: 12 }, (_, index) => [
     { role: "user", content: turn(index), timestamp: index * 2 },
     { role: "assistant", content: [{ type: "text", text: `answer ${index}` }], api: "openai-completions", provider: "openai", model: "fixture", stopReason: "stop", timestamp: index * 2 + 1,
@@ -209,6 +207,7 @@ test("an imported history larger than one summarization request is summarized in
   assert.ok(summarizations.length >= 2, `expected chunked summaries, got ${summarizations.length}`);
   // Each later chunk builds on the previous chunk's summary.
   assert.match(text(summarizations[1]), /SUMMARY-MARKER-1/);
+  for (const request of summarizations) assert.ok(text(request).length < 8000 * 4, `each summarization request fits the window (${text(request).length} characters)`);
   assert.ok(text(fake.chat().at(-1)!).length < 8000 * 4, "the model request fits the context window");
 });
 

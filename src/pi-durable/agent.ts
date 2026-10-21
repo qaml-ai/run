@@ -75,6 +75,42 @@ async function latestDurableCursor(storage: Storage, conversationId: Conversatio
   } while (cursor !== undefined);
 }
 
+const summaryOf = (message: AssistantMessage) => {
+  const text = message.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n").trim();
+  return text || undefined;
+};
+
+/**
+ * Pi's summary request (a system prompt, and a user message holding `<conversation>…</conversation>` and its prompt)
+ * split into requests that each fit `window` with `maxTokens` to answer: each takes a part of the conversation, cut
+ * between lines, after the summary of the parts before it. Undefined when the request fits as it is (or is not one).
+ */
+export function summaryChunks(messages: Message[], window: number, maxTokens: number): ((before?: string) => Message[])[] | undefined {
+  const [system, user] = messages;
+  const text = user?.role === "user" && Array.isArray(user.content) && user.content.length === 1 && user.content[0].type === "text" ? user.content[0].text : undefined;
+  const match = text?.match(/^<conversation>\n([\s\S]*)\n<\/conversation>\n\n([\s\S]*)$/);
+  if (messages.length !== 2 || !match || !Number.isFinite(window)) return undefined;
+  const [, conversation, prompt] = match;
+  const tokens = (value: string) => Math.ceil(value.length / 4);
+  // Room for a part: the window less the answer, the prompts, and the summary carried in (bounded by the answer's size).
+  const fixed = tokens(JSON.stringify(system)) + tokens(prompt) + 200;
+  if (fixed + tokens(conversation) + maxTokens <= window) return undefined;
+  const room = (window - maxTokens - fixed - Math.max(maxTokens, 1_000)) * 4;
+  if (room < 4_000) return undefined;
+  const parts: string[] = [];
+  let part = "";
+  for (const line of conversation.split("\n")) {
+    for (let at = 0; at < Math.max(line.length, 1); at += room) {
+      const piece = line.slice(at, at + room);
+      if (part && part.length + piece.length + 1 > room) { parts.push(part); part = ""; }
+      part = part ? `${part}\n${piece}` : piece;
+    }
+  }
+  if (part) parts.push(part);
+  return parts.map(content => (before?: string) => [system, { ...user, content: [{ type: "text", text:
+    `${before === undefined ? "" : `<previous-summary>\n${before}\n</previous-summary>\n\nThe summary above covers the conversation before this part. Summarize both together.\n\n`}<conversation>\n${content}\n</conversation>\n\n${prompt}` }] } as Message]);
+}
+
 /** `storage`, telling `onFailure` of a call that failed (not one its caller cancelled). */
 function storageGuard(storage: Storage, onFailure?: (error: unknown) => void): Storage {
   if (!onFailure) return storage;
@@ -269,14 +305,28 @@ export class DurableAgent {
       completeSimple: async (_model: unknown, view: { messages: Message[] }, streamOptions: unknown) => {
         await agent.flushEvents();
         const apiKey = await options.getApiKey?.(agent.state.model.provider);
-        const events = await (options.durable.summaryStream ?? options.streamFn)(agent.state.model, view as never,
-          { ...(streamOptions as object), apiKey } as never);
-        const result = await events.result();
-        await agent.conversation.commit(tx => tx.appendEntry(agent.conversation.id, {
-          kind: "camel.compaction.usage", data: { message: result } as never,
-        }), context);
-        await options.durable.onSummary?.(result);
-        return result;
+        const summarize = async (messages: Message[]) => {
+          const events = await (options.durable.summaryStream ?? options.streamFn)(agent.state.model, { ...view, messages } as never,
+            { ...(streamOptions as object), apiKey } as never);
+          const result = await events.result();
+          await agent.conversation.commit(tx => tx.appendEntry(agent.conversation.id, {
+            kind: "camel.compaction.usage", data: { message: result } as never,
+          }), context);
+          await options.durable.onSummary?.(result);
+          return result;
+        };
+        // Pi asks for one summary of the whole prefix. One larger than the window (an imported history, a model whose
+        // window is small) is summarized in parts that fit, each carrying the summary so far, as the legacy compactor did.
+        const chunks = summaryChunks(view.messages, window(), (streamOptions as { maxTokens?: number } | undefined)?.maxTokens ?? 0);
+        if (!chunks) return summarize(view.messages);
+        let summary: AssistantMessage | undefined;
+        for (const chunk of chunks) {
+          const before = summary && summaryOf(summary);
+          if (summary && before === undefined) return summary;
+          summary = await summarize(chunk(before));
+          if (summary.stopReason !== "stop") return summary;
+        }
+        return summary!;
       },
     };
     const window = () => Math.min(agent.state.model.contextWindow, options.durable.contextWindow ?? Infinity, agent.overflowWindow);
