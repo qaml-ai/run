@@ -106,6 +106,10 @@ and the RDS instance also have deletion protection in AWS.
   trusts the proxy first (any image from this change on), set
   `runtime_image_tag` to it, apply, then redeploy that tag with
   `infra/ecs-deploy.sh <tag>` to ship the new environment.
+- **Card credit**: `agent_card_credit_usd` is a string, default `""`. When non-empty it sets
+  `AGENT_CARD_CREDIT_USD` in the task environment. Empty follows `AGENT_CREDIT_GRANT_USD`
+  (default $5); `"0"` disables card credit, including grants from pending checks, without
+  changing the GitHub starting grant.
 - **Task definition** (`ecs.tf`). Settings come from `var.runtime_env`. Storage,
   database, public-URL and tenant settings are derived from the resources:
   - `AGENT_STORAGE=s3`, `AGENT_S3_BUCKET`, `AGENT_S3_PREFIX`, `AWS_REGION`;

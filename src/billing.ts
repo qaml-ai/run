@@ -345,7 +345,7 @@ export class Billing {
       where t.id = $1`, [tenant])).rows[0];
     if (!row || row.billing !== "prepaid") return { status: "not_applicable", amount: 0 };
     if (row.amount > 0) return { status: "granted", amount: row.amount };
-    const cardCheck = await this.cardCredit?.available(tenant) ? { cardCheck: { amount: this.pricing.startingGrant } } : {};
+    const cardCheck = await this.cardCredit?.available(tenant) ? { cardCheck: { amount: this.cardCredit!.amount } } : {};
     return { status: row.decision === "disabled" ? "not_applicable" : row.decision === "ineligible" ? "not_eligible" : "not_granted", amount: 0, ...cardCheck };
   }
 

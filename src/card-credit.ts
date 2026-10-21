@@ -11,8 +11,8 @@ export type CardCheckOutcome = { status: "granted" | "not_granted" | "pending"; 
 /**
  * Starting credit unlocked by verifying a card, with no charge: a Stripe Checkout session in
  * setup mode saves a card to the tenant's customer, and once its SetupIntent succeeds the tenant
- * gets the starting grant. It is the one way to starting credit for tenants that did not get it
- * at signup: Google sign-ins always, and GitHub accounts refused or never considered. Each card
+ * gets the configured card grant, when offered. Tenants that did not get credit at signup can
+ * use it: Google sign-ins always, and GitHub accounts refused or never considered. Each card
  * (its Stripe fingerprint) unlocks credit once across all tenants, and each tenant once. A
  * completed check is settled once per SetupIntent (`card_checks`), whether the webhook or the
  * console's confirmation gets there first, and the grant's ledger key names the card.
@@ -27,7 +27,7 @@ export class CardCredit {
     this.page = `${publicUrl ?? ""}/console/billing`;
   }
 
-  get amount() { return this.billing.pricing.startingGrant; }
+  get amount() { return this.billing.pricing.cardCreditGrant ?? this.billing.pricing.startingGrant; }
 
   /** Whether `tenant`, a tenant made by sign-in and billed from credit, may still unlock starting credit. */
   async available(tenant: string, sql: Pick<Db, "query"> = this.db) {
@@ -41,6 +41,7 @@ export class CardCredit {
 
   /** A Stripe Checkout session in setup mode, to verify a card; nothing is charged. */
   async start(tenant: string) {
+    if (!(this.amount > 0)) throw new HttpError(409, "Free credit for verifying a card is not offered; add credit to start", "CARD_CREDIT_UNAVAILABLE");
     if (!await this.available(tenant)) throw new HttpError(409, "Starting credit is not available for this account");
     const customer = await this.billing.payments!.customer(tenant);
     const metadata = { purpose: CARD_CHECK, tenant };

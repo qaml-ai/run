@@ -194,6 +194,12 @@ variable "runtime_env" {
 }
 
 
+variable "agent_card_credit_usd" {
+  description = "Free credit in USD for verifying a card. Empty leaves AGENT_CARD_CREDIT_USD unset and follows AGENT_CREDIT_GRANT_USD (default $5); 0 disables card credit without changing the GitHub starting grant."
+  type        = string
+  default     = ""
+}
+
 variable "openai_apps_challenge" {
   description = "The domain-verification token the OpenAI Plugins dashboard shows for the ChatGPT plugin, served at https://<hostname>/.well-known/openai-apps-challenge. Not a secret. Empty serves nothing."
   type        = string
