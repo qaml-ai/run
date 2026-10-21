@@ -5552,7 +5552,8 @@ export class ClientSessions {
    * and writing no configuration change, which its next open does as for any session on Pi. Only an agent no node holds
    * is opened: one hosted or being loaded anywhere, or with runs open (which the orphan sweep loads), is left for its
    * own next open. Opening takes the agent's ownership claim as any load does, so a node that took it meanwhile keeps it
-   * (`skipped_hosted`). The legacy transcript is read first, bounded: one too large to copy is left for its own open
+   * (`skipped_hosted`). One this node holds but never started (a watcher's or an upsert's load) is imported in place,
+   * and stays loaded (`loadedHere`). The legacy transcript is read first, bounded: one too large to copy is left for its own open
    * (`skipped_size_limit`), which imports it by reference after reading the log whole. Tools are listed only for a
    * transcript with no leading system message, which the import makes from them. A dry run stops after the read
    * (`would_migrate`, with what the import would find and write), writing nothing. The sweep's `large` pass imports
@@ -5560,27 +5561,32 @@ export class ClientSessions {
    */
   async piSweepAgent(agent: PiSweepCandidate, dryRun: boolean, large = false): Promise<PiSweepResult> {
     const { id } = agent;
-    if (agent.owned || this.sessions.has(id) || this.loading.has(id)) return { outcome: "skipped_hosted" };
+    if (agent.owned || this.loading.has(id)) return { outcome: "skipped_hosted" };
     if (agent.pendingRuns) return { outcome: "skipped_pending_runs" };
+    // Held here, but never started (a watcher's or an upsert's load): this node, its owner, imports it where it is.
+    const here = this.sessions.get(id);
     const plan = await this.supervisor.migrationPlan(id, { measure: dryRun });
     // Too large to copy: the large pass imports it by reference, as its own open would; the others leave it to that.
     if (!plan.ready && !(large && plan.reason === "size_limit" && !dryRun)) return { outcome: `skipped_${plan.reason}` };
     const found = plan.ready ? { system: plan.system, ...(plan.from ? { from: plan.from } : {}) } : { size: plan.reason };
     if (dryRun && plan.ready) return { outcome: "would_migrate", detail: { records: plan.records, bytes: plan.bytes, contextBytes: plan.contextBytes, ...found } };
     if (this.closed || this.draining) return { outcome: "skipped_leaving" };
-    let session: Session | undefined;
-    try { session = await this.load(id); }
-    catch (error) { if (error instanceof NotOwner) return { outcome: "skipped_hosted" }; throw error; }
+    let session: Session | undefined = here;
+    if (!session) {
+      try { session = await this.load(id); }
+      catch (error) { if (error instanceof NotOwner) return { outcome: "skipped_hosted" }; throw error; }
+    }
     if (!session) return { outcome: "gone" };
-    const idle = () => this.sessions.get(id) === session && !this.busy(session) && !session.running.size;
+    const idle = () => this.sessions.get(id) === session && !this.busy(session) && !session.running.size && !this.supervisor.agents.has(id);
     try {
       // Its load found work (a request since the candidate was read): it runs here, as for any load.
       if (!idle()) return { outcome: "skipped_busy" };
       const { migration } = await this.ensureStarted(session, { listTools: !plan.ready || !plan.system }) as { migration?: { state: string; from?: string; archive?: string } };
       if (!migration) return { outcome: "not_migrated" };
-      return { outcome: migration.state === "existing" ? "already_pi" : migration.state, detail: { ...found, ...(migration.archive ? { archive: migration.archive } : {}) } };
+      return { outcome: migration.state === "existing" ? "already_pi" : migration.state, detail: { ...found, ...(migration.archive ? { archive: migration.archive } : {}), ...(here ? { loadedHere: true } : {}) } };
     } finally {
-      if (idle() && !this.supervisor.agents.has(id)) await this.unload(session);
+      // One it loaded is let go; one held here before stays, for whoever holds it.
+      if (!here && idle()) await this.unload(session);
     }
   }
 

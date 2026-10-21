@@ -20,3 +20,6 @@ A large pass, off by default (`infra/pi-sweep.sh large on`), imports the session
 by reference once the on pass has finished: one at a time across the fleet, only while a node's
 container memory is under `AGENT_PI_SWEEP_LARGE_MAX_MEMORY_BYTES` (Terraform: 35% of the task),
 `AGENT_PI_SWEEP_LARGE_PACE_MS` (30 s) apart (migration 082).
+
+An agent a node holds but never started (a watcher's or an upsert's load) is imported by that node's
+own sweep, in place, instead of being skipped as held on every pass.
