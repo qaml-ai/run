@@ -30,16 +30,18 @@ export function piDualRead(value: string | undefined): "log" | "throw" | undefin
 }
 
 /**
- * AGENT_NATIVE_SECTIONS_TENANTS: `*` (every tenant) or comma-separated tenant ids; unset or empty, none. Checked at start,
+ * A tenant allow-list setting: `*` (every tenant) or comma-separated tenant ids; unset or empty, none. Checked at start,
  * so a misspelled id fails the node rather than gating no one.
  */
-export function nativeSectionsTenants(value: string | undefined): string[] {
+export function tenantList(name: string, value: string | undefined): string[] {
   if (!value?.trim()) return [];
   if (value.trim() === "*") return ["*"];
   const tenants = value.split(",").map(item => item.trim());
-  if (tenants.some(tenant => !/^[a-z0-9][a-z0-9-]{0,39}$/.test(tenant))) throw new Error("AGENT_NATIVE_SECTIONS_TENANTS must be * or comma-separated tenant ids");
+  if (tenants.some(tenant => !/^[a-z0-9][a-z0-9-]{0,39}$/.test(tenant))) throw new Error(`${name} must be * or comma-separated tenant ids`);
   return [...new Set(tenants)];
 }
+/** AGENT_NATIVE_SECTIONS_TENANTS (`tenantList`). */
+export const nativeSectionsTenants = (value: string | undefined) => tenantList("AGENT_NATIVE_SECTIONS_TENANTS", value);
 
 /** A comma-separated setting's items, trimmed; none when unset. */
 const list = (value: string | undefined) => (value ?? "").split(",").map(item => item.trim()).filter(Boolean);
@@ -148,6 +150,9 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     piDualWrite: env.AGENT_PI_DUAL_WRITE === "1",
     // Tenants whose agents' system sections are native Pi sections, `*` for every tenant (AGENT_NATIVE_SECTIONS_TENANTS).
     nativeSectionsTenants: nativeSectionsTenants(env.AGENT_NATIVE_SECTIONS_TENANTS),
+    // Tenants whose agents read their history from Pi's journal, `*` for every tenant, where it is dual-written
+    // (AGENT_PI_HISTORY_SOURCE_TENANTS; plans/host-transcript-removal.md, phase 2).
+    historySourceTenants: tenantList("AGENT_PI_HISTORY_SOURCE_TENANTS", env.AGENT_PI_HISTORY_SOURCE_TENANTS),
     // What its agent processes are told of these settings.
     agentEnv: agentProcessEnv(env),
     systemPrompt: env.AGENT_SYSTEM_PROMPT,

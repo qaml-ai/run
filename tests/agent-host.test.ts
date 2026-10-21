@@ -55,6 +55,8 @@ async function setup(t: Context) {
       modelAuth: async () => { throw new Error("no per-call credentials"); },
       fs: async () => { throw new Error("no files"); },
       piDualRead: options.piDualRead ?? "throw",
+      // Every agent reads its history from the journal (phase 2), and fails on a value the host's transcript disagrees with.
+      historySourceTenants: ["*"],
       ...(options.nativeSectionsTenants ? { nativeSectionsTenants: options.nativeSectionsTenants } : {}),
     };
     const host = createAgentHost(io);
@@ -353,4 +355,29 @@ test("in log mode an agent's dual read runs at its load, then at most every ten 
   await host.handle("prompt", { text: "one" });
   await host.handle("prompt", { text: "two" });
   assert.equal(checks(), 1, "runs within ten minutes of the last check read nothing");
+});
+
+test("a session's journal history starts once: its base is written at its first load reading from the journal, and kept after", async t => {
+  const fake = await setup(t);
+  const bases = async () => {
+    const reader = (await openPiJournalReader({ sessionId: "agent", directory: fake.path.replace(/\/transcript\.jsonl$/, "") }))!;
+    try {
+      let count = 0;
+      for (let cursor; ;) {
+        const page = await reader.scanEntries({ conversationId: 1 as never, order: "ascending" }, 256, cursor, BACKGROUND_CONTEXT);
+        count += page.items.filter(entry => entry.kind === "camel.history.marker" && (entry.data as { t?: string }).t === "base").length;
+        if (!(cursor = page.next)) break;
+      }
+      return count;
+    } finally { await reader.close(BACKGROUND_CONTEXT); }
+  };
+  const first = await fake.start();
+  fake.respond(answer("One."));
+  await first.host.handle("prompt", { text: "one" });
+  assert.equal(await bases(), 1);
+  await first.host.dispose(0);
+  const second = await fake.start();
+  fake.respond(answer("Two."));
+  assert.equal((await second.host.handle("prompt", { text: "two" })).messages, 4);
+  assert.equal(await bases(), 1, "a later load keeps the base");
 });
