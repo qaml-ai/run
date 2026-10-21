@@ -11,6 +11,10 @@ import { LEGACY_CONVERSATION_ID as conversationId, HOST_ARCHIVE_KIND as ARCHIVE,
 
 const ADDRESS = { kind: "camel.host.snapshot", scope: { kind: "session" as const } };
 const RECORD = "camel.host.record", DISABLED = "camel.host.disabled";
+/** Phase 1's native entries: a message the host wrote, as Pi's adapter writes a non-user message and a user one. */
+export const HOST_MESSAGE_KIND = "camel.message", HOST_USER_KIND = "camel.user";
+/** Phase 1's markers: `retract` (with the index it took back), `turn` (with the history's length), `awaiting`, and `pi` (a skip). */
+export const MARKER_KIND = "camel.history.marker";
 const json = (value: unknown) => JSON.parse(JSON.stringify(value));
 type State = { enabled: boolean; generation: number; snapshot: TranscriptSnapshot };
 /**
@@ -287,7 +291,24 @@ export class NativeTranscript extends Transcript {
       const before = { ...structuredClone(rest), context: [...kept] };
       try {
         const writes: StorageWrite[] = [];
-        for (const record of records) {
+        for (let record of records) {
+          // Dual write (plans/host-transcript-removal.md, phase 1): what the host writes itself is in Pi's journal too,
+          // in the same commit, so Pi's journal alone gives the history. A message the host writes (a repair, an input's
+          // answer, a message that lands without a turn) is a native entry, which its record refers to; a retraction, a
+          // turn's start or end, calls left waiting and journal messages skipped are markers.
+          if (record.t === "message" && !record.pi) {
+            const id = await this.storage.mintId<EntryId>(), message = record.message;
+            // An answer to a call that waited on a person replaces Pi's input-required placeholder in its context.
+            const placeholder = message.role === "toolResult" ? await this.placeholder(message.toolCallId) : undefined;
+            writes.push({ type: "entry", value: { id, conversationId, ...(message.role === "user"
+              ? { kind: HOST_USER_KIND, data: json({ message }), model: json([{ role: "user", content: message.content, timestamp: message.timestamp }]) }
+              : { kind: HOST_MESSAGE_KIND, model: json([message]), ...(placeholder ? { edits: [{ target: placeholder, action: "omit" as const }] } : {}) }) } });
+            record = { ...record, pi: { entryId: id, index: 0 } };
+          } else if (record.t !== "message" && record.t !== "reset" && record.t !== "compaction" && record.t !== "system") {
+            writes.push({ type: "entry", value: { id: await this.storage.mintId<EntryId>(), conversationId, kind: MARKER_KIND,
+              data: json(record.t === "retract" ? { t: "retract", index: this.total - 1 } : record.t === "turn" ? { ...record, total: this.total }
+                : record.t === "pi" ? { ...record, ...(this.piCursor ? { after: this.piCursor } : {}) } : record) } });
+          }
           const data = record.t === "message" && record.pi ? { pi: record.pi } : { record };
           writes.push({ type: "entry", value: { id: await this.storage.mintId<EntryId>(), conversationId, kind: RECORD, data: json(data) } });
           if (record.t === "message" && record.message.role === "user") {
@@ -305,6 +326,19 @@ export class NativeTranscript extends Transcript {
         this.stored = change.stored;
       } catch (error) { this.restore(before); this.failed = error; throw error; }
     });
+  }
+  /** The journal's input-required placeholder for call `id`, read back from its end as far as the turn's start. */
+  private async placeholder(id: string): Promise<EntryId | undefined> {
+    let cursor: Cursor | undefined;
+    do {
+      const page = await this.storage.scanEntries({ conversationId, order: "descending" }, 64, cursor, context);
+      for (const entry of page.items) {
+        if (entry.kind === "pi.tool-result" && entry.model?.some(message => message.role === "toolResult" && message.toolCallId === id &&
+          (message.details as { inputRequired?: boolean } | undefined)?.inputRequired)) return entry.id;
+        if (entry.kind === "pi.assistant" && entry.model?.some(message => message.role === "assistant" && message.content.some(part => part.type === "toolCall" && part.id === id))) return undefined;
+      }
+      cursor = page.next;
+    } while (cursor);
   }
   override replace(messages: Parameters<Transcript["replace"]>[0], active = this.active,
     compaction?: Parameters<Transcript["replace"]>[2]) {
