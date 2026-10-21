@@ -105,7 +105,7 @@ test("retries and concurrent imports are idempotent; another session or source g
     assert.deepEqual(results.map(value => value.status), ["imported", "existing"]);
     assert.equal(results[0].markerId, results[1].markerId);
     assert.equal((await storage.scanConversations({}, 10, undefined, context)).items.length, 1);
-    assert.equal((await storage.scanEntries({ conversationId: LEGACY_CONVERSATION_ID }, 100, undefined, context)).items.length, Math.ceil(source.length / 128) + 2);
+    assert.equal((await storage.scanEntries({ conversationId: LEGACY_CONVERSATION_ID }, 100, undefined, context)).items.length, Math.ceil(source.length / 128) + 1 + planLegacyMigration(source).model.length, "the marker, the archive and one context entry per message");
     await assert.rejects(importLegacyTranscript({ storage, sessionId: "other", records: source }), LegacyMigrationConflict);
     await assert.rejects(importLegacyTranscript({ storage, sessionId: "session", records: [...source, { t: "message", message: user("new source") }] }), LegacyMigrationConflict);
   } finally { await storage.close(context); }
@@ -155,7 +155,7 @@ test("active runs, human waits, and contexts Pi would alter defer without creati
   }
 });
 
-test("SQLite reopen reads only the reduced checkpoint, retaining archive, public identity, and deduplication", async t => {
+test("SQLite reopen finds the migration without paging the archive, retaining archive, public identity, and deduplication", async t => {
   const directory = await mkdtemp(join(tmpdir(), "pi-migration-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const path = join(directory, "session.sqlite");
@@ -179,9 +179,15 @@ test("SQLite reopen reads only the reduced checkpoint, retaining archive, public
       scans++;
       return originalScan(query, limit, cursor, callContext);
     };
+    const marker = await loadLegacyMigration(reopened);
+    assert.equal(scans, 1);
+    reopened.scanEntries = originalScan;
+    const checkpoint = (await reopened.entry(marker!.contextEntryId, context))!.entry;
+    assert.ok(JSON.stringify(checkpoint).length < 20000, "the checkpoint head holds no old body and no second copy of the context");
+    // The audit path reduces the archive again for the context; the reduced state beside it was stored with the checkpoint.
     const loaded = await loadMigratedSnapshot(reopened);
     assert.ok(loaded);
-    assert.equal(scans, 1);
+    assert.deepEqual(loaded.metadata, marker);
     assert.equal(loaded.metadata.sessionId, "same-public-id");
     assert.equal(loaded.metadata.fingerprint, imported.fingerprint);
     assert.equal(loaded.snapshot.total, 301);
@@ -189,7 +195,6 @@ test("SQLite reopen reads only the reduced checkpoint, retaining archive, public
     assert.deepEqual(loaded.snapshot.system, leading);
     assert.ok(JSON.stringify(loaded.snapshot).length < 10000, "no old body is retained in the reduced snapshot");
     assert.ok(await reopened.submissionByRequest(LEGACY_CONVERSATION_ID, "old-0", context));
-    reopened.scanEntries = originalScan;
     assert.deepEqual(await readMigratedLegacyRecords(reopened), source);
     await validateLegacyMigration(reopened, source, leading);
   } finally { await reopened.close(context); }

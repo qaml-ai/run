@@ -11,6 +11,8 @@ import { fileAppendLog } from "../shared/append-log.ts";
 import { MIGRATION_MAX_BYTES } from "../src/pi-durable/migration.ts";
 import { transcriptPath, type TranscriptRecord } from "../src/transcript.ts";
 import { agentEngine } from "../src/pi-durable/config.ts";
+import { openPiJournalReader } from "../src/pi-durable/storage.ts";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 
 test("Pi is an explicit operator switch with a legacy default", () => {
   assert.equal(agentEngine(undefined), "legacy");
@@ -69,6 +71,18 @@ for (const hosting of ["inline", "process"] as Hosting[]) test(`session migratio
   assert.deepEqual(withPi.slice(0, original.length), original);
   assert.equal(withPi.length, 4);
   await switched.supervisor.close();
+  // The import wrote the archive and the context once, and the first Pi run found its context current.
+  const journal = (await openPiJournalReader({ sessionId: "same-public-session", directory: join(root, "same-public-session") }))!;
+  const kinds: string[] = [];
+  for (let cursor; ;) {
+    const page = await journal.scanEntries({ conversationId: 1 as never, order: "ascending" }, 256, cursor, BACKGROUND_CONTEXT);
+    kinds.push(...page.items.map(entry => entry.kind));
+    if (!(cursor = page.next)) break;
+  }
+  await journal.close(BACKGROUND_CONTEXT);
+  assert.equal(kinds.filter(kind => kind === "camel.legacy.context").length, 1);
+  assert.equal(kinds.filter(kind => kind === "camel.host.archive").length, 1);
+  assert.ok(!kinds.includes("camel.legacy.record"));
 
   const reopened = await open("pi-durable");
   assert.equal(reopened.init.migration.state, "existing");
