@@ -276,6 +276,16 @@ test("a retry of a request still being taken is answered once its record is dura
   assert.ok(result.reached.includes("a retry waited for its request's record to be durable"), result.reached.join(", "));
 });
 
+test("a Pi journal statement the database cancels is tried again, and its notification is in its parent's history once (seed 305)", async () => {
+  // Found on Pi with seeds 1-400: a statement timeout (57014) on a journal commit failed Pi's Session, which closed the
+  // agent's Storage under its still-loaded host: the run failed, and every live history read failed after it, so the
+  // landed notification was in no history read (I21). The journal now repeats what the server gave up on, and a journal
+  // failure gives the agent up as a failed transcript write does.
+  const plan: Plan = JSON.parse(readFileSync(new URL("./sim/cases/pi-journal-statement-timeout.json", import.meta.url), "utf8"));
+  const result = await runPlan(plan, { quiet: true });
+  assert.deepEqual(result.failures, []);
+});
+
 test("a log closed with its records dropped fails the flushes still waiting for them, rather than seeming to write them (night 4, fuzz a025ff9b)", async () => {
   // b's session faulted (its transcript failed a write) while run-9's acceptance waited behind a journal write the
   // outage held up; giving the agent up dropped the journal's buffer, and run-9's flush then found nothing to write and

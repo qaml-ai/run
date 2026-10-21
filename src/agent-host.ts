@@ -1076,6 +1076,9 @@ export function createAgentHost(hostIO: HostIO) {
         if (config.engine === "pi-durable") {
           durableAgent = await DurableAgent.create({ ...agentOptions, durable: {
             storage: piStorage, conversationId: conversion.conversationId, cursor: transcript.piCursor,
+            // Pi's journal failed a write or read: what the host holds is no longer known to be stored, as when the
+            // transcript fails one. The run ends with PERSISTENCE_FAILED and the session gives the agent up.
+            onStorageFailure: error => { transcript.failed ??= error; },
             // Summaries share credential/network gates but not the run's output
             // schema, temperature or max-output settings.
             summaryStream,

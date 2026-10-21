@@ -15,7 +15,7 @@ import { openNodeSqliteDatabase } from "@earendil-works/pi-durable/storage/sqlit
 import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 import { validKey } from "../../shared/storage.ts";
 import { underClaim, type Claim } from "../ownership.ts";
-import { databaseUnavailable, type Db, type Sql } from "../db.ts";
+import { databaseRetryable, databaseUnavailable, type Db, type Sql } from "../db.ts";
 import { clock } from "../node-context.ts";
 
 import type { Context, JsonValue } from "@earendil-works/chord";
@@ -78,7 +78,8 @@ async function whileUnavailable<T>(retryMs: number, work: () => Promise<T>, sett
     for (let delay = 100; ; delay = Math.min(delay * 2, 2_000)) {
         try { return await work(); }
         catch (error) {
-            if (!databaseUnavailable(error) || Date.now() + delay > deadline) throw error;
+            // Unreachable, or a statement the server gave up on (a timeout, a deadlock): nothing of it was kept.
+            if (!(databaseUnavailable(error) || databaseRetryable(error)) || Date.now() + delay > deadline) throw error;
             await clock().sleep(delay);
             const landed = await whileUnavailable(Math.max(0, deadline - Date.now()), async () => settled?.());
             if (landed) return landed.value;

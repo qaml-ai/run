@@ -19,6 +19,11 @@ export type DurableAgentOptions = Omit<AgentOptions, "transformContext"> & {
     summaryStream?: AgentOptions["streamFn"];
     onSummary?: (message: AssistantMessage) => void | Promise<void>;
     onCompaction?: (state: { summary: string; keptMessages: number; at: number }) => void | Promise<void>;
+    /**
+     * A storage call failed (past the Storage's own retries). Pi's Session is then failed for good, and closes the
+     * Storage: the host must be given up and reopened from what was committed.
+     */
+    onStorageFailure?: (error: unknown) => void;
   };
 };
 type Listener = (event: AgentEvent & { durable?: DurableCursor }, signal: AbortSignal) => void | Promise<void>;
@@ -67,6 +72,26 @@ async function latestDurableCursor(storage: Storage, conversationId: Conversatio
     }
     cursor = page.next;
   } while (cursor !== undefined);
+}
+
+/** `storage`, telling `onFailure` of a call that failed (not one its caller cancelled). */
+function storageGuard(storage: Storage, onFailure?: (error: unknown) => void): Storage {
+  if (!onFailure) return storage;
+  return new Proxy(storage, { get(target, key) {
+    const value = Reflect.get(target, key, target);
+    if (typeof value !== "function" || key === "close") return typeof value === "function" ? value.bind(target) : value;
+    return (...args: unknown[]) => {
+      const failed = (error: unknown) => {
+        const cancelled = args.some(arg => (arg as { abortSignal?: AbortSignal } | undefined)?.abortSignal?.aborted);
+        if (!cancelled) onFailure(error);
+        throw error;
+      };
+      try {
+        const result = value.apply(target, args);
+        return result instanceof Promise ? result.catch(failed) : result;
+      } catch (error) { return failed(error); }
+    };
+  } });
 }
 
 /** Retire native work for an explicit rollback without ever dispatching its run phases. */
@@ -248,7 +273,7 @@ export class DurableAgent {
       },
     };
     const window = () => Math.min(agent.state.model.contextWindow, options.durable.contextWindow ?? Infinity);
-    agent.harness = await Harness.open(options.durable.storage, { registry, models: models as unknown as HarnessOptions["models"],
+    agent.harness = await Harness.open(storageGuard(options.durable.storage, options.durable.onStorageFailure), { registry, models: models as unknown as HarnessOptions["models"],
       settings: { compaction: { enabled: true,
         get reserveTokens() { return Math.min(16_384, Math.floor(window() * 0.15)); },
         get keepRecentTokens() { return Math.min(20_000, Math.floor(window() * 0.25)); }, backgroundTokens: 0 },

@@ -1,0 +1,78 @@
+{
+  "seed": "305",
+  "nodes": [
+    "a",
+    "b",
+    "c"
+  ],
+  "leaseTtlMs": 6000,
+  "durationMs": 60000,
+  "skews": {
+    "a": 0,
+    "b": 0,
+    "c": 0
+  },
+  "modelDelayMs": [
+    50,
+    200
+  ],
+  "buggify": false,
+  "steps": [
+    {
+      "at": 0,
+      "op": {
+        "op": "create",
+        "agent": 0,
+        "node": "b",
+        "spawner": true
+      }
+    },
+    {
+      "at": 6720,
+      "op": {
+        "op": "prompt",
+        "agent": 0,
+        "run": 2,
+        "node": "a",
+        "spawn": true
+      }
+    },
+    {
+      "at": 8362,
+      "op": {
+        "op": "prompt",
+        "agent": 0,
+        "run": 3,
+        "node": "b",
+        "spawn": true
+      }
+    }
+  ],
+  "drifts": {
+    "a": {
+      "wall": 0.0044,
+      "monotonic": 0.00062
+    },
+    "b": {
+      "wall": 0.0061,
+      "monotonic": 0.00044
+    },
+    "c": {
+      "wall": 0.0095,
+      "monotonic": -0.00087
+    }
+  },
+  "dbErrors": {
+    "rate": 0.005,
+    "codes": [
+      "40P01",
+      "57014",
+      "ECONNRESET"
+    ]
+  },
+  "env": {
+    "AGENT_CHILD_SWEEP_MS": "2000",
+    "AGENT_OUTBOUND_ALLOW_HTTP": "true",
+    "AGENT_OUTBOUND_ALLOW_CIDRS": "10.0.0.0/8"
+  }
+}
