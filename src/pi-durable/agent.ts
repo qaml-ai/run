@@ -2,10 +2,12 @@ import { createHash } from "node:crypto";
 import type { AgentEvent, AgentMessage, AgentOptions, AgentState, AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
 import { createAssistantMessageEventStream, getCurrentSystemMessage, getSystemMessageText, type AssistantMessage, type ImageContent, type Message, type ToolResultMessage } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { backgroundTokens } from "../compaction.ts";
+import { estimateMessageTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { isContextOverflow } from "@earendil-works/pi-ai/utils/overflow";
 import { convertToLlm as contextMessages, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "../pi-harness/messages.ts";
 import {
-  GenerationTask, Harness, InboxDoc, LiveDoc, StorageRequestError, createRegistry,
+  CompactionTask, GenerationTask, Harness, InboxDoc, LiveDoc, StorageRequestError, createRegistry, hook,
   type Conversation, type ConversationId, type EntryRecord, type HarnessOptions, type RegistryReader, type RegistrySnapshot, type Storage, type TaskId,
 } from "@earendil-works/pi-durable";
 
@@ -18,8 +20,10 @@ export type DurableAgentOptions = Omit<AgentOptions, "transformContext"> & {
     cursor?: DurableCursor;
     contextWindow?: number;
     summaryStream?: AgentOptions["streamFn"];
-    onSummary?: (message: AssistantMessage) => void | Promise<void>;
-    onCompaction?: (state: { summary: string; keptMessages: number; at: number; reason: "threshold" | "overflow" }) => void | Promise<void>;
+    onSummary?: (message: AssistantMessage, background: boolean) => void | Promise<void>;
+    beforeCompaction?: (state: { background: boolean; reason: "threshold" | "overflow" | "manual" }) => boolean | Promise<boolean>;
+    onCompactionStart?: (state: { background: boolean; reason: "threshold" | "overflow" | "manual" }) => void | Promise<void>;
+    onCompaction?: (state: { summary: string; keptMessages: number; at: number; reason: "threshold" | "overflow"; background: boolean }) => void | Promise<void>;
     /**
      * A storage call failed (past the Storage's own retries). Pi's Session is then failed for good, and closes the
      * Storage: the host must be given up and reopened from what was committed.
@@ -232,6 +236,7 @@ export class DurableAgent {
    * after an overflow it compacts against this, as the legacy compactor kept about a fifth of the context.
    */
   private overflowWindow = Infinity;
+  private lastCompactionAt?: number;
   private errorMessage?: string;
   private lastTurn?: AssistantMessage;
   private lastTurnResults: ToolResultMessage[] = [];
@@ -327,13 +332,27 @@ export class DurableAgent {
         return original.phases.tools(...args);
       },
     } } };
+    // Keep the task's ownership on summary usage too: a background response may arrive after the run ended.
+    const nativeCompaction = CompactionTask.definition;
+    const compactionTask = { definition: { ...nativeCompaction, phases: { ...nativeCompaction.phases,
+      summarize: async (...args: Parameters<typeof nativeCompaction.phases.summarize>) => {
+        const [record, runtime, taskContext] = args;
+        const scoped = new Proxy(runtime, { get(target, key) {
+          if (key === "models") return { ...target.models,
+            completeSimple: (model: unknown, view: { messages: Message[] }, options: unknown) => models.completeSimple(model, view, options, record.background) };
+          const value = Reflect.get(target, key, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        } });
+        return nativeCompaction.phases.summarize(record, scoped, taskContext);
+      },
+    } } };
     const registry: RegistryReader = {
       subscribe: listener => agent.registry.subscribe(listener),
       snapshot: () => {
         const snapshot = agent.registry.snapshot();
         return new Proxy(snapshot, { get(target, key) {
-          if (key === "task") return (name: string) => name === original.name ? task : target.task(name);
-          if (key === "tasks") return () => target.tasks().map(item => item.definition.name === original.name ? task : item);
+          if (key === "task") return (name: string) => name === original.name ? task : name === nativeCompaction.name ? compactionTask : target.task(name);
+          if (key === "tasks") return () => target.tasks().map(item => item.definition.name === original.name ? task : item.definition.name === nativeCompaction.name ? compactionTask : item);
           const value = Reflect.get(target, key, target); return typeof value === "function" ? value.bind(target) : value;
         } }) as RegistrySnapshot;
       },
@@ -343,7 +362,7 @@ export class DurableAgent {
     const models = {
       getModel: () => ({ ...agent.state.model, contextWindow: window() }),
       streamSimple: (_model: unknown, view: { messages: Message[] }, streamOptions: unknown) => agent.stream(streamOptions, view.messages),
-      completeSimple: async (_model: unknown, view: { messages: Message[] }, streamOptions: unknown) => {
+      completeSimple: async (_model: unknown, view: { messages: Message[] }, streamOptions: unknown, background = false) => {
         await agent.flushEvents();
         const apiKey = await options.getApiKey?.(agent.state.model.provider);
         const summarize = async (messages: Message[]) => {
@@ -353,7 +372,7 @@ export class DurableAgent {
           await agent.conversation.commit(tx => tx.appendEntry(agent.conversation.id, {
             kind: "camel.compaction.usage", data: { message: result } as never,
           }), context);
-          await options.durable.onSummary?.(result);
+          await options.durable.onSummary?.(result, background);
           return result;
         };
         // Pi asks for one summary of the whole prefix. One larger than the window (an imported history, a model whose
@@ -385,7 +404,8 @@ export class DurableAgent {
           const system = agent.messages.findLast(message => message.role === "system");
           const fixed = system ? Math.ceil(JSON.stringify(system).length / 4) : 0;
           return Math.max(1_000, Math.min(20_000, Math.floor(limit * 0.25), limit - reserve - fixed - Math.floor(limit / 4)));
-        }, backgroundTokens: 0 },
+        },
+        get backgroundTokens() { return backgroundTokens({ ...agent.state.model, contextWindow: window() }); } },
         // Live answers and tool output stream to the host from the provider and the tool, not from these commits:
         // they only bound what a lost node's run keeps, so each costs a journal write once a second, not every 100 ms.
         progress: { partialIntervalMs: 1_000, outputIntervalMs: 1_000 },
@@ -438,7 +458,6 @@ export class DurableAgent {
     const head = await options.durable.storage.findLatestHeadMarker(agent.conversation.id, undefined, context);
     if (head?.kind === "pi.compaction") {
       await agent.adoptCompaction(head, false);
-      agent.messages = [...(await agent.conversation.context(context)).messages] as AgentMessage[];
     }
     agent._latestCursor = options.durable.cursor ?? await latestDurableCursor(options.durable.storage, agent.conversation.id);
     return agent;
@@ -462,7 +481,28 @@ export class DurableAgent {
       summary = summary.slice(COMPACTION_SUMMARY_PREFIX.length, -COMPACTION_SUMMARY_SUFFIX.length);
     }
     const reason = (entry.data as { reason?: string } | undefined)?.reason === "overflow" ? "overflow" : "threshold";
-    await this.options.durable.onCompaction?.({ summary, keptMessages, at: entry.model?.[0]?.timestamp ?? Date.now(), reason });
+    // A background summary is placed by a write submission, possibly by a later generation at its boundary.
+    // Its entry's byTaskId therefore need not be the summarizer. Resolve the durable compaction outcome instead.
+    let background = false, cursor;
+    outer: do {
+      const page = await this.options.durable.storage.scanTasks({ conversationId: this.conversation.id, kind: "pi.compaction", order: "descending" }, 32, cursor, context);
+      for (const task of page.items) {
+        if (task.state.status !== "terminal" || task.state.outcome.status !== "completed") continue;
+        const result = task.state.outcome.result as { entryId?: number; submissionId?: number };
+        const placed = result.submissionId === undefined ? result.entryId :
+          (await this.options.durable.storage.submission(result.submissionId as never, context))?.entry;
+        if (placed === entry.id) { background = task.background; break outer; }
+      }
+      cursor = page.next;
+    } while (cursor !== undefined);
+    // Native compaction may cut away the entry that declared the system sections. Keep that
+    // declaration for the adapter's next preparation, just as the host retains its leading prompt.
+    const system = getCurrentSystemMessage(this.messages);
+    this.messages = this.originals(view.messages as Message[]);
+    if (system && !getCurrentSystemMessage(this.messages)) this.messages.unshift(system);
+    const at = entry.model?.[0]?.timestamp ?? Date.now();
+    this.lastCompactionAt = at;
+    await this.options.durable.onCompaction?.({ summary, keptMessages, at, reason, background });
   }
 
   get signal() { return this.controller?.signal; }
@@ -581,7 +621,26 @@ export class DurableAgent {
   }
 
   private installTools() {
-    this.registry.install({ name: "camel", tools: this.tools.map(tool => ({ ...tool, replay: tool.replay === "safe" ? "safe" : "unsafe",
+    this.registry.install({ name: "camel", hooks: [hook(CompactionTask, {
+      beforeCompact: async ({ reason }, api, context) => {
+        const background = (await this.options.durable.storage.task(api.taskId, context))?.background ?? false;
+        const state = { reason, background };
+        await this.flushEvents();
+        if (await this.options.durable.beforeCompaction?.(state) === false) return { decline: true };
+        // Preserve the legacy lowered-window growth guard. A large fixed prompt can leave the
+        // retained tail already near the background threshold; wait for another quarter-window
+        // of messages rather than paying for a new summary on every turn. Blocking compaction
+        // remains free to run whenever the context would otherwise overflow.
+        const limit = Math.min(this.state.model.contextWindow, this.options.durable.contextWindow ?? Infinity, this.overflowWindow);
+        if (background && limit < this.state.model.contextWindow && this.lastCompactionAt !== undefined) {
+          const view = await this.conversation.context(context);
+          const added = view.messages.reduce((tokens, message) => tokens +
+            (message.role !== "system" && message.timestamp > this.lastCompactionAt! ? estimateMessageTokens(message) : 0), 0);
+          if (added < limit / 4) return { decline: true };
+        }
+        await this.options.durable.onCompactionStart?.(state);
+      },
+    })], tools: this.tools.map(tool => ({ ...tool, replay: tool.replay === "safe" ? "safe" : "unsafe",
       structuredOutputSchema: tool.outputSchema,
       // Camel already bounds tool output; a second truncation changes persisted replies.
       outputLimits: { maxBytes: Number.MAX_SAFE_INTEGER, maxLines: Number.MAX_SAFE_INTEGER },

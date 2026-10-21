@@ -910,9 +910,13 @@ export function createAgentHost(hostIO: HostIO) {
         // schema, temperature or max-output settings.
         summaryStream,
         get contextWindow() { return compactionModel().contextWindow; },
-        onSummary: message => io.emit({ type: "compaction_usage", provider: message.provider,
-          model: message.model, usage: message.usage, timestamp: message.timestamp, durable: true }),
-        onCompaction: async ({ summary, keptMessages, at, reason }) => {
+        onSummary: (message, background) => io.emit({ type: "compaction_usage", provider: message.provider,
+          model: message.model, usage: message.usage, timestamp: message.timestamp, durable: true, ...(background ? { background: true } : {}) }),
+        // Like the legacy background compactor, do not spend on speculative summaries past the cap.
+        // An unavailable limit leaves the existing model-attempt credit gate authoritative.
+        beforeCompaction: async ({ background }) => !background || (await io.runLimit().catch(() => undefined))?.stopped !== "spend_limit",
+        onCompactionStart: ({ reason, background }) => { io.emit({ type: "compaction_start", reason, ...(background ? { background: true } : {}) }); },
+        onCompaction: async ({ summary, keptMessages, at, reason, background }) => {
           // Pi compacts after a context overflow with the refused response in its journal: as the legacy loop did, that
           // response is taken back from history, and the stream told so.
           const refused = transcript.context.at(-1) as AssistantMessage | undefined;
@@ -927,7 +931,7 @@ export function createAgentHost(hostIO: HostIO) {
           const state = { summary, cut, tokensBefore: contextTokens(transcript.view()), at };
           await transcript.compact(state, transcript.compaction, changes => getCurrentSystemMessage([leading(tools.map(toToolDeclaration)), ...changes]));
           io.emit({ type: "compaction_end", reason, tokensBefore: state.tokensBefore,
-            keptMessages, summarizedMessages: cut - offset });
+            keptMessages, summarizedMessages: cut - offset, ...(background ? { background: true } : {}) });
         },
       } });
       const cursor = await agent.discardInterruptedRun();
