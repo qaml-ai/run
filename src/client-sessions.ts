@@ -3395,7 +3395,8 @@ export class ClientSessions {
    * A new agent with `source`'s configuration and a copy of its history and workspace (POST /v1/agents/:id/fork), on
    * the node serving `source`. Its history is the source's as its index and journal hold it (every message a turn
    * committed, wherever the source runs) up to the fork point (`journalForkCut`), and its model context Pi's as of
-   * there: copies of its own, sharing nothing mutable with the source, whose FileRefs are pinned to it. Its workspace volume is a fork of the source's, as it is
+   * there (raw history before Pi's retained head): copies of its own, sharing nothing mutable with the source, whose
+   * FileRefs are pinned to it. Its workspace volume is a fork of the source's, as it is
    * now; other mounts are the same volumes. Not copied: schedules, channels, inputs, requests and spend so far. Who it
    * acts for (`identity`), its prompt addition and its model headers may be its own. With a key, a retry returns the same fork; a key naming
    * another agent is refused.
@@ -3424,8 +3425,10 @@ export class ClientSessions {
       // Its summary, if it covers no more than the fork keeps, then what follows it.
       const summary = compaction && compaction.cut <= count ? [createCompactionSummaryMessage(compaction.summary, compaction.tokensBefore, new Date(compaction.at).toISOString()) as AgentMessage] : [];
       cut = { through: count ? count - 1 : null, messages: kept, turns: kept.flatMap((message, index) => message.role === "user" && kept[index - 1]?.role !== "user" ? [index] : []),
-        model: convertToLlm([...summary, ...kept.slice(summary.length ? compaction!.cut : 0)]) };
+        model: convertToLlm([...summary, ...kept.slice(summary.length ? compaction!.cut : 0)]),
+        ...(compaction && count < compaction.cut ? { fromHistory: true as const } : {}) };
     }
+    if (cut.fromHistory) console.log(JSON.stringify({ type: "fork_from_history", agent: sourceId, at: cut.through, messages: cut.messages.length }));
     const from: ForkedFrom = { agentId: sourceId, atMessage: cut.through };
     // The source's own workspace is forked for the fork, under the id its workspace has; shared volumes stay shared.
     let mounts: unknown[] | undefined = source.mounts;

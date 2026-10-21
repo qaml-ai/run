@@ -177,10 +177,18 @@ test("a fork of a compacted agent keeps its summary: the model sees the summary 
     await r.prompt(early, `EARLY-${atMessage}`);
     return JSON.stringify(r.model.bodies.at(-1).messages);
   };
-  // Before the summary's cut, the context the journal retains (the summary's) cannot start it: refused (#381).
+  // Before the import cut, seed the fork from raw indexed history, without the summary.
   const before = await r.call(`/v1/agents/${source}/fork`, { body: { atMessage: 0 } });
-  assert.equal(before.status, 400, before.text);
-  assert.equal(before.json.code, "FORK_POINT_INVALID");
+  assert.equal(before.status, 201, before.text);
+  assert.deepEqual(before.json.forkedFrom, { agentId: source, atMessage: 0 });
+  assert.deepEqual(said((await r.call(`/v1/agents/${before.json.id}/history`)).json.messages), ["user:OLD-QUESTION"]);
+  await r.prompt(before.json.id, "EARLY-0");
+  const raw = r.model.bodies.at(-1).messages.filter((message: any) => message.role !== "system");
+  assert.deepEqual(said(raw), ["user:OLD-QUESTION", "user:EARLY-0"]);
+  assert.ok(r.logs.some(line => {
+    const event = JSON.parse(line);
+    return event.type === "fork_from_history" && event.agent === source && event.at === 0 && event.messages === 1;
+  }));
   const at = await sentFor(1);
   assert.ok(at.includes("SUMMARY-OF-EARLIER") && !at.includes("OLD-ANSWER") && !at.includes("KEPT-QUESTION"), at);
 });

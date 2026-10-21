@@ -132,7 +132,7 @@ test("stage 1 holds the claim against a first acquisition until deletion commits
   } finally { await holder.query("rollback"); holder.release(); }
 });
 
-test("after reclaim a cold agent runs, pages history, forks a retained turn, and forks before the checkpoint from the host's history", { timeout: 60_000 }, async t => {
+test("after reclaim a cold agent runs, pages history, and forks retained and pre-checkpoint messages", { timeout: 60_000 }, async t => {
   const r = await runtime(t, body => ({ role: "assistant", content: `answer to ${lastUser(body)}` }),
     { AGENT_IDLE_MS: "1000", AGENT_PI_DUAL_WRITE: "1", AGENT_PI_HISTORY_SOURCE_TENANTS: "*" });
   const session = (await r.call("/v1/agents", { body: {} })).json.id as string;
@@ -162,9 +162,16 @@ test("after reclaim a cold agent runs, pages history, forks a retained turn, and
   const made = await r.call(`/v1/agents/${session}/fork`, { body: { atMessage: 3 } });
   assert.equal(made.status, 201, made.text);
   assert.equal((await r.prompt(made.json.id, "forked")).outcome.result.reply, "answer to forked");
-  // Before the retained head the host's cut serves the fork while the host transcript lasts.
   const early = await r.call(`/v1/agents/${session}/fork`, { body: { atMessage: 0 } });
   assert.equal(early.status, 201, early.text);
+  assert.deepEqual(early.json.forkedFrom, { agentId: session, atMessage: 0 });
+  const copied = (await r.call(`/v1/agents/${early.json.id}/history`)).json.messages;
+  assert.deepEqual(copied, [older.json.entries[0].message], "the fork keeps the original indexed message");
+  assert.equal((await r.db.query("select indexed from agent_history_index where agent = $1", [session])).rows[0].indexed >= 2, true, "old history is in blob chunks");
+  assert.equal((await r.prompt(early.json.id, "early fork")).outcome.result.reply, "answer to early fork");
+  const raw = r.model.bodies.at(-1).messages.filter((message: any) => message.role !== "system");
+  assert.deepEqual(raw.map((message: any) => [message.role, message.content]),
+    [["user", [{ type: "text", text: "first" }]], ["user", [{ type: "text", text: "early fork" }]]]);
 });
 
 test("stage 1 honors a compaction's retained head, never its marker ID, and leaves sessions without a head alone", async () => {

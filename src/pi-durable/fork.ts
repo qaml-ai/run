@@ -17,11 +17,13 @@ export interface JournalForkCut {
   /** The history the fork starts with, and where its turns began. */
   messages: AgentMessage[];
   turns: number[];
-  /** The fork's model context as of the cut, as Pi derives it. */
+  /** Pi's context as of the cut, or raw history when the cut predates its retained head. */
   model: Message[];
+  /** The retained context could not cover the cut; the model starts from raw history. */
+  fromHistory?: true;
 }
 
-/** The journal's retained context cannot reconstruct this point; do not fall back to the host's fork. */
+/** The journal's retained context cannot reconstruct this point; use the settled history instead. */
 export class ForkBeforeHead extends Error {
   readonly status = 400;
   readonly code = "FORK_POINT_INVALID";
@@ -98,9 +100,9 @@ export async function contextAt(storage: Pick<Storage, "scanEntries" | "findLate
 
 /**
  * The fork of a session at `at` from its journal: `messages` is its whole history (the history index's settled part,
- * then the journal's), `history` its journal history. Its model starts from Pi's context as of the cut; a cut before
- * the session's journal base (whose messages have no journal cursor) starts from the kept history, whole, which Pi
- * compacts as it must.
+ * then the journal's), `history` its journal history. Its model starts from Pi's context as of the cut. Before the
+ * retained head, or the journal base (whose messages have no cursor), it starts from raw kept history, which Pi
+ * compacts on the first turn as needed.
  */
 export async function journalForkCut(storage: Pick<Storage, "scanEntries" | "findLatestHeadMarker">, history: JournalHistory, messages: readonly AgentMessage[], at?: number | string): Promise<JournalForkCut> {
   if (messages.length !== history.total) throw new Error(`The agent's history has ${messages.length} messages, its journal ${history.total}`);
@@ -113,6 +115,13 @@ export async function journalForkCut(storage: Pick<Storage, "scanEntries" | "fin
   // checkpoint that summarizes what the fork keeps, an import's summary at its cut), never anything after.
   const cursor = history.cursorAt(count - 1), next = history.cursorAt(count);
   const through = !cursor ? undefined : !next ? { entryId: Number.MAX_SAFE_INTEGER, index: -1 } : next.index > 0 ? { entryId: next.entryId, index: next.index - 1 } : { entryId: next.entryId - 1, index: -1 };
-  const model = through ? await contextAt(storage, through) : convertToLlm([...kept]);
-  return { through: count - 1, messages: [...kept], turns: turns.filter(turn => turn < count), model };
+  if (through) {
+    try {
+      const model = await contextAt(storage, through);
+      return { through: count - 1, messages: [...kept], turns: turns.filter(turn => turn < count), model };
+    } catch (error) {
+      if (!(error instanceof ForkBeforeHead)) throw error;
+    }
+  }
+  return { through: count - 1, messages: [...kept], turns: turns.filter(turn => turn < count), model: convertToLlm([...kept]), fromHistory: true };
 }

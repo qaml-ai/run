@@ -2,12 +2,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { MemoryStorage, type EntryId, type StorageWrite } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { contextAt, forkCount, journalForkCut } from "../src/pi-durable/fork.ts";
 import { JournalHistory, MARKER_KIND } from "../src/pi-durable/history.ts";
-import { HOST_BOOTSTRAP_KIND, SESSION_CONVERSATION_ID as conversationId } from "../src/pi-durable/seed.ts";
+import { HOST_BOOTSTRAP_KIND, seedJournal, SESSION_CONVERSATION_ID as conversationId } from "../src/pi-durable/seed.ts";
 import { COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "../src/pi-harness/messages.ts";
+import { DurableAgent } from "../src/pi-durable/agent.ts";
 
 const user = (text: string, requestId?: string) => ({ role: "user", content: text, timestamp: 1, ...(requestId ? { requestId } : {}) }) as AgentMessage;
 const reply = (text: string) => fauxAssistantMessage(text) as AgentMessage;
@@ -94,12 +95,16 @@ test("a journal fork cut keeps the history to the cut, and its model starts from
   assert.deepEqual(cut.messages, messages);
   assert.deepEqual(cut.turns, [], "where its turns began, as the journal marks them (this one marks none)");
   assert.deepEqual(roles(cut.model), ["user", "user", "assistant"]);
+  assert.equal(cut.fromHistory, undefined, "the retained-context fast path");
   await assert.rejects(journalForkCut(storage, history, messages.slice(1), "r2"), /has 3 messages, its journal 4/, "a history that is not the journal's whole is not cut");
-  // Before the compaction's retained head: refused, as reclaim may have removed what it would start from.
-  await assert.rejects(journalForkCut(storage, history, messages, 1), { code: "FORK_POINT_INVALID" });
+  const early = await journalForkCut(storage, history, messages, 1);
+  assert.equal(early.through, 1);
+  assert.equal(early.fromHistory, true);
+  assert.deepEqual(early.messages, messages.slice(0, 2));
+  assert.deepEqual(early.model, messages.slice(0, 2), "raw messages, without the later summary or system checkpoint");
 });
 
-test("forks before the newest head are refused even before reclaim; a compaction's retained head is valid", async () => {
+test("context lookup signals a cut before the newest head; a compaction's retained head is valid", async () => {
   const { storage, at } = await journal([
     { kind: "camel.legacy.context", model: [system], self: true },
     { kind: "pi.user", model: [user("old")] },
@@ -116,7 +121,7 @@ test("forks before the newest head are refused even before reclaim; a compaction
   assert.deepEqual(roles(await contextAt(storage, at(5))), ["user", "user", "assistant"]);
 });
 
-test("forks before a newer checkpoint are refused, while its head and later entries work", async () => {
+test("context lookup signals a cut before a newer checkpoint, while its head and later entries work", async () => {
   const { storage, at } = await journal([
     { kind: "camel.legacy.context", model: [system], self: true },
     { kind: "pi.user", model: [user("old")] },
@@ -127,4 +132,72 @@ test("forks before a newer checkpoint are refused, while its head and later entr
     (error as { code?: string }).code === "FORK_POINT_INVALID" && /fork at a later message/.test((error as Error).message));
   assert.deepEqual(roles(await contextAt(storage, at(2))), ["system"]);
   assert.deepEqual(roles(await contextAt(storage, at(3))), ["system", "user"]);
+});
+
+test("a fork before the journal base uses indexed history with the same request and tool-result cuts", async () => {
+  const indexed = [user("old", "r1"), call("a"), result("a"), reply("done")];
+  const { storage } = await journal([
+    { kind: MARKER_KIND, data: { t: "base", total: indexed.length, active: false, turnStart: indexed.length, awaiting: [] } },
+    { kind: "camel.legacy.context", model: [summary("Imported summary")], self: true },
+    { kind: MARKER_KIND, data: { t: "turn", active: true } },
+    { kind: "pi.user", model: [user("running", "r2")] },
+  ]);
+  const history = (await JournalHistory.open(storage))!;
+  const messages = [...indexed, ...(await history.messagesFrom(indexed.length))!];
+  for (const [at, count] of [[1, 3], ["r1", 4]] as const) {
+    const cut = await journalForkCut(storage, history, messages, at);
+    assert.equal(cut.through, count - 1);
+    assert.equal(cut.fromHistory, true);
+    assert.deepEqual(cut.messages, indexed.slice(0, count));
+    assert.deepEqual(cut.model, cut.messages);
+  }
+  for (const at of [4, "r2"]) await assert.rejects(journalForkCut(storage, history, messages, at), { status: 409, code: "FORK_POINT_RUNNING" });
+  for (const at of [5, "unknown"]) await assert.rejects(journalForkCut(storage, history, messages, at), { status: 400, code: "FORK_POINT_INVALID" });
+});
+
+for (const measured of [false, true]) test(`an over-window raw fork seed compacts in chunks${measured ? " after a provider overflow with old usage counts" : " before its first model generation"}`, async t => {
+  const storage = new MemoryStorage();
+  const raw = Array.from({ length: 24 }, (_, index) => [user(`old-${index} ${"word ".repeat(1000)}`),
+    { ...fauxAssistantMessage(`answer-${index}`), ...(measured ? { usage: { ...fauxAssistantMessage("").usage, input: 1, totalTokens: 1 } } : {}) } as AgentMessage]).flat();
+  await seedJournal({ storage, sessionId: "raw-fork", model: raw as never, before: { total: raw.length }, requests: [] });
+  assert.deepEqual(await contextAt(storage, { entryId: Number.MAX_SAFE_INTEGER, index: -1 }), raw, "the seed keeps every raw message");
+  const model = { id: "fixture", provider: "fixture", api: "openai-completions", name: "Fixture", reasoning: false,
+    input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8192, maxTokens: 1000 } as any;
+  const stream = (text: string, error = false) => {
+    const message = { ...fauxAssistantMessage(text), provider: model.provider, model: model.id,
+      ...(error ? { stopReason: "error" as const, errorMessage: "maximum context length exceeded" } : {}) };
+    const events = createAssistantMessageEventStream();
+    queueMicrotask(() => {
+      if (error) events.push({ type: "error", reason: "error", error: message });
+      else events.push({ type: "done", reason: "stop", message });
+      events.end(message);
+    });
+    return events;
+  };
+  let summaries = 0, generations = 0;
+  const agent = await DurableAgent.create({
+    initialState: { model, messages: [], tools: [] },
+    streamFn: (_model, view) => {
+      generations++;
+      // Old usage counts can understate a raw history's size. The normal overflow path must compact and retry.
+      if (measured && generations === 1) {
+        assert.ok(JSON.stringify(view.messages).length > model.contextWindow * 4);
+        return stream("", true);
+      }
+      assert.ok(summaries > 1, "chunked compaction ran before generation");
+      assert.ok(JSON.stringify(view.messages).length < model.contextWindow * 4, "generation fits the model window");
+      return stream("done");
+    },
+    durable: { storage, conversationId,
+      summaryStream: (_model, view) => {
+        summaries++;
+        assert.ok(JSON.stringify(view.messages).length < model.contextWindow * 4, "each summary chunk fits the model window");
+        return stream("Summary of the old conversation.");
+      },
+    },
+  });
+  t.after(() => agent.close());
+  await agent.prompt("Continue the fork");
+  assert.equal(agent.state.errorMessage, undefined);
+  assert.equal(generations, measured ? 2 : 1);
 });
