@@ -350,7 +350,7 @@ test("a multi-step turn writes nothing to Storage; unloading writes one segment 
   const storage = memoryStorage(postgresTail(db));
   const ownership = new Ownership(db, { node: "http://n" });
   await ownership.start();
-  const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, storage });
+  const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, storage, db });
   const sessions = new ClientSessions(supervisor, { db, storage, prefix: "client-sessions/", ownership, secret: "tail-test-secret-with-32-characters!", apiKeyFor: () => "fixture-only" });
   let calls = 0;
   const provider = createServer(async (req, res) => {
@@ -382,7 +382,10 @@ test("a multi-step turn writes nothing to Storage; unloading writes one segment 
   await agent.status();
 
   const before = storage.puts;
+  const journalRows = async () => Number((await db.query("select count(*) as count from pi_durable_entries where session_id = $1", [agent.session.id])).rows[0].count);
+  const rowsBefore = await journalRows();
   assert.equal((await agent.prompt("Echo twice.")).error, null);
+  const rowsTurn = await journalRows() - rowsBefore;
   assert.equal(calls, 3);
   const turn = storage.puts - before;
   const tail = Number((await db.query("select count(*) as count from log_records")).rows[0].count);
@@ -390,7 +393,8 @@ test("a multi-step turn writes nothing to Storage; unloading writes one segment 
   await sessions.close();
   await supervisor.close();
   const unload = storage.puts - before - turn;
-  console.log(JSON.stringify({ type: "storage_writes", turn, unload, tailRows: tail }));
+  const rowsUnload = await journalRows() - rowsBefore - rowsTurn;
+  console.log(JSON.stringify({ type: "storage_writes", turn, unload, tailRows: tail, journalRows: { turn: rowsTurn, unload: rowsUnload } }));
   assert.equal(turn, 0, "no Storage writes during the turn");
   const chunks = [...storage.blobs.keys()].filter(key => key.startsWith(`sessions/${agent.session.id}/history/`)).length;
   assert.equal(chunks, 1, "the settled turn goes to the history index as one chunk, when the agent stops");
@@ -398,6 +402,10 @@ test("a multi-step turn writes nothing to Storage; unloading writes one segment 
   assert.equal(Number((await db.query("select count(*) as count from log_records")).rows[0].count), 0, "unloading emptied the tail");
   const history = (await supervisor.history(agent.session.id)).map(message => message.role);
   assert.deepEqual(history, ["user", "assistant", "toolResult", "assistant", "toolResult", "assistant"]);
+  // A Pi agent writes its journal in Postgres as the turn goes: a few rows per message (the message and its host
+  // record), and nothing more to unload.
+  assert.ok(rowsTurn <= 3 * history.length, `journal rows for the turn: ${rowsTurn}`);
+  assert.equal(rowsUnload, 0, "unloading writes no journal rows");
 });
 
 test("an append may be repeated after its connection dropped: its own rows count, anyone else's and a lost claim do not", async t => {
@@ -429,7 +437,7 @@ test("an agent woken thirty times, one execute each, keeps a bounded number of S
   const storage = memoryStorage(postgresTail(db));
   const ownership = new Ownership(db, { node: "http://n" });
   await ownership.start();
-  const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, storage });
+  const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, storage, db });
   const sessions = new ClientSessions(supervisor, { db, storage, prefix: "client-sessions/", ownership, secret: "tail-test-secret-with-32-characters!", apiKeyFor: () => "fixture-only" });
   t.after(async () => {
     await sessions.close(); await supervisor.close(); await ownership.close();
@@ -438,6 +446,9 @@ test("an agent woken thirty times, one execute each, keeps a bounded number of S
   const model = { id: "fixture", name: "Fixture", api: "openai-completions", provider: "openai", baseUrl: "http://127.0.0.1:9/v1", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 1024 } as Model<Api>;
   const { id } = await sessions.create([], { model }, "woken-agent", {}, "default");
   const logs = [`client-sessions/${id}.journal`, AgentSupervisor.transcriptKey(id)];
+  // A Pi agent's journal (Postgres rows rather than Storage objects): a wake that changes no history adds none.
+  const journalRows = async () => Number((await db.query("select count(*) as count from pi_durable_entries where session_id = $1", [id])).rows[0].count);
+  let rows: number | undefined;
   for (let n = 0; n < 30; n++) {
     await sessions.submit(id, "default", { id: `wake-${n}`, method: "execute", params: { code: `return ${n}` } });
     await until(() => sessions.sessions.get(id)?.requests.get(`wake-${n}`)?.state === "completed" && !sessions.inFlight(), `execute ${n} finished`, 30_000);
@@ -445,6 +456,8 @@ test("an agent woken thirty times, one execute each, keeps a bounded number of S
     await sessions.releaseIdle();
     assert.equal(sessions.sessions.has(id), false);
     for (const key of logs) assert.ok(objects(storage, key).length <= FOLD_SEGMENTS + 1, `${key} after wake ${n}: ${objects(storage, key).join(",")}`);
+    rows ??= await journalRows();
+    assert.equal(await journalRows(), rows, `journal rows after wake ${n}`);
   }
   assert.ok(objects(storage, logs[0]).some(name => name.startsWith("snapshot-")), "the journal was folded");
   const state = await sessions.inspect(id, "default");

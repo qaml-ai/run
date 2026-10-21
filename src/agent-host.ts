@@ -117,6 +117,7 @@ export function openCalls(messages: AgentMessage[]): ToolCall[] {
  * A limit's stop as a run's result carries it: its code (its own, else the kind of stop), and the limit, reason, bucket
  * and end user where it names them.
  */
+const sameCursor = (a: { entryId: number; index: number }, b: { entryId: number; index: number } | undefined) => !!b && a.entryId === b.entryId && a.index === b.index;
 const stopFields = (stop: Partial<RunStop>) => ({
   code: stop.code ?? stop.stopped,
   ...(stop.limit ? { limit: stop.limit } : {}), ...(stop.reason ? { reason: stop.reason } : {}),
@@ -1093,7 +1094,8 @@ export function createAgentHost(hostIO: HostIO) {
             },
           } });
           const cursor = await durableAgent.discardInterruptedRun();
-          if (cursor) await transcript.commit(() => [{ t: "pi", cursor }]);
+          // Recorded only when it moved: a start with nothing new writes no host record.
+          if (cursor && !sameCursor(cursor, transcript.piCursor)) await transcript.commit(() => [{ t: "pi", cursor }]);
           agent = durableAgent as unknown as Agent;
           engine = "pi-durable";
           migration ??= { state: "existing" };
@@ -1101,7 +1103,7 @@ export function createAgentHost(hostIO: HostIO) {
           // Rollback keeps the native history projection, retires pending execution, then uses the legacy loop.
           const paused = await DurableAgent.create({ ...agentOptions, durable: { storage: piStorage, conversationId: conversion.conversationId } });
           const cursor = await paused.discardInterruptedRun();
-          if (cursor) await transcript.commit(() => [{ t: "pi", cursor }]);
+          if (cursor && !sameCursor(cursor, transcript.piCursor)) await transcript.commit(() => [{ t: "pi", cursor }]);
           await paused.close();
           agent = new Agent({ ...agentOptions, transformContext: contextFor });
         }
