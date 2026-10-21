@@ -84,3 +84,17 @@ test("journal history: refresh takes in what was committed since, and an answer 
   assert.equal(history.total, 1);
   assert.equal(history.callIndex("ask"), 0, "the base's calls are known");
 });
+
+test("journal history: refreshes that overlap (parallel tool calls asking for their call's index) count each entry once", async () => {
+  const storage = await journal([base(0)]);
+  const history = (await JournalHistory.open(storage))!;
+  const call = fauxAssistantMessage([fauxToolCall("publish", {}, { id: "a" }), fauxToolCall("publish", {}, { id: "b" })], { stopReason: "toolUse" });
+  await storage.commit([
+    { type: "entry", value: { id: await storage.mintId<EntryId>(), conversationId, kind: "pi.user", model: [user("publish both")] as never } },
+    { type: "entry", value: { id: await storage.mintId<EntryId>(), conversationId, kind: "pi.assistant", model: [call] as never } },
+  ], BACKGROUND_CONTEXT);
+  await Promise.all([history.refresh(), history.refresh()]);
+  assert.equal(history.total, 2);
+  assert.equal(history.callIndex("a"), 1);
+  assert.equal(history.callIndex("b"), 1);
+});
