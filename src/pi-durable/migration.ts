@@ -10,6 +10,8 @@ import { Transcript, type TranscriptRecord, type TranscriptSnapshot } from "../t
 
 export const LEGACY_MIGRATION_KIND = "camel.legacy.migration";
 export const LEGACY_RECORD_KIND = "camel.legacy.record";
+/** The host's generation marker and archive blocks (NativeTranscript): an import writes its archive in this form. */
+export const HOST_BOOTSTRAP_KIND = "camel.host.bootstrap", HOST_ARCHIVE_KIND = "camel.host.archive";
 export const LEGACY_CONTEXT_KIND = "camel.legacy.context";
 /** One message of a context checkpoint after its head entry: Pi can choose a compaction cut between them. */
 export const CONTEXT_MESSAGE_KIND = "camel.context.message";
@@ -63,6 +65,8 @@ export interface LegacyMigrationMetadata {
   importedAt: number;
   markerId: EntryId;
   contextEntryId: EntryId;
+  /** The host generation the import starts (imports before it have none: the host adopted them in its own). */
+  generationId?: EntryId;
 }
 
 export interface LegacyMigrationPlan {
@@ -264,6 +268,11 @@ const lines = new WeakMap<Storage, Promise<unknown>>();
  *
  * Each thing is written once: the archive, and the context as one entry per message (`model` when the host's working
  * set differs from the reduced source, e.g. by a newer leading system message). No record is copied to build them.
+ *
+ * With `host` (NativeTranscript.importLegacy), the same commit also starts the host's generation: its marker, the
+ * archive as that generation's archive blocks (the layout every release's host history reader reads, so a node on an
+ * earlier release that takes the session over still reads its whole history), and the writes `host` returns (its
+ * document). A generation therefore never exists without its document, as with NativeTranscript.adopt.
  */
 export async function importLegacyTranscript(options: {
   storage: Storage;
@@ -271,6 +280,7 @@ export async function importLegacyTranscript(options: {
   records: readonly TranscriptRecord[];
   leadingSystem?: SystemMessage;
   model?: Message[];
+  host?: (generation: { generationId: EntryId; contextEntryId: EntryId }) => Promise<StorageWrite[]>;
   context?: Context;
   now?: number;
 }): Promise<LegacyMigrationMetadata & { status: "imported" | "existing" }> {
@@ -292,7 +302,8 @@ export async function importLegacyTranscript(options: {
     // Postgres reserves the complete monotonic range under the host's claim in one transaction. Native SQLite mints
     // from its in-memory allocator. Both retain the storage's global ID-ownership checks in the final atomic commit.
     const contextIds = Math.max(1, model.length);
-    const count = 1 + blockCount + contextIds + plan.snapshot.requests.length;
+    const host = options.host ? 1 : 0;
+    const count = 1 + host + blockCount + contextIds + plan.snapshot.requests.length;
     const bulk = storage as Storage & { mintIds?(count: number): Promise<number[]> };
     const ids = bulk.mintIds ? await bulk.mintIds(count) : await (async () => {
       const ids: number[] = [];
@@ -303,19 +314,21 @@ export async function importLegacyTranscript(options: {
       throw new LegacyMigrationConflict("storage returned an invalid ID reservation");
     }
     let nextId = 0;
-    const markerId = ids[nextId++] as EntryId, contextEntryId = ids[1 + blockCount] as EntryId;
+    const markerId = ids[nextId++] as EntryId, generationId = host ? ids[nextId++] as EntryId : undefined;
+    const contextEntryId = ids[1 + host + blockCount] as EntryId;
     const metadata: LegacyMigrationMetadata = {
       version: VERSION, sessionId, fingerprint: plan.fingerprint, conversationId: LEGACY_CONVERSATION_ID,
       recordCount: plan.records.length, historyCount: plan.historyCount, contextCount: model.length,
-      importedAt: now, markerId, contextEntryId,
+      importedAt: now, markerId, contextEntryId, ...(generationId ? { generationId } : {}),
     };
     const writes: StorageWrite[] = [
       { type: "conversation", value: { id: LEGACY_CONVERSATION_ID } },
       { type: "entry", value: { id: markerId, conversationId: LEGACY_CONVERSATION_ID, kind: LEGACY_MIGRATION_KIND, data: payload(metadata) } },
+      ...(generationId ? [{ type: "entry" as const, value: { id: generationId, conversationId: LEGACY_CONVERSATION_ID, kind: HOST_BOOTSTRAP_KIND } }] : []),
     ];
     for (let index = 0; index < plan.records.length; index += ARCHIVE_BLOCK_RECORDS) {
       // Blocks refer to the source's records: storage serializes them as it writes, so the archive is never copied.
-      writes.push({ type: "entry", value: { id: ids[nextId++] as EntryId, conversationId: LEGACY_CONVERSATION_ID, kind: LEGACY_RECORD_KIND,
+      writes.push({ type: "entry", value: { id: ids[nextId++] as EntryId, conversationId: LEGACY_CONVERSATION_ID, kind: host ? HOST_ARCHIVE_KIND : LEGACY_RECORD_KIND,
         data: { index, records: plan.records.slice(index, index + ARCHIVE_BLOCK_RECORDS) } as unknown as JsonValue } });
     }
     const { context: _context, ...state } = plan.snapshot;
@@ -325,6 +338,7 @@ export async function importLegacyTranscript(options: {
       type: "submission",
       value: { id: ids[nextId++] as never, conversationId: LEGACY_CONVERSATION_ID, requestId, type: "input", status: "unanswered", reason: "legacy_import", detail: "Request already recorded by the legacy runtime; its original history is retained." },
     });
+    if (generationId) writes.push(...await options.host!({ generationId, contextEntryId }));
     await storage.commit(writes, context);
     // The commit is atomic: reading back its marker and checkpoint head confirms it landed, without reading the context again.
     const landed = await loadLegacyMigration(storage, context);
@@ -341,7 +355,10 @@ export async function importLegacyTranscript(options: {
 export async function readMigratedLegacyRecords(storage: Storage, context: Context = BACKGROUND_CONTEXT): Promise<TranscriptRecord[]> {
   const metadata = await loadLegacyMigration(storage, context);
   if (!metadata) return [];
-  const archived = (await entries(storage, metadata.conversationId, context)).filter(entry => entry.kind === LEGACY_RECORD_KIND);
+  // An import archives as legacy records (a host adopting it archives again, after the checkpoint), or, when it
+  // starts the host's generation, as that generation's archive blocks, before the checkpoint.
+  const archived = (await entries(storage, metadata.conversationId, context)).filter(entry => entry.kind === LEGACY_RECORD_KIND ||
+    entry.kind === HOST_ARCHIVE_KIND && entry.id < metadata.contextEntryId);
   const records: TranscriptRecord[] = [];
   for (const entry of archived) {
     const data = entry.data as unknown as { index: number; records?: TranscriptRecord[]; record?: TranscriptRecord };

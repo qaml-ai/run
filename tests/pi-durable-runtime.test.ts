@@ -81,8 +81,8 @@ for (const hosting of ["inline", "process"] as Hosting[]) test(`session migratio
   }
   await journal.close(BACKGROUND_CONTEXT);
   assert.equal(kinds.filter(kind => kind === "camel.legacy.context").length, 1);
-  assert.equal(kinds.filter(kind => kind === "camel.legacy.record").length, 1);
-  assert.ok(!kinds.includes("camel.host.archive"));
+  assert.equal(kinds.filter(kind => kind === "camel.host.archive").length, 1);
+  assert.ok(!kinds.includes("camel.legacy.record"));
 
   const reopened = await open("pi-durable");
   assert.equal(reopened.init.migration.state, "existing");

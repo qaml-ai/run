@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { SystemMessage } from "@earendil-works/pi-ai";
 import { convertToLlm } from "../pi-harness/messages.ts";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { Op } from "@earendil-works/chord/delta";
@@ -6,10 +7,10 @@ import type { JsonObject, Storage, StorageWrite, DocumentId, DocumentContent, En
 import type { AppendLog } from "../../shared/append-log.ts";
 import { Transcript, type TranscriptRecord, type TranscriptSnapshot } from "../transcript.ts";
 import { durableEntryMessages } from "./agent.ts";
-import { LEGACY_CONVERSATION_ID as conversationId, LEGACY_RECORD_KIND, readMigrationRecords, contextWrites, type LegacyMigrationMetadata } from "./migration.ts";
+import { LEGACY_CONVERSATION_ID as conversationId, HOST_ARCHIVE_KIND as ARCHIVE, HOST_BOOTSTRAP_KIND as BOOTSTRAP, readMigrationRecords, contextWrites, importLegacyTranscript } from "./migration.ts";
 
 const ADDRESS = { kind: "camel.host.snapshot", scope: { kind: "session" as const } };
-const BOOTSTRAP = "camel.host.bootstrap", ARCHIVE = "camel.host.archive", RECORD = "camel.host.record", DISABLED = "camel.host.disabled";
+const RECORD = "camel.host.record", DISABLED = "camel.host.disabled";
 const json = (value: unknown) => JSON.parse(JSON.stringify(value));
 type State = { enabled: boolean; generation: number; snapshot: TranscriptSnapshot };
 /**
@@ -39,24 +40,11 @@ async function generation(storage: Pick<Storage, "scanEntries">): Promise<EntryR
   } while (cursor);
 }
 
-/** A generation adopted straight after its import shares the import's archive, which lies before the import's context. */
-async function* importedArchive(storage: Pick<Storage, "scanEntries">, before: number): AsyncGenerator<TranscriptRecord> {
-  let cursor: Cursor | undefined;
-  do {
-    const page = await storage.scanEntries({ conversationId, order: "ascending", maxEntryId: (before - 1) as EntryId }, 16, cursor, context);
-    for (const entry of page.items) if (entry.kind === LEGACY_RECORD_KIND) yield* (entry.data as { records: TranscriptRecord[] }).records;
-    cursor = page.next;
-  } while (cursor);
-}
-
 /** Full export is deliberately separate from bounded reload. Canonical bodies are stored once. */
 export async function nativeTranscriptRecords(storage: Pick<Storage, "scanEntries">): Promise<TranscriptRecord[] | undefined> {
-  const bootstrap = await generation(storage);
-  if (!bootstrap) return undefined;
-  const start = bootstrap.id;
+  const start = (await generation(storage))?.id;
+  if (!start) return undefined;
   const records: TranscriptRecord[] = [];
-  const archiveBefore = (bootstrap.data as { importedArchiveBefore?: number } | undefined)?.importedArchiveBefore;
-  if (archiveBefore !== undefined) for await (const record of importedArchive(storage, archiveBefore)) records.push(record);
   const pending = new Map<number, ReturnType<typeof durableEntryMessages>>();
   let cursor: Cursor | undefined;
   do {
@@ -121,18 +109,45 @@ export class NativeTranscript extends Transcript {
   }
 
   /**
-   * The host's first native generation. Straight after this process imported the session (`imported`), the import's
-   * archive, request keys and per-message context checkpoint already are what a generation needs: it writes only its
-   * bootstrap and host document, and reads no record. Otherwise (a re-adoption after rollback, or an import whose
-   * process stopped before adopting it) it archives the legacy log and checkpoints the working set itself.
+   * Import a legacy session and start the host's generation in one commit: the import's archive is the generation's
+   * archive, and its per-message checkpoint the generation's context, so nothing is written twice or read back.
+   * Undefined when the session was already imported (adopt it instead).
    */
-  static async adopt(storage: Storage, source: Transcript, indexed?: number, bound?: number, working?: AgentMessage[], imported?: LegacyMigrationMetadata & { status?: "imported" | "existing" }) {
+  static async importLegacy(storage: Storage, source: Transcript, options: { sessionId: string; records: readonly TranscriptRecord[];
+    leadingSystem?: SystemMessage; working: AgentMessage[]; indexed?: number; bound?: number }) {
+    let transcript: NativeTranscript | undefined, stored: Stored | undefined;
+    const metadata = await importLegacyTranscript({ storage, sessionId: options.sessionId, records: options.records,
+      leadingSystem: options.leadingSystem, model: convertToLlm(options.working),
+      host: async ({ generationId, contextEntryId }) => {
+        const documentId = await storage.mintId<DocumentId>();
+        transcript = NativeTranscript.from(storage, source, documentId, generationId, options.indexed, options.bound);
+        transcript.piCursor = { entryId: contextEntryId, index: -1 };
+        transcript.prune();
+        const base = transcript.document();
+        stored = base.stored;
+        return [{ type: "document.create", record: { id: documentId, ...ADDRESS }, content: base.content }];
+      } });
+    if (metadata.status !== "imported" || !transcript) return { metadata };
+    transcript.stored = stored;
+    return { metadata, transcript };
+  }
+
+  /** A host transcript continuing `source`: the source is left behind, so its messages are shared rather than copied. */
+  private static from(storage: Storage, source: Transcript, documentId: DocumentId, generationId: number, indexed?: number, bound?: number) {
+    const transcript = new NativeTranscript(storage, documentId, generationId, indexed, bound);
+    const { context: messages, updates, awaiting, backlog, ...rest } = source.snapshot();
+    transcript.restore({ ...rest, context: [...messages], updates: updates.map(update => ({ ...update })), awaiting: [...awaiting],
+      ...(backlog ? { backlog: { ...backlog, messages: [...backlog.messages], sizes: [...backlog.sizes], turns: [...backlog.turns] } } : {}) });
+    transcript.pin = source.pin;
+    return transcript;
+  }
+
+  static async adopt(storage: Storage, source: Transcript, indexed?: number, bound?: number, working?: AgentMessage[]) {
     const previous = await storage.findDocument(ADDRESS, "current", context);
-    const fresh = imported?.status === "imported" && !previous;
-    const records = fresh ? [] : await readMigrationRecords(source.log);
+    const records = await readMigrationRecords(source.log);
     // Initial migration already indexed these keys. Find rollback-era additions
     // by pages, rather than doing a database round trip per historical request.
-    const missing = new Set(fresh ? [] : source.requests);
+    const missing = new Set(source.requests);
     let cursor: Cursor | undefined;
     while (missing.size) {
       const page = await storage.scanSubmissions({ conversationId, order: "ascending" }, 512, cursor, context);
@@ -140,8 +155,8 @@ export class NativeTranscript extends Transcript {
       cursor = page.next;
       if (!cursor) break;
     }
-    const model = fresh ? [] : convertToLlm(working ?? [...(source.system ? [source.system] : []), ...source.view()]);
-    const contextIds = fresh ? 0 : Math.max(1, model.length);
+    const model = convertToLlm(working ?? [...(source.system ? [source.system] : []), ...source.view()]);
+    const contextIds = Math.max(1, model.length);
     const count = 1 + Math.ceil(records.length / 128) + missing.size + (previous ? 0 : 1) + contextIds;
     const bulk = storage as Storage & { mintIds?(count: number): Promise<number[]> };
     const ids = bulk.mintIds ? await bulk.mintIds(count) : await (async () => {
@@ -152,14 +167,8 @@ export class NativeTranscript extends Transcript {
     let next = 0;
     const generationId = ids[next++] as EntryId;
     const documentId = previous?.id ?? ids[next++] as DocumentId;
-    const transcript = new NativeTranscript(storage, documentId, generationId, indexed, bound);
-    // The source is left behind: its messages, never changed in place, are shared rather than copied.
-    const { context: messages, updates, awaiting, backlog, ...rest } = source.snapshot();
-    transcript.restore({ ...rest, context: [...messages], updates: updates.map(update => ({ ...update })), awaiting: [...awaiting],
-      ...(backlog ? { backlog: { ...backlog, messages: [...backlog.messages], sizes: [...backlog.sizes], turns: [...backlog.turns] } } : {}) });
-    transcript.pin = source.pin;
-    const writes: StorageWrite[] = [{ type: "entry", value: { id: generationId, conversationId, kind: BOOTSTRAP,
-      ...(fresh ? { data: { importedArchiveBefore: imported!.contextEntryId } } : {}) } }];
+    const transcript = NativeTranscript.from(storage, source, documentId, generationId, indexed, bound);
+    const writes: StorageWrite[] = [{ type: "entry", value: { id: generationId, conversationId, kind: BOOTSTRAP } }];
     for (let at = 0; at < records.length; at += 128) writes.push({ type: "entry", value: {
       id: ids[next++] as EntryId, conversationId, kind: ARCHIVE, data: { records: records.slice(at, at + 128) } as unknown as JsonObject,
     } });
@@ -168,8 +177,8 @@ export class NativeTranscript extends Transcript {
     } });
     // The checkpoint covers the complete adopted archive. Recovery starts
     // after this small barrier, never in archive blocks carrying old bodies.
-    const ready = fresh ? imported!.contextEntryId as EntryId : ids[next] as EntryId;
-    if (!fresh) writes.push(...contextWrites(ids.slice(next, next += contextIds), conversationId, model));
+    const ready = ids[next] as EntryId;
+    writes.push(...contextWrites(ids.slice(next, next += contextIds), conversationId, model));
     transcript.piCursor = { entryId: ready, index: -1 };
     transcript.prune();
     const base = transcript.document();
