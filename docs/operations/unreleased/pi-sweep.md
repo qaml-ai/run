@@ -19,4 +19,4 @@ turns' p95 `TimeToFirstRequestMs` is past `AGENT_PI_SWEEP_MAX_FIRST_REQUEST_MS` 
 A large pass, off by default (`infra/pi-sweep.sh large on`), imports the sessions too large to copy
 by reference once the on pass has finished: one at a time across the fleet, only while a node's
 container memory is under `AGENT_PI_SWEEP_LARGE_MAX_MEMORY_BYTES` (Terraform: 35% of the task),
-`AGENT_PI_SWEEP_LARGE_PACE_MS` (30 s) apart (migration 081).
+`AGENT_PI_SWEEP_LARGE_PACE_MS` (30 s) apart (migration 082).
