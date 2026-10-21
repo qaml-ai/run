@@ -8,7 +8,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, chmo
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const infra = new URL("../infra/", import.meta.url);
+const infra = new URL("./", import.meta.url);
 const registry = "904534089871.dkr.ecr.us-west-2.amazonaws.com/camelai-agent-runtime";
 
 // The fake keeps the service, revisions and images in state.json. A deployment's tasks run one describe-services
@@ -34,7 +34,7 @@ const roll = (arn) => {
   svc.events.unshift({ id: "ev" + state.deploymentCount, message: "(service camelai-agent-runtime) has started 3 tasks for " + id });
 };
 const applyPlan = (at) => {
-  for (const step of state.plan.filter((s) => s.at === at)) roll(step.revision ? revisionArn(step.revision) : register(registry + ":" + step.tag));
+  for (const step of state.plan.filter((s) => s.at === at && !s.done)) step.done = true, roll(step.revision ? revisionArn(step.revision) : register(registry + ":" + step.tag));
 };
 const tasksOf = (d) => state.tick > d.started ? [0, 1, 2].map((i) => "arn:aws:ecs:us-west-2:1:task/c/" + d.id.split("/")[1] + "-" + i) : [];
 const imageOfArn = (arn) => state.revisions[Number(arn.split(":").pop()) - 1];
@@ -47,12 +47,16 @@ switch (command) {
   }
   case "ecs describe-services": {
     state.tick++;
+    if (state.apiErrorAt === state.tick) { save(); process.exit(42); }
     applyPlan(state.tick);
+    if (state.completedSeen) applyPlan("completed");
     const primary = svc.deployments.find((d) => d.status === "PRIMARY");
     if (primary.rolloutState === "IN_PROGRESS" && state.tick - primary.started >= state.completeAfter) {
       primary.rolloutState = "COMPLETED";
       svc.deployments = [primary];
     }
+    if (state.failAt === state.tick) primary.rolloutState = "FAILED";
+    if (primary.rolloutState === "COMPLETED" && primary.started >= 0) state.completedSeen = true;
     out({ services: [{ desiredCount: 3, events: svc.events, deployments: svc.deployments.map((d) => ({ ...d,
       runningCount: tasksOf(d).length, desiredCount: d.status === "PRIMARY" ? 3 : 0 })) }] });
   }
@@ -119,11 +123,12 @@ function setup() {
   return { root, repo, sha: { a, b, c, d }, tag: (s: string) => s.slice(0, 12) };
 }
 
-type Plan = { at: number | "register"; tag?: string; revision?: number }[];
-function deploy(env: ReturnType<typeof setup>, live: string, target: string, options: { plan?: Plan; allowOlder?: boolean; taskImageOverride?: string; liveRevisions?: string[]; primaryRevision?: number } = {}) {
+// `at: "completed"`: at the first describe-services after the rollout was seen COMPLETED (the check after the smoke).
+type Plan = { at: number | "register" | "completed"; tag?: string; revision?: number }[];
+function deploy(env: ReturnType<typeof setup>, live: string, target: string, options: { plan?: Plan; allowOlder?: boolean; taskImageOverride?: string; liveRevisions?: string[]; primaryRevision?: number; failAt?: number; apiErrorAt?: number } = {}) {
   const revisions = (options.liveRevisions ?? [live]).map((s) => `${registry}:${env.tag(s)}`);
   const state = {
-    images: Object.values(env.sha).map(env.tag), revisions, tick: 0, completeAfter: 4, deploymentCount: 1, calls: [] as string[],
+    images: Object.values(env.sha).map(env.tag), revisions, tick: 0, failAt: options.failAt, apiErrorAt: options.apiErrorAt, completedSeen: false, completeAfter: 4, deploymentCount: 1, calls: [] as string[],
     plan: (options.plan ?? []).map((s) => ({ ...s, tag: s.tag && env.tag(s.tag) })),
     taskImageOverride: options.taskImageOverride && `${registry}:${env.tag(options.taskImageOverride)}`,
     service: { deployments: [{ id: "ecs-svc/1", status: "PRIMARY", taskDefinition: `arn:aws:ecs:us-west-2:1:task-definition/camelai-agent-runtime:${options.primaryRevision ?? revisions.length}`, rolloutState: "COMPLETED", started: -1 }], events: [{ id: "ev0", message: "(service camelai-agent-runtime) has reached a steady state." }] },
@@ -214,4 +219,28 @@ test("a running task on another image fails the deploy", { skip }, () => {
   const run = deploy(env, env.sha.a, env.sha.b, { taskImageOverride: env.sha.a });
   assert.equal(run.status, 1, run.output);
   assert.match(run.output, /running tasks not on/);
+});
+
+test("a rollback after the new tasks are healthy, or during the public smoke, fails the deploy", () => {
+  const env = setup();
+  const after = deploy(env, env.sha.a, env.sha.b, { plan: [{ at: 4, revision: 1 }] });
+  assert.equal(after.status, 1, after.output);
+  assert.match(after.output, /new tasks healthy: 3\/3/);
+  assert.match(after.output, /rolled back/);
+  assert.doesNotMatch(after.output, /deployed:/);
+  const smoke = deploy(env, env.sha.a, env.sha.b, { plan: [{ at: "completed", revision: 1 }] });
+  assert.equal(smoke.status, 1, smoke.output);
+  assert.match(smoke.output, /rollout COMPLETED[\s\S]*rolled back/);
+  assert.doesNotMatch(smoke.output, /deployed:/);
+  assert.deepEqual([after.updates, smoke.updates], [[env.tag(env.sha.b)], [env.tag(env.sha.b)]]);
+});
+
+test("a failed rollout or an ECS API error fails the deploy without another update", () => {
+  const env = setup();
+  for (const options of [{ failAt: 3 }, { apiErrorAt: 3 }]) {
+    const run = deploy(env, env.sha.a, env.sha.b, options);
+    assert.equal(run.status === 0, false, run.output);
+    assert.doesNotMatch(run.output, /deployed:/);
+    assert.deepEqual(run.updates, [env.tag(env.sha.b)]);
+  }
 });
