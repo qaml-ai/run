@@ -283,7 +283,15 @@ export class DurableAgent {
     agent.harness = await Harness.open(storageGuard(options.durable.storage, options.durable.onStorageFailure), { registry, models: models as unknown as HarnessOptions["models"],
       settings: { compaction: { enabled: true,
         get reserveTokens() { return Math.min(16_384, Math.floor(window() * 0.15)); },
-        get keepRecentTokens() { return Math.min(20_000, Math.floor(window() * 0.25)); }, backgroundTokens: 0 },
+        // The recent context a summary keeps, but never so much that what is fixed (the system prompt) and it fill the
+        // window again within a quarter of it: then every turn would be summarized again (the legacy compactor waited
+        // for that quarter too).
+        get keepRecentTokens() {
+          const limit = window(), reserve = Math.min(16_384, Math.floor(limit * 0.15));
+          const system = agent.messages.findLast(message => message.role === "system");
+          const fixed = system ? Math.ceil(JSON.stringify(system).length / 4) : 0;
+          return Math.max(1_000, Math.min(20_000, Math.floor(limit * 0.25), limit - reserve - fixed - Math.floor(limit / 4)));
+        }, backgroundTokens: 0 },
         // Live answers and tool output stream to the host from the provider and the tool, not from these commits:
         // they only bound what a lost node's run keeps, so each costs a journal write once a second, not every 100 ms.
         progress: { partialIntervalMs: 1_000, outputIntervalMs: 1_000 },
