@@ -66,6 +66,7 @@ import type { HistoryPage } from "./history-pages.ts";
 import { VersionConflict, VolumeService } from "./volumes.ts";
 import { FILE_LIMITS, FileLinks } from "./files.ts";
 import { nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from "./ecs.ts";
+import { cgroupMemory } from "./process-memory.ts";
 import { recordCreate, safeError, Steps, webhookBacklogLine } from "./metrics.ts";
 import { runtimeSecrets, managedDiscordSecrets } from "./secrets.ts";
 import { checkSandbox, type CodeExecutor } from "./codemode.ts";
@@ -127,6 +128,8 @@ export type NodeDeps = {
   sandbox: Record<string, unknown>;
   /** This task's private address on ECS, where peers reach it. */
   address?: string;
+  /** Production cgroup counters; absent for simulations and in-process test nodes. */
+  readCgroupMemory?: typeof cgroupMemory;
   /**
    * On ECS, a check of whether a newer deployment of this task's service has replaced it (undefined off ECS). Looked up
    * once the node has started listening, so an ECS metadata fetch never delays that.
@@ -195,7 +198,7 @@ export async function nodeDeps(config: NodeConfig): Promise<NodeDeps> {
   const db = await databaseFromEnvironment(env);
   const address = await taskAddress(env);
   return {
-    tenants, secrets, db, listen: handlers => listenFromEnvironment(handlers, env), sandbox, address, codeExecutor,
+    tenants, secrets, db, listen: handlers => listenFromEnvironment(handlers, env), sandbox, address, codeExecutor, readCgroupMemory: cgroupMemory,
     supersession: () => supersession(env), managedDiscord: () => managedDiscordSecrets(env),
   };
 }
@@ -1389,19 +1392,30 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   tenantsTimer?.unref();
 
   // Load for autoscaling, as a CloudWatch metric extracted from the log line.
+  let loadReading = false;
+  let lastBacklogSample = 0;
   const loadTimer = setInterval(() => {
-    const memory = process.memoryUsage();
-    const media = voiceHost?.stats();
-    console.log(nodeLoadLine({
-      hostedAgents: supervisor.agents.size, sessions: clients.sessions.size, volumes: volumes.size, runningTurns: clients.inFlight(), rssBytes: memory.rss,
-      watchers: clients.watchers, dbConnections: db.totalCount, dbIdle: db.idleCount, dbWaiting: db.waitingCount,
-      heapUsedBytes: memory.heapUsed, heapTotalBytes: memory.heapTotal, externalBytes: memory.external, arrayBuffersBytes: memory.arrayBuffers,
-      ...(media ? { voiceSessions: media.sessions, voiceWorkers: media.workers, voiceWorkerBytes: media.memoryMb * 1_048_576 } : {}),
-    }, config.serviceName, { node, retiring: retiringSince !== undefined }));
+    if (loadReading) return;
+    loadReading = true;
+    void (deps.readCgroupMemory?.() ?? Promise.resolve({})).then(cgroup => {
+      const memory = process.memoryUsage();
+      const media = voiceHost?.stats();
+      console.log(nodeLoadLine({
+        hostedAgents: supervisor.agents.size, sessions: clients.sessions.size, volumes: volumes.size, runningTurns: clients.inFlight(), rssBytes: memory.rss,
+        watchers: clients.watchers, dbConnections: db.totalCount, dbIdle: db.idleCount, dbWaiting: db.waitingCount,
+        heapUsedBytes: memory.heapUsed, heapTotalBytes: memory.heapTotal, externalBytes: memory.external, arrayBuffersBytes: memory.arrayBuffers,
+        ...cgroup,
+        ...(media ? { voiceSessions: media.sessions, voiceWorkers: media.workers, voiceWorkerBytes: media.memoryMb * 1_048_576 } : {}),
+      }, config.serviceName, { node, retiring: retiringSince !== undefined }));
+    }).catch(error => console.error(JSON.stringify({ type: "node_load_failed", error: safeError(error) })))
+      .finally(() => { loadReading = false; });
     // Every node reports the shared outboxes' backlog: read it with Maximum.
+    // Keep database polling at once a minute even during high-frequency memory sampling.
+    if (Date.now() - lastBacklogSample < 60_000) return;
+    lastBacklogSample = Date.now();
     void webhooks.backlog().then(backlog => console.log(webhookBacklogLine(backlog)))
       .catch(error => console.error(JSON.stringify({ type: "webhook_backlog_failed", error: errorText(error) })));
-  }, 60_000);
+  }, config.loadIntervalMs);
   loadTimer.unref();
   // Tail rows a dead node left for agents and volumes that are gone since.
   const sweepTimer = setInterval(() => void sweepTails(db).catch(error => console.error(JSON.stringify({ type: "tail_sweep_failed", error: errorText(error) }))), 60 * 60_000);
