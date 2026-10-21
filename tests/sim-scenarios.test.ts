@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { MAX_RESUMES } from "../src/client-sessions.ts";
 import { Sim, TOKEN } from "./sim/sim.ts";
 import type { SimDb } from "./sim/db.ts";
 import { runPlan } from "./sim/run.ts";
@@ -110,25 +111,29 @@ test("an abort that reaches a resumed turn before the agent has it settles the t
 
 test("a run that ends at a load past its resumes settles the turn it left open, so a fork holds it", async t => {
   // Regression from seed 2. Crash at observed provider dispatches, rather than relying on the
-  // number of database queries in a seeded fault stream, so this always exhausts both resumes.
+  // number of database queries in a seeded fault stream, so this always exhausts the allowed resumes.
   const sim = await Sim.create({ seed: 2, respond: () => ({ stall: true }),
     env: { AGENT_LEASE_TTL_MS: "3000", AGENT_ORPHAN_SWEEP_MS: "1000", AGENT_IDLE_MS: "600000" } });
   t.after(() => sim.close());
   await sim.start("a");
   const agent = (await sim.call("a", "/v1/agents", { body: {} })).json.id;
   const id = await prompt(sim, "a", agent, "Keep this prompt across recovery");
-  for (const [index, node] of ["a", "b", "c"].entries()) {
+  const nodes = Array.from({ length: MAX_RESUMES + 2 }, (_, index) => index === 0 ? "a" : `recovery-${index}`);
+  for (const [index, node] of nodes.slice(0, -1).entries()) {
     await sim.until(() => sim.model.served.length === index + 1, `${node} dispatched its attempt`);
     sim.crash(node);
-    await sim.start(["b", "c", "d"][index]);
+    await sim.start(nodes[index + 1]);
   }
-  const run = await outcome(sim, "d", agent, id);
-  assert.equal(run.outcome.uncertain, true, JSON.stringify(run.outcome));
-  assert.equal(sim.model.served.length, 3, "initial request and exactly two resumes");
-  const fork = await sim.call("d", `/v1/agents/${agent}/fork`, { body: {} });
+  const recovered = nodes.at(-1)!;
+  const run = await outcome(sim, recovered, agent, id);
+  assert.equal(run.outcome.result.code, "resume_limit", JSON.stringify(run.outcome));
+  assert.equal(sim.model.served.length, MAX_RESUMES + 1, "initial request and exactly the allowed resumes");
+  const row = (await sim.db.query("select turn_resumes, resume_failures, resume_after from agents where id = $1", [agent])).rows[0];
+  assert.deepEqual(row, { turn_resumes: 0, resume_failures: 0, resume_after: null });
+  const fork = await sim.call(recovered, `/v1/agents/${agent}/fork`, { body: {} });
   assert.equal(fork.status, 201, JSON.stringify(fork.json));
   assert.notEqual(fork.json.forkedFrom.atMessage, null);
-  const history = (await sim.call("d", `/v1/agents/${fork.json.id}/history`)).json;
+  const history = (await sim.call(recovered, `/v1/agents/${fork.json.id}/history`)).json;
   assert.match(JSON.stringify(history.messages), /Keep this prompt across recovery/);
   assert.deepEqual(sim.hooks.violations, []);
 });
@@ -309,4 +314,24 @@ test("a run whose start the database refuses for now is tried again, not failed:
   assert.equal(record.outcome.error, undefined, JSON.stringify(record.outcome));
   assert.ok(sim.env.logs.some(log => log.line.includes('"run_start_retry"')), "its start was tried again");
   assert.ok(sim.hooks.reached.includes("a run's start met a transient refusal and was tried again"));
+});
+
+test("an abort during node-loss backoff settles immediately and resets the counters", async t => {
+  const sim = await Sim.create({ seed: 312, respond: () => ({ stall: true }),
+    env: { AGENT_LEASE_TTL_MS: "3000", AGENT_ORPHAN_SWEEP_MS: "1000" } });
+  t.after(() => sim.close());
+  await sim.start("a");
+  const agent = (await sim.call("a", "/v1/agents", { body: {} })).json.id;
+  const id = await prompt(sim, "a", agent, "stop while backing off");
+  await sim.until(() => sim.model.served.length === 1, "initial model dispatch");
+  await sim.db.query("update agents set resume_after = $2, resume_failures = 4 where id = $1", [agent, Date.now() + 60_000]);
+  sim.crash("a");
+  await sim.start("b");
+  await sim.until(async () => (await sim.call("b", `/v1/agents/${agent}/abort`, { body: {} })).status === 200, "abort to reach the new owner");
+  const run = await outcome(sim, "b", agent, id);
+  assert.equal(run.outcome.result.code, "aborted");
+  assert.equal(sim.model.served.length, 1, "aborting the wait never asks the model again");
+  const row = (await sim.db.query("select turn_resumes, resume_failures, resume_after from agents where id = $1", [agent])).rows[0];
+  assert.deepEqual(row, { turn_resumes: 0, resume_failures: 0, resume_after: null });
+  assert.deepEqual(sim.hooks.violations, []);
 });

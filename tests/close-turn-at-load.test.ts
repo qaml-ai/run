@@ -81,11 +81,11 @@ function assertSettled(records: TranscriptRecord[], awaiting = false) {
   assert.equal(recordedMessages(cut.records).some(message => JSON.stringify(message).includes("research it")), !awaiting);
 }
 
-test("a run past its resumes ends uncertain at a load only once the turn it left open is settled", async t => {
+test("a run past its resumes fails with resume_limit at a load only once the turn it left open is settled", async t => {
   const { read, records } = await lostTurn(t, { resumes: MAX_RESUMES });
   const ended = await read();
   assert.equal(ended.state, "completed", JSON.stringify(ended));
-  assert.equal(ended.outcome?.uncertain, true);
+  assert.equal((ended.outcome?.result as { code?: string })?.code, "resume_limit");
   assertSettled(await records());
   const transcript = replayed(await records());
   assert.match(JSON.stringify(transcript.context.at(-1)), /Runtime notice/, "closed with the notice a restart leaves, so a continue does not resubmit it");

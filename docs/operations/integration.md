@@ -17,8 +17,8 @@ ID. It never re-prompts the model to reconstruct a UI stream. The DO retains onl
 a UI turn marker, the SDK event cursor, and a render projection.
 
 The service persists native messages and tool outcomes. A killed service run
-resumes on the next node with "outcome unknown" tool results (at most twice,
-then it completes with an uncertain error); unknown side effects are never
+resumes on the next node with "outcome unknown" tool results (two resumes by
+default, configurable with `AGENT_MAX_RESUMES`, then it fails with `resume_limit`); unknown side effects are never
 automatically repeated. The service retries transient provider errors itself,
 so no degraded retry ladder, salvage mode, or retry budget is needed in the
 application.

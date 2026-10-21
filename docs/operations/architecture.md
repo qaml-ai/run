@@ -236,8 +236,10 @@ time), the turn resumes there under the same request ID instead of failing: an
 answer the model had already finished is taken as the outcome; otherwise any
 tool call whose outcome was lost gets an "outcome unknown" result (a call is
 never sent again) and the model is called once more to continue. A run is
-resumed at most twice, counted in the journal; after that, and for code
-executions, the request fails as uncertain. A code execution counts as begun
+resumed at most two times by default (`AGENT_MAX_RESUMES`), counted durably in
+the journal and mirrored in `agents.turn_resumes`. Backoff grows across resumes;
+after the limit, the request fails with `resume_limit` and the agent remains usable.
+Code executions fail as uncertain. A code execution counts as begun
 once it has called a tool: until then it has no effect outside its sandbox, so
 one whose node is lost before its first tool call is simply run again (its
 start becomes durable before its first tool call is sent anywhere).

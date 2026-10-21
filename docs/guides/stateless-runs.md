@@ -132,7 +132,8 @@ completed step:
   run to another node at that step boundary. Nothing is lost and nothing runs
   twice (`handoffs` lists them).
 - A node that dies: another node resumes the run from its transcript, at most
-  twice (`resumes`). A tool call that completed is not made again. A model call
+  two times by default (`resumes`; configurable with `AGENT_MAX_RESUMES`).
+  The next loss fails it with `resume_limit`. A tool call that completed is not made again. A model call
   that was in flight is simply asked again. A tool call that was in flight when
   the node died has an unknown outcome, which the model is told, as for an agent.
   As for an agent, a run resumed after its node died reports in `usage` and

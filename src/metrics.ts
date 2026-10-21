@@ -59,6 +59,7 @@ function emit(type: string, line: Parameters<typeof metricLine>[1]) {
 }
 
 const CLASSES: [string, RegExp][] = [
+  ["resume_limit", /^This turn exhausted its \d+ node-loss resumes/],
   ["runtime_restart", /runtime restarted/i],
   // A run its caller stopped (agent-host.ts: "The run was aborted"; Pi's "Request was aborted"): not a failure of the model's.
   ["aborted", /^The run was aborted|^Request was aborted/],
