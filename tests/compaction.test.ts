@@ -19,7 +19,7 @@ import { postgresTail } from "../src/log-tail.ts";
 import { Ownership } from "../src/ownership.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { openPiStorage } from "../src/pi-durable/storage.ts";
-import { LEGACY_CONVERSATION_ID } from "../src/pi-durable/migration.ts";
+import { SESSION_CONVERSATION_ID as LEGACY_CONVERSATION_ID } from "../src/pi-durable/seed.ts";
 
 type Body = { messages: { role: string; content: unknown }[] };
 const text = (body: Body) => JSON.stringify(body.messages);
