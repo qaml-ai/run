@@ -73,6 +73,20 @@ test("a call is refused when it cannot hold its minimum: for the balance, or for
   assert.deepEqual((await service.reserve("t", "nobody", "builder", { id: randomUUID(), want: 0, min: 0 }))?.hold?.raw, 0, "a free call is never refused");
 });
 
+test("a run whose first call holds a fixed amount is refused before it starts when less than that is left", async () => {
+  const { service } = await credits({ allowances: { "bot:*": 30_000 } });
+  // $0.03 of the bot's allowance left: some, so a run may start, but not the $0.05 a realtime voice response holds.
+  assert.equal(await service.refusal("t", "u", "bot:1"), undefined);
+  const short = await service.refusal("t", "u", "bot:1", { usd: 0.05 });
+  assert.equal(short?.reason, "balance");
+  assert.equal(short!.message, 'This end user has too little credit left for this call: $0.03 is left of the free $0.03 for "bot:1" today, and their balance is $0.00');
+  assert.equal(await service.refusal("t", "u", "bot:1", { usd: 0.03 }), undefined, "exactly enough");
+  // The allowance and the balance together cover it, as the hold would take them.
+  await service.post("t", "u", { kind: "grant", amount: 20_000, key: "pay" });
+  assert.equal(await service.refusal("t", "u", "bot:1", { usd: 0.05 }), undefined);
+  assert.equal(await new EndUserCredits(service.db).refusal("off", "u", "bot:1", { usd: 0.05 }), undefined, "a tenant that does not meter its end users");
+});
+
 test("a bucket's own daily limit caps what it charges the balance, whatever the balance: a bot cannot spend past it", async () => {
   const { service } = await credits({ allowances: { "bot:*": 100_000 }, bucketLimits: { "bot:*": 300_000 } });
   await service.post("t", "u", { kind: "grant", amount: 10 * USD, key: "pay" });

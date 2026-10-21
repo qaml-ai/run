@@ -564,15 +564,18 @@ export class EndUserCredits {
 
   /**
    * Why `endUser` may not start more work in `bucket` now: nothing left of the bucket's allowance today and no paid room
-   * (balance, daily limit), after holds. Undefined when they may, or the tenant does not meter its end users. A read,
-   * for refusing a run before it starts: the hold its first call takes is what decides.
+   * (balance, daily limit), after holds; with `usd`, too little of them to hold that much (what the work's first call
+   * holds, all of it, as a realtime voice response does). Undefined when they may, or the tenant does not meter its end
+   * users. A read, for refusing a run before it starts: the hold its first call takes is what decides.
    */
-  async refusal(tenant: string, endUser: string, bucket: string, now = Date.now()): Promise<CreditRefusal | undefined> {
+  async refusal(tenant: string, endUser: string, bucket: string, { usd = 0, now = Date.now() }: { usd?: number; now?: number } = {}): Promise<CreditRefusal | undefined> {
     if (!await this.enabled(tenant)) return undefined;
     const user = (await this.db.query("select * from end_users where tenant = $1 and id = $2", [tenant, endUser])).rows[0]
       ?? { id: endUser, balance: 0, allowances: {}, bucket_limits: {}, daily_limit: null };
     const left = await room(this.db, tenant, user, await this.settings(tenant), bucket, now);
-    return left.allowanceLeft > 0 || left.paidRoom > 0 ? undefined : refusal(endUser, bucket, left);
+    const want = Math.ceil(usd * MICROS);
+    const enough = want > 0 ? split(want, left).raw >= want : left.allowanceLeft > 0 || left.paidRoom > 0;
+    return enough ? undefined : refusal(endUser, bucket, left);
   }
 
   /**
