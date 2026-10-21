@@ -44,3 +44,14 @@ test("docs-only PRs still require checks, images and docs", () => {
   assert.ok(passes(options));
   assert.equal(passes({ ...options, results: { ...options.results, image: "skipped" } }), false);
 });
+
+
+test("superseded PR cancellation covers the workflow and only PR matrices fail fast", () => {
+  const concurrency = workflow.split("concurrency:\n")[1].split("jobs:\n")[0];
+  assert.match(concurrency, /github\.event\.pull_request\.number/);
+  assert.match(concurrency, /cancel-in-progress: \$\{\{ github\.ref != 'refs\/heads\/main' \}\}/);
+  const matrix = workflow.split("  test:\n")[1].split("  sim:\n")[0];
+  assert.match(matrix, /fail-fast: \$\{\{ github\.event_name == 'pull_request' \}\}/);
+  const nightly = readFileSync(new URL("../.github/workflows/nightly.yml", import.meta.url), "utf8");
+  assert.match(nightly, /cancel-in-progress: false/);
+});

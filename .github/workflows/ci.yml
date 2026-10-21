@@ -94,7 +94,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.tests == 'true'
     strategy:
-      fail-fast: false
+      # One failed PR shard makes the PR red; main and manual full runs retain every result.
+      fail-fast: ${{ github.event_name == 'pull_request' }}
       matrix:
         hosting: [process, inline]
         shard: ${{ fromJSON(needs.changes.outputs.shards) }}
