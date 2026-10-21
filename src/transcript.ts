@@ -51,7 +51,7 @@ export async function readTranscript(directory: string): Promise<AgentMessage[]>
   const reader = await openPiJournalReader({ sessionId: "local", directory });
   if (reader) try {
     const { nativeTranscriptRecords } = await import("./pi-durable/transcript.ts");
-    const records = await nativeTranscriptRecords(reader);
+    const records = await nativeTranscriptRecords(reader, () => fileAppendLog<TranscriptRecord>(transcriptPath(directory)).read());
     if (records) return historyOf(records);
   } finally { await reader.close((await import("@earendil-works/chord/context")).BACKGROUND_CONTEXT); }
   return historyOf(await fileAppendLog<TranscriptRecord>(transcriptPath(directory)).read());

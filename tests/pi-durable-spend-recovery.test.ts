@@ -1,4 +1,4 @@
-import { NativeTranscript } from "../src/pi-durable/transcript.ts";
+import { disableGeneration } from "./fixtures/pi-rollback.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -14,7 +14,7 @@ import { postgresTail } from "../src/log-tail.ts";
 import { Ownership } from "../src/ownership.ts";
 import { getModel } from "../src/pi-catalog.ts";
 import { LEGACY_CONVERSATION_ID } from "../src/pi-durable/migration.ts";
-import { openPiStorage } from "../src/pi-durable/storage.ts";
+import { openPiStorage, purgePiStorage } from "../src/pi-durable/storage.ts";
 import { AgentSupervisor } from "../src/supervisor.ts";
 import { Transcript, type TranscriptRecord } from "../src/transcript.ts";
 import { testDatabase } from "./database.ts";
@@ -46,7 +46,7 @@ async function fixture(t: TestContext, engine: "legacy" | "pi-durable" = "pi-dur
   await ownership.start();
   const nodes: { sessions: ClientSessions; supervisor: AgentSupervisor }[] = [];
   function open() {
-    const supervisor = new AgentSupervisor(directory, { storage, db, hosting: "inline", engine });
+    const supervisor = new AgentSupervisor(directory, { storage, db, hosting: "inline" });
     const sessions = new ClientSessions(supervisor, { db, storage, prefix: "client-sessions/", ownership,
       secret: "pi-spend-recovery-test-secret-32-characters", apiKeyFor: () => ({ key: "fixture", platform: true }), catalogPriced: async () => true });
     const node = { sessions, supervisor };
@@ -59,6 +59,8 @@ async function fixture(t: TestContext, engine: "legacy" | "pi-durable" = "pi-dur
   assert.equal(first.supervisor.agents.has(id), true);
   await first.sessions.close();
   await first.supervisor.close();
+  // A session the legacy engine kept: its log, and no Pi storage.
+  if (engine === "legacy") await purgePiStorage(db, id);
   // Simulate the two stores after a crash: the native response committed, its public projection did not.
   const log = storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id));
   const transcript = new Transcript(log);
@@ -70,7 +72,7 @@ async function fixture(t: TestContext, engine: "legacy" | "pi-durable" = "pi-dur
     const native = await openPiStorage({ sessionId: id, directory: join(directory, id), db });
     // Exercise recovery from the older compatibility adapter, before a native
     // host snapshot and atomic usage receipts existed.
-    await (await NativeTranscript.open(native))?.disable();
+    await disableGeneration(native);
     const entryId = await native.mintId<EntryId>();
     await native.commit([{ type: "entry", value: { id: entryId, conversationId: LEGACY_CONVERSATION_ID, kind: "pi.assistant", model: [response] as any } }], context);
     await native.close(context);

@@ -33,3 +33,11 @@ test("a node's js_exec, history and agent process settings come from its own env
     }
   }
 });
+
+test("the legacy engine's settings are accepted and ignored: a node that still has them starts, and says so", () => {
+  assert.deepEqual(nodeConfig({}).ignored, []);
+  for (const engine of ["legacy", "pi-durable"]) {
+    const config = nodeConfig({ AGENT_ENGINE: engine, AGENT_PI_CANARY_AGENTS: "a,b", AGENT_PI_CANARY_TENANTS: "" });
+    assert.deepEqual(config.ignored, ["AGENT_ENGINE", "AGENT_PI_CANARY_AGENTS", "AGENT_PI_CANARY_TENANTS"]);
+  }
+});

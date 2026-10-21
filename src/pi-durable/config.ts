@@ -1,8 +1,0 @@
-/** Operator setting; tenants keep the same session and request API. */
-export type AgentEngine = "legacy" | "pi-durable";
-
-export function agentEngine(value: string | undefined): AgentEngine {
-  if (value === undefined || value === "pi-durable") return "pi-durable";
-  if (value === "legacy") return value;
-  throw new Error("AGENT_ENGINE must be legacy or pi-durable");
-}

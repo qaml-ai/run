@@ -50,6 +50,8 @@ CI machines are saturated and every rerun costs about ten minutes.
     marks `azure` as needing an endpoint and deployment, not one key).
 
 ## Compaction (from comparing with pi-durable)
+The host compactor these were for was removed with the legacy engine: Pi compacts natively now. Check Pi's own
+summary path for the same gaps before reviving any of them.
 12. **Retry the summary call** (3 attempts with backoff, not on abort or spend-limit refusal).
 13. **Reject a truncated or empty summary** (`stopReason: "length"`, empty text, or a tool call): never save a cut-off
     summary.

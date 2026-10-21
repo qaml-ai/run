@@ -18,7 +18,7 @@ const noise = () => sharp(randomBytes(1000 * 800 * 3), { raw: { width: 1000, hei
 /** OpenRouter's limit on the image content of one request: past it, a 413 within milliseconds. */
 const PROVIDER_IMAGE_BYTES = 30 * 1000 * 1000;
 
-for (const engine of ["legacy", "pi-durable"] as const) test(`a history whose images exceed the request's image budget sends the newest within it, placeholders for the rest, and every turn succeeds (${engine})`, { timeout: 120_000 }, async t => {
+test("a history whose images exceed the request's image budget sends the newest within it, placeholders for the rest, and every turn succeeds", { timeout: 120_000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), "image-budget-"));
   const bodies: any[] = [];
   const images = (body: any): string[] => body.messages.flatMap((message: any) => Array.isArray(message.content) ? message.content : [])
@@ -46,15 +46,14 @@ for (const engine of ["legacy", "pi-durable"] as const) test(`a history whose im
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 1_000_000, maxTokens: 1024,
   } as Model<Api>;
   const bridge = { definitions: [], call: async () => { throw new Error("No application tools"); } };
-  const supervisor = new AgentSupervisor(root, { hosting: "inline", engine });
+  const supervisor = new AgentSupervisor(root, { hosting: "inline" });
   t.after(async () => {
     await supervisor.close();
     server.closeAllConnections();
     await new Promise<void>(resolve => server.close(() => resolve()));
     await rm(root, { recursive: true, force: true });
   });
-  const init = await supervisor.start("bot", { model, apiKey: "fixture", codeMode: false }, bridge);
-  assert.equal(init.engine, engine);
+  await supervisor.start("bot", { model, apiKey: "fixture", codeMode: false }, bridge);
 
   // Five messages of two screenshots each: about 32 MB of base64 in all, past what the provider takes in one request.
   const sent: string[] = [];

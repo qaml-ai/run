@@ -10,10 +10,15 @@ import { createAgentHost, type HostIO } from "../src/agent-host.ts";
 import { forkCut, recordedMessages, Transcript, type TranscriptRecord } from "../src/transcript.ts";
 import { fileAppendLog, type AppendLog } from "../shared/append-log.ts";
 import type { ToolDefinition } from "../src/protocol.ts";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { Storage as PiStorage } from "@earendil-works/pi-durable";
+import { openPiJournalReader, openPiStorage } from "../src/pi-durable/storage.ts";
+import { nativeTranscriptRecords } from "../src/pi-durable/transcript.ts";
 
 /**
- * The agent host on its own, without a supervisor or processes: a faux model, a transcript file, and crashes simulated
- * by writing the transcript a lost node would have left (or stopping a host mid-turn) and loading it in a new host.
+ * The agent host on its own, without a supervisor or processes: a faux model, its Pi storage, and crashes simulated by
+ * stopping a host mid-turn and loading the agent in a new host. A turn a node on the legacy engine lost is written as
+ * that node left it, in the legacy transcript file: the next host imports it as it stands, then recovers it.
  */
 type Context = { after(fn: () => unknown): void };
 
@@ -28,22 +33,25 @@ async function setup(t: Context) {
     { name: "delegate", description: "A sub-agent", parameters: { type: "object" }, exposure: "direct" },
   ];
   /** A host over the transcript file, as a node starting the agent: `call` answers its tools. */
-  async function start(options: { resume?: boolean; call?: (name: string, host: ReturnType<typeof createAgentHost>) => unknown; log?: AppendLog<TranscriptRecord>; initialMessages?: AgentMessage[] } = {}) {
+  async function start(options: { resume?: boolean; call?: (name: string, host: ReturnType<typeof createAgentHost>) => unknown; storage?: (storage: PiStorage) => PiStorage; initialMessages?: AgentMessage[] } = {}) {
     const events: any[] = [];
-    const log = options.log ?? fileAppendLog<TranscriptRecord>(path);
+    const log = fileAppendLog<TranscriptRecord>(path);
+    const opened = await openPiStorage({ sessionId: "agent", directory });
+    const storage = options.storage?.(opened) ?? opened;
     const io: HostIO = {
       emit: event => events.push(event),
       tool: async name => (options.call ?? (() => "found"))(name, host),
       cancelTools: async () => null,
       runLimit: async () => undefined,
       transcript: log,
+      piStorage: async () => storage,
       file: async () => { throw new Error("no files"); },
       modelAuth: async () => { throw new Error("no per-call credentials"); },
       fs: async () => { throw new Error("no files"); },
     };
     const host = createAgentHost(io);
     const init = await host.handle("init", { id: "agent", directory, model: faux.getModel(), apiKey: "fixture", tools, ...(options.resume ? { resume: true } : {}), ...(options.initialMessages ? { initialMessages: options.initialMessages } : {}) });
-    t.after(() => host.dispose(0));
+    t.after(async () => { await host.dispose(0); await opened.close(BACKGROUND_CONTEXT); });
     return { host, init, events, log };
   }
   /** Leave the transcript as a node lost mid-turn would: a turn opened and `messages` written, nothing after. */
@@ -55,9 +63,15 @@ async function setup(t: Context) {
     await transcript.append(messages);
     await transcript.log.close();
   }
-  const history = async () => { const transcript = new Transcript(fileAppendLog<TranscriptRecord>(path)); await transcript.load(); await transcript.log.close(); return transcript; };
+  /** The agent's records: Pi's, once a host has the agent (imported or new), else the legacy file a lost node left. */
+  const records = async () => {
+    const reader = await openPiJournalReader({ sessionId: "agent", directory });
+    try { return (reader && await nativeTranscriptRecords(reader)) || await fileAppendLog<TranscriptRecord>(path).read(); }
+    finally { await reader?.close(BACKGROUND_CONTEXT); }
+  };
+  const history = async () => { const transcript = new Transcript(undefined as never); for (const record of await records()) transcript.apply(record); return transcript; };
   const respond = (...steps: FauxResponseStep[]) => faux.setResponses(steps);
-  return { faux, start, crashedTurn, history, respond, path };
+  return { faux, start, crashedTurn, history, records, respond, path };
 }
 
 const user = (text: string) => ({ role: "user", content: text, timestamp: 1 }) as AgentMessage;
@@ -154,16 +168,14 @@ test("a node stopped while a tool call runs leaves a turn the next one resumes f
   assert.deepEqual(roles((await fake.history()).context), ["user", "assistant", "toolResult", "assistant"]);
 });
 
-test("a write that fails leaves memory as the log has it, and the agent refuses runs until it is loaded again", async t => {
+test("a write that fails leaves memory as the journal has it, and the agent refuses runs until it is loaded again", async t => {
   const fake = await setup(t);
-  const file = fileAppendLog<TranscriptRecord>(fake.path);
   let failing = false;
-  const log: AppendLog<TranscriptRecord> = {
-    read: () => file.read(), append: record => file.append(record), rewrite: snapshot => file.rewrite(snapshot), close: () => file.close(),
-    get appendedSinceRewrite() { return file.appendedSinceRewrite; },
-    flush: async durable => { if (failing) throw new Error("disk full"); return file.flush(durable); },
-  };
-  const { host } = await fake.start({ log });
+  const { host } = await fake.start({ storage: storage => {
+    const commit = storage.commit.bind(storage);
+    storage.commit = async (writes, context) => { if (failing) throw new Error("disk full"); return commit(writes, context); };
+    return storage;
+  } });
   fake.respond(answer("One."));
   assert.equal((await host.handle("prompt", { text: "one" })).reply, "One.");
   const status = await host.handle("status", {});
@@ -171,25 +183,26 @@ test("a write that fails leaves memory as the log has it, and the agent refuses 
   fake.respond(answer("Two."));
   await host.handle("prompt", { text: "two" }).catch(() => {});
   assert.equal((await host.handle("status", {})).messages, status.messages, "nothing unwritten is held");
-  await assert.rejects(host.handle("prompt", { text: "three" }), /Session persistence failed: Error: disk full/);
+  await assert.rejects(host.handle("prompt", { text: "three" }), /Session persistence failed: .*disk full/);
 });
 
 test("the leading system message is pinned in one commit with the first message, and a change follows it", async t => {
   const fake = await setup(t);
-  const flushes: TranscriptRecord[][] = [];
-  const file = fileAppendLog<TranscriptRecord>(fake.path);
-  let pending: TranscriptRecord[] = [];
-  const log: AppendLog<TranscriptRecord> = {
-    read: () => file.read(), rewrite: snapshot => file.rewrite(snapshot), close: () => file.close(),
-    append: record => { pending.push(record); file.append(record); },
-    get appendedSinceRewrite() { return file.appendedSinceRewrite; },
-    flush: async durable => { flushes.push(pending); pending = []; return file.flush(durable); },
-  };
-  const { host } = await fake.start({ log });
+  // The host records each commit writes to Pi's journal: a message Pi committed is recorded by its cursor.
+  const flushes: string[][] = [];
+  const { host } = await fake.start({ storage: storage => {
+    const commit = storage.commit.bind(storage);
+    storage.commit = async (writes, context) => {
+      const recorded = writes.flatMap(write => write.type === "entry" && write.value.kind === "camel.host.record" ? [write.value.data as { pi?: unknown; record?: TranscriptRecord }] : []);
+      if (recorded.length) flushes.push(recorded.map(data => data.pi ? "message" : data.record!.t === "system" ? (data.record!.leading ? "leading" : "change") : data.record!.t));
+      return commit(writes, context);
+    };
+    return storage;
+  } });
   fake.respond(answer("One."));
   await host.handle("prompt", { text: "one" });
   await host.handle("configure", { systemPrompt: "New rules" });
-  const kinds = flushes.filter(batch => batch.some(record => record.t === "system")).map(batch => batch.map(record => record.t === "system" ? (record.leading ? "leading" : "change") : record.t));
+  const kinds = flushes.filter(batch => batch.some(kind => kind === "leading" || kind === "change"));
   assert.deepEqual(kinds, [["leading", "message"], ["change"]]);
 });
 
@@ -237,8 +250,7 @@ for (const when of ["before the host has the run", "as the host begins it"]) {
     assert.deepEqual(roles(after.context), ["user", "assistant", "user", "assistant", "toolResult"]);
     assert.match(JSON.stringify(after.context.at(-1)), /outcome is unknown/);
     // A fork without a point ends with the last settled record: the aborted turn's prompt is in it.
-    const records = await fileAppendLog<TranscriptRecord>(fake.path).read();
-    const cut = forkCut(records);
+    const cut = forkCut(await fake.records());
     assert.equal(cut.through, 4);
     assert.ok(recordedMessages(cut.records).some(message => JSON.stringify(message).includes("research it")));
     // The next prompt starts a turn of its own.

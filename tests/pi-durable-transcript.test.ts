@@ -4,7 +4,7 @@ import { MemoryStorage } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { Transcript, historyOf, type TranscriptRecord } from "../src/transcript.ts";
 import { NativeTranscript, nativeTranscriptRecords } from "../src/pi-durable/transcript.ts";
-import { importLegacyTranscript, LegacyMigrationDeferred, MIGRATION_MAX_RECORDS, readMigratedLegacyRecords, validateLegacyMigration } from "../src/pi-durable/migration.ts";
+import { importLegacyTranscript, MIGRATION_MAX_RECORDS, readMigratedLegacyRecords, validateLegacyMigration } from "../src/pi-durable/migration.ts";
 import * as previous from "./fixtures/pi-readers-before-322.ts";
 import type { AppendLog } from "../shared/append-log.ts";
 import type { Storage, StorageWrite } from "@earendil-works/pi-durable";
@@ -67,16 +67,21 @@ test("failed native checkpoint never advances host state; canonical response rec
 });
 
 
-test("adoption after rollback applies the import bound before changing the native generation", async () => {
+test("adoption past the import bound keeps the archive in the legacy log, which the generation's history reads first", async () => {
   const storage = new MemoryStorage(), source = legacy();
   await importLegacyTranscript({ storage, sessionId: "test", records: [] });
+  source.records.push({ t: "message", message: { role: "user", content: "kept in the log", timestamp: 1 } as any });
   for (let i = 0; i <= MIGRATION_MAX_RECORDS; i++) source.records.push({ t: "turn", active: false });
-  await assert.rejects(NativeTranscript.adopt(storage, source.transcript),
-    error => error instanceof LegacyMigrationDeferred && error.reason === "size_limit");
-  assert.equal(await NativeTranscript.open(storage), undefined);
-  source.records.length = 0;
+  await source.transcript.load();
   const adopted = await NativeTranscript.adopt(storage, source.transcript);
-  assert.equal(adopted.total, 0, "retrying a refused adoption succeeds without partial-generation state");
+  assert.equal(adopted.total, 1);
+  assert.ok(await NativeTranscript.open(storage), "the generation is enabled");
+  const kinds = (await storage.scanEntries({ conversationId: 1 as never, order: "ascending" }, 1000, undefined, context)).items.map(entry => entry.kind);
+  assert.ok(!kinds.includes("camel.host.archive"), "nothing was copied");
+  await assert.rejects(nativeTranscriptRecords(storage), /legacy log/, "a read without the log cannot give the whole history");
+  assert.deepEqual(historyOf((await nativeTranscriptRecords(storage, source.transcript.log.read))!), [{ role: "user", content: "kept in the log", timestamp: 1 }]);
+  await adopted.append([{ role: "user", content: "after the adoption", timestamp: 2 } as any]);
+  assert.deepEqual(historyOf((await nativeTranscriptRecords(storage, source.transcript.log.read))!).map(message => (message as { content: unknown }).content), ["kept in the log", "after the adoption"]);
   await storage.close(context);
 });
 

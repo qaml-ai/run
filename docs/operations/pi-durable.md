@@ -1,89 +1,70 @@
 # Pi durable sessions
 
-The runtime has an opt-in replacement backed by `@earendil-works/pi-durable`
-1.3.0. The default remains the current pi-agent-core runtime (`legacy`). The code is deployed with Pi disabled; activation and migration are separate rollout steps.
-
-```sh
-AGENT_ENGINE=pi-durable npm start
-```
-
-Both `AGENT_HOSTING=inline` and `process` are supported. The choice applies when a
-host opens; already awake hosts retain their engine. Setting `AGENT_ENGINE=legacy`
-selects the current runtime again.
-
-## Canary before cutover
-
-Keep `AGENT_ENGINE=legacy` and set `AGENT_PI_CANARY_AGENTS` or
-`AGENT_PI_CANARY_TENANTS` to comma-separated exact IDs chosen by the operator.
-Apply the same allowlist on every node. Selected sessions use Pi on their next
-host open; every other session keeps the default engine. Existing active hosts
-finish on their current engine. These settings cannot be changed by tenants.
-
-Exercise a new session and an existing idle session, check retained history and
-request IDs, tools, human-input resume, and cross-node reload. Observe memory,
-CPU, latency and errors before broadening the cohort. Removing an ID reopens it
-on the default engine and uses the documented rollback path. Once the canary is
-accepted, `AGENT_ENGINE=pi-durable` selects Pi fleet-wide; keep the old engine and
-migration support while deferred sessions or rollback needs remain.
+Every agent runs on `@earendil-works/pi-durable` 1.3.0, in process or inline
+hosting. The earlier pi-agent-core loop (the "legacy" engine) was removed: no
+session runs on it, and nothing rolls a session back to it. `AGENT_ENGINE`,
+`AGENT_PI_CANARY_AGENTS` and `AGENT_PI_CANARY_TENANTS` are ignored; a node that has
+them set starts and logs `settings_ignored` once.
 
 ## Ownership of state
 
-Pi owns model/tool execution, canonical history and compaction on the opt-in
-path. Native compaction uses the scaled reserve/recent-context limits and has
-background speculation disabled. Camel supplies credentials, lease and network
-checks, tools, sandbox execution, human-input handling, output schemas, run
-limits and provider retry policy. The legacy compactor remains available to the
-legacy engine; it does not run alongside native compaction.
+Pi owns model/tool execution, canonical history and compaction. Native compaction
+uses the scaled reserve/recent-context limits and has background speculation
+disabled. Camel supplies credentials, lease and network checks, tools, sandbox
+execution, human-input handling, output schemas, run limits and provider retry
+policy.
 
 The host stores its bounded working state in a latest-only `camel.host.snapshot`
 document. Immutable `camel.host.record` entries preserve turns, resets,
 retractions, configuration changes and human waits. A record for a native message
 references its canonical entry rather than copying the message body. The host
 record and checkpoint commit atomically. Loading reads the checkpoint and any
-unacknowledged native tail, without replaying the legacy transcript or retaining
+unacknowledged native tail, without replaying a legacy transcript or retaining
 lifetime request/tool-ID maps. Request deduplication uses Pi's indexed submissions.
 
 Full history, export and fork operations reconstruct immutable history on demand;
-they are intentionally separate from bounded host loading. The original legacy
-transcript is not appended during normal native operation.
+they are intentionally separate from bounded host loading.
 
-## Migration and rollback
+## Importing legacy sessions
 
-Eligible sessions migrate when next opened. There is no fleet-wide eager command.
-An active legacy turn or a human wait continues on its original engine, and can
-migrate on a later idle open. Contexts that Pi would normalize differently defer
-migration rather than silently changing provider history.
+A session the legacy engine wrote (its `sessions/<id>/transcript` log) is imported
+the first time a host opens it. The import is one-way and runs once: the host reads
+the log, imports it as it stands, and from then on writes only Pi storage. Nothing
+writes the legacy log again; it is kept, and readers still read it where needed.
 
-Migration retains public session IDs, configuration, credentials, request
-journals, attachments, volume files and API routes. Original records, opaque
-provider fields, system changes, summaries, retractions, request IDs and tool
-identities are preserved. The initial archive and indexed historical request
-submissions commit atomically. A fingerprint detects conflicting imports.
+The import keeps public session IDs, configuration, credentials, request journals,
+attachments, volume files and API routes; original records, opaque provider
+fields, system changes, summaries, retractions, request IDs and tool identities.
+The archive, the historical request submissions (so a retried old request is
+`taken`, never run again), the context checkpoint and the host generation commit
+atomically. A fingerprint detects a conflicting import.
 
-The host adopts the existing effective history into its native generation before
-it begins writing native control records. This can include work performed during
-a previous rollback. Automatic import and adoption are limited to 64 MiB of
-serialized source records and 200,000 records. Larger sources remain on the legacy
-engine with `migration: { state: "deferred", reason: "size_limit" }`; no history
-is deleted and retrying an open is safe. The limits also apply to adoption after
-rollback, while already migrated native sessions reload normally regardless of
-archive size.
+Whatever the legacy engine left is imported as it is; recovery then runs on Pi as
+it does for any session on Pi:
 
-File imports check size before allocating the source. Shared-storage imports
-check object sizes and Postgres tail bytes before downloading/parsing bodies;
-missing size information also defers migration. Checks count obsolete objects
-conservatively, so some eligible histories may defer. The supervisor applies the
-bound before transferring an archive to a child. First imports remain serialized
-per node. These are source-size limits, not a hard process RSS cap: parsing and
-native commits need additional memory, and normal legacy loading/export/rollback
-keep their existing behavior. There is no streaming bulk importer yet.
+| The log held | Outcome |
+| --- | --- |
+| A turn its node lost mid-run (`from: "active"`) | Imported with the turn open. A resumed run retracts a cut-off response, answers calls whose outcome was lost as unknown (never runs them again), makes again only the calls keyed by the call (`delegate` and the other multi-agent tools), and continues on Pi. Without a resume, the turn is closed as interrupted. |
+| A tool waiting on a person (`from: "awaiting"`) | Imported with the call open. Its answer resumes the turn on Pi; a new message closes it first, as on Pi. |
+| A context Pi orders its own way (`from: "context_changed"`): failed or aborted responses, results out of call order, a call without a result | Imported whole. Pi builds each request from it as it does for any context: failed and aborted responses left out, results in call order, a missing result given one saying so. Requests already went through the same normalization under the legacy engine (pi-ai's `transformMessages`), except for the order of results. |
+| More than 64 MiB or 200,000 records | Imported without copying the archive (`archive: "legacy-log"`): the host generation starts from the working set as the host loaded it, and its history reader reads the legacy log first. The log is never read whole to import it. |
 
-For rollback, reopen with `AGENT_ENGINE=legacy`. The host first exports the native
-history and atomically rebuilds the legacy transcript, then marks the native host
-generation inactive. Pending native work is retired before legacy execution.
-Keep both stores. A later opt-in creates a fresh native host generation from the
-current legacy history, including intervening legacy turns. Rollback changes no
-public IDs and does not delete the native archive.
+The host logs `legacy_session_imported` with `state` (`migrated` for a first
+import, `adopted` for a session an earlier release imported without a host
+generation or rolled back to the legacy engine), `from` and `archive`.
+
+Sessions an earlier release rolled back (`AGENT_ENGINE=legacy` left a
+`camel.host.disabled` entry and rebuilt the legacy log from Pi's history, which the
+legacy engine then appended to) are adopted again: the native messages the log
+lacks are copied to it, and the whole log becomes the archive of a new host
+generation. The same applies to imports an earlier release made without a host
+generation.
+
+During a rolling deploy, a node on the previous release takes over imported
+sessions on Pi as before, since that release has the Pi engine and the importer.
+It does not read a by-reference archive (`archive: "legacy-log"`): there, its
+history reads show only what followed the import until the session is back on a
+node of this release.
 
 ## Persistence and billing
 
@@ -94,7 +75,7 @@ processes access storage through their supervisor.
 
 A standalone supervisor without a database uses `pi-durable.sqlite`, created with
 mode `0600` and `synchronous=FULL`. This is a local, single-owner configuration.
-Shared legacy storage without a supervisor database is refused for Pi execution.
+Shared storage without a supervisor database is refused.
 
 Migration 079 adds `pi_usage_receipts`. Production model calls retain the existing durable model-attempt accounting,
 including end-user credit holds. A response already settled by that path never
@@ -104,8 +85,7 @@ as its canonical entry. Summary responses have durable `camel.compaction.usage`
 entries. Live usage notifications wake accounting without counting a second copy.
 Workers claim receipts with row locks and atomically commit daily usage, prepaid
 charges, webhook events and receipt completion. Startup drains surviving receipts;
-concurrent workers and retries cannot charge a receipt twice. Legacy-engine usage
-retains its existing model-attempt accounting behavior.
+concurrent workers and retries cannot charge a receipt twice.
 
 Recovery does not replay arbitrary tool side effects. Committed results are reused;
 unknown interrupted outcomes are closed as unknown, with the existing special
@@ -113,26 +93,20 @@ handling for safe runtime delegation. Temporary human-wait results remain outsid
 completed public history. Session purge removes the native journal; account deletion
 also removes its receipt records after the normal accounting flush.
 
-## Local validation and rollout gates
+## Local validation
 
-The tests cover inline/process migration and rollback, bounded reload, old request
-IDs, exact full history, forks, human answers, failed host checkpoints, lost commit
-acknowledgements, native compaction failures, transaction rollback and concurrent
-receipt consumption. Existing cluster tests exercise Postgres handoff, cross-node
-human input, forks and exports with the opt-in engine.
+The tests cover import of every shape above, inline/process hosting, bounded
+reload, old request IDs, exact full history, forks, human answers, failed host
+checkpoints, lost commit acknowledgements, native compaction failures, transaction
+rollback and concurrent receipt consumption. Cluster tests exercise Postgres
+handoff, cross-node human input, forks and exports.
 
 ```sh
-node --experimental-strip-types --disable-warning=ExperimentalWarning --test tests/pi-durable-*.test.ts
-AGENT_ENGINE=pi-durable AGENT_HOSTING=inline node --experimental-strip-types --disable-warning=ExperimentalWarning --test tests/human-input.test.ts tests/cluster-handoff.test.ts tests/cluster-step-handoff.test.ts tests/cluster-fork.test.ts tests/cluster-export.test.ts tests/fresh-history.test.ts tests/history-import.test.ts
+node --experimental-strip-types --disable-warning=ExperimentalWarning --test tests/pi-durable-*.test.ts tests/agent-host.test.ts
 ```
 
 See the [integrated comparison](../../benchmarks/session-memory/INTEGRATED-NATIVE.md)
-for the actual host workload and raw trials. The earlier
-[compatibility-adapter comparison](../../benchmarks/session-memory/INTEGRATION.md)
-and [native prototype](../../benchmarks/session-memory/REPLACEMENT.md) measured
-different implementations and should not be substituted for this comparison.
+for the actual host workload and raw trials.
 
 Storage metering is deferred at the operator's request; the current object-storage
-meter does not measure the new Postgres bodies. Real-provider summary quality,
-production concurrency and a staged rollout remain unverified by these local tests.
-Oversized legacy sessions need a separately planned import if they must move to Pi.
+meter does not measure the new Postgres bodies.

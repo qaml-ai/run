@@ -53,7 +53,7 @@ export async function projectPiTranscript(transcript: Transcript, storage: PiJou
 
 /** Full-record archive API: merge a native tail without changing the legacy log or the live owner's storage. */
 export async function projectPiRecords(records: readonly TranscriptRecord[], storage: PiJournal, conversationId: ConversationId | number): Promise<TranscriptRecord[]> {
-  const native = await nativeTranscriptRecords(storage);
+  const native = await nativeTranscriptRecords(storage, async () => [...records]);
   if (native) return native;
   let cursor: PiMessageCursor | undefined;
   for (let index = records.length - 1; index >= 0; index--) {
