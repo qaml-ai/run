@@ -36,7 +36,7 @@ import type { Storage as PiStorage } from "@earendil-works/pi-durable";
 import { DurableAgent, type DurableAgentOptions } from "./pi-durable/agent.ts";
 import { checkDualRead } from "./pi-durable/dual-read.ts";
 import { JournalHistory } from "./pi-durable/history.ts";
-import { metricLine } from "./metrics.ts";
+import { metricLine, safeError } from "./metrics.ts";
 import { always } from "./assert.ts";
 import { LEGACY_CONVERSATION_ID, legacyImportShape, LegacyMigrationDeferred, loadLegacyMigration, readMigrationRecords, type LegacyImportShape } from "./pi-durable/migration.ts";
 import { reconcilePiTranscript } from "./pi-durable/projection.ts";
@@ -393,7 +393,7 @@ export function createAgentHost(hostIO: HostIO) {
       value = await journalValue(piHistory);
     } catch (error) {
       // The journal could not be read (its storage closed as the agent stops): the host's value, as where they differ.
-      console.error(JSON.stringify({ type: "history_source_unavailable", agent: config.id, field, error: errorText(error) }));
+      console.error(JSON.stringify({ type: "history_source_unavailable", agent: config.id, field, error: safeError(error) }));
       return host;
     }
     // What the journal does not hold (messages before its base the history index lacks yet): the host's, not a mismatch.
