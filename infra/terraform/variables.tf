@@ -114,16 +114,6 @@ variable "task_memory" {
   default = 4096
 }
 
-variable "agent_pi_sweep" {
-  description = "AGENT_PI_SWEEP: the most the Pi migration sweep may do: off, dry-run (log what migrating each legacy agent would do) or on (open idle legacy agents so they migrate to Pi). The operator's mode (infra/pi-sweep.sh) chooses within it, and starts in dry-run"
-  type        = string
-  default     = "off"
-  validation {
-    condition     = contains(["off", "dry-run", "on"], var.agent_pi_sweep)
-    error_message = "agent_pi_sweep is off, dry-run or on."
-  }
-}
-
 variable "agent_engine" {
   description = "AGENT_ENGINE, kept at pi-durable for images before the legacy engine's removal (which default to legacy without it; a deploy rollback may run one). The current image ignores it. Remove once no image that reads it can be deployed."
   type        = string

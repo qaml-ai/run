@@ -284,8 +284,9 @@ test("health says what the platform spent, for whom, and what is waiting longer 
   assert.match(check("schedules").detail, /oldest for 60 min/);
   assert.equal(check("attempts").status, "warn", "a call five hours old the provider has not confirmed");
   assert.equal(check("help").status, "ok");
-  assert.equal(check("pi_migration").status, "info");
+  // This fixture's agents are rows with no Pi storage: each counts, and any at all warns (they cannot be opened).
   assert.match(check("pi_migration").value, /^\d+ agents?$/);
+  assert.equal(check("pi_migration").status, check("pi_migration").value.startsWith("0 ") ? "ok" : "warn");
   assert.equal(health.nodes.length, 1);
 });
 

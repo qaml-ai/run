@@ -2,7 +2,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { Cursor, EntryId, EntryRecord, Storage } from "@earendil-works/pi-durable";
 import { durableEntryMessages } from "./agent.ts";
-import { HOST_BOOTSTRAP_KIND, LEGACY_CONVERSATION_ID as conversationId } from "./migration.ts";
+import { HOST_BOOTSTRAP_KIND, SESSION_CONVERSATION_ID as conversationId } from "./seed.ts";
 import { MARKER_KIND } from "./transcript.ts";
 import { entryIds, type EntryIdLister } from "./storage.ts";
 import { createHash } from "node:crypto";

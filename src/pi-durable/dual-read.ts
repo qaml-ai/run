@@ -6,7 +6,7 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { Cursor, EntryId, EntryRecord, Storage } from "@earendil-works/pi-durable";
 import type { TranscriptRecord } from "../transcript.ts";
 import { durableEntryMessages } from "./agent.ts";
-import { HOST_BOOTSTRAP_KIND, LEGACY_CONVERSATION_ID as conversationId } from "./migration.ts";
+import { HOST_BOOTSTRAP_KIND, SESSION_CONVERSATION_ID as conversationId } from "./seed.ts";
 
 /**
  * Dual read for removing the host transcript (plans/host-transcript-removal.md): the history Pi's journal holds on its

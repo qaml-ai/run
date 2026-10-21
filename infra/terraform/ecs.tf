@@ -73,12 +73,6 @@ locals {
     AGENT_MEMORY_HIGH_BYTES = tostring(floor(var.task_memory * 0.65) * 1048576)
     # Read only by images before the legacy engine's removal, which a deploy rollback may run (see var.agent_engine).
     AGENT_ENGINE = var.agent_engine
-    # Legacy agents opened one at a time so they migrate to Pi (docs/operations/pi-durable.md): the most the sweep may do;
-    # the operator's mode (infra/pi-sweep.sh) chooses within it. It takes no agent past 60% of the task's memory.
-    AGENT_PI_SWEEP                  = var.agent_pi_sweep
-    AGENT_PI_SWEEP_MAX_MEMORY_BYTES = tostring(floor(var.task_memory * 0.6) * 1048576)
-    # Its large pass (a session too large to copy reads its legacy log whole) only below 35%: room for the read.
-    AGENT_PI_SWEEP_LARGE_MAX_MEMORY_BYTES = tostring(floor(var.task_memory * 0.35) * 1048576)
     # Removing the host transcript (docs/operations/pi-durable.md): what the host writes is written into Pi's journal too
     # ("1"), and each agent's host transcript is compared with the journal ("log"). Off unless set.
     AGENT_PI_DUAL_WRITE = var.agent_pi_dual_write ? "1" : "0"

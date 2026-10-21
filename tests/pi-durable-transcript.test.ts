@@ -4,7 +4,7 @@ import { MemoryStorage } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { Transcript, historyOf, type TranscriptRecord } from "../src/transcript.ts";
 import { NativeTranscript, nativeTranscriptRecords } from "../src/pi-durable/transcript.ts";
-import { importLegacyTranscript, MIGRATION_MAX_RECORDS, readMigratedLegacyRecords, validateLegacyMigration } from "../src/pi-durable/migration.ts";
+import { loadSeedMarker, SEED_MAX_RECORDS } from "../src/pi-durable/seed.ts";
 import * as previous from "./fixtures/pi-readers-before-322.ts";
 import type { AppendLog } from "../shared/append-log.ts";
 import type { Storage, StorageWrite } from "@earendil-works/pi-durable";
@@ -24,10 +24,9 @@ test("native transcript reload uses only the bounded checkpoint and indexed requ
   const source = legacy();
   for (let i = 0; i < 2000; i++) await source.transcript.push({ role: "user", content: `request ${i}`, requestId: `request-${i}`, timestamp: i } as any);
   await source.transcript.compact({ summary: "Earlier requests", cut: 1999, tokensBefore: 10000, at: 2001 }, undefined, () => undefined);
-  await importLegacyTranscript({ storage, sessionId: "test", records: source.records });
-  const transcript = await NativeTranscript.adopt(storage, source.transcript);
+  const transcript = (await NativeTranscript.seed(storage, { sessionId: "test", records: source.records }))!;
   const head = await storage.findLatestHeadMarker(1 as any, undefined, context);
-  assert.equal(head?.id, transcript.piCursor?.entryId, "native context begins after the imported archive");
+  assert.equal(head?.id, transcript.piCursor?.entryId, "native context begins after the seeded archive");
   assert.ok((head?.model?.length ?? 0) <= 2, "the new head carries only the bounded working context");
   assert.equal(transcript.requests.size, 0);
   assert.ok(await transcript.hasRequest("request-0"));
@@ -51,8 +50,7 @@ test("native transcript reload uses only the bounded checkpoint and indexed requ
 
 test("failed native checkpoint never advances host state; canonical response recovers once", async () => {
   const storage = new MemoryStorage(), source = legacy();
-  await importLegacyTranscript({ storage, sessionId: "test", records: [] });
-  const transcript = await NativeTranscript.adopt(storage, source.transcript);
+  const transcript = (await NativeTranscript.seed(storage, { sessionId: "test", records: source.records }))!;
   const id = await storage.mintId<any>();
   const message = { role: "user", content: "committed", timestamp: 1 } as const;
   await storage.commit([{ type: "entry", value: { id, conversationId: 1 as any, kind: "pi.user", model: [message] } }], context);
@@ -67,22 +65,36 @@ test("failed native checkpoint never advances host state; canonical response rec
 });
 
 
-test("adoption past the import bound keeps the archive in the legacy log, which the generation's history reads first", async () => {
+test("a seed past the copy budget keeps its records in the legacy log, which the generation's history reads first", async () => {
   const storage = new MemoryStorage(), source = legacy();
-  await importLegacyTranscript({ storage, sessionId: "test", records: [] });
   source.records.push({ t: "message", message: { role: "user", content: "kept in the log", timestamp: 1 } as any });
-  for (let i = 0; i <= MIGRATION_MAX_RECORDS; i++) source.records.push({ t: "turn", active: false });
-  await source.transcript.load();
-  const adopted = await NativeTranscript.adopt(storage, source.transcript);
-  assert.equal(adopted.total, 1);
+  for (let i = 0; i <= SEED_MAX_RECORDS; i++) source.records.push({ t: "turn", active: false });
+  const seeded = (await NativeTranscript.seed(storage, { sessionId: "test", records: source.records, legacy: source.transcript.log }))!;
+  assert.equal(seeded.total, 1);
   assert.ok(await NativeTranscript.open(storage), "the generation is enabled");
   const kinds = (await storage.scanEntries({ conversationId: 1 as never, order: "ascending" }, 1000, undefined, context)).items.map(entry => entry.kind);
   assert.ok(!kinds.includes("camel.host.archive"), "nothing was copied");
+  assert.equal((await loadSeedMarker(storage))?.archive, "legacy-log");
   await assert.rejects(nativeTranscriptRecords(storage), /legacy log/, "a read without the log cannot give the whole history");
   assert.deepEqual(historyOf((await nativeTranscriptRecords(storage, source.transcript.log.read))!), [{ role: "user", content: "kept in the log", timestamp: 1 }]);
-  await adopted.append([{ role: "user", content: "after the adoption", timestamp: 2 } as any]);
-  assert.deepEqual(historyOf((await nativeTranscriptRecords(storage, source.transcript.log.read))!).map(message => (message as { content: unknown }).content), ["kept in the log", "after the adoption"]);
+  await seeded.append([{ role: "user", content: "after the seed", timestamp: 2 } as any]);
+  assert.deepEqual(historyOf((await nativeTranscriptRecords(storage, source.transcript.log.read))!).map(message => (message as { content: unknown }).content), ["kept in the log", "after the seed"]);
+  assert.deepEqual(historyOf((await seeded.log.read())), historyOf((await nativeTranscriptRecords(storage, source.transcript.log.read))!), "the host's own reads take the log first too");
   await storage.close(context);
+});
+
+test("seeding the same source again finds it seeded; another session's or source's is refused", async () => {
+  const storage = new MemoryStorage();
+  const records: TranscriptRecord[] = [{ t: "message", message: { role: "user", content: "hi", requestId: "r", timestamp: 1 } as any }];
+  assert.ok(await NativeTranscript.seed(storage, { sessionId: "test", records }));
+  assert.equal(await NativeTranscript.seed(storage, { sessionId: "test", records }), undefined);
+  await assert.rejects(NativeTranscript.seed(storage, { sessionId: "other", records }), /seed conflict/);
+  await assert.rejects(NativeTranscript.seed(storage, { sessionId: "test", records: [] }), /seed conflict/);
+  const empty = new MemoryStorage();
+  empty.commit = async () => { throw new Error("disk full"); };
+  await assert.rejects(NativeTranscript.seed(empty, { sessionId: "test", records }), /disk full/);
+  assert.equal(await loadSeedMarker(empty), undefined, "a failed seed leaves nothing");
+  await storage.close(context); await empty.close(context);
 });
 
 for (const backend of ["memory", "postgres"] as const) test(`native transcript commits write what they add, not the working set again (${backend})`, async () => {
@@ -94,8 +106,7 @@ for (const backend of ["memory", "postgres"] as const) test(`native transcript c
     for (const write of writes) if (write.type === "document.change") written.push(write.content);
     return commit(writes, at);
   };
-  await importLegacyTranscript({ storage, sessionId: "test", records: [] });
-  const transcript = await NativeTranscript.adopt(storage, legacy().transcript);
+  const transcript = (await NativeTranscript.seed(storage, { sessionId: "test", records: [] }))!;
   const big = "x".repeat(2_000_000);
   await transcript.push({ role: "user", content: big, timestamp: 1 } as any);
   written.length = 0;
@@ -120,7 +131,7 @@ for (const backend of ["memory", "postgres"] as const) test(`native transcript c
   await storage.close(context);
 });
 
-test("a host's import writes its archive and context once, in one commit with its generation, and exports the whole history", async () => {
+test("a seed writes its archive and context once, in one commit with its generation, and exports the whole history", async () => {
   const storage = new MemoryStorage(), source = legacy();
   for (let i = 0; i < 300; i++) {
     await source.transcript.push({ role: "user", content: `request ${i}`, requestId: `request-${i}`, timestamp: i } as any);
@@ -131,9 +142,9 @@ test("a host's import writes its archive and context once, in one commit with it
   const commit = storage.commit.bind(storage);
   storage.commit = async (batch, at) => { commits.push([...batch]); return commit(batch, at); };
   const working = source.transcript.view();
-  const { metadata, transcript } = await NativeTranscript.importLegacy(storage, source.transcript, { sessionId: "test", records: source.records, working });
-  assert.ok(transcript);
-  assert.equal(commits.length, 1, "the import, the generation and its document land together");
+  const transcript = (await NativeTranscript.seed(storage, { sessionId: "test", records: source.records, working }))!;
+  const metadata = (await loadSeedMarker(storage))!;
+  assert.equal(commits.length, 1, "the seed, the generation and its document land together");
   const kinds = new Map<string, number>();
   for (const write of commits[0]) {
     const kind = write.type === "entry" ? write.value.kind : write.type;
@@ -144,8 +155,6 @@ test("a host's import writes its archive and context once, in one commit with it
   assert.deepEqual(transcript.piCursor, { entryId: metadata.contextEntryId, index: -1 });
   assert.equal((await storage.findLatestHeadMarker(1 as any, undefined, context))?.id, metadata.contextEntryId);
   assert.ok(await transcript.hasRequest("request-0"));
-  assert.deepEqual(await readMigratedLegacyRecords(storage), source.records);
-  await validateLegacyMigration(storage, source.records);
   await transcript.setActive(true);
   await transcript.push({ role: "user", content: "new", requestId: "new", timestamp: 301 } as any);
   await transcript.setActive(false);

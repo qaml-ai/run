@@ -25,111 +25,32 @@ lifetime request/tool-ID maps. Request deduplication uses Pi's indexed submissio
 Full history, export and fork operations reconstruct immutable history on demand;
 they are intentionally separate from bounded host loading.
 
-## Importing legacy sessions
+## Sessions from the legacy engine
 
-A session the legacy engine wrote (its `sessions/<id>/transcript` log) is imported
-the first time a host opens it, or by the
-[migration sweep](#the-migration-sweep). The import is one-way and runs once: the host reads
-the log, imports it as it stands, and from then on writes only Pi storage. Nothing
-writes the legacy log again; it is kept, and readers still read it where needed.
+Every session the legacy engine kept was imported into Pi, when a host first opened
+it or by the migration sweep (both now removed). The runtime no longer reads a
+legacy transcript to import it. It still reads every format those imports wrote:
 
-The import keeps public session IDs, configuration, credentials, request journals,
-attachments, volume files and API routes; original records, opaque provider
-fields, system changes, summaries, retractions, request IDs and tool identities.
-The archive, the historical request submissions (so a retried old request is
-`taken`, never run again), the context checkpoint and the host generation commit
-atomically. A fingerprint detects a conflicting import.
+- A session's Pi storage starts with a seed marker (`camel.legacy.migration`), then
+  its host generation (`camel.host.bootstrap`) with the records it started with as
+  archive blocks, a context checkpoint and its request IDs, all in one commit. New
+  agents and forks are seeded the same way (`NativeTranscript.seed`); releases before
+  #326 refuse a root without the marker.
+- An import too large to copy (more than 64 MiB or 200,000 records) left its records
+  in the session's legacy log (`archive: "legacy-log"` on the marker and the
+  generation). That log is read-only: the generation's history reads it first,
+  live, cold and for exports. A fork that large is seeded the same way, into its
+  own legacy log.
+- Imports from before #322 have archive blocks and no generation of their own; their
+  history reads the same way.
 
-Whatever the legacy engine left is imported as it is; recovery then runs on Pi as
-it does for any session on Pi:
-
-| The log held | Outcome |
-| --- | --- |
-| A turn its node lost mid-run (`from: "active"`) | Imported with the turn open. A resumed run retracts a cut-off response, answers calls whose outcome was lost as unknown (never runs them again), makes again only the calls keyed by the call (`delegate` and the other multi-agent tools), and continues on Pi. Without a resume, the turn is closed as interrupted. |
-| A tool waiting on a person (`from: "awaiting"`) | Imported with the call open. Its answer resumes the turn on Pi; a new message closes it first, as on Pi. |
-| A context Pi orders its own way (`from: "context_changed"`): failed or aborted responses, results out of call order, a call without a result | Imported whole. Pi builds each request from it as it does for any context: failed and aborted responses left out, results in call order, a missing result given one saying so. Requests already went through the same normalization under the legacy engine (pi-ai's `transformMessages`), except for the order of results. |
-| More than 64 MiB or 200,000 records | Imported without copying the archive (`archive: "legacy-log"`): the host generation starts from the working set as the host loaded it, and its history reader reads the legacy log first. The log is never read whole to import it. |
-
-The host logs `legacy_session_imported` with `state` (`migrated` for a first
-import, `adopted` for a session an earlier release imported without a host
-generation or rolled back to the legacy engine), `from` and `archive`.
-
-Sessions an earlier release rolled back (`AGENT_ENGINE=legacy` left a
-`camel.host.disabled` entry and rebuilt the legacy log from Pi's history, which the
-legacy engine then appended to) are adopted again: the native messages the log
-lacks are copied to it, and the whole log becomes the archive of a new host
-generation. The same applies to imports an earlier release made without a host
-generation.
-
-During a rolling deploy, a node on the previous release takes over imported
-sessions on Pi as before, since that release has the Pi engine and the importer.
-It does not read a by-reference archive (`archive: "legacy-log"`): there, its
-history reads show only what followed the import until the session is back on a
-node of this release.
-
-### The migration sweep
-
-`AGENT_PI_SWEEP` (Terraform `agent_pi_sweep`; `off` by default) lets each node open the remaining
-legacy sessions one at a time, so they are imported without waiting for traffic. It is the most a node may
-do; the operator's mode chooses within it, is read before every agent, and starts in `dry-run`:
-
-    infra/pi-sweep.sh status      # mode, cursors, agents left on legacy
-    infra/pi-sweep.sh dry-run     # report only (the starting mode)
-    infra/pi-sweep.sh on          # migrate (needs AGENT_PI_SWEEP=on)
-    infra/pi-sweep.sh off         # every node stops before its next agent, within seconds
-    infra/pi-sweep.sh large on    # the large pass, for sessions too large to copy (off by default)
-
-- **Which agents:** kept (not revoked, purged or expired) and without a Pi host document, in id
-  order. Nodes take them from a shared cursor in the `pi_sweep` row, so no agent is taken twice in a
-  pass, and a restart or deploy goes on where the fleet was. Each mode has its own cursor. After a
-  pass reaches the end, the next starts from the first agent `AGENT_PI_SWEEP_REPASS_MS` later (6 h);
-  `--restart` starts both passes again now. Migrated agents are never candidates again.
-- **Never two owners:** an agent hosted or being loaded anywhere is skipped (`skipped_hosted`).
-  Opening takes the agent's ownership claim as any load does, so a node that took it in between keeps
-  it. One with runs open (`skipped_pending_runs`) is left to the orphan sweep, which loads it. One its
-  owner holds but never started (a watcher's or an upsert's load) is imported by the owner's own
-  sweep in place, and stays loaded (`loadedHere`); every other node skips it. Since the shared
-  cursor hands each agent to whichever node asks next, each node also looks, at most once a minute,
-  for legacy agents it holds itself, and takes them apart from the cursor (`pass: "own"`).
-- **Import only:** the sweep's start imports the session and stops its host at once. It recovers no
-  turn and writes no configuration change: the next open does that, as for any session on Pi. It
-  asks no model, bills nothing, sends no webhook and warms no tool search (whose embeddings its
-  tenant would pay for). It lists the agent's tool sources (connecting to its MCP servers) only when
-  the legacy transcript pinned no leading system message, which the import then makes from the
-  tools (`system: false`). A request that comes while the sweep's start runs waits for it, then
-  starts the agent as any request does.
-- **Read first:** the legacy transcript is read first (bounded, as the import reads it). One too large
-  to copy (`skipped_size_limit`) is left for its own open, which imports it by reference after
-  reading the log whole: not something to do back to back. A dry run stops there for every agent
-  (`would_migrate`, with its `records`, `system`, the `bytes` of the archive and `contextBytes` of the
-  context checkpoint it would write, and, where the import would find one, `from`: `active`,
-  `awaiting` or `context_changed`), opening nothing and writing nothing but the sweep's own cursor.
-  Sessions with a `camel.host.disabled` entry already have a host document, so the sweep leaves them
-  to their next open, which adopts them.
-- **The large pass:** sessions too large to copy (`skipped_size_limit`) are left by the passes above,
-  so `remaining` cannot reach 0 without it. With the large pass on (`infra/pi-sweep.sh large on`;
-  off by default) and the mode `on`, once the on pass has finished, nodes take what is left from a
-  cursor of its own, one agent at a time across the fleet (a lease in the `pi_sweep` row, given back
-  after each agent or after 15 minutes), only while their container memory is under
-  `AGENT_PI_SWEEP_LARGE_MAX_MEMORY_BYTES` (Terraform: 35% of the task) on top of every other gate, and
-  `AGENT_PI_SWEEP_LARGE_PACE_MS` apart (30 s). Each import is by reference (`archive: "legacy-log"`),
-  reading the log whole, as the session's own open would. Its lines carry `pass: "large"`.
-- **Live traffic first:** a node takes no agent while it is leaving, its database pool has a
-  request waiting, its turns' p95 `TimeToFirstRequestMs` over 10 minutes (the runtime's own part of a
-  turn's latency, which imports compete with; at least 5 turns) is past
-  `AGENT_PI_SWEEP_MAX_FIRST_REQUEST_MS` (8 s), its resident memory is past `AGENT_MEMORY_HIGH_BYTES`,
-  its container memory is past `AGENT_PI_SWEEP_MAX_MEMORY_BYTES` (60% of the task), or it is full. It waits 5 s, doubling to 60 s,
-  and logs `pi_sweep_backoff` with the reason at most once a minute. Five failures in a row wait 60 s.
-- **Logs:** `pi_sweep_agent` (agent, tenant, `outcome`, `ms`), `pi_sweep_progress` each minute per
-  node (counts by outcome, `bytes`, `contextBytes` and `noSystem` so far, `remaining`), `pi_sweep_pass_done` (`mode`, `remaining`), and
-  `pi_sweep_mode_set` when the operator changes it. A dry run's report:
-
-      filter type = "pi_sweep_agent" and mode = "dry-run"
-      | stats count(*) as agents, sum(bytes) as archive, sum(contextBytes) as context by outcome, system
-
-  Outcomes: `migrated` (with `from`, as `legacy_session_imported` logs it), `adopted`, `already_pi`,
-  `would_migrate`, `skipped_hosted`, `skipped_pending_runs`, `skipped_size_limit`, `skipped_busy`,
-  `skipped_leaving`, `gone`, `not_migrated`, `failed` (with `error`).
+A session whose history is still only in the legacy format (its Pi host generation
+missing, or disabled by an earlier release's rollback to the legacy engine) is
+refused: its host logs `legacy_session_not_imported` (agent, tenant, `reason`:
+`legacy_log` or `not_on_pi`), and the request fails with 409 `AGENT_NOT_MIGRATED`.
+Nothing is written, so its history stays where it is, and readable. To import one,
+run it on a release that still has the importer (before the importer's removal),
+then come back. The operator dashboard's "Agents not on Pi" counts them.
 
 ## Persistence and billing
 
