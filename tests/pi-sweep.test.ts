@@ -462,6 +462,37 @@ test("an agent its owner holds but never started is imported by the owner's swee
   assert.equal((await control.status()).remaining, 0);
 });
 
+test("an agent its owner holds is taken by the owner's sweep even when another node's pass reached it first", { timeout: 120_000 }, async t => {
+  const { model } = await fixtureModel(t);
+  const { db } = await testDatabase();
+  const storage = memoryStorage(postgresTail(db));
+  const [held] = await legacyAgents(t, db, storage, model, ["held"], [], ["held"]);
+  const a = await node(t, db, storage, "a");
+  const b = await node(t, db, storage, "b");
+  await (a.sessions as unknown as { load(id: string): Promise<unknown> }).load(held);
+  const control = new PiSweepControl(db, "on");
+  await control.set("on");
+
+  // B's pass takes it from the shared cursor, skips it (A holds it), and finishes: the cursor is past it.
+  const onB = sweeper(db, b.sessions, "on", undefined, "http://b");
+  t.after(() => onB.sweep.stop());
+  onB.sweep.start();
+  await finished(db, "on");
+  await onB.sweep.stop();
+  assert.deepEqual(onB.outcomes, { skipped_hosted: 1 });
+
+  // A's sweep finds the pass finished, and takes what it holds itself.
+  const results: Record<string, PiSweepResult> = {};
+  const onA = sweeper(db, a.sessions, "on", (id, result) => { results[id] = result; }, "http://a");
+  t.after(() => onA.sweep.stop());
+  onA.sweep.start();
+  await until(() => results[held], "A's own pass");
+  await onA.sweep.stop();
+  assert.deepEqual(results[held], { outcome: "migrated", detail: { system: true, loadedHere: true } });
+  assert.equal((await control.status()).remaining, 0);
+  assert.ok(a.sessions.sessions.has(held), "still held where it was");
+});
+
 test("turning the operator's mode off stops every node's sweep before its next agent; on again, it goes on from its cursor", { timeout: 60_000 }, async t => {
   const { db } = await testDatabase();
   for (let i = 0; i < 40; i++) {

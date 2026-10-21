@@ -1,5 +1,5 @@
 import type { Db } from "./db.ts";
-import { transaction } from "./db.ts";
+import { transaction, type Sql } from "./db.ts";
 import { clock } from "./node-context.ts";
 import { markSweepImport, safeError } from "./metrics.ts";
 
@@ -28,6 +28,8 @@ export interface PiSweepOptions {
   paceMs: number;
   /** After an agent of the large pass. */
   largePaceMs?: number;
+  /** How soon this node tries again an agent it holds that its sweep left (busy, say): 10 minutes. */
+  ownRetryMs?: number;
   /** How long a node may hold the large pass's lease (one agent at a time across the fleet) before another takes it. */
   largeLeaseMs?: number;
   /** After a pass reaches the end, before the next starts from the beginning. */
@@ -59,6 +61,9 @@ export class PiSweep {
   private totals = { bytes: 0, contextBytes: 0, noSystem: 0 };
   private lastProgress = 0;
   private lastBackoff = new Map<string, number>();
+  /** This node's own held agents (`ownHeld`): when they were tried, and when it last looked. */
+  private ownTried = new Map<string, number>();
+  private ownChecked = 0;
 
   private readonly options: PiSweepOptions;
 
@@ -132,7 +137,7 @@ export class PiSweep {
       const detail = result.detail ?? {};
       for (const key of ["bytes", "contextBytes"] as const) if (typeof detail[key] === "number") this.totals[key] += detail[key] as number;
       if (detail.system === false) this.totals.noSystem++;
-      console.log(JSON.stringify({ type: "pi_sweep_agent", mode: next.mode, ...(large ? { pass: "large" } : {}), agent: next.candidate.id, tenant: next.candidate.tenant,
+      console.log(JSON.stringify({ type: "pi_sweep_agent", mode: next.mode, ...(next.pass !== "main" ? { pass: next.pass } : {}), agent: next.candidate.id, tenant: next.candidate.tenant,
         outcome: result.outcome, ms: Math.round(clock().monotonic() - started), ...result.detail }));
       if (clock().now() - this.lastProgress >= 60_000) {
         this.lastProgress = clock().now();
@@ -163,11 +168,33 @@ export class PiSweep {
   }
 
   /**
+   * A legacy agent this node holds (loaded here, by a watcher or an upsert, say) that it has not tried in the last
+   * `ownRetryMs`, read at most once a minute. From the claims of this node, few, rather than from every agent.
+   */
+  private async ownHeld(sql: Sql, now: number): Promise<PiSweepCandidate | undefined> {
+    const node = this.options.node;
+    if (!node || now - this.ownChecked < 60_000) return undefined;
+    this.ownChecked = now;
+    const retryMs = this.options.ownRetryMs ?? 10 * 60_000;
+    for (const [id, at] of this.ownTried) if (now - at >= retryMs) this.ownTried.delete(id);
+    const row = (await sql.query<{ id: string; tenant: string; pending_runs: boolean }>(`
+      select a.id, a.tenant, a.pending_runs from actor_owners o
+        join runtime_nodes n on n.node = o.node and n.session = o.session and n.expires_at > now()
+        join agents a on a.id = o.actor
+      where o.node = $2 and not (a.id = any($3::text[])) and ${LEGACY} order by a.id limit 1`, [now, node, [...this.ownTried.keys()]])).rows[0];
+    if (!row) return undefined;
+    this.ownTried.set(row.id, now);
+    // More may be waiting: the next look is not a minute away.
+    this.ownChecked = 0;
+    return { id: row.id, tenant: row.tenant, pendingRuns: row.pending_runs, owned: false };
+  }
+
+  /**
    * The next agent for this node, its cursor moved past it under the row's lock so no other node takes it this pass:
    * idle while the mode is off (or a pass finished less than `repassMs` ago), finished when the pass found none left.
    * With the mode on and its pass finished, the large pass's next agent, when `largeReady` and no node holds its lease.
    */
-  private next(largeReady: boolean): Promise<{ state: "idle" } | { state: "finished"; mode: PiSweepMode; pass: "main" | "large" } | { state: "agent"; mode: PiSweepMode; pass: "main" | "large"; candidate: PiSweepCandidate }> {
+  private next(largeReady: boolean): Promise<{ state: "idle" } | { state: "finished"; mode: PiSweepMode; pass: "main" | "large" } | { state: "agent"; mode: PiSweepMode; pass: "main" | "large" | "own"; candidate: PiSweepCandidate }> {
     return transaction(this.options.db, async sql => {
       const control = (await sql.query<{ mode: PiSweepMode; dry_run_cursor: string; on_cursor: string; dry_run_finished_at: string | null; on_finished_at: string | null;
         large: "off" | "on"; large_cursor: string; large_finished_at: string | null; large_until: string | null }>(
@@ -175,6 +202,10 @@ export class PiSweep {
       const mode = effectiveMode(this.options.setting, control?.mode ?? "off");
       if (mode === "off") return { state: "idle" as const };
       const now = clock().now();
+      // Agents this node holds: the shared cursor gives each agent to whichever node asks next, which skips one held
+      // elsewhere, so only the node holding it takes it, from here (at most once a minute, each at most every `ownRetryMs`).
+      const own = await this.ownHeld(sql, now);
+      if (own) return { state: "agent" as const, mode, pass: "own" as const, candidate: own };
       const recent = (finished: string | null) => finished !== null && now - Number(finished) < this.options.repassMs;
       let pass: "main" | "large" = "main";
       let column: "on" | "dry_run" | "large" = mode === "on" ? "on" : "dry_run";
