@@ -110,6 +110,8 @@ interface SessionHeader {
   run?: RunSettings;
 }
 export type RunSettings = { retentionMs: number; fingerprint: string };
+/** One `piSweep` pass: agents looked at, how many ended each way, the last id (the next pass's `after`), and why it stopped early. */
+export type PiSweepSummary = { dryRun: boolean; seen: number; outcomes: Record<string, number>; last?: string; stopped?: string; skipped?: string };
 /** A stateless run's id (`run_<hex>`) for its session's (`client_<hex>`), and back: one hex, so routing finds its owner. */
 export const runIdOf = (sessionId: string) => `run_${sessionId.slice("client_".length)}`;
 export const runSessionOf = (runId: string) => /^run_[a-f0-9]{40}$/.test(runId) ? `client_${runId.slice("run_".length)}` : undefined;
@@ -5482,6 +5484,78 @@ export class ClientSessions {
     } finally {
       if (claim) await ownership!.release(claim).catch(() => {});
     }
+  }
+
+  /**
+   * Open retained agents still on the legacy engine, so each migrates to Pi as its next open would (`AGENT_PI_SWEEP`):
+   * up to `limit` agents, one at a time, `paceMs` apart, in id order after `after`. Only an idle agent that no node holds
+   * is opened, then unloaded again; one with runs open, waiting on human input, or served anywhere is left for its own
+   * next open. A dry run opens and writes nothing: it reads each candidate's legacy transcript (`migrationPlan`) and says
+   * what its open would do. Every agent gets a `pi_sweep_agent` line and the pass a `pi_sweep_done` summary. One node
+   * sweeps at a time (an advisory lock); a pass stops when this node drains, fills up, or after repeated failures.
+   */
+  async piSweep(options: { dryRun: boolean; limit?: number; paceMs?: number; after?: string }): Promise<PiSweepSummary> {
+    const { dryRun, limit = 1000, paceMs = 2000 } = options;
+    const summary: PiSweepSummary = { dryRun, seen: 0, outcomes: {}, last: options.after };
+    const count = (outcome: string) => { summary.outcomes[outcome] = (summary.outcomes[outcome] ?? 0) + 1; };
+    const lock = await this.db.connect();
+    let failure: Error | undefined;
+    try {
+      if (!(await lock.query("select pg_try_advisory_lock(hashtext('pi_sweep')) as locked")).rows[0]?.locked) return { ...summary, skipped: "another node is sweeping" };
+      let failures = 0;
+      try {
+        const { rows } = await this.db.query<{ id: string; tenant: string; pending_runs: boolean; awaiting: boolean; owned: boolean }>(`
+          select a.id, a.tenant, a.pending_runs,
+            exists (select 1 from agent_inputs i where i.agent = a.id and i.state = 'pending') as awaiting,
+            exists (select 1 from actor_owners o join runtime_nodes n on n.node = o.node and n.session = o.session and n.expires_at > now() where o.actor = a.id) as owned
+          from agents a
+          where not a.revoked and a.purged_at is null and (a.expires_at is null or a.expires_at > $1) and a.id > $2
+            -- Pi stores document kinds as JSON text.
+            and not exists (select 1 from pi_durable_documents d where d.session_id = a.id and d.kind = '"camel.host.snapshot"')
+          order by a.id limit $3`, [Date.now(), options.after ?? "", limit]);
+        for (const row of rows) {
+          if (this.closed || this.draining) { summary.stopped = "node leaving"; break; }
+          if (!dryRun && this.supervisor.full) { summary.stopped = "node full"; break; }
+          summary.seen++;
+          summary.last = row.id;
+          let outcome: string;
+          let detail: Record<string, unknown> = {};
+          try {
+            const held = row.owned || this.sessions.has(row.id) || this.loading.has(row.id);
+            if (held || row.pending_runs || row.awaiting) outcome = held ? "skipped_loaded" : row.pending_runs ? "deferred_active" : "deferred_awaiting";
+            else if (dryRun) {
+              const plan = await this.supervisor.migrationPlan(row.id);
+              outcome = plan.ready ? "would_migrate" : `deferred_${plan.reason}`;
+              if (plan.ready) detail = { records: plan.records };
+            } else {
+              const session = await this.load(row.id);
+              if (!session) outcome = "gone";
+              else {
+                await this.ensureStarted(session);
+                const status = await this.supervisor.request(row.id, "status", {}) as { engine?: string; migration?: { state: string; reason?: string } };
+                outcome = status.engine === "pi-durable" ? "migrated" : `deferred_${status.migration?.reason ?? "unknown"}`;
+                // A request that arrived meanwhile keeps it; the idle tick unloads it after.
+                if (!this.busy(session) && !session.running.size) {
+                  await this.supervisor.stop(row.id);
+                  if (!this.busy(session) && !session.running.size) await this.unload(session);
+                }
+              }
+            }
+            failures = 0;
+          } catch (error) {
+            outcome = error instanceof NotOwner ? "skipped_loaded" : "error";
+            if (outcome === "error") { failures++; detail = { error: errorText(error) }; }
+          }
+          count(outcome);
+          console.log(JSON.stringify({ type: "pi_sweep_agent", dryRun, agent: row.id, tenant: row.tenant, outcome, ...detail }));
+          if (failures >= 5) { summary.stopped = "repeated failures"; break; }
+          await clock().sleep(paceMs);
+        }
+      } finally { await lock.query("select pg_advisory_unlock(hashtext('pi_sweep'))"); }
+      console.log(JSON.stringify({ type: "pi_sweep_done", ...summary }));
+      return summary;
+    } catch (error) { failure = error as Error; throw error; }
+    finally { lock.release(failure); }
   }
 
   /** Requests being worked on: runs that began, until their outcome is published, and other open requests; not queued runs or resumes. */

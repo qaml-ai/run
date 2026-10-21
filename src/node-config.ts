@@ -175,10 +175,25 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     verifyKeys: env.AGENT_VERIFY_KEYS !== "false",
     billingAdmins: (env.AGENT_BILLING_ADMINS ?? "").split(",").map(value => value.trim()).filter(Boolean),
     purgeMs, billingMs, reconcileDays,
+    piSweep: piSweepSettings(env),
     gc: {
       enabled: env.AGENT_GC_ENABLED === "true", dryRun: env.AGENT_GC_DRY_RUN === "true", pollMs: Number(env.AGENT_GC_POLL_MS ?? 60_000),
       graceMs: Number(env.AGENT_GC_GRACE_MS ?? 24 * 60 * 60_000), intervalMs: Number(env.AGENT_GC_INTERVAL_MS ?? 6 * 60 * 60_000),
     },
     ecs: { agentUri: env.ECS_AGENT_URI, protectionIdleMs: Number(env.AGENT_PROTECTION_IDLE_MS ?? 30_000), pollMs: Number(env.AGENT_ECS_POLL_MS ?? 30_000) },
   };
+}
+
+/**
+ * The Pi migration sweep (`ClientSessions.piSweep`): off by default; `dry-run` reports what opening each legacy agent
+ * would do, `on` opens them. Paced (AGENT_PI_SWEEP_PACE_MS between agents) and AGENT_PI_SWEEP_LIMIT agents a pass.
+ */
+function piSweepSettings(env: Record<string, string | undefined>) {
+  const mode = env.AGENT_PI_SWEEP ?? "off";
+  if (!["off", "dry-run", "on"].includes(mode)) throw new Error("AGENT_PI_SWEEP must be off, dry-run or on");
+  const paceMs = Number(env.AGENT_PI_SWEEP_PACE_MS ?? 2_000);
+  const limit = Number(env.AGENT_PI_SWEEP_LIMIT ?? 500);
+  if (!Number.isInteger(paceMs) || paceMs < 0) throw new Error("AGENT_PI_SWEEP_PACE_MS must be a non-negative integer");
+  if (!Number.isInteger(limit) || limit < 1) throw new Error("AGENT_PI_SWEEP_LIMIT must be a positive integer");
+  return { mode: mode as "off" | "dry-run" | "on", paceMs, limit, delayMs: Number(env.AGENT_PI_SWEEP_DELAY_MS ?? 120_000) };
 }

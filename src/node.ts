@@ -1428,6 +1428,18 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   // writes created) is recorded either way, so turning it on later loses nothing.
   const storageGc = new StorageGc({ db, storage, volumes, graceMs: config.gc.graceMs, intervalMs: config.gc.intervalMs, dryRun: config.gc.dryRun });
   if (config.gc.enabled) storageGc.start(config.gc.pollMs);
+  // Retained agents still on the legacy engine, opened one at a time so they migrate to Pi (AGENT_PI_SWEEP; off by default).
+  // Once per node start, after it settles: a pass walks every candidate, `limit` at a time, and ends when none is left.
+  let piSweeping = true;
+  const piSweepTimer = config.piSweep.mode === "off" ? undefined : setTimeout(() => void (async () => {
+    let after: string | undefined;
+    while (piSweeping) {
+      const pass = await clients.piSweep({ dryRun: config.piSweep.mode === "dry-run", limit: config.piSweep.limit, paceMs: config.piSweep.paceMs, after });
+      if (pass.skipped || pass.stopped || pass.seen < config.piSweep.limit) break;
+      after = pass.last;
+    }
+  })().catch(error => console.error(JSON.stringify({ type: "pi_sweep_failed", error: errorText(error) }))), config.piSweep.delayMs);
+  piSweepTimer?.unref();
   // Agents no node holds with work left (a dead owner's turn, runs a drain queued) are loaded by whichever node gets to them first,
   // so their runs resume even when no one reads them. A node sweeps as it starts too: in a deploy, its peers are retiring and do not.
   const orphanTimer = orphanMs ? setInterval(() => void clients.resumeSoon(), orphanMs) : undefined;
@@ -1545,6 +1557,8 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     clearInterval(loadTimer);
     clearInterval(sweepTimer);
     clearInterval(purgeTimer);
+    piSweeping = false;
+    clearTimeout(piSweepTimer);
     clearInterval(orphanTimer);
     clearInterval(childTimer);
     clearInterval(billingTimer);

@@ -26,7 +26,7 @@ import { agentEngine, type AgentEngine } from "./pi-durable/config.ts";
 import { deletePiStorage, hasPiStorage, openPiJournalReader, openPiStorage, purgePiStorage, storageRequest } from "./pi-durable/storage.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { projectPiRecords, projectPiTranscript, reconcilePiTranscript } from "./pi-durable/projection.ts";
-import { LEGACY_CONVERSATION_ID, loadLegacyMigration } from "./pi-durable/migration.ts";
+import { LEGACY_CONVERSATION_ID, LegacyMigrationDeferred, loadLegacyMigration, planLegacyMigration, readMigrationRecords } from "./pi-durable/migration.ts";
 
 /**
  * How agents run. "process": each agent is its own Node process (strong memory
@@ -124,6 +124,24 @@ export class AgentSupervisor {
       const records = await log.read();
       return journal ? await projectPiRecords(records, journal, LEGACY_CONVERSATION_ID) : records;
     } finally { await journal?.close(BACKGROUND_CONTEXT); await log.close(); }
+  }
+
+  /**
+   * Whether a stopped agent's next open would migrate it to Pi, and if not why, from its legacy transcript alone: read
+   * beside a live owner, without writing or taking a claim (`piSweep`'s dry run). Refuses an oversized transcript
+   * before reading its bodies, as the import does.
+   */
+  async migrationPlan(id: string): Promise<{ ready: true; records: number } | { ready: false; reason: LegacyMigrationDeferred["reason"] }> {
+    if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id)) throw new Error("Invalid agent id");
+    const log = this.options.storage ? this.options.storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id)) : fileAppendLog<TranscriptRecord>(transcriptPath(resolve(join(this.root, id))));
+    try {
+      const records = await readMigrationRecords(log);
+      planLegacyMigration(records);
+      return { ready: true, records: records.length };
+    } catch (error) {
+      if (error instanceof LegacyMigrationDeferred) return { ready: false, reason: error.reason };
+      throw error;
+    } finally { await log.close(); }
   }
 
   /** Start a new agent's transcript as `records` (a fork's), under its owner's `claim`, before it is started. */

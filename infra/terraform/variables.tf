@@ -114,6 +114,16 @@ variable "task_memory" {
   default = 4096
 }
 
+variable "agent_pi_sweep" {
+  description = "AGENT_PI_SWEEP: off, dry-run (log what migrating each legacy agent would do) or on (open idle legacy agents so they migrate to Pi)"
+  type        = string
+  default     = "off"
+  validation {
+    condition     = contains(["off", "dry-run", "on"], var.agent_pi_sweep)
+    error_message = "agent_pi_sweep is off, dry-run or on."
+  }
+}
+
 variable "agent_engine" {
   description = "AGENT_ENGINE: pi-durable, or legacy to roll every agent back to the old engine"
   type        = string

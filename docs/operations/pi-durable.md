@@ -49,7 +49,11 @@ transcript is not appended during normal native operation.
 
 ## Migration and rollback
 
-Eligible sessions migrate when next opened. There is no fleet-wide eager command.
+Eligible sessions migrate when next opened. `AGENT_PI_SWEEP` (off by default) opens the
+remaining idle legacy sessions one at a time so they migrate without waiting for traffic: run it
+with `dry-run` first, which logs each candidate's predicted outcome (`would_migrate` or
+`deferred_<reason>`) and writes nothing, then with `on`. The admin health page counts agents still
+on the legacy engine.
 An active legacy turn or a human wait continues on its original engine, and can
 migrate on a later idle open. Contexts that Pi would normalize differently defer
 migration rather than silently changing provider history.
