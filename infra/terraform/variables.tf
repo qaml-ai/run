@@ -304,3 +304,25 @@ variable "admin_access_aud" {
   type        = string
   default     = "041fd04d6d1fb5bc79df2e24d35bde86085109e322819cdc0964501ba5bd3478"
 }
+
+variable "agent_pi_dual_write" {
+  description = "AGENT_PI_DUAL_WRITE: write what the host writes itself (messages, markers) into each agent's Pi journal too, in the same commit (phase 1 of removing the host transcript)"
+  type        = bool
+  default     = false
+}
+
+variable "agent_pi_dual_read" {
+  description = "AGENT_PI_DUAL_READ: off, or log (compare each agent's host transcript with its Pi journal at load and at most every ten minutes, and log host_transcript_dual_read_mismatch on a difference)"
+  type        = string
+  default     = "off"
+  validation {
+    condition     = contains(["off", "log"], var.agent_pi_dual_read)
+    error_message = "agent_pi_dual_read is off or log."
+  }
+}
+
+variable "agent_native_sections_tenants" {
+  description = "AGENT_NATIVE_SECTIONS_TENANTS: tenants whose agents' system sections are native Pi sections, comma-separated, or * for every tenant; empty for none"
+  type        = string
+  default     = ""
+}
