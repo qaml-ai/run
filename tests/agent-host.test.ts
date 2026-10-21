@@ -297,3 +297,21 @@ test("a conversation a later release re-keyed to the application section keeps t
   assert.equal(sections[APPLICATION], instructions);
   assert.equal(getSystemMessageText(getCurrentSystemMessage(seen as never)!).split(instructions).length - 1, 1, "the instructions appear once");
 });
+
+test("the system prompt's hash is logged when it changes, never its text", async t => {
+  const fake = await setup(t);
+  const { host } = await fake.start();
+  const logged = t.mock.method(console, "log", () => {});
+  const hashes = () => logged.mock.calls.map(call => String(call.arguments[0])).filter(line => line.includes('"system_prompt_hash"')).map(line => JSON.parse(line));
+  fake.respond(answer("One."), answer("Two."));
+  await host.handle("prompt", { text: "one" });
+  await host.handle("prompt", { text: "two" });
+  assert.equal(hashes().length, 1, "logged once while the prompt stays the same");
+  assert.match(hashes()[0].hash, /^[0-9a-f]{16}$/);
+  assert.ok(!JSON.stringify(hashes()).includes(applicationInstructions()), "never the prompt's text");
+  await host.handle("configure", { systemPromptAppend: "Answer in French." });
+  fake.respond(answer("Trois."));
+  await host.handle("prompt", { text: "three" });
+  assert.equal(hashes().length, 2);
+  assert.equal(hashes()[1].previous, hashes()[0].hash);
+});
