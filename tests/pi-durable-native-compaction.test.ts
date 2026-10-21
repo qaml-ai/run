@@ -60,7 +60,7 @@ test("failed native summary stops the run with an error and retains completed to
     initialState: { model, messages: [], tools: [{ name: "read", label: "read", description: "read", parameters: { type: "object" },
       execute: async () => ({ content: [{ type: "text", text: "x".repeat(10000) }], details: null }) }] },
     streamFn: () => stream({ ...fauxAssistantMessage([fauxToolCall("read", {}, { id: `read-${++calls}` })], { stopReason: "toolUse" }), provider: model.provider, model: model.id }),
-    durable: { storage, summaryStream: () => {
+    durable: { storage, beforeCompaction: ({ background }) => !background, summaryStream: () => {
       summaries++;
       return stream({ ...fauxAssistantMessage("", { stopReason: "error" }), errorMessage: "summary unavailable", provider: model.provider, model: model.id });
     } },

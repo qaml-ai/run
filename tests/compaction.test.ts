@@ -7,6 +7,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { normalizeContext, type Api, type Model } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
+import { MemoryStorage } from "@earendil-works/pi-durable";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { createAgentHost, type HostIO } from "../src/agent-host.ts";
+import { fileAppendLog } from "../shared/append-log.ts";
+import { nativeTranscriptRecords } from "../src/pi-durable/transcript.ts";
+import { Transcript, type TranscriptRecord } from "../src/transcript.ts";
 import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
 import { compactionNeed, contextTokens, explicitKeyStream, runCompaction } from "../src/compaction.ts";
 import { readTranscript } from "../src/transcript.ts";
@@ -29,6 +35,7 @@ const isSummarization = (body: Body) => text(body).includes("context summarizati
 async function provider(t: { after(fn: () => Promise<void>): void }, options: { overflowAboveChars?: number; usage?: boolean; gated?: boolean; turnInput?: (body: Body) => number } = {}) {
   const requests: Body[] = [];
   let summaries = 0;
+  let toolNext = false;
   let gate = Promise.withResolvers<void>();
   const state = { inflight: 0, maxInflight: 0 };
   const server = createServer(async (req, res) => {
@@ -45,11 +52,13 @@ async function provider(t: { after(fn: () => Promise<void>): void }, options: { 
       res.writeHead(400, { "Content-Type": "application/json" }).end(JSON.stringify({ error: { message: `This endpoint's maximum context length is 8000 tokens. However, you requested about ${Math.round(text(body).length / 4)} tokens`, type: "invalid_request_error" } }));
       return;
     }
+    const tool = !isSummarization(body) && toolNext;
+    if (tool) toolNext = false;
     const reply = isSummarization(body) ? `## Goal\nSUMMARY-MARKER-${++summaries}` : "ack";
     res.writeHead(200, { "Content-Type": "text/event-stream" });
-    res.write(`data: ${JSON.stringify({ id: "x", object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: reply }, finish_reason: null }] })}\n\n`);
+    res.write(`data: ${JSON.stringify({ id: "x", object: "chat.completion.chunk", choices: [{ index: 0, delta: tool ? { role: "assistant", tool_calls: [{ index: 0, id: "lookup-1", type: "function", function: { name: "lookup", arguments: "{}" } }] } : { role: "assistant", content: reply }, finish_reason: null }] })}\n\n`);
     const usage = options.usage ? { usage: isSummarization(body) ? { prompt_tokens: 3000, completion_tokens: 200 } : { prompt_tokens: options.turnInput?.(body) ?? 10, completion_tokens: 1 } } : {};
-    res.write(`data: ${JSON.stringify({ id: "x", object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "stop" }], ...usage })}\n\n`);
+    res.write(`data: ${JSON.stringify({ id: "x", object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: tool ? "tool_calls" : "stop" }], ...usage })}\n\n`);
     res.end("data: [DONE]\n\n");
   });
   server.listen(0, "127.0.0.1");
@@ -61,7 +70,7 @@ async function provider(t: { after(fn: () => Promise<void>): void }, options: { 
     id, name: "Fixture", api: "openai-completions", provider: "openai", baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
     reasoning: false, input: ["text"], cost: { input: 1, output: 10, cacheRead: 0, cacheWrite: 0 }, contextWindow, maxTokens: 1000,
   }) as Model<Api>;
-  return { requests, model, release, state, chat: () => requests.filter(body => !isSummarization(body)), summarizations: () => requests.filter(isSummarization) };
+  return { requests, model, release, state, toolNext: () => { toolNext = true; }, chat: () => requests.filter(body => !isSummarization(body)), summarizations: () => requests.filter(isSummarization) };
 }
 
 async function fixture(t: { after(fn: () => Promise<void>): void }) {
@@ -77,8 +86,8 @@ test("long conversations compact into a summary; history stays complete and the 
   const fake = await provider(t);
   const supervisor = await fixture(t);
   const model = fake.model(8000);
-  await supervisor.start("long", { model, apiKey: "fixture" }, bridge);
   const events: any[] = [];
+  await supervisor.start("long", { model, apiKey: "fixture" }, { ...bridge, background: event => events.push(event) });
   for (let index = 0; index < 5; index++) {
     const result = await supervisor.request("long", "prompt", { text: turn(index) }, event => events.push(event));
     assert.equal(result.error, null);
@@ -104,9 +113,12 @@ test("long conversations compact into a summary; history stays complete and the 
   const restarted = await supervisor.start("long", { model, apiKey: "fixture" }, bridge);
   assert.equal(restarted.messages, 10);
   const after = await supervisor.request("long", "status");
-  assert.equal(after.contextMessages, status.contextMessages, "only the working set is loaded");
+  // A background summary can land after the status snapshot or resume when reopened. The
+  // working set may shrink; it must stay bounded while all ten original messages survive.
+  assert.ok(after.contextMessages > 0 && after.contextMessages <= status.contextMessages, "reload keeps the compacted working set");
   await supervisor.request("long", "prompt", { text: "After restart" });
   assert.match(text(fake.chat().at(-1)!), /SUMMARY-MARKER/);
+  assert.match(text(fake.chat().at(-1)!), /TURN-4 /, "the last pre-restart input survives");
 });
 
 test("a message whose request the history already holds is not taken again, even once compaction folded it away and the agent restarted", async t => {
@@ -312,6 +324,8 @@ test("a prompt or tool change on an agent with history is appended after the cac
     assert.ok(index < 6, "compaction ran");
     assert.equal((await b.request("agent", "prompt", { text: turn(index) }, event => events.push(event))).error, null);
   }
+  // Background summaries can land after the request that triggered them; inspect the next request.
+  await b.request("agent", "prompt", { text: "after compaction" });
   const compacted = last();
   assert.equal(updates(compacted).length, 0);
   assert.match(JSON.stringify(compacted.messages[0]), /New rules/);
@@ -547,4 +561,99 @@ test("Pi applies a lowered context limit to an already loaded host", async t => 
   assert.ok(fake.summarizations().length > 0, "the new limit compacts without restarting the host");
   assert.equal((await supervisor.request("live-pi-context", "status")).compacted, true);
   assert.equal((await supervisor.request("live-pi-context", "history")).messages.length, 10);
+});
+
+
+/** Direct host with deterministic provider gates: assert the actual host projection as well as Pi's journal. */
+async function backgroundHost(t: { after(fn: () => Promise<void>): void }, fake: Awaited<ReturnType<typeof provider>>, options: {
+  runLimit?: HostIO["runLimit"]; tool?: HostIO["tool"];
+} = {}) {
+  const directory = await mkdtemp(join(tmpdir(), "pi-background-"));
+  const storage = new MemoryStorage();
+  const log = fileAppendLog<TranscriptRecord>(join(directory, "transcript.jsonl"));
+  const events: any[] = [], attempts: any[] = [];
+  const host = createAgentHost({
+    emit: event => events.push(event), transcript: log, piStorage: async () => storage,
+    tool: options.tool ?? (async () => "found"), cancelTools: async () => {},
+    runLimit: options.runLimit ?? (async () => undefined),
+    modelAttempt: async event => { attempts.push(event); return true; },
+    file: async () => { throw new Error("no files"); }, fs: async () => { throw new Error("no files"); },
+    modelAuth: async () => ({ apiKey: "fixture" }),
+  });
+  t.after(async () => { fake.release(); await host.dispose(0); await rm(directory, { recursive: true, force: true }); });
+  // Together with the host prompt, inside the 8,192-window background band and below its blocking threshold.
+  const initialMessages = Array.from({ length: 16 }, (_, index) => index % 2 === 0
+    ? { role: "user", content: `OLD-${index} ${"x".repeat(1980)}`, timestamp: index + 1 }
+    : { role: "assistant", content: [{ type: "text", text: `ACK-${index}` }], api: "openai-completions", provider: "openai", model: "fixture", stopReason: "stop",
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, timestamp: index + 1 });
+  await host.handle("init", { id: "background", directory, model: fake.model(100_000), runLimits: { contextTokens: 8192 }, apiKey: "fixture",
+    dataCollection: "deny", initialMessages, tools: [{ name: "lookup", description: "Lookup", parameters: { type: "object", properties: {} }, exposure: "direct" }] });
+  const history = async () => { const transcript = new Transcript(undefined as never); for (const record of (await nativeTranscriptRecords(storage))!) transcript.apply(record); return transcript; };
+  return { host, storage, events, attempts, history, initialMessages };
+}
+
+for (const duringTool of [false, true]) test(`native background summary lands ${duringTool ? "during a tool round" : "between turns"} without losing host messages`, async t => {
+  const fake = await provider(t, { gated: true });
+  const toolStarted = Promise.withResolvers<void>(), finishTool = Promise.withResolvers<void>();
+  t.after(async () => { finishTool.resolve(); fake.release(); });
+  const f = await backgroundHost(t, fake, { tool: async () => { toolStarted.resolve(); await finishTool.promise; return "TOOL-RESULT"; } });
+  const first = f.host.handle("prompt", { text: "FIRST" });
+  await until(() => fake.state.inflight === 1 && fake.chat().length === 1, "summary and turn requests run concurrently");
+  assert.equal((await first).error, null, "the turn ends before the summary is released");
+  assert.equal(f.events.filter(event => event.type === "compaction_end").length, 0);
+  assert.ok(f.events.some(event => event.type === "compaction_start" && event.background === true));
+  let second: Promise<any> | undefined;
+  if (duringTool) {
+    fake.toolNext();
+    second = f.host.handle("prompt", { text: "SECOND" });
+    await toolStarted.promise;
+  }
+  fake.release();
+  await until(() => f.events.some(event => event.type === "compaction_usage"), "summary completed and was accounted");
+  if (duringTool) finishTool.resolve();
+  if (second) assert.equal((await second).error, null);
+  await until(() => f.events.some(event => event.type === "compaction_end"), "summary adopted by host");
+  const end = f.events.find(event => event.type === "compaction_end");
+  assert.equal(end.background, true);
+  assert.ok(end.keptMessages > 0 && end.summarizedMessages > 0);
+  const projected = await f.history();
+  const all = await f.host.handle("history", {});
+  const history = all.messages;
+  assert.equal(history.length, f.initialMessages.length + (duringTool ? 6 : 2));
+  assert.equal(history.filter((item: any) => JSON.stringify(item).includes('"FIRST"')).length, 1);
+  if (duringTool) {
+    assert.equal(history.filter((item: any) => JSON.stringify(item).includes('"SECOND"')).length, 1);
+    assert.equal(history.filter((item: any) => item.role === "toolResult").length, 1);
+  }
+  assert.deepEqual(projected.context, history.slice(projected.offset), "the host keeps exactly the unsummarized tail");
+  assert.equal(projected.compaction?.cut, end.summarizedMessages);
+  const entries = await f.storage.scanEntries({ conversationId: 1 as never }, 1000, undefined, BACKGROUND_CONTEXT);
+  assert.equal(entries.items.filter(entry => entry.kind === "camel.compaction.usage").length, 1);
+  const compactionAttempts = f.attempts.filter(event => event.type === "begin" && event.kind === "compaction");
+  assert.equal(compactionAttempts.length, 1, "background requests use compaction billing attempts");
+  // Usage goes where something carries it: the open run's stream, or the supervisor's background billing between runs.
+  const usage = f.events.filter(event => event.type === "compaction_usage");
+  assert.equal(usage.length, 1);
+  assert.equal(usage[0].background, duringTool ? undefined : true);
+  assert.ok(f.attempts.some(event => event.type === "finish" && event.id === compactionAttempts[0].id && event.completed), "the background billing attempt settles");
+  await f.host.handle("prompt", { text: "AFTER" });
+  const sent = text(fake.chat().at(-1)!);
+  assert.match(sent, /SUMMARY-MARKER/);
+  assert.match(sent, /FIRST/);
+  assert.doesNotMatch(sent, /OLD-0 /);
+  if (duringTool) assert.match(sent, /TOOL-RESULT/);
+});
+
+test("native background compaction declines before any summary request when the host spend limit is reached", async t => {
+  const fake = await provider(t);
+  let checks = 0;
+  const f = await backgroundHost(t, fake, { runLimit: async () => { checks++; return { stopped: "spend_limit", message: "Cap reached", limit: "agent" }; } });
+  assert.equal((await f.host.handle("prompt", { text: "FIRST" })).error, null);
+  await until(() => checks > 0, "background compactor checks spend");
+  const tasks = await f.storage.scanTasks({ kind: "pi.compaction" }, 100, undefined, BACKGROUND_CONTEXT);
+  assert.ok(tasks.items.some(task => task.background && task.state.status === "terminal" && task.state.outcome.status === "completed"));
+  assert.equal(fake.summarizations().length, 0);
+  assert.equal(f.attempts.filter(event => event.type === "begin" && event.kind === "compaction").length, 0);
+  assert.equal(f.events.filter(event => event.type.startsWith("compaction_")).length, 0);
+  assert.equal((await f.host.handle("history", {})).messages.length, f.initialMessages.length + 2);
 });
