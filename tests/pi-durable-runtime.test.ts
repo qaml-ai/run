@@ -12,8 +12,8 @@ import { MIGRATION_MAX_BYTES } from "../src/pi-durable/migration.ts";
 import { transcriptPath, type TranscriptRecord } from "../src/transcript.ts";
 import { agentEngine } from "../src/pi-durable/config.ts";
 
-test("Pi is an explicit operator switch with a legacy default", () => {
-  assert.equal(agentEngine(undefined), "legacy");
+test("Pi is the default engine; legacy stays an explicit operator rollback", () => {
+  assert.equal(agentEngine(undefined), "pi-durable");
   assert.equal(agentEngine("legacy"), "legacy");
   assert.equal(agentEngine("pi-durable"), "pi-durable");
   assert.throws(() => agentEngine("pi"), /AGENT_ENGINE/);
