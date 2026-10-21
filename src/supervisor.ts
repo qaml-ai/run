@@ -64,6 +64,8 @@ export type SupervisorOptions = {
   piDualRead?: "log" | "throw";
   /** Tenants whose inline agents' system sections are native Pi sections (agent processes get it in `agentEnv`). */
   nativeSectionsTenants?: string[];
+  /** Tenants whose inline agents read their history from Pi's journal (agent processes get it in `agentEnv`). */
+  historySourceTenants?: string[];
   /** Shared Pi records use the same database and ownership claim as the session. */
   db?: Db;
 };
@@ -302,8 +304,13 @@ export class AgentSupervisor {
   }
 
   private async startProcess(id: string, directory: string, init: AgentConfig, bridge: ToolBridge, transcript: AppendLog<TranscriptRecord>, durable?: PiStorage) {
-    const { child, rpc } = childProcess("./agent-child.ts", directory, this.options.runtime, true, id, this.options.nativeSectionsTenants?.length && !this.options.agentEnv?.AGENT_NATIVE_SECTIONS_TENANTS
-      ? { ...this.options.agentEnv ?? agentProcessEnv(process.env), AGENT_NATIVE_SECTIONS_TENANTS: this.options.nativeSectionsTenants.join(",") } : this.options.agentEnv);
+    // A supervisor given its tenant lists directly (tests) tells its agent processes, as a node's agentEnv does.
+    const lists = {
+      ...(this.options.nativeSectionsTenants?.length && !this.options.agentEnv?.AGENT_NATIVE_SECTIONS_TENANTS ? { AGENT_NATIVE_SECTIONS_TENANTS: this.options.nativeSectionsTenants.join(",") } : {}),
+      ...(this.options.historySourceTenants?.length && !this.options.agentEnv?.AGENT_PI_HISTORY_SOURCE_TENANTS ? { AGENT_PI_HISTORY_SOURCE_TENANTS: this.options.historySourceTenants.join(",") } : {}),
+    };
+    const { child, rpc } = childProcess("./agent-child.ts", directory, this.options.runtime, true, id, Object.keys(lists).length
+      ? { ...this.options.agentEnv ?? agentProcessEnv(process.env), ...lists } : this.options.agentEnv);
     const handle: ProcessHandle = { kind: "process", bridge, child, rpc, calls: new Set(), listeners: new Set(), transcript, durable, slots: new Map() };
     this.agents.set(id, handle);
     this.starting.delete(id);
@@ -483,6 +490,7 @@ export class AgentSupervisor {
       ...(this.options.historyBacklogBytes ? { historyBacklogBytes: this.options.historyBacklogBytes } : {}),
       ...(this.options.piDualRead ? { piDualRead: this.options.piDualRead } : {}),
       ...(this.options.nativeSectionsTenants?.length ? { nativeSectionsTenants: this.options.nativeSectionsTenants } : {}),
+      ...(this.options.historySourceTenants?.length ? { historySourceTenants: this.options.historySourceTenants } : {}),
       ...(this.options.modelOutbound ? { modelOutbound: this.options.modelOutbound } : {}),
       lease: async () => { await handle.bridge.lease?.(); },
       history: {

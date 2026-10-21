@@ -302,7 +302,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     db,
     // Pi's journal rides out a failover as the log tail does: for as long as the node's lease lasts.
     piRetryMs: leaseTtlMs,
-    agentEnv: config.agentEnv, historyBacklogBytes: config.historyBacklogBytes, ...(config.piDualRead ? { piDualRead: config.piDualRead } : {}), ...(config.nativeSectionsTenants.length ? { nativeSectionsTenants: config.nativeSectionsTenants } : {}), modelOutbound: outbound,
+    agentEnv: config.agentEnv, historyBacklogBytes: config.historyBacklogBytes, ...(config.piDualRead ? { piDualRead: config.piDualRead } : {}), ...(config.nativeSectionsTenants.length ? { nativeSectionsTenants: config.nativeSectionsTenants } : {}), ...(config.historySourceTenants.length ? { historySourceTenants: config.historySourceTenants } : {}), modelOutbound: outbound,
   });
   const model = configuredModel(env);
   // Where people are sent (the public URL), other names served in full (an earlier domain), and the issuer tokens name.
