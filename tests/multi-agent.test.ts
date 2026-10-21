@@ -176,3 +176,53 @@ test("aborting a parent aborts the children it waits on; the stream shows them t
   assert.ok(nested.frames.some(frame => frame.data.event?.type === "subagent_end" && frame.data.event.agentId === child));
   assert.ok(!plain.frames.some(frame => String(frame.data.event?.type).startsWith("subagent_")), "a subscriber that did not ask gets none");
 });
+
+test("aborting a parent answers once its delegate child has ended, charges what the child spent, and deleting the parent deletes the child", async t => {
+  // Each response costs $0.15 (5000 input tokens of openai/gpt-5.5-pro). The WORKER makes one call, then answers slowly.
+  const r = await runtime(t, body => {
+    const usage = { prompt_tokens: 5000, completion_tokens: 0 };
+    if (systemText(body).includes("WORKER")) return body.messages.at(-1).role === "tool" ? { role: "assistant", content: "too late", delayMs: 30_000 } : { ...toolCall("missing_tool", {}, "call_w"), usage };
+    return toolResults(body).length ? { role: "assistant", content: "after" } : { ...toolCall("delegate", { instructions: "You are a WORKER.", task: "work" }, "call_d"), usage };
+  }, { AGENT_MODEL: "openai/gpt-5.5-pro" });
+  const parent = (await r.call("/v1/agents", { body: { builtins: ["delegate"], delegate: { instructions: true }, spendLimit: { usd: 10 } } })).json.id;
+  const accepted = await r.call(`/v1/agents/${parent}/prompt`, { body: { text: "go" } });
+  assert.equal(accepted.status, 202, accepted.text);
+  await until(() => r.model.bodies.some((body: any) => systemText(body).includes("WORKER") && body.messages.at(-1).role === "tool"), "the worker's slow response began");
+  const child = (await r.call("/v1/agents")).json.find((agent: any) => agent.parentAgentId === parent).id;
+
+  assert.equal((await r.call(`/v1/agents/${parent}/abort`, { method: "POST" })).status, 200);
+  // The abort answered only once its child had ended: the child is not left running behind a parent that says it stopped.
+  const childRun = (await r.call(`/v1/agents/${child}`)).json.requests.find((request: any) => request.method === "prompt");
+  assert.equal(childRun.state, "completed", JSON.stringify(childRun));
+  const parentRun = await until(async () => { const record = (await r.call(`/v1/agents/${parent}/requests/${accepted.json.id}`)).json; return record.state === "completed" && record; }, "the parent's run ended");
+  // The child's first response ($0.15) counts in the aborted run's usage and against the parent's spend limit, with the parent's own.
+  assert.equal(parentRun.outcome.result.usage?.subagentCostUsd?.toFixed(2), "0.15", JSON.stringify(parentRun.outcome));
+  await until(async () => (await r.call(`/v1/agents/${parent}`)).json.spendLimit?.spent >= 0.3 - 1e-9, "the parent's spend counts its child's");
+  const { rows } = await r.db.query("select kind, landed_by from agent_children where parent = $1", [parent]);
+  assert.deepEqual(rows, [{ kind: "delegate", landed_by: "stop" }]);
+
+  // The child the runtime made for the call goes with its parent.
+  assert.equal((await r.call(`/v1/agents/${parent}`, { method: "DELETE" })).status, 200);
+  assert.equal((await r.call(`/v1/agents/${child}`)).status, 404);
+});
+
+test("a delegate child whose ending no call took, its parent's run over, is landed by the sweep and charged to the parent", async t => {
+  // Each response costs $0.15 (5000 input tokens of openai/gpt-5.5-pro).
+  const r = await runtime(t, body => {
+    const usage = { prompt_tokens: 5000, completion_tokens: 0 };
+    if (systemText(body).includes("WORKER")) return { role: "assistant", content: "done", usage };
+    return { ...toolResults(body).length ? { role: "assistant", content: "after" } : toolCall("delegate", { instructions: "You are a WORKER.", task: "work" }, "call_d"), usage };
+  }, { AGENT_MODEL: "openai/gpt-5.5-pro", AGENT_CHILD_SWEEP_MS: "300" });
+  const parent = (await r.call("/v1/agents", { body: { builtins: ["delegate"], delegate: { instructions: true }, spendLimit: { usd: 10 } } })).json.id;
+  const record = await r.prompt(parent, "go");
+  assert.equal(record.outcome.result.usage.subagentCostUsd.toFixed(2), "0.15", JSON.stringify(record.outcome));
+  const spent = async () => Number((await r.db.query("select spent from agent_spend_limits where agent = $1", [parent])).rows[0].spent);
+  // The parent's two responses and its child's: the call landed the child's ending, and charged it once.
+  await until(async () => (await spent()) >= 0.45 - 1e-9, "the parent's spend written");
+  assert.deepEqual((await r.db.query("select kind, landed_by from agent_children where parent = $1", [parent])).rows, [{ kind: "delegate", landed_by: "call" }]);
+
+  // As if the node that ran the call was lost before it took the answer, and the run then ended without it.
+  await r.db.query("update agent_children set ended_at = null, landed_at = null, landed_by = null, state = 'running', checked_at = 0 where parent = $1", [parent]);
+  await until(async () => (await r.db.query("select landed_by from agent_children where parent = $1", [parent])).rows[0].landed_by === "late", "the sweep landed it");
+  assert.equal((await spent()).toFixed(2), "0.60", "what the child spent is charged to the parent's spend limit");
+});

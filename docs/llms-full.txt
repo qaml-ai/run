@@ -5304,8 +5304,10 @@ The model calls `delegate` directly, never from `js_exec`.
 ### Cancelling
 
 Aborting the parent's run (`agent.abort()`, `POST /v1/agents/{id}/abort`)
-aborts the sub-agents it is waiting on (and cancels the parent's queued runs). So does deleting the parent. A named
-agent is aborted only while it runs the parent's task, never another.
+aborts the sub-agents it is waiting on (and cancels the parent's queued runs), and answers once they have ended (at
+most 10 seconds): what they spent by then counts in the aborted run's `usage.subagentCostUsd` and against the parent's
+spend limit. So does deleting the parent, which deletes the sub-agents the runtime made for it too. A named agent is
+aborted only while it runs the parent's task, never another.
 
 ### When a node is lost
 
@@ -5313,7 +5315,9 @@ A sub-agent is keyed by the parent's tool call, and its run by the call too. If
 the parent's node is lost while it waits, the parent's run resumes on another
 node and makes the call again. That call finds the same sub-agent and run, and
 waits for its answer; the task never runs twice. The sub-agent, if its own node
-was lost, resumes like any agent.
+was lost, resumes like any agent. Each sub-agent has a row in `agent_children`, written before its prompt is sent, so
+an abort or delete of the parent reaches it from any node, even before the parent's run resumes. Should the parent's
+run end without its answer, the sub-agent is aborted, and what it spent is still charged to the parent's spend limit.
 
 ### Watching sub-agents
 
