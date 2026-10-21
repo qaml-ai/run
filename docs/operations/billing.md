@@ -202,14 +202,19 @@ the account's `sub`, with a neutral id derived from it (`u-<16 hex>`, never any 
 the address, and never an admin tenant's or another account's id), and never merged with a GitHub tenant, even with the same address. Google
 tenants get no starting credit at signup. Instead, any prepaid tenant made by sign-in
 that has no starting credit (Google tenants, email sign-ups, and GitHub accounts that did not qualify)
-can unlock it once by verifying a card: `POST /v1/billing/card-check` returns a Stripe
+can unlock it once by verifying a card, when offered: `POST /v1/billing/card-check` returns a Stripe
 Checkout session in setup mode, which saves the card without charging it, and the
 grant posts when its SetupIntent succeeds (from the `checkout.session.completed`
 webhook, or `POST /v1/billing/card-check/confirm` `{session}` when the console
 returns first). A card, by its Stripe fingerprint, unlocks credit once across all
 tenants; prepaid cards unlock none. Each completed check is recorded in `card_checks`,
 so webhook retries and races settle once. `startingCredit.cardCheck: {amount}` in
-`GET /v1/billing` says when a check is available. Running with an
+`GET /v1/billing` says when a check is available; the console shows the offer only then.
+`AGENT_CARD_CREDIT_USD` sets the card grant independently of the GitHub starting grant.
+Unset, it follows `AGENT_CREDIT_GRANT_USD` (default $5). Set it to `0` to disable the
+card offer and refuse new checks with HTTP 409, code `CARD_CREDIT_UNAVAILABLE`.
+A check started before disabling still settles and is recorded with `granted=false`,
+without adding credit. Previously granted credit is unchanged. Running with an
 own provider key still requires credit for agent time. A prepaid tenant that
 has never bought credit (grants and adjustments do not count; a full refund puts it
 back) is on **free credit**, with tighter limits: the Free usage tier's busy agents

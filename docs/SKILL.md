@@ -224,7 +224,7 @@ transcript and tool calls appear.
 | Error | What to do |
 |---|---|
 | `model_key_missing` (`No ... API key is configured`) | Leave out `model`, or pick one from `npx -y @camelai/camelrun models --available` |
-| `INSUFFICIENT_CREDIT` / 402 | Tell the user: verify a card for starting credit (no charge), or add credit, at https://run.camelai.com/console/billing |
+| `INSUFFICIENT_CREDIT` / 402 | Tell the user: add credit, or verify a card for starting credit (no charge) if offered, at https://run.camelai.com/console/billing |
 | `APPLICATION_NOT_CONNECTED` | No process is serving the agent's tools. Run the script that calls `upsert`. |
 | 401 | The key is wrong or revoked. Go back to step 1. |
 | `RATE_LIMITED` / 429 | Too many runs started this minute (240 on free credit, 600 paid), or agents made (600, against abuse). Wait out `Retry-After`; reuse agents instead of making one per check or request. |
