@@ -194,7 +194,9 @@ test("a transcript written by pi 0.87.1 loads on pi 1.0, replays its summary, to
 
 test("an imported history larger than one summarization request is summarized in chunks", async t => {
   const fake = await provider(t);
-  const supervisor = await fixture(t);
+  // The legacy compactor's. Pi sends the whole prefix in one summarization request, past this model's window: a gap
+  // to close before the legacy engine goes (docs/operations/pi-durable.md).
+  const supervisor = await fixture(t, "legacy");
   const initialMessages = Array.from({ length: 12 }, (_, index) => [
     { role: "user", content: turn(index), timestamp: index * 2 },
     { role: "assistant", content: [{ type: "text", text: `answer ${index}` }], api: "openai-completions", provider: "openai", model: "fixture", stopReason: "stop", timestamp: index * 2 + 1,
@@ -402,7 +404,8 @@ async function nearLimit(t: { after(fn: () => Promise<void>): void }, fake: Awai
 
 test("past the threshold, the next turn starts at once with the whole context while the summary is made in the background", async t => {
   const fake = await provider(t, { gated: true });
-  const supervisor = await fixture(t);
+  // The legacy compactor's background summaries: Pi's native compaction has background speculation off by design.
+  const supervisor = await fixture(t, "legacy");
   const background = await nearLimit(t, fake, supervisor, "eager");
   const before = fake.chat().length;
   const started = Date.now();
@@ -432,7 +435,8 @@ test("messages appended while a background summary is made follow its cut: the s
   const { db } = await testDatabase();
   const root = await mkdtemp(join(tmpdir(), "compaction-concurrent-"));
   const storage = fileStorage(join(root, "state"));
-  const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, storage, db });
+  // The legacy compactor's background summaries (Pi's are off by design), and its transcript log.
+  const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, storage, db, engine: "legacy" });
   t.after(async () => { await supervisor.close(); await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); });
   const background = await nearLimit(t, fake, supervisor, "concurrent");
   const summarizing = (await supervisor.request("concurrent", "status")).messages;
@@ -461,7 +465,8 @@ test("messages appended while a background summary is made follow its cut: the s
 
 test("a turn that would not fit waits for the background summary instead of starting another, and one with none running compacts first", async t => {
   const fake = await provider(t, { gated: true });
-  const supervisor = await fixture(t);
+  // The legacy compactor's background summaries: Pi's native compaction has background speculation off by design.
+  const supervisor = await fixture(t, "legacy");
   const background = await nearLimit(t, fake, supervisor, "waits");
   const before = fake.chat().length;
   const events: any[] = [];
@@ -499,7 +504,8 @@ test("a node lost mid-compaction cannot write its summary: the next owner serves
   const storage = memoryStorage(postgresTail(db));
   const root = await mkdtemp(join(tmpdir(), "compaction-failover-"));
   const owners = [new Ownership(db, { node: "http://a" }), new Ownership(db, { node: "http://b" })];
-  const [a, b] = ["a", "b"].map(name => new AgentSupervisor(join(root, name), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, storage, db }));
+  // The legacy compactor's background summaries: Pi's native compaction has background speculation off by design.
+  const [a, b] = ["a", "b"].map(name => new AgentSupervisor(join(root, name), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, storage, db, engine: "legacy" }));
   for (const owner of owners) await owner.start();
   t.after(async () => {
     fake.release();
@@ -541,7 +547,8 @@ test("a node lost mid-compaction cannot write its summary: the next owner serves
 
 test("a background compaction is billed like any: to the tenant as compaction, outside any run, and against the agent's spend limit", async t => {
   const fake = await provider(t, { usage: true });
-  const supervisor = await fixture(t);
+  // The legacy compactor's background summaries: Pi's native compaction has background speculation off by design.
+  const supervisor = await fixture(t, "legacy");
   const { db } = await testDatabase();
   const accounts = new Accounts({ tenants: new Tenants({ read: async () => JSON.stringify({ tenants: {} }) }), db });
   const root = await mkdtemp(join(tmpdir(), "compaction-background-usage-"));
@@ -587,9 +594,10 @@ test("runLimits.contextTokens compacts a large-window model's context below it, 
   const background: any[] = [], unbounded: any[] = [];
   await supervisor.start("bounded", { model: fake.model(1_000_000), apiKey: "fixture", runLimits: { contextTokens: 20_000 } }, { ...bridge, background: (event: any) => background.push(event) } as never);
   await supervisor.start("unbounded", { model: fake.model(1_000_000), apiKey: "fixture" }, { ...bridge, background: (event: any) => unbounded.push(event) } as never);
-  // About 2,250 tokens a turn: past 14,000 (20,000 less its reserve and background margin) after seven.
+  // About 2,250 tokens a turn: past 14,000 (20,000 less its reserve and background margin) after seven. A compaction is
+  // in the background (legacy) or in the turn's own stream (Pi).
   for (let index = 0; index < 9; index++) {
-    for (const id of ["bounded", "unbounded"]) assert.equal((await supervisor.request(id, "prompt", { text: turn(index) })).error, null);
+    for (const id of ["bounded", "unbounded"]) assert.equal((await supervisor.request(id, "prompt", { text: turn(index) }, event => (id === "bounded" ? background : unbounded).push(event))).error, null);
     await new Promise(resolve => setTimeout(resolve, 50));
   }
   await until(() => background.some(event => event.type === "compaction_end"), "the bounded agent compacted");
@@ -608,7 +616,8 @@ test("a mount added after the first message is appended after the cached prefix,
   const fake = await provider(t);
   const root = await mkdtemp(join(tmpdir(), "mount-cache-"));
   const storage = fileStorage(join(root, "state"));
-  const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, storage });
+  const { db } = await testDatabase();
+  const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, storage, db });
   t.after(async () => { await supervisor.close(); await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); });
   const model = { ...fake.model(100_000), compat: { supportsMidConvoSystemMessages: true, supportsMidConvoToolAdditions: true } } as Model<Api>;
   const workspace = { path: "/workspace", mode: "rw" as const };
@@ -624,7 +633,8 @@ test("a mount added after the first message is appended after the cached prefix,
   const second = fake.chat().at(-1)!;
   assert.deepEqual(second.messages.slice(0, first.messages.length), first.messages, "the prefix the provider cached is byte-identical");
   assert.match(JSON.stringify(second.messages.slice(first.messages.length)), /Updated system prompt section \\"environment\\"[\s\S]*\/bot \(read-write\)/);
-  const log = await records(storage.log(AgentSupervisor.transcriptKey("agent")));
+  // The agent's records, from whichever store its engine keeps them in.
+  const log = await supervisor.records("agent");
   assert.equal(log.filter(record => record.t === "system" && (record as { leading?: boolean }).leading).length, 1, "pinned once, with the first message");
 });
 
