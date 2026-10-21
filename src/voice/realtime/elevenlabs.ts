@@ -25,9 +25,17 @@ export const ELEVENLABS_AGENTS = Object.freeze({
   models: ["gemini-2.5-flash-lite"] as const,
   defaultModel: "gemini-2.5-flash-lite",
   voice: "cgSgspJ2msm6clMCkdW9", // Jessica, a conversational default; sessions may supply any voice_id their key can use.
-  name: "camelRun realtime voice v2",
+  // v3: conversations last up to maxDurationSeconds (v2 agents kept ElevenLabs' 10-minute default). The agent is found
+  // by name, so a changed creation setting needs a new name.
+  name: "camelRun realtime voice v3",
   connectTimeoutMs: 20_000,
+  maxDurationSeconds: 1_800,
 });
+/**
+ * ElevenLabs ends a conversation at the agent's max duration with close 1000 "Max call duration exceeded": the call
+ * itself goes on, in a fresh conversation (the brain reconnects and briefs it with what was said).
+ */
+const MAX_DURATION = /max call duration/i;
 const VOICE_FOR = Object.freeze(Object.fromEntries(
   ["alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar", "nova", "onyx", "fable"].map(name => [name, ELEVENLABS_AGENTS.voice]),
 ));
@@ -169,7 +177,7 @@ export function elevenlabsAgents(options: { baseUrl?: string; socket?: SocketFac
         asr: { user_input_audio_format: "pcm_16000" },
         tts: { voice_id: voice, model_id: "eleven_v4_turbo", agent_output_audio_format: "pcm_24000" },
         turn: { turn_eagerness: "normal", turn_timeout: 7, silence_end_call_timeout: -1 },
-        conversation: { client_events: ["conversation_initiation_metadata", "ping", "audio", "interruption", "user_transcript", "agent_response", "client_tool_call", "agent_response_complete", "client_error"] },
+        conversation: { max_duration_seconds: ELEVENLABS_AGENTS.maxDurationSeconds, client_events: ["conversation_initiation_metadata", "ping", "audio", "interruption", "user_transcript", "agent_response", "client_tool_call", "agent_response_complete", "client_error"] },
       },
       platform_settings: {
         auth: { enable_auth: true }, privacy: { record_voice: false },
@@ -251,7 +259,8 @@ class ElevenLabs implements RealtimeConnection {
       };
       socket.onmessage = event => this.message(messageJson(event.data));
       socket.onerror = () => this.fail(`ElevenLabs Agents ${this.stage}: connection failed`);
-      socket.onclose = event => this.fail(`ElevenLabs Agents ${this.stage}: ${closeDetail({ code: event?.code, reason: this.redact(event?.reason ?? "") })}`, !event?.code || ![1000, 1008].includes(event.code));
+      socket.onclose = event => this.fail(`ElevenLabs Agents ${this.stage}: ${closeDetail({ code: event?.code, reason: this.redact(event?.reason ?? "") })}`,
+        !event?.code || ![1000, 1008].includes(event.code) || (event.code === 1000 && MAX_DURATION.test(event.reason ?? "")));
     }).catch(error => this.fail(error instanceof ElevenLabsFailure ? error.message : "ElevenLabs Agents provisioning: unexpected failure", error instanceof ElevenLabsFailure ? error.retryable : false));
   }
 

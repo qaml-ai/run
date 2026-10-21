@@ -35,7 +35,7 @@ const createAgentSchema = z.object({
     asr: z.object({ user_input_audio_format: z.literal("pcm_16000") }).strict(),
     tts: z.object({ voice_id: z.string(), model_id: z.literal("eleven_v4_turbo"), agent_output_audio_format: z.literal("pcm_24000") }).strict(),
     turn: z.object({ turn_eagerness: z.enum(["patient", "normal", "eager"]), turn_timeout: z.number(), silence_end_call_timeout: z.number() }).strict(),
-    conversation: z.object({ client_events: z.array(z.enum(["conversation_initiation_metadata", "ping", "audio", "interruption", "user_transcript", "agent_response", "client_tool_call", "agent_response_complete", "client_error"])) }).strict(),
+    conversation: z.object({ max_duration_seconds: z.number().int().min(1), client_events: z.array(z.enum(["conversation_initiation_metadata", "ping", "audio", "interruption", "user_transcript", "agent_response", "client_tool_call", "agent_response_complete", "client_error"])) }).strict(),
   }).strict(),
   platform_settings: z.object({
     auth: z.object({ enable_auth: z.boolean() }).strict(), privacy: z.object({ record_voice: z.boolean() }).strict(),
@@ -109,6 +109,8 @@ test("ElevenLabs provisions once per credential, authenticates with signed URLs,
   const body = creates[0].body;
   createAgentSchema.parse(body);
   assert.equal(body.name, ELEVENLABS_AGENTS.name);
+  assert.equal(body.name, "camelRun realtime voice v3", "a new name: agents made before max_duration_seconds are not reused");
+  assert.equal(body.conversation_config.conversation.max_duration_seconds, 1800);
   assert.equal(body.conversation_config.tts.voice_id, config.voice, "creation uses the requested voice, without depending on Jessica access");
   assert.equal(body.conversation_config.agent.prompt.llm, ELEVENLABS_AGENTS.defaultModel);
   assert.deepEqual(body.conversation_config.agent.prompt.tools.map(({ name, description, parameters, type, expects_response }: any) => ({ name, description, parameters, type, expects_response })),
@@ -318,6 +320,29 @@ test("ElevenLabs lost connections settle once and reconnect behind a renewed hol
   state.brain.close();
   await until(() => settlements.length === 2, "replacement settled");
   assert.equal(settlements.reduce((sum, cost) => sum + cost, 0), realtimeCost("elevenlabs/gemini-2.5-flash-lite", NO_USAGE, 0.2));
+});
+
+test("ElevenLabs max call duration starts a fresh conversation, briefed, and the call goes on; other normal closes end it", async t => {
+  const fake = await fakeElevenLabs(t);
+  const state = testBrain({ reference: "elevenlabs/gemini-2.5-flash-lite", ownsTurns: true, provider: elevenlabsAgents({ baseUrl: fake.base }) });
+  t.after(() => state.brain.close());
+  await until(() => state.logs.some(log => log.type === "voice_realtime_ready"), "first connection");
+  fake.send({ type: "agent_response", agent_response_event: { agent_response: "Welcome to the lounge" } });
+  fake.send(audio());
+  fake.send({ type: "agent_response_complete", agent_response_complete_event: { event_id: 1 } });
+  await until(() => state.spoke.some(event => event.type === "ended"), "answer played");
+  fake.connections[0].close(1000, "Max call duration exceeded");
+  await until(() => state.logs.filter(log => log.type === "voice_realtime_ready").length === 2, "fresh conversation ready");
+  const lost = state.logs.find(log => log.type === "voice_realtime_lost")!;
+  assert.equal(lost.fields?.retrying, true);
+  assert.match(String(lost.fields?.detail), /1000: Max call duration exceeded/);
+  await until(() => fake.seen.events.some(e => e.type === "contextual_update" && String(e.text).startsWith("[Earlier in this call]")), "briefing");
+  assert.match(fake.seen.events.find(e => e.type === "contextual_update" && String(e.text).startsWith("[Earlier in this call]")).text, /You: Welcome to the lounge/);
+
+  fake.connections[1].close(1000, "Conversation ended");
+  await until(() => state.logs.filter(log => log.type === "voice_realtime_lost").length === 2, "second close");
+  assert.equal(state.logs.filter(log => log.type === "voice_realtime_lost")[1].fields?.retrying, false);
+  assert.equal(fake.connections.length, 2);
 });
 
 for (const stage of ["list agents", "create agent", "signed URL"]) {
