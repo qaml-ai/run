@@ -9,3 +9,9 @@ starts in `dry-run`, which logs what each agent's open would do and writes nothi
 fleet within seconds without a deploy. Progress is in `pi_sweep_agent`, `pi_sweep_progress`,
 `pi_sweep_backoff` and `pi_sweep_pass_done` log lines. The admin health page gains an "Agents on the
 legacy engine" count.
+
+The sweep's start only imports: the host imports the session and stops, recovering no turn and
+writing no configuration change (its next open does), warming no tool search, and listing tool
+sources only for a transcript with no leading system message. A dry run's lines carry `system`,
+`bytes` and `contextBytes`, to size what the imports will write. Nodes also back off while their
+turns' p95 `TimeToFirstRequestMs` is past `AGENT_PI_SWEEP_MAX_FIRST_REQUEST_MS` (8 s).

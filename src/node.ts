@@ -68,7 +68,7 @@ import { VersionConflict, VolumeService } from "./volumes.ts";
 import { FILE_LIMITS, FileLinks } from "./files.ts";
 import { nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from "./ecs.ts";
 import { cgroupMemory } from "./process-memory.ts";
-import { recordCreate, safeError, Steps, webhookBacklogLine } from "./metrics.ts";
+import { recentFirstRequestP95, recordCreate, safeError, Steps, webhookBacklogLine } from "./metrics.ts";
 import { runtimeSecrets, managedDiscordSecrets } from "./secrets.ts";
 import { checkSandbox, type CodeExecutor } from "./codemode.ts";
 import { V8Exec } from "./v8-exec.ts";
@@ -1441,6 +1441,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     sweep: (candidate, dryRun) => clients.piSweepAgent(candidate, dryRun),
     busy: () => piSweepGate({
       leaving: retiringSince !== undefined || clients.draining, dbWaiting: db.waitingCount, memoryHigh: supervisor.memoryHigh, full: supervisor.full,
+      firstRequestP95: recentFirstRequestP95(), maxFirstRequestMs: config.piSweep.maxFirstRequestMs,
       maxMemoryBytes: config.piSweep.maxMemoryBytes,
       memoryBytes: async () => (await deps.readCgroupMemory?.() as { cgroupMemoryBytes?: number } | undefined)?.cgroupMemoryBytes ?? process.memoryUsage.rss(),
     }),

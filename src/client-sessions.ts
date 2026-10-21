@@ -165,6 +165,8 @@ type Session = {
   reserved: number; reserving?: Promise<void>; held?: ClientEvent[];
   /** The application's connection: its event stream, which carries its attached MCP server. */
   response?: ServerResponse; starting?: Promise<unknown>;
+  /** `starting` is the Pi sweep's import-only start (`piSweepAgent`): what needs the agent waits for it, then starts it. */
+  sweeping?: boolean;
   /** Read-only subscribers (`/events?watch=1`): each gets every event, and none replaces another or the application's connection. */
   watchers: Set<ServerResponse>;
   /** Long polls waiting for the next event. */
@@ -1589,13 +1591,23 @@ export class ClientSessions {
     return typeof resolved === "object" ? resolved : { key: resolved, platform: false };
   }
 
-  private ensureStarted(session: Session) {
+  /**
+   * Start the agent's host, unless it runs. `sweep` is the Pi sweep's start (`piSweepAgent`), only to import the agent:
+   * its host opens the transcript (importing a legacy session) and is stopped at once, before anything else can use it
+   * (`importOnly`). It warms no tool search (whose embeddings its tenant pays for), and without `listTools` it lists no
+   * tool source: the import needs them only for a leading system message the legacy transcript lacks.
+   */
+  private ensureStarted(session: Session, sweep?: { listTools: boolean }): Promise<any> {
     if (this.closed || session.header.revoked) return Promise.reject(new HttpError(410, "Session closed"));
     if (session.fault) return Promise.reject(session.fault);
     session.lastActive = Date.now();
-    if (this.supervisor.agents.has(session.header.id) && !session.starting) return Promise.resolve();
     const id = session.header.id;
+    // The sweep's start: what needs the agent waits for it to end, then starts it.
+    if (!sweep && session.sweeping) return session.starting!.catch(() => {}).then(() => this.ensureStarted(session));
+    if (sweep && (session.starting || this.supervisor.agents.has(id))) return Promise.reject(new Error("The agent is starting or running"));
+    if (this.supervisor.agents.has(id) && !session.starting) return Promise.resolve();
     const steps = new Steps();
+    if (!session.starting) session.sweeping = !!sweep;
     return session.starting ??= (async () => {
       await steps.time("room", this.makeRoom(id, session.header.tenant, !!session.header.run));
       // Read before any response is counted against it.
@@ -1605,12 +1617,12 @@ export class ClientSessions {
       session.catalogPriced = !!priced;
       // Its tool servers are listed (remote MCP servers connected to) before its host starts.
       session.hosted = session.header.mounts ?? [];
-      const definitions = await steps.time("tools", this.toolset(session));
+      const definitions = sweep && !sweep.listTools ? [] : await steps.time("tools", this.toolset(session, { warm: !sweep }));
       const { cpuMs, maxTimeoutMs } = await this.codeLimits(session.header.tenant);
       // Lost or given up while it got ready (its node fenced, or is leaving): it starts nothing. A host started now would
       // serve an owner that is gone, and whoever loads the agent next would find it and take it for theirs, still starting.
       if (session.fault || session.leaving) throw session.fault ?? new Error("Agent stopped");
-      const result = await steps.time("init", this.supervisor.start(session.header.id, { ...session.header.config, model: withCatalogPrices(session.header.config.model), apiKey, mounts: VolumeService.markWorkspace(session.header.id, session.header.mounts ?? []).map(({ path, mode, workspace }) => ({ path, mode, ...workspace ? { workspace } : {} })), ...(this.options.retry ? { retry: this.options.retry } : {}), ...(this.options.streamTimeouts ? { streamTimeouts: this.options.streamTimeouts } : {}), ...(session.resuming.size ? { resume: true } : {}), tenant: session.header.tenant, codeLimits: { cpuMs, maxTimeoutMs } }, {
+      const result = await steps.time("init", this.supervisor.start(session.header.id, { ...session.header.config, model: withCatalogPrices(session.header.config.model), apiKey, mounts: VolumeService.markWorkspace(session.header.id, session.header.mounts ?? []).map(({ path, mode, workspace }) => ({ path, mode, ...workspace ? { workspace } : {} })), ...(this.options.retry ? { retry: this.options.retry } : {}), ...(this.options.streamTimeouts ? { streamTimeouts: this.options.streamTimeouts } : {}), ...(session.resuming.size ? { resume: true } : {}), ...(sweep ? { importOnly: true } : {}), tenant: session.header.tenant, codeLimits: { cpuMs, maxTimeoutMs } }, {
         definitions,
         codeSlot: async signal => this.codeGate.acquire(session.header.tenant, (await this.codeLimits(session.header.tenant)).concurrent, signal),
         runLimit: async () => {
@@ -1660,6 +1672,12 @@ export class ClientSessions {
           write: chunk => this.historyIndex.write(id, session.claim, chunk),
         },
       }, session.claim));
+      if (sweep) {
+        // Imported: its host goes before anything else finds it, for a start that serves it.
+        await this.supervisor.stop(id);
+        recordStart(steps, { tenant: session.header.tenant, agent: id });
+        return result;
+      }
       // Init can recover native responses through committing without emitting their old message_end events.
       await this.refreshSpend(session);
       // Bootstrap history has been imported into the transcript; keep only one authority.
@@ -1679,7 +1697,7 @@ export class ClientSessions {
       recordStart(steps, { tenant: session.header.tenant, agent: id });
       return result;
     })().catch(error => { recordStart(steps, { tenant: session.header.tenant, agent: id, error: safeError(error) }); throw error; })
-      .finally(() => { session.starting = undefined; this.supervisor.unreserve(id); });
+      .finally(() => { session.starting = undefined; session.sweeping = false; this.supervisor.unreserve(id); });
   }
 
   /**
@@ -1740,7 +1758,7 @@ export class ClientSessions {
    * The agent's tools from its servers (see `servers`), or from the ones `next` gives it (a configuration it is about to
    * take). Records the route, and the servers for `toolSources`.
    */
-  private async toolset(session: Session, next: { tools?: ToolDefinition[]; sources?: Sources; fileTools?: boolean; codeMode?: boolean } = {}) {
+  private async toolset(session: Session, next: { tools?: ToolDefinition[]; sources?: Sources; fileTools?: boolean; codeMode?: boolean; warm?: boolean } = {}) {
     const { header } = session;
     const servers = await this.servers(session, next.tools ?? header.definitions, "sources" in next ? next.sources : header.sources, "fileTools" in next ? next.fileTools : header.config.fileTools, "codeMode" in next ? next.codeMode : header.config.codeMode);
     const { tools: definitions, route } = await compose(servers);
@@ -1754,7 +1772,7 @@ export class ClientSessions {
     session.sourceErrors = views.flatMap(view => view.status === "error" ? [{ kind: view.kind, source: view.name, message: view.error ?? "Could not be listed" }] : []);
     session.searchable = definitions.filter(tool => tool.exposure !== "direct");
     // Rerankers that index the catalog (embeddings) start now, so the first search need not wait; the agent's tenant pays for it at cost.
-    for (const stage of this.options.rerankers ?? []) stage.warm?.(session.searchable, usd => this.toolSearchUsage(session, usd, 0));
+    if (next.warm !== false) for (const stage of this.options.rerankers ?? []) stage.warm?.(session.searchable, usd => this.toolSearchUsage(session, usd, 0));
     return definitions;
   }
 
@@ -5486,22 +5504,24 @@ export class ClientSessions {
   }
 
   /**
-   * One step of the Pi migration sweep (src/pi-sweep.ts): open `agent`, kept and not yet on Pi, so its legacy session
-   * is imported as its next open would import it, then let it go. Only an agent no node holds is opened: one hosted or
-   * being loaded anywhere, or with runs open (which the orphan sweep loads), is left for its own next open. Opening
-   * takes the agent's ownership claim as any load does, so a node that took it meanwhile keeps it (`skipped_hosted`).
-   * The legacy transcript is read first, bounded: one too large to copy is left for its own open
-   * (`skipped_size_limit`), which imports it by reference after reading the log whole. A dry run stops there
-   * (`would_migrate`, with what the import would find), writing nothing. A request that arrives while it is open
-   * keeps it open.
+   * One step of the Pi migration sweep (src/pi-sweep.ts): import `agent`, kept and not yet on Pi, as its next open would,
+   * with an import-only start (`ensureStarted`'s `sweep`): its host imports the transcript and stops, recovering no turn
+   * and writing no configuration change, which its next open does as for any session on Pi. Only an agent no node holds
+   * is opened: one hosted or being loaded anywhere, or with runs open (which the orphan sweep loads), is left for its
+   * own next open. Opening takes the agent's ownership claim as any load does, so a node that took it meanwhile keeps it
+   * (`skipped_hosted`). The legacy transcript is read first, bounded: one too large to copy is left for its own open
+   * (`skipped_size_limit`), which imports it by reference after reading the log whole. Tools are listed only for a
+   * transcript with no leading system message, which the import makes from them. A dry run stops after the read
+   * (`would_migrate`, with what the import would find and write), writing nothing.
    */
   async piSweepAgent(agent: PiSweepCandidate, dryRun: boolean): Promise<PiSweepResult> {
     const { id } = agent;
     if (agent.owned || this.sessions.has(id) || this.loading.has(id)) return { outcome: "skipped_hosted" };
     if (agent.pendingRuns) return { outcome: "skipped_pending_runs" };
-    const plan = await this.supervisor.migrationPlan(id);
+    const plan = await this.supervisor.migrationPlan(id, { measure: dryRun });
     if (!plan.ready) return { outcome: `skipped_${plan.reason}` };
-    if (dryRun) return { outcome: "would_migrate", detail: { records: plan.records, ...(plan.from ? { from: plan.from } : {}) } };
+    const found = { system: plan.system, ...(plan.from ? { from: plan.from } : {}) };
+    if (dryRun) return { outcome: "would_migrate", detail: { records: plan.records, bytes: plan.bytes, contextBytes: plan.contextBytes, ...found } };
     if (this.closed || this.draining) return { outcome: "skipped_leaving" };
     let session: Session | undefined;
     try { session = await this.load(id); }
@@ -5511,15 +5531,14 @@ export class ClientSessions {
     try {
       // Its load found work (a request since the candidate was read): it runs here, as for any load.
       if (!idle()) return { outcome: "skipped_busy" };
-      await this.ensureStarted(session);
-      const { migration } = await this.supervisor.request(id, "status", {}) as { migration?: { state: string; from?: string; archive?: string } };
+      const { migration } = await this.ensureStarted(session, { listTools: !plan.system }) as { migration?: { state: string; from?: string; archive?: string } };
       if (!migration) return { outcome: "not_migrated" };
-      return { outcome: migration.state === "existing" ? "already_pi" : migration.state, ...(migration.from || migration.archive ? { detail: { ...(migration.from ? { from: migration.from } : {}), ...(migration.archive ? { archive: migration.archive } : {}) } } : {}) };
+      return { outcome: migration.state === "existing" ? "already_pi" : migration.state, detail: { ...found, ...(migration.archive ? { archive: migration.archive } : {}) } };
     } finally {
-      if (idle()) await this.supervisor.stop(id).catch(() => {});
-      if (idle()) await this.unload(session);
+      if (idle() && !this.supervisor.agents.has(id)) await this.unload(session);
     }
   }
+
 
   /** Requests being worked on: runs that began, until their outcome is published, and other open requests; not queued runs or resumes. */
   inFlight() {

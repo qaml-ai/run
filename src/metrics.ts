@@ -194,6 +194,23 @@ export function recordV8Exec(event: { event: "spawn_failed" | "killed"; code?: s
 /** The methods that are a turn of the model (not code executions, configuration or loads). */
 const TURN_METHODS = new Set(["prompt", "continue", "resume"]);
 
+/** This process's recent turns' TimeToFirstRequestMs (the runtime's part of the time to first token), newest last. */
+const firstRequests: { at: number; ms: number }[] = [];
+/**
+ * The 95th percentile of TimeToFirstRequestMs over this process's turns in the last `windowMs`, or undefined with fewer
+ * than `minSamples` of them: how long the runtime itself keeps a turn from its model (the Pi sweep backs off past a limit).
+ * Turns hosted in agent processes (`process` hosting) are theirs, not counted here.
+ */
+export function recentFirstRequestP95(windowMs = 5 * 60_000, minSamples = 10, now = Date.now()) {
+  const recent = firstRequests.filter(sample => now - sample.at <= windowMs).map(sample => sample.ms).sort((a, b) => a - b);
+  return recent.length < minSamples ? undefined : recent[Math.ceil(recent.length * 0.95) - 1];
+}
+function recordFirstRequest(ms: number) {
+  const now = Date.now();
+  firstRequests.push({ at: now, ms });
+  while (firstRequests.length > 2_000 || (firstRequests.length && now - firstRequests[0].at > 15 * 60_000)) firstRequests.shift();
+}
+
 /**
  * A host's turns, observed from its events and its handler: `event` sees each event
  * the host emits, `wrap` times each turn and writes its line when it ends.
@@ -274,6 +291,7 @@ export function observeTurns(model: () => { provider: string; id: string } | und
     // A turn handed off at a step boundary ends here and goes on on another node: its part here is a turn of its own.
     const outcome = aborted ? "aborted" : error !== "none" ? "failed" : result?.handedOff ? "handed_off" : result?.stopped === "input_required" ? "input_required" : limited ?? "completed";
     const { provider = "unknown", id = "unknown" } = model() ?? {};
+    if (current.firstRequest !== undefined) recordFirstRequest(current.firstRequest - current.started);
     emit("turn_metrics", {
       dimensions: { Outcome: outcome, ErrorClass: error, Provider: provider, Model: id },
       rollups: [[], ["Outcome"], ["ErrorClass"], ["Provider", "Model"]],

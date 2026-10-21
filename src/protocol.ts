@@ -110,6 +110,12 @@ export interface AgentConfig {
   streamTimeouts?: { firstTokenMs?: number; idleMs?: number };
   /** A run that began elsewhere will resume: leave an interrupted turn open to continue it. */
   resume?: boolean;
+  /**
+   * Only import the session to Pi (the Pi sweep): init opens the transcript, which imports a legacy session, and stops
+   * there. It recovers no turn, writes no configuration change and makes no agent; the host answers only status and
+   * history requests, and is stopped next.
+   */
+  importOnly?: boolean;
   /** The agent's tenant, set by the runtime, for its metric lines. */
   tenant?: string;
   /** The tenant's js_exec limits, set by the runtime (never the agent's configuration): CPU per execution, the longest timeoutMs, and the engine. */
