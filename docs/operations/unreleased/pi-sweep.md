@@ -35,3 +35,6 @@ minutes and 10), so small nodes in a large fleet have one. `turn_metrics` gains
 `FirstRequestStorageMs` (a turn's time in Pi storage before its first model request), `firstTurn`,
 `sweepImport` (a Pi sweep import ran beside it on this node), and, for a first request 2 s late or
 more, `slowFirstRequest`: `storage`, `sweep_import`, `first_turn` or `other`.
+
+Each node also takes the legacy agents it holds itself, at most once a minute (`pass: "own"`): the
+shared cursor gave such an agent to whichever node asked next, which skipped it as held elsewhere.
