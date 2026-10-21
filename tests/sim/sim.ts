@@ -105,7 +105,7 @@ export class Sim {
   /** Every pause a node took, when (virtual ms) and for how long: the checkers excuse what a stopped node could not do. */
   readonly pauses: { node: string; at: number; ms: number }[] = [];
   /** Pauses armed to start as a node next hears a database answer (to a statement that matches, if one is given). */
-  private readonly dbPauses = new Map<string, { ms: number; statement?: string; skip: number }>();
+  private readonly dbPauses = new Map<string, { ms: number; statement?: string; written?: string[]; skip: number }>();
   /** Work done as no node at all: the fakes, the database, the client. */
   private readonly world = new AsyncResource("SimWorld");
 
@@ -183,9 +183,11 @@ export class Sim {
       return high > 0 ? low + latencyRandom.int(high - low + 1) : 0;
     };
     // A pause armed for this node's next database answer starts as the answer arrives: the node hears it only after.
-    const gate = (text: string) => {
+    const gate = (text: string, written?: string) => {
       const armed = this.dbPauses.get(name);
-      if (armed && !this.env.isPaused(clock) && (!armed.statement || text.replace(/\s+/g, " ").toLowerCase().includes(armed.statement.toLowerCase())) && armed.skip-- <= 0) {
+      const matches = (armed?.written === undefined || armed.written.every(part => written?.includes(part)))
+        && (!armed?.statement || text.replace(/\s+/g, " ").toLowerCase().includes(armed.statement.toLowerCase()));
+      if (armed && !this.env.isPaused(clock) && matches && armed.skip-- <= 0) {
         this.dbPauses.delete(name);
         this.pauses.push({ node: name, at: this.env.elapsed, ms: armed.ms });
         void this.env.pause(clock, armed.ms);
@@ -270,6 +272,13 @@ export class Sim {
    * `nth` picks a later answer to it: the statement's second (2) or third run, as when one query serves two steps.
    */
   pauseAtDbAnswer(name: string, ms: number, statement?: string, nth = 1) { this.dbPauses.set(name, { ms, ...(statement ? { statement } : {}), skip: nth - 1 }); }
+
+  /**
+   * Pause node `name` for `ms` as it hears that a write it made is durable: the answer to the commit (or to the statement,
+   * outside a transaction) of the `nth` write whose statements or values include each of `written`. A pause where a write landed
+   * but its node goes no further, whether the write is one statement or a transaction of several.
+   */
+  pauseAtDbCommit(name: string, ms: number, written: string | string[], nth = 1) { this.dbPauses.set(name, { ms, written: [written].flat(), skip: nth - 1 }); }
 
   /** Node `name`'s wall clock jumps by `ms` (forward or back), from now on and across its restarts: its machine's clock. */
   jumpClock(name: string, ms: number) {

@@ -93,7 +93,9 @@ test("history comes in pages of whole turns, newest first, from chunks rather th
   // The agent indexes its settled turns as it stops; then pages come from chunks alone, and the log is not read.
   await until(async () => !(await r.call("/v1/agents")).json.find((entry: any) => entry.id === agent).running, "the idle agent to stop", 20_000);
   await until(async () => (await r.db.query("select indexed from agent_history_index where agent = $1", [agent])).rows[0]?.indexed === 16, "the stopping agent to index its turns");
-  await rm(join(r.root, "sessions", agent, "transcript.jsonl"));
+  // Without its log (a legacy agent's transcript, a Pi agent's journal entries), pages still come.
+  await rm(join(r.root, "sessions", agent, "transcript.jsonl"), { force: true });
+  await r.db.query("delete from pi_durable_entries where session_id = $1", [agent]);
   await check();
 
   // The SDK pages the same way, with the agent's own token.

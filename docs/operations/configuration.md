@@ -109,7 +109,7 @@
 | `AGENT_STORAGE_RECONCILE_DAYS` | how often the storage charge first corrects tracked storage by listing Storage (default 7; 0: only the first time; see [Billing](billing.md)) |
 | `AGENT_SERVICE_NAME` | the `ServiceName` dimension on the `node_load` metrics (none when unset) |
 | `AGENT_HOSTING` | `process` (one Node process per awake agent) or `inline` (many agents per process) |
-| `AGENT_ENGINE` | `legacy` (default) or `pi-durable` (opt-in). Selected when an agent host loads; eligible idle sessions migrate lazily, while unfinished legacy work stays on its existing engine. See [Pi durable sessions](pi-durable.md) for preservation, storage, rollback, and current limits |
+| `AGENT_ENGINE` | `pi-durable` (default) or `legacy` (operator rollback). Selected when an agent host loads; eligible idle sessions migrate lazily, while unfinished legacy work stays on its existing engine. See [Pi durable sessions](pi-durable.md) for preservation, storage, rollback, and current limits |
 | `AGENT_PI_CANARY_AGENTS` | Comma-separated exact agent IDs to run with Pi while the default engine remains legacy; operator-only, applied on host open |
 | `AGENT_PI_CANARY_TENANTS` | Comma-separated exact tenant IDs whose sessions run with Pi; apply the same allowlist on every node so handoffs keep the selected engine |
 | `AGENT_CODE_WORKERS_MAX` | how many js_exec executions tenants with a concurrency limit (`codeConcurrency`; self-serve ones by default) run at once on a node, together (default 16; each holds about 20 MB while it waits on tools). Executions beyond it, or beyond their tenant's limit, wait their turn within their own timeout. Admin tenants without one are bounded only by `AGENT_V8_MAX` |

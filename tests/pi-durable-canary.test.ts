@@ -11,7 +11,8 @@ const model = { id: "fixture", name: "Fixture", api: "openai-completions", provi
 const bridge = { definitions: [], call: async () => { throw new Error("No application tools"); } };
 
 test("canary lists are exact operator IDs and leave the fleet default unchanged", () => {
-  const config = nodeConfig({ AGENT_PI_CANARY_AGENTS: " selected, other,selected, ", AGENT_PI_CANARY_TENANTS: " internal " });
+  assert.equal(nodeConfig({}).engine, "pi-durable");
+  const config = nodeConfig({ AGENT_ENGINE: "legacy", AGENT_PI_CANARY_AGENTS: " selected, other,selected, ", AGENT_PI_CANARY_TENANTS: " internal " });
   assert.equal(config.engine, "legacy");
   assert.deepEqual([...config.piCanaryAgents], ["selected", "other"]);
   assert.deepEqual([...config.piCanaryTenants], ["internal"]);

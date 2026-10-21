@@ -75,6 +75,33 @@ export async function nativeTranscriptRecords(storage: Pick<Storage, "scanEntrie
   return records;
 }
 
+const later = (a: { entryId: number; index: number }, b: { entryId: number; index: number }) => a.entryId > b.entryId || a.entryId === b.entryId && a.index > b.index;
+
+/**
+ * Whether the journal ends with a canonical message the host never recorded (a process that died between Pi's commit
+ * and its host record). Read back from the journal's end only as far as the newest recorded message: one turn's entries.
+ */
+export async function nativeUnrecorded(storage: Pick<Storage, "scanEntries">): Promise<boolean> {
+  let recorded: { entryId: number; index: number } | undefined;
+  let cursor: Cursor | undefined;
+  do {
+    const page = await storage.scanEntries({ conversationId, order: "descending" }, 64, cursor, context);
+    for (const entry of page.items) {
+      if (entry.kind === BOOTSTRAP || entry.kind === DISABLED) return false;
+      if (entry.kind === RECORD) {
+        const data = entry.data as any;
+        const at = data.pi ?? (data.record?.t === "pi" ? data.record.cursor : undefined);
+        if (at && (!recorded || later(at, recorded))) recorded = at;
+        continue;
+      }
+      const last = durableEntryMessages(entry).at(-1);
+      if (last) return !recorded || later(last.cursor, recorded);
+    }
+    cursor = page.next;
+  } while (cursor);
+  return false;
+}
+
 /**
  * Pi's latest-only document holds bounded host state; immutable host records refer
  * to canonical messages by ID. No legacy log is read or appended during normal use.

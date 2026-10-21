@@ -1,5 +1,5 @@
 import { durableEntryMessages } from "./pi-durable/agent.ts";
-import { NativeTranscript, nativeTranscriptRecords } from "./pi-durable/transcript.ts";
+import { NativeTranscript, nativeTranscriptRecords, nativeUnrecorded } from "./pi-durable/transcript.ts";
 import { mkdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { once } from "node:events";
@@ -49,6 +49,8 @@ export type SupervisorOptions = {
    */
   memoryHighBytes?: number;
   storage?: Storage; hosting?: Hosting; /** How long stopping agents wait, all together, to index their settled turns (default 5 s). */ historyFlushMs?: number;
+  /** How long Pi's journal (in `db`) repeats a read or commit the database did not answer: a failover (default 0). */
+  piRetryMs?: number;
   /** An agent process is pinged this often, and killed once a ping has gone this long unanswered (default 5 s and 30 s). */
   pingMs?: number; unresponsiveMs?: number;
   /** Where inline agents run js_exec (src/codemode.ts): this process's v8-exec runner unless given. Agent processes always use their own. */
@@ -79,7 +81,7 @@ export class AgentSupervisor {
   private readonly unhosted = new Map<string, Set<{ cancelled: boolean; settled: Promise<void> }>>();
   /** Turns being closed without their agent (`closeTurn`): the latest close of each, which the next one and a start wait for. */
   private readonly closing = new Map<string, Promise<void>>();
-  /** Large first imports materialize legacy archives. Only one runs per node at a time. */
+  /** First imports of a legacy history materialize its archive. Only one runs per node at a time. */
   private migrating: Promise<void> = Promise.resolve();
   readonly root: string;
   readonly options: SupervisorOptions;
@@ -100,9 +102,20 @@ export class AgentSupervisor {
 
   static transcriptKey(id: string) { return `sessions/${id}/transcript`; }
 
-  private piLocation(id: string) { return { sessionId: id, directory: resolve(join(this.root, id)), ...(this.options.db ? { db: this.options.db } : {}) }; }
+  private piLocation(id: string) { return { sessionId: id, directory: resolve(join(this.root, id)), ...(this.options.db ? { db: this.options.db, retryMs: this.options.piRetryMs ?? 0 } : {}) }; }
 
-  /** Cold history may have committed native messages newer than its legacy index or last reported run. */
+  /**
+   * Whether cold history may hold native messages its index and last reported run do not show: a canonical message
+   * committed after the host's last record. Reads only the journal's newest entries.
+   */
+  async unrecordedHistory(id: string): Promise<boolean> {
+    const journal = await openPiJournalReader(this.piLocation(id));
+    if (!journal) return false;
+    try { return await nativeUnrecorded(journal); }
+    finally { await journal.close(BACKGROUND_CONTEXT); }
+  }
+
+  /** Whether the agent keeps a native (Pi) journal. */
   async hasDurableHistory(id: string): Promise<boolean> {
     const journal = await openPiJournalReader(this.piLocation(id));
     await journal?.close(BACKGROUND_CONTEXT);
@@ -233,7 +246,7 @@ export class AgentSupervisor {
         const storage = this.options.storage;
         const log = storage ? storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id), claim) : fileAppendLog<TranscriptRecord>(transcriptPath(directory));
         const transcript = bridge.committing ? committing(log, bridge.committing) : log;
-        const location = { sessionId: id, directory, ...(this.options.db ? { db: this.options.db } : {}) };
+        const location = { sessionId: id, directory, ...(this.options.db ? { db: this.options.db, retryMs: this.options.piRetryMs ?? 0 } : {}) };
         const engine = this.options.piCanaryAgents?.has(id) || (config.tenant !== undefined && this.options.piCanaryTenants?.has(config.tenant)) ? "pi-durable" : this.engine;
         const needsPi = engine === "pi-durable" || await hasPiStorage(location);
         if (needsPi && storage && !this.options.db) throw new Error("Pi durable shared storage requires the supervisor database");
@@ -247,7 +260,9 @@ export class AgentSupervisor {
         } }) : undefined;
         let release: (() => void) | undefined;
         try {
-          if (durable && engine === "pi-durable" && !await loadLegacyMigration(durable)) {
+          // Only a start with a legacy history to import waits for the node's import in progress: a new agent's (an
+          // empty log) has nothing to materialize, and serializing every first start held agents created together back.
+          if (durable && engine === "pi-durable" && !await loadLegacyMigration(durable) && (await transcript.readBounded?.(0))?.length !== 0) {
             const previous = this.migrating;
             this.migrating = new Promise<void>(resolve => { release = resolve; });
             await previous;

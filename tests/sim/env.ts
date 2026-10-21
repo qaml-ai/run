@@ -2,6 +2,7 @@ import { AsyncResource, createHook } from "node:async_hooks";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import type { BinaryLike, ScryptOptions } from "node:crypto";
 import FakeTimers from "@sinonjs/fake-timers";
+import { ProviderDoc } from "@earendil-works/pi-durable";
 import { nodeContext, type Clock, type Random } from "../../src/node-context.ts";
 import { SimSocket } from "./duplex.ts";
 
@@ -185,6 +186,10 @@ export class SimEnv {
     }) as typeof crypto.scrypt);
     patch(globalThis.crypto, "getRandomValues", ((view: ArrayBufferView) => fill(view)) as typeof globalThis.crypto.getRandomValues);
     patch(globalThis.crypto, "randomUUID", uuid);
+    // Pi's provider identity is a UUIDv7 drawn with module state that outlives a run (its last timestamp and sequence),
+    // so a second run in this process would draw another. Each node's seeded randomUUID instead; the runtime never sends
+    // Pi's identity to a provider (it passes its own session id).
+    patch(ProviderDoc.definition as { initial: () => unknown }, "initial", () => ({ sessionId: uuid() }));
 
     // The console: every line kept, with when and by whom.
     for (const method of ["log", "error", "warn", "info"] as const) {

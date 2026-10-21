@@ -9,6 +9,11 @@ import { resumeId } from "../src/client-sessions.ts";
 import type { Plan } from "./sim/workload.ts";
 import { prompt, outcome } from "./sim/scenario.ts";
 
+/** What a Pi host record holds (its journal entry's values): the turn marked active or ended, a waiting call released. */
+const HOST_RECORD = '"kind":"camel.host.record"';
+const TURN_ACTIVE = '{"record":{"t":"turn","active":true}}', TURN_ENDED = '{"record":{"t":"turn","active":false}}';
+const RELEASED = '"released":true';
+
 /**
  * An agent behind an approval policy on a store's MCP server (tools.sim): its first model call deletes an item, which waits
  * for approval; the next says what the call returned. Returns the suspended run's id and its approval, and the store's calls.
@@ -48,10 +53,10 @@ test("an approval whose node is lost as its resume starts runs the approved call
   const sim = await approvalWorld(43);
   t.after(() => sim.close());
   const { agent, suspension, input, calls } = await approvalAsked(sim);
-  // a takes the answer (b forwards it), begins the resume run, and has its agent mark the turn active: its third log
-  // append from here. It stops there, before the agent releases the call to run it, past its lease: b takes the agent
+  // a takes the answer (b forwards it), begins the resume run, and has its agent mark the turn active (a host record in
+  // its Pi journal). It stops there, before the agent releases the call to run it, past its lease: b takes the agent
   // over and finds the turn still suspended on the very call the resume answers.
-  sim.pauseAtDbAnswer("a", 10_000, "insert into log_records", 3);
+  sim.pauseAtDbCommit("a", 10_000, TURN_ACTIVE);
   await sim.env.settle(sim.request("b", `/v1/agents/${agent}/inputs/${input}`, { body: { action: "accept" } }).catch(() => undefined));
   const record = await outcome(sim, "b", agent, resumeId(suspension));
   assert.equal(record.resumes, 1);
@@ -69,8 +74,8 @@ test("an approval whose node is lost after its agent released the call ends it a
   const sim = await approvalWorld(44);
   t.after(() => sim.close());
   const { agent, suspension, input, calls } = await approvalAsked(sim);
-  // One append later: the call is released (it may be running), so the next owner must not run it again.
-  sim.pauseAtDbAnswer("a", 10_000, "insert into log_records", 4);
+  // One host record later: the call is released (it may be running), so the next owner must not run it again.
+  sim.pauseAtDbCommit("a", 10_000, [HOST_RECORD, RELEASED]);
   await sim.env.settle(sim.request("b", `/v1/agents/${agent}/inputs/${input}`, { body: { action: "accept" } }).catch(() => undefined));
   const record = await outcome(sim, "b", agent, resumeId(suspension));
   assert.equal(record.resumes, 1);
@@ -85,8 +90,8 @@ test("a prompt whose node is lost after its turn ended, before its run recorded 
   await sim.start("a");
   await sim.start("b");
   const agent = (await sim.call("a", "/v1/agents", { body: {} })).json.id;
-  // a's sixth log append from here ends the turn (the reply is written before it): a stops there, past its lease.
-  sim.pauseAtDbAnswer("a", 10_000, "insert into log_records", 6);
+  // a's host record ending the turn (the reply is written before it): a stops there, past its lease.
+  sim.pauseAtDbCommit("a", 10_000, TURN_ENDED);
   await sim.env.settle(sim.request("b", `/v1/agents/${agent}/prompt`, { body: { text: "hi" }, headers: { "Idempotency-Key": "turn-1" } }).catch(() => undefined));
   const record = await outcome(sim, "b", agent, "turn-1");
   assert.equal(record.resumes, 1);
@@ -100,8 +105,8 @@ test("an approval whose node is lost after its turn ended, before the resume rec
   const sim = await approvalWorld(45);
   t.after(() => sim.close());
   const { agent, suspension, input, calls } = await approvalAsked(sim);
-  // a's seventh log append from here ends the resumed turn, its reply written: a stops there, past its lease.
-  sim.pauseAtDbAnswer("a", 10_000, "insert into log_records", 7);
+  // a's host record ending the resumed turn, its reply written: a stops there, past its lease.
+  sim.pauseAtDbCommit("a", 10_000, TURN_ENDED);
   await sim.env.settle(sim.request("b", `/v1/agents/${agent}/inputs/${input}`, { body: { action: "accept" } }).catch(() => undefined));
   const record = await outcome(sim, "b", agent, resumeId(suspension));
   assert.equal(record.resumes, 1);
@@ -213,7 +218,8 @@ test("a notification refused at the wake cap whose node is lost after its messag
   await outcome(sim, "a", parent, await prompt(sim, "a", parent, "start the worker again"));
   const heard = () => sim.model.served.filter(served => JSON.stringify(served.body.messages.at(-1).content).includes("<agent_notification")).length;
   const before = heard();
-  sim.pauseAtDbAnswer("a", 10_000, "insert into log_records", 5);
+  // a lands the refused notification in its journal (a host record), and stops there, before it closes the turn.
+  sim.pauseAtDbCommit("a", 10_000, [HOST_RECORD, '{"record":{"t":"message"', '"source":{"kind":"agent"']);
   const second = await sim.until(async () => (await sim.db.query("select request_id from agent_children where parent = $1 and id <> $2 and kind = 'spawn'", [parent, first.slice("child_".length)])).rows[0]?.request_id, "the second spawn's row");
   await sim.until(() => sim.pauses.some(pause => pause.node === "a"), "a to stop as the refused notification lands", 60_000);
   sim.crash("a");

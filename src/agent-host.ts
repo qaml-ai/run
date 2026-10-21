@@ -117,6 +117,7 @@ export function openCalls(messages: AgentMessage[]): ToolCall[] {
  * A limit's stop as a run's result carries it: its code (its own, else the kind of stop), and the limit, reason, bucket
  * and end user where it names them.
  */
+const sameCursor = (a: { entryId: number; index: number }, b: { entryId: number; index: number } | undefined) => !!b && a.entryId === b.entryId && a.index === b.index;
 const stopFields = (stop: Partial<RunStop>) => ({
   code: stop.code ?? stop.stopped,
   ...(stop.limit ? { limit: stop.limit } : {}), ...(stop.reason ? { reason: stop.reason } : {}),
@@ -1080,25 +1081,36 @@ export function createAgentHost(hostIO: HostIO) {
         if (config.engine === "pi-durable") {
           durableAgent = await DurableAgent.create({ ...agentOptions, durable: {
             storage: piStorage, conversationId: conversion.conversationId, cursor: transcript.piCursor,
+            // Pi's journal failed a write or read: what the host holds is no longer known to be stored, as when the
+            // transcript fails one. The run ends with PERSISTENCE_FAILED and the session gives the agent up.
+            onStorageFailure: error => { transcript.failed ??= error; },
             // Summaries share credential/network gates but not the run's output
             // schema, temperature or max-output settings.
             summaryStream,
             get contextWindow() { return compactionModel().contextWindow; },
             onSummary: message => io.emit({ type: "compaction_usage", provider: message.provider,
               model: message.model, usage: message.usage, timestamp: message.timestamp, durable: true }),
-            onCompaction: async ({ summary, keptMessages, at }) => {
+            onCompaction: async ({ summary, keptMessages, at, reason }) => {
+              // Pi compacts after a context overflow with the refused response in its journal: as the legacy loop does,
+              // that response is taken back from history, and the stream told so.
+              const refused = transcript.context.at(-1) as AssistantMessage | undefined;
+              if (reason === "overflow" && refused?.role === "assistant" && refused.stopReason === "error" && isContextOverflow(refused) && transcript.total > transcript.turnStart) {
+                await transcript.retract();
+                io.emit({ type: "message_retracted", index: transcript.total });
+              }
               const cut = transcript.total - keptMessages;
               if (cut < transcript.offset || cut > transcript.total) throw new Error("Native compaction is outside the host working set");
               if (transcript.compaction?.cut === cut && transcript.compaction.summary === summary && transcript.compaction.at === at) return;
               const offset = transcript.offset;
               const state = { summary, cut, tokensBefore: contextTokens(transcript.view()), at };
               await transcript.compact(state, transcript.compaction, changes => getCurrentSystemMessage([leading(tools.map(toToolDeclaration)), ...changes]));
-              io.emit({ type: "compaction_end", reason: "threshold", tokensBefore: state.tokensBefore,
+              io.emit({ type: "compaction_end", reason, tokensBefore: state.tokensBefore,
                 keptMessages, summarizedMessages: cut - offset });
             },
           } });
           const cursor = await durableAgent.discardInterruptedRun();
-          if (cursor) await transcript.commit(() => [{ t: "pi", cursor }]);
+          // Recorded only when it moved: a start with nothing new writes no host record.
+          if (cursor && !sameCursor(cursor, transcript.piCursor)) await transcript.commit(() => [{ t: "pi", cursor }]);
           agent = durableAgent as unknown as Agent;
           engine = "pi-durable";
           migration ??= { state: "existing" };
@@ -1106,7 +1118,7 @@ export function createAgentHost(hostIO: HostIO) {
           // Rollback keeps the native history projection, retires pending execution, then uses the legacy loop.
           const paused = await DurableAgent.create({ ...agentOptions, durable: { storage: piStorage, conversationId: conversion.conversationId } });
           const cursor = await paused.discardInterruptedRun();
-          if (cursor) await transcript.commit(() => [{ t: "pi", cursor }]);
+          if (cursor && !sameCursor(cursor, transcript.piCursor)) await transcript.commit(() => [{ t: "pi", cursor }]);
           await paused.close();
           agent = new Agent({ ...agentOptions, transformContext: contextFor });
         }
