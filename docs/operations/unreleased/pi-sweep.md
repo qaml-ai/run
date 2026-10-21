@@ -20,3 +20,9 @@ A large pass, off by default (`infra/pi-sweep.sh large on`), imports the session
 by reference once the on pass has finished: one at a time across the fleet, only while a node's
 container memory is under `AGENT_PI_SWEEP_LARGE_MAX_MEMORY_BYTES` (Terraform: 35% of the task),
 `AGENT_PI_SWEEP_LARGE_PACE_MS` (30 s) apart (migration 082).
+
+The sweep's latency gate reads this node's last 10 minutes of turns and needs 5 of them (was 5
+minutes and 10), so small nodes in a large fleet have one. `turn_metrics` gains
+`FirstRequestStorageMs` (a turn's time in Pi storage before its first model request), `firstTurn`,
+`sweepImport` (a Pi sweep import ran beside it on this node), and, for a first request 2 s late or
+more, `slowFirstRequest`: `storage`, `sweep_import`, `first_turn` or `other`.
