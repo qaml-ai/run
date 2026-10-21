@@ -26,7 +26,7 @@ const isSummarization = (body: Body) => text(body).includes("context summarizati
  * An OpenAI-compatible provider that reports no usage, like some proxies, unless `usage` is set. With `gated`,
  * summaries wait until `release()`; `inflight` counts summaries asked for and not yet answered.
  */
-async function provider(t: { after(fn: () => Promise<void>): void }, options: { overflowAboveChars?: number; usage?: boolean; gated?: boolean } = {}) {
+async function provider(t: { after(fn: () => Promise<void>): void }, options: { overflowAboveChars?: number; usage?: boolean; gated?: boolean; turnInput?: (body: Body) => number } = {}) {
   const requests: Body[] = [];
   let summaries = 0;
   let gate = Promise.withResolvers<void>();
@@ -48,7 +48,7 @@ async function provider(t: { after(fn: () => Promise<void>): void }, options: { 
     const reply = isSummarization(body) ? `## Goal\nSUMMARY-MARKER-${++summaries}` : "ack";
     res.writeHead(200, { "Content-Type": "text/event-stream" });
     res.write(`data: ${JSON.stringify({ id: "x", object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: reply }, finish_reason: null }] })}\n\n`);
-    const usage = options.usage ? { usage: isSummarization(body) ? { prompt_tokens: 3000, completion_tokens: 200 } : { prompt_tokens: 10, completion_tokens: 1 } } : {};
+    const usage = options.usage ? { usage: isSummarization(body) ? { prompt_tokens: 3000, completion_tokens: 200 } : { prompt_tokens: options.turnInput?.(body) ?? 10, completion_tokens: 1 } } : {};
     res.write(`data: ${JSON.stringify({ id: "x", object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "stop" }], ...usage })}\n\n`);
     res.end("data: [DONE]\n\n");
   });
@@ -231,7 +231,10 @@ test("a context overflow from the provider compacts and retries the turn once", 
 });
 
 test("compaction summaries bill their tokens and cost to the tenant, apart from the agent's turns", async t => {
-  const fake = await provider(t, { usage: true });
+  // The turns report the input they sent (about four characters a token): Pi decides to compact from the usage the
+  // provider reports, so one that reported 10 tokens for every turn would never be compacted.
+  const turnInput = (body: Body) => Math.ceil(text(body).length / 4);
+  const fake = await provider(t, { usage: true, turnInput });
   const supervisor = await fixture(t);
   const { db } = await testDatabase();
   const accounts = new Accounts({ tenants: new Tenants({ read: async () => JSON.stringify({ tenants: {} }) }), db });
@@ -253,7 +256,7 @@ test("compaction summaries bill their tokens and cost to the tenant, apart from 
   const turns = usage.days.filter(row => row.kind === "turn");
   assert.deepEqual(compaction.map(row => [row.model, row.responses, row.input, row.output]), [["openai/turns", summaries, 3000 * summaries, 200 * summaries]]);
   assert.ok(Math.abs(compaction[0].cost - summaries * (3000 * 1 + 200 * 10) / 1e6) < 1e-12, "priced at the summarizing model's rates");
-  assert.deepEqual(turns.map(row => [row.model, row.responses, row.input]), [["openai/turns", 4, 40]]);
+  assert.deepEqual(turns.map(row => [row.model, row.responses, row.input]), [["openai/turns", 4, fake.chat().reduce((sum, body) => sum + turnInput(body), 0)]]);
   assert.equal(usage.totals.responses, 4 + summaries);
 });
 

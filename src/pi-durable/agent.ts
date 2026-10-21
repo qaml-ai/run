@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { AgentEvent, AgentMessage, AgentOptions, AgentState, AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
 import { createAssistantMessageEventStream, getCurrentSystemMessage, getSystemMessageText, type AssistantMessage, type ImageContent, type Message, type ToolResultMessage } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { isContextOverflow } from "@earendil-works/pi-ai/utils/overflow";
 import { convertToLlm as contextMessages, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "../pi-harness/messages.ts";
 import {
   GenerationTask, Harness, InboxDoc, LiveDoc, createRegistry,
@@ -18,7 +19,7 @@ export type DurableAgentOptions = Omit<AgentOptions, "transformContext"> & {
     contextWindow?: number;
     summaryStream?: AgentOptions["streamFn"];
     onSummary?: (message: AssistantMessage) => void | Promise<void>;
-    onCompaction?: (state: { summary: string; keptMessages: number; at: number }) => void | Promise<void>;
+    onCompaction?: (state: { summary: string; keptMessages: number; at: number; reason: "threshold" | "overflow" }) => void | Promise<void>;
     /**
      * A storage call failed (past the Storage's own retries). Pi's Session is then failed for good, and closes the
      * Storage: the host must be given up and reopened from what was committed.
@@ -148,6 +149,12 @@ export class DurableAgent {
   private originalInputs = new Map<number, { native: Message; message: AgentMessage }>();
   private _latestCursor?: DurableCursor;
   private streamingMessage?: AgentMessage;
+  /**
+   * The context a provider refused as too long (a context overflow), in tokens: the real limit is below it, whatever the
+   * model's declared window. Pi's compaction scales its reserve and the recent context it keeps from the window, so
+   * after an overflow it compacts against this, as the legacy compactor kept about a fifth of the context.
+   */
+  private overflowWindow = Infinity;
   private errorMessage?: string;
   private lastTurn?: AssistantMessage;
   private lastTurnResults: ToolResultMessage[] = [];
@@ -257,7 +264,7 @@ export class DurableAgent {
     // Generation and summarization use the same credential resolver, network
     // policy and provider instrumentation. Summaries omit run-only output settings.
     const models = {
-      getModel: () => options.durable.contextWindow ? { ...agent.state.model, contextWindow: Math.min(agent.state.model.contextWindow, options.durable.contextWindow) } : agent.state.model,
+      getModel: () => ({ ...agent.state.model, contextWindow: window() }),
       streamSimple: (_model: unknown, view: { messages: Message[] }, streamOptions: unknown) => agent.stream(streamOptions, view.messages),
       completeSimple: async (_model: unknown, view: { messages: Message[] }, streamOptions: unknown) => {
         await agent.flushEvents();
@@ -272,7 +279,7 @@ export class DurableAgent {
         return result;
       },
     };
-    const window = () => Math.min(agent.state.model.contextWindow, options.durable.contextWindow ?? Infinity);
+    const window = () => Math.min(agent.state.model.contextWindow, options.durable.contextWindow ?? Infinity, agent.overflowWindow);
     agent.harness = await Harness.open(storageGuard(options.durable.storage, options.durable.onStorageFailure), { registry, models: models as unknown as HarnessOptions["models"],
       settings: { compaction: { enabled: true,
         get reserveTokens() { return Math.min(16_384, Math.floor(window() * 0.15)); },
@@ -343,7 +350,8 @@ export class DurableAgent {
     if (summary.startsWith(COMPACTION_SUMMARY_PREFIX) && summary.endsWith(COMPACTION_SUMMARY_SUFFIX)) {
       summary = summary.slice(COMPACTION_SUMMARY_PREFIX.length, -COMPACTION_SUMMARY_SUFFIX.length);
     }
-    await this.options.durable.onCompaction?.({ summary, keptMessages, at: entry.model?.[0]?.timestamp ?? Date.now() });
+    const reason = (entry.data as { reason?: string } | undefined)?.reason === "overflow" ? "overflow" : "threshold";
+    await this.options.durable.onCompaction?.({ summary, keptMessages, at: entry.model?.[0]?.timestamp ?? Date.now(), reason });
   }
 
   get signal() { return this.controller?.signal; }
@@ -373,7 +381,8 @@ export class DurableAgent {
     this.messages.push(message);
     if (message.role === "assistant") {
       this.lastTurn = message; this.lastTurnResults = [];
-      if (message.stopReason === "error" || message.stopReason === "aborted") this.errorMessage = message.errorMessage;
+      // A later response of the run (one made after an overflow's compaction) answers what an earlier one failed.
+      this.errorMessage = message.stopReason === "error" || message.stopReason === "aborted" ? message.errorMessage : undefined;
     }
     if (message.role === "toolResult") {
       this.pending.delete(message.toolCallId); this.lastTurnResults.push(message);
@@ -424,6 +433,10 @@ export class DurableAgent {
         stream.push(event);
       }
       const final = await events.result();
+      if (final.stopReason === "error" && isContextOverflow(final)) {
+        const sent = Math.ceil(JSON.stringify(llm).length / 4);
+        this.overflowWindow = Math.min(this.overflowWindow, Math.max(1_000, Math.floor(sent * 0.9)));
+      }
       // Pi commits an aborted response from its last throttled partial (`convertPartial`), which may be stale or
       // missing: the provider's own terminal message, with its usage and billing attempt, replaces it before Pi's
       // abort handler converts it, so the canceled response is in history and billed exactly once.

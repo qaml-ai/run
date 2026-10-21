@@ -1085,14 +1085,21 @@ export function createAgentHost(hostIO: HostIO) {
             get contextWindow() { return compactionModel().contextWindow; },
             onSummary: message => io.emit({ type: "compaction_usage", provider: message.provider,
               model: message.model, usage: message.usage, timestamp: message.timestamp, durable: true }),
-            onCompaction: async ({ summary, keptMessages, at }) => {
+            onCompaction: async ({ summary, keptMessages, at, reason }) => {
+              // Pi compacts after a context overflow with the refused response in its journal: as the legacy loop does,
+              // that response is taken back from history, and the stream told so.
+              const refused = transcript.context.at(-1) as AssistantMessage | undefined;
+              if (reason === "overflow" && refused?.role === "assistant" && refused.stopReason === "error" && isContextOverflow(refused) && transcript.total > transcript.turnStart) {
+                await transcript.retract();
+                io.emit({ type: "message_retracted", index: transcript.total });
+              }
               const cut = transcript.total - keptMessages;
               if (cut < transcript.offset || cut > transcript.total) throw new Error("Native compaction is outside the host working set");
               if (transcript.compaction?.cut === cut && transcript.compaction.summary === summary && transcript.compaction.at === at) return;
               const offset = transcript.offset;
               const state = { summary, cut, tokensBefore: contextTokens(transcript.view()), at };
               await transcript.compact(state, transcript.compaction, changes => getCurrentSystemMessage([leading(tools.map(toToolDeclaration)), ...changes]));
-              io.emit({ type: "compaction_end", reason: "threshold", tokensBefore: state.tokensBefore,
+              io.emit({ type: "compaction_end", reason, tokensBefore: state.tokensBefore,
                 keptMessages, summarizedMessages: cut - offset });
             },
           } });
