@@ -39,6 +39,8 @@ npm run typecheck
   - Don't rerun a failed job to get it green; a flaky test is fixed
     ([docs/operations/README.md](docs/operations/README.md#ci-and-deploys)).
 
+- Release notes in `docs/operations/unreleased/` are gathered elsewhere: no relative links in them (write the path in backticks). After any docs change run `npm run docs` and `node --experimental-strip-types --test --test-name-pattern="llms.txt" tests/docs.test.ts`.
+
 ## Where things are written down
 
 - [docs/operations/README.md](docs/operations/README.md): layout, local development, CI and deploys, and the index

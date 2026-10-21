@@ -13,7 +13,7 @@ locals {
 
   runtime_image = "${aws_ecr_repository.runtime.repository_url}:${var.runtime_image_tag}"
 
-  runtime_environment = merge(var.runtime_env, local.email_environment, local.account_email_environment, local.billing_environment, local.admin_environment, local.journey_environment, var.openai_apps_challenge == "" ? {} : {
+  runtime_environment = merge(var.runtime_env, local.anthropic_federation_environment, local.email_environment, local.account_email_environment, local.billing_environment, local.admin_environment, local.journey_environment, var.openai_apps_challenge == "" ? {} : {
     AGENT_OPENAI_APPS_CHALLENGE = var.openai_apps_challenge
     }, var.agent_card_credit_usd == "" ? {} : {
     AGENT_CARD_CREDIT_USD = var.agent_card_credit_usd
@@ -166,6 +166,12 @@ resource "aws_iam_role_policy" "task" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = concat(local.state_bucket_statements, [
+      {
+        Sid      = "AnthropicFederation"
+        Effect   = "Allow"
+        Action   = "sts:GetWebIdentityToken"
+        Resource = "*"
+      },
       {
         Sid    = "RuntimeSecrets"
         Effect = "Allow"

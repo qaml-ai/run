@@ -217,7 +217,9 @@ function authorize(model: Model<Api>, asked: any, credentials: Credentials, sink
   if (!apiKey && !fetchable) throw new Error(`A key scope entry without an apiKey cannot call ${model.provider}'s ${model.api} API`);
   const bedrock = model.api === "bedrock-converse-stream";
   const callOptions = {
-    ...options, apiKey: apiKey || "keyless", headers: { ...options?.headers, ...headers, ...modelHeaders },
+    // A bearer credential must not reach Pi's sk-ant-oat substring detection: that path adds
+    // Claude Code subscription headers, tool renaming and a system prompt. callFetch installs the real token.
+    ...options, apiKey: bearer && model.api === "anthropic-messages" ? "runtime-bearer" : apiKey || "keyless", headers: { ...options?.headers, ...headers, ...modelHeaders },
     // Bedrock's region reaches Pi's client only through `env` (its simple options drop a `region`), ahead of the
     // process's AWS_REGION. Bedrock through a gateway speaks HTTP/1.1, as its pass-through does.
     env: bedrock ? { ...(region ? { AWS_REGION: region } : {}), ...(baseUrl ? { AWS_BEDROCK_FORCE_HTTP1: "1" } : {}) } : {},
