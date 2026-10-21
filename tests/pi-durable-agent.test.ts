@@ -309,3 +309,32 @@ test("Pi adapter checkpoints a message replaced in place under the same role and
   assert.ok(sent.includes(IMAGE_PAST_BUDGET) && !sent.includes(image.data), "the next request carries the placeholder, not the image");
   await fake.agent.close();
 });
+
+test("Pi adapter commits a streaming answer's progress about once a second, not on every delta", async () => {
+  const storage = new MemoryStorage();
+  let commits = 0, streaming = false;
+  const commit = storage.commit.bind(storage);
+  storage.commit = async (writes, at) => { if (streaming) commits++; return commit(writes, at); };
+  const response = answer("x".repeat(30));
+  const fake = await fixture([], { streamFn: () => {
+    const stream = createAssistantMessageEventStream();
+    void (async () => {
+      const partial = { ...response, content: [{ type: "text" as const, text: "" }] };
+      stream.push({ type: "start", partial });
+      stream.push({ type: "text_start", contentIndex: 0, partial });
+      streaming = true;
+      for (let i = 0; i < 30; i++) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+        partial.content[0].text += "x";
+        stream.push({ type: "text_delta", contentIndex: 0, delta: "x", partial });
+      }
+      streaming = false;
+      stream.push({ type: "done", reason: "stop", message: response }); stream.end(response);
+    })();
+    return stream;
+  } }, storage);
+  await fake.agent.prompt(user("Stream"));
+  assert.ok(fake.events.filter(event => event.type === "message_update").length >= 30, "every delta still reaches the host live");
+  assert.ok(commits <= 3, `1.5 s of deltas commit progress ${commits} times`);
+  await fake.agent.close();
+});
