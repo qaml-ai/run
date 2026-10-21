@@ -205,6 +205,12 @@ export class JournalHistory {
     for (const [id, at] of this.calls) if (at >= index) this.calls.delete(id);
   }
 
+  /** The history's length at its base: messages before it are the history index's, with no journal cursor here. */
+  get baseTotal() { return this.base.total; }
+
+  /** The journal cursor of the history message at absolute index `index`, from the base on. */
+  cursorAt(index: number): At | undefined { return index >= this.base.total && index < this.total ? this.cursors[index - this.base.total] : undefined; }
+
   /** Where turns began, among the history's messages from absolute index `from` on. */
   turnsFrom(from: number): number[] { return this.turnStarts.filter(turn => turn >= from && turn < this.total); }
 

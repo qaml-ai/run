@@ -293,3 +293,22 @@ test("the SDK's fork() makes a new agent from this one: its history, configurati
   assert.equal((await fork.run("again")).text, "said: again");
   assert.equal((await source.history()).length, 2, "the source's history is its own");
 });
+
+test("where the source's tenant reads history from Pi's journal, a fork is cut from the journal: the same history, and Pi's context as of the cut", async t => {
+  const r = await runtime(t, answering(), { ...roomy, AGENT_PI_DUAL_WRITE: "1", AGENT_PI_HISTORY_SOURCE_TENANTS: "*" });
+  const source = (await r.call("/v1/agents", { body: { name: "Journal" } })).json.id as string;
+  await r.prompt(source, "first question");
+  await r.prompt(source, "second question");
+  const forked = await r.call(`/v1/agents/${source}/fork`, { body: { key: "journal-fork", atMessage: 1 } });
+  assert.equal(forked.status, 201, forked.text);
+  assert.deepEqual(forked.json.forkedFrom, { agentId: source, atMessage: 1 });
+  const fork = forked.json.id as string;
+  assert.deepEqual(said((await r.call(`/v1/agents/${fork}/history`)).json.messages), ["user:first question", "assistant:answer to first question"]);
+  const fromJournal = r.logs.filter(line => line.includes('"field":"fork"'));
+  assert.equal(fromJournal.length, 1);
+  assert.match(fromJournal[0], /"Outcome":"match"/, "the journal's cut is the host's");
+  await r.prompt(fork, "fork question");
+  const sent = JSON.stringify(r.model.bodies.at(-1).messages);
+  assert.ok(sent.includes("first question") && sent.includes("answer to first question"));
+  assert.ok(!sent.includes("second question"), "nothing after the cut");
+});

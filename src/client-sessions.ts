@@ -1,3 +1,4 @@
+import type { Message } from "@earendil-works/pi-ai";
 import { END_USER_CREDIT, type AttemptAck, type ModelAttemptHook } from "./model-attempt.ts";
 import { bucketInput, creditError, DEFAULT_BUCKET, MICROS, type CreditHold, type EndUserCredits } from "./end-user-credits.ts";
 import { durableEntryMessages } from "./pi-durable/agent.ts";
@@ -16,7 +17,7 @@ import { withCatalogPrices } from "./pi-catalog.ts";
 import { configurationRefusal, configurationUpdate, runLimitsInput, type CustomProviders, type ModelEndpoints } from "./session-config.ts";
 import { outputInput, validateDefinitions } from "./tool-policy.ts";
 import { importedHistory, validateUserMessages } from "./history.ts";
-import { forkCut, recordedMessages, type Backlog, type TranscriptRecord } from "./transcript.ts";
+import { forkCut, historyOf, recordedMessages, type Backlog, type TranscriptRecord } from "./transcript.ts";
 import { canonical } from "../shared/durable-json.ts";
 import type { AppendLog, CommitEffect } from "../shared/append-log.ts";
 import { fileStorage, type Storage } from "../shared/storage.ts";
@@ -3091,7 +3092,7 @@ export class ClientSessions {
    * (`origin.definition`), and `origin.provision` stands for its configuration in the
    * idempotency check, so a retry after the definition changed returns the same agent.
    */
-  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, given: string | undefined, metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string; spendLimit?: number; bucket?: string; toolsHash?: string; remount?: boolean; idleTtlMs?: number; builtins?: string[]; delegate?: DelegateSettings; mcpServers?: McpServerSpec[]; parent?: SessionHeader["parent"]; fork?: { id: string; from: ForkedFrom; records: TranscriptRecord[] }; admit?: (unchanged: boolean) => Promise<unknown>; run?: RunSettings } = {}, steps = new Steps()): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
+  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, given: string | undefined, metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string; spendLimit?: number; bucket?: string; toolsHash?: string; remount?: boolean; idleTtlMs?: number; builtins?: string[]; delegate?: DelegateSettings; mcpServers?: McpServerSpec[]; parent?: SessionHeader["parent"]; fork?: { id: string; from: ForkedFrom; records: TranscriptRecord[]; model?: Message[] }; admit?: (unchanged: boolean) => Promise<unknown>; run?: RunSettings } = {}, steps = new Steps()): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
     metadata = agentMetadata(metadata);
     validateDefinitions(definitions);
     // The caller's key, shown in listings; an agent made without one gets a key nothing else knows.
@@ -3168,7 +3169,7 @@ export class ClientSessions {
         const refs = [...safeConfig.initialMessages ?? [], ...access.fork ? recordedMessages(access.fork.records) : []].flatMap(message => Array.isArray((message as { content?: unknown }).content) ? (message as { content: unknown[] }).content.filter(validFileRef) : []);
         if (refs.length && this.options.volumes) await this.options.volumes.pin(tenant, id, refs.flatMap(ref => ref.chunks));
         // A fork's history is its transcript before it exists, written under its claim.
-        if (access.fork) await steps.time("history", this.supervisor.seed(id, access.fork.records, claim));
+        if (access.fork) await steps.time("history", this.supervisor.seed(id, access.fork.records, claim, access.fork.model));
         // A conditional create: if a concurrent request made this agent first, retry as a load. A new agent's history is
         // indexed from its first message (a fork's copy, too, once it starts: until then a page reads its log); beginning
         // its index is idempotent, so it goes alongside.
@@ -3270,7 +3271,18 @@ export class ClientSessions {
     let records = await steps.time("history", this.supervisor.records(sourceId));
     // History given at create is imported when the agent first starts: one that has not yet holds it in its configuration.
     if (!records.length && source.config.initialMessages?.length) records = [{ t: "reset", ...importedHistory(source.config.initialMessages) }];
-    const cut = forkCut(records, input.atMessage);
+    let cut: { records: TranscriptRecord[]; through: number | null; model?: Message[] } = forkCut(records, input.atMessage);
+    // Where the source's tenant reads history from Pi's journal, the fork is cut from it (pi-durable/fork.ts): its
+    // history and Pi's context as of the cut. The host's cut where they keep different messages (logged), or where the
+    // journal cannot place it.
+    if (this.supervisor.readsJournal(tenant)) {
+      const indexed = (await this.historyIndex.indexed(sourceId)) ?? 0;
+      const journal = await steps.time("journal", this.supervisor.journalFork(sourceId, indexed, count => this.historyIndex.messages(sourceId, count), input.atMessage))
+        .catch(error => { console.error(JSON.stringify({ type: "history_source_unavailable", agent: sourceId, field: "fork", error: safeError(error) })); return undefined; });
+      const host = { through: cut.through, messages: historyOf(cut.records) };
+      const served = servedHistory(sourceId, "fork", host, journal && { through: journal.through, messages: historyOf(journal.records) });
+      if (journal && served !== host) cut = journal;
+    }
     const from: ForkedFrom = { agentId: sourceId, atMessage: cut.through };
     // The source's own workspace is forked for the fork, under the id its workspace has; shared volumes stay shared.
     let mounts: unknown[] | undefined = source.mounts;
@@ -3290,7 +3302,7 @@ export class ClientSessions {
     const name = input.name ?? (source.metadata?.name && `${source.metadata.name} (fork)`.slice(0, 120));
     const created = await this.create(source.definitions, config as Omit<AgentConfig, "id" | "directory" | "tools">, key, { ...source.metadata, ...(name ? { name } : {}) }, tenant, input.ttlMs, mounts,
       source.definition && { definition: source.definition, provision: { fork: source.provisionHash }, overrides: source.overrides, sources: source.sources }, identity,
-      { keyScope: source.keyScope, ...(spend ? { spendLimit: Number(spend.usd) } : {}), toolsHash: source.toolsHash, ...source.definition ? {} : { builtins: source.sources?.builtins, delegate: source.sources?.delegate, mcpServers: source.sources?.mcpServers }, fork: { id: made.id, from, records: cut.records } }, steps);
+      { keyScope: source.keyScope, ...(spend ? { spendLimit: Number(spend.usd) } : {}), toolsHash: source.toolsHash, ...source.definition ? {} : { builtins: source.sources?.builtins, delegate: source.sources?.delegate, mcpServers: source.sources?.mcpServers }, fork: { id: made.id, from, records: cut.records, ...(cut.model ? { model: cut.model } : {}) } }, steps);
     // Made meanwhile by a retry: whatever it holds is the fork.
     if (created.reconfigure) return answer(this.sessions.get(created.id)?.header ?? (await this.readHeader(created.id))!.value);
     return { id: created.id, token: created.token, expiresAt: created.expiresAt, forkedFrom: from };
