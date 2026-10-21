@@ -81,7 +81,7 @@ export class AgentSupervisor {
   private readonly unhosted = new Map<string, Set<{ cancelled: boolean; settled: Promise<void> }>>();
   /** Turns being closed without their agent (`closeTurn`): the latest close of each, which the next one and a start wait for. */
   private readonly closing = new Map<string, Promise<void>>();
-  /** Large first imports materialize legacy archives. Only one runs per node at a time. */
+  /** First imports of a legacy history materialize its archive. Only one runs per node at a time. */
   private migrating: Promise<void> = Promise.resolve();
   readonly root: string;
   readonly options: SupervisorOptions;
@@ -260,7 +260,9 @@ export class AgentSupervisor {
         } }) : undefined;
         let release: (() => void) | undefined;
         try {
-          if (durable && engine === "pi-durable" && !await loadLegacyMigration(durable)) {
+          // Only a start with a legacy history to import waits for the node's import in progress: a new agent's (an
+          // empty log) has nothing to materialize, and serializing every first start held agents created together back.
+          if (durable && engine === "pi-durable" && !await loadLegacyMigration(durable) && (await transcript.readBounded?.(0))?.length !== 0) {
             const previous = this.migrating;
             this.migrating = new Promise<void>(resolve => { release = resolve; });
             await previous;
