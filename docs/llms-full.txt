@@ -1984,7 +1984,8 @@ completed step:
   run to another node at that step boundary. Nothing is lost and nothing runs
   twice (`handoffs` lists them).
 - A node that dies: another node resumes the run from its transcript, at most
-  twice (`resumes`). A tool call that completed is not made again. A model call
+  three times by default (`resumes`; configurable with `AGENT_MAX_RESUMES`).
+  The next loss fails it with `resume_limit`. A tool call that completed is not made again. A model call
   that was in flight is simply asked again. A tool call that was in flight when
   the node died has an unknown outcome, which the model is told, as for an agent.
   As for an agent, a run resumed after its node died reports in `usage` and
@@ -8419,7 +8420,9 @@ ended (`running`, `completed`): a failed run is `state: "completed"`,
 
 A failed model response that is retried is retracted from history (`message_retracted`); the last one stays, with its `errorMessage`. A run
 whose node was lost mid-turn resumes on another (`turn_resumed`), with any tool
-call whose answer was lost marked "outcome unknown" for the model; tool calls
+call whose answer was lost marked "outcome unknown" for the model. After three
+node-loss resumes by default (`AGENT_MAX_RESUMES`), another loss fails the run with
+`resume_limit`; the agent can accept a new prompt. Tool calls
 are never sent twice. A deploy or drain loses nothing: the node finishes the
 step in flight and hands the turn off at that boundary (`turn_resumed` with
 `handoff`; the run's `handoffs` records it).
