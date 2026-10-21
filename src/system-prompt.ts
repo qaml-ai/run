@@ -56,12 +56,14 @@ ${APPLICATION_FOLLOWS}`;
 export const bare = (config: Pick<AgentConfig, "codeMode" | "tools">) => config.codeMode === false && !config.tools.length;
 
 /** The system prompt section holding the application's instructions; a later system message replaces it. */
-export const INSTRUCTIONS = "instructions";
-/**
- * The key a later release gives that section (Pi reserves `instructions` for a conversation's own instructions). A
- * conversation that release re-keyed keeps it here too, so rolling back never declares the instructions twice.
- */
 export const APPLICATION = "application";
+export const INSTRUCTIONS = APPLICATION;
+/**
+ * The key that section had before: Pi reserves `instructions` for a conversation's own instructions, which it renders
+ * last. A conversation whose system messages still use it has its sections declared again under the new key, in the
+ * same order, so the prompt the model sees stays the same text (declareConfiguration, agent-host.ts).
+ */
+export const LEGACY_INSTRUCTIONS = "instructions";
 /** The section summarizing the agent's environment, generated from its configuration. */
 export const ENVIRONMENT = "environment";
 /** The tool a run that asks for structured output (a prompt's `output.schema`) answers with. */

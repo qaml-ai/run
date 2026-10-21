@@ -277,7 +277,7 @@ test("a prompt or tool change on an agent with history is appended after the cac
   const lookup = { name: "lookup", description: "Look something up", parameters: { type: "object" }, exposure: "direct" as const };
   const tools = (definitions: typeof lookup[]) => ({ definitions, async call() { return "found"; } });
   const last = () => fake.chat().at(-1) as Body & { tools: unknown[] };
-  const updates = (body: Body) => body.messages.filter(message => JSON.stringify(message).includes('Updated system prompt section \\"instructions\\"'));
+  const updates = (body: Body) => body.messages.filter(message => JSON.stringify(message).includes('Updated system prompt section \\"application\\"'));
 
   const a = node("a");
   await a.start("agent", { model, apiKey: "fixture", systemPrompt: "Original rules" }, tools([]));

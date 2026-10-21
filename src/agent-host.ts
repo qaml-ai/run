@@ -12,7 +12,7 @@ import { executeCode, presentResult, type CodeExecutor, type CodeResult } from "
 import type { Outbound } from "./outbound.ts";
 import { scriptValue } from "./mcp-results.ts";
 import { errorText, IDENTITY_KEY, PERSISTENCE_FAILED, SCOPE_KEY, scratchMount, type AgentConfig, type CallContext, type Credentials, type RunStop, type ToolBridge } from "./protocol.ts";
-import { APPLICATION, applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS, leadingSystemMessage, OUTPUT, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER, OUTPUT_TOOL } from "./system-prompt.ts";
+import { applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS, LEGACY_INSTRUCTIONS, leadingSystemMessage, OUTPUT, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER, OUTPUT_TOOL } from "./system-prompt.ts";
 import { renderMessages, senderInput, stamp, type MessageSource } from "./sender.ts";
 import type { SearchHit, SearchQuery } from "./tool-search.ts";
 import type { AppendLog } from "../shared/append-log.ts";
@@ -288,22 +288,27 @@ export function createAgentHost(hostIO: HostIO) {
       return;
     }
     const { toolsAdded, toolsRemoved } = getToolStateChanges(getCurrentTools(messages), tools);
-    const current = getCurrentSystemMessage(messages)?.sections ?? {};
-    // A conversation a later release re-keyed holds its instructions under that key, which it keeps.
-    const instructions = APPLICATION in current ? APPLICATION : INSTRUCTIONS;
+    let current = getCurrentSystemMessage(messages)?.sections ?? {};
+    // Sections under the old key are removed and every section declared again in order: a section declared later is
+    // placed after the others, so re-keying one alone would move the application's instructions after the environment.
+    const cleared: SystemMessage[] = [];
+    if (LEGACY_INSTRUCTIONS in current) {
+      cleared.push({ role: "system", content: "", timestamp: Date.now(), sections: Object.fromEntries(Object.keys(current).map(name => [name, null])) });
+      current = {};
+    }
     const wanted = {
-      [instructions]: applicationInstructions(config.systemPrompt, config.systemPromptAppend), [ENVIRONMENT]: environmentSummary(config),
+      [INSTRUCTIONS]: applicationInstructions(config.systemPrompt, config.systemPromptAppend), [ENVIRONMENT]: environmentSummary(config),
       [OUTPUT]: tools.some(tool => tool.name === OUTPUT_TOOL) ? OUTPUT_INSTRUCTIONS : null,
     };
     const sections = Object.fromEntries(Object.entries(wanted).filter(([name, text]) => (current[name] ?? null) !== text));
-    if (!Object.keys(sections).length && !toolsAdded.length && !toolsRemoved.length) return;
+    if (!cleared.length && !Object.keys(sections).length && !toolsAdded.length && !toolsRemoved.length) return;
     const change: SystemMessage = {
       role: "system", content: "", timestamp: Date.now(), ...(Object.keys(sections).length ? { sections } : {}),
       ...(toolsAdded.length ? { toolsAdded } : {}), ...(toolsRemoved.length ? { toolsRemoved } : {}),
     };
     // Pi takes the change once it is written.
-    await declare(change, messages[0] as SystemMessage);
-    agent!.state.messages = [...messages, change];
+    for (const message of [...cleared, change]) await declare(message, messages[0] as SystemMessage);
+    agent!.state.messages = [...messages, ...cleared, change];
   }
 
   /**
