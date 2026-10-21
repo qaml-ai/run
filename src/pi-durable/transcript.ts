@@ -1,7 +1,8 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { convertToLlm } from "../pi-harness/messages.ts";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import type { JsonObject, Storage, StorageWrite, DocumentId, EntryId, EntryRecord, Cursor } from "@earendil-works/pi-durable";
+import type { Op } from "@earendil-works/chord/delta";
+import type { JsonObject, Storage, StorageWrite, DocumentId, DocumentContent, EntryId, EntryRecord, Cursor } from "@earendil-works/pi-durable";
 import type { AppendLog } from "../../shared/append-log.ts";
 import { Transcript, type TranscriptRecord, type TranscriptSnapshot } from "../transcript.ts";
 import { durableEntryMessages } from "./agent.ts";
@@ -11,6 +12,19 @@ const ADDRESS = { kind: "camel.host.snapshot", scope: { kind: "session" as const
 const BOOTSTRAP = "camel.host.bootstrap", ARCHIVE = "camel.host.archive", RECORD = "camel.host.record", DISABLED = "camel.host.disabled";
 const json = (value: unknown) => JSON.parse(JSON.stringify(value));
 type State = { enabled: boolean; generation: number; snapshot: TranscriptSnapshot };
+/**
+ * What the host document holds as of its last write: the context's messages (by identity) and every other snapshot
+ * field's JSON. A commit that only appends messages writes them as a delta instead of the whole working set again.
+ */
+type Stored = { context: AgentMessage[]; fields: Map<string, string>; deltas: number; bytes: number; base: number };
+/** A new base is written past this many deltas, or once deltas outweigh the base (and this many bytes): reload reads base + deltas. */
+const MAX_DELTAS = 512, MIN_REBASE_BYTES = 8 * 1024 * 1024;
+
+function fieldsOf(snapshot: TranscriptSnapshot) {
+  const fields = new Map<string, string>();
+  for (const [key, value] of Object.entries(snapshot)) if (key !== "context" && value !== undefined) fields.set(key, JSON.stringify(value));
+  return fields;
+}
 
 /** Find the latest host generation without materializing the historical archive. */
 async function generation(storage: Pick<Storage, "scanEntries">): Promise<number | undefined> {
@@ -95,6 +109,7 @@ export class NativeTranscript extends Transcript {
   private storage: Storage;
   private documentId: DocumentId;
   private generationId: number;
+  private stored?: Stored;
   private constructor(storage: Storage, documentId: DocumentId, generationId: number, indexed?: number, bound?: number) {
     super({ read: async () => (await nativeTranscriptRecords(storage))!, close: async () => {},
       append: () => { throw new Error("Use NativeTranscript.commit"); }, flush: async () => {},
@@ -110,6 +125,7 @@ export class NativeTranscript extends Transcript {
     if (!state?.enabled) return undefined;
     const transcript = new NativeTranscript(storage, document.id, state.generation, indexed, bound);
     transcript.restore(structuredClone(state.snapshot));
+    transcript.stored = { context: [...transcript.context], fields: fieldsOf(state.snapshot), deltas: stored!.deltasSinceBase, bytes: 0, base: 0 };
     transcript.prune();
     if (indexed === undefined) transcript.backlog = undefined;
     else if (!transcript.backlog || indexed < transcript.backlog.from) transcript.backlog = { from: indexed, kept: transcript.total, messages: [], sizes: [], bytes: 0, turns: [] };
@@ -158,9 +174,11 @@ export class NativeTranscript extends Transcript {
       model: json(convertToLlm(working ?? [...(source.system ? [source.system] : []), ...source.view()])) } });
     transcript.piCursor = { entryId: ready, index: -1 };
     transcript.prune();
-    writes.push(previous ? { type: "document.change", id: documentId, content: transcript.content() } :
-      { type: "document.create", record: { id: documentId, ...ADDRESS }, content: transcript.content() });
+    const base = transcript.document();
+    writes.push(previous ? { type: "document.change", id: documentId, content: base.content } :
+      { type: "document.create", record: { id: documentId, ...ADDRESS }, content: base.content });
     await storage.commit(writes, context);
+    transcript.stored = base.stored;
     return transcript;
   }
 
@@ -168,12 +186,39 @@ export class NativeTranscript extends Transcript {
     this.requests.clear();
     for (const [id, index] of this.calls) if (index < this.offset) this.calls.delete(id);
   }
-  private content(enabled = true) {
+  private stateSnapshot() {
     const snapshot = this.snapshot();
     // History indexing can always recover its backlog from immutable records.
     // Avoid rewriting a multi-megabyte indexing backlog with every checkpoint.
     if (snapshot.backlog) snapshot.backlog = { from: snapshot.backlog.from, kept: snapshot.total, messages: [], sizes: [], bytes: 0, turns: [] };
-    return { version: 1, kind: "base" as const, value: json({ enabled, generation: this.generationId, snapshot }) as JsonObject };
+    return snapshot;
+  }
+  /** The whole host state as a new base. */
+  private document(enabled = true): { content: Extract<DocumentContent, { kind: "base" }>; stored: Stored } {
+    const snapshot = this.stateSnapshot();
+    const text = JSON.stringify({ enabled, generation: this.generationId, snapshot });
+    return { content: { version: 1, kind: "base", value: JSON.parse(text) as JsonObject },
+      stored: { context: [...snapshot.context], fields: fieldsOf(snapshot), deltas: 0, bytes: 0, base: text.length } };
+  }
+  /**
+   * The change since the stored document: appended messages and changed fields as a delta, so a commit costs what it
+   * adds rather than the whole working set. Anything else (a reset, retraction or compaction) writes a new base.
+   */
+  private change(): { content?: DocumentContent; stored: Stored } {
+    const stored = this.stored, snapshot = this.stateSnapshot();
+    if (!stored || stored.deltas >= MAX_DELTAS || stored.bytes > Math.max(stored.base, MIN_REBASE_BYTES) ||
+      snapshot.context.length < stored.context.length || stored.context.some((message, index) => snapshot.context[index] !== message)) return this.document();
+    const ops: Op[] = [], fields = fieldsOf(snapshot);
+    let bytes = 0;
+    for (const [key, text] of fields) if (stored.fields.get(key) !== text) { ops.push(["s", ["snapshot", key], JSON.parse(text)]); bytes += text.length; }
+    for (const key of stored.fields.keys()) if (!fields.has(key)) ops.push(["d", ["snapshot", key]]);
+    if (snapshot.context.length > stored.context.length) {
+      const text = JSON.stringify(snapshot.context.slice(stored.context.length));
+      ops.push(["p", ["snapshot", "context"], stored.context.length, 0, JSON.parse(text)]);
+      bytes += text.length;
+    }
+    const next = { ...stored, context: [...snapshot.context], fields };
+    return ops.length ? { content: { version: 1, kind: "delta", ops }, stored: { ...next, deltas: stored.deltas + 1, bytes: stored.bytes + bytes } } : { stored: next };
   }
   override async hasRequest(requestId: string) {
     return !!await this.storage.submissionByRequest(conversationId, requestId, context);
@@ -182,7 +227,9 @@ export class NativeTranscript extends Transcript {
     return this.enqueue(async () => {
       const records = change();
       if (!records.length) return;
-      const before = structuredClone(this.snapshot());
+      // Messages are never changed in place: the rollback copies the context's array, not its (large) bodies.
+      const { context: kept, ...rest } = this.snapshot();
+      const before = { ...structuredClone(rest), context: [...kept] };
       try {
         const writes: StorageWrite[] = [];
         for (const record of records) {
@@ -197,8 +244,10 @@ export class NativeTranscript extends Transcript {
           this.apply(record);
         }
         this.prune();
-        writes.push({ type: "document.change", id: this.documentId, content: this.content() });
+        const change = this.change();
+        if (change.content) writes.push({ type: "document.change", id: this.documentId, content: change.content });
         await this.storage.commit(writes, context);
+        this.stored = change.stored;
       } catch (error) { this.restore(before); this.failed = error; throw error; }
     });
   }
@@ -208,6 +257,7 @@ export class NativeTranscript extends Transcript {
   }
   async disable() {
     await this.storage.commit([{ type: "entry", value: { id: await this.storage.mintId<EntryId>(), conversationId, kind: DISABLED } },
-      { type: "document.change", id: this.documentId, content: this.content(false) }], context);
+      { type: "document.change", id: this.documentId, content: this.document(false).content }], context);
+    this.stored = undefined;
   }
 }

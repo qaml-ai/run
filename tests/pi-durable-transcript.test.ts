@@ -6,6 +6,10 @@ import { Transcript, historyOf, type TranscriptRecord } from "../src/transcript.
 import { NativeTranscript, nativeTranscriptRecords } from "../src/pi-durable/transcript.ts";
 import { importLegacyTranscript, LegacyMigrationDeferred, MIGRATION_MAX_RECORDS } from "../src/pi-durable/migration.ts";
 import type { AppendLog } from "../shared/append-log.ts";
+import type { Storage, StorageWrite } from "@earendil-works/pi-durable";
+import { randomUUID } from "node:crypto";
+import { openPiStorage } from "../src/pi-durable/storage.ts";
+import { testDatabase } from "./database.ts";
 
 function legacy() {
   const records: TranscriptRecord[] = [];
@@ -72,5 +76,40 @@ test("adoption after rollback applies the import bound before changing the nativ
   source.records.length = 0;
   const adopted = await NativeTranscript.adopt(storage, source.transcript);
   assert.equal(adopted.total, 0, "retrying a refused adoption succeeds without partial-generation state");
+  await storage.close(context);
+});
+
+for (const backend of ["memory", "postgres"] as const) test(`native transcript commits write what they add, not the working set again (${backend})`, async () => {
+  const storage: Storage = backend === "memory" ? new MemoryStorage() :
+    await openPiStorage({ sessionId: randomUUID(), directory: "unused", db: (await testDatabase()).db });
+  const written: Extract<StorageWrite, { type: "document.change" }>["content"][] = [];
+  const commit = storage.commit.bind(storage);
+  storage.commit = async (writes, at) => {
+    for (const write of writes) if (write.type === "document.change") written.push(write.content);
+    return commit(writes, at);
+  };
+  await importLegacyTranscript({ storage, sessionId: "test", records: [] });
+  const transcript = await NativeTranscript.adopt(storage, legacy().transcript);
+  const big = "x".repeat(2_000_000);
+  await transcript.push({ role: "user", content: big, timestamp: 1 } as any);
+  written.length = 0;
+  await transcript.setActive(true);
+  for (let i = 0; i < 20; i++) await transcript.push({ role: "user", content: `small ${i}`, requestId: `r${i}`, timestamp: 2 + i } as any);
+  await transcript.setActive(false);
+  assert.equal(written.length, 22);
+  for (const content of written) {
+    assert.equal(content.kind, "delta");
+    assert.ok(JSON.stringify(content).length < 10_000, "a delta never carries the earlier working set");
+  }
+  const reopened = (await NativeTranscript.open(storage))!;
+  assert.deepEqual(reopened.snapshot(), transcript.snapshot(), "base + deltas reload the same state");
+
+  // A change that is not an append (here a retraction) writes the whole state as a new base.
+  written.length = 0;
+  await reopened.commit(() => [{ t: "retract" }]);
+  assert.deepEqual(written.map(content => content.kind), ["base"]);
+  for (let i = 0; i < 600; i++) await reopened.push({ role: "user", content: `more ${i}`, timestamp: 100 + i } as any);
+  assert.ok(written.filter(content => content.kind === "base").length >= 2, "deltas are folded into a new base");
+  assert.deepEqual((await NativeTranscript.open(storage))!.snapshot(), reopened.snapshot());
   await storage.close(context);
 });

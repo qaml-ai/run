@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { AgentEvent, AgentMessage, AgentOptions, AgentState, AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
 import { createAssistantMessageEventStream, getCurrentSystemMessage, getSystemMessageText, type AssistantMessage, type ImageContent, type Message, type ToolResultMessage } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -23,6 +24,22 @@ export type DurableAgentOptions = Omit<AgentOptions, "transformContext"> & {
 type Listener = (event: AgentEvent & { durable?: DurableCursor }, signal: AbortSignal) => void | Promise<void>;
 const context = BACKGROUND_CONTEXT;
 const nativeKinds = new Set(["pi.user", "pi.assistant", "pi.tool-result", "camel.user", "camel.message"]);
+
+/** Each message's content digest, kept with the message: a host's working set is mostly the same objects run to run. */
+const digests = new WeakMap<object, string>();
+const digest = (message: AgentMessage) => {
+  let value = digests.get(message);
+  if (value === undefined) digests.set(message, value = createHash("sha256").update(JSON.stringify(message)).digest("base64"));
+  return value;
+};
+
+/**
+ * Whether two working contexts hold the same messages: the same objects, or messages whose whole content is equal.
+ * Each message is serialized on its own, so the check never holds more than one message's JSON at a time.
+ */
+function sameMessages(left: readonly AgentMessage[], right: readonly AgentMessage[]) {
+  return left.length === right.length && left.every((message, index) => message === right[index] || digest(message) === digest(right[index]));
+}
 
 /** The native WAL is authoritative; an old transcript is a cursor-addressed projection. */
 export function durableEntryMessages(entry: EntryRecord): DurableMessage[] {
@@ -124,7 +141,9 @@ export class DurableAgent {
     const self = this;
     this.state = {
       model: options.initialState!.model!, thinkingLevel: options.initialState?.thinkingLevel ?? "off",
-      get messages() { return self.messages; }, set messages(value) { self.messages = [...value]; self.dirty = true; },
+      get messages() { return self.messages; },
+      // Hosts reassign the working set after every run; only a real change is checkpointed into Pi's context.
+      set messages(value) { if (!sameMessages(value, self.messages)) self.dirty = true; self.messages = [...value]; },
       get tools() { return self.tools; }, set tools(value) { self.tools = [...value]; self.installTools(); self.dirty = true; },
       get systemPrompt() { const system = self.messages.findLast(message => message.role === "system"); return system ? getSystemMessageText(system) : ""; },
       get isStreaming() { return self.controller !== undefined; },
@@ -233,6 +252,9 @@ export class DurableAgent {
       settings: { compaction: { enabled: true,
         get reserveTokens() { return Math.min(16_384, Math.floor(window() * 0.15)); },
         get keepRecentTokens() { return Math.min(20_000, Math.floor(window() * 0.25)); }, backgroundTokens: 0 },
+        // Live answers and tool output stream to the host from the provider and the tool, not from these commits:
+        // they only bound what a lost node's run keeps, so each costs a journal write once a second, not every 100 ms.
+        progress: { partialIntervalMs: 1_000, outputIntervalMs: 1_000 },
         retry: { enabled: false }, toolExecution: options.toolExecution ?? "parallel",
         steeringMode: agent.steeringMode, followUpMode: agent.followUpMode, contextRetentionMs: 0 },
     }, context);
@@ -270,6 +292,11 @@ export class DurableAgent {
         const original = (entry.data as { message?: AgentMessage } | undefined)?.message;
         if (original) agent.originalInputs.set(entry.id, { native: entry.model[0], message: original });
       }
+      // A reload whose Pi context already is the host's working set writes no checkpoint: rewriting the whole context
+      // on every load cost a full copy of it in memory and in the journal. An imported context is still split once
+      // into per-message entries, so Pi can choose a compaction cut inside it.
+      const whole = view.head?.kind === "camel.legacy.context" && (view.head.model?.length ?? 0) > 1;
+      agent.dirty = whole || !sameMessages(agent.originals(view.messages as Message[]) as AgentMessage[], contextMessages(agent.messages) as AgentMessage[]);
     }
     const head = await options.durable.storage.findLatestHeadMarker(agent.conversation.id, undefined, context);
     if (head?.kind === "pi.compaction") {
@@ -344,16 +371,9 @@ export class DurableAgent {
       signal?.throwIfAborted();
       await this.emit({ type: "turn_start" });
       let messages = this.messages;
-      if (nativeMessages) {
-        // Preserve Camel's original input metadata (sender, file refs) while Pi
-        // supplies its bounded model context, including the persisted summary.
-        const originals = new Map<string, AgentMessage[]>();
-        for (const item of this.originalInputs.values()) {
-          const key = JSON.stringify(item.native), queue = originals.get(key) ?? [];
-          queue.push(item.message); originals.set(key, queue);
-        }
-        messages = nativeMessages.map(message => message.role === "user" ? originals.get(JSON.stringify(message))?.shift() ?? message : message) as AgentMessage[];
-      }
+      // Preserve Camel's original input metadata (sender, file refs) while Pi
+      // supplies its bounded model context, including the persisted summary.
+      if (nativeMessages) messages = this.originals(nativeMessages);
       // Pi's working context already excludes archived bodies.
       this.messages = [...messages];
       const prepared = await this.options.prepareRequest?.({ context: { messages, tools: this.tools }, model: this.state.model,
@@ -398,6 +418,16 @@ export class DurableAgent {
     return stream;
   }
 
+  /** Pi's context with each submitted input replaced by Camel's original message. */
+  private originals(nativeMessages: Message[]): AgentMessage[] {
+    const originals = new Map<string, AgentMessage[]>();
+    for (const item of this.originalInputs.values()) {
+      const key = JSON.stringify(item.native), queue = originals.get(key) ?? [];
+      queue.push(item.message); originals.set(key, queue);
+    }
+    return nativeMessages.map(message => message.role === "user" ? originals.get(JSON.stringify(message))?.shift() ?? message : message) as AgentMessage[];
+  }
+
   private installTools() {
     this.registry.install({ name: "camel", tools: this.tools.map(tool => ({ ...tool, replay: tool.replay === "safe" ? "safe" : "unsafe",
       structuredOutputSchema: tool.outputSchema,
@@ -425,13 +455,14 @@ export class DurableAgent {
 
   /** Abort handlers settle unknown work; opening itself never dispatches a task. */
   async discardInterruptedRun() {
-    const before = [...this.messages];
+    const before = [...this.messages], cursor = this._latestCursor;
     const listeners = [...this.listeners]; this.listeners.clear();
     await this.conversation.abort(context);
     await this.flushEvents();
+    // Settling an interrupted run commits native messages the host's working set does not take: check it in again.
+    if (this.messages.length !== before.length || this._latestCursor !== cursor) this.dirty = true;
     this.messages = before; this.lastTurn = undefined; this.lastTurnResults = []; this.errorMessage = undefined;
     for (const listener of listeners) this.listeners.add(listener);
-    this.dirty = true;
     return this._latestCursor;
   }
 
