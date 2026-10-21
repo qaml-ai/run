@@ -432,9 +432,11 @@ export class DurableAgent {
   }
 
   private async adoptCompaction(entry: EntryRecord) {
-    const view = await this.conversation.context(context);
+    // The context as the compaction left it: entries committed since (inputs a boundary placed with the summary, a
+    // later turn) are not among the messages it kept, and the host has not taken them in yet.
+    const view = await this.conversation.context(context, { at: entry.id });
     const retained = new Set(view.entries.map(entry => entry.id));
-    for (const id of this.originalInputs.keys()) if (!retained.has(id as never)) this.originalInputs.delete(id);
+    for (const id of this.originalInputs.keys()) if (id < entry.id && !retained.has(id as never)) this.originalInputs.delete(id);
     const keptMessages = view.contributions.reduce((count, messages, index) => count +
       (view.entries[index].id === view.head?.id ? 0 : messages.filter(message => message.role !== "system").length), 0);
     let summary = (entry.model ?? []).map(message => typeof message.content === "string" ? message.content :
