@@ -307,7 +307,7 @@ const MODEL_RUNS = ["prompt", "continue"];
 /** A running run's active time is reported at least this often. */
 const ACTIVE_REPORT_MS = 60_000;
 /** Resumes of one run's turn before it fails with resume_limit, so a turn that kills its node cannot loop. Hand-offs at a step boundary are not resumes. */
-export const MAX_RESUMES = 3;
+export const MAX_RESUMES = 2;
 /**
  * How many times a run's start (its busy slot, its agent's process, its run events' setting) is tried when the
  * database refuses it for now or cannot be reached, or the node answers 503: the run stays queued meanwhile, its place

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { randomBytes } from "node:crypto";
 import { listen } from "./runtime-server.ts";
+import { MAX_RESUMES } from "../src/client-sessions.ts";
 import { AgentRuntime, schema, tool } from "../clients/typescript.ts";
 import { cluster, fakeModel, jsExec, lookup, token, toolMessages, until } from "./cluster-helpers.ts";
 
@@ -93,7 +94,7 @@ test("a turn whose node died during a tool call continues with the outcome unkno
   assert.ok(toolMessages(model.bodies[1]).some((content: string) => /outcome is unknown/.test(content)), "the model was told the outcome is unknown");
 });
 
-test("three node-loss resumes preserve growing backoff; the fourth loss fails and new work can run", { timeout: 120_000 }, async t => {
+test("node-loss resumes preserve growing backoff; the loss after the limit fails and new work can run", { timeout: 120_000 }, async t => {
   const c = await cluster(t);
   const events: any[] = [];
   const hookUrl = await listen(t, async (req, res) => {
@@ -118,7 +119,7 @@ test("three node-loss resumes preserve growing backoff; the fourth loss fails an
   run.catch(() => {});
   const row = async () => (await c.db.query("select turn_resumes, resume_failures, resume_after from agents where id = $1", [created.session.id])).rows[0];
   let previousDelay = 0;
-  for (let loss = 1; loss <= 4; loss++) {
+  for (let loss = 1; loss <= MAX_RESUMES + 1; loss++) {
     await until(() => model.bodies.length === loss, `model call ${loss}`);
     const before = await row();
     assert.equal(before.turn_resumes, loss - 1);
@@ -132,19 +133,19 @@ test("three node-loss resumes preserve growing backoff; the fourth loss fails an
     node.child.kill("SIGKILL");
     await once(node.child, "close");
     node = await c.start(`a${loss}`, env, port);
-    if (loss < 4) {
+    if (loss <= MAX_RESUMES) {
       await until(() => model.bodies.length === loss + 1, `resumed call ${loss}`);
       assert.ok(Date.now() >= deadline, "even a client-triggered load waits for resume_after");
     }
   }
   const result = await run;
   assert.equal(result.code, "resume_limit");
-  assert.match(result.error!, /3 node-loss resumes/);
-  assert.equal(model.bodies.length, 4, "the first attempt and three resumes, with no fifth call");
+  assert.match(result.error!, new RegExp(`${MAX_RESUMES} node-loss resumes`));
+  assert.equal(model.bodies.length, MAX_RESUMES + 1, "the first attempt and allowed resumes, with no call past the limit");
   await until(async () => (await row()).turn_resumes === 0, "terminal reset");
   assert.equal((await row()).resume_failures, 0);
   assert.equal((await row()).resume_after, null);
-  assert.ok(node.logs.some(entry => entry.type === "turn_resume_limit" && entry.agent === created.session.id && entry.tenant === "alice" && entry.resumes === 3));
+  assert.ok(node.logs.some(entry => entry.type === "turn_resume_limit" && entry.agent === created.session.id && entry.tenant === "alice" && entry.resumes === MAX_RESUMES));
   finish = true;
   const next = await client.prompt("fresh prompt", { idempotencyKey: "fresh" });
   assert.equal(next.reply, "new turn finished");

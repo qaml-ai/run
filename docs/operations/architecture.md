@@ -236,7 +236,7 @@ time), the turn resumes there under the same request ID instead of failing: an
 answer the model had already finished is taken as the outcome; otherwise any
 tool call whose outcome was lost gets an "outcome unknown" result (a call is
 never sent again) and the model is called once more to continue. A run is
-resumed at most three times by default (`AGENT_MAX_RESUMES`), counted durably in
+resumed at most two times by default (`AGENT_MAX_RESUMES`), counted durably in
 the journal and mirrored in `agents.turn_resumes`. Backoff grows across resumes;
 after the limit, the request fails with `resume_limit` and the agent remains usable.
 Code executions fail as uncertain. A code execution counts as begun

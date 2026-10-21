@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { nodeConfig } from "../src/node-config.ts";
-import { loadDecision } from "../src/client-sessions.ts";
+import { loadDecision, MAX_RESUMES } from "../src/client-sessions.ts";
 
 // What used to be the process's settings are each node's own, from its environment, and its agent processes are told
 // its settings rather than inheriting the process's.
@@ -43,8 +43,9 @@ test("the legacy engine's settings are accepted and ignored: a node that still h
   }
 });
 
-test("node-loss resume limit defaults to three and accepts only positive integers", () => {
-  assert.equal(nodeConfig({}).maxResumes, 3);
+test("node-loss resume limit defaults to two and accepts only positive integers", () => {
+  assert.equal(MAX_RESUMES, 2);
+  assert.equal(nodeConfig({}).maxResumes, MAX_RESUMES);
   assert.equal(nodeConfig({ AGENT_MAX_RESUMES: "7" }).maxResumes, 7);
   for (const value of ["0", "-1", "1.5", "NaN", ""]) assert.throws(() => nodeConfig({ AGENT_MAX_RESUMES: value }), /AGENT_MAX_RESUMES/);
 });
