@@ -48,6 +48,7 @@ async function setup(t: Context) {
       file: async () => { throw new Error("no files"); },
       modelAuth: async () => { throw new Error("no per-call credentials"); },
       fs: async () => { throw new Error("no files"); },
+      piDualRead: "throw",
     };
     const host = createAgentHost(io);
     const init = await host.handle("init", { id: "agent", directory, model: faux.getModel(), apiKey: "fixture", tools, ...(options.resume ? { resume: true } : {}), ...(options.initialMessages ? { initialMessages: options.initialMessages } : {}) });

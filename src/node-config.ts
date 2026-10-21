@@ -22,6 +22,13 @@ import { MULTI_AGENT_LIMITS } from "./multi-agent.ts";
  */
 export type NodeConfig = ReturnType<typeof nodeConfig>;
 
+/** AGENT_PI_DUAL_READ: `log`, `throw`, or off (unset). */
+export function piDualRead(value: string | undefined): "log" | "throw" | undefined {
+  if (!value) return undefined;
+  if (value !== "log" && value !== "throw") throw new Error("AGENT_PI_DUAL_READ must be log or throw");
+  return value;
+}
+
 /** A comma-separated setting's items, trimmed; none when unset. */
 const list = (value: string | undefined) => (value ?? "").split(",").map(item => item.trim()).filter(Boolean);
 
@@ -122,6 +129,9 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     sandboxRequired: env.AGENT_SANDBOX_REQUIRED === "1",
     // The most of an agent's history its host keeps in memory (AGENT_HISTORY_BACKLOG_BYTES).
     historyBacklogBytes: Number(env.AGENT_HISTORY_BACKLOG_BYTES) || BACKLOG_BYTES,
+    // Compare each agent's host transcript with Pi's journal after its loads and runs (AGENT_PI_DUAL_READ: log, or throw
+    // in tests and the simulation; unset: off). See plans/host-transcript-removal.md.
+    piDualRead: piDualRead(env.AGENT_PI_DUAL_READ),
     // What its agent processes are told of these settings.
     agentEnv: agentProcessEnv(env),
     systemPrompt: env.AGENT_SYSTEM_PROMPT,
