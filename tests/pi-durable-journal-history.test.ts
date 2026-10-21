@@ -98,3 +98,51 @@ test("journal history: refreshes that overlap (parallel tool calls asking for th
   assert.equal(history.callIndex("a"), 1);
   assert.equal(history.callIndex("b"), 1);
 });
+
+test("journal history: an entry committed after one with a later ID is still taken in, in ID order", async () => {
+  const storage = await journal([base(0)]);
+  const history = (await JournalHistory.open(storage))!;
+  // The host takes an ID for its retraction's marker, then Pi commits a later-numbered entry first.
+  const failed = await storage.mintId<EntryId>(), retraction = await storage.mintId<EntryId>(), next = await storage.mintId<EntryId>();
+  await storage.commit([{ type: "entry", value: { id: failed, conversationId, kind: "pi.assistant", model: [{ ...fauxAssistantMessage(""), stopReason: "error" }] as never } }], BACKGROUND_CONTEXT);
+  await storage.commit([{ type: "entry", value: { id: next, conversationId, kind: "pi.assistant", model: [reply("next")] as never } }], BACKGROUND_CONTEXT);
+  await history.refresh();
+  assert.equal(history.total, 2, "the failure and the next response, so far");
+  await storage.commit([{ type: "entry", value: { id: retraction, conversationId, kind: MARKER_KIND, data: { t: "retract", index: 0 } as never } }], BACKGROUND_CONTEXT);
+  await history.refresh();
+  assert.equal(history.total, 1, "the retraction took back the failure, which precedes it");
+  assert.equal((await history.messagesFrom(0))!.length, 1);
+  assert.equal(((await history.messagesFrom(0))![0] as { stopReason: string }).stopReason, "stop");
+});
+
+test("journal history: a refresh with nothing late reads only IDs of the recent entries, then what is new", async () => {
+  const storage = await journal([base(0), { native: "pi.user", message: user("one") }]);
+  const history = (await JournalHistory.open(storage))!;
+  const scans: { minEntryId?: number; maxEntryId?: number }[] = [];
+  let listed = 0;
+  const scan = storage.scanEntries.bind(storage);
+  storage.scanEntries = ((query: { minEntryId?: number; maxEntryId?: number }, ...rest: unknown[]) => { scans.push(query); return (scan as any)(query, ...rest); }) as typeof storage.scanEntries;
+  (storage as any).entryIds = async (_conversation: number, minId: number, maxId: number) => { listed++; return (await scan({ conversationId, order: "ascending", minEntryId: minId as EntryId, maxEntryId: maxId as EntryId }, 1000, undefined, BACKGROUND_CONTEXT)).items.map(entry => entry.id); };
+  await storage.commit([{ type: "entry", value: { id: await storage.mintId<EntryId>(), conversationId, kind: "pi.assistant", model: [reply("two")] as never } }], BACKGROUND_CONTEXT);
+  await history.refresh();
+  assert.equal(listed, 1, "the recent IDs, listed");
+  assert.equal(scans.length, 1, "one read of records: what is new");
+  assert.equal(scans[0].maxEntryId, undefined);
+  assert.equal(history.total, 2);
+});
+
+test("journal history: a compaction is not history, and the response its overflow refused is taken back by its marker", async () => {
+  const overflow = { ...fauxAssistantMessage(""), stopReason: "error", errorMessage: "prompt is too long" };
+  const storage = await journal([
+    base(3),
+    { native: "pi.user", message: user("a long one") },
+    { native: "pi.assistant", message: overflow },
+    { native: "camel.compaction.usage", message: reply("summary usage") },
+    { native: "pi.compaction", message: { role: "user", content: "The conversation so far, summarized.", timestamp: 2 } },
+    { marker: { t: "retract", index: 4 } },
+    { native: "pi.assistant", message: reply("answered after the summary") },
+  ]);
+  const history = (await JournalHistory.open(storage))!;
+  assert.equal(history.total, 5, "the user message and the answer: no summary, no refused response");
+  assert.deepEqual((await history.messagesFrom(3))!.map(message => (message as { role: string }).role), ["user", "assistant"]);
+});
