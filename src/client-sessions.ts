@@ -3712,9 +3712,9 @@ export class ClientSessions {
       const indexed = await this.historyIndex.indexed(id);
       const reported = "unloaded" in session ? await this.historyIndex.reported(id) : Math.max(0, ...[...session.requests.values()].map(record => Number((record.outcome?.result as { messages?: unknown } | undefined)?.messages) || 0));
       const orphaned = "unloaded" in session && !!(await this.db.query("select 1 from agents where id = $1 and pending_runs", [id])).rowCount;
-      // A Pi response may have committed just before its legacy projection and run outcome failed. Neither
-      // reported nor pending_runs then reveals that tail; a cold read must also consult the native journal.
-      const durable = await this.supervisor.hasDurableHistory(id);
+      // A Pi response may have committed just before its host record and run outcome failed. Neither reported nor
+      // pending_runs then reveals that tail: the native journal's newest entries do.
+      const durable = await this.supervisor.unrecordedHistory(id);
       if (tail === null || indexed === undefined || indexed < reported || orphaned || durable) tail = await this.supervisor.backlog(id, indexed ?? 0);
     }
     return this.historyIndex.page(id, { before, limit }, tail ?? undefined);
@@ -5486,21 +5486,22 @@ export class ClientSessions {
   }
 
   /**
-   * One step of the Pi migration sweep (src/pi-sweep.ts): open `agent`, kept and still on the legacy engine, so it
-   * migrates as its next open would, then let it go. Only an idle agent no node holds is opened: one hosted or being
-   * loaded anywhere, with runs open, or waiting on a person is left for its own next open. Opening takes the agent's
-   * ownership claim as any load does, so a node that took it meanwhile keeps it (`skipped_hosted`). The legacy
-   * transcript is read first, bounded, and an agent its open would not migrate is not opened (`deferred_<reason>`).
-   * A dry run stops there (`would_migrate`), writing nothing. A request that arrives while it is open keeps it open.
+   * One step of the Pi migration sweep (src/pi-sweep.ts): open `agent`, kept and not yet on Pi, so its legacy session
+   * is imported as its next open would import it, then let it go. Only an agent no node holds is opened: one hosted or
+   * being loaded anywhere, or with runs open (which the orphan sweep loads), is left for its own next open. Opening
+   * takes the agent's ownership claim as any load does, so a node that took it meanwhile keeps it (`skipped_hosted`).
+   * The legacy transcript is read first, bounded: one too large to copy is left for its own open
+   * (`skipped_size_limit`), which imports it by reference after reading the log whole. A dry run stops there
+   * (`would_migrate`, with what the import would find), writing nothing. A request that arrives while it is open
+   * keeps it open.
    */
   async piSweepAgent(agent: PiSweepCandidate, dryRun: boolean): Promise<PiSweepResult> {
     const { id } = agent;
     if (agent.owned || this.sessions.has(id) || this.loading.has(id)) return { outcome: "skipped_hosted" };
     if (agent.pendingRuns) return { outcome: "skipped_pending_runs" };
-    if (agent.awaiting) return { outcome: "deferred_awaiting" };
     const plan = await this.supervisor.migrationPlan(id);
-    if (!plan.ready) return { outcome: `deferred_${plan.reason}`, ...(plan.kind ? { detail: { kind: plan.kind } } : {}) };
-    if (dryRun) return { outcome: "would_migrate", detail: { records: plan.records } };
+    if (!plan.ready) return { outcome: `skipped_${plan.reason}` };
+    if (dryRun) return { outcome: "would_migrate", detail: { records: plan.records, ...(plan.from ? { from: plan.from } : {}) } };
     if (this.closed || this.draining) return { outcome: "skipped_leaving" };
     let session: Session | undefined;
     try { session = await this.load(id); }
@@ -5511,10 +5512,9 @@ export class ClientSessions {
       // Its load found work (a request since the candidate was read): it runs here, as for any load.
       if (!idle()) return { outcome: "skipped_busy" };
       await this.ensureStarted(session);
-      const { migration } = await this.supervisor.request(id, "status", {}) as { migration?: { state: string; reason?: string; from?: string; archive?: string } };
+      const { migration } = await this.supervisor.request(id, "status", {}) as { migration?: { state: string; from?: string; archive?: string } };
       if (!migration) return { outcome: "not_migrated" };
-      if (migration.state === "deferred") return { outcome: `deferred_${migration.reason ?? "unknown"}` };
-      return { outcome: migration.state === "existing" ? "already_pi" : migration.state, ...(migration.from || migration.archive ? { detail: { from: migration.from, archive: migration.archive } } : {}) };
+      return { outcome: migration.state === "existing" ? "already_pi" : migration.state, ...(migration.from || migration.archive ? { detail: { ...(migration.from ? { from: migration.from } : {}), ...(migration.archive ? { archive: migration.archive } : {}) } } : {}) };
     } finally {
       if (idle()) await this.supervisor.stop(id).catch(() => {});
       if (idle()) await this.unload(session);

@@ -10,12 +10,21 @@ const INT8 = 20;
  * queries of its own for checkers, and the statements it ran. SimDb (PGlite, deterministic) and PostgresDb (a real
  * server, for the nightly mode) are the two.
  */
+export type Gate = (text: string, written?: string) => Promise<void>;
+/** A statement and its values, as `Gate`'s `written` gives them. */
+const valueText = (value: unknown): string => typeof value === "string" ? value : Array.isArray(value) ? value.map(valueText).join(" ") : JSON.stringify(value);
+export const statementText = (text: string, values?: unknown[]) => `${text} ${valueText(values ?? [])}`;
+
 export interface WorldDb {
   readonly statements: string[];
   /** How the ownership statements came out (`ownershipOutcome`), counted: what the fuzzer reads as behaviour. */
   readonly outcomes: Map<string, number>;
-  /** `gate` is called with each answer's statement before the node hears it: it waits while the node is paused. */
-  connection(node: string, gate?: (text: string) => Promise<void>, latency?: () => number): Db & { kill(): void };
+  /**
+   * `gate` is called with each answer's statement before the node hears it: it waits while the node is paused. An answer
+   * that makes writes durable (a commit, or a statement outside a transaction) also gives what was written (`written`):
+   * the statements and their values.
+   */
+  connection(node: string, gate?: Gate, latency?: () => number): Db & { kill(): void };
   listen(node: string, dead?: () => boolean, deliver?: (work: () => void) => void): (handlers: Record<string, (payload: string) => void>) => Promise<{ close(): Promise<void> }>;
   setDown(node: string, down: boolean): void;
   migrate(): Promise<void>;
@@ -133,18 +142,18 @@ export class SimDb implements WorldDb {
    * `node`'s view of the database: its own pool. Ending it ends nothing shared. `kill` is its process dying: every
    * query from then on fails, as the server dropped its connections (an open transaction rolls back on release).
    */
-  connection(node: string, gate: (text: string) => Promise<void> = async () => {}, latency: () => number = () => 0): Db & { kill(): void } {
+  connection(node: string, gate: Gate = async () => {}, latency: () => number = () => 0): Db & { kill(): void } {
     let ended = false, killed = false;
     /** Sessions this pool holds (open transactions): a process that dies loses its connections, and the server rolls back. */
     const held = new Set<() => void>();
     /** Its connections' sessions, for their advisory locks: a dying process's go with its connections. */
     const sessions = new Set<object>();
     // A paused node hears the answer once it runs again (`gate`).
-    const answered = <T>(result: Promise<T>, text: string) => result.then(async value => { await gate(text); return value; }, async error => { await gate(text); throw error; });
+    const answered = <T>(result: Promise<T>, text: string, written?: string) => result.then(async value => { await gate(text, written); return value; }, async error => { await gate(text); throw error; });
     // A pool query's round trip (`latency`, virtual ms): it reaches the server that much later, on the node's timers.
     const travel = async () => { const ms = latency(); if (ms > 0) await new Promise(resolve => setTimeout(resolve, ms)); };
     const query = (text: string, values?: unknown[]) => ended ? Promise.reject(new Error("Cannot use a pool after calling end on the pool"))
-      : killed ? Promise.reject(unavailable()) : answered(travel().then(() => this.exclusive(() => killed ? Promise.reject(unavailable()) : this.run(node, text, values))), text);
+      : killed ? Promise.reject(unavailable()) : answered(travel().then(() => this.exclusive(() => killed ? Promise.reject(unavailable()) : this.run(node, text, values))), text, statementText(text, values));
     return {
       query: query as Db["query"],
       connect: async () => {
@@ -165,6 +174,8 @@ export class SimDb implements WorldDb {
         const lost = () => end(true);
         const me = {};
         sessions.add(me);
+        // What the open transaction wrote, for its commit's answer (`Gate`).
+        let written: string[] = [];
         const client: DbClient = {
           query: (async (text: string, values?: unknown[]) => {
             if (killed) { broken = true; throw unavailable(); }
@@ -172,8 +183,11 @@ export class SimDb implements WorldDb {
             const advisory = /\bpg_(try_advisory_lock|advisory_unlock)\(hashtext\(\$1\)\)/.exec(text)?.[1];
             if (advisory) return answered(this.advisory(node, me, advisory === "advisory_unlock" ? "unlock" : "try", String(values?.[0])), text);
             if (verb === "begin" && !ending) await new Promise<void>(taken => void this.exclusive(() => new Promise<void>(release => { ending = release; held.add(lost); taken(); })));
+            if (verb === "begin") written = [];
+            else if (verb !== "commit" && verb !== "rollback") written.push(statementText(text, values));
+            const durable = verb === "commit" ? written.join("\n") : ending ? undefined : statementText(text, values);
             try {
-              const result = await answered(ending ? this.run(node, text, values) : this.exclusive(() => this.run(node, text, values)), text);
+              const result = await answered(ending ? this.run(node, text, values) : this.exclusive(() => this.run(node, text, values)), text, durable);
               if (verb === "commit" || verb === "rollback") end(false);
               return result;
             } catch (error) {

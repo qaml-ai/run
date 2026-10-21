@@ -125,12 +125,12 @@ variable "agent_pi_sweep" {
 }
 
 variable "agent_engine" {
-  description = "AGENT_ENGINE: pi-durable, or legacy to roll every agent back to the old engine"
+  description = "AGENT_ENGINE, kept at pi-durable for images before the legacy engine's removal (which default to legacy without it; a deploy rollback may run one). The current image ignores it. Remove once no image that reads it can be deployed."
   type        = string
   default     = "pi-durable"
   validation {
-    condition     = contains(["pi-durable", "legacy"], var.agent_engine)
-    error_message = "agent_engine is pi-durable or legacy."
+    condition     = var.agent_engine == "pi-durable"
+    error_message = "agent_engine is pi-durable: the legacy engine was removed, and an older image rolled back to it would take sessions off Pi."
   }
 }
 

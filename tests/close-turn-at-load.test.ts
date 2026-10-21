@@ -13,6 +13,9 @@ import { MAX_RESUMES } from "../src/client-sessions.ts";
 import type { RequestRecord } from "../shared/client-protocol.ts";
 import { AgentSupervisor } from "../src/supervisor.ts";
 import { interruptedTurnRepairs } from "../src/history.ts";
+import { hasPiStorage, openPiJournalReader, openPiStorage } from "../src/pi-durable/storage.ts";
+import { NativeTranscript, nativeTranscriptRecords } from "../src/pi-durable/transcript.ts";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 
 /**
  * A run that ends with no host to end it (past its resumes or stopped before its node was lost, at a load; or resumed
@@ -29,12 +32,16 @@ async function lostTurn(t: Parameters<typeof fixture>[0], run: Partial<RequestRe
   // The node running the turn is lost: its host and session are gone, and what it left is what the logs hold.
   await fx.sessions.close();
   await fx.supervisor.close();
-  const transcript = new Transcript(fileAppendLog<TranscriptRecord>(transcriptPath(join(fx.root, "agents", id))));
-  await transcript.load();
+  // The open turn, in the store the agent's engine keeps it in: Pi's host records, or the legacy transcript log.
+  const location = { sessionId: id, directory: join(fx.root, "agents", id) };
+  const native = await hasPiStorage(location) ? await openPiStorage(location) : undefined;
+  const transcript = native ? (await NativeTranscript.open(native))! : new Transcript(fileAppendLog<TranscriptRecord>(transcriptPath(join(fx.root, "agents", id))));
+  if (!native) await transcript.load();
   await transcript.setActive(true);
   await transcript.append([user("research it"), fauxAssistantMessage([fauxToolCall("lookup", {}, { id: "look" }), fauxToolCall("approve", {}, { id: "ask" })], { stopReason: "toolUse" })]);
   if (options.awaiting) await transcript.await(["ask"]);
-  await transcript.log.close();
+  if (native) await native.close(BACKGROUND_CONTEXT);
+  else await transcript.log.close();
   const journal = fileStorage(join(fx.root, "sessions")).log<unknown>(`${id}.journal`);
   const now = Date.now();
   journal.append({ t: "request", record: { id: "turn-1", fingerprint: "fixture", method: "prompt", state: "running", startedAt: now, began: now, ...run } });
@@ -46,7 +53,11 @@ async function lostTurn(t: Parameters<typeof fixture>[0], run: Partial<RequestRe
     const response = await fetch(`${fx.url}/clients/${id}/requests/turn-1`, { headers: { Authorization: `Bearer ${agent.session.token}` } });
     return response.json() as Promise<RequestRecord>;
   };
-  const records = () => fileAppendLog<TranscriptRecord>(transcriptPath(join(fx.root, "agents", id))).read();
+  const records = async () => {
+    const reader = native ? await openPiJournalReader(location) : undefined;
+    if (!reader) return fileAppendLog<TranscriptRecord>(transcriptPath(join(fx.root, "agents", id))).read();
+    try { return (await nativeTranscriptRecords(reader))!; } finally { await reader.close(BACKGROUND_CONTEXT); }
+  };
   return { fx, id, read, records };
 }
 

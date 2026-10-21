@@ -11,7 +11,6 @@ export type CallContext = { toolCallId: string; innerCallId?: string; messageInd
 import type { HistoryChunk } from "./history-pages.ts";
 import type { CommitEffect } from "../shared/append-log.ts";
 import type { TranscriptRecord } from "./transcript.ts";
-import type { AgentEngine } from "./pi-durable/config.ts";
 /** The least `runLimits.contextTokens` may be: below it, a summary and the recent messages it keeps would not fit. */
 export const MIN_CONTEXT_TOKENS = 20_000;
 /**
@@ -78,8 +77,6 @@ export type Credentials = { apiKey: string; identity?: boolean; baseUrl?: string
 export interface AgentConfig {
   id: string;
   directory: string;
-  /** The operator's execution engine, chosen by the supervisor, never tenant configuration. */
-  engine?: AgentEngine;
   model: Model<Api>;
   apiKey?: string;
   systemPrompt?: string;

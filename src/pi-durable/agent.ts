@@ -2,10 +2,11 @@ import { createHash } from "node:crypto";
 import type { AgentEvent, AgentMessage, AgentOptions, AgentState, AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
 import { createAssistantMessageEventStream, getCurrentSystemMessage, getSystemMessageText, type AssistantMessage, type ImageContent, type Message, type ToolResultMessage } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { isContextOverflow } from "@earendil-works/pi-ai/utils/overflow";
 import { convertToLlm as contextMessages, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "../pi-harness/messages.ts";
 import {
-  GenerationTask, Harness, LiveDoc, createRegistry,
-  type Conversation, type ConversationId, type EntryRecord, type HarnessOptions, type RegistryReader, type RegistrySnapshot, type Storage,
+  GenerationTask, Harness, InboxDoc, LiveDoc, createRegistry,
+  type Conversation, type ConversationId, type EntryRecord, type HarnessOptions, type RegistryReader, type RegistrySnapshot, type Storage, type TaskId,
 } from "@earendil-works/pi-durable";
 
 export interface DurableCursor { entryId: number; index: number }
@@ -18,7 +19,12 @@ export type DurableAgentOptions = Omit<AgentOptions, "transformContext"> & {
     contextWindow?: number;
     summaryStream?: AgentOptions["streamFn"];
     onSummary?: (message: AssistantMessage) => void | Promise<void>;
-    onCompaction?: (state: { summary: string; keptMessages: number; at: number }) => void | Promise<void>;
+    onCompaction?: (state: { summary: string; keptMessages: number; at: number; reason: "threshold" | "overflow" }) => void | Promise<void>;
+    /**
+     * A storage call failed (past the Storage's own retries). Pi's Session is then failed for good, and closes the
+     * Storage: the host must be given up and reopened from what was committed.
+     */
+    onStorageFailure?: (error: unknown) => void;
   };
 };
 type Listener = (event: AgentEvent & { durable?: DurableCursor }, signal: AbortSignal) => void | Promise<void>;
@@ -40,6 +46,40 @@ const digest = (message: AgentMessage) => {
 function sameMessages(left: readonly AgentMessage[], right: readonly AgentMessage[]) {
   return left.length === right.length && left.every((message, index) => message === right[index] || digest(message) === digest(right[index]));
 }
+
+/** Pi 1.3.0's context derivation (harness/context.js, not exported): what it leaves out, and a missing result's text. */
+const EXCLUDED_STOP_REASONS = new Set(["aborted", "error", "deferred"]);
+const MISSING_RESULT_TEXT = "Tool result unavailable: history ends before this call completed.";
+
+/**
+ * A context as Pi derives it from a checkpoint of `messages`: failed, aborted and deferred responses left out, and each
+ * assistant's tool results right after it in call order (a missing one given Pi's own placeholder, an unmatched one
+ * dropped). Two working sets with the same Pi context need no new checkpoint: an imported legacy context Pi orders
+ * differently, or a failed response the host keeps, would otherwise rewrite the whole context on every run.
+ */
+export function piOrdered(messages: readonly AgentMessage[]): AgentMessage[] {
+  const kept = messages.filter(message => message.role !== "assistant" || !EXCLUDED_STOP_REASONS.has(message.stopReason));
+  const ordered: AgentMessage[] = [];
+  for (let index = 0; index < kept.length; index++) {
+    const message = kept[index];
+    if (message.role === "toolResult") continue;
+    ordered.push(message);
+    if (message.role !== "assistant") continue;
+    const calls = message.content.filter(part => part.type === "toolCall");
+    if (!calls.length) continue;
+    const results = new Map<string, AgentMessage>();
+    for (let next = index + 1; next < kept.length && kept[next].role !== "assistant"; next++) {
+      const candidate = kept[next];
+      if (candidate.role === "toolResult" && !results.has(candidate.toolCallId)) results.set(candidate.toolCallId, candidate);
+    }
+    for (const call of calls) ordered.push(results.get(call.id) ?? { role: "toolResult", toolCallId: call.id, toolName: call.name,
+      content: [{ type: "text", text: MISSING_RESULT_TEXT }], isError: true, details: { reason: "missing_result" }, timestamp: message.timestamp } as AgentMessage);
+  }
+  return ordered;
+}
+
+/** Whether two working sets give Pi the same context: the same messages, or the same once Pi orders them (`piOrdered`). */
+const samePiContext = (left: readonly AgentMessage[], right: readonly AgentMessage[]) => sameMessages(left, right) || sameMessages(piOrdered(left), piOrdered(right));
 
 /** The native WAL is authoritative; an old transcript is a cursor-addressed projection. */
 export function durableEntryMessages(entry: EntryRecord): DurableMessage[] {
@@ -67,6 +107,62 @@ async function latestDurableCursor(storage: Storage, conversationId: Conversatio
     }
     cursor = page.next;
   } while (cursor !== undefined);
+}
+
+const summaryOf = (message: AssistantMessage) => {
+  const text = message.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n").trim();
+  return text || undefined;
+};
+
+/**
+ * Pi's summary request (a system prompt, and a user message holding `<conversation>…</conversation>` and its prompt)
+ * split into requests that each fit `window` with `maxTokens` to answer: each takes a part of the conversation, cut
+ * between lines, after the summary of the parts before it. Undefined when the request fits as it is (or is not one).
+ */
+export function summaryChunks(messages: Message[], window: number, maxTokens: number): ((before?: string) => Message[])[] | undefined {
+  const [system, user] = messages;
+  const text = user?.role === "user" && Array.isArray(user.content) && user.content.length === 1 && user.content[0].type === "text" ? user.content[0].text : undefined;
+  const match = text?.match(/^<conversation>\n([\s\S]*)\n<\/conversation>\n\n([\s\S]*)$/);
+  if (messages.length !== 2 || !match || !Number.isFinite(window)) return undefined;
+  const [, conversation, prompt] = match;
+  const tokens = (value: string) => Math.ceil(value.length / 4);
+  // Room for a part: the window less the answer, the prompts, and the summary carried in (bounded by the answer's size).
+  const fixed = tokens(JSON.stringify(system)) + tokens(prompt) + 200;
+  if (fixed + tokens(conversation) + maxTokens <= window) return undefined;
+  const room = (window - maxTokens - fixed - Math.max(maxTokens, 1_000)) * 4;
+  if (room < 4_000) return undefined;
+  const parts: string[] = [];
+  let part = "";
+  for (const line of conversation.split("\n")) {
+    for (let at = 0; at < Math.max(line.length, 1); at += room) {
+      const piece = line.slice(at, at + room);
+      if (part && part.length + piece.length + 1 > room) { parts.push(part); part = ""; }
+      part = part ? `${part}\n${piece}` : piece;
+    }
+  }
+  if (part) parts.push(part);
+  return parts.map(content => (before?: string) => [system, { ...user, content: [{ type: "text", text:
+    `${before === undefined ? "" : `<previous-summary>\n${before}\n</previous-summary>\n\nThe summary above covers the conversation before this part. Summarize both together.\n\n`}<conversation>\n${content}\n</conversation>\n\n${prompt}` }] } as Message]);
+}
+
+/** `storage`, telling `onFailure` of a call that failed (not one its caller cancelled). */
+function storageGuard(storage: Storage, onFailure?: (error: unknown) => void): Storage {
+  if (!onFailure) return storage;
+  return new Proxy(storage, { get(target, key) {
+    const value = Reflect.get(target, key, target);
+    if (typeof value !== "function" || key === "close") return typeof value === "function" ? value.bind(target) : value;
+    return (...args: unknown[]) => {
+      const failed = (error: unknown) => {
+        const cancelled = args.some(arg => (arg as { abortSignal?: AbortSignal } | undefined)?.abortSignal?.aborted);
+        if (!cancelled) onFailure(error);
+        throw error;
+      };
+      try {
+        const result = value.apply(target, args);
+        return result instanceof Promise ? result.catch(failed) : result;
+      } catch (error) { return failed(error); }
+    };
+  } });
 }
 
 /** Retire native work for an explicit rollback without ever dispatching its run phases. */
@@ -116,11 +212,19 @@ export class DurableAgent {
   private dirty = true;
   private pending = new Set<string>();
   private steering: AgentMessage[] = [];
+  /** A run's input beyond its first message: placed with it, before the run's first model request. */
+  private batch: AgentMessage[] = [];
   private followups: AgentMessage[] = [];
   private inputRefs = new Map<string, AgentMessage[]>();
   private originalInputs = new Map<number, { native: Message; message: AgentMessage }>();
   private _latestCursor?: DurableCursor;
   private streamingMessage?: AgentMessage;
+  /**
+   * The context a provider refused as too long (a context overflow), in tokens: the real limit is below it, whatever the
+   * model's declared window. Pi's compaction scales its reserve and the recent context it keeps from the window, so
+   * after an overflow it compacts against this, as the legacy compactor kept about a fifth of the context.
+   */
+  private overflowWindow = Infinity;
   private errorMessage?: string;
   private lastTurn?: AssistantMessage;
   private lastTurnResults: ToolResultMessage[] = [];
@@ -141,7 +245,7 @@ export class DurableAgent {
       model: options.initialState!.model!, thinkingLevel: options.initialState?.thinkingLevel ?? "off",
       get messages() { return self.messages; },
       // Hosts reassign the working set after every run; only a real change is checkpointed into Pi's context.
-      set messages(value) { if (!sameMessages(value, self.messages)) self.dirty = true; self.messages = [...value]; },
+      set messages(value) { if (!samePiContext(value, self.messages)) self.dirty = true; self.messages = [...value]; },
       get tools() { return self.tools; }, set tools(value) { self.tools = [...value]; self.installTools(); self.dirty = true; },
       get systemPrompt() { const system = self.messages.findLast(message => message.role === "system"); return system ? getSystemMessageText(system) : ""; },
       get isStreaming() { return self.controller !== undefined; },
@@ -161,6 +265,7 @@ export class DurableAgent {
     const task = { definition: { ...original, phases: { ...original.phases,
       prepare: async (...args: Parameters<typeof original.phases.prepare>) => {
         const [record, runtime, taskContext] = args;
+        await agent.placeQueued(record.id, runtime, taskContext);
         const view = await runtime.context(runtime.conversationId, taskContext);
         const sections = getCurrentSystemMessage(view.messages)?.sections ??
           getCurrentSystemMessage(agent.messages)?.sections ?? {};
@@ -229,26 +334,48 @@ export class DurableAgent {
     // Generation and summarization use the same credential resolver, network
     // policy and provider instrumentation. Summaries omit run-only output settings.
     const models = {
-      getModel: () => options.durable.contextWindow ? { ...agent.state.model, contextWindow: Math.min(agent.state.model.contextWindow, options.durable.contextWindow) } : agent.state.model,
+      getModel: () => ({ ...agent.state.model, contextWindow: window() }),
       streamSimple: (_model: unknown, view: { messages: Message[] }, streamOptions: unknown) => agent.stream(streamOptions, view.messages),
       completeSimple: async (_model: unknown, view: { messages: Message[] }, streamOptions: unknown) => {
         await agent.flushEvents();
         const apiKey = await options.getApiKey?.(agent.state.model.provider);
-        const events = await (options.durable.summaryStream ?? options.streamFn)(agent.state.model, view as never,
-          { ...(streamOptions as object), apiKey } as never);
-        const result = await events.result();
-        await agent.conversation.commit(tx => tx.appendEntry(agent.conversation.id, {
-          kind: "camel.compaction.usage", data: { message: result } as never,
-        }), context);
-        await options.durable.onSummary?.(result);
-        return result;
+        const summarize = async (messages: Message[]) => {
+          const events = await (options.durable.summaryStream ?? options.streamFn)(agent.state.model, { ...view, messages } as never,
+            { ...(streamOptions as object), apiKey } as never);
+          const result = await events.result();
+          await agent.conversation.commit(tx => tx.appendEntry(agent.conversation.id, {
+            kind: "camel.compaction.usage", data: { message: result } as never,
+          }), context);
+          await options.durable.onSummary?.(result);
+          return result;
+        };
+        // Pi asks for one summary of the whole prefix. One larger than the window (an imported history, a model whose
+        // window is small) is summarized in parts that fit, each carrying the summary so far, as the legacy compactor did.
+        const chunks = summaryChunks(view.messages, window(), (streamOptions as { maxTokens?: number } | undefined)?.maxTokens ?? 0);
+        if (!chunks) return summarize(view.messages);
+        let summary: AssistantMessage | undefined;
+        for (const chunk of chunks) {
+          const before = summary && summaryOf(summary);
+          if (summary && before === undefined) return summary;
+          summary = await summarize(chunk(before));
+          if (summary.stopReason !== "stop") return summary;
+        }
+        return summary!;
       },
     };
-    const window = () => Math.min(agent.state.model.contextWindow, options.durable.contextWindow ?? Infinity);
-    agent.harness = await Harness.open(options.durable.storage, { registry, models: models as unknown as HarnessOptions["models"],
+    const window = () => Math.min(agent.state.model.contextWindow, options.durable.contextWindow ?? Infinity, agent.overflowWindow);
+    agent.harness = await Harness.open(storageGuard(options.durable.storage, options.durable.onStorageFailure), { registry, models: models as unknown as HarnessOptions["models"],
       settings: { compaction: { enabled: true,
         get reserveTokens() { return Math.min(16_384, Math.floor(window() * 0.15)); },
-        get keepRecentTokens() { return Math.min(20_000, Math.floor(window() * 0.25)); }, backgroundTokens: 0 },
+        // The recent context a summary keeps, but never so much that what is fixed (the system prompt) and it fill the
+        // window again within a quarter of it: then every turn would be summarized again (the legacy compactor waited
+        // for that quarter too).
+        get keepRecentTokens() {
+          const limit = window(), reserve = Math.min(16_384, Math.floor(limit * 0.15));
+          const system = agent.messages.findLast(message => message.role === "system");
+          const fixed = system ? Math.ceil(JSON.stringify(system).length / 4) : 0;
+          return Math.max(1_000, Math.min(20_000, Math.floor(limit * 0.25), limit - reserve - fixed - Math.floor(limit / 4)));
+        }, backgroundTokens: 0 },
         // Live answers and tool output stream to the host from the provider and the tool, not from these commits:
         // they only bound what a lost node's run keeps, so each costs a journal write once a second, not every 100 ms.
         progress: { partialIntervalMs: 1_000, outputIntervalMs: 1_000 },
@@ -293,7 +420,7 @@ export class DurableAgent {
       // on every load cost a full copy of it in memory and in the journal. An imported context is still split once
       // into per-message entries, so Pi can choose a compaction cut inside it.
       const whole = view.head?.kind === "camel.legacy.context" && (view.head.model?.length ?? 0) > 1;
-      agent.dirty = whole || !sameMessages(agent.originals(view.messages as Message[]) as AgentMessage[], contextMessages(agent.messages) as AgentMessage[]);
+      agent.dirty = whole || !samePiContext(agent.originals(view.messages as Message[]) as AgentMessage[], contextMessages(agent.messages) as AgentMessage[]);
     }
     const head = await options.durable.storage.findLatestHeadMarker(agent.conversation.id, undefined, context);
     if (head?.kind === "pi.compaction") {
@@ -315,7 +442,8 @@ export class DurableAgent {
     if (summary.startsWith(COMPACTION_SUMMARY_PREFIX) && summary.endsWith(COMPACTION_SUMMARY_SUFFIX)) {
       summary = summary.slice(COMPACTION_SUMMARY_PREFIX.length, -COMPACTION_SUMMARY_SUFFIX.length);
     }
-    await this.options.durable.onCompaction?.({ summary, keptMessages, at: entry.model?.[0]?.timestamp ?? Date.now() });
+    const reason = (entry.data as { reason?: string } | undefined)?.reason === "overflow" ? "overflow" : "threshold";
+    await this.options.durable.onCompaction?.({ summary, keptMessages, at: entry.model?.[0]?.timestamp ?? Date.now(), reason });
   }
 
   get signal() { return this.controller?.signal; }
@@ -345,7 +473,8 @@ export class DurableAgent {
     this.messages.push(message);
     if (message.role === "assistant") {
       this.lastTurn = message; this.lastTurnResults = [];
-      if (message.stopReason === "error" || message.stopReason === "aborted") this.errorMessage = message.errorMessage;
+      // A later response of the run (one made after an overflow's compaction) answers what an earlier one failed.
+      this.errorMessage = message.stopReason === "error" || message.stopReason === "aborted" ? message.errorMessage : undefined;
     }
     if (message.role === "toolResult") {
       this.pending.delete(message.toolCallId); this.lastTurnResults.push(message);
@@ -395,7 +524,20 @@ export class DurableAgent {
         }
         stream.push(event);
       }
-      stream.end(await events.result());
+      const final = await events.result();
+      if (final.stopReason === "error" && isContextOverflow(final)) {
+        const sent = Math.ceil(JSON.stringify(llm).length / 4);
+        this.overflowWindow = Math.min(this.overflowWindow, Math.max(1_000, Math.floor(sent * 0.9)));
+      }
+      // Pi commits an aborted response from its last throttled partial (`convertPartial`), which may be stale or
+      // missing: the provider's own terminal message, with its usage and billing attempt, replaces it before Pi's
+      // abort handler converts it, so the canceled response is in history and billed exactly once.
+      // Only for the run's own abort: a request the runtime cut (a stale lease) is classified by Pi and made again.
+      if (final.stopReason === "aborted" && signal?.aborted) await this.conversation.commit(async tx => {
+        const live = await tx.doc(LiveDoc, this.conversation.id);
+        if (live.generation) live.generation.message = JSON.parse(JSON.stringify(final));
+      }, context).catch(error => console.error(JSON.stringify({ type: "pi_aborted_response_write_failed", error: error instanceof Error ? error.message : String(error) })));
+      stream.end(final);
     })().catch(error => {
       const message = { role: "assistant", content: [], api: this.state.model.api, provider: this.state.model.provider,
         model: this.state.model.id, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
@@ -523,6 +665,37 @@ export class DurableAgent {
       throw error;
     }
   }
+  /**
+   * Before a model request, as the legacy loop polls its steering queue: the run's remaining input and the queued steers
+   * enter the context now, rather than at Pi's next boundary (after the response). They are submitted as Pi queues busy
+   * input, then placed as Pi's boundary places them: an entry each, the submission placed and made one of the run's inputs.
+   */
+  private async placeQueued(taskId: TaskId, runtime: Parameters<typeof GenerationTask.definition.phases.prepare>[1],
+    taskContext: Parameters<typeof GenerationTask.definition.phases.prepare>[2]) {
+    const messages = [...this.batch.splice(0), ...this.steering.splice(0, this.steeringMode === "all" ? this.steering.length : 1)];
+    if (!messages.length) return;
+    const ids = new Set<number>();
+    for (const message of messages) {
+      const submission = await this.submitMessage(message, "steer");
+      if (submission !== undefined) ids.add(submission.id);
+    }
+    if (!ids.size) return;
+    await runtime.commit(async tx => {
+      const live = await tx.doc(LiveDoc, runtime.conversationId);
+      if (live.run?.taskId !== taskId) return undefined;
+      const items = (await tx.doc(InboxDoc, runtime.conversationId)).items;
+      for (let index = 0; index < items.length;) {
+        const item = items[index];
+        if (item.mode !== "steer" || !ids.has(item.id)) { index++; continue; }
+        const entry = await tx.appendEntry(runtime.conversationId, { ...(item.entry ?? { kind: "pi.user" }),
+          model: [{ role: "user", content: item.content, timestamp: runtime.now() }] } as never);
+        tx.placeSubmission(item.id, entry.id);
+        live.run.inputs.push(item.id);
+        items.splice(index, 1);
+      }
+      return undefined;
+    }, taskContext);
+  }
   private async submitQueues(which: "steer" | "followUp") {
     const queue = which === "steer" ? this.steering : this.followups;
     const mode = which === "steer" ? this.steeringMode : this.followUpMode;
@@ -550,8 +723,11 @@ export class DurableAgent {
       // Brand-new sessions have no native cursor. Start at the context marker,
       // rather than scanning a potentially huge imported archive at agent_end.
       start ??= await latestDurableCursor(this.options.durable.storage, this.conversation.id);
-      if (messages.length) for (const message of messages) await this.submitMessage(message);
-      else {
+      if (messages.length) {
+        // The rest of the input goes in before the first model request (`placeQueued`), as one prompt.
+        this.batch = messages.slice(1);
+        await this.submitMessage(messages[0]);
+      } else {
         const live = await this.harness.snapshot(LiveDoc, this.conversation.id, context);
         if (!live?.run) {
           await this.conversation.commit(async tx => {
@@ -575,6 +751,8 @@ export class DurableAgent {
         await this.submitQueues(this.steering.length ? "steer" : "followUp");
       }
     } finally {
+      // Input of a run aborted before its first request is withdrawn, as Pi withdraws queued input on abort.
+      this.batch = [];
       await this.flushEvents();
       const added = await this.recoverMessages(start);
       await this.emit({ type: "agent_end", messages: added.map(item => item.message) });

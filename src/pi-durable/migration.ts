@@ -20,7 +20,7 @@ export const LEGACY_CONVERSATION_ID = 1 as ConversationId;
 const VERSION = 1;
 const PAGE_SIZE = 256;
 const ARCHIVE_BLOCK_RECORDS = 128;
-/** Automatic migration is intentionally small. Larger sessions stay on the legacy engine. */
+/** What an import copies at most. A larger source keeps its archive in its legacy log (`importLegacyTranscript`'s `reference`). */
 export const MIGRATION_MAX_BYTES = 64 * 1024 * 1024;
 export const MIGRATION_MAX_RECORDS = 200_000;
 
@@ -67,6 +67,8 @@ export interface LegacyMigrationMetadata {
   contextEntryId: EntryId;
   /** The host generation the import starts (imports before it have none: the host adopted them in its own). */
   generationId?: EntryId;
+  /** "legacy-log": the source was too large to copy (`MIGRATION_MAX_BYTES`), so its records stay in the legacy log, which the generation's history reads first. */
+  archive?: "legacy-log";
 }
 
 export interface LegacyMigrationPlan {
@@ -80,13 +82,10 @@ export interface LegacyMigrationPlan {
 /** A session that still has old execution state stays on the old engine. No tool is replayed by an import. */
 export class LegacyMigrationDeferred extends Error {
   readonly reason: "active" | "awaiting" | "context_changed" | "size_limit";
-  /** Which context shape Pi would change (`context_changed` only): a failed response, a call without a result, or the order. */
-  readonly kind?: "failed_response" | "open_call" | "order";
-  constructor(reason: LegacyMigrationDeferred["reason"], detail: string, kind?: LegacyMigrationDeferred["kind"]) {
+  constructor(reason: LegacyMigrationDeferred["reason"], detail: string) {
     super(`Legacy session migration deferred: ${detail}`);
     this.name = "LegacyMigrationDeferred";
     this.reason = reason;
-    if (kind) this.kind = kind;
   }
 }
 
@@ -129,19 +128,20 @@ export function legacyHistoryOf(records: readonly TranscriptRecord[]): AgentMess
   return history;
 }
 
+/** What an imported session held that Pi takes its own way: a running turn, calls waiting on a person, or a context Pi orders differently. */
+export type LegacyImportShape = "active" | "awaiting" | "context_changed";
+
 /**
- * Pi deliberately normalizes tool-result order and omits failed assistant messages. A migration must not silently
- * change an old active context: defer these unusual shapes to the legacy engine instead. This mirrors the stable
- * context invariants, rather than repairing or executing unfinished calls as part of migration.
+ * Whether Pi would build a different model context from `messages`: it leaves out failed and aborted responses, puts
+ * each call's result right after it in call order, and gives a call without one a result saying so. Requests already
+ * went through the same normalization (pi-ai's transformMessages) under the legacy engine, but for the order of results.
  */
-function assertCompatibleContext(messages: readonly Message[]) {
+export function piReorders(messages: readonly Message[]): boolean {
   const ordered: Message[] = [];
   for (let index = 0; index < messages.length; index++) {
     const message = messages[index];
     if (message.role === "toolResult") continue;
-    if (message.role === "assistant" && ["error", "aborted", "deferred"].includes(message.stopReason)) {
-      throw new LegacyMigrationDeferred("context_changed", "active context includes an excluded assistant response", "failed_response");
-    }
+    if (message.role === "assistant" && ["error", "aborted", "deferred"].includes(message.stopReason)) return true;
     ordered.push(message);
     if (message.role !== "assistant") continue;
     for (const call of message.content.filter(part => part.type === "toolCall")) {
@@ -150,7 +150,7 @@ function assertCompatibleContext(messages: readonly Message[]) {
         const candidate = messages[next];
         if (candidate.role === "toolResult" && candidate.toolCallId === call.id) { result = candidate; break; }
       }
-      if (!result) throw new LegacyMigrationDeferred("context_changed", `tool call ${call.id} has no durable result`, "open_call");
+      if (!result) return true;
       ordered.push(result);
     }
   }
@@ -159,9 +159,14 @@ function assertCompatibleContext(messages: readonly Message[]) {
     ordered.unshift(...ordered.splice(firstSystem, 1));
   }
   // The same objects in the same order, compared one message at a time rather than as two context-sized strings.
-  if (messages.length !== ordered.length || messages.some((message, index) => message !== ordered[index] && !same(message, ordered[index]))) {
-    throw new LegacyMigrationDeferred("context_changed", "Pi would reorder the active model context", "order");
-  }
+  return messages.length !== ordered.length || messages.some((message, index) => message !== ordered[index] && !same(message, ordered[index]));
+}
+
+/** How an import's source differs from a session Pi left idle (`LegacyImportShape`), for its log line; undefined when it does not. */
+export function legacyImportShape(source: Pick<Transcript, "active" | "awaiting">, working: AgentMessage[]): LegacyImportShape | undefined {
+  if (source.active) return "active";
+  if (source.awaiting.length) return "awaiting";
+  return piReorders(convertToLlm(working)) ? "context_changed" : undefined;
 }
 
 /**
@@ -170,8 +175,6 @@ function assertCompatibleContext(messages: readonly Message[]) {
  */
 export function planLegacyMigration(records: readonly TranscriptRecord[], leadingSystem?: SystemMessage, fingerprint = legacyTranscriptFingerprint(records)): LegacyMigrationPlan {
   const transcript = reduced(records);
-  if (transcript.active) throw new LegacyMigrationDeferred("active", "the legacy turn is still active");
-  if (transcript.awaiting.length) throw new LegacyMigrationDeferred("awaiting", "a tool is waiting for human input");
   const snapshot = transcript.snapshot();
   // Native entry IDs are scoped to their storage. Fork/import archives retain the old cursor as evidence, but the
   // new storage starts a new projection domain and must not skip entries because of an ancestor's high watermark.
@@ -181,8 +184,17 @@ export function planLegacyMigration(records: readonly TranscriptRecord[], leadin
     ...(snapshot.system ? [snapshot.system] : []),
     ...convertToLlm(transcript.view()),
   ];
-  assertCompatibleContext(model);
   return { records: records as TranscriptRecord[], snapshot, model, fingerprint, historyCount: transcript.total };
+}
+
+/** The plan of an import whose archive stays in the legacy log: the source as the host reduced it, nothing to copy. */
+function referencePlan(source: TranscriptSnapshot, leadingSystem?: SystemMessage): LegacyMigrationPlan {
+  const { piCursor: _cursor, ...snapshot } = source;
+  if (!snapshot.system && leadingSystem) snapshot.system = leadingSystem;
+  const transcript = new Transcript(undefined as never);
+  transcript.restore(snapshot);
+  const model = [...(snapshot.system ? [snapshot.system] : []), ...convertToLlm(transcript.view())];
+  return { records: [], snapshot, model, fingerprint: `legacy-log:${snapshot.total}`, historyCount: snapshot.total };
 }
 
 /**
@@ -276,11 +288,16 @@ const lines = new WeakMap<Storage, Promise<unknown>>();
  * archive as that generation's archive blocks (the layout every release's host history reader reads, so a node on an
  * earlier release that takes the session over still reads its whole history), and the writes `host` returns (its
  * document). A generation therefore never exists without its document, as with NativeTranscript.adopt.
+ *
+ * With `reference` instead of `records` (a source past the import's size budget, which is never read whole), nothing is
+ * archived: `reference` is the source reduced as the host loaded it, and the generation's records follow the legacy
+ * log's, which its history reader reads first (its bootstrap entry says `archive: "legacy-log"`). Nothing writes that log again.
  */
 export async function importLegacyTranscript(options: {
   storage: Storage;
   sessionId: string;
   records: readonly TranscriptRecord[];
+  reference?: TranscriptSnapshot;
   leadingSystem?: SystemMessage;
   model?: Message[];
   host?: (generation: { generationId: EntryId; contextEntryId: EntryId }) => Promise<StorageWrite[]>;
@@ -298,9 +315,9 @@ export async function importLegacyTranscript(options: {
       await checkpointOf(storage, previous, context);
       return { ...previous, status: "existing" as const };
     }
-    const plan = planLegacyMigration(records, leadingSystem, measuredFingerprint(records));
+    if (options.reference && !options.host) throw new TypeError("An import that keeps its archive in the legacy log starts the host's generation");
+    const plan = options.reference ? referencePlan(options.reference, leadingSystem) : planLegacyMigration(records, leadingSystem, measuredFingerprint(records));
     const model = options.model ?? plan.model;
-    if (model !== plan.model) assertCompatibleContext(model);
     const blockCount = Math.ceil(plan.records.length / ARCHIVE_BLOCK_RECORDS);
     // Postgres reserves the complete monotonic range under the host's claim in one transaction. Native SQLite mints
     // from its in-memory allocator. Both retain the storage's global ID-ownership checks in the final atomic commit.
@@ -322,12 +339,13 @@ export async function importLegacyTranscript(options: {
     const metadata: LegacyMigrationMetadata = {
       version: VERSION, sessionId, fingerprint: plan.fingerprint, conversationId: LEGACY_CONVERSATION_ID,
       recordCount: plan.records.length, historyCount: plan.historyCount, contextCount: model.length,
-      importedAt: now, markerId, contextEntryId, ...(generationId ? { generationId } : {}),
+      importedAt: now, markerId, contextEntryId, ...(generationId ? { generationId } : {}), ...(options.reference ? { archive: "legacy-log" as const } : {}),
     };
     const writes: StorageWrite[] = [
       { type: "conversation", value: { id: LEGACY_CONVERSATION_ID } },
       { type: "entry", value: { id: markerId, conversationId: LEGACY_CONVERSATION_ID, kind: LEGACY_MIGRATION_KIND, data: payload(metadata) } },
-      ...(generationId ? [{ type: "entry" as const, value: { id: generationId, conversationId: LEGACY_CONVERSATION_ID, kind: HOST_BOOTSTRAP_KIND } }] : []),
+      ...(generationId ? [{ type: "entry" as const, value: { id: generationId, conversationId: LEGACY_CONVERSATION_ID, kind: HOST_BOOTSTRAP_KIND,
+        ...(options.reference ? { data: { archive: "legacy-log" } } : {}) } }] : []),
     ];
     for (let index = 0; index < plan.records.length; index += ARCHIVE_BLOCK_RECORDS) {
       // Blocks refer to the source's records: storage serializes them as it writes, so the archive is never copied.
@@ -358,6 +376,7 @@ export async function importLegacyTranscript(options: {
 export async function readMigratedLegacyRecords(storage: Storage, context: Context = BACKGROUND_CONTEXT): Promise<TranscriptRecord[]> {
   const metadata = await loadLegacyMigration(storage, context);
   if (!metadata) return [];
+  if (metadata.archive === "legacy-log") throw new LegacyMigrationConflict("this import's archive is its legacy log, not Pi storage");
   // An import archives as legacy records (a host adopting it archives again, after the checkpoint), or, when it
   // starts the host's generation, as that generation's archive blocks, before the checkpoint.
   const archived = (await entries(storage, metadata.conversationId, context)).filter(entry => entry.kind === LEGACY_RECORD_KIND ||

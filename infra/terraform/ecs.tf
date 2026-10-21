@@ -71,7 +71,7 @@ locals {
     # Inline agents share the task's memory: past about two thirds of it a task starts no more of them and hands new
     # work to a peer, below the -task-memory alarm (3 GB of 4) and well below the OOM kill.
     AGENT_MEMORY_HIGH_BYTES = tostring(floor(var.task_memory * 0.65) * 1048576)
-    # Pi durable sessions for every agent (docs/operations/pi-durable.md); "legacy" rolls the fleet back.
+    # Read only by images before the legacy engine's removal, which a deploy rollback may run (see var.agent_engine).
     AGENT_ENGINE = var.agent_engine
     # Legacy agents opened one at a time so they migrate to Pi (docs/operations/pi-durable.md): the most the sweep may do;
     # the operator's mode (infra/pi-sweep.sh) chooses within it. It takes no agent past 60% of the task's memory.

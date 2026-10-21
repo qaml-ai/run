@@ -226,7 +226,8 @@ test("fileArguments: other parties' servers are not offered or sent files unless
   assert.deepEqual(tools.find((tool: any) => tool.name === "app__attach").parameters.properties.attachment, fileParameter({ accept: ["application/pdf"], maxSize: MAX_SIZE }), "no {$file} offered");
   assert.deepEqual(tools.find((tool: any) => tool.name === "docs__upload").parameters.properties.body.properties.file, { type: "string", format: "binary" });
   // The model is told file arguments are off for the tool, whether its schema refuses them or the runtime does.
-  assert.match(toolResults(r.model.bodies[1]).at(-1), /^app__attach is not sent files: file arguments \(\{"\$file": path\}\) are off for this tool/);
+  // Said first (Pi reports a refused call as its harness's error diagnostic), not after the schema's own complaint.
+  assert.match(toolResults(r.model.bodies[1]).at(-1), /^(<harness>\n\[error\] )?app__attach is not sent files: file arguments \(\{"\$file": path\}\) are off for this tool/);
   assert.match(toolResults(r.model.bodies[2]).at(-1), /app is not sent files: \$file needs fileArguments "on" in its definition/, "and where that takes anything, the runtime refuses");
   assert.match(toolResults(r.model.bodies[3]).at(-1), /docs__upload is not sent files: file arguments \(\{"\$file": path\}\) are off for this tool/);
   assert.equal(app.calls.length, 0, "nothing reached the server");

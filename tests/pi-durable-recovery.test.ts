@@ -14,7 +14,6 @@ import { Transcript, historyOf, readTranscript, type TranscriptRecord } from "..
 import { openPiJournalReader, openPiStorage } from "../src/pi-durable/storage.ts";
 import { loadLegacyMigration } from "../src/pi-durable/migration.ts";
 import { recoverDurableMessages } from "../src/pi-durable/agent.ts";
-import type { AgentEngine } from "../src/pi-durable/config.ts";
 import type { ToolDefinition } from "../src/protocol.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -36,7 +35,7 @@ async function fixture(t: TestContext) {
     asked++;
     return typeof step === "function" ? (step as (...args: any[]) => any)(...args) : step;
   }));
-  async function start(options: { engine?: AgentEngine; resume?: boolean; log?: AppendLog<TranscriptRecord>; inputRequired?: boolean; fault?: "flush" | "torn" } = {}) {
+  async function start(options: { resume?: boolean; log?: AppendLog<TranscriptRecord>; inputRequired?: boolean; fault?: "flush" | "torn" } = {}) {
     const storage = await openPiStorage({ sessionId: "public-session", directory });
     stores.push(storage);
     if (options.fault) {
@@ -67,7 +66,7 @@ async function fixture(t: TestContext) {
     };
     const host = createAgentHost(io);
     hosts.push(host);
-    const init = await host.handle("init", { id: "public-session", directory, engine: options.engine ?? "pi-durable", resume: options.resume,
+    const init = await host.handle("init", { id: "public-session", directory, resume: options.resume,
       model: faux.getModel(), apiKey: "fixture", tools, codeMode: false });
     return { host, init, log, storage, events };
   }
@@ -84,13 +83,12 @@ async function fixture(t: TestContext) {
   } };
 }
 
-for (const engine of ["pi-durable", "legacy"] as const) {
+{
   for (const mode of ["flush", "torn"] as const) {
-    test(`native WAL recovers a ${mode} history projection once on ${engine} restart, preserving request and tool identity`, { timeout: 20_000 }, async t => {
+    test(`native WAL recovers a ${mode} history projection once on restart, preserving request and tool identity`, { timeout: 20_000 }, async t => {
       const f = await fixture(t);
       f.responses(answer(fauxToolCall("lookup", { key: "saved" }, { id: "lookup-once" }), "toolUse"), answer("durable final answer"));
       const first = await f.start({ fault: mode });
-      assert.equal(first.init.engine, "pi-durable");
       await assert.rejects(first.host.handle("prompt", { text: "look it up", requestId: "request-once" }), /Session persistence failed:.*projection disk unavailable/);
       assert.deepEqual(f.calls, ["lookup"]);
       assert.equal(f.asked(), 2);
@@ -99,8 +97,7 @@ for (const engine of ["pi-durable", "legacy"] as const) {
       assert.equal(native.filter(item => text(item.message) === "durable final answer").length, 1, "the answer already exists in the authoritative native WAL");
       await first.host.dispose(0).catch(() => {});
 
-      const second = await f.start({ engine, resume: true });
-      assert.equal(second.init.engine, engine);
+      const second = await f.start({ resume: true });
       assert.equal(second.init.resume?.finished?.reply, "durable final answer");
       const history = await f.history();
       assert.deepEqual(history.map(message => message.role), ["user", "assistant", "toolResult", "assistant"]);
@@ -115,7 +112,7 @@ for (const engine of ["pi-durable", "legacy"] as const) {
       assert.doesNotMatch(repairedText, /"text":"torn/);
       await second.host.dispose(0);
 
-      const third = await f.start({ engine, resume: true });
+      const third = await f.start({ resume: true });
       assert.deepEqual(await f.history(), history, "a second restart cannot project the native response twice");
       assert.equal(f.asked(), 2);
       assert.deepEqual(f.calls, ["lookup"]);
@@ -127,32 +124,36 @@ for (const engine of ["pi-durable", "legacy"] as const) {
   }
 }
 
-test("an active legacy session finishes on its existing engine, then migrates on the next idle reopen", { timeout: 20_000 }, async t => {
+test("a legacy turn its node lost mid-run is imported as it stands, and the next owner continues it on Pi without taking its request twice", { timeout: 20_000 }, async t => {
   const f = await fixture(t);
+  // As a node on the legacy engine left it: the turn open, its call made, the result never written.
   const transcript = new Transcript(fileAppendLog<TranscriptRecord>(f.path));
   await transcript.setActive(true);
-  await transcript.push(user("unfinished legacy request", "active-request"));
+  await transcript.append([user("unfinished legacy request", "active-request"), answer(fauxToolCall("lookup", { key: "saved" }, { id: "lost-call" }), "toolUse")]);
   await transcript.log.close();
+  const legacy = await readFile(f.path, "utf8");
   const first = await f.start({ resume: true });
-  assert.equal(first.init.engine, "legacy");
-  assert.equal(first.init.migration?.state, "deferred");
-  assert.equal(first.init.migration?.reason, "active");
-  assert.equal(await loadLegacyMigration(first.storage), undefined);
-  f.responses(answer("completed by legacy"));
-  assert.equal((await first.host.handle("continue", {})).reply, "completed by legacy");
+  assert.deepEqual(first.init.migration, { state: "migrated", from: "active" });
+  assert.ok(await loadLegacyMigration(first.storage));
+  assert.deepEqual(first.init.resume, { continue: true });
+  const repaired = await f.history();
+  assert.deepEqual(repaired.map(message => message.role), ["user", "assistant", "toolResult"]);
+  assert.match(JSON.stringify(repaired[2]), /outcome is unknown/, "the lost call is answered as unknown, never made again");
+  f.responses(answer("completed on Pi"));
+  assert.equal((await first.host.handle("continue", {})).reply, "completed on Pi");
+  assert.deepEqual(f.calls, []);
+  assert.equal(await readFile(f.path, "utf8"), legacy, "the legacy log is not written");
   await first.host.dispose(0);
-  await first.storage.close(context);
   const before = await f.history();
   const second = await f.start();
-  assert.equal(second.init.engine, "pi-durable");
-  assert.equal(second.init.migration?.state, "migrated");
+  assert.deepEqual(second.init.migration, { state: "existing" });
   assert.deepEqual(await f.history(), before);
-  assert.deepEqual(await second.host.handle("prompt", { text: "unfinished legacy request", requestId: "active-request" }), { messages: 2, error: null, taken: true });
+  assert.deepEqual(await second.host.handle("prompt", { text: "unfinished legacy request", requestId: "active-request" }), { messages: 4, error: null, taken: true });
   f.responses(answer("new native work"));
   assert.equal((await second.host.handle("prompt", { text: "new", requestId: "new-native" })).reply, "new native work");
 });
 
-test("legacy human waits retain the open call and answer on legacy before migrating without rerunning the tool", { timeout: 20_000 }, async t => {
+test("a legacy human wait is imported with its call open, and its answer resumes the turn on Pi without running the tool", { timeout: 20_000 }, async t => {
   const f = await fixture(t);
   const transcript = new Transcript(fileAppendLog<TranscriptRecord>(f.path));
   await transcript.setActive(true);
@@ -160,23 +161,69 @@ test("legacy human waits retain the open call and answer on legacy before migrat
   await transcript.await(["waiting-call"]);
   await transcript.log.close();
   const first = await f.start({ resume: true });
-  assert.equal(first.init.engine, "legacy");
-  assert.equal(first.init.migration?.state, "deferred");
-  assert.equal(first.init.migration?.reason, "awaiting");
-  assert.equal(await loadLegacyMigration(first.storage), undefined);
+  assert.deepEqual(first.init.migration, { state: "migrated", from: "active" });
   assert.equal(first.init.resume?.finished?.stopped, "input_required");
+  assert.equal((await f.history()).filter(message => message.role === "toolResult").length, 0, "the call stays open for its answer");
+  await first.host.dispose(0);
+  // Reopened while it waits: still waiting, now on Pi.
+  const second = await f.start({ resume: true });
+  assert.deepEqual(second.init.migration, { state: "existing" });
   f.responses(answer("human answer accepted"));
-  const resumed = await first.host.handle("resume", { calls: [{ toolCallId: "waiting-call", result: { content: [{ type: "text", text: "already approved" }], isError: false } }] });
+  const resumed = await second.host.handle("resume", { calls: [{ toolCallId: "waiting-call", result: { content: [{ type: "text", text: "already approved" }], isError: false } }] });
   assert.equal(resumed.reply, "human answer accepted");
   assert.deepEqual(f.calls, [], "the supplied human result settles the old call without another side effect");
-  await first.host.dispose(0);
-  await first.storage.close(context);
-  const before = await f.history();
-  assert.equal(before.filter(message => message.role === "toolResult" && message.toolCallId === "waiting-call").length, 1);
-  const second = await f.start();
-  assert.equal(second.init.engine, "pi-durable");
-  assert.equal(second.init.migration?.state, "migrated");
-  assert.deepEqual(await f.history(), before);
+  const after = await f.history();
+  assert.equal(after.filter(message => message.role === "toolResult" && message.toolCallId === "waiting-call").length, 1);
+  assert.deepEqual(after.map(message => message.role), ["user", "assistant", "toolResult", "assistant"]);
+});
+
+test("a legacy context Pi orders its own way imports whole and is checkpointed once, not on every run", { timeout: 20_000 }, async t => {
+  const f = await fixture(t);
+  // Results in completion order, not call order, and a failed response kept visible: Pi orders and leaves out these itself.
+  const calls = answer([fauxToolCall("lookup", { key: "a" }, { id: "a" }), fauxToolCall("lookup", { key: "b" }, { id: "b" })], "toolUse");
+  const result = (id: string) => ({ role: "toolResult", toolCallId: id, toolName: "lookup", content: [{ type: "text", text: id }], isError: false, timestamp: 2 }) as AgentMessage;
+  const transcript = new Transcript(fileAppendLog<TranscriptRecord>(f.path));
+  await transcript.setActive(true);
+  await transcript.append([user("both"), calls, result("b"), result("a"), answer("Both."), user("again"), answer("", "error")]);
+  await transcript.setActive(false);
+  await transcript.log.close();
+  const before = historyOf(await fileAppendLog<TranscriptRecord>(f.path).read());
+  const { host, init, storage } = await f.start();
+  assert.deepEqual(init.migration, { state: "migrated", from: "context_changed" });
+  const checkpoints = async () => {
+    let count = 0;
+    for (let cursor; ;) {
+      const page = await storage.scanEntries({ conversationId: 1 as never, order: "ascending" }, 256, cursor, context);
+      count += page.items.filter(entry => entry.kind === "camel.legacy.context").length;
+      if (!(cursor = page.next)) break;
+    }
+    return count;
+  };
+  assert.equal(await checkpoints(), 1, "the import's");
+  for (const text of ["one", "two", "three"]) {
+    f.responses(answer(`reply ${text}`));
+    assert.equal((await host.handle("prompt", { text })).reply, `reply ${text}`);
+  }
+  assert.equal(await checkpoints(), 1, "runs append to Pi's context; none rewrites it");
+  const history = await f.history();
+  assert.deepEqual(history.slice(0, before.length), before, "the history is whole, in the order the legacy engine wrote it");
+  assert.equal(history.length, before.length + 6);
+});
+
+test("a legacy wait between turns (no turn running) imports as awaiting, and a new message closes it first", { timeout: 20_000 }, async t => {
+  const f = await fixture(t);
+  const transcript = new Transcript(fileAppendLog<TranscriptRecord>(f.path));
+  await transcript.setActive(true);
+  await transcript.append([user("needs approval", "waiting-request"), answer(fauxToolCall("lookup", { key: "saved" }, { id: "waiting-call" }), "toolUse")]);
+  await transcript.await(["waiting-call"]);
+  await transcript.setActive(false);
+  await transcript.log.close();
+  const first = await f.start();
+  assert.deepEqual(first.init.migration, { state: "migrated", from: "awaiting" });
+  f.responses(answer("moved on"));
+  assert.equal((await first.host.handle("prompt", { text: "never mind", requestId: "next" })).reply, "moved on");
+  const after = await f.history();
+  assert.match(JSON.stringify(after.find(message => message.role === "toolResult")), /Not answered: the user sent a new message instead/);
   assert.deepEqual(f.calls, []);
 });
 
@@ -190,7 +237,6 @@ test("a native human wait survives reopen and accepts its answer without project
   assert.equal((await f.history()).filter(message => message.role === "toolResult").length, 0, "temporary native result is not public completed history");
   await first.host.dispose(0);
   const second = await f.start({ resume: true });
-  assert.equal(second.init.engine, "pi-durable");
   assert.equal((second.init.resume?.finished ?? second.init.ended?.finished)?.stopped, "input_required");
   assert.deepEqual(f.calls, ["lookup"]);
   assert.equal((await f.history()).filter(message => message.role === "toolResult").length, 0);

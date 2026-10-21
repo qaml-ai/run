@@ -1,5 +1,5 @@
 import { durableEntryMessages } from "./pi-durable/agent.ts";
-import { NativeTranscript, nativeTranscriptRecords } from "./pi-durable/transcript.ts";
+import { NativeTranscript, nativeTranscriptRecords, nativeUnrecorded } from "./pi-durable/transcript.ts";
 import { mkdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { once } from "node:events";
@@ -22,11 +22,10 @@ import { buggify } from "./buggify.ts";
 import { closeInterruptedTurn } from "./history.ts";
 import type { Db, Sql } from "./db.ts";
 import type { Storage as PiStorage } from "@earendil-works/pi-durable";
-import { agentEngine, type AgentEngine } from "./pi-durable/config.ts";
 import { deletePiStorage, hasPiStorage, openPiJournalReader, openPiStorage, purgePiStorage, storageRequest } from "./pi-durable/storage.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { projectPiRecords, projectPiTranscript, reconcilePiTranscript } from "./pi-durable/projection.ts";
-import { LEGACY_CONVERSATION_ID, LegacyMigrationDeferred, loadLegacyMigration, planLegacyMigration, readMigrationRecords } from "./pi-durable/migration.ts";
+import { LEGACY_CONVERSATION_ID, LegacyMigrationDeferred, loadLegacyMigration, piReorders, planLegacyMigration, readMigrationRecords, type LegacyImportShape } from "./pi-durable/migration.ts";
 
 /**
  * How agents run. "process": each agent is its own Node process (strong memory
@@ -49,6 +48,8 @@ export type SupervisorOptions = {
    */
   memoryHighBytes?: number;
   storage?: Storage; hosting?: Hosting; /** How long stopping agents wait, all together, to index their settled turns (default 5 s). */ historyFlushMs?: number;
+  /** How long Pi's journal (in `db`) repeats a read or commit the database did not answer: a failover (default 0). */
+  piRetryMs?: number;
   /** An agent process is pinged this often, and killed once a ping has gone this long unanswered (default 5 s and 30 s). */
   pingMs?: number; unresponsiveMs?: number;
   /** Where inline agents run js_exec (src/codemode.ts): this process's v8-exec runner unless given. Agent processes always use their own. */
@@ -59,11 +60,6 @@ export type SupervisorOptions = {
   modelOutbound?: Outbound;
   /** The history backlog's bound for inline agents (agent processes get it in `agentEnv`). */
   historyBacklogBytes?: number;
-  /** Execution engine requested for safe, idle sessions. Existing active legacy turns defer migration. */
-  engine?: AgentEngine;
-  /** Exact operator-selected canary IDs; all other sessions use the default engine. */
-  piCanaryAgents?: ReadonlySet<string>;
-  piCanaryTenants?: ReadonlySet<string>;
   /** Shared Pi records use the same database and ownership claim as the session. */
   db?: Db;
 };
@@ -79,7 +75,7 @@ export class AgentSupervisor {
   private readonly unhosted = new Map<string, Set<{ cancelled: boolean; settled: Promise<void> }>>();
   /** Turns being closed without their agent (`closeTurn`): the latest close of each, which the next one and a start wait for. */
   private readonly closing = new Map<string, Promise<void>>();
-  /** Large first imports materialize legacy archives. Only one runs per node at a time. */
+  /** First imports of a legacy history materialize its archive. Only one runs per node at a time. */
   private migrating: Promise<void> = Promise.resolve();
   readonly root: string;
   readonly options: SupervisorOptions;
@@ -96,13 +92,23 @@ export class AgentSupervisor {
   }
 
   get hosting(): Hosting { return this.options.hosting ?? "process"; }
-  get engine(): AgentEngine { return this.options.engine ?? agentEngine(process.env.AGENT_ENGINE); }
 
   static transcriptKey(id: string) { return `sessions/${id}/transcript`; }
 
-  private piLocation(id: string) { return { sessionId: id, directory: resolve(join(this.root, id)), ...(this.options.db ? { db: this.options.db } : {}) }; }
+  private piLocation(id: string) { return { sessionId: id, directory: resolve(join(this.root, id)), ...(this.options.db ? { db: this.options.db, retryMs: this.options.piRetryMs ?? 0 } : {}) }; }
 
-  /** Cold history may have committed native messages newer than its legacy index or last reported run. */
+  /**
+   * Whether cold history may hold native messages its index and last reported run do not show: a canonical message
+   * committed after the host's last record. Reads only the journal's newest entries.
+   */
+  async unrecordedHistory(id: string): Promise<boolean> {
+    const journal = await openPiJournalReader(this.piLocation(id));
+    if (!journal) return false;
+    try { return await nativeUnrecorded(journal); }
+    finally { await journal.close(BACKGROUND_CONTEXT); }
+  }
+
+  /** Whether the agent keeps a native (Pi) journal. */
   async hasDurableHistory(id: string): Promise<boolean> {
     const journal = await openPiJournalReader(this.piLocation(id));
     await journal?.close(BACKGROUND_CONTEXT);
@@ -119,7 +125,7 @@ export class AgentSupervisor {
     const log = this.options.storage ? this.options.storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id)) : fileAppendLog<TranscriptRecord>(transcriptPath(resolve(join(this.root, id))));
     const journal = await openPiJournalReader(this.piLocation(id));
     try {
-      const native = journal ? await nativeTranscriptRecords(journal) : undefined;
+      const native = journal ? await nativeTranscriptRecords(journal, () => log.read()) : undefined;
       if (native) return native;
       const records = await log.read();
       return journal ? await projectPiRecords(records, journal, LEGACY_CONVERSATION_ID) : records;
@@ -127,19 +133,21 @@ export class AgentSupervisor {
   }
 
   /**
-   * Whether a stopped agent's next open would migrate it to Pi, and if not why, from its legacy transcript alone: read
-   * beside a live owner, without writing or taking a claim (`piSweep`'s dry run). Refuses an oversized transcript
-   * before reading its bodies, as the import does.
+   * What a stopped agent's next open would import, from its legacy transcript alone: its record count and how it
+   * differs from a session Pi left idle (`from`), or why it would not be imported whole. Read beside a live owner,
+   * without writing or taking a claim (the Pi sweep). Refuses an oversized transcript before reading its bodies, as
+   * the import does.
    */
-  async migrationPlan(id: string): Promise<{ ready: true; records: number } | { ready: false; reason: LegacyMigrationDeferred["reason"]; kind?: LegacyMigrationDeferred["kind"] }> {
+  async migrationPlan(id: string): Promise<{ ready: true; records: number; from?: LegacyImportShape } | { ready: false; reason: LegacyMigrationDeferred["reason"] }> {
     if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id)) throw new Error("Invalid agent id");
     const log = this.options.storage ? this.options.storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id)) : fileAppendLog<TranscriptRecord>(transcriptPath(resolve(join(this.root, id))));
     try {
       const records = await readMigrationRecords(log);
-      planLegacyMigration(records);
-      return { ready: true, records: records.length };
+      const { snapshot, model } = planLegacyMigration(records);
+      const from = snapshot.active ? "active" : snapshot.awaiting?.length ? "awaiting" : piReorders(model) ? "context_changed" : undefined;
+      return { ready: true, records: records.length, ...(from ? { from } : {}) };
     } catch (error) {
-      if (error instanceof LegacyMigrationDeferred) return { ready: false, reason: error.reason, ...(error.kind ? { kind: error.kind } : {}) };
+      if (error instanceof LegacyMigrationDeferred) return { ready: false, reason: error.reason };
       throw error;
     } finally { await log.close(); }
   }
@@ -251,28 +259,28 @@ export class AgentSupervisor {
         const storage = this.options.storage;
         const log = storage ? storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id), claim) : fileAppendLog<TranscriptRecord>(transcriptPath(directory));
         const transcript = bridge.committing ? committing(log, bridge.committing) : log;
-        const location = { sessionId: id, directory, ...(this.options.db ? { db: this.options.db } : {}) };
-        const engine = this.options.piCanaryAgents?.has(id) || (config.tenant !== undefined && this.options.piCanaryTenants?.has(config.tenant)) ? "pi-durable" : this.engine;
-        const needsPi = engine === "pi-durable" || await hasPiStorage(location);
-        if (needsPi && storage && !this.options.db) throw new Error("Pi durable shared storage requires the supervisor database");
-        const durable = needsPi ? await openPiStorage({ ...location, ...(claim ? { claim } : {}), committing: async (entry, sql) => {
+        const location = { sessionId: id, directory, ...(this.options.db ? { db: this.options.db, retryMs: this.options.piRetryMs ?? 0 } : {}) };
+        if (storage && !this.options.db) throw new Error("Pi durable shared storage requires the supervisor database");
+        const durable = await openPiStorage({ ...location, ...(claim ? { claim } : {}), committing: async (entry, sql) => {
           if (bridge.nativeCommitting) await bridge.nativeCommitting(entry)?.(sql);
           else for (const item of durableEntryMessages(entry)) await bridge.committing?.({ t: "message", message: item.message, pi: item.cursor })?.(sql);
           if (entry.kind === "camel.host.record") {
             const record = (entry.data as { record?: TranscriptRecord } | undefined)?.record;
             if (record) await bridge.committing?.(record)?.(sql);
           }
-        } }) : undefined;
+        } });
         let release: (() => void) | undefined;
         try {
-          if (durable && engine === "pi-durable" && !await loadLegacyMigration(durable)) {
+          // Only a start with a legacy history to import waits for the node's import in progress: a new agent's (an
+          // empty log) has nothing to materialize, and serializing every first start held agents created together back.
+          if (!await loadLegacyMigration(durable) && (await transcript.readBounded?.(0))?.length !== 0) {
             const previous = this.migrating;
             this.migrating = new Promise<void>(resolve => { release = resolve; });
             await previous;
           }
           if (pending.cancelled) throw new Error("Agent stopped");
           hosted();
-          const init = { ...config, engine, id, directory, tools: bridge.definitions };
+          const init = { ...config, id, directory, tools: bridge.definitions };
           return this.hosting === "inline" ? await this.startInline(id, init, bridge, transcript, durable) : await this.startProcess(id, directory, init, bridge, transcript, durable);
         } catch (error) { await durable?.close(BACKGROUND_CONTEXT); await transcript.close(); throw error; }
         finally { release?.(); }
@@ -318,7 +326,7 @@ export class AgentSupervisor {
       if (method !== "tool") throw new Error("Unknown tool");
       return this.dispatchTool(handle, params);
     };
-    const timeout = setTimeout(() => { rpc.close("Agent initialization timed out"); child.kill("SIGKILL"); }, init.engine === "pi-durable" ? 120_000 : 30_000);
+    const timeout = setTimeout(() => { rpc.close("Agent initialization timed out"); child.kill("SIGKILL"); }, 120_000);
     try {
       const result = await rpc.request("init", init);
       this.watch(id, handle);
@@ -415,7 +423,7 @@ export class AgentSupervisor {
     const transcript = new Transcript(log, from, Infinity);
     const journal = await openPiJournalReader(this.piLocation(id));
     try {
-      const native = journal ? await nativeTranscriptRecords(journal) : undefined;
+      const native = journal ? await nativeTranscriptRecords(journal, () => log.read()) : undefined;
       if (native) for (const record of native) transcript.apply(record);
       else {
         await transcript.load();

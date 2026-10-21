@@ -13,7 +13,7 @@ import type { SystemMessage } from "@earendil-works/pi-ai";
 import {
   MIGRATION_MAX_BYTES, MIGRATION_MAX_RECORDS, readMigrationRecords, importLegacyTranscript, LEGACY_CONVERSATION_ID, LegacyMigrationConflict, LegacyMigrationDeferred,
   legacyHistoryOf, loadLegacyMigration, loadMigratedSnapshot, planLegacyMigration,
-  readMigratedLegacyHistory, readMigratedLegacyRecords, validateLegacyMigration,
+  readMigratedLegacyHistory, readMigratedLegacyRecords, validateLegacyMigration, legacyImportShape, type LegacyImportShape,
 } from "../src/pi-durable/migration.ts";
 import { Transcript, type TranscriptRecord } from "../src/transcript.ts";
 import type { AppendLog } from "../shared/append-log.ts";
@@ -136,21 +136,28 @@ test("commit failure leaves the source intact and no partial Pi session; ambiguo
   } finally { await storage.close(context); }
 });
 
-test("active runs, human waits, and contexts Pi would alter defer without creating or executing anything", async () => {
-  const cases: [TranscriptRecord[], LegacyMigrationDeferred["reason"], LegacyMigrationDeferred["kind"]?][] = [
+test("active runs, human waits, and contexts Pi would alter import as they stand, without creating or executing anything", async () => {
+  const cases: [TranscriptRecord[], LegacyImportShape][] = [
     [[{ t: "turn", active: true }, { t: "message", message: user("still running") }], "active"],
     [[{ t: "message", message: assistant([call("waiting")]) }, { t: "awaiting", calls: ["waiting"] }], "awaiting"],
-    [[{ t: "message", message: assistant([call("unknown-outcome")]) }], "context_changed", "open_call"],
-    [[{ t: "message", message: result("orphan") }], "context_changed", "order"],
-    [[{ t: "message", message: assistant([{ type: "text", text: "failed" }], { stopReason: "error" }) }], "context_changed", "failed_response"],
-    [[{ t: "message", message: assistant([call("a"), call("b")]) }, { t: "message", message: result("b") }, { t: "message", message: result("a") }], "context_changed", "order"],
+    [[{ t: "message", message: assistant([call("unknown-outcome")]) }], "context_changed"],
+    [[{ t: "message", message: result("orphan") }], "context_changed"],
+    [[{ t: "message", message: assistant([{ type: "text", text: "failed" }], { stopReason: "error" }) }], "context_changed"],
+    [[{ t: "message", message: assistant([call("a"), call("b")]) }, { t: "message", message: result("b") }, { t: "message", message: result("a") }], "context_changed"],
   ];
-  for (const [source, reason, kind] of cases) {
+  for (const [source, shape] of cases) {
     const storage = new MemoryStorage();
     try {
-      await assert.rejects(importLegacyTranscript({ storage, sessionId: "defer", records: source }), error => error instanceof LegacyMigrationDeferred && error.reason === reason && error.kind === kind);
-      assert.equal((await storage.scanConversations({}, 10, undefined, context)).items.length, 0);
+      const plan = planLegacyMigration(source);
+      assert.equal(legacyImportShape(plan.snapshot, plan.snapshot.context), shape);
+      const imported = await importLegacyTranscript({ storage, sessionId: "shaped", records: source });
+      assert.equal(imported.status, "imported");
+      // The archive is the source, whole; the import starts no run and no tool.
+      assert.deepEqual(await readMigratedLegacyRecords(storage), source);
       assert.equal((await storage.scanTasks({}, 10, undefined, context)).items.length, 0);
+      const snapshot = (await loadMigratedSnapshot(storage))!.snapshot;
+      assert.equal(snapshot.active, shape === "active");
+      assert.deepEqual(snapshot.awaiting, shape === "awaiting" ? ["waiting"] : []);
     } finally { await storage.close(context); }
   }
 });

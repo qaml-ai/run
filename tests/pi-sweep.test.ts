@@ -6,25 +6,25 @@ import { join } from "node:path";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import type pg from "pg";
-import type { Api, Model } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, type Api, type Model } from "@earendil-works/pi-ai";
 import { memoryStorage } from "../shared/storage.ts";
 import { postgresTail } from "../src/log-tail.ts";
 import { Ownership } from "../src/ownership.ts";
 import { AgentSupervisor } from "../src/supervisor.ts";
 import { ClientSessions } from "../src/client-sessions.ts";
 import { effectiveMode, PiSweep, PiSweepControl, piSweepGate, type PiSweepCandidate, type PiSweepMode, type PiSweepResult } from "../src/pi-sweep.ts";
-import type { AgentEngine } from "../src/pi-durable/config.ts";
+import type { TranscriptRecord } from "../src/transcript.ts";
 import { testDatabase } from "./database.ts";
 import { OTHER_OPERATOR, runtime, until } from "./runtime-server.ts";
 
 type Context = { after(fn: () => Promise<void> | void): void };
 
-/** A node over the shared storage and database, on `engine`. */
-async function node(t: Context, db: pg.Pool, storage: ReturnType<typeof memoryStorage>, name: string, engine: AgentEngine) {
+/** A node over the shared storage and database. */
+async function node(t: Context, db: pg.Pool, storage: ReturnType<typeof memoryStorage>, name: string) {
   const root = await mkdtemp(join(tmpdir(), "pi-sweep-"));
   const ownership = new Ownership(db, { node: `http://${name}` });
   await ownership.start();
-  const supervisor = new AgentSupervisor(join(root, "agents"), { hosting: "inline", storage, db, engine });
+  const supervisor = new AgentSupervisor(join(root, "agents"), { hosting: "inline", storage, db });
   const sessions = new ClientSessions(supervisor, { db, storage, prefix: "client-sessions/", ownership, secret: "pi-sweep-test-secret-with-32-characters!", apiKeyFor: () => "fixture-only" });
   let closed = false;
   const close = async () => {
@@ -65,17 +65,37 @@ async function fixtureModel(t: Context) {
   return { model, state };
 }
 
-/** Agents made with history on a legacy node, then let go: what the sweep migrates. */
-async function legacyAgents(t: Context, db: pg.Pool, storage: ReturnType<typeof memoryStorage>, model: Model<Api>, names: string[]) {
-  const legacy = await node(t, db, storage, "legacy", "legacy");
+/** A turn as the legacy engine wrote it to an agent's transcript log. */
+const legacyTurn = (text: string, requestId: string, reply: string): TranscriptRecord[] => [
+  { t: "turn", active: true },
+  { t: "message", message: { role: "user", content: text, timestamp: 1, requestId } as never },
+  { t: "message", message: fauxAssistantMessage(reply) },
+  { t: "turn", active: false },
+];
+
+/**
+ * Agents as the legacy engine left them: made (which starts no host), then given a transcript log of a turn, and for
+ * `awaiting` ones a call still waiting on a person. What the sweep migrates.
+ */
+async function legacyAgents(t: Context, db: pg.Pool, storage: ReturnType<typeof memoryStorage>, model: Model<Api>, names: string[], awaiting: string[] = []) {
+  const maker = await node(t, db, storage, "maker");
   const ids: string[] = [];
   for (const name of names) {
-    const { id } = await legacy.sessions.create([], { model }, name, {}, "default");
-    await prompt(legacy.sessions, id, `hello-${name}`);
+    const { id } = await maker.sessions.create([], { model }, name, {}, "default");
+    const records = legacyTurn(`hello-${name}`, `request-${name}`, `answer-${name}`);
+    if (awaiting.includes(name)) records.push({ t: "message", message: fauxAssistantMessage([{ type: "toolCall", id: "call-1", name: "confirm", arguments: {} }], { stopReason: "toolUse" }) }, { t: "awaiting", calls: ["call-1"] } as TranscriptRecord);
+    // Written under the agent's claim, as its legacy host wrote it.
+    const acquired = await maker.ownership.acquire(id);
+    assert.ok("claim" in acquired);
+    const log = storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id), acquired.claim);
+    await log.rewrite(() => records);
+    await log.close();
+    await maker.ownership.release(acquired.claim);
     ids.push(id);
   }
-  await legacy.sessions.releaseIdle();
-  await legacy.close();
+  await maker.sessions.releaseIdle();
+  await maker.close();
+  assert.equal(await count(db, NATIVE), 0, "made agents are not on Pi yet");
   return ids;
 }
 
@@ -91,13 +111,14 @@ async function everything(db: pg.Pool) {
 }
 
 /** A sweep over `sessions` that records each agent's outcome, never waiting for memory or pace. */
-function sweeper(db: pg.Pool, sessions: ClientSessions, setting: PiSweepMode) {
+function sweeper(db: pg.Pool, sessions: ClientSessions, setting: PiSweepMode, each?: (id: string, result: PiSweepResult) => void) {
   const outcomes: Record<string, number> = {};
   const sweep = new PiSweep({
     db, setting, paceMs: 0, repassMs: 60 * 60_000, pollMs: 20, backoffMs: [20, 40], busy: async () => undefined,
     sweep: async (candidate, dryRun) => {
       const result = await sessions.piSweepAgent(candidate, dryRun);
       outcomes[result.outcome] = (outcomes[result.outcome] ?? 0) + 1;
+      each?.(candidate.id, result);
       return result;
     },
   });
@@ -106,58 +127,59 @@ function sweeper(db: pg.Pool, sessions: ClientSessions, setting: PiSweepMode) {
 
 const finished = (db: pg.Pool, mode: "dry_run" | "on") => until(async () => (await db.query(`select ${mode}_finished_at from pi_sweep`)).rows[0][`${mode}_finished_at`] !== null, `the ${mode} pass`, 60_000);
 
-test("the sweep's dry run reports and writes nothing; on, it migrates the idle agents once, and a second pass finds only those it left", { timeout: 180_000 }, async t => {
+test("the sweep's dry run reports and writes nothing; on, it imports the idle agents once, and a second pass finds only those it left", { timeout: 180_000 }, async t => {
   const { model, state } = await fixtureModel(t);
   const { db } = await testDatabase();
   const storage = memoryStorage(postgresTail(db));
-  const ids = await legacyAgents(t, db, storage, model, ["idle-a", "idle-b", "waiting"]);
-  await db.query(`insert into agent_inputs (id, agent, tenant, request_id, tool_call_id, kind, input, created_at, expires_at)
-    values ('input-1', $1, 'default', 'r', 'c', 'confirm', '{}', $2, $3)`, [ids[2], Date.now(), Date.now() + 60_000]);
-  assert.equal(await count(db, NATIVE), 0);
-  const calls = state.calls;
+  const ids = await legacyAgents(t, db, storage, model, ["idle-a", "idle-b", "waiting", "running"], ["waiting"]);
+  // Runs open: the orphan sweep's to load, not this one's.
+  await db.query("update agents set pending_runs = true where id = $1", [ids[3]]);
 
-  const pi = await node(t, db, storage, "pi", "pi-durable");
+  const pi = await node(t, db, storage, "pi");
   const control = new PiSweepControl(db, "on");
   assert.equal((await control.status()).effective, "dry-run", "a new database starts in dry-run");
-  assert.equal((await control.status()).remaining, 3);
+  assert.equal((await control.status()).remaining, 4);
 
   // Dry run: what each open would do; nothing written, nothing opened or held.
   const before = await everything(db);
-  const { sweep, outcomes, reset } = sweeper(db, pi.sessions, "on");
+  const results: Record<string, PiSweepResult> = {};
+  const { sweep, outcomes, reset } = sweeper(db, pi.sessions, "on", (id, result) => { results[id] = result; });
   t.after(() => sweep.stop());
   sweep.start();
   await finished(db, "dry_run");
-  assert.deepEqual(outcomes, { would_migrate: 2, deferred_awaiting: 1 });
+  assert.deepEqual(outcomes, { would_migrate: 3, skipped_pending_runs: 1 });
+  assert.deepEqual(results[ids[0]], { outcome: "would_migrate", detail: { records: 4 } });
+  assert.deepEqual(results[ids[2]], { outcome: "would_migrate", detail: { records: 6, from: "awaiting" } }, "with what the import would find");
   assert.deepEqual(await everything(db), before, "a dry run writes nothing but its cursor");
   assert.equal(pi.supervisor.agents.size, 0);
   assert.equal(pi.sessions.sessions.size, 0);
 
-  // On: the idle ones migrate, and are let go again.
+  // On: the idle ones are imported, and let go again.
   reset();
   await control.set("on");
   await finished(db, "on");
-  assert.deepEqual(outcomes, { migrated: 2, deferred_awaiting: 1 });
-  assert.equal(await count(db, NATIVE), 2);
+  assert.deepEqual(outcomes, { migrated: 3, skipped_pending_runs: 1 });
+  assert.deepEqual(results[ids[2]], { outcome: "migrated", detail: { from: "awaiting" } });
+  assert.equal(await count(db, NATIVE), 3);
   assert.equal(pi.supervisor.agents.size, 0, "swept agents are stopped");
   assert.equal(pi.sessions.sessions.size, 0, "and unloaded");
   assert.equal(await count(db, "select count(*) as count from actor_owners where node is not null"), 0, "and their ownership released");
-  assert.equal(state.calls, calls, "opening an agent asks no model");
+  assert.equal(state.calls, 0, "opening an agent asks no model");
 
-  // Again from the start: migrated agents are not candidates, and nothing changes.
+  // Again from the start: imported agents are not candidates, and nothing changes.
   reset();
   const migrated = await everything(db);
   await control.set("on", true);
   await finished(db, "on");
   await sweep.stop();
-  assert.deepEqual(outcomes, { deferred_awaiting: 1 });
+  assert.deepEqual(outcomes, { skipped_pending_runs: 1 });
   assert.deepEqual((await everything(db)).pi_durable_documents, migrated.pi_durable_documents, "a second pass rewrites nothing");
   assert.equal((await control.status()).remaining, 1);
 
-  // A migrated agent runs on Pi with its history.
+  // An imported agent runs on Pi with its history.
   await prompt(pi.sessions, ids[0], "after-the-sweep");
-  const status = await pi.supervisor.request(ids[0], "status", {}) as { engine: string; messages: number };
-  assert.equal(status.engine, "pi-durable");
-  assert.equal(status.messages, 4);
+  assert.equal((await pi.supervisor.request(ids[0], "status", {}) as { messages: number }).messages, 4);
+  assert.equal(state.calls, 1);
 });
 
 test("the sweep never takes an agent another node holds, even one taken after it was chosen", { timeout: 120_000 }, async t => {
@@ -166,10 +188,11 @@ test("the sweep never takes an agent another node holds, even one taken after it
   const storage = memoryStorage(postgresTail(db));
   const [held, free] = await legacyAgents(t, db, storage, model, ["held", "free"]);
 
-  // Another node serves `held` (on the legacy engine, so it stays a candidate).
-  const other = await node(t, db, storage, "other", "legacy");
-  await prompt(other.sessions, held, "still-here");
-  const pi = await node(t, db, storage, "pi", "pi-durable");
+  // Another node holds `held`'s claim, as one loading or serving it does.
+  const other = await node(t, db, storage, "other");
+  const claimed = await other.ownership.acquire(held);
+  assert.ok("claim" in claimed);
+  const pi = await node(t, db, storage, "pi");
 
   const { sweep, outcomes } = sweeper(db, pi.sessions, "on");
   t.after(() => sweep.stop());
@@ -179,13 +202,13 @@ test("the sweep never takes an agent another node holds, even one taken after it
   await sweep.stop();
   assert.deepEqual(outcomes, { skipped_hosted: 1, migrated: 1 });
 
-  // Chosen while free, taken by another node before the sweep opened it: its load is refused, so the node keeps it.
-  const stale: PiSweepCandidate = { id: held, tenant: "default", pendingRuns: false, awaiting: false, owned: false };
+  // Chosen while free, taken by another node before the sweep opened it: its load is refused, so that node keeps it.
+  const stale: PiSweepCandidate = { id: held, tenant: "default", pendingRuns: false, owned: false };
   assert.deepEqual(await pi.sessions.piSweepAgent(stale, false), { outcome: "skipped_hosted" });
-  assert.ok(other.sessions.sessions.has(held), "the other node still serves it");
-  assert.equal(await other.ownership.owner(held), "http://other");
+  assert.ok(other.ownership.holds(claimed.claim), "the other node still holds it");
+  assert.equal(await pi.ownership.owner(held), "http://other");
   assert.equal(await count(db, "select count(*) as count from pi_durable_documents where session_id = $1", [held]), 0, "and nothing of it was imported");
-  await prompt(other.sessions, held, "still-mine");
+  assert.equal(pi.sessions.sessions.size, 0);
   assert.equal(await count(db, `select count(*) as count from pi_durable_documents where session_id = $1 and kind = '"camel.host.snapshot"'`, [free]), 1);
 });
 

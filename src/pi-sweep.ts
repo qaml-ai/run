@@ -9,15 +9,15 @@ const RANK: Record<PiSweepMode, number> = { off: 0, "dry-run": 1, on: 2 };
 export const PI_SWEEP_MODES = Object.keys(RANK) as PiSweepMode[];
 
 /** An agent the sweep takes next, as the database saw it then. */
-export interface PiSweepCandidate { id: string; tenant: string; pendingRuns: boolean; awaiting: boolean; owned: boolean }
-/** What came of one agent: `outcome` (migrated, would_migrate, deferred_<reason>, skipped_<why>, ...) and ids or sizes. */
+export interface PiSweepCandidate { id: string; tenant: string; pendingRuns: boolean; owned: boolean }
+/** What came of one agent: `outcome` (migrated, would_migrate, skipped_<why>, ...) and ids or sizes. */
 export interface PiSweepResult { outcome: string; detail?: Record<string, unknown> }
 
 export interface PiSweepOptions {
   db: Db;
   /** The node's AGENT_PI_SWEEP: the most the operator's mode may do here. */
   setting: PiSweepMode;
-  /** One agent: open it so it migrates (or, dry, say what that would do). ClientSessions.piSweepAgent. */
+  /** One agent: open it so it is imported (or, dry, say what that would find). ClientSessions.piSweepAgent. */
   sweep(candidate: PiSweepCandidate, dryRun: boolean): Promise<PiSweepResult>;
   /** Why this node should not take an agent now (short of memory, its pool waiting, full, leaving), or undefined. */
   busy(): Promise<string | undefined>;
@@ -150,9 +150,8 @@ export class PiSweep {
       const now = clock().now();
       if (finished !== null && now - Number(finished) < this.options.repassMs) return { state: "idle" as const };
       const cursor = finished !== null ? "" : control[`${column}_cursor`];
-      const row = (await sql.query<{ id: string; tenant: string; pending_runs: boolean; awaiting: boolean; owned: boolean }>(`
+      const row = (await sql.query<{ id: string; tenant: string; pending_runs: boolean; owned: boolean }>(`
         select a.id, a.tenant, a.pending_runs,
-          exists (select 1 from agent_inputs i where i.agent = a.id and i.state = 'pending') as awaiting,
           exists (select 1 from actor_owners o join runtime_nodes n on n.node = o.node and n.session = o.session and n.expires_at > now() where o.actor = a.id) as owned
         from agents a where ${LEGACY} and a.id > $2 order by a.id limit 1`, [now, cursor])).rows[0];
       if (!row) {
@@ -160,7 +159,7 @@ export class PiSweep {
         return { state: "finished" as const, mode };
       }
       await sql.query(`update pi_sweep set ${column}_cursor = $1, ${column}_finished_at = null, updated_at = $2 where id`, [row.id, now]);
-      return { state: "agent" as const, mode, candidate: { id: row.id, tenant: row.tenant, pendingRuns: row.pending_runs, awaiting: row.awaiting, owned: row.owned } };
+      return { state: "agent" as const, mode, candidate: { id: row.id, tenant: row.tenant, pendingRuns: row.pending_runs, owned: row.owned } };
     });
   }
 }
