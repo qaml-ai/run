@@ -259,6 +259,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   if (rerankers.length && !secrets.toolSearchKey && !platformOpenRouter()) {
     console.error(JSON.stringify({ type: "tool_search_not_configured", reason: "no platformKeys.openrouter in the tenants file and no AGENT_TOOL_SEARCH_API_KEY; tools.search ranks by keywords until one is set" }));
   }
+  if (config.ignored.length) console.error(JSON.stringify({ type: "settings_ignored", settings: config.ignored, reason: "the legacy agent engine was removed: every agent runs on Pi durable" }));
   // Control plane: coordination and small mutable state in Postgres.
   await migrate(db);
   // Data plane: logs and blobs in local files by default, or shared storage (S3) so any node can serve any agent.
@@ -295,7 +296,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   const outbound = outboundFromEnvironment(env);
   const supervisor = new AgentSupervisor(join(root, "sessions"), {
     runtime: config.runtime, maxAgents, ...(config.memoryHighBytes ? { memoryHighBytes: config.memoryHighBytes } : {}), hosting, ...(distributed ? { storage } : {}), ...(deps.codeExecutor ? { codeExecutor: deps.codeExecutor } : {}),
-    engine: config.engine, piCanaryAgents: config.piCanaryAgents, piCanaryTenants: config.piCanaryTenants, db,
+    db,
     // Pi's journal rides out a failover as the log tail does: for as long as the node's lease lasts.
     piRetryMs: leaseTtlMs,
     agentEnv: config.agentEnv, historyBacklogBytes: config.historyBacklogBytes, modelOutbound: outbound,

@@ -47,6 +47,40 @@ function sameMessages(left: readonly AgentMessage[], right: readonly AgentMessag
   return left.length === right.length && left.every((message, index) => message === right[index] || digest(message) === digest(right[index]));
 }
 
+/** Pi 1.3.0's context derivation (harness/context.js, not exported): what it leaves out, and a missing result's text. */
+const EXCLUDED_STOP_REASONS = new Set(["aborted", "error", "deferred"]);
+const MISSING_RESULT_TEXT = "Tool result unavailable: history ends before this call completed.";
+
+/**
+ * A context as Pi derives it from a checkpoint of `messages`: failed, aborted and deferred responses left out, and each
+ * assistant's tool results right after it in call order (a missing one given Pi's own placeholder, an unmatched one
+ * dropped). Two working sets with the same Pi context need no new checkpoint: an imported legacy context Pi orders
+ * differently, or a failed response the host keeps, would otherwise rewrite the whole context on every run.
+ */
+export function piOrdered(messages: readonly AgentMessage[]): AgentMessage[] {
+  const kept = messages.filter(message => message.role !== "assistant" || !EXCLUDED_STOP_REASONS.has(message.stopReason));
+  const ordered: AgentMessage[] = [];
+  for (let index = 0; index < kept.length; index++) {
+    const message = kept[index];
+    if (message.role === "toolResult") continue;
+    ordered.push(message);
+    if (message.role !== "assistant") continue;
+    const calls = message.content.filter(part => part.type === "toolCall");
+    if (!calls.length) continue;
+    const results = new Map<string, AgentMessage>();
+    for (let next = index + 1; next < kept.length && kept[next].role !== "assistant"; next++) {
+      const candidate = kept[next];
+      if (candidate.role === "toolResult" && !results.has(candidate.toolCallId)) results.set(candidate.toolCallId, candidate);
+    }
+    for (const call of calls) ordered.push(results.get(call.id) ?? { role: "toolResult", toolCallId: call.id, toolName: call.name,
+      content: [{ type: "text", text: MISSING_RESULT_TEXT }], isError: true, details: { reason: "missing_result" }, timestamp: message.timestamp } as AgentMessage);
+  }
+  return ordered;
+}
+
+/** Whether two working sets give Pi the same context: the same messages, or the same once Pi orders them (`piOrdered`). */
+const samePiContext = (left: readonly AgentMessage[], right: readonly AgentMessage[]) => sameMessages(left, right) || sameMessages(piOrdered(left), piOrdered(right));
+
 /** The native WAL is authoritative; an old transcript is a cursor-addressed projection. */
 export function durableEntryMessages(entry: EntryRecord): DurableMessage[] {
   if (!nativeKinds.has(entry.kind)) return [];
@@ -211,7 +245,7 @@ export class DurableAgent {
       model: options.initialState!.model!, thinkingLevel: options.initialState?.thinkingLevel ?? "off",
       get messages() { return self.messages; },
       // Hosts reassign the working set after every run; only a real change is checkpointed into Pi's context.
-      set messages(value) { if (!sameMessages(value, self.messages)) self.dirty = true; self.messages = [...value]; },
+      set messages(value) { if (!samePiContext(value, self.messages)) self.dirty = true; self.messages = [...value]; },
       get tools() { return self.tools; }, set tools(value) { self.tools = [...value]; self.installTools(); self.dirty = true; },
       get systemPrompt() { const system = self.messages.findLast(message => message.role === "system"); return system ? getSystemMessageText(system) : ""; },
       get isStreaming() { return self.controller !== undefined; },
@@ -386,7 +420,7 @@ export class DurableAgent {
       // on every load cost a full copy of it in memory and in the journal. An imported context is still split once
       // into per-message entries, so Pi can choose a compaction cut inside it.
       const whole = view.head?.kind === "camel.legacy.context" && (view.head.model?.length ?? 0) > 1;
-      agent.dirty = whole || !sameMessages(agent.originals(view.messages as Message[]) as AgentMessage[], contextMessages(agent.messages) as AgentMessage[]);
+      agent.dirty = whole || !samePiContext(agent.originals(view.messages as Message[]) as AgentMessage[], contextMessages(agent.messages) as AgentMessage[]);
     }
     const head = await options.durable.storage.findLatestHeadMarker(agent.conversation.id, undefined, context);
     if (head?.kind === "pi.compaction") {

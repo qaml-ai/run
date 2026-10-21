@@ -19,7 +19,7 @@ test("cold paginated history includes a native commit beyond an up-to-date legac
   const { db } = await testDatabase();
   const directory = await mkdtemp(join(tmpdir(), "pi-cold-history-"));
   const storage = fileStorage(join(directory, "storage"));
-  const supervisor = new AgentSupervisor(join(directory, "agents"), { db, storage, engine: "legacy", hosting: "inline" });
+  const supervisor = new AgentSupervisor(join(directory, "agents"), { db, storage, hosting: "inline" });
   const sessions = new ClientSessions(supervisor, { db, storage, secret: "pi-history-secret-32-characters-long" });
   t.after(async () => { await sessions.close(); await supervisor.close(); await rm(directory, { recursive: true, force: true }); });
   const id = `client_${"a".repeat(40)}`;

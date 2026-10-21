@@ -58,7 +58,7 @@ test("a rejected receipt rolls back the canonical response in the same Postgres 
 
 for (const hosting of ["inline", "process"]) test(`actual native response uses existing durable attempts and counts usage once (${hosting})`, async t => {
   const r = await runtime(t, () => ({ role: "assistant", content: "done", usage: { prompt_tokens: 100, completion_tokens: 10, cost: 0.01 } }),
-    { AGENT_ENGINE: "pi-durable", AGENT_HOSTING: hosting });
+    { AGENT_HOSTING: hosting });
   const created = await r.call("/v1/agents", { body: { codeMode: false } });
   assert.equal(created.status, 201, created.text);
   const id = created.json.id;

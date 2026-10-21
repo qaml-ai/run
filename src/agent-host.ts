@@ -1,10 +1,10 @@
 import { END_USER_CREDIT, type CreditStop, type ModelAttemptHook } from "./model-attempt.ts";
 import { NativeTranscript } from "./pi-durable/transcript.ts";
 import { mkdir } from "node:fs/promises";
-import { Agent, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
 import { convertToLlm } from "./pi-harness/messages.ts";
 import {
-  getCurrentSystemMessage, getCurrentTools, getSystemMessageText, getToolStateChanges, isContextOverflow, isRetryableAssistantError, toToolDeclaration, validateToolArguments,
+  getCurrentSystemMessage, getCurrentTools, getToolStateChanges, isContextOverflow, isRetryableAssistantError, toToolDeclaration, validateToolArguments,
   type AssistantMessage, type Message, type SystemMessage, type Tool, type ToolCall, type ToolResultMessage,
 } from "@earendil-works/pi-ai";
 import { executeCode, presentResult, type CodeExecutor, type CodeResult } from "./codemode.ts";
@@ -15,9 +15,9 @@ import { applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS,
 import { renderMessages, senderInput, stamp, type MessageSource } from "./sender.ts";
 import type { SearchHit, SearchQuery } from "./tool-search.ts";
 import type { AppendLog } from "../shared/append-log.ts";
-import { Transcript, readTranscriptLog, summaryMessage, type Backlog, type CompactionState, type TranscriptRecord, type TranscriptSnapshot } from "./transcript.ts";
-import { boundedContext, closeInterruptedTurn, importedHistory, interruptedTurnRepairs, validateInitialMessages, validateUserMessages } from "./history.ts";
-import { backgroundTokens, compactionNeed, compactionSettings, contextTokens, explicitKeyStream, messagesTokens, modelKeyFailure, runCompaction, type ModelGate } from "./compaction.ts";
+import { Transcript, readTranscriptLog, type Backlog, type TranscriptRecord, type TranscriptSnapshot } from "./transcript.ts";
+import { closeInterruptedTurn, importedHistory, interruptedTurnRepairs, validateInitialMessages, validateUserMessages } from "./history.ts";
+import { contextTokens, explicitKeyStream, modelKeyFailure, type ModelGate } from "./compaction.ts";
 import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
 import { isStalled, streamTimeouts } from "./model-stream.ts";
 import { MODEL_INTERRUPTED, modelFailure, retriesModelError } from "./model-errors.ts";
@@ -32,9 +32,8 @@ import { imageHeader } from "./image-header.ts";
 import { clock } from "./node-context.ts";
 import { usageMissing } from "./platform-pricing.ts";
 import type { Storage as PiStorage } from "@earendil-works/pi-durable";
-import type { DurableAgent } from "./pi-durable/agent.ts";
-import type { AgentEngine } from "./pi-durable/config.ts";
-import { readMigrationRecords, LegacyMigrationDeferred, loadLegacyMigration, type LegacyMigrationMetadata } from "./pi-durable/migration.ts";
+import { DurableAgent, type DurableAgentOptions } from "./pi-durable/agent.ts";
+import { LEGACY_CONVERSATION_ID, legacyImportShape, LegacyMigrationDeferred, loadLegacyMigration, readMigrationRecords, type LegacyImportShape } from "./pi-durable/migration.ts";
 import { reconcilePiTranscript } from "./pi-durable/projection.ts";
 
 /** How often an agent reads back from its log what its history backlog could not hold (see `index`). */
@@ -129,11 +128,10 @@ const stopFields = (stop: Partial<RunStop>) => ({
  * in its own process (agent-child.ts) or inline in a worker hosting many agents.
  */
 export function createAgentHost(hostIO: HostIO) {
-  let agent: Agent | undefined;
+  let agent: DurableAgent | undefined;
   let config: AgentConfig;
-  let engine: AgentEngine = "legacy";
-  let durableAgent: DurableAgent | undefined;
-  let migration: { state: "migrated" | "existing" | "deferred"; reason?: string } | undefined;
+  /** How this start found the session: on Pi already, or imported from its legacy transcript now (and what that import took). */
+  let migration: { state: "existing" } | { state: "migrated" | "adopted"; from?: LegacyImportShape; archive?: "legacy-log" } | undefined;
   // Each turn's outcome, timing and model and tool counts, as metrics (metrics.ts), from what the host emits.
   const turns = observeTurns(() => config?.model && { provider: config.model.provider, id: config.model.id }, Date.now, () => config?.tenant);
   const io: HostIO = { ...hostIO, emit: event => { turns.event(event); hostIO.emit(event); } };
@@ -151,9 +149,6 @@ export function createAgentHost(hostIO: HostIO) {
     stopped = { stopped: "spend_limit", error: refused.message, code: END_USER_CREDIT, limit: "end_user", reason: refused.reason, bucket: refused.bucket, endUser: refused.endUser };
     io.emit({ type: "spend_limit_reached", message: refused.message });
   };
-  /** Messages a compaction folded into the summary during the current run, still in Pi's live state. */
-  let dropped = new WeakSet<AgentMessage>();
-  let summary: { state: CompactionState; message: AgentMessage } | undefined;
   /** Files' bytes (base64) by content, as requests carry them, least recently used first, kept between model requests. */
   const hydrated = new Map<string, Hydrated>();
   let hydratedBytes = 0;
@@ -177,8 +172,6 @@ export function createAgentHost(hostIO: HostIO) {
    * whether the latest request did.
    */
   let forcing = { left: 0, reminding: false, last: false };
-  /** In a run with history: "none", the system message as it stands: its requests lead with it, and carry only the run's own messages (`freshTurn`). */
-  let fresh: SystemMessage | undefined;
   /** Calls a lost node left open that are safe to make again (`RERUN`): made again before the resumed turn continues. */
   let rerun: ToolCall[] = [];
   /** js_exec, which an agent has unless its codeMode is false; made at init. */
@@ -239,13 +232,6 @@ export function createAgentHost(hostIO: HostIO) {
     }).catch(error => console.error(JSON.stringify({ type: "history_index_failed", agent: config.id, error: errorText(error) })));
   }
 
-  function summaryView(): AgentMessage[] {
-    const state = transcript.compaction;
-    if (!state) return [];
-    if (summary?.state !== state) summary = { state, message: summaryMessage(state) };
-    return [summary.message];
-  }
-
   /**
    * The context's first system message, the start of the provider's cached prefix. It is built
    * from configuration until the prompt or tools change with history; the transcript then pins
@@ -258,11 +244,6 @@ export function createAgentHost(hostIO: HostIO) {
   /** Pi's messages from the transcript: what a run starts from. */
   function stateMessages(): AgentMessage[] { return [leading(), ...transcript.view()]; }
 
-  /** The model's context: the leading system message, the current summary, and live messages not yet folded into it. A fresh run's: its own system message and messages. */
-  function liveView(messages: AgentMessage[]): AgentMessage[] {
-    return [fresh ?? leading(), ...fresh ? [] : summaryView(), ...messages.filter((message, index) => !(index === 0 && message.role === "system") && message.role !== "compactionSummary" && !dropped.has(message))];
-  }
-
   /**
    * Begin a run that sees no history (a prompt's history: "none", which its user message records): Pi's state is the
    * system message as it stands (the leading one with every change since), then the run's own messages, from `first` on.
@@ -274,8 +255,7 @@ export function createAgentHost(hostIO: HostIO) {
     if ((first as { history?: string } | undefined)?.history !== "none") return undefined;
     const all = stateMessages();
     const at = all.indexOf(first!);
-    fresh = getCurrentSystemMessage(at < 0 ? all : all.slice(0, at))!;
-    return [fresh, ...at < 0 ? [] : all.slice(at)];
+    return [getCurrentSystemMessage(at < 0 ? all : all.slice(0, at))!, ...at < 0 ? [] : all.slice(at)];
   }
 
   /** Record a system message after the leading one, pinning `current` as that first, in one commit (`Transcript.declareSystem`). */
@@ -343,162 +323,13 @@ export function createAgentHost(hostIO: HostIO) {
   /** Where its model requests go, for `retriesModelError`: its tenant's own endpoint retries for itself. */
   const failureContext = () => ({ ownEndpoint: config.apiKey === IDENTITY_KEY, contextWindow: config.model.contextWindow });
 
-  /** The compaction running now, if any: an agent compacts one at a time. */
-  let compacting: { done: Promise<boolean>; controller: AbortController; background: boolean } | undefined;
-
-  /** Wait for `promise` to settle, or until `signal` aborts (then throw its reason). */
-  function until(promise: Promise<unknown>, signal?: AbortSignal): Promise<unknown> {
-    const settled = promise.catch(() => {});
-    if (!signal) return settled;
-    signal.throwIfAborted();
-    return Promise.race([settled, new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }))]);
-  }
-
   /**
-   * Summarize older context into the transcript before the next request: a turn's context that would not fit (or that
-   * the provider refused) waits for it. One compaction at a time: one running already (in the background) is waited for first.
-   */
-  async function compactNow(reason: "threshold" | "overflow", signal?: AbortSignal): Promise<boolean> {
-    while (compacting) await until(compacting.done, signal);
-    return startCompaction(reason, false, signal).done;
-  }
-
-  /**
-   * Compact in the background when the context is near its limit (`compactionNeed`) and no compaction runs: turns go on
-   * with the whole context meanwhile, and the summary takes over once it is written. `messages` are Pi's live state.
-   */
-  function compactInBackground(messages = agent?.state.messages) {
-    if (durableAgent || compacting || !messages || !config.apiKey || transcript.failed !== undefined || !measure(messages).need) return;
-    startCompaction("threshold", true).done.catch(() => {});
-  }
-
-  function startCompaction(reason: "threshold" | "overflow", background: boolean, signal?: AbortSignal) {
-    const controller = new AbortController();
-    const abort = () => controller.abort(signal!.reason);
-    signal?.addEventListener("abort", abort, { once: true });
-    const current = { controller, background, done: compact(reason, background, controller.signal) };
-    compacting = current;
-    current.done.finally(() => {
-      signal?.removeEventListener("abort", abort);
-      if (compacting === current) compacting = undefined;
-    }).catch(() => {});
-    return current;
-  }
-
-  /**
-   * Summarize the working set as it is now, up to a cut that keeps recent context. Messages appended meanwhile (a turn
-   * that went on) follow the cut, so the summary replaces only the prefix it covered. The transcript's write is fenced
-   * by the owner's claim like every other: a node that lost the agent cannot write it. Failures leave the context as
-   * is; a later request tries again.
-   */
-  async function compact(reason: "threshold" | "overflow", background: boolean, signal: AbortSignal): Promise<boolean> {
-    const apiKey = config.apiKey;
-    if (!apiKey) return false;
-    // A tenant or agent at its spend cap makes no more model calls, summaries included, until a run needs one.
-    if (background && (await io.runLimit().catch(() => undefined))?.stopped === "spend_limit") return false;
-    const flag = background ? { background: true } : {};
-    io.emit({ type: "compaction_start", reason, ...flag });
-    const previous = transcript.compaction;
-    try {
-      const context = transcript.context.slice();
-      const offset = transcript.offset;
-      // An overflow means the real limit is lower than assumed: keep about a fifth of the context.
-      const keepRecentTokens = reason === "overflow" ? Math.max(1_000, Math.floor(contextTokens([...summaryView(), ...context]) * 0.2)) : compactionSettings(compactionModel()).keepRecentTokens;
-      const outcome = await runCompaction({
-        // The summarizer reads messages as the model does, senders included; rendering keeps their count, so the cut still indexes the context.
-        context: renderMessages(context), offset, previous, model: config.model, apiKey: perCall() ? () => io.modelAuth() : apiKey, signal, keepRecentTokens, modelHeaders: config.modelHeaders, dataCollection: config.dataCollection, gate, outbound: io.modelOutbound, attempt: io.modelAttempt,
-        // A summary whose usage never came is billed at the estimate of what it wrote (`chars`) and read.
-        onResponse: message => io.emit({ type: "compaction_usage", provider: message.provider, model: message.model, usage: message.usage, timestamp: message.timestamp,
-          ...(usageMissing(message.usage) ? { chars: message.content.length ? JSON.stringify(message.content).length : 0 } : {}), ...flag }),
-      });
-      if ("skipped" in outcome) {
-        io.emit({ type: "compaction_end", reason, skipped: outcome.skipped, ...flag });
-        return false;
-      }
-      // Only onto the working set it summarized. System messages before the cut fold into the leading one: the summary starts a new prefix anyway.
-      const folded = await transcript.compact(outcome.state, previous, changes => getCurrentSystemMessage([leading(), ...changes]));
-      if (!folded) {
-        io.emit({ type: "compaction_end", reason, skipped: "The working set changed while it was summarized", ...flag });
-        return false;
-      }
-      // A running turn leaves what the summary folded at its next request (liveView); between runs, Pi starts from the summary.
-      for (const message of [...context.slice(0, outcome.state.cut - offset), ...folded]) dropped.add(message);
-      if (!busy) { agent!.state.messages = stateMessages(); dropped = new WeakSet(); }
-      io.emit({ type: "compaction_end", reason, tokensBefore: outcome.state.tokensBefore, summarizedMessages: outcome.state.cut - offset, keptMessages: transcript.context.length, ...flag });
-      return true;
-    } catch (error) {
-      if (signal.aborted) throw error;
-      io.emit({ type: "compaction_end", reason, error: error instanceof Error ? error.message : String(error), ...flag });
-      return false;
-    }
-  }
-
-  const systemTokens = (system: SystemMessage) => Math.ceil(getSystemMessageText(system).length / 4);
-
-  /**
-   * The model as compaction measures it: its context window lowered to the agent's `runLimits.contextTokens`, if that is
-   * lower. Only when to compact and how much to keep follow it; trimming, the last resort, keeps the model's own window.
+   * The model as Pi's compaction measures it: its context window lowered to the agent's `runLimits.contextTokens`, if
+   * that is lower.
    */
   function compactionModel(): AgentConfig["model"] {
     const limit = config.runLimits?.contextTokens;
     return limit && limit < config.model.contextWindow ? { ...config.model, contextWindow: limit } : config.model;
-  }
-
-  /**
-   * Before every model request: a context near its limit starts compacting in the background and is sent whole; one
-   * that would not fit waits for a compaction running already, else compacts first. Trimming is the last resort.
-   */
-  /**
-   * The model's context for `messages` and whether it needs compacting: `blocking` when it would not fit the window less
-   * the reserve, `background` within `backgroundTokens` of that (`compactionNeed`). Measured the way trimming measures it
-   * too (its JSON characters), so a context is compacted, not trimmed, wherever compaction can bring it within budget.
-   */
-  function measure(messages: AgentMessage[]) {
-    const [system, ...view] = liveView(messages) as [SystemMessage, ...AgentMessage[]];
-    const budget = config.model.contextWindow - compactionSettings(config.model).reserveTokens - systemTokens(system);
-    const trims = (tokens: number) => { try { return boundedContext(view, tokens).length !== view.length; } catch { return true; } };
-    const limited = compactionModel();
-    let need = compactionNeed(view, config.model, systemTokens(system));
-    if (need === "blocking" || trims(budget)) need = "blocking";
-    else need ??= trims(budget - backgroundTokens(config.model)) ? "background"
-      : limited !== config.model && grown(view, limited.contextWindow) ? compactionNeed(view, limited, systemTokens(system)) : undefined;
-    return { system, view, budget, need };
-  }
-
-  /**
-   * Whether the context gained a quarter of `limit` (runLimits.contextTokens) since the last compaction, which the limit
-   * waits for before compacting again. A system prompt, summary and recent messages that nearly fill the limit would
-   * otherwise be summarized again on every turn, each time writing the provider's cached prefix anew.
-   */
-  function grown(view: AgentMessage[], limit: number): boolean {
-    const since = transcript.compaction?.at;
-    if (since === undefined) return true;
-    return messagesTokens(view.filter(message => message.role !== "compactionSummary" && message.role !== "system" && message.timestamp > since)) >= limit / 4;
-  }
-
-  /**
-   * Before every model request: a context near its limit starts compacting in the background and is sent whole; one
-   * that would not fit waits for a compaction running already, else compacts first. Trimming is the last resort.
-   */
-  async function contextFor(messages: AgentMessage[], signal?: AbortSignal): Promise<AgentMessage[]> {
-    let measured = measure(messages);
-    if (measured.need === "blocking" && compacting) {
-      await until(compacting.done, signal);
-      measured = measure(messages);
-    }
-    if (measured.need === "blocking" && await compactNow("threshold", signal)) measured = measure(messages);
-    else if (measured.need === "background") compactInBackground(messages);
-    const { view, budget } = measured;
-    let system = measured.system;
-    // Trimming is left for a context compaction could not bring within the budget.
-    const bounded = boundedContext(view, budget);
-    if (bounded.length !== view.length) {
-      io.emit({ type: "context_trimmed", retainedMessages: bounded.length, omittedMessages: view.length - bounded.length });
-      // Changes in the trimmed part still apply.
-      const trimmed = view.slice(0, view.length - bounded.length).filter(message => message.role === "system");
-      if (trimmed.length) system = getCurrentSystemMessage([system, ...trimmed])!;
-    }
-    return [system, ...bounded];
   }
 
   /**
@@ -648,6 +479,34 @@ export function createAgentHost(hostIO: HostIO) {
           return { content: await capped(toolCallId, [{ type: "text", text: JSON.stringify(value) ?? "null" }]), details: value };
         },
       }));
+  }
+
+  /** js_exec, with the agent's code limits. */
+  function codeTool(): AgentTool {
+    const maxTimeoutMs = config.codeLimits?.maxTimeoutMs ?? SANDBOX_LIMITS.maxTimeoutMs;
+    return {
+      name: "js_exec", label: "JavaScript",
+      description: "Run JavaScript or TypeScript in a fresh sandbox. Return what you want to see: it comes back as JSON (a string as its own text), after any console.log lines. In scope: tools (await tools.<name>(args) gives the tool's result as data; tools.search, tools.namespaces and tools.describe find them) and fs for your files (readFile(path, { encoding: \"utf8\" }) gives a string, a Uint8Array without it; writeFile(path, string | Uint8Array); stat, list, remove); no network, imports, Node APIs or timers. Variables are gone after each execution; files persist. An execution gets timeoutMs of wall time (default " + Math.min(SANDBOX_LIMITS.timeoutMs, maxTimeoutMs) + ", at most " + maxTimeoutMs + "), tool calls included: raise it for slow tools." + " For example:\nconst tickets = [];\nfor (let page = 1; page; ) { const result = await tools.helpdesk__list_tickets({ status: \"open\", page }); tickets.push(...result.tickets); page = result.nextPage; }\nawait fs.writeFile(\"" + (scratchMount(config.mounts)?.path ?? "/workspace") + "/tmp/tickets.json\", JSON.stringify(tickets)); // a later execution can read it back\nreturn { open: tickets.length, oldest: tickets[0]?.createdAt };",
+      parameters: {
+        type: "object", required: ["code"],
+        properties: { code: { type: "string" }, description: { type: "string" }, timeoutMs: { type: "number" }, maxOutputCharacters: { type: "number" } },
+      } as AgentTool["parameters"],
+      executionMode: "sequential",
+      execute: async (id, args, signal, onUpdate) => {
+        try {
+          const request = codeRequest(args);
+          const { returned, cpuMs: _cpuMs, ...result } = await runCode({
+            ...request, bridge: bridge(signal ?? new AbortController().signal, id), signal,
+            onEvent: event => {
+              io.emit({ type: "codemode", toolCallId: id, event });
+              onUpdate?.({ content: [{ type: "text", text: JSON.stringify(event) }], details: event });
+            },
+          });
+          // details keeps the output as events streamed it, for clients that render it.
+          return { content: [{ type: "text", text: presentResult({ ...result, returned }, request.maxOutputCharacters) }], details: result };
+        } finally { await io.cancelTools(); }
+      },
+    };
   }
 
   /** A referenced file's bytes as the request carries them: an image scaled down if it must be (`fitImage`), or why it is omitted. */
@@ -833,37 +692,18 @@ export function createAgentHost(hostIO: HostIO) {
   }
 
   /**
-   * Recover failed responses within the same turn: a context overflow compacts and
-   * continues once; transient provider failures retry with backoff. The failed
-   * response is retracted either way, so it never becomes history.
+   * Recover failed responses within the same turn: transient provider failures retry with backoff, and the failed
+   * response is retracted, so it never becomes history.
    */
   async function recoverFailedResponses(signal: AbortSignal) {
     const policy = config.retry ?? DEFAULT_RETRY;
-    let overflowHandled = false;
     for (let attempt = 1; ; attempt++) {
       const last = agent!.state.messages.at(-1) as AssistantMessage | undefined;
       if (signal.aborted || !last || last.role !== "assistant" || last.stopReason !== "error") return;
       // Its end user's credit refused it: asking again would be refused again.
       if (stopped?.code === END_USER_CREDIT) return;
-      if (isContextOverflow(last, config.model.contextWindow)) {
-        if (durableAgent) return;
-        if (overflowHandled) return;
-        overflowHandled = true;
-        await transcript.retract();
-        const index = transcript.total;
-        agent!.state.messages = agent!.state.messages.slice(0, -1);
-        if (!await compactNow("overflow", signal)) {
-          // Keep the error visible: nothing could be summarized, so a retry would overflow again.
-          await transcript.push(last);
-          agent!.state.messages = [...agent!.state.messages, last];
-          return;
-        }
-        // Taken back for good: say so on the stream, whose subscribers saw it end.
-        io.emit({ type: "message_retracted", index });
-        await agent!.continue();
-        attempt--;
-        continue;
-      }
+      // Pi compacts and asks again on an overflow itself: one that reaches here is past what compaction can do.
+      if (isContextOverflow(last, config.model.contextWindow)) return;
       // Cut by this node's stale lease: made again at once, as its gate allows, and not counted as a provider failure.
       const interrupted = last.errorMessage === MODEL_INTERRUPTED;
       // What the API reports as `retryable` (model-errors.ts): a tenant's own endpoint has retried already, so its errors
@@ -895,6 +735,46 @@ export function createAgentHost(hostIO: HostIO) {
     }
   }
 
+  /**
+   * The session's host transcript on Pi. A session not on Pi yet is read from its legacy log once and imported as it
+   * stands, a turn its old node left running or waiting on a person included: the recovery that follows treats it as it
+   * treats any session on Pi, and nothing writes the legacy log after the import. `tools` make the leading system
+   * message an import starts Pi's context with.
+   */
+  async function open(storage: PiStorage, indexed: number | undefined, tools: Tool[]): Promise<Transcript> {
+    const native = await NativeTranscript.open(storage, indexed, io.historyBacklogBytes, io.transcript);
+    const migrated = await loadLegacyMigration(storage);
+    if (native) {
+      migration = { state: "existing" };
+      // The native journal commits before its host record. Each copied message carries its cursor in that same
+      // record, so a torn append is safe to copy again after reopen.
+      if (migrated) await reconcilePiTranscript(native, storage, migrated.conversationId);
+      return native;
+    }
+    const legacy = new Transcript(io.transcript, indexed, io.historyBacklogBytes);
+    if (io.loadTranscript) legacy.restore(await io.loadTranscript(indexed ?? null, io.historyBacklogBytes));
+    else await legacy.load();
+    // Imported by a release that started no host generation with it, or rolled back to the legacy engine since
+    // (camel.host.disabled): the native messages its log lacks are copied to it first, then the whole log is adopted.
+    if (migrated) await reconcilePiTranscript(legacy, storage, migrated.conversationId);
+    const leadingSystem = legacy.system ?? leadingSystemMessage(config, tools);
+    const working = [leadingSystem, ...legacy.view()];
+    const from = legacyImportShape(legacy, working);
+    if (!migrated) {
+      // One commit imports the session and starts the host's generation on it; Pi's context starts as the host's
+      // working set, checkpointed once. A log too large to copy is never read whole: it stays the archive.
+      const records = await readMigrationRecords(legacy.log).catch(error => { if (error instanceof LegacyMigrationDeferred) return undefined; throw error; });
+      const imported = await NativeTranscript.importLegacy(storage, legacy, { sessionId: config.id,
+        ...records ? { records } : {}, leadingSystem, working, indexed, bound: io.historyBacklogBytes });
+      if (imported.transcript) {
+        migration = { state: "migrated", ...from ? { from } : {}, ...records ? {} : { archive: "legacy-log" } };
+        return imported.transcript;
+      }
+    }
+    migration = { state: "adopted", ...from ? { from } : {} };
+    return NativeTranscript.adopt(storage, legacy, indexed, io.historyBacklogBytes, working);
+  }
+
   async function handle(method: string, params: any): Promise<any> {
     if (method === "init") {
       if (agent) throw new Error("Agent already initialized");
@@ -904,27 +784,13 @@ export function createAgentHost(hostIO: HostIO) {
       // One whose index cannot be read now (null) is left for the next start.
       const indexed = io.history ? await io.history.indexed().catch(() => null) : null;
       const piStorage = await io.piStorage?.();
-      const native = piStorage ? await NativeTranscript.open(piStorage, indexed ?? undefined, io.historyBacklogBytes) : undefined;
-      if (native && config.engine === "pi-durable") transcript = native;
-      else {
-        if (native) {
-          // Materialize a rollback once, before the old engine takes ownership.
-          const records = await native.log.read();
-          await io.transcript.rewrite(() => records);
-          await native.disable();
-        }
-        transcript = new Transcript(io.transcript, indexed ?? undefined, io.historyBacklogBytes);
-        transcript.pin = () => agent ? leading() : undefined;
-        if (io.loadTranscript) transcript.restore(await io.loadTranscript(indexed, io.historyBacklogBytes));
-        else await transcript.load();
-      }
-      const migrated = piStorage ? await loadLegacyMigration(piStorage) : undefined;
-      const canMigrate = !transcript.active && !transcript.awaiting.length;
-      if (piStorage && migrated) {
-        // The native journal commits before its history projection. Each copied message carries
-        // its cursor in that same record, so a torn append is safe to copy again after reopen.
-        await reconcilePiTranscript(transcript, piStorage, migrated.conversationId);
-      }
+      if (!piStorage) throw new Error("The agent's Pi durable storage is not open");
+      // Tools first: an import starts Pi's context with the leading system message they make.
+      jsExec = codeTool();
+      const tools = [...config.codeMode === false ? [] : [jsExec], ...directAgentTools(config.tools)];
+      transcript = await open(piStorage, indexed ?? undefined, tools.map(toToolDeclaration));
+      // Each legacy session is imported once, as it is first loaded: what its imports took, for operators to follow.
+      if (migration?.state !== "existing") console.log(JSON.stringify({ type: "legacy_session_imported", agent: config.id, tenant: config.tenant, ...migration }));
       transcript.pin = () => agent ? leading() : undefined;
       let recovered = false;
       let resume: { continue: true } | { finished: { messages: number; error: string | null; reply?: string; stopped?: string; output?: unknown } } | undefined;
@@ -963,32 +829,6 @@ export function createAgentHost(hostIO: HostIO) {
         const { messages, compaction } = importedHistory(config.initialMessages);
         await transcript.replace(messages, undefined, compaction);
       }
-      const directTools = directAgentTools(config.tools);
-      const maxTimeoutMs = config.codeLimits?.maxTimeoutMs ?? SANDBOX_LIMITS.maxTimeoutMs;
-      jsExec = {
-        name: "js_exec", label: "JavaScript",
-        description: "Run JavaScript or TypeScript in a fresh sandbox. Return what you want to see: it comes back as JSON (a string as its own text), after any console.log lines. In scope: tools (await tools.<name>(args) gives the tool's result as data; tools.search, tools.namespaces and tools.describe find them) and fs for your files (readFile(path, { encoding: \"utf8\" }) gives a string, a Uint8Array without it; writeFile(path, string | Uint8Array); stat, list, remove); no network, imports, Node APIs or timers. Variables are gone after each execution; files persist. An execution gets timeoutMs of wall time (default " + Math.min(SANDBOX_LIMITS.timeoutMs, maxTimeoutMs) + ", at most " + maxTimeoutMs + "), tool calls included: raise it for slow tools." + " For example:\nconst tickets = [];\nfor (let page = 1; page; ) { const result = await tools.helpdesk__list_tickets({ status: \"open\", page }); tickets.push(...result.tickets); page = result.nextPage; }\nawait fs.writeFile(\"" + (scratchMount(config.mounts)?.path ?? "/workspace") + "/tmp/tickets.json\", JSON.stringify(tickets)); // a later execution can read it back\nreturn { open: tickets.length, oldest: tickets[0]?.createdAt };",
-        parameters: {
-          type: "object", required: ["code"],
-          properties: { code: { type: "string" }, description: { type: "string" }, timeoutMs: { type: "number" }, maxOutputCharacters: { type: "number" } },
-        } as AgentTool["parameters"],
-        executionMode: "sequential",
-        execute: async (id, args, signal, onUpdate) => {
-          try {
-            const request = codeRequest(args);
-            const { returned, cpuMs: _cpuMs, ...result } = await runCode({
-              ...request, bridge: bridge(signal ?? new AbortController().signal, id), signal,
-              onEvent: event => {
-                io.emit({ type: "codemode", toolCallId: id, event });
-                onUpdate?.({ content: [{ type: "text", text: JSON.stringify(event) }], details: event });
-              },
-            });
-            // details keeps the output as events streamed it, for clients that render it.
-            return { content: [{ type: "text", text: presentResult({ ...result, returned }, request.maxOutputCharacters) }], details: result };
-          } finally { await io.cancelTools(); }
-        },
-      };
-      const tools = [...config.codeMode === false ? [] : [jsExec], ...directTools];
       // A request whose stream goes quiet ends as a retryable error (model-stream.ts), said on the run's stream as it happens.
       const stream = explicitKeyStream(() => perCall() ? io.modelAuth() : undefined, () => config.modelHeaders, gate,
         (model, reasoning) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts),
@@ -1001,7 +841,7 @@ export function createAgentHost(hostIO: HostIO) {
       // A summary reads the conversation as a turn does: the agent's OpenRouter data policy goes on it too.
       const summaryStream: typeof summaries = (model, context, options) =>
         summaries(model, context, { ...options, ...(config.dataCollection ? { dataCollection: config.dataCollection } : {}) } as typeof options);
-      const agentOptions: Omit<ConstructorParameters<typeof Agent>[0], "transformContext"> = {
+      const agentOptions: Omit<DurableAgentOptions, "durable"> = {
         initialState: {
           model: config.model,
           tools, messages: [leading(tools.map(toToolDeclaration)), ...transcript.view()],
@@ -1050,79 +890,38 @@ export function createAgentHost(hostIO: HostIO) {
         sessionId: config.id,
         toolExecution: "parallel",
       };
-      let conversion: LegacyMigrationMetadata | undefined = migrated;
-      if (config.engine === "pi-durable" && piStorage && !conversion && canMigrate) {
-        try {
-          // One commit imports the session and starts the host's generation on it; Pi's context starts as the host's
-          // working set, checkpointed once.
-          const imported = await NativeTranscript.importLegacy(piStorage, transcript, { sessionId: config.id,
-            records: await readMigrationRecords(transcript.log), leadingSystem: leading(tools.map(toToolDeclaration)),
-            working: agentOptions.initialState!.messages!, indexed: indexed ?? undefined, bound: io.historyBacklogBytes });
-          conversion = imported.metadata;
-          if (imported.transcript) transcript = imported.transcript;
-          migration = { state: "migrated" };
-        } catch (error) {
-          if (!(error instanceof LegacyMigrationDeferred)) throw error;
-          migration = { state: "deferred", reason: error.reason };
-        }
-      } else if (config.engine === "pi-durable" && !conversion) migration = { state: "deferred", reason: transcript.awaiting.length ? "awaiting" : "active" };
-      let adoptionDeferred = false;
-      if (piStorage && conversion && config.engine === "pi-durable" && !(transcript instanceof NativeTranscript)) {
-        try {
-          transcript = await NativeTranscript.adopt(piStorage, transcript, indexed ?? undefined, io.historyBacklogBytes, agentOptions.initialState?.messages);
-        } catch (error) {
-          if (!(error instanceof LegacyMigrationDeferred)) throw error;
-          migration = { state: "deferred", reason: error.reason };
-          adoptionDeferred = true;
-        }
-      }
-      if (piStorage && conversion && !adoptionDeferred) {
-        const { DurableAgent } = await import("./pi-durable/agent.ts");
-        if (config.engine === "pi-durable") {
-          durableAgent = await DurableAgent.create({ ...agentOptions, durable: {
-            storage: piStorage, conversationId: conversion.conversationId, cursor: transcript.piCursor,
-            // Pi's journal failed a write or read: what the host holds is no longer known to be stored, as when the
-            // transcript fails one. The run ends with PERSISTENCE_FAILED and the session gives the agent up.
-            onStorageFailure: error => { transcript.failed ??= error; },
-            // Summaries share credential/network gates but not the run's output
-            // schema, temperature or max-output settings.
-            summaryStream,
-            get contextWindow() { return compactionModel().contextWindow; },
-            onSummary: message => io.emit({ type: "compaction_usage", provider: message.provider,
-              model: message.model, usage: message.usage, timestamp: message.timestamp, durable: true }),
-            onCompaction: async ({ summary, keptMessages, at, reason }) => {
-              // Pi compacts after a context overflow with the refused response in its journal: as the legacy loop does,
-              // that response is taken back from history, and the stream told so.
-              const refused = transcript.context.at(-1) as AssistantMessage | undefined;
-              if (reason === "overflow" && refused?.role === "assistant" && refused.stopReason === "error" && isContextOverflow(refused) && transcript.total > transcript.turnStart) {
-                await transcript.retract();
-                io.emit({ type: "message_retracted", index: transcript.total });
-              }
-              const cut = transcript.total - keptMessages;
-              if (cut < transcript.offset || cut > transcript.total) throw new Error("Native compaction is outside the host working set");
-              if (transcript.compaction?.cut === cut && transcript.compaction.summary === summary && transcript.compaction.at === at) return;
-              const offset = transcript.offset;
-              const state = { summary, cut, tokensBefore: contextTokens(transcript.view()), at };
-              await transcript.compact(state, transcript.compaction, changes => getCurrentSystemMessage([leading(tools.map(toToolDeclaration)), ...changes]));
-              io.emit({ type: "compaction_end", reason, tokensBefore: state.tokensBefore,
-                keptMessages, summarizedMessages: cut - offset });
-            },
-          } });
-          const cursor = await durableAgent.discardInterruptedRun();
-          // Recorded only when it moved: a start with nothing new writes no host record.
-          if (cursor && !sameCursor(cursor, transcript.piCursor)) await transcript.commit(() => [{ t: "pi", cursor }]);
-          agent = durableAgent as unknown as Agent;
-          engine = "pi-durable";
-          migration ??= { state: "existing" };
-        } else {
-          // Rollback keeps the native history projection, retires pending execution, then uses the legacy loop.
-          const paused = await DurableAgent.create({ ...agentOptions, durable: { storage: piStorage, conversationId: conversion.conversationId } });
-          const cursor = await paused.discardInterruptedRun();
-          if (cursor && !sameCursor(cursor, transcript.piCursor)) await transcript.commit(() => [{ t: "pi", cursor }]);
-          await paused.close();
-          agent = new Agent({ ...agentOptions, transformContext: contextFor });
-        }
-      } else agent = new Agent({ ...agentOptions, transformContext: contextFor });
+      agent = await DurableAgent.create({ ...agentOptions, durable: {
+        storage: piStorage, conversationId: LEGACY_CONVERSATION_ID, cursor: transcript.piCursor,
+        // Pi's journal failed a write or read: what the host holds is no longer known to be stored, as when the
+        // transcript fails one. The run ends with PERSISTENCE_FAILED and the session gives the agent up.
+        onStorageFailure: error => { transcript.failed ??= error; },
+        // Summaries share credential/network gates but not the run's output
+        // schema, temperature or max-output settings.
+        summaryStream,
+        get contextWindow() { return compactionModel().contextWindow; },
+        onSummary: message => io.emit({ type: "compaction_usage", provider: message.provider,
+          model: message.model, usage: message.usage, timestamp: message.timestamp, durable: true }),
+        onCompaction: async ({ summary, keptMessages, at, reason }) => {
+          // Pi compacts after a context overflow with the refused response in its journal: as the legacy loop did, that
+          // response is taken back from history, and the stream told so.
+          const refused = transcript.context.at(-1) as AssistantMessage | undefined;
+          if (reason === "overflow" && refused?.role === "assistant" && refused.stopReason === "error" && isContextOverflow(refused) && transcript.total > transcript.turnStart) {
+            await transcript.retract();
+            io.emit({ type: "message_retracted", index: transcript.total });
+          }
+          const cut = transcript.total - keptMessages;
+          if (cut < transcript.offset || cut > transcript.total) throw new Error("Native compaction is outside the host working set");
+          if (transcript.compaction?.cut === cut && transcript.compaction.summary === summary && transcript.compaction.at === at) return;
+          const offset = transcript.offset;
+          const state = { summary, cut, tokensBefore: contextTokens(transcript.view()), at };
+          await transcript.compact(state, transcript.compaction, changes => getCurrentSystemMessage([leading(tools.map(toToolDeclaration)), ...changes]));
+          io.emit({ type: "compaction_end", reason, tokensBefore: state.tokensBefore,
+            keptMessages, summarizedMessages: cut - offset });
+        },
+      } });
+      const cursor = await agent.discardInterruptedRun();
+      // Recorded only when it moved: a start with nothing new writes no host record.
+      if (cursor && !sameCursor(cursor, transcript.piCursor)) await transcript.commit(() => [{ t: "pi", cursor }]);
       agent.subscribe(async event => {
         if ((event.type === "message_start" || event.type === "message_update" || event.type === "message_end") && event.message.role === "system") {
           // Pi declares a tool set that no longer matches the context's; it stays in place like the runtime's own changes.
@@ -1151,10 +950,10 @@ export function createAgentHost(hostIO: HostIO) {
       // A configuration changed elsewhere (another node, or while this agent was stopped) applies from here.
       await declareConfiguration();
       void index();
-      return { pid: process.pid, engine, ...(migration ? { migration } : {}), recovered, messages: transcript.total, ...(resume ? { resume } : {}), ...(!recovered && config.resume ? endedTurn() : {}) };
+      return { pid: process.pid, ...(migration ? { migration } : {}), recovered, messages: transcript.total, ...(resume ? { resume } : {}), ...(!recovered && config.resume ? endedTurn() : {}) };
     }
     if (!agent) throw new Error("Agent is not initialized");
-    if (method === "status") return { pid: process.pid, engine, ...(migration ? { migration } : {}), busy, messages: transcript.total, contextMessages: transcript.context.length, compacted: !!transcript.compaction };
+    if (method === "status") return { pid: process.pid, ...(migration ? { migration } : {}), busy, messages: transcript.total, contextMessages: transcript.context.length, compacted: !!transcript.compaction };
     if (method === "configure") {
       if (busy) throw new Error("Agent is busy");
       if (params.systemPrompt !== undefined) config.systemPrompt = params.systemPrompt ?? undefined;
@@ -1330,22 +1129,12 @@ export function createAgentHost(hostIO: HostIO) {
         steers = steers.filter(steer => !steer.whileRunning);
         for (const steer of steers) agent.steer(steer.message);
       }
-      // Release what compaction folded away: the next run starts from summary + kept messages.
-      const wasFresh = !!fresh;
-      fresh = undefined;
-      if (method !== "execute" && transcript.failed === undefined) {
-        agent.state.messages = stateMessages();
-        dropped = new WeakSet();
-      }
+      // The next run starts from the transcript: Pi's summary and the messages it kept.
+      if (method !== "execute" && transcript.failed === undefined) agent.state.messages = stateMessages();
       await io.cancelTools();
       active = undefined;
       busy = false;
-      if (method !== "execute") {
-        void index();
-        // After the turn: the summary is made while the agent waits for its next message; not by one handing its turn off,
-        // nor after a run that saw no history (a run that does see it compacts first, if it must).
-        if (!handedOffHere() && !wasFresh) compactInBackground();
-      }
+      if (method !== "execute") void index();
     }
   }
 
@@ -1462,9 +1251,8 @@ export function createAgentHost(hostIO: HostIO) {
   async function dispose(flushMs = HISTORY_FLUSH_MS) {
     active?.abort();
     agent?.abort();
-    compacting?.controller.abort();
     await io.cancelTools();
-    await durableAgent?.close();
+    await agent?.close();
     if (flushMs > 0) await Promise.race([index(true), clock().sleep(flushMs)]);
     await transcript?.log.close();
   }
