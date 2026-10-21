@@ -997,7 +997,7 @@ export function createAgentHost(hostIO: HostIO) {
       const summaryStream = explicitKeyStream(() => perCall() ? io.modelAuth() : undefined, () => config.modelHeaders, gate,
         (model, reasoning) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts),
         stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: config.model.provider, model: config.model.id }), io.modelOutbound, summaryAttempt, creditStop);
-      const agentOptions: ConstructorParameters<typeof Agent>[0] = {
+      const agentOptions: Omit<ConstructorParameters<typeof Agent>[0], "transformContext"> = {
         initialState: {
           model: config.model,
           tools, messages: [leading(tools.map(toToolDeclaration)), ...transcript.view()],
@@ -1016,7 +1016,6 @@ export function createAgentHost(hostIO: HostIO) {
         // Renders compaction summaries for the model (the default drops non-chat roles), and each message's sender.
         convertToLlm: messages => hydrate(convertToLlm(renderMessages(messages))),
         onPayload: payload => documents ? documentPayload(payload) : undefined,
-        transformContext: (messages, signal) => contextFor(messages, signal),
         // A turn with calls waiting on a person suspends; one past a spend cap or its run's limits (responses, time) stops before the next model request, after this response's tool results.
         finishTurn: async turn => {
           if (transcript.awaiting.length) {
@@ -1075,7 +1074,7 @@ export function createAgentHost(hostIO: HostIO) {
         const { DurableAgent } = await import("./pi-durable/agent.ts");
         if (config.engine === "pi-durable") {
           durableAgent = await DurableAgent.create({ ...agentOptions, durable: {
-            storage: piStorage, conversationId: conversion.conversationId, cursor: transcript.piCursor, nativeCompaction: true,
+            storage: piStorage, conversationId: conversion.conversationId, cursor: transcript.piCursor,
             // Summaries share credential/network gates but not the run's output
             // schema, temperature or max-output settings.
             summaryStream,
@@ -1104,9 +1103,9 @@ export function createAgentHost(hostIO: HostIO) {
           const cursor = await paused.discardInterruptedRun();
           if (cursor) await transcript.commit(() => [{ t: "pi", cursor }]);
           await paused.close();
-          agent = new Agent(agentOptions);
+          agent = new Agent({ ...agentOptions, transformContext: contextFor });
         }
-      } else agent = new Agent(agentOptions);
+      } else agent = new Agent({ ...agentOptions, transformContext: contextFor });
       agent.subscribe(async event => {
         if ((event.type === "message_start" || event.type === "message_update" || event.type === "message_end") && event.message.role === "system") {
           // Pi declares a tool set that no longer matches the context's; it stays in place like the runtime's own changes.

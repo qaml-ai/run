@@ -4,7 +4,6 @@ import { MemoryStorage } from "@earendil-works/pi-durable";
 import { createAssistantMessageEventStream, fauxAssistantMessage, fauxToolCall, type AssistantMessage } from "@earendil-works/pi-ai";
 import type { AgentMessage, AgentOptions, AgentTool } from "@earendil-works/pi-agent-core";
 import { DurableAgent, recoverDurableMessages } from "../src/pi-durable/agent.ts";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { forkCut, Transcript, type TranscriptRecord } from "../src/transcript.ts";
 
 const model = { id: "fixture", provider: "fixture", api: "openai-completions", name: "Fixture", reasoning: false, input: ["text"],
@@ -69,10 +68,10 @@ test("Pi adapter executes native durable generations/tools and projects cursor-a
   const input = { ...user("Read it"), sender: { id: "person", name: "Person" }, requestId: "req-1" } as AgentMessage;
   await fake.agent.prompt(input);
   assert.equal(fake.requests.length, 2);
-  assert.deepEqual(fake.agent.state.messages.map(message => message.role), ["user", "assistant", "toolResult", "assistant"]);
+  assert.deepEqual(fake.agent.state.messages.map(message => message.role), ["system", "user", "assistant", "toolResult", "assistant"]);
   const messages = await fake.agent.recoverMessages();
   assert.deepEqual(messages[0].message, input);
-  assert.deepEqual(messages.map(item => item.message), fake.agent.state.messages);
+  assert.deepEqual(messages.map(item => item.message), fake.agent.state.messages.filter(message => message.role !== "system"));
   assert.equal(fake.events.filter(event => event.type === "tool_execution_start").length, 1);
   assert.equal(fake.events.filter(event => event.type === "turn_end").length, 2);
   assert.equal(fake.events.filter(event => event.type === "agent_end").length, 1);
@@ -105,32 +104,6 @@ test("Pi adapter finishTurn includes invalid and unavailable tool results", asyn
   await fake.agent.prompt("Work");
   assert.equal(fake.requests.length, 1);
   assert.equal(fake.events.filter(event => event.type === "tool_execution_start").length, 0);
-});
-
-test("Pi adapter supplies host context transforms and releases old working-set messages", async t => {
-  const first = user("old body");
-  const fake = await fixture([answer("Done")], {
-    initialState: { model, messages: [first], tools: [] },
-    transformContext: async messages => messages.filter(message => message !== first),
-  });
-  t.after(() => fake.agent.close());
-  await fake.agent.prompt("New");
-  assert.equal(fake.requests[0].messages.length, 1);
-  assert.equal(fake.agent.state.messages.some(message => message === first), false);
-});
-
-test("Pi adapter checkpoints host cuts into native context while retaining every canonical message", async t => {
-  const rounds = 20;
-  const read = tool("read", async () => ({ content: [{ type: "text", text: "x".repeat(4096) }], details: null }));
-  const fake = await fixture([...Array.from({ length: rounds }, () => call("read")), answer("Done")], {
-    initialState: { model, messages: [], tools: [read] }, transformContext: async messages => messages.slice(-2),
-  });
-  t.after(() => fake.agent.close());
-  await fake.agent.prompt("Start");
-  const head = await fake.storage.findLatestHeadMarker(fake.agent.conversationId, undefined, BACKGROUND_CONTEXT);
-  assert.equal(head?.kind, "camel.legacy.context");
-  assert.ok(head.model!.length <= 2, "native context follows the bounded host working set");
-  assert.equal((await fake.agent.recoverMessages()).length, rounds * 2 + 2, "head markers never delete original messages");
 });
 
 test("Pi adapter injects queued steering at the post-tools boundary", async t => {
