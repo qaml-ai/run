@@ -84,6 +84,8 @@ test("Pi shared writes and ID allocation are fenced against stale owners", async
   await stale.commit([{ type: "conversation", value: { id: 1 as ConversationId } }], context);
   await db.query("update actor_owners set epoch = epoch + 1 where actor = $1", [claim.actor]);
   await assert.rejects(stale.commit([], context), LostClaim);
+  // A holder that has no block left reserves one, and is fenced. (IDs left in an earlier block are handed out, but no
+  // write using them can commit.)
   await assert.rejects(stale.mintId<EntryId>(), LostClaim);
   await assert.rejects(stale.mintIds(100), LostClaim);
   await assert.rejects(purgePiStorage(db, sessionId, claim), LostClaim);
@@ -153,12 +155,42 @@ test("Pi bulk ID ranges stay unique, fenced, and durable across handles and RPC"
   for (const range of ranges) assert.deepEqual(range, Array.from({ length: 100 }, (_, n) => range[0] + n));
   const next = await b.mintId<EntryId>();
   assert.ok(next > Math.max(...ids));
+  const reserved = await nextReserved(sessionId);
   await assert.rejects(a.mintIds(0), /Invalid durable ID reservation count/);
   await assert.rejects(a.mintIds(1.5), /Invalid durable ID reservation count/);
-  assert.equal(await a.mintId<EntryId>(), next + 1, "invalid reservations have no durable effect");
+  assert.equal(await nextReserved(sessionId), reserved, "invalid reservations have no durable effect");
+  const later = await a.mintId<EntryId>();
+  assert.ok(later > next);
   await a.close(context);
   await b.close(context);
+  const end = await nextReserved(sessionId);
   const reopened = await PostgresPiStorage.open(db, sessionId);
-  assert.equal(await reopened.mintId<EntryId>(), next + 2);
+  assert.ok(await reopened.mintId<EntryId>() >= end, "a reopened handle starts past every reserved block");
   await reopened.close(context);
+});
+
+const nextReserved = async (sessionId: string) =>
+  Number((await (await database).db.query("select next_id from pi_durable_metadata where session_id = $1", [sessionId])).rows[0].next_id);
+
+test("Pi shared mintId reserves IDs in blocks, and a later holder never reuses one", async () => {
+  const { db } = await database;
+  const sessionId = randomUUID();
+  const first = await PostgresPiStorage.open(db, sessionId);
+  const ids: number[] = [];
+  for (let i = 0; i < 300; i++) ids.push(await first.mintId<EntryId>());
+  assert.deepEqual(ids, Array.from({ length: 300 }, (_, n) => 2 + n), "consecutive IDs from the block");
+  assert.equal(await nextReserved(sessionId), 2 + 2 * 256, "two fenced reservations for 300 IDs, not 300");
+  // A lease handoff: the next holder opens the session while the first still holds most of its second block.
+  const next = await PostgresPiStorage.open(db, sessionId);
+  const taken = await next.mintId<EntryId>();
+  assert.ok(taken >= 2 + 2 * 256, "the new holder starts past the old holder's whole block");
+  assert.ok(await first.mintId<EntryId>() < taken, "the old holder's unused IDs stay its own (its commits are fenced)");
+  // IDs stay greater than every one reserved in bulk or written here.
+  const bulk = await next.mintIds(10);
+  const after = await next.mintId<EntryId>();
+  assert.ok(after > bulk.at(-1)!);
+  await next.commit([{ type: "conversation", value: { id: (after + 100) as ConversationId } }], context);
+  assert.ok(await next.mintId<EntryId>() > after + 100);
+  await first.close(context);
+  await next.close(context);
 });
