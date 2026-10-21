@@ -114,10 +114,10 @@ async function everything(db: pg.Pool) {
 }
 
 /** A sweep over `sessions` that records each agent's outcome, never waiting for memory or pace. */
-function sweeper(db: pg.Pool, sessions: ClientSessions, setting: PiSweepMode, each?: (id: string, result: PiSweepResult) => void) {
+function sweeper(db: pg.Pool, sessions: ClientSessions, setting: PiSweepMode, each?: (id: string, result: PiSweepResult) => void, node?: string) {
   const outcomes: Record<string, number> = {};
   const sweep = new PiSweep({
-    db, setting, paceMs: 0, largePaceMs: 0, repassMs: 60 * 60_000, pollMs: 20, backoffMs: [20, 40], busy: async () => undefined,
+    db, setting, node, paceMs: 0, largePaceMs: 0, repassMs: 60 * 60_000, pollMs: 20, backoffMs: [20, 40], busy: async () => undefined,
     sweep: async (candidate, dryRun, large) => {
       const result = await sessions.piSweepAgent(candidate, dryRun, large);
       outcomes[result.outcome] = (outcomes[result.outcome] ?? 0) + 1;
@@ -346,6 +346,58 @@ test("the large pass takes one agent at a time across nodes, and only below its 
   await until(async () => (await control.status()).large.finishedAt, "the large pass");
   assert.equal(most, 1, "one at a time across the fleet");
   assert.deepEqual([...taken].sort(), taken.map((_, i) => `client_${i}`), "each once");
+});
+
+test("an agent its owner holds but never started is imported by the owner's sweep, in place; other nodes leave it", { timeout: 120_000 }, async t => {
+  const { model, state } = await fixtureModel(t);
+  const { db } = await testDatabase();
+  const storage = memoryStorage(postgresTail(db));
+  const [watched, asked] = await legacyAgents(t, db, storage, model, ["watched", "asked"], [], ["watched", "asked"]);
+  const a = await node(t, db, storage, "a");
+  const b = await node(t, db, storage, "b");
+  // Loaded on A, as a watcher's or an upsert's load does, and never started.
+  const load = (id: string) => (a.sessions as unknown as { load(id: string): Promise<unknown> }).load(id);
+  await load(watched);
+  await load(asked);
+  assert.equal(a.supervisor.agents.size, 0);
+  const control = new PiSweepControl(db, "on");
+  await control.set("on");
+
+  // B leaves both: A holds them.
+  const onB = sweeper(db, b.sessions, "on", undefined, "http://b");
+  t.after(() => onB.sweep.stop());
+  onB.sweep.start();
+  await finished(db, "on");
+  await onB.sweep.stop();
+  assert.deepEqual(onB.outcomes, { skipped_hosted: 2 });
+  assert.equal(await count(db, NATIVE), 0);
+
+  // A imports `watched` where it is, and keeps it loaded, not started.
+  const results: Record<string, PiSweepResult> = {};
+  const onA = sweeper(db, a.sessions, "on", (id, result) => { results[id] = result; }, "http://a");
+  t.after(() => onA.sweep.stop());
+  // A request for `asked` comes while A's sweep imports it: it waits, then runs.
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const start = a.supervisor.start.bind(a.supervisor);
+  a.supervisor.start = (async (...args: Parameters<typeof start>) => { if (args[0] === asked) { await held; a.supervisor.start = start; } return start(...args); }) as typeof start;
+  await control.set("on", true);
+  onA.sweep.start();
+  await until(() => (a.sessions.sessions.get(asked) as { sweeping?: boolean } | undefined)?.sweeping, "the sweep's start of the asked agent");
+  const prompted = prompt(a.sessions, asked, "while-importing");
+  await new Promise(resolve => setTimeout(resolve, 50));
+  release();
+  await prompted;
+  await finished(db, "on");
+  await onA.sweep.stop();
+  assert.deepEqual(results[watched], { outcome: "migrated", detail: { system: true, loadedHere: true } });
+  assert.deepEqual(results[asked], { outcome: "migrated", detail: { system: true, loadedHere: true } });
+  assert.equal(await count(db, NATIVE), 2);
+  assert.ok(a.sessions.sessions.has(watched), "it stays loaded for whoever holds it");
+  assert.ok(!a.supervisor.agents.has(watched), "and is not started");
+  assert.ok(a.supervisor.agents.has(asked), "the request's start serves it");
+  assert.equal(state.calls, 1, "only the request asked the model");
+  assert.equal((await control.status()).remaining, 0);
 });
 
 test("turning the operator's mode off stops every node's sweep before its next agent; on again, it goes on from its cursor", { timeout: 60_000 }, async t => {

@@ -9,6 +9,7 @@ const RANK: Record<PiSweepMode, number> = { off: 0, "dry-run": 1, on: 2 };
 export const PI_SWEEP_MODES = Object.keys(RANK) as PiSweepMode[];
 
 /** An agent the sweep takes next, as the database saw it then. */
+/** `owned`: a live node other than this one holds it. */
 export interface PiSweepCandidate { id: string; tenant: string; pendingRuns: boolean; owned: boolean }
 /** What came of one agent: `outcome` (migrated, would_migrate, skipped_<why>, ...) and ids or sizes. */
 export interface PiSweepResult { outcome: string; detail?: Record<string, unknown> }
@@ -17,6 +18,8 @@ export interface PiSweepOptions {
   db: Db;
   /** The node's AGENT_PI_SWEEP: the most the operator's mode may do here. */
   setting: PiSweepMode;
+  /** This node's name in ownership: agents it holds are its own sweep's to import, not skipped as held elsewhere. */
+  node?: string;
   /** One agent: open it so it is imported (or, dry, say what that would find; `large`, even too large to copy). ClientSessions.piSweepAgent. */
   sweep(candidate: PiSweepCandidate, dryRun: boolean, large: boolean): Promise<PiSweepResult>;
   /** Why this node should not take an agent now (short of memory, its pool waiting, full, leaving), or undefined; `large`, with the large pass's memory limit. */
@@ -181,8 +184,9 @@ export class PiSweep {
       const cursor = finished !== null ? "" : control[`${column}_cursor`];
       const row = (await sql.query<{ id: string; tenant: string; pending_runs: boolean; owned: boolean }>(`
         select a.id, a.tenant, a.pending_runs,
-          exists (select 1 from actor_owners o join runtime_nodes n on n.node = o.node and n.session = o.session and n.expires_at > now() where o.actor = a.id) as owned
-        from agents a where ${LEGACY} and a.id > $2 order by a.id limit 1`, [now, cursor])).rows[0];
+          exists (select 1 from actor_owners o join runtime_nodes n on n.node = o.node and n.session = o.session and n.expires_at > now()
+            where o.actor = a.id and ($3::text is null or o.node <> $3)) as owned
+        from agents a where ${LEGACY} and a.id > $2 order by a.id limit 1`, [now, cursor, this.options.node ?? null])).rows[0];
       if (!row) {
         await sql.query(`update pi_sweep set ${column}_cursor = '', ${column}_finished_at = $1, updated_at = $1 where id`, [now]);
         return { state: "finished" as const, mode, pass };
