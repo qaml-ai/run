@@ -326,3 +326,13 @@ variable "agent_native_sections_tenants" {
   type        = string
   default     = ""
 }
+
+variable "agent_pi_history_source_tenants" {
+  description = "AGENT_PI_HISTORY_SOURCE_TENANTS: tenants whose agents read their history from Pi's journal (on nodes with agent_pi_dual_write), comma-separated, or * for every tenant; empty for none"
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.agent_pi_history_source_tenants == "" || var.agent_pi_history_source_tenants == "*" || can(regex("^[a-z0-9][a-z0-9-]{0,39}(,[a-z0-9][a-z0-9-]{0,39})*$", var.agent_pi_history_source_tenants))
+    error_message = "agent_pi_history_source_tenants is empty, * or comma-separated tenant ids."
+  }
+}
