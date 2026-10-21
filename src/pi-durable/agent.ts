@@ -499,7 +499,10 @@ export class DurableAgent {
     const stream = createAssistantMessageEventStream();
     void (async () => {
       await this.flushEvents();
-      const signal = this.signal;
+      // The request stops when the run is aborted, and also when Pi ends the generation's invocation itself: an abort
+      // mark, a close, or a failed storage (whose Session fails and signals its running tasks).
+      const own = this.signal, native = (rawOptions as { signal?: AbortSignal } | undefined)?.signal;
+      const signal = own && native ? AbortSignal.any([own, native]) : own ?? native;
       signal?.throwIfAborted();
       await this.emit({ type: "turn_start" });
       let messages = this.messages;
@@ -539,7 +542,7 @@ export class DurableAgent {
       // missing: the provider's own terminal message, with its usage and billing attempt, replaces it before Pi's
       // abort handler converts it, so the canceled response is in history and billed exactly once.
       // Only for the run's own abort: a request the runtime cut (a stale lease) is classified by Pi and made again.
-      if (final.stopReason === "aborted" && signal?.aborted) await this.conversation.commit(async tx => {
+      if (final.stopReason === "aborted" && own?.aborted) await this.conversation.commit(async tx => {
         const live = await tx.doc(LiveDoc, this.conversation.id);
         if (live.generation) live.generation.message = JSON.parse(JSON.stringify(final));
       }, context).catch(error => console.error(JSON.stringify({ type: "pi_aborted_response_write_failed", error: error instanceof Error ? error.message : String(error) })));
