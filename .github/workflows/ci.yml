@@ -24,6 +24,7 @@ jobs:
     outputs:
       tests: ${{ steps.changes.outputs.tests || 'true' }}
       reuse: ${{ steps.changes.outputs.reuse || 'false' }}
+      image: ${{ steps.changes.outputs.image || 'true' }}
       shards: ${{ (github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && !(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted')) && '[1,2,3,4,5]' || '[1,2,3,4,5,6,7,8,9,10,11,12]' }}
       shard-count: ${{ (github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && !(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted')) && '5' || '12' }}
     steps:
@@ -94,7 +95,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.tests == 'true'
     strategy:
-      fail-fast: false
+      # One failed PR shard makes the PR red; main and manual full runs retain every result.
+      fail-fast: ${{ github.event_name == 'pull_request' }}
       matrix:
         hosting: [process, inline]
         shard: ${{ fromJSON(needs.changes.outputs.shards) }}
@@ -140,13 +142,14 @@ jobs:
         with: { name: sim-failures, path: sim-failures/, if-no-files-found: ignore }
   image:
     needs: changes
-    # Only a proven successful PR run of this exact main tree can replace these checks.
-    if: needs.changes.outputs.reuse != 'true'
+    # PRs smoke-test amd64 only when image inputs change; main always covers both architectures.
+    if: github.event_name != 'pull_request' || needs.changes.outputs.image == 'true'
     # The deployed image installs only runtime dependencies; prove it migrates its database, starts and serves,
     # with js_exec and file parsing confined by agent-launcher. Keep native ARM64 (production) and x86 coverage.
     strategy:
       fail-fast: false
-      matrix: { arch: [amd64, arm64] }
+      matrix:
+        arch: ${{ fromJSON(github.event_name == 'pull_request' && '["amd64"]' || '["amd64","arm64"]') }}
     runs-on: ${{ matrix.arch == 'arm64' && ((github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && 'blacksmith-16vcpu-ubuntu-2404-arm' || 'ubuntu-24.04-arm') || fromJSON(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && vars.CI_RUNNER_LABELS || ((github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && '["blacksmith-16vcpu-ubuntu-2404"]' || '["ubuntu-latest"]')) }}
     timeout-minutes: 20
     services:
@@ -162,7 +165,8 @@ jobs:
       - run: npm run build:console
       - if: ${{ !((github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && (matrix.arch == 'arm64' || !(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted')))) }}
         uses: docker/setup-buildx-action@v3
-        with: { driver-opts: "image=mirror.gcr.io/moby/buildkit:buildx-stable-1" }
+        # Hosted fallback runners can pull Docker Hub directly; avoid GCR's shared quota.
+        with: { driver-opts: "image=docker.io/moby/buildkit:v0.20.2" }
       - if: ${{ (github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && (matrix.arch == 'arm64' || !(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted'))) }}
         uses: useblacksmith/setup-docker-builder@v2
         with: { cache-key: "run-image-${{ matrix.arch }}" }
@@ -170,6 +174,9 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          # Blacksmith's builder routes docker.io through its local registry mirror.
+          # An explicit ECR Public base bypasses that mirror and has a shared quota.
+          build-args: BASE_REGISTRY=docker.io/library
           platforms: linux/${{ matrix.arch }}
           provenance: false
           load: true
@@ -180,6 +187,9 @@ jobs:
         uses: useblacksmith/build-push-action@v2
         with:
           context: .
+          # Blacksmith's builder routes docker.io through its local registry mirror.
+          # An explicit ECR Public base bypasses that mirror and has a shared quota.
+          build-args: BASE_REGISTRY=docker.io/library
           platforms: linux/${{ matrix.arch }}
           provenance: false
           load: true
@@ -243,6 +253,9 @@ jobs:
         uses: useblacksmith/build-push-action@v2
         with:
           context: .
+          # Blacksmith's builder routes docker.io through its local registry mirror.
+          # An explicit ECR Public base bypasses that mirror and has a shared quota.
+          build-args: BASE_REGISTRY=docker.io/library
           platforms: linux/arm64
           provenance: false
           push: true
@@ -284,9 +297,14 @@ jobs:
             # Reuse is valid only on main pushes, with all replaced jobs intentionally skipped.
             test '${{ github.event_name }}' = push
             test '${{ github.ref }}' = refs/heads/main
-            echo "$RESULTS" | jq -e '[.checks, .python, .test, .sim, .image, .docs] | all(.result == "skipped")'
+            echo "$RESULTS" | jq -e '[.checks, .python, .test, .sim, .docs] | all(.result == "skipped")'
           else
-            echo "$RESULTS" | jq -e '[.checks, .image, .docs] | all(.result == "success")'
+            echo "$RESULTS" | jq -e '[.checks, .docs] | all(.result == "success")'
+          fi
+          if [ '${{ github.event_name }}' = pull_request ] && [ '${{ needs.changes.outputs.image }}' = false ]; then
+            echo "$RESULTS" | jq -e '.image.result == "skipped"'
+          else
+            echo "$RESULTS" | jq -e '.image.result == "success"'
           fi
           if [ '${{ github.event_name }}' = push ] && [ '${{ github.ref }}' = refs/heads/main ]; then
             echo "$RESULTS" | jq -e '.publish.result == "success"'
@@ -296,12 +314,17 @@ jobs:
           fi
       - uses: actions/checkout@v4
         if: github.event_name == 'pull_request'
-      - name: Record the tested merge commit
+      - name: Record the tested merge tree
+        id: tested-tree
         if: github.event_name == 'pull_request'
         env:
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: jq -n --arg commit "$(git rev-parse HEAD)" --arg head "$PR_HEAD" --argjson pr "$PR_NUMBER" '{commit:$commit,head:$head,pr:$pr}' > merge.json
+        run: |
+          tree=$(git rev-parse 'HEAD^{tree}')
+          echo "tree=$tree" >> "$GITHUB_OUTPUT"
+          jq -n --arg tree "$tree" --arg commit "$(git rev-parse HEAD)" --arg head "$PR_HEAD" --argjson pr "$PR_NUMBER" '{tree:$tree,commit:$commit,head:$head,pr:$pr}' > merge.json
       - uses: actions/upload-artifact@v4
         if: github.event_name == 'pull_request'
-        with: { name: tested-merge, path: merge.json, retention-days: 14 }
+        # A successful rerun replaces the same run's proof instead of failing with an artifact-name conflict.
+        with: { name: "tested-tree-${{ steps.tested-tree.outputs.tree }}", path: merge.json, retention-days: 14, overwrite: true }
