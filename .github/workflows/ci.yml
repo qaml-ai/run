@@ -26,6 +26,7 @@ jobs:
       reuse: ${{ steps.changes.outputs.reuse || 'false' }}
       image: ${{ steps.changes.outputs.image || 'true' }}
       # A draft runs only the fast checks and its changed test files; marking it ready runs everything.
+      draft: ${{ steps.changes.outputs.draft || 'false' }}
       quick: ${{ steps.changes.outputs.quick }}
       # Blacksmith for this repository's PRs, main and dispatches; forks stay on GitHub's runners.
       blacksmith: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'true' || 'false' }}
@@ -306,7 +307,7 @@ jobs:
     name: CI success
     timeout-minutes: 5
     # Drafts never report it, so neither a merge nor main's tree reuse can take a draft's fast checks for the suite.
-    if: always() && !github.event.pull_request.draft
+    if: always() && needs.changes.outputs.draft != 'true'
     needs: [changes, checks, quick, python, test, sim, image, publish, docs]
     runs-on: ubuntu-latest
     steps:

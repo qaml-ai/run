@@ -75,7 +75,7 @@ once all of CI passes, from the image CI's `publish` job already pushed. The gat
 tests (`docs`), the simulator's fixed seeds (`sim`) and both image architectures (`image`). Same-repository PRs, main
 and dispatches run on Blacksmith; fork PRs use standard GitHub runners, including native ARM64.
 
-A draft PR runs only `checks`, `docs` and `changed tests`: the test files it changes, and those named after the
+A draft PR (by its state when the run starts, not the event's) runs only `checks`, `docs` and `changed tests`: the test files it changes, and those named after the
 source files it changes (`src/foo.ts` runs `tests/foo.test.ts` and `tests/foo-*.test.ts`, up to 40 files). A draft
 run never reports `CI success`, so it can be neither merged as green nor reused on main. Marking the PR ready for
 review starts the full run, as does every push to a ready PR. While iterating on a change, open it as a draft.

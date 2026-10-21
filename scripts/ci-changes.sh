@@ -5,6 +5,7 @@ set -euo pipefail
 tests=true
 reuse=false
 image=true
+draft=false
 quick=
 if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
   base=$(jq -r '.pull_request.base.sha' "$GITHUB_EVENT_PATH")
@@ -31,7 +32,11 @@ sys.exit(0 if paths and not any(p in files or p.startswith(inputs) for p in path
     image=false
   fi
   # A draft runs the fast checks and the test files its change names; ready_for_review runs the rest.
-  if [ "$(jq -r '.pull_request.draft // false' "$GITHUB_EVENT_PATH")" = true ]; then
+  # Ask for the PR's state now, not the event's: a push just before "ready for review" sends a draft
+  # event that supersedes the ready one, and a rerun replays its event.
+  number=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")
+  if [ "$(gh api "repos/$GITHUB_REPOSITORY/pulls/$number" --jq .draft)" = true ]; then
+    draft=true
     tests=false
     image=false
     quick=$(git diff --no-renames --name-only --diff-filter=d -z "$base...$head" | python3 -c '
@@ -91,4 +96,4 @@ elif [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; the
   done
 fi
 printf 'tests=%s\nreuse=%s\nimage=%s\n' "$tests" "$reuse" "$image" >> "$GITHUB_OUTPUT"
-if [ -n "$quick" ]; then printf 'quick=%s\n' "$quick" >> "$GITHUB_OUTPUT"; fi
+if [ "$draft" = true ]; then printf 'draft=true\nquick=%s\n' "$quick" >> "$GITHUB_OUTPUT"; fi

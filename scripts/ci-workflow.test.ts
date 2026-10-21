@@ -34,7 +34,8 @@ test("CI gate requires every non-reused check and main publication", () => {
 
 test("drafts never report CI success, so no merge or main reuse can rest on their fast checks", () => {
   const job = workflow.split("  ci:\n")[1];
-  assert.match(job, /if: always\(\) && !github\.event\.pull_request\.draft\n/);
+  assert.match(job, /if: always\(\) && needs\.changes\.outputs\.draft != 'true'\n/);
+  assert.match(workflow, /draft: \$\{\{ steps\.changes\.outputs\.draft \|\| 'false' \}\}/);
   assert.match(workflow, /types: \[opened, synchronize, reopened, ready_for_review\]/);
 });
 
