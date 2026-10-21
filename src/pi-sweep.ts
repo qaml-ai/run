@@ -44,6 +44,7 @@ export class PiSweep {
   private wake?: () => void;
   private running?: Promise<void>;
   private counts: Record<string, number> = {};
+  private countsMode?: PiSweepMode;
   private lastProgress = 0;
   private lastBackoff = new Map<string, number>();
 
@@ -97,6 +98,8 @@ export class PiSweep {
         continue;
       }
       const dryRun = next.mode === "dry-run";
+      // Each mode's counts on their own: a dry run's are its report.
+      if (next.mode !== this.countsMode) { this.counts = {}; this.countsMode = next.mode; }
       const started = clock().monotonic();
       let result: PiSweepResult;
       try { result = await this.options.sweep(next.candidate, dryRun); failures = 0; }
