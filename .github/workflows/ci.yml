@@ -165,7 +165,8 @@ jobs:
       - run: npm run build:console
       - if: ${{ !((github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && (matrix.arch == 'arm64' || !(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted')))) }}
         uses: docker/setup-buildx-action@v3
-        with: { driver-opts: "image=mirror.gcr.io/moby/buildkit:buildx-stable-1" }
+        # Hosted fallback runners can pull Docker Hub directly; avoid GCR's shared quota.
+        with: { driver-opts: "image=docker.io/moby/buildkit:v0.20.2" }
       - if: ${{ (github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && (matrix.arch == 'arm64' || !(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted'))) }}
         uses: useblacksmith/setup-docker-builder@v2
         with: { cache-key: "run-image-${{ matrix.arch }}" }
@@ -173,6 +174,9 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          # Blacksmith's builder routes docker.io through its local registry mirror.
+          # An explicit ECR Public base bypasses that mirror and has a shared quota.
+          build-args: BASE_REGISTRY=docker.io/library
           platforms: linux/${{ matrix.arch }}
           provenance: false
           load: true
@@ -183,6 +187,9 @@ jobs:
         uses: useblacksmith/build-push-action@v2
         with:
           context: .
+          # Blacksmith's builder routes docker.io through its local registry mirror.
+          # An explicit ECR Public base bypasses that mirror and has a shared quota.
+          build-args: BASE_REGISTRY=docker.io/library
           platforms: linux/${{ matrix.arch }}
           provenance: false
           load: true
@@ -246,6 +253,9 @@ jobs:
         uses: useblacksmith/build-push-action@v2
         with:
           context: .
+          # Blacksmith's builder routes docker.io through its local registry mirror.
+          # An explicit ECR Public base bypasses that mirror and has a shared quota.
+          build-args: BASE_REGISTRY=docker.io/library
           platforms: linux/arm64
           provenance: false
           push: true
@@ -316,4 +326,5 @@ jobs:
           jq -n --arg tree "$tree" --arg commit "$(git rev-parse HEAD)" --arg head "$PR_HEAD" --argjson pr "$PR_NUMBER" '{tree:$tree,commit:$commit,head:$head,pr:$pr}' > merge.json
       - uses: actions/upload-artifact@v4
         if: github.event_name == 'pull_request'
-        with: { name: "tested-tree-${{ steps.tested-tree.outputs.tree }}", path: merge.json, retention-days: 14 }
+        # A successful rerun replaces the same run's proof instead of failing with an artifact-name conflict.
+        with: { name: "tested-tree-${{ steps.tested-tree.outputs.tree }}", path: merge.json, retention-days: 14, overwrite: true }

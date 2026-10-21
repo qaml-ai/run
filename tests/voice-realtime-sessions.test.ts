@@ -403,17 +403,25 @@ test("ElevenLabs connection minutes settle speech usage and the end-user ledger 
   media.handlers.ready();
   const model = await until(() => realtime.connections[0], "model after hold");
   assert.equal(Number((await cluster.db.query("select count(*) as count from end_user_holds")).rows[0].count), 1);
-  model.events.meter?.(0.1, 0);
+  // Fixed provider durations, independent of playback and machine wall-clock time.
+  const beforeResponseSeconds = 0.1, onCloseSeconds = 0.05;
+  model.events.meter?.(beforeResponseSeconds, 0);
   await model.answer("elevenlabs_1", { ms: 80 });
-  model.events.meter?.(0.05, 0);
+  model.events.meter?.(onCloseSeconds, 0);
   await a.voice.end("alice", created.id);
+  const expected = Math.round(realtimeCost("elevenlabs/gemini-2.5-flash-lite", NO_USAGE, beforeResponseSeconds + onCloseSeconds) * 1e6);
+  // Response settlement releases its hold before the close settlement creates and
+  // settles the next one. Zero holds can be transient (only 3333 of 5000 posted).
+  // Wait for the final durable ledger amount, not that intermediate empty state.
+  const entries = await until(async () => {
+    const entries = (await credits.ledger("alice", "ada")).entries.filter(entry => entry.kind === "usage");
+    return entries.reduce((sum, entry) => sum + entry.raw, 0) === expected ? entries : undefined;
+  }, "response and close usage settled");
   await until(async () => Number((await cluster.db.query("select count(*) as count from end_user_holds")).rows[0].count) === 0, "holds released");
-  const expected = Math.round(realtimeCost("elevenlabs/gemini-2.5-flash-lite", NO_USAGE, 0.15) * 1e6);
   const speech = cluster.usage.filter(entry => entry.usage.kind === "speech").map(entry => entry.usage);
   assert.ok(speech.length > 0);
   assert.ok(speech.every(entry => entry.provider === "elevenlabs" && entry.model === "gemini-2.5-flash-lite" && entry.platform && entry.identity?.subject === "ada"));
   assert.equal(Math.round(speech.reduce((sum, entry) => sum + entry.usage.cost.total, 0) * 1e6), expected);
-  const entries = (await credits.ledger("alice", "ada")).entries.filter(entry => entry.kind === "usage");
   assert.equal(entries.reduce((sum, entry) => sum + entry.raw, 0), expected);
   assert.ok(entries.every(entry => entry.bucket === "bot:7"));
   await until(async () => Math.round((await a.voice.get("alice", created.id)).costUsd * 1e6) === expected, "session cost");
