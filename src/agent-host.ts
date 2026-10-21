@@ -12,7 +12,7 @@ import { executeCode, presentResult, type CodeExecutor, type CodeResult } from "
 import type { Outbound } from "./outbound.ts";
 import { scriptValue } from "./mcp-results.ts";
 import { errorText, IDENTITY_KEY, PERSISTENCE_FAILED, SCOPE_KEY, scratchMount, type AgentConfig, type CallContext, type Credentials, type RunStop, type ToolBridge } from "./protocol.ts";
-import { applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS, LEGACY_INSTRUCTIONS, leadingSystemMessage, OUTPUT, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER, OUTPUT_TOOL } from "./system-prompt.ts";
+import { APPLICATION, applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS, leadingSystemMessage, OUTPUT, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER, OUTPUT_TOOL } from "./system-prompt.ts";
 import { renderMessages, senderInput, stamp, type MessageSource } from "./sender.ts";
 import type { SearchHit, SearchQuery } from "./tool-search.ts";
 import type { AppendLog } from "../shared/append-log.ts";
@@ -101,6 +101,8 @@ export interface HostIO {
    * `log` reports mismatches, `throw` also fails the request on an unexpected one (tests, the simulation).
    */
   piDualRead?: "log" | "throw";
+  /** Tenants whose agents' system sections are native Pi sections (AGENT_NATIVE_SECTIONS_TENANTS; `*`: every tenant). */
+  nativeSectionsTenants?: string[];
   /** The agent's history index, which the supervisor writes: how many messages it has (null: it has none yet, or none is kept), and a chunk to add. */
   history?: { indexed(): Promise<number | null>; write(chunk: HistoryChunk): Promise<number>; read(from: number): Promise<Backlog> };
 }
@@ -249,7 +251,7 @@ export function createAgentHost(hostIO: HostIO) {
    * it, and each change follows as a system message of its own where the conversation stood.
    */
   function leading(tools: Tool[] = agent!.state.tools.map(toToolDeclaration)): SystemMessage {
-    return transcript.system ?? leadingSystemMessage(config, tools);
+    return transcript.system ?? leadingSystemMessage(config, tools, nativeSections() ? APPLICATION : INSTRUCTIONS);
   }
 
   /** Pi's messages from the transcript: what a run starts from. */
@@ -284,20 +286,22 @@ export function createAgentHost(hostIO: HostIO) {
     const messages = agent!.state.messages;
     const tools = agent!.state.tools.map(toToolDeclaration);
     if (!durable && !transcript.total && !transcript.compaction) {
-      agent!.state.messages = [leadingSystemMessage(config, tools), ...messages.filter(message => message.role !== "system")];
+      agent!.state.messages = [leadingSystemMessage(config, tools, nativeSections() ? APPLICATION : INSTRUCTIONS), ...messages.filter(message => message.role !== "system")];
       return;
     }
     const { toolsAdded, toolsRemoved } = getToolStateChanges(getCurrentTools(messages), tools);
     let current = getCurrentSystemMessage(messages)?.sections ?? {};
+    // Native sections take the instructions under `application`; so does a conversation that already has them there.
+    const native = nativeSections(), instructions = native || APPLICATION in current ? APPLICATION : INSTRUCTIONS;
     // Sections under the old key are removed and every section declared again in order: a section declared later is
     // placed after the others, so re-keying one alone would move the application's instructions after the environment.
     const cleared: SystemMessage[] = [];
-    if (LEGACY_INSTRUCTIONS in current) {
+    if (native && INSTRUCTIONS in current) {
       cleared.push({ role: "system", content: "", timestamp: Date.now(), sections: Object.fromEntries(Object.keys(current).map(name => [name, null])) });
       current = {};
     }
     const wanted = {
-      [INSTRUCTIONS]: applicationInstructions(config.systemPrompt, config.systemPromptAppend), [ENVIRONMENT]: environmentSummary(config),
+      [instructions]: applicationInstructions(config.systemPrompt, config.systemPromptAppend), [ENVIRONMENT]: environmentSummary(config),
       [OUTPUT]: tools.some(tool => tool.name === OUTPUT_TOOL) ? OUTPUT_INSTRUCTIONS : null,
     };
     const sections = Object.fromEntries(Object.entries(wanted).filter(([name, text]) => (current[name] ?? null) !== text));
@@ -348,6 +352,9 @@ export function createAgentHost(hostIO: HostIO) {
     console.log(JSON.stringify({ type: "system_prompt_hash", agent: config.id, hash, previous: lastPromptHash ?? null, sections: Object.keys(system?.sections ?? {}) }));
     lastPromptHash = hash;
   }
+
+  /** Whether the agent's system sections are native Pi sections: its tenant is in AGENT_NATIVE_SECTIONS_TENANTS (or `*`). */
+  const nativeSections = () => !!io.nativeSectionsTenants && (io.nativeSectionsTenants.includes("*") || io.nativeSectionsTenants.includes(config.tenant ?? ""));
 
   /** Whether each model call asks the supervisor for its credentials. */
   const perCall = () => config.apiKey === IDENTITY_KEY || config.apiKey === SCOPE_KEY;
@@ -788,7 +795,7 @@ export function createAgentHost(hostIO: HostIO) {
     // Imported by a release that started no host generation with it, or rolled back to the legacy engine since
     // (camel.host.disabled): the native messages its log lacks are copied to it first, then the whole log is adopted.
     if (migrated) await reconcilePiTranscript(legacy, storage, migrated.conversationId);
-    const leadingSystem = legacy.system ?? leadingSystemMessage(config, tools);
+    const leadingSystem = legacy.system ?? leadingSystemMessage(config, tools, nativeSections() ? APPLICATION : INSTRUCTIONS);
     const working = [leadingSystem, ...legacy.view()];
     const from = legacyImportShape(legacy, working);
     if (!migrated) {
@@ -933,6 +940,7 @@ export function createAgentHost(hostIO: HostIO) {
         // Summaries share credential/network gates but not the run's output
         // schema, temperature or max-output settings.
         summaryStream,
+        nativeSections: nativeSections(),
         get contextWindow() { return compactionModel().contextWindow; },
         onSummary: message => io.emit({ type: "compaction_usage", provider: message.provider,
           model: message.model, usage: message.usage, timestamp: message.timestamp, durable: true }),

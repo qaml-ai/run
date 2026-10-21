@@ -134,6 +134,8 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     piDualRead: piDualRead(env.AGENT_PI_DUAL_READ),
     // Write what the host writes itself into Pi's journal too: native entries and markers (AGENT_PI_DUAL_WRITE=1).
     piDualWrite: env.AGENT_PI_DUAL_WRITE === "1",
+    // Tenants whose agents' system sections are native Pi sections, `*` for every tenant (AGENT_NATIVE_SECTIONS_TENANTS).
+    nativeSectionsTenants: list(env.AGENT_NATIVE_SECTIONS_TENANTS),
     // What its agent processes are told of these settings.
     agentEnv: agentProcessEnv(env),
     systemPrompt: env.AGENT_SYSTEM_PROMPT,

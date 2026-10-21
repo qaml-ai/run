@@ -18,6 +18,12 @@ export type DurableAgentOptions = Omit<AgentOptions, "transformContext"> & {
     cursor?: DurableCursor;
     /** The latest journal message the host wrote or recorded itself: a run's new messages are the ones after it. */
     written?: () => DurableCursor | undefined;
+    /**
+     * Render the host's system sections as native Pi sections (the `camel` extension's `section()`), rather than give
+     * them to Pi's generation in place of its agent's. A host section named `instructions` (Pi's own) is then left out:
+     * hosts declare it again under a key of their own.
+     */
+    nativeSections?: boolean;
     contextWindow?: number;
     summaryStream?: AgentOptions["streamFn"];
     onSummary?: (message: AssistantMessage) => void | Promise<void>;
@@ -257,6 +263,7 @@ export class DurableAgent {
    * one, which the host declares again under a key of its own) is not rendered here.
    */
   private sections(): Record<string, string> {
+    if (!this.options.durable.nativeSections) return {};
     return Object.fromEntries(Object.entries(getCurrentSystemMessage(this._messages)?.sections ?? {})
       .filter((entry): entry is [string, string] => entry[1] !== null && entry[0] !== "instructions"));
   }
@@ -293,7 +300,15 @@ export class DurableAgent {
       prepare: async (...args: Parameters<typeof original.phases.prepare>) => {
         const [record, runtime, taskContext] = args;
         await agent.placeQueued(record.id, runtime, taskContext);
+        // Without native sections, Camel's sections are given to Pi as its agent's: an empty native section registry
+        // would remove application instructions and duplicate the checkpoint's tools.
+        const sections = agent.options.durable.nativeSections ? undefined : getCurrentSystemMessage((await runtime.context(runtime.conversationId, taskContext)).messages)?.sections ??
+          getCurrentSystemMessage(agent.messages)?.sections ?? {};
         const prepared = new Proxy(runtime, { get(target, key) {
+          if (key === "agent" && sections) return async (ctx: typeof taskContext) => ({ ...await target.agent(ctx),
+            sections: Object.entries(sections).filter(([, value]) => value !== null).map(([key, value]) =>
+              ({ key, tag: false, render: async () => value! })),
+          });
           if (key === "context") return async (...params: Parameters<typeof runtime.context>) => {
             const current = await target.context(...params);
             return current.head?.kind === "camel.legacy.context" ? { ...current, head: undefined } : current;

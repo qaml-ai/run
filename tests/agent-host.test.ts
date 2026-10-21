@@ -39,7 +39,7 @@ async function setup(t: Context) {
     { name: "delegate", description: "A sub-agent", parameters: { type: "object" }, exposure: "direct" },
   ];
   /** A host over the transcript file, as a node starting the agent: `call` answers its tools. */
-  async function start(options: { resume?: boolean; call?: (name: string, host: ReturnType<typeof createAgentHost>) => unknown; storage?: (storage: PiStorage) => PiStorage; initialMessages?: AgentMessage[] } = {}) {
+  async function start(options: { resume?: boolean; call?: (name: string, host: ReturnType<typeof createAgentHost>) => unknown; storage?: (storage: PiStorage) => PiStorage; initialMessages?: AgentMessage[]; tenant?: string; nativeSectionsTenants?: string[] } = {}) {
     const events: any[] = [];
     const log = fileAppendLog<TranscriptRecord>(path);
     const opened = await openPiStorage({ sessionId: "agent", directory });
@@ -55,9 +55,10 @@ async function setup(t: Context) {
       modelAuth: async () => { throw new Error("no per-call credentials"); },
       fs: async () => { throw new Error("no files"); },
       piDualRead: "throw",
+      ...(options.nativeSectionsTenants ? { nativeSectionsTenants: options.nativeSectionsTenants } : {}),
     };
     const host = createAgentHost(io);
-    const init = await host.handle("init", { id: "agent", directory, model: faux.getModel(), apiKey: "fixture", tools, ...(options.resume ? { resume: true } : {}), ...(options.initialMessages ? { initialMessages: options.initialMessages } : {}) });
+    const init = await host.handle("init", { id: "agent", directory, model: faux.getModel(), apiKey: "fixture", tools, ...(options.tenant ? { tenant: options.tenant } : {}), ...(options.resume ? { resume: true } : {}), ...(options.initialMessages ? { initialMessages: options.initialMessages } : {}) });
     t.after(async () => { await host.dispose(0); await opened.close(BACKGROUND_CONTEXT); });
     return { host, init, events, log };
   }
@@ -318,4 +319,26 @@ test("the system prompt's hash is logged when it changes, never its text", async
   await host.handle("prompt", { text: "three" });
   assert.equal(hashes().length, 2);
   assert.equal(hashes()[1].previous, hashes()[0].hash);
+});
+
+test("native sections are per tenant: a conversation of a listed tenant is re-keyed to application with the same prompt text; others keep instructions", async t => {
+  const fake = await setup(t);
+  const prompts: string[] = [], keys: string[][] = [];
+  const capture = (reply: string) => (context: any) => {
+    const system = getCurrentSystemMessage(context.messages)!;
+    prompts.push(getSystemMessageText(system)); keys.push(Object.keys(system.sections ?? {}));
+    return answer(reply);
+  };
+  const first = await fake.start({ tenant: "bots", nativeSectionsTenants: ["someone-else"] });
+  fake.respond(capture("One."), capture("Two."));
+  await first.host.handle("prompt", { text: "one" });
+  await first.host.handle("prompt", { text: "two" });
+  await first.host.dispose(0);
+  assert.deepEqual(keys.at(-1), ["instructions", "environment"], "a tenant not listed keeps today's key");
+  const second = await fake.start({ tenant: "bots", nativeSectionsTenants: ["bots"] });
+  fake.respond(capture("Three."), capture("Four."));
+  await second.host.handle("prompt", { text: "three" });
+  await second.host.handle("prompt", { text: "four" });
+  assert.deepEqual(keys.slice(2), [["application", "environment"], ["application", "environment"]], "re-keyed as it loads");
+  assert.deepEqual(new Set(prompts).size, 1, "the model is sent the same prompt text throughout");
 });

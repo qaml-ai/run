@@ -261,14 +261,14 @@ test("compaction summaries bill their tokens and cost to the tenant, apart from 
   assert.equal(usage.totals.responses, 4 + summaries);
 });
 
-test("a prompt or tool change on an agent with history is appended after the cached prefix, and reloads and compaction keep it", async t => {
+for (const native of [false, true]) test(`a prompt or tool change on an agent with history is appended after the cached prefix, and reloads and compaction keep it${native ? " (native sections)" : ""}`, async t => {
   const fake = await provider(t);
   const { db } = await testDatabase();
   const root = await mkdtemp(join(tmpdir(), "configure-cache-"));
   const storage = fileStorage(join(root, "state"));
   const nodes: AgentSupervisor[] = [];
   const node = (name: string) => {
-    const supervisor = new AgentSupervisor(join(root, name), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, storage, db });
+    const supervisor = new AgentSupervisor(join(root, name), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined, storage, db, ...(native ? { nativeSectionsTenants: ["*"] } : {}) });
     nodes.push(supervisor);
     return supervisor;
   };
@@ -277,7 +277,7 @@ test("a prompt or tool change on an agent with history is appended after the cac
   const lookup = { name: "lookup", description: "Look something up", parameters: { type: "object" }, exposure: "direct" as const };
   const tools = (definitions: typeof lookup[]) => ({ definitions, async call() { return "found"; } });
   const last = () => fake.chat().at(-1) as Body & { tools: unknown[] };
-  const updates = (body: Body) => body.messages.filter(message => JSON.stringify(message).includes('Updated system prompt section \\"application\\"'));
+  const updates = (body: Body) => body.messages.filter(message => JSON.stringify(message).includes(`Updated system prompt section \\"${native ? "application" : "instructions"}\\"`));
 
   const a = node("a");
   await a.start("agent", { model, apiKey: "fixture", systemPrompt: "Original rules" }, tools([]));
