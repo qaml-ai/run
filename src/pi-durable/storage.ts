@@ -167,7 +167,13 @@ export async function openPiJournalReader(options: { sessionId: string; director
     };
     const table = (name: "conversations" | "entries") => shared ? `pi_durable_${name}` : name;
     const namespace = shared ? "session_id = $1 AND " : "";
-    const root = await select<JsonRow>(`select record from ${table("conversations")} where ${namespace}id = ?`, [1]);
+    let root: JsonRow[];
+    try { root = await select<JsonRow>(`select record from ${table("conversations")} where ${namespace}id = ?`, [1]); }
+    catch (error) {
+        // A session file its first open has created but not yet given a schema holds no journal yet.
+        if (sqlite && /no such table/.test(String((error as Error).message))) { sqlite.close(); return undefined; }
+        sqlite?.close(); throw error;
+    }
     if (!root.length) { sqlite?.close(); return undefined; }
     const conversation = async (id: ConversationId): Promise<ConversationRecord> => {
         const row = (await select<JsonRow>(`select record from ${table("conversations")} where ${namespace}id = ?`, [id]))[0];
