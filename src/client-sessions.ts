@@ -3735,7 +3735,7 @@ export class ClientSessions {
    * A page of the agent's history (see HistoryIndex.page): settled messages from their chunks, and
    * what the running agent has not indexed yet from it.
    */
-  private async historyPage(session: Session | { header: { id: string }; unloaded: true }, query: { before?: string; limit?: string }): Promise<HistoryPage> {
+  private async historyPage(session: Session | { header: { id: string; tenant: string }; unloaded: true }, query: { before?: string; limit?: string }): Promise<HistoryPage> {
     const before = query.before === undefined ? undefined : Number(query.before);
     const limit = query.limit === undefined ? 50 : Number(query.limit);
     if (before !== undefined && (!Number.isSafeInteger(before) || before < 0)) throw new HttpError(400, "before is a message index");
@@ -3756,7 +3756,7 @@ export class ClientSessions {
       // A Pi response may have committed just before its host record and run outcome failed. Neither reported nor
       // pending_runs then reveals that tail: the native journal's newest entries do.
       const durable = await this.supervisor.unrecordedHistory(id);
-      if (tail === null || indexed === undefined || indexed < reported || orphaned || durable) tail = await this.supervisor.backlog(id, indexed ?? 0);
+      if (tail === null || indexed === undefined || indexed < reported || orphaned || durable) tail = await this.supervisor.backlog(id, indexed ?? 0, session.header.tenant);
     }
     return this.historyIndex.page(id, { before, limit }, tail ?? undefined);
   }
@@ -3764,7 +3764,7 @@ export class ClientSessions {
   /** A tenant's view of a page of one agent's history. */
   async historyPageFor(id: string, tenant: string, query: { before?: string; limit?: string }) {
     if (!await this.owns(id, tenant)) throw new HttpError(404, "Unknown agent");
-    if (this.unloaded(id)) return this.historyPage({ header: { id }, unloaded: true }, query);
+    if (this.unloaded(id)) return this.historyPage({ header: { id, tenant }, unloaded: true }, query);
     const session = await this.load(id);
     if (!session) throw new HttpError(404, "Unknown agent");
     return this.historyPage(session, query);

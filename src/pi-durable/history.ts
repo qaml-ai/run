@@ -4,6 +4,9 @@ import type { Cursor, EntryId, EntryRecord, Storage } from "@earendil-works/pi-d
 import { durableEntryMessages } from "./agent.ts";
 import { HOST_BOOTSTRAP_KIND, LEGACY_CONVERSATION_ID as conversationId } from "./migration.ts";
 import { MARKER_KIND } from "./transcript.ts";
+import { createHash } from "node:crypto";
+import { always } from "../assert.ts";
+import { metricLine } from "../metrics.ts";
 
 /**
  * An agent's history as Pi's journal gives it (plans/host-transcript-removal.md, phase 2): the messages before the
@@ -181,4 +184,23 @@ export class JournalHistory {
     }
     return messages;
   }
+}
+
+/**
+ * A history value the journal gives, where reads have moved there, against the host transcript's: the journal's when
+ * they are the same, the host's otherwise (logged as history_source_mismatch, with values and hashes only, and an
+ * always-assertion the simulation records). `journal` undefined: the journal does not hold it, the host's.
+ */
+export function servedHistory<T>(agent: string, field: string, host: T, journal: T | undefined): T {
+  if (journal === undefined) return host;
+  const same = JSON.stringify(journal) === JSON.stringify(host);
+  const summary = (item: unknown) => typeof item === "number" || typeof item === "boolean" || item === undefined ? item
+    : createHash("sha256").update(JSON.stringify(item)).digest("hex").slice(0, 16);
+  console.log(metricLine(same ? "history_source" : "history_source_mismatch", {
+    dimensions: { Outcome: same ? "match" : "mismatch" }, rollups: [[], ["Outcome"]],
+    metrics: { HistorySourceReads: 1, HistorySourceMismatches: same ? 0 : 1 },
+    properties: { agent, field, ...(same ? {} : { host: summary(host), journal: summary(journal) }) },
+  }));
+  always(same, "a history value the journal gives is the host transcript's");
+  return same ? journal : host;
 }
