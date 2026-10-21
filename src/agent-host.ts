@@ -260,7 +260,13 @@ export function createAgentHost(hostIO: HostIO) {
       if (!backlog?.messages.length || (!final && backlog.bytes < CHUNK_BYTES)) return;
       // A turn cut off by the stop is settled at the next start, with its repairs.
       const count = !final ? backlog.messages.length - 1 : transcript.active ? Math.max(0, transcript.turnStart - backlog.from) : backlog.messages.length;
-      await write(chunksOf(backlog, count));
+      // Where the agent reads from the journal, its messages and turn starts are the journal's (the host's where they differ).
+      const kept = { messages: backlog.messages.slice(0, count), turns: backlog.turns.filter(turn => turn < backlog.from + count) };
+      const indexed = await served("indexTail", kept, async journal => {
+        const messages = (await journal.messagesFrom(backlog.from))?.slice(0, count);
+        return messages ? { messages, turns: journal.turnsFrom(backlog.from).filter(turn => turn < backlog.from + count) } : NOT_HELD;
+      });
+      await write(chunksOf({ ...backlog, messages: indexed.messages, sizes: backlog.sizes.slice(0, count), turns: indexed.turns }, count));
     }).catch(error => console.error(JSON.stringify({ type: "history_index_failed", agent: config.id, error: errorText(error) })));
   }
 
@@ -381,8 +387,15 @@ export function createAgentHost(hostIO: HostIO) {
    */
   async function served<T>(field: string, host: T, journalValue: (history: JournalHistory) => T | typeof NOT_HELD | Promise<T | typeof NOT_HELD>): Promise<T> {
     if (!piHistory || transcript.failed !== undefined) return host;
-    await piHistory.refresh();
-    const value = await journalValue(piHistory);
+    let value: T | typeof NOT_HELD;
+    try {
+      await piHistory.refresh();
+      value = await journalValue(piHistory);
+    } catch (error) {
+      // The journal could not be read (its storage closed as the agent stops): the host's value, as where they differ.
+      console.error(JSON.stringify({ type: "history_source_unavailable", agent: config.id, field, error: errorText(error) }));
+      return host;
+    }
     // What the journal does not hold (messages before its base the history index lacks yet): the host's, not a mismatch.
     if (value === NOT_HELD) return host;
     const same = JSON.stringify(value) === JSON.stringify(host);

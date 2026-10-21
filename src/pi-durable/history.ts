@@ -30,6 +30,8 @@ export class JournalHistory {
   awaiting: string[];
   /** The journal cursor of each history message from the base on: `cursors[i]` is the message at `base.total + i`. */
   private cursors: At[] = [];
+  /** Where turns began (their first message's index), from the base on. */
+  private turnStarts: number[] = [];
   /** Each tool call's assistant message index: those the base holds (its working set's), and those made since. */
   private calls = new Map<string, number>();
   private readonly base: HistoryBase;
@@ -121,7 +123,10 @@ export class JournalHistory {
       if (entry.id <= this.baseId) return;
       const marker = entry.data as { t: string; active?: boolean; calls?: string[]; released?: boolean; cursor?: At; after?: At };
       if (marker.t === "retract") this.pop();
-      else if (marker.t === "turn") { this.active = !!marker.active; if (marker.active) this.turnStart = this.total; }
+      else if (marker.t === "turn") {
+        this.active = !!marker.active;
+        if (marker.active) { this.turnStart = this.total; this.turnStarts.push(this.total); }
+      }
       else if (marker.t === "awaiting" && marker.calls) {
         this.awaiting = marker.released ? this.awaiting.filter(id => !marker.calls!.includes(id)) : [...this.awaiting, ...marker.calls.filter(id => !this.awaiting.includes(id))];
       } else if (marker.t === "pi" && marker.cursor) {
@@ -152,6 +157,9 @@ export class JournalHistory {
   private forgetCallsFrom(index: number) {
     for (const [id, at] of this.calls) if (at >= index) this.calls.delete(id);
   }
+
+  /** Where turns began, among the history's messages from absolute index `from` on. */
+  turnsFrom(from: number): number[] { return this.turnStarts.filter(turn => turn >= from && turn < this.total); }
 
   /** The index of the assistant message that made call `id`, if the base holds it or it was made since. */
   callIndex(id: string): number | undefined { return this.calls.get(id); }
