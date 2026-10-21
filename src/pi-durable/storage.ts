@@ -88,6 +88,8 @@ function postgresDatabase(db: Db, sessionId: string, claim?: Claim): PgDatabase 
             // wait on underClaim's ownership lock before another owner can update this metadata. One statement locks
             // and reads the row and turns synchronous commit on for this transaction.
             const metadata = (await sql.query<MetadataRow>("select next_id, next_seq, set_config('synchronous_commit', 'on', true) from pi_durable_metadata where session_id = $1 for update", [sessionId])).rows[0];
+            // No row (the session's first open creates it): set_config did not run, so turn synchronous commit on here.
+            if (!metadata) await sql.query("set local synchronous_commit = on");
             return work(executor(sql), metadata);
         }),
         async close() {}, // The supervisor, not an individual Pi session, owns the pool.
