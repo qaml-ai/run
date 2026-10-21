@@ -54,13 +54,15 @@ test("model and run errors are sorted into a few classes", () => {
   assert.equal(errorClass(undefined), "none");
 });
 
-test("a turn's line: its outcome, duration, time to first token, model responses and errors, tool calls and errors, retries", async () => {
+test("a turn's line: its outcome, duration, time to first token and to its first request, model responses and errors, tool calls and errors, retries", async () => {
   let now = 10_000;
   const turns = observeTurns(() => ({ provider: "openrouter", id: "openai/gpt-6-luna" }), () => now);
   const lines = await captured(async () => {
     const handle = turns.wrap(async (method: string) => {
       assert.equal(method, "prompt");
-      now += 400;
+      now += 150;
+      turns.event({ type: "turn_start" });
+      now += 250;
       turns.event({ type: "message_start", message: { role: "assistant" } });
       now += 800;
       turns.event({ type: "message_update", message: { role: "assistant" }, assistantMessageEvent: { type: "text_delta" } });
@@ -99,6 +101,7 @@ test("a turn's line: its outcome, duration, time to first token, model responses
   assert.equal(turn.Turns, 1);
   assert.equal(turn.TurnDurationMs, 3200);
   assert.equal(turn.TimeToFirstTokenMs, 1200);
+  assert.equal(turn.TimeToFirstRequestMs, 150, "the runtime's part: until the first model request starts");
   assert.equal(turn.ModelResponses, 3);
   assert.equal(turn.ModelErrors, undefined, "model_error lines count failed responses: no second count under the same name");
   assert.equal(turn.modelErrors, 1);
@@ -136,6 +139,7 @@ test("turn outcomes: a model error, input required, the spend limit, a thrown er
   assert.deepEqual(outcomes, [["failed", "provider_5xx"], ["input_required", "none"], ["spend_limit", "none"], ["turn_limit", "none"], ["failed", "exception"], ["aborted", "aborted"], ["aborted", "aborted"], ["completed", "none"]]);
   const noFirstToken = lines.find(line => line.type === "turn_metrics");
   assert.equal(noFirstToken.TimeToFirstTokenMs, undefined, "no token, no time to first token");
+  assert.equal(noFirstToken.TimeToFirstRequestMs, undefined, "no request, no time to it");
 });
 
 test("run and usage events: counted by tenant as they are written, with runtime restarts and resumes", async () => {
@@ -233,6 +237,9 @@ test("each model response logs its time, first token and the host that served it
   let now = 1_000;
   const lines = await captured(() => {
     const turns = observeTurns(() => ({ provider: "openrouter", id: "deepseek/deepseek-v4.1-flash-1017:nitro" }), () => now, () => "camel-bots");
+    // The request starts; its stream's headers come 600 ms later.
+    turns.event({ type: "turn_start" });
+    now += 600;
     turns.event({ type: "message_start", message: { role: "assistant" } });
     now += 900;
     turns.event({ type: "message_update", message: { role: "assistant" }, assistantMessageEvent: { type: "thinking_delta", delta: "a secret plan" } });
@@ -248,12 +255,12 @@ test("each model response logs its time, first token and the host that served it
   const responses = lines.filter(line => line.type === "model_response");
   assert.equal(responses.length, 2);
   const [first, second] = responses;
-  assert.deepEqual([first.Provider, first.Model, first.Host, first.ResponseMs, first.ResponseFirstTokenMs, first.stopReason, first.outputTokens, first.tenant],
-    ["openrouter", "deepseek/deepseek-v4.1-flash-1017:nitro", "Parasail", 5_000, 900, "toolUse", 321, "camel-bots"]);
+  assert.deepEqual([first.Provider, first.Model, first.Host, first.ResponseMs, first.ResponseFirstTokenMs, first.RequestFirstTokenMs, first.stopReason, first.outputTokens, first.tenant],
+    ["openrouter", "deepseek/deepseek-v4.1-flash-1017:nitro", "Parasail", 5_000, 900, 1_500, "toolUse", 321, "camel-bots"]);
   // One metric set, by model and host: ResponseMs by Model and Host on the dashboard.
   assert.equal(first._aws.CloudWatchMetrics[0].Dimensions.length, 1);
   assert.deepEqual(first._aws.CloudWatchMetrics[0].Dimensions[0].filter((name: string) => name !== "ServiceName"), ["Provider", "Model", "Host"]);
-  assert.deepEqual([second.Host, second.ResponseMs, second.ResponseFirstTokenMs, second.stopReason], ["unknown", 2_000, undefined, "error"]);
+  assert.deepEqual([second.Host, second.ResponseMs, second.ResponseFirstTokenMs, second.RequestFirstTokenMs, second.stopReason], ["unknown", 2_000, undefined, undefined, "error"]);
   const text = JSON.stringify(responses);
   assert.ok(!text.includes("secret"), "no text of a response, its reasoning or its error");
 });

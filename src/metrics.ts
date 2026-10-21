@@ -199,14 +199,20 @@ const TURN_METHODS = new Set(["prompt", "continue", "resume"]);
  * the host emits, `wrap` times each turn and writes its line when it ends.
  */
 export function observeTurns(model: () => { provider: string; id: string } | undefined, clock = Date.now, tenant: () => string | undefined = () => undefined) {
-  let turn: { started: number; firstToken?: number; responses: number; errors: number; retries: number; tools: number; toolErrors: number } | undefined;
-  // The model response being streamed: when it started, and its first token.
-  let response: { started: number; firstToken?: number } | undefined;
+  let turn: { started: number; firstRequest?: number; firstToken?: number; responses: number; errors: number; retries: number; tools: number; toolErrors: number } | undefined;
+  // The model response being streamed: when it started (its stream's headers), when its request began, and its first token.
+  let response: { started: number; requested?: number; firstToken?: number } | undefined;
+  // When the latest model request began (`turn_start`: the runtime has its context and starts the call), until its response starts.
+  let requested: number | undefined;
 
   function event(value: unknown) {
     const event = value as { type?: string; message?: any; toolName?: string; isError?: boolean; result?: any };
-    if (event.type === "message_start" && event.message?.role === "assistant") {
-      response = { started: clock() };
+    if (event.type === "turn_start") {
+      requested = clock();
+      if (turn && turn.firstRequest === undefined) turn.firstRequest = requested;
+    } else if (event.type === "message_start" && event.message?.role === "assistant") {
+      response = { started: clock(), ...(requested === undefined ? {} : { requested }) };
+      requested = undefined;
     } else if (event.type === "message_update" && event.message?.role === "assistant") {
       if (turn && turn.firstToken === undefined) turn.firstToken = clock();
       if (response && response.firstToken === undefined) response.firstToken = clock();
@@ -219,7 +225,10 @@ export function observeTurns(model: () => { provider: string; id: string } | und
         const host = typeof served.usage?.providerHost === "string" ? served.usage.providerHost : "unknown";
         const output = Number(served.usage?.output), stopReason = String(served.stopReason ?? "unknown");
         const Provider = String(served.provider ?? model()?.provider ?? "unknown"), Model = String(served.model ?? model()?.id ?? "unknown");
-        const firstToken = response.firstToken !== undefined ? { ResponseFirstTokenMs: [response.firstToken - response.started, "Milliseconds"] as Value } : {};
+        // ResponseFirstTokenMs counts from the stream's headers, which some hosts send only with the first token;
+        // RequestFirstTokenMs from the request's start: the model's time to first token as the runtime waits for it.
+        const firstToken = response.firstToken !== undefined ? { ResponseFirstTokenMs: [response.firstToken - response.started, "Milliseconds"] as Value,
+          ...(response.requested !== undefined ? { RequestFirstTokenMs: [response.firstToken - response.requested, "Milliseconds"] as Value } : {}) } : {};
         emit("model_response", {
           dimensions: { Provider, Model, Host: host }, rollups: [["Provider", "Model", "Host"]],
           metrics: { ResponseMs: [at - response.started, "Milliseconds"], ...firstToken },
@@ -271,6 +280,8 @@ export function observeTurns(model: () => { provider: string; id: string } | und
       metrics: {
         Turns: 1, TurnDurationMs: [clock() - current.started, "Milliseconds"],
         TimeToFirstTokenMs: current.firstToken === undefined ? undefined : [current.firstToken - current.started, "Milliseconds"],
+        // The runtime's part of it: from the turn's start until its first model request starts (loads, journal reads and commits).
+        TimeToFirstRequestMs: current.firstRequest === undefined ? undefined : [current.firstRequest - current.started, "Milliseconds"],
         // Failed responses are counted by their own lines (model_error), under the same dimensions.
         ModelResponses: current.responses, ModelRetries: current.retries,
         ToolCalls: current.tools, ToolErrors: current.toolErrors,
