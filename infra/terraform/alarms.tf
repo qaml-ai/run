@@ -277,3 +277,33 @@ resource "aws_cloudwatch_metric_alarm" "database_memory" {
   alarm_actions       = local.alarm_topics
   ok_actions          = local.alarm_topics
 }
+
+# The dual read (AGENT_PI_DUAL_READ=log) found an agent whose host transcript and Pi journal disagree beyond what is
+# expected while the host writes them both: a bug to explain before reads move to the journal.
+resource "aws_cloudwatch_log_metric_filter" "dual_read_mismatches" {
+  name           = "${var.name}-dual-read-mismatches"
+  log_group_name = aws_cloudwatch_log_group.runtime.name
+  pattern        = "{ $.type = \"host_transcript_dual_read_mismatch\" }"
+
+  metric_transformation {
+    namespace     = "AgentRuntime/Logs"
+    name          = "DualReadMismatches"
+    value         = "1"
+    default_value = "0"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "dual_read_mismatches" {
+  alarm_name          = "${var.name}-dual-read-mismatches"
+  alarm_description   = "An agent's host transcript and Pi journal disagree (host_transcript_dual_read_mismatch in /ecs/${var.name}): a projection bug, which holds back moving history reads to the journal"
+  namespace           = "AgentRuntime/Logs"
+  metric_name         = "DualReadMismatches"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_topics
+  ok_actions          = local.alarm_topics
+}
