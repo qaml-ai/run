@@ -88,11 +88,11 @@ run tests again. Superseded PR and branch runs are cancelled; each main SHA runs
 its completed CI event. Four hundred fresh simulator seeds run every night (`sim-seeds.yml`; run it by hand for
 more): a seed that finds something new turns that run red.
 
-Runner sizes follow job timings: the test shards, `python`, `checks`, `docs` and `changed tests` mostly wait on
-Postgres, child processes and timers, and finish as fast on four vCPUs as on eight; the fixed seeds are CPU-bound
-(16 vCPUs); image builds keep 16 vCPUs for cache misses. Deploy waits on ECS on two ARM vCPUs. `changes` and
-`CI success` stay on GitHub's runners, which pick a job up in about a second against Blacksmith's six to eight,
-on the critical path.
+Runner sizes follow job timings. The test shards and `python` are CPU-bound and keep eight vCPUs (on four, shards
+took 170-450 s instead of 115-165 s); `checks`, `docs` and `changed tests` finish within a minute on four. The fixed
+seeds use 16 vCPUs, and image builds keep 16 for cache misses. Deploy waits on ECS on two ARM vCPUs. `changes` and
+`CI success` stay on GitHub's runners, on the critical path: they pick a job up in one to three seconds, Blacksmith
+in seven to seventeen.
 
 The shards are balanced by `tests/timings.json`. Each shard records its files' times as a `test-timings-*`
 artifact; when shards drift apart, rebalance from a few green runs (a file's time is its mean over them):

@@ -43,7 +43,7 @@ jobs:
     if: needs.changes.outputs.reuse != 'true'
     # Fail fast: each job here takes 1-4 minutes, so anything near this limit is hung.
     timeout-minutes: 15
-    # About 40 s on four vCPUs, beside test shards that take two minutes.
+    # Under a minute on four vCPUs, beside test shards that take two to three.
     runs-on: ${{ needs.changes.outputs.blacksmith == 'true' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
@@ -80,7 +80,8 @@ jobs:
     # Python starts a runtime and needs the sandbox executable; restore it without waiting for another builder.
     needs: changes
     if: needs.changes.outputs.tests == 'true'
-    runs-on: ${{ needs.changes.outputs.blacksmith == 'true' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    # Eight vCPUs: on four the suite took 180 s instead of 134 s, past the test shards.
+    runs-on: ${{ needs.changes.outputs.blacksmith == 'true' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/v8-exec
@@ -112,8 +113,8 @@ jobs:
   test:
     # Bound a hung shard while allowing the flaky-file rerun (scripts/test-shard.ts).
     timeout-minutes: 15
-    # Duration-balanced files, five shards per mode. On Blacksmith each shard runs eight files at once: they mostly
-    # wait on Postgres, child processes and timers, so four vCPUs finish them as fast as eight. Forks run two at a time.
+    # Duration-balanced files, five shards per mode; 8-vCPU Blacksmith runners run eight files at once, forks two.
+    # The shards are CPU-bound: on four vCPUs they took 170-450 s against 115-165 s on eight, at no lower cost.
     name: test (${{ matrix.hosting }} ${{ matrix.shard }}/5)
     needs: changes
     if: needs.changes.outputs.tests == 'true'
@@ -123,7 +124,7 @@ jobs:
       matrix:
         hosting: [process, inline]
         shard: [1, 2, 3, 4, 5]
-    runs-on: ${{ needs.changes.outputs.blacksmith == 'true' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    runs-on: ${{ needs.changes.outputs.blacksmith == 'true' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     env:
       AGENT_HOSTING: ${{ matrix.hosting }}
     steps:
