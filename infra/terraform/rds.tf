@@ -34,7 +34,8 @@ resource "aws_db_instance" "control" {
   # RDS generates and rotates the password in Secrets Manager; it never appears in state.
   manage_master_user_password = true
 
-  allocated_storage     = 20
+  # Reflect the manual increase ahead of the Pi migration sweep.
+  allocated_storage     = 60
   max_allocated_storage = 200
   storage_type          = "gp3"
   storage_encrypted     = true
@@ -57,6 +58,8 @@ resource "aws_db_instance" "control" {
 
   lifecycle {
     prevent_destroy = true
+    # Autoscaling and manual increases own storage growth; never try to shrink it.
+    ignore_changes = [allocated_storage]
   }
 }
 

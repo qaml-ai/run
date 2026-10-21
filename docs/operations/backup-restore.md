@@ -8,6 +8,8 @@ places, restored differently:
   into S3). Multi-AZ with a synchronous standby, so an instance or AZ failure is a failover (about a minute, absorbed
   by RDS Proxy; [Architecture](architecture.md)), not a restore. A restore is for data lost to a bad migration, an
   operator mistake or corruption.
+  Storage starts at 60 GB and grows by RDS autoscaling (up to 200 GB) or
+  `modify-db-instance --apply-immediately`; Terraform ignores changes to `allocated_storage`.
 - **State bucket** (`s3://camelai-agent-runtime-state/agents/`, `infra/terraform/state-bucket.tf`): transcripts' and
   journals' segments, history chunks, content chunks (`chunks/`), volumes' trees and snapshots. S3 is regional and
   durable; what can be lost is a delete, by the runtime (storage GC, account deletion) or by hand.
