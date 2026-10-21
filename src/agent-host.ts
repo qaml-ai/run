@@ -33,6 +33,7 @@ import { clock } from "./node-context.ts";
 import { usageMissing } from "./platform-pricing.ts";
 import type { Storage as PiStorage } from "@earendil-works/pi-durable";
 import { DurableAgent, type DurableAgentOptions } from "./pi-durable/agent.ts";
+import { checkDualRead } from "./pi-durable/dual-read.ts";
 import { LEGACY_CONVERSATION_ID, legacyImportShape, LegacyMigrationDeferred, loadLegacyMigration, readMigrationRecords, type LegacyImportShape } from "./pi-durable/migration.ts";
 import { reconcilePiTranscript } from "./pi-durable/projection.ts";
 
@@ -94,6 +95,11 @@ export interface HostIO {
   historyBacklogBytes?: number;
   /** Wait until the node may act for the agent (its lease is fresh), before each model request and js_exec; rejects once it lost the agent. */
   lease?(): Promise<void>;
+  /**
+   * Compare the host's records with Pi's journal after each load and run (pi-durable/dual-read.ts, AGENT_PI_DUAL_READ):
+   * `log` reports mismatches, `throw` also fails the request on an unexpected one (tests, the simulation).
+   */
+  piDualRead?: "log" | "throw";
   /** The agent's history index, which the supervisor writes: how many messages it has (null: it has none yet, or none is kept), and a chunk to add. */
   history?: { indexed(): Promise<number | null>; write(chunk: HistoryChunk): Promise<number>; read(from: number): Promise<Backlog> };
 }
@@ -136,6 +142,8 @@ export function createAgentHost(hostIO: HostIO) {
   const turns = observeTurns(() => config?.model && { provider: config.model.provider, id: config.model.id }, Date.now, () => config?.tenant);
   const io: HostIO = { ...hostIO, emit: event => { turns.event(event); hostIO.emit(event); } };
   let transcript: Transcript;
+  /** The agent's Pi storage, once loaded: the dual read reads it. */
+  let journal: PiStorage | undefined;
   let busy = false;
   let active: AbortController | undefined;
   /** Why the current run ended early: a spend limit, tool calls waiting on a person's input, or a hand-off (its node is leaving). */
@@ -788,6 +796,7 @@ export function createAgentHost(hostIO: HostIO) {
       // Tools first: an import starts Pi's context with the leading system message they make.
       jsExec = codeTool();
       const tools = [...config.codeMode === false ? [] : [jsExec], ...directAgentTools(config.tools)];
+      journal = piStorage;
       transcript = await open(piStorage, indexed ?? undefined, tools.map(toToolDeclaration));
       // Each legacy session is imported once, as it is first loaded: what its imports took, for operators to follow.
       if (migration?.state !== "existing") console.log(JSON.stringify({ type: "legacy_session_imported", agent: config.id, tenant: config.tenant, ...migration }));
@@ -1264,7 +1273,13 @@ export function createAgentHost(hostIO: HostIO) {
 
   /** Once the transcript failed, any request it ends says so, for the session to give the agent up (and reload it). */
   async function handled(method: string, params: any): Promise<any> {
-    try { return await handle(method, params); }
+    try {
+      const result = await handle(method, params);
+      if (io.piDualRead && journal && transcript?.failed === undefined && ["init", "prompt", "execute", "continue", "resume"].includes(method)) {
+        await checkDualRead(io.piDualRead, config.id, journal, transcript.awaiting);
+      }
+      return result;
+    }
     catch (error) {
       if (transcript?.failed !== undefined && !errorText(error).startsWith(PERSISTENCE_FAILED)) throw new Error(`${PERSISTENCE_FAILED}: ${errorText(error)}`);
       throw error;

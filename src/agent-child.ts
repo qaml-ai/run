@@ -30,6 +30,7 @@ const host = createAgentHost({
   piStorage: async () => await rpc.request("pi-storage", { method: "available" }) ? remotePiStorage(request => rpc.request("pi-storage", request)) : undefined,
   // This process's environment is the node's settings for it (agentProcessEnv).
   ...(Number(process.env.AGENT_HISTORY_BACKLOG_BYTES) ? { historyBacklogBytes: Number(process.env.AGENT_HISTORY_BACKLOG_BYTES) } : {}),
+  ...(process.env.AGENT_PI_DUAL_READ === "log" || process.env.AGENT_PI_DUAL_READ === "throw" ? { piDualRead: process.env.AGENT_PI_DUAL_READ } : {}),
 });
 
 /** A turn to run js_exec, held by the supervisor (which counts the tenant's across the node) until given back. */

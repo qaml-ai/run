@@ -60,6 +60,8 @@ export type SupervisorOptions = {
   modelOutbound?: Outbound;
   /** The history backlog's bound for inline agents (agent processes get it in `agentEnv`). */
   historyBacklogBytes?: number;
+  /** The host transcript's dual read for inline agents (agent processes get it in `agentEnv`): AGENT_PI_DUAL_READ. */
+  piDualRead?: "log" | "throw";
   /** Shared Pi records use the same database and ownership claim as the session. */
   db?: Db;
 };
@@ -473,6 +475,7 @@ export class AgentSupervisor {
       codeSlot: signal => handle.bridge.codeSlot?.(signal) ?? Promise.resolve(() => {}),
       ...(this.options.codeExecutor ? { codeExecutor: this.options.codeExecutor } : {}),
       ...(this.options.historyBacklogBytes ? { historyBacklogBytes: this.options.historyBacklogBytes } : {}),
+      ...(this.options.piDualRead ? { piDualRead: this.options.piDualRead } : {}),
       ...(this.options.modelOutbound ? { modelOutbound: this.options.modelOutbound } : {}),
       lease: async () => { await handle.bridge.lease?.(); },
       history: {
