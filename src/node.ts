@@ -1,3 +1,4 @@
+import { anthropicFederationFromEnvironment } from "./anthropic-federation.ts";
 import { ModelAttempts } from "./model-attempts.ts";
 import { setDualWrite } from "./pi-durable/transcript.ts";
 import { bucketInput, EndUserCredits } from "./end-user-credits.ts";
@@ -310,7 +311,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   // Prepaid tenants pay from credit at the rates in src/pricing.ts, which the environment may override.
   // Credit is bought through Stripe Checkout when Stripe is configured (AGENT_STRIPE_SECRET_ARN, or STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET).
   const stripe = secrets.stripe && new Stripe({ ...secrets.stripe, ...config.stripe });
-  const accounts = new Accounts({ tenants, db, secretsKey: secrets.secretsKey, pricing, publicUrl, stripe, maxAgentsPerTenant, ...(secrets.azureOpenAI ? { azureOpenAI: secrets.azureOpenAI } : {}) });
+  const accounts = new Accounts({ anthropicFederation: anthropicFederationFromEnvironment(env), tenants, db, secretsKey: secrets.secretsKey, pricing, publicUrl, stripe, maxAgentsPerTenant, ...(secrets.azureOpenAI ? { azureOpenAI: secrets.azureOpenAI } : {}) });
   // Recover committed fallback Pi usage before serving model work.
   await accounts.flushUsage();
   // Busy agents per tenant, counted across the fleet: each tenant's own maxAgents, its usage tier, or AGENT_MAX_AGENTS_PER_TENANT.
@@ -819,6 +820,8 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       if (Object.hasOwn(tenants.modelEndpoints(tenant) ?? {}, provider)) return { key: IDENTITY_KEY, platform: false };
       // An agent with a key scope, or on the tenant's own provider, resolves its key at each call, so a changed key applies at once.
       if (keyScope || await modelProviders.has(tenant, provider)) return { key: SCOPE_KEY, platform: false };
+      // Resolve on every model call, including after a static fallback, so rotations and recovery reach existing agents.
+      if (provider === "anthropic" && accounts.anthropicFederation) return { key: SCOPE_KEY, platform: false };
       const resolved = await accounts.providerKey(tenant, provider);
       // The tenant's own Bedrock key names a region, which each call takes with the key (`scopedKey`).
       if (resolved?.region) return { key: SCOPE_KEY, platform: false };
@@ -838,7 +841,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       const resolved = await accounts.providerKey(tenant, provider);
       const azure = provider === "azure" && accounts.azureChat;
       if (resolved && azure) return { ...azureChatCredentials(azure), platform: true };
-      return resolved && { apiKey: resolved.key, platform: resolved.source !== "tenant", ...(resolved.region ? { region: resolved.region } : {}) };
+      return resolved && { apiKey: resolved.key, platform: resolved.source !== "tenant", ...(resolved.region ? { region: resolved.region } : {}), ...(resolved.bearer ? { bearer: true as const } : {}) };
     },
     modelEndpoints: tenant => tenants.modelEndpoints(tenant),
     customProviders: (tenant, keyScope) => modelProviders.resolvable(tenant, keyScope),

@@ -15,6 +15,7 @@ with the [Quickstart](../quickstart.md) and [Concepts](../concepts.md) instead.
 - [Pi durable sessions](pi-durable.md): the execution engine, importing legacy sessions, storage, recovery and billing
 - [Billing](billing.md): prepaid credit, the ledger, storage metering, Stripe, which keys a tenant's calls use
 - [Tenants](tenants.md): admin tenants and `infra/tenant.sh`: tokens, keys, agent and spend limits, other limits
+- [Anthropic federation](anthropic-federation.md): platform Anthropic credentials from the ECS task role
 - [Model endpoints](model-endpoints.md): a tenant's model calls through a pass-through gateway of the operator's
 - [Account data](privacy.md): export, deletion, what is kept and for how long; handling requests by email
 - [Account email](account-email.md): sign-up, password reset and adding a password by email; SES setup

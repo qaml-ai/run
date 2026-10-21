@@ -73,7 +73,7 @@ export const SCOPE_KEY = "agent-runtime:key-scope";
  * A key scope's entry may also put an endpoint in front of the provider (`baseUrl`), add `headers`,
  * and name Bedrock's `region`.
  */
-/** `bearer`: send the key as `Authorization: Bearer` where the API would send `x-api-key` (an Anthropic gateway that wants it so). */
+/** `bearer`: plain `Authorization: Bearer` instead of `x-api-key`, without Pi's subscription OAuth behavior (Anthropic federation or a gateway). */
 /** `deployments`: for the platform's Azure OpenAI resource (whose v1 API root is `baseUrl`), each azure model's deployment. */
 export type Credentials = { apiKey: string; identity?: boolean; baseUrl?: string; headers?: Record<string, string>; region?: string; bearer?: true; deployments?: Record<string, string> };
 export interface AgentConfig {
