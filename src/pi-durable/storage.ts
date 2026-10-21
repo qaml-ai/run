@@ -68,7 +68,11 @@ type PgExecutor = {
     all<T>(query: string, ...params: unknown[]): Promise<T[]>;
     run(query: string, ...params: unknown[]): Promise<void>;
 };
-type PgDatabase = PgExecutor & { retryMs: number; transaction<T>(work: (sql: PgExecutor, metadata: MetadataRow | undefined) => Promise<T>): Promise<T>; close(): Promise<void> };
+/**
+ * `transaction(work, advance)` locks the session's metadata row by taking the next commit sequence: `metadata.next_seq`
+ * is then the transaction's own, and `next_id` is at least `advance.nextId`. Without `advance` it only locks the row.
+ */
+type PgDatabase = PgExecutor & { retryMs: number; transaction<T>(work: (sql: PgExecutor, metadata: MetadataRow | undefined) => Promise<T>, advance?: { nextId: number }): Promise<T>; close(): Promise<void> };
 /**
  * Run `work` again while the database is unreachable (a failover, a network fault), for up to `retryMs`, as the log tail
  * repeats its appends. `settled`, given the failure, says whether the work landed anyway (its answer was lost).
@@ -108,11 +112,13 @@ function postgresDatabase(db: Db, sessionId: string, claim?: Claim, retryMs = 0)
         all: (text, ...params) => whileUnavailable(retryMs, () => pool.all(text, ...params)),
         run: (text, ...params) => whileUnavailable(retryMs, () => pool.run(text, ...params)),
         retryMs,
-        transaction: work => underClaim(db, claim, async sql => {
+        transaction: (work, advance) => underClaim(db, claim, async sql => {
             // Serializes mutations by session, including separate handles on this node. Takeovers
             // wait on underClaim's ownership lock before another owner can update this metadata. One statement locks
-            // and reads the row and turns synchronous commit on for this transaction.
-            const metadata = (await sql.query<MetadataRow>("select next_id, next_seq, set_config('synchronous_commit', 'on', true) from pi_durable_metadata where session_id = $1 for update", [sessionId])).rows[0];
+            // and reads the row (a commit's also takes its sequence) and turns synchronous commit on for this transaction.
+            const metadata = (advance === undefined
+                ? await sql.query<MetadataRow>("select next_id, next_seq, set_config('synchronous_commit', 'on', true) from pi_durable_metadata where session_id = $1 for update", [sessionId])
+                : await sql.query<MetadataRow>("update pi_durable_metadata set next_id = greatest(next_id::bigint, $2::bigint)::text, next_seq = next_seq + 1 where session_id = $1 returning next_id, next_seq - 1 as next_seq, set_config('synchronous_commit', 'on', true)", [sessionId, advance.nextId])).rows[0];
             // No row (the session's first open creates it): set_config did not run, so turn synchronous commit on here.
             if (!metadata) await sql.query("set local synchronous_commit = on");
             return work(executor(sql), metadata);
@@ -120,6 +126,37 @@ function postgresDatabase(db: Db, sessionId: string, claim?: Claim, retryMs = 0)
         async close() {}, // The supervisor, not an individual Pi session, owns the pool.
     };
 }
+/** About as much as one statement of `Statements` carries: the bound each entries insert keeps for imports. */
+const STATEMENT_BYTES = 4 * 1024 * 1024;
+/**
+ * A commit's writes, sent as few statements as they fit in: each write a data-modifying `WITH` query of one statement,
+ * so a batch costs one round trip to the database instead of one per table. All of a statement's parts see the
+ * database as it was before it, so a part must not depend on another's rows (an insert after a delete of the same
+ * rows is fine: the delete never sees it).
+ */
+class Statements {
+    private parts: { text: string; params: unknown[] }[] = [];
+    private bytes = 0;
+    private readonly executor: PgExecutor;
+    constructor(executor: PgExecutor) { this.executor = executor; }
+
+    /** Adds a write of about `bytes`, first sending those before it when together they would pass `STATEMENT_BYTES`. */
+    async add(text: string, params: unknown[], bytes = 0): Promise<void> {
+        if (this.parts.length && this.bytes + bytes > STATEMENT_BYTES) await this.flush();
+        this.parts.push({ text, params });
+        this.bytes += bytes;
+    }
+
+    async flush(): Promise<void> {
+        const parts = this.parts;
+        this.parts = []; this.bytes = 0;
+        if (!parts.length) return;
+        const text = parts.length === 1 ? parts[0].text
+            : `WITH ${parts.map((part, index) => `w${index} AS (${part.text})`).join(", ")} SELECT 1`;
+        await this.executor.run(text, ...parts.flatMap(part => part.params));
+    }
+}
+
 /** IDs `mintId` reserves at a time. */
 const ID_BLOCK = 256;
 const idFromNumber = <I extends Id<string>>(value: number): I => {
@@ -288,7 +325,6 @@ export function remotePiStorage(request: (request: PiStorageRequest) => Promise<
 
 type StoredTask = TaskRecord<JsonValue, JsonValue, JsonValue>;
 type TableName = "conversation" | "entry" | "task" | "submission" | "document";
-type RecordIdRow = { readonly record_type: TableName };
 type JsonRow = { readonly record: string };
 type EntryJsonRow = { readonly record: string; readonly commit_seq: number };
 type RevisionRow = {
@@ -428,22 +464,23 @@ export class PostgresPiStorage implements Storage {
 		const candidateNextId = this.candidateNextId(writes);
 		// The sequence the latest attempt took: a commit whose answer was lost is found by what it wrote at it (`landed`).
 		let attempted: Seq | undefined;
+		// Each statement is a round trip to the database, and a turn's every step commits: the metadata lock takes the
+		// sequence, one read checks the batch's IDs and documents, and one statement writes it all.
 		const seq = await whileUnavailable(this.db.retryMs, () => this.db.transaction(async (transaction, metadata) => {
 			if (metadata === undefined) throw new Error("Durable Postgres metadata is missing");
 			const committedSeq = seqFromNumber(Number(metadata.next_seq));
 			attempted = committedSeq;
-			await this.checkGlobalIds(transaction, writes);
-			const existing = await this.checkDocumentActions(transaction, documentActions);
-			await this.applyTableWrites(transaction, writes, committedSeq);
-			await this.applyDocumentActions(transaction, documentActions, committedSeq, existing);
+			const stored = await this.readCommitState(transaction, writes, documentActions);
+			this.checkGlobalIds(writes, stored.ids);
+			const existing = await this.checkDocumentActions(transaction, documentActions, stored.documents);
+			const statements = new Statements(transaction);
+			await this.applyTableWrites(statements, writes, committedSeq);
+			const after = await this.applyDocumentActions(transaction, statements, documentActions, committedSeq, existing);
+			await statements.flush();
+			for (const id of after) await transaction.run(`DELETE FROM ${this.schema.tables.documentRevisions} WHERE session_id = $1 AND document_id = ?`, id);
             for (const write of writes) if (write.type === "entry") await this.committing?.(write.value, transaction.sql);
-			await transaction.run(
-				`UPDATE ${this.schema.tables.durableMetadata} SET next_id = ?, next_seq = ? WHERE session_id = $1 AND singleton = 1`,
-				String(Math.max(Number(metadata.next_id), candidateNextId)),
-				committedSeq + 1,
-			);
 			return committedSeq;
-		}), async () => attempted !== undefined && await this.landed(writes, attempted) ? { value: attempted } : undefined);
+		}, { nextId: candidateNextId }), async () => attempted !== undefined && await this.landed(writes, attempted) ? { value: attempted } : undefined);
 		this.nextId = Math.max(this.nextId, candidateNextId);
 		return seq;
 	}
@@ -580,15 +617,26 @@ export class PostgresPiStorage implements Storage {
 					: undefined;
 		if (id === undefined) throw new StorageRequestError("Storage.entry() requires an entry ID");
 		let conversation: ConversationRecord | undefined;
+		let row: EntryJsonRow | undefined;
 		if (context !== undefined) {
+			// The conversation and the entry in one statement.
 			const conversationId = idFromNumber<ConversationId>(idOrConversationId);
-			conversation = await this.readConversation(conversationId);
-			if (conversation === undefined) throw new StorageRequestError(`Unknown conversation: ${conversationId}`);
+			const found = await this.db.get<{ conversation: string; record: string | null; commit_seq: number | null }>(
+				`SELECT c.record AS conversation, e.record, e.commit_seq FROM ${this.schema.tables.conversations} c
+					LEFT JOIN ${this.schema.tables.entries} e ON e.session_id = c.session_id AND e.id = ?
+					WHERE c.session_id = $1 AND c.id = ?`,
+				id,
+				conversationId,
+			);
+			if (found === undefined) throw new StorageRequestError(`Unknown conversation: ${conversationId}`);
+			conversation = parseJson<ConversationRecord>(found.conversation);
+			row = found.record === null ? undefined : { record: found.record, commit_seq: found.commit_seq! };
+		} else {
+			row = await this.db.get<EntryJsonRow>(
+				`SELECT record, commit_seq FROM ${this.schema.tables.entries} WHERE session_id = $1 AND id = ?`,
+				id,
+			);
 		}
-		const row = await this.db.get<EntryJsonRow>(
-			`SELECT record, commit_seq FROM ${this.schema.tables.entries} WHERE session_id = $1 AND id = ?`,
-			id,
-		);
 		if (row === undefined) return undefined;
 		const entry = parseJson<EntryRecord>(row.record);
 		if (conversation !== undefined) {
@@ -607,10 +655,14 @@ export class PostgresPiStorage implements Storage {
 		conversationId: ConversationId,
 		atOrBeforeEntryId: EntryId | undefined,
 	): Promise<(EntryRecord & { readonly head: EntryId }) | undefined> {
-		let conversation = await this.readConversation(conversationId);
-		if (conversation === undefined) throw new StorageRequestError(`Unknown conversation: ${conversationId}`);
+		const own = await this.conversationEntries(conversationId, "head IS NOT NULL", atOrBeforeEntryId, "DESC", 1);
+		if (own.entries.length) return own.entries[0] as EntryRecord & { readonly head: EntryId };
+		let conversation = own.conversation;
 		let upper: number | undefined = atOrBeforeEntryId;
 		while (true) {
+			if (conversation.parent === undefined) return undefined;
+			upper = upper === undefined ? conversation.parent.at : Math.min(upper, conversation.parent.at);
+			conversation = (await this.readConversation(conversation.parent.conversationId))!;
 			const row =
 				upper === undefined
 					? await this.db.get<JsonRow>(
@@ -623,10 +675,40 @@ export class PostgresPiStorage implements Storage {
 							upper,
 						);
 			if (row !== undefined) return parseJson<EntryRecord & { readonly head: EntryId }>(row.record);
-			if (conversation.parent === undefined) return undefined;
-			upper = upper === undefined ? conversation.parent.at : Math.min(upper, conversation.parent.at);
-			conversation = (await this.readConversation(conversation.parent.conversationId))!;
 		}
+	}
+
+	/**
+	 * A conversation's record and up to `limit` of its own entries (not its fork parent's) matching `where`, at or below
+	 * `upper`, in one statement: no round trip to the database for the conversation alone. `ownOnly` reads no entries of
+	 * a fork, whose entries an ascending scan reads from its root forward.
+	 */
+	private async conversationEntries(
+		conversationId: ConversationId,
+		where: string,
+		upper: number | undefined,
+		order: "ASC" | "DESC",
+		limit: number,
+		params: unknown[] = [],
+		ownOnly = false,
+	): Promise<{ conversation: ConversationRecord; entries: EntryRecord[] }> {
+		const rows = await this.db.all<{ conversation: string; record: string | null }>(
+			`SELECT c.record AS conversation, e.record FROM ${this.schema.tables.conversations} c
+				LEFT JOIN LATERAL (SELECT id, record FROM ${this.schema.tables.entries}
+					WHERE session_id = c.session_id AND conversation_id = c.id AND ${where}${upper === undefined ? "" : " AND id <= ?"}
+					${ownOnly ? "AND (c.record::jsonb -> 'parent') IS NULL" : ""}
+					ORDER BY id ${order} LIMIT ?) e ON true
+				WHERE c.session_id = $1 AND c.id = ? ORDER BY e.id ${order}`,
+			...params,
+			...(upper === undefined ? [] : [upper]),
+			limit,
+			conversationId,
+		);
+		if (!rows.length) throw new StorageRequestError(`Unknown conversation: ${conversationId}`);
+		return {
+			conversation: parseJson<ConversationRecord>(rows[0].conversation),
+			entries: rows.flatMap(row => row.record === null ? [] : [parseJson<EntryRecord>(row.record)]),
+		};
 	}
 
 	private async readEntries(
@@ -636,12 +718,16 @@ export class PostgresPiStorage implements Storage {
 	): Promise<Page<EntryRecord, Cursor>> {
 		const { order, after } = scanStart(query.order, cursor, "descending");
 		if (order === "ascending") return this.readEntriesAscending(query, limit, after);
-		let conversation = await this.readConversation(query.conversationId);
-		if (conversation === undefined) throw new StorageRequestError(`Unknown conversation: ${query.conversationId}`);
 		let upper: number | undefined = query.maxEntryId;
 		if (after !== undefined) upper = Math.min(upper ?? Number.MAX_SAFE_INTEGER, after - 1);
-		const values: EntryRecord[] = [];
-		while (true) {
+		const own = await this.conversationEntries(query.conversationId, query.minEntryId === undefined ? "true" : "id >= ?", upper, "DESC", limit + 1,
+			query.minEntryId === undefined ? [] : [query.minEntryId]);
+		let conversation = own.conversation;
+		const values: EntryRecord[] = own.entries;
+		while (values.length <= limit && conversation.parent !== undefined) {
+			upper = upper === undefined ? conversation.parent.at : Math.min(upper, conversation.parent.at);
+			if (query.minEntryId !== undefined && upper < query.minEntryId) break;
+			conversation = (await this.readConversation(conversation.parent.conversationId))!;
 			const clauses = ["conversation_id = ?"];
 			const params: unknown[] = [conversation.id];
 			if (query.minEntryId !== undefined) {
@@ -658,10 +744,6 @@ export class PostgresPiStorage implements Storage {
 				...params,
 			);
 			values.push(...rows.map((row) => parseJson<EntryRecord>(row.record)));
-			if (values.length > limit || conversation.parent === undefined) break;
-			upper = upper === undefined ? conversation.parent.at : Math.min(upper, conversation.parent.at);
-			if (query.minEntryId !== undefined && upper < query.minEntryId) break;
-			conversation = (await this.readConversation(conversation.parent.conversationId))!;
 		}
 		return page(values, limit, "descending");
 	}
@@ -672,9 +754,14 @@ export class PostgresPiStorage implements Storage {
 		limit: number,
 		after: number | undefined,
 	): Promise<Page<EntryRecord, Cursor>> {
+		let lower: number | undefined = query.minEntryId;
+		if (after !== undefined) lower = Math.max(lower ?? after + 1, after + 1);
+		// A conversation that is no fork is its only segment: it and its entries in one statement.
+		const own = await this.conversationEntries(query.conversationId, lower === undefined ? "true" : "id >= ?", query.maxEntryId, "ASC", limit + 1,
+			lower === undefined ? [] : [lower], true);
+		let conversation = own.conversation;
+		if (conversation.parent === undefined) return page(own.entries, limit, "ascending");
 		const segments: { readonly conversationId: ConversationId; readonly upper: number | undefined }[] = [];
-		let conversation = await this.readConversation(query.conversationId);
-		if (conversation === undefined) throw new StorageRequestError(`Unknown conversation: ${query.conversationId}`);
 		let upper: number | undefined = query.maxEntryId;
 		while (true) {
 			segments.push({ conversationId: conversation.id, upper });
@@ -683,8 +770,6 @@ export class PostgresPiStorage implements Storage {
 			if (query.minEntryId !== undefined && upper < query.minEntryId) break;
 			conversation = (await this.readConversation(conversation.parent.conversationId))!;
 		}
-		let lower: number | undefined = query.minEntryId;
-		if (after !== undefined) lower = Math.max(lower ?? after + 1, after + 1);
 		const values: EntryRecord[] = [];
 		for (const segment of segments.reverse()) {
 			const clauses = ["conversation_id = ?"];
@@ -949,11 +1034,36 @@ export class PostgresPiStorage implements Storage {
 		return nextId;
 	}
 
-	private async checkGlobalIds(executor: PgExecutor, writes: readonly StorageWrite[]): Promise<void> {
+	/**
+	 * What a commit checks its batch against, in one read: the record types its IDs already have, and the records and
+	 * latest revision versions of the documents it acts on.
+	 */
+	private async readCommitState(
+		executor: PgExecutor,
+		writes: readonly StorageWrite[],
+		actions: ReadonlyMap<DocumentId, DocumentAction>,
+	): Promise<{ ids: Map<number, TableName>; documents: (JsonRow & { readonly id: number; readonly version: number | null })[] }> {
+		const ids = writes.flatMap(write => { const id = writeId(write); return id === undefined ? [] : [id]; });
+		if (!ids.length && !actions.size) return { ids: new Map(), documents: [] };
+		const rows = await executor.all<{ source: "id" | "document"; id: number; record_type: TableName | null; record: string | null; version: number | null }>(
+			`SELECT 'id' AS source, id, record_type, NULL AS record, NULL::integer AS version FROM ${this.schema.tables.recordIds}
+				WHERE session_id = $1 AND id = ANY(?::bigint[])
+			UNION ALL
+			SELECT 'document', d.id, NULL, d.record, r.version FROM ${this.schema.tables.documents} d
+				LEFT JOIN LATERAL (SELECT version FROM ${this.schema.tables.documentRevisions}
+					WHERE session_id = d.session_id AND document_id = d.id ORDER BY seq DESC LIMIT 1) r ON true
+				WHERE d.session_id = $1 AND d.id = ANY(?::bigint[])`,
+			ids,
+			[...actions.keys()],
+		);
+		return {
+			ids: new Map(rows.flatMap(row => row.source === "id" ? [[Number(row.id), row.record_type!] as const] : [])),
+			documents: rows.flatMap(row => row.source === "document" ? [{ id: row.id, record: row.record!, version: row.version }] : []),
+		};
+	}
+
+	private checkGlobalIds(writes: readonly StorageWrite[], existingById: ReadonlyMap<number, TableName>): void {
 		const claimed = new Map<Id<string>, TableName>();
-        const ids = writes.flatMap(write => { const id = writeId(write); return id === undefined ? [] : [id]; });
-        const existingRows = ids.length ? await executor.all<RecordIdRow & { id: number }>(`SELECT id, record_type FROM ${this.schema.tables.recordIds} WHERE session_id = $1 AND id = ANY(?::bigint[])`, ids) : [];
-        const existingById = new Map(existingRows.map(row => [row.id, row.record_type]));
 		for (const write of writes) {
 			if (write.type === "document.change" || write.type === "document.retire") continue;
 			const document = write.type === "document.create" || write.type === "document.copy";
@@ -1020,26 +1130,18 @@ export class PostgresPiStorage implements Storage {
 		return actions;
 	}
 
-	/** Checks a batch's document actions with one read of their records and latest revisions; returns the records. */
+	/** Checks a batch's document actions against their records and latest revisions (`readCommitState`); returns the records. */
 	private async checkDocumentActions(
 		executor: PgExecutor,
 		actions: ReadonlyMap<DocumentId, DocumentAction>,
+		rows: readonly (JsonRow & { readonly id: number; readonly version: number | null })[],
 	): Promise<Map<DocumentId, DocumentRecord>> {
 		const existing = new Map<DocumentId, DocumentRecord>();
 		const versions = new Map<DocumentId, number>();
-		if (actions.size) {
-			const rows = await executor.all<JsonRow & { readonly id: number; readonly version: number | null }>(
-				`SELECT d.id, d.record, r.version FROM ${this.schema.tables.documents} d
-					LEFT JOIN LATERAL (SELECT version FROM ${this.schema.tables.documentRevisions}
-						WHERE session_id = d.session_id AND document_id = d.id ORDER BY seq DESC LIMIT 1) r ON true
-					WHERE d.session_id = $1 AND d.id = ANY(?::bigint[])`,
-				[...actions.keys()],
-			);
-			for (const row of rows) {
-				const id = idFromNumber<DocumentId>(Number(row.id));
-				existing.set(id, parseJson<DocumentRecord>(row.record));
-				if (row.version !== null) versions.set(id, row.version);
-			}
+		for (const row of rows) {
+			const id = idFromNumber<DocumentId>(Number(row.id));
+			existing.set(id, parseJson<DocumentRecord>(row.record));
+			if (row.version !== null) versions.set(id, row.version);
 		}
 		const liveCounts = new Map<string, number>();
 		for (const [id, action] of actions) {
@@ -1092,7 +1194,7 @@ export class PostgresPiStorage implements Storage {
 		return id === undefined ? undefined : idFromNumber<DocumentId>(id);
 	}
 
-    private async applyTableWrites(executor: PgExecutor, writes: readonly StorageWrite[], seq: Seq): Promise<void> {
+    private async applyTableWrites(statements: Statements, writes: readonly StorageWrite[], seq: Seq): Promise<void> {
         const conversations = new Map<number, ConversationRecord>();
         const entries = new Map<number, EntryRecord>();
         const tasks = new Map<number, StoredTask>();
@@ -1107,25 +1209,25 @@ export class PostgresPiStorage implements Storage {
                 case "document.create": case "document.copy": claims.set(write.record.id, "document"); break;
             }
         }
-        if (claims.size) await executor.run(
+        if (claims.size) await statements.add(
             `INSERT INTO ${this.schema.tables.recordIds} (session_id, id, record_type)
              SELECT $1, r.id, r.record_type FROM unnest(?::bigint[], ?::text[]) AS r(id, record_type)
-             ON CONFLICT(session_id, id) DO NOTHING`, [...claims.keys()], [...claims.values()]);
+             ON CONFLICT(session_id, id) DO NOTHING`, [[...claims.keys()], [...claims.values()]]);
         if (conversations.size) {
             const values = [...conversations.values()];
-            await executor.run(`INSERT INTO ${this.schema.tables.conversations} (session_id, id, owner_conversation_id, owner_task_id, record)
+            await statements.add(`INSERT INTO ${this.schema.tables.conversations} (session_id, id, owner_conversation_id, owner_task_id, record)
                 SELECT $1, r.* FROM unnest(?::bigint[], ?::bigint[], ?::bigint[], ?::text[]) AS r(id, owner_conversation_id, owner_task_id, record)`,
-                values.map(value => value.id), values.map(value => value.owner?.conversationId ?? null),
-                values.map(value => value.owner?.taskId ?? null), values.map(encodeJson));
+                [values.map(value => value.id), values.map(value => value.owner?.conversationId ?? null),
+                values.map(value => value.owner?.taskId ?? null), values.map(encodeJson)]);
         }
         // Keep PostgreSQL's text-array encoding buffers bounded for one-time archive imports: each insert carries at
-        // most 32 entries or about 4 MB of them, and only its own entries' JSON is held at once.
+        // most 32 entries or about 4 MB of them (`Statements` sends at most about 4 MB at once).
         let batch: EntryRecord[] = [], records: string[] = [], bytes = 0;
         const flush = async () => {
             if (!batch.length) return;
-            await executor.run(`INSERT INTO ${this.schema.tables.entries} (session_id, id, conversation_id, head, commit_seq, record)
-                SELECT $1, r.id, r.conversation_id, r.head, ?, r.record FROM unnest(?::bigint[], ?::bigint[], ?::bigint[], ?::text[]) AS r(id, conversation_id, head, record)`,
-                seq, batch.map(value => value.id), batch.map(value => value.conversationId), batch.map(value => value.head ?? null), records);
+            await statements.add(`INSERT INTO ${this.schema.tables.entries} (session_id, id, conversation_id, head, commit_seq, record)
+                SELECT $1, r.id, r.conversation_id, r.head, ?::bigint, r.record FROM unnest(?::bigint[], ?::bigint[], ?::bigint[], ?::text[]) AS r(id, conversation_id, head, record)`,
+                [seq, batch.map(value => value.id), batch.map(value => value.conversationId), batch.map(value => value.head ?? null), records], bytes);
             batch = []; records = []; bytes = 0;
         };
         for (const value of entries.values()) {
@@ -1135,39 +1237,37 @@ export class PostgresPiStorage implements Storage {
         }
         await flush();
         if (tasks.size) {
-            const values = [...tasks.values()];
-            await executor.run(`INSERT INTO ${this.schema.tables.tasks} (session_id, id, conversation_id, kind, status, abort_requested, background, record)
+            const values = [...tasks.values()], records = values.map(encodeJson);
+            await statements.add(`INSERT INTO ${this.schema.tables.tasks} (session_id, id, conversation_id, kind, status, abort_requested, background, record)
                 SELECT $1, r.* FROM unnest(?::bigint[], ?::bigint[], ?::text[], ?::text[], ?::integer[], ?::integer[], ?::text[]) AS r(id, conversation_id, kind, status, abort_requested, background, record)
                 ON CONFLICT(session_id, id) DO UPDATE SET conversation_id = excluded.conversation_id, kind = excluded.kind,
                 status = excluded.status, abort_requested = excluded.abort_requested, background = excluded.background, record = excluded.record`,
-                values.map(value => value.id), values.map(value => value.conversationId), values.map(value => encodeIndexedString(value.kind)),
-                values.map(value => value.state.status), values.map(value => value.abortRequested ? 1 : 0), values.map(value => value.background ? 1 : 0), values.map(encodeJson));
+                [values.map(value => value.id), values.map(value => value.conversationId), values.map(value => encodeIndexedString(value.kind)),
+                values.map(value => value.state.status), values.map(value => value.abortRequested ? 1 : 0), values.map(value => value.background ? 1 : 0), records], records.reduce((sum, record) => sum + record.length, 0));
         }
         const allSubmissions = [...submissions.values()];
         for (let offset = 0; offset < allSubmissions.length; offset += 256) {
-            const values = allSubmissions.slice(offset, offset + 256);
-            await executor.run(`INSERT INTO ${this.schema.tables.submissions} (session_id, id, conversation_id, request_id, status, record)
+            const values = allSubmissions.slice(offset, offset + 256), records = values.map(encodeJson);
+            await statements.add(`INSERT INTO ${this.schema.tables.submissions} (session_id, id, conversation_id, request_id, status, record)
                 SELECT $1, r.* FROM unnest(?::bigint[], ?::bigint[], ?::text[], ?::text[], ?::text[]) AS r(id, conversation_id, request_id, status, record)
                 ON CONFLICT(session_id, id) DO UPDATE SET conversation_id = excluded.conversation_id, request_id = excluded.request_id, status = excluded.status, record = excluded.record`,
-                values.map(value => value.id), values.map(value => value.conversationId), values.map(value => value.requestId === undefined ? null : encodeIndexedString(value.requestId)),
-                values.map(value => value.status), values.map(encodeJson));
+                [values.map(value => value.id), values.map(value => value.conversationId), values.map(value => value.requestId === undefined ? null : encodeIndexedString(value.requestId)),
+                values.map(value => value.status), records], records.reduce((sum, record) => sum + record.length, 0));
         }
     }
 
-	private async claimId(executor: PgExecutor, id: Id<string>, table: TableName): Promise<void> {
-		await executor.run(
-			`INSERT INTO ${this.schema.tables.recordIds} (session_id, id, record_type) VALUES ($1, ?, ?) ON CONFLICT(session_id, id) DO NOTHING`,
-			id,
-			table,
-		);
-	}
-
+	/**
+	 * Adds the batch's document writes to `statements` (their IDs are claimed with the table writes'). Returns the
+	 * current-only documents it retires, whose revisions are deleted after the statements, new revision included.
+	 */
 	private async applyDocumentActions(
 		executor: PgExecutor,
+		statements: Statements,
 		actions: ReadonlyMap<DocumentId, DocumentAction>,
 		seq: Seq,
 		existing: ReadonlyMap<DocumentId, DocumentRecord>,
-	): Promise<void> {
+	): Promise<DocumentId[]> {
+		const retired: DocumentId[] = [];
 		for (const [id, action] of actions) {
 			let content = action.content;
 			if (action.copy !== undefined) {
@@ -1198,53 +1298,39 @@ export class PostgresPiStorage implements Storage {
 					...(action.retire ? { retiredAt: seq } : {}),
 				};
 				const parts = addressParts(record);
-				await this.claimId(executor, id, "document");
-				await executor.run(
+				await statements.add(
 					`INSERT INTO ${this.schema.tables.documents}
 						(session_id, id, kind, family, key_value, scope_kind, owner_id, created_at, retired_at, record)
-						VALUES ($1, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-					id,
-					parts.kind,
-					parts.family,
-					parts.keyValue,
-					parts.scopeKind,
-					parts.ownerId,
-					seq,
-					action.retire ? seq : null,
-					encodeJson(record),
+						VALUES ($1, ?::bigint, ?, ?::integer, ?, ?, ?::bigint, ?::bigint, ?::bigint, ?)`,
+					[id, parts.kind, parts.family, parts.keyValue, parts.scopeKind, parts.ownerId, seq, action.retire ? seq : null, encodeJson(record)],
 				);
 			} else record = existing.get(id)!;
 
 			if (content !== undefined) {
+				// One statement: the delete sees only the revisions before it, never the one it inserts.
 				if (content.kind === "base" && isCurrentOnly(record)) {
-					await executor.run(`DELETE FROM ${this.schema.tables.documentRevisions} WHERE session_id = $1 AND document_id = ?`, id);
+					await statements.add(`DELETE FROM ${this.schema.tables.documentRevisions} WHERE session_id = $1 AND document_id = ?::bigint`, [id]);
 				}
 				const encodedContent = content.kind === "base" ? encodeJson(content.value) : encodeJson(content.ops);
-				await executor.run(
-					`INSERT INTO ${this.schema.tables.documentRevisions} (session_id, document_id, seq, kind, version, content) VALUES ($1, ?, ?, ?, ?, ?)`,
-					id,
-					seq,
-					content.kind,
-					content.version,
-					encodedContent,
+				await statements.add(
+					`INSERT INTO ${this.schema.tables.documentRevisions} (session_id, document_id, seq, kind, version, content) VALUES ($1, ?::bigint, ?::bigint, ?, ?::integer, ?)`,
+					[id, seq, content.kind, content.version, encodedContent],
+					encodedContent.length,
 				);
 			}
 
 			if (action.retire) {
 				if (action.create === undefined) {
 					record = { ...record, retiredAt: seq };
-					await executor.run(
-						`UPDATE ${this.schema.tables.documents} SET retired_at = ?, record = ? WHERE session_id = $1 AND id = ?`,
-						seq,
-						encodeJson(record),
-						id,
+					await statements.add(
+						`UPDATE ${this.schema.tables.documents} SET retired_at = ?::bigint, record = ? WHERE session_id = $1 AND id = ?::bigint`,
+						[seq, encodeJson(record), id],
 					);
 				}
-				if (isCurrentOnly(record)) {
-					await executor.run(`DELETE FROM ${this.schema.tables.documentRevisions} WHERE session_id = $1 AND document_id = ?`, id);
-				}
+				if (isCurrentOnly(record)) retired.push(id);
 			}
 		}
+		return retired;
 	}
 
 	private assertOpen(): void {
