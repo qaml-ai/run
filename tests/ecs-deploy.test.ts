@@ -93,6 +93,8 @@ switch (command) {
 }
 `;
 
+// The script needs jq; a runner without it skips these rather than block main's CI (the deploy job installs it).
+const skip = spawnSync("jq", ["--version"]).status === 0 ? false : "jq is not installed";
 const git = (dir: string, ...args: string[]) => execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" }).trim();
 
 // Commits A < B < C on one line, plus D on a branch off A.
@@ -138,7 +140,7 @@ function deploy(env: ReturnType<typeof setup>, live: string, target: string, opt
   return { status: result.status, output: result.stdout + result.stderr, updates, registered: after.revisions.length - revisions.length - (options.plan ?? []).filter((s) => s.tag).length };
 }
 
-test("deploys exactly its own commit's image over an older one, and verifies the running tasks", () => {
+test("deploys exactly its own commit's image over an older one, and verifies the running tasks", { skip }, () => {
   const env = setup();
   const run = deploy(env, env.sha.a, env.sha.b);
   assert.equal(run.status, 0, run.output);
@@ -147,7 +149,7 @@ test("deploys exactly its own commit's image over an older one, and verifies the
   assert.match(run.output, /ecs: has started 3 tasks/);
 });
 
-test("never rolls an older commit over a newer one: it follows the newer deployment instead", () => {
+test("never rolls an older commit over a newer one: it follows the newer deployment instead", { skip }, () => {
   const env = setup();
   const run = deploy(env, env.sha.c, env.sha.b);
   assert.equal(run.status, 0, run.output);
@@ -156,14 +158,14 @@ test("never rolls an older commit over a newer one: it follows the newer deploym
   assert.match(run.output, /includes .* following it instead of deploying an older commit/);
 });
 
-test("a rollback on purpose deploys the older commit", () => {
+test("a rollback on purpose deploys the older commit", { skip }, () => {
   const env = setup();
   const run = deploy(env, env.sha.c, env.sha.b, { allowOlder: true });
   assert.equal(run.status, 0, run.output);
   assert.deepEqual(run.updates, [env.tag(env.sha.b)]);
 });
 
-test("a commit neither older nor newer than production's is refused without a rollback", () => {
+test("a commit neither older nor newer than production's is refused without a rollback", { skip }, () => {
   const env = setup();
   const run = deploy(env, env.sha.c, env.sha.d);
   assert.equal(run.status, 1, run.output);
@@ -171,7 +173,7 @@ test("a commit neither older nor newer than production's is refused without a ro
   assert.deepEqual(run.updates, []);
 });
 
-test("the image production already runs is followed, not redeployed; with newer settings it is redeployed", () => {
+test("the image production already runs is followed, not redeployed; with newer settings it is redeployed", { skip }, () => {
   const env = setup();
   const same = deploy(env, env.sha.b, env.sha.b);
   assert.equal(same.status, 0, same.output);
@@ -183,7 +185,7 @@ test("the image production already runs is followed, not redeployed; with newer 
   assert.deepEqual(settings.updates, [env.tag(env.sha.b)]);
 });
 
-test("a newer deployment that replaces this one mid-rollout is followed to completion", () => {
+test("a newer deployment that replaces this one mid-rollout is followed to completion", { skip }, () => {
   const env = setup();
   const run = deploy(env, env.sha.a, env.sha.b, { plan: [{ at: 3, tag: env.sha.c }] });
   assert.equal(run.status, 0, run.output);
@@ -191,14 +193,14 @@ test("a newer deployment that replaces this one mid-rollout is followed to compl
   assert.match(run.output, new RegExp(`running image verified: 3/3 tasks on .*:${env.tag(env.sha.c)}`));
 });
 
-test("a rollback or an older deployment replacing this one fails the deploy", () => {
+test("a rollback or an older deployment replacing this one fails the deploy", { skip }, () => {
   const env = setup();
   const run = deploy(env, env.sha.a, env.sha.c, { plan: [{ at: 3, revision: 1 }] });
   assert.equal(run.status, 1, run.output);
   assert.match(run.output, /rolled back .* or replaced by a deployment without/);
 });
 
-test("a deploy that started while this one registered is decided again before the update", () => {
+test("a deploy that started while this one registered is decided again before the update", { skip }, () => {
   const env = setup();
   const run = deploy(env, env.sha.a, env.sha.b, { plan: [{ at: "register", tag: env.sha.c }] });
   assert.equal(run.status, 0, run.output);
@@ -207,7 +209,7 @@ test("a deploy that started while this one registered is decided again before th
   assert.match(run.output, new RegExp(`running image verified: 3/3 tasks on .*:${env.tag(env.sha.c)}`));
 });
 
-test("a running task on another image fails the deploy", () => {
+test("a running task on another image fails the deploy", { skip }, () => {
   const env = setup();
   const run = deploy(env, env.sha.a, env.sha.b, { taskImageOverride: env.sha.a });
   assert.equal(run.status, 1, run.output);

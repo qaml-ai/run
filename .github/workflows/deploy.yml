@@ -54,6 +54,7 @@ jobs:
           EVENT_SHA: ${{ github.event.workflow_run.head_sha }}
           INPUT_SHA: ${{ inputs.sha }}
         run: |
+          command -v jq >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq jq; }
           cp -R infra "$RUNNER_TEMP/infra"
           git fetch --quiet origin main
           ref=${EVENT_SHA:-${INPUT_SHA:-origin/main}}
