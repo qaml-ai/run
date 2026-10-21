@@ -35,9 +35,13 @@ const tests = new URL("../tests/", import.meta.url);
 const timingsFile = new URL("timings.json", tests);
 const files = readdirSync(tests).filter(name => name.endsWith(".test.ts")).sort();
 // The simulator hosts its nodes inline whatever AGENT_HOSTING says (tests/sim/sim.ts), so its files would only
-// run twice the same way: they run in the inline shards alone.
+// run twice the same way: they run in the inline shards alone on main, and in process shards on PRs.
 const inlineOnly = (file: string) => file.startsWith("sim-") || file === "sim.test.ts";
-const filesFor = (hosting: string) => files.filter(file => hosting === "inline" || !inlineOnly(file));
+const selected: string[] | undefined = process.env.TEST_FILES ? JSON.parse(process.env.TEST_FILES) : undefined;
+if (selected && (!Array.isArray(selected) || selected.some(file => !files.map(name => `tests/${name}`).includes(file)))) throw new Error("Invalid TEST_FILES selection");
+const filesFor = (hosting: string) => files.filter(file =>
+  (!selected || selected.includes(`tests/${file}`)) &&
+  (hosting === "inline" || process.env.TEST_INCLUDE_SIM === "true" || !inlineOnly(file)));
 
 function run(args: string[], timingsOut: string, failuresOut: string) {
   return spawnSync(process.execPath, [...TEST_ARGS, timingsOut, failuresOut, ...args], { stdio: "inherit", cwd: fileURLToPath(new URL("..", import.meta.url)) }).status ?? 1;
@@ -50,8 +54,10 @@ function* jsonFiles(dir: string): Generator<string> {
   }
 }
 
+const inlineTimings: Record<string, number> = JSON.parse(readFileSync(timingsFile, "utf8")).inline ?? {};
+
 function shard(index: number, count: number, hosting: string, seconds: Record<string, number>) {
-  const weight = (file: string) => seconds[file] ?? DEFAULT_SECONDS;
+  const weight = (file: string) => seconds[file] ?? (inlineOnly(file) ? inlineTimings[file] : undefined) ?? DEFAULT_SECONDS;
   const shards = Array.from({ length: count }, () => ({ files: [] as string[], seconds: 0 }));
   for (const file of filesFor(hosting).sort((a, b) => weight(b) - weight(a) || a.localeCompare(b))) {
     const lightest = shards.reduce((best, next) => next.seconds < best.seconds ? next : best);
@@ -93,6 +99,7 @@ if (process.argv[2] === "--update") {
   const hosting = process.env.AGENT_HOSTING ?? "process";
   const planned = shard(index, count, hosting, JSON.parse(readFileSync(timingsFile, "utf8"))[hosting] ?? {});
   console.log(`# shard ${index}/${count} (${hosting}): ~${Math.round(planned.seconds)}s of ${planned.files.join(", ")}`);
+  if (!planned.files.length) { console.log("# empty shard"); process.exit(0); }
   const timingsDir = fileURLToPath(new URL("../test-timings/", import.meta.url));
   mkdirSync(timingsDir, { recursive: true });
   const name = `${hosting}-${index}of${count}`;

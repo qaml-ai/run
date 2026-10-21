@@ -23,9 +23,9 @@ jobs:
       pull-requests: read
     outputs:
       tests: ${{ steps.changes.outputs.tests || 'true' }}
-      reuse: ${{ steps.changes.outputs.reuse || 'false' }}
+      selected: ${{ steps.changes.outputs.selected }}
       image: ${{ steps.changes.outputs.image || 'true' }}
-      # A draft runs only the fast checks and its changed test files; marking it ready runs everything.
+      # A draft runs only the fast checks and its changed test files; marking it ready runs the affected suite.
       draft: ${{ steps.changes.outputs.draft || 'false' }}
       quick: ${{ steps.changes.outputs.quick }}
       # Blacksmith for this repository's PRs, main and dispatches; forks stay on GitHub's runners.
@@ -33,15 +33,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
+      - uses: ./.github/actions/node-dependencies
+        if: github.event_name == 'pull_request'
       - id: changes
-        # API, artifact or git uncertainty always runs the full suite.
+        # API, selector or git uncertainty always runs the full suite.
         continue-on-error: true
         run: bash scripts/ci-changes.sh
         env: { GH_TOKEN: "${{ github.token }}" }
   checks:
     needs: changes
-    # Only a proven successful PR run of this exact main tree can replace these checks.
-    if: needs.changes.outputs.reuse != 'true'
     # Fail fast: each job here takes 1-4 minutes, so anything near this limit is hung.
     timeout-minutes: 15
     # Under a minute on four vCPUs, beside test shards that take two to three.
@@ -123,11 +123,14 @@ jobs:
       # One failed PR shard makes the PR red; main and manual full runs retain every result.
       fail-fast: ${{ github.event_name == 'pull_request' }}
       matrix:
-        hosting: [process, inline]
+        hosting: ${{ fromJSON(github.event_name == 'pull_request' && '["process"]' || '["process","inline"]') }}
         shard: [1, 2, 3, 4, 5]
     runs-on: ${{ needs.changes.outputs.blacksmith == 'true' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     env:
       AGENT_HOSTING: ${{ matrix.hosting }}
+      TEST_FILES: ${{ needs.changes.outputs.selected }}
+      # Sim nodes host inline internally, even in a PR process shard.
+      TEST_INCLUDE_SIM: ${{ github.event_name == 'pull_request' }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/node-dependencies
@@ -284,8 +287,6 @@ jobs:
           tags: ${{ steps.ecr.outputs.registry }}/camelai-agent-runtime:${{ steps.image.outputs.tag }}
   docs:
     needs: changes
-    # Only a proven successful PR run of this exact main tree can replace these checks.
-    if: needs.changes.outputs.reuse != 'true'
     timeout-minutes: 15
     runs-on: ${{ needs.changes.outputs.blacksmith == 'true' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     steps:
@@ -297,7 +298,7 @@ jobs:
         with:
           image: postgres:16-alpine
       - uses: ./.github/actions/node-dependencies
-      - run: node --experimental-strip-types --test scripts/ci-changes.test.ts scripts/ci-workflow.test.ts scripts/test-files.test.ts tests/docs.test.ts tests/openapi.test.ts tests/openapi-sources.test.ts
+      - run: node --experimental-strip-types --test scripts/ci-changes.test.ts scripts/ci-workflow.test.ts scripts/test-select.test.ts scripts/test-shard.test.ts scripts/test-files.test.ts tests/docs.test.ts tests/openapi.test.ts tests/openapi-sources.test.ts
         env:
           AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:${{ steps.postgres.outputs.port }}/postgres
       - name: Stop test Postgres
@@ -306,10 +307,14 @@ jobs:
   ci:
     name: CI success
     timeout-minutes: 5
-    # Drafts never report it, so neither a merge nor main's tree reuse can take a draft's fast checks for the suite.
+    # Always report a result on ready PRs, including when a dependency failed or was cancelled.
     if: always() && needs.changes.outputs.draft != 'true'
     needs: [changes, checks, quick, python, test, sim, image, publish, docs]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
     steps:
       - name: Require successful checks or intentional skips
         env: { RESULTS: '${{ toJSON(needs) }}' }
@@ -317,14 +322,7 @@ jobs:
           echo "$RESULTS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")'
           echo "$RESULTS" | jq -e '.changes.result == "success"'
           echo "$RESULTS" | jq -e '.quick.result == "skipped"'
-          if [ '${{ needs.changes.outputs.reuse }}' = true ]; then
-            # Reuse is valid only on main pushes, with all replaced jobs intentionally skipped.
-            test '${{ github.event_name }}' = push
-            test '${{ github.ref }}' = refs/heads/main
-            echo "$RESULTS" | jq -e '[.checks, .python, .test, .sim, .docs] | all(.result == "skipped")'
-          else
-            echo "$RESULTS" | jq -e '[.checks, .docs] | all(.result == "success")'
-          fi
+          echo "$RESULTS" | jq -e '[.checks, .docs] | all(.result == "success")'
           if [ '${{ github.event_name }}' = pull_request ] && [ '${{ needs.changes.outputs.image }}' = false ]; then
             echo "$RESULTS" | jq -e '.image.result == "skipped"'
           else
@@ -333,22 +331,19 @@ jobs:
           if [ '${{ github.event_name }}' = push ] && [ '${{ github.ref }}' = refs/heads/main ]; then
             echo "$RESULTS" | jq -e '.publish.result == "success"'
           fi
-          if [ '${{ needs.changes.outputs.tests }}' = true ]; then
+          if [ '${{ needs.changes.outputs.tests }}' = true ] || [ '${{ github.event_name }}' != pull_request ]; then
             echo "$RESULTS" | jq -e '[.python, .test, .sim] | all(.result == "success")'
           fi
-      - uses: actions/checkout@v4
-        if: github.event_name == 'pull_request'
-      - name: Record the tested merge tree
-        id: tested-tree
-        if: github.event_name == 'pull_request'
+      - name: Identify failed main commit
+        if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
-          PR_HEAD: ${{ github.event.pull_request.head.sha }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          tree=$(git rev-parse 'HEAD^{tree}')
-          echo "tree=$tree" >> "$GITHUB_OUTPUT"
-          jq -n --arg tree "$tree" --arg commit "$(git rev-parse HEAD)" --arg head "$PR_HEAD" --argjson pr "$PR_NUMBER" '{tree:$tree,commit:$commit,head:$head,pr:$pr}' > merge.json
-      - uses: actions/upload-artifact@v4
-        if: github.event_name == 'pull_request'
-        # A successful rerun replaces the same run's proof instead of failing with an artifact-name conflict.
-        with: { name: "tested-tree-${{ steps.tested-tree.outputs.tree }}", path: merge.json, retention-days: 14, overwrite: true }
+          prs=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '[.[] | "#\(.number) \(.html_url)"] | join(", ")') || prs="unavailable (API error)"
+          green=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=100" | jq -rs --argjson current "$GITHUB_RUN_NUMBER" '[.[].workflow_runs[] | select(.run_number < $current)] | max_by(.run_number).head_sha // "none found"') || green="unavailable (API error)"
+          {
+            echo "### Main CI failed"
+            echo "Commit: $GITHUB_SHA"
+            echo "PR: ${prs:-none (direct push)}"
+            echo "Last green main SHA: $green"
+          } >> "$GITHUB_STEP_SUMMARY"
