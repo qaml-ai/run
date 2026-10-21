@@ -13,7 +13,7 @@ import { checkScope, KeyScopes } from "./key-scopes.ts";
 import { ENDPOINTS_CHANNEL, Subscribers, Webhooks } from "./webhooks.ts";
 import { Telemetry, TELEMETRY_CHANNEL } from "./telemetry.ts";
 import { expireIdempotencyKeys } from "./idempotency.ts";
-import { DOCS_SITE, loadDocs, loadRegistry, SKILL_PATHS } from "./docs.ts";
+import { DOCS_SITE, loadDocs, loadRegistry, ROBOTS_TXT, SKILL_PATHS } from "./docs.ts";
 import { StorageGc } from "./storage-gc.ts";
 import { modelHeadersInput, resolveModel, sessionConfig } from "./session-config.ts";
 import { ClientSessions, ORPHANS_CHANNEL, runSessionOf, spendInput, type RunSettings, type SessionHooks } from "./client-sessions.ts";
@@ -1072,7 +1072,11 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   app.get("/.well-known/oauth-authorization-server", c => c.json({
     issuer: origins.issuer, jwks_uri: `${origins.issuer}/.well-known/jwks.json`, ...oauth.metadata(),
   }, 200, { "Cache-Control": "public, max-age=300", "Access-Control-Allow-Origin": "*" }));
-  // The public docs (docs/ in the image), for people and for models: cacheable, and readable from any page.
+  // Crawlers may fetch everything, so they see the noindex the console and the documents below answer with: a page
+  // robots.txt blocks can still be listed, from links to it.
+  app.get("/robots.txt", c => c.text(ROBOTS_TXT, 200, { "Cache-Control": "public, max-age=3600" }));
+  // The public docs (docs/ in the image), for people and for models: cacheable, and readable from any page. They are
+  // copies for agents and tools, not search results: search should send people to the docs site.
   const docs = loadDocs(config.docsDir, publicUrl);
   // The UI registry's JSON (packages/registry/public/r/ in the image), for `npx shadcn add <runtime>/r/<name>.json`.
   const registry = loadRegistry(config.registryDir, publicUrl);
@@ -1087,7 +1091,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     if (!served) return next();
     const doc = c.req.method === "GET" || c.req.method === "HEAD" ? served.get(path) : undefined;
     if (!doc) return c.json({ type: "error", error: `Unknown document. The docs' index: ${origins.canonical}/llms.txt`, code: "NOT_FOUND" }, 404, { "Access-Control-Allow-Origin": "*" });
-    return c.body(doc.body, 200, { "Content-Type": doc.type, "Cache-Control": skill ? "no-cache" : "public, max-age=300", "Access-Control-Allow-Origin": "*" });
+    return c.body(doc.body, 200, { "Content-Type": doc.type, "Cache-Control": skill ? "no-cache" : "public, max-age=300", "Access-Control-Allow-Origin": "*", "X-Robots-Tag": "noindex" });
   });
   app.get("/healthz", c => draining ? c.json({ ok: false, draining: true }, 503) : c.json({ ok: true, ...(retiringSince !== undefined ? { retiring: true } : {}) }));
   // Every 503 is worth retrying (capacity, an actor moving, this node draining), and so is a 429 (a
@@ -1224,6 +1228,12 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     }
   });
   app.all("/internal/*", c => c.body(null, 404));
+  // The pages people use (the console, its sign-in and billing routes, OAuth's sign-in page) are no one's search result.
+  // After forwarding, so the node that answers a request is the one that marks it.
+  app.use(async (c, next) => {
+    await next();
+    if (BROWSER_PAGES.test(c.req.path)) c.res.headers.set("X-Robots-Tag", "noindex");
+  });
   app.route("/", consoleAuth.app);
   if (managedDiscord) app.route("/", managedDiscord.app);
   else app.get("/console/discord/config", c => c.json({ enabled: false }, 200, { "Cache-Control": "no-store" }));
