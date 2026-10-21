@@ -116,6 +116,9 @@ export interface HostIO {
   history?: { indexed(): Promise<number | null>; write(chunk: HistoryChunk): Promise<number>; read(from: number): Promise<Backlog> };
 }
 
+/** A history value the journal does not hold (`served`). */
+const NOT_HELD = Symbol("not held");
+
 /** The least time between an agent's dual reads in `log` mode, past its load's. */
 export const DUAL_READ_INTERVAL_MS = 10 * 60_000;
 
@@ -376,11 +379,13 @@ export function createAgentHost(hostIO: HostIO) {
    * A history value as the journal gives it, where the agent reads from there: the host transcript's when they differ,
    * which is logged (history_source_mismatch, with values and hashes only) for the cutover to explain.
    */
-  async function served<T>(field: string, host: T, journalValue: (history: JournalHistory) => T | undefined | Promise<T | undefined>): Promise<T> {
+  async function served<T>(field: string, host: T, journalValue: (history: JournalHistory) => T | typeof NOT_HELD | Promise<T | typeof NOT_HELD>): Promise<T> {
     if (!piHistory || transcript.failed !== undefined) return host;
     await piHistory.refresh();
     const value = await journalValue(piHistory);
-    const same = value !== undefined && JSON.stringify(value) === JSON.stringify(host);
+    // What the journal does not hold (messages before its base the history index lacks yet): the host's, not a mismatch.
+    if (value === NOT_HELD) return host;
+    const same = JSON.stringify(value) === JSON.stringify(host);
     const summary = (item: unknown) => typeof item === "number" || typeof item === "boolean" || item === undefined ? item
       : createHash("sha256").update(JSON.stringify(item)).digest("hex").slice(0, 16);
     console.log(metricLine(same ? "history_source" : "history_source_mismatch", {
@@ -392,7 +397,7 @@ export function createAgentHost(hostIO: HostIO) {
     // `throw`) fail on it.
     always(same, "a history value the journal gives is the host transcript's");
     if (!same && io.piDualRead === "throw") throw new Error(`History from the journal: ${field} is ${JSON.stringify(summary(value))}, the host's ${JSON.stringify(summary(host))}`);
-    return same ? value! : host;
+    return same ? value : host;
   }
 
   /** Whether the agent's system sections are native Pi sections: its tenant is in AGENT_NATIVE_SECTIONS_TENANTS (or `*`). */
@@ -1079,7 +1084,7 @@ export function createAgentHost(hostIO: HostIO) {
       const backlog = transcript.backlog;
       // Part of it left to the log: the page reads the log instead.
       if (!backlog || backlog.kept !== backlog.from) return null;
-      const messages = await served("tail", backlog.messages, history => history.messagesFrom(backlog.from));
+      const messages = await served("tail", backlog.messages, async history => await history.messagesFrom(backlog.from) ?? NOT_HELD);
       return { from: backlog.from, messages, turns: backlog.turns };
     }
     if (method === "steer") {
