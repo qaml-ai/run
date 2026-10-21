@@ -1,5 +1,11 @@
 import { transaction, type Db, type Sql } from "../db.ts";
 
+/**
+ * What a reclaim stage removes from session $1 (plans/journal-reclaim.md): the entries it selects (`id`, `bytes`), and
+ * the documents (`id`) whose revisions and rows go with them. IDs (`pi_durable_record_ids`) are never removed.
+ */
+export interface ReclaimStage { name: string; entries: string; documents?: string }
+
 /** Stage 1 only. IDs, native history, compactions, documents and the live context are never removed. */
 const obsolete = `with head as (
   select coalesce(head, id) as start from pi_durable_entries
@@ -8,6 +14,38 @@ const obsolete = `with head as (
 select e.id, octet_length(e.record) as bytes from pi_durable_entries e, head
 where e.session_id = $1 and e.conversation_id = 1 and e.id < head.start
   and (e.record::jsonb)->>'kind' in ('camel.legacy.context', 'camel.context.message', 'pi.system')`;
+
+/** Stage 1: context checkpoints superseded by a newer head. */
+export const CHECKPOINTS: ReclaimStage = { name: "checkpoints", entries: obsolete };
+
+/**
+ * Whether session $1's host transcript was retired (its first load on a release without it wrote `camel.host.disabled`
+ * with `retired: "journal"`), and its history index holds every message before what its journal holds (its newest base
+ * marker's `total`, less the running turn's messages the marker keeps): then nothing reads its host records any more.
+ */
+const retiredAndIndexed = `exists (select 1 from pi_durable_entries rx where rx.session_id = $1 and rx.conversation_id = 1
+    and (rx.record::jsonb)->>'kind' = 'camel.host.disabled' and (rx.record::jsonb)->'data'->>'retired' = 'journal')
+  and exists (select 1 from pi_durable_documents rd
+    join lateral (select rr.content from pi_durable_document_revisions rr where rr.session_id = rd.session_id and rr.document_id = rd.id and rr.kind = 'base' order by rr.seq desc limit 1) rr on true
+    join pi_durable_entries rm on rm.session_id = rd.session_id and rm.id = ((rr.content::jsonb)->>'entry')::bigint
+    join agent_history_index ri on ri.agent = rd.session_id
+    where rd.session_id = $1 and rd.kind = '"camel.history.base"' and rd.retired_at is null
+      and ri.indexed >= ((rm.record::jsonb)->'data'->>'total')::bigint - coalesce(jsonb_array_length((rm.record::jsonb)->'data'->'kept'), 0))`;
+
+/**
+ * Stage 2: a retired host transcript's own data: its records, its archive (and the archive of imports from before
+ * #322), and its snapshot document with every revision. The generation marker (`camel.host.bootstrap`) and the
+ * `camel.host.disabled` entry stay, so a release from #374 on still refuses the session as newer.
+ */
+export const HOST_TRANSCRIPT: ReclaimStage = {
+  name: "host_transcript",
+  entries: `select he.id, octet_length(he.record) as bytes from pi_durable_entries he
+    where he.session_id = $1 and he.conversation_id = 1 and (he.record::jsonb)->>'kind' in ('camel.host.record', 'camel.host.archive', 'camel.legacy.record')
+      and ${retiredAndIndexed}`,
+  documents: `select hd.id, octet_length(hd.record) + coalesce((select sum(octet_length(hr.content)) from pi_durable_document_revisions hr
+      where hr.session_id = hd.session_id and hr.document_id = hd.id), 0) as bytes
+    from pi_durable_documents hd where hd.session_id = $1 and hd.kind = '"camel.host.snapshot"' and ${retiredAndIndexed}`,
+};
 
 export interface ReclaimOptions { apply?: boolean; limit?: number; session?: string }
 export interface ReclaimSession {
@@ -25,7 +63,7 @@ async function busy(sql: Sql, session: string): Promise<string | null> {
 }
 
 /** One transaction per session. Called again after discovery so a session that woke meanwhile is skipped. */
-export async function reclaimSession(db: Db, session: string, apply = false): Promise<ReclaimSession> {
+export async function reclaimSession(db: Db, session: string, apply = false, stage: ReclaimStage = CHECKPOINTS): Promise<ReclaimSession> {
   const result: ReclaimSession = { type: "reclaim_session", session, rows: 0, bytes: 0, skipped_reason: null };
   try {
     return await transaction(db, async sql => {
@@ -51,12 +89,23 @@ export async function reclaimSession(db: Db, session: string, apply = false): Pr
         await sql.query("set local synchronous_commit = on");
       }
       const query = apply
-        ? `with obsolete as (${obsolete}), removed as (
+        ? `with obsolete as (${stage.entries}), removed as (
             delete from pi_durable_entries e using obsolete o where e.session_id = $1 and e.id = o.id returning o.bytes
           ) select count(*) as rows, coalesce(sum(bytes), 0) as bytes from removed`
-        : `select count(*) as rows, coalesce(sum(bytes), 0) as bytes from (${obsolete}) obsolete`;
+        : `select count(*) as rows, coalesce(sum(bytes), 0) as bytes from (${stage.entries}) obsolete`;
+      // Documents first: their selection may read the entries the next statement removes.
+      let documents = { rows: 0, bytes: 0 };
+      if (stage.documents) {
+        const { rows: [found] } = await sql.query(apply
+          ? `with obsolete as (${stage.documents}),
+              revisions as (delete from pi_durable_document_revisions r using obsolete o where r.session_id = $1 and r.document_id = o.id),
+              removed as (delete from pi_durable_documents d using obsolete o where d.session_id = $1 and d.id = o.id returning o.bytes)
+            select count(*) as rows, coalesce(sum(bytes), 0) as bytes from removed`
+          : `select count(*) as rows, coalesce(sum(bytes), 0) as bytes from (${stage.documents}) obsolete`, [session]);
+        documents = { rows: Number(found.rows), bytes: Number(found.bytes) };
+      }
       const { rows: [counts] } = await sql.query(query, [session]);
-      return { ...result, rows: Number(counts.rows), bytes: Number(counts.bytes) };
+      return { ...result, rows: Number(counts.rows) + documents.rows, bytes: Number(counts.bytes) + documents.bytes };
     }, { rerun: false });
   } catch (error) {
     const failure = error as { code?: string; skippedReason?: string };
@@ -68,18 +117,28 @@ export async function reclaimSession(db: Db, session: string, apply = false): Pr
 
 /** Keyset discovery in bounded batches; a repeat run simply finds no more obsolete rows in completed sessions. */
 export async function reclaimCheckpoints(db: Db, options: ReclaimOptions = {}, log: (row: ReclaimSession) => void = row => console.log(JSON.stringify(row))) {
+  return reclaim(db, CHECKPOINTS, options, log);
+}
+
+/** Stage 2 (`HOST_TRANSCRIPT`), as stage 1: dry run unless `apply`, idle sessions only, one transaction each. */
+export async function reclaimHostTranscripts(db: Db, options: ReclaimOptions = {}, log: (row: ReclaimSession) => void = row => console.log(JSON.stringify(row))) {
+  return reclaim(db, HOST_TRANSCRIPT, options, log);
+}
+
+async function reclaim(db: Db, stage: ReclaimStage, options: ReclaimOptions, log: (row: ReclaimSession) => void) {
   if (options.limit !== undefined && (!Number.isSafeInteger(options.limit) || options.limit < 1)) throw new Error("--limit must be a positive integer");
-  const totals = { type: "reclaim_total", mode: options.apply ? "apply" : "dry-run", sessions: 0, skipped: 0, rows: 0, bytes: 0 };
+  const totals = { type: "reclaim_total", stage: stage.name, mode: options.apply ? "apply" : "dry-run", sessions: 0, skipped: 0, rows: 0, bytes: 0 };
   let after = "";
   while (totals.sessions < (options.limit ?? Infinity)) {
     const size = Math.min(100, (options.limit ?? Infinity) - totals.sessions);
     const { rows } = await db.query(`select m.session_id from pi_durable_metadata m
       where m.session_id > $1 and ($2::text is null or m.session_id = $2)
-        and exists (select 1 from (${obsolete.replaceAll("$1", "m.session_id")}) obsolete)
+        and (exists (select 1 from (${stage.entries.replaceAll("$1", "m.session_id")}) obsolete)
+          ${stage.documents ? `or exists (select 1 from (${stage.documents.replaceAll("$1", "m.session_id")}) obsolete)` : ""})
       order by m.session_id limit $3`, [after, options.session ?? null, size]);
     if (!rows.length) break;
     for (const { session_id: session } of rows) {
-      const row = await reclaimSession(db, session, options.apply);
+      const row = await reclaimSession(db, session, options.apply, stage);
       log(row);
       totals.sessions++; totals.rows += row.rows; totals.bytes += row.bytes;
       if (row.skipped_reason) totals.skipped++;
