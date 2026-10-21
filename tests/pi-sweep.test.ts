@@ -12,6 +12,7 @@ import { postgresTail } from "../src/log-tail.ts";
 import { Ownership } from "../src/ownership.ts";
 import { AgentSupervisor } from "../src/supervisor.ts";
 import { ClientSessions } from "../src/client-sessions.ts";
+import { MIGRATION_MAX_BYTES } from "../src/pi-durable/migration.ts";
 import { effectiveMode, PiSweep, PiSweepControl, piSweepGate, type PiSweepCandidate, type PiSweepMode, type PiSweepResult } from "../src/pi-sweep.ts";
 import type { TranscriptRecord } from "../src/transcript.ts";
 import { testDatabase } from "./database.ts";
@@ -116,9 +117,9 @@ async function everything(db: pg.Pool) {
 function sweeper(db: pg.Pool, sessions: ClientSessions, setting: PiSweepMode, each?: (id: string, result: PiSweepResult) => void) {
   const outcomes: Record<string, number> = {};
   const sweep = new PiSweep({
-    db, setting, paceMs: 0, repassMs: 60 * 60_000, pollMs: 20, backoffMs: [20, 40], busy: async () => undefined,
-    sweep: async (candidate, dryRun) => {
-      const result = await sessions.piSweepAgent(candidate, dryRun);
+    db, setting, paceMs: 0, largePaceMs: 0, repassMs: 60 * 60_000, pollMs: 20, backoffMs: [20, 40], busy: async () => undefined,
+    sweep: async (candidate, dryRun, large) => {
+      const result = await sessions.piSweepAgent(candidate, dryRun, large);
       outcomes[result.outcome] = (outcomes[result.outcome] ?? 0) + 1;
       each?.(candidate.id, result);
       return result;
@@ -271,6 +272,82 @@ test("the sweep's start only imports: it lists tools only for a transcript witho
   assert.equal(state.calls, calls + 1);
 });
 
+test("the large pass imports a session too large to copy by reference, once the on pass is done and only when turned on", { timeout: 180_000 }, async t => {
+  const { model } = await fixtureModel(t);
+  const { db } = await testDatabase();
+  const storage = memoryStorage(postgresTail(db));
+  const [large, small] = await legacyAgents(t, db, storage, model, ["large", "small"]);
+  {
+    const maker = await node(t, db, storage, "maker-large");
+    const acquired = await maker.ownership.acquire(large);
+    assert.ok("claim" in acquired);
+    const log = storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(large), acquired.claim);
+    await log.rewrite(() => [
+      { t: "message", message: { role: "user", content: "x".repeat(MIGRATION_MAX_BYTES), timestamp: 1, requestId: "old" } as never },
+      { t: "compaction", summary: "Earlier history", cut: 1, tokensBefore: 100, at: 2 },
+    ]);
+    await log.close();
+    await maker.ownership.release(acquired.claim);
+    await maker.close();
+  }
+  const pi = await node(t, db, storage, "pi");
+  const control = new PiSweepControl(db, "on");
+  await control.set("on");
+  const { sweep, outcomes, reset } = sweeper(db, pi.sessions, "on");
+  t.after(() => sweep.stop());
+  sweep.start();
+  await finished(db, "on");
+  assert.deepEqual(outcomes, { migrated: 1, skipped_size_limit: 1 }, "the on pass leaves it");
+  await new Promise(resolve => setTimeout(resolve, 200));
+  assert.equal((await control.status()).large.finishedAt, null, "the large pass is off by default");
+
+  reset();
+  const turned = await control.set(undefined, false, "on");
+  assert.equal(turned.mode, "on");
+  assert.equal(turned.large.mode, "on");
+  await until(async () => (await control.status()).large.finishedAt, "the large pass", 120_000);
+  await sweep.stop();
+  assert.deepEqual(outcomes, { migrated: 1 });
+  assert.equal(await count(db, `select count(*) as count from pi_durable_documents where session_id = $1 and kind = '"camel.host.snapshot"'`, [large]), 1);
+  assert.equal(await count(db, `select count(*) as count from pi_durable_documents where session_id = $1 and kind = '"camel.host.snapshot"'`, [small]), 1);
+  assert.equal((await control.status()).remaining, 0, "nothing is left on legacy");
+  assert.equal((await control.status()).large.leasedUntil, null, "and the lease is given back");
+  assert.equal(pi.supervisor.agents.size, 0);
+});
+
+test("the large pass takes one agent at a time across nodes, and only below its own memory limit", { timeout: 60_000 }, async t => {
+  const { db } = await testDatabase();
+  for (let i = 0; i < 6; i++) {
+    await db.query("insert into agents (id, tenant, header, revision, name, type, model) values ($1, 'default', '{}', 1, 'a', 'client', 'm')", [`client_${i}`]);
+  }
+  const control = new PiSweepControl(db, "on");
+  // The on pass is done: what is left is the large pass's.
+  await db.query("update pi_sweep set on_finished_at = $1", [Date.now()]);
+  await control.set("on", false, "on");
+  let inFlight = 0, most = 0, room = false;
+  const taken: string[] = [];
+  const sweeps = [0, 1].map(() => new PiSweep({
+    db, setting: "on", paceMs: 0, largePaceMs: 0, repassMs: 60 * 60_000, pollMs: 10, backoffMs: [10, 20],
+    busy: async large => large && !room ? "memory" : undefined,
+    sweep: async (candidate, _dryRun, large) => {
+      assert.ok(large);
+      inFlight++; most = Math.max(most, inFlight);
+      taken.push(candidate.id);
+      await new Promise(resolve => setTimeout(resolve, 30));
+      inFlight--;
+      return { outcome: "migrated" };
+    },
+  }));
+  t.after(() => Promise.all(sweeps.map(sweep => sweep.stop())));
+  for (const sweep of sweeps) sweep.start();
+  await new Promise(resolve => setTimeout(resolve, 200));
+  assert.deepEqual(taken, [], "short of its memory, it waits");
+  room = true;
+  await until(async () => (await control.status()).large.finishedAt, "the large pass");
+  assert.equal(most, 1, "one at a time across the fleet");
+  assert.deepEqual([...taken].sort(), taken.map((_, i) => `client_${i}`), "each once");
+});
+
 test("turning the operator's mode off stops every node's sweep before its next agent; on again, it goes on from its cursor", { timeout: 60_000 }, async t => {
   const { db } = await testDatabase();
   for (let i = 0; i < 40; i++) {
@@ -361,5 +438,9 @@ test("only the platform operator sees and sets the sweep's mode, through the API
   assert.equal(set.status, 200);
   assert.equal(set.json.mode, "on");
   assert.equal(set.json.effective, "dry-run", "no more than AGENT_PI_SWEEP");
+  const large = (await call("/v1/operations/pi-sweep", { method: "PUT", body: { large: "on" } })).json;
+  assert.equal(large.large.mode, "on");
+  assert.equal(large.mode, "on", "the mode as it was");
+  assert.equal((await call("/v1/operations/pi-sweep", { method: "PUT", body: { large: "maybe" } })).status, 400);
   assert.equal((await call("/v1/operations/pi-sweep", { method: "PUT", body: { mode: "off" } })).json.effective, "off");
 });

@@ -77,6 +77,8 @@ locals {
     # the operator's mode (infra/pi-sweep.sh) chooses within it. It takes no agent past 60% of the task's memory.
     AGENT_PI_SWEEP                  = var.agent_pi_sweep
     AGENT_PI_SWEEP_MAX_MEMORY_BYTES = tostring(floor(var.task_memory * 0.6) * 1048576)
+    # Its large pass (a session too large to copy reads its legacy log whole) only below 35%: room for the read.
+    AGENT_PI_SWEEP_LARGE_MAX_MEMORY_BYTES = tostring(floor(var.task_memory * 0.35) * 1048576)
     # node_load every 5 s while Pi's memory is watched (cgroup current and peak); the default is 60 s.
     AGENT_LOAD_INTERVAL_MS = "5000"
     # Tool sources (MCP servers, HTTP tools, web_fetch) never reach the VPC, on top of the private ranges the runtime always refuses.

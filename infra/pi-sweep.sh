@@ -5,7 +5,8 @@
 #   pi-sweep.sh off                # every node stops before its next agent (seconds); no deploy
 #   pi-sweep.sh dry-run            # report what migrating each agent would do (pi_sweep_agent lines), writing nothing
 #   pi-sweep.sh on                 # migrate: needs AGENT_PI_SWEEP=on (infra/apply.sh agent_pi_sweep=on)
-#   pi-sweep.sh <mode> --restart   # and start both passes again from the first agent
+#   pi-sweep.sh <mode> --restart   # and start every pass again from the first agent
+#   pi-sweep.sh large on|off       # the large pass: sessions too large to copy, one at a time, after the on pass
 #
 # Calls the runtime (AGENT_URL, default https://run.camelai.com) with the operator token of ADMIN_TENANT (default
 # miguel, in AGENT_BILLING_ADMINS).
@@ -13,12 +14,18 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 source "$here/config.sh"
 aws() { command aws --region "$REGION" "$@"; }
-usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 command=${1:-}; restart=false
-[[ "${2:-}" == --restart ]] && restart=true
-[[ "$command" =~ ^(status|off|dry-run|on)$ && ( -z "${2:-}" || "$restart" == true ) ]] || usage
-[[ "$command" == status && "$restart" == true ]] && usage
+if [[ "$command" == large ]]; then
+  [[ "${2:-}" =~ ^(on|off)$ && -z "${3:-}" ]] || usage
+  body=$(printf '{"large":"%s"}' "$2")
+else
+  [[ "${2:-}" == --restart ]] && restart=true
+  [[ "$command" =~ ^(status|off|dry-run|on)$ && ( -z "${2:-}" || "$restart" == true ) ]] || usage
+  [[ "$command" == status && "$restart" == true ]] && usage
+  body=$(printf '{"mode":"%s","restart":%s}' "$command" "$restart")
+fi
 
 umask 077
 work=$(mktemp -d)
@@ -29,7 +36,7 @@ printf 'Authorization: Bearer %s\n' "$(aws secretsmanager get-secret-value --sec
 if [[ "$command" == status ]]; then
   curl -sS --fail-with-body -H @"$work/auth" "$url/v1/operations/pi-sweep" > "$work/reply" || { cat "$work/reply" >&2; echo >&2; exit 1; }
 else
-  printf '{"mode":"%s","restart":%s}' "$command" "$restart" > "$work/body"
+  printf '%s' "$body" > "$work/body"
   curl -sS --fail-with-body -X PUT -H @"$work/auth" -H "Content-Type: application/json" --data-binary @"$work/body" "$url/v1/operations/pi-sweep" > "$work/reply" || { cat "$work/reply" >&2; echo >&2; exit 1; }
 fi
 cat "$work/reply"; echo

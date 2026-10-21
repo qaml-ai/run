@@ -1108,11 +1108,12 @@ export function api(context: ApiContext) {
   app.get("/v1/operations/pi-sweep", async c => json(c, 200, await piSweep(c).status()));
   app.put("/v1/operations/pi-sweep", async c => {
     const control = piSweep(c);
-    const body = await readJson(c.req.raw.body, 1024) as { mode?: unknown; restart?: unknown };
-    if (!PI_SWEEP_MODES.includes(body?.mode as PiSweepMode)) throw new HttpError(400, `mode must be one of ${PI_SWEEP_MODES.join(", ")}`);
+    const body = await readJson(c.req.raw.body, 1024) as { mode?: unknown; restart?: unknown; large?: unknown };
+    if (!(body?.mode === undefined && body?.large !== undefined) && !PI_SWEEP_MODES.includes(body?.mode as PiSweepMode)) throw new HttpError(400, `mode must be one of ${PI_SWEEP_MODES.join(", ")}`);
     if (body.restart !== undefined && typeof body.restart !== "boolean") throw new HttpError(400, "restart must be true or false");
-    const status = await control.set(body.mode as PiSweepMode, body.restart === true);
-    console.log(JSON.stringify({ type: "pi_sweep_mode_set", by: c.var.principal.tenant, mode: status.mode, restart: body.restart === true }));
+    if (body.large !== undefined && body.large !== "on" && body.large !== "off") throw new HttpError(400, "large must be on or off");
+    const status = await control.set(body.mode as PiSweepMode | undefined, body.restart === true, body.large as "on" | "off" | undefined);
+    console.log(JSON.stringify({ type: "pi_sweep_mode_set", by: c.var.principal.tenant, mode: status.mode, large: status.large.mode, restart: body.restart === true }));
     return json(c, 200, status);
   });
   const deletions = () => {
