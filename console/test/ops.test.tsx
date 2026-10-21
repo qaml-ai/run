@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { AdminAcquisition } from "../../src/admin-acquisition";
+import type { AdminMcp } from "../../src/admin-mcp";
 import type { AdminGrowth } from "../../src/admin-growth";
 import type { AdminRevenue } from "../../src/admin-revenue";
 import type { AdminAccountDetail, AdminUsage } from "../../src/admin-usage";
@@ -81,6 +82,13 @@ beforeEach(() => {
     if (pathname === "/api/me") return Response.json({ viewer: "ops@example.test" });
     if (pathname === "/api/growth") return Response.json(growth(days));
     if (pathname === "/api/acquisition") return Response.json(acquisition(days));
+    if (pathname === "/api/mcp") return Response.json({
+      schema_version: 1, range: range(days), generated_at: NOW,
+      daily: [{ date: "2026-10-16", kind: "chatgpt", signups: 3, token_active_accounts: 2 }],
+      weekly: [{ week: "2026-10-12", kind: "chatgpt", token_active_accounts: 2 }],
+      funnel: [{ kind: "chatgpt", label: "ChatGPT plugin", authorized: 3, made_agent: 2, ran_turn: 1, came_back: 0 }],
+      limitations: ["Latest token issuance or refresh only; not MCP request activity."],
+    } satisfies AdminMcp);
     if (pathname === "/api/usage") return Response.json(usage(days));
     if (pathname === "/api/revenue") return Response.json(revenue(days));
     if (pathname === "/api/account" && searchParams.get("tenant") === "ann") return Response.json(ann);
@@ -170,4 +178,18 @@ test("an account opens from Top accounts and shows its agents' setup and the sta
   await user.click(within(dialog).getByRole("button", { name: "Close" }));
   await user.click(screen.getByRole("switch"));
   expect(within(top).getByText("camelbot")).toBeTruthy();
+});
+
+test("MCP plugins shows attribution and token activity with the shared range and refresh", async () => {
+  const user = userEvent.setup();
+  page("?tab=mcp&days=7");
+  expect(await screen.findByText("ChatGPT plugin")).toBeTruthy();
+  expect(screen.getByText("Latest token issuance or refresh only; not MCP request activity.")).toBeTruthy();
+  expect(requests).toContain("/api/mcp?days=7");
+  await user.click(screen.getByRole("button", { name: "30 days" }));
+  await waitFor(() => expect(requests).toContain("/api/mcp?days=30"));
+  const before = requests.filter(path => path === "/api/mcp?days=30").length;
+  await waitFor(() => expect((screen.getByRole("button", { name: "Refresh" }) as HTMLButtonElement).disabled).toBe(false));
+  await user.click(screen.getByRole("button", { name: "Refresh" }));
+  await waitFor(() => expect(requests.filter(path => path === "/api/mcp?days=30").length).toBe(before + 1));
 });
