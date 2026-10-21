@@ -39,7 +39,9 @@ export async function fakeDiscordVoice(t: T) {
   // The client checks the voice server's certificate, which this one cannot have from a CA.
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
   const server = createServer(certificate());
-  const wss = new WebSocketServer({ server });
+  /** A voice server that is down: its sockets are refused at the upgrade, as Cloudflare answers for Discord (521). */
+  let down = false;
+  const wss = new WebSocketServer({ server, verifyClient: (_info, done) => down ? done(false, 521, "Web Server Is Down") : done(true) });
   const udp = createSocket("udp4");
   const calls: Call[] = [];
   const heardAt: { at: number; bytes: number }[] = [];
@@ -197,5 +199,7 @@ export async function fakeDiscordVoice(t: T) {
     },
     /** Close the live call's voice gateway socket with a code, as Discord does. */
     close(code: number) { live().ws.close(code); },
+    /** Take the voice server down (new sockets refused with 521) or bring it back. */
+    down(is = true) { down = is; },
   };
 }
