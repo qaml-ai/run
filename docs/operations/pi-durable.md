@@ -77,6 +77,7 @@ do; the operator's mode chooses within it, is read before every agent, and start
     infra/pi-sweep.sh dry-run     # report only (the starting mode)
     infra/pi-sweep.sh on          # migrate (needs AGENT_PI_SWEEP=on)
     infra/pi-sweep.sh off         # every node stops before its next agent, within seconds
+    infra/pi-sweep.sh large on    # the large pass, for sessions too large to copy (off by default)
 
 - **Which agents:** kept (not revoked, purged or expired) and without a Pi host document, in id
   order. Nodes take them from a shared cursor in the `pi_sweep` row, so no agent is taken twice in a
@@ -101,6 +102,14 @@ do; the operator's mode chooses within it, is read before every agent, and start
   `awaiting` or `context_changed`), opening nothing and writing nothing but the sweep's own cursor.
   Sessions with a `camel.host.disabled` entry already have a host document, so the sweep leaves them
   to their next open, which adopts them.
+- **The large pass:** sessions too large to copy (`skipped_size_limit`) are left by the passes above,
+  so `remaining` cannot reach 0 without it. With the large pass on (`infra/pi-sweep.sh large on`;
+  off by default) and the mode `on`, once the on pass has finished, nodes take what is left from a
+  cursor of its own, one agent at a time across the fleet (a lease in the `pi_sweep` row, given back
+  after each agent or after 15 minutes), only while their container memory is under
+  `AGENT_PI_SWEEP_LARGE_MAX_MEMORY_BYTES` (Terraform: 35% of the task) on top of every other gate, and
+  `AGENT_PI_SWEEP_LARGE_PACE_MS` apart (30 s). Each import is by reference (`archive: "legacy-log"`),
+  reading the log whole, as the session's own open would. Its lines carry `pass: "large"`.
 - **Live traffic first:** a node takes no agent while it is leaving, its database pool has a
   request waiting, its turns' p95 `TimeToFirstRequestMs` over 5 minutes (the runtime's own part of a
   turn's latency, which imports compete with; at least 10 turns) is past

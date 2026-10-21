@@ -5512,16 +5512,18 @@ export class ClientSessions {
    * (`skipped_hosted`). The legacy transcript is read first, bounded: one too large to copy is left for its own open
    * (`skipped_size_limit`), which imports it by reference after reading the log whole. Tools are listed only for a
    * transcript with no leading system message, which the import makes from them. A dry run stops after the read
-   * (`would_migrate`, with what the import would find and write), writing nothing.
+   * (`would_migrate`, with what the import would find and write), writing nothing. The sweep's `large` pass imports
+   * one too large to copy too, by reference (`detail.size`), reading its log whole as its own open would.
    */
-  async piSweepAgent(agent: PiSweepCandidate, dryRun: boolean): Promise<PiSweepResult> {
+  async piSweepAgent(agent: PiSweepCandidate, dryRun: boolean, large = false): Promise<PiSweepResult> {
     const { id } = agent;
     if (agent.owned || this.sessions.has(id) || this.loading.has(id)) return { outcome: "skipped_hosted" };
     if (agent.pendingRuns) return { outcome: "skipped_pending_runs" };
     const plan = await this.supervisor.migrationPlan(id, { measure: dryRun });
-    if (!plan.ready) return { outcome: `skipped_${plan.reason}` };
-    const found = { system: plan.system, ...(plan.from ? { from: plan.from } : {}) };
-    if (dryRun) return { outcome: "would_migrate", detail: { records: plan.records, bytes: plan.bytes, contextBytes: plan.contextBytes, ...found } };
+    // Too large to copy: the large pass imports it by reference, as its own open would; the others leave it to that.
+    if (!plan.ready && !(large && plan.reason === "size_limit" && !dryRun)) return { outcome: `skipped_${plan.reason}` };
+    const found = plan.ready ? { system: plan.system, ...(plan.from ? { from: plan.from } : {}) } : { size: plan.reason };
+    if (dryRun && plan.ready) return { outcome: "would_migrate", detail: { records: plan.records, bytes: plan.bytes, contextBytes: plan.contextBytes, ...found } };
     if (this.closed || this.draining) return { outcome: "skipped_leaving" };
     let session: Session | undefined;
     try { session = await this.load(id); }
@@ -5531,7 +5533,7 @@ export class ClientSessions {
     try {
       // Its load found work (a request since the candidate was read): it runs here, as for any load.
       if (!idle()) return { outcome: "skipped_busy" };
-      const { migration } = await this.ensureStarted(session, { listTools: !plan.system }) as { migration?: { state: string; from?: string; archive?: string } };
+      const { migration } = await this.ensureStarted(session, { listTools: !plan.ready || !plan.system }) as { migration?: { state: string; from?: string; archive?: string } };
       if (!migration) return { outcome: "not_migrated" };
       return { outcome: migration.state === "existing" ? "already_pi" : migration.state, detail: { ...found, ...(migration.archive ? { archive: migration.archive } : {}) } };
     } finally {

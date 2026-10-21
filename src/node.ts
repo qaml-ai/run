@@ -1438,11 +1438,13 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   // spare, has room, and is not leaving: live traffic comes first.
   const piSweep = new PiSweep({
     db, setting: config.piSweep.mode, paceMs: config.piSweep.paceMs, repassMs: config.piSweep.repassMs,
-    sweep: (candidate, dryRun) => clients.piSweepAgent(candidate, dryRun),
-    busy: () => piSweepGate({
+    largePaceMs: config.piSweep.largePaceMs,
+    sweep: (candidate, dryRun, large) => clients.piSweepAgent(candidate, dryRun, large),
+    busy: large => piSweepGate({
       leaving: retiringSince !== undefined || clients.draining, dbWaiting: db.waitingCount, memoryHigh: supervisor.memoryHigh, full: supervisor.full,
       firstRequestP95: recentFirstRequestP95(), maxFirstRequestMs: config.piSweep.maxFirstRequestMs,
-      maxMemoryBytes: config.piSweep.maxMemoryBytes,
+      // The large pass's lower limit leaves room for a log read whole.
+      maxMemoryBytes: large ? config.piSweep.largeMaxMemoryBytes ?? config.piSweep.maxMemoryBytes : config.piSweep.maxMemoryBytes,
       memoryBytes: async () => (await deps.readCgroupMemory?.() as { cgroupMemoryBytes?: number } | undefined)?.cgroupMemoryBytes ?? process.memoryUsage.rss(),
     }),
   });

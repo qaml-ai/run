@@ -17,12 +17,16 @@ export interface PiSweepOptions {
   db: Db;
   /** The node's AGENT_PI_SWEEP: the most the operator's mode may do here. */
   setting: PiSweepMode;
-  /** One agent: open it so it is imported (or, dry, say what that would find). ClientSessions.piSweepAgent. */
-  sweep(candidate: PiSweepCandidate, dryRun: boolean): Promise<PiSweepResult>;
-  /** Why this node should not take an agent now (short of memory, its pool waiting, full, leaving), or undefined. */
-  busy(): Promise<string | undefined>;
+  /** One agent: open it so it is imported (or, dry, say what that would find; `large`, even too large to copy). ClientSessions.piSweepAgent. */
+  sweep(candidate: PiSweepCandidate, dryRun: boolean, large: boolean): Promise<PiSweepResult>;
+  /** Why this node should not take an agent now (short of memory, its pool waiting, full, leaving), or undefined; `large`, with the large pass's memory limit. */
+  busy(large: boolean): Promise<string | undefined>;
   /** Between agents. */
   paceMs: number;
+  /** After an agent of the large pass. */
+  largePaceMs?: number;
+  /** How long a node may hold the large pass's lease (one agent at a time across the fleet) before another takes it. */
+  largeLeaseMs?: number;
   /** After a pass reaches the end, before the next starts from the beginning. */
   repassMs: number;
   /** While off or paused, how often the operator's mode is read again: how soon turning it on takes effect. */
@@ -38,6 +42,10 @@ export interface PiSweepOptions {
  * operator's mode (`control`) is read before each agent: setting it off stops every node within an agent's time.
  * Logs: `pi_sweep_agent` per agent, `pi_sweep_progress` each minute (with what is left), `pi_sweep_backoff`, and
  * `pi_sweep_pass_done`.
+ *
+ * The large pass (the operator's `large`, off by default) takes what the passes leave, sessions too large to copy
+ * among them, whose import reads the legacy log whole: only with the mode on and its own pass finished, one agent at a
+ * time across the fleet (a lease in the row), only while the node is under its lower memory limit, `largePaceMs` apart.
  */
 export class PiSweep {
   private stopped = false;
@@ -79,7 +87,11 @@ export class PiSweep {
     let backoff = first, failures = 0;
     while (!this.stopped) {
       let busy: string | undefined, next: Awaited<ReturnType<PiSweep["next"]>> | undefined;
-      try { busy = await this.options.busy(); if (!busy) next = await this.next(); }
+      try {
+        busy = await this.options.busy(false);
+        // Whether this node could take a large agent now: the large pass waits for room of its own.
+        if (!busy) next = await this.next(!await this.options.busy(true));
+      }
       catch (error) {
         busy = "error";
         this.note("pi_sweep_backoff", "error", { reason: "error", error: safeError(error) });
@@ -94,7 +106,7 @@ export class PiSweep {
       if (this.stopped) break;
       if (next.state === "idle") { await this.wait(pollMs); continue; }
       if (next.state === "finished") {
-        console.log(JSON.stringify({ type: "pi_sweep_pass_done", mode: next.mode, remaining: await this.remaining() }));
+        console.log(JSON.stringify({ type: "pi_sweep_pass_done", mode: next.mode, ...(next.pass === "large" ? { pass: "large" } : {}), remaining: await this.remaining() }));
         await this.wait(pollMs);
         continue;
       }
@@ -102,15 +114,17 @@ export class PiSweep {
       // Each mode's counts on their own: a dry run's are its report.
       if (next.mode !== this.countsMode) { this.counts = {}; this.totals = { bytes: 0, contextBytes: 0, noSystem: 0 }; this.countsMode = next.mode; }
       const started = clock().monotonic();
+      const large = next.state === "agent" && next.pass === "large";
       let result: PiSweepResult;
-      try { result = await this.options.sweep(next.candidate, dryRun); failures = 0; }
+      try { result = await this.options.sweep(next.candidate, dryRun, large); failures = 0; }
       catch (error) { result = { outcome: "failed", detail: { error: safeError(error) } }; failures++; }
+      finally { if (large) await this.options.db.query("update pi_sweep set large_until = null where id").catch(() => {}); }
       this.counts[result.outcome] = (this.counts[result.outcome] ?? 0) + 1;
       // What the imports would write (a dry run measures it), and how many make their system message from listed tools.
       const detail = result.detail ?? {};
       for (const key of ["bytes", "contextBytes"] as const) if (typeof detail[key] === "number") this.totals[key] += detail[key] as number;
       if (detail.system === false) this.totals.noSystem++;
-      console.log(JSON.stringify({ type: "pi_sweep_agent", mode: next.mode, agent: next.candidate.id, tenant: next.candidate.tenant,
+      console.log(JSON.stringify({ type: "pi_sweep_agent", mode: next.mode, ...(large ? { pass: "large" } : {}), agent: next.candidate.id, tenant: next.candidate.tenant,
         outcome: result.outcome, ms: Math.round(clock().monotonic() - started), ...result.detail }));
       if (clock().now() - this.lastProgress >= 60_000) {
         this.lastProgress = clock().now();
@@ -122,7 +136,7 @@ export class PiSweep {
         failures = 0;
         await this.wait(longest);
       }
-      await this.wait(this.options.paceMs);
+      await this.wait(large ? this.options.largePaceMs ?? 30_000 : this.options.paceMs);
     }
   }
 
@@ -143,17 +157,27 @@ export class PiSweep {
   /**
    * The next agent for this node, its cursor moved past it under the row's lock so no other node takes it this pass:
    * idle while the mode is off (or a pass finished less than `repassMs` ago), finished when the pass found none left.
+   * With the mode on and its pass finished, the large pass's next agent, when `largeReady` and no node holds its lease.
    */
-  private next(): Promise<{ state: "idle" } | { state: "finished"; mode: PiSweepMode } | { state: "agent"; mode: PiSweepMode; candidate: PiSweepCandidate }> {
+  private next(largeReady: boolean): Promise<{ state: "idle" } | { state: "finished"; mode: PiSweepMode; pass: "main" | "large" } | { state: "agent"; mode: PiSweepMode; pass: "main" | "large"; candidate: PiSweepCandidate }> {
     return transaction(this.options.db, async sql => {
-      const control = (await sql.query<{ mode: PiSweepMode; dry_run_cursor: string; on_cursor: string; dry_run_finished_at: string | null; on_finished_at: string | null }>(
-        "select mode, dry_run_cursor, on_cursor, dry_run_finished_at, on_finished_at from pi_sweep where id for update")).rows[0];
+      const control = (await sql.query<{ mode: PiSweepMode; dry_run_cursor: string; on_cursor: string; dry_run_finished_at: string | null; on_finished_at: string | null;
+        large: "off" | "on"; large_cursor: string; large_finished_at: string | null; large_until: string | null }>(
+        "select mode, dry_run_cursor, on_cursor, dry_run_finished_at, on_finished_at, large, large_cursor, large_finished_at, large_until from pi_sweep where id for update")).rows[0];
       const mode = effectiveMode(this.options.setting, control?.mode ?? "off");
       if (mode === "off") return { state: "idle" as const };
-      const column = mode === "on" ? "on" : "dry_run";
-      const finished = control[`${column}_finished_at`];
       const now = clock().now();
-      if (finished !== null && now - Number(finished) < this.options.repassMs) return { state: "idle" as const };
+      const recent = (finished: string | null) => finished !== null && now - Number(finished) < this.options.repassMs;
+      let pass: "main" | "large" = "main";
+      let column: "on" | "dry_run" | "large" = mode === "on" ? "on" : "dry_run";
+      if (recent(control[`${column}_finished_at`])) {
+        // The large pass: after the main one, one agent at a time across the fleet.
+        if (mode !== "on" || control.large !== "on" || !largeReady || recent(control.large_finished_at)) return { state: "idle" as const };
+        if (control.large_until !== null && Number(control.large_until) > now) return { state: "idle" as const };
+        pass = "large";
+        column = "large";
+      }
+      const finished = control[`${column}_finished_at`];
       const cursor = finished !== null ? "" : control[`${column}_cursor`];
       const row = (await sql.query<{ id: string; tenant: string; pending_runs: boolean; owned: boolean }>(`
         select a.id, a.tenant, a.pending_runs,
@@ -161,10 +185,11 @@ export class PiSweep {
         from agents a where ${LEGACY} and a.id > $2 order by a.id limit 1`, [now, cursor])).rows[0];
       if (!row) {
         await sql.query(`update pi_sweep set ${column}_cursor = '', ${column}_finished_at = $1, updated_at = $1 where id`, [now]);
-        return { state: "finished" as const, mode };
+        return { state: "finished" as const, mode, pass };
       }
-      await sql.query(`update pi_sweep set ${column}_cursor = $1, ${column}_finished_at = null, updated_at = $2 where id`, [row.id, now]);
-      return { state: "agent" as const, mode, candidate: { id: row.id, tenant: row.tenant, pendingRuns: row.pending_runs, owned: row.owned } };
+      await sql.query(`update pi_sweep set ${column}_cursor = $1, ${column}_finished_at = null, updated_at = $2${pass === "large" ? ", large_until = $3" : ""} where id`,
+        pass === "large" ? [row.id, now, now + (this.options.largeLeaseMs ?? 15 * 60_000)] : [row.id, now]);
+      return { state: "agent" as const, mode, pass, candidate: { id: row.id, tenant: row.tenant, pendingRuns: row.pending_runs, owned: row.owned } };
     });
   }
 }
@@ -186,19 +211,21 @@ export class PiSweepControl {
   constructor(db: Db, setting: PiSweepMode) { this.db = db; this.setting = setting; }
 
   async status() {
-    const row = (await this.db.query("select mode, dry_run_cursor, on_cursor, dry_run_finished_at, on_finished_at, updated_at from pi_sweep where id")).rows[0];
+    const row = (await this.db.query("select mode, dry_run_cursor, on_cursor, dry_run_finished_at, on_finished_at, large, large_cursor, large_finished_at, large_until, updated_at from pi_sweep where id")).rows[0];
     const remaining = Number((await this.db.query(`select count(*) as count from agents a where ${LEGACY}`, [clock().now()])).rows[0].count);
     const at = (value: string | null) => value === null ? null : new Date(Number(value)).toISOString();
     return {
       setting: this.setting, mode: row.mode as PiSweepMode, effective: effectiveMode(this.setting, row.mode), remaining,
       dryRun: { cursor: row.dry_run_cursor || null, finishedAt: at(row.dry_run_finished_at) },
       on: { cursor: row.on_cursor || null, finishedAt: at(row.on_finished_at) },
+      large: { mode: row.large as "off" | "on", cursor: row.large_cursor || null, finishedAt: at(row.large_finished_at), leasedUntil: at(row.large_until) },
     };
   }
 
-  /** Set the operator's mode; `restart` starts both passes again from the first agent. */
-  async set(mode: PiSweepMode, restart = false) {
-    await this.db.query(`update pi_sweep set mode = $1, updated_at = $2${restart ? ", dry_run_cursor = '', on_cursor = '', dry_run_finished_at = null, on_finished_at = null" : ""} where id`, [mode, clock().now()]);
+  /** Set the operator's mode and the large pass's (each unchanged when not given); `restart` starts every pass again from the first agent. */
+  async set(mode: PiSweepMode | undefined, restart = false, large?: "off" | "on") {
+    await this.db.query(`update pi_sweep set mode = coalesce($1, mode), large = coalesce($3, large), updated_at = $2${restart ? ", dry_run_cursor = '', on_cursor = '', large_cursor = '', dry_run_finished_at = null, on_finished_at = null, large_finished_at = null" : ""} where id`,
+      [mode ?? null, clock().now(), large ?? null]);
     return this.status();
   }
 }

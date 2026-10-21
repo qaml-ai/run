@@ -15,3 +15,8 @@ writing no configuration change (its next open does), warming no tool search, an
 sources only for a transcript with no leading system message. A dry run's lines carry `system`,
 `bytes` and `contextBytes`, to size what the imports will write. Nodes also back off while their
 turns' p95 `TimeToFirstRequestMs` is past `AGENT_PI_SWEEP_MAX_FIRST_REQUEST_MS` (8 s).
+
+A large pass, off by default (`infra/pi-sweep.sh large on`), imports the sessions too large to copy
+by reference once the on pass has finished: one at a time across the fleet, only while a node's
+container memory is under `AGENT_PI_SWEEP_LARGE_MAX_MEMORY_BYTES` (Terraform: 35% of the task),
+`AGENT_PI_SWEEP_LARGE_PACE_MS` (30 s) apart (migration 082).
