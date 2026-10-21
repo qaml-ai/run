@@ -228,8 +228,10 @@ export class RealtimeBrain {
   private readonly history: { who: string; text: string }[] = [];
   readonly stats = {
     turns: 0, responses: 0, spoken: 0, speculative: 0, speculativeDiscarded: 0, superseded: 0, askAgent: 0, askAgentFailed: 0, askAgentLate: 0,
-    staySilent: 0, unaddressed: 0, bargeIns: 0, echoRejected: 0, reconnects: 0, costUsd: 0, inputSeconds: 0, outputSeconds: 0,
+    staySilent: 0, unaddressed: 0, bargeIns: 0, echoRejected: 0, reconnects: 0, azureFallbacks: 0, costUsd: 0, inputSeconds: 0, outputSeconds: 0,
   };
+  /** Where the model runs (the live connection's host: azure or openai for OpenAI's models), for the metrics. */
+  private host?: string;
 
   constructor(options: BrainOptions, hooks: BrainHooks) {
     this.options = options;
@@ -391,11 +393,13 @@ export class RealtimeBrain {
     if (this.metered) this.flushMeter();
     const { costUsd, ...counts } = this.stats;
     this.hooks.log("voice_realtime_stats", { ...counts, costUsd: Math.round(costUsd * 1_000_000) / 1_000_000 });
+    // Host: where the last live connection ran (azure or openai for OpenAI's models, else the provider), so the split shows.
     writeMetricLine(metricLine("voice_realtime", {
-      dimensions: {}, rollups: [[]],
+      dimensions: { Host: this.host ?? this.ttsInfo().ttsProvider }, rollups: [[], ["Host"]],
       metrics: {
         VoiceRealtimeTurns: this.stats.turns, VoiceRealtimeResponses: this.stats.responses, VoiceRealtimeAskAgent: this.stats.askAgent,
         VoiceRealtimeStaySilent: this.stats.staySilent, VoiceRealtimeBargeIns: this.stats.bargeIns, VoiceRealtimeSpeculativeDiscarded: this.stats.speculativeDiscarded,
+        VoiceRealtimeAzureFallbacks: this.stats.azureFallbacks,
       },
       properties: { session: this.options.session, tenant: this.options.tenant, reference: this.options.reference },
     }));
@@ -471,7 +475,17 @@ export class RealtimeBrain {
     const generation = ++this.generation;
     const live = () => !this.closed && generation === this.generation;
     return {
-      ready: () => { if (live()) this.hooks.log("voice_realtime_ready"); },
+      ready: () => {
+        if (!live()) return;
+        this.host = this.connection?.host ?? this.ttsInfo().ttsProvider;
+        this.hooks.log("voice_realtime_ready", { host: this.host });
+      },
+      // Azure refused or failed before the connection was live: it goes on on OpenAI (voice/realtime/openai.ts).
+      fallback: detail => {
+        if (!live()) return;
+        this.stats.azureFallbacks++;
+        this.hooks.log("voice_realtime_azure_fallback", { reason: detail.slice(0, 300) });
+      },
       // close() may report its final billable interval after playback has stopped.
       meter: (seconds, textInputs) => { if (generation === this.generation && this.metered) this.meter(seconds, textInputs); },
       // Responses are asked for one at a time (each after the one before is done): this is the one asked for last.

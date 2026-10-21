@@ -200,11 +200,12 @@ export function realtimeAnswer(id: string, options: { ms?: number; said?: string
 export async function fakeOpenAIRealtime(t: T, options: { transcript?: () => string; answer?: RealtimeAnswer } = {}) {
   const server = createServer((_req, res) => { res.writeHead(404).end(); });
   const sockets = new WebSocketServer({ server });
-  const seen = { urls: [] as string[], auth: [] as string[], events: [] as any[], responses: 0 };
+  const seen = { urls: [] as string[], auth: [] as string[], apiKeys: [] as string[], events: [] as any[], responses: 0 };
   const answer: RealtimeAnswer = options.answer ?? ((index, send) => { for (const event of realtimeAnswer(`resp_${index}`, { said: "Hello!" })) send(event); });
   sockets.on("connection", (ws: WebSocket, req) => {
     seen.urls.push(req.url ?? "");
     seen.auth.push(String(req.headers.authorization ?? ""));
+    seen.apiKeys.push(String(req.headers["api-key"] ?? ""));
     let items = 0;
     const send = (event: Record<string, unknown>) => ws.send(JSON.stringify(event));
     ws.on("message", data => {

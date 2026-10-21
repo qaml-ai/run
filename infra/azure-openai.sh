@@ -1,27 +1,28 @@
 #!/usr/bin/env bash
-# Store the Azure OpenAI resource that images and transcription on the platform's OpenAI key go to, and that serves the
-# platform's azure/<model> chat models, then roll the ECS service. Optional: without it (or with an empty value) images
-# and transcription stay on OpenAI, which is also Azure's fallback, and no azure model is offered.
+# Store the Azure OpenAI resource that images, transcription and realtime voice on the platform's OpenAI key go to, and
+# that serves the platform's azure/<model> chat models, then roll the ECS service. Optional: without it (or with an empty
+# value) they stay on OpenAI, which is also Azure's fallback, and no azure model is offered.
 #
-# Usage: infra/azure-openai.sh <endpoint> [imageDeployment] [transcriptionDeployment] [models]   (reads the API key from stdin)
+# Usage: infra/azure-openai.sh <endpoint> [imageDeployment] [transcriptionDeployment] [models] [realtimeDeployment]   (reads the API key from stdin)
 #   models: catalog model ids and their deployments, as gpt-6-sol=sol-eastus2,gpt-6-luna (a bare id is its own name)
+#   realtimeDeployment: gpt-realtime-2.1's deployment (default gpt-realtime-2.1); "" keeps voice sessions on OpenAI
 #   e.g. az cognitiveservices account keys list -g oai -n migue-ma8lkatg-eastus2 --query key1 -o tsv \
-#          | infra/azure-openai.sh https://migue-ma8lkatg-eastus2.cognitiveservices.azure.com gpt-image-2.5-flare gpt-transcribe gpt-6-sol,gpt-6-luna
+#          | infra/azure-openai.sh https://migue-ma8lkatg-eastus2.cognitiveservices.azure.com gpt-image-2.5-flare gpt-transcribe gpt-6-sol,gpt-6-luna gpt-realtime-2.1
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 source "$here/config.sh"
 aws() { command aws --region "$REGION" "$@"; }
 
-[[ $# -ge 1 && $# -le 4 ]] || { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+[[ $# -ge 1 && $# -le 5 ]] || { sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 [[ ! -t 0 ]] || echo "Paste the Azure OpenAI API key and press Enter, then Ctrl-D:" >&2
 umask 077
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 python3 -c 'import json, re, sys
-endpoint, image, transcription, models, out = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+endpoint, image, transcription, models, realtime, out = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6]
 lines = [line.strip() for line in sys.stdin.read().splitlines() if line.strip()]
 if len(lines) != 1: sys.exit("Send one line: the Azure OpenAI API key")
 if not re.fullmatch(r"https://[a-z0-9-]+\.(openai\.azure\.com|cognitiveservices\.azure\.com)/?", endpoint): sys.exit("The endpoint is https://<resource>.openai.azure.com or .cognitiveservices.azure.com")
-value = {"endpoint": endpoint.rstrip("/"), "apiKey": lines[0], "imageDeployment": image, "transcriptionDeployment": transcription}
+value = {"endpoint": endpoint.rstrip("/"), "apiKey": lines[0], "imageDeployment": image, "transcriptionDeployment": transcription, "realtimeDeployment": realtime}
 deployments = {}
 for entry in filter(None, (part.strip() for part in models.split(","))):
   model, _, name = entry.partition("=")
@@ -29,7 +30,7 @@ for entry in filter(None, (part.strip() for part in models.split(","))):
   if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", model) or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", name): sys.exit(f"Not a model=deployment pair: {entry}")
   deployments[model] = name
 if deployments: value["models"] = deployments
-open(out, "w").write(json.dumps(value))' "$1" "${2:-gpt-image-2.5-flare}" "${3:-gpt-transcribe}" "${4:-}" "$work/value"
+open(out, "w").write(json.dumps(value))' "$1" "${2:-gpt-image-2.5-flare}" "${3:-gpt-transcribe}" "${4:-}" "${5-gpt-realtime-2.1}" "$work/value"
 id="$SECRET_PREFIX/azure-openai"
 if ! aws secretsmanager describe-secret --secret-id "$id" >/dev/null 2>&1; then
   echo "$id does not exist yet: apply the Terraform change that adds it (infra/terraform/secrets.tf) first." >&2
@@ -42,7 +43,7 @@ echo "Stored $id."
 running=$(aws ecs describe-services --cluster "$NAME" --services "$NAME" --query 'services[0].taskDefinition' --output text)
 if aws ecs describe-task-definition --task-definition "$running" --query 'taskDefinition.containerDefinitions[0].environment[].name' --output text | tr '\t' '\n' | grep -qx AGENT_AZURE_OPENAI_SECRET_ARN; then
   aws ecs update-service --cluster "$NAME" --service "$NAME" --force-new-deployment >/dev/null
-  echo "Rolling the ECS service: platform-key images and transcription now go to Azure (\"via\":\"azure\" in images_generated and transcribed logs), and the azure models stored are offered (GET /v1/models?provider=azure)."
+  echo "Rolling the ECS service: platform-key images, transcription and voice now go to Azure (\"via\":\"azure\" in images_generated and transcribed logs, \"host\":\"azure\" in voice_realtime_ready), and the azure models stored are offered (GET /v1/models?provider=azure)."
 else
   tag=$(aws ecs describe-task-definition --task-definition "$running" --query 'taskDefinition.containerDefinitions[0].image' --output text)
   echo "The running revision does not read the secret yet: apply the Terraform change, then deploy the running image (${tag##*:}) with infra/ecs-deploy.sh ${tag##*:}."

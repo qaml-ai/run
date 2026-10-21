@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { AZURE_API_VERSION, azureCredentials, azureOpenAIConfig } from "../src/azure-openai.ts";
+import { AZURE_API_VERSION, azureCredentials, azureOpenAIConfig, azureRealtimeCredentials, azureRealtimeDeployment } from "../src/azure-openai.ts";
 import { safetyRefusal } from "../src/images.ts";
 import { Transcriber, TranscriptionFailed, type TranscriptionProvider } from "../src/transcription.ts";
 import { until } from "./runtime-server.ts";
@@ -9,8 +9,8 @@ import { OPS, OWN, PAYG, start } from "./image-generation-fixture.ts";
 test("Azure OpenAI settings: an https endpoint and a key, deployments defaulting to the models' names, \"\" leaving one on OpenAI", () => {
   assert.equal(azureOpenAIConfig({}, "x"), undefined);
   assert.deepEqual(azureOpenAIConfig({ endpoint: "https://camel.openai.azure.com/", apiKey: "k" }, "x"),
-    { endpoint: "https://camel.openai.azure.com", apiKey: "k", apiVersion: AZURE_API_VERSION, imageDeployment: "gpt-image-2.5-flare", transcriptionDeployment: "gpt-transcribe" });
-  assert.deepEqual(azureOpenAIConfig({ endpoint: "https://camel.openai.azure.com", apiKey: "k", imageDeployment: "img", transcriptionDeployment: "", apiVersion: "2025-03-01-preview" }, "x"),
+    { endpoint: "https://camel.openai.azure.com", apiKey: "k", apiVersion: AZURE_API_VERSION, imageDeployment: "gpt-image-2.5-flare", transcriptionDeployment: "gpt-transcribe", realtimeDeployment: "gpt-realtime-2.1" });
+  assert.deepEqual(azureOpenAIConfig({ endpoint: "https://camel.openai.azure.com", apiKey: "k", imageDeployment: "img", transcriptionDeployment: "", realtimeDeployment: "", apiVersion: "2025-03-01-preview" }, "x"),
     { endpoint: "https://camel.openai.azure.com", apiKey: "k", apiVersion: "2025-03-01-preview", imageDeployment: "img" });
   for (const bad of [{ endpoint: "https://a.example" }, { apiKey: "k" }, { endpoint: "http://camel.openai.azure.com", apiKey: "k" }, { endpoint: "nope", apiKey: "k" }, { endpoint: "https://a.example", apiKey: "k", imageDeployment: "a/b" }, { endpoint: "https://a.example", apiKey: "k", apiVersion: "latest" }]) {
     assert.throws(() => azureOpenAIConfig(bad, "AZURE"), /AZURE/, JSON.stringify(bad));
@@ -20,6 +20,25 @@ test("Azure OpenAI settings: an https endpoint and a key, deployments defaulting
     apiKey: "", baseUrl: "https://camel.openai.azure.com/openai/deployments/gpt-transcribe", query: `api-version=${AZURE_API_VERSION}`,
     model: "gpt-transcribe", secrets: { "api-key": "k" }, via: "azure", fallback: { apiKey: "sk-platform" },
   });
+});
+
+test("realtime on Azure: gpt-realtime-2.1's deployment by default, other models by realtimeModels, \"\" keeping every realtime session on OpenAI", () => {
+  const config = (value: Record<string, unknown>) => azureOpenAIConfig({ endpoint: "https://camel.cognitiveservices.azure.com", apiKey: "k", ...value }, "x")!;
+  const plain = config({});
+  assert.equal(azureRealtimeDeployment(plain, "gpt-realtime-2.1"), "gpt-realtime-2.1");
+  assert.equal(azureRealtimeDeployment(plain, "gpt-realtime-2.1-mini"), undefined, "not deployed: OpenAI");
+  assert.equal(azureRealtimeDeployment(undefined, "gpt-realtime-2.1"), undefined);
+  // As the secret's JSON, or the environment's text.
+  for (const realtimeModels of [{ "gpt-realtime-2.1-mini": "mini-eastus2" }, "gpt-realtime-2.1-mini=mini-eastus2"]) {
+    const mapped = config({ realtimeDeployment: "rt-eastus2", realtimeModels });
+    assert.deepEqual([azureRealtimeDeployment(mapped, "gpt-realtime-2.1"), azureRealtimeDeployment(mapped, "gpt-realtime-2.1-mini")], ["rt-eastus2", "mini-eastus2"]);
+  }
+  // The switch: "" leaves every realtime model on OpenAI, whatever realtimeModels says.
+  const off = config({ realtimeDeployment: "", realtimeModels: "gpt-realtime-2.1-mini=mini-eastus2" });
+  assert.deepEqual([off.realtimeDeployment, off.realtimeModels, azureRealtimeDeployment(off, "gpt-realtime-2.1"), azureRealtimeDeployment(off, "gpt-realtime-2.1-mini")], [undefined, undefined, undefined, undefined]);
+  for (const bad of [{ realtimeDeployment: "a/b" }, { realtimeDeployment: 7 }, { realtimeModels: "gpt-realtime-2.1-mini=a/b" }, { realtimeModels: ["x"] }]) assert.throws(() => config(bad), /^Error: x/, JSON.stringify(bad));
+  assert.deepEqual(azureRealtimeCredentials(plain, "gpt-realtime-2.1"), { endpoint: "https://camel.cognitiveservices.azure.com", apiKey: "k", deployment: "gpt-realtime-2.1", transcriptionDeployment: "gpt-transcribe" });
+  assert.deepEqual(azureRealtimeCredentials(config({ transcriptionDeployment: "" }), "rt"), { endpoint: "https://camel.cognitiveservices.azure.com", apiKey: "k", deployment: "rt" });
 });
 
 test("a safety refusal as OpenAI or Azure's content filter says it", () => {

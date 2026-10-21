@@ -183,6 +183,11 @@ avoid mixing historical samples. `ttsModel` stays a log property to keep metric 
 `ttsProvider`, `speculative` and `askAgent`. Agent execution time is `VoiceAskAgentMs` (formerly
 `VoiceRealtimeAskAgentMs`), with aggregate, `Provider` and `Outcome` rollups; it includes timeouts and failures.
 
+Each session's `voice_realtime` line (when it is let go) has an aggregate and a `Host` rollup: `azure` or `openai` for
+OpenAI's models (where its last live connection ran: the platform's Azure deployment, or OpenAI), else the provider's
+id, with `VoiceRealtimeAzureFallbacks`, its connections that went to OpenAI because Azure refused or failed before they
+were live (each logged as `voice_realtime_azure_fallback` with its reason).
+
 In CloudWatch, the `${name}-voice` dashboard (infra/terraform/voice.tf) shows p50, p95 and p99 of
 `VoiceFirstPacketMs`, p95 of each stage, and where the time goes (turn commit, the realtime model, playout), stacked. A `voice_turn_latency_p95` alarm fires when p95 `VoiceFirstPacketMs` exceeds
 `var.voice_latency_p95_alarm_ms` (2,500 by default) in 3 of 4 15-minute periods, with at least 20 turns, and goes to

@@ -3159,7 +3159,9 @@ await agents.voice.create({
 The runtime offers the providers its `AGENT_VOICE_REALTIME` lists (`openai`, `gemini`, `grok`, `elevenlabs`; OpenAI
 when unset). The account needs a key for the session's provider: your OpenAI key, your `google` key for Gemini, your
 `xai` key for Grok, or your `elevenlabs` key for ElevenLabs Agents, under Models & keys, else the platform's (400
-`REALTIME_UNAVAILABLE` without one).
+`REALTIME_UNAVAILABLE` without one). On the platform's OpenAI key, a hosted runtime may run the model on its own Azure
+OpenAI deployment of it (the same model, voices and price), falling back on OpenAI when Azure cannot take the session;
+your own key always goes to OpenAI.
 
 How it works:
 
@@ -3326,7 +3328,8 @@ The socket may reach any node: one that does not hold the session relays it to t
 Each answer's first audio is timed: `voice_turn_latency` with `Path=realtime`, in ms from the end of speech
 (`turnCommit`; `ttsFirstAudio`, the model's first audio; `firstPacket`, its first audio out), plus `VoiceRealtimeMs`
 (commit to the model's first audio) and `VoicePlayoutMs`. When the session is let go, `voice_realtime_stats` counts its
-turns, answers, ask_agent and stay_silent calls, barge-ins and speculation taken back.
+turns, answers, ask_agent and stay_silent calls, barge-ins and speculation taken back, and the `voice_realtime` metric
+names where the model ran (`Host`: `azure` or `openai` for OpenAI's models, else the provider).
 
 ## Cost
 

@@ -37,10 +37,20 @@ export type RealtimeUsage = {
 };
 export const NO_USAGE: Readonly<RealtimeUsage> = Object.freeze({ inputText: 0, inputAudio: 0, cachedText: 0, cachedAudio: 0, outputText: 0, outputAudio: 0 });
 
+/**
+ * The platform's Azure OpenAI realtime deployment (azure-openai.ts), for a session on the platform's OpenAI key: tried
+ * first, with the OpenAI key beside it (`apiKey`) as the fallback when Azure refuses or fails before the session is live.
+ */
+export type AzureRealtime = { endpoint: string; apiKey: string; deployment: string; transcriptionDeployment?: string };
+/** The key a connection opens with, and for OpenAI on the platform's key, its Azure deployment. */
+export type RealtimeCredentials = { apiKey: string; azure?: AzureRealtime };
+
 /** What a connection reports. Each is called once per thing, in the order the provider sent it. */
 export interface RealtimeEvents {
   /** Opened and configured. */
   ready(): void;
+  /** The first host (Azure) refused or failed before the session was live: it goes on on OpenAI instead. */
+  fallback?(detail: string): void;
   /** Billable audio seconds and text input items, as they cross the provider connection. */
   meter?(audioSeconds: number, textInputs: number): void;
   /** The provider detected barge-in: stop buffered playback too. */
@@ -64,6 +74,8 @@ export interface RealtimeEvents {
 }
 
 export interface RealtimeConnection {
+  /** Where it is connected (or connecting): `azure` or `openai` for OpenAI's models, else the provider's id. */
+  readonly host?: string;
   /** The call's audio, mixed: appended to the input not yet committed. */
   append(pcm: Uint8Array): void;
   /** How much input (ms) is waiting to be committed. */
@@ -107,7 +119,7 @@ export interface RealtimeProvider {
   readonly ownsTurns?: boolean;
   /** Accept voice ids outside the prebuilt list. */
   readonly customVoices?: boolean;
-  connect(config: RealtimeConfig, credentials: { apiKey: string }, events: RealtimeEvents): RealtimeConnection;
+  connect(config: RealtimeConfig, credentials: RealtimeCredentials, events: RealtimeEvents): RealtimeConnection;
 }
 
 export const REALTIME_PROVIDERS = ["openai", "gemini", "grok", "elevenlabs"] as const;

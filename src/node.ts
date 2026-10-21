@@ -74,7 +74,7 @@ import { pricingFromEnvironment } from "./pricing.ts";
 import { openaiTranscription, Transcriber } from "./transcription.ts";
 import { openaiSpeech, Synthesizer } from "./speech.ts";
 import { Imager, openaiImages } from "./images.ts";
-import { azureChatCredentials, azureCredentials } from "./azure-openai.ts";
+import { azureChatCredentials, azureCredentials, azureRealtimeCredentials, azureRealtimeDeployment } from "./azure-openai.ts";
 import { searchProvidersFromEnvironment, WebSearch } from "./web-search.ts";
 import { WebRender } from "./web-render.ts";
 import { Stripe } from "./stripe.ts";
@@ -918,11 +918,15 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     ...(turnModels ? { turnModels } : {}),
     // Realtime brains, on the providers AGENT_VOICE_REALTIME names, each on the tenant's key for it (else the
     // platform's). A key scope's gateway address is for model calls: a realtime brain needs the provider's own key.
+    // OpenAI on the platform's key connects to its Azure deployment of the model first, with that key as the fallback.
     ...(realtimeProviders ? {
       realtime: {
         providers: realtimeProviders,
-        key: async (tenant: string, keyScope: string | undefined, provider: string) => {
-          const key = await providerKey(tenant, keyScope, provider);
+        key: async (tenant: string, keyScope: string | undefined, provider: string, model?: string) => {
+          const azure = secrets.azureOpenAI;
+          const deployment = provider === "openai" && model ? azureRealtimeDeployment(azure, model) : undefined;
+          const key = await providerKey(tenant, keyScope, provider, deployment);
+          if (key && "via" in key && azure && deployment) return { apiKey: key.fallback.apiKey, platform: key.platform, azure: azureRealtimeCredentials(azure, deployment) };
           return key && key.apiKey && !("baseUrl" in key && key.baseUrl) ? { apiKey: key.apiKey, platform: key.platform } : undefined;
         },
       },

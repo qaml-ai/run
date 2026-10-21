@@ -82,11 +82,13 @@ A **prepaid tenant** pays for:
   tokens in, $8 per million image tokens in and $30 per million image tokens out (`AGENT_PRICE_IMAGE_TEXT_INPUT_USD`,
   `AGENT_PRICE_IMAGE_INPUT_USD`, `AGENT_PRICE_IMAGE_OUTPUT_USD`), as OpenAI reports them. The hour's usage entry counts
   them apart (`image`, `images`), and `/v1/usage` has a row with `kind: "image"`. See [Images](../guides/images.md).
-- Both may run on the operator's **Azure OpenAI** deployments instead of the platform's OpenAI key
-  (`AGENT_AZURE_OPENAI_*`, see [Configuration](configuration.md)): Azure's global prices for `gpt-image-2.5-flare` and
-  `gpt-transcribe` are OpenAI's, so tenants are charged the same, from the tokens or seconds the answer reports. Logs
-  mark those requests `"via": "azure"` (`images_generated`, `transcribed`), and a fallback to OpenAI (`images_fallback`,
-  `transcription_fallback`).
+- Both, and realtime voice sessions, may run on the operator's **Azure OpenAI** deployments instead of the platform's
+  OpenAI key (`AGENT_AZURE_OPENAI_*`, see [Configuration](configuration.md)): Azure's global prices for
+  `gpt-image-2.5-flare`, `gpt-transcribe` and `gpt-realtime-2.1` (Global Standard) are OpenAI's, so tenants are charged
+  the same, from the tokens or seconds the answer reports. Logs mark those requests `"via": "azure"` (`images_generated`,
+  `transcribed`), and a fallback to OpenAI (`images_fallback`, `transcription_fallback`); a voice session's host is
+  `voice_realtime_ready`'s `host` and the `voice_realtime` metric's `Host` (`azure` or `openai`), and its fallback
+  `voice_realtime_azure_fallback`.
 - **Azure chat models** (`azure/<model>`, the deployments `AGENT_AZURE_OPENAI_MODELS` names) run on the platform's
   Azure key only, so every response is a platform response, billed like any: from the tokens Azure reports, at the
   catalog's price for that model, which is OpenAI's of the same id (Azure's Global Standard prices are OpenAI's, long

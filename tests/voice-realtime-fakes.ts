@@ -1,7 +1,7 @@
 import type { Playback, Player } from "../src/voice-speech.ts";
 import { Floor, type AddressingPolicy } from "../src/voice/turns/floor.ts";
 import { RealtimeBrain, type BrainHooks, type BrainOptions } from "../src/voice/realtime/brain.ts";
-import { NO_USAGE, type RealtimeConfig, type RealtimeConnection, type RealtimeEvents, type RealtimeProvider, type RealtimeUsage } from "../src/voice/realtime/provider.ts";
+import { NO_USAGE, type RealtimeConfig, type RealtimeConnection, type RealtimeCredentials, type RealtimeEvents, type RealtimeProvider, type RealtimeUsage } from "../src/voice/realtime/provider.ts";
 import type { Cut } from "../src/voice-audio.ts";
 
 export const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -120,7 +120,7 @@ export function fakePlayer(everyMs = 2) {
 }
 
 /** A brain over a fake provider and player, with hooks recording what it reports. */
-export function testBrain(options: Partial<BrainOptions> & { addressing?: Partial<AddressingPolicy>; humans?: number; askAgent?: BrainHooks["askAgent"]; hold?: BrainHooks["hold"]; provider?: RealtimeProvider; refuse?: boolean } = {}) {
+export function testBrain(options: Partial<BrainOptions> & { addressing?: Partial<AddressingPolicy>; humans?: number; askAgent?: BrainHooks["askAgent"]; hold?: BrainHooks["hold"]; provider?: RealtimeProvider; credentials?: RealtimeCredentials; refuse?: boolean } = {}) {
   const realtime = fakeRealtimeProvider();
   const playback = fakePlayer();
   const usage: Parameters<BrainHooks["usage"]>[0][] = [];
@@ -139,7 +139,7 @@ export function testBrain(options: Partial<BrainOptions> & { addressing?: Partia
     ...(options.ownsTurns ? { ownsTurns: true } : {}),
     ...(options.wordsAfterAnswer ? { wordsAfterAnswer: true } : {}), ...(options.limits ? { limits: options.limits } : {}),
   }, {
-    connect: events => (options.provider ?? realtime.provider).connect(config, { apiKey: "fixture" }, events),
+    connect: events => (options.provider ?? realtime.provider).connect(config, options.credentials ?? { apiKey: "fixture" }, events),
     player: () => playback.player, resumeMedia: () => playback.resume(), humans: () => state.humans, name: speaker => names[speaker] ?? speaker,
     ...(options.askAgent ? { askAgent: options.askAgent } : {}),
     admit: async () => { if (options.refuse) throw Object.assign(new Error("No credit"), { status: 402 }); },
