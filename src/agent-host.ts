@@ -1096,8 +1096,13 @@ export function createAgentHost(hostIO: HostIO) {
       const backlog = transcript.backlog;
       // Part of it left to the log: the page reads the log instead.
       if (!backlog || backlog.kept !== backlog.from) return null;
-      // The journal may be ahead mid-run (Pi committed what the host has yet to record): its messages as far as the host's go.
-      const messages = await served("tail", backlog.messages, async history => (await history.messagesFrom(backlog.from))?.slice(0, backlog.messages.length) ?? NOT_HELD);
+      // Either writer may be ahead mid-run: compare every message both hold, and serve the host's full tail.
+      const messages = await served("tail", backlog.messages, async history => {
+        const journal = (await history.messagesFrom(backlog.from))?.slice(0, backlog.messages.length);
+        if (!journal) return NOT_HELD;
+        if (journal.length < backlog.messages.length && JSON.stringify(journal) === JSON.stringify(backlog.messages.slice(0, journal.length))) return backlog.messages;
+        return journal;
+      });
       return { from: backlog.from, messages, turns: backlog.turns };
     }
     if (method === "steer") {

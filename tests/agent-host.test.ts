@@ -442,3 +442,37 @@ test("a history tail read while Pi has committed what the host has yet to record
   const tail = await host.handle("historyTail", {});
   assert.deepEqual(tail.messages.map((message: AgentMessage) => message.role), ["user", "assistant"]);
 });
+
+for (const pending of [1, 2]) test(`a history tail with ${pending} host messages not yet committed to Pi compares every shared message`, async t => {
+  const fake = await setup(t);
+  const noIndex = { indexed: async () => 0, read: async () => { throw new Error("no log reads"); }, write: async () => 0 } as unknown as HostIO["history"];
+  const logged = t.mock.method(console, "log", () => {});
+  let hold = false;
+  const { host } = await fake.start({ history: noIndex, piDualRead: "log", storage: storage => {
+    const commit = storage.commit.bind(storage);
+    // Let the host record the messages while Pi's newest journal entries are still pending.
+    storage.commit = (writes, context) => commit(writes.filter(write => !hold || write.type !== "entry" ||
+      !(write.value.kind === "pi.assistant" || pending === 2 && write.value.kind === "camel.user")), context);
+    return storage;
+  } });
+  fake.respond(answer("One."), answer("Two."));
+  await host.handle("prompt", { text: "one" });
+  hold = true;
+  await host.handle("prompt", { text: "two" });
+  const reads = () => logged.mock.calls.map(call => JSON.parse(String(call.arguments[0]))).filter(line => line.field === "tail");
+  const tail = await host.handle("historyTail", {});
+  assert.deepEqual(tail.messages.map((message: AgentMessage) => message.role), ["user", "assistant", "user", "assistant"]);
+  assert.equal(reads().length, 1);
+  assert.equal(reads()[0].type, "history_source");
+  const messagesFrom = JournalHistory.prototype.messagesFrom;
+  t.mock.method(JournalHistory.prototype, "messagesFrom", async function (this: JournalHistory, from: number) {
+    const messages = (await messagesFrom.call(this, from))!;
+    messages[1] = answer("Different.");
+    return messages;
+  });
+  assert.deepEqual(await host.handle("historyTail", {}), tail, "a real mismatch still serves the host's tail");
+  assert.equal(reads()[1].type, "history_source_mismatch");
+  assert.deepEqual(reads()[1].lengths, [4, 4 - pending]);
+  assert.equal(reads()[1].index, 1, "shared elements beyond the first are compared too");
+  assert.ok(reads()[1].keys.includes("content"));
+});
