@@ -245,6 +245,23 @@ resource "aws_cloudwatch_metric_alarm" "task_memory" {
   ok_actions          = local.alarm_topics
 }
 
+# The task's whole cgroup (Node plus voice workers and helpers) near its memory, for 2 minutes. No notifications (the
+# -task-memory alarm sends them): it is a deployment alarm, so a release that grows memory rolls back.
+resource "aws_cloudwatch_metric_alarm" "task_cgroup_memory" {
+  alarm_name          = "${var.name}-task-cgroup-memory"
+  alarm_description   = "A runtime task's cgroup memory is over 75% of its memory (node_load cgroupMemoryBytes); rolls back deployments"
+  namespace           = "AgentRuntime"
+  metric_name         = "cgroupMemoryBytes"
+  dimensions          = local.runtime_metric
+  statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 2
+  datapoints_to_alarm = 2
+  threshold           = var.task_memory * 1024 * 1024 * 0.75
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+}
+
 # Queries waiting for a database connection: the pool (AGENT_DATABASE_POOL_SIZE) is too small, or the database is slow.
 resource "aws_cloudwatch_metric_alarm" "database_pool_waiting" {
   alarm_name          = "${var.name}-database-pool-waiting"

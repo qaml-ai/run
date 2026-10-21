@@ -108,9 +108,20 @@ variable "task_cpu" {
   default = 1024
 }
 
+# 4 GiB: a Pi session's first load imports its legacy history in-process (one task peaked at 2.4 GiB on 2026-10-21).
 variable "task_memory" {
   type    = number
-  default = 2048
+  default = 4096
+}
+
+variable "agent_engine" {
+  description = "AGENT_ENGINE: pi-durable, or legacy to roll every agent back to the old engine"
+  type        = string
+  default     = "pi-durable"
+  validation {
+    condition     = contains(["pi-durable", "legacy"], var.agent_engine)
+    error_message = "agent_engine is pi-durable or legacy."
+  }
 }
 
 variable "service_min_count" {
