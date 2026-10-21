@@ -1,4 +1,4 @@
-# MCP plugin attribution in ops
+### Ops: sign-ups and activity by MCP plugin (ChatGPT, Codex, Claude)
 
 The ops dashboard has an MCP plugins tab (`GET /ops/api/mcp?days=7|30|90`). It reads existing tables; there is no migration or change to OAuth authentication.
 
