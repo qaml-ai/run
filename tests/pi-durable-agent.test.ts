@@ -235,5 +235,49 @@ test("Pi adapter checkpoints the host's context only when it changes, not after 
   await reopened.agent.prompt(user("fourth"));
   assert.equal(await checkpoints(id), 2);
   assert.deepEqual(reopened.requests[1].messages.map(text).slice(-3), ["three", "landed without a model call", "fourth"]);
+  // So does a message whose content changed under the same role, time and position (a stub, a placeholder).
+  const messages = reopened.agent.state.messages, at = messages.findIndex(message => text(message) === "landed without a model call");
+  reopened.agent.state.messages = messages.map((message, index) => index === at ? { ...message, content: "[archived]" } as AgentMessage : message);
+  const more = await fixture([answer("five")], { initialState: { model, tools: [], messages: reopened.agent.state.messages } }, await open());
   await reopened.agent.close();
+  await more.agent.prompt(user("fifth"));
+  assert.equal(await checkpoints(id), 3);
+  assert.ok(more.requests[0].messages.map(text).includes("[archived]"));
+  assert.ok(!more.requests[0].messages.map(text).includes("landed without a model call"));
+  await more.agent.close();
+});
+
+test("Pi adapter checks the host's context in again after a reload settles an interrupted run", async () => {
+  const { db } = await testDatabase(), sessionId = randomUUID();
+  const open = () => openPiStorage({ sessionId, directory: "unused", db });
+  const system = { role: "system", content: "Be brief.", timestamp: 0 } as AgentMessage;
+  let started!: () => void;
+  const running = new Promise<void>(resolve => { started = resolve; });
+  const hang = tool("hang", () => { started(); return new Promise(() => {}); });
+  const first = await fixture([call("hang")], { initialState: { model, tools: [hang], messages: [system] } }, await open());
+  void first.agent.prompt(user("start")).catch(() => {});
+  await running;
+  // The node is lost mid-tool: another one opens the session with a working set equal to Pi's context, which closes
+  // the open call as missing until a run is settled.
+  const assistant = first.agent.state.messages.at(-1) as AssistantMessage;
+  const kept = [...first.agent.state.messages, { role: "toolResult", toolCallId: "call-0", toolName: "hang",
+    content: [{ type: "text", text: "Tool result unavailable: history ends before this call completed." }], isError: true, details: { reason: "missing_result" }, timestamp: assistant.timestamp } as AgentMessage];
+  const second = await fixture([answer("recovered")], { initialState: { model, tools: [hang], messages: kept } }, await open());
+  const checkpoints = async () => {
+    const storage = await open();
+    let count = 0, cursor;
+    do {
+      const page = await storage.scanEntries({ conversationId: second.agent.conversationId }, 256, cursor, BACKGROUND_CONTEXT);
+      count += page.items.filter(entry => entry.kind === "camel.legacy.context").length;
+      cursor = page.next;
+    } while (cursor !== undefined);
+    return count;
+  };
+  assert.equal((second.agent as any).dirty, false, "opening alone finds Pi's context equal to the host's");
+  const before = await checkpoints();
+  await second.agent.discardInterruptedRun();
+  await second.agent.prompt(user("again"));
+  assert.equal(await checkpoints(), before + 1, "the settled run's native results are replaced by the host's working set");
+  assert.equal(second.requests.length, 1);
+  await second.agent.close();
 });

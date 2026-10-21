@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { AgentEvent, AgentMessage, AgentOptions, AgentState, AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
 import { createAssistantMessageEventStream, getCurrentSystemMessage, getSystemMessageText, type AssistantMessage, type ImageContent, type Message, type ToolResultMessage } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -24,17 +25,20 @@ type Listener = (event: AgentEvent & { durable?: DurableCursor }, signal: AbortS
 const context = BACKGROUND_CONTEXT;
 const nativeKinds = new Set(["pi.user", "pi.assistant", "pi.tool-result", "camel.user", "camel.message"]);
 
+/** Each message's content digest, kept with the message: a host's working set is mostly the same objects run to run. */
+const digests = new WeakMap<object, string>();
+const digest = (message: AgentMessage) => {
+  let value = digests.get(message);
+  if (value === undefined) digests.set(message, value = createHash("sha256").update(JSON.stringify(message)).digest("base64"));
+  return value;
+};
+
 /**
- * Whether two working contexts hold the same messages. Committed messages never change, so position, role, time and
- * call identify them; system messages, which configuration rebuilds, are compared whole.
+ * Whether two working contexts hold the same messages: the same objects, or messages whose whole content is equal.
+ * Each message is serialized on its own, so the check never holds more than one message's JSON at a time.
  */
 function sameMessages(left: readonly AgentMessage[], right: readonly AgentMessage[]) {
-  return left.length === right.length && left.every((message, index) => {
-    const other = right[index];
-    return message === other || message.role === other.role && message.timestamp === other.timestamp &&
-      (message.role !== "toolResult" || message.toolCallId === (other as ToolResultMessage).toolCallId) &&
-      (message.role !== "system" || JSON.stringify(message) === JSON.stringify(other));
-  });
+  return left.length === right.length && left.every((message, index) => message === right[index] || digest(message) === digest(right[index]));
 }
 
 /** The native WAL is authoritative; an old transcript is a cursor-addressed projection. */
