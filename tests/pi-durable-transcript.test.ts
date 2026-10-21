@@ -4,7 +4,8 @@ import { MemoryStorage } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { Transcript, historyOf, type TranscriptRecord } from "../src/transcript.ts";
 import { NativeTranscript, nativeTranscriptRecords } from "../src/pi-durable/transcript.ts";
-import { importLegacyTranscript, LegacyMigrationDeferred, MIGRATION_MAX_RECORDS } from "../src/pi-durable/migration.ts";
+import { importLegacyTranscript, LegacyMigrationDeferred, MIGRATION_MAX_RECORDS, readMigratedLegacyRecords, validateLegacyMigration } from "../src/pi-durable/migration.ts";
+import * as previous from "./fixtures/pi-readers-before-322.ts";
 import type { AppendLog } from "../shared/append-log.ts";
 import type { Storage, StorageWrite } from "@earendil-works/pi-durable";
 import { randomUUID } from "node:crypto";
@@ -112,4 +113,45 @@ for (const backend of ["memory", "postgres"] as const) test(`native transcript c
   assert.ok(written.filter(content => content.kind === "base").length >= 2, "deltas are folded into a new base");
   assert.deepEqual((await NativeTranscript.open(storage))!.snapshot(), reopened.snapshot());
   await storage.close(context);
+});
+
+test("a host's import writes its archive and context once, in one commit with its generation, and exports the whole history", async () => {
+  const storage = new MemoryStorage(), source = legacy();
+  for (let i = 0; i < 300; i++) {
+    await source.transcript.push({ role: "user", content: `request ${i}`, requestId: `request-${i}`, timestamp: i } as any);
+    await source.transcript.push({ role: "assistant", content: [{ type: "text", text: `answer ${i}` }], api: "openai-completions", provider: "test", model: "fake",
+      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: i } as any);
+  }
+  const commits: StorageWrite[][] = [];
+  const commit = storage.commit.bind(storage);
+  storage.commit = async (batch, at) => { commits.push([...batch]); return commit(batch, at); };
+  const working = source.transcript.view();
+  const { metadata, transcript } = await NativeTranscript.importLegacy(storage, source.transcript, { sessionId: "test", records: source.records, working });
+  assert.ok(transcript);
+  assert.equal(commits.length, 1, "the import, the generation and its document land together");
+  const kinds = new Map<string, number>();
+  for (const write of commits[0]) {
+    const kind = write.type === "entry" ? write.value.kind : write.type;
+    kinds.set(kind, (kinds.get(kind) ?? 0) + 1);
+  }
+  assert.deepEqual(Object.fromEntries(kinds), { conversation: 1, "camel.legacy.migration": 1, "camel.host.bootstrap": 1, "camel.host.archive": 5,
+    "camel.legacy.context": 1, "camel.context.message": 599, submission: 300, "document.create": 1 }, "one archive, one context checkpoint (a head and one entry per message), no copies");
+  assert.deepEqual(transcript.piCursor, { entryId: metadata.contextEntryId, index: -1 });
+  assert.equal((await storage.findLatestHeadMarker(1 as any, undefined, context))?.id, metadata.contextEntryId);
+  assert.ok(await transcript.hasRequest("request-0"));
+  assert.deepEqual(await readMigratedLegacyRecords(storage), source.records);
+  await validateLegacyMigration(storage, source.records);
+  await transcript.setActive(true);
+  await transcript.push({ role: "user", content: "new", requestId: "new", timestamp: 301 } as any);
+  await transcript.setActive(false);
+  const history = historyOf((await nativeTranscriptRecords(storage))!);
+  assert.equal(history.length, 601, "export reads the generation's archive, then its records");
+  assert.deepEqual(history.slice(0, 600), historyOf(source.records));
+  const reopened = (await NativeTranscript.open(storage))!;
+  assert.deepEqual(reopened.snapshot(), transcript.snapshot());
+
+  // A node on the release before (a rolling deploy, a rollback) reads the same whole history, and finds Pi's context
+  // checkpoint where it looks for one.
+  assert.deepEqual(historyOf((await previous.nativeTranscriptRecords(storage))!), history);
+  assert.deepEqual(await previous.latestDurableCursor(storage, 1 as any), { entryId: metadata.contextEntryId, index: -1 });
 });

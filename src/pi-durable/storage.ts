@@ -1118,14 +1118,22 @@ export class PostgresPiStorage implements Storage {
                 values.map(value => value.id), values.map(value => value.owner?.conversationId ?? null),
                 values.map(value => value.owner?.taskId ?? null), values.map(encodeJson));
         }
-        // Keep PostgreSQL's text-array encoding buffers bounded for one-time archive imports.
-        const allEntries = [...entries.values()];
-        for (let offset = 0; offset < allEntries.length; offset += 32) {
-            const values = allEntries.slice(offset, offset + 32);
+        // Keep PostgreSQL's text-array encoding buffers bounded for one-time archive imports: each insert carries at
+        // most 32 entries or about 4 MB of them, and only its own entries' JSON is held at once.
+        let batch: EntryRecord[] = [], records: string[] = [], bytes = 0;
+        const flush = async () => {
+            if (!batch.length) return;
             await executor.run(`INSERT INTO ${this.schema.tables.entries} (session_id, id, conversation_id, head, commit_seq, record)
                 SELECT $1, r.id, r.conversation_id, r.head, ?, r.record FROM unnest(?::bigint[], ?::bigint[], ?::bigint[], ?::text[]) AS r(id, conversation_id, head, record)`,
-                seq, values.map(value => value.id), values.map(value => value.conversationId), values.map(value => value.head ?? null), values.map(encodeJson));
+                seq, batch.map(value => value.id), batch.map(value => value.conversationId), batch.map(value => value.head ?? null), records);
+            batch = []; records = []; bytes = 0;
+        };
+        for (const value of entries.values()) {
+            const record = encodeJson(value);
+            batch.push(value); records.push(record); bytes += record.length;
+            if (batch.length >= 32 || bytes >= 4 * 1024 * 1024) await flush();
         }
+        await flush();
         if (tasks.size) {
             const values = [...tasks.values()];
             await executor.run(`INSERT INTO ${this.schema.tables.tasks} (session_id, id, conversation_id, kind, status, abort_requested, background, record)

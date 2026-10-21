@@ -10,7 +10,11 @@ import { Transcript, type TranscriptRecord, type TranscriptSnapshot } from "../t
 
 export const LEGACY_MIGRATION_KIND = "camel.legacy.migration";
 export const LEGACY_RECORD_KIND = "camel.legacy.record";
+/** The host's generation marker and archive blocks (NativeTranscript): an import writes its archive in this form. */
+export const HOST_BOOTSTRAP_KIND = "camel.host.bootstrap", HOST_ARCHIVE_KIND = "camel.host.archive";
 export const LEGACY_CONTEXT_KIND = "camel.legacy.context";
+/** One message of a context checkpoint after its head entry: Pi can choose a compaction cut between them. */
+export const CONTEXT_MESSAGE_KIND = "camel.context.message";
 /** Each Camel session has its own fenced Pi storage, so it uses Pi's reserved root. */
 export const LEGACY_CONVERSATION_ID = 1 as ConversationId;
 const VERSION = 1;
@@ -21,12 +25,21 @@ export const MIGRATION_MAX_BYTES = 64 * 1024 * 1024;
 export const MIGRATION_MAX_RECORDS = 200_000;
 
 export function assertMigrationFits(records: readonly TranscriptRecord[]) {
+  measuredFingerprint(records);
+}
+
+/** The size budget and the fingerprint in one pass: each record is serialized once, on its own. */
+function measuredFingerprint(records: readonly TranscriptRecord[]): string {
   if (records.length > MIGRATION_MAX_RECORDS) throw migrationTooLarge();
+  const hash = createHash("sha256");
   let bytes = 0;
   for (const record of records) {
-    bytes += Buffer.byteLength(JSON.stringify(record)) + 1;
+    const text = JSON.stringify(record);
+    bytes += Buffer.byteLength(text) + 1;
     if (bytes > MIGRATION_MAX_BYTES) throw migrationTooLarge();
+    hash.update(text).update("\n");
   }
+  return hash.digest("hex");
 }
 
 function migrationTooLarge() {
@@ -52,6 +65,8 @@ export interface LegacyMigrationMetadata {
   importedAt: number;
   markerId: EntryId;
   contextEntryId: EntryId;
+  /** The host generation the import starts (imports before it have none: the host adopted them in its own). */
+  generationId?: EntryId;
 }
 
 export interface LegacyMigrationPlan {
@@ -92,7 +107,8 @@ export function legacyTranscriptFingerprint(records: readonly TranscriptRecord[]
 }
 
 function reduced(records: readonly TranscriptRecord[]) {
-  // Reduction does not write: the source log and all of its ownership/fencing stay with the host.
+  // Reduction does not write: the source log and all of its ownership/fencing stay with the host. Applying a record
+  // never changes the record or its message, so the reduced state refers to the source's own message objects.
   const log = { read: async () => [...records] } as AppendLog<TranscriptRecord>;
   const transcript = new Transcript(log);
   for (const record of records) transcript.apply(record);
@@ -139,26 +155,59 @@ function assertCompatibleContext(messages: readonly Message[]) {
   if (firstSystem > 0 && ordered.slice(0, firstSystem).every(message => message.role === "user")) {
     ordered.unshift(...ordered.splice(firstSystem, 1));
   }
-  if (!same(messages, ordered)) throw new LegacyMigrationDeferred("context_changed", "Pi would reorder the active model context");
+  // The same objects in the same order, compared one message at a time rather than as two context-sized strings.
+  if (messages.length !== ordered.length || messages.some((message, index) => message !== ordered[index] && !same(message, ordered[index]))) {
+    throw new LegacyMigrationDeferred("context_changed", "Pi would reorder the active model context");
+  }
 }
 
-/** A detached, side-effect-free conversion. It never mutates or folds the original archive. */
-export function planLegacyMigration(records: readonly TranscriptRecord[], leadingSystem?: SystemMessage): LegacyMigrationPlan {
-  const detached = records.map(record => json(record));
-  const transcript = reduced(detached);
+/**
+ * A side-effect-free conversion. It never mutates or folds the original archive, and it copies none of it: the plan's
+ * records, snapshot and model refer to the source's records and messages, which nothing changes in place.
+ */
+export function planLegacyMigration(records: readonly TranscriptRecord[], leadingSystem?: SystemMessage, fingerprint = legacyTranscriptFingerprint(records)): LegacyMigrationPlan {
+  const transcript = reduced(records);
   if (transcript.active) throw new LegacyMigrationDeferred("active", "the legacy turn is still active");
   if (transcript.awaiting.length) throw new LegacyMigrationDeferred("awaiting", "a tool is waiting for human input");
-  const snapshot = json(transcript.snapshot());
+  const snapshot = transcript.snapshot();
   // Native entry IDs are scoped to their storage. Fork/import archives retain the old cursor as evidence, but the
   // new storage starts a new projection domain and must not skip entries because of an ancestor's high watermark.
   delete snapshot.piCursor;
-  if (!snapshot.system && leadingSystem) snapshot.system = json(leadingSystem);
+  if (!snapshot.system && leadingSystem) snapshot.system = leadingSystem;
   const model = [
     ...(snapshot.system ? [snapshot.system] : []),
     ...convertToLlm(transcript.view()),
   ];
   assertCompatibleContext(model);
-  return { records: detached, snapshot, model, fingerprint: legacyTranscriptFingerprint(detached), historyCount: transcript.total };
+  return { records: records as TranscriptRecord[], snapshot, model, fingerprint, historyCount: transcript.total };
+}
+
+/**
+ * A context checkpoint as Pi entries: a head with the first message, then one entry per message, so the first run
+ * after an import need not split it again (Pi can only cut a compaction between entries). `ids` has one per message.
+ */
+export function contextWrites(ids: readonly number[], conversationId: ConversationId, model: readonly Message[], data?: JsonValue): StorageWrite[] {
+  if (ids.length !== Math.max(1, model.length)) throw new Error("A context checkpoint needs one ID per message");
+  const head = ids[0] as EntryId;
+  return [
+    { type: "entry", value: { id: head, conversationId, kind: LEGACY_CONTEXT_KIND, head, model: model.slice(0, 1), ...(data === undefined ? {} : { data }) } },
+    ...model.slice(1).map((message, index): StorageWrite => ({ type: "entry", value: { id: ids[index + 1] as EntryId, conversationId, kind: CONTEXT_MESSAGE_KIND, model: [message] } })),
+  ];
+}
+
+/** A context checkpoint's messages: its head's, then those of the message entries that follow it. */
+async function checkpointModel(storage: Storage, conversationId: ConversationId, head: EntryRecord, context: Context): Promise<Message[]> {
+  const model = [...head.model ?? []];
+  let cursor: Cursor | undefined;
+  scan: do {
+    const page = await storage.scanEntries({ conversationId, order: "ascending", minEntryId: (head.id + 1) as EntryId }, PAGE_SIZE, cursor, context);
+    for (const entry of page.items) {
+      if (entry.kind !== CONTEXT_MESSAGE_KIND) break scan;
+      model.push(...entry.model ?? []);
+    }
+    cursor = page.next;
+  } while (cursor !== undefined);
+  return model;
 }
 
 async function entries(storage: Storage, conversationId: ConversationId, context: Context, minEntryId?: EntryId) {
@@ -184,16 +233,29 @@ export async function loadLegacyMigration(storage: Storage, context: Context = B
   return json(metadata);
 }
 
-/** Read only the reduced checkpoint, never the archived transcript bodies. */
+type CheckpointData = { fingerprint: string; snapshot?: TranscriptSnapshot; state?: Omit<TranscriptSnapshot, "context"> };
+
+/** The import's context checkpoint, read by ID: its head holds one message (earlier imports: the whole context). */
+async function checkpointOf(storage: Storage, metadata: LegacyMigrationMetadata, context: Context) {
+  const record = await storage.entry(metadata.conversationId, metadata.contextEntryId, context);
+  if (!record || record.entry.kind !== LEGACY_CONTEXT_KIND) throw new LegacyMigrationConflict("migration context checkpoint is missing");
+  const data = record.entry.data as unknown as CheckpointData | undefined;
+  if (!(data?.snapshot || data?.state) || data.fingerprint !== metadata.fingerprint) throw new LegacyMigrationConflict("migration context checkpoint does not match its marker");
+  return { entry: record.entry, data };
+}
+
+/**
+ * The reduced state the import began from. Its context is not stored a second time beside the checkpoint's messages
+ * and the host document: this audit path reduces it from the archive again (earlier imports stored it whole).
+ */
 export async function loadMigratedSnapshot(storage: Storage, conversationId: ConversationId = LEGACY_CONVERSATION_ID, context: Context = BACKGROUND_CONTEXT): Promise<{ snapshot: TranscriptSnapshot; metadata: LegacyMigrationMetadata } | undefined> {
   const metadata = await loadLegacyMigration(storage, context);
   if (!metadata) return undefined;
   if (metadata.conversationId !== conversationId) throw new LegacyMigrationConflict("conversation mapping differs from the migration marker");
-  const record = await storage.entry(conversationId, metadata.contextEntryId, context);
-  if (!record || record.entry.kind !== LEGACY_CONTEXT_KIND) throw new LegacyMigrationConflict("migration context checkpoint is missing");
-  const data = record.entry.data as unknown as { snapshot: TranscriptSnapshot; fingerprint: string };
-  if (!data?.snapshot || data.fingerprint !== metadata.fingerprint) throw new LegacyMigrationConflict("migration context checkpoint does not match its marker");
-  return { snapshot: json(data.snapshot), metadata };
+  const { data } = await checkpointOf(storage, metadata, context);
+  if (data.snapshot) return { snapshot: json(data.snapshot), metadata };
+  const { context: messages } = reduced(await readMigratedLegacyRecords(storage, context)).snapshot();
+  return { snapshot: { context: messages, ...json(data.state!) }, metadata };
 }
 
 const lines = new WeakMap<Storage, Promise<unknown>>();
@@ -203,12 +265,22 @@ const lines = new WeakMap<Storage, Promise<unknown>>();
  * retained by the host and also archived verbatim as non-model entries. One commit publishes every record, request
  * deduplication key, and the context head together. A failed commit publishes no partial conversation. No task is
  * created, resumed, settled, or retried by this function. The host changes its engine selector only after validation.
+ *
+ * Each thing is written once: the archive, and the context as one entry per message (`model` when the host's working
+ * set differs from the reduced source, e.g. by a newer leading system message). No record is copied to build them.
+ *
+ * With `host` (NativeTranscript.importLegacy), the same commit also starts the host's generation: its marker, the
+ * archive as that generation's archive blocks (the layout every release's host history reader reads, so a node on an
+ * earlier release that takes the session over still reads its whole history), and the writes `host` returns (its
+ * document). A generation therefore never exists without its document, as with NativeTranscript.adopt.
  */
 export async function importLegacyTranscript(options: {
   storage: Storage;
   sessionId: string;
   records: readonly TranscriptRecord[];
   leadingSystem?: SystemMessage;
+  model?: Message[];
+  host?: (generation: { generationId: EntryId; contextEntryId: EntryId }) => Promise<StorageWrite[]>;
   context?: Context;
   now?: number;
 }): Promise<LegacyMigrationMetadata & { status: "imported" | "existing" }> {
@@ -220,15 +292,18 @@ export async function importLegacyTranscript(options: {
       if (previous.sessionId !== sessionId || previous.fingerprint !== legacyTranscriptFingerprint(records)) {
         throw new LegacyMigrationConflict("storage belongs to another session or source transcript");
       }
-      await loadMigratedSnapshot(storage, previous.conversationId, context);
+      await checkpointOf(storage, previous, context);
       return { ...previous, status: "existing" as const };
     }
-    assertMigrationFits(records);
-    const plan = planLegacyMigration(records, leadingSystem);
+    const plan = planLegacyMigration(records, leadingSystem, measuredFingerprint(records));
+    const model = options.model ?? plan.model;
+    if (model !== plan.model) assertCompatibleContext(model);
     const blockCount = Math.ceil(plan.records.length / ARCHIVE_BLOCK_RECORDS);
     // Postgres reserves the complete monotonic range under the host's claim in one transaction. Native SQLite mints
     // from its in-memory allocator. Both retain the storage's global ID-ownership checks in the final atomic commit.
-    const count = blockCount + 2 + plan.snapshot.requests.length;
+    const contextIds = Math.max(1, model.length);
+    const host = options.host ? 1 : 0;
+    const count = 1 + host + blockCount + contextIds + plan.snapshot.requests.length;
     const bulk = storage as Storage & { mintIds?(count: number): Promise<number[]> };
     const ids = bulk.mintIds ? await bulk.mintIds(count) : await (async () => {
       const ids: number[] = [];
@@ -239,33 +314,36 @@ export async function importLegacyTranscript(options: {
       throw new LegacyMigrationConflict("storage returned an invalid ID reservation");
     }
     let nextId = 0;
-    const markerId = ids[nextId++] as EntryId;
-    const archive: EntryRecord[] = [];
-    for (let index = 0; index < plan.records.length; index += ARCHIVE_BLOCK_RECORDS) {
-      // The plan already owns detached records. Reuse their bodies instead of copying the entire archive again.
-      archive.push({ id: ids[nextId++] as EntryId, conversationId: LEGACY_CONVERSATION_ID, kind: LEGACY_RECORD_KIND,
-        data: { index, records: plan.records.slice(index, index + ARCHIVE_BLOCK_RECORDS) } as unknown as JsonValue });
-    }
-    const contextEntryId = ids[nextId++] as EntryId;
+    const markerId = ids[nextId++] as EntryId, generationId = host ? ids[nextId++] as EntryId : undefined;
+    const contextEntryId = ids[1 + host + blockCount] as EntryId;
     const metadata: LegacyMigrationMetadata = {
       version: VERSION, sessionId, fingerprint: plan.fingerprint, conversationId: LEGACY_CONVERSATION_ID,
-      recordCount: plan.records.length, historyCount: plan.historyCount, contextCount: plan.model.length,
-      importedAt: now, markerId, contextEntryId,
+      recordCount: plan.records.length, historyCount: plan.historyCount, contextCount: model.length,
+      importedAt: now, markerId, contextEntryId, ...(generationId ? { generationId } : {}),
     };
     const writes: StorageWrite[] = [
       { type: "conversation", value: { id: LEGACY_CONVERSATION_ID } },
       { type: "entry", value: { id: markerId, conversationId: LEGACY_CONVERSATION_ID, kind: LEGACY_MIGRATION_KIND, data: payload(metadata) } },
-      ...archive.map(value => ({ type: "entry" as const, value })),
-      { type: "entry", value: { id: contextEntryId, conversationId: LEGACY_CONVERSATION_ID, kind: LEGACY_CONTEXT_KIND, head: contextEntryId, model: plan.model, data: payload({ fingerprint: plan.fingerprint, snapshot: plan.snapshot }) } },
+      ...(generationId ? [{ type: "entry" as const, value: { id: generationId, conversationId: LEGACY_CONVERSATION_ID, kind: HOST_BOOTSTRAP_KIND } }] : []),
     ];
+    for (let index = 0; index < plan.records.length; index += ARCHIVE_BLOCK_RECORDS) {
+      // Blocks refer to the source's records: storage serializes them as it writes, so the archive is never copied.
+      writes.push({ type: "entry", value: { id: ids[nextId++] as EntryId, conversationId: LEGACY_CONVERSATION_ID, kind: host ? HOST_ARCHIVE_KIND : LEGACY_RECORD_KIND,
+        data: { index, records: plan.records.slice(index, index + ARCHIVE_BLOCK_RECORDS) } as unknown as JsonValue } });
+    }
+    const { context: _context, ...state } = plan.snapshot;
+    writes.push(...contextWrites(ids.slice(nextId, nextId += contextIds), LEGACY_CONVERSATION_ID, model, payload({ fingerprint: plan.fingerprint, state })));
     // Import historical request IDs as terminal admissions. Retrying one must never start a new model/tool run.
     for (const requestId of plan.snapshot.requests) writes.push({
       type: "submission",
       value: { id: ids[nextId++] as never, conversationId: LEGACY_CONVERSATION_ID, requestId, type: "input", status: "unanswered", reason: "legacy_import", detail: "Request already recorded by the legacy runtime; its original history is retained." },
     });
+    if (generationId) writes.push(...await options.host!({ generationId, contextEntryId }));
     await storage.commit(writes, context);
-    const checkpoint = await loadMigratedSnapshot(storage, LEGACY_CONVERSATION_ID, context);
-    if (!checkpoint || !same(checkpoint.snapshot, plan.snapshot)) throw new LegacyMigrationConflict("persisted reduced state differs from the source");
+    // The commit is atomic: reading back its marker and checkpoint head confirms it landed, without reading the context again.
+    const landed = await loadLegacyMigration(storage, context);
+    if (!landed || !same(landed, metadata)) throw new LegacyMigrationConflict("persisted migration marker differs from the source");
+    await checkpointOf(storage, landed, context);
     return { ...metadata, status: "imported" as const };
   });
   lines.set(storage, run);
@@ -277,7 +355,10 @@ export async function importLegacyTranscript(options: {
 export async function readMigratedLegacyRecords(storage: Storage, context: Context = BACKGROUND_CONTEXT): Promise<TranscriptRecord[]> {
   const metadata = await loadLegacyMigration(storage, context);
   if (!metadata) return [];
-  const archived = (await entries(storage, metadata.conversationId, context)).filter(entry => entry.kind === LEGACY_RECORD_KIND);
+  // An import archives as legacy records (a host adopting it archives again, after the checkpoint), or, when it
+  // starts the host's generation, as that generation's archive blocks, before the checkpoint.
+  const archived = (await entries(storage, metadata.conversationId, context)).filter(entry => entry.kind === LEGACY_RECORD_KIND ||
+    entry.kind === HOST_ARCHIVE_KIND && entry.id < metadata.contextEntryId);
   const records: TranscriptRecord[] = [];
   for (const entry of archived) {
     const data = entry.data as unknown as { index: number; records?: TranscriptRecord[]; record?: TranscriptRecord };
@@ -302,7 +383,8 @@ export async function validateLegacyMigration(storage: Storage, source: readonly
   if (loaded.metadata.fingerprint !== plan.fingerprint || !same(loaded.snapshot, plan.snapshot)) throw new LegacyMigrationConflict("source context or request identity differs");
   const archive = await readMigratedLegacyRecords(storage, context);
   if (!same(archive, plan.records) || !same(legacyHistoryOf(archive), legacyHistoryOf(plan.records))) throw new LegacyMigrationConflict("source history differs");
-  const checkpoint = await storage.entry(loaded.metadata.contextEntryId, context);
-  if (!checkpoint || !same(checkpoint.entry.model, plan.model) || checkpoint.entry.head !== checkpoint.entry.id) throw new LegacyMigrationConflict("active model context differs");
+  const { entry } = await checkpointOf(storage, loaded.metadata, context);
+  const model = await checkpointModel(storage, loaded.metadata.conversationId, entry, context);
+  if (entry.head !== entry.id || model.length !== plan.model.length || model.some((message, index) => !same(message, plan.model[index]))) throw new LegacyMigrationConflict("active model context differs");
   return loaded.metadata;
 }
