@@ -365,6 +365,9 @@ export class DurableAgent {
     };
     const window = () => Math.min(agent.state.model.contextWindow, options.durable.contextWindow ?? Infinity, agent.overflowWindow);
     agent.harness = await Harness.open(storageGuard(options.durable.storage, options.durable.onStorageFailure), { registry, models: models as unknown as HarnessOptions["models"],
+      // What Pi contains rather than throws (a faulted phase, a throwing hook or section, a dropped progress commit) is
+      // otherwise silent.
+      onReport: error => console.error(JSON.stringify({ type: "pi_report", error: error instanceof Error ? error.message : String(error) })),
       settings: { compaction: { enabled: true,
         get reserveTokens() { return Math.min(16_384, Math.floor(window() * 0.15)); },
         // The recent context a summary keeps, but never so much that what is fixed (the system prompt) and it fill the
@@ -386,9 +389,12 @@ export class DurableAgent {
       (await agent.harness.conversation(options.durable.conversationId as ConversationId, context))!;
     if (!agent.conversation) throw new Error("Pi durable conversation does not exist");
     agent.harness.subscribeCommits(publication => {
-      for (const change of publication.changes) if (change.type === "task" && change.value.kind === original.name &&
-        change.value.state.status === "terminal" && change.value.state.outcome.status === "failed") {
-        agent.errorMessage = change.value.state.outcome.error.message;
+      // A generation that ended without an answer fails the run: one that failed, and one whose phase threw (faulted) or
+      // that no installed definition could take (orphaned), which would otherwise end the run as if it had answered.
+      for (const change of publication.changes) if (change.type === "task" && change.value.kind === original.name && change.value.state.status === "terminal") {
+        const outcome = change.value.state.outcome;
+        if (outcome.status === "failed" || outcome.status === "faulted") agent.errorMessage = outcome.error.message;
+        else if (outcome.status === "orphaned") agent.errorMessage = `Pi generation was orphaned: ${outcome.reason}`;
       }
       const entries = publication.changes.filter(change => change.type === "entry" && change.value.conversationId === agent.conversation.id)
         .sort((a, b) => (a as { value: EntryRecord }).value.id - (b as { value: EntryRecord }).value.id);
