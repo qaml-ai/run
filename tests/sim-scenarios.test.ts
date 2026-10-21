@@ -88,7 +88,10 @@ test("a session whose commit fails while its node still owns the agent gives the
   // Minimized from the first nightly: the began record's append lands but its answer is lost five times (BUGGIFY
   // tail.append.lost_ack), so the commit fails with the lease healthy. The faulted session used to stay loaded, holding
   // run-5 open (and the agent refusing runs) until its node restarted.
-  const plan: Plan = {"seed": "2686", "nodes": ["a", "b", "c"], "leaseTtlMs": 3000, "durationMs": 60000, "skews": {"a": 0, "b": 0, "c": 0}, "modelDelayMs": [50, 8000], "buggify": "swarm", "steps": [{"at": 0, "op": {"op": "create", "agent": 0, "node": "a"}}, {"at": 10, "op": {"op": "create", "agent": 1, "node": "c"}}, {"at": 1055, "op": {"op": "prompt", "agent": 0, "run": 0, "node": "a"}}, {"at": 2429, "op": {"op": "prompt", "agent": 1, "run": 1, "node": "b"}}, {"at": 4024, "op": {"op": "prompt", "agent": 1, "run": 2, "node": "b"}}, {"at": 5308, "op": {"op": "prompt", "agent": 1, "run": 3, "node": "b"}}, {"at": 6669, "op": {"op": "prompt", "agent": 0, "run": 4, "node": "c"}}, {"at": 8444, "op": {"op": "prompt", "agent": 0, "run": 5, "node": "a"}}]};
+  // The minimized fault schedule is keyed to the legacy engine's sequence of tail appends (Pi writes its transcript in
+  // its own journal, so the same seed draws its faults elsewhere): replayed on the engine it was minimized on. The
+  // session's commit and release are the runtime's, whatever the engine.
+  const plan: Plan = {"env": { AGENT_ENGINE: "legacy" }, "seed": "2686", "nodes": ["a", "b", "c"], "leaseTtlMs": 3000, "durationMs": 60000, "skews": {"a": 0, "b": 0, "c": 0}, "modelDelayMs": [50, 8000], "buggify": "swarm", "steps": [{"at": 0, "op": {"op": "create", "agent": 0, "node": "a"}}, {"at": 10, "op": {"op": "create", "agent": 1, "node": "c"}}, {"at": 1055, "op": {"op": "prompt", "agent": 0, "run": 0, "node": "a"}}, {"at": 2429, "op": {"op": "prompt", "agent": 1, "run": 1, "node": "b"}}, {"at": 4024, "op": {"op": "prompt", "agent": 1, "run": 2, "node": "b"}}, {"at": 5308, "op": {"op": "prompt", "agent": 1, "run": 3, "node": "b"}}, {"at": 6669, "op": {"op": "prompt", "agent": 0, "run": 4, "node": "c"}}, {"at": 8444, "op": {"op": "prompt", "agent": 0, "run": 5, "node": "a"}}]};
   const result = await runPlan(plan, { quiet: true });
   assert.deepEqual(result.failures, []);
   assert.ok(result.logs.some(log => log.line.includes('"session_fault_released"')), "the faulted session was released");
@@ -266,7 +269,8 @@ test("a node cut off the database holding metering deltas across a reconcile has
 test("a retry of a request still being taken is answered once its record is durable, not before (night 4, seed 27266)", async () => {
   // b took run-7 and was writing its record when the retry came; the retry was answered 202 from memory, the write then
   // failed (b cut off the database), and the request the client was told was taken never existed.
-  const plan: Plan = JSON.parse(readFileSync(new URL("./sim/cases/retry-before-durable.json", import.meta.url), "utf8"));
+  // Minimized on the legacy engine, whose transcript appends its fault schedule is keyed to: replayed on it (see seed 2686).
+  const plan: Plan = { ...JSON.parse(readFileSync(new URL("./sim/cases/retry-before-durable.json", import.meta.url), "utf8")), env: { AGENT_ENGINE: "legacy" } };
   const result = await runPlan(plan, { quiet: true });
   assert.deepEqual(result.failures, []);
   assert.ok(result.reached.includes("a retry waited for its request's record to be durable"), result.reached.join(", "));
