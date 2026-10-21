@@ -296,12 +296,16 @@ jobs:
           fi
       - uses: actions/checkout@v4
         if: github.event_name == 'pull_request'
-      - name: Record the tested merge commit
+      - name: Record the tested merge tree
+        id: tested-tree
         if: github.event_name == 'pull_request'
         env:
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: jq -n --arg commit "$(git rev-parse HEAD)" --arg head "$PR_HEAD" --argjson pr "$PR_NUMBER" '{commit:$commit,head:$head,pr:$pr}' > merge.json
+        run: |
+          tree=$(git rev-parse 'HEAD^{tree}')
+          echo "tree=$tree" >> "$GITHUB_OUTPUT"
+          jq -n --arg tree "$tree" --arg commit "$(git rev-parse HEAD)" --arg head "$PR_HEAD" --argjson pr "$PR_NUMBER" '{tree:$tree,commit:$commit,head:$head,pr:$pr}' > merge.json
       - uses: actions/upload-artifact@v4
         if: github.event_name == 'pull_request'
-        with: { name: tested-merge, path: merge.json, retention-days: 14 }
+        with: { name: "tested-tree-${{ steps.tested-tree.outputs.tree }}", path: merge.json, retention-days: 14 }
