@@ -1,8 +1,10 @@
+import type { Message } from "@earendil-works/pi-ai";
 import { durableEntryMessages } from "./pi-durable/agent.ts";
 import { safeError } from "./metrics.ts";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { dualWriting, NativeTranscript, nativeTranscriptRecords, nativeUnrecorded } from "./pi-durable/transcript.ts";
 import { JournalHistory, servedHistory } from "./pi-durable/history.ts";
+import { journalForkCut, type JournalForkCut } from "./pi-durable/fork.ts";
 import { mkdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { once } from "node:events";
@@ -144,14 +146,15 @@ export class AgentSupervisor {
    * started (`NativeTranscript.seed`). Records past the copy budget go to the agent's legacy log instead, which its
    * history reads first.
    */
-  async seed(id: string, records: TranscriptRecord[], claim?: Claim) {
+  /** `model`: the model context the agent starts with (a fork's, as Pi had it at the cut), else its records' working set. */
+  async seed(id: string, records: TranscriptRecord[], claim?: Claim, model?: Message[]) {
     if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id)) throw new Error("Invalid agent id");
     await mkdir(resolve(join(this.root, id)), { recursive: true, mode: 0o700 });
     const storage = await openPiStorage({ ...this.piLocation(id), ...(claim ? { claim } : {}) });
     const log = copyFingerprint(records) === undefined ? this.options.storage ? this.options.storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id), claim) : fileAppendLog<TranscriptRecord>(transcriptPath(resolve(join(this.root, id)))) : undefined;
     try {
       if (log) await log.rewrite(() => records);
-      if (!await NativeTranscript.seed(storage, { sessionId: id, records, ...(log ? { legacy: log } : {}) })) throw new Error("The agent's Pi storage was seeded already");
+      if (!await NativeTranscript.seed(storage, { sessionId: id, records, ...(log ? { legacy: log } : {}), ...(model ? { working: model as AgentMessage[] } : {}) })) throw new Error("The agent's Pi storage was seeded already");
     } finally { await storage.close(BACKGROUND_CONTEXT); await log?.close(); }
   }
 
@@ -420,6 +423,23 @@ export class AgentSupervisor {
   readsJournal(tenant: string) {
     const tenants = this.options.historySourceTenants;
     return dualWriting() && !!tenants?.length && (tenants.includes("*") || tenants.includes(tenant));
+  }
+
+  /**
+   * A fork of agent `id` cut from its journal (pi-durable/fork.ts), read without its process: its history is `settled`
+   * (the history index's first `indexed` messages, which `settled` reads) then the journal's. Undefined where the
+   * journal cannot place the cut.
+   */
+  async journalFork(id: string, indexed: number, settled: (indexed: number) => Promise<AgentMessage[]>, at?: number | string): Promise<JournalForkCut | undefined> {
+    if (!await hasPiStorage(this.piLocation(id))) return undefined;
+    // Read only: opening the storage writes nothing that is not there already, and nothing here commits.
+    const storage = await openPiStorage(this.piLocation(id));
+    try {
+      const history = await JournalHistory.openAny(storage);
+      const tail = history && await history.messagesFrom(indexed);
+      if (!history || !tail) return undefined;
+      return await journalForkCut(storage, history, [...await settled(indexed), ...tail], at);
+    } finally { await storage.close(BACKGROUND_CONTEXT); }
   }
 
   async journalBacklog(id: string, from: number): Promise<{ messages: AgentMessage[]; turns: number[] } | undefined> {
