@@ -273,7 +273,10 @@ export class AgentSupervisor {
           if (bridge.nativeCommitting) await bridge.nativeCommitting(entry)?.(sql);
           else for (const item of durableEntryMessages(entry)) await bridge.committing?.({ t: "message", message: item.message, pi: item.cursor })?.(sql);
           if (entry.kind === "camel.host.record") {
-            const record = (entry.data as { record?: TranscriptRecord } | undefined)?.record;
+            const data = entry.data as { record?: TranscriptRecord; pi?: { entryId: number; index: number } } | undefined;
+            // A message the host wrote itself is a native entry now (dual write), which `nativeCommitting` charges; its
+            // record, as any host record, still writes the spend no record carried yet.
+            const record = data?.record ?? (data?.pi ? { t: "pi" as const, cursor: data.pi } : undefined);
             if (record) await bridge.committing?.(record)?.(sql);
           }
         } });
