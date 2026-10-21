@@ -4,6 +4,9 @@ import type { Cursor, EntryId, EntryRecord, Storage } from "@earendil-works/pi-d
 import { durableEntryMessages } from "./agent.ts";
 import { HOST_BOOTSTRAP_KIND, LEGACY_CONVERSATION_ID as conversationId } from "./migration.ts";
 import { MARKER_KIND } from "./transcript.ts";
+import { createHash } from "node:crypto";
+import { always } from "../assert.ts";
+import { metricLine } from "../metrics.ts";
 
 /**
  * An agent's history as Pi's journal gives it (plans/host-transcript-removal.md, phase 2): the messages before the
@@ -15,6 +18,11 @@ export type At = { entryId: number; index: number };
 /** The marker that starts a session's journal history: the host's history then, and where in the journal it stood. */
 export type HistoryBase = { t: "base"; total: number; through?: At; active: boolean; turnStart: number; awaiting: string[]; calls?: [string, number][] };
 
+/** The host transcript's state document and records (NativeTranscript): read, never written, here. */
+const SNAPSHOT = { kind: "camel.host.snapshot", scope: { kind: "session" as const } };
+const RECORD_KIND = "camel.host.record";
+type Snapshot = { total: number; piCursor?: At; active: boolean; turnStart: number; awaiting?: string[]; calls?: [string, number][] };
+
 const after = (a: At, b: At) => a.entryId > b.entryId || a.entryId === b.entryId && a.index > b.index;
 
 export class JournalHistory {
@@ -25,6 +33,8 @@ export class JournalHistory {
   awaiting: string[];
   /** The journal cursor of each history message from the base on: `cursors[i]` is the message at `base.total + i`. */
   private cursors: At[] = [];
+  /** Where turns began (their first message's index), from the base on. */
+  private turnStarts: number[] = [];
   /** Each tool call's assistant message index: those the base holds (its working set's), and those made since. */
   private calls = new Map<string, number>();
   private readonly base: HistoryBase;
@@ -55,10 +65,45 @@ export class JournalHistory {
   static async open(storage: Pick<Storage, "scanEntries" | "entry">): Promise<JournalHistory | undefined> {
     const base = await JournalHistory.findBase(storage);
     if (!base) return undefined;
-    const history = new JournalHistory(storage, base.data as unknown as HistoryBase, base.id);
+    return JournalHistory.from(storage, base.data as unknown as HistoryBase, base.id);
+  }
+
+  /**
+   * The journal history of any session the host transcript wrote: its base marker's, or, without one, the host's last
+   * snapshot document's, which is where the host's history stood as its last record was written (the host writes both in
+   * one commit). Once the host transcript is no longer written, that snapshot stays where it is: a session that never
+   * loaded since needs no base marker. Undefined for a session with neither.
+   */
+  static async openAny(storage: Pick<Storage, "scanEntries" | "entry" | "findDocument" | "document">): Promise<JournalHistory | undefined> {
+    const marked = await JournalHistory.open(storage);
+    if (marked) return marked;
+    const document = await storage.findDocument(SNAPSHOT, "current", context);
+    const snapshot = document && ((await storage.document(document.id, "current", context))?.value as { snapshot?: Snapshot } | undefined)?.snapshot;
+    if (!snapshot) return undefined;
+    const last = await JournalHistory.lastRecord(storage);
+    if (last === undefined) return undefined;
+    return JournalHistory.from(storage, { t: "base", total: snapshot.total, ...(snapshot.piCursor ? { through: snapshot.piCursor } : {}), active: snapshot.active,
+      turnStart: snapshot.turnStart, awaiting: snapshot.awaiting ?? [], calls: snapshot.calls ?? [] }, last);
+  }
+
+  /** The newest host record's entry, read back from the journal's end to its host generation's start. */
+  private static async lastRecord(storage: Pick<Storage, "scanEntries">): Promise<number | undefined> {
+    let cursor: Cursor | undefined;
+    do {
+      const page = await storage.scanEntries({ conversationId, order: "descending" }, 128, cursor, context);
+      for (const entry of page.items) {
+        if (entry.kind === RECORD_KIND) return entry.id;
+        if (entry.kind === HOST_BOOTSTRAP_KIND) return entry.id;
+      }
+      cursor = page.next;
+    } while (cursor !== undefined);
+  }
+
+  private static async from(storage: Pick<Storage, "scanEntries" | "entry">, base: HistoryBase, baseId: number) {
+    const history = new JournalHistory(storage, base, baseId);
     // Native messages the base did not count yet (between its cursor and the base itself) come first.
     if (history.base.through) await history.read(history.base.through.entryId, true);
-    else await history.read(base.id, false);
+    else await history.read(baseId, false);
     return history;
   }
 
@@ -81,7 +126,10 @@ export class JournalHistory {
       if (entry.id <= this.baseId) return;
       const marker = entry.data as { t: string; active?: boolean; calls?: string[]; released?: boolean; cursor?: At; after?: At };
       if (marker.t === "retract") this.pop();
-      else if (marker.t === "turn") { this.active = !!marker.active; if (marker.active) this.turnStart = this.total; }
+      else if (marker.t === "turn") {
+        this.active = !!marker.active;
+        if (marker.active) { this.turnStart = this.total; this.turnStarts.push(this.total); }
+      }
       else if (marker.t === "awaiting" && marker.calls) {
         this.awaiting = marker.released ? this.awaiting.filter(id => !marker.calls!.includes(id)) : [...this.awaiting, ...marker.calls.filter(id => !this.awaiting.includes(id))];
       } else if (marker.t === "pi" && marker.cursor) {
@@ -113,6 +161,9 @@ export class JournalHistory {
     for (const [id, at] of this.calls) if (at >= index) this.calls.delete(id);
   }
 
+  /** Where turns began, among the history's messages from absolute index `from` on. */
+  turnsFrom(from: number): number[] { return this.turnStarts.filter(turn => turn >= from && turn < this.total); }
+
   /** The index of the assistant message that made call `id`, if the base holds it or it was made since. */
   callIndex(id: string): number | undefined { return this.calls.get(id); }
 
@@ -133,4 +184,23 @@ export class JournalHistory {
     }
     return messages;
   }
+}
+
+/**
+ * A history value the journal gives, where reads have moved there, against the host transcript's: the journal's when
+ * they are the same, the host's otherwise (logged as history_source_mismatch, with values and hashes only, and an
+ * always-assertion the simulation records). `journal` undefined: the journal does not hold it, the host's.
+ */
+export function servedHistory<T>(agent: string, field: string, host: T, journal: T | undefined): T {
+  if (journal === undefined) return host;
+  const same = JSON.stringify(journal) === JSON.stringify(host);
+  const summary = (item: unknown) => typeof item === "number" || typeof item === "boolean" || item === undefined ? item
+    : createHash("sha256").update(JSON.stringify(item)).digest("hex").slice(0, 16);
+  console.log(metricLine(same ? "history_source" : "history_source_mismatch", {
+    dimensions: { Outcome: same ? "match" : "mismatch" }, rollups: [[], ["Outcome"]],
+    metrics: { HistorySourceReads: 1, HistorySourceMismatches: same ? 0 : 1 },
+    properties: { agent, field, ...(same ? {} : { host: summary(host), journal: summary(journal) }) },
+  }));
+  always(same, "a history value the journal gives is the host transcript's");
+  return same ? journal : host;
 }

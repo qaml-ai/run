@@ -1,5 +1,8 @@
 import { durableEntryMessages } from "./pi-durable/agent.ts";
-import { NativeTranscript, nativeTranscriptRecords, nativeUnrecorded } from "./pi-durable/transcript.ts";
+import { safeError } from "./metrics.ts";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { dualWriting, NativeTranscript, nativeTranscriptRecords, nativeUnrecorded } from "./pi-durable/transcript.ts";
+import { JournalHistory, servedHistory } from "./pi-durable/history.ts";
 import { mkdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { once } from "node:events";
@@ -438,7 +441,34 @@ export class AgentSupervisor {
   }
 
   /** The messages an agent's history index lacks, read from its log (all of them from `from`), without its process. */
-  async backlog(id: string, from: number) {
+  /**
+   * The messages an agent's history index lacks, from its journal (pi-durable/history.ts) where its tenant reads
+   * history from there (`historySourceTenants`), without its process; undefined where the journal does not hold them.
+   */
+  private async journalBacklog(id: string, from: number): Promise<{ messages: AgentMessage[]; turns: number[] } | undefined> {
+    if (!await hasPiStorage(this.piLocation(id))) return undefined;
+    // Read only: opening the storage writes nothing that is not there already, and nothing here commits.
+    const storage = await openPiStorage(this.piLocation(id));
+    try {
+      const history = await JournalHistory.openAny(storage);
+      const messages = history && await history.messagesFrom(from);
+      return messages && { messages, turns: history!.turnsFrom(from) };
+    } finally { await storage.close(BACKGROUND_CONTEXT); }
+  }
+
+  async backlog(id: string, from: number, tenant?: string) {
+    const host = await this.hostBacklog(id, from);
+    const tenants = this.options.historySourceTenants;
+    if (tenant === undefined || !dualWriting() || !tenants?.length || !(tenants.includes("*") || tenants.includes(tenant))) return host;
+    const journal = await this.journalBacklog(id, from).catch(error => {
+      console.error(JSON.stringify({ type: "history_source_unavailable", agent: id, field: "backlog", error: safeError(error) }));
+      return undefined;
+    });
+    const served = servedHistory(id, "backlog", { messages: host.messages, turns: host.turns }, journal);
+    return { ...host, messages: served.messages, turns: served.turns };
+  }
+
+  private async hostBacklog(id: string, from: number) {
     const log = this.options.storage ? this.options.storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id)) : fileAppendLog<TranscriptRecord>(transcriptPath(resolve(join(this.root, id))));
     // Unbounded: this backlog is read for one page, not kept.
     const transcript = new Transcript(log, from, Infinity);
