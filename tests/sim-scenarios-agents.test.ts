@@ -218,8 +218,9 @@ test("a notification refused at the wake cap whose node is lost after its messag
   await outcome(sim, "a", parent, await prompt(sim, "a", parent, "start the worker again"));
   const heard = () => sim.model.served.filter(served => JSON.stringify(served.body.messages.at(-1).content).includes("<agent_notification")).length;
   const before = heard();
-  // a lands the refused notification in its journal (a host record), and stops there, before it closes the turn.
-  sim.pauseAtDbCommit("a", 10_000, [HOST_RECORD, '{"record":{"t":"message"', '"source":{"kind":"agent"']);
+  // a lands the refused notification in its journal (its host record, with the native entry it refers to), and stops
+  // there, before it closes the turn.
+  sim.pauseAtDbCommit("a", 10_000, [HOST_RECORD, '"kind":"camel.user"', '"source":{"kind":"agent"']);
   const second = await sim.until(async () => (await sim.db.query("select request_id from agent_children where parent = $1 and id <> $2 and kind = 'spawn'", [parent, first.slice("child_".length)])).rows[0]?.request_id, "the second spawn's row");
   await sim.until(() => sim.pauses.some(pause => pause.node === "a"), "a to stop as the refused notification lands", 60_000);
   sim.crash("a");

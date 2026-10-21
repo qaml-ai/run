@@ -15,6 +15,10 @@ import { openPiJournalReader, openPiStorage } from "../src/pi-durable/storage.ts
 import { loadLegacyMigration } from "../src/pi-durable/migration.ts";
 import { recoverDurableMessages } from "../src/pi-durable/agent.ts";
 import type { ToolDefinition } from "../src/protocol.ts";
+import { setDualWrite } from "../src/pi-durable/transcript.ts";
+
+// The agent host as nodes run it with AGENT_PI_DUAL_WRITE=1 (plans/host-transcript-removal.md, phase 1).
+setDualWrite(true);
 
 const context = BACKGROUND_CONTEXT;
 const user = (content: string, requestId?: string) => ({ role: "user", content, timestamp: 1, ...(requestId ? { requestId } : {}) }) as AgentMessage;
@@ -250,4 +254,27 @@ test("a native human wait survives reopen and accepts its answer without project
   await second.host.dispose(0);
   await f.start({ resume: true });
   assert.deepEqual(await f.history(), before);
+});
+
+test("an answer to a waiting call is written into Pi's journal with its host record, so the next run checks no context in again", { timeout: 20_000 }, async t => {
+  const f = await fixture(t);
+  f.responses(answer(fauxToolCall("lookup", { key: "saved" }, { id: "dual-written-call" }), "toolUse"));
+  const host = await f.start({ inputRequired: true });
+  assert.equal((await host.host.handle("prompt", { text: "ask first", requestId: "dual-written-request" })).stopped, "input_required");
+  const kinds = async () => {
+    const counts: Record<string, number> = {};
+    for (let cursor; ;) {
+      const page = await host.storage.scanEntries({ conversationId: 1 as never, order: "ascending" }, 256, cursor, context);
+      for (const entry of page.items) counts[entry.kind] = (counts[entry.kind] ?? 0) + 1;
+      if (!(cursor = page.next)) break;
+    }
+    return counts;
+  };
+  const before = await kinds();
+  f.responses(answer("answered"));
+  assert.equal((await host.host.handle("resume", { calls: [{ toolCallId: "dual-written-call", result: { content: [{ type: "text", text: "approved" }], isError: false } }] })).reply, "answered");
+  const after = await kinds();
+  assert.equal(after["camel.message"] - (before["camel.message"] ?? 0), 1, "the host's answer is a native entry");
+  assert.equal(after["camel.legacy.context"], before["camel.legacy.context"], "Pi's context already holds it: no whole-context checkpoint");
+  assert.ok(after["camel.history.marker"] > (before["camel.history.marker"] ?? 0), "the turn's end is a marker");
 });

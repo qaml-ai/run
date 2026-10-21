@@ -5,6 +5,10 @@ import { setMetricService, setMetricSink } from "./metrics.ts";
 import type { AppendLog } from "../shared/append-log.ts";
 import type { TranscriptRecord } from "./transcript.ts";
 import { remotePiStorage } from "./pi-durable/storage.ts";
+import { setDualWrite } from "./pi-durable/transcript.ts";
+
+// This process's environment is the node's settings for it (agentProcessEnv).
+setDualWrite(process.env.AGENT_PI_DUAL_WRITE === "1");
 
 // One agent in its own process: the host's I/O goes over IPC to the supervisor.
 // Its stdout is not kept: metric lines (metrics.ts) go to stderr, which the node's log keeps.

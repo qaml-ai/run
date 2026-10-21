@@ -16,6 +16,8 @@ export type DurableAgentOptions = Omit<AgentOptions, "transformContext"> & {
     storage: Storage;
     conversationId?: ConversationId | number;
     cursor?: DurableCursor;
+    /** The latest journal message the host wrote or recorded itself: a run's new messages are the ones after it. */
+    written?: () => DurableCursor | undefined;
     contextWindow?: number;
     summaryStream?: AgentOptions["streamFn"];
     onSummary?: (message: AssistantMessage) => void | Promise<void>;
@@ -622,6 +624,16 @@ export class DurableAgent {
     await this.conversation.configure({ model: { provider: this.state.model.provider, modelId: this.state.model.id },
       thinkingLevel: this.state.thinkingLevel, instructions: null }, context);
     if (!this.dirty) return;
+    // A host that writes its own messages into the journal (NativeTranscript's dual write) changed Pi's context as it
+    // changed its working set: then there is nothing to check in.
+    const view = await this.conversation.context(context);
+    for (const entry of view.entries) if (entry.kind === "camel.user" && entry.model?.[0]?.role === "user" && !this.originalInputs.has(entry.id)) {
+      const original = (entry.data as { message?: AgentMessage } | undefined)?.message;
+      if (original) this.originalInputs.set(entry.id, { native: entry.model[0], message: original });
+    }
+    if (view.head?.kind !== "camel.legacy.context" || (view.head.model?.length ?? 0) <= 1) {
+      if (samePiContext(this.originals(view.messages as Message[]) as AgentMessage[], contextMessages(this.messages) as AgentMessage[])) { this.dirty = false; return; }
+    }
     await this.checkpointContext(this.messages);
     this.dirty = false;
   }
@@ -739,6 +751,9 @@ export class DurableAgent {
   }
   private async runInner(messages: AgentMessage[]) {
     await this.emit({ type: "agent_start" });
+    // Messages the host wrote into the journal itself since the last run are not this run's.
+    const written = this.options.durable.written?.();
+    if (written) this.advanceCursor(written);
     let start = this._latestCursor;
     try {
       await this.syncContext();

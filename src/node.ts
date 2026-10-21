@@ -1,4 +1,5 @@
 import { ModelAttempts } from "./model-attempts.ts";
+import { setDualWrite } from "./pi-durable/transcript.ts";
 import { bucketInput, EndUserCredits } from "./end-user-credits.ts";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -295,6 +296,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   // only, but for origins the operator allows (AGENT_OUTBOUND_ALLOW_ORIGINS), which web_fetch, search and render never reach
   // (`withoutOrigins`).
   const outbound = outboundFromEnvironment(env);
+  if (config.piDualWrite) setDualWrite(true);
   const supervisor = new AgentSupervisor(join(root, "sessions"), {
     runtime: config.runtime, maxAgents, ...(config.memoryHighBytes ? { memoryHighBytes: config.memoryHighBytes } : {}), hosting, ...(distributed ? { storage } : {}), ...(deps.codeExecutor ? { codeExecutor: deps.codeExecutor } : {}),
     db,

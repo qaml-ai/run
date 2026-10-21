@@ -921,7 +921,7 @@ export function createAgentHost(hostIO: HostIO) {
         toolExecution: "parallel",
       };
       agent = await DurableAgent.create({ ...agentOptions, durable: {
-        storage: piStorage, conversationId: LEGACY_CONVERSATION_ID, cursor: transcript.piCursor,
+        storage: piStorage, conversationId: LEGACY_CONVERSATION_ID, cursor: transcript.piCursor, written: () => transcript.piCursor,
         // Pi's journal failed a write or read: what the host holds is no longer known to be stored, as when the
         // transcript fails one. The run ends with PERSISTENCE_FAILED and the session gives the agent up.
         onStorageFailure: error => { transcript.failed ??= error; },
@@ -1295,7 +1295,7 @@ export function createAgentHost(hostIO: HostIO) {
     try {
       const result = await handle(method, params);
       if (io.piDualRead && journal && transcript?.failed === undefined && ["init", "prompt", "execute", "continue", "resume"].includes(method)) {
-        await checkDualRead(io.piDualRead, config.id, journal, transcript.awaiting);
+        await checkDualRead(io.piDualRead, config.id, journal, transcript.awaiting, transcript.active);
       }
       return result;
     }
