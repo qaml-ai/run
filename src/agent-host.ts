@@ -1046,13 +1046,13 @@ export function createAgentHost(hostIO: HostIO) {
         sessionId: config.id,
         toolExecution: "parallel",
       };
-      let conversion: LegacyMigrationMetadata | undefined = migrated;
-      let migrationRecords: TranscriptRecord[] | undefined;
+      let conversion: (LegacyMigrationMetadata & { status?: "imported" | "existing" }) | undefined = migrated;
       if (config.engine === "pi-durable" && piStorage && !conversion && canMigrate) {
         try {
-          migrationRecords = await readMigrationRecords(transcript.log);
+          // Pi's context starts as the host's working set, checkpointed once by the import.
           const imported = await importLegacyTranscript({ storage: piStorage, sessionId: config.id,
-            records: migrationRecords, leadingSystem: leading(tools.map(toToolDeclaration)) });
+            records: await readMigrationRecords(transcript.log), leadingSystem: leading(tools.map(toToolDeclaration)),
+            model: convertToLlm(agentOptions.initialState!.messages!) });
           conversion = imported;
           migration = { state: "migrated" };
         } catch (error) {
@@ -1063,7 +1063,7 @@ export function createAgentHost(hostIO: HostIO) {
       let adoptionDeferred = false;
       if (piStorage && conversion && config.engine === "pi-durable" && !(transcript instanceof NativeTranscript)) {
         try {
-          transcript = await NativeTranscript.adopt(piStorage, transcript, indexed ?? undefined, io.historyBacklogBytes, agentOptions.initialState?.messages, migrationRecords);
+          transcript = await NativeTranscript.adopt(piStorage, transcript, indexed ?? undefined, io.historyBacklogBytes, agentOptions.initialState?.messages, conversion);
         } catch (error) {
           if (!(error instanceof LegacyMigrationDeferred)) throw error;
           migration = { state: "deferred", reason: error.reason };

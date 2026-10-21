@@ -60,7 +60,7 @@ async function latestDurableCursor(storage: Storage, conversationId: Conversatio
     const page = await storage.scanEntries({ conversationId, order: "descending" }, 64, cursor, context);
     for (const entry of page.items) if (nativeKinds.has(entry.kind) && entry.model?.length) {
       return { entryId: entry.id, index: entry.model.length - 1 };
-    } else if (entry.kind === "camel.legacy.context") {
+    } else if (entry.kind === "camel.legacy.context" || entry.kind === "camel.context.message") {
       // This checkpoint supersedes the imported archive as the provider working
       // set. A session that has never run under Pi has no native message yet.
       return { entryId: entry.id, index: -1 };

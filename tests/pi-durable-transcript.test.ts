@@ -113,3 +113,34 @@ for (const backend of ["memory", "postgres"] as const) test(`native transcript c
   assert.deepEqual((await NativeTranscript.open(storage))!.snapshot(), reopened.snapshot());
   await storage.close(context);
 });
+
+test("an import adopted straight away writes its archive and context once, and the generation exports the whole history", async () => {
+  const storage = new MemoryStorage(), source = legacy();
+  for (let i = 0; i < 300; i++) {
+    await source.transcript.push({ role: "user", content: `request ${i}`, requestId: `request-${i}`, timestamp: i } as any);
+    await source.transcript.push({ role: "assistant", content: [{ type: "text", text: `answer ${i}` }], api: "openai-completions", provider: "test", model: "fake",
+      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: i } as any);
+  }
+  const writes: StorageWrite[] = [];
+  const commit = storage.commit.bind(storage);
+  storage.commit = async (batch, at) => { writes.push(...batch); return commit(batch, at); };
+  const imported = await importLegacyTranscript({ storage, sessionId: "test", records: source.records });
+  const transcript = await NativeTranscript.adopt(storage, source.transcript, undefined, undefined, undefined, imported);
+  const kinds = new Map<string, number>();
+  for (const write of writes) if (write.type === "entry") kinds.set(write.value.kind, (kinds.get(write.value.kind) ?? 0) + 1);
+  assert.deepEqual(Object.fromEntries(kinds), { "camel.legacy.migration": 1, "camel.legacy.record": 5, "camel.legacy.context": 1, "camel.context.message": 599, "camel.host.bootstrap": 1 },
+    "one archive, one context checkpoint (a head and one entry per message), no copies");
+  assert.equal(writes.filter(write => write.type === "submission").length, 300, "request keys are written once, by the import");
+  assert.deepEqual(transcript.piCursor, { entryId: imported.contextEntryId, index: -1 });
+  const head = await storage.findLatestHeadMarker(1 as any, undefined, context);
+  assert.equal(head?.id, imported.contextEntryId);
+  assert.ok(await transcript.hasRequest("request-0"));
+  await transcript.setActive(true);
+  await transcript.push({ role: "user", content: "new", requestId: "new", timestamp: 301 } as any);
+  await transcript.setActive(false);
+  const history = historyOf((await nativeTranscriptRecords(storage))!);
+  assert.equal(history.length, 601, "export reads the import's archive, then the generation's records");
+  assert.deepEqual(history.slice(0, 600), historyOf(source.records));
+  const reopened = (await NativeTranscript.open(storage))!;
+  assert.deepEqual(reopened.snapshot(), transcript.snapshot());
+});
