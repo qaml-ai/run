@@ -37,6 +37,17 @@ export function durableEntryMessages(entry: EntryRecord): DurableMessage[] {
   })).filter(item => !(item.message.role === "toolResult" && (item.message.details as { inputRequired?: boolean } | undefined)?.inputRequired));
 }
 
+/** Equal as the model sees them; the same message objects short-circuit. */
+function sameContext(left: readonly AgentMessage[], right: readonly AgentMessage[]) {
+  return left.length === right.length && left.every((message, index) => message === right[index] ||
+    JSON.stringify(contextMessages([message])) === JSON.stringify(contextMessages([right[index]])));
+}
+
+const declaration = (tool: AgentTool) => JSON.stringify([tool.name, tool.description, tool.parameters, tool.outputSchema, tool.replay]);
+function sameTools(left: readonly AgentTool[], right: readonly AgentTool[]) {
+  return left.length === right.length && left.every((tool, index) => tool === right[index] || declaration(tool) === declaration(right[index]));
+}
+
 async function latestDurableCursor(storage: Storage, conversationId: ConversationId): Promise<DurableCursor | undefined> {
   let cursor;
   do {
@@ -122,8 +133,18 @@ export class DurableAgent {
     const self = this;
     this.state = {
       model: options.initialState!.model!, thinkingLevel: options.initialState?.thinkingLevel ?? "off",
-      get messages() { return self.messages; }, set messages(value) { self.messages = [...value]; self.dirty = true; },
-      get tools() { return self.tools; }, set tools(value) { self.tools = [...value]; self.installTools(); self.dirty = true; },
+      // The host reassigns its view around every run. Pi already holds an equal context, so only a change is
+      // checkpointed: rewriting it each turn grew the journal with the square of the session's turns.
+      get messages() { return self.messages; }, set messages(value) {
+        const next = [...value];
+        if (!sameContext(self.messages, next)) self.dirty = true;
+        self.messages = next;
+      },
+      get tools() { return self.tools; }, set tools(value) {
+        const next = [...value];
+        if (!sameTools(self.tools, next)) self.dirty = true;
+        self.tools = next; self.installTools();
+      },
       get systemPrompt() { const system = self.messages.findLast(message => message.role === "system"); return system ? getSystemMessageText(system) : ""; },
       get isStreaming() { return self.controller !== undefined; },
       get streamingMessage() { return self.streamingMessage; }, get pendingToolCalls() { return self.pending; },
