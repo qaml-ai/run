@@ -1,5 +1,5 @@
 import { durableEntryMessages } from "./pi-durable/agent.ts";
-import { NativeTranscript, nativeTranscriptRecords } from "./pi-durable/transcript.ts";
+import { NativeTranscript, nativeTranscriptRecords, nativeUnrecorded } from "./pi-durable/transcript.ts";
 import { mkdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { once } from "node:events";
@@ -102,7 +102,18 @@ export class AgentSupervisor {
 
   private piLocation(id: string) { return { sessionId: id, directory: resolve(join(this.root, id)), ...(this.options.db ? { db: this.options.db } : {}) }; }
 
-  /** Cold history may have committed native messages newer than its legacy index or last reported run. */
+  /**
+   * Whether cold history may hold native messages its index and last reported run do not show: a canonical message
+   * committed after the host's last record. Reads only the journal's newest entries.
+   */
+  async unrecordedHistory(id: string): Promise<boolean> {
+    const journal = await openPiJournalReader(this.piLocation(id));
+    if (!journal) return false;
+    try { return await nativeUnrecorded(journal); }
+    finally { await journal.close(BACKGROUND_CONTEXT); }
+  }
+
+  /** Whether the agent keeps a native (Pi) journal. */
   async hasDurableHistory(id: string): Promise<boolean> {
     const journal = await openPiJournalReader(this.piLocation(id));
     await journal?.close(BACKGROUND_CONTEXT);

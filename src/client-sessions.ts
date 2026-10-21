@@ -3711,9 +3711,9 @@ export class ClientSessions {
       const indexed = await this.historyIndex.indexed(id);
       const reported = "unloaded" in session ? await this.historyIndex.reported(id) : Math.max(0, ...[...session.requests.values()].map(record => Number((record.outcome?.result as { messages?: unknown } | undefined)?.messages) || 0));
       const orphaned = "unloaded" in session && !!(await this.db.query("select 1 from agents where id = $1 and pending_runs", [id])).rowCount;
-      // A Pi response may have committed just before its legacy projection and run outcome failed. Neither
-      // reported nor pending_runs then reveals that tail; a cold read must also consult the native journal.
-      const durable = await this.supervisor.hasDurableHistory(id);
+      // A Pi response may have committed just before its host record and run outcome failed. Neither reported nor
+      // pending_runs then reveals that tail: the native journal's newest entries do.
+      const durable = await this.supervisor.unrecordedHistory(id);
       if (tail === null || indexed === undefined || indexed < reported || orphaned || durable) tail = await this.supervisor.backlog(id, indexed ?? 0);
     }
     return this.historyIndex.page(id, { before, limit }, tail ?? undefined);
