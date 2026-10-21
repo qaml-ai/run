@@ -274,7 +274,10 @@ jobs:
       - if: steps.image.outputs.pushed != 'true'
         uses: useblacksmith/setup-docker-builder@v2
         with: { cache-key: run-image-arm64 }
+      # A hand-run Deploy (a hotfix) may push this tag first; tags are immutable, so this push then fails and the
+      # next step finds that image.
       - if: steps.image.outputs.pushed != 'true'
+        continue-on-error: true
         uses: useblacksmith/build-push-action@v2
         with:
           context: .
@@ -285,6 +288,8 @@ jobs:
           provenance: false
           push: true
           tags: ${{ steps.ecr.outputs.registry }}/camelai-agent-runtime:${{ steps.image.outputs.tag }}
+      - if: steps.image.outputs.pushed != 'true'
+        run: aws ecr describe-images --repository-name camelai-agent-runtime --image-ids imageTag="${GITHUB_SHA::12}" >/dev/null
   docs:
     needs: changes
     timeout-minutes: 15
