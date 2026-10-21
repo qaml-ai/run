@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { WebSocketServer, type WebSocket } from "ws";
-import { openaiRealtime, usageOf } from "../src/voice/realtime/openai.ts";
+import { openaiRealtime, transcriptionLanguage, usageOf } from "../src/voice/realtime/openai.ts";
 import type { RealtimeConfig, RealtimeEvents } from "../src/voice/realtime/provider.ts";
+import { voiceCluster, discordGrant } from "./voice-fakes.ts";
 import { setMetricSink } from "../src/metrics.ts";
 import { sleep, testBrain, tone, until, utter } from "./voice-realtime-fakes.ts";
 
@@ -272,4 +273,38 @@ test("the brain logs voice_realtime_azure_fallback and names the host it ran on 
   const metrics = lines.filter(line => line.type === "voice_realtime");
   assert.deepEqual(metrics.map(line => [line.Host, line.VoiceRealtimeAzureFallbacks]), [["azure", 0], ["openai", 1]]);
   assert.deepEqual(metrics[0]._aws.CloudWatchMetrics[0].Dimensions.map((names: string[]) => names.filter(name => name !== "ServiceName")), [[], ["Host"]]);
+});
+
+test("OpenAI transcription language normalizes BCP-47 to known ISO-639-1 codes", () => {
+  for (const [input, expected] of [["es-ES", "es"], ["pt-BR", "pt"], ["en-US", "en"], ["en", "en"], ["ES", "es"], ["zh-Hant-TW", "zh"], ["fr-CA", "fr"], ["tl", "tl"], ["tl-PH", "tl"], ["bh", "bh"]]) {
+    assert.equal(transcriptionLanguage(input), expected);
+  }
+  for (const input of [undefined, "", "zz", "zz-ZZ", "unknown", "en_US", "en-", "x-private", "und", "en-US-bogus!"]) {
+    assert.equal(transcriptionLanguage(input), undefined, String(input));
+  }
+});
+
+test("a session created with es-ES sends es to OpenAI transcription", async t => {
+  const fake = await fakeOpenAI(t);
+  const cluster = await voiceCluster(t, {
+    realtime: { providers: { openai: openaiRealtime({ baseUrl: fake.base }) }, key: async () => ({ apiKey: "fixture-key", platform: false }) },
+  });
+  const a = await cluster.node("http://a");
+  const created = await a.voice.create("alice", { discord: discordGrant(), language: "es-ES" });
+  const connection = await until(() => cluster.fake.open()[0], "voice transport");
+  connection.handlers.ready();
+  await until(() => fake.seen.events.some(event => event.type === "session.update"), "provider session");
+  assert.equal(fake.seen.events.find(event => event.type === "session.update").session.audio.input.transcription.language, "es");
+  await a.voice.end("alice", created.id);
+});
+
+test("an unknown language is omitted from the OpenAI transcription session", async t => {
+  const fake = await fakeOpenAI(t);
+  const { got, events } = recorder();
+  const connection = openaiRealtime({ baseUrl: fake.base }).connect({
+    model: "gpt-realtime-2.1", voice: "marin", instructions: "", transcribe: true, language: "zz-ZZ", tools: [],
+  }, { apiKey: "fixture-key" }, events);
+  await until(() => got.some(event => event.type === "ready"), "provider ready");
+  assert.equal(Object.hasOwn(fake.seen.events[0].session.audio.input.transcription, "language"), false);
+  connection.close();
 });
