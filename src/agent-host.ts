@@ -994,9 +994,12 @@ export function createAgentHost(hostIO: HostIO) {
         stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: config.model.provider, model: config.model.id }), io.modelOutbound, io.modelAttempt, creditStop);
       const summaryAttempt: ModelAttemptHook | undefined = io.modelAttempt && (event => io.modelAttempt!(
         event.type === "begin" ? { ...event, kind: "compaction" } : event));
-      const summaryStream = explicitKeyStream(() => perCall() ? io.modelAuth() : undefined, () => config.modelHeaders, gate,
+      const summaries = explicitKeyStream(() => perCall() ? io.modelAuth() : undefined, () => config.modelHeaders, gate,
         (model, reasoning) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts),
         stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: config.model.provider, model: config.model.id }), io.modelOutbound, summaryAttempt, creditStop);
+      // A summary reads the conversation as a turn does: the agent's OpenRouter data policy goes on it too.
+      const summaryStream: typeof summaries = (model, context, options) =>
+        summaries(model, context, { ...options, ...(config.dataCollection ? { dataCollection: config.dataCollection } : {}) } as typeof options);
       const agentOptions: Omit<ConstructorParameters<typeof Agent>[0], "transformContext"> = {
         initialState: {
           model: config.model,

@@ -108,3 +108,18 @@ test("compaction summaries carry the agent's data policy too", async t => {
     for (const body of host.bodies.slice(before)) assert.deepEqual(body.provider, { only: HOSTS_1017, ...(dataCollection ? { data_collection: "deny" } : {}) });
   }
 });
+
+test("Pi's compaction summaries carry the agent's data policy too", async t => {
+  const host = await fakeModel(t, () => ({ role: "assistant", content: "Summary: they said hello." }));
+  const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), { ...LOCAL, AGENT_ENGINE: "pi-durable" });
+  await r.call("/v1/key-scopes/chat/providers/openrouter", { method: "PUT", body: { apiKey: "sk-or", baseUrl: host.url } });
+  const summaries = () => host.bodies.filter(body => JSON.stringify(body.messages).includes("context summarization assistant"));
+  for (const dataCollection of [undefined, "deny"] as const) {
+    const before = summaries().length;
+    const created = await r.call("/v1/agents", { body: { model: `openrouter/${FLASH_1017.id}`, keyScope: "chat", runLimits: { contextTokens: 20_000 }, ...(dataCollection ? { dataCollection } : {}) } });
+    assert.equal(created.status, 201, created.text);
+    for (let turn = 0; turn < 10 && summaries().length === before; turn++) await r.prompt(created.json.id, `Turn ${turn} ${"x".repeat(24_000)}`);
+    assert.ok(summaries().length > before, "a summary was asked for");
+    for (const body of summaries().slice(before)) assert.deepEqual(body.provider, { only: HOSTS_1017, ...(dataCollection ? { data_collection: "deny" } : {}) });
+  }
+});
