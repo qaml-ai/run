@@ -116,3 +116,17 @@ test("journal history: a compaction is not history, and the response its overflo
   assert.equal(history.total, 5, "the user message and the answer: no summary, no refused response");
   assert.deepEqual((await history.messagesFrom(3))!.map(message => (message as { role: string }).role), ["user", "assistant"]);
 });
+
+test("journal history: refreshes that overlap (parallel tool calls asking for their call's index) count each entry once", async () => {
+  const storage = await journal([base(0)]);
+  const history = (await JournalHistory.open(storage))!;
+  const call = fauxAssistantMessage([fauxToolCall("publish", {}, { id: "a" }), fauxToolCall("publish", {}, { id: "b" })], { stopReason: "toolUse" });
+  await storage.commit([
+    { type: "entry", value: { id: await storage.mintId<EntryId>(), conversationId, kind: "pi.user", model: [user("publish both")] as never } },
+    { type: "entry", value: { id: await storage.mintId<EntryId>(), conversationId, kind: "pi.assistant", model: [call] as never } },
+  ], BACKGROUND_CONTEXT);
+  await Promise.all([history.refresh(), history.refresh()]);
+  assert.equal(history.total, 2);
+  assert.equal(history.callIndex("a"), 1);
+  assert.equal(history.callIndex("b"), 1);
+});

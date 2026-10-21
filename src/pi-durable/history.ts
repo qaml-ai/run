@@ -37,6 +37,8 @@ export class JournalHistory {
   private applied = new Set<number>();
   /** Where the history's entries begin: the base's cursor's entry, or past the base. */
   private readonly startId: number;
+  /** The refresh in progress, which the next one waits for. */
+  private reading: Promise<void> = Promise.resolve();
   private readonly storage: Pick<Storage, "scanEntries" | "entry">;
 
   private constructor(storage: Pick<Storage, "scanEntries" | "entry">, base: HistoryBase, baseId: number) {
@@ -80,9 +82,16 @@ export class JournalHistory {
    * Take in what the journal committed since the last read. Pi and the host take entry IDs from one sequence but
    * commit on their own, so an entry can land after one with a later ID that a read already took in: the recent IDs
    * are read again, and one not taken in yet means reading the history again from its base, in ID order (a retraction
-   * or skip applies to what precedes it).
+   * or skip applies to what precedes it). Callers overlap (parallel tool calls each ask for their call's index): one
+   * read runs at a time, each after the one before, as two from the same point would count its entries twice.
    */
-  async refresh() {
+  refresh() {
+    const next = this.reading.catch(() => {}).then(() => this.catchUp());
+    this.reading = next;
+    return next;
+  }
+
+  private async catchUp() {
     const late = (await this.entries(Math.max(this.startId, this.lastId - REORDER_WINDOW + 1))).some(entry => entry.id < this.lastId && !this.applied.has(entry.id));
     if (late) { this.reset(); await this.read(this.startId); return; }
     await this.read(this.lastId + 1);

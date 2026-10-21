@@ -37,6 +37,7 @@ async function setup(t: Context) {
     { name: "lookup", description: "Look something up", parameters: { type: "object" }, exposure: "direct" },
     { name: "approve", description: "Needs a person", parameters: { type: "object" }, exposure: "direct" },
     { name: "delegate", description: "A sub-agent", parameters: { type: "object" }, exposure: "direct" },
+    { name: "fetch", description: "Fetch something, alongside other calls", parameters: { type: "object" }, exposure: "direct", executionMode: "parallel" },
   ];
   /** A host over the transcript file, as a node starting the agent: `call` answers its tools. */
   async function start(options: { resume?: boolean; call?: (name: string, host: ReturnType<typeof createAgentHost>) => unknown; storage?: (storage: PiStorage) => PiStorage; initialMessages?: AgentMessage[]; tenant?: string; nativeSectionsTenants?: string[]; piDualRead?: "log" | "throw" } = {}) {
@@ -380,4 +381,19 @@ test("a session's journal history starts once: its base is written at its first 
   fake.respond(answer("Two."));
   assert.equal((await second.host.handle("prompt", { text: "two" })).messages, 4);
   assert.equal(await bases(), 1, "a later load keeps the base");
+});
+
+test("two calls of one response that ask for their message index at once read the journal history once each (it fails a run that counts twice)", async t => {
+  const fake = await setup(t);
+  // Journal reads that take a while, as Postgres's do: the two calls' served("callIndex") refreshes overlap.
+  const { host } = await fake.start({ storage: storage => {
+    const scan = storage.scanEntries.bind(storage);
+    storage.scanEntries = async (...args) => { await new Promise(resolve => setTimeout(resolve, 5)); return scan(...args); };
+    return storage;
+  } });
+  fake.respond(answer([fauxToolCall("fetch", {}, { id: "a" }), fauxToolCall("fetch", {}, { id: "b" })], "toolUse"), answer("Done."));
+  const run = await host.handle("prompt", { text: "fetch both" });
+  assert.equal(run.error, null);
+  assert.equal(run.reply, "Done.");
+  assert.equal(run.messages, 5);
 });
