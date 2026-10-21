@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { END_USER_CREDIT, type CreditStop, type ModelAttemptHook } from "./model-attempt.ts";
-import { dualWriting, NativeTranscript } from "./pi-durable/transcript.ts";
+import { dualWriting, hostRetired, NativeTranscript } from "./pi-durable/transcript.ts";
 import { mkdir } from "node:fs/promises";
 import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
 import { convertToLlm } from "./pi-harness/messages.ts";
@@ -857,6 +857,10 @@ export function createAgentHost(hostIO: HostIO) {
       // record, so a torn append is safe to copy again after reopen.
       await reconcilePiTranscript(native, storage, SESSION_CONVERSATION_ID);
       return native;
+    }
+    if (await hostRetired(storage)) {
+      console.error(JSON.stringify({ type: "session_format_newer", agent: config.id, tenant: config.tenant }));
+      throw new Error(`${NOT_MIGRATED}: this agent's history format is newer than this runtime (a later release keeps its history in Pi's journal alone), so this release cannot open it. Run a newer release; nothing was changed`);
     }
     const legacy = await storage.conversation(SESSION_CONVERSATION_ID, BACKGROUND_CONTEXT) ? "not_on_pi"
       : (await io.transcript.readBounded?.(0))?.length === 0 ? undefined : "legacy_log";

@@ -28,3 +28,13 @@ export async function disableGeneration(storage: Storage) {
     { type: "document.change", id: document!.id as DocumentId, content: { version: 1, kind: "base", value: { ...stored!.value as JsonObject, enabled: false } } },
   ], context);
 }
+
+/** What the release that retires the host transcript writes: the host generation disabled, its document `retired`. */
+export async function retireHost(storage: Storage) {
+  const document = await storage.findDocument(ADDRESS, "current", context);
+  const stored = await storage.document(document!.id as DocumentId, "current", context);
+  await storage.commit([
+    { type: "entry", value: { id: await storage.mintId<EntryId>(), conversationId: 1 as ConversationId, kind: "camel.host.disabled", data: { retired: "journal" } } },
+    { type: "document.change", id: document!.id as DocumentId, content: { version: 1, kind: "base", value: { ...stored!.value as JsonObject, enabled: false, retired: "journal" } } },
+  ], context);
+}

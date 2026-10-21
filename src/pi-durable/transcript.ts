@@ -120,6 +120,16 @@ export async function nativeUnrecorded(storage: Pick<Storage, "scanEntries">): P
 }
 
 /**
+ * Whether a later release took this session's history off the host transcript: it set the host document's `retired`
+ * (with `enabled: false`) once its history was read from Pi's journal alone. This release must not open it.
+ */
+export async function hostRetired(storage: Pick<Storage, "findDocument" | "document">): Promise<boolean> {
+  const document = await storage.findDocument(ADDRESS, "current", context);
+  if (!document) return false;
+  return !!((await storage.document(document.id, "current", context))?.value as { retired?: unknown } | undefined)?.retired;
+}
+
+/**
  * Pi's latest-only document holds bounded host state; immutable host records refer
  * to canonical messages by ID. No legacy log is read or appended during normal use.
  */

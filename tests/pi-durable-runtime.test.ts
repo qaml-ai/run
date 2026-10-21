@@ -12,7 +12,7 @@ import { SEED_MAX_BYTES } from "../src/pi-durable/seed.ts";
 import { historyOf, transcriptPath, type TranscriptRecord } from "../src/transcript.ts";
 import { openPiJournalReader, openPiStorage } from "../src/pi-durable/storage.ts";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
-import { rollBack } from "./fixtures/pi-rollback.ts";
+import { retireHost, rollBack } from "./fixtures/pi-rollback.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 
 for (const hosting of ["inline", "process"] as Hosting[]) test(`a session whose history is still only in the legacy format is refused, loudly, and nothing is written; a new agent is seeded (${hosting})`, { timeout: 60_000 }, async t => {
@@ -51,6 +51,16 @@ for (const hosting of ["inline", "process"] as Hosting[]) test(`a session whose 
   const before = await kinds("rolled-back");
   await assert.rejects(start("rolled-back"), /AGENT_NOT_MIGRATED: .*missing or disabled/);
   assert.deepEqual(await kinds("rolled-back"), before);
+
+  // Retired by a later release, which reads its history from Pi's journal alone: refused as newer, its journal as it was.
+  assert.ok(await start("retired"));
+  await supervisors.at(-1)!.close();
+  const retired = await openPiStorage({ sessionId: "retired", directory: join(root, "retired") });
+  await retireHost(retired);
+  await retired.close(BACKGROUND_CONTEXT);
+  const kept = await kinds("retired");
+  await assert.rejects(start("retired"), /AGENT_NOT_MIGRATED: this agent's history format is newer than this runtime/);
+  assert.deepEqual(await kinds("retired"), kept);
 
   // A new agent: seeded with the marker every release reads first, its generation and context.
   assert.ok(await start("new"));
