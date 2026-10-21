@@ -73,3 +73,33 @@ test("failed native summary stops the run with an error and retains completed to
   const history = await agent.recoverMessages();
   assert.equal(history.filter(item => item.message.role === "toolResult").length, calls);
 });
+
+test("a compaction's kept messages are counted as it left them, whatever was committed since", async t => {
+  const storage = new MemoryStorage();
+  let generations = 0;
+  const kept: number[] = [];
+  const agent = await DurableAgent.create({
+    initialState: { model, messages: [], tools: [{ name: "read", label: "Read", description: "Read", parameters: { type: "object", properties: {} },
+      execute: async () => ({ content: [{ type: "text", text: "payload ".repeat(1000) }], details: null }) }] },
+    streamFn: () => {
+      const content = generations < 12 ? [fauxToolCall("read", {}, { id: `read-${generations}` })] : "Finished";
+      generations++;
+      return stream({ ...fauxAssistantMessage(content, { stopReason: typeof content === "string" ? "stop" : "toolUse" }), provider: model.provider, model: model.id });
+    },
+    durable: { storage,
+      summaryStream: () => stream({ ...fauxAssistantMessage("Summary."), provider: model.provider, model: model.id }),
+      onCompaction: state => { kept.push(state.keptMessages); },
+    },
+  });
+  t.after(() => agent.close());
+  await agent.prompt({ role: "user", content: "Read all records", timestamp: 1 } as any);
+  assert.ok(kept.length > 0, "the run compacted");
+  const page = await storage.scanEntries({ conversationId: agent.conversationId }, 1000, undefined, BACKGROUND_CONTEXT);
+  const compaction = page.items.find(entry => entry.kind === "pi.compaction")!;
+  // Messages land after the compaction before the host adopts it.
+  await (agent as any).conversation.commit((tx: any) => tx.appendEntry(agent.conversationId, { kind: "camel.message", model: [{ role: "user", content: "later", timestamp: 2 }] }), BACKGROUND_CONTEXT);
+  const counted: number[] = [];
+  (agent as any).options.durable.onCompaction = (state: { keptMessages: number }) => { counted.push(state.keptMessages); };
+  await (agent as any).adoptCompaction(compaction);
+  assert.deepEqual(counted, [kept.at(-1)]);
+});
