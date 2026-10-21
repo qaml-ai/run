@@ -84,3 +84,4 @@ test("a provider's HTTP status, wherever its error puts it", () => {
   assert.equal(providerStatus("used 1500 tokens"), undefined, "a number that is no status");
   assert.equal(providerStatus(undefined), undefined);
 });
+// draft changed-tests probe (reverted before merge)
