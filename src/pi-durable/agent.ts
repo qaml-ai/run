@@ -249,6 +249,9 @@ export class DurableAgent {
       settings: { compaction: { enabled: true,
         get reserveTokens() { return Math.min(16_384, Math.floor(window() * 0.15)); },
         get keepRecentTokens() { return Math.min(20_000, Math.floor(window() * 0.25)); }, backgroundTokens: 0 },
+        // Live answers and tool output stream to the host from the provider and the tool, not from these commits:
+        // they only bound what a lost node's run keeps, so each costs a journal write once a second, not every 100 ms.
+        progress: { partialIntervalMs: 1_000, outputIntervalMs: 1_000 },
         retry: { enabled: false }, toolExecution: options.toolExecution ?? "parallel",
         steeringMode: agent.steeringMode, followUpMode: agent.followUpMode, contextRetentionMs: 0 },
     }, context);
