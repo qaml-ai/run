@@ -17,6 +17,7 @@ import { validKey } from "../../shared/storage.ts";
 import { LostClaim, underClaim, type Claim } from "../ownership.ts";
 import { databaseRetryable, databaseUnavailable, transaction, type Db, type Sql } from "../db.ts";
 import { clock } from "../node-context.ts";
+import { timedStorage } from "../metrics.ts";
 
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { apply, type Op } from "@earendil-works/chord/delta";
@@ -108,11 +109,11 @@ function postgresDatabase(db: Db, sessionId: string, claim?: Claim, retryMs = 0)
     return {
         // Reads change nothing: one the database did not answer is asked again.
         sql: db,
-        get: (text, ...params) => whileUnavailable(retryMs, () => pool.get(text, ...params)),
-        all: (text, ...params) => whileUnavailable(retryMs, () => pool.all(text, ...params)),
-        run: (text, ...params) => whileUnavailable(retryMs, () => pool.run(text, ...params)),
+        get: (text, ...params) => timedStorage(() => whileUnavailable(retryMs, () => pool.get(text, ...params))),
+        all: (text, ...params) => timedStorage(() => whileUnavailable(retryMs, () => pool.all(text, ...params))),
+        run: (text, ...params) => timedStorage(() => whileUnavailable(retryMs, () => pool.run(text, ...params))),
         retryMs,
-        transaction: (work, advance) => transaction(db, async sql => {
+        transaction: (work, advance) => timedStorage(() => transaction(db, async sql => {
             // Serializes mutations by session, including separate handles on this node. One statement checks the
             // claim (its ownership row FOR SHARE, as underClaim does: a takeover waits until this commits, and a claim
             // no longer current writes nothing), locks and reads the metadata row (a commit's also takes its
@@ -137,7 +138,7 @@ function postgresDatabase(db: Db, sessionId: string, claim?: Claim, retryMs = 0)
             // No row (the session's first open creates it): set_config did not run, so turn synchronous commit on here.
             if (!metadata) await sql.query("set local synchronous_commit = on");
             return work(executor(sql), metadata);
-        }),
+        })),
         async close() {}, // The supervisor, not an individual Pi session, owns the pool.
     };
 }

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
-import { deliveryLine, errorClass, metricLine, observeTurns, recordEventMetrics, recordWatchRefused, setMetricService, setMetricSink, webhookBacklogLine } from "../src/metrics.ts";
+import { deliveryLine, errorClass, markSweepImport, metricLine, observeTurns, recentFirstRequestP95, recordEventMetrics, recordWatchRefused, setMetricService, setMetricSink, timedStorage, webhookBacklogLine } from "../src/metrics.ts";
 import { webhookEvent } from "../src/webhooks.ts";
 
 /** Capture the metric lines written while `fn` runs. */
@@ -111,6 +111,33 @@ test("a turn's line: its outcome, duration, time to first token and to its first
   assert.equal(turn.ToolErrors, 1);
   assert.deepEqual(directive(turn).Dimensions.map((set: string[]) => set.filter(name => name !== "ServiceName")),
     [[], ["Outcome"], ["ErrorClass"], ["Provider", "Model"]]);
+});
+
+test("a turn whose first model request waited says why: Pi storage, a Pi sweep import beside it, or the host's first turn", async () => {
+  let now = 0;
+  const turns = observeTurns(() => ({ provider: "openrouter", id: "m" }), () => now);
+  /** A turn whose first request comes `ms` after it starts, `storageMs` of them in Pi storage. */
+  const turn = (ms: number, storageMs = 0, during?: () => void) => turns.wrap(async () => {
+    if (storageMs) await timedStorage(() => new Promise(resolve => setTimeout(resolve, storageMs)));
+    during?.();
+    now += ms;
+    turns.event({ type: "turn_start" });
+    return { messages: 1, error: null };
+  })("prompt", {});
+  const lines = await captured(async () => {
+    await turn(2500);
+    await turn(3000, 1600);
+    await turn(2500, 0, () => { markSweepImport(true); markSweepImport(false); });
+    await turn(2500);
+    await turn(100);
+  });
+  const metrics = lines.filter(line => line.type === "turn_metrics");
+  assert.deepEqual(metrics.map(line => line.slowFirstRequest), ["first_turn", "storage", "sweep_import", "other", undefined]);
+  assert.deepEqual(metrics.map(line => line.firstTurn), [true, false, false, false, false]);
+  assert.ok(metrics[1].FirstRequestStorageMs >= 1500, "the storage time is a metric");
+  assert.equal(metrics[2].sweepImport, true);
+  assert.equal(metrics[3].sweepImport, undefined);
+  assert.ok(recentFirstRequestP95(10 * 60_000, 5) !== undefined, "five turns are enough for the sweep's gate");
 });
 
 test("turn outcomes: a model error, input required, the spend limit, a thrown error, a caller's abort; other methods are not turns", async () => {

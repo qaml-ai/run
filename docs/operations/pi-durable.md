@@ -113,8 +113,8 @@ do; the operator's mode chooses within it, is read before every agent, and start
   `AGENT_PI_SWEEP_LARGE_PACE_MS` apart (30 s). Each import is by reference (`archive: "legacy-log"`),
   reading the log whole, as the session's own open would. Its lines carry `pass: "large"`.
 - **Live traffic first:** a node takes no agent while it is leaving, its database pool has a
-  request waiting, its turns' p95 `TimeToFirstRequestMs` over 5 minutes (the runtime's own part of a
-  turn's latency, which imports compete with; at least 10 turns) is past
+  request waiting, its turns' p95 `TimeToFirstRequestMs` over 10 minutes (the runtime's own part of a
+  turn's latency, which imports compete with; at least 5 turns) is past
   `AGENT_PI_SWEEP_MAX_FIRST_REQUEST_MS` (8 s), its resident memory is past `AGENT_MEMORY_HIGH_BYTES`,
   its container memory is past `AGENT_PI_SWEEP_MAX_MEMORY_BYTES` (60% of the task), or it is full. It waits 5 s, doubling to 60 s,
   and logs `pi_sweep_backoff` with the reason at most once a minute. Five failures in a row wait 60 s.

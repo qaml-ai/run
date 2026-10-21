@@ -29,3 +29,9 @@ container memory is under `AGENT_PI_SWEEP_LARGE_MAX_MEMORY_BYTES` (Terraform: 35
 
 An agent a node holds but never started (a watcher's or an upsert's load) is imported by that node's
 own sweep, in place, instead of being skipped as held on every pass.
+
+The sweep's latency gate reads this node's last 10 minutes of turns and needs 5 of them (was 5
+minutes and 10), so small nodes in a large fleet have one. `turn_metrics` gains
+`FirstRequestStorageMs` (a turn's time in Pi storage before its first model request), `firstTurn`,
+`sweepImport` (a Pi sweep import ran beside it on this node), and, for a first request 2 s late or
+more, `slowFirstRequest`: `storage`, `sweep_import`, `first_turn` or `other`.

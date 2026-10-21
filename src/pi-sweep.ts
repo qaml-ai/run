@@ -1,7 +1,7 @@
 import type { Db } from "./db.ts";
 import { transaction } from "./db.ts";
 import { clock } from "./node-context.ts";
-import { safeError } from "./metrics.ts";
+import { markSweepImport, safeError } from "./metrics.ts";
 
 /** Off, a report of what migrating each legacy agent would do, or migrating them. */
 export type PiSweepMode = "off" | "dry-run" | "on";
@@ -119,9 +119,14 @@ export class PiSweep {
       const started = clock().monotonic();
       const large = next.state === "agent" && next.pass === "large";
       let result: PiSweepResult;
+      // Turns waiting meanwhile on this node say so (turn_metrics' sweepImport).
+      if (!dryRun) markSweepImport(true);
       try { result = await this.options.sweep(next.candidate, dryRun, large); failures = 0; }
       catch (error) { result = { outcome: "failed", detail: { error: safeError(error) } }; failures++; }
-      finally { if (large) await this.options.db.query("update pi_sweep set large_until = null where id").catch(() => {}); }
+      finally {
+        if (!dryRun) markSweepImport(false);
+        if (large) await this.options.db.query("update pi_sweep set large_until = null where id").catch(() => {});
+      }
       this.counts[result.outcome] = (this.counts[result.outcome] ?? 0) + 1;
       // What the imports would write (a dry run measures it), and how many make their system message from listed tools.
       const detail = result.detail ?? {};

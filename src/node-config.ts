@@ -220,7 +220,7 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
  * The Pi migration sweep (src/pi-sweep.ts): AGENT_PI_SWEEP is the most it may do on this node (off by default, which
  * runs nothing); the operator's mode (PUT /v1/operations/pi-sweep) chooses within that. It takes no agent while the
  * node's container memory is past AGENT_PI_SWEEP_MAX_MEMORY_BYTES (or its resident memory past AGENT_MEMORY_HIGH_BYTES), nor
- * while its turns' p95 TimeToFirstRequestMs over 5 minutes is past AGENT_PI_SWEEP_MAX_FIRST_REQUEST_MS (0: no limit),
+ * while its turns' p95 TimeToFirstRequestMs over 10 minutes is past AGENT_PI_SWEEP_MAX_FIRST_REQUEST_MS (0: no limit),
  * waits AGENT_PI_SWEEP_PACE_MS between agents, AGENT_PI_SWEEP_DELAY_MS after the node starts, and
  * AGENT_PI_SWEEP_REPASS_MS after a pass reaches the end before the next. Its large pass (sessions too large to copy;
  * the operator turns it on) takes an agent only under AGENT_PI_SWEEP_LARGE_MAX_MEMORY_BYTES (else the sweep's limit),
